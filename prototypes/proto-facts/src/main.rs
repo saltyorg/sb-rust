@@ -44,6 +44,8 @@ enum Action {
     Copy,
     Show,
     Delete,
+    Undo,
+    Fold,
     Save,
     Quit,
 }
@@ -53,6 +55,11 @@ enum Popup {
     Edit(Box<TextArea<'static>>, FactId),
     ConfirmSave,
     ConfirmQuit,
+    /// Right-click (or `m`) menu for one row; `sel` is the highlighted item.
+    Menu {
+        at: Position,
+        sel: usize,
+    },
 }
 
 struct App {
@@ -73,6 +80,7 @@ struct App {
     buttons: Vec<(Rect, Action)>,
     undo_targets: Vec<(Rect, Target)>,
     popup_buttons: Vec<(Rect, bool)>,
+    menu_area: Rect,
 }
 
 fn main() -> Result<()> {
@@ -97,6 +105,7 @@ fn main() -> Result<()> {
         buttons: Vec::new(),
         undo_targets: Vec::new(),
         popup_buttons: Vec::new(),
+        menu_area: Rect::default(),
     };
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
@@ -196,6 +205,9 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if let Popup::Menu { at, sel } = self.popup {
+            return self.on_menu_key(key, at, sel);
+        }
         match &mut self.popup {
             Popup::Edit(textarea, id) => {
                 match key.code {
@@ -228,7 +240,8 @@ impl App {
                 }
                 return None;
             }
-            Popup::None => {}
+            // Handled by on_menu_key above.
+            Popup::Menu { .. } | Popup::None => {}
         }
         if self.searching {
             match key.code {
@@ -263,14 +276,50 @@ impl App {
             KeyCode::Char('c') => return Some(Action::Copy),
             KeyCode::Char('s') => return Some(Action::Show),
             KeyCode::Char('d') => return Some(Action::Delete),
-            KeyCode::Char('u') => {
-                if let Some(t) = self.selected().map(target_of) {
-                    self.undo(t);
-                }
-            }
+            KeyCode::Char('u') => return Some(Action::Undo),
+            KeyCode::Char('m') | KeyCode::Menu => self.open_menu(None),
             KeyCode::Char('v') => return Some(Action::Save),
             KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
             _ => {}
+        }
+        None
+    }
+
+    fn on_menu_key(&mut self, key: KeyEvent, at: Position, sel: usize) -> Option<Action> {
+        let items = self
+            .selected()
+            .map(|r| self.menu_items(r))
+            .unwrap_or_default();
+        let last = items.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.popup = Popup::Menu {
+                    at,
+                    sel: sel.saturating_sub(1),
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.popup = Popup::Menu {
+                    at,
+                    sel: (sel + 1).min(last),
+                }
+            }
+            KeyCode::Enter => {
+                self.popup = Popup::None;
+                return items.get(sel).map(|(_, _, a)| *a);
+            }
+            KeyCode::Esc | KeyCode::Char('m') | KeyCode::Menu => self.popup = Popup::None,
+            code => {
+                // An item's own shortcut works inside the menu too.
+                let hit = items
+                    .iter()
+                    .find(|(_, k, _)| key_matches(k, code))
+                    .map(|(_, _, a)| *a);
+                if hit.is_some() {
+                    self.popup = Popup::None;
+                }
+                return hit;
+            }
         }
         None
     }
@@ -305,6 +354,30 @@ impl App {
 
     fn on_mouse(&mut self, m: MouseEvent) -> Option<Action> {
         let pos = Position::new(m.column, m.row);
+        if let Popup::Menu { sel, .. } = &mut self.popup {
+            let area = self.menu_area;
+            let item =
+                (area.contains(pos) && m.row > area.y && m.row < area.bottom().saturating_sub(1))
+                    .then(|| usize::from(m.row - area.y - 1));
+            match m.kind {
+                MouseEventKind::Moved => {
+                    if let Some(i) = item {
+                        *sel = i;
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let action = item.and_then(|i| {
+                        self.selected()
+                            .and_then(|r| self.menu_items(r).get(i).map(|(_, _, a)| *a))
+                    });
+                    self.popup = Popup::None;
+                    return action;
+                }
+                MouseEventKind::Down(_) => self.popup = Popup::None,
+                _ => {}
+            }
+            return None;
+        }
         if !matches!(self.popup, Popup::None) {
             if m.kind == MouseEventKind::Down(MouseButton::Left)
                 && let Some((_, yes)) = self.popup_buttons.iter().find(|(r, _)| r.contains(pos))
@@ -348,6 +421,13 @@ impl App {
                             self.list.select(Some(row));
                         }
                     }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) if self.list_area.contains(pos) => {
+                let row = self.list.offset() + usize::from(m.row - self.list_area.y);
+                if row < self.rows().len() {
+                    self.list.select(Some(row));
+                    self.open_menu(Some(pos));
                 }
             }
             MouseEventKind::ScrollDown if self.list_area.contains(pos) => {
@@ -402,12 +482,26 @@ impl App {
                     if matches!(self.pending.get(&t), Some(Change::Delete)) {
                         self.undo(t);
                     } else {
+                        // Deleting an app or copy replaces any pending changes inside it.
+                        self.pending.retain(|k, _| !inside(*k, t));
                         self.pending.insert(t, Change::Delete);
                         self.status = format!(
                             "{} will be deleted when you save. Saltbox creates a new value next time it runs.",
                             self.label(t)
                         );
                     }
+                }
+            }
+            Action::Undo => {
+                if let Some(row) = sel {
+                    self.undo(target_of(row));
+                }
+            }
+            Action::Fold => {
+                if let Some(Row::App(r)) = sel
+                    && !self.folded.remove(&r)
+                {
+                    self.folded.insert(r);
                 }
             }
             Action::Save => {
@@ -435,6 +529,84 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Opens the action menu for the selected row, at the click position or
+    /// next to the row when opened from the keyboard.
+    fn open_menu(&mut self, at: Option<Position>) {
+        let Some(sel) = self.list.selected() else {
+            return;
+        };
+        if sel >= self.rows().len() {
+            return;
+        }
+        let row_y =
+            self.list_area.y + u16::try_from(sel.saturating_sub(self.list.offset())).unwrap_or(0);
+        let at = at.unwrap_or(Position::new(self.list_area.x + 30, row_y));
+        self.popup = Popup::Menu { at, sel: 0 };
+    }
+
+    /// The menu entries for a row: label, the key that does the same thing
+    /// without the menu, and the action.
+    fn menu_items(&self, row: Row) -> Vec<(String, &'static str, Action)> {
+        let t = target_of(row);
+        let marked_delete = matches!(self.pending.get(&t), Some(Change::Delete));
+        let mut items = Vec::new();
+        match row {
+            Row::Setting(id) => {
+                if model::looks_secret(&self.roles[id.0].instances[id.1].facts[id.2].key) {
+                    let label = if self.shown.contains(&id) {
+                        "Hide"
+                    } else {
+                        "Show"
+                    };
+                    items.push((label.to_string(), "s", Action::Show));
+                }
+                items.push(("Copy".to_string(), "c", Action::Copy));
+                if !self.deleted(row) {
+                    items.push(("Edit".to_string(), "e", Action::Edit));
+                }
+                if matches!(self.pending.get(&t), Some(Change::Set(_))) {
+                    items.push(("Undo change".to_string(), "u", Action::Undo));
+                }
+                items.push((
+                    if marked_delete { "Keep" } else { "Delete" }.to_string(),
+                    "d",
+                    Action::Delete,
+                ));
+            }
+            Row::Copy(..) => {
+                items.push((
+                    if marked_delete {
+                        "Keep copy"
+                    } else {
+                        "Delete copy"
+                    }
+                    .to_string(),
+                    "d",
+                    Action::Delete,
+                ));
+            }
+            Row::App(r) => {
+                let folded = self.query.is_empty() && self.folded.contains(&r);
+                items.push((
+                    if folded { "Open" } else { "Fold" }.to_string(),
+                    "Enter",
+                    Action::Fold,
+                ));
+                items.push((
+                    if marked_delete {
+                        "Keep app"
+                    } else {
+                        "Delete app"
+                    }
+                    .to_string(),
+                    "d",
+                    Action::Delete,
+                ));
+            }
+        }
+        items
     }
 
     fn start_edit(&mut self, id: FactId) {
@@ -491,6 +663,23 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// True when `k` is strictly inside `outer` (a setting in an app, a copy in an app, ...).
+fn inside(k: Target, outer: Target) -> bool {
+    match (k, outer) {
+        (Target::Copy(r, _) | Target::Setting((r, _, _)), Target::App(a)) => r == a,
+        (Target::Setting((r, i, _)), Target::Copy(a, b)) => (r, i) == (a, b),
+        _ => false,
+    }
+}
+
+fn key_matches(shortcut: &str, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Enter => shortcut == "Enter",
+        KeyCode::Char(c) => shortcut.len() == 1 && shortcut.starts_with(c),
+        _ => false,
     }
 }
 
@@ -740,6 +929,44 @@ fn draw(f: &mut Frame, app: &mut App) {
             "Quit (y)",
             "Keep editing (n)",
         ),
+        Popup::Menu { at, sel } => {
+            let items = app
+                .selected()
+                .map(|r| app.menu_items(r))
+                .unwrap_or_default();
+            let width = items
+                .iter()
+                .map(|(l, k, _)| l.chars().count() + k.len() + 5)
+                .max()
+                .unwrap_or(10) as u16;
+            let height = u16::try_from(items.len()).unwrap_or(0) + 2;
+            let x = at.x.min(area.right().saturating_sub(width));
+            let y = at.y.min(area.bottom().saturating_sub(height));
+            let menu = Rect::new(x, y, width.min(area.width), height.min(area.height));
+            app.menu_area = menu;
+            let inner_w = usize::from(menu.width.saturating_sub(2));
+            let lines: Vec<Line> = items
+                .iter()
+                .enumerate()
+                .map(|(i, (label, key, _))| {
+                    let pad = inner_w.saturating_sub(label.chars().count() + key.len() + 2);
+                    let text = format!(" {label}{}{key} ", " ".repeat(pad));
+                    if i == *sel {
+                        Line::from(text).style(Style::default().fg(Color::Black).bg(Color::Cyan))
+                    } else {
+                        Line::from(vec![
+                            Span::raw(format!(" {label}{}", " ".repeat(pad))),
+                            Span::raw(format!("{key} ")).dim(),
+                        ])
+                    }
+                })
+                .collect();
+            f.render_widget(Clear, menu);
+            f.render_widget(
+                Paragraph::new(lines).block(Block::bordered().border_type(BorderType::Rounded)),
+                menu,
+            );
+        }
         Popup::None => {}
     }
 }

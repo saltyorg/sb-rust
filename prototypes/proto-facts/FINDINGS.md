@@ -33,9 +33,21 @@ are kept below.
 - The page opens fully expanded when everything fits on screen, and folded to
   app names otherwise.
 - The save dialog has clickable Save and Cancel buttons.
+- **Right-click menu** on any setting, copy or app heading, with that item's
+  actions:
+  - settings: Show/Hide, Copy, Edit, Undo change, Delete/Keep;
+  - copy headings: Delete copy;
+  - app headings: Fold/Open, Delete app.
+
+  The item under the mouse is highlighted. Every menu action is also on the
+  keyboard: `m` (or the Menu key) opens the same menu on the selected row,
+  each item shows its direct shortcut, and the shortcut works with or without
+  the menu open. Deleting an app or copy replaces any pending changes inside
+  it, so the changes panel stays readable.
 
 **How it was checked:** the PTY harness drove search, show, copy, edit,
-delete (setting, copy, app), undo by clicking in the changes panel, and save
+delete (setting, copy, app), undo by clicking in the changes panel, the
+right-click menu (open, hover, click an item) and the keyboard menu, and save
 by key and by click. It ran at 110 and 80 columns, against the synthetic
 fixtures and a generated 60-app set. The resulting files matched the intended
 changes exactly: an edited value, a removed section, a removed app file.

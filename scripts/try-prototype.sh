@@ -57,9 +57,10 @@ case "${1:-}" in
       "Look at: apps as headings with values beside each setting, the search box," \
       "         the buttons along the bottom, and the unsaved-changes panel." \
       "Try:  type / and a name to search   click a setting, click again to edit" \
-      "      Copy and Show on a secret   Delete a setting or a whole app heading" \
-      "      undo a change from the panel   Save changes" \
-      "Every button also has its key shown on it. Esc or q quits." \
+      "      right-click a setting, a copy or an app heading for its actions menu" \
+      "      (keyboard: m opens the same menu; each item shows its shortcut key)" \
+      "      Copy and Show on a secret   Delete a whole app   undo from the panel" \
+      "Every button and menu item also has a key. Esc or q quits." \
       "Resize the window: under 100 columns the changes panel moves to the bottom."
     "$b" "$data"
     if [[ "$1" == facts ]]; then
