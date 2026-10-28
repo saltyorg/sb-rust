@@ -1,122 +1,87 @@
 # Prototype: proto-facts
 
-## Task 4: keyboard
+**Question:** Do ratatui and ratatui-textarea give a good fact editor, with
+keyboard and mouse, on Saltbox facts data?
 
-**Question:** Do ratatui and ratatui-textarea give a good keyboard-driven fact
-editor on real facts data?
+**Crates tried:** ratatui@0.30.2 (crossterm 0.29 via `ratatui::crossterm`),
+ratatui-textarea@0.9.3, base64 (clipboard copy).
 
-**Crates tried:** ratatui@0.30.2 (crossterm 0.29 backend via
-`ratatui::crossterm`), ratatui-textarea@0.9.3. Both resolve to one crossterm
-version, so key events pass straight through to the textarea.
+## History
 
-**What was built:** a role → instance → fact tree with an inspector pane. It
-has inline staging (edit `●`, delete `✗`, undo), a review popup, and apply via
-line-based rewrites of only the affected lines. Secret-looking keys
-(pass/secret/token/key/api) are masked by default, with `r` to reveal: a
-redesign over sb-go. The layout is side by side at 96 or more columns and
-stacked below that. A guard refuses the standard Saltbox facts directory. About 535 lines
-of UI plus 155 lines of model, against sb-go factui's roughly 1,900 non-test
-lines, though the prototype has no mouse support, locking, or drift handling.
+The first version copied sb-go's layout (a tree plus a separate details pane)
+without questioning it. It worked technically but kept sb-go's main usability
+problem: values were hidden until you selected each setting. It has been
+replaced by the settings-page design in `docs/ideas/fact-editor.md`, chosen
+for users of mixed skill levels. The technical lessons from the first version
+are kept below.
 
-**How it was checked:** a pexpect + pyte harness drove the binary in a PTY
-with real keystrokes and printed screen snapshots, against synthetic fixtures
-(committed) and a copy of a real facts directory (parse check only).
+## What was built (settings page)
 
-### Result
+- Each app is a heading with its settings beneath it and values visible.
+  Secrets show as dots.
+- Apps with several copies get a heading per copy; single-copy apps don't.
+- A search box narrows the page as you type and opens matching apps.
+- Buttons along the bottom: Edit, Copy, Show/Hide, Delete/Keep,
+  Save changes, Quit. Each shows its key and can be clicked.
+- An "Unsaved changes" panel, always visible, lists each change with a
+  clickable undo. It sits on the right at 100+ columns and at the bottom
+  below that.
+- Delete works on a setting, a copy or a whole app. The status line and the
+  save dialog explain that Saltbox creates a new value on its next run.
+- Copy sends the value to the terminal clipboard without showing it. Show
+  reveals only the selected value.
+- The page opens fully expanded when everything fits on screen, and folded to
+  app names otherwise.
+- The save dialog has clickable Save and Cancel buttons.
 
-- **Works on real data.** A copy of a real facts directory parses to the
-  same role and fact counts as a plain text scan.
-- The full flow works end to end: expand, browse, reveal, stage a delete,
-  edit a value, review, apply. The diff of the copy shows exactly the two
-  intended line changes, and the comment line and other keys are untouched.
-- **ratatui-textarea** covers the editor without extra code: cursor movement,
-  editing, multi-line values with Alt+Enter, and a block title. Feeding it
-  crossterm `KeyEvent`s directly works.
-- **Wide text:** CJK and emoji values render and truncate correctly. ratatui
-  owns the width maths.
-- **Resize and small terminals:** a resize redraws correctly with no extra
-  code. At 28×7 it degrades without panicking.
-- **Problems found and fixed. All were our own code, not stack limits:**
-  1. ratatui `Span`s don't break on `\n`, so multi-line values must become one
-     `Line` per value line.
-  2. An inline editor squeezed into the inspector got no height in stacked
-     layouts. A **modal editor popup** sized to the screen works better.
-  3. `CursorMove::End` goes to the end of the current line. Use `Bottom` then
-     `End` for the end of the value.
-  4. **The writer dropped continuation-line indentation**, which would turn
-     multi-line values into broken keys. The real module needs a
-     round-trip test suite for this, as sb-go has.
-- **Harness limitation:** pyte doesn't blank the second half of a wide
-  character when its first half is overwritten, so a value shown after a CJK
-  value can look like it has missing spaces. Real terminals blank both
-  halves. To be confirmed in the Task 5 checks in real terminals.
-- **Testing approach for the real module:** ratatui's `TestBackend` gives
-  in-process snapshot tests (with `insta`), which needs no pexpect harness.
-  Keep a PTY-driven smoke test for terminal-level behaviour.
+**How it was checked:** the PTY harness drove search, show, copy, edit,
+delete (setting, copy, app), undo by clicking in the changes panel, and save
+by key and by click. It ran at 110 and 80 columns, against the synthetic
+fixtures and a generated 60-app set. The resulting files matched the intended
+changes exactly: an edited value, a removed section, a removed app file.
 
-### Verdict (keyboard)
+## Result
 
-_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+- ratatui covers the whole design with stock widgets (list, paragraphs,
+  blocks). Click targets come from the areas recorded during drawing, so
+  there's no hand-maintained hit-map.
+- **Problems found in our own code, all fixed:**
+  - The save dialog cut off its buttons when a line wrapped. Its height now
+    counts wrapped lines.
+  - Values jumped sideways while searching. The value column is now sized
+    from all settings, not just visible ones.
+  - A search with no results showed a blank page. It now says nothing
+    matches and how to clear the search.
+- **Clipboard copy can't confirm success.** Terminals that block clipboard
+  access ignore the request silently, so the status message says "if your
+  terminal allows it; otherwise use Show".
+- **Folding threshold:** "fold when it doesn't fit" folds even the four
+  demo apps in a 20-row window. A small window may deserve a higher
+  threshold. To be decided in review.
 
-**Adopt.** ratatui plus ratatui-textarea covers the fact editor. Every
-problem found was in our own code.
+**Lessons kept from the first version:**
+- Multi-line values must become one ratatui `Line` per value line.
+- `CursorMove::Bottom` then `End` puts the editor cursor at the end of the
+  value.
+- The writer must keep continuation-line indentation, so the real module
+  needs round-trip tests, as sb-go has.
+- Resize and tiny terminals are handled by ratatui without extra code.
+- Pending a real-terminal check: Shift-drag text selection while mouse
+  capture is on, and wide characters after overwrites (the PTY harness can't
+  emulate either).
 
-### Map impact
-
-- `tui` module: modal editor popup; masked secrets with reveal; per-line value
-  rendering; snapshot tests via `TestBackend` and `insta`.
-- `config` (facts) module: line-preserving writer with continuation-line
-  round-trip tests. Keep sb-go's locking and drift detection; the prototype
-  skipped them on purpose.
-
-## Task 5: mouse
-
-**Question:** Can crossterm mouse events mapped to ratatui layout areas
-replace sb-go's hand-written hit-map, without owning ANSI or width code?
-
-**What was built:** about 110 added lines, against sb-go's roughly 410 lines
-of `hitmap.go` and `mouse.go`.
-- Click selects a row. Clicking the selected row acts like Enter (expand, or
-  open the editor).
-- Right-clicking a fact opens an action menu (Edit / Delete / Undo), clamped
-  inside the screen.
-- The scroll wheel moves through the tree.
-- Mouse capture is enabled through `ratatui::crossterm::execute!`.
-- Hit-testing uses the `Rect` each widget was drawn into plus the
-  `ListState::offset()` ratatui keeps. There's no separate hit-map to keep in
-  sync with the layout.
-- Menu entries map to the same key codes as the keyboard shortcuts, so mouse
-  and keyboard behaviour can't drift apart.
-
-### Result (driven through the PTY harness with SGR mouse sequences)
-
-- Select, second-click expand and edit, right-click menu → Delete (staged `✗`)
-  and the wheel all work.
-- **Mapping stays correct when the list is scrolled.** Clicking the top
-  visible row selects that row, not row 0.
-- **Mapping stays correct after a resize.** Areas are recorded on every draw,
-  so nothing goes stale.
-- Clicks outside the tree, or on non-fact rows with the right button, are
-  ignored as intended.
-- Row-based hit-testing is width-independent, so wide characters in values
-  can't shift click targets in the tree.
-- **Polish for the module:** after the terminal grows, ratatui keeps the
-  list's scroll offset, so rows above stay hidden even though there's room.
-  Reset the offset on resize.
-- **Pending manual check:** a session in at least two real terminal
-  emulators, covering native text selection with Shift-drag while mouse
-  capture is on, and the wide-character redraw note from Task 4. The PTY
-  harness can't stand in for either.
-
-### Verdict (mouse)
+## Verdict
 
 _Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
 
-**Adopt.** Layout rects plus `ListState::offset()` replace the hit-map with
-far less code. No ANSI or width handling is ours.
+**Adopt** ratatui plus ratatui-textarea. The settings-page design is the
+candidate for the `tui` spec, subject to review.
 
-### Map impact
+## Map impact
 
-- `tui` module: mouse support is cheap enough to keep across all interactive
-  screens. Record areas during draw and route menu actions through the
-  keyboard handlers.
+- `tui` module: the fact editor is a settings page. It has search, visible
+  buttons, an always-visible changes panel with undo, per-value show and
+  copy, and delete at app, copy and setting level.
+- `config` (facts) module: deletes at three levels (setting line, section,
+  file). Line-preserving writer with round-trip tests. Keep sb-go's locking
+  and drift detection.
