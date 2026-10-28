@@ -56,6 +56,8 @@ with real keystrokes and printed screen snapshots, against synthetic fixtures
 
 ### Verdict (keyboard)
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt.** ratatui plus ratatui-textarea covers the fact editor. Every
 problem found was in our own code.
 
@@ -107,6 +109,8 @@ of `hitmap.go` and `mouse.go`.
   harness can't stand in for either.
 
 ### Verdict (mouse)
+
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
 
 **Adopt.** Layout rects plus `ListState::offset()` replace the hit-map with
 far less code. No ANSI or width handling is ours.

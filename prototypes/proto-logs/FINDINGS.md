@@ -66,6 +66,8 @@ afterwards.
 
 ## Verdict
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt.** One async loop with crossterm `EventStream`, bollard streams and a
 `journalctl -f` child covers both log viewers, at a fraction of sb-go's size.
 

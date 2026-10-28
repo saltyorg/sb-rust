@@ -60,6 +60,8 @@ text) and a real Saltbox announcements file, at 80 and 140 columns.
 
 ## Verdict
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt tui-markdown** (with a small Saltbox `StyleSheet`); **reject
 termimad**. It's a second rendering stack with its own width maths.
 

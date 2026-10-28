@@ -51,6 +51,8 @@ with SIGINT mid-step in both modes.
 
 ## Verdict
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt with changes.** indicatif and portable-pty replace sb-go's
 bubbletea-based runner, provided the "finished steps become printed lines"
 pattern is followed.

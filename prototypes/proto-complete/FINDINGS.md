@@ -45,6 +45,8 @@ answers the shell's requests, and the shell is registered with
 
 ## Verdict
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt with changes:** use the dynamic engine, with an exact version pin and
 an ADR recording the unstable-feature dependency.
 

@@ -44,6 +44,8 @@ container listing over the local socket, and a command run under a PTY.
 
 ## Verdict
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt with changes.** The stack builds and runs statically on both
 architectures. The build pipeline needs a musl C toolchain.
 

@@ -45,6 +45,8 @@ running with port mappings, one exited), which were removed afterwards.
 
 ## Verdict
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt.** comfy-table, anstyle/anstream and dialoguer cover the inline look,
 provided colour is decided in one place.
 

@@ -1,4 +1,4 @@
-# Capability Map: sb-rust (ready for approval)
+# Capability Map: sb-rust (pending review of prototype output)
 
 sb-rust is a Rust rewrite, not a line-by-line port, of the Saltbox CLI (`sb`,
 currently sb-go). It keeps the user-facing behaviour of `sb` and uses idiomatic
@@ -6,8 +6,10 @@ Rust libraries in place of sb-go's internals.
 
 > **Status:** the stack and module boundaries below have been tested by eight
 > prototypes (`prototypes/*/FINDINGS.md`). Every row in the stack table names
-> the prototype that backs it, or says it is untested. Once this map is
-> approved, module specs start with `cli-core`.
+> the prototype that backs it, or says it is untested. The verdicts are
+> technical only: the maintainer still has to review each prototype's look
+> and feel. Module specs start with `cli-core` only after that review and
+> approval of this map.
 
 ## Objective
 

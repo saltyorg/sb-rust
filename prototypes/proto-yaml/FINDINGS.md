@@ -53,6 +53,8 @@ recursion, number, boolean/ansible_bool, url and additionalProperties.
 
 ## Verdict
 
+_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+
 **Adopt with changes.** Use serde-saphyr for typed YAML (schemas, sb-owned
 config) and saphyr `MarkedYaml` for schema-validated Saltbox config.
 
