@@ -315,22 +315,44 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
     let (tx, mut rx) = mpsc::unbounded_channel::<(u64, String)>();
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
+    // Opt-in frame timing for performance work: PROTO_LOGS_TIMING=<file>.
+    let mut timing =
+        std::env::var_os("PROTO_LOGS_TIMING").and_then(|p| std::fs::File::create(p).ok());
+    let mut cause = "start";
     while !app.quit {
+        let started = std::time::Instant::now();
         terminal.draw(|f| draw(f, app))?;
+        if let Some(file) = timing.as_mut() {
+            use std::io::Write as _;
+            let mode = match (&app.popup, app.follow) {
+                (Popup::Open { .. }, _) => "popup",
+                (Popup::Menu { .. }, _) => "menu",
+                (Popup::None, true) => "follow",
+                (Popup::None, false) => "paused",
+            };
+            let _ = writeln!(file, "{} {mode} {cause}", started.elapsed().as_micros());
+        }
         tokio::select! {
             Some(Ok(event)) = events.next() => match event {
-                Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key, &docker, &tx),
-                Event::Mouse(mouse) => app.on_mouse(mouse, &docker, &tx),
-                _ => {}
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    cause = "key";
+                    app.on_key(key, &docker, &tx);
+                }
+                Event::Mouse(mouse) => {
+                    cause = if matches!(mouse.kind, MouseEventKind::Moved) { "mouse-move" } else { "mouse" };
+                    app.on_mouse(mouse, &docker, &tx);
+                }
+                _ => cause = "other",
             },
             Some(first) = rx.recv() => {
+                cause = "lines";
                 // Batch everything already queued so a busy log costs one redraw.
                 app.push(first);
                 while let Ok(more) = rx.try_recv() {
                     app.push(more);
                 }
             }
-            _ = tick.tick() => {}
+            _ = tick.tick() => cause = "tick",
         }
     }
     if let Some(task) = app.stream.take() {
@@ -848,9 +870,16 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
             }
             // If the lines from `top` to the end leave space (e.g. after turning
             // wrap off), pull older lines in so the screen stays full.
-            let mut below: u16 = (app.top..app.lines.len())
-                .map(|i| row_height(&texts(i), inner.width, app.wrap))
-                .fold(0, u16::saturating_add);
+            // Only measure until the screen is full: measuring every line to the
+            // end of the buffer made each redraw cost O(buffer) (70 ms in debug
+            // builds with 500 long lines, and growing with the buffer).
+            let mut below = 0u16;
+            for i in app.top..app.lines.len() {
+                below = below.saturating_add(row_height(&texts(i), inner.width, app.wrap));
+                if below >= height {
+                    break;
+                }
+            }
             while app.top > 0 && below < height {
                 let h = row_height(&texts(app.top - 1), inner.width, app.wrap);
                 if below + h > height {

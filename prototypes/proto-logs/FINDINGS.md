@@ -84,6 +84,25 @@ types:
 - Wrapping needs exact row heights, which use ratatui's unstable
   `rendered-line-info` feature (`Paragraph::line_count`), the same pin as
   proto-markdown.
+- **Performance (reported as laggy when opening a line):** measured with the
+  opt-in `PROTO_LOGS_TIMING=<file>` frame log on a real source with very long
+  lines.
+
+  | Case | Before | After |
+  |---|---|---|
+  | Paused near the newest line (debug) | ~5 ms per redraw | unchanged |
+  | Paused at the oldest line, popup open, mouse moving (debug) | ~70 ms | ~5 ms |
+  | Same (release) | ~6 ms | ~0.5 ms |
+  | Same with the buffer at its 5,000-line cap (debug) | not measured (scaled with buffer) | ~5 ms |
+
+  Cause: keeping the paused view full measured every line from the top of the
+  view to the end of the buffer on every redraw, so the cost grew with the
+  buffer. Each mouse movement redraws, so moving over the popup queued up slow
+  frames. Fix: stop measuring once the screen is full. Results were the same
+  over two runs. Not changed: skipping redraws on mouse movement. At ~5 ms per
+  frame it isn't needed, and an unmeasured "improvement" would only add code.
+  The module needs a frame-time budget check with long-line fixtures so this
+  can't regress unnoticed.
 - **Design notes for the module:**
   - Search highlights whole lines. Per-match highlighting means splitting the
     spans ansi-to-tui produces.
