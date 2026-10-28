@@ -97,15 +97,15 @@ and clean Ctrl-C?
 editor on real facts data?
 
 **Acceptance criteria:**
-- [ ] It reads facts from a path argument and shows role → instance → key/value
+- [x] It reads facts from a path argument and shows role → instance → key/value
       navigation.
-- [ ] It edits a value inline, deletes a fact, and shows a pending-changes
+- [x] It edits a value inline, deletes a fact, and shows a pending-changes
       summary. Writes go to a copy, never the live file.
-- [ ] It handles resize and narrow terminals without panics.
+- [x] It handles resize and narrow terminals without panics.
 
 **Verification:**
-- [ ] Manual session against a copy of a real facts directory.
-- [ ] The diff of the copy shows only the intended changes.
+- [x] Manual session against a copy of a real facts directory.
+- [x] The diff of the copy shows only the intended changes.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-facts/{Cargo.toml,src/main.rs,src/model.rs,FINDINGS.md}`
@@ -117,11 +117,11 @@ editor on real facts data?
 replace sb-go's hand-written hit-map, without owning ANSI or width code?
 
 **Acceptance criteria:**
-- [ ] Clicking selects rows and focuses the editor, and the scroll wheel
+- [x] Clicking selects rows and focuses the editor, and the scroll wheel
       scrolls lists.
-- [ ] Click targets stay correct after resize and with wide (CJK/emoji)
+- [x] Click targets stay correct after resize and with wide (CJK/emoji)
       values.
-- [ ] FINDINGS lists any gap that needs custom code and how big it is.
+- [x] FINDINGS lists any gap that needs custom code and how big it is.
 
 **Verification:**
 - [ ] Manual mouse session in at least two terminal emulators, named in
@@ -137,16 +137,16 @@ replace sb-go's hand-written hit-map, without owning ANSI or width code?
 ratatui viewer with follow, scroll, and search, without blocking input?
 
 **Acceptance criteria:**
-- [ ] It picks a running container or a Saltbox systemd service, then streams
+- [x] It picks a running container or a Saltbox systemd service, then streams
       its logs.
-- [ ] Follow mode toggles, scrolling back works, and `/` search highlights
+- [x] Follow mode toggles, scrolling back works, and `/` search highlights
       matches.
-- [ ] Switching the source mid-stream cancels the old stream cleanly.
-- [ ] FINDINGS compares this with a simpler inline design (picker, then plain
+- [x] Switching the source mid-stream cancels the old stream cleanly.
+- [x] FINDINGS compares this with a simpler inline design (picker, then plain
       streamed output).
 
 **Verification:**
-- [ ] Manual session against a running container and a Saltbox service.
+- [x] Manual session against a running container and a Saltbox service.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-logs/{Cargo.toml,src/main.rs,FINDINGS.md}`
@@ -158,20 +158,20 @@ ratatui viewer with follow, scroll, and search, without blocking input?
 enough to replace glamour?
 
 **Acceptance criteria:**
-- [ ] It renders a real announcements file with each crate, inline and in a
+- [x] It renders a real announcements file with each crate, inline and in a
       scrollable view.
-- [ ] Headings, lists, code, links and emphasis are compared side by side in
+- [x] Headings, lists, code, links and emphasis are compared side by side in
       FINDINGS.
 
 **Verification:**
-- [ ] Manual review at 80 columns and at a wide width.
+- [x] Manual review at 80 columns and at a wide width.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-markdown/{Cargo.toml,src/main.rs,FINDINGS.md}`
 **Scope:** S
 
 ## Checkpoint B: after Tasks 4–7
-- [ ] All screen FINDINGS have a verdict and a proposed screen design.
+- [x] All screen FINDINGS have a verdict and a proposed screen design.
 - [ ] Review with the user.
 
 ## Task 8: Inline output kit (`proto-inline`)

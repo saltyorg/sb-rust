@@ -52,10 +52,10 @@ See `tasks/todo.md` for acceptance criteria and verification for each task.
 ### Checkpoint A: plumbing verdicts reviewed
 
 ### Phase 2: Interactive screens
-- [ ] Task 4: Fact editor, keyboard
-- [ ] Task 5: Fact editor, mouse
-- [ ] Task 6: Log viewer streaming
-- [ ] Task 7: Announcements markdown
+- [x] Task 4: Fact editor, keyboard
+- [x] Task 5: Fact editor, mouse
+- [x] Task 6: Log viewer streaming
+- [x] Task 7: Announcements markdown
 
 ### Checkpoint B: screen verdicts reviewed
 
