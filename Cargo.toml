@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["prototypes/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# CLAUDE.md: #[allow] is forbidden; justified exceptions use #[expect(lint, reason = "...")].
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
