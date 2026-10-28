@@ -17,7 +17,7 @@ use crossterm::event::{
     MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
@@ -164,8 +164,20 @@ async fn main() -> Result<()> {
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, docker).await;
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    drain_input();
     ratatui::restore();
     result
+}
+
+/// Reads and discards input still in flight after mouse capture is turned
+/// off, so stray mouse codes don't end up in the user's shell.
+fn drain_input() {
+    let deadline = std::time::Instant::now() + Duration::from_millis(150);
+    while std::time::Instant::now() < deadline {
+        if let Ok(true) = crossterm::event::poll(Duration::from_millis(20)) {
+            let _ = crossterm::event::read();
+        }
+    }
 }
 
 async fn list_sources(docker: &Docker, cli: &Cli) -> Result<Vec<Source>> {
@@ -333,16 +345,27 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
             let _ = writeln!(file, "{} {mode} {cause}", started.elapsed().as_micros());
         }
         tokio::select! {
-            Some(Ok(event)) = events.next() => match event {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    cause = "key";
-                    app.on_key(key, &docker, &tx);
+            Some(Ok(first)) = events.next() => {
+                // Handle every event that is already waiting, then redraw once.
+                // Redrawing per event let a moving mouse queue seconds of frames.
+                let mut next = Some(first);
+                while let Some(event) = next.take() {
+                    match event {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            cause = "key";
+                            app.on_key(key, &docker, &tx);
+                        }
+                        Event::Mouse(mouse) => {
+                            cause = if matches!(mouse.kind, MouseEventKind::Moved) { "mouse-move" } else { "mouse" };
+                            app.on_mouse(mouse, &docker, &tx);
+                        }
+                        _ => cause = "other",
+                    }
+                    if app.quit {
+                        break;
+                    }
+                    next = events.next().now_or_never().flatten().and_then(Result::ok);
                 }
-                Event::Mouse(mouse) => {
-                    cause = if matches!(mouse.kind, MouseEventKind::Moved) { "mouse-move" } else { "mouse" };
-                    app.on_mouse(mouse, &docker, &tx);
-                }
-                _ => cause = "other",
             },
             Some(first) = rx.recv() => {
                 cause = "lines";

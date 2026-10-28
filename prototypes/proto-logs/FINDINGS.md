@@ -103,6 +103,22 @@ types:
   frame it isn't needed, and an unmeasured "improvement" would only add code.
   The module needs a frame-time budget check with long-line fixtures so this
   can't regress unnoticed.
+- **Lockups with a real mouse (reported: froze for seconds):** each input
+  event caused a full redraw. A real mouse sends motion events faster than
+  redraws finish in a large window, so redraws queued up. Measured with a
+  burst of 300 back-to-back motion events at 240×70: 300 redraws at ~18 ms
+  (debug), i.e. ~5 s of queued work. Fix: handle every waiting event, then
+  redraw once. Result: 600 motion events caused 2 redraws (same over two
+  runs). The earlier harness only sent one event per 150 ms, so it couldn't
+  show this.
+- **Terminal codes leaking into the shell after quitting:** mouse codes the
+  terminal sends while capture is being switched off arrived after the app
+  stopped reading, and the shell printed them. Fix: after disabling mouse
+  capture, read and discard input for 150 ms before restoring the terminal.
+  Measured by sending mouse codes 10, 50 and 100 ms after `q` and counting
+  what the shell received: before, 600 bytes every time; after, 0.
+- The launcher now builds release binaries, so trying a prototype feels like
+  the real thing (debug redraws are ~10× slower).
 - **Design notes for the module:**
   - Search highlights whole lines. Per-match highlighting means splitting the
     spans ansi-to-tui produces.

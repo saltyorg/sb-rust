@@ -21,14 +21,15 @@ Usage: scripts/try-prototype.sh <prototype>
   inline       docker ps style table, then username/password prompts
   complete     Shell with dynamic tag completion loaded (bash)
 
-Each run builds the prototype first. Nothing touches real Saltbox files.
+Each run builds the prototype (release mode) first. Nothing touches real Saltbox files.
 EOF
 }
 
 bin() {
   command -v cargo >/dev/null || { echo "cargo not found on PATH" >&2; exit 1; }
-  cargo build -q -p "proto-$1"
-  printf '%s/target/debug/proto-%s' "$root" "$1"
+  # Release builds: debug builds redraw ~10x slower and misrepresent how it feels.
+  cargo build -q --release -p "proto-$1"
+  printf '%s/target/release/proto-%s' "$root" "$1"
 }
 
 intro() {

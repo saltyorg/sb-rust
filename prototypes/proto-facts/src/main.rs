@@ -95,6 +95,7 @@ fn main() -> Result<()> {
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, &cli.dir);
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    drain_input();
     ratatui::restore();
     result
 }
@@ -102,16 +103,36 @@ fn main() -> Result<()> {
 fn run(terminal: &mut DefaultTerminal, app: &mut App, dir: &std::path::Path) -> Result<()> {
     while !app.quit {
         terminal.draw(|f| draw(f, app))?;
-        let action = match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
-            Event::Mouse(mouse) => app.on_mouse(mouse),
-            _ => None,
-        };
-        if let Some(action) = action {
-            app.perform(action, dir)?;
+        // Handle every event that is already waiting, then redraw once, so a
+        // moving mouse can't queue up a redraw per motion event.
+        let mut event = event::read()?;
+        loop {
+            let action = match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
+                Event::Mouse(mouse) => app.on_mouse(mouse),
+                _ => None,
+            };
+            if let Some(action) = action {
+                app.perform(action, dir)?;
+            }
+            if app.quit || !event::poll(std::time::Duration::ZERO)? {
+                break;
+            }
+            event = event::read()?;
         }
     }
     Ok(())
+}
+
+/// Reads and discards input still in flight after mouse capture is turned
+/// off, so stray mouse codes don't end up in the user's shell.
+fn drain_input() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+    while std::time::Instant::now() < deadline {
+        if let Ok(true) = event::poll(std::time::Duration::from_millis(20)) {
+            let _ = event::read();
+        }
+    }
 }
 
 impl App {

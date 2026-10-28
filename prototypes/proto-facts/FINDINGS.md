@@ -76,6 +76,11 @@ changes exactly: an edited value, a removed section, a removed app file.
   demo apps in a 20-row window. A small window may deserve a higher
   threshold. To be decided in review.
 
+- **Same two input problems as proto-logs, same fixes:** input events are
+  handled in batches with one redraw per batch, and input is drained after
+  mouse capture is turned off. Before the fix, mouse codes arriving 10–100 ms
+  after `q` reached the shell (550 bytes in the test); after, none.
+
 **Lessons kept from the first version:**
 - Multi-line values must become one ratatui `Line` per value line.
 - `CursorMove::Bottom` then `End` puts the editor cursor at the end of the
