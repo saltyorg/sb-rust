@@ -4,7 +4,8 @@
 keyboard and mouse, on Saltbox facts data?
 
 **Crates tried:** ratatui@0.30.2 (crossterm 0.29 via `ratatui::crossterm`),
-ratatui-textarea@0.9.3, base64 (clipboard copy).
+ratatui-textarea@0.9.3, tui-popup@0.7.7 (dialogs), crossterm `osc52`
+(clipboard).
 
 ## History
 
@@ -80,6 +81,26 @@ changes exactly: an edited value, a removed section, a removed app file.
   handled in batches with one redraw per batch, and input is drained after
   mouse capture is turned off. Before the fix, mouse codes arriving 10–100 ms
   after `q` reached the shell (550 bytes in the test); after, none.
+
+- **Library audit (after review asked whether proper libraries were used):**
+  - Clipboard copy now uses crossterm's own `CopyToClipboard` (feature
+    `osc52`), replacing hand-written escape codes and the base64 crate.
+    Verified by decoding the emitted OSC 52 payload: it carried exactly the
+    selected value, wide characters included.
+  - The edit popup and the save/quit dialogs now use tui-popup (ratatui
+    org). A fresh state each frame keeps dialogs centred and sized; button
+    clicks are hit-tested against the popup's reported area.
+  - The right-click menu stays our own drawing. tui-popup's `move_to` only
+    works after a first render and its size is frozen after that (see
+    `popup_state.rs` and `popup_area` in its source), which doesn't suit a
+    menu that opens at the cursor with changing labels.
+  - The INI writer stays our own. rust-ini and configparser rewrite whole
+    files rather than preserving untouched lines, and ini-roundtrip has very
+    low adoption. Line preservation is a Saltbox-specific constraint.
+  - The event loop uses crossterm's documented `read()`/`poll()` on one
+    thread, cited in the code.
+  - A `TestBackend` render test now checks the save dialog's title and
+    buttons in memory: the module-level testing approach.
 
 **Lessons kept from the first version:**
 - Multi-line values must become one ratatui `Line` per value line.

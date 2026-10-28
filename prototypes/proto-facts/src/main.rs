@@ -6,11 +6,9 @@
 mod model;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use base64::Engine;
 use clap::Parser;
 use model::{Change, FactId, Role, Target};
 use ratatui::crossterm::event::{
@@ -18,7 +16,7 @@ use ratatui::crossterm::event::{
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
-use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
@@ -104,7 +102,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, dir: &std::path::Path) -> 
     while !app.quit {
         terminal.draw(|f| draw(f, app))?;
         // Handle every event that is already waiting, then redraw once, so a
-        // moving mouse can't queue up a redraw per motion event.
+        // moving mouse can't queue up a redraw per motion event. Uses crossterm's
+        // documented blocking read() plus poll() on one thread:
+        // https://docs.rs/crossterm/0.29.0/crossterm/event/index.html
         let mut event = event::read()?;
         loop {
             let action = match event {
@@ -125,7 +125,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, dir: &std::path::Path) -> 
 }
 
 /// Reads and discards input still in flight after mouse capture is turned
-/// off, so stray mouse codes don't end up in the user's shell.
+/// off, so stray mouse codes don't end up in the user's shell. Same thread as
+/// the event loop, as crossterm requires for read()/poll().
+/// UNVERIFIED pattern: no doc covers draining; kept because it measurably
+/// stopped the leak (FINDINGS.md).
 fn drain_input() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
     while std::time::Instant::now() < deadline {
@@ -480,14 +483,13 @@ impl App {
             },
             Action::Copy => match sel {
                 Some(Row::Setting(id)) => {
-                    let value = self.value(id);
-                    let encoded =
-                        base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
-                    // Ask the terminal to set the clipboard (works over SSH where the
-                    // terminal allows it; there is no way to confirm it did).
-                    let mut out = std::io::stdout();
-                    write!(out, "\x1b]52;c;{encoded}\x07")?;
-                    out.flush()?;
+                    // OSC 52 via crossterm's clipboard command (feature "osc52"):
+                    // https://docs.rs/crossterm/0.29.0/crossterm/clipboard/struct.CopyToClipboard.html
+                    // Terminals that block clipboard access ignore it silently.
+                    execute!(
+                        std::io::stdout(),
+                        crossterm::clipboard::CopyToClipboard::to_clipboard_from(self.value(id))
+                    )?;
                     let key = &self.roles[id.0].instances[id.1].facts[id.2].key;
                     self.status = format!(
                         "Copied {key} to the clipboard (if your terminal allows it; otherwise use Show)"
@@ -912,14 +914,14 @@ fn draw(f: &mut Frame, app: &mut App) {
     app.popup_buttons.clear();
     match &app.popup {
         Popup::Edit(textarea, _) => {
-            let [a] = Layout::vertical([Constraint::Length(8)])
-                .flex(Flex::Center)
-                .areas(area);
-            let [a] = Layout::horizontal([Constraint::Percentage(70)])
-                .flex(Flex::Center)
-                .areas(a);
-            f.render_widget(Clear, a);
-            f.render_widget(&**textarea, a);
+            // tui-popup centres, sizes and clears; the textarea keeps its own
+            // titled border, so the popup draws none.
+            // https://docs.rs/tui-popup/0.7.7/tui_popup/
+            let width = usize::from(area.width) * 7 / 10;
+            let mut popup =
+                tui_popup::Popup::new(tui_popup::KnownSizeWrapper::new(&**textarea, width, 8));
+            popup.borders = ratatui::widgets::Borders::NONE;
+            f.render_widget(popup, area);
         }
         Popup::ConfirmSave => {
             let n = app.pending.len();
@@ -989,6 +991,10 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// A centred confirmation dialog with two clickable buttons, drawn with
+/// tui-popup (https://docs.rs/tui-popup/0.7.7/tui_popup/). A fresh
+/// PopupState each frame keeps it centred and sized to its content; the
+/// rendered area it reports is used to hit-test the buttons.
 fn confirm(
     f: &mut Frame,
     app: &mut App,
@@ -997,44 +1003,43 @@ fn confirm(
     yes: &str,
     no: &str,
 ) {
-    let width = 72u16.min(f.area().width);
-    let inner_width = usize::from(width.saturating_sub(2)).max(1);
+    let width = 70usize.min(usize::from(f.area().width.saturating_sub(2)));
+    let width = width.max(1);
     // Count wrapped lines so the buttons are never cut off.
-    let text_lines: usize = text
-        .iter()
-        .map(|l| l.width().div_ceil(inner_width).max(1))
-        .sum();
-    let height = u16::try_from(text_lines).unwrap_or(1) + 4;
-    let [a] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(f.area());
-    let [a] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(a);
-    f.render_widget(Clear, a);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(title.to_string());
-    let inner = block.inner(a);
-    text.push(Line::raw(""));
+    let text_lines: usize = text.iter().map(|l| l.width().div_ceil(width).max(1)).sum();
     let yes_text = format!(" {yes} ");
     let no_text = format!(" {no} ");
-    let y = inner.y + u16::try_from(text_lines + 1).unwrap_or(0);
-    let yes_w = u16::try_from(yes_text.chars().count()).unwrap_or(0);
-    let no_w = u16::try_from(no_text.chars().count()).unwrap_or(0);
-    app.popup_buttons
-        .push((Rect::new(inner.x, y, yes_w, 1), true));
-    app.popup_buttons
-        .push((Rect::new(inner.x + yes_w + 2, y, no_w, 1), false));
+    text.push(Line::raw(""));
     text.push(Line::from(vec![
-        Span::styled(yes_text, Style::default().fg(Color::Black).bg(Color::Green)),
+        Span::styled(
+            yes_text.clone(),
+            Style::default().fg(Color::Black).bg(Color::Green),
+        ),
         Span::raw("  "),
-        Span::styled(no_text, Style::default().fg(Color::Black).bg(Color::Gray)),
+        Span::styled(
+            no_text.clone(),
+            Style::default().fg(Color::Black).bg(Color::Gray),
+        ),
     ]));
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).block(block),
-        a,
-    );
+    let body = Paragraph::new(text).wrap(Wrap { trim: false });
+    let mut popup = tui_popup::Popup::new(tui_popup::KnownSizeWrapper::new(
+        body,
+        width,
+        text_lines + 2,
+    ));
+    popup.title = Line::from(title.to_string());
+    popup.border_set = ratatui::symbols::border::ROUNDED;
+    let mut state = tui_popup::PopupState::default();
+    f.render_stateful_widget(popup, f.area(), &mut state);
+    if let Some(a) = *state.area() {
+        let y = a.y + 1 + u16::try_from(text_lines + 1).unwrap_or(0);
+        let yes_w = u16::try_from(yes_text.chars().count()).unwrap_or(0);
+        let no_w = u16::try_from(no_text.chars().count()).unwrap_or(0);
+        app.popup_buttons
+            .push((Rect::new(a.x + 1, y, yes_w, 1), true));
+        app.popup_buttons
+            .push((Rect::new(a.x + 1 + yes_w + 2, y, no_w, 1), false));
+    }
 }
 
 fn row_item(app: &App, row: Row, key_width: usize) -> ListItem<'static> {
@@ -1152,6 +1157,37 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT));
         app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
         assert_eq!(app.query, "plex");
+    }
+
+    /// Renders the save dialog into ratatui's in-memory TestBackend (no
+    /// terminal emulator involved) and checks title and buttons.
+    #[test]
+    fn save_dialog_renders_title_and_buttons() {
+        let mut app = App::new(Vec::new());
+        app.pending.insert(Target::App(0), Change::Delete);
+        app.popup = Popup::ConfirmSave;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        app.roles = vec![Role {
+            name: "demo".into(),
+            path: "demo.ini".into(),
+            instances: Vec::new(),
+        }];
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows: Vec<String> = (0..20)
+            .map(|y| {
+                (0..100)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let screen = rows.join("\n");
+        assert!(screen.contains("Save changes"), "title missing:\n{screen}");
+        assert!(
+            screen.contains("Save (y)") && screen.contains("Cancel (n)"),
+            "buttons missing:\n{screen}"
+        );
+        assert_eq!(app.popup_buttons.len(), 2);
     }
 
     #[test]
