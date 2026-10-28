@@ -45,7 +45,6 @@ enum Action {
     Show,
     Delete,
     Undo,
-    Fold,
     Save,
     Quit,
 }
@@ -497,13 +496,6 @@ impl App {
                     self.undo(target_of(row));
                 }
             }
-            Action::Fold => {
-                if let Some(Row::App(r)) = sel
-                    && !self.folded.remove(&r)
-                {
-                    self.folded.insert(r);
-                }
-            }
             Action::Save => {
                 if self.pending.is_empty() {
                     self.status = "Nothing to save".into();
@@ -587,13 +579,7 @@ impl App {
                     Action::Delete,
                 ));
             }
-            Row::App(r) => {
-                let folded = self.query.is_empty() && self.folded.contains(&r);
-                items.push((
-                    if folded { "Open" } else { "Fold" }.to_string(),
-                    "Enter",
-                    Action::Fold,
-                ));
+            Row::App(_) => {
                 items.push((
                     if marked_delete {
                         "Keep app"
@@ -677,7 +663,6 @@ fn inside(k: Target, outer: Target) -> bool {
 
 fn key_matches(shortcut: &str, code: KeyCode) -> bool {
     match code {
-        KeyCode::Enter => shortcut == "Enter",
         KeyCode::Char(c) => shortcut.len() == 1 && shortcut.starts_with(c),
         _ => false,
     }

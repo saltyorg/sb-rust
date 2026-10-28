@@ -37,7 +37,7 @@ are kept below.
   actions:
   - settings: Show/Hide, Copy, Edit, Undo change, Delete/Keep;
   - copy headings: Delete copy;
-  - app headings: Fold/Open, Delete app.
+  - app headings: Delete app (folding stays on click or Enter, not in the menu).
 
   The item under the mouse is highlighted. Every menu action is also on the
   keyboard: `m` (or the Menu key) opens the same menu on the selected row,
