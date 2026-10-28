@@ -46,6 +46,26 @@ repository (see the hooks in `.claude/settings.json`).
 | Preparing a release / launch | `agent-skills:shipping-and-launch` |
 | Context/rules setup, degraded output | `agent-skills:context-engineering` |
 
+## Library first (don't diverge from what dependencies already solve)
+
+- Before writing glue for terminal, UI, input, event-loop, clipboard,
+  process or I/O behaviour, check the dependency's official docs, recipes
+  and examples (and its organisation's widget crates, e.g. ratatui's
+  `tui-widgets`). Use `agent-skills:source-driven-development`.
+- Follow the documented pattern and cite it in a code comment with the full
+  URL. Never re-implement something a dependency already provides (event
+  loops, input editing, clipboard, popups, widgets, ANSI handling).
+- Diverging from the documented approach needs evidence: a measurement or a
+  missing feature. Record it in a code comment ("why not X") and in the
+  prototype's FINDINGS.md or an ADR.
+- A pattern with no official source is marked `UNVERIFIED` in the code,
+  with what it was checked against.
+- Prefer crates that are actively maintained and widely used. A
+  low-adoption crate needs a stated reason.
+- Domain logic (Saltbox schema rules, file formats with Saltbox-specific
+  constraints) is ours to write, but still goes through a library wherever
+  one meets the constraint.
+
 ## Project artifacts
 
 - **Specs before code:** `docs/specs/`. Tasks: `tasks/plan.md`, `tasks/todo.md`.
