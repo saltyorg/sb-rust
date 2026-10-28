@@ -1,6 +1,6 @@
-//! Minimal facts model: one INI file per role, sections are instances.
-//! Deliberately simpler than sb-go's facts package (no locks, no drift
-//! detection); the prototype is about the UI. Edits are line-based so
+//! Minimal facts model: one INI file per app (role), sections are copies
+//! (instances). Deliberately simpler than sb-go's facts package (no locks, no
+//! drift detection); the prototype is about the UI. Edits are line-based so
 //! untouched lines keep their formatting.
 
 use std::collections::BTreeMap;
@@ -27,8 +27,16 @@ pub struct Role {
 /// (role, instance, fact) indices into the loaded catalog.
 pub type FactId = (usize, usize, usize);
 
+/// What a pending change applies to: a whole app, one copy, or one setting.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Target {
+    App(usize),
+    Copy(usize, usize),
+    Setting(FactId),
+}
+
 #[derive(Clone)]
-pub enum Pending {
+pub enum Change {
     Set(String),
     Delete,
 }
@@ -93,42 +101,56 @@ fn parse(text: &str) -> Vec<Instance> {
     instances
 }
 
-/// Applies pending changes by rewriting only the affected lines of each role
-/// file (temp file + rename). Returns the paths written.
-pub fn apply(roles: &[Role], pending: &BTreeMap<FactId, Pending>) -> Result<Vec<PathBuf>> {
-    let mut written = Vec::new();
+/// Applies pending changes. A deleted app removes its file; a deleted copy
+/// removes its section; settings are rewritten line by line (temp file +
+/// rename). Returns the number of files touched.
+pub fn apply(roles: &[Role], pending: &BTreeMap<Target, Change>) -> Result<usize> {
+    let mut touched = 0;
     for (ri, role) in roles.iter().enumerate() {
-        let edits: Vec<_> = pending.iter().filter(|((r, _, _), _)| *r == ri).collect();
-        if edits.is_empty() {
+        if matches!(pending.get(&Target::App(ri)), Some(Change::Delete)) {
+            std::fs::remove_file(&role.path)?;
+            touched += 1;
+            continue;
+        }
+        let relevant = pending.keys().any(|t| match t {
+            Target::App(r) | Target::Copy(r, _) | Target::Setting((r, _, _)) => *r == ri,
+        });
+        if !relevant {
             continue;
         }
         let text = std::fs::read_to_string(&role.path)?;
         let mut out = String::with_capacity(text.len());
         let mut section = None::<usize>;
+        let mut dropping_section = false;
         let mut skipping_continuation: Option<usize> = None;
         for raw in text.split_inclusive('\n') {
             let trimmed = raw.trim();
             let indent = raw.len() - raw.trim_start().len();
+            if let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                section = role.instances.iter().position(|i| i.name == name);
+                dropping_section = section.is_some_and(|si| {
+                    matches!(pending.get(&Target::Copy(ri, si)), Some(Change::Delete))
+                });
+                skipping_continuation = None;
+            }
+            if dropping_section {
+                continue;
+            }
             if let Some(base) = skipping_continuation {
                 if !trimmed.is_empty() && indent > base {
                     continue;
                 }
                 skipping_continuation = None;
             }
-            if let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-                section = role.instances.iter().position(|i| i.name == name);
-            } else if let (Some(si), Some((k, _))) = (section, trimmed.split_once('=')) {
+            if let (Some(si), Some((k, _))) = (section, trimmed.split_once('='))
+                && !trimmed.starts_with('[')
+            {
                 let key = k.trim();
-                let hit = edits.iter().find(|((_, i, f), _)| {
-                    *i == si
-                        && role.instances[si]
-                            .facts
-                            .get(*f)
-                            .is_some_and(|fact| fact.key == key)
-                });
-                if let Some((_, change)) = hit {
+                let fi = role.instances[si].facts.iter().position(|f| f.key == key);
+                if let Some(change) = fi.and_then(|fi| pending.get(&Target::Setting((ri, si, fi))))
+                {
                     skipping_continuation = Some(indent);
-                    if let Pending::Set(value) = change {
+                    if let Change::Set(value) = change {
                         let newline = if raw.ends_with('\n') { "\n" } else { "" };
                         let lead = &raw[..indent];
                         let continuation = format!("\n{lead}    ");
@@ -143,9 +165,9 @@ pub fn apply(roles: &[Role], pending: &BTreeMap<FactId, Pending>) -> Result<Vec<
         let tmp = role.path.with_extension("ini.tmp");
         std::fs::write(&tmp, out)?;
         std::fs::rename(&tmp, &role.path)?;
-        written.push(role.path.clone());
+        touched += 1;
     }
-    Ok(written)
+    Ok(touched)
 }
 
 pub fn looks_secret(key: &str) -> bool {

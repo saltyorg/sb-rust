@@ -12,12 +12,13 @@ usage() {
   cat <<'EOF'
 Usage: scripts/try-prototype.sh <prototype>
 
-  facts      Fact editor (keyboard + mouse) on a copy of synthetic facts
-  logs       Log viewer on a demo container and demo systemd unit (removed on exit)
-  markdown   Announcements renderer (full-screen view, then inline, then termimad)
-  runner     Task runner with spinners, live output and a failing step
-  inline     docker ps style table, then username/password prompts
-  complete   Shell with dynamic tag completion loaded (bash)
+  facts        Fact editor as a settings page, on a copy of synthetic facts
+  facts-large  The same with 60 synthetic apps, to see folding and search
+  logs         Log viewer on a demo container and demo systemd unit (removed on exit)
+  markdown     Announcements renderer (full-screen view, then inline, then termimad)
+  runner       Task runner with spinners, live output and a failing step
+  inline       docker ps style table, then username/password prompts
+  complete     Shell with dynamic tag completion loaded (bash)
 
 Each run builds the prototype first. Nothing touches real Saltbox files.
 EOF
@@ -39,21 +40,32 @@ intro() {
 }
 
 case "${1:-}" in
-  facts)
+  facts | facts-large)
     b="$(bin facts)"
     data="$(mktemp -d)"
     trap 'rm -rf "$data"' EXIT
-    cp prototypes/proto-facts/fixtures/*.ini "$data/"
-    intro "Fact editor (synthetic facts in a temp copy)" \
-      "Look at: tree + inspector layout, masked secrets, the edit popup, the review popup." \
-      "Keys:  ↑/↓ move   →/Enter expand   Enter on a fact edits (Enter saves, Alt+Enter newline, Esc cancels)" \
-      "       r reveal secrets   d delete   u undo   a review + apply   q quit" \
-      "Mouse: click selects, click again expands/edits, right-click a fact for actions, wheel scrolls." \
-      "       Try Shift+drag to check native text selection still works." \
-      "Resize the window and try a narrow one (<96 columns stacks the panes)."
+    if [[ "$1" == facts-large ]]; then
+      for i in $(seq -w 1 60); do
+        printf '[app%s]\napi_key = synthetic-%s\nport = 8%s\n' "$i" "$i" "$i" >"$data/app$i.ini"
+      done
+      size="60 synthetic apps, to show how a big install starts folded"
+    else
+      cp prototypes/proto-facts/fixtures/*.ini "$data/"
+      size="a few synthetic apps"
+    fi
+    intro "Fact editor: settings page with $size (temp copy)" \
+      "Look at: apps as headings with values beside each setting, the search box," \
+      "         the buttons along the bottom, and the unsaved-changes panel." \
+      "Try:  type / and a name to search   click a setting, click again to edit" \
+      "      Copy and Show on a secret   Delete a setting or a whole app heading" \
+      "      undo a change from the panel   Save changes" \
+      "Every button also has its key shown on it. Esc or q quits." \
+      "Resize the window: under 100 columns the changes panel moves to the bottom."
     "$b" "$data"
-    printf '\nChanges were written to the temp copy only. Diff vs the fixtures:\n'
-    diff -r prototypes/proto-facts/fixtures "$data" || true
+    if [[ "$1" == facts ]]; then
+      printf '\nChanges were written to the temp copy only. Diff vs the fixtures:\n'
+      diff -r prototypes/proto-facts/fixtures "$data" || true
+    fi
     ;;
   logs)
     b="$(bin logs)"

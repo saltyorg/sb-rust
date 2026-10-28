@@ -1,14 +1,18 @@
-//! Prototype: fact editor on ratatui + ratatui-textarea, keyboard and mouse.
-//! Throwaway; see FINDINGS.md. Never point it at the live facts directory.
+//! Prototype: fact editor as a settings page (see docs/ideas/fact-editor.md).
+//! Apps are headings, settings sit beneath them with values visible, a search
+//! box narrows the page, buttons do everything, and unsaved changes are always
+//! listed. Throwaway; see FINDINGS.md. Never point it at the live facts directory.
 
 mod model;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
+use base64::Engine;
 use clap::Parser;
-use model::{FactId, Pending, Role};
+use model::{Change, FactId, Role, Target};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -17,106 +21,148 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
-};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_textarea::TextArea;
 
 #[derive(Parser)]
 struct Cli {
-    /// Directory of role .ini files (use a copy).
+    /// Directory of app .ini files (use a copy).
     dir: PathBuf,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Row {
-    Role(usize),
-    Instance(usize, usize),
-    Fact(FactId),
+    App(usize),
+    Copy(usize, usize),
+    Setting(FactId),
 }
 
-enum Mode {
-    Browse,
-    Edit(Box<TextArea<'static>>),
-    Review,
+#[derive(Clone, Copy, PartialEq)]
+enum Action {
+    Edit,
+    Copy,
+    Show,
+    Delete,
+    Save,
+    Quit,
+}
+
+enum Popup {
+    None,
+    Edit(Box<TextArea<'static>>, FactId),
+    ConfirmSave,
     ConfirmQuit,
 }
 
 struct App {
     roles: Vec<Role>,
-    expanded: BTreeSet<(usize, Option<usize>)>,
+    folded: BTreeSet<usize>,
+    fold_decided: bool,
     list: ListState,
-    pending: BTreeMap<FactId, Pending>,
-    mode: Mode,
-    reveal: bool,
+    query: String,
+    searching: bool,
+    pending: BTreeMap<Target, Change>,
+    shown: BTreeSet<FactId>,
+    popup: Popup,
     status: String,
     quit: bool,
-    /// Areas from the last draw, used to map mouse positions without a
-    /// hand-maintained hit-map.
-    tree_area: Rect,
-    menu_area: Rect,
-    menu: Option<Menu>,
-}
-
-/// Right-click action menu for one fact.
-struct Menu {
-    target: FactId,
-    at: Position,
+    // Areas from the last draw, for mouse hits.
+    list_area: Rect,
+    search_area: Rect,
+    buttons: Vec<(Rect, Action)>,
+    undo_targets: Vec<(Rect, Target)>,
+    popup_buttons: Vec<(Rect, bool)>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if std::fs::canonicalize(&cli.dir)? == std::path::Path::new("/opt/saltbox") {
-        bail!("refusing to edit the live facts directory; pass a copy");
+        bail!("refusing to edit the standard Saltbox facts directory; pass a copy");
     }
-    let roles = model::load(&cli.dir)?;
     let mut app = App {
-        roles,
-        expanded: BTreeSet::new(),
+        roles: model::load(&cli.dir)?,
+        folded: BTreeSet::new(),
+        fold_decided: false,
         list: ListState::default().with_selected(Some(0)),
+        query: String::new(),
+        searching: false,
         pending: BTreeMap::new(),
-        mode: Mode::Browse,
-        reveal: false,
-        status: String::from("Loaded"),
+        shown: BTreeSet::new(),
+        popup: Popup::None,
+        status: String::new(),
         quit: false,
-        tree_area: Rect::default(),
-        menu_area: Rect::default(),
-        menu: None,
+        list_area: Rect::default(),
+        search_area: Rect::default(),
+        buttons: Vec::new(),
+        undo_targets: Vec::new(),
+        popup_buttons: Vec::new(),
     };
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, &cli.dir);
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+fn run(terminal: &mut DefaultTerminal, app: &mut App, dir: &std::path::Path) -> Result<()> {
     while !app.quit {
         terminal.draw(|f| draw(f, app))?;
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key)?,
+        let action = match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
             Event::Mouse(mouse) => app.on_mouse(mouse),
-            _ => {}
+            _ => None,
+        };
+        if let Some(action) = action {
+            app.perform(action, dir)?;
         }
     }
     Ok(())
 }
 
 impl App {
+    fn has_copies(&self, r: usize) -> bool {
+        let role = &self.roles[r];
+        role.instances.len() > 1 || role.instances.first().is_some_and(|i| i.name != role.name)
+    }
+
+    fn matches(&self, (r, i, f): FactId) -> bool {
+        let q = self.query.to_lowercase();
+        let role = &self.roles[r];
+        q.is_empty()
+            || role.name.to_lowercase().contains(&q)
+            || role.instances[i].name.to_lowercase().contains(&q)
+            || role.instances[i].facts[f].key.to_lowercase().contains(&q)
+    }
+
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
-        for (ri, role) in self.roles.iter().enumerate() {
-            rows.push(Row::Role(ri));
-            if !self.expanded.contains(&(ri, None)) {
+        for (r, role) in self.roles.iter().enumerate() {
+            let hits: Vec<FactId> = role
+                .instances
+                .iter()
+                .enumerate()
+                .flat_map(|(i, inst)| (0..inst.facts.len()).map(move |f| (r, i, f)))
+                .filter(|id| self.matches(*id))
+                .collect();
+            if !self.query.is_empty() && hits.is_empty() {
                 continue;
             }
-            for (ii, inst) in role.instances.iter().enumerate() {
-                rows.push(Row::Instance(ri, ii));
-                if self.expanded.contains(&(ri, Some(ii))) {
-                    rows.extend((0..inst.facts.len()).map(|fi| Row::Fact((ri, ii, fi))));
+            rows.push(Row::App(r));
+            // Searching opens every matching group, whatever its fold state.
+            if self.query.is_empty() && self.folded.contains(&r) {
+                continue;
+            }
+            for (i, _) in role.instances.iter().enumerate() {
+                let inst_hits: Vec<FactId> = hits.iter().copied().filter(|h| h.1 == i).collect();
+                if inst_hits.is_empty() {
+                    continue;
                 }
+                if self.has_copies(r) {
+                    rows.push(Row::Copy(r, i));
+                }
+                rows.extend(inst_hits.into_iter().map(Row::Setting));
             }
         }
         rows
@@ -126,517 +172,707 @@ impl App {
         self.rows().get(self.list.selected()?).copied()
     }
 
-    fn on_key(&mut self, key: KeyEvent) -> Result<()> {
-        match &mut self.mode {
-            Mode::Edit(textarea) => match key.code {
-                KeyCode::Esc => {
-                    self.mode = Mode::Browse;
-                    self.status = "Edit cancelled".into();
+    fn deleted(&self, row: Row) -> bool {
+        let del = |t| matches!(self.pending.get(&t), Some(Change::Delete));
+        match row {
+            Row::App(r) => del(Target::App(r)),
+            Row::Copy(r, i) => del(Target::App(r)) || del(Target::Copy(r, i)),
+            Row::Setting((r, i, f)) => {
+                del(Target::App(r)) || del(Target::Copy(r, i)) || del(Target::Setting((r, i, f)))
+            }
+        }
+    }
+
+    fn value(&self, id: FactId) -> String {
+        match self.pending.get(&Target::Setting(id)) {
+            Some(Change::Set(v)) => v.clone(),
+            _ => self.roles[id.0].instances[id.1].facts[id.2].value.clone(),
+        }
+    }
+
+    fn masked(&self, id: FactId) -> bool {
+        model::looks_secret(&self.roles[id.0].instances[id.1].facts[id.2].key)
+            && !self.shown.contains(&id)
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match &mut self.popup {
+            Popup::Edit(textarea, id) => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.popup = Popup::None;
+                        self.status = "Edit cancelled".into();
+                    }
+                    KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
+                        let (value, id) = (textarea.lines().join("\n"), *id);
+                        self.stage_edit(id, value);
+                        self.popup = Popup::None;
+                    }
+                    _ => {
+                        textarea.input(key);
+                    }
                 }
-                KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
-                    let value = textarea.lines().join("\n");
-                    if let Some(Row::Fact(id)) = self.selected() {
-                        let original = &self.roles[id.0].instances[id.1].facts[id.2].value;
-                        if &value == original {
-                            self.pending.remove(&id);
+                return None;
+            }
+            Popup::ConfirmSave => {
+                match key.code {
+                    KeyCode::Enter | KeyCode::Char('y') => return Some(Action::Save),
+                    _ => self.popup = Popup::None,
+                }
+                return None;
+            }
+            Popup::ConfirmQuit => {
+                match key.code {
+                    KeyCode::Enter | KeyCode::Char('y') => self.quit = true,
+                    _ => self.popup = Popup::None,
+                }
+                return None;
+            }
+            Popup::None => {}
+        }
+        if self.searching {
+            match key.code {
+                KeyCode::Char(c) => self.query.push(c),
+                KeyCode::Backspace => {
+                    self.query.pop();
+                }
+                KeyCode::Esc if self.query.is_empty() => self.searching = false,
+                KeyCode::Esc => self.query.clear(),
+                KeyCode::Enter | KeyCode::Down | KeyCode::Tab => self.searching = false,
+                _ => {}
+            }
+            self.list.select(Some(0));
+            return None;
+        }
+        let len = self.rows().len();
+        let sel = self.list.selected().unwrap_or(0);
+        match key.code {
+            KeyCode::Char('/') => self.searching = true,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.list.select(Some((sel + 1).min(len.saturating_sub(1))))
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.list.select(Some(sel.saturating_sub(1))),
+            KeyCode::PageDown => self
+                .list
+                .select(Some((sel + 10).min(len.saturating_sub(1)))),
+            KeyCode::PageUp => self.list.select(Some(sel.saturating_sub(10))),
+            KeyCode::Enter => self.activate(),
+            KeyCode::Left => self.fold_selected(true),
+            KeyCode::Right => self.fold_selected(false),
+            KeyCode::Char('e') => return Some(Action::Edit),
+            KeyCode::Char('c') => return Some(Action::Copy),
+            KeyCode::Char('s') => return Some(Action::Show),
+            KeyCode::Char('d') => return Some(Action::Delete),
+            KeyCode::Char('u') => {
+                if let Some(t) = self.selected().map(target_of) {
+                    self.undo(t);
+                }
+            }
+            KeyCode::Char('v') => return Some(Action::Save),
+            KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
+            _ => {}
+        }
+        None
+    }
+
+    /// Enter / second click: open or fold a heading, edit a setting.
+    fn activate(&mut self) {
+        match self.selected() {
+            Some(Row::App(r)) => {
+                if !self.folded.remove(&r) {
+                    self.folded.insert(r);
+                }
+            }
+            Some(Row::Setting(id)) => self.start_edit(id),
+            _ => {}
+        }
+    }
+
+    fn fold_selected(&mut self, fold: bool) {
+        let r = match self.selected() {
+            Some(Row::App(r) | Row::Copy(r, _) | Row::Setting((r, _, _))) => r,
+            None => return,
+        };
+        if fold {
+            self.folded.insert(r);
+            let rows = self.rows();
+            self.list
+                .select(rows.iter().position(|row| *row == Row::App(r)));
+        } else {
+            self.folded.remove(&r);
+        }
+    }
+
+    fn on_mouse(&mut self, m: MouseEvent) -> Option<Action> {
+        let pos = Position::new(m.column, m.row);
+        if !matches!(self.popup, Popup::None) {
+            if m.kind == MouseEventKind::Down(MouseButton::Left)
+                && let Some((_, yes)) = self.popup_buttons.iter().find(|(r, _)| r.contains(pos))
+            {
+                let yes = *yes;
+                return match (&self.popup, yes) {
+                    (Popup::ConfirmSave, true) => Some(Action::Save),
+                    (Popup::ConfirmQuit, true) => {
+                        self.quit = true;
+                        None
+                    }
+                    _ => {
+                        self.popup = Popup::None;
+                        None
+                    }
+                };
+            }
+            return None;
+        }
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some((_, action)) = self.buttons.iter().find(|(r, _)| r.contains(pos)) {
+                    return Some(*action);
+                }
+                if let Some((_, target)) = self.undo_targets.iter().find(|(r, _)| r.contains(pos)) {
+                    let t = *target;
+                    self.undo(t);
+                    return None;
+                }
+                if self.search_area.contains(pos) {
+                    self.searching = true;
+                    return None;
+                }
+                self.searching = false;
+                if self.list_area.contains(pos) {
+                    let row = self.list.offset() + usize::from(m.row - self.list_area.y);
+                    if row < self.rows().len() {
+                        if self.list.selected() == Some(row) {
+                            self.activate();
                         } else {
-                            self.pending.insert(id, Pending::Set(value));
+                            self.list.select(Some(row));
                         }
                     }
-                    self.mode = Mode::Browse;
-                    self.status = "Change staged".into();
                 }
-                _ => {
-                    textarea.input(key);
-                }
+            }
+            MouseEventKind::ScrollDown if self.list_area.contains(pos) => {
+                let len = self.rows().len();
+                let sel = self.list.selected().unwrap_or(0);
+                self.list.select(Some((sel + 1).min(len.saturating_sub(1))));
+            }
+            MouseEventKind::ScrollUp if self.list_area.contains(pos) => {
+                let sel = self.list.selected().unwrap_or(0);
+                self.list.select(Some(sel.saturating_sub(1)));
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn perform(&mut self, action: Action, dir: &std::path::Path) -> Result<()> {
+        let sel = self.selected();
+        match action {
+            Action::Edit => match sel {
+                Some(Row::Setting(id)) if !self.deleted(Row::Setting(id)) => self.start_edit(id),
+                _ => self.status = "Pick a setting to edit".into(),
             },
-            Mode::Review => match key.code {
-                KeyCode::Enter | KeyCode::Char('y') => {
-                    let written = model::apply(&self.roles, &self.pending)?;
-                    self.roles =
-                        model::load(self.roles[0].path.parent().expect("role file has a parent"))?;
+            Action::Copy => match sel {
+                Some(Row::Setting(id)) => {
+                    let value = self.value(id);
+                    let encoded =
+                        base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+                    // Ask the terminal to set the clipboard (works over SSH where the
+                    // terminal allows it; there is no way to confirm it did).
+                    let mut out = std::io::stdout();
+                    write!(out, "\x1b]52;c;{encoded}\x07")?;
+                    out.flush()?;
+                    let key = &self.roles[id.0].instances[id.1].facts[id.2].key;
                     self.status = format!(
-                        "Applied {} change(s) to {} file(s)",
-                        self.pending.len(),
-                        written.len()
+                        "Copied {key} to the clipboard (if your terminal allows it; otherwise use Show)"
                     );
-                    self.pending.clear();
-                    self.mode = Mode::Browse;
                 }
-                KeyCode::Esc | KeyCode::Char('n') => self.mode = Mode::Browse,
-                _ => {}
+                _ => self.status = "Pick a setting to copy".into(),
             },
-            Mode::ConfirmQuit => match key.code {
-                KeyCode::Char('y') => self.quit = true,
-                _ => self.mode = Mode::Browse,
+            Action::Show => match sel {
+                Some(Row::Setting(id)) => {
+                    if !self.shown.remove(&id) {
+                        self.shown.insert(id);
+                    }
+                }
+                _ => self.status = "Pick a setting to show".into(),
             },
-            Mode::Browse => self.on_browse_key(key),
+            Action::Delete => {
+                if let Some(row) = sel {
+                    let t = target_of(row);
+                    if matches!(self.pending.get(&t), Some(Change::Delete)) {
+                        self.undo(t);
+                    } else {
+                        self.pending.insert(t, Change::Delete);
+                        self.status = format!(
+                            "{} will be deleted when you save. Saltbox creates a new value next time it runs.",
+                            self.label(t)
+                        );
+                    }
+                }
+            }
+            Action::Save => {
+                if self.pending.is_empty() {
+                    self.status = "Nothing to save".into();
+                } else if matches!(self.popup, Popup::ConfirmSave) {
+                    let count = self.pending.len();
+                    model::apply(&self.roles, &self.pending)?;
+                    self.roles = model::load(dir)?;
+                    self.pending.clear();
+                    self.shown.clear();
+                    self.popup = Popup::None;
+                    self.list.select(Some(0));
+                    self.status = format!("Saved {count} change(s)");
+                } else {
+                    self.popup = Popup::ConfirmSave;
+                }
+            }
+            Action::Quit => {
+                if self.pending.is_empty() {
+                    self.quit = true;
+                } else {
+                    self.popup = Popup::ConfirmQuit;
+                }
+            }
         }
         Ok(())
     }
 
-    fn on_browse_key(&mut self, key: KeyEvent) {
-        let rows = self.rows();
-        let sel = self.list.selected().unwrap_or(0);
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self
-                .list
-                .select(Some((sel + 1).min(rows.len().saturating_sub(1)))),
-            KeyCode::Up | KeyCode::Char('k') => self.list.select(Some(sel.saturating_sub(1))),
-            KeyCode::Home | KeyCode::Char('g') => self.list.select(Some(0)),
-            KeyCode::End | KeyCode::Char('G') => {
-                self.list.select(Some(rows.len().saturating_sub(1)))
-            }
-            KeyCode::Right | KeyCode::Char('l') => match rows.get(sel) {
-                Some(Row::Role(r)) => {
-                    self.expanded.insert((*r, None));
-                }
-                Some(Row::Instance(r, i)) => {
-                    self.expanded.insert((*r, Some(*i)));
-                }
-                _ => {}
-            },
-            KeyCode::Left | KeyCode::Char('h') => self.collapse_or_parent(&rows, sel),
-            KeyCode::Enter => match rows.get(sel) {
-                Some(Row::Role(r)) => toggle(&mut self.expanded, (*r, None)),
-                Some(Row::Instance(r, i)) => toggle(&mut self.expanded, (*r, Some(*i))),
-                Some(Row::Fact(id)) => self.start_edit(*id),
-                None => {}
-            },
-            KeyCode::Char('e') => {
-                if let Some(Row::Fact(id)) = rows.get(sel) {
-                    self.start_edit(*id);
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(Row::Fact(id)) = rows.get(sel) {
-                    if matches!(self.pending.get(id), Some(Pending::Delete)) {
-                        self.pending.remove(id);
-                        self.status = "Delete undone".into();
-                    } else {
-                        self.pending.insert(*id, Pending::Delete);
-                        self.status = "Delete staged".into();
-                    }
-                }
-            }
-            KeyCode::Char('u') => {
-                if let Some(Row::Fact(id)) = rows.get(sel) {
-                    self.pending.remove(id);
-                    self.status = "Change undone".into();
-                }
-            }
-            KeyCode::Char('r') => self.reveal = !self.reveal,
-            KeyCode::Char('a') if !self.pending.is_empty() => self.mode = Mode::Review,
-            KeyCode::Char('q') | KeyCode::Esc => {
-                if self.pending.is_empty() {
-                    self.quit = true;
-                } else {
-                    self.mode = Mode::ConfirmQuit;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn on_mouse(&mut self, m: MouseEvent) {
-        if !matches!(self.mode, Mode::Browse) {
-            return;
-        }
-        let pos = Position::new(m.column, m.row);
-        if let Some(menu) = self.menu.take() {
-            // Any click closes the menu; a left click on an item also runs it.
-            if m.kind == MouseEventKind::Down(MouseButton::Left)
-                && self.menu_area.contains(pos)
-                && m.row > self.menu_area.y
-                && let Some((_, code)) =
-                    menu_items(self, menu.target).get(usize::from(m.row - self.menu_area.y - 1))
-            {
-                self.on_browse_key(KeyEvent::from(*code));
-            }
-            if !matches!(m.kind, MouseEventKind::Down(_)) {
-                self.menu = Some(menu); // keep open on moves/scrolls
-            }
-            return;
-        }
-        if !self.tree_area.contains(pos) {
-            return;
-        }
-        let rows = self.rows();
-        let hit =
-            tree_row_at(self.tree_area, self.list.offset(), m.row).filter(|i| *i < rows.len());
-        match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(i) = hit {
-                    if self.list.selected() == Some(i) {
-                        // Second click on the selected row acts like Enter.
-                        self.on_browse_key(KeyEvent::from(KeyCode::Enter));
-                    } else {
-                        self.list.select(Some(i));
-                    }
-                }
-            }
-            MouseEventKind::Down(MouseButton::Right) => {
-                if let Some(i) = hit {
-                    self.list.select(Some(i));
-                    if let Row::Fact(id) = rows[i] {
-                        self.menu = Some(Menu {
-                            target: id,
-                            at: pos,
-                        });
-                    }
-                }
-            }
-            MouseEventKind::ScrollDown => self.on_browse_key(KeyEvent::from(KeyCode::Down)),
-            MouseEventKind::ScrollUp => self.on_browse_key(KeyEvent::from(KeyCode::Up)),
-            _ => {}
-        }
-    }
-
-    fn collapse_or_parent(&mut self, rows: &[Row], sel: usize) {
-        let target = match rows.get(sel) {
-            Some(Row::Role(r)) => {
-                self.expanded.remove(&(*r, None));
-                None
-            }
-            Some(Row::Instance(r, i)) if self.expanded.remove(&(*r, Some(*i))) => None,
-            Some(Row::Instance(r, _)) => Some(Row::Role(*r)),
-            Some(Row::Fact((r, i, _))) => Some(Row::Instance(*r, *i)),
-            None => None,
-        };
-        if let Some(t) = target {
-            self.list.select(rows.iter().position(|row| *row == t));
-        }
-    }
-
     fn start_edit(&mut self, id: FactId) {
-        let current = match self.pending.get(&id) {
-            Some(Pending::Set(v)) => v.clone(),
-            _ => self.roles[id.0].instances[id.1].facts[id.2].value.clone(),
-        };
-        let mut textarea = TextArea::new(current.lines().map(String::from).collect());
+        let mut textarea = TextArea::new(self.value(id).lines().map(String::from).collect());
+        let key = self.roles[id.0].instances[id.1].facts[id.2].key.clone();
         textarea.set_block(
             Block::bordered()
-                .title(" Edit value · Enter save · Esc cancel ")
-                .border_type(BorderType::Rounded),
+                .border_type(BorderType::Rounded)
+                .title(format!(" Edit {key} "))
+                .title_bottom(" Enter save · Alt+Enter new line · Esc cancel "),
         );
         textarea.set_cursor_line_style(Style::default());
         textarea.move_cursor(ratatui_textarea::CursorMove::Bottom);
         textarea.move_cursor(ratatui_textarea::CursorMove::End);
-        self.mode = Mode::Edit(Box::new(textarea));
-        self.status = "Editing".into();
+        self.popup = Popup::Edit(Box::new(textarea), id);
     }
 
-    fn display_value(&self, id: FactId) -> String {
-        let fact = &self.roles[id.0].instances[id.1].facts[id.2];
-        if self.reveal || !model::looks_secret(&fact.key) {
-            fact.value.clone()
+    fn stage_edit(&mut self, id: FactId, value: String) {
+        let original = &self.roles[id.0].instances[id.1].facts[id.2].value;
+        if &value == original {
+            self.pending.remove(&Target::Setting(id));
+            self.status = "No change".into();
         } else {
-            "•".repeat(fact.value.chars().count().clamp(4, 12))
+            self.pending.insert(Target::Setting(id), Change::Set(value));
+            self.status = format!(
+                "{} changed (not saved yet)",
+                self.label(Target::Setting(id))
+            );
+        }
+    }
+
+    fn undo(&mut self, t: Target) {
+        if self.pending.remove(&t).is_some() {
+            self.status = format!("Undid change to {}", self.label(t));
+        }
+    }
+
+    fn label(&self, t: Target) -> String {
+        match t {
+            Target::App(r) => self.roles[r].name.clone(),
+            Target::Copy(r, i) => format!(
+                "{} · {}",
+                self.roles[r].name, self.roles[r].instances[i].name
+            ),
+            Target::Setting((r, i, f)) => {
+                let key = &self.roles[r].instances[i].facts[f].key;
+                if self.has_copies(r) {
+                    format!(
+                        "{} · {} · {key}",
+                        self.roles[r].name, self.roles[r].instances[i].name
+                    )
+                } else {
+                    format!("{} · {key}", self.roles[r].name)
+                }
+            }
         }
     }
 }
 
-fn toggle(set: &mut BTreeSet<(usize, Option<usize>)>, key: (usize, Option<usize>)) {
-    if !set.remove(&key) {
-        set.insert(key);
+fn target_of(row: Row) -> Target {
+    match row {
+        Row::App(r) => Target::App(r),
+        Row::Copy(r, i) => Target::Copy(r, i),
+        Row::Setting(id) => Target::Setting(id),
     }
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
-    let [header, body, footer] = Layout::vertical([
-        Constraint::Length(1),
+    let area = f.area();
+    let wide = area.width >= 100;
+    let changes_height = if wide || app.pending.is_empty() {
+        0
+    } else {
+        u16::try_from(app.pending.len()).unwrap_or(4).min(4) + 2
+    };
+    let [search, body, changes_bottom, status, buttons] = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Fill(1),
+        Constraint::Length(changes_height),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
-    .areas(f.area());
-    let facts: usize = app
+    .areas(area);
+    let (list_area, changes_area) = if wide {
+        let [l, c] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(36)]).areas(body);
+        (l, Some(c))
+    } else {
+        (body, (changes_height > 0).then_some(changes_bottom))
+    };
+
+    // Search box.
+    let border = if app.searching {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+    let hint = if app.query.is_empty() && !app.searching {
+        Span::raw("type / or click here to search").dim()
+    } else {
+        Span::raw(format!(
+            "{}{}",
+            app.query,
+            if app.searching { "▏" } else { "" }
+        ))
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![" Search  ".bold(), hint])).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(border))
+                .title(" Saltbox settings "),
+        ),
+        search,
+    );
+    app.search_area = search;
+
+    // Settings page.
+    let rows = app.rows();
+    if !app.fold_decided && list_area.height > 0 {
+        // Open everything when it fits on screen, otherwise start folded to app names.
+        app.fold_decided = true;
+        if rows.len() > usize::from(list_area.height) {
+            app.folded = (0..app.roles.len()).collect();
+        }
+    }
+    let rows = app.rows();
+    // Sized from every setting, not just visible ones, so values don't jump
+    // sideways while searching.
+    let key_width = app
         .roles
         .iter()
         .flat_map(|r| &r.instances)
-        .map(|i| i.facts.len())
-        .sum();
-    f.render_widget(
-        Line::from(vec![
-            " ◆ Saltbox Facts ".bold().cyan(),
-            Span::raw(format!(" {} roles · {facts} facts ", app.roles.len())).dim(),
-            if app.pending.is_empty() {
-                Span::raw("")
-            } else {
-                format!(" {} pending ", app.pending.len())
-                    .black()
-                    .on_yellow()
-            },
-        ]),
-        header,
-    );
-
-    let wide = body.width >= 96;
-    let [tree_area, inspector_area] = if wide {
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body)
-    } else {
-        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(body)
-    };
-
-    let items: Vec<ListItem> = app.rows().iter().map(|row| tree_item(app, *row)).collect();
-    let tree = List::new(items)
-        .block(
-            Block::bordered()
-                .title(" Fact tree ")
-                .border_type(BorderType::Rounded),
-        )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("› ");
-    f.render_stateful_widget(tree, tree_area, &mut app.list);
-    app.tree_area = tree_area;
-
-    f.render_widget(
-        inspector(app).block(
-            Block::bordered()
-                .title(" Inspector ")
-                .border_type(BorderType::Rounded),
-        ),
-        inspector_area,
-    );
-    if let Mode::Edit(textarea) = &app.mode {
-        // Modal editor: a fixed share of the screen, independent of the inspector size.
-        let [area] = Layout::vertical([Constraint::Percentage(50)])
-            .flex(Flex::Center)
-            .areas(f.area());
-        let [area] = Layout::horizontal([Constraint::Percentage(80)])
-            .flex(Flex::Center)
-            .areas(area);
-        f.render_widget(Clear, area);
-        f.render_widget(&**textarea, area);
+        .flat_map(|i| &i.facts)
+        .map(|f| f.key.chars().count())
+        .max()
+        .unwrap_or(10)
+        .min(28);
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| row_item(app, *row, key_width))
+        .collect();
+    let list = List::new(items).highlight_style(Style::default().bg(Color::Rgb(40, 60, 90)));
+    let list_area = list_area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+    if rows.is_empty() {
+        let msg = if app.query.is_empty() {
+            "No settings found".to_string()
+        } else {
+            format!(
+                "No settings match \"{}\". Press Esc in the search box to clear it.",
+                app.query
+            )
+        };
+        f.render_widget(Line::from(msg).dim(), list_area);
     }
+    f.render_stateful_widget(list, list_area, &mut app.list);
+    app.list_area = list_area;
 
-    let hints = match app.mode {
-        Mode::Browse => {
-            "↑↓ move  →/← expand  Enter edit  d delete  u undo  r reveal  a apply  q quit  · click select, right-click actions"
+    // Unsaved changes, always visible once there are any.
+    let mut undo_targets = Vec::new();
+    if let Some(ca) = changes_area {
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(format!(" Unsaved changes ({}) ", app.pending.len()));
+        let inner = block.inner(ca);
+        let lines: Vec<Line> = if app.pending.is_empty() {
+            vec![Line::from("Nothing changed yet").dim()]
+        } else {
+            app.pending
+                .iter()
+                .enumerate()
+                .map(|(n, (t, c))| {
+                    let (verb, colour) = match c {
+                        Change::Set(_) => ("Edit  ", Color::Yellow),
+                        Change::Delete => ("Delete", Color::Red),
+                    };
+                    let undo = " undo ";
+                    let label_width =
+                        usize::from(inner.width).saturating_sub(verb.len() + undo.len() + 2);
+                    let label: String = app.label(*t).chars().take(label_width).collect();
+                    if let Ok(y) = u16::try_from(n)
+                        && y < inner.height
+                    {
+                        let x = inner.right().saturating_sub(undo.len() as u16);
+                        undo_targets.push((Rect::new(x, inner.y + y, undo.len() as u16, 1), *t));
+                    }
+                    let pad = usize::from(inner.width)
+                        .saturating_sub(verb.len() + 1 + label.chars().count() + undo.len());
+                    Line::from(vec![
+                        Span::styled(verb, Style::default().fg(colour)),
+                        Span::raw(format!(" {label}{}", " ".repeat(pad))),
+                        Span::raw(undo).underlined().cyan(),
+                    ])
+                })
+                .collect()
+        };
+        f.render_widget(Paragraph::new(lines).block(block), ca);
+    }
+    app.undo_targets = undo_targets;
+
+    f.render_widget(Line::from(format!(" {}", app.status)).dim(), status);
+
+    // Buttons: every action is visible and clickable; the key is shown on it.
+    let sel = app.selected();
+    let on_setting = matches!(sel, Some(Row::Setting(_)));
+    let specs = [
+        ("Edit", "e", Action::Edit, on_setting),
+        ("Copy", "c", Action::Copy, on_setting),
+        (
+            if matches!(sel, Some(Row::Setting(id)) if app.shown.contains(&id)) {
+                "Hide"
+            } else {
+                "Show"
+            },
+            "s",
+            Action::Show,
+            on_setting,
+        ),
+        (
+            if sel.is_some_and(|r| {
+                app.pending
+                    .get(&target_of(r))
+                    .is_some_and(|c| matches!(c, Change::Delete))
+            }) {
+                "Keep"
+            } else {
+                "Delete"
+            },
+            "d",
+            Action::Delete,
+            sel.is_some(),
+        ),
+        ("Save changes", "v", Action::Save, !app.pending.is_empty()),
+        ("Quit", "q", Action::Quit, true),
+    ];
+    app.buttons.clear();
+    let mut x = buttons.x + 1;
+    let mut spans = vec![Span::raw(" ")];
+    for (label, key, action, enabled) in specs {
+        let text = format!(" {label} ({key}) ");
+        let width = u16::try_from(text.chars().count()).unwrap_or(0);
+        let style = if enabled {
+            Style::default()
+                .fg(Color::Black)
+                .bg(if action == Action::Save {
+                    Color::Green
+                } else {
+                    Color::Gray
+                })
+        } else {
+            Style::default()
+                .fg(Color::DarkGray)
+                .bg(Color::Rgb(30, 30, 30))
+        };
+        if enabled && x + width <= buttons.right() {
+            app.buttons
+                .push((Rect::new(x, buttons.y, width, 1), action));
         }
-        Mode::Edit(_) => "Enter save  Alt+Enter newline  Esc cancel",
-        Mode::Review => "Enter/y apply  Esc back",
-        Mode::ConfirmQuit => "y discard and quit  any other key to go back",
-    };
-    f.render_widget(
-        Line::from(vec![
-            format!(" {} ", app.status).reversed(),
-            Span::raw(" "),
-            hints.dim(),
-        ]),
-        footer,
-    );
+        spans.push(Span::styled(text, style));
+        spans.push(Span::raw(" "));
+        x += width + 1;
+    }
+    f.render_widget(Line::from(spans), buttons);
 
-    match app.mode {
-        Mode::Review => popup(f, " Review changes ", review_lines(app)),
-        Mode::ConfirmQuit => popup(
+    // Popups.
+    app.popup_buttons.clear();
+    match &app.popup {
+        Popup::Edit(textarea, _) => {
+            let [a] = Layout::vertical([Constraint::Length(8)])
+                .flex(Flex::Center)
+                .areas(area);
+            let [a] = Layout::horizontal([Constraint::Percentage(70)])
+                .flex(Flex::Center)
+                .areas(a);
+            f.render_widget(Clear, a);
+            f.render_widget(&**textarea, a);
+        }
+        Popup::ConfirmSave => {
+            let n = app.pending.len();
+            let deletes = app
+                .pending
+                .values()
+                .filter(|c| matches!(c, Change::Delete))
+                .count();
+            let mut text = vec![Line::from(format!(
+                "Save {n} change(s) to the Saltbox settings?"
+            ))];
+            if deletes > 0 {
+                text.push(Line::from(format!("{deletes} deleted value(s) will be created fresh the next time Saltbox runs.")).dim());
+            }
+            confirm(f, app, " Save changes ", text, "Save (y)", "Cancel (n)");
+        }
+        Popup::ConfirmQuit => confirm(
             f,
+            app,
             " Unsaved changes ",
             vec![Line::from(format!(
-                "{} change(s) not applied. Quit anyway? (y/N)",
+                "You have {} unsaved change(s). Quit and lose them?",
                 app.pending.len()
             ))],
+            "Quit (y)",
+            "Keep editing (n)",
         ),
-        _ => {}
-    }
-
-    if let Some(menu) = &app.menu {
-        let items = menu_items(app, menu.target);
-        let width = 18u16.min(f.area().width);
-        let height = (u16::try_from(items.len()).unwrap_or(0) + 2).min(f.area().height);
-        // Open at the click, shifted back inside the screen if it would overflow.
-        let x = menu.at.x.min(f.area().right().saturating_sub(width));
-        let y = menu.at.y.min(f.area().bottom().saturating_sub(height));
-        let area = Rect::new(x, y, width, height);
-        app.menu_area = area;
-        let lines: Vec<Line> = items
-            .iter()
-            .map(|(label, _)| Line::from(format!(" {label}")))
-            .collect();
-        f.render_widget(Clear, area);
-        f.render_widget(
-            Paragraph::new(lines).block(Block::bordered().border_type(BorderType::Rounded)),
-            area,
-        );
+        Popup::None => {}
     }
 }
 
-/// Menu entries map to the same keys the keyboard uses, so behaviour can't drift.
-fn menu_items(app: &App, id: FactId) -> Vec<(&'static str, KeyCode)> {
-    let mut items = vec![("Edit", KeyCode::Char('e'))];
-    match app.pending.get(&id) {
-        Some(Pending::Delete) => items.push(("Undo delete", KeyCode::Char('d'))),
-        Some(Pending::Set(_)) => {
-            items.push(("Delete", KeyCode::Char('d')));
-            items.push(("Undo change", KeyCode::Char('u')));
-        }
-        None => items.push(("Delete", KeyCode::Char('d'))),
-    }
-    items
-}
-
-fn tree_item(app: &App, row: Row) -> ListItem<'static> {
-    let arrow = |open: bool| if open { "▾ " } else { "▸ " };
-    match row {
-        Row::Role(r) => {
-            let role = &app.roles[r];
-            let dirty = app.pending.keys().any(|(pr, _, _)| *pr == r);
-            ListItem::new(Line::from(vec![
-                Span::raw(arrow(app.expanded.contains(&(r, None)))),
-                Span::styled(role.name.clone(), Style::default().bold()),
-                Span::raw(format!(" ({})", role.instances.len())).dim(),
-                if dirty {
-                    " ●".yellow()
-                } else {
-                    Span::raw("")
-                },
-            ]))
-        }
-        Row::Instance(r, i) => ListItem::new(Line::from(vec![
-            Span::raw("  "),
-            Span::raw(arrow(app.expanded.contains(&(r, Some(i))))),
-            Span::raw(app.roles[r].instances[i].name.clone()).blue(),
-        ])),
-        Row::Fact(id) => {
-            let key = app.roles[id.0].instances[id.1].facts[id.2].key.clone();
-            let (marker, style) = match app.pending.get(&id) {
-                Some(Pending::Set(_)) => (" ●", Style::default().fg(Color::Yellow)),
-                Some(Pending::Delete) => (
-                    " ✗",
-                    Style::default()
-                        .fg(Color::Red)
-                        .add_modifier(Modifier::CROSSED_OUT),
-                ),
-                None => ("", Style::default()),
-            };
-            ListItem::new(Line::from(vec![
-                Span::raw("      "),
-                Span::styled(key, style),
-                Span::styled(marker, style),
-            ]))
-        }
-    }
-}
-
-fn inspector(app: &App) -> Paragraph<'static> {
-    let label = |s: &str| Span::raw(format!("{s:<10}")).dim();
-    let lines = match app.selected() {
-        Some(Row::Role(r)) => {
-            let role = &app.roles[r];
-            vec![
-                Line::from(vec![label("Role"), role.name.clone().bold()]),
-                Line::from(vec![
-                    label("Instances"),
-                    Span::raw(role.instances.len().to_string()),
-                ]),
-            ]
-        }
-        Some(Row::Instance(r, i)) => vec![
-            Line::from(vec![label("Role"), Span::raw(app.roles[r].name.clone())]),
-            Line::from(vec![
-                label("Instance"),
-                app.roles[r].instances[i].name.clone().bold(),
-            ]),
-            Line::from(vec![
-                label("Facts"),
-                Span::raw(app.roles[r].instances[i].facts.len().to_string()),
-            ]),
-        ],
-        Some(Row::Fact(id)) => {
-            let fact = &app.roles[id.0].instances[id.1].facts[id.2];
-            let mut lines = vec![
-                Line::from(vec![label("Role"), Span::raw(app.roles[id.0].name.clone())]),
-                Line::from(vec![
-                    label("Instance"),
-                    Span::raw(app.roles[id.0].instances[id.1].name.clone()),
-                ]),
-                Line::from(vec![label("Key"), fact.key.clone().bold()]),
-            ];
-            lines.extend(value_lines(
-                label("Value"),
-                app.display_value(id),
-                Style::default(),
-            ));
-            match app.pending.get(&id) {
-                Some(Pending::Set(v)) => {
-                    let shown = if app.reveal || !model::looks_secret(&fact.key) {
-                        v.clone()
-                    } else {
-                        "•".repeat(8)
-                    };
-                    lines.extend(value_lines(
-                        label("Pending"),
-                        shown,
-                        Style::default().fg(Color::Yellow),
-                    ));
-                }
-                Some(Pending::Delete) => {
-                    lines.push(Line::from(vec![label("Pending"), "delete".red()]))
-                }
-                None => {}
-            }
-            lines
-        }
-        None => vec![Line::from("No facts found").dim()],
-    };
-    Paragraph::new(lines).wrap(Wrap { trim: false })
-}
-
-/// ratatui Spans do not break on '\n'; emit one Line per value line.
-fn value_lines(label: Span<'static>, value: String, style: Style) -> Vec<Line<'static>> {
-    let pad = Span::raw(" ".repeat(label.width()));
-    value
-        .lines()
-        .enumerate()
-        .map(|(i, l)| {
-            let lead = if i == 0 { label.clone() } else { pad.clone() };
-            Line::from(vec![lead, Span::styled(l.to_string(), style)])
-        })
-        .collect()
-}
-
-fn review_lines(app: &App) -> Vec<Line<'static>> {
-    app.pending
+fn confirm(
+    f: &mut Frame,
+    app: &mut App,
+    title: &str,
+    mut text: Vec<Line<'static>>,
+    yes: &str,
+    no: &str,
+) {
+    let width = 72u16.min(f.area().width);
+    let inner_width = usize::from(width.saturating_sub(2)).max(1);
+    // Count wrapped lines so the buttons are never cut off.
+    let text_lines: usize = text
         .iter()
-        .map(|((r, i, fi), p)| {
-            let role = &app.roles[*r];
-            let key = &role.instances[*i].facts[*fi].key;
-            let what = match p {
-                Pending::Set(_) => "set".yellow(),
-                Pending::Delete => "delete".red(),
-            };
-            Line::from(vec![
-                what,
-                Span::raw(format!("  {}/{}/{key}", role.name, role.instances[*i].name)),
-            ])
-        })
-        .collect()
-}
-
-fn popup(f: &mut Frame, title: &'static str, lines: Vec<Line<'static>>) {
-    let height = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(2)
-        .min(f.area().height);
-    let [area] = Layout::vertical([Constraint::Length(height)])
+        .map(|l| l.width().div_ceil(inner_width).max(1))
+        .sum();
+    let height = u16::try_from(text_lines).unwrap_or(1) + 4;
+    let [a] = Layout::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .areas(f.area());
-    let [area] = Layout::horizontal([Constraint::Percentage(70)])
+    let [a] = Layout::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
-        .areas(area);
-    f.render_widget(Clear, area);
+        .areas(a);
+    f.render_widget(Clear, a);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(title.to_string());
+    let inner = block.inner(a);
+    text.push(Line::raw(""));
+    let yes_text = format!(" {yes} ");
+    let no_text = format!(" {no} ");
+    let y = inner.y + u16::try_from(text_lines + 1).unwrap_or(0);
+    let yes_w = u16::try_from(yes_text.chars().count()).unwrap_or(0);
+    let no_w = u16::try_from(no_text.chars().count()).unwrap_or(0);
+    app.popup_buttons
+        .push((Rect::new(inner.x, y, yes_w, 1), true));
+    app.popup_buttons
+        .push((Rect::new(inner.x + yes_w + 2, y, no_w, 1), false));
+    text.push(Line::from(vec![
+        Span::styled(yes_text, Style::default().fg(Color::Black).bg(Color::Green)),
+        Span::raw("  "),
+        Span::styled(no_text, Style::default().fg(Color::Black).bg(Color::Gray)),
+    ]));
     f.render_widget(
-        Paragraph::new(lines).block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Double)
-                .title(title),
-        ),
-        area,
+        Paragraph::new(text).wrap(Wrap { trim: false }).block(block),
+        a,
     );
 }
 
-/// Maps a terminal row inside the bordered tree to a list index.
-fn tree_row_at(area: Rect, offset: usize, y: u16) -> Option<usize> {
-    (y > area.y && y < area.bottom().saturating_sub(1))
-        .then(|| offset + usize::from(y - area.y - 1))
+fn row_item(app: &App, row: Row, key_width: usize) -> ListItem<'static> {
+    let deleted = app.deleted(row);
+    let strike = if deleted {
+        Modifier::CROSSED_OUT
+    } else {
+        Modifier::empty()
+    };
+    let tag = |t: Target| match app.pending.get(&t) {
+        Some(Change::Delete) => Span::raw("  will be deleted").red(),
+        Some(Change::Set(_)) => Span::raw("  changed").yellow(),
+        None => Span::raw(""),
+    };
+    match row {
+        Row::App(r) => {
+            let role = &app.roles[r];
+            let folded = app.query.is_empty() && app.folded.contains(&r);
+            let count: usize = role.instances.iter().map(|i| i.facts.len()).sum();
+            let mut spans = vec![
+                Span::raw(if folded { "▸ " } else { "▾ " }).dim(),
+                Span::styled(
+                    title_case(&role.name),
+                    Style::default().bold().add_modifier(strike),
+                ),
+            ];
+            if folded {
+                spans.push(Span::raw(format!("  {count} setting(s)")).dim());
+            }
+            spans.push(tag(Target::App(r)));
+            ListItem::new(Line::from(spans))
+        }
+        Row::Copy(r, i) => ListItem::new(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                app.roles[r].instances[i].name.clone(),
+                Style::default().fg(Color::Cyan).add_modifier(strike),
+            ),
+            tag(Target::Copy(r, i)),
+        ])),
+        Row::Setting(id) => {
+            // Deeper rows get a narrower key column so every value starts in
+            // the same screen column.
+            let (indent, key_width) = if app.has_copies(id.0) {
+                ("      ", key_width)
+            } else {
+                ("    ", key_width + 2)
+            };
+            let key = app.roles[id.0].instances[id.1].facts[id.2].key.clone();
+            let value = app.value(id);
+            let mut shown = if app.masked(id) {
+                "••••••••".to_string()
+            } else {
+                value.lines().next().unwrap_or("").to_string()
+            };
+            if !app.masked(id) && value.lines().count() > 1 {
+                shown.push_str(" …");
+            }
+            ListItem::new(Line::from(vec![
+                Span::raw(indent),
+                Span::styled(
+                    format!("{key:<key_width$}  "),
+                    Style::default().add_modifier(strike),
+                ),
+                Span::styled(
+                    shown,
+                    Style::default()
+                        .fg(if app.masked(id) {
+                            Color::DarkGray
+                        } else {
+                            Color::Reset
+                        })
+                        .add_modifier(strike),
+                ),
+                tag(Target::Setting(id)),
+            ]))
+        }
+    }
+}
+
+fn title_case(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }

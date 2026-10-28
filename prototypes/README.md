@@ -20,7 +20,8 @@ Saltbox files.
 
 | Name | What you see | Demo data | Needs |
 |---|---|---|---|
-| `facts` | Full-screen fact editor: tree, inspector, edit popup, review/apply, mouse | Copy of `proto-facts/fixtures` in a temp dir; a diff is printed after quitting | — |
+| `facts` | Fact editor as a settings page: search, visible buttons, unsaved-changes panel, copy and show, mouse | Copy of `proto-facts/fixtures` in a temp dir; a diff is printed after quitting | — |
+| `facts-large` | The same with 60 apps, to see folding and search | Generated in a temp dir | — |
 | `logs` | Source picker, then a streaming log viewer with follow, search and switching | A demo container and a demo systemd unit, both removed on exit | Docker, systemd, root |
 | `markdown` | Announcement rendered by tui-markdown (full-screen, then inline), then by termimad for comparison | `proto-markdown/fixtures/announcements.yml` | — |
 | `runner` | Spinners with a live output tail, a failing step, a Ctrl-C run, then piped output | Simulated steps; uses `ansible-playbook --version` if the Saltbox venv exists | — |
