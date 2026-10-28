@@ -1,4 +1,4 @@
-//! Prototype: keyboard-driven fact editor on ratatui + ratatui-textarea.
+//! Prototype: fact editor on ratatui + ratatui-textarea, keyboard and mouse.
 //! Throwaway; see FINDINGS.md. Never point it at the live facts directory.
 
 mod model;
@@ -9,8 +9,12 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use clap::Parser;
 use model::{FactId, Pending, Role};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::crossterm::execute;
+use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -48,6 +52,17 @@ struct App {
     reveal: bool,
     status: String,
     quit: bool,
+    /// Areas from the last draw, used to map mouse positions without a
+    /// hand-maintained hit-map.
+    tree_area: Rect,
+    menu_area: Rect,
+    menu: Option<Menu>,
+}
+
+/// Right-click action menu for one fact.
+struct Menu {
+    target: FactId,
+    at: Position,
 }
 
 fn main() -> Result<()> {
@@ -65,9 +80,14 @@ fn main() -> Result<()> {
         reveal: false,
         status: String::from("Loaded"),
         quit: false,
+        tree_area: Rect::default(),
+        menu_area: Rect::default(),
+        menu: None,
     };
     let mut terminal = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -75,10 +95,10 @@ fn main() -> Result<()> {
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     while !app.quit {
         terminal.draw(|f| draw(f, app))?;
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            app.on_key(key)?;
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key)?,
+            Event::Mouse(mouse) => app.on_mouse(mouse),
+            _ => {}
         }
     }
     Ok(())
@@ -218,6 +238,60 @@ impl App {
         }
     }
 
+    fn on_mouse(&mut self, m: MouseEvent) {
+        if !matches!(self.mode, Mode::Browse) {
+            return;
+        }
+        let pos = Position::new(m.column, m.row);
+        if let Some(menu) = self.menu.take() {
+            // Any click closes the menu; a left click on an item also runs it.
+            if m.kind == MouseEventKind::Down(MouseButton::Left)
+                && self.menu_area.contains(pos)
+                && m.row > self.menu_area.y
+                && let Some((_, code)) =
+                    menu_items(self, menu.target).get(usize::from(m.row - self.menu_area.y - 1))
+            {
+                self.on_browse_key(KeyEvent::from(*code));
+            }
+            if !matches!(m.kind, MouseEventKind::Down(_)) {
+                self.menu = Some(menu); // keep open on moves/scrolls
+            }
+            return;
+        }
+        if !self.tree_area.contains(pos) {
+            return;
+        }
+        let rows = self.rows();
+        let hit =
+            tree_row_at(self.tree_area, self.list.offset(), m.row).filter(|i| *i < rows.len());
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(i) = hit {
+                    if self.list.selected() == Some(i) {
+                        // Second click on the selected row acts like Enter.
+                        self.on_browse_key(KeyEvent::from(KeyCode::Enter));
+                    } else {
+                        self.list.select(Some(i));
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if let Some(i) = hit {
+                    self.list.select(Some(i));
+                    if let Row::Fact(id) = rows[i] {
+                        self.menu = Some(Menu {
+                            target: id,
+                            at: pos,
+                        });
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => self.on_browse_key(KeyEvent::from(KeyCode::Down)),
+            MouseEventKind::ScrollUp => self.on_browse_key(KeyEvent::from(KeyCode::Up)),
+            _ => {}
+        }
+    }
+
     fn collapse_or_parent(&mut self, rows: &[Row], sel: usize) {
         let target = match rows.get(sel) {
             Some(Row::Role(r)) => {
@@ -313,6 +387,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
     f.render_stateful_widget(tree, tree_area, &mut app.list);
+    app.tree_area = tree_area;
 
     f.render_widget(
         inspector(app).block(
@@ -336,7 +411,7 @@ fn draw(f: &mut Frame, app: &mut App) {
 
     let hints = match app.mode {
         Mode::Browse => {
-            "↑↓ move  →/← expand  Enter edit  d delete  u undo  r reveal  a apply  q quit"
+            "↑↓ move  →/← expand  Enter edit  d delete  u undo  r reveal  a apply  q quit  · click select, right-click actions"
         }
         Mode::Edit(_) => "Enter save  Alt+Enter newline  Esc cancel",
         Mode::Review => "Enter/y apply  Esc back",
@@ -363,6 +438,40 @@ fn draw(f: &mut Frame, app: &mut App) {
         ),
         _ => {}
     }
+
+    if let Some(menu) = &app.menu {
+        let items = menu_items(app, menu.target);
+        let width = 18u16.min(f.area().width);
+        let height = (u16::try_from(items.len()).unwrap_or(0) + 2).min(f.area().height);
+        // Open at the click, shifted back inside the screen if it would overflow.
+        let x = menu.at.x.min(f.area().right().saturating_sub(width));
+        let y = menu.at.y.min(f.area().bottom().saturating_sub(height));
+        let area = Rect::new(x, y, width, height);
+        app.menu_area = area;
+        let lines: Vec<Line> = items
+            .iter()
+            .map(|(label, _)| Line::from(format!(" {label}")))
+            .collect();
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(lines).block(Block::bordered().border_type(BorderType::Rounded)),
+            area,
+        );
+    }
+}
+
+/// Menu entries map to the same keys the keyboard uses, so behaviour can't drift.
+fn menu_items(app: &App, id: FactId) -> Vec<(&'static str, KeyCode)> {
+    let mut items = vec![("Edit", KeyCode::Char('e'))];
+    match app.pending.get(&id) {
+        Some(Pending::Delete) => items.push(("Undo delete", KeyCode::Char('d'))),
+        Some(Pending::Set(_)) => {
+            items.push(("Delete", KeyCode::Char('d')));
+            items.push(("Undo change", KeyCode::Char('u')));
+        }
+        None => items.push(("Delete", KeyCode::Char('d'))),
+    }
+    items
 }
 
 fn tree_item(app: &App, row: Row) -> ListItem<'static> {
@@ -526,8 +635,7 @@ fn popup(f: &mut Frame, title: &'static str, lines: Vec<Line<'static>>) {
     );
 }
 
-/// Kept for the mouse task: maps a terminal row inside the tree to a list index.
-#[expect(dead_code, reason = "wired up in the mouse task (Task 5)")]
+/// Maps a terminal row inside the bordered tree to a list index.
 fn tree_row_at(area: Rect, offset: usize, y: u16) -> Option<usize> {
     (y > area.y && y < area.bottom().saturating_sub(1))
         .then(|| offset + usize::from(y - area.y - 1))

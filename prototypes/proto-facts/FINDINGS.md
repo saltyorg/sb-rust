@@ -66,3 +66,53 @@ problem found was in our own code.
 - `config` (facts) module: line-preserving writer with continuation-line
   round-trip tests. Keep sb-go's locking and drift detection; the prototype
   skipped them on purpose.
+
+## Task 5: mouse
+
+**Question:** Can crossterm mouse events mapped to ratatui layout areas
+replace sb-go's hand-written hit-map, without owning ANSI or width code?
+
+**What was built:** about 110 added lines, against sb-go's roughly 410 lines
+of `hitmap.go` and `mouse.go`.
+- Click selects a row. Clicking the selected row acts like Enter (expand, or
+  open the editor).
+- Right-clicking a fact opens an action menu (Edit / Delete / Undo), clamped
+  inside the screen.
+- The scroll wheel moves through the tree.
+- Mouse capture is enabled through `ratatui::crossterm::execute!`.
+- Hit-testing uses the `Rect` each widget was drawn into plus the
+  `ListState::offset()` ratatui keeps. There's no separate hit-map to keep in
+  sync with the layout.
+- Menu entries map to the same key codes as the keyboard shortcuts, so mouse
+  and keyboard behaviour can't drift apart.
+
+### Result (driven through the PTY harness with SGR mouse sequences)
+
+- Select, second-click expand and edit, right-click menu → Delete (staged `✗`)
+  and the wheel all work.
+- **Mapping stays correct when the list is scrolled.** Clicking the top
+  visible row selects that row, not row 0.
+- **Mapping stays correct after a resize.** Areas are recorded on every draw,
+  so nothing goes stale.
+- Clicks outside the tree, or on non-fact rows with the right button, are
+  ignored as intended.
+- Row-based hit-testing is width-independent, so wide characters in values
+  can't shift click targets in the tree.
+- **Polish for the module:** after the terminal grows, ratatui keeps the
+  list's scroll offset, so rows above stay hidden even though there's room.
+  Reset the offset on resize.
+- **Pending manual check:** a session in at least two real terminal
+  emulators, covering native text selection with Shift-drag while mouse
+  capture is on, and the wide-character redraw note from Task 4. The PTY
+  harness can't stand in for either.
+
+### Verdict (mouse)
+
+**Adopt.** Layout rects plus `ListState::offset()` replace the hit-map with
+far less code. No ANSI or width handling is ours.
+
+### Map impact
+
+- `tui` module: mouse support is cheap enough to keep across all interactive
+  screens. Record areas during draw and route menu actions through the
+  keyboard handlers.
