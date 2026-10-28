@@ -89,7 +89,7 @@ and clean Ctrl-C?
 
 ## Checkpoint A: after Tasks 1–3
 - [x] All three FINDINGS have a verdict.
-- [ ] Review with the user before starting the screen prototypes.
+- [x] Review with the user before starting the screen prototypes.
 
 ## Task 4: Fact editor, keyboard (`proto-facts`)
 
@@ -172,7 +172,7 @@ enough to replace glamour?
 
 ## Checkpoint B: after Tasks 4–7
 - [x] All screen FINDINGS have a verdict and a proposed screen design.
-- [ ] Review with the user.
+- [x] Review with the user.
 
 ## Task 8: Inline output kit (`proto-inline`)
 
@@ -180,15 +180,15 @@ enough to replace glamour?
 `docker ps`-style tables and restore-style prompts, on a TTY and when piped?
 
 **Acceptance criteria:**
-- [ ] Renders a docker ps table from live bollard data, with colours, and
+- [x] Renders a docker ps table from live bollard data, with colours, and
       adapts to terminal width.
-- [ ] Shows username and password prompts with validation, plus a confirm
+- [x] Shows username and password prompts with validation, plus a confirm
       prompt.
-- [ ] When piped or with `NO_COLOR` set, output is plain, and prompts fail
+- [x] When piped or with `NO_COLOR` set, output is plain, and prompts fail
       clearly without a TTY.
 
 **Verification:**
-- [ ] Manual runs on a TTY, piped, and with `NO_COLOR=1`.
+- [x] Manual runs on a TTY, piped, and with `NO_COLOR=1`.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-inline/{Cargo.toml,src/main.rs,FINDINGS.md}`
@@ -200,14 +200,14 @@ enough to replace glamour?
 dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
 
 **Acceptance criteria:**
-- [ ] `install <TAB>` completes tags from a tag source (a static list in the
+- [x] `install <TAB>` completes tags from a tag source (a static list in the
       prototype).
 - [ ] It works in bash, zsh and fish, with the install steps recorded.
-- [ ] FINDINGS notes the API's stability status (unstable feature flags, if
+- [x] FINDINGS notes the API's stability status (unstable feature flags, if
       any).
 
 **Verification:**
-- [ ] Manual completion in each shell, or one tested with `rexpect`.
+- [x] Manual completion in each shell, or one tested with `rexpect`.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-complete/{Cargo.toml,src/main.rs,FINDINGS.md}`
@@ -216,13 +216,13 @@ dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
 ## Task 10: Update the capability map from the findings
 
 **Acceptance criteria:**
-- [ ] The stack table reflects every verdict, with rejected crates moved to
+- [x] The stack table reflects every verdict, with rejected crates moved to
       "Rejected" with reasons.
-- [ ] Module boundaries are adjusted where findings require it.
-- [ ] The status line changes to "ready for approval".
+- [x] Module boundaries are adjusted where findings require it.
+- [x] The status line changes to "ready for approval".
 
 **Verification:**
-- [ ] Every FINDINGS verdict traces to a map change, or to an explicit "no
+- [x] Every FINDINGS verdict traces to a map change, or to an explicit "no
       change".
 
 **Dependencies:** Tasks 1–9

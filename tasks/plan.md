@@ -60,9 +60,9 @@ See `tasks/todo.md` for acceptance criteria and verification for each task.
 ### Checkpoint B: screen verdicts reviewed
 
 ### Phase 3: Remaining surface
-- [ ] Task 8: Inline output kit
-- [ ] Task 9: Dynamic completions
-- [ ] Task 10: Update the capability map from the findings
+- [x] Task 8: Inline output kit
+- [x] Task 9: Dynamic completions
+- [x] Task 10: Update the capability map from the findings
 
 ### Checkpoint C: map ready for approval
 
