@@ -12,13 +12,13 @@ Every task also requires:
 settings so prototypes build consistently.
 
 **Acceptance criteria:**
-- [ ] `Cargo.toml` workspace (resolver 3) with `prototypes/*` members and
+- [x] `Cargo.toml` workspace (resolver 3) with `prototypes/*` members and
       workspace-level `[workspace.lints]`.
-- [ ] `rust-toolchain.toml` pins 1.99.1 with the `x86_64-unknown-linux-musl` and
+- [x] `rust-toolchain.toml` pins 1.99.1 with the `x86_64-unknown-linux-musl` and
       `aarch64-unknown-linux-musl` targets.
 
 **Verification:**
-- [ ] `cargo metadata --no-deps` succeeds.
+- [x] `cargo metadata --no-deps` succeeds.
 
 **Dependencies:** None
 **Files:** `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`
@@ -31,16 +31,16 @@ into one static musl binary for both architectures, at an acceptable size and
 build time?
 
 **Acceptance criteria:**
-- [ ] The binary makes an HTTPS GET, lists containers via bollard, and runs a
+- [x] The binary makes an HTTPS GET, lists containers via bollard, and runs a
       command under a PTY.
-- [ ] It builds for x86_64 and aarch64 musl. `file` reports both as statically
+- [x] It builds for x86_64 and aarch64 musl. `file` reports both as statically
       linked.
-- [ ] FINDINGS records release size (stripped), clean build time, and any
+- [x] FINDINGS records release size (stripped), clean build time, and any
       feature flags needed.
 
 **Verification:**
-- [ ] The x86_64 binary runs on Ubuntu and does all three actions.
-- [ ] The aarch64 build is checked under `cross` or `qemu`, or FINDINGS says
+- [x] The x86_64 binary runs on Ubuntu and does all three actions.
+- [x] The aarch64 build is checked under `cross` or `qemu`, or FINDINGS says
       it wasn't run.
 
 **Dependencies:** Task 0
@@ -53,15 +53,15 @@ build time?
 rejection, and line/column errors, on the real Saltbox config files?
 
 **Acceptance criteria:**
-- [ ] It loads the main Saltbox config files from a directory argument into
+- [x] It loads the main Saltbox config files from a directory argument into
       typed structs.
-- [ ] Synthetic fixtures prove duplicate keys, wrong types, and missing
+- [x] Synthetic fixtures prove duplicate keys, wrong types, and missing
       required keys each give an error with file, line and column.
-- [ ] FINDINGS compares the error messages with sb-go's for the same fixtures.
+- [x] FINDINGS compares the error messages with sb-go's for the same fixtures.
 
 **Verification:**
-- [ ] It runs clean against a real Saltbox config directory.
-- [ ] Each synthetic fixture produces the expected error.
+- [x] It runs clean against a real Saltbox config directory.
+- [x] Each synthetic fixture produces the expected error.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-yaml/{Cargo.toml,src/main.rs,fixtures/*.yml,FINDINGS.md}`
@@ -74,21 +74,21 @@ spinner per step, live child output under a PTY, a tail of output on failure,
 and clean Ctrl-C?
 
 **Acceptance criteria:**
-- [ ] It runs a sequence of steps, including an `ansible-playbook --version`
+- [x] It runs a sequence of steps, including an `ansible-playbook --version`
       style command under a PTY, keeping colours.
-- [ ] A failing step shows the last N output lines and a non-zero exit.
-- [ ] Ctrl-C kills the child process group and restores the terminal.
-- [ ] Output is sensible when piped (no spinner control codes).
+- [x] A failing step shows the last N output lines and a non-zero exit.
+- [x] Ctrl-C kills the child process group and restores the terminal.
+- [x] Output is sensible when piped (no spinner control codes).
 
 **Verification:**
-- [ ] Manual runs on a TTY, piped to `cat`, and interrupted with Ctrl-C.
+- [x] Manual runs on a TTY, piped to `cat`, and interrupted with Ctrl-C.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-runner/{Cargo.toml,src/main.rs,FINDINGS.md}`
 **Scope:** M
 
 ## Checkpoint A: after Tasks 1–3
-- [ ] All three FINDINGS have a verdict.
+- [x] All three FINDINGS have a verdict.
 - [ ] Review with the user before starting the screen prototypes.
 
 ## Task 4: Fact editor, keyboard (`proto-facts`)

@@ -42,12 +42,12 @@ verdict, and the verdicts update the capability map. Module specs come after.
 See `tasks/todo.md` for acceptance criteria and verification for each task.
 
 ### Phase 0: Foundation
-- [ ] Task 0: Workspace scaffold
+- [x] Task 0: Workspace scaffold
 
 ### Phase 1: Highest-risk plumbing
-- [ ] Task 1: Static musl build
-- [ ] Task 2: YAML on real config
-- [ ] Task 3: Task runner and PTY
+- [x] Task 1: Static musl build
+- [x] Task 2: YAML on real config
+- [x] Task 3: Task runner and PTY
 
 ### Checkpoint A: plumbing verdicts reviewed
 
