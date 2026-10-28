@@ -1,0 +1,21 @@
+[package]
+name = "proto-logs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ansi-to-tui = "8.0.1"
+anyhow = "1.0.104"
+bollard = "0.21.1"
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures = "0.3.34"
+ratatui = "0.30.2"
+ratatui-textarea = "0.9.3"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "signal"] }
+
+[lints]
+workspace = true
