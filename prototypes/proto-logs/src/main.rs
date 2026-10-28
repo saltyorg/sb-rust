@@ -881,6 +881,10 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
         f.render_widget(search, area);
     }
 
+    // Context menu drawn here rather than with tui-popup: its PopupState::move_to
+    // only works after a first render and the size is frozen afterwards
+    // (tui-popup 0.7.7 popup_state.rs / popup.rs popup_area), which doesn't suit
+    // a menu opened at the cursor with changing labels.
     if let Some((at, sel)) = app.menu {
         let items = app.menu_items();
         let width = items

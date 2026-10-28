@@ -26,10 +26,14 @@ with SIGINT mid-step in both modes.
   and `kill_process_group(SIGTERM)` cleanly stops the child and its
   grandchildren. No processes were left behind in either mode.
 - **Piped:** indicatif's hidden draw target plus plain `- step` / `✓ step`
-  lines work. Our own styled text is plain when piped, but **child output
-  keeps its ANSI codes**, so the real module must strip them when the
-  destination isn't a terminal (`console::strip_ansi_codes` or anstream).
-  Library-owned either way.
+  lines work. Child output kept its ANSI codes at first. It is now stripped
+  with `console::strip_ansi_codes` (already in the tree through indicatif)
+  when the destination isn't a terminal: 0 escape sequences in piped
+  output.
+- **Library audit:** the `\r`/`\n` line splitting stays our own. It's a few
+  lines of "carriage return overwrites the line" logic that no dependency
+  here provides. Process-group kill (rustix), signals (signal-hook) and the
+  PTY (portable-pty) are already library calls.
 - **Pitfalls found in indicatif (each fixed in the prototype):**
   1. Leaving finished bars inside the `MultiProgress` lost them: later
      redraws overwrote their lines. The robust pattern is

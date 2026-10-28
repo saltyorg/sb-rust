@@ -181,7 +181,7 @@ fn run_step(
                     if tty {
                         mp.println(format!("    {line}"))?;
                     } else {
-                        println!("    {line}");
+                        println!("    {}", console::strip_ansi_codes(&line));
                     }
                 }
                 if history.len() == FAILURE_TAIL {
@@ -234,7 +234,10 @@ fn run_step(
         if tty {
             mp.println(text)?;
         } else {
-            eprintln!("{text}");
+            // Child output keeps its colours under the PTY; strip them when the
+            // destination isn't a terminal (console, already used by indicatif):
+            // https://docs.rs/console/0.16.6/console/fn.strip_ansi_codes.html
+            eprintln!("{}", console::strip_ansi_codes(&text));
         }
         Ok(())
     };

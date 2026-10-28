@@ -949,6 +949,10 @@ fn draw(f: &mut Frame, app: &mut App) {
             "Quit (y)",
             "Keep editing (n)",
         ),
+        // Context menu drawn here rather than with tui-popup: its PopupState::move_to
+        // only works after a first render and the size is frozen afterwards
+        // (tui-popup 0.7.7 popup_state.rs / popup.rs popup_area), which doesn't suit
+        // a menu opened at the cursor with changing labels.
         Popup::Menu { at, sel } => {
             let items = app
                 .selected()
