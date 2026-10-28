@@ -1,0 +1,34 @@
+# Synthetic announcement exercising the Markdown features Saltbox uses.
+announcements:
+  - date: "2026-01-15"
+    title: "Example Feature Update"
+    migration:
+      required: false
+      tag: ""
+    message: |
+      ## Feature Update
+
+      A **bold** statement, some *emphasis*, and `inline code`.
+
+      Full details: https://docs.example.org/upgrade
+
+      ### What changed
+
+      - First item with a [named link](https://example.org/a)
+      - Second item
+        - Nested item
+      1. Ordered step one
+      2. Ordered step two
+
+      ```yaml
+      settings:
+        enabled: true
+      ```
+
+      > A quoted note that is long enough to wrap when the terminal is narrow, so wrapping behaviour shows up in the comparison.
+
+      Wide text: 家庭メディア 🎬 server.
+  - date: "2026-01-01"
+    title: "Second Entry"
+    message: |
+      Plain paragraph for the second announcement.
