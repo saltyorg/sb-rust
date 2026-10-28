@@ -22,8 +22,8 @@ Saltbox files.
 |---|---|---|---|
 | `facts` | Fact editor as a settings page: search, visible buttons, unsaved-changes panel, copy and show, mouse | Copy of `proto-facts/fixtures` in a temp dir; a diff is printed after quitting | — |
 | `facts-large` | The same with 60 apps, to see folding and search | Generated in a temp dir | — |
-| `logs` | Source picker, then a streaming log viewer with follow, search and switching | Your real containers and Saltbox services (read-only) | Docker, systemd, root |
-| `logs-demo` | The same viewer on predictable output | A demo container and a demo systemd unit, both removed on exit | Docker, systemd, root |
+| `logs` | Grouped source picker (Needs attention, Recent, Services, Containers) with live status, then a streaming log viewer with follow, search and switching | Your real containers and Saltbox services (read-only) | Docker, systemd, root |
+| `logs-demo` | The same on predictable output, including a crash-looping container | Two demo containers and a demo systemd unit, all removed on exit | Docker, systemd, root |
 | `markdown` | Announcement rendered by tui-markdown (full-screen, then inline), then by termimad for comparison | `proto-markdown/fixtures/announcements.yml` | — |
 | `runner` | Spinners with a live output tail, a failing step, a Ctrl-C run, then piped output | Simulated steps; uses `ansible-playbook --version` if the Saltbox venv exists | — |
 | `inline` | `docker ps` style table (with and without `NO_COLOR`), then restore-style prompts | Your containers (read-only); prompts restore nothing | Docker |

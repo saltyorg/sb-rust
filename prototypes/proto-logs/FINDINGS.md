@@ -5,13 +5,15 @@ viewer with follow, scroll, and search, without blocking input?
 
 **Crates tried:** ratatui@0.30.2 (`unstable-rendered-line-info`), crossterm@0.29 (`event-stream`), mimalloc@0.1.52 (musl builds),
 ratatui-textarea@0.9.3 (search box), ansi-to-tui@8.0.1 (ratatui org),
-bollard@0.21.1, tokio@1.54 (process, signal), futures@0.3.
+bollard@0.21.1, tokio@1.54 (process, signal), futures@0.3, serde_json@1
+(systemctl JSON), jiff@0.2 (Docker timestamps), dirs@7 (state directory).
 
 **What was built:** about 480 lines, against roughly 2,070 non-blank lines
 across sb-go's `logs.go` and `dockerLogs.go`. One viewer serves both source
 types:
-- A picker lists containers (bollard) and services (`systemctl list-units`
-  filtered by the `saltbox_managed_` prefix).
+- A picker lists services and containers with their status, grouped into
+  Needs attention, Recent, Services and Containers (see "Picker redesign"
+  below and `docs/ideas/log-picker.md`).
 - The viewer streams the chosen source. Containers use bollard's
   `logs(follow, tail=500)`; services use a `journalctl -u … -n 500 -f` child.
 - Both feed one `tokio::select!` loop alongside crossterm's async
@@ -178,6 +180,64 @@ types:
     spans ansi-to-tui produces.
   - The search query carries over when you switch source. It should probably
     reset.
+
+## Picker redesign
+
+Review asked for sb-go's service list and a friendlier picker. The
+maintainer picked a grouped status list, with colour, stopped containers,
+rich status, recent sources, and one picker for both kinds of source.
+
+- **Same services as sb-go.** sb-go lists `saltbox_managed_*` plus
+  `docker`, and hides units whose file is gone. The first prototype missed
+  `docker` and kept stale units. The picker now uses the same filter, read
+  from `systemctl list-units --output=json` rather than the human table
+  sb-go parses. JSON table output is present in systemd v249 (Ubuntu 22.04),
+  checked in the v249 source (`output_table()` in
+  `src/systemctl/systemctl-util.c`). Timestamps come from `systemctl show`,
+  whose output systemctl(1) calls computer-parsable.
+- **Status words and colour.** Services show
+  running/uptime, failed and how long ago, restarting, or idle with the next
+  timer run. Containers show uptime, exit code, out-of-memory, restart count
+  and failing health checks, from one bollard inspect per container, run in
+  parallel. The words carry the meaning without colour. The rules are pure
+  functions in `src/sources.rs`, test-first: the tests failed against stubs,
+  then passed.
+- **Needs attention:** failed or auto-restarting units, containers that
+  exited non-zero, ran out of memory, are restarting, are unhealthy, or were
+  restarted by Docker less than 10 minutes ago. A container that exited with
+  code 0 is listed as stopped, not as a problem.
+- **Sections are complete per kind;** Needs attention and Recent are
+  shortcuts on top, so a source is always under its own kind as well.
+  ratatui's `List` has no unselectable rows, so the cursor skips headers in
+  our own `step()`. Selection survives reloads and filtering.
+- **Live updates.** Docker's event stream (bollard `events`, type
+  `container`) marks the list stale. Services re-read every 5 s while the
+  picker shows. Reloads start on the 4/s tick, which also batches event
+  bursts. The first load runs in the background, so the screen appears at
+  once.
+- **Recent sources** (last 5) go in a one-line-per-source file under
+  `dirs::state_dir()`.
+- **Measured:** a full load (three systemctl calls plus an inspect of every
+  container, process start included) took about 20 ms across five runs on a
+  real install with a few dozen containers. That is well under the 150 ms
+  budget that would have called for showing the list before its status.
+- **How it was checked:**
+  - `TestBackend` render tests on synthetic sources check the sections,
+    status text and cursor behaviour.
+  - On the real install (names masked in the output), the picker listed the
+    same services as sb-go's filter.
+  - A throwaway container that exited with code 3 moved into Needs attention
+    within a tick, without input. A restart-policy loop showed its restart
+    count.
+  - Filter-then-Enter opened the stopped container's log. Recent showed it
+    afterwards.
+  - Clicks on headers were ignored, the wheel moved the cursor, and a click
+    then a second click opened a source.
+  - `logs-demo` now includes a crash-looping container.
+- **Open:** whether "+N more" is needed when many sources fail, and whether a
+  source that recovers should stay marked for a while. Services have no live
+  signal yet (systemd's D-Bus signals would give one, at the cost of a D-Bus
+  dependency).
 
 ## Verdict
 
