@@ -1,0 +1,23 @@
+# Synthetic schema exercising the rule kinds Saltbox schemas use.
+user:
+  type: object
+  required: true
+  properties:
+    name: { type: string, required: true, min_length: 1 }
+    email: { type: string, required: true, format: email, not_equals: "your@example.com" }
+    domain: { type: string, required: true }
+backup:
+  type: object
+  required: false
+  properties:
+    enabled: { type: ansible_bool, required: true }
+    destination: { type: string, required_when_true: [enabled] }
+    retries: { type: number, required: false }
+    hosts:
+      type: array
+      required: false
+      items: { type: url }
+labels:
+  type: object
+  required: false
+  additionalProperties: { type: string, min_length: 2 }

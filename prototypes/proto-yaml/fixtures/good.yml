@@ -1,0 +1,12 @@
+user:
+  name: example
+  email: someone@example.org
+  domain: example.org
+backup:
+  enabled: "yes"
+  destination: remote
+  retries: 3
+  hosts:
+    - https://a.example.org
+labels:
+  web: frontend
