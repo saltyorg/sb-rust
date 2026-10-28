@@ -3,7 +3,7 @@
 **Question:** Can bollard log streams and `journalctl -f` output feed a ratatui
 viewer with follow, scroll, and search, without blocking input?
 
-**Crates tried:** ratatui@0.30.2 (`unstable-rendered-line-info`), crossterm@0.29 (`event-stream`), serde_json (`preserve_order`),
+**Crates tried:** ratatui@0.30.2 (`unstable-rendered-line-info`), crossterm@0.29 (`event-stream`),
 ratatui-textarea@0.9.3 (search box), ansi-to-tui@8.0.1 (ratatui org),
 bollard@0.21.1, tokio@1.54 (process, signal), futures@0.3.
 
@@ -62,17 +62,22 @@ types:
 - **Real logs:** all four real sources rendered without any raw escape
   sequences, and follow, pause, search and resume behaved as with the
   synthetic sources. The journal source streamed like the container sources.
-- **Gap shown only by real logs, now addressed:** application lines can run
-  to thousands of characters (JSON, stack traces). The first version cut them
-  off at the window edge. The viewer now has:
-  - **Wrap on by default**, toggled with `w` or the right-click menu. A
-    following view sits against the bottom edge, and a paused view stays full
-    after wrap changes.
-  - **Open a line:** ↑/↓ or the wheel highlight a line (pausing follow);
-    Enter or a click opens it in a scrollable popup. JSON in the line is
-    pretty-printed with its key order kept (serde_json `preserve_order`).
-  - A **right-click menu** on a line (Open line, Wrap, Follow), also on the
-    keyboard via `m` and each item's key.
+- **Long lines (shown only by real logs):** application lines can run to
+  thousands of characters (JSON, stack traces). After review, the design is:
+  - **Wrap on by default**, toggled with `w` or the right-click menu.
+  - **With wrap off, scroll sideways:** ←/→, Shift+wheel or a horizontal
+    wheel, 8 columns per step, with the column shown in the header.
+  - The earlier open-line popup (with JSON pretty-printing) was removed at
+    review in favour of these two.
+- **Scrolling moves the view directly, by screen rows** (no selection
+  cursor). The earlier design moved a highlight and only scrolled once it
+  hit the edge, so the first wheel notches changed nothing visible, which
+  felt slow. Now:
+  - one notch moves the view immediately;
+  - wrapped long lines scroll smoothly instead of jumping a line at a time;
+  - scrolling up pauses, and reaching the bottom resumes following;
+  - a paused view that would leave rows empty (e.g. after turning wrap off)
+    follows instead, so the screen stays full.
 - **Container restarts:** the follow stream ends when a container stops. The
   viewer now writes "container stopped, waiting for it to come back…", polls
   until the container (or a re-created one with the same name) runs again,
@@ -119,6 +124,13 @@ types:
   what the shell received: before, 600 bytes every time; after, 0.
 - The launcher now builds release binaries, so trying a prototype feels like
   the real thing (debug redraws are ~10× slower).
+- **"Still a tad slow" (after the lockup fixes):** measured again at 240×70
+  (release) on the long-line source, with the timing log now also recording
+  bytes written per frame. Scrolling redraws took ~1.3 ms and 7–20 KB, before
+  and after the scrolling redesign, so neither CPU nor output volume
+  explained it. The cause was the cursor-based scrolling described above.
+  Render caching was considered and not added: at ~1.3 ms per frame it would
+  add code without a measurable gain.
 - **Design notes for the module:**
   - Search highlights whole lines. Per-match highlighting means splitting the
     spans ansi-to-tui produces.

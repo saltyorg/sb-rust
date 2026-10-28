@@ -76,9 +76,10 @@ case "${1:-}" in
       "Look at: the picker, streaming while following, pausing, search, switching source," \
       "         and how long lines, JSON and coloured output from real apps look." \
       "Picker: ↑/↓ or wheel move   Enter or click again to open   q quit" \
-      "Viewer: ↑/↓ or wheel highlight a line (pauses)   Enter or click it to open it in full" \
-      "        w wrap long lines on/off   f follow on/off   / search   n/N next/prev match" \
-      "        right-click a line (or m) for the same actions   Esc back to picker   q quit" \
+      "Viewer: ↑/↓, PgUp/PgDn or wheel scroll (scrolling up pauses; back at the bottom it follows)" \
+      "        w wrap long lines on/off; with wrap off, ←/→ or shift+wheel scroll sideways" \
+      "        f follow on/off   / search   n/N next/prev match   right-click (or m) menu" \
+      "        Esc back to picker   q quit" \
       "Inline design afterwards:  $b --inline <container-or-unit>   (Ctrl-C stops)"
     "$b"
     ;;
@@ -97,8 +98,8 @@ case "${1:-}" in
     intro "Log viewer on a demo container + demo systemd unit (removed on exit)" \
       "Predictable output for checking search (try: needle) and switching sources." \
       "Picker: ↑/↓ or wheel move   Enter or click again to open   q quit" \
-      "Viewer: ↑/↓ highlight   Enter open line   w wrap   f follow   / search   n/N   right-click menu" \
-      "        Esc picker   q quit"
+      "Viewer: ↑/↓ or wheel scroll   w wrap (off: ←/→ or shift+wheel sideways)   f follow" \
+      "        / search   n/N   right-click menu   Esc picker   q quit"
     "$b" --filter "$name"
     ;;
   markdown)

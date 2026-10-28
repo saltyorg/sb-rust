@@ -1,6 +1,6 @@
 //! Prototype: stream container and systemd logs into a ratatui viewer.
-//! Long lines wrap (toggle), any line can be opened in a popup (JSON is
-//! pretty-printed), a right-click menu mirrors the keys, and container
+//! The view scrolls directly by screen rows (no selection cursor), long lines
+//! wrap or scroll sideways, a right-click menu mirrors the keys, and container
 //! restarts are followed instead of ending the stream. Throwaway; see FINDINGS.md.
 
 use std::collections::VecDeque;
@@ -14,15 +14,16 @@ use bollard::query_parameters::LogsOptions;
 use clap::Parser;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
-    MouseButton, MouseEvent, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use futures::{FutureExt, StreamExt};
-use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
+use ratatui::Frame;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::{DefaultTerminal, Frame};
 use ratatui_textarea::TextArea;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -31,6 +32,8 @@ use tokio::task::JoinHandle;
 const MAX_LINES: usize = 5000;
 /// Prefix marking a line written by the viewer itself (stopped/restarted notices).
 const NOTICE: char = '\u{1}';
+/// Columns moved per sideways scroll step.
+const HSTEP: u16 = 8;
 
 #[derive(Parser)]
 struct Cli {
@@ -67,23 +70,11 @@ enum Screen {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
-    Open,
     Wrap,
     Follow,
 }
 
-enum Popup {
-    None,
-    /// The full text of one line; `scroll` is in rows.
-    Open {
-        line: usize,
-        scroll: u16,
-    },
-    Menu {
-        at: Position,
-        sel: usize,
-    },
-}
+type Term = ratatui::Terminal<CrosstermBackend<CountingWriter>>;
 
 struct App {
     sources: Vec<Source>,
@@ -91,23 +82,23 @@ struct App {
     screen: Screen,
     current: Option<Source>,
     lines: VecDeque<String>,
-    /// Highlighted line while paused; the newest line while following.
-    cursor: usize,
+    /// While paused, the view starts at row `skip` of line `top`.
     top: usize,
+    skip: u16,
     follow: bool,
     wrap: bool,
+    hscroll: u16,
     search: Option<TextArea<'static>>,
     query: String,
-    popup: Popup,
+    /// Right-click menu position and highlighted item.
+    menu: Option<(Position, usize)>,
     generation: u64,
     stream: Option<JoinHandle<()>>,
     quit: bool,
     // From the last draw, for mouse hits and paging.
     pick_area: Rect,
     body: Rect,
-    rows: Vec<(Rect, usize)>,
     menu_area: Rect,
-    open_area: Rect,
 }
 
 #[tokio::main]
@@ -144,29 +135,49 @@ async fn main() -> Result<()> {
         screen: Screen::Pick,
         current: None,
         lines: VecDeque::new(),
-        cursor: 0,
         top: 0,
+        skip: 0,
         follow: true,
         wrap: true,
+        hscroll: 0,
         search: None,
         query: String::new(),
-        popup: Popup::None,
+        menu: None,
         generation: 0,
         stream: None,
         quit: false,
         pick_area: Rect::default(),
         body: Rect::default(),
-        rows: Vec::new(),
         menu_area: Rect::default(),
-        open_area: Rect::default(),
     };
-    let mut terminal = ratatui::init();
+    // ratatui::init sets up raw mode, the alternate screen and the panic hook;
+    // the terminal we draw with wraps stdout to count bytes for the timing log.
+    drop(ratatui::init());
+    let mut terminal = Term::new(CrosstermBackend::new(CountingWriter))?;
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, docker).await;
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     drain_input();
     ratatui::restore();
     result
+}
+
+/// Bytes written to the terminal during the current frame, for the timing log.
+static BYTES_WRITTEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// stdout wrapper that counts bytes written into `BYTES_WRITTEN`.
+struct CountingWriter;
+
+impl std::io::Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = std::io::stdout().write(buf)?;
+        BYTES_WRITTEN.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stdout().flush()
+    }
 }
 
 /// Reads and discards input still in flight after mouse capture is turned
@@ -323,7 +334,7 @@ fn spawn_stream(
     })
 }
 
-async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> Result<()> {
+async fn run(terminal: &mut Term, app: &mut App, docker: Docker) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<(u64, String)>();
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
@@ -333,16 +344,21 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
     let mut cause = "start";
     while !app.quit {
         let started = std::time::Instant::now();
+        BYTES_WRITTEN.store(0, std::sync::atomic::Ordering::Relaxed);
         terminal.draw(|f| draw(f, app))?;
         if let Some(file) = timing.as_mut() {
             use std::io::Write as _;
-            let mode = match (&app.popup, app.follow) {
-                (Popup::Open { .. }, _) => "popup",
-                (Popup::Menu { .. }, _) => "menu",
-                (Popup::None, true) => "follow",
-                (Popup::None, false) => "paused",
+            let bytes = BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed);
+            let mode = match (app.menu.is_some(), app.follow) {
+                (true, _) => "menu",
+                (false, true) => "follow",
+                (false, false) => "paused",
             };
-            let _ = writeln!(file, "{} {mode} {cause}", started.elapsed().as_micros());
+            let _ = writeln!(
+                file,
+                "{} {mode} {cause} {bytes}",
+                started.elapsed().as_micros()
+            );
         }
         tokio::select! {
             Some(Ok(first)) = events.next() => {
@@ -392,17 +408,89 @@ impl App {
         self.lines.push_back(line);
         if self.lines.len() > MAX_LINES {
             self.lines.pop_front();
-            self.cursor = self.cursor.saturating_sub(1);
+            if self.top == 0 {
+                self.skip = 0;
+            }
             self.top = self.top.saturating_sub(1);
         }
     }
 
-    fn last(&self) -> usize {
-        self.lines.len().saturating_sub(1)
-    }
-
     fn matches(&self, line: &str) -> bool {
         !self.query.is_empty() && line.contains(&self.query)
+    }
+
+    /// Screen rows one log line takes at the current width and wrap setting.
+    fn height(&self, i: usize) -> u16 {
+        row_height(&render_line(&self.lines[i]), self.body.width, self.wrap)
+    }
+
+    /// Scrolls the view by `delta` screen rows. Scrolling up pauses; reaching
+    /// the bottom again resumes following.
+    fn scroll(&mut self, delta: i32) {
+        if self.lines.is_empty() {
+            return;
+        }
+        if self.follow {
+            // Start from the position the follow view is showing.
+            let (top, skip) = self.bottom_anchor();
+            self.top = top;
+            self.skip = skip;
+            self.follow = false;
+        }
+        if delta < 0 {
+            for _ in 0..delta.unsigned_abs() {
+                if self.skip > 0 {
+                    self.skip -= 1;
+                } else if self.top > 0 {
+                    self.top -= 1;
+                    self.skip = self.height(self.top).saturating_sub(1);
+                } else {
+                    break;
+                }
+            }
+        } else {
+            for _ in 0..delta {
+                if self.at_bottom() {
+                    break;
+                }
+                if self.skip + 1 < self.height(self.top) {
+                    self.skip += 1;
+                } else {
+                    self.top += 1;
+                    self.skip = 0;
+                }
+            }
+            if self.at_bottom() {
+                self.follow = true;
+            }
+        }
+    }
+
+    /// True when the rows from (top, skip) to the end fit on screen.
+    fn at_bottom(&self) -> bool {
+        let mut rows = self.height(self.top).saturating_sub(self.skip);
+        for i in self.top + 1..self.lines.len() {
+            rows = rows.saturating_add(self.height(i));
+            if rows > self.body.height {
+                return false;
+            }
+        }
+        rows <= self.body.height
+    }
+
+    /// (top, skip) that puts the newest line on the bottom row.
+    fn bottom_anchor(&self) -> (usize, u16) {
+        let mut used = 0u16;
+        let mut i = self.lines.len();
+        while i > 0 {
+            let h = self.height(i - 1);
+            if used + h >= self.body.height {
+                return (i - 1, h - (self.body.height - used));
+            }
+            used += h;
+            i -= 1;
+        }
+        (0, 0)
     }
 
     fn on_key(
@@ -425,53 +513,25 @@ impl App {
             }
             return;
         }
-        match self.popup {
-            Popup::Open { line, scroll } => {
-                let scroll = match key.code {
-                    KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1),
-                    KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
-                    KeyCode::PageDown => scroll.saturating_add(10),
-                    KeyCode::PageUp => scroll.saturating_sub(10),
-                    _ => {
-                        self.popup = Popup::None;
-                        return;
-                    }
-                };
-                self.popup = Popup::Open { line, scroll };
-                return;
-            }
-            Popup::Menu { at, sel } => {
-                let items = self.menu_items();
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.popup = Popup::Menu {
-                            at,
-                            sel: sel.saturating_sub(1),
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.popup = Popup::Menu {
-                            at,
-                            sel: (sel + 1).min(items.len() - 1),
-                        }
-                    }
-                    KeyCode::Enter => {
-                        self.popup = Popup::None;
-                        self.perform(items[sel].2);
-                    }
-                    KeyCode::Char('w') => {
-                        self.popup = Popup::None;
-                        self.perform(Action::Wrap);
-                    }
-                    KeyCode::Char('f') => {
-                        self.popup = Popup::None;
-                        self.perform(Action::Follow);
-                    }
-                    _ => self.popup = Popup::None,
+        if let Some((at, sel)) = self.menu {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.menu = Some((at, sel.saturating_sub(1))),
+                KeyCode::Down | KeyCode::Char('j') => self.menu = Some((at, (sel + 1).min(1))),
+                KeyCode::Enter => {
+                    self.menu = None;
+                    self.perform(self.menu_items()[sel].2);
                 }
-                return;
+                KeyCode::Char('w') => {
+                    self.menu = None;
+                    self.perform(Action::Wrap);
+                }
+                KeyCode::Char('f') => {
+                    self.menu = None;
+                    self.perform(Action::Follow);
+                }
+                _ => self.menu = None,
             }
-            Popup::None => {}
+            return;
         }
         match self.screen {
             Screen::Pick => match key.code {
@@ -486,15 +546,24 @@ impl App {
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char('f') => self.perform(Action::Follow),
                 KeyCode::Char('w') => self.perform(Action::Wrap),
-                KeyCode::Enter => self.perform(Action::Open),
-                KeyCode::Char('m') | KeyCode::Menu => self.open_menu(None),
-                KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
-                KeyCode::PageUp => self.move_cursor(-(self.body.height.max(1) as isize)),
-                KeyCode::PageDown => self.move_cursor(self.body.height.max(1) as isize),
+                KeyCode::Char('m') | KeyCode::Menu => {
+                    self.menu = Some((Position::new(self.body.x + 20, self.body.y + 1), 0));
+                }
+                KeyCode::Up | KeyCode::Char('k') => self.scroll(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.scroll(1),
+                KeyCode::PageUp => self.scroll(-i32::from(self.body.height.max(2) - 1)),
+                KeyCode::PageDown => self.scroll(i32::from(self.body.height.max(2) - 1)),
+                KeyCode::Left | KeyCode::Char('h') if !self.wrap => {
+                    self.hscroll = self.hscroll.saturating_sub(HSTEP)
+                }
+                KeyCode::Right | KeyCode::Char('l') if !self.wrap => {
+                    self.hscroll = self.hscroll.saturating_add(HSTEP)
+                }
                 KeyCode::Home | KeyCode::Char('g') => {
                     self.follow = false;
-                    self.cursor = 0;
+                    self.top = 0;
+                    self.skip = 0;
+                    self.hscroll = 0;
                 }
                 KeyCode::End | KeyCode::Char('G') => self.follow = true,
                 KeyCode::Char('/') => {
@@ -516,55 +585,31 @@ impl App {
         tx: &mpsc::UnboundedSender<(u64, String)>,
     ) {
         let pos = Position::new(m.column, m.row);
-        match self.popup {
-            Popup::Open { line, scroll } => {
-                match m.kind {
-                    MouseEventKind::ScrollDown => {
-                        self.popup = Popup::Open {
-                            line,
-                            scroll: scroll.saturating_add(3),
-                        }
+        if let Some((at, _)) = self.menu {
+            let area = self.menu_area;
+            let item =
+                (area.contains(pos) && m.row > area.y && m.row < area.bottom().saturating_sub(1))
+                    .then(|| usize::from(m.row - area.y - 1));
+            match m.kind {
+                MouseEventKind::Moved => {
+                    if let Some(sel) = item {
+                        self.menu = Some((at, sel));
                     }
-                    MouseEventKind::ScrollUp => {
-                        self.popup = Popup::Open {
-                            line,
-                            scroll: scroll.saturating_sub(3),
-                        }
-                    }
-                    MouseEventKind::Down(_) if !self.open_area.contains(pos) => {
-                        self.popup = Popup::None
-                    }
-                    _ => {}
                 }
-                return;
-            }
-            Popup::Menu { at, .. } => {
-                let area = self.menu_area;
-                let item = (area.contains(pos)
-                    && m.row > area.y
-                    && m.row < area.bottom().saturating_sub(1))
-                .then(|| usize::from(m.row - area.y - 1));
-                match m.kind {
-                    MouseEventKind::Moved => {
-                        if let Some(sel) = item {
-                            self.popup = Popup::Menu { at, sel };
-                        }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.menu = None;
+                    if let Some(action) =
+                        item.and_then(|i| self.menu_items().get(i).map(|(_, _, a)| *a))
+                    {
+                        self.perform(action);
                     }
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        self.popup = Popup::None;
-                        if let Some(action) =
-                            item.and_then(|i| self.menu_items().get(i).map(|(_, _, a)| *a))
-                        {
-                            self.perform(action);
-                        }
-                    }
-                    MouseEventKind::Down(_) => self.popup = Popup::None,
-                    _ => {}
                 }
-                return;
+                MouseEventKind::Down(_) => self.menu = None,
+                _ => {}
             }
-            Popup::None => {}
+            return;
         }
+        let shift = m.modifiers.contains(KeyModifiers::SHIFT);
         match self.screen {
             Screen::Pick => {
                 let row = (self.pick_area.contains(pos) && m.row > self.pick_area.y)
@@ -585,65 +630,49 @@ impl App {
                     _ => {}
                 }
             }
-            Screen::View => {
-                let hit = self
-                    .rows
-                    .iter()
-                    .find(|(r, _)| r.contains(pos))
-                    .map(|(_, i)| *i);
-                match m.kind {
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        if let Some(i) = hit {
-                            if !self.follow && self.cursor == i {
-                                self.perform(Action::Open);
-                            } else {
-                                self.follow = false;
-                                self.cursor = i;
-                            }
-                        }
-                    }
-                    MouseEventKind::Down(MouseButton::Right) => {
-                        if let Some(i) = hit {
-                            self.follow = false;
-                            self.cursor = i;
-                            self.open_menu(Some(pos));
-                        }
-                    }
-                    MouseEventKind::ScrollDown if self.body.contains(pos) => self.move_cursor(3),
-                    MouseEventKind::ScrollUp if self.body.contains(pos) => self.move_cursor(-3),
-                    _ => {}
+            Screen::View => match m.kind {
+                MouseEventKind::Down(MouseButton::Right) if self.body.contains(pos) => {
+                    self.menu = Some((pos, 0))
                 }
-            }
+                // Shift+wheel and horizontal wheels scroll sideways when not wrapping.
+                MouseEventKind::ScrollRight if !self.wrap => {
+                    self.hscroll = self.hscroll.saturating_add(HSTEP)
+                }
+                MouseEventKind::ScrollLeft if !self.wrap => {
+                    self.hscroll = self.hscroll.saturating_sub(HSTEP)
+                }
+                MouseEventKind::ScrollDown if shift && !self.wrap => {
+                    self.hscroll = self.hscroll.saturating_add(HSTEP)
+                }
+                MouseEventKind::ScrollUp if shift && !self.wrap => {
+                    self.hscroll = self.hscroll.saturating_sub(HSTEP)
+                }
+                MouseEventKind::ScrollDown if self.body.contains(pos) => self.scroll(3),
+                MouseEventKind::ScrollUp if self.body.contains(pos) => self.scroll(-3),
+                _ => {}
+            },
         }
     }
 
     fn perform(&mut self, action: Action) {
         match action {
-            Action::Open => {
-                if !self.lines.is_empty() {
-                    let line = if self.follow {
-                        self.last()
-                    } else {
-                        self.cursor
-                    };
-                    self.follow = false;
-                    self.cursor = line;
-                    self.popup = Popup::Open { line, scroll: 0 };
-                }
+            Action::Wrap => {
+                self.wrap = !self.wrap;
+                self.hscroll = 0;
+                self.skip = 0;
             }
-            Action::Wrap => self.wrap = !self.wrap,
             Action::Follow => {
-                self.follow = !self.follow;
-                if !self.follow {
-                    self.cursor = self.last();
+                if self.follow {
+                    self.scroll(-1);
+                } else {
+                    self.follow = true;
                 }
             }
         }
     }
 
-    fn menu_items(&self) -> Vec<(String, &'static str, Action)> {
-        vec![
-            ("Open line".into(), "Enter", Action::Open),
+    fn menu_items(&self) -> [(String, &'static str, Action); 2] {
+        [
             (
                 format!("Wrap long lines: {}", if self.wrap { "on" } else { "off" }),
                 "w",
@@ -655,18 +684,6 @@ impl App {
                 Action::Follow,
             ),
         ]
-    }
-
-    fn open_menu(&mut self, at: Option<Position>) {
-        let at = at
-            .or_else(|| {
-                self.rows
-                    .iter()
-                    .find(|(_, i)| *i == self.cursor)
-                    .map(|(r, _)| Position::new(r.x + 20, r.y))
-            })
-            .unwrap_or(Position::new(self.body.x + 20, self.body.y + 1));
-        self.popup = Popup::Menu { at, sel: 0 };
     }
 
     fn open_selected(&mut self, docker: &Docker, tx: &mpsc::UnboundedSender<(u64, String)>) {
@@ -683,8 +700,9 @@ impl App {
         }
         self.generation += 1;
         self.lines.clear();
-        self.cursor = 0;
         self.top = 0;
+        self.skip = 0;
+        self.hscroll = 0;
         self.follow = true;
         self.query.clear();
         self.stream = Some(spawn_stream(
@@ -705,15 +723,7 @@ impl App {
         self.screen = Screen::Pick;
     }
 
-    fn move_cursor(&mut self, delta: isize) {
-        if self.follow {
-            self.cursor = self.last();
-        }
-        self.follow = false;
-        self.cursor = self.cursor.saturating_add_signed(delta).min(self.last());
-    }
-
-    /// Moves the highlight to the next (or previous) matching line.
+    /// Scrolls the next (or previous) matching line to the top of the view.
     fn jump(&mut self, forward: bool) {
         if self.query.is_empty() {
             return;
@@ -725,15 +735,14 @@ impl App {
                 .rev()
                 .find(|&i| self.matches(&self.lines[i]))
         } else if forward {
-            (self.cursor + 1..self.lines.len()).find(|&i| self.matches(&self.lines[i]))
+            (self.top + 1..self.lines.len()).find(|&i| self.matches(&self.lines[i]))
         } else {
-            (0..self.cursor)
-                .rev()
-                .find(|&i| self.matches(&self.lines[i]))
+            (0..self.top).rev().find(|&i| self.matches(&self.lines[i]))
         };
         if let Some(i) = found {
             self.follow = false;
-            self.cursor = i;
+            self.top = i;
+            self.skip = 0;
         }
     }
 }
@@ -752,38 +761,6 @@ fn render_line(raw: &str) -> Text<'static> {
     raw.as_bytes()
         .into_text()
         .unwrap_or_else(|_| Text::raw(raw.to_string()))
-}
-
-fn plain(raw: &str) -> String {
-    render_line(raw)
-        .lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
-        .collect()
-}
-
-/// The popup body: the line as-is, plus any JSON in it pretty-printed.
-fn open_text(raw: &str) -> Text<'static> {
-    let text = plain(raw);
-    let json_start = text.find(['{', '[']);
-    let pretty = json_start.and_then(|i| {
-        let value: serde_json::Value = serde_json::from_str(text[i..].trim()).ok()?;
-        Some((i, serde_json::to_string_pretty(&value).ok()?))
-    });
-    match pretty {
-        Some((i, json)) => {
-            let mut out = Text::default();
-            let prefix = text[..i].trim();
-            if !prefix.is_empty() {
-                out.lines.push(Line::from(prefix.to_string()).bold());
-                out.lines.push(Line::raw(""));
-            }
-            out.lines
-                .extend(json.lines().map(|l| Line::raw(l.to_string())));
-            out
-        }
-        None => render_line(raw),
-    }
 }
 
 fn row_height(text: &Text<'static>, width: u16, wrap: bool) -> u16 {
@@ -834,6 +811,43 @@ fn draw(f: &mut Frame, app: &mut App) {
 fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rect) {
     let name = app.current.as_ref().map(Source::label).unwrap_or_default();
     let hits = app.lines.iter().filter(|l| app.matches(l)).count();
+    let block = Block::bordered().border_type(BorderType::Rounded);
+    let inner = block.inner(body);
+    f.render_widget(block, body);
+    app.body = inner;
+
+    // A paused view that would leave rows empty below the newest line (e.g.
+    // after turning wrap off) is at the bottom already: follow, which fills it.
+    if !app.follow && !app.lines.is_empty() && app.at_bottom() {
+        app.follow = true;
+    }
+    if app.follow {
+        let (top, skip) = app.bottom_anchor();
+        app.top = top;
+        app.skip = skip;
+    }
+    let mut y = inner.y;
+    let mut i = app.top;
+    let mut skip = app.skip;
+    while i < app.lines.len() && y < inner.bottom() {
+        let mut text = render_line(&app.lines[i]);
+        let full = row_height(&text, inner.width, app.wrap);
+        let h = full.saturating_sub(skip).min(inner.bottom() - y);
+        if app.matches(&app.lines[i]) {
+            text = text.style(Style::default().bg(Color::Rgb(70, 60, 0)));
+        }
+        let p = Paragraph::new(text);
+        let p = if app.wrap {
+            p.wrap(Wrap { trim: false }).scroll((skip, 0))
+        } else {
+            p.scroll((0, app.hscroll))
+        };
+        f.render_widget(p, Rect::new(inner.x, y, inner.width, h));
+        y += h;
+        i += 1;
+        skip = 0;
+    }
+
     f.render_widget(
         Line::from(vec![
             format!(" ◆ {name} ").bold().cyan(),
@@ -843,7 +857,12 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
             } else {
                 " PAUSED ".black().on_yellow()
             },
-            Span::raw(if app.wrap { "  wrap on" } else { "  wrap off" }).dim(),
+            Span::raw(if app.wrap {
+                "  wrap on".to_string()
+            } else {
+                format!("  wrap off · col {}", app.hscroll + 1)
+            })
+            .dim(),
             if app.query.is_empty() {
                 Span::raw("")
             } else {
@@ -852,91 +871,6 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
         ]),
         header,
     );
-    let block = Block::bordered().border_type(BorderType::Rounded);
-    let inner = block.inner(body);
-    f.render_widget(block, body);
-    app.body = inner;
-    app.rows.clear();
-
-    // Work out which lines fit: from the newest backwards while following, or
-    // from `top` (kept so the highlighted line stays visible) while paused.
-    let height = inner.height;
-    let texts = |i: usize| render_line(&app.lines[i]);
-    let mut start_y = inner.y;
-    if !app.lines.is_empty() {
-        if app.follow {
-            let mut used = 0u16;
-            let mut top = app.lines.len();
-            while top > 0 {
-                let h = row_height(&texts(top - 1), inner.width, app.wrap);
-                if used + h > height && top < app.lines.len() {
-                    break;
-                }
-                used = used.saturating_add(h);
-                top -= 1;
-            }
-            app.top = top;
-            // Sit against the bottom edge like `tail -f`, no gap under the newest line.
-            start_y = inner.y + height.saturating_sub(used);
-        } else {
-            app.cursor = app.cursor.min(app.last());
-            if app.cursor < app.top {
-                app.top = app.cursor;
-            }
-            // If the highlight is below the fold, pull `top` down until it fits.
-            let mut used: u16 = (app.top..=app.cursor)
-                .map(|i| row_height(&texts(i), inner.width, app.wrap))
-                .sum();
-            while used > height && app.top < app.cursor {
-                used -= row_height(&texts(app.top), inner.width, app.wrap);
-                app.top += 1;
-            }
-            // If the lines from `top` to the end leave space (e.g. after turning
-            // wrap off), pull older lines in so the screen stays full.
-            // Only measure until the screen is full: measuring every line to the
-            // end of the buffer made each redraw cost O(buffer) (70 ms in debug
-            // builds with 500 long lines, and growing with the buffer).
-            let mut below = 0u16;
-            for i in app.top..app.lines.len() {
-                below = below.saturating_add(row_height(&texts(i), inner.width, app.wrap));
-                if below >= height {
-                    break;
-                }
-            }
-            while app.top > 0 && below < height {
-                let h = row_height(&texts(app.top - 1), inner.width, app.wrap);
-                if below + h > height {
-                    break;
-                }
-                below += h;
-                app.top -= 1;
-            }
-        }
-        let mut y = start_y;
-        let mut i = app.top;
-        while i < app.lines.len() && y < inner.bottom() {
-            let mut text = texts(i);
-            let h = row_height(&text, inner.width, app.wrap).min(inner.bottom() - y);
-            if !app.follow && i == app.cursor {
-                text = text.style(Style::default().bg(Color::Rgb(40, 60, 90)));
-            } else if app.matches(&app.lines[i]) {
-                text = text.style(Style::default().bg(Color::Rgb(70, 60, 0)));
-            }
-            let rect = Rect::new(inner.x, y, inner.width, h);
-            let p = Paragraph::new(text);
-            f.render_widget(
-                if app.wrap {
-                    p.wrap(Wrap { trim: false })
-                } else {
-                    p
-                },
-                rect,
-            );
-            app.rows.push((rect, i));
-            y += h;
-            i += 1;
-        }
-    }
 
     if let Some(search) = &app.search {
         let [_, area] = Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(body);
@@ -944,80 +878,50 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
         f.render_widget(search, area);
     }
 
-    match app.popup {
-        Popup::Open { line, scroll } => {
-            let [a] = Layout::vertical([Constraint::Percentage(80)])
-                .flex(Flex::Center)
-                .areas(f.area());
-            let [a] = Layout::horizontal([Constraint::Percentage(85)])
-                .flex(Flex::Center)
-                .areas(a);
-            app.open_area = a;
-            let text = app
-                .lines
-                .get(line)
-                .map(|l| open_text(l))
-                .unwrap_or_default();
-            f.render_widget(Clear, a);
-            f.render_widget(
-                Paragraph::new(text)
-                    .wrap(Wrap { trim: false })
-                    .scroll((scroll, 0))
-                    .block(
-                        Block::bordered()
-                            .border_type(BorderType::Rounded)
-                            .title(format!(" Line {} of {} ", line + 1, app.lines.len()))
-                            .title_bottom(
-                                " ↑↓ or wheel scroll · any other key or click outside closes ",
-                            ),
-                    ),
-                a,
-            );
-        }
-        Popup::Menu { at, sel } => {
-            let items = app.menu_items();
-            let width = items
-                .iter()
-                .map(|(l, k, _)| l.chars().count() + k.len() + 5)
-                .max()
-                .unwrap_or(10) as u16;
-            let height = u16::try_from(items.len()).unwrap_or(0) + 2;
-            let area = f.area();
-            let menu = Rect::new(
-                at.x.min(area.right().saturating_sub(width)),
-                at.y.min(area.bottom().saturating_sub(height)),
-                width,
-                height,
-            );
-            app.menu_area = menu;
-            let inner_w = usize::from(width.saturating_sub(2));
-            let lines: Vec<Line> = items
-                .iter()
-                .enumerate()
-                .map(|(i, (label, key, _))| {
-                    let pad = inner_w.saturating_sub(label.chars().count() + key.len() + 2);
-                    let line = Line::from(vec![
-                        Span::raw(format!(" {label}{}", " ".repeat(pad))),
-                        Span::raw(format!("{key} ")).dim(),
-                    ]);
-                    if i == sel {
-                        line.style(Style::default().fg(Color::Black).bg(Color::Cyan))
-                    } else {
-                        line
-                    }
-                })
-                .collect();
-            f.render_widget(Clear, menu);
-            f.render_widget(
-                Paragraph::new(lines).block(Block::bordered().border_type(BorderType::Rounded)),
-                menu,
-            );
-        }
-        Popup::None => {}
+    if let Some((at, sel)) = app.menu {
+        let items = app.menu_items();
+        let width = items
+            .iter()
+            .map(|(l, k, _)| l.chars().count() + k.len() + 5)
+            .max()
+            .unwrap_or(10) as u16;
+        let height = u16::try_from(items.len()).unwrap_or(0) + 2;
+        let area = f.area();
+        let menu = Rect::new(
+            at.x.min(area.right().saturating_sub(width)),
+            at.y.min(area.bottom().saturating_sub(height)),
+            width,
+            height,
+        );
+        app.menu_area = menu;
+        let inner_w = usize::from(width.saturating_sub(2));
+        let lines: Vec<Line> = items
+            .iter()
+            .enumerate()
+            .map(|(i, (label, key, _))| {
+                let pad = inner_w.saturating_sub(label.chars().count() + key.len() + 2);
+                let line = Line::from(vec![
+                    Span::raw(format!(" {label}{}", " ".repeat(pad))),
+                    Span::raw(format!("{key} ")).dim(),
+                ]);
+                if i == sel {
+                    line.style(Style::default().fg(Color::Black).bg(Color::Cyan))
+                } else {
+                    line
+                }
+            })
+            .collect();
+        f.render_widget(Clear, menu);
+        f.render_widget(
+            Paragraph::new(lines).block(Block::bordered().border_type(BorderType::Rounded)),
+            menu,
+        );
     }
 
-    f.render_widget(
-        Line::from(" ↑↓/wheel move  Enter/click open line  w wrap  f follow  / search  n/N next/prev  m or right-click menu  Esc sources  q quit".dim()),
-        footer,
-    );
+    let hint = if app.wrap {
+        " ↑↓/wheel scroll  w wrap off  f follow  / search  n/N next/prev  m or right-click menu  Esc sources  q quit"
+    } else {
+        " ↑↓/wheel scroll  ←→/shift+wheel sideways  w wrap on  f follow  / search  n/N  m or right-click menu  Esc  q"
+    };
+    f.render_widget(Line::from(hint.dim()), footer);
 }
