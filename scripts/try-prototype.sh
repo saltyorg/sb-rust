@@ -14,7 +14,8 @@ Usage: scripts/try-prototype.sh <prototype>
 
   facts        Fact editor as a settings page, on a copy of synthetic facts
   facts-large  The same with 60 synthetic apps, to see folding and search
-  logs         Log viewer on a demo container and demo systemd unit (removed on exit)
+  logs         Log viewer on your real containers and Saltbox services (read-only)
+  logs-demo    Log viewer on a demo container and demo systemd unit (removed on exit)
   markdown     Announcements renderer (full-screen view, then inline, then termimad)
   runner       Task runner with spinners, live output and a failing step
   inline       docker ps style table, then username/password prompts
@@ -70,6 +71,17 @@ case "${1:-}" in
     ;;
   logs)
     b="$(bin logs)"
+    intro "Log viewer on your real containers and Saltbox services (read-only)" \
+      "Look at: the picker, streaming while following, pausing, search, switching source," \
+      "         and how long lines, JSON and coloured output from real apps look." \
+      "Picker: ↑/↓ move   Enter open   q quit" \
+      "Viewer: f follow on/off   ↑/↓ PgUp/PgDn scroll   / search   n/N next/prev match" \
+      "        Esc back to picker (stops the stream)   q quit" \
+      "Inline design afterwards:  $b --inline <container-or-unit>   (Ctrl-C stops)"
+    "$b"
+    ;;
+  logs-demo)
+    b="$(bin logs)"
     name=sb-rust-proto-demo
     cleanup() {
       docker rm -f "$name" >/dev/null 2>&1 || true
@@ -80,13 +92,10 @@ case "${1:-}" in
       'i=0; while true; do i=$((i+1)); printf "\033[32mINFO\033[0m line %s\n" $i; [ $((i%7)) = 0 ] && printf "\033[31mERROR\033[0m needle %s\n" $i; sleep 0.3; done' >/dev/null
     # shellcheck disable=SC2016 # $n is expanded by the unit's own sh, not here
     systemd-run --quiet --unit "$name" sh -c 'n=0; while true; do n=$((n+1)); echo "demo tick $n"; sleep 0.5; done'
-    intro "Log viewer (demo container + demo systemd unit, removed on exit)" \
-      "Look at: the picker, streaming while following, pausing, search highlighting, switching source." \
+    intro "Log viewer on a demo container + demo systemd unit (removed on exit)" \
+      "Predictable output for checking search (try: needle) and switching sources." \
       "Picker: ↑/↓ move   Enter open   q quit" \
-      "Viewer: f follow on/off   ↑/↓ PgUp/PgDn scroll   / search (try: needle)   n/N next/prev match" \
-      "        Esc back to picker (stops the stream)   q quit" \
-      "Afterwards, try the inline design:  $b --inline $name   (Ctrl-C stops)" \
-      "To see your real containers/services instead, run: $b"
+      "Viewer: f follow   ↑/↓ PgUp/PgDn scroll   / search   n/N next/prev   Esc picker   q quit"
     "$b" --filter "$name"
     ;;
   markdown)

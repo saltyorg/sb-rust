@@ -21,10 +21,15 @@ types:
   picker.
 - `--inline <source>` streams plain output to stdout instead, for comparison.
 
-**How it was checked:** the PTY harness drove the viewer against a throwaway
-container and a transient systemd unit. Both emitted synthetic lines
-(coloured, with a search word every seventh line) and both were removed
-afterwards.
+**How it was checked:**
+- **Synthetic sources:** a throwaway container and a transient systemd unit
+  with predictable coloured output, removed afterwards. Used for search and
+  switching.
+- **Real sources** on a real Saltbox install, read-only: the container with
+  the longest log lines (over 5,000 characters), a container emitting ANSI
+  colour, the busiest container, and a Saltbox-managed systemd service. Each
+  was opened, followed, paused, searched and resumed in the PTY harness. Only
+  structure was recorded (states, widths, escape leaks), never log content.
 
 ## Result
 
@@ -54,13 +59,21 @@ afterwards.
     follow/pause.
   - Proposal: keep both. The TUI is the default on a terminal, and
     `--follow`/`--no-tui` or piped output use inline mode.
+- **Real logs:** all four real sources rendered without any raw escape
+  sequences, and follow, pause, search and resume behaved as with the
+  synthetic sources. The journal source streamed like the container sources.
+- **Gap shown only by real logs:** application lines can run to thousands of
+  characters (JSON, stack traces). The viewer truncates them at the window
+  edge with no way to read the rest. The module needs wrap and/or horizontal
+  scroll, or an "open this line" detail view. To be decided in review.
+- **Not tested on real sources:** a container restarting mid-stream (the
+  bollard follow stream ends). Restarting real containers would disrupt them,
+  so this is checked on the demo container instead.
 - **Design notes for the module:**
   - Search highlights whole lines. Per-match highlighting means splitting the
     spans ansi-to-tui produces.
   - The search query carries over when you switch source. It should probably
     reset.
-  - Long lines are truncated, not wrapped. Decide between wrap and
-    horizontal scroll.
   - Mouse support (wheel scroll, click in the picker) wasn't added. The
     proto-facts pattern applies directly.
 
