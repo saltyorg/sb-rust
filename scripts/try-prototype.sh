@@ -74,9 +74,10 @@ case "${1:-}" in
     intro "Log viewer on your real containers and Saltbox services (read-only)" \
       "Look at: the picker, streaming while following, pausing, search, switching source," \
       "         and how long lines, JSON and coloured output from real apps look." \
-      "Picker: ↑/↓ move   Enter open   q quit" \
-      "Viewer: f follow on/off   ↑/↓ PgUp/PgDn scroll   / search   n/N next/prev match" \
-      "        Esc back to picker (stops the stream)   q quit" \
+      "Picker: ↑/↓ or wheel move   Enter or click again to open   q quit" \
+      "Viewer: ↑/↓ or wheel highlight a line (pauses)   Enter or click it to open it in full" \
+      "        w wrap long lines on/off   f follow on/off   / search   n/N next/prev match" \
+      "        right-click a line (or m) for the same actions   Esc back to picker   q quit" \
       "Inline design afterwards:  $b --inline <container-or-unit>   (Ctrl-C stops)"
     "$b"
     ;;
@@ -94,8 +95,9 @@ case "${1:-}" in
     systemd-run --quiet --unit "$name" sh -c 'n=0; while true; do n=$((n+1)); echo "demo tick $n"; sleep 0.5; done'
     intro "Log viewer on a demo container + demo systemd unit (removed on exit)" \
       "Predictable output for checking search (try: needle) and switching sources." \
-      "Picker: ↑/↓ move   Enter open   q quit" \
-      "Viewer: f follow   ↑/↓ PgUp/PgDn scroll   / search   n/N next/prev   Esc picker   q quit"
+      "Picker: ↑/↓ or wheel move   Enter or click again to open   q quit" \
+      "Viewer: ↑/↓ highlight   Enter open line   w wrap   f follow   / search   n/N   right-click menu" \
+      "        Esc picker   q quit"
     "$b" --filter "$name"
     ;;
   markdown)

@@ -3,7 +3,7 @@
 **Question:** Can bollard log streams and `journalctl -f` output feed a ratatui
 viewer with follow, scroll, and search, without blocking input?
 
-**Crates tried:** ratatui@0.30.2, crossterm@0.29 (`event-stream`),
+**Crates tried:** ratatui@0.30.2 (`unstable-rendered-line-info`), crossterm@0.29 (`event-stream`), serde_json (`preserve_order`),
 ratatui-textarea@0.9.3 (search box), ansi-to-tui@8.0.1 (ratatui org),
 bollard@0.21.1, tokio@1.54 (process, signal), futures@0.3.
 
@@ -62,20 +62,33 @@ types:
 - **Real logs:** all four real sources rendered without any raw escape
   sequences, and follow, pause, search and resume behaved as with the
   synthetic sources. The journal source streamed like the container sources.
-- **Gap shown only by real logs:** application lines can run to thousands of
-  characters (JSON, stack traces). The viewer truncates them at the window
-  edge with no way to read the rest. The module needs wrap and/or horizontal
-  scroll, or an "open this line" detail view. To be decided in review.
-- **Not tested on real sources:** a container restarting mid-stream (the
-  bollard follow stream ends). Restarting real containers would disrupt them,
-  so this is checked on the demo container instead.
+- **Gap shown only by real logs, now addressed:** application lines can run
+  to thousands of characters (JSON, stack traces). The first version cut them
+  off at the window edge. The viewer now has:
+  - **Wrap on by default**, toggled with `w` or the right-click menu. A
+    following view sits against the bottom edge, and a paused view stays full
+    after wrap changes.
+  - **Open a line:** ↑/↓ or the wheel highlight a line (pausing follow);
+    Enter or a click opens it in a scrollable popup. JSON in the line is
+    pretty-printed with its key order kept (serde_json `preserve_order`).
+  - A **right-click menu** on a line (Open line, Wrap, Follow), also on the
+    keyboard via `m` and each item's key.
+- **Container restarts:** the follow stream ends when a container stops. The
+  viewer now writes "container stopped, waiting for it to come back…", polls
+  until the container (or a re-created one with the same name) runs again,
+  says so, and resumes from the stop time. Checked by restarting a demo
+  container mid-stream. Real containers were not restarted.
+- **Bug found and fixed:** searching while following found nothing, because
+  the search started after the newest line. It now jumps to the most recent
+  match first.
+- Wrapping needs exact row heights, which use ratatui's unstable
+  `rendered-line-info` feature (`Paragraph::line_count`), the same pin as
+  proto-markdown.
 - **Design notes for the module:**
   - Search highlights whole lines. Per-match highlighting means splitting the
     spans ansi-to-tui produces.
   - The search query carries over when you switch source. It should probably
     reset.
-  - Mouse support (wheel scroll, click in the picker) wasn't added. The
-    proto-facts pattern applies directly.
 
 ## Verdict
 
