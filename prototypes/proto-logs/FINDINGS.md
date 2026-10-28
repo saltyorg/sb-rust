@@ -3,7 +3,7 @@
 **Question:** Can bollard log streams and `journalctl -f` output feed a ratatui
 viewer with follow, scroll, and search, without blocking input?
 
-**Crates tried:** ratatui@0.30.2 (`unstable-rendered-line-info`), crossterm@0.29 (`event-stream`),
+**Crates tried:** ratatui@0.30.2 (`unstable-rendered-line-info`), crossterm@0.29 (`event-stream`), mimalloc@0.1.52 (musl builds),
 ratatui-textarea@0.9.3 (search box), ansi-to-tui@8.0.1 (ratatui org),
 bollard@0.21.1, tokio@1.54 (process, signal), futures@0.3.
 
@@ -131,6 +131,28 @@ types:
   explained it. The cause was the cursor-based scrolling described above.
   Render caching was considered and not added: at ~1.3 ms per frame it would
   add code without a measurable gain.
+- **Production build (for comparing against sb-go):** a `production`
+  profile (fat LTO, one codegen unit, stripped), built static for musl with
+  `cross`, is 3.0 MB. Redraw medians while scrolling the long-line source at
+  240×70, three runs each:
+
+  | Build | Median per redraw |
+  |---|---|
+  | release, glibc | 1.55–1.65 ms |
+  | production, musl, default allocator | 2.11–2.31 ms |
+  | production, musl, mimalloc | 1.99–2.04 ms |
+
+  musl's allocator costs ~40% per frame. mimalloc (musl builds only) recovers
+  part of that and is kept. All of these are far below one 60 Hz frame
+  (16 ms), so redraw time doesn't explain a feel difference against sb-go.
+- **Mouse reporting mode, a real difference from sb-go:** crossterm's
+  `EnableMouseCapture` turns on all-motion tracking (1003), so the terminal
+  sends an event for every pointer movement. That traffic competes with
+  wheel events, especially over SSH. sb-go's bubbletea uses cell motion
+  (clicks, wheel, drags only). The prototype now defaults to
+  `--mouse buttons` (1000, 1002, 1006, verified from the emitted escape
+  sequences), with `--mouse all` kept for comparison. Without motion events
+  the right-click menu loses hover highlighting; clicking still works.
 - **Design notes for the module:**
   - Search highlights whole lines. Per-match highlighting means splitting the
     spans ansi-to-tui produces.

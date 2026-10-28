@@ -29,6 +29,18 @@ Saltbox files.
 | `inline` | `docker ps` style table (with and without `NO_COLOR`), then restore-style prompts | Your containers (read-only); prompts restore nothing | Docker |
 | `complete` | A bash subshell with dynamic tag completion loaded | Static tag list | bash |
 
+## Production-style build
+
+`scripts/try-prototype.sh` uses ordinary release builds. To judge speed as a
+shipped binary would have it (static musl, fat LTO, mimalloc):
+
+```sh
+CARGO_TARGET_DIR=target/cross cross build --profile production \
+  --target x86_64-unknown-linux-musl -p proto-logs
+target/cross/x86_64-unknown-linux-musl/production/proto-logs            # buttons-only mouse, like sb-go
+target/cross/x86_64-unknown-linux-musl/production/proto-logs --mouse all  # also reports pointer movement
+```
+
 ## What to look for
 
 - Whether each screen is pleasant and clear to use, and what you'd change.

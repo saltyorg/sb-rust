@@ -17,5 +17,9 @@ ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 ratatui-textarea = "0.9.3"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "signal"] }
 
+# musl's allocator made static builds ~40% slower per frame (see FINDINGS.md).
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = "0.1.52"
+
 [lints]
 workspace = true

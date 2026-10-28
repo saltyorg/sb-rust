@@ -29,6 +29,12 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+// musl's allocator is much slower than glibc's for ratatui's per-frame
+// allocations; static release builds use mimalloc instead.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const MAX_LINES: usize = 5000;
 /// Prefix marking a line written by the viewer itself (stopped/restarted notices).
 const NOTICE: char = '\u{1}';
@@ -46,6 +52,16 @@ struct Cli {
     /// Skip the TUI: stream this source (container name or unit) to stdout.
     #[arg(long)]
     inline: Option<String>,
+    /// Mouse reporting: `buttons` reports clicks, wheel and drags only (what
+    /// sb-go's bubbletea uses); `all` also reports every pointer movement.
+    #[arg(long, value_enum, default_value = "buttons")]
+    mouse: MouseMode,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum MouseMode {
+    Buttons,
+    All,
 }
 
 #[derive(Clone)]
@@ -104,6 +120,7 @@ struct App {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let cli_mouse = cli.mouse;
     let docker = Docker::connect_with_local_defaults()?;
     let sources = list_sources(&docker, &cli).await?;
 
@@ -154,7 +171,18 @@ async fn main() -> Result<()> {
     // the terminal we draw with wraps stdout to count bytes for the timing log.
     drop(ratatui::init());
     let mut terminal = Term::new(CrosstermBackend::new(CountingWriter))?;
-    execute!(std::io::stdout(), EnableMouseCapture)?;
+    match cli_mouse {
+        // crossterm's EnableMouseCapture always includes all-motion tracking
+        // (1003), so button-only mode writes the modes itself: 1000 clicks and
+        // wheel, 1002 drags, 1006 SGR encoding.
+        MouseMode::Buttons => {
+            use std::io::Write as _;
+            let mut out = std::io::stdout();
+            write!(out, "\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
+            out.flush()?;
+        }
+        MouseMode::All => execute!(std::io::stdout(), EnableMouseCapture)?,
+    }
     let result = run(&mut terminal, &mut app, docker).await;
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     drain_input();

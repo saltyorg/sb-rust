@@ -15,3 +15,10 @@ unsafe_code = "forbid"
 # CLAUDE.md: #[allow] is forbidden; justified exceptions use #[expect(lint, reason = "...")].
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+
+# What a shipped binary would be built with (`--profile production`).
+[profile.production]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true
