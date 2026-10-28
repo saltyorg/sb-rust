@@ -160,23 +160,8 @@ async fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, docker).await;
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    drain_input();
     ratatui::restore();
     result
-}
-
-/// Reads and discards input still in flight after mouse capture is turned
-/// off, so stray mouse codes don't end up in the user's shell.
-/// UNVERIFIED pattern: neither the ratatui nor the crossterm docs describe
-/// this; it is kept because it measurably stopped the leak (FINDINGS.md).
-fn drain_input() {
-    let deadline = std::time::Instant::now() + Duration::from_millis(150);
-    while std::time::Instant::now() < deadline {
-        if let Ok(true) = crossterm::event::poll(Duration::from_millis(20)) {
-            let _ = crossterm::event::read();
-        }
-    }
 }
 
 async fn list_sources(docker: &Docker, cli: &Cli) -> Result<Vec<Source>> {
@@ -399,6 +384,18 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
             }
         }
     }
+    // Turn mouse reporting off, then keep discarding events from the same
+    // EventStream for a moment, so mouse codes already in flight don't reach
+    // the shell. crossterm forbids mixing EventStream with read()/poll()
+    // (https://docs.rs/crossterm/0.29.0/crossterm/event/index.html), so the
+    // drain goes through the event task rather than a separate read loop.
+    // UNVERIFIED pattern: no doc covers draining; kept because it measurably
+    // stopped the leak (FINDINGS.md).
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = tokio::time::timeout(Duration::from_millis(150), async {
+        while events.recv().await.is_some() {}
+    })
+    .await;
     event_task.abort();
     if let Some(task) = app.stream.take() {
         task.abort();
