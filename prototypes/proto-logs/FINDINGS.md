@@ -145,14 +145,34 @@ types:
   musl's allocator costs ~40% per frame. mimalloc (musl builds only) recovers
   part of that and is kept. All of these are far below one 60 Hz frame
   (16 ms), so redraw time doesn't explain a feel difference against sb-go.
-- **Mouse reporting mode, a real difference from sb-go:** crossterm's
-  `EnableMouseCapture` turns on all-motion tracking (1003), so the terminal
-  sends an event for every pointer movement. That traffic competes with
-  wheel events, especially over SSH. sb-go's bubbletea uses cell motion
-  (clicks, wheel, drags only). The prototype now defaults to
-  `--mouse buttons` (1000, 1002, 1006, verified from the emitted escape
-  sequences), with `--mouse all` kept for comparison. Without motion events
-  the right-click menu loses hover highlighting; clicking still works.
+- **Slow picker (reported: moving up and down was "slow as hell"):** the
+  batching change had polled crossterm's `EventStream` with a throwaway
+  waker (`now_or_never`). The stream then woke that dead waker, so input was
+  only noticed on the next 250 ms tick. Measured key-to-screen latency
+  (harness baseline 51 ms subtracted): before, ~100 ms median and up to
+  ~250 ms added; after, ~14 ms (within one frame).
+- **Root cause of the whole series of input bugs:** the event loop, batching,
+  mouse modes and terminal setup were hand-written instead of following the
+  libraries' documented patterns. The prototype now uses the ratatui async
+  event handler recipe
+  (https://ratatui.rs/recipes/apps/terminal-and-event-handler/):
+  - a task reads `EventStream` via `next().fuse()` in `tokio::select!` and
+    sends events over an unbounded mpsc channel;
+  - rendering happens on a 60 fps interval, only when something changed;
+  - a 4/s tick runs alongside.
+
+  Removed: the hand-rolled batching, the byte-counting stdout wrapper
+  (standard `ratatui::init()` again), and the hand-written mouse-mode escape
+  codes (back to crossterm's `EnableMouseCapture`). With frame-rate
+  rendering, pointer-motion events no longer cause redraws, which was the
+  only reason to hand-write button-only mode. Still own code: windowed
+  scrolling, because `Paragraph::scroll` applies after wrapping, so
+  following would need the unstable `line_count` over the whole buffer every
+  frame; and the input drain on exit, which no doc covers but measurably
+  stopped the leak (marked UNVERIFIED in the code).
+- **Lesson for the module:** every framework-level pattern (event loop,
+  terminal setup, input modes) follows the official recipe or docs, cited in
+  the code. Measure input latency end to end, not just redraw time.
 - **Design notes for the module:**
   - Search highlights whole lines. Per-match highlighting means splitting the
     spans ansi-to-tui produces.

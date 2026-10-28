@@ -18,8 +18,8 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use futures::{FutureExt, StreamExt};
+use ratatui::DefaultTerminal;
 use ratatui::Frame;
-use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
@@ -36,6 +36,9 @@ use tokio::task::JoinHandle;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const MAX_LINES: usize = 5000;
+/// Ticks and frames per second, the ratatui recipe's defaults.
+const TICK_RATE: f64 = 4.0;
+const FRAME_RATE: f64 = 60.0;
 /// Prefix marking a line written by the viewer itself (stopped/restarted notices).
 const NOTICE: char = '\u{1}';
 /// Columns moved per sideways scroll step.
@@ -52,16 +55,6 @@ struct Cli {
     /// Skip the TUI: stream this source (container name or unit) to stdout.
     #[arg(long)]
     inline: Option<String>,
-    /// Mouse reporting: `buttons` reports clicks, wheel and drags only (what
-    /// sb-go's bubbletea uses); `all` also reports every pointer movement.
-    #[arg(long, value_enum, default_value = "buttons")]
-    mouse: MouseMode,
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum MouseMode {
-    Buttons,
-    All,
 }
 
 #[derive(Clone)]
@@ -89,8 +82,6 @@ enum Action {
     Wrap,
     Follow,
 }
-
-type Term = ratatui::Terminal<CrosstermBackend<CountingWriter>>;
 
 struct App {
     sources: Vec<Source>,
@@ -120,7 +111,6 @@ struct App {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cli_mouse = cli.mouse;
     let docker = Docker::connect_with_local_defaults()?;
     let sources = list_sources(&docker, &cli).await?;
 
@@ -167,22 +157,8 @@ async fn main() -> Result<()> {
         body: Rect::default(),
         menu_area: Rect::default(),
     };
-    // ratatui::init sets up raw mode, the alternate screen and the panic hook;
-    // the terminal we draw with wraps stdout to count bytes for the timing log.
-    drop(ratatui::init());
-    let mut terminal = Term::new(CrosstermBackend::new(CountingWriter))?;
-    match cli_mouse {
-        // crossterm's EnableMouseCapture always includes all-motion tracking
-        // (1003), so button-only mode writes the modes itself: 1000 clicks and
-        // wheel, 1002 drags, 1006 SGR encoding.
-        MouseMode::Buttons => {
-            use std::io::Write as _;
-            let mut out = std::io::stdout();
-            write!(out, "\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
-            out.flush()?;
-        }
-        MouseMode::All => execute!(std::io::stdout(), EnableMouseCapture)?,
-    }
+    let mut terminal = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, docker).await;
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     drain_input();
@@ -190,26 +166,10 @@ async fn main() -> Result<()> {
     result
 }
 
-/// Bytes written to the terminal during the current frame, for the timing log.
-static BYTES_WRITTEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// stdout wrapper that counts bytes written into `BYTES_WRITTEN`.
-struct CountingWriter;
-
-impl std::io::Write for CountingWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = std::io::stdout().write(buf)?;
-        BYTES_WRITTEN.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        std::io::stdout().flush()
-    }
-}
-
 /// Reads and discards input still in flight after mouse capture is turned
 /// off, so stray mouse codes don't end up in the user's shell.
+/// UNVERIFIED pattern: neither the ratatui nor the crossterm docs describe
+/// this; it is kept because it measurably stopped the leak (FINDINGS.md).
 fn drain_input() {
     let deadline = std::time::Instant::now() + Duration::from_millis(150);
     while std::time::Instant::now() < deadline {
@@ -362,66 +322,84 @@ fn spawn_stream(
     })
 }
 
-async fn run(terminal: &mut Term, app: &mut App, docker: Docker) -> Result<()> {
+/// Events from the terminal reader task.
+enum AppEvent {
+    Input(Event),
+    Tick,
+    Render,
+}
+
+/// Reads terminal input on its own task and emits ticks and render requests,
+/// following the ratatui async event handler recipe:
+/// https://ratatui.rs/recipes/apps/terminal-and-event-handler/
+/// (EventStream read via `next().fuse()` inside `tokio::select!`, forwarded
+/// over an unbounded mpsc channel; tick and render on their own intervals).
+fn spawn_event_task(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut reader = EventStream::new();
+        let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / TICK_RATE));
+        let mut render = tokio::time::interval(Duration::from_secs_f64(1.0 / FRAME_RATE));
+        loop {
+            let crossterm_event = reader.next().fuse();
+            let event = tokio::select! {
+                maybe_event = crossterm_event => match maybe_event {
+                    Some(Ok(event)) => AppEvent::Input(event),
+                    Some(Err(_)) | None => break,
+                },
+                _ = tick.tick() => AppEvent::Tick,
+                _ = render.tick() => AppEvent::Render,
+            };
+            if tx.send(event).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<(u64, String)>();
-    let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let (event_tx, mut events) = mpsc::unbounded_channel::<AppEvent>();
+    let event_task = spawn_event_task(event_tx);
     // Opt-in frame timing for performance work: PROTO_LOGS_TIMING=<file>.
     let mut timing =
         std::env::var_os("PROTO_LOGS_TIMING").and_then(|p| std::fs::File::create(p).ok());
-    let mut cause = "start";
+    // Input and new lines only mark the screen dirty; drawing happens on the
+    // next Render event, so bursts of events cost at most one frame each tick.
+    let mut dirty = true;
     while !app.quit {
-        let started = std::time::Instant::now();
-        BYTES_WRITTEN.store(0, std::sync::atomic::Ordering::Relaxed);
-        terminal.draw(|f| draw(f, app))?;
-        if let Some(file) = timing.as_mut() {
-            use std::io::Write as _;
-            let bytes = BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed);
-            let mode = match (app.menu.is_some(), app.follow) {
-                (true, _) => "menu",
-                (false, true) => "follow",
-                (false, false) => "paused",
-            };
-            let _ = writeln!(
-                file,
-                "{} {mode} {cause} {bytes}",
-                started.elapsed().as_micros()
-            );
-        }
         tokio::select! {
-            Some(Ok(first)) = events.next() => {
-                // Handle every event that is already waiting, then redraw once.
-                // Redrawing per event let a moving mouse queue seconds of frames.
-                let mut next = Some(first);
-                while let Some(event) = next.take() {
-                    match event {
-                        Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            cause = "key";
-                            app.on_key(key, &docker, &tx);
-                        }
-                        Event::Mouse(mouse) => {
-                            cause = if matches!(mouse.kind, MouseEventKind::Moved) { "mouse-move" } else { "mouse" };
-                            app.on_mouse(mouse, &docker, &tx);
-                        }
-                        _ => cause = "other",
-                    }
-                    if app.quit {
-                        break;
-                    }
-                    next = events.next().now_or_never().flatten().and_then(Result::ok);
+            Some(event) = events.recv() => match event {
+                AppEvent::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                    app.on_key(key, &docker, &tx);
+                    dirty = true;
                 }
+                AppEvent::Input(Event::Mouse(mouse)) => {
+                    // Plain pointer motion only matters while the menu is open.
+                    if !matches!(mouse.kind, MouseEventKind::Moved) || app.menu.is_some() {
+                        app.on_mouse(mouse, &docker, &tx);
+                        dirty = true;
+                    }
+                }
+                AppEvent::Input(Event::Resize(..)) => dirty = true,
+                AppEvent::Input(_) | AppEvent::Tick => {}
+                AppEvent::Render if dirty => {
+                    let started = std::time::Instant::now();
+                    terminal.draw(|f| draw(f, app))?;
+                    dirty = false;
+                    if let Some(file) = timing.as_mut() {
+                        use std::io::Write as _;
+                        let _ = writeln!(file, "{}", started.elapsed().as_micros());
+                    }
+                }
+                AppEvent::Render => {}
             },
-            Some(first) = rx.recv() => {
-                cause = "lines";
-                // Batch everything already queued so a busy log costs one redraw.
-                app.push(first);
-                while let Ok(more) = rx.try_recv() {
-                    app.push(more);
-                }
+            Some(line) = rx.recv() => {
+                app.push(line);
+                dirty = true;
             }
-            _ = tick.tick() => cause = "tick",
         }
     }
+    event_task.abort();
     if let Some(task) = app.stream.take() {
         task.abort();
     }

@@ -37,8 +37,7 @@ shipped binary would have it (static musl, fat LTO, mimalloc):
 ```sh
 CARGO_TARGET_DIR=target/cross cross build --profile production \
   --target x86_64-unknown-linux-musl -p proto-logs
-target/cross/x86_64-unknown-linux-musl/production/proto-logs            # buttons-only mouse, like sb-go
-target/cross/x86_64-unknown-linux-musl/production/proto-logs --mouse all  # also reports pointer movement
+target/cross/x86_64-unknown-linux-musl/production/proto-logs
 ```
 
 ## What to look for
