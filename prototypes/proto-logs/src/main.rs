@@ -3,14 +3,16 @@
 //! wrap or scroll sideways, a right-click menu mirrors the keys, and container
 //! restarts are followed instead of ending the stream. Throwaway; see FINDINGS.md.
 
-use std::collections::VecDeque;
+mod sources;
+
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use ansi_to_tui::IntoText;
 use anyhow::{Context, Result};
 use bollard::Docker;
 use bollard::container::LogOutput;
-use bollard::query_parameters::LogsOptions;
+use bollard::query_parameters::{EventsOptionsBuilder, LogsOptions};
 use clap::Parser;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
@@ -24,10 +26,12 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+use sources::{Entry, Health, Section, Source};
 
 // musl's allocator is much slower than glibc's for ratatui's per-frame
 // allocations; static release builds use mimalloc instead.
@@ -43,10 +47,12 @@ const FRAME_RATE: f64 = 60.0;
 const NOTICE: char = '\u{1}';
 /// Columns moved per sideways scroll step.
 const HSTEP: u16 = 8;
+/// Services are re-read every this many ticks (5 s) while the picker shows.
+const SERVICE_REFRESH_TICKS: u32 = 20;
 
 #[derive(Parser)]
 struct Cli {
-    /// Only list sources whose name contains this text.
+    /// Open the picker already filtered to this text.
     #[arg(long, default_value = "")]
     filter: String,
     /// systemd unit prefix that counts as a Saltbox service.
@@ -55,21 +61,6 @@ struct Cli {
     /// Skip the TUI: stream this source (container name or unit) to stdout.
     #[arg(long)]
     inline: Option<String>,
-}
-
-#[derive(Clone)]
-enum Source {
-    Container(String),
-    Service(String),
-}
-
-impl Source {
-    fn label(&self) -> String {
-        match self {
-            Self::Container(n) => format!("container  {n}"),
-            Self::Service(n) => format!("service    {n}"),
-        }
-    }
 }
 
 enum Screen {
@@ -83,8 +74,27 @@ enum Action {
     Follow,
 }
 
+/// One picker line. Only `Item` rows can be selected; ratatui's List has no
+/// notion of unselectable rows, so `App::step` skips headers and spacers.
+#[derive(Clone, Copy, PartialEq)]
+enum Row {
+    Spacer,
+    Header(Section),
+    Item(Section, usize),
+}
+
 struct App {
-    sources: Vec<Source>,
+    service_prefix: String,
+    /// None until the first load finishes.
+    entries: Option<Vec<Entry>>,
+    recent: Vec<Source>,
+    rows: Vec<Row>,
+    /// Live filter box while typing, and the filter text in effect.
+    filter_box: Option<TextArea<'static>>,
+    filter: String,
+    /// The picker data is out of date and should be reloaded on the next tick.
+    stale: bool,
+    load_error: Option<String>,
     pick: ListState,
     screen: Screen,
     current: Option<Source>,
@@ -112,12 +122,13 @@ struct App {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let docker = Docker::connect_with_local_defaults()?;
-    let sources = list_sources(&docker, &cli).await?;
 
     if let Some(name) = cli.inline {
-        let source = sources
+        let source = sources::load(&docker, &cli.service_prefix)
+            .await?
             .into_iter()
-            .find(|s| matches!(s, Source::Container(n) | Source::Service(n) if *n == name))
+            .map(|e| e.source)
+            .find(|s| s.name() == name)
             .context("no such source")?;
         let (tx, mut rx) = mpsc::unbounded_channel();
         let task = spawn_stream(docker, source, 0, tx);
@@ -136,72 +147,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut app = App {
-        sources,
-        pick: ListState::default().with_selected(Some(0)),
-        screen: Screen::Pick,
-        current: None,
-        lines: VecDeque::new(),
-        top: 0,
-        skip: 0,
-        follow: true,
-        wrap: true,
-        hscroll: 0,
-        search: None,
-        query: String::new(),
-        menu: None,
-        generation: 0,
-        stream: None,
-        quit: false,
-        pick_area: Rect::default(),
-        body: Rect::default(),
-        menu_area: Rect::default(),
-    };
+    let mut app = App::new(cli.service_prefix, cli.filter, sources::load_recent());
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, docker).await;
     ratatui::restore();
     result
-}
-
-async fn list_sources(docker: &Docker, cli: &Cli) -> Result<Vec<Source>> {
-    let mut sources: Vec<Source> = docker
-        .list_containers(None::<bollard::query_parameters::ListContainersOptions>)
-        .await?
-        .into_iter()
-        .filter_map(|c| {
-            c.names?
-                .first()
-                .map(|n| n.trim_start_matches('/').to_string())
-        })
-        .map(Source::Container)
-        .collect();
-    sources.sort_by_key(Source::label);
-    let out = tokio::process::Command::new("systemctl")
-        .args([
-            "list-units",
-            "--type=service",
-            "--all",
-            "--no-pager",
-            "--plain",
-            "--no-legend",
-        ])
-        .output()
-        .await?;
-    sources.extend(
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|l| l.split_whitespace().next())
-            .filter(|u| {
-                u.starts_with(&cli.service_prefix)
-                    || (!cli.filter.is_empty() && u.contains(&cli.filter))
-            })
-            .map(|u| Source::Service(u.to_string())),
-    );
-    sources.retain(
-        |s| matches!(s, Source::Container(n) | Source::Service(n) if n.contains(&cli.filter)),
-    );
-    Ok(sources)
 }
 
 fn now_secs() -> i32 {
@@ -341,10 +292,48 @@ fn spawn_event_task(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
     })
 }
 
+fn spawn_load(
+    docker: Docker,
+    prefix: String,
+    tx: mpsc::UnboundedSender<Result<Vec<Entry>, String>>,
+) {
+    tokio::spawn(async move {
+        let result = sources::load(&docker, &prefix)
+            .await
+            .map_err(|e| format!("{e:#}"));
+        let _ = tx.send(result);
+    });
+}
+
+/// Signals on every container event (start, die, health change, ...), from
+/// Docker's event stream: https://docs.rs/bollard/0.21.1/bollard/struct.Docker.html#method.events
+fn spawn_docker_events(docker: Docker, tx: mpsc::UnboundedSender<()>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let filters = HashMap::from([("type", vec!["container"])]);
+        let opts = EventsOptionsBuilder::new().filters(&filters).build();
+        let mut stream = docker.events(Some(opts));
+        while let Some(Ok(_)) = stream.next().await {
+            if tx.send(()).is_err() {
+                return;
+            }
+        }
+    })
+}
+
 async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<(u64, String)>();
     let (event_tx, mut events) = mpsc::unbounded_channel::<AppEvent>();
     let event_task = spawn_event_task(event_tx);
+    // Picker data loads in the background so the screen appears at once.
+    // Docker's event stream marks the list stale when any container changes;
+    // services have no such stream here, so they refresh on a slow timer.
+    // Loads start on ticks, which also batches bursts of Docker events.
+    let (load_tx, mut loads) = mpsc::unbounded_channel::<Result<Vec<Entry>, String>>();
+    let (stale_tx, mut stale) = mpsc::unbounded_channel::<()>();
+    let docker_events = spawn_docker_events(docker.clone(), stale_tx);
+    let mut loading = false;
+    let mut ticks: u32 = 0;
+    app.stale = true;
     // Opt-in frame timing for performance work: PROTO_LOGS_TIMING=<file>.
     let mut timing =
         std::env::var_os("PROTO_LOGS_TIMING").and_then(|p| std::fs::File::create(p).ok());
@@ -366,7 +355,18 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
                     }
                 }
                 AppEvent::Input(Event::Resize(..)) => dirty = true,
-                AppEvent::Input(_) | AppEvent::Tick => {}
+                AppEvent::Tick => {
+                    ticks = ticks.wrapping_add(1);
+                    if ticks.is_multiple_of(SERVICE_REFRESH_TICKS) {
+                        app.stale = true;
+                    }
+                    if app.stale && !loading && matches!(app.screen, Screen::Pick) {
+                        app.stale = false;
+                        loading = true;
+                        spawn_load(docker.clone(), app.service_prefix.clone(), load_tx.clone());
+                    }
+                }
+                AppEvent::Input(_) => {}
                 AppEvent::Render if dirty => {
                     let started = std::time::Instant::now();
                     terminal.draw(|f| draw(f, app))?;
@@ -382,8 +382,15 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
                 app.push(line);
                 dirty = true;
             }
+            Some(result) = loads.recv() => {
+                loading = false;
+                app.set_entries(result);
+                dirty = true;
+            }
+            Some(()) = stale.recv() => app.stale = true,
         }
     }
+    docker_events.abort();
     // Turn mouse reporting off, then keep discarding events from the same
     // EventStream for a moment, so mouse codes already in flight don't reach
     // the shell. crossterm forbids mixing EventStream with read()/poll()
@@ -404,6 +411,37 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
 }
 
 impl App {
+    fn new(service_prefix: String, filter: String, recent: Vec<Source>) -> Self {
+        Self {
+            service_prefix,
+            entries: None,
+            recent,
+            rows: Vec::new(),
+            filter_box: None,
+            filter,
+            stale: true,
+            load_error: None,
+            pick: ListState::default(),
+            screen: Screen::Pick,
+            current: None,
+            lines: VecDeque::new(),
+            top: 0,
+            skip: 0,
+            follow: true,
+            wrap: true,
+            hscroll: 0,
+            search: None,
+            query: String::new(),
+            menu: None,
+            generation: 0,
+            stream: None,
+            quit: false,
+            pick_area: Rect::default(),
+            body: Rect::default(),
+            menu_area: Rect::default(),
+        }
+    }
+
     fn push(&mut self, (generation, line): (u64, String)) {
         if generation != self.generation {
             return;
@@ -502,6 +540,26 @@ impl App {
         docker: &Docker,
         tx: &mpsc::UnboundedSender<(u64, String)>,
     ) {
+        // Typing in the picker filter narrows the list on every keystroke.
+        if let Some(filter_box) = &mut self.filter_box {
+            match key.code {
+                KeyCode::Enter => self.open_selected(docker, tx),
+                KeyCode::Esc => {
+                    self.filter_box = None;
+                    self.filter.clear();
+                    self.rebuild_rows();
+                }
+                KeyCode::Down => self.step(1),
+                KeyCode::Up => self.step(-1),
+                _ => {
+                    if filter_box.input(key) {
+                        self.filter = filter_box.lines().join("");
+                        self.rebuild_rows();
+                    }
+                }
+            }
+            return;
+        }
         if let Some(search) = &mut self.search {
             match key.code {
                 KeyCode::Enter => {
@@ -537,13 +595,25 @@ impl App {
             return;
         }
         match self.screen {
-            Screen::Pick => match key.code {
-                KeyCode::Down | KeyCode::Char('j') => self.pick.select_next(),
-                KeyCode::Up | KeyCode::Char('k') => self.pick.select_previous(),
-                KeyCode::Enter => self.open_selected(docker, tx),
-                KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
-                _ => {}
-            },
+            Screen::Pick => {
+                let page = isize::try_from(self.pick_area.height.max(2) - 1).unwrap_or(1);
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => self.step(1),
+                    KeyCode::Up | KeyCode::Char('k') => self.step(-1),
+                    KeyCode::PageDown => self.step(page),
+                    KeyCode::PageUp => self.step(-page),
+                    KeyCode::End | KeyCode::Char('G') => self.step(isize::MAX),
+                    KeyCode::Home | KeyCode::Char('g') => self.step(-isize::MAX),
+                    KeyCode::Enter => self.open_selected(docker, tx),
+                    KeyCode::Char('/') => self.open_filter(),
+                    KeyCode::Esc if !self.filter.is_empty() => {
+                        self.filter.clear();
+                        self.rebuild_rows();
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+                    _ => {}
+                }
+            }
             Screen::View => match key.code {
                 KeyCode::Esc => self.back_to_picker(),
                 KeyCode::Char('q') => self.quit = true,
@@ -615,9 +685,12 @@ impl App {
         let shift = m.modifiers.contains(KeyModifiers::SHIFT);
         match self.screen {
             Screen::Pick => {
-                let row = (self.pick_area.contains(pos) && m.row > self.pick_area.y)
-                    .then(|| self.pick.offset() + usize::from(m.row - self.pick_area.y - 1))
-                    .filter(|r| *r < self.sources.len());
+                // The list has no border: screen row = list row - offset.
+                let row = self
+                    .pick_area
+                    .contains(pos)
+                    .then(|| self.pick.offset() + usize::from(m.row - self.pick_area.y))
+                    .filter(|r| matches!(self.rows.get(*r), Some(Row::Item(..))));
                 match m.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
                         if let Some(r) = row {
@@ -628,8 +701,8 @@ impl App {
                             }
                         }
                     }
-                    MouseEventKind::ScrollDown => self.pick.select_next(),
-                    MouseEventKind::ScrollUp => self.pick.select_previous(),
+                    MouseEventKind::ScrollDown => self.step(1),
+                    MouseEventKind::ScrollUp => self.step(-1),
                     _ => {}
                 }
             }
@@ -690,14 +763,12 @@ impl App {
     }
 
     fn open_selected(&mut self, docker: &Docker, tx: &mpsc::UnboundedSender<(u64, String)>) {
-        let Some(source) = self
-            .pick
-            .selected()
-            .and_then(|i| self.sources.get(i))
-            .cloned()
-        else {
+        let Some(source) = self.selected_source() else {
             return;
         };
+        sources::remember(&mut self.recent, &source);
+        sources::save_recent(&self.recent);
+        self.filter_box = None;
         if let Some(task) = self.stream.take() {
             task.abort();
         }
@@ -724,6 +795,90 @@ impl App {
         }
         self.generation += 1;
         self.screen = Screen::Pick;
+        // Statuses may have changed while viewing, and Recent has.
+        self.stale = true;
+        self.rebuild_rows();
+    }
+
+    fn set_entries(&mut self, result: Result<Vec<Entry>, String>) {
+        match result {
+            Ok(entries) => {
+                self.entries = Some(entries);
+                self.load_error = None;
+            }
+            Err(e) => self.load_error = Some(e),
+        }
+        self.rebuild_rows();
+    }
+
+    /// Rebuilds the picker rows after the data, filter or recent list
+    /// changed, keeping the cursor on the same source when it is still shown.
+    fn rebuild_rows(&mut self) {
+        let before = self.pick.selected().and_then(|i| self.rows.get(i).copied());
+        let before_source = self.selected_source();
+        let entries = self.entries.as_deref().unwrap_or_default();
+        self.rows.clear();
+        for (section, items) in sources::sections(entries, &self.recent, &self.filter) {
+            if !self.rows.is_empty() {
+                self.rows.push(Row::Spacer);
+            }
+            self.rows.push(Row::Header(section));
+            self.rows
+                .extend(items.into_iter().map(|i| Row::Item(section, i)));
+        }
+        let same_row = |r: &Row| match (r, before) {
+            (Row::Item(s, i), Some(Row::Item(bs, _))) => {
+                *s == bs && Some(&entries[*i].source) == before_source.as_ref()
+            }
+            _ => false,
+        };
+        let same_source = |r: &Row| matches!(r, Row::Item(_, i) if Some(&entries[*i].source) == before_source.as_ref());
+        let first_item = |r: &Row| matches!(r, Row::Item(..));
+        let at = self
+            .rows
+            .iter()
+            .position(same_row)
+            .or_else(|| self.rows.iter().position(same_source))
+            .or_else(|| self.rows.iter().position(first_item));
+        self.pick.select(at);
+    }
+
+    fn open_filter(&mut self) {
+        let mut t = TextArea::new(vec![self.filter.clone()]);
+        t.move_cursor(CursorMove::End);
+        self.filter_box = Some(t);
+    }
+
+    fn selected_source(&self) -> Option<Source> {
+        let entries = self.entries.as_ref()?;
+        match self.rows.get(self.pick.selected()?)? {
+            Row::Item(_, i) => Some(entries[*i].source.clone()),
+            _ => None,
+        }
+    }
+
+    /// Moves the cursor `delta` selectable rows (headers and spacers are
+    /// skipped), stopping at the first and last item.
+    fn step(&mut self, delta: isize) {
+        let Some(mut at) = self.pick.selected() else {
+            return;
+        };
+        let mut left = delta.unsigned_abs();
+        let mut i = at;
+        while left > 0 {
+            let next = if delta < 0 {
+                i.checked_sub(1)
+            } else {
+                Some(i + 1).filter(|n| *n < self.rows.len())
+            };
+            let Some(n) = next else { break };
+            i = n;
+            if matches!(self.rows[i], Row::Item(..)) {
+                at = i;
+                left -= 1;
+            }
+        }
+        self.pick.select(Some(at));
     }
 
     /// Scrolls the next (or previous) matching line to the top of the view.
@@ -785,29 +940,141 @@ fn draw(f: &mut Frame, app: &mut App) {
     ])
     .areas(area);
     match app.screen {
-        Screen::Pick => {
-            f.render_widget(Line::from(" ◆ Logs · pick a source ".bold().cyan()), header);
-            let items: Vec<ListItem> = app
-                .sources
-                .iter()
-                .map(|s| ListItem::new(s.label()))
-                .collect();
-            let list = List::new(items)
-                .block(
-                    Block::bordered()
-                        .border_type(BorderType::Rounded)
-                        .title(" Sources "),
-                )
-                .highlight_symbol("› ")
-                .highlight_style(Style::default().reversed());
-            f.render_stateful_widget(list, body, &mut app.pick);
-            app.pick_area = body;
-            f.render_widget(
-                Line::from(" ↑↓ or wheel move   Enter or click again to open   q quit".dim()),
-                footer,
-            );
-        }
+        Screen::Pick => draw_picker(f, app, header, body, footer),
         Screen::View => draw_view(f, app, header, body, footer),
+    }
+}
+
+fn health_color(status: &sources::Status) -> Color {
+    match (status.health, status.symbol) {
+        (Health::Problem, '↻') | (Health::Busy, _) => Color::Yellow,
+        (Health::Problem, _) => Color::Red,
+        (Health::Ok, _) => Color::Green,
+        (Health::Idle, _) => Color::DarkGray,
+    }
+}
+
+fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rect) {
+    let entries = app.entries.as_deref().unwrap_or_default();
+    let count = |f: &dyn Fn(&Entry) -> bool| entries.iter().filter(|e| f(e)).count();
+    let services = count(&|e| matches!(e.source, Source::Service(_)));
+    let problems = count(&|e| e.status.health == Health::Problem);
+    let mut title = vec![" ◆ Logs ".bold().cyan()];
+    if app.entries.is_some() {
+        title.push(
+            format!(
+                "  {services} services · {} containers · ",
+                entries.len() - services
+            )
+            .dim(),
+        );
+        title.push(match problems {
+            0 => "all healthy".green(),
+            1 => "1 needs attention".red().bold(),
+            n => format!("{n} need attention").red().bold(),
+        });
+    }
+    f.render_widget(Line::from(title), header);
+
+    // One blank row above the list, one column in from the edge.
+    let area = body.inner(ratatui::layout::Margin::new(1, 0));
+    let area = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    app.pick_area = area;
+    let message = if let Some(e) = &app.load_error {
+        Some(Line::from(format!("Could not list sources: {e}").red()))
+    } else if app.entries.is_none() {
+        Some(Line::from("Loading sources…".dim()))
+    } else if app.rows.is_empty() && !app.filter.is_empty() {
+        Some(Line::from(format!(
+            "Nothing matches \"{}\". Esc clears the filter.",
+            app.filter
+        )))
+    } else if app.rows.is_empty() {
+        Some(Line::from("No Saltbox services or containers found."))
+    } else {
+        None
+    };
+    if let Some(message) = message {
+        f.render_widget(Paragraph::new(message), area);
+    } else {
+        let name_width = entries
+            .iter()
+            .map(|e| e.source.name().chars().count())
+            .max()
+            .unwrap_or(0);
+        let status_width = entries
+            .iter()
+            .map(|e| e.status.text.chars().count())
+            .max()
+            .unwrap_or(0);
+        let items: Vec<ListItem> = app
+            .rows
+            .iter()
+            .map(|row| match *row {
+                Row::Spacer => ListItem::new(""),
+                Row::Header(section) => {
+                    let color = if section == Section::Attention {
+                        Color::Red
+                    } else {
+                        Color::Cyan
+                    };
+                    ListItem::new(Line::from(section.title().bold().fg(color)))
+                }
+                Row::Item(section, i) => {
+                    let e = &entries[i];
+                    let color = health_color(&e.status);
+                    let name = e.source.name();
+                    // The shared Saltbox prefix is dimmed so the part that
+                    // differs stands out; the full name still filters.
+                    let (prefix, rest) = match name.strip_prefix(app.service_prefix.as_str()) {
+                        Some(rest) if matches!(e.source, Source::Service(_)) => {
+                            (app.service_prefix.as_str(), rest)
+                        }
+                        _ => ("", name),
+                    };
+                    let pad = name_width.saturating_sub(name.chars().count());
+                    let mut spans = vec![
+                        Span::raw("  "),
+                        Span::styled(e.status.symbol.to_string(), Style::new().fg(color)),
+                        Span::raw(" "),
+                        Span::styled(prefix.to_string(), Style::new().dim()),
+                        Span::raw(rest.to_string()),
+                        Span::raw(" ".repeat(pad + 3)),
+                        match e.status.health {
+                            Health::Ok => Span::raw(e.status.text.clone()),
+                            _ => Span::styled(e.status.text.clone(), Style::new().fg(color)),
+                        },
+                    ];
+                    // Shortcut sections mix kinds, so say which one this is.
+                    if matches!(section, Section::Attention | Section::Recent) {
+                        let pad = status_width.saturating_sub(e.status.text.chars().count());
+                        spans.push(format!("{}  {}", " ".repeat(pad), e.source.kind()).dim());
+                    }
+                    ListItem::new(Line::from(spans))
+                }
+            })
+            .collect();
+        let list = List::new(items)
+            .highlight_symbol("›")
+            .highlight_style(Style::default().reversed());
+        f.render_stateful_widget(list, area, &mut app.pick);
+    }
+
+    if let Some(filter_box) = &app.filter_box {
+        let [label, input] =
+            Layout::horizontal([Constraint::Length(9), Constraint::Fill(1)]).areas(footer);
+        f.render_widget(Line::from(" Filter: ".bold()), label);
+        f.render_widget(filter_box, input);
+    } else {
+        let mut keys = vec![" ↑↓ move   Enter or click again open   / filter   q quit".dim()];
+        if !app.filter.is_empty() {
+            keys.push(format!("   filter \"{}\" · Esc clears", app.filter).yellow());
+        }
+        f.render_widget(Line::from(keys), footer);
     }
 }
 
@@ -931,4 +1198,159 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
         " ↑↓/wheel scroll  ←→/shift+wheel sideways  w wrap on  f follow  / search  n/N  m or right-click menu  Esc  q"
     };
     f.render_widget(Line::from(hint.dim()), footer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use sources::{Status, classify_container, classify_unit};
+
+    fn demo_app() -> App {
+        let now = 1_000_000;
+        let unit = |name: &str, active: &str, sub: &str, changed, timer| sources::Entry {
+            source: Source::Service(name.into()),
+            status: classify_unit(
+                &sources::UnitFacts {
+                    active: active.into(),
+                    sub: sub.into(),
+                    changed,
+                    active_since: Some(now - 12 * 86400),
+                    next_timer: timer,
+                },
+                now,
+            ),
+        };
+        let container = |name: &str, state: &str, exit_code, restart_count| sources::Entry {
+            source: Source::Container(name.into()),
+            status: classify_container(
+                &sources::ContainerFacts {
+                    state: state.into(),
+                    exit_code,
+                    restart_count,
+                    started: Some(now - 2 * 86400),
+                    finished: Some(now - 3 * 3600),
+                    ..Default::default()
+                },
+                now,
+            ),
+        };
+        let mut app = App::new(
+            "saltbox_managed_".into(),
+            String::new(),
+            vec![Source::Container("plex".into())],
+        );
+        app.set_entries(Ok(vec![
+            unit("docker", "active", "running", None, None),
+            unit(
+                "saltbox_managed_backup",
+                "failed",
+                "failed",
+                Some(now - 7200),
+                None,
+            ),
+            unit("saltbox_managed_mount", "active", "running", None, None),
+            unit(
+                "saltbox_managed_update",
+                "inactive",
+                "dead",
+                None,
+                Some(now + 10_800),
+            ),
+            container("plex", "running", 0, 0),
+            container("radarr", "restarting", 1, 3),
+            container("sonarr", "running", 0, 0),
+            container("tdarr", "exited", 0, 0),
+        ]));
+        app
+    }
+
+    fn render(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("backend");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn picker_groups_sources_with_status() {
+        let mut app = demo_app();
+        let screen = render(&mut app, 80, 24);
+        println!("{screen}");
+        assert!(screen.contains("2 need attention"));
+        for title in ["NEEDS ATTENTION", "RECENT", "SERVICES", "CONTAINERS"] {
+            assert!(screen.contains(title), "missing {title}");
+        }
+        assert!(screen.contains("failed 2h ago"));
+        assert!(screen.contains("restarting (3×)"));
+        assert!(screen.contains("idle · next run in 3h"));
+        assert!(screen.contains("stopped 3h ago"));
+        // The cursor starts on the first item, not on a header.
+        assert_eq!(
+            app.selected_source(),
+            Some(Source::Service("saltbox_managed_backup".into()))
+        );
+    }
+
+    #[test]
+    fn cursor_skips_headers_and_survives_reloads_and_filtering() {
+        let mut app = demo_app();
+        render(&mut app, 80, 24);
+        app.step(2); // backup -> radarr -> (header, spacer skipped) plex in Recent
+        assert_eq!(
+            app.selected_source(),
+            Some(Source::Container("plex".into()))
+        );
+        assert!(matches!(
+            app.rows[app.pick.selected().unwrap_or_default()],
+            Row::Item(Section::Recent, _)
+        ));
+        app.step(-isize::MAX);
+        assert_eq!(app.pick.selected(), Some(1));
+        app.step(isize::MAX);
+        assert_eq!(
+            app.selected_source(),
+            Some(Source::Container("tdarr".into()))
+        );
+        // A reload with the same sources keeps the cursor where it was.
+        let entries = app.entries.clone().unwrap_or_default();
+        app.set_entries(Ok(entries));
+        assert_eq!(
+            app.selected_source(),
+            Some(Source::Container("tdarr".into()))
+        );
+        // Filtering keeps it when the source is still shown, else moves to the first item.
+        app.filter = "son".into();
+        app.rebuild_rows();
+        assert_eq!(
+            app.selected_source(),
+            Some(Source::Container("sonarr".into()))
+        );
+        app.filter = "zzz".into();
+        app.rebuild_rows();
+        assert_eq!(app.selected_source(), None);
+        assert!(render(&mut app, 80, 24).contains("Nothing matches \"zzz\""));
+    }
+
+    #[test]
+    fn status_colours_follow_health() {
+        let s = |health, symbol| Status {
+            health,
+            symbol,
+            text: String::new(),
+        };
+        assert_eq!(health_color(&s(Health::Problem, '✗')), Color::Red);
+        assert_eq!(health_color(&s(Health::Problem, '↻')), Color::Yellow);
+        assert_eq!(health_color(&s(Health::Ok, '✓')), Color::Green);
+    }
 }

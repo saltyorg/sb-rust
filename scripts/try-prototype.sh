@@ -73,9 +73,10 @@ case "${1:-}" in
   logs)
     b="$(bin logs)"
     intro "Log viewer on your real containers and Saltbox services (read-only)" \
-      "Look at: the picker, streaming while following, pausing, search, switching source," \
+      "Look at: the grouped picker and its status words/colours, streaming while following, pausing, search, switching source," \
       "         and how long lines, JSON and coloured output from real apps look." \
-      "Picker: ↑/↓ or wheel move   Enter or click again to open   q quit" \
+      "Picker: sections Needs attention, Recent, Services, Containers; status updates live" \
+      "        ↑/↓ or wheel move   Enter or click again to open   / filter (Esc clears)   q quit" \
       "Viewer: ↑/↓, PgUp/PgDn or wheel scroll (scrolling up pauses; back at the bottom it follows)" \
       "        w wrap long lines on/off; with wrap off, ←/→ or shift+wheel scroll sideways" \
       "        f follow on/off   / search   n/N next/prev match   right-click (or m) menu" \
@@ -87,20 +88,24 @@ case "${1:-}" in
     b="$(bin logs)"
     name=sb-rust-proto-demo
     cleanup() {
-      docker rm -f "$name" >/dev/null 2>&1 || true
+      docker rm -f "$name" "$name-crash" >/dev/null 2>&1 || true
       systemctl stop "$name.service" >/dev/null 2>&1 || true
     }
     trap cleanup EXIT
     docker run -d --rm --name "$name" alpine sh -c \
       'i=0; while true; do i=$((i+1)); printf "\033[32mINFO\033[0m line %s\n" $i; [ $((i%7)) = 0 ] && printf "\033[31mERROR\033[0m needle %s\n" $i; sleep 0.3; done' >/dev/null
+    # Fails every few seconds and is restarted, to show "Needs attention".
+    docker run -d --name "$name-crash" --restart on-failure alpine sh -c \
+      'echo "starting"; sleep 4; echo "fatal: demo crash" >&2; exit 1' >/dev/null
     # shellcheck disable=SC2016 # $n is expanded by the unit's own sh, not here
     systemd-run --quiet --unit "$name" sh -c 'n=0; while true; do n=$((n+1)); echo "demo tick $n"; sleep 0.5; done'
     intro "Log viewer on a demo container + demo systemd unit (removed on exit)" \
       "Predictable output for checking search (try: needle) and switching sources." \
-      "Picker: ↑/↓ or wheel move   Enter or click again to open   q quit" \
+      "A third demo container crashes every few seconds, to show Needs attention live." \
+      "Picker: ↑/↓ or wheel move   Enter or click again to open   / filter   q quit" \
       "Viewer: ↑/↓ or wheel scroll   w wrap (off: ←/→ or shift+wheel sideways)   f follow" \
       "        / search   n/N   right-click menu   Esc picker   q quit"
-    "$b" --filter "$name"
+    "$b" --filter "$name" --service-prefix "$name"
     ;;
   markdown)
     b="$(bin markdown)"
