@@ -94,9 +94,17 @@ changes exactly: an edited value, a removed section, a removed app file.
     works after a first render and its size is frozen after that (see
     `popup_state.rs` and `popup_area` in its source), which doesn't suit a
     menu that opens at the cursor with changing labels.
-  - The INI writer stays our own. rust-ini and configparser rewrite whole
-    files rather than preserving untouched lines, and ini-roundtrip has very
-    low adoption. Line preservation is a Saltbox-specific constraint.
+  - The INI writer stays our own, with evidence:
+    - **rust-ini:** a load, change one key, write round trip on the
+      synthetic fixture rewrote spacing and mis-read the indented
+      continuation lines. It swallowed the comment and the next key into a
+      value and wrote a duplicate key.
+    - **configparser:** its docs say it regenerates a compact format and
+      doesn't support multi-line values.
+    - **ini-roundtrip:** very low adoption.
+
+    Line preservation and continuation lines are Saltbox-specific
+    constraints.
   - The event loop uses crossterm's documented `read()`/`poll()` on one
     thread, cited in the code.
   - A `TestBackend` render test now checks the save dialog's title and
