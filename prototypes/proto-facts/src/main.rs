@@ -66,6 +66,9 @@ struct App {
     folded: BTreeSet<usize>,
     fold_decided: bool,
     list: ListState,
+    /// Single-line search box; editing keys (Backspace, Ctrl+H, Ctrl+W, …)
+    /// are the widget's job, not ours. `query` mirrors its text.
+    search: TextArea<'static>,
     query: String,
     searching: bool,
     pending: BTreeMap<Target, Change>,
@@ -87,25 +90,7 @@ fn main() -> Result<()> {
     if std::fs::canonicalize(&cli.dir)? == std::path::Path::new("/opt/saltbox") {
         bail!("refusing to edit the standard Saltbox facts directory; pass a copy");
     }
-    let mut app = App {
-        roles: model::load(&cli.dir)?,
-        folded: BTreeSet::new(),
-        fold_decided: false,
-        list: ListState::default().with_selected(Some(0)),
-        query: String::new(),
-        searching: false,
-        pending: BTreeMap::new(),
-        shown: BTreeSet::new(),
-        popup: Popup::None,
-        status: String::new(),
-        quit: false,
-        list_area: Rect::default(),
-        search_area: Rect::default(),
-        buttons: Vec::new(),
-        undo_targets: Vec::new(),
-        popup_buttons: Vec::new(),
-        menu_area: Rect::default(),
-    };
+    let mut app = App::new(model::load(&cli.dir)?);
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, &cli.dir);
@@ -130,6 +115,29 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, dir: &std::path::Path) -> 
 }
 
 impl App {
+    fn new(roles: Vec<Role>) -> Self {
+        Self {
+            roles,
+            folded: BTreeSet::new(),
+            fold_decided: false,
+            list: ListState::default().with_selected(Some(0)),
+            search: search_box(),
+            query: String::new(),
+            searching: false,
+            pending: BTreeMap::new(),
+            shown: BTreeSet::new(),
+            popup: Popup::None,
+            status: String::new(),
+            quit: false,
+            list_area: Rect::default(),
+            search_area: Rect::default(),
+            buttons: Vec::new(),
+            undo_targets: Vec::new(),
+            popup_buttons: Vec::new(),
+            menu_area: Rect::default(),
+        }
+    }
+
     fn has_copies(&self, r: usize) -> bool {
         let role = &self.roles[r];
         role.instances.len() > 1 || role.instances.first().is_some_and(|i| i.name != role.name)
@@ -244,15 +252,14 @@ impl App {
         }
         if self.searching {
             match key.code {
-                KeyCode::Char(c) => self.query.push(c),
-                KeyCode::Backspace => {
-                    self.query.pop();
-                }
                 KeyCode::Esc if self.query.is_empty() => self.searching = false,
-                KeyCode::Esc => self.query.clear(),
+                KeyCode::Esc => self.search = search_box(),
                 KeyCode::Enter | KeyCode::Down | KeyCode::Tab => self.searching = false,
-                _ => {}
+                _ => {
+                    self.search.input(key);
+                }
             }
+            self.query = self.search.lines().first().cloned().unwrap_or_default();
             self.list.select(Some(0));
             return None;
         }
@@ -668,6 +675,13 @@ fn key_matches(shortcut: &str, code: KeyCode) -> bool {
     }
 }
 
+fn search_box() -> TextArea<'static> {
+    let mut t = TextArea::default();
+    t.set_placeholder_text("type / or click here to search");
+    t.set_cursor_line_style(Style::default());
+    t
+}
+
 fn target_of(row: Row) -> Target {
     match row {
         Row::App(r) => Target::App(r),
@@ -705,24 +719,22 @@ fn draw(f: &mut Frame, app: &mut App) {
     } else {
         Color::DarkGray
     };
-    let hint = if app.query.is_empty() && !app.searching {
-        Span::raw("type / or click here to search").dim()
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(" Saltbox settings ");
+    let inner = block.inner(search);
+    f.render_widget(block, search);
+    let [label, field] =
+        Layout::horizontal([Constraint::Length(9), Constraint::Fill(1)]).areas(inner);
+    f.render_widget(Line::from(" Search  ".bold()), label);
+    // Only show the text cursor while the box has focus.
+    app.search.set_cursor_style(if app.searching {
+        Style::default().add_modifier(Modifier::REVERSED)
     } else {
-        Span::raw(format!(
-            "{}{}",
-            app.query,
-            if app.searching { "▏" } else { "" }
-        ))
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![" Search  ".bold(), hint])).block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(border))
-                .title(" Saltbox settings "),
-        ),
-        search,
-    );
+        Style::default()
+    });
+    f.render_widget(&app.search, field);
     app.search_area = search;
 
     // Settings page.
@@ -1087,4 +1099,48 @@ fn title_case(s: &str) -> String {
     c.next()
         .map(|f| f.to_uppercase().chain(c).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn type_into_search(app: &mut App, text: &str) {
+        app.searching = true;
+        for c in text.chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    /// Regression: many terminals send Backspace as Ctrl+H, which the old
+    /// hand-rolled search box typed as a literal "h".
+    #[test]
+    fn backspace_and_ctrl_h_delete_in_search() {
+        let mut app = App::new(Vec::new());
+        type_into_search(&mut app, "plexx");
+        app.on_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert_eq!(app.query, "plex");
+        app.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.query, "ple");
+    }
+
+    #[test]
+    fn alt_and_ctrl_combos_do_not_type_letters() {
+        let mut app = App::new(Vec::new());
+        type_into_search(&mut app, "plex");
+        app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT));
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert_eq!(app.query, "plex");
+    }
+
+    #[test]
+    fn esc_clears_then_leaves_search() {
+        let mut app = App::new(Vec::new());
+        type_into_search(&mut app, "plex");
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.query, "");
+        assert!(app.searching);
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.searching);
+    }
 }

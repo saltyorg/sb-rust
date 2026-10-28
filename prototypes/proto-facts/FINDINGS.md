@@ -64,6 +64,11 @@ changes exactly: an edited value, a removed section, a removed app file.
     from all settings, not just visible ones.
   - A search with no results showed a blank page. It now says nothing
     matches and how to clear the search.
+  - Backspace typed an "h" in the search box in terminals that send Ctrl+H.
+    The box was hand-rolled and treated any key with a letter as text. It now
+    uses ratatui-textarea, which handles Backspace, Ctrl+H, word delete and
+    cursor movement. Regression tests in `src/main.rs` cover it. Lesson: every
+    text input, however small, uses the library widget.
 - **Clipboard copy can't confirm success.** Terminals that block clipboard
   access ignore the request silently, so the status message says "if your
   terminal allows it; otherwise use Show".
