@@ -2345,6 +2345,7 @@ dependencies = [
  "proto-theme",
  "ratatui",
  "ratatui-textarea",
+ "tempfile",
  "tui-popup",
 ]
 
