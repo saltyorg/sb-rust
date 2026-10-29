@@ -128,7 +128,11 @@ and the try script.
 
 ## Verdict
 
-_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+_Reviewed by the maintainer (2026-10-29): the `docker ps` table is liked
+as it is. The review moved it to sb-go's columns and layout on tabled, and
+asked for theme configuration in the real CLI (capability map, open
+items). The restore prompts are deferred until the restore backend
+rewrite._
 
 **Adopt** tabled, anstyle/anstream and dialoguer for the inline look,
 provided colour is decided in one place. tabled replaced comfy-table for

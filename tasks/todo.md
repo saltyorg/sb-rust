@@ -197,9 +197,9 @@ enough to replace glamour?
 
 **Verification:**
 - [x] Manual runs on a TTY, piped, and with `NO_COLOR=1`.
-- [ ] Look and feel of the `docker ps` table reviewed by the maintainer.
-      The table now follows sb-go's `docker ps` (chosen at the review)
-      on tabled.
+- [x] Look and feel of the `docker ps` table reviewed by the maintainer
+      (2026-10-29): liked. The table follows sb-go's `docker ps` on tabled.
+      Theme configuration for the real CLI is noted in the capability map.
 - Deferred: the restore prompts. The restore backend is being rewritten,
   so its CLI takes shape after that work.
 

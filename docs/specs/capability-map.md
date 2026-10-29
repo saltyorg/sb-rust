@@ -8,8 +8,8 @@ Rust libraries in place of sb-go's internals.
 > prototypes (`prototypes/*/FINDINGS.md`). Every row in the stack table names
 > the prototype that backs it, or says it is untested. The verdicts are
 > technical only until the maintainer reviews each prototype's look and
-> feel. Reviewed so far: proto-logs, proto-markdown, proto-facts and
-> proto-runner (2026-10-29). Module specs start with `cli-core` only after those reviews
+> feel. Reviewed so far: proto-logs, proto-markdown, proto-facts,
+> proto-runner and proto-inline (2026-10-29; its restore prompts deferred). Module specs start with `cli-core` only after those reviews
 > and approval of this map.
 
 ## Objective
@@ -240,9 +240,15 @@ sb-go has never enforced them. sb-rust will.
 - **Manual real-terminal check** (two emulators): mouse use and Shift-drag
   native selection in the fact editor.
 - **Logging (decision 11):** the logging spec (format, location,
-  retention, secret filtering), a runner change so step output goes into
-  the rotated log, and a logging dimension in `CONSTRAINTS.md` when it is
-  created.
+  retention, secret filtering) and a logging dimension in `CONSTRAINTS.md`
+  when it is created. The runner already logs every run and its step
+  output (proto-runner).
+- **Theme configuration:** the real CLI should let users choose or override
+  the colour theme in its config (maintainer review of proto-inline,
+  2026-10-29). Every screen already takes its colours from one role-named
+  palette (proto-theme), so a theme is a set of values for those roles.
+  The config format and where it lives go in the cli-core spec, alongside
+  the colour fallback (decision 10).
 - **Install script:** moves into this repository and runs `sb setup`
   attached to the terminal instead of capturing it (tasks/todo.md, "Later:
   Install script lives in this repository").
