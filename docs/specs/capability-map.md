@@ -7,9 +7,9 @@ Rust libraries in place of sb-go's internals.
 > **Status:** the stack and module boundaries below have been tested by eight
 > prototypes (`prototypes/*/FINDINGS.md`). Every row in the stack table names
 > the prototype that backs it, or says it is untested. The verdicts are
-> technical only: the maintainer still has to review each prototype's look
-> and feel. Module specs start with `cli-core` only after that review and
-> approval of this map.
+> technical only until the maintainer reviews each prototype's look and
+> feel. Reviewed so far: proto-logs (2026-10-29). Module specs start with
+> `cli-core` only after those reviews and approval of this map.
 
 ## Objective
 
@@ -105,6 +105,8 @@ GitHub API (last push, archived flag).
 | Logging | `tracing` + `tracing-subscriber` | 2026 | 240M | terminal/logging | untested |
 | Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs) | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs |
 | Docker | `bollard` | 0.21.1 / 2026-08 | 20M | moby client | proto-musl, proto-logs, proto-inline |
+| systemctl JSON output | `serde_json` | 1.0.154 / 2026-10 | 389M | parsing systemctl's human-readable columns | proto-logs |
+| Timestamps | `jiff` | 0.2.38 / 2026-10 | 98M | time | proto-logs |
 | YAML, typed | `serde-saphyr` | 2.0.0 / 2026-10 | 10M | yaml.v3 | proto-yaml, proto-markdown |
 | YAML, schema-validated config | `saphyr` (`MarkedYaml`, positions, duplicate-key rejection) | 0.3.3 / 2026-10 | 1.1M | yaml.v3 nodes + custom duplicate-key walker | proto-yaml |
 | Schema `pattern` rules | `regex` | — | — | (not enforced by sb-go) | proto-yaml |

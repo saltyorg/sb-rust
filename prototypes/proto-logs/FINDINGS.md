@@ -296,7 +296,11 @@ rich status, recent sources, and one picker for both kinds of source.
 
 ## Verdict
 
-_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+_Reviewed by the maintainer (2026-10-29): verified for now, open to later
+improvements. The review shaped the picker (grouped status list, sb-go's
+service filter, disabled leftovers flagged, timer services healthy, no
+Recent section), the viewer (scroll instead of a popup, faster input) and
+the truecolor palette._
 
 **Adopt.** One async loop with crossterm `EventStream`, bollard streams and a
 `journalctl -f` child covers both log viewers, at a fraction of sb-go's size.
@@ -310,3 +314,14 @@ _Technical verdict only: it builds, works and fits the library policy. Pending t
   asked.
 - `docker` and `host` modules expose log streams (bollard and a
   `journalctl -f` child with `kill_on_drop`) that the viewer consumes.
+- `host` module: the service list is sb-go's filter, read from systemctl's
+  JSON output (`list-units`, `list-unit-files`, `list-timers`, `show`), so
+  disabled leftovers are visible. The status rules (`src/sources.rs`) are
+  pure, tested functions and carry over as-is.
+- `docker` module: container status from list plus a parallel inspect, kept
+  live by bollard's event stream.
+- `tui` module: the picker design is in `docs/ideas/log-picker.md`. The
+  role-named truecolor palette (`src/theme.rs`) is the starting point for a
+  shared theme across screens (capability map, decision 10).
+- Stack table: add `serde_json` (systemctl JSON) and `jiff` (Docker
+  timestamps).

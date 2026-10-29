@@ -147,9 +147,10 @@ ratatui viewer with follow, scroll, and search, without blocking input?
 
 **Verification:**
 - [x] Manual session against a running container and a Saltbox service.
+- [x] Look and feel reviewed and verified by the maintainer (2026-10-29).
 
 **Dependencies:** Task 0
-**Files:** `prototypes/proto-logs/{Cargo.toml,src/main.rs,FINDINGS.md}`
+**Files:** `prototypes/proto-logs/{Cargo.toml,src/main.rs,src/sources.rs,src/theme.rs,FINDINGS.md}`
 **Scope:** M
 
 ## Task 7: Announcements markdown (`proto-markdown`)
