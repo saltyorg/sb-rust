@@ -207,6 +207,20 @@ rich status, recent sources, and one picker for both kinds of source.
   intended shouldn't look idle. A failed run leaves the unit `failed`, which
   is already under Needs attention, so inactive with a next run scheduled
   means healthy. The test was changed first and failed against the old rule.
+- **Disabled units are shown, not hidden.** `list-units` returns only
+  loaded units, and systemd unloads a disabled unit that nothing uses. sb-go
+  and the first version of this picker therefore hid disabled
+  `saltbox_managed_*` units completely. Review called a disabled unit a lack
+  of cleanup, so the picker now also reads
+  `systemctl list-unit-files --output=json`.
+  - A disabled unit that is neither running nor scheduled by a timer shows
+    as `! disabled · not cleaned up`, in amber, under Needs attention.
+  - Running or timer-scheduled disabled units keep their normal status.
+  - Checked against v249 source: JSON table output, the `unit_file` key
+    (spaces in headers become underscores) and bare unit names
+    (`basename(u->path)`).
+  - Tests were written first and failed. The demo script now adds a
+    disabled leftover unit, which showed as intended on real systemd.
 - **Needs attention:** failed or auto-restarting units, containers that
   exited non-zero, ran out of memory, are restarting, are unhealthy, or were
   restarted by Docker less than 10 minutes ago. A container that exited with
@@ -240,11 +254,11 @@ rich status, recent sources, and one picker for both kinds of source.
     then a second click opened a source.
   - `logs-demo` now includes a crash-looping container.
   - `scripts/demo-log-sources.sh up` creates a demo source for every state
-    the picker can show: 7 transient `sbdemo-*` units and 10 labelled
+    the picker can show: 8 `sbdemo-*` units (one a disabled leftover) and 10 labelled
     containers (crash, out of memory, restart loop, unhealthy, recently
     restarted, running, health check pending, paused, stopped, never
     started). `view` opens the picker on them and `down` removes them. All
-    17 showed with the intended section, symbol and words.
+    showed with the intended section, symbol and words.
   - systemctl lists only loaded units. An idle unit file is unloaded, so
     the "stopped" demo is enabled at runtime, as an enabled Saltbox unit
     would be.

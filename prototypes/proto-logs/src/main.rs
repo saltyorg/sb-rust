@@ -947,7 +947,8 @@ fn draw(f: &mut Frame, app: &mut App) {
 
 fn health_color(status: &sources::Status) -> Color {
     match (status.health, status.symbol) {
-        (Health::Problem, '↻') | (Health::Busy, _) => theme::WARN,
+        // Restarting and leftover units need a look, but aren't broken.
+        (Health::Problem, '↻' | '!') | (Health::Busy, _) => theme::WARN,
         (Health::Problem, _) => theme::PROBLEM,
         (Health::Ok, _) => theme::OK,
         (Health::Idle, _) => theme::IDLE,
@@ -1294,6 +1295,7 @@ mod tests {
                     changed,
                     active_since: Some(now - 12 * 86400),
                     next_timer: timer,
+                    file_state: None,
                 },
                 now,
             ),
@@ -1450,6 +1452,7 @@ mod tests {
         assert_eq!(health_color(&s(Health::Problem, '↻')), theme::WARN);
         assert_eq!(health_color(&s(Health::Ok, '✓')), theme::OK);
         assert_eq!(health_color(&s(Health::Idle, '○')), theme::IDLE);
+        assert_eq!(health_color(&s(Health::Problem, '!')), theme::WARN);
     }
 
     /// Truecolor is the design target (capability map, decision 10): every

@@ -14,6 +14,7 @@ PREFIX=sbdemo-
 LABEL=sb-rust-demo=1
 IMAGE=alpine:3
 STOPPED_UNIT=/run/systemd/system/${PREFIX}stopped.service
+LEFTOVER_UNIT=/run/systemd/system/${PREFIX}leftover.service
 
 die() { echo "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "needs root (systemd units and Docker)"
@@ -70,6 +71,15 @@ ExecStart=/bin/true
 [Install]
 WantedBy=multi-user.target
 EOF
+  # A disabled unit file nothing starts: an app removed without cleanup.
+  cat >"$LEFTOVER_UNIT" <<'EOF'
+[Unit]
+Description=sb-rust demo: disabled leftover
+[Service]
+ExecStart=/bin/true
+[Install]
+WantedBy=multi-user.target
+EOF
   systemctl daemon-reload
   systemctl enable --quiet --runtime "${PREFIX}stopped.service"
 
@@ -92,7 +102,7 @@ down() {
     systemctl reset-failed $units 2>/dev/null || true
   fi
   systemctl disable --quiet --runtime "${PREFIX}stopped.service" 2>/dev/null || true
-  rm -f "$STOPPED_UNIT"
+  rm -f "$STOPPED_UNIT" "$LEFTOVER_UNIT"
   systemctl daemon-reload
   echo "Demo sources removed."
 }

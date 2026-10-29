@@ -62,6 +62,15 @@ struct UnitRow {
     sub: String,
 }
 
+/// One row of `systemctl list-unit-files --output=json`. The "unit file"
+/// header becomes `unit_file`: v249 turns spaces in headers into underscores
+/// (`string_to_json_field_name()` in src/shared/format-table.c).
+#[derive(Deserialize)]
+struct UnitFileRow {
+    unit_file: String,
+    state: String,
+}
+
 #[derive(Deserialize)]
 struct TimerRow {
     /// Microseconds since the epoch; 0 or null when no run is scheduled.
@@ -69,9 +78,11 @@ struct TimerRow {
     activates: String,
 }
 
-/// The same units sb-go lists (`saltbox_managed_*` plus `docker`, skipping
-/// units whose file is gone), read from systemctl's JSON table output
-/// instead of its human-readable columns. `--output=json` for list-units is
+/// The units sb-go lists (`saltbox_managed_*` plus `docker`, skipping
+/// units whose file is gone), plus unit files systemd hasn't loaded:
+/// `list-units` only returns loaded units, so a disabled leftover would
+/// otherwise be hidden. Read from systemctl's JSON table output instead of
+/// its human-readable columns. `--output=json` for list-units is
 /// in systemd since at least v249 (Ubuntu 22.04): `output_table()` in
 /// https://github.com/systemd/systemd/blob/v249/src/systemctl/systemctl-util.c
 async fn load_services(prefix: &str, now: i64) -> Result<Vec<Entry>> {
@@ -84,10 +95,31 @@ async fn load_services(prefix: &str, now: i64) -> Result<Vec<Entry>> {
         "--all",
     ])
     .await?;
-    let units: Vec<UnitRow> = units
+    let mut units: Vec<UnitRow> = units
         .into_iter()
         .filter(|u| u.load != "not-found" && u.unit.ends_with(".service"))
         .collect();
+    let files: Vec<UnitFileRow> = systemctl_json(&[
+        "list-unit-files",
+        &pattern,
+        "docker.service",
+        "--type=service",
+    ])
+    .await?;
+    // The unit file column is the bare unit name (`basename(u->path)` in
+    // v249's src/systemctl/systemctl-list-unit-files.c).
+    let file_state: HashMap<String, String> =
+        files.into_iter().map(|f| (f.unit_file, f.state)).collect();
+    for name in file_state.keys() {
+        if !units.iter().any(|u| &u.unit == name) {
+            units.push(UnitRow {
+                unit: name.clone(),
+                load: "not-loaded".into(),
+                active: "inactive".into(),
+                sub: "dead".into(),
+            });
+        }
+    }
     let timers: Vec<TimerRow> = systemctl_json(&["list-timers", &pattern, "--all"]).await?;
     let next_run: HashMap<String, i64> = timers
         .into_iter()
@@ -100,6 +132,7 @@ async fn load_services(prefix: &str, now: i64) -> Result<Vec<Entry>> {
             let (changed, active_since) = times.get(&u.unit).copied().unwrap_or_default();
             let facts = UnitFacts {
                 next_timer: next_run.get(&u.unit).copied(),
+                file_state: file_state.get(&u.unit).cloned(),
                 active: u.active,
                 sub: u.sub,
                 changed,
@@ -286,6 +319,8 @@ pub struct UnitFacts {
     pub active_since: Option<i64>,
     /// Unix seconds of the next run of a timer that starts this unit.
     pub next_timer: Option<i64>,
+    /// Unit file state from `systemctl list-unit-files` (enabled, disabled, ...).
+    pub file_state: Option<String>,
 }
 
 /// State of one container, from the Docker inspect response.
@@ -321,6 +356,13 @@ pub fn classify_unit(f: &UnitFacts, now: i64) -> Status {
         ("active", sub) => status(Health::Ok, '✓', sub.into()),
         ("activating", _) => status(Health::Busy, '◌', "starting".into()),
         ("deactivating", _) => status(Health::Busy, '◌', "stopping".into()),
+        // A disabled unit that is neither running nor scheduled by a timer
+        // is left over from an app that wasn't cleaned up.
+        ("inactive", _)
+            if f.next_timer.is_none() && f.file_state.as_deref() == Some("disabled") =>
+        {
+            status(Health::Problem, '!', "disabled · not cleaned up".into())
+        }
         // Between runs a timer-driven unit is inactive by design; a failed
         // run would have left it "failed" instead.
         ("inactive", _) => match f.next_timer {
@@ -491,6 +533,36 @@ mod tests {
             classify_unit(&unit("inactive", "dead"), NOW),
             status(Health::Idle, '○', "stopped".into())
         );
+    }
+
+    #[test]
+    fn disabled_leftover_unit_needs_cleanup() {
+        let leftover = UnitFacts {
+            file_state: Some("disabled".into()),
+            ..unit("inactive", "dead")
+        };
+        assert_eq!(
+            classify_unit(&leftover, NOW),
+            status(Health::Problem, '!', "disabled · not cleaned up".into())
+        );
+        // Still running, or still scheduled by a timer: not a leftover.
+        let running = UnitFacts {
+            file_state: Some("disabled".into()),
+            active_since: Some(NOW - 60),
+            ..unit("active", "running")
+        };
+        assert_eq!(classify_unit(&running, NOW).health, Health::Ok);
+        let scheduled = UnitFacts {
+            next_timer: Some(NOW + 60),
+            ..leftover
+        };
+        assert_eq!(classify_unit(&scheduled, NOW).health, Health::Ok);
+        // Enabled but stopped stays plain "stopped".
+        let enabled = UnitFacts {
+            file_state: Some("enabled".into()),
+            ..unit("inactive", "dead")
+        };
+        assert_eq!(classify_unit(&enabled, NOW).text, "stopped");
     }
 
     #[test]
