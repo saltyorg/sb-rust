@@ -153,6 +153,34 @@ Ansible output, since the runner will not inline Ansible's own output.
   shows sb-go's 8 lines (`liveTaskOutputLines`), capped so the live area
   stays within half the terminal's height, since indicatif skips bars that
   don't fit. Checked: 7 lines once 7 existed at 24 rows, 5 at 10 rows.
+- **Blinking lines** (review): diagnosed by measuring what reaches the
+  terminal.
+  - indicatif's default redraw erases every live line and writes them again,
+    up to 20 times a second. Measured over 3 s of the install step: 349
+    line erases. The terminal can show the gap, so the lines blink.
+    indicatif 0.18.6 has no synchronized output (sb-go wraps frames in mode
+    2026 for the same reason).
+  - indicatif's documented alternative is `MultiProgress::set_move_cursor`:
+    overwrite in place, no erase. It "can reduce flickering, but do not
+    enable it if you intend to change the number of progress bars".
+    - Tried as is, with bars added and removed per step: stale lines in tmux
+      in all three endings.
+    - So the spinner and tail bars are now created once and reused by every
+      step (a constant bar count). The cursor-moving redraw is switched off
+      only for the final clear.
+  - After: 0 line erases in the same measurement. Clean endings in tmux
+    for success, failure and Ctrl-C.
+  - Side effect fixed: the root line, printed through indicatif before any
+    bar existed, was drawn over. The cursor-moving redraw counts only bar
+    lines, so with none drawn it moves up zero lines and writes `\r` at the
+    start of the printed line (indicatif 0.18.6 `draw_target.rs`,
+    `draw_to_term`). It now goes straight to stderr before any bar exists.
+  - Between steps the bars are blanked, not removed, so the old spinner and
+    output don't show for a frame under the finished step's line.
+  - Known limit: indicatif skips bars that don't fit the terminal height. If
+    the terminal is made shorter mid-run, fewer lines get drawn while the
+    cursor-moving redraw is on, which can leave stale lines. The tail length
+    is worked out once, at the start.
 - **A failed step now exits 1 without repeating itself.** anyhow had printed
   "Error: step failed" under the tree; the tree already says it.
 - **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:

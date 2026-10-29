@@ -103,17 +103,32 @@ echo "E: Unable to locate package demo-unavailable"; exit 100"#),
     let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
     let live = !mp.is_hidden();
     let echo = live.then(QuietControlEcho::new).flatten();
-    emit(
-        &mp,
-        live,
-        &palette(theme::ACCENT)
+    let terminal_rows = console::Term::stderr()
+        .size_checked()
+        .map_or(24, |(rows, _)| usize::from(rows));
+    let tail_count = if live && !cli.verbose {
+        tail_lines(terminal_rows)
+    } else {
+        0
+    };
+    // The root line goes straight to stderr before any bar exists. Through
+    // MultiProgress::println it was drawn over: the cursor-moving redraw
+    // counts only bar lines, so with no bar drawn yet it moves up zero lines,
+    // writes `\r` and lands at the start of the printed line (indicatif
+    // 0.18.6 draw_target.rs, draw_to_term). UNVERIFIED against upstream
+    // issues. Later printed lines are safe: bars exist by then. The palette
+    // style already leaves it plain when stderr gets no colour.
+    eprintln!(
+        "{}",
+        palette(theme::ACCENT)
             .bold()
             .apply_to("Saltbox (simulated run)")
-            .to_string(),
-    )?;
+    );
+    let area = LiveArea::new(&mp, tail_count)?;
     for (i, step) in steps.iter().enumerate() {
         let last = i + 1 == steps.len();
-        if let Err(e) = run_step(&mp, step, last, live, cli.verbose, &interrupted) {
+        if let Err(e) = run_step(&mp, &area, step, last, live, cli.verbose, &interrupted) {
+            area.finish();
             let signal = interrupted.load(Ordering::Relaxed);
             if signal != 0 {
                 // 128 + the signal, the shell convention (130 for Ctrl-C, 143
@@ -132,40 +147,23 @@ echo "E: Unable to locate package demo-unavailable"; exit 100"#),
             }
             return Err(e);
         }
+        area.end_step();
     }
+    area.finish();
     Ok(())
 }
 
 fn run_step(
     mp: &MultiProgress,
+    area: &LiveArea,
     step: &Step,
     last: bool,
     live: bool,
     verbose: bool,
     interrupted: &AtomicUsize,
 ) -> Result<()> {
-    let spinner = mp.add(ProgressBar::new_spinner());
-    spinner.set_style(ProgressStyle::with_template(&spinner_template())?);
-    // The running step is the newest branch, so it takes the last-item glyph.
-    spinner.set_prefix(faint(branch(true)));
-    spinner.set_message(step.running);
-    spinner.enable_steady_tick(Duration::from_millis(80));
+    area.start(step.running);
     let terminal = console::Term::stderr().size_checked();
-    let tail_count = tail_lines(terminal.map_or(24, |(rows, _)| usize::from(rows)));
-    let tail_bars: Vec<ProgressBar> = if live && !verbose {
-        (0..tail_count)
-            .map(|_| {
-                let b = mp.add(ProgressBar::new_spinner());
-                b.set_style(
-                    ProgressStyle::with_template(&tail_template()).expect("static template"),
-                );
-                b
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
     let (rows, cols) = terminal.map_or((24, 80), |(r, c)| (r.max(10), c.max(40)));
     let pair = native_pty_system().openpty(PtySize {
         rows,
@@ -226,13 +224,7 @@ fn run_step(
                     history.pop_front();
                 }
                 history.push_back(line);
-                let start = history.len().saturating_sub(tail_count);
-                let shown = history.len() - start;
-                for (i, (bar, line)) in tail_bars.iter().zip(history.iter().skip(start)).enumerate()
-                {
-                    bar.set_prefix(tail_prefix(i, shown));
-                    bar.set_message(line.clone());
-                }
+                area.show_tail(&history);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break child.wait()?,
@@ -273,9 +265,6 @@ fn run_step(
         }
     };
 
-    for bar in &tail_bars {
-        bar.finish_and_clear();
-    }
     // Finished steps become permanent printed lines; indicatif only manages
     // live bars. Its MultiProgress docs describe this: a dropped bar is wiped
     // on the next println and not redrawn, so either keep the handle or print
@@ -283,8 +272,7 @@ fn run_step(
     // https://docs.rs/indicatif/0.18.6/indicatif/struct.MultiProgress.html
     // Elapsed in the same format as the live {elapsed} (indicatif 0.18.6
     // style.rs renders it with HumanDuration's alternate form).
-    let elapsed = format!("{:#}", indicatif::HumanDuration(spinner.elapsed()));
-    spinner.finish_and_clear();
+    let elapsed = format!("{:#}", indicatif::HumanDuration(area.spinner.elapsed()));
     if interrupted.load(Ordering::Relaxed) != 0 {
         emit(
             mp,
@@ -316,6 +304,90 @@ fn run_step(
         )?;
     }
     Err(StepFailed.into())
+}
+
+/// The live part of the screen: the running step's spinner line and its
+/// output tail. Created once and reused by every step, so the number of
+/// bars never changes and indicatif can redraw by moving the cursor and
+/// overwriting the lines instead of clearing them first. Clearing first
+/// made the lines blink: measured, every redraw (about 20 a second) erased
+/// the live lines and wrote them again. indicatif documents the trade-off:
+/// set_move_cursor "can reduce flickering, but do not enable it if you
+/// intend to change the number of progress bars"; tried with per-step bars,
+/// it left stale lines in tmux, hence the fixed set.
+/// https://docs.rs/indicatif/0.18.6/indicatif/struct.MultiProgress.html#method.set_move_cursor
+struct LiveArea {
+    mp: MultiProgress,
+    spinner: ProgressBar,
+    tail: Vec<ProgressBar>,
+}
+
+impl LiveArea {
+    fn new(mp: &MultiProgress, tail_count: usize) -> Result<Self> {
+        mp.set_move_cursor(true);
+        let spinner = mp.add(ProgressBar::new_spinner());
+        spinner.set_style(ProgressStyle::with_template(&spinner_template())?);
+        spinner.enable_steady_tick(Duration::from_millis(80));
+        let tail = (0..tail_count)
+            .map(|_| {
+                let bar = mp.add(ProgressBar::new_spinner());
+                bar.set_style(ProgressStyle::with_template(&tail_template())?);
+                Ok(bar)
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            mp: mp.clone(),
+            spinner,
+            tail,
+        })
+    }
+
+    /// Starts a step: its name on the spinner line, elapsed from zero, an
+    /// empty tail. The running step is the newest branch, so it takes the
+    /// last-item glyph.
+    fn start(&self, name: &'static str) {
+        self.spinner.reset_elapsed();
+        self.spinner.set_prefix(faint(branch(true)));
+        self.spinner.set_message(name);
+        for bar in &self.tail {
+            bar.set_prefix("");
+            bar.set_message("");
+        }
+    }
+
+    /// Shows the newest lines of `history` in the tail, ├── for each and ╰──
+    /// for the newest.
+    fn show_tail(&self, history: &VecDeque<String>) {
+        let start = history.len().saturating_sub(self.tail.len());
+        let shown = history.len() - start;
+        for (i, (bar, line)) in self.tail.iter().zip(history.iter().skip(start)).enumerate() {
+            bar.set_prefix(tail_prefix(i, shown));
+            bar.set_message(line.clone());
+        }
+    }
+
+    /// Blanks the live area once a step's line is printed, so a redraw before
+    /// the next step starts doesn't show the old spinner and output under
+    /// it. The bars stay, so their count doesn't change.
+    fn end_step(&self) {
+        self.spinner.set_prefix("");
+        self.spinner.set_message("");
+        for bar in &self.tail {
+            bar.set_prefix("");
+            bar.set_message("");
+        }
+    }
+
+    /// Removes the live area at the end of the run. The bar count drops to
+    /// zero here, so the cursor-moving redraw is switched off first and the
+    /// final redraw clears the lines.
+    fn finish(&self) {
+        self.mp.set_move_cursor(false);
+        for bar in &self.tail {
+            bar.finish_and_clear();
+        }
+        self.spinner.finish_and_clear();
+    }
 }
 
 /// Turns off the terminal's echo of control characters (`ECHOCTL`) while the
