@@ -32,8 +32,13 @@ per-command startup code.
    (exec, not a child: signals and the exit code then belong to the real
    run). One environment for every run, and every run is logged.
    If sudo asks for a password, the user answers sudo's own prompt (exec
-   hands it the terminal), Tab completion included, as with sb-go; sb adds
-   no special handling.
+   hands it the terminal). Tab completion is the exception: it runs
+   `sudo -n` as a child instead, so a password prompt never lands in the
+   middle of the command line. If sudo refuses (it wants a password), sb
+   completes as the calling user: commands, subcommands and flags come
+   from the binary and need no root, and dynamic values (Ansible tags)
+   are offered when their cache is readable. A message in place of
+   completions isn't used: bash can't show one cleanly.
 2. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
    sb-go does (maintainer, 2026-10-29). The supported releases list
@@ -179,7 +184,9 @@ boundaries that callers match on.
    sb-go's message.
 3. Any command run as a normal user execs `sudo` with `VISUAL` and `EDITOR`
    kept, and its exit code is the command's own. When sudo wants a
-   password, its own prompt appears and the run continues once answered.
+   password, its own prompt appears and the run continues once answered;
+   during Tab completion there is no prompt, and commands and flags still
+   complete.
 4. SIGINT exits 130 and SIGTERM 143, with the terminal restored.
 5. An error shows one `✗` block with its causes and the log pointer, and
    exits 1.
