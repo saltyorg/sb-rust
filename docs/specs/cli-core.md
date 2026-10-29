@@ -196,9 +196,12 @@ boundaries that callers match on.
 - Invalid theme config: warn, log and use the built-in theme.
 - Theme shape: named built-in themes plus per-role overrides.
 - Second signal: exit at once.
+- Config file ownership: like Saltbox's own configuration, the file and
+  its `sb` directory belong to the Saltbox user (from `accounts.yml`, as
+  sb-go's `GetSaltboxUser` reads it) and their group, with fairly open
+  modes (file 0664, directory 0775): it holds no secrets. sb keeps that
+  owner and mode when it writes the file, as proto-facts' saves do.
 
 ## Open questions
 
-1. **Config file ownership and mode:** root-owned, 0644 (it holds no
-   secrets), created only when the user first saves a theme? To settle in
-   the plan.
+None.
