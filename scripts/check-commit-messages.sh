@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Fails if any commit subject in BEFORE..AFTER is not a Conventional Commit
-# (lowercase description, no trailing period).
+# Fails if any commit in BEFORE..AFTER breaks the commit message rules:
+# - the subject is a Conventional Commit (lowercase description, no trailing
+#   period);
+# - a commit that changes Rust source (*.rs) has a "Library-check:" line in
+#   its body saying which dependency APIs or documented patterns were checked
+#   and what stayed custom and why (CLAUDE.md, "Library first"). This applies
+#   from the commit that introduced the rule onward: a commit whose parent's
+#   copy of this script doesn't mention it is exempt.
 # With no usable BEFORE (first push), checks every commit reachable from AFTER.
 set -euo pipefail
 before="${1:-}"
@@ -11,12 +17,19 @@ else
   range="$before..$after"
 fi
 pattern='^(feat|fix|docs|chore|refactor|test|ci|build|perf|style|revert)(\([a-z0-9-]+\))?!?: [^A-Z ](.{0,98}[^.])?$'
+script=scripts/check-commit-messages.sh
 status=0
 while IFS= read -r line; do
   sha="${line%% *}"; subject="${line#* }"
   if [[ "$subject" =~ ^Merge\  ]]; then continue; fi
   if ! [[ "$subject" =~ $pattern ]]; then
     echo "Not a Conventional Commit: $sha $subject"
+    status=1
+  fi
+  if git diff-tree --no-commit-id --name-only -r "$sha" | grep -q '\.rs$' \
+    && git show "$sha^:$script" 2>/dev/null | grep -q 'Library-check:' \
+    && ! git log -1 --format=%b "$sha" | grep -qE '^Library-check: .+'; then
+    echo "Missing 'Library-check:' line (commit changes Rust source): $sha $subject"
     status=1
   fi
 done < <(git log --format='%h %s' "$range")

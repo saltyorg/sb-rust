@@ -65,6 +65,17 @@ repository (see the hooks in `.claude/settings.json`).
 - Domain logic (Saltbox schema rules, file formats with Saltbox-specific
   constraints) is ours to write, but still goes through a library wherever
   one meets the constraint.
+- **Enforcement:**
+  - After each edit to a `.rs` file, a hook (`.claude/hooks/library-check.sh`)
+    asks for this check. Answer it then, not at commit time.
+  - Before committing changes to terminal, UI, input, event-loop,
+    clipboard, process or I/O code, run the `library-reviewer` agent
+    (`.claude/agents/library-reviewer.md`) on the diff. Give it the range,
+    not your reasoning. Fix REPLACE findings or record why not.
+  - Every commit that changes Rust source carries a `Library-check:` line
+    in its body: what is library-backed, what stayed custom and why, and
+    whether the reviewer ran. `scripts/check-commit-messages.sh` rejects
+    commits without it.
 
 ## Project artifacts
 
