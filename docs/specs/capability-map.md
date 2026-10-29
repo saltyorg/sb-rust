@@ -54,6 +54,27 @@ Rust libraries in place of sb-go's internals.
    - ratatui `unstable-rendered-line-info` (only if inline Markdown output is
      kept).
    - The `cross` image version used for releases.
+10. **Colour:** screens are designed for truecolor and emit it by default,
+    as sb-go does. sb-go sets `COLORTERM=truecolor` and a TrueColor
+    colorprofile writer unless `SB_COLOR_PROFILE` says otherwise. sb-rust has
+    its own truecolor palette, shared by every screen; it is not copied from
+    sb-go or charmtone. ratatui with crossterm writes `Color::Rgb` as 24-bit
+    SGR whatever the terminal reports, so the default needs no code.
+
+    **Fallback (planned, not built):**
+    - Keep sb-go's `SB_COLOR_PROFILE` (`truecolor`, `ansi256`, `ansi`,
+      `ascii`) for terminals without truecolor, and honour `NO_COLOR`.
+    - Use libraries, with no colour maths of ours.
+      - **Recommended:** `anstyle-query` for detection and `anstyle-lossy`
+        for RGB to 256/16 conversion. Both are from the rust-cli org and
+        widely used. Pair them with ratatui-core's `anstyle` feature for
+        conversions.
+      - **Alternative:** `termprofile`, which does detection and conversion
+        in one crate with a ratatui feature, but has low adoption.
+    - The palette is converted once at startup for the chosen profile.
+    - The choice goes in an ADR when it is built.
+
+    The palette assumes a dark background. Light themes are an open item.
 
 ## Assumptions (still open to correction)
 

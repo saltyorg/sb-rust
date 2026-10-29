@@ -85,3 +85,7 @@ Otherwise run them in the listed order, which goes riskiest first.
 
 - None blocking. Decisions made while prototyping go in each FINDINGS.md and
   then into the map.
+- **Colour fallback:** truecolor is the default (capability map, decision 10).
+  The `SB_COLOR_PROFILE` and `NO_COLOR` fallback is planned through
+  `anstyle-query` and `anstyle-lossy` (or `termprofile`). It gets built, with
+  an ADR, in the `term-ui`/`tui` module work, not in the prototypes.
