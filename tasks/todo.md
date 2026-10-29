@@ -255,6 +255,14 @@ https://docs.saltbox.dev/saltbox/install/install/#step-1-dependencies):
   the `wget -qO-` equivalent, then `&& cd /srv/git/saltbox` on success.
 - Verbose via `bash -s -- -v` (`-v`), for both curl and wget.
 
+**Design latitude (maintainer, 2026-10-29):** we own both the script and
+sb, so sb may gain flags that let the script state what it wants instead of
+sb guessing from its environment. Use them only where they remove a guess.
+Candidates to weigh in the spec, not decisions:
+- an explicit non-interactive mode (fail instead of prompting);
+- `--color` set from the script's own terminal check;
+- distinct exit codes, or a final summary line the script can rely on.
+
 **Acceptance criteria:**
 - [ ] The script lives in sb-rust, replacing `sb_install.sh` in the `sb`
       repository. Publishing it at install.saltbox.dev is a separate,
