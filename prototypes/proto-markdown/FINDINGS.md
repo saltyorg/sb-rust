@@ -21,8 +21,9 @@ nested and ordered lists, a fenced code block, a long quote) and a real
 Saltbox announcements file, at 80 and 140 columns.
 
 Announcements are English only (Saltbox is not multi-language), and the real
-file is plain ASCII, so wide-character (CJK, emoji) checks are out of scope
-for announcements. The first fixture had a CJK/emoji line; it was removed.
+file is plain ASCII, so the fixture no longer carries a CJK/emoji line. The
+viewer still supports any text: a test checks the list measures wide
+characters by display width.
 
 ## Result
 
@@ -123,7 +124,8 @@ stand out while missed ones can still be read.
   - The list column is as wide as its widest row by `ListItem::width`
     (display width) rather than a character count, capped at 40% of the
     screen. A longer title is cut off in the list; the announcement pane
-    still shows it in full. Open: whether to wrap or abbreviate instead.
+    still shows it in full. Decided in review: keep the cap and keep
+    announcement titles short.
 - **Library review** (the `library-reviewer` agent, given only the commit
   range) found:
   - **A bug:** `ListState::select_next` doesn't clamp until the list is

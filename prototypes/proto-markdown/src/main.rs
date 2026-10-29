@@ -740,6 +740,20 @@ mod tests {
     }
 
     #[test]
+    fn list_measures_wide_characters_by_display_width() {
+        // Announcements are English, but the viewer supports any text.
+        let mut v = Viewer::new(classify(
+            vec![announcement("2026-01-01", "家庭メディア 🎬", "Body.")],
+            None,
+        ));
+        let terminal = draw_at(&mut v, 100, 20);
+        // A wide character takes two cells; the second reads as a space here.
+        // The whole title, then the list's right border.
+        let row = screen(&terminal)[1].replace(' ', "");
+        assert!(row.contains("家庭メディア🎬│"), "{row:?}");
+    }
+
+    #[test]
     fn scrollbar_uses_the_palette() {
         let mut v = Viewer::new(classify(long_announcements(1), None));
         let terminal = draw_at(&mut v, 100, 30);
