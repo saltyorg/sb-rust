@@ -1365,7 +1365,7 @@ mod tests {
         }
         assert!(screen.contains("failed 2h ago"));
         assert!(screen.contains("restarting (3×)"));
-        assert!(screen.contains("idle · next run in 3h"));
+        assert!(screen.contains("scheduled · next run in 3h"));
         assert!(screen.contains("stopped 3h ago"));
         // The cursor starts on the first item, not on a header.
         assert_eq!(

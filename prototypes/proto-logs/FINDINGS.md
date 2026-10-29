@@ -196,12 +196,17 @@ rich status, recent sources, and one picker for both kinds of source.
   `src/systemctl/systemctl-util.c`). Timestamps come from `systemctl show`,
   whose output systemctl(1) calls computer-parsable.
 - **Status words and colour.** Services show
-  running/uptime, failed and how long ago, restarting, or idle with the next
+  running/uptime, failed and how long ago, restarting, or scheduled with the next
   timer run. Containers show uptime, exit code, out-of-memory, restart count
   and failing health checks, from one bollard inspect per container, run in
   parallel. The words carry the meaning without colour. The rules are pure
   functions in `src/sources.rs`, test-first: the tests failed against stubs,
   then passed.
+- **Timer-driven services** count as healthy between runs (`✓ scheduled ·
+  next run in …`). Review pointed out that a refresh-style unit working as
+  intended shouldn't look idle. A failed run leaves the unit `failed`, which
+  is already under Needs attention, so inactive with a next run scheduled
+  means healthy. The test was changed first and failed against the old rule.
 - **Needs attention:** failed or auto-restarting units, containers that
   exited non-zero, ran out of memory, are restarting, are unhealthy, or were
   restarted by Docker less than 10 minutes ago. A container that exited with

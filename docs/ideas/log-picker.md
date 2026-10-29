@@ -18,8 +18,9 @@ containers), grouped into sections with readable, coloured status:
    shown as stopped, not as a problem.
 
 Each row shows a status symbol and words: `✓ running · 2d`,
-`✗ failed 2h ago`, `↻ restarting (3×)`, `○ idle · next run 3h`. Colours
-follow the meaning (green fine, red failed, yellow restarting, dim idle),
+`✗ failed 2h ago`, `↻ restarting (3×)`, `✓ scheduled · next run 3h`.
+Colours follow the meaning (green fine, red failed, yellow restarting, blue
+stopped),
 and the words carry the meaning on their own for `NO_COLOR` and
 colour-blind users. `/` filters across all sections. The list updates
 live while open.

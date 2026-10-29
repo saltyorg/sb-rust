@@ -321,11 +321,13 @@ pub fn classify_unit(f: &UnitFacts, now: i64) -> Status {
         ("active", sub) => status(Health::Ok, '✓', sub.into()),
         ("activating", _) => status(Health::Busy, '◌', "starting".into()),
         ("deactivating", _) => status(Health::Busy, '◌', "stopping".into()),
+        // Between runs a timer-driven unit is inactive by design; a failed
+        // run would have left it "failed" instead.
         ("inactive", _) => match f.next_timer {
             Some(next) => status(
-                Health::Idle,
-                '○',
-                format!("idle · next run in {}", short_duration(next - now)),
+                Health::Ok,
+                '✓',
+                format!("scheduled · next run in {}", short_duration(next - now)),
             ),
             None => status(Health::Idle, '○', "stopped".into()),
         },
@@ -474,14 +476,16 @@ mod tests {
     }
 
     #[test]
-    fn inactive_unit_with_timer_is_idle_with_next_run() {
+    fn timer_driven_unit_waiting_for_its_next_run_is_healthy() {
+        // A failed run leaves the unit "failed", so inactive with a next run
+        // scheduled means it is working as intended.
         let f = UnitFacts {
             next_timer: Some(NOW + 3 * 3600),
             ..unit("inactive", "dead")
         };
         assert_eq!(
             classify_unit(&f, NOW),
-            status(Health::Idle, '○', "idle · next run in 3h".into())
+            status(Health::Ok, '✓', "scheduled · next run in 3h".into())
         );
         assert_eq!(
             classify_unit(&unit("inactive", "dead"), NOW),
