@@ -2393,6 +2393,7 @@ dependencies = [
  "serde-saphyr",
  "termimad",
  "tui-markdown",
+ "tui-scrollview",
 ]
 
 [[package]]
@@ -3715,6 +3716,17 @@ dependencies = [
  "derive-getters",
  "derive_setters",
  "document-features",
+ "ratatui-core",
+ "ratatui-widgets",
+]
+
+[[package]]
+name = "tui-scrollview"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "997f1ad8c98f3c1928bdf05a288d5ea5557b4261ea7c4c86fbf273f79b584da8"
+dependencies = [
+ "indoc",
  "ratatui-core",
  "ratatui-widgets",
 ]

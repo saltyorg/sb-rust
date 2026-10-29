@@ -15,6 +15,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "2.0.0"
 termimad = "0.35.5"
 tui-markdown = "0.3.12"
+tui-scrollview = "0.6.8"
 
 [lints]
 workspace = true

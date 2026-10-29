@@ -77,6 +77,55 @@ prototype was built, so it was restyled before review.
 - On the real binary with `TERM=xterm-256color`, the full-screen view sent
   132 24-bit colour codes and the inline path 68, with no 16-colour codes.
 
+## Viewer redesign (maintainer review)
+
+The review asked for no scrolling when the announcement fits, and a list of
+announcements on the left, with ones that aren't new tinted, so new ones
+stand out while missed ones can still be read.
+- **What counts as new** is sb-go's rule (saltbox/announcements.go):
+  - New means not in the file before the update, matched on date and title.
+  - With no before file, all are new.
+  - An announcement only applies when its `required_folder` or
+    `required_file`, if set, exists.
+
+  Unlike sb-go, the viewer keeps the older ones in the list. `--before`
+  mirrors `sb announcements --before`, and the inline path (after
+  `sb update`) still prints only the new ones.
+- **Layout:**
+  - The list is newest first. New ones get a green ● and full-strength
+    text; older ones are drawn in the faint tone without the marker. The
+    list title counts the new ones.
+  - The selected announcement shows on the right with a NEW badge if it is
+    new, and the viewer opens on the newest new one.
+  - Below 70 columns the list goes above the announcement.
+  - Mouse: click a row; the wheel moves the list or scrolls the
+    announcement, depending on where the pointer is.
+- **Scrolling comes from libraries, not our own maths:**
+  - `tui-scrollview` 0.6.8 (ratatui org) clamps while rendering: content
+    that fits never scrolls, and the bottom position is the last full page
+    (`scroll_view.rs`, `render`). It shows the scrollbar only when needed
+    and provides page up and down.
+  - It was rejected for logs because it draws the whole content every
+    frame. An announcement is a few dozen lines, so that cost doesn't
+    matter here.
+  - List movement uses `ListState::select_next`/`select_previous`, which
+    clamp when rendering.
+  - Limitation: tui-scrollview 0.6.8 draws its scrollbar unstyled, with no
+    hook to colour it, so it takes the base text colour. It still never
+    emits a named colour.
+  - The remaining glue: the content height, from ratatui's unstable
+    `line_count`, measured again one column narrower when a scrollbar is
+    needed. Also click-to-row mapping, since `List` has no hit-testing.
+- **Event loop:** proto-facts' documented `read()`/`poll()` pattern, with
+  the same drain after mouse capture is turned off (still UNVERIFIED).
+- **Tests:**
+  - new detection, required paths, a short announcement not scrolling, a
+    long one stopping at its last line, switching starting at the top, the
+    marker and tint, a click selecting a row, truecolor only at two
+    widths.
+  - Each behaviour was mutation-checked: removing it fails a test. The
+    scroll-reset test was added after a mutation survived.
+
 ## Verdict
 
 _Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
