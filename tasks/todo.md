@@ -237,3 +237,44 @@ dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
 
 ## Checkpoint C
 - [ ] User approves the updated map. Then module specs start with `cli-core`.
+
+## Later: Install script lives in this repository
+
+Not part of the prototype plan; recorded so it isn't lost. To be specified
+once cli-core and the runner module exist.
+
+**Why:** today's installer (`sb_install.sh` in the `sb` repository) captures
+`sb setup`'s output in a shell variable when not verbose. sb then sees no
+terminal, so the user gets no progress and no colour, only a dump of the
+captured text if setup fails. sb-rust draws its own progress and keeps a
+failed step's last lines, so the installer should stop capturing.
+
+**How it must work** (documented usage, step 1 of
+https://docs.saltbox.dev/saltbox/install/install/#step-1-dependencies):
+- Run as root via `curl -sL https://install.saltbox.dev | sudo -H bash`, or
+  the `wget -qO-` equivalent, then `&& cd /srv/git/saltbox` on success.
+- Verbose via `bash -s -- -v` (`-v`), for both curl and wget.
+
+**Acceptance criteria:**
+- [ ] The script lives in sb-rust, replacing `sb_install.sh` in the `sb`
+      repository. Publishing it at install.saltbox.dev is a separate,
+      explicitly authorised step.
+- [ ] Both documented forms work, with and without `-v`, and exit non-zero
+      on failure so `&& cd /srv/git/saltbox` only runs after success.
+- [ ] `sb setup` runs attached to the terminal, never captured, so sb draws
+      its own progress and failure output. Without `-v` sb shows its normal
+      tree; `-v` gets sb's verbose output.
+- [ ] Nothing reads stdin. Under `curl … | bash`, stdin is the script itself:
+      a read would swallow the rest of it. Any prompt uses `/dev/tty` or is
+      avoided.
+- [ ] With no terminal (CI, output redirected to a log), sb's own detection
+      gives plain output, and no `--color` flag is needed.
+
+**Verification:**
+- [ ] Each documented command run against a test server (one at a time,
+      endpoint from environment variables), with and without `-v`, plus a
+      forced failure to check the exit code and failure output.
+
+**Dependencies:** cli-core, runner module
+**Files:** a new install script in this repository (path decided in the spec)
+**Scope:** S
