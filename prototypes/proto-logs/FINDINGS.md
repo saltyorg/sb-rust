@@ -273,8 +273,9 @@ rich status, recent sources, and one picker for both kinds of source.
     the old style.
   - **Truecolor palette (after review: design for truecolor, as sb-go
     forces it):** a 16-colour palette was tried first and replaced.
-    - `src/theme.rs` holds sb-rust's own palette, for dark backgrounds,
-      named by role: text tones, accent, health (ok, problem, warn, idle),
+    - sb-rust's own palette, for dark backgrounds, first in `src/theme.rs`
+      and now in the shared `prototypes/proto-theme` crate (also used by
+      proto-markdown). Colours are named by role: text tones, accent, health (ok, problem, warn, idle),
       kinds and sections (each with a darker rule tone), selection and
       search hit. It is not copied from sb-go or charmtone.
     - Explicit tones replace the DIM modifier, which terminals render
@@ -321,7 +322,7 @@ the truecolor palette._
 - `docker` module: container status from list plus a parallel inspect, kept
   live by bollard's event stream.
 - `tui` module: the picker design is in `docs/ideas/log-picker.md`. The
-  role-named truecolor palette (`src/theme.rs`) is the starting point for a
+  role-named truecolor palette (`prototypes/proto-theme`) is the starting point for a
   shared theme across screens (capability map, decision 10).
 - Stack table: add `serde_json` (systemctl JSON) and `jiff` (Docker
   timestamps).

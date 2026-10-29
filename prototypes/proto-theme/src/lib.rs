@@ -1,4 +1,5 @@
-//! sb-rust's truecolor palette, designed for dark terminal backgrounds.
+//! sb-rust's truecolor palette, shared by the prototype screens and the seed
+//! of the real `tui`/`term-ui` theme. Designed for dark terminal backgrounds.
 //! Colours are named by role, not hue, so screens share one meaning per
 //! colour. Truecolor is the default (capability map, decision 10): crossterm
 //! writes `Color::Rgb` as 24-bit SGR without consulting the terminal
@@ -9,6 +10,7 @@
 //! inconsistently.
 
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 
 const fn rgb(hex: u32) -> Color {
     let [_, r, g, b] = hex.to_be_bytes();
@@ -41,6 +43,14 @@ pub const ATTENTION_RULE: Color = rgb(0x6A2E36);
 
 /// Active filter and search text.
 pub const HIGHLIGHT: Color = rgb(0xE8C77A);
+/// Links in rendered text.
+pub const LINK: Color = rgb(0x7EA6FF);
+/// Inline code and code blocks: sand text on a slightly raised background.
+pub const CODE: Color = rgb(0xE8C77A);
+pub const CODE_BG: Color = rgb(0x1C2430);
+/// Second accent, for emphasis that isn't a warning (notes marked important).
+pub const ACCENT_2: Color = rgb(0xC49BFF);
+
 /// Background of log lines matching the search.
 pub const SEARCH_HIT: Color = rgb(0x4A3F12);
 
@@ -52,3 +62,16 @@ pub const SELECTED: Style = Style::new()
     .bg(rgb(0x24405E))
     .add_modifier(Modifier::BOLD)
     .remove_modifier(Modifier::DIM);
+
+/// Footer key hints: keys in the accent colour, what they do muted.
+pub fn key_hints(hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (key, what) in hints {
+        spans.push(Span::styled(
+            (*key).to_string(),
+            Style::new().fg(ACCENT).bold(),
+        ));
+        spans.push(Span::styled(format!(" {what}   "), Style::new().fg(MUTED)));
+    }
+    Line::from(spans)
+}

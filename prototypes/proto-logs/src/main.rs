@@ -4,7 +4,6 @@
 //! restarts are followed instead of ending the stream. Throwaway; see FINDINGS.md.
 
 mod sources;
-mod theme;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
@@ -32,7 +31,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use proto_theme as theme;
 use sources::{Entry, Health, Section, Source};
+use theme::key_hints;
 
 // musl's allocator is much slower than glibc's for ratatui's per-frame
 // allocations; static release builds use mimalloc instead.
@@ -969,22 +970,6 @@ fn section_colors(section: Section) -> (Color, Color) {
         Section::Services => (theme::SERVICE, theme::SERVICE_RULE),
         Section::Containers => (theme::CONTAINER, theme::CONTAINER_RULE),
     }
-}
-
-/// Footer key hints: keys in colour, what they do in the default colour.
-fn key_hints(hints: &[(&str, &str)]) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
-    for (key, what) in hints {
-        spans.push(Span::styled(
-            (*key).to_string(),
-            Style::new().fg(theme::ACCENT).bold(),
-        ));
-        spans.push(Span::styled(
-            format!(" {what}   "),
-            Style::new().fg(theme::MUTED),
-        ));
-    }
-    Line::from(spans)
 }
 
 fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rect) {
