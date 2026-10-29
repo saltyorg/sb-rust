@@ -29,6 +29,7 @@ EOF
 bin() {
   command -v cargo >/dev/null || { echo "cargo not found on PATH" >&2; exit 1; }
   # Release builds: debug builds redraw ~10x slower and misrepresent how it feels.
+  echo "Building proto-$1 (release)..." >&2
   cargo build -q --release -p "proto-$1"
   printf '%s/target/release/proto-%s' "$root" "$1"
 }
@@ -38,6 +39,13 @@ intro() {
   printf '\n\033[1m%s\033[0m\n' "$1"
   shift
   printf '  %s\n' "$@"
+  # The prototypes are interactive: this waits for Enter, and they draw live
+  # output and ask questions. Without a terminal (Claude Code's `!` prefix, a
+  # pipe, cron) that input never comes, so say so instead of hanging.
+  if [[ ! -t 0 ]]; then
+    echo "try-prototype: needs an interactive terminal; run it in your own shell, not through a pipe or Claude Code's ! prefix" >&2
+    exit 2
+  fi
   printf '\nPress Enter to start (Ctrl-C to cancel)... '
   read -r _
 }
