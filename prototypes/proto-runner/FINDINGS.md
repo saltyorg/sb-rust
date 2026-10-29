@@ -139,6 +139,10 @@ Ansible output, since the runner will not inline Ansible's own output.
   - Finished lines pad with `console::pad_str` to the same column.
   - Tests check the branch glyphs and that every finished line ends in the
     same column.
+- **Command output is no longer greyed out** (review): the live tail shows
+  a command's own colours and leaves uncoloured text in the terminal's
+  default colour; only the tree glyphs are faint. The simulated "Enabling
+  services" step prints a `systemctl status`-style green line to show this.
 - **A failed step now exits 1 without repeating itself.** anyhow had printed
   "Error: step failed" under the tree; the tree already says it.
 - **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:

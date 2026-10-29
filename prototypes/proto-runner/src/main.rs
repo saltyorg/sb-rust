@@ -509,10 +509,11 @@ fn spinner_template() -> String {
     )
 }
 
-/// One line of the live output tail. Child output keeps its own colours
-/// inside; this only tones down uncoloured text.
+/// One line of the live output tail: the command's output as it is, with
+/// its own colours, and uncoloured text in the terminal's default colour.
+/// Only the tree prefix is styled (before it is set).
 fn tail_template() -> String {
-    format!("{{prefix}}{{wide_msg:.{}}}", theme::MUTED)
+    "{prefix}{wide_msg}".to_string()
 }
 
 /// The permanent line a finished step leaves: its branch, the status and
@@ -612,9 +613,12 @@ echo "Processing triggers for man-db ...""#),
         Step {
             running: "Enabling services",
             done: "Services enabled",
+            // Coloured like `systemctl status`, to show a command's own colours
+            // coming through the tail.
             cmd: sh(
                 r#"echo "Created symlink multi-user.target.wants/demo.service -> demo.service"; sleep 0.5
-echo "demo.service: active (running)"; sleep 0.4"#,
+printf '\033[0;1;32m●\033[0m demo.service - Demo service\n'; sleep 0.4
+printf '     Active: \033[0;1;32mactive (running)\033[0m since just now\n'; sleep 0.6"#,
             ),
         },
     ]
@@ -840,9 +844,18 @@ mod tests {
         assert_eq!(tail_prefix(0, 1), "    ╰── ");
     }
 
+    /// Command output keeps its own colours and is otherwise drawn in the
+    /// terminal's default colour: the tail template styles nothing but the
+    /// tree prefix (which is styled before it is set).
+    #[test]
+    fn tail_template_leaves_command_output_unstyled() {
+        assert_eq!(tail_template(), "{prefix}{wide_msg}");
+        ProgressStyle::with_template(&tail_template()).expect("valid template");
+    }
+
     #[test]
     fn templates_use_palette_colours() {
-        for template in [spinner_template(), tail_template()] {
+        for template in [spinner_template()] {
             assert!(template.contains('#'), "{template}");
             for name in ["yellow", "green", "red", "cyan", "dim"] {
                 assert!(!template.contains(name), "{template} uses {name}");
