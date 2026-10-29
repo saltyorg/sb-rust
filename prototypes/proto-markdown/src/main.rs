@@ -290,6 +290,8 @@ struct Viewer {
     quit: bool,
     // From the last draw, for mouse hits.
     list_area: Rect,
+    /// The list's rows: its area inside the border.
+    list_rows: Rect,
 }
 
 impl Viewer {
@@ -302,6 +304,7 @@ impl Viewer {
             article: ScrollViewState::default(),
             quit: false,
             list_area: Rect::default(),
+            list_rows: Rect::default(),
         }
     }
 
@@ -311,6 +314,13 @@ impl Viewer {
     fn move_list(&mut self, movement: impl FnOnce(&mut ListState)) {
         let before = self.list.selected();
         movement(&mut self.list);
+        // ListState::select_next doesn't clamp; List clamps when rendering
+        // (ratatui-widgets 0.3.2 list/state.rs, list/rendering.rs). Clamp here
+        // too, so moving past the last item isn't seen as a change.
+        let last = self.items.len().saturating_sub(1);
+        if let Some(selected) = self.list.selected() {
+            self.list.select(Some(selected.min(last)));
+        }
         if self.list.selected() != before {
             self.article.scroll_to_top();
         }
@@ -333,10 +343,12 @@ impl Viewer {
         let pos = Position::new(m.column, m.row);
         let in_list = self.list_area.contains(pos);
         match m.kind {
-            // ratatui's List has no hit-testing; rows start inside the
-            // block's top border, offset by the list's scroll.
-            MouseEventKind::Down(MouseButton::Left) if in_list && m.row > self.list_area.y => {
-                let row = self.list.offset() + usize::from(m.row - self.list_area.y - 1);
+            // ratatui's List has no hit-testing (none in ratatui-widgets 0.3.2
+            // list/), so rows are mapped here: only
+            // clicks inside the block (Block::inner) count, offset by the
+            // list's scroll.
+            MouseEventKind::Down(MouseButton::Left) if self.list_rows.contains(pos) => {
+                let row = self.list.offset() + usize::from(m.row - self.list_rows.y);
                 if row < self.items.len() {
                     self.move_list(|l| l.select(Some(row)));
                 }
@@ -361,26 +373,6 @@ impl Viewer {
 fn draw(f: &mut Frame, v: &mut Viewer) {
     let [body, footer] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
-    let longest = v
-        .items
-        .iter()
-        .map(|i| i.announcement.title.chars().count() + i.announcement.date.len())
-        .max()
-        .unwrap_or(0);
-    let [list_area, article_area] = if body.width >= SIDE_BY_SIDE_MIN_WIDTH {
-        // Wide enough for "● date  title" plus borders, up to 40% of the screen.
-        let width = u16::try_from(longest + 9)
-            .unwrap_or(u16::MAX)
-            .clamp(24, body.width * 2 / 5);
-        Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(body)
-    } else {
-        let height = u16::try_from(v.items.len() + 2)
-            .unwrap_or(u16::MAX)
-            .min(body.height / 3);
-        Layout::vertical([Constraint::Length(height), Constraint::Fill(1)]).areas(body)
-    };
-    v.list_area = list_area;
-
     let new_count = v.items.iter().filter(|i| i.new).count();
     let rows: Vec<ListItem> = v
         .items
@@ -407,6 +399,22 @@ fn draw(f: &mut Frame, v: &mut Viewer) {
             ListItem::new(line)
         })
         .collect();
+    // Wide enough for the widest row (display width, so CJK and emoji count
+    // double) plus the borders, up to 40% of the screen.
+    let widest = rows.iter().map(ListItem::width).max().unwrap_or(0);
+    let [list_area, article_area] = if body.width >= SIDE_BY_SIDE_MIN_WIDTH {
+        let width = u16::try_from(widest + 2)
+            .unwrap_or(u16::MAX)
+            .clamp(24, body.width * 2 / 5);
+        Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(body)
+    } else {
+        let height = u16::try_from(v.items.len() + 2)
+            .unwrap_or(u16::MAX)
+            .min(body.height / 3);
+        Layout::vertical([Constraint::Length(height), Constraint::Fill(1)]).areas(body)
+    };
+    v.list_area = list_area;
+
     let list_title = if new_count == 0 {
         Line::from(Span::styled(
             " Announcements ",
@@ -418,19 +426,24 @@ fn draw(f: &mut Frame, v: &mut Viewer) {
             Span::styled(format!("· {new_count} new "), Style::new().fg(theme::OK)),
         ])
     };
+    let list_block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::BORDER))
+        .title(list_title);
+    v.list_rows = list_block.inner(list_area);
     let list = List::new(rows)
-        .block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(theme::BORDER))
-                .title(list_title),
-        )
+        .block(list_block)
         .highlight_style(theme::SELECTED);
     f.render_stateful_widget(list, list_area, &mut v.list);
 
+    // tui-scrollview's scrollbar has no style of its own (Scrollbar::new's
+    // styles are empty), so it keeps the colour already in its cells: the
+    // block's style. The content itself is copied over from the scroll view's
+    // buffer and keeps the paragraph's style.
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::BORDER));
+        .border_style(Style::new().fg(theme::BORDER))
+        .style(Style::new().fg(theme::FAINT));
     let inner = block.inner(article_area);
     f.render_widget(block, article_area);
     if let Some(item) = v.list.selected().and_then(|i| v.items.get(i)) {
@@ -657,6 +670,85 @@ mod tests {
         v.on_key(KeyCode::Down);
         draw_at(&mut v, 100, 30);
         assert_eq!(v.article.offset().y, 0);
+    }
+
+    fn long_announcements(count: usize) -> Vec<Announcement> {
+        let long: String = (1..=60).map(|n| format!("Paragraph {n}.\n\n")).collect();
+        (0..count)
+            .map(|i| {
+                announcement(
+                    &format!("2026-01-{:02}", 28 - i),
+                    &format!("Entry {i}"),
+                    &long,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn moving_past_the_last_announcement_keeps_the_scroll_position() {
+        let mut v = Viewer::new(classify(long_announcements(2), None));
+        draw_at(&mut v, 100, 30);
+        v.on_key(KeyCode::Down); // the last (oldest) one
+        draw_at(&mut v, 100, 30);
+        v.on_key(KeyCode::PageDown);
+        draw_at(&mut v, 100, 30);
+        let scrolled = v.article.offset().y;
+        assert!(scrolled > 0);
+        v.on_key(KeyCode::Down); // nothing below: the selection stays
+        draw_at(&mut v, 100, 30);
+        assert_eq!(v.article.offset().y, scrolled);
+    }
+
+    #[test]
+    fn clicks_on_the_list_border_select_nothing() {
+        // Narrow layout with more announcements than rows, so a click on the
+        // bottom border would land on a hidden item if borders counted.
+        let mut v = Viewer::new(classify(long_announcements(10), None));
+        draw_at(&mut v, 60, 20);
+        let before = v.list.selected();
+        let area = v.list_area;
+        for (column, row) in [
+            (area.x + 3, area.bottom() - 1),
+            (area.x, area.y + 2),
+            (area.right() - 1, area.y + 2),
+        ] {
+            v.on_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            });
+        }
+        assert_eq!(v.list.selected(), before);
+    }
+
+    #[test]
+    fn list_is_wide_enough_for_wide_characters() {
+        let mut v = Viewer::new(classify(
+            vec![announcement("2026-01-01", "家庭メディア更新", "Body.")],
+            None,
+        ));
+        let terminal = draw_at(&mut v, 100, 20);
+        // A wide character takes two cells; the second reads as a space here.
+        // The whole title, then the list's right border.
+        let row = screen(&terminal)[1].replace(' ', "");
+        assert!(row.contains("家庭メディア更新│"), "{row:?}");
+    }
+
+    #[test]
+    fn scrollbar_uses_the_palette() {
+        let mut v = Viewer::new(classify(long_announcements(1), None));
+        let terminal = draw_at(&mut v, 100, 30);
+        let buffer = terminal.backend().buffer();
+        // The scrollbar sits in the last column inside the article border.
+        let x = v.list_area.right() + (100 - v.list_area.right()) - 2;
+        let cells: Vec<_> = (2..27).map(|y| &buffer[(x, y)]).collect();
+        assert!(
+            cells.iter().any(|c| c.symbol() == "█"),
+            "no thumb at column {x}"
+        );
+        assert!(cells.iter().all(|c| c.fg == theme::FAINT));
     }
 
     #[test]

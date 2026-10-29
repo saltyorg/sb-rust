@@ -110,12 +110,31 @@ stand out while missed ones can still be read.
     matter here.
   - List movement uses `ListState::select_next`/`select_previous`, which
     clamp when rendering.
-  - Limitation: tui-scrollview 0.6.8 draws its scrollbar unstyled, with no
-    hook to colour it, so it takes the base text colour. It still never
-    emits a named colour.
+  - The scrollbar is coloured through the article block's style.
+    tui-scrollview 0.6.8 builds a plain `Scrollbar` whose styles are empty,
+    so it keeps the colour already in its cells. An earlier note here called
+    it uncolourable and said it took the text colour; both were wrong (its
+    cells were the terminal default), and the library reviewer caught it.
   - The remaining glue: the content height, from ratatui's unstable
     `line_count`, measured again one column narrower when a scrollbar is
-    needed. Also click-to-row mapping, since `List` has no hit-testing.
+    needed. Also click-to-row mapping, since `List` has no hit-testing. The
+    clickable area is `Block::inner` of the list, so border clicks select
+    nothing.
+  - The list column is as wide as its widest row by `ListItem::width`
+    (display width), so CJK and emoji titles fit. The first version counted
+    characters.
+- **Library review** (the `library-reviewer` agent, given only the commit
+  range) found:
+  - **A bug:** `ListState::select_next` doesn't clamp until the list is
+    rendered, so Down on the last announcement looked like a change and
+    reset the scroll. The selection is now clamped before comparing.
+  - **Two duplicated library APIs:** a hand-written character-count width
+    (now `ListItem::width`) and an `rgb` helper in the theme (now
+    `Color::from_u32`).
+  - **Two unused library mechanisms:** `Block::inner` for the click area,
+    and `Block::style` for the scrollbar colour.
+
+  Each fix got a test first, which failed against the old code.
 - **Event loop:** proto-facts' documented `read()`/`poll()` pattern, with
   the same drain after mouse capture is turned off (still UNVERIFIED).
 - **Tests:**
