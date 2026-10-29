@@ -234,6 +234,24 @@ rich status, recent sources, and one picker for both kinds of source.
   - Clicks on headers were ignored, the wheel moved the cursor, and a click
     then a second click opened a source.
   - `logs-demo` now includes a crash-looping container.
+- **Colour (after review: "not a fan of the line selected having different
+  colors", and too little colour overall):**
+  - The selected row was `reversed()`, which swaps each span's own colours,
+    so the bar came out in several colours. It is now one solid bar:
+    ratatui paints `highlight_style` over the whole row after drawing it
+    (ratatui-widgets 0.3.2 `list/rendering.rs`), so a style with both
+    colours that also clears DIM replaces every span's styling. A
+    `TestBackend` test checks every cell of the selected row, and failed on
+    the old style.
+  - The palette is the 16 standard ANSI colours, so it follows the terminal
+    theme:
+    - sections and kind tags: blue services, magenta containers, red Needs
+      attention, yellow Recent;
+    - state words by health: green running, red failed, yellow restarting
+      or busy, cyan idle;
+    - key hints in cyan.
+  - Section headers carry a count and a coloured rule. Colour still only
+    repeats what the words say.
 - **Open:** whether "+N more" is needed when many sources fail, and whether a
   source that recovers should stay marked for a while. Services have no live
   signal yet (systemd's D-Bus signals would give one, at the cost of a D-Bus

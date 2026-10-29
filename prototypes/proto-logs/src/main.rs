@@ -945,13 +945,56 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+// Picker palette: the 16 standard ANSI colours only, so it follows the
+// user's terminal theme. Colour always repeats what the words say.
+const SERVICE_COLOR: Color = Color::Blue;
+const CONTAINER_COLOR: Color = Color::Magenta;
+const KEY_COLOR: Color = Color::Cyan;
+/// The selected row is one solid bar: ratatui paints `highlight_style` over
+/// the whole row after drawing it (ratatui-widgets 0.3.2 list/rendering.rs),
+/// so setting both colours and clearing DIM replaces every span's styling.
+const SELECTED: Style = Style::new()
+    .fg(Color::White)
+    .bg(Color::Blue)
+    .add_modifier(Modifier::BOLD)
+    .remove_modifier(Modifier::DIM);
+
 fn health_color(status: &sources::Status) -> Color {
     match (status.health, status.symbol) {
         (Health::Problem, '↻') | (Health::Busy, _) => Color::Yellow,
         (Health::Problem, _) => Color::Red,
         (Health::Ok, _) => Color::Green,
-        (Health::Idle, _) => Color::DarkGray,
+        (Health::Idle, _) => Color::Cyan,
     }
+}
+
+fn kind_color(source: &Source) -> Color {
+    match source {
+        Source::Service(_) => SERVICE_COLOR,
+        Source::Container(_) => CONTAINER_COLOR,
+    }
+}
+
+fn section_color(section: Section) -> Color {
+    match section {
+        Section::Attention => Color::Red,
+        Section::Recent => Color::Yellow,
+        Section::Services => SERVICE_COLOR,
+        Section::Containers => CONTAINER_COLOR,
+    }
+}
+
+/// Footer key hints: keys in colour, what they do in the default colour.
+fn key_hints(hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (key, what) in hints {
+        spans.push(Span::styled(
+            (*key).to_string(),
+            Style::new().fg(KEY_COLOR).bold(),
+        ));
+        spans.push(Span::raw(format!(" {what}   ")));
+    }
+    Line::from(spans)
 }
 
 fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rect) {
@@ -959,15 +1002,12 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
     let count = |f: &dyn Fn(&Entry) -> bool| entries.iter().filter(|e| f(e)).count();
     let services = count(&|e| matches!(e.source, Source::Service(_)));
     let problems = count(&|e| e.status.health == Health::Problem);
-    let mut title = vec![" ◆ Logs ".bold().cyan()];
+    let mut title = vec![" ◆ Logs ".bold().black().on_cyan(), Span::raw("  ")];
     if app.entries.is_some() {
-        title.push(
-            format!(
-                "  {services} services · {} containers · ",
-                entries.len() - services
-            )
-            .dim(),
-        );
+        title.push(format!("{services} services").fg(SERVICE_COLOR));
+        title.push(" · ".dim());
+        title.push(format!("{} containers", entries.len() - services).fg(CONTAINER_COLOR));
+        title.push(" · ".dim());
         title.push(match problems {
             0 => "all healthy".green(),
             1 => "1 needs attention".red().bold(),
@@ -1011,18 +1051,27 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
             .map(|e| e.status.text.chars().count())
             .max()
             .unwrap_or(0);
+        let in_section = |section: Section| {
+            app.rows
+                .iter()
+                .filter(|r| matches!(r, Row::Item(s, _) if *s == section))
+                .count()
+        };
+        // Header rules run to the right edge (less the highlight column).
+        let rule_width = usize::from(area.width.saturating_sub(1));
         let items: Vec<ListItem> = app
             .rows
             .iter()
             .map(|row| match *row {
                 Row::Spacer => ListItem::new(""),
                 Row::Header(section) => {
-                    let color = if section == Section::Attention {
-                        Color::Red
-                    } else {
-                        Color::Cyan
-                    };
-                    ListItem::new(Line::from(section.title().bold().fg(color)))
+                    let color = section_color(section);
+                    let title = format!("{} ({}) ", section.title(), in_section(section));
+                    let rule = "─".repeat(rule_width.saturating_sub(title.chars().count()));
+                    ListItem::new(Line::from(vec![
+                        title.bold().fg(color),
+                        Span::styled(rule, Style::new().fg(color).dim()),
+                    ]))
                 }
                 Row::Item(section, i) => {
                     let e = &entries[i];
@@ -1037,22 +1086,27 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
                         _ => ("", name),
                     };
                     let pad = name_width.saturating_sub(name.chars().count());
+                    // "running · 2d": the state word in the health colour,
+                    // the detail after it in the default colour.
+                    let (word, detail) = match e.status.text.split_once(" · ") {
+                        Some((word, detail)) => (word, format!(" · {detail}")),
+                        None => (e.status.text.as_str(), String::new()),
+                    };
                     let mut spans = vec![
                         Span::raw("  "),
-                        Span::styled(e.status.symbol.to_string(), Style::new().fg(color)),
+                        Span::styled(e.status.symbol.to_string(), Style::new().fg(color).bold()),
                         Span::raw(" "),
                         Span::styled(prefix.to_string(), Style::new().dim()),
-                        Span::raw(rest.to_string()),
+                        Span::styled(rest.to_string(), Style::new().bold()),
                         Span::raw(" ".repeat(pad + 3)),
-                        match e.status.health {
-                            Health::Ok => Span::raw(e.status.text.clone()),
-                            _ => Span::styled(e.status.text.clone(), Style::new().fg(color)),
-                        },
+                        Span::styled(word.to_string(), Style::new().fg(color)),
+                        Span::raw(detail),
                     ];
                     // Shortcut sections mix kinds, so say which one this is.
                     if matches!(section, Section::Attention | Section::Recent) {
                         let pad = status_width.saturating_sub(e.status.text.chars().count());
-                        spans.push(format!("{}  {}", " ".repeat(pad), e.source.kind()).dim());
+                        spans.push(Span::raw(" ".repeat(pad + 2)));
+                        spans.push(e.source.kind().fg(kind_color(&e.source)));
                     }
                     ListItem::new(Line::from(spans))
                 }
@@ -1060,21 +1114,26 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
             .collect();
         let list = List::new(items)
             .highlight_symbol("›")
-            .highlight_style(Style::default().reversed());
+            .highlight_style(SELECTED);
         f.render_stateful_widget(list, area, &mut app.pick);
     }
 
     if let Some(filter_box) = &app.filter_box {
         let [label, input] =
             Layout::horizontal([Constraint::Length(9), Constraint::Fill(1)]).areas(footer);
-        f.render_widget(Line::from(" Filter: ".bold()), label);
+        f.render_widget(Line::from(" Filter: ".bold().fg(KEY_COLOR)), label);
         f.render_widget(filter_box, input);
     } else {
-        let mut keys = vec![" ↑↓ move   Enter or click again open   / filter   q quit".dim()];
+        let mut keys = key_hints(&[
+            ("↑↓", "move"),
+            ("Enter", "or click again to open"),
+            ("/", "filter"),
+            ("q", "quit"),
+        ]);
         if !app.filter.is_empty() {
-            keys.push(format!("   filter \"{}\" · Esc clears", app.filter).yellow());
+            keys.push_span(format!("filter \"{}\" · Esc clears", app.filter).yellow());
         }
-        f.render_widget(Line::from(keys), footer);
+        f.render_widget(keys, footer);
     }
 }
 
@@ -1192,12 +1251,30 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
         );
     }
 
-    let hint = if app.wrap {
-        " ↑↓/wheel scroll  w wrap off  f follow  / search  n/N next/prev  m or right-click menu  Esc sources  q quit"
+    let hints = if app.wrap {
+        key_hints(&[
+            ("↑↓", "scroll"),
+            ("w", "wrap off"),
+            ("f", "follow"),
+            ("/", "search"),
+            ("n/N", "next/prev"),
+            ("m", "or right-click menu"),
+            ("Esc", "sources"),
+            ("q", "quit"),
+        ])
     } else {
-        " ↑↓/wheel scroll  ←→/shift+wheel sideways  w wrap on  f follow  / search  n/N  m or right-click menu  Esc  q"
+        key_hints(&[
+            ("↑↓", "scroll"),
+            ("←→", "sideways"),
+            ("w", "wrap on"),
+            ("f", "follow"),
+            ("/", "search"),
+            ("n/N", "next/prev"),
+            ("m", "or right-click menu"),
+            ("Esc", "sources"),
+        ])
     };
-    f.render_widget(Line::from(hint.dim()), footer);
+    f.render_widget(hints, footer);
 }
 
 #[cfg(test)]
@@ -1340,6 +1417,31 @@ mod tests {
         app.rebuild_rows();
         assert_eq!(app.selected_source(), None);
         assert!(render(&mut app, 80, 24).contains("Nothing matches \"zzz\""));
+    }
+
+    #[test]
+    fn selected_row_is_one_uniform_bar() {
+        let mut app = demo_app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("backend");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let row = app.pick_area.y
+            + u16::try_from(app.pick.selected().unwrap_or_default()).unwrap_or(0)
+            - u16::try_from(app.pick.offset()).unwrap_or(0);
+        let cells: Vec<_> = (app.pick_area.x..app.pick_area.right())
+            .map(|x| &buffer[(x, row)])
+            .collect();
+        assert!(
+            cells[3..].iter().any(|c| c.symbol() == "✗"),
+            "not the selected row"
+        );
+        let (fg, bg) = (cells[0].fg, cells[0].bg);
+        assert_ne!(bg, Color::Reset, "selection needs a background");
+        for c in &cells {
+            assert_eq!((c.fg, c.bg), (fg, bg), "cell {:?} differs", c.symbol());
+            assert!(!c.modifier.contains(Modifier::DIM));
+            assert!(!c.modifier.contains(Modifier::REVERSED));
+        }
     }
 
     #[test]
