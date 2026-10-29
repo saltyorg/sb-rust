@@ -59,6 +59,21 @@ fn sh(script: &str) -> Vec<String> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     apply_colour_choice(cli.color);
+    // Every run is logged, whatever its outcome (capability map, decision
+    // 11). A log that can't be opened must not stop the run, so it is
+    // reported once and the run goes on without it.
+    let log = match log_subscriber(&log_dir()) {
+        Ok((subscriber, log)) => {
+            tracing::subscriber::set_global_default(subscriber)?;
+            log
+        }
+        Err(e) => {
+            eprintln!("warning: no log this run: {e:#}");
+            RunLog::disabled()
+        }
+    };
+    let _run = log.enter_run();
+    log.started(&std::env::args().collect::<Vec<_>>());
     if cli.gallery {
         gallery::print();
         return Ok(());
@@ -125,9 +140,17 @@ echo "E: Unable to locate package demo-unavailable"; exit 100"#),
             .apply_to("Saltbox (simulated run)")
     );
     let area = LiveArea::new(&mp, tail_count, live)?;
+    let ctx = RunContext {
+        mp: &mp,
+        area: &area,
+        log: &log,
+        live,
+        verbose: cli.verbose,
+        interrupted: &interrupted,
+    };
     for (i, step) in steps.iter().enumerate() {
         let last = i + 1 == steps.len();
-        if let Err(e) = run_step(&mp, &area, step, last, live, cli.verbose, &interrupted) {
+        if let Err(e) = run_step(&ctx, step, last) {
             area.finish();
             let signal = interrupted.load(Ordering::Relaxed);
             if signal != 0 {
@@ -153,20 +176,28 @@ echo "E: Unable to locate package demo-unavailable"; exit 100"#),
     Ok(())
 }
 
-fn run_step(
-    mp: &MultiProgress,
-    area: &LiveArea,
-    step: &Step,
-    last: bool,
+/// What every step of a run shares.
+struct RunContext<'a> {
+    mp: &'a MultiProgress,
+    area: &'a LiveArea,
+    log: &'a RunLog,
     live: bool,
     verbose: bool,
-    interrupted: &AtomicUsize,
-) -> Result<()> {
+    interrupted: &'a AtomicUsize,
+}
+
+fn run_step(ctx: &RunContext<'_>, step: &Step, last: bool) -> Result<()> {
+    let RunContext {
+        mp,
+        area,
+        log,
+        live,
+        verbose,
+        interrupted,
+    } = *ctx;
     area.start(step.running);
-    // The step's complete output, kept if it fails. Not having a log file
-    // must not stop the run, so a failure to create one is only a missing
-    // path later.
-    let mut log = StepLog::new(step.running).ok();
+    let _step = log.enter_step(step.running);
+    log.step_started();
     let terminal = console::Term::stderr().size_checked();
     let (rows, cols) = terminal.map_or((24, 80), |(r, c)| (r.max(10), c.max(40)));
     let pair = native_pty_system().openpty(PtySize {
@@ -210,8 +241,10 @@ fn run_step(
     let status = loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok((line, overwrite)) => {
-                if let Some(log) = log.as_mut() {
-                    log.write(&line, overwrite);
+                // In-place progress updates are logged only in their final
+                // state.
+                if !overwrite {
+                    log.output(&line);
                 }
                 if last_overwrites {
                     history.pop_back();
@@ -259,8 +292,8 @@ fn run_step(
         if let Some(status) = child.try_wait()? {
             // Drain whatever the reader already queued before reporting.
             while let Ok((line, overwrite)) = rx.try_recv() {
-                if let Some(log) = log.as_mut() {
-                    log.write(&line, overwrite);
+                if !overwrite {
+                    log.output(&line);
                 }
                 if last_overwrites {
                     history.pop_back();
@@ -289,14 +322,14 @@ fn run_step(
             live,
             &step_line(true, &Outcome::Interrupted, step.running, &elapsed),
         )?;
-        if let Some(path) = log.and_then(|l| l.keep().ok()) {
-            for line in failure_lines(&VecDeque::new(), Some(&path)) {
-                emit(mp, live, &line)?;
-            }
+        log.step_finished(&Outcome::Interrupted, &elapsed);
+        for line in failure_lines(&VecDeque::new(), log.pointer().as_deref()) {
+            emit(mp, live, &line)?;
         }
         bail!("interrupted");
     }
     if status.success() {
+        log.step_finished(&Outcome::Done, &elapsed);
         emit(
             mp,
             live,
@@ -310,75 +343,148 @@ fn run_step(
         code: status.exit_code(),
         signal: status.signal().map(str::to_string),
     };
+    log.step_finished(&outcome, &elapsed);
     emit(mp, live, &step_line(true, &outcome, step.running, &elapsed))?;
-    let path = log.and_then(|l| l.keep().ok());
-    for line in failure_lines(&history, path.as_deref()) {
+    for line in failure_lines(&history, log.pointer().as_deref()) {
         emit(mp, live, &line)?;
     }
     Err(StepFailed.into())
 }
 
-/// A step's complete output as a plain-text log file: every line, ANSI
-/// stripped (console::strip_ansi_codes), skipping in-place progress updates
-/// (only their final state). A tempfile `NamedTempFile`, so it is removed
-/// when dropped, after a successful step, unless kept for a failure
-/// (https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html#method.keep).
-/// The prototype uses the system temp directory; where sb keeps these logs
-/// is for the runner module spec.
-struct StepLog {
-    file: tempfile::NamedTempFile,
+/// Where the prototype writes its log: `SB_LOG_DIR`, or the system temp
+/// directory. sb itself will use /var/log/sb when run as root (capability
+/// map, decision 11).
+fn log_dir() -> std::path::PathBuf {
+    std::env::var_os("SB_LOG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("sb-rust-proto").join("logs"))
 }
 
-impl StepLog {
-    fn new(step: &str) -> Result<Self> {
-        let dir = std::env::temp_dir().join("sb-rust-proto");
-        std::fs::create_dir_all(&dir)?;
-        let slug: String = step
-            .to_lowercase()
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|w| !w.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
-        let file = tempfile::Builder::new()
-            .prefix(&format!("{slug}-"))
-            .suffix(".log")
-            .tempfile_in(dir)?;
-        Ok(Self { file })
-    }
+/// Daily log files tracing-appender keeps. It prunes to one below this at
+/// every start (counting today's file), so 13 to 14 days of logs remain;
+/// files start at UTC midnight (tracing-appender 0.2.5 rolling.rs).
+const LOG_FILES_KEPT: usize = 14;
 
-    fn write(&mut self, line: &str, overwrite: bool) {
-        use std::io::Write as _;
-        if !overwrite {
-            let _ = writeln!(self.file, "{}", console::strip_ansi_codes(line));
+/// A run's identity in the log, so one run's lines can be picked out of the
+/// day's file.
+struct RunLog {
+    id: String,
+    /// None when the log couldn't be opened; events then go nowhere.
+    dir: Option<std::path::PathBuf>,
+}
+
+/// The log for every run, successful or not (capability map, decision 11):
+/// tracing events written by tracing-subscriber's fmt layer (readable
+/// key=value lines, no ANSI) to a tracing-appender RollingFileAppender that
+/// starts a new file daily and keeps `LOG_FILES_KEPT`
+/// (https://docs.rs/tracing-appender/0.2.5/tracing_appender/rolling/struct.Builder.html).
+/// The appender is used as the writer directly, so writes are synchronous
+/// and nothing is lost when the process exits early.
+fn log_subscriber(
+    dir: &std::path::Path,
+) -> Result<(impl tracing::Subscriber + Send + Sync, RunLog)> {
+    std::fs::create_dir_all(dir)?;
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("sb")
+        .filename_suffix("log")
+        .max_log_files(LOG_FILES_KEPT)
+        .build(dir)?;
+    // The default Full format prints the run and step spans, with their
+    // fields, before each event, so every line carries both. A failed write
+    // (full disk) is not reported on stderr, where it would land on the live
+    // area.
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(appender)
+        .with_ansi(false)
+        .with_target(false)
+        .log_internal_errors(false)
+        .finish();
+    // Only needs to tell runs apart within the log: start time and pid. Why
+    // not uuid or fastrand: no new direct dependency for an id that only has
+    // to differ between runs on one host.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let id = format!("{:08x}", nanos ^ std::process::id());
+    Ok((
+        subscriber,
+        RunLog {
+            id,
+            dir: Some(dir.to_path_buf()),
+        },
+    ))
+}
+
+impl RunLog {
+    fn disabled() -> Self {
+        Self {
+            id: String::new(),
+            dir: None,
         }
     }
 
-    #[cfg(test)]
-    fn path(&self) -> &std::path::Path {
-        self.file.path()
+    /// The run's span: entered for the whole run, so every event in it is
+    /// tagged with the run id.
+    fn enter_run(&self) -> tracing::span::EnteredSpan {
+        tracing::info_span!("run", run = %self.id).entered()
     }
 
-    /// Keeps the file past this run and returns its path.
-    fn keep(self) -> Result<std::path::PathBuf> {
-        let (_, path) = self.file.keep()?;
-        Ok(path)
+    /// A step's span: entered while the step runs, so its events carry the
+    /// step's name.
+    fn enter_step(&self, step: &str) -> tracing::span::EnteredSpan {
+        tracing::info_span!("step", step).entered()
+    }
+
+    fn started(&self, args: &[String]) {
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), args = %args.join(" "), "run started");
+    }
+
+    fn step_started(&self) {
+        tracing::info!("step started");
+    }
+
+    /// One line of the running step's output, as plain text: fmt's own
+    /// sanitising escapes ANSI codes rather than removing them.
+    fn output(&self, line: &str) {
+        tracing::info!("{}", console::strip_ansi_codes(line));
+    }
+
+    fn step_finished(&self, outcome: &Outcome, elapsed: &str) {
+        let outcome = match outcome {
+            Outcome::Done => "done".to_string(),
+            Outcome::Failed {
+                signal: Some(s), ..
+            } => format!("killed by signal {s}"),
+            Outcome::Failed { code, .. } => format!("exit {code}"),
+            Outcome::Interrupted => "interrupted".to_string(),
+        };
+        tracing::info!(outcome = outcome.as_str(), elapsed, "step finished");
+    }
+
+    /// The pointer printed under a failed or interrupted step, if there is
+    /// a log to point at.
+    fn pointer(&self) -> Option<String> {
+        self.dir
+            .as_ref()
+            .map(|dir| format!("full output: {} (run {})", dir.display(), self.id))
     }
 }
 
 /// The lines under a failed or interrupted step: its last output lines,
-/// then the full log's path as the last branch.
-fn failure_lines(history: &VecDeque<String>, log: Option<&std::path::Path>) -> Vec<String> {
-    let total = history.len() + usize::from(log.is_some());
+/// then the pointer to the full log as the last branch.
+fn failure_lines(history: &VecDeque<String>, pointer: Option<&str>) -> Vec<String> {
+    let total = history.len() + usize::from(pointer.is_some());
     let mut lines: Vec<String> = history
         .iter()
         .enumerate()
         .map(|(i, line)| format!("{}{line}", tail_prefix(i, total)))
         .collect();
-    if let Some(path) = log {
+    if let Some(pointer) = pointer {
         lines.push(format!(
             "{}{}",
             tail_prefix(total - 1, total),
-            palette(theme::MUTED).apply_to(format!("full output: {}", path.display()))
+            palette(theme::MUTED).apply_to(pointer)
         ));
     }
     lines
@@ -1086,36 +1192,44 @@ mod tests {
         assert_eq!(tail_lines(3), 1);
     }
 
-    /// The full output of a step goes to a log file: every line, as plain
-    /// text, skipping in-place progress updates (only their final state).
-    /// Kept on failure, removed when the step succeeds.
+    /// Logging is general for the CLI (capability map, decision 11): every
+    /// run and step is logged with its output, successful or not, into a
+    /// tracing-appender rotated file. Nothing is removed after a run; only
+    /// rotation retires old files.
     #[test]
-    fn step_log_keeps_every_line_and_only_on_failure() {
-        let mut log = StepLog::new("Installing packages").expect("log");
-        for n in 1..=30 {
-            log.write(&format!("\x1b[32mline {n}\x1b[0m"), false);
+    fn run_log_keeps_every_run_and_step_with_its_output() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (subscriber, run) = log_subscriber(dir.path()).expect("subscriber");
+        tracing::subscriber::with_default(subscriber, || {
+            let _run = run.enter_run();
+            run.started(&["proto-runner".to_string(), "--fail".to_string()]);
+            let _step = run.enter_step("Installing packages");
+            run.step_started();
+            run.output("\x1b[32mGet: jq\x1b[0m");
+            run.step_finished(&Outcome::Done, "3s");
+        });
+        let files: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .map(|e| e.expect("entry").path())
+            .collect();
+        assert_eq!(files.len(), 1, "{files:?}");
+        let name = files[0]
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("sb.") && name.ends_with(".log"), "{name}");
+        let text = std::fs::read_to_string(&files[0]).expect("read");
+        for expected in [
+            format!("run={}", run.id),
+            "--fail".to_string(),
+            "step=\"Installing packages\"".to_string(),
+            "Get: jq".to_string(),
+            "outcome=\"done\"".to_string(),
+        ] {
+            assert!(text.contains(&expected), "missing {expected:?} in:\n{text}");
         }
-        log.write("Progress: [ 40%]", true);
-        log.write("Progress: [100%]", false);
-        let path = log.keep().expect("kept");
-        let text = std::fs::read_to_string(&path).expect("read");
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 31, "{text}");
-        assert_eq!(lines[0], "line 1");
-        assert_eq!(lines[30], "Progress: [100%]");
-        assert!(
-            path.file_name()
-                .expect("name")
-                .to_string_lossy()
-                .contains("installing-packages")
-        );
-        std::fs::remove_file(&path).expect("clean up");
-
-        let mut log = StepLog::new("Fine step").expect("log");
-        log.write("ok", false);
-        let temp_path = log.path().to_path_buf();
-        drop(log);
-        assert!(!temp_path.exists(), "a successful step's log is removed");
+        assert!(!text.contains('\x1b'), "escape codes in the log:\n{text}");
     }
 
     /// Under a failed step: its last lines, then the log path as the last
@@ -1127,10 +1241,14 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         console::set_colors_enabled_stderr(false);
         let history: VecDeque<String> = ["a", "b"].iter().map(|s| (*s).to_string()).collect();
-        let lines = failure_lines(&history, Some(std::path::Path::new("/tmp/x.log")));
+        let lines = failure_lines(&history, Some("full output: /var/log/sb (run 1a2b)"));
         assert_eq!(
             lines,
-            ["    ├── a", "    ├── b", "    ╰── full output: /tmp/x.log"]
+            [
+                "    ├── a",
+                "    ├── b",
+                "    ╰── full output: /var/log/sb (run 1a2b)"
+            ]
         );
         let no_log = failure_lines(&history, None);
         assert_eq!(no_log, ["    ├── a", "    ╰── b"]);

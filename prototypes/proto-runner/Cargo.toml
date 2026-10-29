@@ -16,8 +16,13 @@ proto-theme = { version = "0.1.0", path = "../proto-theme" }
 ratatui = { version = "0.30.2", default-features = false }
 rustix = { version = "1.1.6", features = ["process", "termios", "stdio"] }
 signal-hook = "0.4.5"
-tempfile = "3.27.0"
 termtree = "1.0.0"
+tracing = "0.1"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

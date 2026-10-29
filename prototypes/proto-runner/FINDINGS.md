@@ -190,13 +190,34 @@ Ansible output, since the runner will not inline Ansible's own output.
   - Checked: hidden then shown on all three exits in a PTY; tmux reports
     the cursor invisible mid-run and visible after; no cursor codes when
     piped.
-- **A failed step's full output is kept** (review: the 10-line tail can miss
-  the actual error). Each step writes its complete output (plain text, final
-  state of in-place progress) to a log file. It is removed on success and
-  kept on failure or interrupt, with its path as the last branch:
-  `╰── full output: …`. The prototype uses the system temp directory via
-  tempfile. The real location follows the logging decision in the
-  capability map.
+- **General run log** (capability map, decision 11). Review corrected a
+  first version that kept a per-step file only on failure: logging is
+  general for the CLI, and nothing is removed after a successful run.
+  - Every run logs, through `tracing` and `tracing-subscriber`'s readable
+    key=value format, to a `tracing-appender` file that starts daily at
+    UTC midnight. With `max_log_files(14)` it prunes to one below that at
+    every start, so 13 to 14 days remain:
+    - a run record with its id, version and arguments;
+    - each step's start, its output lines (plain text, the final state of
+      in-place progress) and its end with outcome and elapsed.
+
+    A `run` span (with the id) and a `step` span (with the step's name)
+    tag every line, e.g. `run{run=…}:step{step="…"}: Get: …`; the
+    library-reviewer pointed out that fields passed by hand on each event
+    duplicated what spans do.
+  - Not used: `latest_symlink`. It would let the pointer name a file, but
+    the link moves at the next rotation, so a printed pointer would later
+    lead elsewhere. Internal write errors (a full disk) are not printed, so
+    they can't land on the live area.
+  - A failed or interrupted step's last branch points at the log:
+    `╰── full output: <dir> (run <id>)`.
+  - The appender is the writer directly, so writes are synchronous and the
+    early exits lose nothing. A log that can't be opened is a warning, not
+    a failed run.
+  - The prototype writes to `SB_LOG_DIR` or the system temp directory; sb
+    will use /var/log/sb.
+  - Checked: a successful and a failing run in one daily file, both kept,
+    with every step's result and output.
 - **A failed step now exits 1 without repeating itself.** anyhow had printed
   "Error: step failed" under the tree; the tree already says it.
 - **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:
