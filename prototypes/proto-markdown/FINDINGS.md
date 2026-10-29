@@ -17,8 +17,12 @@ message) with four renderer/mode combinations:
 - termimad's own scrollable view (`MadView`) was **not** built. See below.
 
 Checked against a synthetic fixture (headings, emphasis, inline code, links,
-nested and ordered lists, a fenced code block, a long quote, wide CJK/emoji
-text) and a real Saltbox announcements file, at 80 and 140 columns.
+nested and ordered lists, a fenced code block, a long quote) and a real
+Saltbox announcements file, at 80 and 140 columns.
+
+Announcements are English only (Saltbox is not multi-language), and the real
+file is plain ASCII, so wide-character (CJK, emoji) checks are out of scope
+for announcements. The first fixture had a CJK/emoji line; it was removed.
 
 ## Result
 
@@ -31,7 +35,6 @@ text) and a real Saltbox announcements file, at 80 and 140 columns.
 | Lists, nested, ordered | correct | correct | correct (`•` bullets) |
 | Code block | fences shown | fences hidden, styled | plain, no fences |
 | Quote wrap | prefix on first line only | same | `▐` on every wrapped line |
-| Wide text | correct in full-screen view | same | correct |
 | Wrap and rewrap on resize | yes (view) | yes | n/a (inline print) |
 
 - **tui-markdown is the better fit.** It produces ratatui `Text`, so the same
@@ -52,9 +55,6 @@ text) and a real Saltbox announcements file, at 80 and 140 columns.
   2. The inline viewport queries the cursor position at start-up and fails
      when nothing answers (pipes, some CI). The module needs a plain-text
      fallback when stdout isn't a terminal.
-  3. Wide characters looked spaced out on the inline path in the emulated
-     terminal, but rendered correctly in the full-screen view. Pending a
-     check in a real terminal.
 - **Quote wrapping** loses the `>` prefix after the first line. This is
   cosmetic, and a candidate for a `StyleSheet` tweak or an upstream issue.
 
@@ -121,8 +121,9 @@ stand out while missed ones can still be read.
     clickable area is `Block::inner` of the list, so border clicks select
     nothing.
   - The list column is as wide as its widest row by `ListItem::width`
-    (display width), so CJK and emoji titles fit. The first version counted
-    characters.
+    (display width) rather than a character count, capped at 40% of the
+    screen. A longer title is cut off in the list; the announcement pane
+    still shows it in full. Open: whether to wrap or abbreviate instead.
 - **Library review** (the `library-reviewer` agent, given only the commit
   range) found:
   - **A bug:** `ListState::select_next` doesn't clamp until the list is
@@ -160,4 +161,3 @@ termimad**. It's a second rendering stack with its own width maths.
 - `tui` module: the announcements viewer is a ratatui screen. Inline
   announcement output (e.g. after `sb update`) uses the inline viewport, with
   a plain-text fallback when stdout isn't a terminal.
-- Pending a real-terminal check: wide characters on the inline path.

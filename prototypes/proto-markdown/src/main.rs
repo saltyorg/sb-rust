@@ -399,8 +399,8 @@ fn draw(f: &mut Frame, v: &mut Viewer) {
             ListItem::new(line)
         })
         .collect();
-    // Wide enough for the widest row (display width, so CJK and emoji count
-    // double) plus the borders, up to 40% of the screen.
+    // Wide enough for the widest row (ListItem::width) plus the borders, up
+    // to 40% of the screen.
     let widest = rows.iter().map(ListItem::width).max().unwrap_or(0);
     let [list_area, article_area] = if body.width >= SIDE_BY_SIDE_MIN_WIDTH {
         let width = u16::try_from(widest + 2)
@@ -724,16 +724,19 @@ mod tests {
     }
 
     #[test]
-    fn list_is_wide_enough_for_wide_characters() {
+    fn list_is_wide_enough_for_the_longest_title() {
+        let title = "Example migration notice"; // fits under the 40% cap
         let mut v = Viewer::new(classify(
-            vec![announcement("2026-01-01", "家庭メディア更新", "Body.")],
+            vec![
+                announcement("2026-01-02", "Short", "Body."),
+                announcement("2026-01-01", title, "Body."),
+            ],
             None,
         ));
-        let terminal = draw_at(&mut v, 100, 20);
-        // A wide character takes two cells; the second reads as a space here.
+        let terminal = draw_at(&mut v, 120, 20);
         // The whole title, then the list's right border.
-        let row = screen(&terminal)[1].replace(' ', "");
-        assert!(row.contains("家庭メディア更新│"), "{row:?}");
+        let row = &screen(&terminal)[2];
+        assert!(row.contains(&format!("{title}│")), "{row:?}");
     }
 
     #[test]

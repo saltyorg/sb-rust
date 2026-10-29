@@ -26,8 +26,6 @@ announcements:
       ```
 
       > A quoted note that is long enough to wrap when the terminal is narrow, so wrapping behaviour shows up in the comparison.
-
-      Wide text: 家庭メディア 🎬 server.
   - date: "2026-01-08"
     title: "Formatting Reference"
     message: |

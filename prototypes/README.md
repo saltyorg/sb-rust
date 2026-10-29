@@ -54,7 +54,6 @@ target/cross/x86_64-unknown-linux-musl/production/proto-logs
 - Whether each screen is pleasant and clear to use, and what you'd change.
 - Mouse support and Shift-drag text selection in `facts`, in your usual
   terminal emulators.
-- Wide characters (CJK and emoji) in the `markdown` inline output.
 
 Report reactions per prototype; verdicts and the capability map are updated
 only after that review.

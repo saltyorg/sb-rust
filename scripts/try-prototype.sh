@@ -116,7 +116,7 @@ case "${1:-}" in
       "sb update), then termimad inline for comparison." \
       "Viewer: list on the left (new ones marked ●, older ones tinted), announcement on the right." \
       "        ↑/↓ or click choose   PgUp/PgDn, space or wheel scroll   q to continue" \
-      "Look at: the list, headings, bold/italic, inline code, links, lists, code, quote, table, CJK/emoji."
+      "Look at: the list, headings, bold/italic, inline code, links, lists, code, quote, table."
     "$b" --mode view --before "$before" "$f"
     printf '\n\033[1m--- tui-markdown inline (new announcements only) ---\033[0m\n'
     "$b" --mode inline --before "$before" "$f"

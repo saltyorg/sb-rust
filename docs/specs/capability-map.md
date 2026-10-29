@@ -187,8 +187,8 @@ sb-go has never enforced them. sb-rust will.
 ## Open items carried into module specs
 
 - **Manual real-terminal check** (two emulators): mouse use and Shift-drag
-  native selection in the fact editor, and wide characters on the inline
-  Markdown path.
+  native selection in the fact editor. (Announcements are English and ASCII
+  only, so wide characters on the Markdown path are out of scope.)
 - **fish completion:** registration is generated but untested.
 - **Runner:** nested subtasks (`insert_after`) and forwarding terminal resize
   to the PTY haven't been prototyped.
