@@ -243,15 +243,24 @@ rich status, recent sources, and one picker for both kinds of source.
     colours that also clears DIM replaces every span's styling. A
     `TestBackend` test checks every cell of the selected row, and failed on
     the old style.
-  - The palette is the 16 standard ANSI colours, so it follows the terminal
-    theme:
-    - sections and kind tags: blue services, magenta containers, red Needs
-      attention, yellow Recent;
-    - state words by health: green running, red failed, yellow restarting
-      or busy, cyan idle;
-    - key hints in cyan.
-  - Section headers carry a count and a coloured rule. Colour still only
-    repeats what the words say.
+  - **Truecolor palette (after review: design for truecolor, as sb-go
+    forces it):** a 16-colour palette was tried first and replaced.
+    - `src/theme.rs` holds sb-rust's own palette, for dark backgrounds,
+      named by role: text tones, accent, health (ok, problem, warn, idle),
+      kinds and sections (each with a darker rule tone), selection and
+      search hit. It is not copied from sb-go or charmtone.
+    - Explicit tones replace the DIM modifier, which terminals render
+      inconsistently. The background stays the terminal's own.
+    - crossterm writes `Color::Rgb` as 24-bit SGR without checking the
+      terminal (crossterm 0.29 `style/types/colored.rs`), so truecolor is
+      forced with no code. Checked on the real binary with
+      `TERM=xterm-256color` and no `COLORTERM`: 116 24-bit SGR codes, no
+      16-colour ones.
+    - A `TestBackend` test fails if any cell on the picker or viewer
+      (including the menu and a search hit) uses a named ANSI colour.
+      Mutation-checked: putting back one `Color::Green` fails it.
+    - The fallback for terminals without truecolor is planned, not built
+      (capability map, decision 10).
 - **Open:** whether "+N more" is needed when many sources fail, and whether a
   source that recovers should stay marked for a while. Services have no live
   signal yet (systemd's D-Bus signals would give one, at the cost of a D-Bus

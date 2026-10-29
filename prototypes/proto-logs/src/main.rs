@@ -4,6 +4,7 @@
 //! restarts are followed instead of ending the stream. Throwaway; see FINDINGS.md.
 
 mod sources;
+mod theme;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
@@ -911,7 +912,7 @@ fn render_line(raw: &str) -> Text<'static> {
         return Text::from(
             Line::from(format!("── {notice} ──")).style(
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme::WARN)
                     .add_modifier(Modifier::ITALIC),
             ),
         );
@@ -939,48 +940,38 @@ fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(area);
+    // Base text colour for the whole screen; the background stays the
+    // terminal's own, so transparent and themed terminals keep theirs.
+    f.buffer_mut().set_style(area, Style::new().fg(theme::TEXT));
     match app.screen {
         Screen::Pick => draw_picker(f, app, header, body, footer),
         Screen::View => draw_view(f, app, header, body, footer),
     }
 }
 
-// Picker palette: the 16 standard ANSI colours only, so it follows the
-// user's terminal theme. Colour always repeats what the words say.
-const SERVICE_COLOR: Color = Color::Blue;
-const CONTAINER_COLOR: Color = Color::Magenta;
-const KEY_COLOR: Color = Color::Cyan;
-/// The selected row is one solid bar: ratatui paints `highlight_style` over
-/// the whole row after drawing it (ratatui-widgets 0.3.2 list/rendering.rs),
-/// so setting both colours and clearing DIM replaces every span's styling.
-const SELECTED: Style = Style::new()
-    .fg(Color::White)
-    .bg(Color::Blue)
-    .add_modifier(Modifier::BOLD)
-    .remove_modifier(Modifier::DIM);
-
 fn health_color(status: &sources::Status) -> Color {
     match (status.health, status.symbol) {
-        (Health::Problem, '↻') | (Health::Busy, _) => Color::Yellow,
-        (Health::Problem, _) => Color::Red,
-        (Health::Ok, _) => Color::Green,
-        (Health::Idle, _) => Color::Cyan,
+        (Health::Problem, '↻') | (Health::Busy, _) => theme::WARN,
+        (Health::Problem, _) => theme::PROBLEM,
+        (Health::Ok, _) => theme::OK,
+        (Health::Idle, _) => theme::IDLE,
     }
 }
 
 fn kind_color(source: &Source) -> Color {
     match source {
-        Source::Service(_) => SERVICE_COLOR,
-        Source::Container(_) => CONTAINER_COLOR,
+        Source::Service(_) => theme::SERVICE,
+        Source::Container(_) => theme::CONTAINER,
     }
 }
 
-fn section_color(section: Section) -> Color {
+/// A section's title colour and the darker tone of its rule.
+fn section_colors(section: Section) -> (Color, Color) {
     match section {
-        Section::Attention => Color::Red,
-        Section::Recent => Color::Yellow,
-        Section::Services => SERVICE_COLOR,
-        Section::Containers => CONTAINER_COLOR,
+        Section::Attention => (theme::PROBLEM, theme::ATTENTION_RULE),
+        Section::Recent => (theme::RECENT, theme::RECENT_RULE),
+        Section::Services => (theme::SERVICE, theme::SERVICE_RULE),
+        Section::Containers => (theme::CONTAINER, theme::CONTAINER_RULE),
     }
 }
 
@@ -990,9 +981,12 @@ fn key_hints(hints: &[(&str, &str)]) -> Line<'static> {
     for (key, what) in hints {
         spans.push(Span::styled(
             (*key).to_string(),
-            Style::new().fg(KEY_COLOR).bold(),
+            Style::new().fg(theme::ACCENT).bold(),
         ));
-        spans.push(Span::raw(format!(" {what}   ")));
+        spans.push(Span::styled(
+            format!(" {what}   "),
+            Style::new().fg(theme::MUTED),
+        ));
     }
     Line::from(spans)
 }
@@ -1002,16 +996,19 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
     let count = |f: &dyn Fn(&Entry) -> bool| entries.iter().filter(|e| f(e)).count();
     let services = count(&|e| matches!(e.source, Source::Service(_)));
     let problems = count(&|e| e.status.health == Health::Problem);
-    let mut title = vec![" ◆ Logs ".bold().black().on_cyan(), Span::raw("  ")];
+    let mut title = vec![
+        " ◆ Logs ".bold().fg(theme::ON_ACCENT).bg(theme::ACCENT),
+        Span::raw("  "),
+    ];
     if app.entries.is_some() {
-        title.push(format!("{services} services").fg(SERVICE_COLOR));
-        title.push(" · ".dim());
-        title.push(format!("{} containers", entries.len() - services).fg(CONTAINER_COLOR));
-        title.push(" · ".dim());
+        title.push(format!("{services} services").fg(theme::SERVICE));
+        title.push(" · ".fg(theme::FAINT));
+        title.push(format!("{} containers", entries.len() - services).fg(theme::CONTAINER));
+        title.push(" · ".fg(theme::FAINT));
         title.push(match problems {
-            0 => "all healthy".green(),
-            1 => "1 needs attention".red().bold(),
-            n => format!("{n} need attention").red().bold(),
+            0 => "all healthy".fg(theme::OK),
+            1 => "1 needs attention".fg(theme::PROBLEM).bold(),
+            n => format!("{n} need attention").fg(theme::PROBLEM).bold(),
         });
     }
     f.render_widget(Line::from(title), header);
@@ -1025,9 +1022,11 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
     };
     app.pick_area = area;
     let message = if let Some(e) = &app.load_error {
-        Some(Line::from(format!("Could not list sources: {e}").red()))
+        Some(Line::from(
+            format!("Could not list sources: {e}").fg(theme::PROBLEM),
+        ))
     } else if app.entries.is_none() {
-        Some(Line::from("Loading sources…".dim()))
+        Some(Line::from("Loading sources…".fg(theme::MUTED)))
     } else if app.rows.is_empty() && !app.filter.is_empty() {
         Some(Line::from(format!(
             "Nothing matches \"{}\". Esc clears the filter.",
@@ -1065,12 +1064,12 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
             .map(|row| match *row {
                 Row::Spacer => ListItem::new(""),
                 Row::Header(section) => {
-                    let color = section_color(section);
+                    let (color, rule_color) = section_colors(section);
                     let title = format!("{} ({}) ", section.title(), in_section(section));
                     let rule = "─".repeat(rule_width.saturating_sub(title.chars().count()));
                     ListItem::new(Line::from(vec![
                         title.bold().fg(color),
-                        Span::styled(rule, Style::new().fg(color).dim()),
+                        Span::styled(rule, Style::new().fg(rule_color)),
                     ]))
                 }
                 Row::Item(section, i) => {
@@ -1096,7 +1095,7 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
                         Span::raw("  "),
                         Span::styled(e.status.symbol.to_string(), Style::new().fg(color).bold()),
                         Span::raw(" "),
-                        Span::styled(prefix.to_string(), Style::new().dim()),
+                        Span::styled(prefix.to_string(), Style::new().fg(theme::FAINT)),
                         Span::styled(rest.to_string(), Style::new().bold()),
                         Span::raw(" ".repeat(pad + 3)),
                         Span::styled(word.to_string(), Style::new().fg(color)),
@@ -1114,14 +1113,14 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
             .collect();
         let list = List::new(items)
             .highlight_symbol("›")
-            .highlight_style(SELECTED);
+            .highlight_style(theme::SELECTED);
         f.render_stateful_widget(list, area, &mut app.pick);
     }
 
     if let Some(filter_box) = &app.filter_box {
         let [label, input] =
             Layout::horizontal([Constraint::Length(9), Constraint::Fill(1)]).areas(footer);
-        f.render_widget(Line::from(" Filter: ".bold().fg(KEY_COLOR)), label);
+        f.render_widget(Line::from(" Filter: ".bold().fg(theme::ACCENT)), label);
         f.render_widget(filter_box, input);
     } else {
         let mut keys = key_hints(&[
@@ -1131,7 +1130,7 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
             ("q", "quit"),
         ]);
         if !app.filter.is_empty() {
-            keys.push_span(format!("filter \"{}\" · Esc clears", app.filter).yellow());
+            keys.push_span(format!("filter \"{}\" · Esc clears", app.filter).fg(theme::RECENT));
         }
         f.render_widget(keys, footer);
     }
@@ -1140,7 +1139,9 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
 fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rect) {
     let name = app.current.as_ref().map(Source::label).unwrap_or_default();
     let hits = app.lines.iter().filter(|l| app.matches(l)).count();
-    let block = Block::bordered().border_type(BorderType::Rounded);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::BORDER));
     let inner = block.inner(body);
     f.render_widget(block, body);
     app.body = inner;
@@ -1163,7 +1164,7 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
         let full = row_height(&text, inner.width, app.wrap);
         let h = full.saturating_sub(skip).min(inner.bottom() - y);
         if app.matches(&app.lines[i]) {
-            text = text.style(Style::default().bg(Color::Rgb(70, 60, 0)));
+            text = text.style(Style::default().bg(theme::SEARCH_HIT));
         }
         let p = Paragraph::new(text);
         let p = if app.wrap {
@@ -1179,23 +1180,26 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
 
     f.render_widget(
         Line::from(vec![
-            format!(" ◆ {name} ").bold().cyan(),
-            Span::raw(format!(" {} lines ", app.lines.len())).dim(),
+            format!(" ◆ {name} ")
+                .bold()
+                .fg(theme::ON_ACCENT)
+                .bg(theme::ACCENT),
+            Span::raw(format!("  {} lines ", app.lines.len())).fg(theme::MUTED),
             if app.follow {
-                " FOLLOW ".black().on_green()
+                " FOLLOW ".bold().fg(theme::ON_ACCENT).bg(theme::OK)
             } else {
-                " PAUSED ".black().on_yellow()
+                " PAUSED ".bold().fg(theme::ON_ACCENT).bg(theme::WARN)
             },
             Span::raw(if app.wrap {
                 "  wrap on".to_string()
             } else {
                 format!("  wrap off · col {}", app.hscroll + 1)
             })
-            .dim(),
+            .fg(theme::MUTED),
             if app.query.is_empty() {
                 Span::raw("")
             } else {
-                Span::raw(format!("  /{} · {hits} hits", app.query)).yellow()
+                Span::raw(format!("  /{} · {hits} hits", app.query)).fg(theme::RECENT)
             },
         ]),
         header,
@@ -1235,10 +1239,10 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
                 let pad = inner_w.saturating_sub(label.chars().count() + key.len() + 2);
                 let line = Line::from(vec![
                     Span::raw(format!(" {label}{}", " ".repeat(pad))),
-                    Span::raw(format!("{key} ")).dim(),
+                    Span::raw(format!("{key} ")).fg(theme::MUTED),
                 ]);
                 if i == sel {
-                    line.style(Style::default().fg(Color::Black).bg(Color::Cyan))
+                    line.style(theme::SELECTED)
                 } else {
                     line
                 }
@@ -1451,8 +1455,39 @@ mod tests {
             symbol,
             text: String::new(),
         };
-        assert_eq!(health_color(&s(Health::Problem, '✗')), Color::Red);
-        assert_eq!(health_color(&s(Health::Problem, '↻')), Color::Yellow);
-        assert_eq!(health_color(&s(Health::Ok, '✓')), Color::Green);
+        assert_eq!(health_color(&s(Health::Problem, '✗')), theme::PROBLEM);
+        assert_eq!(health_color(&s(Health::Problem, '↻')), theme::WARN);
+        assert_eq!(health_color(&s(Health::Ok, '✓')), theme::OK);
+        assert_eq!(health_color(&s(Health::Idle, '○')), theme::IDLE);
+    }
+
+    /// Truecolor is the design target (capability map, decision 10): every
+    /// cell the screens colour uses a palette RGB value, never a named ANSI
+    /// colour whose look depends on the terminal theme.
+    #[test]
+    fn screens_draw_only_truecolor() {
+        let mut app = demo_app();
+        let check = |app: &mut App, what: &str| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("backend");
+            terminal.draw(|f| draw(f, app)).expect("draw");
+            for cell in terminal.backend().buffer().content() {
+                for color in [cell.fg, cell.bg] {
+                    assert!(
+                        matches!(color, Color::Rgb(..) | Color::Reset),
+                        "{what}: {:?} drawn in {color:?}",
+                        cell.symbol()
+                    );
+                }
+            }
+        };
+        check(&mut app, "picker");
+        app.lines.extend([
+            "plain line".to_string(),
+            format!("{NOTICE}container stopped"),
+        ]);
+        app.query = "plain".into();
+        app.screen = Screen::View;
+        app.menu = Some((Position::new(5, 5), 0));
+        check(&mut app, "viewer with menu and search hit");
     }
 }
