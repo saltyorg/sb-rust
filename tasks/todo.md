@@ -82,6 +82,8 @@ and clean Ctrl-C?
 
 **Verification:**
 - [x] Manual runs on a TTY, piped to `cat`, and interrupted with Ctrl-C.
+- [x] Look and feel reviewed and marked done for now by the maintainer
+      (2026-10-29).
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-runner/{Cargo.toml,src/main.rs,FINDINGS.md}`

@@ -235,7 +235,12 @@ Ansible output, since the runner will not inline Ansible's own output.
 
 ## Verdict
 
-_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+_Reviewed by the maintainer (2026-10-29): done for now. The review chose
+the rounded tree with aligned times from a gallery of formats, a live tail
+of the step's output with no Ansible output inline, the command's own
+colours, no blinking and a hidden cursor, `--color` for piped output, and a
+rotated run log on the host for every run (decision 11). Still open: the
+install script (tasks/todo.md, Later) and the vt100/termwiz evaluation._
 
 **Adopt with changes.** indicatif and portable-pty replace sb-go's
 bubbletea-based runner, provided the "finished steps become printed lines"

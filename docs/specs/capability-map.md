@@ -8,8 +8,8 @@ Rust libraries in place of sb-go's internals.
 > prototypes (`prototypes/*/FINDINGS.md`). Every row in the stack table names
 > the prototype that backs it, or says it is untested. The verdicts are
 > technical only until the maintainer reviews each prototype's look and
-> feel. Reviewed so far: proto-logs, proto-markdown and proto-facts
-> (2026-10-29). Module specs start with `cli-core` only after those reviews
+> feel. Reviewed so far: proto-logs, proto-markdown, proto-facts and
+> proto-runner (2026-10-29). Module specs start with `cli-core` only after those reviews
 > and approval of this map.
 
 ## Objective
