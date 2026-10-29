@@ -77,9 +77,10 @@ Rust libraries in place of sb-go's internals.
 
     **Piped output** is plain by default (colour only on a terminal, and
     console's NO_COLOR and CLICOLOR rules). A `--color=auto|always|never` flag (clap's
-    `ColorChoice`, the git/ls/cargo convention) forces it either way; the
-    Saltbox installer script, which pipes sb's output, passes
-    `--color=always`. Proved in proto-runner. Open for cli-core: make clap's
+    `ColorChoice`, the git/ls/cargo convention) forces it either way.
+    The install script will run `sb setup` attached to the terminal instead
+    (tasks/todo.md), so it needs no flag; `--color` stays as a general
+    override. Proved in proto-runner. Open for cli-core: make clap's
     own `--help` follow the flag too (`Command::color`).
 
     The palette assumes a dark background. Light themes are an open item.
