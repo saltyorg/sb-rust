@@ -2423,6 +2423,7 @@ dependencies = [
  "ratatui",
  "rustix",
  "signal-hook 0.4.5",
+ "tempfile",
  "termtree",
 ]
 

@@ -163,6 +163,10 @@ fn run_step(
     interrupted: &AtomicUsize,
 ) -> Result<()> {
     area.start(step.running);
+    // The step's complete output, kept if it fails. Not having a log file
+    // must not stop the run, so a failure to create one is only a missing
+    // path later.
+    let mut log = StepLog::new(step.running).ok();
     let terminal = console::Term::stderr().size_checked();
     let (rows, cols) = terminal.map_or((24, 80), |(r, c)| (r.max(10), c.max(40)));
     let pair = native_pty_system().openpty(PtySize {
@@ -206,6 +210,9 @@ fn run_step(
     let status = loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok((line, overwrite)) => {
+                if let Some(log) = log.as_mut() {
+                    log.write(&line, overwrite);
+                }
                 if last_overwrites {
                     history.pop_back();
                 }
@@ -252,6 +259,9 @@ fn run_step(
         if let Some(status) = child.try_wait()? {
             // Drain whatever the reader already queued before reporting.
             while let Ok((line, overwrite)) = rx.try_recv() {
+                if let Some(log) = log.as_mut() {
+                    log.write(&line, overwrite);
+                }
                 if last_overwrites {
                     history.pop_back();
                 }
@@ -279,6 +289,11 @@ fn run_step(
             live,
             &step_line(true, &Outcome::Interrupted, step.running, &elapsed),
         )?;
+        if let Some(path) = log.and_then(|l| l.keep().ok()) {
+            for line in failure_lines(&VecDeque::new(), Some(&path)) {
+                emit(mp, live, &line)?;
+            }
+        }
         bail!("interrupted");
     }
     if status.success() {
@@ -296,14 +311,77 @@ fn run_step(
         signal: status.signal().map(str::to_string),
     };
     emit(mp, live, &step_line(true, &outcome, step.running, &elapsed))?;
-    for (i, line) in history.iter().enumerate() {
-        emit(
-            mp,
-            live,
-            &format!("{}{line}", tail_prefix(i, history.len())),
-        )?;
+    let path = log.and_then(|l| l.keep().ok());
+    for line in failure_lines(&history, path.as_deref()) {
+        emit(mp, live, &line)?;
     }
     Err(StepFailed.into())
+}
+
+/// A step's complete output as a plain-text log file: every line, ANSI
+/// stripped (console::strip_ansi_codes), skipping in-place progress updates
+/// (only their final state). A tempfile `NamedTempFile`, so it is removed
+/// when dropped, after a successful step, unless kept for a failure
+/// (https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html#method.keep).
+/// The prototype uses the system temp directory; where sb keeps these logs
+/// is for the runner module spec.
+struct StepLog {
+    file: tempfile::NamedTempFile,
+}
+
+impl StepLog {
+    fn new(step: &str) -> Result<Self> {
+        let dir = std::env::temp_dir().join("sb-rust-proto");
+        std::fs::create_dir_all(&dir)?;
+        let slug: String = step
+            .to_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let file = tempfile::Builder::new()
+            .prefix(&format!("{slug}-"))
+            .suffix(".log")
+            .tempfile_in(dir)?;
+        Ok(Self { file })
+    }
+
+    fn write(&mut self, line: &str, overwrite: bool) {
+        use std::io::Write as _;
+        if !overwrite {
+            let _ = writeln!(self.file, "{}", console::strip_ansi_codes(line));
+        }
+    }
+
+    #[cfg(test)]
+    fn path(&self) -> &std::path::Path {
+        self.file.path()
+    }
+
+    /// Keeps the file past this run and returns its path.
+    fn keep(self) -> Result<std::path::PathBuf> {
+        let (_, path) = self.file.keep()?;
+        Ok(path)
+    }
+}
+
+/// The lines under a failed or interrupted step: its last output lines,
+/// then the full log's path as the last branch.
+fn failure_lines(history: &VecDeque<String>, log: Option<&std::path::Path>) -> Vec<String> {
+    let total = history.len() + usize::from(log.is_some());
+    let mut lines: Vec<String> = history
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{}{line}", tail_prefix(i, total)))
+        .collect();
+    if let Some(path) = log {
+        lines.push(format!(
+            "{}{}",
+            tail_prefix(total - 1, total),
+            palette(theme::MUTED).apply_to(format!("full output: {}", path.display()))
+        ));
+    }
+    lines
 }
 
 /// The live part of the screen: the running step's spinner line and its
@@ -1006,6 +1084,56 @@ mod tests {
         assert_eq!(tail_lines(16), 8);
         assert_eq!(tail_lines(12), 6);
         assert_eq!(tail_lines(3), 1);
+    }
+
+    /// The full output of a step goes to a log file: every line, as plain
+    /// text, skipping in-place progress updates (only their final state).
+    /// Kept on failure, removed when the step succeeds.
+    #[test]
+    fn step_log_keeps_every_line_and_only_on_failure() {
+        let mut log = StepLog::new("Installing packages").expect("log");
+        for n in 1..=30 {
+            log.write(&format!("\x1b[32mline {n}\x1b[0m"), false);
+        }
+        log.write("Progress: [ 40%]", true);
+        log.write("Progress: [100%]", false);
+        let path = log.keep().expect("kept");
+        let text = std::fs::read_to_string(&path).expect("read");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 31, "{text}");
+        assert_eq!(lines[0], "line 1");
+        assert_eq!(lines[30], "Progress: [100%]");
+        assert!(
+            path.file_name()
+                .expect("name")
+                .to_string_lossy()
+                .contains("installing-packages")
+        );
+        std::fs::remove_file(&path).expect("clean up");
+
+        let mut log = StepLog::new("Fine step").expect("log");
+        log.write("ok", false);
+        let temp_path = log.path().to_path_buf();
+        drop(log);
+        assert!(!temp_path.exists(), "a successful step's log is removed");
+    }
+
+    /// Under a failed step: its last lines, then the log path as the last
+    /// branch.
+    #[test]
+    fn failure_lines_end_with_the_log_path() {
+        let _lock = COLOUR_SWITCHES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        console::set_colors_enabled_stderr(false);
+        let history: VecDeque<String> = ["a", "b"].iter().map(|s| (*s).to_string()).collect();
+        let lines = failure_lines(&history, Some(std::path::Path::new("/tmp/x.log")));
+        assert_eq!(
+            lines,
+            ["    ├── a", "    ├── b", "    ╰── full output: /tmp/x.log"]
+        );
+        let no_log = failure_lines(&history, None);
+        assert_eq!(no_log, ["    ├── a", "    ╰── b"]);
     }
 
     #[test]

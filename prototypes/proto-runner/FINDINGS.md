@@ -190,6 +190,13 @@ Ansible output, since the runner will not inline Ansible's own output.
   - Checked: hidden then shown on all three exits in a PTY; tmux reports
     the cursor invisible mid-run and visible after; no cursor codes when
     piped.
+- **A failed step's full output is kept** (review: the 10-line tail can miss
+  the actual error). Each step writes its complete output (plain text, final
+  state of in-place progress) to a log file. It is removed on success and
+  kept on failure or interrupt, with its path as the last branch:
+  `╰── full output: …`. The prototype uses the system temp directory via
+  tempfile. The real location follows the logging decision in the
+  capability map.
 - **A failed step now exits 1 without repeating itself.** anyhow had printed
   "Error: step failed" under the tree; the tree already says it.
 - **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:
