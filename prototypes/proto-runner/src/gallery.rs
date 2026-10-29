@@ -9,8 +9,8 @@ use proto_theme as theme;
 // Frame and branch glyphs from ratatui's symbol sets, so the mock-ups match
 // the frames the full-screen prototypes draw.
 use ratatui::symbols::line::{
-    BOTTOM_LEFT, HORIZONTAL, LIGHT_QUADRUPLE_DASH_VERTICAL, ROUNDED_BOTTOM_LEFT,
-    ROUNDED_BOTTOM_RIGHT, ROUNDED_TOP_LEFT, ROUNDED_TOP_RIGHT, VERTICAL, VERTICAL_RIGHT,
+    HORIZONTAL, LIGHT_QUADRUPLE_DASH_VERTICAL, ROUNDED_BOTTOM_LEFT, ROUNDED_BOTTOM_RIGHT,
+    ROUNDED_TOP_LEFT, ROUNDED_TOP_RIGHT, VERTICAL,
 };
 
 use crate::palette;
@@ -89,7 +89,21 @@ const FORMATS: &[Format] = &[
         "words instead of symbols, no decoration",
         minimal,
     ),
-    ("Tree", "output as branches under its step", tree),
+    (
+        "Tree",
+        "output as branches under its step, times in a column",
+        tree,
+    ),
+    (
+        "Tree, dot leaders",
+        "the tree with dot leaders to the times",
+        tree_dots,
+    ),
+    (
+        "Tree, rounded",
+        "the tree with a rounded last branch",
+        tree_rounded,
+    ),
 ];
 
 /// Every format's title and snapshot, ready to print.
@@ -108,6 +122,33 @@ pub(crate) fn lines() -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+/// The trees drawn by the tree formats, one `Vec` of lines per tree (a
+/// tree ends at a blank line), for tests.
+#[cfg(test)]
+pub(crate) fn tree_blocks() -> Vec<Vec<String>> {
+    let mut blocks = Vec::new();
+    for (name, _, render) in FORMATS {
+        if !name.starts_with("Tree") {
+            continue;
+        }
+        let mut block = Vec::new();
+        for line in render(&SAMPLE) {
+            let line = console::strip_ansi_codes(&line).to_string();
+            if line.trim().is_empty() {
+                if !block.is_empty() {
+                    blocks.push(std::mem::take(&mut block));
+                }
+            } else if !line.ends_with(':') {
+                block.push(line);
+            }
+        }
+        if !block.is_empty() {
+            blocks.push(block);
+        }
+    }
+    blocks
 }
 
 pub(crate) fn print() {
@@ -144,7 +185,12 @@ fn faint(s: impl std::fmt::Display) -> String {
 /// Left text, then dots out to `WIDTH`, then right text (console's
 /// pad_str_with does the padding by display width).
 fn leader(left: &str, right: &str) -> String {
-    let dots_width = WIDTH.saturating_sub(measure_text_width(left) + measure_text_width(right) + 2);
+    leader_to(WIDTH, left, right)
+}
+
+/// `leader`, ending at `width` columns.
+fn leader_to(width: usize, left: &str, right: &str) -> String {
+    let dots_width = width.saturating_sub(measure_text_width(left) + measure_text_width(right) + 2);
     let dots = pad_str_with("", dots_width, Alignment::Left, None, '.');
     format!("{left} {} {right}", faint(dots))
 }
@@ -364,47 +410,112 @@ fn minimal(s: &Sample) -> Vec<String> {
     out
 }
 
-/// Drawn by hand: a fixed two-level mock-up. If this format is chosen for the
-/// real runner, use a tree crate (termtree) instead; none is in the tree yet.
-fn tree(s: &Sample) -> Vec<String> {
-    let tee = format!("{VERTICAL_RIGHT}{HORIZONTAL}");
-    let elbow = format!("{BOTTOM_LEFT}{HORIZONTAL}");
-    let mut out = vec![accent("Saltbox update")];
-    for d in &s.done {
-        out.push(format!(
-            "{} {} {}",
-            faint(&tee),
-            ok(format!("✓ {}", d.text)),
-            muted(d.elapsed)
-        ));
+/// How a tree format lays out its right-hand column.
+#[derive(Clone, Copy)]
+enum Fill {
+    Spaces,
+    Dots,
+}
+
+/// A step item at `depth`, with `right` ending at the time column whatever
+/// the depth. The indent per level is what the palette's glyphs take
+/// ("├" + "── "); console's pad_str and pad_str_with pad by display width.
+fn tree_item(
+    glyphs: &termtree::GlyphPalette,
+    depth: usize,
+    left: &str,
+    right: &str,
+    fill: Fill,
+) -> String {
+    let indent = measure_text_width(glyphs.middle_item) + measure_text_width(glyphs.item_indent);
+    let width = WIDTH.saturating_sub(depth * indent);
+    match fill {
+        Fill::Spaces => {
+            let room = width.saturating_sub(measure_text_width(right) + 1);
+            format!("{} {right}", pad_str(left, room, Alignment::Left, None))
+        }
+        Fill::Dots => leader_to(width, left, right),
     }
-    out.push(format!(
-        "{} {} {} {}",
-        faint(&tee),
-        accent(spinner()),
-        accent(s.running),
-        muted(s.running_elapsed)
-    ));
-    let last = s.tail.len() - 1;
-    for (i, l) in s.tail.iter().enumerate() {
-        let branch = if i == last { &elbow } else { &tee };
-        out.push(format!(
-            "{}  {} {}",
-            faint(VERTICAL),
-            faint(branch),
-            muted(l)
-        ));
-    }
+}
+
+/// Renders a termtree tree, then tones down its glyphs: termtree's
+/// GlyphPalette takes fixed strings, so colour is applied afterwards to
+/// each line's leading glyph run.
+fn render_tree(tree: &termtree::Tree<String>) -> Vec<String> {
+    tree.to_string()
+        .lines()
+        .map(|line| {
+            let split = line
+                .char_indices()
+                .find(|(_, c)| !matches!(c, ' ' | '│' | '├' | '└' | '╰' | '─'))
+                .map_or(line.len(), |(i, _)| i);
+            let (glyphs, text) = line.split_at(split);
+            format!("{}{text}", faint(glyphs))
+        })
+        .collect()
+}
+
+/// One run as two complete trees, "while running" and "if it fails", so
+/// neither is broken by the other.
+fn tree_variant(s: &Sample, fill: Fill, glyphs: termtree::GlyphPalette) -> Vec<String> {
+    let finished = || -> Vec<termtree::Tree<String>> {
+        s.done
+            .iter()
+            .map(|d| {
+                termtree::Tree::new(tree_item(
+                    &glyphs,
+                    1,
+                    &ok(format!("✓ {}", d.text)),
+                    &muted(d.elapsed),
+                    fill,
+                ))
+            })
+            .collect()
+    };
+    let running = termtree::Tree::new(tree_item(
+        &glyphs,
+        1,
+        &format!("{} {}", accent(spinner()), accent(s.running)),
+        &muted(s.running_elapsed),
+        fill,
+    ))
+    .with_leaves(s.tail.iter().map(muted));
+    let failed = termtree::Tree::new(tree_item(
+        &glyphs,
+        1,
+        &bad(format!("✗ {}", s.failed)),
+        &bad(format!("exit {} · {}", s.failed_code, s.failed_elapsed)),
+        fill,
+    ))
+    .with_leaves(s.failure_tail.iter().map(|l| (*l).to_string()));
+    let mut out = vec![muted("while running:")];
+    let mut tree = termtree::Tree::new(accent("Saltbox update")).with_glyphs(glyphs);
+    tree.extend(finished());
+    tree.push(running);
+    out.extend(render_tree(&tree));
     out.push(String::new());
-    out.push(format!(
-        "{} {}",
-        faint(&elbow),
-        bad(format!("✗ {}: failed (exit {})", s.failed, s.failed_code))
-    ));
-    let last = s.failure_tail.len() - 1;
-    for (i, l) in s.failure_tail.iter().enumerate() {
-        let branch = if i == last { &elbow } else { &tee };
-        out.push(format!("   {} {l}", bad(branch)));
-    }
+    out.push(muted("if it fails:"));
+    let mut tree = termtree::Tree::new(accent("Saltbox update")).with_glyphs(glyphs);
+    tree.extend(finished());
+    tree.push(failed);
+    out.extend(render_tree(&tree));
     out
+}
+
+/// Trees drawn by termtree (rust-cli), with termtree's default glyphs.
+fn tree(s: &Sample) -> Vec<String> {
+    tree_variant(s, Fill::Spaces, termtree::GlyphPalette::new())
+}
+
+fn tree_dots(s: &Sample) -> Vec<String> {
+    tree_variant(s, Fill::Dots, termtree::GlyphPalette::new())
+}
+
+/// Rounded last branch, with ratatui's rounded corner glyph.
+fn tree_rounded(s: &Sample) -> Vec<String> {
+    let glyphs = termtree::GlyphPalette {
+        last_item: ROUNDED_BOTTOM_LEFT,
+        ..termtree::GlyphPalette::new()
+    };
+    tree_variant(s, Fill::Spaces, glyphs)
 }

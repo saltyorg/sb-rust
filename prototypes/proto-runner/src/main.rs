@@ -525,6 +525,43 @@ mod tests {
         }
     }
 
+    /// The tree formats: each tree is unbroken (every line after its root
+    /// starts with a tree glyph or the indent under one), and every line
+    /// carrying a time or exit code ends in the same column.
+    #[test]
+    fn tree_formats_are_connected_and_times_line_up() {
+        let _lock = COLOUR_SWITCHES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        console::set_colors_enabled_stderr(false);
+        let trees = gallery::tree_blocks();
+        assert!(
+            trees.len() >= 6,
+            "expected a running and a failing tree per tree format"
+        );
+        for block in trees {
+            let (root, rest) = block.split_first().expect("a root line");
+            assert!(!root.trim().is_empty());
+            for line in rest {
+                let t = line.trim_start_matches(' ');
+                assert!(
+                    t.starts_with(['├', '└', '╰', '│']),
+                    "loose line in tree: {line:?}\n{block:#?}"
+                );
+            }
+            let ends: Vec<usize> = rest
+                .iter()
+                .filter(|l| l.ends_with('s') && l.contains(|c: char| c.is_ascii_digit()))
+                .map(|l| console::measure_text_width(l))
+                .collect();
+            assert!(ends.len() >= 3, "{block:#?}");
+            assert!(
+                ends.windows(2).all(|w| w[0] == w[1]),
+                "times don't line up: {ends:?}\n{block:#?}"
+            );
+        }
+    }
+
     #[test]
     fn a_signalled_child_is_reported_by_signal() {
         let _lock = COLOUR_SWITCHES
