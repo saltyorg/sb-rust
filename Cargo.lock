@@ -2419,6 +2419,7 @@ dependencies = [
  "console",
  "indicatif",
  "portable-pty",
+ "proto-theme",
  "rustix",
  "signal-hook 0.4.5",
 ]

@@ -193,7 +193,9 @@ sb-go has never enforced them. sb-rust will.
   native selection in the fact editor.
 - **fish completion:** registration is generated but untested.
 - **Runner:** nested subtasks (`insert_after`) and forwarding terminal resize
-  to the PTY haven't been prototyped.
+  to the PTY haven't been prototyped. Evaluate a terminal-emulator crate
+  (`vt100`, or termwiz's escape parser) for the output tail instead of the
+  custom line splitter.
 - **Edit picker:** not prototyped on its own. It reuses the proto-facts and
   proto-logs patterns (list picker, then `$EDITOR`).
 - **Release tooling:** evaluate cross from git main or `cargo-zigbuild` when CI
