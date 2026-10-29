@@ -75,6 +75,13 @@ Rust libraries in place of sb-go's internals.
     - The palette is converted once at startup for the chosen profile.
     - The choice goes in an ADR when it is built.
 
+    **Piped output** is plain by default (colour only on a terminal, and
+    console's NO_COLOR and CLICOLOR rules). A `--color=auto|always|never` flag (clap's
+    `ColorChoice`, the git/ls/cargo convention) forces it either way; the
+    Saltbox installer script, which pipes sb's output, passes
+    `--color=always`. Proved in proto-runner. Open for cli-core: make clap's
+    own `--help` follow the flag too (`Command::color`).
+
     The palette assumes a dark background. Light themes are an open item.
 
 ## Assumptions (still open to correction)

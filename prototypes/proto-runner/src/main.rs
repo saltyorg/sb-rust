@@ -35,6 +35,10 @@ struct Cli {
     /// Print static snapshots of a run in several formats, to compare them.
     #[arg(long)]
     gallery: bool,
+    /// When to use colour: auto (only on a terminal), always (also when
+    /// piped, e.g. by the Saltbox installer script) or never.
+    #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto)]
+    color: clap::ColorChoice,
 }
 
 struct Step {
@@ -52,6 +56,7 @@ fn sh(script: &str) -> Vec<String> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    apply_colour_choice(cli.color);
     if cli.gallery {
         gallery::print();
         return Ok(());
@@ -427,6 +432,23 @@ pub(crate) fn palette(colour: impl std::fmt::Display) -> console::Style {
     console::Style::from_dotted_str(&colour.to_string()).for_stderr()
 }
 
+/// Applies `--color` to console's colour switches, which every style here
+/// and indicatif's bars follow. `auto` keeps console's own detection
+/// (terminal or not, NO_COLOR, dumb terminals, CLICOLOR/CLICOLOR_FORCE).
+/// The value type is clap's own ColorChoice, the auto/always/never
+/// convention of git, ls and cargo. Why not the colorchoice crate (in the
+/// tree through clap): it sets anstream's global, which console and
+/// indicatif don't read.
+fn apply_colour_choice(choice: clap::ColorChoice) {
+    let enabled = match choice {
+        clap::ColorChoice::Always => true,
+        clap::ColorChoice::Never => false,
+        clap::ColorChoice::Auto => return,
+    };
+    console::set_colors_enabled(enabled);
+    console::set_colors_enabled_stderr(enabled);
+}
+
 /// Prints a permanent line above the live bars, or straight to stderr when
 /// indicatif isn't drawing (piped, or a dumb terminal).
 fn emit(mp: &MultiProgress, live: bool, text: &str) -> Result<()> {
@@ -774,6 +796,30 @@ mod tests {
                 "times don't line up: {ends:?}\n{block:#?}"
             );
         }
+    }
+
+    /// `--color=always` keeps colour when piped (the Saltbox installer
+    /// script's case), `never` drops it, `auto` leaves console's detection.
+    #[test]
+    fn colour_flag_overrides_detection() {
+        let _lock = COLOUR_SWITCHES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cli = Cli::try_parse_from(["proto-runner", "--color=always"]).expect("parses");
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(false);
+        apply_colour_choice(cli.color);
+        assert!(console::colors_enabled() && console::colors_enabled_stderr());
+        apply_colour_choice(clap::ColorChoice::Never);
+        assert!(!console::colors_enabled() && !console::colors_enabled_stderr());
+        console::set_colors_enabled_stderr(true);
+        apply_colour_choice(clap::ColorChoice::Auto);
+        assert!(
+            console::colors_enabled_stderr(),
+            "auto must not change detection"
+        );
+        let default = Cli::try_parse_from(["proto-runner"]).expect("parses");
+        assert_eq!(default.color, clap::ColorChoice::Auto);
     }
 
     #[test]

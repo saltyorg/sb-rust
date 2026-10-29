@@ -143,6 +143,12 @@ Ansible output, since the runner will not inline Ansible's own output.
   a command's own colours and leaves uncoloured text in the terminal's
   default colour; only the tree glyphs are faint. The simulated "Enabling
   services" step prints a `systemctl status`-style green line to show this.
+- **`--color=auto|always|never`** (review: the Saltbox installer script
+  pipes sb's output and wants colour). Plain when piped stays the default.
+  The value type is clap's `ColorChoice`, applied to console's colour
+  switches, which every style and indicatif's bars follow. Measured piped:
+  0 lines with escape codes for `auto` and `never`, 5 for `always` (root
+  plus four steps).
 - **A failed step now exits 1 without repeating itself.** anyhow had printed
   "Error: step failed" under the tree; the tree already says it.
 - **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:

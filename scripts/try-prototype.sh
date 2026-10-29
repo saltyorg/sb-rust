@@ -131,12 +131,15 @@ case "${1:-}" in
       "Run 1: steps with a live output tail under the running one, then a failing step that keeps" \
       "       its last lines under it." \
       "Run 2: a 30 s step - press Ctrl-C to see the interrupt handling." \
-      "Run 3: the same steps piped through cat (plain output, no spinners)."
+      "Run 3: the same steps piped through cat (plain output, no spinners)." \
+      "Run 4: piped again with --color=always (colours kept, as the installer script would ask)."
     "$b" --fail || true
     printf '\n\033[1m--- Run 2: press Ctrl-C during the long task ---\033[0m\n'
     "$b" --slow || true
     printf '\n\033[1m--- Run 3: piped ---\033[0m\n'
     "$b" --fail 2>&1 | cat || true
+    printf '\n\033[1m--- Run 4: piped with --color=always ---\033[0m\n'
+    "$b" --fail --color=always 2>&1 | cat || true
     ;;
   runner-gallery)
     b="$(bin runner)"
