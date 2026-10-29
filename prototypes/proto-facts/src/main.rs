@@ -5,6 +5,7 @@
 
 mod model;
 
+use proto_theme as theme;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -17,7 +18,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
@@ -631,9 +632,17 @@ impl App {
         textarea.set_block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
-                .title(format!(" Edit {key} "))
-                .title_bottom(" Enter save · Alt+Enter new line · Esc cancel "),
+                .border_style(Style::new().fg(theme::ACCENT))
+                .title(Span::styled(
+                    format!(" Edit {key} "),
+                    Style::new().fg(theme::ACCENT).bold(),
+                ))
+                .title_bottom(Span::styled(
+                    " Enter save · Alt+Enter new line · Esc cancel ",
+                    Style::new().fg(theme::MUTED),
+                )),
         );
+        textarea.set_style(Style::new().fg(theme::TEXT));
         textarea.set_cursor_line_style(Style::default());
         textarea.move_cursor(ratatui_textarea::CursorMove::Bottom);
         textarea.move_cursor(ratatui_textarea::CursorMove::End);
@@ -701,6 +710,7 @@ fn key_matches(shortcut: &str, code: KeyCode) -> bool {
 fn search_box() -> TextArea<'static> {
     let mut t = TextArea::default();
     t.set_placeholder_text("type / or click here to search");
+    t.set_placeholder_style(Style::new().fg(theme::FAINT));
     t.set_cursor_line_style(Style::default());
     t
 }
@@ -715,6 +725,9 @@ fn target_of(row: Row) -> Target {
 
 fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    // Base text colour for the whole screen; the background stays the
+    // terminal's own.
+    f.buffer_mut().set_style(area, Style::new().fg(theme::TEXT));
     let wide = area.width >= 100;
     let changes_height = if wide || app.pending.is_empty() {
         0
@@ -738,14 +751,17 @@ fn draw(f: &mut Frame, app: &mut App) {
 
     // Search box.
     let border = if app.searching {
-        Color::Cyan
+        theme::ACCENT
     } else {
-        Color::DarkGray
+        theme::BORDER
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
-        .title(" Saltbox settings ");
+        .title(Span::styled(
+            " Saltbox settings ",
+            Style::new().fg(theme::ACCENT).bold(),
+        ));
     let inner = block.inner(search);
     f.render_widget(block, search);
     let [label, field] =
@@ -785,7 +801,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         .iter()
         .map(|row| row_item(app, *row, key_width))
         .collect();
-    let list = List::new(items).highlight_style(Style::default().bg(Color::Rgb(40, 60, 90)));
+    let list = List::new(items).highlight_style(theme::SELECTED);
     let list_area = list_area.inner(ratatui::layout::Margin {
         horizontal: 1,
         vertical: 0,
@@ -799,7 +815,7 @@ fn draw(f: &mut Frame, app: &mut App) {
                 app.query
             )
         };
-        f.render_widget(Line::from(msg).dim(), list_area);
+        f.render_widget(Line::from(msg).fg(theme::MUTED), list_area);
     }
     f.render_stateful_widget(list, list_area, &mut app.list);
     app.list_area = list_area;
@@ -809,18 +825,22 @@ fn draw(f: &mut Frame, app: &mut App) {
     if let Some(ca) = changes_area {
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .title(format!(" Unsaved changes ({}) ", app.pending.len()));
+            .border_style(Style::new().fg(theme::BORDER))
+            .title(Span::styled(
+                format!(" Unsaved changes ({}) ", app.pending.len()),
+                Style::new().fg(theme::ACCENT).bold(),
+            ));
         let inner = block.inner(ca);
         let lines: Vec<Line> = if app.pending.is_empty() {
-            vec![Line::from("Nothing changed yet").dim()]
+            vec![Line::from("Nothing changed yet").fg(theme::MUTED)]
         } else {
             app.pending
                 .iter()
                 .enumerate()
                 .map(|(n, (t, c))| {
                     let (verb, colour) = match c {
-                        Change::Set(_) => ("Edit  ", Color::Yellow),
-                        Change::Delete => ("Delete", Color::Red),
+                        Change::Set(_) => ("Edit  ", theme::WARN),
+                        Change::Delete => ("Delete", theme::PROBLEM),
                     };
                     let undo = " undo ";
                     let label_width =
@@ -837,7 +857,7 @@ fn draw(f: &mut Frame, app: &mut App) {
                     Line::from(vec![
                         Span::styled(verb, Style::default().fg(colour)),
                         Span::raw(format!(" {label}{}", " ".repeat(pad))),
-                        Span::raw(undo).underlined().cyan(),
+                        Span::raw(undo).underlined().fg(theme::LINK),
                     ])
                 })
                 .collect()
@@ -846,7 +866,10 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     app.undo_targets = undo_targets;
 
-    f.render_widget(Line::from(format!(" {}", app.status)).dim(), status);
+    f.render_widget(
+        Line::from(format!(" {}", app.status)).fg(theme::MUTED),
+        status,
+    );
 
     // Buttons: every action is visible and clickable; the key is shown on it.
     let sel = app.selected();
@@ -887,18 +910,10 @@ fn draw(f: &mut Frame, app: &mut App) {
     for (label, key, action, enabled) in specs {
         let text = format!(" {label} ({key}) ");
         let width = u16::try_from(text.chars().count()).unwrap_or(0);
-        let style = if enabled {
-            Style::default()
-                .fg(Color::Black)
-                .bg(if action == Action::Save {
-                    Color::Green
-                } else {
-                    Color::Gray
-                })
-        } else {
-            Style::default()
-                .fg(Color::DarkGray)
-                .bg(Color::Rgb(30, 30, 30))
+        let style = match (enabled, action) {
+            (true, Action::Save) => Style::new().fg(theme::ON_ACCENT).bg(theme::OK).bold(),
+            (true, _) => Style::new().fg(theme::TEXT).bg(theme::BUTTON_BG),
+            (false, _) => Style::new().fg(theme::FAINT).bg(theme::BUTTON_DISABLED_BG),
         };
         if enabled && x + width <= buttons.right() {
             app.buttons
@@ -934,7 +949,7 @@ fn draw(f: &mut Frame, app: &mut App) {
                 "Save {n} change(s) to the Saltbox settings?"
             ))];
             if deletes > 0 {
-                text.push(Line::from(format!("{deletes} deleted value(s) will be created fresh the next time Saltbox runs.")).dim());
+                text.push(Line::from(format!("{deletes} deleted value(s) will be created fresh the next time Saltbox runs.")).fg(theme::WARN));
             }
             confirm(f, app, " Save changes ", text, "Save (y)", "Cancel (n)");
         }
@@ -976,18 +991,22 @@ fn draw(f: &mut Frame, app: &mut App) {
                     let pad = inner_w.saturating_sub(label.chars().count() + key.len() + 2);
                     let text = format!(" {label}{}{key} ", " ".repeat(pad));
                     if i == *sel {
-                        Line::from(text).style(Style::default().fg(Color::Black).bg(Color::Cyan))
+                        Line::from(text).style(theme::SELECTED)
                     } else {
                         Line::from(vec![
                             Span::raw(format!(" {label}{}", " ".repeat(pad))),
-                            Span::raw(format!("{key} ")).dim(),
+                            Span::raw(format!("{key} ")).fg(theme::MUTED),
                         ])
                     }
                 })
                 .collect();
             f.render_widget(Clear, menu);
             f.render_widget(
-                Paragraph::new(lines).block(Block::bordered().border_type(BorderType::Rounded)),
+                Paragraph::new(lines).block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::new().fg(theme::BORDER)),
+                ),
                 menu,
             );
         }
@@ -1017,12 +1036,12 @@ fn confirm(
     text.push(Line::from(vec![
         Span::styled(
             yes_text.clone(),
-            Style::default().fg(Color::Black).bg(Color::Green),
+            Style::new().fg(theme::ON_ACCENT).bg(theme::OK).bold(),
         ),
         Span::raw("  "),
         Span::styled(
             no_text.clone(),
-            Style::default().fg(Color::Black).bg(Color::Gray),
+            Style::new().fg(theme::TEXT).bg(theme::BUTTON_BG),
         ),
     ]));
     let body = Paragraph::new(text).wrap(Wrap { trim: false });
@@ -1031,8 +1050,13 @@ fn confirm(
         width,
         text_lines + 2,
     ));
-    popup.title = Line::from(title.to_string());
+    popup.title = Line::from(Span::styled(
+        title.to_string(),
+        Style::new().fg(theme::ACCENT).bold(),
+    ));
     popup.border_set = ratatui::symbols::border::ROUNDED;
+    popup.border_style = Style::new().fg(theme::BORDER);
+    popup.style = Style::new().fg(theme::TEXT);
     let mut state = tui_popup::PopupState::default();
     f.render_stateful_widget(popup, f.area(), &mut state);
     if let Some(a) = *state.area() {
@@ -1054,8 +1078,8 @@ fn row_item(app: &App, row: Row, key_width: usize) -> ListItem<'static> {
         Modifier::empty()
     };
     let tag = |t: Target| match app.pending.get(&t) {
-        Some(Change::Delete) => Span::raw("  will be deleted").red(),
-        Some(Change::Set(_)) => Span::raw("  changed").yellow(),
+        Some(Change::Delete) => Span::raw("  will be deleted").fg(theme::PROBLEM),
+        Some(Change::Set(_)) => Span::raw("  changed").fg(theme::WARN),
         None => Span::raw(""),
     };
     match row {
@@ -1064,14 +1088,14 @@ fn row_item(app: &App, row: Row, key_width: usize) -> ListItem<'static> {
             let folded = app.query.is_empty() && app.folded.contains(&r);
             let count: usize = role.instances.iter().map(|i| i.facts.len()).sum();
             let mut spans = vec![
-                Span::raw(if folded { "▸ " } else { "▾ " }).dim(),
+                Span::raw(if folded { "▸ " } else { "▾ " }).fg(theme::FAINT),
                 Span::styled(
                     title_case(&role.name),
                     Style::default().bold().add_modifier(strike),
                 ),
             ];
             if folded {
-                spans.push(Span::raw(format!("  {count} setting(s)")).dim());
+                spans.push(Span::raw(format!("  {count} setting(s)")).fg(theme::MUTED));
             }
             spans.push(tag(Target::App(r)));
             ListItem::new(Line::from(spans))
@@ -1080,7 +1104,7 @@ fn row_item(app: &App, row: Row, key_width: usize) -> ListItem<'static> {
             Span::raw("    "),
             Span::styled(
                 app.roles[r].instances[i].name.clone(),
-                Style::default().fg(Color::Cyan).add_modifier(strike),
+                Style::default().fg(theme::ACCENT).add_modifier(strike),
             ),
             tag(Target::Copy(r, i)),
         ])),
@@ -1112,9 +1136,9 @@ fn row_item(app: &App, row: Row, key_width: usize) -> ListItem<'static> {
                     shown,
                     Style::default()
                         .fg(if app.masked(id) {
-                            Color::DarkGray
+                            theme::MUTED
                         } else {
-                            Color::Reset
+                            theme::TEXT
                         })
                         .add_modifier(strike),
                 ),
@@ -1134,6 +1158,7 @@ fn title_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
 
     fn type_into_search(app: &mut App, text: &str) {
         app.searching = true;
@@ -1192,6 +1217,97 @@ mod tests {
             "buttons missing:\n{screen}"
         );
         assert_eq!(app.popup_buttons.len(), 2);
+    }
+
+    fn fixture_app() -> App {
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures"));
+        App::new(model::load(dir).expect("fixtures load"))
+    }
+
+    fn draw_app(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("backend");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+        terminal
+    }
+
+    /// Truecolor is the design target (capability map, decision 10): every
+    /// coloured cell on every screen state uses a palette RGB value, never a
+    /// named ANSI colour.
+    #[test]
+    fn screens_draw_only_truecolor() {
+        let check = |app: &mut App, what: &str| {
+            for (width, height) in [(110, 30), (80, 30)] {
+                let terminal = draw_app(app, width, height);
+                for cell in terminal.backend().buffer().content() {
+                    for color in [cell.fg, cell.bg] {
+                        assert!(
+                            matches!(color, Color::Rgb(..) | Color::Reset),
+                            "{what} at {width}: {:?} drawn in {color:?}",
+                            cell.symbol()
+                        );
+                    }
+                }
+            }
+        };
+        let mut app = fixture_app();
+        check(&mut app, "page");
+        // A pending edit and a pending delete fill the changes panel.
+        app.pending.insert(Target::App(0), Change::Delete);
+        app.pending
+            .insert(Target::Setting((1, 0, 0)), Change::Set("changed".into()));
+        check(&mut app, "page with changes");
+        app.popup = Popup::Menu {
+            at: Position::new(10, 5),
+            sel: 0,
+        };
+        check(&mut app, "menu");
+        app.popup = Popup::ConfirmSave;
+        check(&mut app, "save dialog");
+        app.popup = Popup::ConfirmQuit;
+        check(&mut app, "quit dialog");
+        app.start_edit((1, 0, 0));
+        check(&mut app, "edit popup");
+        app.popup = Popup::None;
+        type_into_search(&mut app, "zzz-no-match");
+        check(&mut app, "search with no match");
+    }
+
+    /// The selected row is one solid bar, not a background behind spans that
+    /// keep their own colours (review of the log picker).
+    #[test]
+    fn selected_row_is_one_uniform_bar() {
+        let mut app = fixture_app();
+        // A masked setting with a pending change mixes several colours.
+        let rows = app.rows();
+        let (index, id) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(i, row)| match *row {
+                Row::Setting(id) if app.masked(id) => Some((i, id)),
+                _ => None,
+            })
+            .expect("a masked setting in the fixtures");
+        app.pending
+            .insert(Target::Setting(id), Change::Set("new-secret".into()));
+        app.list.select(Some(index));
+        let terminal = draw_app(&mut app, 110, 30);
+        let buffer = terminal.backend().buffer();
+        let at = app.list.selected().unwrap_or_default() - app.list.offset();
+        let y = app.list_area.y + u16::try_from(at).unwrap_or(0);
+        let cells: Vec<_> = (app.list_area.x..app.list_area.right())
+            .map(|x| &buffer[(x, y)])
+            .collect();
+        let (fg, bg) = (cells[0].fg, cells[0].bg);
+        assert_ne!(bg, Color::Reset, "selection needs a background");
+        for c in &cells {
+            assert_eq!((c.fg, c.bg), (fg, bg), "cell {:?} differs", c.symbol());
+        }
     }
 
     #[test]

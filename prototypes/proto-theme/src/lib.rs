@@ -46,6 +46,10 @@ pub const CODE_BG: Color = Color::from_u32(0x1C2430);
 /// Second accent, for emphasis that isn't a warning (notes marked important).
 pub const ACCENT_2: Color = Color::from_u32(0xC49BFF);
 
+/// Buttons: an enabled button, and one that can't be used right now.
+pub const BUTTON_BG: Color = Color::from_u32(0x2A3446);
+pub const BUTTON_DISABLED_BG: Color = Color::from_u32(0x1A2029);
+
 /// Background of log lines matching the search.
 pub const SEARCH_HIT: Color = Color::from_u32(0x4A3F12);
 
