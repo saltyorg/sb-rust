@@ -25,24 +25,21 @@ per-command startup code.
 
 **Startup order** (each step is one function, unit-testable on its own):
 
-1. **Host support check.** Refuse to run on anything but a supported
-   Ubuntu release, for every command including `--help` and `version`, as
-   sb-go does (maintainer, 2026-10-29). It reads `/etc/os-release` and
-   needs no root. The supported releases list belongs to `host`;
-   `cli-core` calls it through a startup hook so the dependency stays
-   one-way (see Project structure).
-2. **Parse arguments** with clap. Parse errors and help are printed here,
-   as the calling user.
-3. **Root relaunch, only when needed** (maintainer, 2026-10-29; a factual
-   improvement under decision 1). `--help`, `version` and completion
-   output run as the calling user. Every other command, when not root,
-   replaces itself with `sudo --preserve-env=VISUAL,EDITOR <exe> <args>`
+1. **Root relaunch, always**, as sb-go (maintainer, 2026-10-29). When not
+   root, `sb` replaces itself with
+   `sudo --preserve-env=VISUAL,EDITOR <exe> <args>` before anything else,
+   for every command including `--help`, `version` and Tab completion
    (exec, not a child: signals and the exit code then belong to the real
-   run). Each command declares whether it needs root; the default is yes.
+   run). One environment for every run, and every run is logged.
+2. **Host support check.** Refuse to run on anything but a supported
+   Ubuntu release, for every command including `--help` and `version`, as
+   sb-go does (maintainer, 2026-10-29). The supported releases list
+   belongs to `host`; `cli-core` calls it through a startup hook so the
+   dependency stays one-way (see Project structure).
+3. **Parse arguments** with clap. Parse errors and help are printed here.
 4. **Logging** (decision 11): a run record to `/var/log/sb`, rotated
-   daily by tracing-appender, kept regardless of outcome. Commands that run
-   as the calling user don't log (the directory is root-only). A log that
-   can't be opened is a warning, not a failure.
+   daily by tracing-appender, kept regardless of outcome, for every run. A
+   log that can't be opened is a warning, not a failure.
 5. **Colour** (decision 10): `--color=auto|always|never` (colorchoice-clap)
    decides once and is passed on to anstream, console and crossterm. clap's
    own help follows it (`Command::color`). Truecolor is the default; the
@@ -173,12 +170,12 @@ boundaries that callers match on.
 
 ## Success criteria
 
-1. `sb --help`, `sb version` and `sb version --json` run as a normal user,
-   with no sudo prompt, on a supported host, and give sb-go's output shape.
+1. `sb --help`, `sb version` and `sb version --json` give sb-go's output
+   shape; run as a normal user, they go through `sudo` first, as sb-go.
 2. On an unsupported host every command, including `--help`, exits 1 with
    sb-go's message.
-3. A root-needing command run as a normal user execs `sudo` with `VISUAL`
-   and `EDITOR` kept, and its exit code is the command's own.
+3. Any command run as a normal user execs `sudo` with `VISUAL` and `EDITOR`
+   kept, and its exit code is the command's own.
 4. SIGINT exits 130 and SIGTERM 143, with the terminal restored.
 5. An error shows one `✗` block with its causes and the log pointer, and
    exits 1.
@@ -196,6 +193,10 @@ boundaries that callers match on.
 - Invalid theme config: warn, log and use the built-in theme.
 - Theme shape: named built-in themes plus per-role overrides.
 - Second signal: exit at once.
+- Root: every command relaunches through `sudo`, as sb-go, including help,
+  version and Tab completion. A first draft relaunched only commands that
+  need root; reading the config doesn't need root (it is 0664), but the
+  maintainer chose one environment and a logged record for every run.
 - Config file ownership: like Saltbox's own configuration, the file and
   its `sb` directory belong to the Saltbox user (from `accounts.yml`, as
   sb-go's `GetSaltboxUser` reads it) and their group, with fairly open
