@@ -181,6 +181,15 @@ Ansible output, since the runner will not inline Ansible's own output.
     the terminal is made shorter mid-run, fewer lines get drawn while the
     cursor-moving redraw is on, which can leave stale lines. The tail length
     is worked out once, at the start.
+- **Cursor hidden while drawing** (review: a cursor block sat at the far
+  right of the live lines). indicatif pads each line to the full width,
+  which leaves the cursor parked at the right edge after every redraw.
+  - The live area hides it with console's `Term::hide_cursor` (only on a
+    terminal) and shows it again in `finish`, which every exit runs
+    (success, failure, Ctrl-C), plus a `Drop` for panics.
+  - Checked: hidden then shown on all three exits in a PTY; tmux reports
+    the cursor invisible mid-run and visible after; no cursor codes when
+    piped.
 - **A failed step now exits 1 without repeating itself.** anyhow had printed
   "Error: step failed" under the tree; the tree already says it.
 - **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:

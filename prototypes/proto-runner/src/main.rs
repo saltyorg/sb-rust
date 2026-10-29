@@ -124,7 +124,7 @@ echo "E: Unable to locate package demo-unavailable"; exit 100"#),
             .bold()
             .apply_to("Saltbox (simulated run)")
     );
-    let area = LiveArea::new(&mp, tail_count)?;
+    let area = LiveArea::new(&mp, tail_count, live)?;
     for (i, step) in steps.iter().enumerate() {
         let last = i + 1 == steps.len();
         if let Err(e) = run_step(&mp, &area, step, last, live, cli.verbose, &interrupted) {
@@ -320,11 +320,18 @@ struct LiveArea {
     mp: MultiProgress,
     spinner: ProgressBar,
     tail: Vec<ProgressBar>,
+    /// The terminal cursor is hidden while the live area is drawn.
+    /// indicatif pads each line to the full width, which leaves the cursor
+    /// parked at the far right after every redraw.
+    cursor_hidden: bool,
 }
 
 impl LiveArea {
-    fn new(mp: &MultiProgress, tail_count: usize) -> Result<Self> {
+    fn new(mp: &MultiProgress, tail_count: usize, live: bool) -> Result<Self> {
         mp.set_move_cursor(true);
+        // console's Term::hide_cursor (`\x1b[?25l`); only on a terminal, so
+        // piped output gets no escape codes.
+        let cursor_hidden = live && console::Term::stderr().hide_cursor().is_ok();
         let spinner = mp.add(ProgressBar::new_spinner());
         spinner.set_style(ProgressStyle::with_template(&spinner_template())?);
         spinner.enable_steady_tick(Duration::from_millis(80));
@@ -339,6 +346,7 @@ impl LiveArea {
             mp: mp.clone(),
             spinner,
             tail,
+            cursor_hidden,
         })
     }
 
@@ -387,6 +395,21 @@ impl LiveArea {
             bar.finish_and_clear();
         }
         self.spinner.finish_and_clear();
+        self.show_cursor();
+    }
+
+    fn show_cursor(&self) {
+        if self.cursor_hidden {
+            let _ = console::Term::stderr().show_cursor();
+        }
+    }
+}
+
+/// Also shows the cursor when unwinding from a panic; every normal exit,
+/// including the early `process::exit` ones, goes through `finish` first.
+impl Drop for LiveArea {
+    fn drop(&mut self) {
+        self.show_cursor();
     }
 }
 
