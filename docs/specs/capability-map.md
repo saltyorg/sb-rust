@@ -1,4 +1,4 @@
-# Capability Map: sb-rust (pending review of prototype output)
+# Capability Map: sb-rust (approved 2026-10-29)
 
 sb-rust is a Rust rewrite, not a line-by-line port, of the Saltbox CLI (`sb`,
 currently sb-go). It keeps the user-facing behaviour of `sb` and uses idiomatic
@@ -8,9 +8,10 @@ Rust libraries in place of sb-go's internals.
 > prototypes (`prototypes/*/FINDINGS.md`). Every row in the stack table names
 > the prototype that backs it, or says it is untested. The verdicts are
 > technical only until the maintainer reviews each prototype's look and
-> feel. Reviewed so far: proto-logs, proto-markdown, proto-facts,
-> proto-runner and proto-inline (2026-10-29; its restore prompts deferred). Module specs start with `cli-core` only after those reviews
-> and approval of this map.
+> feel. Reviewed: proto-logs, proto-markdown, proto-facts, proto-runner and
+> proto-inline (2026-10-29; its restore prompts deferred). The maintainer
+> approved this map on 2026-10-29 with proto-complete's review still open
+> (see Open items). Module specs start with `cli-core`.
 
 ## Objective
 
@@ -252,7 +253,9 @@ sb-go has never enforced them. sb-rust will.
 - **Install script:** moves into this repository and runs `sb setup`
   attached to the terminal instead of capturing it (tasks/todo.md, "Later:
   Install script lives in this repository").
-- **fish completion:** registration is generated but untested.
+- **Shell completion:** proto-complete's look and feel is not yet reviewed
+  by the maintainer; review it before the `completion` module spec. fish
+  registration is generated but untested.
 - **Runner:** nested subtasks (`insert_after`) and forwarding terminal resize
   to the PTY haven't been prototyped. Evaluate a terminal-emulator crate
   (`vt100`, or termwiz's escape parser) for the output tail instead of the

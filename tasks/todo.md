@@ -243,7 +243,8 @@ dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
 **Scope:** XS
 
 ## Checkpoint C
-- [ ] User approves the updated map. Then module specs start with `cli-core`.
+- [x] User approves the updated map (2026-10-29), with proto-complete's
+      review carried as an open item. Module specs start with `cli-core`.
 
 ## Later: Install script lives in this repository
 
