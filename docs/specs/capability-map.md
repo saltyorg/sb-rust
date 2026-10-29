@@ -8,8 +8,9 @@ Rust libraries in place of sb-go's internals.
 > prototypes (`prototypes/*/FINDINGS.md`). Every row in the stack table names
 > the prototype that backs it, or says it is untested. The verdicts are
 > technical only until the maintainer reviews each prototype's look and
-> feel. Reviewed so far: proto-logs (2026-10-29). Module specs start with
-> `cli-core` only after those reviews and approval of this map.
+> feel. Reviewed so far: proto-logs and proto-markdown (2026-10-29). Module
+> specs start with `cli-core` only after those reviews and approval of this
+> map.
 
 ## Objective
 
@@ -51,8 +52,8 @@ Rust libraries in place of sb-go's internals.
 9. **Unstable-feature dependencies** are allowed only with an exact version
    pin and an ADR. There are currently three:
    - `clap_complete/unstable-dynamic` (dynamic tag completion).
-   - ratatui `unstable-rendered-line-info` (only if inline Markdown output is
-     kept).
+   - ratatui `unstable-rendered-line-info` (`Paragraph::line_count`): used by
+     the log viewer, the announcement viewer and inline Markdown output.
    - The `cross` image version used for releases.
 10. **Colour:** screens are designed for truecolor and emit it by default,
     as sb-go does. sb-go sets `COLORTERM=truecolor` and a TrueColor
@@ -95,6 +96,7 @@ GitHub API (last push, archived flag).
 | Text input / editor | `ratatui-textarea` (ratatui org) | 0.9.3 / 2026-10 | 0.6M | bubbles textinput/textarea | proto-facts, proto-logs |
 | ANSI log text in TUI | `ansi-to-tui` (ratatui org) | 8.0.1 / 2026-01 | 3.4M | (lipgloss/ansi handling) | proto-logs |
 | Markdown | `tui-markdown` + a small Saltbox `StyleSheet` | 0.3.12 / 2026-10 | 0.2M | glamour | proto-markdown |
+| Scrollable panes (small content) | `tui-scrollview` (ratatui org) | 0.6.8 / 2026-09 | 0.1M | bubbles viewport | proto-markdown |
 | Spinners, progress | `indicatif` (printed-lines pattern) | 0.18.6 / 2026-07 | 54M | bubbles spinner/progress, terminal runner | proto-runner |
 | Styled one-off lines, ANSI stripping | `console` (already pulled in by indicatif) | 0.16.6 / 2026-09 | 94M | lipgloss styles | proto-runner |
 | Prompts | `dialoguer` | 0.12.0 / repo active 2026-10 | 19M | restore textinput model | proto-inline |
@@ -157,7 +159,7 @@ GitHub API (last push, archived flag).
 | `config` | Saltbox YAML: strict schema loading (drift fails loudly), position-carrying validation collecting all issues, `pattern` and `additionalProperties` support, `validate-config`; facts with a line-preserving writer (round-trip tests), locking and drift detection | exec, host, ansible, release | saltbox, facts |
 | `docker` | ps/start/stop/restart and log streams via bollard | cli-core, term-ui | cmd/docker* |
 | `motd` | System info plus media-server and downloader providers (thin reqwest clients), parallel collection | host, config, term-ui | motd |
-| `tui` | ratatui screens: one shared streaming log viewer (docker and systemd) with an inline fallback; fact editor (modal editor, masked secrets, mouse); edit picker; announcements viewer (tui-markdown). Mouse via recorded layout rects on all screens | docker, host, config | cmd/logs, cmd/dockerLogs, cmd/edit, factui, saltbox/announcements |
+| `tui` | ratatui screens: one shared streaming log viewer (docker and systemd) with an inline fallback; fact editor (modal editor, masked secrets, mouse); edit picker; announcements viewer (tui-markdown, announcement list, tui-scrollview). Mouse via recorded layout rects on all screens | docker, host, config | cmd/logs, cmd/dockerLogs, cmd/edit, factui, saltbox/announcements |
 | `ops` | Workflow commands: setup, update, branch, branch-sandbox, reinstall-*, update-venv, restore, diag, bench, gha | all of the above as needed | remaining cmd/* |
 | `completion` | Dynamic completion via `CompleteEnv` (one tag completer reading the tag cache); install writes the generated per-shell registration stub | cli-core, ansible | completion, cmd/tag_completion |
 
@@ -187,8 +189,7 @@ sb-go has never enforced them. sb-rust will.
 ## Open items carried into module specs
 
 - **Manual real-terminal check** (two emulators): mouse use and Shift-drag
-  native selection in the fact editor. (Announcements are English and ASCII
-  only, so wide characters on the Markdown path are out of scope.)
+  native selection in the fact editor.
 - **fish completion:** registration is generated but untested.
 - **Runner:** nested subtasks (`insert_after`) and forwarding terminal resize
   to the PTY haven't been prototyped.

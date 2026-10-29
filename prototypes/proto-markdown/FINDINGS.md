@@ -150,7 +150,10 @@ stand out while missed ones can still be read.
 
 ## Verdict
 
-_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+_Reviewed by the maintainer (2026-10-29): ready for now. The review shaped
+the viewer: an announcement list beside the selected one, new ones marked
+and older ones tinted, no scrolling past the end, the truecolor palette,
+and the 40% list cap with short titles._
 
 **Adopt tui-markdown** (with a small Saltbox `StyleSheet`); **reject
 termimad**. It's a second rendering stack with its own width maths.
@@ -160,6 +163,15 @@ termimad**. It's a second rendering stack with its own width maths.
 - Stack table, Markdown row: `tui-markdown` with a custom `StyleSheet`.
   Enable ratatui's `unstable-rendered-line-info` if inline rendering is
   kept, and record that pin.
-- `tui` module: the announcements viewer is a ratatui screen. Inline
-  announcement output (e.g. after `sb update`) uses the inline viewport, with
-  a plain-text fallback when stdout isn't a terminal.
+- `tui` module: the announcements viewer is a ratatui screen: a list of
+  every applicable announcement (newest first, new ones marked, older ones
+  tinted) beside the selected one, scrolled with `tui-scrollview`. Inline
+  announcement output (e.g. after `sb update`) prints only the new ones
+  through the inline viewport, with a plain-text fallback when stdout isn't
+  a terminal.
+- `saltbox` (announcements) module: sb-go's rules carry over. New means not
+  in the file before the update, matched on date and title. Required folder
+  and file conditions apply. `--before`/`--after` stay.
+- Stack table: add `tui-scrollview` (ratatui org) for scrollable panes whose
+  content is small enough to render whole. The log viewer keeps its own
+  windowed scrolling.
