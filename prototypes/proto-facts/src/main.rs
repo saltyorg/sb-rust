@@ -1028,8 +1028,13 @@ fn confirm(
 ) {
     let width = 70usize.min(usize::from(f.area().width.saturating_sub(2)));
     let width = width.max(1);
-    // Count wrapped lines so the buttons are never cut off.
-    let text_lines: usize = text.iter().map(|l| l.width().div_ceil(width).max(1)).sum();
+    // Count wrapped lines with ratatui itself (Paragraph::line_count, behind
+    // the unstable-rendered-line-info feature, capability map decision 9), so
+    // the buttons are never cut off. Dividing by the width undercounts when
+    // whole words move to the next line.
+    let text_lines = Paragraph::new(text.clone())
+        .wrap(Wrap { trim: false })
+        .line_count(u16::try_from(width).unwrap_or(u16::MAX));
     let yes_text = format!(" {yes} ");
     let no_text = format!(" {no} ");
     text.push(Line::raw(""));
@@ -1308,6 +1313,142 @@ mod tests {
         for c in &cells {
             assert_eq!((c.fg, c.bg), (fg, bg), "cell {:?} differs", c.symbol());
         }
+    }
+
+    /// Word wrap can need more lines than width / dialog width, so the
+    /// dialog height must come from the real wrapped line count, or its
+    /// buttons get cut off at some widths.
+    #[test]
+    fn save_dialog_buttons_stay_visible_at_every_width() {
+        let mut app = fixture_app();
+        app.pending.insert(Target::App(0), Change::Delete);
+        app.pending
+            .insert(Target::Setting((1, 0, 0)), Change::Set("changed".into()));
+        app.popup = Popup::ConfirmSave;
+        for width in 30..=100 {
+            let terminal = draw_app(&mut app, width, 30);
+            let buffer = terminal.backend().buffer();
+            let screen: String = (0..30)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+                .collect();
+            assert!(
+                screen.contains("Save (y)") && screen.contains("Cancel (n)"),
+                "buttons cut off at width {width}"
+            );
+        }
+    }
+
+    /// A line built so the old estimate is wrong: 69 characters estimate to
+    /// 2 lines in a 38-column dialog, but word wrap needs 3.
+    #[test]
+    fn dialog_height_uses_the_wrapped_line_count() {
+        let mut app = fixture_app();
+        let text = ["wordsmith"; 7].join(" ");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20)).expect("backend");
+        terminal
+            .draw(|f| {
+                confirm(
+                    f,
+                    &mut app,
+                    " Test ",
+                    vec![Line::from(text.clone())],
+                    "Yes (y)",
+                    "No (n)",
+                )
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let screen: String = (0..20)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+            .collect();
+        assert!(screen.contains("Yes (y)"), "buttons cut off");
+    }
+
+    /// Screen position of the first cell of `text` (ASCII labels only).
+    fn find(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>, text: &str) -> Position {
+        let buffer = terminal.backend().buffer();
+        for y in 0..buffer.area.height {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect();
+            // Byte offset to cell column: border glyphs are multi-byte.
+            if let Some(byte) = row.find(text) {
+                let x = row[..byte].chars().count();
+                return Position::new(u16::try_from(x).expect("x"), y);
+            }
+        }
+        panic!("{text:?} not on screen");
+    }
+
+    fn click(app: &mut App, at: Position) -> Option<Action> {
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: at.x,
+            row: at.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Each bottom button is clickable across its whole label, and nowhere
+    /// beside it.
+    #[test]
+    fn bottom_buttons_click_where_they_are_drawn() {
+        let mut app = fixture_app();
+        app.pending
+            .insert(Target::Setting((1, 0, 0)), Change::Set("changed".into()));
+        let rows = app.rows();
+        let setting = rows
+            .iter()
+            .position(|r| matches!(r, Row::Setting(_)))
+            .expect("setting");
+        app.list.select(Some(setting));
+        let terminal = draw_app(&mut app, 110, 30);
+        for (label, action) in [
+            (" Edit (e) ", Action::Edit),
+            (" Copy (c) ", Action::Copy),
+            (" Show (s) ", Action::Show),
+            (" Delete (d) ", Action::Delete),
+            (" Save changes (v) ", Action::Save),
+            (" Quit (q) ", Action::Quit),
+        ] {
+            let at = find(&terminal, label);
+            let last = Position::new(at.x + u16::try_from(label.len()).expect("len") - 1, at.y);
+            for p in [at, last] {
+                assert!(click(&mut app, p) == Some(action), "{label:?} at {p:?}");
+            }
+            let after = Position::new(last.x + 1, at.y);
+            assert!(
+                click(&mut app, after).is_none(),
+                "gap after {label:?} is clickable"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_link_removes_its_change() {
+        let mut app = fixture_app();
+        app.pending
+            .insert(Target::Setting((1, 0, 0)), Change::Set("changed".into()));
+        let terminal = draw_app(&mut app, 110, 30);
+        let at = find(&terminal, " undo ");
+        click(&mut app, Position::new(at.x + 2, at.y));
+        assert!(app.pending.is_empty());
+    }
+
+    #[test]
+    fn dialog_buttons_click_where_they_are_drawn() {
+        let mut app = fixture_app();
+        app.pending.insert(Target::App(0), Change::Delete);
+        app.popup = Popup::ConfirmSave;
+        let terminal = draw_app(&mut app, 110, 30);
+        let save = find(&terminal, " Save (y) ");
+        let cancel = find(&terminal, " Cancel (n) ");
+        assert!(click(&mut app, Position::new(save.x + 9, save.y)) == Some(Action::Save));
+        assert!(click(&mut app, Position::new(cancel.x + 1, cancel.y)).is_none());
+        assert!(matches!(app.popup, Popup::None), "cancel closes the dialog");
     }
 
     #[test]
