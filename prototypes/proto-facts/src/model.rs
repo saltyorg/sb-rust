@@ -2,6 +2,15 @@
 //! (instances). Deliberately simpler than sb-go's facts package (no locks, no
 //! drift detection); the prototype is about the UI. Edits are line-based so
 //! untouched lines keep their formatting.
+//!
+//! Why not an INI crate (details in FINDINGS.md, checked against the
+//! sources): rust-ini 0.21.3 regenerates the whole file on write, drops
+//! comments while parsing, escapes newlines instead of writing indented
+//! continuation lines, and unquotes and unescapes values by default.
+//! configparser 3.3.0 parses multi-line values only when asked (`multiline`,
+//! off by default), but its `write`/`pretty_write` serialise the parsed
+//! configuration and overwrite the file, and comments are dropped on read.
+//! Keeping untouched lines byte-for-byte is a Saltbox constraint.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -66,12 +75,18 @@ pub fn load(dir: &Path) -> Result<Vec<Role>> {
         .collect()
 }
 
+/// A blank or comment line ends a multi-line value. Shared by the reader and
+/// the writer, so a save replaces exactly the lines a value was read from.
+fn ends_value(trimmed: &str) -> bool {
+    trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';')
+}
+
 fn parse(text: &str) -> Vec<Instance> {
     let mut instances: Vec<Instance> = Vec::new();
     let mut last_indent: Option<usize> = None;
     for raw in text.lines() {
         let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+        if ends_value(trimmed) {
             last_indent = None;
             continue;
         }
@@ -137,7 +152,7 @@ pub fn apply(roles: &[Role], pending: &BTreeMap<Target, Change>) -> Result<usize
                 continue;
             }
             if let Some(base) = skipping_continuation {
-                if !trimmed.is_empty() && indent > base {
+                if !ends_value(trimmed) && indent > base {
                     continue;
                 }
                 skipping_continuation = None;
@@ -286,6 +301,26 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&target).expect("read"),
             "[demo]\nkey = old\n"
+        );
+    }
+
+    /// The writer must agree with the reader on where a value ends: the
+    /// reader ends a multi-line value at an indented comment, so changing the
+    /// value must keep that comment.
+    #[test]
+    fn changing_a_value_keeps_an_indented_comment_below_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("demo.ini");
+        let before = "[demo]\nmotd = first\n    second\n    # keep me\nother = x\n";
+        std::fs::write(&path, before).expect("write");
+        let roles = load(dir.path()).expect("load");
+        assert_eq!(roles[0].instances[0].facts[0].value, "first\nsecond");
+        let mut pending = BTreeMap::new();
+        pending.insert(Target::Setting((0, 0, 0)), Change::Set("one\ntwo".into()));
+        apply(&roles, &pending).expect("apply");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "[demo]\nmotd = one\n    two\n    # keep me\nother = x\n"
         );
     }
 

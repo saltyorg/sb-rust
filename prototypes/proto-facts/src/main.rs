@@ -90,6 +90,15 @@ fn main() -> Result<()> {
         bail!("refusing to edit the standard Saltbox facts directory; pass a copy");
     }
     let mut app = App::new(model::load(&cli.dir)?);
+    // ratatui's panic hook restores raw mode and the alternate screen but not
+    // mouse capture, so a panic would leak mouse codes into the shell. This
+    // hook adds that; ratatui says to install other hooks before init, which
+    // wraps them (ratatui 0.30.2 init.rs, "Panic Hook").
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        previous(info);
+    }));
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, &cli.dir);
@@ -280,6 +289,9 @@ impl App {
                 KeyCode::Esc if self.query.is_empty() => self.searching = false,
                 KeyCode::Esc => self.search = search_box(),
                 KeyCode::Enter | KeyCode::Down | KeyCode::Tab => self.searching = false,
+                // Single line: Ctrl+M would insert a newline, as in
+                // ratatui-textarea's examples/single_line.rs, which filters it.
+                KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {}
                 _ => {
                     self.search.input(key);
                 }
@@ -288,18 +300,12 @@ impl App {
             self.list.select(Some(0));
             return None;
         }
-        let len = self.rows().len();
-        let sel = self.list.selected().unwrap_or(0);
         match key.code {
             KeyCode::Char('/') => self.searching = true,
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.list.select(Some((sel + 1).min(len.saturating_sub(1))))
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.list.select(Some(sel.saturating_sub(1))),
-            KeyCode::PageDown => self
-                .list
-                .select(Some((sel + 10).min(len.saturating_sub(1)))),
-            KeyCode::PageUp => self.list.select(Some(sel.saturating_sub(10))),
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(ListState::select_next),
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(ListState::select_previous),
+            KeyCode::PageDown => self.move_selection(|l| l.scroll_down_by(10)),
+            KeyCode::PageUp => self.move_selection(|l| l.scroll_up_by(10)),
             KeyCode::Enter => self.activate(),
             KeyCode::Left => self.fold_selected(true),
             KeyCode::Right => self.fold_selected(false),
@@ -314,6 +320,23 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// Moves the selection with ListState's own methods, then clamps it to
+    /// the rows at once: ListState only clamps while rendering (ratatui-widgets
+    /// 0.3.2 list/state.rs, list/rendering.rs), and several events can be
+    /// handled before the next draw.
+    fn move_selection(&mut self, movement: impl FnOnce(&mut ListState)) {
+        // With nothing selected, start from the first row: select_previous
+        // would otherwise wrap to the last one.
+        if self.list.selected().is_none() {
+            self.list.select(Some(0));
+        }
+        movement(&mut self.list);
+        let last = self.rows().len().saturating_sub(1);
+        if let Some(selected) = self.list.selected() {
+            self.list.select(Some(selected.min(last)));
+        }
     }
 
     fn on_menu_key(&mut self, key: KeyEvent, at: Position, sel: usize) -> Option<Action> {
@@ -386,10 +409,8 @@ impl App {
     fn on_mouse(&mut self, m: MouseEvent) -> Option<Action> {
         let pos = Position::new(m.column, m.row);
         if let Popup::Menu { sel, .. } = &mut self.popup {
-            let area = self.menu_area;
-            let item =
-                (area.contains(pos) && m.row > area.y && m.row < area.bottom().saturating_sub(1))
-                    .then(|| usize::from(m.row - area.y - 1));
+            // Click to menu item: the rows the menu was drawn in.
+            let item = menu_rows(self.menu_area).position(|r| r.contains(pos));
             match m.kind {
                 MouseEventKind::Moved => {
                     if let Some(i) = item {
@@ -443,6 +464,10 @@ impl App {
                     return None;
                 }
                 self.searching = false;
+                // Click to row: ratatui's List has no hit-testing (none in
+                // ratatui-widgets 0.3.2 list/, nor in the tui-widgets crates),
+                // so map it here. Assumes one line per row, which holds:
+                // every row is a single Line.
                 if self.list_area.contains(pos) {
                     let row = self.list.offset() + usize::from(m.row - self.list_area.y);
                     if row < self.rows().len() {
@@ -462,13 +487,10 @@ impl App {
                 }
             }
             MouseEventKind::ScrollDown if self.list_area.contains(pos) => {
-                let len = self.rows().len();
-                let sel = self.list.selected().unwrap_or(0);
-                self.list.select(Some((sel + 1).min(len.saturating_sub(1))));
+                self.move_selection(ListState::select_next);
             }
             MouseEventKind::ScrollUp if self.list_area.contains(pos) => {
-                let sel = self.list.selected().unwrap_or(0);
-                self.list.select(Some(sel.saturating_sub(1)));
+                self.move_selection(ListState::select_previous);
             }
             _ => {}
         }
@@ -723,6 +745,11 @@ fn target_of(row: Row) -> Target {
     }
 }
 
+/// The context menu's item rows: one per line inside its border.
+fn menu_rows(menu: Rect) -> ratatui::layout::Rows {
+    menu.inner(ratatui::layout::Margin::new(1, 1)).rows()
+}
+
 fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     // Base text colour for the whole screen; the background stays the
@@ -831,38 +858,32 @@ fn draw(f: &mut Frame, app: &mut App) {
                 Style::new().fg(theme::ACCENT).bold(),
             ));
         let inner = block.inner(ca);
-        let lines: Vec<Line> = if app.pending.is_empty() {
-            vec![Line::from("Nothing changed yet").fg(theme::MUTED)]
-        } else {
-            app.pending
-                .iter()
-                .enumerate()
-                .map(|(n, (t, c))| {
-                    let (verb, colour) = match c {
-                        Change::Set(_) => ("Edit  ", theme::WARN),
-                        Change::Delete => ("Delete", theme::PROBLEM),
-                    };
-                    let undo = " undo ";
-                    let label_width =
-                        usize::from(inner.width).saturating_sub(verb.len() + undo.len() + 2);
-                    let label: String = app.label(*t).chars().take(label_width).collect();
-                    if let Ok(y) = u16::try_from(n)
-                        && y < inner.height
-                    {
-                        let x = inner.right().saturating_sub(undo.len() as u16);
-                        undo_targets.push((Rect::new(x, inner.y + y, undo.len() as u16, 1), *t));
-                    }
-                    let pad = usize::from(inner.width)
-                        .saturating_sub(verb.len() + 1 + label.chars().count() + undo.len());
-                    Line::from(vec![
-                        Span::styled(verb, Style::default().fg(colour)),
-                        Span::raw(format!(" {label}{}", " ".repeat(pad))),
-                        Span::raw(undo).underlined().fg(theme::LINK),
-                    ])
-                })
-                .collect()
-        };
-        f.render_widget(Paragraph::new(lines).block(block), ca);
+        f.render_widget(block, ca);
+        if app.pending.is_empty() {
+            f.render_widget(Line::from("Nothing changed yet").fg(theme::MUTED), inner);
+        }
+        // One row per change, split into verb, label and undo columns by
+        // ratatui's layout, so the undo link's click area is the rectangle
+        // it is drawn in.
+        let undo = Span::raw(" undo ").underlined().fg(theme::LINK);
+        for ((t, c), row) in app.pending.iter().zip(inner.rows()) {
+            let verb = match c {
+                Change::Set(_) => Span::raw("Edit").fg(theme::WARN),
+                Change::Delete => Span::raw("Delete").fg(theme::PROBLEM),
+            };
+            let [verb_area, label_area, undo_area] = row.layout(
+                &Layout::horizontal([
+                    Constraint::Length(6),
+                    Constraint::Fill(1),
+                    Constraint::Length(u16::try_from(undo.width()).unwrap_or(u16::MAX)),
+                ])
+                .spacing(1),
+            );
+            f.render_widget(verb, verb_area);
+            f.render_widget(Line::from(app.label(*t)), label_area);
+            f.render_widget(undo.clone(), undo_area);
+            undo_targets.push((undo_area, *t));
+        }
     }
     app.undo_targets = undo_targets;
 
@@ -905,25 +926,38 @@ fn draw(f: &mut Frame, app: &mut App) {
         ("Quit", "q", Action::Quit, true),
     ];
     app.buttons.clear();
-    let mut x = buttons.x + 1;
-    let mut spans = vec![Span::raw(" ")];
-    for (label, key, action, enabled) in specs {
-        let text = format!(" {label} ({key}) ");
-        let width = u16::try_from(text.chars().count()).unwrap_or(0);
-        let style = match (enabled, action) {
-            (true, Action::Save) => Style::new().fg(theme::ON_ACCENT).bg(theme::OK).bold(),
-            (true, _) => Style::new().fg(theme::TEXT).bg(theme::BUTTON_BG),
-            (false, _) => Style::new().fg(theme::FAINT).bg(theme::BUTTON_DISABLED_BG),
-        };
-        if enabled && x + width <= buttons.right() {
-            app.buttons
-                .push((Rect::new(x, buttons.y, width, 1), action));
+    // Each button is laid out by ratatui (display widths, one column apart)
+    // and drawn into the rectangle that is also its click area.
+    let spans: Vec<(Span, Action, bool)> = specs
+        .into_iter()
+        .map(|(label, key, action, enabled)| {
+            let style = match (enabled, action) {
+                (true, Action::Save) => Style::new().fg(theme::ON_ACCENT).bg(theme::OK).bold(),
+                (true, _) => Style::new().fg(theme::TEXT).bg(theme::BUTTON_BG),
+                (false, _) => Style::new().fg(theme::FAINT).bg(theme::BUTTON_DISABLED_BG),
+            };
+            (
+                Span::styled(format!(" {label} ({key}) "), style),
+                action,
+                enabled,
+            )
+        })
+        .collect();
+    let row = buttons.inner(ratatui::layout::Margin::new(1, 0));
+    let areas =
+        Layout::horizontal(spans.iter().map(|(span, _, _)| {
+            Constraint::Length(u16::try_from(span.width()).unwrap_or(u16::MAX))
+        }))
+        .spacing(1)
+        .split(row);
+    for ((span, action, enabled), area) in spans.into_iter().zip(areas.iter()) {
+        // A button the screen is too narrow for is not clickable.
+        let fits = usize::from(area.width) == span.width();
+        if enabled && fits {
+            app.buttons.push((*area, action));
         }
-        spans.push(Span::styled(text, style));
-        spans.push(Span::raw(" "));
-        x += width + 1;
+        f.render_widget(span, *area);
     }
-    f.render_widget(Line::from(spans), buttons);
 
     // Popups.
     app.popup_buttons.clear();
@@ -975,40 +1009,38 @@ fn draw(f: &mut Frame, app: &mut App) {
                 .unwrap_or_default();
             let width = items
                 .iter()
-                .map(|(l, k, _)| l.chars().count() + k.len() + 5)
+                .map(|(l, k, _)| Line::from(l.as_str()).width() + Span::raw(*k).width() + 5)
                 .max()
-                .unwrap_or(10) as u16;
+                .unwrap_or(10);
             let height = u16::try_from(items.len()).unwrap_or(0) + 2;
-            let x = at.x.min(area.right().saturating_sub(width));
-            let y = at.y.min(area.bottom().saturating_sub(height));
-            let menu = Rect::new(x, y, width.min(area.width), height.min(area.height));
+            // Opened at the pointer, moved and shrunk to fit the screen.
+            let menu =
+                Rect::new(at.x, at.y, u16::try_from(width).unwrap_or(u16::MAX), height).clamp(area);
             app.menu_area = menu;
-            let inner_w = usize::from(menu.width.saturating_sub(2));
-            let lines: Vec<Line> = items
-                .iter()
-                .enumerate()
-                .map(|(i, (label, key, _))| {
-                    let pad = inner_w.saturating_sub(label.chars().count() + key.len() + 2);
-                    let text = format!(" {label}{}{key} ", " ".repeat(pad));
-                    if i == *sel {
-                        Line::from(text).style(theme::SELECTED)
-                    } else {
-                        Line::from(vec![
-                            Span::raw(format!(" {label}{}", " ".repeat(pad))),
-                            Span::raw(format!("{key} ")).fg(theme::MUTED),
-                        ])
-                    }
-                })
-                .collect();
             f.render_widget(Clear, menu);
             f.render_widget(
-                Paragraph::new(lines).block(
-                    Block::bordered()
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::new().fg(theme::BORDER)),
-                ),
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(theme::BORDER)),
                 menu,
             );
+            // One row per item inside the border (Rect::rows), split into
+            // label and shortcut columns (Rect::layout); the same rows are
+            // used to map clicks back to items.
+            for (i, ((label, key, _), row)) in items.iter().zip(menu_rows(menu)).enumerate() {
+                let key = Span::raw(*key).fg(theme::MUTED);
+                let [label_area, key_area] =
+                    row.inner(ratatui::layout::Margin::new(1, 0))
+                        .layout(&Layout::horizontal([
+                            Constraint::Fill(1),
+                            Constraint::Length(u16::try_from(key.width()).unwrap_or(u16::MAX)),
+                        ]));
+                f.render_widget(Line::from(label.as_str()), label_area);
+                f.render_widget(key, key_area);
+                if i == *sel {
+                    f.buffer_mut().set_style(row, theme::SELECTED);
+                }
+            }
         }
         Popup::None => {}
     }
@@ -1035,20 +1067,18 @@ fn confirm(
     let text_lines = Paragraph::new(text.clone())
         .wrap(Wrap { trim: false })
         .line_count(u16::try_from(width).unwrap_or(u16::MAX));
-    let yes_text = format!(" {yes} ");
-    let no_text = format!(" {no} ");
+    let yes_button = Span::styled(
+        format!(" {yes} "),
+        Style::new().fg(theme::ON_ACCENT).bg(theme::OK).bold(),
+    );
+    let no_button = Span::styled(
+        format!(" {no} "),
+        Style::new().fg(theme::TEXT).bg(theme::BUTTON_BG),
+    );
+    // A blank line, then a row left empty for the buttons, which are drawn
+    // into their click areas once the popup has placed itself.
     text.push(Line::raw(""));
-    text.push(Line::from(vec![
-        Span::styled(
-            yes_text.clone(),
-            Style::new().fg(theme::ON_ACCENT).bg(theme::OK).bold(),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            no_text.clone(),
-            Style::new().fg(theme::TEXT).bg(theme::BUTTON_BG),
-        ),
-    ]));
+    text.push(Line::raw(""));
     let body = Paragraph::new(text).wrap(Wrap { trim: false });
     let mut popup = tui_popup::Popup::new(tui_popup::KnownSizeWrapper::new(
         body,
@@ -1064,14 +1094,21 @@ fn confirm(
     popup.style = Style::new().fg(theme::TEXT);
     let mut state = tui_popup::PopupState::default();
     f.render_stateful_widget(popup, f.area(), &mut state);
-    if let Some(a) = *state.area() {
-        let y = a.y + 1 + u16::try_from(text_lines + 1).unwrap_or(0);
-        let yes_w = u16::try_from(yes_text.chars().count()).unwrap_or(0);
-        let no_w = u16::try_from(no_text.chars().count()).unwrap_or(0);
-        app.popup_buttons
-            .push((Rect::new(a.x + 1, y, yes_w, 1), true));
-        app.popup_buttons
-            .push((Rect::new(a.x + 1 + yes_w + 2, y, no_w, 1), false));
+    // The popup's inner area (inside its border), then the button row after
+    // the text and the blank line.
+    if let Some(row) = state
+        .area()
+        .map(|a| a.inner(ratatui::layout::Margin::new(1, 1)))
+        .and_then(|inner| inner.rows().nth(text_lines + 1))
+    {
+        let width =
+            |span: &Span| Constraint::Length(u16::try_from(span.width()).unwrap_or(u16::MAX));
+        let [yes_area, no_area] =
+            row.layout(&Layout::horizontal([width(&yes_button), width(&no_button)]).spacing(2));
+        f.render_widget(yes_button, yes_area);
+        f.render_widget(no_button, no_area);
+        app.popup_buttons.push((yes_area, true));
+        app.popup_buttons.push((no_area, false));
     }
 }
 
@@ -1449,6 +1486,84 @@ mod tests {
         assert!(click(&mut app, Position::new(save.x + 9, save.y)) == Some(Action::Save));
         assert!(click(&mut app, Position::new(cancel.x + 1, cancel.y)).is_none());
         assert!(matches!(app.popup, Popup::None), "cancel closes the dialog");
+    }
+
+    /// Several events can be handled before the next draw, so moving past
+    /// the last row must leave a valid selection straight away, not only
+    /// after ratatui clamps it while rendering.
+    #[test]
+    fn moving_past_the_end_keeps_a_valid_selection_before_redraw() {
+        let mut app = fixture_app();
+        draw_app(&mut app, 110, 30);
+        let last = app.rows().len() - 1;
+        app.list.select(Some(last));
+        for code in [KeyCode::Down, KeyCode::PageDown] {
+            app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert_eq!(app.list.selected(), Some(last), "{code:?}");
+        }
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: app.list_area.x,
+            row: app.list_area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.list.selected(), Some(last), "wheel");
+        app.list.select(Some(0));
+        for code in [KeyCode::Up, KeyCode::PageUp] {
+            app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert_eq!(app.list.selected(), Some(0), "{code:?}");
+        }
+    }
+
+    /// The context menu: pointing at an item highlights it, clicking it runs
+    /// it, and the border does nothing.
+    #[test]
+    fn menu_items_click_where_they_are_drawn() {
+        let mut app = fixture_app();
+        let rows = app.rows();
+        let setting = rows
+            .iter()
+            .position(|r| matches!(r, Row::Setting(_)))
+            .expect("setting");
+        app.list.select(Some(setting));
+        app.open_menu(Some(Position::new(20, 6)));
+        let terminal = draw_app(&mut app, 110, 30);
+        let items = app.menu_items(app.selected().expect("row"));
+        let (label, _, action) = &items[1];
+        let at = find(&terminal, label);
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: at.x,
+            row: at.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(
+            matches!(app.popup, Popup::Menu { sel: 1, .. }),
+            "hover highlights"
+        );
+        let border = Position::new(app.menu_area.x + 2, app.menu_area.y);
+        assert!(click(&mut app, border).is_none(), "top border runs nothing");
+        app.open_menu(Some(Position::new(20, 6)));
+        draw_app(&mut app, 110, 30);
+        assert!(click(&mut app, at) == Some(*action), "click runs the item");
+    }
+
+    #[test]
+    fn up_with_nothing_selected_goes_to_the_first_row() {
+        let mut app = fixture_app();
+        draw_app(&mut app, 110, 30);
+        app.list.select(None);
+        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.list.selected(), Some(0));
+    }
+
+    #[test]
+    fn ctrl_m_does_not_add_a_line_to_search() {
+        let mut app = App::new(Vec::new());
+        type_into_search(&mut app, "plex");
+        app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL));
+        assert_eq!(app.search.lines().len(), 1);
+        assert_eq!(app.query, "plex");
     }
 
     #[test]

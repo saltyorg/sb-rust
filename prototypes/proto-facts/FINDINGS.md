@@ -94,21 +94,73 @@ changes exactly: an edited value, a removed section, a removed app file.
     works after a first render and its size is frozen after that (see
     `popup_state.rs` and `popup_area` in its source), which doesn't suit a
     menu that opens at the cursor with changing labels.
-  - The INI writer stays our own, with evidence:
-    - **rust-ini:** a load, change one key, write round trip on the
-      synthetic fixture rewrote spacing and mis-read the indented
-      continuation lines. It swallowed the comment and the next key into a
-      value and wrote a duplicate key.
-    - **configparser:** its docs say it regenerates a compact format and
-      doesn't support multi-line values.
+  - The INI writer stays our own. The library review corrected the
+    evidence for this (checked in rust-ini 0.21.3's source):
+    - **rust-ini:** the earlier round trip mis-read the indented
+      continuation lines only because `enabled_indented_mutiline_value` is
+      off by default. With it on, they parse. The writer is what rules it
+      out: it regenerates the whole file (blank lines between sections),
+      drops comments while parsing, writes a newline as an escaped `\n`
+      instead of indented continuation lines, and unquotes and unescapes
+      values by default, which can change passwords.
+    - **configparser 3.3.0:** multi-line values parse only when asked
+      (`IniDefault::multiline`, off by default), the same opt-in mistake as
+      above. The writer rules it out: `write` and `pretty_write` serialise the
+      parsed configuration and overwrite the file, and `;`/`#` lines are read
+      as comments and dropped.
     - **ini-roundtrip:** very low adoption.
 
     Line preservation and continuation lines are Saltbox-specific
-    constraints.
+    constraints. `model.rs` now says this in its module doc.
   - The event loop uses crossterm's documented `read()`/`poll()` on one
     thread, cited in the code.
   - A `TestBackend` render test now checks the save dialog's title and
     buttons in memory: the module-level testing approach.
+
+- **Library review of the whole crate** (the `library-reviewer` agent,
+  after the truecolor change). Each fix was test-first: the test failed
+  against the old code, or for refactors, it pinned the behaviour first.
+  - **Security:** saving rewrote a fact file through a fixed temp name with
+    default permissions, so a 0600 file holding secrets became 0644.
+    - It now matches sb-go: tempfile creates the temp file (unpredictable
+      name, exclusive, 0600, named `.<app>-XXXXXX.tmp`).
+    - The original owner, then mode, are copied before writing.
+    - Data and directory are synced.
+    - A symlinked fact file is refused rather than replaced.
+    - A second review of the fix found nothing to replace, but corrected
+      the doc comment, which had overclaimed sb-go parity.
+  - **Dialog buttons could still be cut off.** The wrapped-line estimate
+    (text width / dialog width) undercounts when whole words wrap. The
+    dialog height now comes from `Paragraph::line_count`. The real dialog
+    texts happened not to trigger it; a test with text built to trigger it
+    failed before the fix.
+  - **Click areas and widths moved onto ratatui layout:**
+    - Bottom buttons: `Layout::horizontal` with spacing, widths from
+      `Span::width`, each drawn into the rectangle that is its click area.
+    - Undo links: `Rect::rows` plus `Rect::layout`.
+    - Dialog buttons: drawn into rectangles from the dialog's inner rows.
+    - The menu is placed with `Rect::clamp`.
+  - **List movement** uses `ListState::select_next`/`select_previous`/
+    `scroll_down_by`/`scroll_up_by`, clamped at once, because several
+    events can be handled before the next draw and `ListState` only clamps
+    while rendering.
+  - **Smaller fixes:**
+    - Ctrl+M can no longer add a line to the search box. This follows
+      ratatui-textarea's single-line example.
+    - A panic now also turns mouse capture off. ratatui's hook doesn't, so
+      a hook is installed before `ratatui::init`, as its docs say.
+    - The reader and writer now share one rule for where a multi-line value
+      ends, so changing a value no longer deletes an indented comment below
+      it.
+  - **Context menu:** still our own popup (tui-popup reasons above), but its
+    rows now come from `Rect::rows` plus `Rect::layout`, the same rows map
+    clicks back to items, and shortcut widths use `Span::width`. A second
+    review flagged the first decline ("the current drawing works") as not
+    a valid reason under the library rule.
+  - **Stays custom, with comments:** click-to-row mapping in the list
+    (`List` has no hit-testing).
+  - **Up with nothing selected** goes to the first row again. The library
+    `select_previous` would wrap to the last; a test caught the change.
 
 **Lessons kept from the first version:**
 - Multi-line values must become one ratatui `Line` per value line.
