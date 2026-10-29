@@ -12,10 +12,9 @@ containers), grouped into sections with readable, coloured status:
 
 1. **Needs attention:** failed services, containers that stopped with an
    error, containers that keep restarting, failing health checks.
-2. **Recent:** the last few sources the user opened.
-3. **Services:** `saltbox_managed_*` units plus `docker`, matching sb-go's
+2. **Services:** `saltbox_managed_*` units plus `docker`, matching sb-go's
    filter. Units whose file no longer exists are hidden.
-4. **Containers:** running and stopped. A container that exited cleanly is
+3. **Containers:** running and stopped. A container that exited cleanly is
    shown as stopped, not as a problem.
 
 Each row shows a status symbol and words: `✓ running · 2d`,
@@ -41,14 +40,14 @@ command names can open the same picker pre-filtered to one kind.
 
 ## MVP Scope
 
-In: the four sections, status and colour, stopped containers, recent
-sources (small state file in the user's state directory), filter, live
-container updates, mouse and keyboard.
+In: the three sections, status and colour, stopped containers, filter,
+live container updates, mouse and keyboard.
 
 Out: everything in Not Doing.
 
 ## Not Doing (and Why)
 
+- A Recent section: tried and removed at the maintainer's request.
 - Sidebar, search-launcher and dashboard layouts: shelved, not dropped.
   The grouped list was the maintainer's first pick.
 - Opening a source by name on the command line: not picked for now.

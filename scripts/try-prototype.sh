@@ -75,7 +75,7 @@ case "${1:-}" in
     intro "Log viewer on your real containers and Saltbox services (read-only)" \
       "Look at: the grouped picker and its status words/colours, streaming while following, pausing, search, switching source," \
       "         and how long lines, JSON and coloured output from real apps look." \
-      "Picker: sections Needs attention, Recent, Services, Containers; status updates live" \
+      "Picker: sections Needs attention, Services, Containers; status updates live" \
       "        ↑/↓ or wheel move   Enter or click again to open   / filter (Esc clears)   q quit" \
       "Viewer: ↑/↓, PgUp/PgDn or wheel scroll (scrolling up pauses; back at the bottom it follows)" \
       "        w wrap long lines on/off; with wrap off, ←/→ or shift+wheel scroll sideways" \

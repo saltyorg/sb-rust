@@ -37,10 +37,10 @@ pub const SERVICE: Color = rgb(0x7EA6FF);
 pub const SERVICE_RULE: Color = rgb(0x34466E);
 pub const CONTAINER: Color = rgb(0xC49BFF);
 pub const CONTAINER_RULE: Color = rgb(0x4F3D6E);
-pub const RECENT: Color = rgb(0xE8C77A);
-pub const RECENT_RULE: Color = rgb(0x5E5133);
 pub const ATTENTION_RULE: Color = rgb(0x6A2E36);
 
+/// Active filter and search text.
+pub const HIGHLIGHT: Color = rgb(0xE8C77A);
 /// Background of log lines matching the search.
 pub const SEARCH_HIT: Color = rgb(0x4A3F12);
 

@@ -2,7 +2,6 @@
 //! readable status for the picker. Design: docs/ideas/log-picker.md.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use anyhow::Result;
 use bollard::Docker;
@@ -33,18 +32,6 @@ impl Source {
 
     pub fn label(&self) -> String {
         format!("{} {}", self.kind(), self.name())
-    }
-
-    fn key(&self) -> String {
-        format!("{}:{}", self.kind(), self.name())
-    }
-
-    fn from_key(key: &str) -> Option<Self> {
-        match key.split_once(':')? {
-            ("container", n) => Some(Self::Container(n.into())),
-            ("service", n) => Some(Self::Service(n.into())),
-            _ => None,
-        }
     }
 }
 
@@ -225,7 +212,6 @@ async fn load_containers(docker: &Docker, now: i64) -> Result<Vec<Entry>> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Attention,
-    Recent,
     Services,
     Containers,
 }
@@ -234,7 +220,6 @@ impl Section {
     pub fn title(self) -> &'static str {
         match self {
             Self::Attention => "NEEDS ATTENTION",
-            Self::Recent => "RECENT",
             Self::Services => "SERVICES",
             Self::Containers => "CONTAINERS",
         }
@@ -242,9 +227,9 @@ impl Section {
 }
 
 /// Entry indexes per section. Services and Containers always list every
-/// matching source; Needs attention and Recent are shortcuts on top, so a
-/// source can appear twice but is always where its kind says.
-pub fn sections(entries: &[Entry], recent: &[Source], filter: &str) -> Vec<(Section, Vec<usize>)> {
+/// matching source; Needs attention is a shortcut on top, so a problem
+/// appears twice but is always where its kind says.
+pub fn sections(entries: &[Entry], filter: &str) -> Vec<(Section, Vec<usize>)> {
     let needle = filter.to_lowercase();
     let shown: Vec<usize> = (0..entries.len())
         .filter(|&i| entries[i].source.name().to_lowercase().contains(&needle))
@@ -252,16 +237,11 @@ pub fn sections(entries: &[Entry], recent: &[Source], filter: &str) -> Vec<(Sect
     let pick = |f: &dyn Fn(&Entry) -> bool| -> Vec<usize> {
         shown.iter().copied().filter(|&i| f(&entries[i])).collect()
     };
-    let recent_rows: Vec<usize> = recent
-        .iter()
-        .filter_map(|r| shown.iter().copied().find(|&i| entries[i].source == *r))
-        .collect();
     [
         (
             Section::Attention,
             pick(&|e| e.status.health == Health::Problem),
         ),
-        (Section::Recent, recent_rows),
         (
             Section::Services,
             pick(&|e| matches!(e.source, Source::Service(_))),
@@ -274,38 +254,6 @@ pub fn sections(entries: &[Entry], recent: &[Source], filter: &str) -> Vec<(Sect
     .into_iter()
     .filter(|(_, rows)| !rows.is_empty())
     .collect()
-}
-
-/// How many recently opened sources the picker remembers.
-pub const RECENT_MAX: usize = 5;
-
-/// Moves `source` to the front of the recent list.
-pub fn remember(recent: &mut Vec<Source>, source: &Source) {
-    recent.retain(|r| r != source);
-    recent.insert(0, source.clone());
-    recent.truncate(RECENT_MAX);
-}
-
-/// `$XDG_STATE_HOME` (or ~/.local/state) via dirs::state_dir; one source per line.
-fn recent_path() -> Option<PathBuf> {
-    Some(dirs::state_dir()?.join("sb-rust-proto").join("recent-logs"))
-}
-
-pub fn load_recent() -> Vec<Source> {
-    recent_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| t.lines().filter_map(Source::from_key).collect())
-        .unwrap_or_default()
-}
-
-/// Best effort: a picker that can't save its history still works.
-pub fn save_recent(recent: &[Source]) {
-    let Some(path) = recent_path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let text: Vec<String> = recent.iter().map(Source::key).collect();
-    let _ = std::fs::write(path, text.join("\n") + "\n");
 }
 
 /// What the picker should make of a source's state.
@@ -661,41 +609,19 @@ mod tests {
             entry(Source::Container("plex".into()), Health::Ok),
             entry(Source::Container("sonarr".into()), Health::Problem),
         ];
-        let recent = vec![
-            Source::Container("plex".into()),
-            Source::Container("gone".into()),
-        ];
-        let got = sections(&entries, &recent, "");
+        let got = sections(&entries, "");
         assert_eq!(
             got,
             vec![
                 (Section::Attention, vec![1, 3]),
-                (Section::Recent, vec![2]),
                 (Section::Services, vec![0, 1]),
                 (Section::Containers, vec![2, 3]),
             ]
         );
         // Filtering is case-insensitive and drops sections left empty.
         assert_eq!(
-            sections(&entries, &recent, "PLE"),
-            vec![(Section::Recent, vec![2]), (Section::Containers, vec![2])]
-        );
-    }
-
-    #[test]
-    fn remember_moves_to_front_without_duplicates_and_caps() {
-        let mut recent: Vec<Source> = (0..RECENT_MAX)
-            .map(|i| Source::Container(i.to_string()))
-            .collect();
-        remember(&mut recent, &Source::Container("3".into()));
-        assert_eq!(recent[0], Source::Container("3".into()));
-        assert_eq!(recent.len(), RECENT_MAX);
-        remember(&mut recent, &Source::Service("new".into()));
-        assert_eq!(recent.len(), RECENT_MAX);
-        assert!(!recent.contains(&Source::Container("4".into())));
-        assert_eq!(
-            Source::from_key(&Source::Service("x:y".into()).key()),
-            Some(Source::Service("x:y".into()))
+            sections(&entries, "PLE"),
+            vec![(Section::Containers, vec![2])]
         );
     }
 

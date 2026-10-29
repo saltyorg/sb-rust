@@ -88,7 +88,6 @@ struct App {
     service_prefix: String,
     /// None until the first load finishes.
     entries: Option<Vec<Entry>>,
-    recent: Vec<Source>,
     rows: Vec<Row>,
     /// Live filter box while typing, and the filter text in effect.
     filter_box: Option<TextArea<'static>>,
@@ -148,7 +147,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut app = App::new(cli.service_prefix, cli.filter, sources::load_recent());
+    let mut app = App::new(cli.service_prefix, cli.filter);
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app, docker).await;
@@ -412,11 +411,10 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App, docker: Docker) -> R
 }
 
 impl App {
-    fn new(service_prefix: String, filter: String, recent: Vec<Source>) -> Self {
+    fn new(service_prefix: String, filter: String) -> Self {
         Self {
             service_prefix,
             entries: None,
-            recent,
             rows: Vec::new(),
             filter_box: None,
             filter,
@@ -767,8 +765,6 @@ impl App {
         let Some(source) = self.selected_source() else {
             return;
         };
-        sources::remember(&mut self.recent, &source);
-        sources::save_recent(&self.recent);
         self.filter_box = None;
         if let Some(task) = self.stream.take() {
             task.abort();
@@ -796,7 +792,7 @@ impl App {
         }
         self.generation += 1;
         self.screen = Screen::Pick;
-        // Statuses may have changed while viewing, and Recent has.
+        // Statuses may have changed while viewing.
         self.stale = true;
         self.rebuild_rows();
     }
@@ -812,14 +808,14 @@ impl App {
         self.rebuild_rows();
     }
 
-    /// Rebuilds the picker rows after the data, filter or recent list
+    /// Rebuilds the picker rows after the data or filter
     /// changed, keeping the cursor on the same source when it is still shown.
     fn rebuild_rows(&mut self) {
         let before = self.pick.selected().and_then(|i| self.rows.get(i).copied());
         let before_source = self.selected_source();
         let entries = self.entries.as_deref().unwrap_or_default();
         self.rows.clear();
-        for (section, items) in sources::sections(entries, &self.recent, &self.filter) {
+        for (section, items) in sources::sections(entries, &self.filter) {
             if !self.rows.is_empty() {
                 self.rows.push(Row::Spacer);
             }
@@ -969,7 +965,6 @@ fn kind_color(source: &Source) -> Color {
 fn section_colors(section: Section) -> (Color, Color) {
     match section {
         Section::Attention => (theme::PROBLEM, theme::ATTENTION_RULE),
-        Section::Recent => (theme::RECENT, theme::RECENT_RULE),
         Section::Services => (theme::SERVICE, theme::SERVICE_RULE),
         Section::Containers => (theme::CONTAINER, theme::CONTAINER_RULE),
     }
@@ -1101,8 +1096,8 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
                         Span::styled(word.to_string(), Style::new().fg(color)),
                         Span::raw(detail),
                     ];
-                    // Shortcut sections mix kinds, so say which one this is.
-                    if matches!(section, Section::Attention | Section::Recent) {
+                    // Needs attention mixes kinds, so say which one this is.
+                    if section == Section::Attention {
                         let pad = status_width.saturating_sub(e.status.text.chars().count());
                         spans.push(Span::raw(" ".repeat(pad + 2)));
                         spans.push(e.source.kind().fg(kind_color(&e.source)));
@@ -1130,7 +1125,7 @@ fn draw_picker(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: R
             ("q", "quit"),
         ]);
         if !app.filter.is_empty() {
-            keys.push_span(format!("filter \"{}\" · Esc clears", app.filter).fg(theme::RECENT));
+            keys.push_span(format!("filter \"{}\" · Esc clears", app.filter).fg(theme::HIGHLIGHT));
         }
         f.render_widget(keys, footer);
     }
@@ -1199,7 +1194,7 @@ fn draw_view(f: &mut Frame, app: &mut App, header: Rect, body: Rect, footer: Rec
             if app.query.is_empty() {
                 Span::raw("")
             } else {
-                Span::raw(format!("  /{} · {hits} hits", app.query)).fg(theme::RECENT)
+                Span::raw(format!("  /{} · {hits} hits", app.query)).fg(theme::HIGHLIGHT)
             },
         ]),
         header,
@@ -1317,11 +1312,7 @@ mod tests {
                 now,
             ),
         };
-        let mut app = App::new(
-            "saltbox_managed_".into(),
-            String::new(),
-            vec![Source::Container("plex".into())],
-        );
+        let mut app = App::new("saltbox_managed_".into(), String::new());
         app.set_entries(Ok(vec![
             unit("docker", "active", "running", None, None),
             unit(
@@ -1369,7 +1360,7 @@ mod tests {
         let screen = render(&mut app, 80, 24);
         println!("{screen}");
         assert!(screen.contains("2 need attention"));
-        for title in ["NEEDS ATTENTION", "RECENT", "SERVICES", "CONTAINERS"] {
+        for title in ["NEEDS ATTENTION", "SERVICES", "CONTAINERS"] {
             assert!(screen.contains(title), "missing {title}");
         }
         assert!(screen.contains("failed 2h ago"));
@@ -1387,14 +1378,14 @@ mod tests {
     fn cursor_skips_headers_and_survives_reloads_and_filtering() {
         let mut app = demo_app();
         render(&mut app, 80, 24);
-        app.step(2); // backup -> radarr -> (header, spacer skipped) plex in Recent
+        app.step(2); // backup -> radarr -> (spacer and header skipped) docker
         assert_eq!(
             app.selected_source(),
-            Some(Source::Container("plex".into()))
+            Some(Source::Service("docker".into()))
         );
         assert!(matches!(
             app.rows[app.pick.selected().unwrap_or_default()],
-            Row::Item(Section::Recent, _)
+            Row::Item(Section::Services, _)
         ));
         app.step(-isize::MAX);
         assert_eq!(app.pick.selected(), Some(1));

@@ -12,7 +12,7 @@ bollard@0.21.1, tokio@1.54 (process, signal), futures@0.3, serde_json@1
 across sb-go's `logs.go` and `dockerLogs.go`. One viewer serves both source
 types:
 - A picker lists services and containers with their status, grouped into
-  Needs attention, Recent, Services and Containers (see "Picker redesign"
+  Needs attention, Services and Containers (see "Picker redesign"
   below and `docs/ideas/log-picker.md`).
 - The viewer streams the chosen source. Containers use bollard's
   `logs(follow, tail=500)`; services use a `journalctl -u … -n 500 -f` child.
@@ -206,8 +206,8 @@ rich status, recent sources, and one picker for both kinds of source.
   exited non-zero, ran out of memory, are restarting, are unhealthy, or were
   restarted by Docker less than 10 minutes ago. A container that exited with
   code 0 is listed as stopped, not as a problem.
-- **Sections are complete per kind;** Needs attention and Recent are
-  shortcuts on top, so a source is always under its own kind as well.
+- **Sections are complete per kind;** Needs attention is a shortcut on
+  top, so a source is always under its own kind as well.
   ratatui's `List` has no unselectable rows, so the cursor skips headers in
   our own `step()`. Selection survives reloads and filtering.
 - **Live updates.** Docker's event stream (bollard `events`, type
@@ -215,8 +215,9 @@ rich status, recent sources, and one picker for both kinds of source.
   picker shows. Reloads start on the 4/s tick, which also batches event
   bursts. The first load runs in the background, so the screen appears at
   once.
-- **Recent sources** (last 5) go in a one-line-per-source file under
-  `dirs::state_dir()`.
+- **Recent section: removed.** A Recent section (last 5 opened, kept in a
+  state file) was built and then removed at the maintainer's request,
+  together with its `dirs` dependency.
 - **Measured:** a full load (three systemctl calls plus an inspect of every
   container, process start included) took about 20 ms across five runs on a
   real install with a few dozen containers. That is well under the 150 ms
@@ -229,11 +230,19 @@ rich status, recent sources, and one picker for both kinds of source.
   - A throwaway container that exited with code 3 moved into Needs attention
     within a tick, without input. A restart-policy loop showed its restart
     count.
-  - Filter-then-Enter opened the stopped container's log. Recent showed it
-    afterwards.
+  - Filter-then-Enter opened the stopped container's log.
   - Clicks on headers were ignored, the wheel moved the cursor, and a click
     then a second click opened a source.
   - `logs-demo` now includes a crash-looping container.
+  - `scripts/demo-log-sources.sh up` creates a demo source for every state
+    the picker can show: 7 transient `sbdemo-*` units and 10 labelled
+    containers (crash, out of memory, restart loop, unhealthy, recently
+    restarted, running, health check pending, paused, stopped, never
+    started). `view` opens the picker on them and `down` removes them. All
+    17 showed with the intended section, symbol and words.
+  - systemctl lists only loaded units. An idle unit file is unloaded, so
+    the "stopped" demo is enabled at runtime, as an enabled Saltbox unit
+    would be.
 - **Colour (after review: "not a fan of the line selected having different
   colors", and too little colour overall):**
   - The selected row was `reversed()`, which swaps each span's own colours,
