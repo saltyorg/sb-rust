@@ -58,6 +58,25 @@ text) and a real Saltbox announcements file, at 80 and 140 columns.
 - **Quote wrapping** loses the `>` prefix after the first line. This is
   cosmetic, and a candidate for a `StyleSheet` tweak or an upstream issue.
 
+## Truecolor styling (before maintainer review)
+
+The truecolor decision (capability map, decision 10) came after this
+prototype was built, so it was restyled before review.
+- tui-markdown takes every colour from its `StyleSheet` trait (tui-markdown
+  0.3.12 `style_sheet.rs`). Its own tests are the only other place colours
+  appear. `SaltboxSheet` now overrides every styled element with roles from
+  the shared palette (`prototypes/proto-theme`): headings, code, links,
+  quotes, alerts, tables, list markers, footnotes and the rest.
+- The title line, border and footer use the same palette and key-hint
+  helper as the log viewer.
+- The fixture gained a synthetic announcement with an alert, a table and a
+  footnote, so every styled element is drawn. Real Saltbox announcements
+  currently use one heading and no tables, alerts, code or quotes.
+- A `TestBackend` test fails if any cell of any fixture announcement uses a
+  named ANSI colour. It failed against the default stylesheet first.
+- On the real binary with `TERM=xterm-256color`, the full-screen view sent
+  132 24-bit colour codes and the inline path 68, with no 16-colour codes.
+
 ## Verdict
 
 _Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
