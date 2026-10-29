@@ -1,4 +1,4 @@
-# Spec: `cli-core` (draft, pending maintainer approval)
+# Spec: `cli-core` (approved 2026-10-29)
 
 Module `cli-core` in the approved capability map
 ([capability-map.md](capability-map.md)). It owns how `sb` starts, runs a
@@ -52,7 +52,10 @@ per-command startup code.
    `<server_appdata_path>/sb/config.toml`, `/opt/sb/config.toml` by
    default, so Saltbox backups cover it (maintainer, 2026-10-29).
    `server_appdata_path` comes from the Saltbox inventory, as sb-go's
-   `layout` reads it. A missing file means the built-in theme.
+   `layout` reads it. A theme names a built-in theme (`default` built in)
+   and can override individual palette roles. A missing file means the
+   built-in theme; an invalid one is a warning (shown and logged) and the
+   built-in theme is used, so a typo can't block `sb update`.
 7. **Run the command** with a cancellation token.
 
 **Command tree:** sb-go's names, subcommands and flags (decision 1). The
@@ -63,7 +66,8 @@ compares the tree with sb-go's command list.
 
 **Cancellation:** the first SIGINT or SIGTERM cancels a token shared by
 every command; work stops at its next await or check, child processes are
-killed through `exec`. A second signal exits at once. A command can also
+killed through `exec`. A second signal exits at once with the same code,
+skipping remaining cleanup. A command can also
 request shutdown with its own exit code (sb-go's `Shutdown(code)`).
 
 **Exit codes:** 0 success; 1 error; 130 after SIGINT, 143 after SIGTERM; a
@@ -183,17 +187,18 @@ boundaries that callers match on.
 7. `--color=never` gives no escape codes on any path, including help.
    `--color=always` gives truecolor when piped.
 8. A theme in `/opt/sb/config.toml` (or under a moved `server_appdata_path`)
-   changes the palette, and no file means the built-in theme.
+   selects a built-in theme and overrides roles; no file means the built-in
+   theme; an invalid file warns and falls back.
 9. The command-tree contract test passes against sb-go's command list.
+
+## Decided in review (2026-10-29)
+
+- Invalid theme config: warn, log and use the built-in theme.
+- Theme shape: named built-in themes plus per-role overrides.
+- Second signal: exit at once.
 
 ## Open questions
 
-1. **Invalid theme config:** fail the run (consistent with strict Saltbox
-   config), or warn, log and use the built-in theme so a typo can't block
-   `sb update`? Proposal: warn and fall back.
-2. **Theme format:** named built-in themes plus per-role overrides, or
-   overrides only? Proposal: both, with `default` built in.
-3. **Second signal:** exit at once (proposal), or wait for cleanup to
-   finish?
-4. **Config file ownership and mode:** root-owned, 0644 (it holds no
-   secrets), created only when the user first saves a theme?
+1. **Config file ownership and mode:** root-owned, 0644 (it holds no
+   secrets), created only when the user first saves a theme? To settle in
+   the plan.
