@@ -31,9 +31,11 @@ per-command startup code.
    for every command including `--help`, `version` and Tab completion
    (exec, not a child: signals and the exit code then belong to the real
    run). One environment for every run, and every run is logged.
-   Saltbox configures passwordless sudo for the Saltbox user, so this
-   adds no prompt there, Tab completion included; another user gets
-   sudo's own prompt.
+   When sudo asks for a password: on a terminal, sudo prompts as usual
+   (exec hands it the terminal). During Tab completion sb runs `sudo -n`
+   (never prompts), and a refusal means no completions rather than a
+   prompt or a hang. Without a terminal, a refusal ends the run with a
+   clear message: root is needed and sudo wants a password.
 2. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
    sb-go does (maintainer, 2026-10-29). The supported releases list
@@ -178,7 +180,9 @@ boundaries that callers match on.
 2. On an unsupported host every command, including `--help`, exits 1 with
    sb-go's message.
 3. Any command run as a normal user execs `sudo` with `VISUAL` and `EDITOR`
-   kept, and its exit code is the command's own.
+   kept, and its exit code is the command's own. When sudo wants a
+   password, Tab completion returns nothing without hanging, and a run
+   without a terminal fails with a clear message.
 4. SIGINT exits 130 and SIGTERM 143, with the terminal restored.
 5. An error shows one `✗` block with its causes and the log pointer, and
    exits 1.
