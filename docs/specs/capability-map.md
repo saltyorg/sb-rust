@@ -84,6 +84,40 @@ Rust libraries in place of sb-go's internals.
 
     The palette assumes a dark background. Light themes are an open item.
 
+11. **Logging on the host (maintainer, 2026-10-29):** sb always writes
+    useful logs on the host, by default, with rotation, so a user (or
+    whoever helps them) can see afterwards what happened. sb-go writes no log
+    files: its debug output goes to the screen only with `-v`.
+    - **Questions the logs must answer:**
+      - Which sb command ran, with what version and arguments, and when?
+      - Which step failed, and why (exit code, signal)?
+      - What did each step print (its complete output, not just the tail on
+        screen)?
+      - How long did each step take?
+    - **Libraries:** `tracing` events, written by `tracing-subscriber` to a
+      `tracing-appender` `RollingFileAppender`. It rotates by time and
+      prunes with `max_log_files` (checked in tracing-appender 0.2.5 source).
+      It has no size-based rotation, so retention is "N days" (for example
+      daily files, 14 kept). No logrotate configuration is needed.
+    - **What is logged:**
+      - one record per run, with a run id and the entry point (command, and
+        whether the install script started it);
+      - one record per step: start, end, outcome and elapsed;
+      - each step's output lines, tagged with run id and step.
+
+      A failed step's `full output:` line points at the log file and the run
+      id. (The runner prototype keeps a per-step file; folding that into the
+      rotated log removes our own pruning.)
+    - **Format:** to be decided in the spec. tracing-subscriber's readable
+      key=value format suits users reading the file; its JSON format suits
+      tools.
+    - **Location:** `/var/log/sb/` when running as root (sb normally is),
+      otherwise the user's state directory. To be settled in the spec, with
+      file permissions that keep the logs root-only.
+    - **Never logged:** secrets. That means fact values, credentials and
+      tokens, and anything the fact editor masks. The secret check is shared
+      with the fact editor's masking.
+
 ## Assumptions (still open to correction)
 
 1. sb-go stays the shipping binary until sb-rust reaches the parity agreed per
@@ -111,7 +145,7 @@ GitHub API (last push, archived flag).
 | Colour decision | `anstyle` + `anstream` (clap's own) | 1.0 / 2026 | 227M | lipgloss styles, colorprofile, charmtone | proto-inline |
 | Signals | `signal-hook` | 0.4.5 / 2026-10 | 67M | signals pkg | proto-runner |
 | Errors | `anyhow` (bin), `thiserror` (lib modules) | 2026 | 260M / 464M | — | untested |
-| Logging | `tracing` + `tracing-subscriber` | 2026 | 240M | terminal/logging | untested |
+| Logging | `tracing` + `tracing-subscriber`, files via `tracing-appender` (rolling, `max_log_files`) | 0.2.5 (appender) / 2026-04 | 240M / 42M | terminal/logging (screen only) | untested; decision 11 |
 | Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs) | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs |
 | Docker | `bollard` | 0.21.1 / 2026-08 | 20M | moby client | proto-musl, proto-logs, proto-inline |
 | systemctl JSON output | `serde_json` | 1.0.154 / 2026-10 | 389M | parsing systemctl's human-readable columns | proto-logs |
@@ -198,6 +232,10 @@ sb-go has never enforced them. sb-rust will.
 
 - **Manual real-terminal check** (two emulators): mouse use and Shift-drag
   native selection in the fact editor.
+- **Logging (decision 11):** the logging spec (format, location,
+  retention, secret filtering), a runner change so step output goes into
+  the rotated log, and a logging dimension in `CONSTRAINTS.md` when it is
+  created.
 - **Install script:** moves into this repository and runs `sb setup`
   attached to the terminal instead of capturing it (tasks/todo.md, "Later:
   Install script lives in this repository").
