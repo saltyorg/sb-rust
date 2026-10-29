@@ -72,18 +72,75 @@ running with port mappings, one exited), which were removed afterwards.
   columns wide before, 60 after. Colour is now decided per cell, and
   `enforce_styling` keeps colours for `--color=always` when piped.
 
+The comfy-table notes above are kept as history; the table below replaced
+it.
+
+## sb-go's `docker ps` layout on tabled (maintainer review)
+
+The maintainer chose sb-go's `sb docker ps` layout over the first
+table (NAME / STATE / STATUS / PORTS). Compared at 120 columns:
+
+- **sb-go's columns:** Container, Status, **Traefik Port** (from Saltbox's
+  `traefik.http.services.*.loadbalancer.server.port` labels, skipping the
+  `-http` redirect services) and Port Bindings, one binding per line with
+  the ports padded so the arrows line up and IPv6 as `[::]`.
+- **sb-go's look:** rounded corners, a rule between rows (chosen again in
+  review), bold centred headings, port columns right-aligned, a coloured
+  border, sorted by name.
+- **The first table** repeated the state in two columns, showed Docker's
+  "Up 30 hours (healthy)" text, joined bindings with commas so they wrapped
+  mid-list, showed IPv6 as `:::` and kept Docker's order.
+
+Rebuilt with all of that, plus:
+
+- **Status from inspect** in sb-go's wording, but an exit code decides
+  whether a stopped container is a problem (`exited (code 137)` PROBLEM, a
+  clean `exited` IDLE, out of memory named), as in proto-logs. sb-go shows
+  every exited container red. Health: healthy OK, starting WARN, unhealthy
+  PROBLEM.
+- **Parallel inspect** (futures `join_all`, as proto-logs): 9 ms against
+  sb-go's 40 ms for the same containers (one run each, release build).
+- **Stable order:** Traefik ports and bindings are sorted. sb-go iterates Go
+  maps, so their order could change between runs.
+- **Palette and width:** BORDER for the lines, status colours from the
+  palette, and the table fitted to the terminal (checked at 120, 70 and 50
+  columns: 92, 70 and 50 characters wide). At narrow widths the widest
+  column wraps first, so "running (healthy)" can wrap at 70 columns.
+- **Library switch, comfy-table → tabled 0.22.** comfy-table has no way to
+  colour border lines (its `TableStyle` sets characters only). tabled has
+  `BorderColor` (truecolor via `Color::rgb_fg`), `Style::modern_rounded()`
+  (sb-go's layout exactly), `Width::wrap(..).priority(..)` for the whole
+  table and ANSI-aware widths (`ansi` feature). It doesn't read the terminal
+  width, so that comes from console's `Term::size_checked` (None when stdout
+  isn't a terminal). tabled doesn't read NO_COLOR either; the table follows the one
+  colour decision. Both crates are maintained and widely used (crates.io,
+  2026-10: tabled 13M recent downloads, comfy-table 23M).
+- **Tests** cover the truecolor guard, no codes with colour off, the rule
+  between rows, fitting a width, the status wording, the Traefik rule and
+  the binding format, each confirmed by breaking the code.
+
+## Restore prompts: deferred
+
+The restore backend is being rewritten, so the restore CLI takes shape
+after that. The `prompt` subcommand stays as the dialoguer evidence
+(palette theme, validation, no-terminal failure) but is out of the review
+and the try script.
+
 ## Verdict
 
 _Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
 
-**Adopt.** comfy-table, anstyle/anstream and dialoguer cover the inline look,
-provided colour is decided in one place.
+**Adopt** tabled, anstyle/anstream and dialoguer for the inline look,
+provided colour is decided in one place. tabled replaced comfy-table for
+the coloured border.
 
 ## Map impact
 
-- Stack table: confirm `comfy-table`, `anstyle` + `anstream`, and `dialoguer`.
-  No new rendering families: comfy-table uses ratatui's crossterm, and
-  dialoguer uses indicatif's console.
+- Stack table: `tabled` (replacing `comfy-table`), `anstyle` + `anstream`,
+  and `dialoguer`. tabled renders on its own (papergrid) and takes the
+  terminal width from console; dialoguer uses indicatif's
+  console.
+- `docker` module: the `ps` columns, status rules and binding format above.
 - `term-ui` module: a single `colours_on()` decision feeds anstream,
-  comfy-table and indicatif. Every prompt has a non-interactive flag. A
+  tabled and indicatif. Every prompt has a non-interactive flag. A
   `--plain` or JSON output option is to be decided per command.

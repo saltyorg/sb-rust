@@ -148,7 +148,7 @@ GitHub API (last push, archived flag).
 | Spinners, progress | `indicatif` (printed-lines pattern) | 0.18.6 / 2026-07 | 54M | bubbles spinner/progress, terminal runner | proto-runner |
 | Styled one-off lines, ANSI stripping | `console` (already pulled in by indicatif) | 0.16.6 / 2026-09 | 94M | lipgloss styles | proto-runner |
 | Prompts | `dialoguer` | 0.12.0 / repo active 2026-10 | 19M | restore textinput model | proto-inline |
-| Tables | `comfy-table` | 8.0.1 / 2026-09 | 22M | aquasecurity/table, terminal table | proto-inline |
+| Tables | `tabled` (`ansi` feature), terminal width from `console` | 0.22.0 / 2026-09 | 13M | aquasecurity/table, terminal table | proto-inline (replaced comfy-table: no border colour) |
 | Colour decision | `anstyle` + `anstream` (clap's own), `colorchoice-clap` for `--color` | 1.0 / 2026 | 227M | lipgloss styles, colorprofile, charmtone | proto-inline |
 | Signals | `signal-hook` | 0.4.5 / 2026-10 | 67M | signals pkg | proto-runner |
 | Errors | `anyhow` (bin), `thiserror` (lib modules) | 2026 | 260M / 464M | — | untested |
@@ -199,7 +199,7 @@ GitHub API (last push, archived flag).
 |---|---|---|---|
 | `cli-core` | clap tree, global flags, root relaunch, build info, signals/cancellation (exit 130 on interrupt), error and exit-code policy | — | main.go, cmd/root.go, buildinfo, signals, layout |
 | `exec` | Child processes: streamed and captured output; PTY execution with process-group kill on cancel; ANSI stripping when not a terminal | cli-core | executor |
-| `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/comfy-table/indicatif | cli-core | terminal |
+| `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif | cli-core | terminal |
 | `host` | Ubuntu/arch/LXC/desktop checks, disk space, apt, systemd (including a `journalctl -f` log stream), file ownership | exec, term-ui | host |
 | `repo` | Git operations on Saltbox/Sandbox checkouts, branch switching | exec, host | git |
 | `release` | GitHub release lookup (with User-Agent), version compare, self-update with digest verification | cli-core | release, selfupdate |

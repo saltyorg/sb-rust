@@ -19,7 +19,7 @@ Usage: scripts/try-prototype.sh <prototype>
   markdown     Announcements renderer (full-screen view, then inline, then termimad)
   runner       Task runner with spinners, live output and a failing step
   runner-gallery  Task runner output in eight formats, to compare (static)
-  inline       docker ps style table, then username/password prompts
+  inline       docker ps table in sb-go's layout (plain, NO_COLOR, piped)
   complete     Shell with dynamic tag completion loaded (bash)
 
 Each run builds the prototype (release mode) first. Nothing touches real Saltbox files.
@@ -160,18 +160,15 @@ case "${1:-}" in
   inline)
     b="$(bin inline)"
     intro "Inline output (no full-screen UI)" \
-      "1. docker ps style table of your containers (resize narrow to see wrapping)." \
+      "1. docker ps table of your containers, sb-go's layout (resize narrow to see wrapping)." \
       "2. The same table with NO_COLOR=1." \
       "3. Piped through cat with --color=always (the installer case)." \
-      "4. Restore-style prompts: try an empty or spaced username and a short password." \
-      "   Nothing is restored; it only prints what it would do."
+      "   (The restore prompts are deferred until the restore backend rewrite.)"
     "$b" ps
     printf '\n\033[1m--- NO_COLOR=1 ---\033[0m\n'
     NO_COLOR=1 "$b" ps
     printf '\n\033[1m--- piped, --color=always ---\033[0m\n'
     "$b" --color=always ps | cat
-    printf '\n\033[1m--- prompts ---\033[0m\n'
-    "$b" prompt || true
     ;;
   complete)
     b="$(bin complete)"

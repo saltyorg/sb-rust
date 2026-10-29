@@ -197,6 +197,11 @@ enough to replace glamour?
 
 **Verification:**
 - [x] Manual runs on a TTY, piped, and with `NO_COLOR=1`.
+- [ ] Look and feel of the `docker ps` table reviewed by the maintainer.
+      The table now follows sb-go's `docker ps` (chosen at the review)
+      on tabled.
+- Deferred: the restore prompts. The restore backend is being rewritten,
+  so its CLI takes shape after that work.
 
 **Dependencies:** Task 0
 **Files:** `prototypes/proto-inline/{Cargo.toml,src/main.rs,FINDINGS.md}`

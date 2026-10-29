@@ -1,21 +1,27 @@
-//! Prototype: the non-TUI look. comfy-table for tables, anstyle/anstream for
+//! Prototype: the non-TUI look. tabled for tables, anstyle/anstream for
 //! styled lines, dialoguer for prompts; on a TTY, piped, and with NO_COLOR.
 //! Throwaway; see FINDINGS.md.
 
+use std::collections::HashMap;
 use std::io::IsTerminal;
 
 use anstream::ColorChoice;
 use anstyle::Style;
 use anyhow::{Result, bail};
 use bollard::Docker;
+use bollard::models::{ContainerInspectResponse, PortMap};
 use bollard::query_parameters::ListContainersOptions;
 use clap::{Parser, Subcommand};
-use comfy_table::presets::UTF8_FULL_CONDENSED;
-use comfy_table::{Attribute, Cell, ContentArrangement, Table};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Password};
-use proto_theme::{IDLE, MUTED, OK, PROBLEM, WARN};
+use futures::future::join_all;
+use proto_theme::{BORDER, IDLE, MUTED, OK, PROBLEM, WARN};
 use ratatui::style::Color;
+use tabled::builder::Builder;
+use tabled::settings::object::{Columns, Rows, Segment};
+use tabled::settings::peaker::Priority;
+use tabled::settings::style::BorderColor;
+use tabled::settings::{Alignment, Style as TableStyle, Width};
 
 #[derive(Parser)]
 struct Cli {
@@ -36,7 +42,8 @@ enum Action {
         #[arg(long, default_value = "")]
         filter: String,
     },
-    /// restore style prompts.
+    /// restore style prompts. Deferred: the restore backend is being
+    /// rewritten, so its prompts take shape after that (FINDINGS.md).
     Prompt,
 }
 
@@ -44,8 +51,8 @@ enum Action {
 /// colours are all `Color::Rgb` (`Color::from_u32`); anything else would be a
 /// palette bug, shown as no colour rather than a named ANSI one. Why not
 /// ratatui-core's `TryFrom<Color> for anstyle::RgbColor`: it covers anstyle
-/// only, behind a feature the ratatui facade doesn't forward, and comfy-table
-/// and console still need the RGB values; one match serves all three.
+/// only, behind a feature the ratatui facade doesn't forward, and tabled and
+/// console still need the RGB values; one match serves all three.
 fn rgb(colour: Color) -> Option<(u8, u8, u8)> {
     match colour {
         Color::Rgb(r, g, b) => Some((r, g, b)),
@@ -57,8 +64,8 @@ fn style(colour: Color) -> Style {
     Style::new().fg_color(rgb(colour).map(|(r, g, b)| anstyle::RgbColor(r, g, b).into()))
 }
 
-fn cell_colour(colour: Color) -> Option<comfy_table::Color> {
-    rgb(colour).map(|(r, g, b)| comfy_table::Color::Rgb { r, g, b })
+fn table_colour(colour: Color) -> Option<tabled::settings::Color> {
+    rgb(colour).map(|(r, g, b)| tabled::settings::Color::rgb_fg(r, g, b))
 }
 
 fn console_style(colour: Color) -> console::Style {
@@ -68,11 +75,10 @@ fn console_style(colour: Color) -> console::Style {
 
 /// `--color` for every output path. colorchoice-clap sets anstream's
 /// global choice, which `AutoStream::choice` reads first. No library links
-/// that choice to console, which dialoguer's prompts go through, or to
-/// crossterm, which comfy-table styles through and which drops colours on its
-/// own when NO_COLOR is set (crossterm 0.29 `style/types/colored.rs`), so
-/// `always` and `never` are passed on to both here. `auto` leaves them to
-/// their own detection (NO_COLOR, CLICOLOR_FORCE, a terminal or not).
+/// that choice to console, which dialoguer's prompts go through, so `always`
+/// and `never` are passed on to it here. `auto` leaves it to its own
+/// detection (NO_COLOR, CLICOLOR_FORCE, a terminal or not). tabled writes
+/// only the colours it is given, so the table follows `colours_on`.
 fn apply_colour_choice(color: colorchoice_clap::Color) {
     color.write_global();
     let enabled = match color.color {
@@ -82,12 +88,10 @@ fn apply_colour_choice(color: colorchoice_clap::Color) {
     };
     console::set_colors_enabled(enabled);
     console::set_colors_enabled_stderr(enabled);
-    crossterm::style::Colored::set_ansi_color_disabled(!enabled);
 }
 
 /// One decision for every output path: anstream honours `--color`,
-/// NO_COLOR, CLICOLOR_FORCE and non-terminal stdout; comfy-table doesn't read
-/// NO_COLOR, so the table follows this instead.
+/// NO_COLOR, CLICOLOR_FORCE and non-terminal stdout.
 fn colours_on() -> bool {
     !matches!(
         anstream::AutoStream::choice(&std::io::stdout()),
@@ -105,109 +109,200 @@ async fn main() -> Result<()> {
     }
 }
 
+/// sb-go's `sb docker ps` columns: the container, its status, the port
+/// Traefik routes to, and the host port bindings. Each container is
+/// inspected (in parallel, as proto-logs does) for health, exit code, labels
+/// and bindings, which the list endpoint doesn't all carry.
 async fn ps(filter: &str) -> Result<()> {
     let docker = Docker::connect_with_local_defaults()?;
     let opts = ListContainersOptions {
         all: true,
         ..Default::default()
     };
-    let containers = docker.list_containers(Some(opts)).await?;
-
-    let rows: Vec<Row> = containers
+    let names: Vec<String> = docker
+        .list_containers(Some(opts))
+        .await?
         .into_iter()
-        .filter_map(|c| {
-            let name = c
-                .names
-                .unwrap_or_default()
-                .first()
-                .map(|n| n.trim_start_matches('/').to_string())
-                .unwrap_or_default();
-            if !name.contains(filter) {
-                return None;
-            }
-            let ports = c
-                .ports
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|p| {
-                    Some(format!(
-                        "{}:{}→{}/{}",
-                        p.ip.as_deref()?,
-                        p.public_port?,
-                        p.private_port,
-                        p.typ.map(|t| t.to_string()).unwrap_or_default()
-                    ))
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            Some(Row {
-                name,
-                state: c.state.map(|s| s.to_string()).unwrap_or_default(),
-                status: c.status.unwrap_or_default(),
-                ports,
-            })
-        })
+        .filter_map(|c| Some(c.names?.first()?.trim_start_matches('/').to_string()))
+        .filter(|name| name.contains(filter))
         .collect();
-    let colours = colours_on();
-    println!("{}", table(&rows, colours));
-    let ok = style(OK).bold();
-    anstream::println!("{ok}✓{ok:#} {} container(s)", rows.len());
+    let inspected = join_all(names.iter().map(|n| docker.inspect_container(n, None))).await;
+    let mut rows = Vec::new();
+    let mut failed = Vec::new();
+    for (name, info) in names.into_iter().zip(inspected) {
+        match info {
+            Ok(info) => rows.push(row(name, info)),
+            Err(e) => failed.push(format!("{name}: {e}")),
+        }
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Fit the terminal when there is one, as comfy-table did; piped output
+    // keeps its natural width. tabled doesn't detect the terminal itself;
+    // console's size_checked is None when stdout isn't a terminal
+    // (console 0.16.6 `unix_term.rs`).
+    let width = console::Term::stdout()
+        .size_checked()
+        .map(|(_, cols)| usize::from(cols));
+    println!("{}", table(&rows, colours_on(), width));
+    if !failed.is_empty() {
+        let err = style(PROBLEM).bold();
+        for f in &failed {
+            anstream::eprintln!("{err}✗{err:#} could not inspect {f}");
+        }
+        bail!("{} container(s) could not be inspected", failed.len());
+    }
     Ok(())
 }
 
 struct Row {
     name: String,
-    state: String,
     status: String,
-    ports: String,
+    colour: Color,
+    traefik: Vec<String>,
+    bindings: Vec<String>,
 }
 
-/// The state's palette colour. The list endpoint gives the state but not the
-/// exit code, so a failed exit can't be told from a clean stop here; the
-/// real table would reuse proto-logs' classification (inspect gives the exit
-/// code). States: https://docs.docker.com/reference/api/engine/version/v1.53/#tag/Container/operation/ContainerInspect
-fn state_colour(state: &str) -> Color {
-    match state {
-        "running" => OK,
-        "restarting" | "dead" => PROBLEM,
-        "exited" | "created" | "paused" => IDLE,
-        _ => WARN,
+fn row(name: String, info: ContainerInspectResponse) -> Row {
+    let state = info.state.unwrap_or_default();
+    let (status, colour) = status(
+        &state.status.map(|s| s.to_string()).unwrap_or_default(),
+        state.exit_code.unwrap_or_default(),
+        state.oom_killed.unwrap_or_default(),
+        state
+            .health
+            .and_then(|h| h.status)
+            .map(|s| s.to_string())
+            .as_deref(),
+    );
+    Row {
+        name,
+        status,
+        colour,
+        traefik: traefik_ports(&info.config.and_then(|c| c.labels).unwrap_or_default()),
+        bindings: port_bindings(
+            &info
+                .network_settings
+                .and_then(|n| n.ports)
+                .unwrap_or_default(),
+        ),
     }
 }
 
-/// The table, styled or not. Colour is decided here per cell rather than
-/// with `force_no_tty`, which would also switch off comfy-table's terminal
-/// width lookup and with it the wrapping. `enforce_styling` keeps the
-/// colours when `--color=always` output is piped.
-fn table(rows: &[Row], colours: bool) -> Table {
-    let paint = |cell: Cell, colour: Color| match cell_colour(colour) {
-        Some(c) if colours => cell.fg(c),
-        _ => cell,
+/// Status text and palette colour. sb-go's wording ("running (healthy)"),
+/// but an exit code decides whether a stopped container is a problem, as in
+/// proto-logs. States: https://docs.docker.com/reference/api/engine/version/v1.53/#tag/Container/operation/ContainerInspect
+fn status(state: &str, exit_code: i64, oom_killed: bool, health: Option<&str>) -> (String, Color) {
+    match (state, health) {
+        ("running", Some("healthy")) => ("running (healthy)".into(), OK),
+        ("running", Some("unhealthy")) => ("running (unhealthy)".into(), PROBLEM),
+        ("running", Some("starting")) => ("running (starting)".into(), WARN),
+        ("running", _) => ("running".into(), OK),
+        ("exited", _) if oom_killed => ("exited (out of memory)".into(), PROBLEM),
+        ("exited", _) if exit_code != 0 => (format!("exited (code {exit_code})"), PROBLEM),
+        ("exited" | "created" | "paused", _) => (state.into(), IDLE),
+        ("restarting" | "dead", _) => (state.into(), PROBLEM),
+        (other, _) => (other.into(), WARN),
+    }
+}
+
+/// The ports Traefik routes to, from Saltbox's labels: sb-go's rule
+/// (`traefik.http.services.<name>.loadbalancer.server.port`, skipping the
+/// `-http` redirect services), deduplicated and sorted so the order is
+/// stable (Go's map order made sb-go's vary).
+fn traefik_ports(labels: &HashMap<String, String>) -> Vec<String> {
+    let mut ports: Vec<String> = labels
+        .iter()
+        .filter(|(key, _)| {
+            key.contains("traefik.http.services")
+                && key.contains(".loadbalancer.server.port")
+                && !key.contains("-http")
+                && key.split('.').count() > 3
+        })
+        .map(|(_, port)| port.clone())
+        .collect();
+    ports.sort_by_key(|p| (p.parse::<u32>().unwrap_or(u32::MAX), p.clone()));
+    ports.dedup();
+    ports
+}
+
+/// Host bindings, one per line, as sb-go: `host-ip:host-port->port/proto`
+/// with the ports padded so the arrows line up, an unset host IP shown as
+/// 0.0.0.0 and IPv6's `::` as `[::]`. Sorted by container port, IPv4 first.
+fn port_bindings(ports: &PortMap) -> Vec<String> {
+    let mut parts: Vec<(String, String, String)> = ports
+        .iter()
+        .flat_map(|(internal, bindings)| {
+            bindings.iter().flatten().filter_map(move |b| {
+                let host_port = b.host_port.clone().filter(|p| !p.is_empty())?;
+                let ip = match b.host_ip.as_deref() {
+                    None | Some("") => "0.0.0.0".to_string(),
+                    Some("::") => "[::]".to_string(),
+                    Some(ip) => ip.to_string(),
+                };
+                Some((ip, host_port, internal.clone()))
+            })
+        })
+        .collect();
+    let port_number = |p: &str| {
+        p.split('/')
+            .next()
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(u32::MAX)
     };
-    let mut table = Table::new();
-    table
-        .load_style(UTF8_FULL_CONDENSED)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(["NAME", "STATE", "STATUS", "PORTS"].map(|h| {
-            let cell = paint(Cell::new(h), MUTED);
-            if colours {
-                cell.add_attribute(Attribute::Bold)
-            } else {
-                cell
-            }
-        }));
-    if colours {
-        table.enforce_styling();
-    }
+    parts.sort_by(|a, b| {
+        (port_number(&a.2), &a.2, &a.0, &a.1).cmp(&(port_number(&b.2), &b.2, &b.0, &b.1))
+    });
+    let host_width = parts.iter().map(|p| p.1.len()).max().unwrap_or(0);
+    let internal_width = parts.iter().map(|p| p.2.len()).max().unwrap_or(0);
+    parts
+        .iter()
+        .map(|(ip, host, internal)| {
+            format!("{ip}:{host:>host_width$}->{internal:>internal_width$}")
+        })
+        .collect()
+}
+
+/// The table: rounded, a rule between rows (tabled's `modern_rounded`), bold
+/// centred headings, port columns right-aligned, as sb-go. With colours on,
+/// the lines take the palette's BORDER colour (tabled `BorderColor`, which
+/// comfy-table has no equivalent of) and each status its colour. `width`
+/// shrinks the widest column first, wrapping at word boundaries.
+fn table(rows: &[Row], colours: bool, width: Option<usize>) -> String {
+    let mut builder = Builder::default();
+    builder.push_record(["Container", "Status", "Traefik Port", "Port Bindings"]);
     for row in rows {
-        table.add_row([
-            Cell::new(&row.name),
-            paint(Cell::new(&row.state), state_colour(&row.state)),
-            Cell::new(&row.status),
-            Cell::new(&row.ports),
+        builder.push_record([
+            row.name.clone(),
+            row.status.clone(),
+            row.traefik.join(", "),
+            row.bindings.join("\n"),
         ]);
     }
+    let mut table = builder.build();
     table
+        .with(TableStyle::modern_rounded())
+        .modify(Columns::new(2..), Alignment::right())
+        .modify(Rows::first(), Alignment::center());
+    if colours {
+        if let Some(c) = table_colour(BORDER) {
+            table.modify(Segment::all(), BorderColor::filled(c));
+        }
+        table.modify(Rows::first(), tabled::settings::Color::BOLD);
+        for (i, row) in rows.iter().enumerate() {
+            if let Some(c) = table_colour(row.colour) {
+                table.modify((i + 1, 1), c);
+            }
+        }
+    }
+    if let Some(width) = width {
+        table.with(
+            Width::wrap(width)
+                .priority(Priority::max(true))
+                .keep_words(true),
+        );
+    }
+    table.to_string()
 }
 
 /// dialoguer's ColorfulTheme with the palette in place of its named ANSI
@@ -285,30 +380,38 @@ fn prompt() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bollard::models::PortBinding;
 
     fn rows() -> Vec<Row> {
         [
-            "running",
-            "exited",
-            "restarting",
-            "created",
-            "paused",
-            "dead",
+            ("running", 0, None),
+            ("running", 0, Some("healthy")),
+            ("running", 0, Some("unhealthy")),
+            ("exited", 0, None),
+            ("exited", 1, None),
+            ("restarting", 0, None),
         ]
-        .iter()
-        .map(|state| Row {
-            name: format!("demo-{state}"),
-            state: (*state).to_string(),
-            status: "Up 2 hours".to_string(),
-            ports: "0.0.0.0:80→80/tcp".to_string(),
+        .into_iter()
+        .enumerate()
+        .map(|(i, (state, code, health))| {
+            let (status, colour) = status(state, code, false, health);
+            Row {
+                name: format!("demo-{i}"),
+                status,
+                colour,
+                traefik: vec!["8080".into()],
+                bindings: vec!["0.0.0.0:80->80/tcp".into(), "   [::]:80->80/tcp".into()],
+            }
         })
         .collect()
     }
 
     /// SGR parameter lists in `text`, e.g. `[[38, 2, 111, 211, 154]]`. A plain
-    /// split is enough: the input is only comfy-table, crossterm and console
-    /// output, which write `ESC [ params m` with `;` separators. Why not
-    /// anstyle-parse: its `Perform` boilerplate is longer than this.
+    /// split is enough: the input is only tabled and console output, which
+    /// write `ESC [ params m` with `;` separators. Why not anstyle-parse: its
+    /// `Perform` boilerplate is longer than this. Why not ansitok (in the
+    /// tree through tabled's `ansi` feature): a direct dev-dependency on a
+    /// transitive crate for one test helper.
     fn sgr(text: &str) -> Vec<Vec<u16>> {
         text.split("\x1b[")
             .skip(1)
@@ -332,34 +435,123 @@ mod tests {
         false
     }
 
-    /// Truecolor is the design target (capability map, decision 10).
+    fn rgb_code(colour: Color) -> Vec<u16> {
+        let (r, g, b) = rgb(colour).expect("palette colour");
+        vec![38, 2, r.into(), g.into(), b.into()]
+    }
+
+    /// Truecolor is the design target (capability map, decision 10): the
+    /// border, headings and statuses use palette RGB, never named colours.
     #[test]
     fn coloured_table_uses_only_truecolor() {
-        let text = table(&rows(), true).to_string();
+        let text = table(&rows(), true, None);
         let codes = sgr(&text);
-        assert!(
-            codes.iter().any(|c| c.starts_with(&[38, 2])),
-            "no truecolor: {text}"
-        );
+        for colour in [BORDER, OK, PROBLEM, IDLE] {
+            assert!(codes.contains(&rgb_code(colour)), "{colour:?} missing");
+        }
         assert!(!codes.iter().any(|c| sets_named_colour(c)), "{codes:?}");
     }
 
-    /// With colour off no cell carries a style, so even a terminal (which
-    /// comfy-table styles for; forced here) gets none.
     #[test]
     fn colours_off_means_no_escape_codes() {
-        let text = table(&rows(), false).enforce_styling().to_string();
+        let text = table(&rows(), false, None);
         assert!(!text.contains('\x1b'), "{text}");
-        assert!(text.contains("demo-running"));
+        assert!(text.contains("demo-0"));
+    }
+
+    /// sb-go's layout: rounded corners and a rule between every row.
+    #[test]
+    fn rows_are_separated_by_rules() {
+        let text = table(&rows(), false, None);
+        assert!(text.starts_with('╭'), "{text}");
+        let rules = text.lines().filter(|l| l.starts_with('├')).count();
+        assert_eq!(rules, rows().len(), "{text}");
     }
 
     #[test]
-    fn states_use_their_palette_colours() {
-        assert_eq!(state_colour("running"), OK);
-        assert_eq!(state_colour("dead"), PROBLEM);
-        assert_eq!(state_colour("restarting"), PROBLEM);
-        assert_eq!(state_colour("exited"), IDLE);
-        assert_eq!(state_colour("removing"), WARN);
+    fn table_fits_the_given_width() {
+        let text = table(&rows(), true, Some(50));
+        let widest = text
+            .lines()
+            .map(console::measure_text_width)
+            .max()
+            .unwrap_or(0);
+        assert!(widest <= 50, "{widest}\n{text}");
+        assert!(
+            table(&rows(), false, None)
+                .lines()
+                .any(|l| l.chars().count() > 50)
+        );
+    }
+
+    #[test]
+    fn status_wording_and_colours() {
+        assert_eq!(
+            status("running", 0, false, Some("healthy")),
+            ("running (healthy)".into(), OK)
+        );
+        assert_eq!(status("running", 0, false, None), ("running".into(), OK));
+        assert_eq!(status("running", 0, false, Some("unhealthy")).1, PROBLEM);
+        assert_eq!(status("running", 0, false, Some("starting")).1, WARN);
+        assert_eq!(status("exited", 0, false, None), ("exited".into(), IDLE));
+        assert_eq!(
+            status("exited", 137, false, None),
+            ("exited (code 137)".into(), PROBLEM)
+        );
+        assert_eq!(
+            status("exited", 137, true, None).0,
+            "exited (out of memory)"
+        );
+        assert_eq!(status("dead", 0, false, None).1, PROBLEM);
+        assert_eq!(status("removing", 0, false, None).1, WARN);
+    }
+
+    #[test]
+    fn traefik_ports_follow_sb_go_rule_sorted_and_unique() {
+        let labels: HashMap<String, String> = [
+            ("traefik.http.services.app.loadbalancer.server.port", "9000"),
+            ("traefik.http.services.api.loadbalancer.server.port", "8080"),
+            ("traefik.http.services.dup.loadbalancer.server.port", "9000"),
+            (
+                "traefik.http.services.app-http.loadbalancer.server.port",
+                "80",
+            ),
+            ("traefik.enable", "true"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        assert_eq!(traefik_ports(&labels), ["8080", "9000"]);
+    }
+
+    #[test]
+    fn port_bindings_line_up_like_sb_go() {
+        let binding = |ip: Option<&str>, port: &str| PortBinding {
+            host_ip: ip.map(str::to_string),
+            host_port: Some(port.to_string()),
+        };
+        let ports: PortMap = [
+            (
+                "8080/tcp".to_string(),
+                Some(vec![
+                    binding(Some("::"), "80"),
+                    binding(Some("0.0.0.0"), "80"),
+                ]),
+            ),
+            ("443/tcp".to_string(), Some(vec![binding(None, "4443")])),
+            ("9999/tcp".to_string(), Some(vec![binding(None, "")])),
+            ("53/udp".to_string(), None),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            port_bindings(&ports),
+            [
+                "0.0.0.0:4443-> 443/tcp",
+                "0.0.0.0:  80->8080/tcp",
+                "[::]:  80->8080/tcp",
+            ]
+        );
     }
 
     /// Every styled part of the prompt theme is truecolor.
