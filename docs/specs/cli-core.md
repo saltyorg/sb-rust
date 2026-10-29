@@ -31,6 +31,9 @@ per-command startup code.
    for every command including `--help`, `version` and Tab completion
    (exec, not a child: signals and the exit code then belong to the real
    run). One environment for every run, and every run is logged.
+   Saltbox configures passwordless sudo for the Saltbox user, so this
+   adds no prompt there, Tab completion included; another user gets
+   sudo's own prompt.
 2. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
    sb-go does (maintainer, 2026-10-29). The supported releases list
