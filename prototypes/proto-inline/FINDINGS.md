@@ -43,6 +43,35 @@ running with port mappings, one exited), which were removed afterwards.
   in favour of `load_style` and `TableStyle` constants. That's fine at a
   pinned version, but expect breaking major releases.
 
+## Palette and `--color` (before the maintainer's review)
+
+- **Truecolor palette.** The table's state and header colours, the summary
+  lines and dialoguer's prompt theme now use proto-theme's RGB colours in
+  place of named ANSI ones. comfy-table takes `Color::Rgb`, anstyle
+  `RgbColor`, and dialoguer's `ColorfulTheme` has public fields that take
+  console styles (`Style::true_color`). Guard tests fail on any named
+  colour.
+- **State colours** follow the palette roles: running OK, restarting and
+  dead PROBLEM, exited, created and paused IDLE. The list endpoint has no
+  exit code, so a failed exit looks like a clean stop here; the real table
+  would reuse proto-logs' classification, which inspects each container.
+- **`--color=auto|always|never`** (decision 10) comes from
+  `colorchoice-clap`, the anstream project's clap mixin (the library-reviewer
+  pointed it out), which sets anstream's global choice. No library passes
+  that choice on to console (the prompts) or crossterm, so `always` and
+  `never` are applied to both by hand.
+- **crossterm reads `NO_COLOR` itself** and drops every colour it writes
+  (crossterm 0.29 `style/types/colored.rs`). comfy-table styles through
+  crossterm, so `--color=always` lost the table's colours under `NO_COLOR`
+  until `Colored::set_ansi_color_disabled(false)` was added. ratatui's
+  crossterm backend goes through the same code, so the TUI screens already
+  honour `NO_COLOR`; the colour-fallback ADR should build on that.
+- **Fixed: `NO_COLOR` stopped the table wrapping.** The old code called
+  comfy-table's `force_no_tty` to drop colours, which also switches off its
+  terminal-width lookup. Measured at 60 columns with `NO_COLOR=1`: 172
+  columns wide before, 60 after. Colour is now decided per cell, and
+  `enforce_styling` keeps colours for `--color=always` when piped.
+
 ## Verdict
 
 _Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._

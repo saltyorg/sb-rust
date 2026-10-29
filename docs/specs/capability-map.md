@@ -80,7 +80,11 @@ Rust libraries in place of sb-go's internals.
     `ColorChoice`, the git/ls/cargo convention) forces it either way.
     The install script will run `sb setup` attached to the terminal instead
     (tasks/todo.md), so it needs no flag; `--color` stays as a general
-    override. Proved in proto-runner. Open for cli-core: make clap's
+    override. Proved in proto-runner and proto-inline; the flag itself is
+    `colorchoice-clap` (anstream's clap mixin), which sets anstream's
+    choice, and cli-core passes `always`/`never` on to console and to
+    crossterm, which otherwise drops colours under NO_COLOR on its own (so
+    the ratatui screens honour NO_COLOR already). Open for cli-core: make clap's
     own `--help` follow the flag too (`Command::color`).
 
     The palette assumes a dark background. Light themes are an open item.
@@ -145,7 +149,7 @@ GitHub API (last push, archived flag).
 | Styled one-off lines, ANSI stripping | `console` (already pulled in by indicatif) | 0.16.6 / 2026-09 | 94M | lipgloss styles | proto-runner |
 | Prompts | `dialoguer` | 0.12.0 / repo active 2026-10 | 19M | restore textinput model | proto-inline |
 | Tables | `comfy-table` | 8.0.1 / 2026-09 | 22M | aquasecurity/table, terminal table | proto-inline |
-| Colour decision | `anstyle` + `anstream` (clap's own) | 1.0 / 2026 | 227M | lipgloss styles, colorprofile, charmtone | proto-inline |
+| Colour decision | `anstyle` + `anstream` (clap's own), `colorchoice-clap` for `--color` | 1.0 / 2026 | 227M | lipgloss styles, colorprofile, charmtone | proto-inline |
 | Signals | `signal-hook` | 0.4.5 / 2026-10 | 67M | signals pkg | proto-runner |
 | Errors | `anyhow` (bin), `thiserror` (lib modules) | 2026 | 260M / 464M | — | untested |
 | Logging | `tracing` + `tracing-subscriber`, files via `tracing-appender` (rolling, `max_log_files`) | 0.2.5 (appender) / 2026-04 | 240M / 42M | terminal/logging (screen only) | proto-runner; decision 11 |
