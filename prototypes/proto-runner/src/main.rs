@@ -1,6 +1,9 @@
 //! Prototype: can indicatif + portable-pty reproduce sb-go's task runner?
-//! Spinner per step, live output tail under the running step, output tail on
-//! failure, clean Ctrl-C, plain output when piped. Throwaway; see FINDINGS.md.
+//! Drawn as the rounded tree picked from `--gallery`: a branch per step with
+//! the times in one column, the running step's live output hanging under it,
+//! the last lines of a failed step kept under it. Clean Ctrl-C, plain output
+//! when piped. The run itself is simulated (apt-style output). Throwaway; see
+//! FINDINGS.md.
 
 mod gallery;
 
@@ -29,9 +32,6 @@ struct Cli {
     /// Add a 30s step to try Ctrl-C against.
     #[arg(long)]
     slow: bool,
-    /// Path to ansible-playbook for the realistic step.
-    #[arg(long, default_value = "ansible-playbook")]
-    ansible: String,
     /// Print static snapshots of a run in several formats, to compare them.
     #[arg(long)]
     gallery: bool,
@@ -69,33 +69,22 @@ fn main() -> Result<()> {
         signal_hook::flag::register_usize(signal, Arc::clone(&interrupted), value)?;
     }
 
-    let mut steps = vec![
-        Step {
-            running: "Checking Ansible",
-            done: "Ansible available",
-            cmd: vec![cli.ansible.clone(), "--version".into()],
-        },
-        Step {
-            running: "Installing packages",
-            done: "Packages installed",
-            cmd: sh(
-                r#"for i in 1 2 3 4 5 6; do printf '\033[32mok\033[0m: [localhost] => package-%s\n' "$i"; sleep 0.4; done
-                       for p in 10 40 70 100; do printf '\rdownloading %s%%' "$p"; sleep 0.3; done; echo"#,
-            ),
-        },
-    ];
+    let mut steps = simulated_steps();
     if cli.slow {
         steps.push(Step {
-            running: "Long task (press Ctrl-C)",
+            running: "Waiting on a long task (press Ctrl-C)",
             done: "Long task finished",
-            cmd: sh("trap 'echo got TERM; exit 143' TERM; for i in $(seq 1 30); do echo tick $i; sleep 1; done"),
+            cmd: sh("trap 'echo got TERM; exit 143' TERM; for i in $(seq 1 30); do echo \"waiting ($i/30)\"; sleep 1; done"),
         });
     }
     if cli.fail {
         steps.push(Step {
-            running: "Configuring service",
-            done: "Service configured",
-            cmd: sh(r#"for i in $(seq 1 14); do echo "task line $i"; done; printf '\033[31mfatal\033[0m: [localhost]: FAILED! => unreachable\n'; exit 2"#),
+            running: "Installing an unavailable package",
+            done: "Package installed",
+            cmd: sh(r#"echo "Reading package lists... Done"; sleep 0.3
+echo "Building dependency tree... Done"; sleep 0.3
+echo "Reading state information... Done"; sleep 0.2
+echo "E: Unable to locate package demo-unavailable"; exit 100"#),
         });
     }
 
@@ -106,15 +95,33 @@ fn main() -> Result<()> {
     // MultiProgress::println does nothing.
     let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
     let live = !mp.is_hidden();
-    for step in &steps {
-        if let Err(e) = run_step(&mp, step, live, cli.verbose, &interrupted) {
+    let echo = live.then(QuietControlEcho::new).flatten();
+    emit(
+        &mp,
+        live,
+        &palette(theme::ACCENT)
+            .bold()
+            .apply_to("Saltbox (simulated run)")
+            .to_string(),
+    )?;
+    for (i, step) in steps.iter().enumerate() {
+        let last = i + 1 == steps.len();
+        if let Err(e) = run_step(&mp, step, last, live, cli.verbose, &interrupted) {
             let signal = interrupted.load(Ordering::Relaxed);
             if signal != 0 {
                 // 128 + the signal, the shell convention (130 for Ctrl-C, 143
                 // for SIGTERM). An explicit exit, which signal-hook recommends
                 // over re-raising the signal in a multi-threaded program
                 // (low_level::emulate_default_handler).
+                drop(echo);
                 std::process::exit(128 + i32::try_from(signal).unwrap_or(0));
+            }
+            // A failed step is already shown in the tree, with its last
+            // output; exit 1 without repeating it. Anything else (the PTY
+            // could not be opened, ...) is reported as an error.
+            if e.downcast_ref::<StepFailed>().is_some() {
+                drop(echo);
+                std::process::exit(1);
             }
             return Err(e);
         }
@@ -125,17 +132,17 @@ fn main() -> Result<()> {
 fn run_step(
     mp: &MultiProgress,
     step: &Step,
+    last: bool,
     live: bool,
     verbose: bool,
     interrupted: &AtomicUsize,
 ) -> Result<()> {
     let spinner = mp.add(ProgressBar::new_spinner());
     spinner.set_style(ProgressStyle::with_template(&spinner_template())?);
+    // The running step is the newest branch, so it takes the last-item glyph.
+    spinner.set_prefix(faint(branch(true)));
     spinner.set_message(step.running);
     spinner.enable_steady_tick(Duration::from_millis(80));
-    if !live {
-        eprintln!("- {}", step.running);
-    }
     let tail_bars: Vec<ProgressBar> = if live && !verbose {
         (0..TAIL_LINES)
             .map(|_| {
@@ -161,7 +168,6 @@ fn run_step(
     })?;
     let mut cmd = CommandBuilder::new(&step.cmd[0]);
     cmd.args(&step.cmd[1..]);
-    cmd.env("ANSIBLE_FORCE_COLOR", "1");
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
     let pid = child.process_id();
@@ -200,12 +206,13 @@ fn run_step(
                 }
                 last_overwrites = overwrite;
                 if verbose && !overwrite {
+                    let line = format!("{}{line}", faint(skip(last)));
                     if live {
-                        mp.println(format!("    {line}"))?;
+                        mp.println(line)?;
                     } else if console::colors_enabled() {
-                        println!("    {line}");
+                        println!("{line}");
                     } else {
-                        println!("    {}", console::strip_ansi_codes(&line));
+                        println!("{}", console::strip_ansi_codes(&line));
                     }
                 }
                 if history.len() == FAILURE_TAIL {
@@ -213,7 +220,10 @@ fn run_step(
                 }
                 history.push_back(line);
                 let start = history.len().saturating_sub(TAIL_LINES);
-                for (bar, line) in tail_bars.iter().zip(history.iter().skip(start)) {
+                let shown = history.len() - start;
+                for (i, (bar, line)) in tail_bars.iter().zip(history.iter().skip(start)).enumerate()
+                {
+                    bar.set_prefix(tail_prefix(i, shown));
                     bar.set_message(line.clone());
                 }
             }
@@ -268,40 +278,89 @@ fn run_step(
     // style.rs renders it with HumanDuration's alternate form).
     let elapsed = format!("{:#}", indicatif::HumanDuration(spinner.elapsed()));
     spinner.finish_and_clear();
-    let emit = |text: String| -> Result<()> {
-        if live {
-            mp.println(text)?;
-        } else if console::colors_enabled_stderr() {
-            eprintln!("{text}");
-        } else {
-            // Child output keeps its colours under the PTY; strip them when
-            // console says stderr gets no colour (not a terminal, or
-            // CLICOLOR=0): https://docs.rs/console/0.16.6/console/fn.strip_ansi_codes.html
-            eprintln!("{}", console::strip_ansi_codes(&text));
-        }
-        Ok(())
-    };
     if interrupted.load(Ordering::Relaxed) != 0 {
-        emit(status_line(&Outcome::Interrupted, step.running, &elapsed))?;
+        emit(
+            mp,
+            live,
+            &step_line(true, &Outcome::Interrupted, step.running, &elapsed),
+        )?;
         bail!("interrupted");
     }
     if status.success() {
-        emit(status_line(&Outcome::Done, step.done, &elapsed))?;
+        emit(
+            mp,
+            live,
+            &step_line(last, &Outcome::Done, step.done, &elapsed),
+        )?;
         return Ok(());
     }
-    emit(status_line(
-        &Outcome::Failed {
-            code: status.exit_code(),
-            signal: status.signal().map(str::to_string),
-        },
-        step.running,
-        &elapsed,
-    ))?;
-    for line in &history {
-        emit(format!("    {line}"))?;
+    // A failure ends the run, so the failed step is the last branch and its
+    // last output lines hang under it.
+    let outcome = Outcome::Failed {
+        code: status.exit_code(),
+        signal: status.signal().map(str::to_string),
+    };
+    emit(mp, live, &step_line(true, &outcome, step.running, &elapsed))?;
+    for (i, line) in history.iter().enumerate() {
+        emit(
+            mp,
+            live,
+            &format!("{}{line}", tail_prefix(i, history.len())),
+        )?;
     }
-    bail!("step failed: {}", step.running)
+    Err(StepFailed.into())
 }
+
+/// Turns off the terminal's echo of control characters (`ECHOCTL`) while the
+/// runner draws, and restores it when dropped. Without this, pressing Ctrl-C
+/// echoes `^C` among indicatif's lines, its line count goes wrong, and a
+/// stale spinner line is left above the "interrupted" line. Measured in
+/// tmux: one stale line without this, none with it; turning on `NOFLSH`
+/// instead made no difference. Ctrl-C still sends SIGINT; only the echo goes.
+/// Uses rustix's termios wrappers (tcgetattr/tcsetattr on stdin, the
+/// controlling terminal). Why not crossterm's `enable_raw_mode`: raw mode
+/// clears ISIG, so Ctrl-C would stop sending SIGINT. UNVERIFIED pattern: no
+/// indicatif or console documentation covers this; checked against tmux as
+/// above. (The PTY harness's emulator, pyte, doesn't show the echo, so it
+/// can't check this.)
+struct QuietControlEcho {
+    original: rustix::termios::Termios,
+}
+
+impl QuietControlEcho {
+    fn new() -> Option<Self> {
+        let stdin = rustix::stdio::stdin();
+        let original = rustix::termios::tcgetattr(stdin).ok()?;
+        let mut quiet = original.clone();
+        quiet
+            .local_modes
+            .remove(rustix::termios::LocalModes::ECHOCTL);
+        rustix::termios::tcsetattr(stdin, rustix::termios::OptionalActions::Now, &quiet).ok()?;
+        Some(Self { original })
+    }
+}
+
+impl Drop for QuietControlEcho {
+    fn drop(&mut self) {
+        let _ = rustix::termios::tcsetattr(
+            rustix::stdio::stdin(),
+            rustix::termios::OptionalActions::Now,
+            &self.original,
+        );
+    }
+}
+
+/// A step exited unsuccessfully; already reported in the tree.
+#[derive(Debug)]
+struct StepFailed;
+
+impl std::fmt::Display for StepFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("step failed")
+    }
+}
+
+impl std::error::Error for StepFailed {}
 
 #[derive(Debug)]
 enum Outcome {
@@ -368,47 +427,198 @@ pub(crate) fn palette(colour: impl std::fmt::Display) -> console::Style {
     console::Style::from_dotted_str(&colour.to_string()).for_stderr()
 }
 
-/// indicatif passes a template's style part to the same parser
-/// (indicatif 0.18.6 style.rs).
-fn spinner_template() -> String {
+/// Prints a permanent line above the live bars, or straight to stderr when
+/// indicatif isn't drawing (piped, or a dumb terminal).
+fn emit(mp: &MultiProgress, live: bool, text: &str) -> Result<()> {
+    if live {
+        mp.println(text)?;
+    } else if console::colors_enabled_stderr() {
+        eprintln!("{text}");
+    } else {
+        // Child output keeps its colours under the PTY; strip them when
+        // console says stderr gets no colour (not a terminal, or
+        // CLICOLOR=0): https://docs.rs/console/0.16.6/console/fn.strip_ansi_codes.html
+        eprintln!("{}", console::strip_ansi_codes(text));
+    }
+    Ok(())
+}
+
+/// Column where every step's right-hand text (elapsed, exit code) ends.
+const COLUMN: usize = 64;
+/// Width the running step's elapsed time is right-aligned in.
+const ELAPSED_WIDTH: usize = 6;
+
+/// The rounded tree picked from the gallery: termtree's glyphs with
+/// ratatui's rounded corner for the last branch.
+/// https://docs.rs/termtree/1.0.0/termtree/struct.GlyphPalette.html
+/// termtree only draws a finished tree in one go, so the live runner borrows
+/// its glyph set and draws the branches line by line through indicatif
+/// prefixes, the pattern of indicatif's own tree example:
+/// https://github.com/console-rs/indicatif/blob/main/examples/multi-tree-ext.rs
+fn glyphs() -> termtree::GlyphPalette {
+    termtree::GlyphPalette {
+        last_item: ratatui::symbols::line::ROUNDED_BOTTOM_LEFT,
+        ..termtree::GlyphPalette::new()
+    }
+}
+
+/// A step's branch: "├── ", or "╰── " for the last one.
+fn branch(last: bool) -> String {
+    let g = glyphs();
     format!(
-        "{{spinner:.{a}}} {{msg:.{a}}} {{elapsed:.{m}}}",
+        "{}{}",
+        if last { g.last_item } else { g.middle_item },
+        g.item_indent
+    )
+}
+
+/// What sits in front of a step's children: "│   " under a middle branch,
+/// spaces under the last.
+fn skip(last: bool) -> String {
+    let g = glyphs();
+    format!(
+        "{}{}",
+        if last { g.last_skip } else { g.middle_skip },
+        g.skip_indent
+    )
+}
+
+/// Prefix for line `i` of `n` hanging under the running or failed (last)
+/// step: ├── for each, ╰── for the newest.
+fn tail_prefix(i: usize, n: usize) -> String {
+    faint(format!("{}{}", skip(true), branch(i + 1 == n)))
+}
+
+fn faint(text: impl std::fmt::Display) -> String {
+    palette(theme::FAINT).apply_to(text).to_string()
+}
+
+/// The running step: branch, spinner and name, then the elapsed time
+/// right-aligned so it ends in `COLUMN`, like the finished lines. Width and
+/// alignment are indicatif's own template syntax ({key:<width} and
+/// {key:>width}), which pads by display width; `!` truncates a name that is
+/// too long, so the time stays in its column. Its style part goes to the same
+/// parser as `palette`. https://docs.rs/indicatif/0.18.6/indicatif/#templates
+fn spinner_template() -> String {
+    let branch_width = console::measure_text_width(&branch(true));
+    let name = COLUMN - branch_width - 2 - 1 - ELAPSED_WIDTH;
+    format!(
+        "{{prefix}}{{spinner:.{a}}} {{msg:<{name}!.{a}}} {{elapsed:>{ELAPSED_WIDTH}.{m}}}",
         a = theme::ACCENT,
         m = theme::MUTED
     )
 }
 
-/// The live output tail under a running step. Child output keeps its own
-/// colours inside; this only tones down uncoloured text.
+/// One line of the live output tail. Child output keeps its own colours
+/// inside; this only tones down uncoloured text.
 fn tail_template() -> String {
-    format!("    {{wide_msg:.{}}}", theme::MUTED)
+    format!("{{prefix}}{{wide_msg:.{}}}", theme::MUTED)
 }
 
-/// The permanent line a finished step leaves behind.
-fn status_line(outcome: &Outcome, text: &str, elapsed: &str) -> String {
-    match outcome {
-        Outcome::Done => format!(
-            "{} {}",
-            palette(theme::OK).apply_to(format!("✓ {text}")),
-            palette(theme::MUTED).apply_to(elapsed)
+/// The permanent line a finished step leaves: its branch, the status and
+/// name, and the right-hand text ending in `COLUMN` (console's pad_str pads
+/// by display width): https://docs.rs/console/0.16.6/console/fn.pad_str.html
+fn step_line(last: bool, outcome: &Outcome, text: &str, elapsed: &str) -> String {
+    let (left, right) = match outcome {
+        Outcome::Done => (
+            palette(theme::OK).apply_to(format!("✓ {text}")).to_string(),
+            palette(theme::MUTED).apply_to(elapsed).to_string(),
         ),
         // portable-pty reports a signalled child as code 1 plus the signal
         // name (portable-pty 0.9.0 lib.rs, ExitStatus).
         Outcome::Failed {
             signal: Some(signal),
             ..
-        } => palette(theme::PROBLEM)
-            .apply_to(format!("✗ {text}: killed by signal ({signal})"))
-            .to_string(),
-        Outcome::Failed { code, .. } => palette(theme::PROBLEM)
-            .apply_to(format!("✗ {text}: failed (exit {code})"))
-            .to_string(),
-        Outcome::Interrupted => palette(theme::WARN)
-            .apply_to(format!("✗ {text}: interrupted"))
-            .to_string(),
-    }
+        } => (
+            palette(theme::PROBLEM)
+                .apply_to(format!("✗ {text}"))
+                .to_string(),
+            palette(theme::PROBLEM)
+                .apply_to(format!("killed by signal ({signal}) · {elapsed}"))
+                .to_string(),
+        ),
+        Outcome::Failed { code, .. } => (
+            palette(theme::PROBLEM)
+                .apply_to(format!("✗ {text}"))
+                .to_string(),
+            palette(theme::PROBLEM)
+                .apply_to(format!("exit {code} · {elapsed}"))
+                .to_string(),
+        ),
+        Outcome::Interrupted => (
+            palette(theme::WARN)
+                .apply_to(format!("✗ {text}"))
+                .to_string(),
+            palette(theme::WARN)
+                .apply_to(format!("interrupted · {elapsed}"))
+                .to_string(),
+        ),
+    };
+    let branch = branch(last);
+    let room = COLUMN.saturating_sub(
+        console::measure_text_width(&branch) + console::measure_text_width(&right) + 1,
+    );
+    format!(
+        "{}{} {right}",
+        faint(branch),
+        console::pad_str(&left, room, console::Alignment::Left, None)
+    )
 }
 
+/// A simulated install with apt-style output, so the runner can be judged
+/// without touching the system. Progress uses `\r` updates, as apt's does.
+fn simulated_steps() -> Vec<Step> {
+    vec![
+        Step {
+            running: "Checking the system",
+            done: "System checked",
+            cmd: sh(r#"echo "Ubuntu 24.04 (noble), x86_64"; sleep 0.4
+echo "Disk: 41 GiB free on /"; sleep 0.4
+echo "Memory: 7.6 GiB"; sleep 0.3"#),
+        },
+        Step {
+            running: "Updating package lists",
+            done: "Package lists updated",
+            cmd: sh(r#"for line in \
+  "Hit:1 http://archive.example.org/ubuntu noble InRelease" \
+  "Get:2 http://archive.example.org/ubuntu noble-updates InRelease [126 kB]" \
+  "Get:3 http://security.example.org/ubuntu noble-security InRelease [126 kB]" \
+  "Get:4 http://archive.example.org/ubuntu noble-updates/main amd64 Packages [612 kB]" \
+  "Fetched 864 kB in 2s (432 kB/s)"; do echo "$line"; sleep 0.5; done
+printf 'Reading package lists... 0%%\r'; sleep 0.3
+printf 'Reading package lists... 64%%\r'; sleep 0.3
+echo "Reading package lists... Done""#),
+        },
+        Step {
+            running: "Installing packages",
+            done: "Packages installed",
+            cmd: sh(r#"echo "Reading package lists... Done"; sleep 0.2
+echo "Building dependency tree... Done"; sleep 0.2
+echo "The following NEW packages will be installed: curl jq unzip"; sleep 0.4
+for p in "curl 8.5.0 [227 kB]" "jq 1.7.1 [65.7 kB]" "unzip 6.0 [174 kB]"; do
+  echo "Get: http://archive.example.org/ubuntu noble/main amd64 $p"; sleep 0.4
+done
+for pct in 10 25 40 55 70 85 100; do
+  bar=$(printf '%*s' $((pct / 5)) '' | tr ' ' '#')
+  printf 'Progress: [%3d%%] [%-20s]\r' "$pct" "$bar"; sleep 0.35
+done
+echo
+for p in curl jq unzip; do
+  echo "Unpacking $p ..."; sleep 0.3
+  echo "Setting up $p ..."; sleep 0.3
+done
+echo "Processing triggers for man-db ...""#),
+        },
+        Step {
+            running: "Enabling services",
+            done: "Services enabled",
+            cmd: sh(
+                r#"echo "Created symlink multi-user.target.wants/demo.service -> demo.service"; sleep 0.5
+echo "demo.service: active (running)"; sleep 0.4"#,
+            ),
+        },
+    ]
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,7 +682,7 @@ mod tests {
             },
             Outcome::Interrupted,
         ] {
-            let line = status_line(&outcome, "Packages installed", "1s");
+            let line = step_line(false, &outcome, "Packages installed", "1s");
             let codes = sgr(&line);
             assert!(!codes.is_empty(), "{outcome:?} is unstyled: {line:?}");
             assert!(
@@ -491,10 +701,10 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         console::set_colors_enabled(false);
         console::set_colors_enabled_stderr(true);
-        assert!(!sgr(&status_line(&Outcome::Done, "x", "1s")).is_empty());
+        assert!(!sgr(&step_line(false, &Outcome::Done, "x", "1s")).is_empty());
         console::set_colors_enabled(true);
         console::set_colors_enabled_stderr(false);
-        assert!(sgr(&status_line(&Outcome::Done, "x", "1s")).is_empty());
+        assert!(sgr(&step_line(false, &Outcome::Done, "x", "1s")).is_empty());
     }
 
     /// Every gallery format is truecolor too, and none is empty.
@@ -569,7 +779,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         console::set_colors_enabled(false);
         console::set_colors_enabled_stderr(false);
-        let line = status_line(
+        let line = step_line(
+            true,
             &Outcome::Failed {
                 code: 1,
                 signal: Some("Terminated".into()),
@@ -577,7 +788,56 @@ mod tests {
             "Configuring service",
             "2s",
         );
-        assert_eq!(line, "✗ Configuring service: killed by signal (Terminated)");
+        assert!(line.starts_with("╰── ✗ Configuring service "), "{line:?}");
+        assert!(
+            line.ends_with(" killed by signal (Terminated) · 2s"),
+            "{line:?}"
+        );
+    }
+
+    /// The live runner draws the rounded tree picked from the gallery:
+    /// finished steps branch with ├──, the last with ╰──, and the right-hand
+    /// text always ends in the same column as the running step's elapsed.
+    #[test]
+    fn step_lines_form_a_rounded_tree_with_aligned_times() {
+        let _lock = COLOUR_SWITCHES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        console::set_colors_enabled_stderr(false);
+        let lines = [
+            step_line(false, &Outcome::Done, "System checked", "1s"),
+            step_line(false, &Outcome::Done, "Packages installed", "1m 4s"),
+            step_line(
+                true,
+                &Outcome::Failed {
+                    code: 100,
+                    signal: None,
+                },
+                "Configuring the firewall",
+                "3s",
+            ),
+            step_line(true, &Outcome::Interrupted, "Waiting", "12s"),
+        ];
+        assert!(lines[0].starts_with("├── ✓ System checked"));
+        assert!(lines[2].starts_with("╰── ✗ Configuring the firewall"));
+        assert!(lines[2].ends_with("exit 100 · 3s"), "{}", lines[2]);
+        assert!(lines[3].ends_with("interrupted · 12s"), "{}", lines[3]);
+        for line in &lines {
+            assert_eq!(console::measure_text_width(line), COLUMN, "{line:?}");
+        }
+    }
+
+    /// The live tail hangs under the running (last) step: indented past its
+    /// branch, ├── for each line and ╰── for the newest.
+    #[test]
+    fn tail_lines_branch_under_the_running_step() {
+        let _lock = COLOUR_SWITCHES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        console::set_colors_enabled_stderr(false);
+        let prefixes: Vec<String> = (0..3).map(|i| tail_prefix(i, 3)).collect();
+        assert_eq!(prefixes, ["    ├── ", "    ├── ", "    ╰── "]);
+        assert_eq!(tail_prefix(0, 1), "    ╰── ");
     }
 
     #[test]

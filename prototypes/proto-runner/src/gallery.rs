@@ -36,28 +36,28 @@ struct Sample {
 const SAMPLE: Sample = Sample {
     done: [
         Done {
-            text: "Ansible available",
+            text: "System checked",
             elapsed: "1s",
         },
         Done {
-            text: "Packages installed",
-            elapsed: "4s",
+            text: "Package lists updated",
+            elapsed: "3s",
         },
     ],
-    running: "Configuring service",
+    running: "Installing packages",
     running_elapsed: "7s",
     tail: [
-        "TASK [docker : Create network] ****",
-        "ok: [localhost]",
-        "TASK [docker : Start container] ****",
+        "Get: http://archive.example.org/ubuntu noble/main amd64 jq 1.7.1 [65.7 kB]",
+        "Get: http://archive.example.org/ubuntu noble/main amd64 unzip 6.0 [174 kB]",
+        "Progress: [ 40%] [########            ]",
     ],
-    failed: "Configuring service",
-    failed_code: 2,
+    failed: "Installing packages",
+    failed_code: 100,
     failed_elapsed: "9s",
     failure_tail: [
-        "task line 13",
-        "task line 14",
-        "fatal: [localhost]: FAILED! => unreachable",
+        "Building dependency tree... Done",
+        "Reading state information... Done",
+        "E: Unable to locate package demo-unavailable",
     ],
     total: 4,
 };

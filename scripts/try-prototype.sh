@@ -127,17 +127,16 @@ case "${1:-}" in
     ;;
   runner)
     b="$(bin runner)"
-    ansible=/srv/ansible/venv/bin/ansible-playbook
-    [[ -x "$ansible" ]] || ansible=true
-    intro "Task runner (simulated steps; the first runs ansible-playbook --version if present)" \
-      "Run 1: spinners with a live tail, then a failing step that prints its last 10 lines." \
+    intro "Task runner as a rounded tree (a simulated install with apt-style output; nothing is installed)" \
+      "Run 1: steps with a live output tail under the running one, then a failing step that keeps" \
+      "       its last lines under it." \
       "Run 2: a 30 s step - press Ctrl-C to see the interrupt handling." \
       "Run 3: the same steps piped through cat (plain output, no spinners)."
-    "$b" --ansible "$ansible" --fail || true
+    "$b" --fail || true
     printf '\n\033[1m--- Run 2: press Ctrl-C during the long task ---\033[0m\n'
-    "$b" --ansible "$ansible" --slow || true
+    "$b" --slow || true
     printf '\n\033[1m--- Run 3: piped ---\033[0m\n'
-    "$b" --ansible "$ansible" --fail 2>&1 | cat || true
+    "$b" --fail 2>&1 | cat || true
     ;;
   runner-gallery)
     b="$(bin runner)"

@@ -111,6 +111,49 @@ with SIGINT mid-step in both modes.
     a named colour mixed into a 24-bit sequence is caught, using console's
     `AnsiCodeIterator`.
 
+## Rounded tree (maintainer review)
+
+From the `--gallery` comparison the maintainer picked the tree, with a
+rounded last branch and the times in one column. The examples are no longer
+Ansible output, since the runner will not inline Ansible's own output.
+- **The live runner is now that tree:**
+  - a root line, then a branch per finished step (`├──`, the last `╰──`);
+  - the running step as the newest branch, with its live tail under it
+    (`├──`, the newest line `╰──`);
+  - a failed step keeps its last lines under it.
+
+  Times and exit codes end in one column, both live and once finished.
+- **The run is simulated:** checking the system, updating package lists,
+  installing packages (apt-style `Get:` lines and an in-place
+  `Progress: [ 40%]` line updated with `\r`) and enabling services. The
+  `--fail` and `--slow` steps are apt-style too. The Ansible step and the
+  `--ansible` option are gone.
+- **Libraries:**
+  - Glyphs come from termtree's `GlyphPalette`, with ratatui's rounded
+    corner for the last branch. termtree only draws a finished tree in one
+    go, so the live runner borrows its glyph set and draws branches line by
+    line through indicatif (`set_prefix`).
+  - The running line's name and elapsed columns use indicatif's own
+    template width and alignment (`{msg:<N}`, `{elapsed:>N}`), which pad by
+    display width.
+  - Finished lines pad with `console::pad_str` to the same column.
+  - Tests check the branch glyphs and that every finished line ends in the
+    same column.
+- **A failed step now exits 1 without repeating itself.** anyhow had printed
+  "Error: step failed" under the tree; the tree already says it.
+- **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:
+  - The terminal echoes `^C` among indicatif's lines and its line count
+    goes wrong.
+  - The runner now turns off `ECHOCTL` while drawing (rustix termios) and
+    restores it on exit, including on interrupt.
+  - Measured in tmux: one stale line without it, none with it. `NOFLSH`
+    made no difference and was left out. `echoctl` is back on after the run.
+  - The PTY harness's emulator (pyte) doesn't show the echo, so this was
+    checked in tmux. A first diagnosis that blamed line overflow turned out
+    wrong: indicatif's padding parks the cursor at the right edge on
+    purpose.
+  - No library or doc covers this, so it is marked UNVERIFIED in the code.
+
 ## Verdict
 
 _Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
