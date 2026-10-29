@@ -47,7 +47,9 @@ struct Step {
     cmd: Vec<String>,
 }
 
-const TAIL_LINES: usize = 3;
+/// Live output lines under the running step on a tall enough terminal, as
+/// sb-go shows (`liveTaskOutputLines` in its runner).
+const TAIL_LINES: usize = 8;
 const FAILURE_TAIL: usize = 10;
 
 fn sh(script: &str) -> Vec<String> {
@@ -148,8 +150,10 @@ fn run_step(
     spinner.set_prefix(faint(branch(true)));
     spinner.set_message(step.running);
     spinner.enable_steady_tick(Duration::from_millis(80));
+    let terminal = console::Term::stderr().size_checked();
+    let tail_count = tail_lines(terminal.map_or(24, |(rows, _)| usize::from(rows)));
     let tail_bars: Vec<ProgressBar> = if live && !verbose {
-        (0..TAIL_LINES)
+        (0..tail_count)
             .map(|_| {
                 let b = mp.add(ProgressBar::new_spinner());
                 b.set_style(
@@ -162,9 +166,7 @@ fn run_step(
         Vec::new()
     };
 
-    let (rows, cols) = console::Term::stderr()
-        .size_checked()
-        .map_or((24, 80), |(r, c)| (r.max(10), c.max(40)));
+    let (rows, cols) = terminal.map_or((24, 80), |(r, c)| (r.max(10), c.max(40)));
     let pair = native_pty_system().openpty(PtySize {
         rows,
         cols,
@@ -224,7 +226,7 @@ fn run_step(
                     history.pop_front();
                 }
                 history.push_back(line);
-                let start = history.len().saturating_sub(TAIL_LINES);
+                let start = history.len().saturating_sub(tail_count);
                 let shown = history.len() - start;
                 for (i, (bar, line)) in tail_bars.iter().zip(history.iter().skip(start)).enumerate()
                 {
@@ -447,6 +449,13 @@ fn apply_colour_choice(choice: clap::ColorChoice) {
     };
     console::set_colors_enabled(enabled);
     console::set_colors_enabled_stderr(enabled);
+}
+
+/// How many live output lines to show: `TAIL_LINES`, but keeping the live
+/// area (spinner plus tail) to half the terminal's height, because indicatif
+/// skips bars that don't fit the terminal (indicatif 0.18.6 draw_target.rs).
+fn tail_lines(terminal_rows: usize) -> usize {
+    TAIL_LINES.min(terminal_rows / 2).max(1)
 }
 
 /// Prints a permanent line above the live bars, or straight to stderr when
@@ -893,6 +902,17 @@ mod tests {
     /// Command output keeps its own colours and is otherwise drawn in the
     /// terminal's default colour: the tail template styles nothing but the
     /// tree prefix (which is styled before it is set).
+    /// The live tail shows sb-go's 8 lines, fewer on a short terminal so the
+    /// live area keeps to half its height (indicatif skips bars that don't
+    /// fit the terminal).
+    #[test]
+    fn live_tail_shows_eight_lines_unless_the_terminal_is_short() {
+        assert_eq!(tail_lines(50), 8);
+        assert_eq!(tail_lines(16), 8);
+        assert_eq!(tail_lines(12), 6);
+        assert_eq!(tail_lines(3), 1);
+    }
+
     #[test]
     fn tail_template_leaves_command_output_unstyled() {
         assert_eq!(tail_template(), "{prefix}{wide_msg}");

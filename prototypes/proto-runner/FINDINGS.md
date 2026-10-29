@@ -149,6 +149,10 @@ Ansible output, since the runner will not inline Ansible's own output.
   switches, which every style and indicatif's bars follow. Measured piped:
   0 lines with escape codes for `auto` and `never`, 5 for `always` (root
   plus four steps).
+- **Live tail length** (review: three lines was too few): the tail now
+  shows sb-go's 8 lines (`liveTaskOutputLines`), capped so the live area
+  stays within half the terminal's height, since indicatif skips bars that
+  don't fit. Checked: 7 lines once 7 existed at 24 rows, 5 at 10 rows.
 - **A failed step now exits 1 without repeating itself.** anyhow had printed
   "Error: step failed" under the tree; the tree already says it.
 - **Ctrl-C left a stale spinner line**, in tmux as in any real terminal:
