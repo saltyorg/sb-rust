@@ -127,8 +127,11 @@ replace sb-go's hand-written hit-map, without owning ANSI or width code?
 - [ ] Manual mouse session in at least two terminal emulators, named in
       FINDINGS.
 
+- [x] Look and feel reviewed by the maintainer (2026-10-29); the
+      two-emulator manual check above is still open.
+
 **Dependencies:** Task 4
-**Files:** `prototypes/proto-facts/src/{main.rs,mouse.rs}`, `FINDINGS.md`
+**Files:** `prototypes/proto-facts/src/{main.rs,model.rs}`, `FINDINGS.md`
 **Scope:** S
 
 ## Task 6: Log viewer streaming (`proto-logs`)

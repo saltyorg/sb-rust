@@ -175,10 +175,14 @@ changes exactly: an edited value, a removed section, a removed app file.
 
 ## Verdict
 
-_Technical verdict only: it builds, works and fits the library policy. Pending the maintainer's own review of the look and feel._
+_Reviewed by the maintainer (2026-10-29): fine. The review shaped the
+settings-page design, the right-click menu (no Fold, every action on the
+keyboard too), the search box and the truecolor palette. Still open: the
+manual check in two real terminal emulators (mouse, Shift-drag selection,
+wide characters after overwrites)._
 
-**Adopt** ratatui plus ratatui-textarea. The settings-page design is the
-candidate for the `tui` spec, subject to review.
+**Adopt** ratatui, ratatui-textarea and tui-popup, with tempfile for saves.
+The settings-page design goes into the `tui` spec.
 
 ## Map impact
 
