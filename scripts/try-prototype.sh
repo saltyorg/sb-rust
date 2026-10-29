@@ -18,6 +18,7 @@ Usage: scripts/try-prototype.sh <prototype>
   logs-demo    Log viewer on a demo container and demo systemd unit (removed on exit)
   markdown     Announcements renderer (full-screen view, then inline, then termimad)
   runner       Task runner with spinners, live output and a failing step
+  runner-gallery  Task runner output in eight formats, to compare (static)
   inline       docker ps style table, then username/password prompts
   complete     Shell with dynamic tag completion loaded (bash)
 
@@ -137,6 +138,14 @@ case "${1:-}" in
     "$b" --ansible "$ansible" --slow || true
     printf '\n\033[1m--- Run 3: piped ---\033[0m\n'
     "$b" --ansible "$ansible" --fail 2>&1 | cat || true
+    ;;
+  runner-gallery)
+    b="$(bin runner)"
+    intro "Task runner formats (static snapshots, nothing runs)" \
+      "Eight formats for the same moments: two finished steps, a step running with its live" \
+      "tail, then (after the blank line) that step failing with its last output lines." \
+      "Pick what you like, or mix: e.g. dot leaders with the tree's failure output."
+    "$b" --gallery
     ;;
   inline)
     b="$(bin inline)"

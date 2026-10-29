@@ -2,6 +2,8 @@
 //! Spinner per step, live output tail under the running step, output tail on
 //! failure, clean Ctrl-C, plain output when piped. Throwaway; see FINDINGS.md.
 
+mod gallery;
+
 use std::collections::VecDeque;
 use std::io::Read;
 use std::sync::Arc;
@@ -30,6 +32,9 @@ struct Cli {
     /// Path to ansible-playbook for the realistic step.
     #[arg(long, default_value = "ansible-playbook")]
     ansible: String,
+    /// Print static snapshots of a run in several formats, to compare them.
+    #[arg(long)]
+    gallery: bool,
 }
 
 struct Step {
@@ -47,6 +52,10 @@ fn sh(script: &str) -> Vec<String> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.gallery {
+        gallery::print();
+        return Ok(());
+    }
     // One flag holding the stop signal that arrived (0 = none), registered
     // for signal-hook's shutdown signals as its flag module documents
     // (signal-hook 0.4.5 flag.rs, register_usize; consts::TERM_SIGNALS).
@@ -353,7 +362,7 @@ impl LineSplitter {
 /// dotted style syntax parses as a 24-bit colour (console 0.16.6 utils.rs,
 /// `Style::from_dotted_str`). console writes RGB as 24-bit SGR whatever the
 /// terminal reports, and leaves output plain when colours are off (piped).
-fn palette(colour: impl std::fmt::Display) -> console::Style {
+pub(crate) fn palette(colour: impl std::fmt::Display) -> console::Style {
     // The lines go to stderr, so colour follows stderr's setting, as
     // indicatif does for its own bars (ProgressBar::set_style).
     console::Style::from_dotted_str(&colour.to_string()).for_stderr()
@@ -486,6 +495,34 @@ mod tests {
         console::set_colors_enabled(true);
         console::set_colors_enabled_stderr(false);
         assert!(sgr(&status_line(&Outcome::Done, "x", "1s")).is_empty());
+    }
+
+    /// Every gallery format is truecolor too, and none is empty.
+    #[test]
+    fn gallery_uses_only_truecolor() {
+        let _lock = COLOUR_SWITCHES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        console::set_colors_enabled_stderr(true);
+        let text = gallery::lines().join("\n");
+        let codes = sgr(&text);
+        assert!(codes.len() > 50, "gallery looks unstyled");
+        assert!(
+            !codes.iter().any(|c| sets_named_colour(c)),
+            "named colour in the gallery"
+        );
+        for name in [
+            "Current",
+            "Dot leaders",
+            "Step counter",
+            "Badges",
+            "Timeline",
+            "Grouped",
+            "Minimal",
+            "Tree",
+        ] {
+            assert!(text.contains(name), "{name} missing");
+        }
     }
 
     #[test]

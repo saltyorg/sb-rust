@@ -2420,6 +2420,7 @@ dependencies = [
  "indicatif",
  "portable-pty",
  "proto-theme",
+ "ratatui",
  "rustix",
  "signal-hook 0.4.5",
 ]
