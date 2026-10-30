@@ -124,9 +124,11 @@ text with clap's `Command::override_help`, so `-h`, `--help`,
 as an error). Not copied yet: fang's 120-column wrap of the about;
 `sb help help` stays clap's own (clap adds that subcommand after sb sets
 the others). Parse errors (unknown command
-or flag, bad value) are drawn in the same style as sb's `✗` error block, on
-stderr, and exit 2, the usage-error convention (sb-go exits 1; a deliberate
-difference).
+or flag, bad value) follow sb-go's layout in sb's palette (maintainer,
+2026-10-30): an `ERROR` badge, clap's message, its tips and context lines,
+and `help: try '<command> --help'`, on stderr, exiting 2, the usage-error
+convention (sb-go exits 1; a deliberate difference). Run errors keep sb's
+`✗` block.
 
 **Build info:** version, git commit and the pinned uv version are set at
 build time; release builds can switch self-update off. `sb version` prints

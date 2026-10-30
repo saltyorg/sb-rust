@@ -123,11 +123,10 @@ fn block(
     render_block(headline, causes.chain(pointer), theme)
 }
 
-/// sb's error block, shared by run errors and parse errors (`help`): the
-/// mark in the problem colour and the headline, then indented lines, each
-/// with an optional muted label. A plain theme renders no codes at all
-/// (anstyle renders an empty style as nothing).
-pub(crate) fn render_block<'a>(
+/// sb's error block: the mark in the problem colour and the headline, then
+/// indented lines, each with an optional muted label. A plain theme renders
+/// no codes at all (anstyle renders an empty style as nothing).
+fn render_block<'a>(
     headline: &str,
     lines: impl IntoIterator<Item = (Option<&'a str>, String)>,
     theme: &Theme,

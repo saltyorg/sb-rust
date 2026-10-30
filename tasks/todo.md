@@ -300,10 +300,11 @@ whose long text needs it. `sb help help` stays clap's own format.
 **Files:** `crates/cli-core/src/help.rs`, `crates/sb/src/main.rs`, `crates/sb/tests/help.rs`
 **Scope:** M
 
-## Task 12: Parse errors in sb's error style
+## Task 12: Parse errors in sb-go's layout
 
 **Description:** clap's parse errors (unknown command or flag, bad value)
-are drawn like sb's `✗` block, on stderr, exit 2 (maintainer: the
+are drawn in sb-go's layout (an ERROR badge, chosen by the maintainer over
+a `✗` block), on stderr, exit 2 (maintainer: the
 usage-error convention, a deliberate difference from sb-go's 1). Not
 through a clap `ErrorFormatter`: clap builds its messages in private code,
 so sb keeps clap's wording and re-lays out its plain rendering, with the
@@ -312,7 +313,7 @@ usage paragraph removed through `Error::remove(ContextKind::Usage)`
 
 **Acceptance criteria:**
 - [x] An unknown command, an unknown flag and a bad value each show one
-      `✗` block with clap's message and tip, exit 2.
+      ERROR block with clap's message and tip, exit 2.
 - [x] `--color` and the profile apply as for help.
 
 **Verification:**

@@ -233,9 +233,10 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
     )
 }
 
-/// A clap parse error drawn like sb's error block (`exit::render_block`):
-/// `✗` and clap's message, clap's tips and context lines (`[possible
-/// values: …]`), then where to look, naming the command that failed
+/// A clap parse error in sb-go's (fang's) layout, in sb's palette
+/// (maintainer, 2026-10-30): an `ERROR` badge on the problem colour, a blank
+/// line, clap's message, then clap's tips and context lines (`[possible
+/// values: …]`) and where to look, naming the command that failed
 /// (`help: try 'sb version --help'`), or `program` when clap doesn't say
 /// (a bad value carries no usage). clap's usage paragraph is left out
 /// (help has it): removed with clap's `Error::remove(ContextKind::Usage)`
@@ -295,7 +296,29 @@ pub fn parse_error_block(mut err: clap::Error, program: &str, theme: &Theme) -> 
             body.push((None, trimmed.to_string()));
         }
     }
-    crate::exit::render_block(headline, body, theme)
+    // The badge text takes the on-accent colour, the palette's dark text
+    // for a bright background (the theme's `text` is light and wouldn't
+    // read on the problem colour).
+    let badge = match theme.color(Role::Problem) {
+        Some(bg) => Style::new()
+            .bg_color(Some(bg))
+            .fg_color(theme.color(Role::OnAccent))
+            .bold(),
+        None => Style::new(),
+    };
+    let (text, label) = (theme.style(Role::Text), theme.style(Role::Muted));
+    let mut out = format!("\n  {badge} ERROR {badge:#}\n\n  {text}{headline}{text:#}\n");
+    if !body.is_empty() {
+        out.push('\n');
+    }
+    for (name, line) in body {
+        match name {
+            Some(name) => out.push_str(&format!("  {label}{name}{label:#} {line}\n")),
+            None => out.push_str(&format!("  {line}\n")),
+        }
+    }
+    out.push('\n');
+    out
 }
 
 /// The command a usage line is for: `Usage: sb version [OPTIONS]` gives
@@ -569,12 +592,12 @@ mod tests {
         );
         assert_eq!(
             parse_error_block(err, "sb", &Theme::plain()),
-            "✗ invalid value 'x'\n  [possible values: a, b]\n  tip: try 'a'\n  help: try 'sb --help'\n"
+            "\n   ERROR \n\n  invalid value 'x'\n\n  [possible values: a, b]\n  tip: try 'a'\n  help: try 'sb --help'\n\n"
         );
     }
 
-    /// With colour the mark is the theme's problem colour and the labels
-    /// are muted, as in sb's own error block.
+    /// With colour the badge sits on a background (the problem colour) and
+    /// the labels are muted.
     #[test]
     fn a_parse_error_takes_the_themes_colours() {
         let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
@@ -584,7 +607,13 @@ mod tests {
             .expect_err("unknown command");
         let block = parse_error_block(err, "sb", &theme);
         assert!(
-            block.starts_with(&format!("{}✗", theme.style(Role::Problem))),
+            block.starts_with(&format!(
+                "\n  {badge} ERROR {badge:#}\n",
+                badge = Style::new()
+                    .bg_color(theme.color(Role::Problem))
+                    .fg_color(theme.color(Role::OnAccent))
+                    .bold()
+            )),
             "{block:?}"
         );
         assert!(
@@ -623,7 +652,7 @@ mod tests {
         );
         assert_eq!(
             plain_error(add, &["sb", "add"]),
-            "✗ the following required arguments were not provided:\n  <name>\n  <path>\n  help: try 'sb add --help'\n"
+            "\n   ERROR \n\n  the following required arguments were not provided:\n\n  <name>\n  <path>\n  help: try 'sb add --help'\n\n"
         );
         let flag = |id: &'static str| Arg::new(id).long(id).action(ArgAction::SetTrue);
         let conflict = Command::new("sb")
@@ -632,7 +661,7 @@ mod tests {
             .arg(flag("c").conflicts_with_all(["a", "b"]));
         assert_eq!(
             plain_error(conflict, &["sb", "--c", "--a", "--b"]),
-            "✗ the argument '--c' cannot be used with:\n  --a\n  --b\n  help: try 'sb --help'\n"
+            "\n   ERROR \n\n  the argument '--c' cannot be used with:\n\n  --a\n  --b\n  help: try 'sb --help'\n\n"
         );
         let required = Command::new("sb")
             .subcommand_required(true)
@@ -640,7 +669,7 @@ mod tests {
             .subcommand(Command::new("version"));
         assert_eq!(
             plain_error(required, &["sb", "--verbose"]),
-            "✗ 'sb' requires a subcommand but one was not provided\n  [subcommands: version, help]\n  help: try 'sb --help'\n"
+            "\n   ERROR \n\n  'sb' requires a subcommand but one was not provided\n\n  [subcommands: version, help]\n  help: try 'sb --help'\n\n"
         );
         let two_usages = Command::new("sb")
             .args_conflicts_with_subcommands(true)
@@ -648,7 +677,7 @@ mod tests {
             .subcommand(Command::new("version"));
         assert_eq!(
             plain_error(two_usages, &["sb", "--bogus"]),
-            "✗ unexpected argument '--bogus' found\n  help: try 'sb --help'\n"
+            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n  help: try 'sb --help'\n\n"
         );
     }
 
@@ -665,7 +694,7 @@ mod tests {
             );
         assert_eq!(
             plain_error(cmd, &["sb", "--bogus"]),
-            "✗ unexpected argument '--bogus' found\n"
+            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n"
         );
     }
 
@@ -678,7 +707,7 @@ mod tests {
             .subcommand(Command::new("version"));
         assert_eq!(
             plain_error(cmd, &["sb", "--bogus"]),
-            "✗ unexpected argument '--bogus' found\n  help: try 'help'\n"
+            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n  help: try 'help'\n\n"
         );
     }
 }

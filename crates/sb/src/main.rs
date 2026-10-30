@@ -170,7 +170,7 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
 }
 
 /// The real parse, with every command's help in sb-go's format, in the
-/// theme's colours (`help::apply`), and parse errors in sb's error style
+/// theme's colours (`help::apply`), and parse errors in sb-go's ERROR-badge layout
 /// (`help::parse_error_block`). Under `ascii` what clap still draws itself
 /// (`sb help help`) gets clap's plain styles
 /// (https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain).
@@ -209,7 +209,7 @@ fn parse(profile: theme::Profile) -> Cli {
     }
 }
 
-/// A parse error in sb's error style, on stderr, ending the run with
+/// A parse error in sb-go's ERROR-badge layout, on stderr, ending the run with
 /// clap's exit code (2, the usage-error convention; cli-core spec).
 fn parse_error(err: clap::Error) -> ! {
     let code = err.exit_code();

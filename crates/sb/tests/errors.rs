@@ -48,23 +48,23 @@ fn a_closed_pipe_is_quiet() {
     assert_eq!(String::from_utf8(out.stderr).expect("utf-8"), "");
 }
 
-/// Parse errors are drawn like sb's own error block (cli-core spec: Help
-/// and parse errors): `✗` and clap's message, its tips and context lines,
+/// Parse errors are drawn in sb-go's layout (cli-core spec: Help and parse
+/// errors): an ERROR badge, clap's message, its tips and context lines,
 /// then where to look; no usage paragraph; exit 2.
 #[test]
 fn a_parse_error_is_an_sb_error_block() {
     sb().arg("nope").assert().code(2).stderr(predicate::eq(
-        "✗ unrecognized subcommand 'nope'\n  help: try 'sb --help'\n",
+        "\n   ERROR \n\n  unrecognized subcommand 'nope'\n\n  help: try 'sb --help'\n\n",
     ));
 }
 
 #[test]
 fn a_parse_error_keeps_claps_tips_and_context() {
     sb().arg("verison").assert().code(2).stderr(predicate::eq(
-        "✗ unrecognized subcommand 'verison'\n  tip: a similar subcommand exists: 'version'\n  help: try 'sb --help'\n",
+        "\n   ERROR \n\n  unrecognized subcommand 'verison'\n\n  tip: a similar subcommand exists: 'version'\n  help: try 'sb --help'\n\n",
     ));
     sb().args(["--color=bad", "version"]).assert().code(2).stderr(predicate::eq(
-        "✗ invalid value 'bad' for '--color <WHEN>'\n  [possible values: auto, always, never]\n  help: try 'sb --help'\n",
+        "\n   ERROR \n\n  invalid value 'bad' for '--color <WHEN>'\n\n  [possible values: auto, always, never]\n  help: try 'sb --help'\n\n",
     ));
 }
 
@@ -75,6 +75,6 @@ fn a_parse_error_points_at_the_failing_commands_help() {
         .assert()
         .code(2)
         .stderr(predicate::eq(
-            "✗ unexpected argument '--bogus' found\n  help: try 'sb version --help'\n",
+            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n  help: try 'sb version --help'\n\n",
         ));
 }

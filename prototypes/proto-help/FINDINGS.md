@@ -98,7 +98,8 @@ would rewrite every message. `KindFormatter` prints the kind alone, losing
 the values and tips. sb therefore keeps clap's wording: it removes the
 usage context (`Error::remove(ContextKind::Usage)`, after reading the
 failing command's name from it), renders the error plain, and lays the
-message, tips and context lines out as sb's `✗` block. Tests built on
+message, tips and context lines out in sb-go's layout (an ERROR badge on
+the problem colour; the maintainer chose it over a `✗` block). Tests built on
 real clap errors pin each shape, so a clap update that changes one fails.
 
 ## Verdict
