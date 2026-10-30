@@ -112,7 +112,8 @@ fn never_means_no_escapes_in_parse_errors() {
 fn no_color_turns_help_colour_off_on_a_terminal() {
     let out = sb_on_a_terminal("--help", &[("NO_COLOR", "1")]);
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("Usage"));
+    // Help was printed: a flag both help formats list.
+    assert!(String::from_utf8_lossy(&out.stdout).contains("--color"));
     assert!(!has_escape(&out.stdout));
 }
 
