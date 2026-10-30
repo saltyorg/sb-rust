@@ -252,16 +252,17 @@ criteria.
   comes with the completion module.
 - [ ] Criterion 4: SIGINT 130 and SIGTERM 143 pass; nothing draws to the
   terminal yet, so the restore is checked when term-ui lands.
-- [ ] The `help` subcommand: the spec says "hidden", but sb-go removes it
-  (`SetHelpCommand` with an empty name: `sb help` is an unknown command);
-  maintainer to decide.
+- [x] The `help` subcommand: sb-go removes it; the maintainer chose to keep
+  clap's `help` listed (spec updated, 2026-10-30).
 - [x] Startup budget holds: `sb --help` and `sb version` median ≤ 10 ms (0.76 and 0.90 ms).
 
 **Verification:**
 - [x] `scripts/check.sh full`.
 - [ ] Manual: `sb --help`, `sb version`, Ctrl-C and `--color` on this host, shown to the maintainer.
-- [ ] Manual, with the maintainer's go-ahead: one root run against the real
-      `/var/log/sb` (created 0700, record written, pointer names the file).
+- [x] Manual, with the maintainer's go-ahead: root runs against the real
+      `/var/log/sb` (created root-owned 0700, record written; kept). A
+      failed root run (`sb version >/dev/full`) printed the pointer with
+      the real file and run id, and the log recorded the failure.
 
 **Dependencies:** Tasks 3, 6, 9
 **Files:** `crates/sb/src/{main.rs,contract.rs}`, `crates/sb/tests/fixtures/sb-go-command-tree.tsv`, `crates/cli-core/src/config.rs` (inventory read with saphyr)

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (maintainer, 2026-10-30, cli-core Checkpoint B)
+Accepted (maintainer, 2026-10-30, cli-core Checkpoint B); values superseded
+by [ADR-004](ADR-004-yaml-stack-binary-size.md)
 
 ## Date
 

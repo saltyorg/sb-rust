@@ -86,11 +86,13 @@ both files they read are readable without root.
    built-in theme is used, so a typo can't block `sb update`.
 7. **Run the command** with a cancellation token.
 
-**Command tree:** sb-go's names, subcommands and flags (decision 1). The
-`help` subcommand stays hidden, there is no generated `completion`
-subcommand (completion has its own module) and no `--version` flag
-(`version` is a command). `--color` is the one new global flag. A test
-compares the tree with sb-go's command list.
+**Command tree:** sb-go's names, subcommands and flags (decision 1). There
+is no generated `completion` subcommand (completion has its own module)
+and no `--version` flag (`version` is a command). Two deliberate
+extensions: `--color`, the one new global flag, and clap's `help`
+subcommand, listed in help (sb-go removes its help command; maintainer,
+2026-10-30, Checkpoint C). A test compares the tree with sb-go's command
+list (walked before clap adds `help`).
 
 **Cancellation:** the first SIGINT or SIGTERM cancels a token shared by
 every command; work stops at its next await or check, child processes are

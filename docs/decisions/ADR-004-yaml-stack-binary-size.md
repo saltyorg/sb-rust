@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (cli-core Checkpoint C)
+Accepted (maintainer, 2026-10-30, cli-core Checkpoint C)
 
 ## Date
 
