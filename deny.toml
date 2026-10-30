@@ -13,7 +13,12 @@ targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
 # graph. An ignore needs a CONSTRAINTS.md Exceptions row.
 unmaintained = "all"
 yanked = "deny"
-ignore = []
+ignore = [
+    # CONSTRAINTS.md exception E1: syntect (tui-markdown's code highlighting)
+    # needs these two; unmaintained, not vulnerable.
+    { id = "RUSTSEC-2025-0141", reason = "E1: bincode via syntect, reads only syntax dumps built into the binary" },
+    { id = "RUSTSEC-2024-0320", reason = "E1: yaml-rust via syntect, used only by syntect" },
+]
 
 [licenses]
 # Compatible with the project's GPL-3.0-only licence. Adding one needs a

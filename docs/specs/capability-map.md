@@ -270,8 +270,9 @@ sb-go has never enforced them. sb-rust will.
 - **Announcements and unmaintained crates:** `tui-markdown`'s default
   `highlight-code` feature pulls in `syntect`, which brings `bincode` and
   `yaml-rust`, both flagged unmaintained by RustSec (cargo-deny,
-  2026-10-30). The `tui` crate uses `tui-markdown` with
-  `default-features = false` (no syntax highlighting in announcement code
-  blocks) unless the maintainer prefers an Exceptions row.
+  2026-10-30). The maintainer kept YAML highlighting: CONSTRAINTS.md
+  exception E1, expiring 2027-01-28. Without it, `default-features =
+  false` drops syntect (checked in proto-markdown: tests pass, advisories
+  clean).
 - **Plain/JSON output** for scripted commands (`docker ps` and others): decide
   per command.

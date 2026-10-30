@@ -86,3 +86,4 @@ called out in review, and expires.
 
 | ID | Rule | Path | Reason | Owner | Expires |
 |---|---|---|---|---|---|
+| E1 | cargo-deny `unmaintained`: RUSTSEC-2025-0141 (bincode 1), RUSTSEC-2024-0320 (yaml-rust) | `deny.toml` `[advisories] ignore`; reached through `tui-markdown`'s default `highlight-code` feature (syntect 5.3.0) | YAML highlighting in announcements, chosen by the maintainer (2026-10-30). The crates are unmaintained, not vulnerable, and only read syntax data built into the binary. No other ratatui Markdown renderer has comparable adoption, and syntect's latest release still needs both. On expiry: check for a syntect or tui-markdown release without them, else decide again | saltydk | 2027-01-28 |
