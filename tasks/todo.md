@@ -19,13 +19,13 @@ Add the cargo-deny `wrappers` entry for `sb-cli-core` and record the first
 measurements in CONSTRAINTS.md's "Measured" table.
 
 **Acceptance criteria:**
-- [ ] `sb version` and `sb version --json` match sb-go's output shape.
-- [ ] `scripts/check.sh full` runs every step (none skipped) and passes.
-- [ ] Startup, binary size and project coverage are recorded in CONSTRAINTS.md.
+- [x] `sb version` and `sb version --json` match sb-go's output shape.
+- [x] `scripts/check.sh full` runs every step (none skipped) and passes.
+- [x] Startup, binary size and project coverage are recorded in CONSTRAINTS.md.
 
 **Verification:**
-- [ ] `cargo test -p sb -p sb-cli-core`; CLI tests with `assert_cmd`.
-- [ ] `scripts/check.sh full`.
+- [x] `cargo test -p sb -p sb-cli-core`; CLI tests with `assert_cmd`.
+- [x] `scripts/check.sh full`.
 
 **Dependencies:** None
 **Files:** `Cargo.toml`, `crates/cli-core/{Cargo.toml,src/lib.rs,src/build_info.rs}`, `crates/sb/{Cargo.toml,src/main.rs,tests/version.rs}`, `deny.toml`, `CONSTRAINTS.md`

@@ -51,7 +51,10 @@ allow-wildcard-paths = true
 # Architecture: one entry per crates/ crate, listing the crates allowed to
 # depend on it directly (`wrappers`), from the capability map's
 # "Depends on" column. Added with each crate.
-deny = []
+deny = [
+    # cli-core: every module builds on it; today only the binary uses it.
+    { crate = "sb-cli-core", wrappers = ["sb"] },
+]
 
 [sources]
 unknown-registry = "deny"

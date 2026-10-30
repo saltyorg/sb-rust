@@ -1,0 +1,20 @@
+[package]
+name = "sb"
+version = "0.1.0"
+description = "The Saltbox CLI"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sb-cli-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+
+[lints]
+workspace = true

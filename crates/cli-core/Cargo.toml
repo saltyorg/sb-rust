@@ -1,0 +1,16 @@
+[package]
+name = "sb-cli-core"
+version = "0.1.0"
+description = "How sb starts, runs a command and ends: the frame every sb-rust command runs in"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
