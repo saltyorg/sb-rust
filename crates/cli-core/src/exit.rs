@@ -9,11 +9,39 @@ use std::fmt::Write as _;
 use std::io::Write;
 pub use std::process::ExitCode;
 
+use crate::cancel::Shutdown;
+
 /// End the run with this exit code and print nothing more: a wrapped
 /// child's own code, or an error the command has already shown.
 #[derive(Debug, thiserror::Error)]
 #[error("exit code {0}")]
 pub struct Exit(pub u8);
+
+/// End a run: a signal shows "interrupted" (spec: a cancellation shows
+/// that rather than an error chain) and exits with its code; a command's
+/// own shutdown request exits quietly with its code; otherwise the result
+/// decides, through [`report`] for an error.
+pub fn finish_run(
+    shutdown: &Shutdown,
+    error: Option<&(dyn Error + 'static)>,
+    log_pointer: Option<&str>,
+    out: &mut impl Write,
+) -> ExitCode {
+    if let Some(code) = shutdown.requested() {
+        if shutdown.interrupted() {
+            let mut block = String::from("✗ interrupted\n");
+            if let Some(pointer) = log_pointer {
+                let _ = writeln!(block, "  details: {pointer}");
+            }
+            let _ = out.write_all(block.as_bytes());
+        }
+        return ExitCode::from(code);
+    }
+    match error {
+        None => ExitCode::SUCCESS,
+        Some(err) => report(err, log_pointer, out),
+    }
+}
 
 /// Print one error block (`✗` and the message, each cause on its own line,
 /// then the log pointer) and return 1, or return a requested [`Exit`] code
@@ -57,6 +85,7 @@ pub fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancel::Shutdown;
     use std::fmt;
 
     /// An error with an optional cause, like a module's typed error.
@@ -148,6 +177,70 @@ mod tests {
         let (text, code) = report_text(&err, None);
         assert_eq!(text, "");
         assert_eq!(code, ExitCode::from(141));
+    }
+
+    /// A signal ended the run: "interrupted" (and the log pointer), never
+    /// the command's own error chain, with the signal's code.
+    #[test]
+    fn an_interrupted_run_says_so_with_the_signal_code() {
+        let shutdown = Shutdown::new();
+        shutdown.signalled(signal_hook::consts::SIGINT);
+        let mut out = Vec::new();
+        let err = failure("operation cancelled");
+        let code = finish_run(
+            &shutdown,
+            Some(&err),
+            Some("/var/log/sb/x.log (run 1)"),
+            &mut out,
+        );
+        assert_eq!(code, ExitCode::from(130));
+        assert_eq!(
+            String::from_utf8(out).expect("utf-8"),
+            "✗ interrupted\n  details: /var/log/sb/x.log (run 1)\n"
+        );
+    }
+
+    /// Asking to end with 0 ends successfully and quietly.
+    #[test]
+    fn a_requested_shutdown_with_0_succeeds() {
+        let shutdown = Shutdown::new();
+        shutdown.request(0);
+        let mut out = Vec::new();
+        let err = failure("cancelled");
+        assert_eq!(
+            finish_run(&shutdown, Some(&err), None, &mut out),
+            ExitCode::from(0)
+        );
+        assert!(out.is_empty());
+    }
+
+    /// A command asked to end with its own code: quiet, with that code.
+    #[test]
+    fn a_requested_shutdown_is_quiet() {
+        let shutdown = Shutdown::new();
+        shutdown.request(3);
+        let mut out = Vec::new();
+        assert_eq!(
+            finish_run(&shutdown, None, None, &mut out),
+            ExitCode::from(3)
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_normal_run_ends_as_its_result_says() {
+        let shutdown = Shutdown::new();
+        let mut out = Vec::new();
+        assert_eq!(
+            finish_run(&shutdown, None, None, &mut out),
+            ExitCode::SUCCESS
+        );
+        let err = failure("boom");
+        assert_eq!(
+            finish_run(&shutdown, Some(&err), None, &mut out),
+            ExitCode::from(1)
+        );
+        assert_eq!(String::from_utf8(out).expect("utf-8"), "✗ boom\n");
     }
 
     /// A requested exit wrapped in context (as anyhow's `context` does)

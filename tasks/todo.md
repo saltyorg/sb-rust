@@ -59,13 +59,18 @@ SIGINT or SIGTERM cancels it; a second exits at once with the same code
 command can request shutdown with its own code.
 
 **Acceptance criteria:**
-- [ ] SIGINT exits 130 and SIGTERM 143; a second signal exits immediately.
-- [ ] An interrupted run shows "interrupted" and the terminal is restored.
-- [ ] Commands receive the token through the run context.
+- [x] SIGINT exits 130 and SIGTERM 143; a second signal exits immediately.
+- [x] An interrupted run shows "interrupted". Terminal restore moves to the
+      first command that changes the terminal (term-ui), where it can be
+      tested.
+- [x] Commands receive the shutdown handle (and its token).
 
 **Verification:**
-- [ ] One integration-test file per signal (own process); rexpect PTY smoke test on the built binary.
-- [ ] `scripts/check.sh task`; library-reviewer on the diff.
+- [x] Signal tests against a real process (the test binary re-runs itself
+      as the child). The rexpect PTY smoke test on the built binary moves to
+      the first long-running command: `sb version` ends before a signal can
+      reach it.
+- [x] `scripts/check.sh task`; library-reviewer on the diff.
 
 **Dependencies:** Task 2
 **Files:** `crates/cli-core/src/{cancel.rs,lib.rs}`, `crates/cli-core/tests/{sigint.rs,sigterm.rs}`, `crates/sb/tests/interrupt_pty.rs`

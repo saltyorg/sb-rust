@@ -5,6 +5,7 @@ use std::io::Write;
 
 use clap::{Parser, Subcommand};
 use sb_cli_core::build_info::BuildInfo;
+use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{self, ExitCode};
 
 /// Saltbox CLI
@@ -30,13 +31,16 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => exit::report(err.as_ref(), None, &mut std::io::stderr()),
-    }
+    let shutdown = Shutdown::new();
+    let result = shutdown
+        .listen_for_signals()
+        .map_err(anyhow::Error::from)
+        .and_then(|()| run(cli, &shutdown));
+    let error = result.as_ref().err().map(|e| e.as_ref() as _);
+    exit::finish_run(&shutdown, error, None, &mut std::io::stderr())
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {
     let info = BuildInfo::current();
     let mut out = std::io::stdout().lock();
     match cli.command {

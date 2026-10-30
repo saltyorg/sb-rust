@@ -2,4 +2,5 @@
 //! docs/specs/cli-core.md).
 
 pub mod build_info;
+pub mod cancel;
 pub mod exit;

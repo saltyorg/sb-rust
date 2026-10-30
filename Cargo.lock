@@ -3096,9 +3096,12 @@ name = "sb-cli-core"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "rustix",
  "serde",
  "serde_json",
+ "signal-hook 0.4.5",
  "thiserror 2.0.21",
+ "tokio-util",
 ]
 
 [[package]]
