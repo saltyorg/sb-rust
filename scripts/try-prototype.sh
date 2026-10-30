@@ -20,6 +20,7 @@ Usage: scripts/try-prototype.sh <prototype>
   runner       Task runner with spinners, live output and a failing step
   runner-gallery  Task runner output in eight formats, to compare (static)
   inline       docker ps table in sb-go's layout (plain, NO_COLOR, piped)
+  help         sb --help in six looks (Rust libraries, then sb-go's format copied)
   complete     Shell with dynamic tag completion loaded (bash)
 
 Each run builds the prototype (release mode) first. Nothing touches real Saltbox files.
@@ -156,6 +157,23 @@ case "${1:-}" in
       "tail, then (after the blank line) that step failing with its last output lines." \
       "Pick what you like, or mix: e.g. dot leaders with the tree's failure output."
     "$b" --gallery
+    ;;
+  help)
+    b="$(bin help)"
+    intro "sb --help in six looks, then the installed sb's own help" \
+      "1. clap's defaults (sb today)  2. clap Styles from sb's palette  3. cargo's look" \
+      "(clap-cargo + color-print)  4. clap template with sb-go's sections  5. clap-help" \
+      "(termimad tables, no subcommand support)  6. sb-go's format copied, in sb's palette." \
+      "5 and 6 also show 'install'. One look for one command, e.g.:" \
+      "  target/release/proto-help sb-go docker"
+    "$b"
+    if command -v sb >/dev/null; then
+      printf '\n\033[2m━━━━ the installed sb (%s) ━━━━\033[0m\n' "$(command -v sb)"
+      # SB_LOG_DIR keeps a root run out of /var/log/sb if this is ever sb-rust.
+      logdir="$(mktemp -d)"
+      trap 'rm -rf "$logdir"' EXIT
+      SB_LOG_DIR="$logdir" sb --help
+    fi
     ;;
   inline)
     b="$(bin inline)"

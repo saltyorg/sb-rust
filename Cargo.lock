@@ -419,6 +419,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap-cargo"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac0fb996b5acdd543c8b8ff723c719715d437fdce607ac1fda01c977f568020d"
+dependencies = [
+ "anstyle",
+ "clap",
+]
+
+[[package]]
+name = "clap-help"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2273621d9a264d51a6e8c1db392ded0462d6b8f02ec2ae2ffa7fc7943d1f6f3"
+dependencies = [
+ "clap",
+ "termimad",
+ "terminal-light",
+]
+
+[[package]]
 name = "clap_builder"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -467,6 +488,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "color-print"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3aa954171903797d5623e047d9ab69d91b493657917bdfb8c2c80ecaf9cdb6f4"
+dependencies = [
+ "color-print-proc-macro",
+]
+
+[[package]]
+name = "color-print-proc-macro"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "692186b5ebe54007e45a59aea47ece9eb4108e141326c304cdc91699a7118a22"
+dependencies = [
+ "nom 7.1.3",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2507,6 +2549,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "proto-help"
+version = "0.1.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap",
+ "clap-cargo",
+ "clap-help",
+ "color-print",
+ "sb-cli-core",
+]
+
+[[package]]
 name = "proto-inline"
 version = "0.1.0"
 dependencies = [
@@ -3693,6 +3748,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal-light"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23493cf1be461ed14d2c81bf1d39dcea17c8095d4f623b1a1292ea212f6b88ed"
+dependencies = [
+ "coolor",
+ "crossterm",
+ "thiserror 2.0.21",
+ "xterm-query",
+]
+
+[[package]]
 name = "terminfo"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4588,6 +4655,15 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
 version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
@@ -4694,6 +4770,17 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "xterm-query"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db3cad17d6cbdca6eaf31f1cc8c0b624cde2266261e8b5573c13081bd8a09eb5"
+dependencies = [
+ "nix 0.31.3",
+ "thiserror 2.0.21",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "yaml-rust"

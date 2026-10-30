@@ -27,6 +27,7 @@ Saltbox files.
 | `markdown` | Announcement rendered by tui-markdown (full-screen, then inline), then by termimad for comparison | `proto-markdown/fixtures/announcements.yml` | — |
 | `runner` | Spinners with a live output tail, a failing step, a Ctrl-C run, then piped output | Simulated steps; uses `ansible-playbook --version` if the Saltbox venv exists | — |
 | `inline` | `docker ps` style table (with and without `NO_COLOR`), then restore-style prompts | Your containers (read-only); prompts restore nothing | Docker |
+| `help` | `sb --help` in six looks: clap defaults, clap with sb's palette, cargo's look, a clap template with sb-go's sections, clap-help, and sb-go's format copied; then the installed sb's own help | sb-go 0.1.3's command tree (static) | — |
 | `complete` | A bash subshell with dynamic tag completion loaded | Static tag list | bash |
 
 ### Every picker state
