@@ -60,9 +60,9 @@ Recorded from the first `crates/` build; each must not get worse.
 
 | Metric | Today | Direction |
 |---|---|---|
-| Project coverage (`crates/`) | not measured yet | must not fall (0.5% tolerance) |
-| Production binary size | not measured yet | must not grow more than 5% in one change without a reason in the commit |
-| `sb --help` median | not measured yet | must not grow more than 1 ms in one change |
+| Project coverage (`crates/`) | not measured yet | must not fall; tolerance at most 0.5% |
+| Production binary size | not measured yet | must not grow; growth at most 5% per change without a reason in the commit |
+| `sb --help` median | not measured yet | must not grow; growth at most 1 ms per change |
 
 ## Tools
 
