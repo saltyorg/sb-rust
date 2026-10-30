@@ -105,6 +105,11 @@ impl Role {
         }
     }
 
+    /// The role with this theme-file name.
+    pub fn from_name(name: &str) -> Option<Role> {
+        Role::ALL.into_iter().find(|role| role.name() == name)
+    }
+
     fn index(self) -> usize {
         self as usize
     }
@@ -155,6 +160,16 @@ impl Palette {
     pub fn get(&self, role: Role) -> RgbColor {
         self.0[role.index()]
     }
+
+    /// Override one role (a theme file's `[theme.colors]`).
+    pub fn set(&mut self, role: Role, colour: RgbColor) {
+        self.0[role.index()] = colour;
+    }
+}
+
+/// The warning for an unknown `SB_COLOR_PROFILE`, naming what is `used`.
+fn unknown_profile(value: &str, used: &str) -> String {
+    format!("unknown SB_COLOR_PROFILE {value:?} (truecolor, ansi256, ansi, ascii); using {used}")
 }
 
 /// How many colours the terminal gets (sb-go's `SB_COLOR_PROFILE`).
@@ -169,19 +184,41 @@ pub enum Profile {
 impl Profile {
     /// sb-go's values; none or empty means truecolor; an unknown one means
     /// truecolor as in sb-go, and warns (sb-go is silent).
-    pub fn parse(value: Option<&str>) -> (Self, Option<String>) {
+    fn parse(value: Option<&str>) -> (Self, Option<String>) {
         match value {
             // sb-go reads an empty value as unset (main.go: `!= ""`).
-            None | Some("" | "truecolor") => (Profile::TrueColor, None),
-            Some("ansi256") => (Profile::Ansi256, None),
-            Some("ansi") => (Profile::Ansi, None),
-            Some("ascii") => (Profile::Ascii, None),
+            None | Some("") => (Profile::TrueColor, None),
+            Some(name) if let Some(profile) = Profile::from_name(name) => (profile, None),
             Some(other) => (
                 Profile::TrueColor,
-                Some(format!(
-                    "unknown SB_COLOR_PROFILE {other:?} (truecolor, ansi256, ansi, ascii); using truecolor"
-                )),
+                Some(unknown_profile(other, "truecolor")),
             ),
+        }
+    }
+
+    /// The run's profile from `SB_COLOR_PROFILE` (`env`) and the theme
+    /// file's (`file`): the environment wins (ADR-002); unset or empty, the
+    /// file's counts. An unknown value warns and the file's profile, else
+    /// truecolor, is used.
+    pub fn choose(env: Option<&str>, file: Option<Self>) -> (Self, Option<String>) {
+        match (env, file) {
+            (None | Some(""), Some(file)) => (file, None),
+            (Some(value), Some(file)) if Profile::from_name(value).is_none() => (
+                file,
+                Some(unknown_profile(value, "the theme file's profile")),
+            ),
+            _ => Profile::parse(env),
+        }
+    }
+
+    /// The profile with sb-go's name for it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "truecolor" => Some(Profile::TrueColor),
+            "ansi256" => Some(Profile::Ansi256),
+            "ansi" => Some(Profile::Ansi),
+            "ascii" => Some(Profile::Ascii),
+            _ => None,
         }
     }
 
@@ -267,6 +304,32 @@ mod tests {
             warning.as_deref(),
             Some(
                 "unknown SB_COLOR_PROFILE \"16bit\" (truecolor, ansi256, ansi, ascii); using truecolor"
+            )
+        );
+    }
+
+    /// With no file profile, the choice is the environment's alone.
+    #[test]
+    fn without_a_file_profile_the_environment_decides() {
+        for env in [None, Some(""), Some("ansi"), Some("16bit")] {
+            assert_eq!(Profile::choose(env, None), Profile::parse(env));
+        }
+    }
+
+    /// The environment beats the theme file (ADR-002); unset, empty or
+    /// unknown, the file's profile counts.
+    #[test]
+    fn the_environment_beats_the_file_unless_it_is_unusable() {
+        let file = Some(Profile::Ascii);
+        assert_eq!(Profile::choose(Some("ansi"), file), (Profile::Ansi, None));
+        assert_eq!(Profile::choose(None, file), (Profile::Ascii, None));
+        assert_eq!(Profile::choose(Some(""), file), (Profile::Ascii, None));
+        let (profile, warning) = Profile::choose(Some("16bit"), file);
+        assert_eq!(profile, Profile::Ascii);
+        assert_eq!(
+            warning.as_deref(),
+            Some(
+                "unknown SB_COLOR_PROFILE \"16bit\" (truecolor, ansi256, ansi, ascii); using the theme file's profile"
             )
         );
     }

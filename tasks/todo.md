@@ -165,8 +165,6 @@ Carried forward from the cli-core code review (2026-10-30):
 - sb-go also exports COLORTERM for child processes (truecolor, 256color,
   unset for ansi and ascii); sb-rust doesn't yet. Decide when the exec
   module starts children (ansible).
-- The colour-profile warning isn't written to the run log (it is shown in
-  the first, unprivileged run, before any log exists).
 - Check sudoers(5): a policy without `setenv` may refuse `--preserve-env`
   names outside env_keep (VISUAL and EDITOR carry the same risk); record
   the answer in docs/platform-notes/.
@@ -227,15 +225,15 @@ named built-in theme (`default`) plus per-role overrides, and an optional
 invalid warns (and logs) and falls back.
 
 **Acceptance criteria:**
-- [ ] A theme file changes the resolved palette; no file means the built-in theme.
-- [ ] An invalid file or unreadable inventory warns and falls back; a moved `server_appdata_path` is followed.
+- [x] A theme file changes the resolved palette; no file means the built-in theme.
+- [x] An invalid file or unreadable inventory warns and falls back; a moved `server_appdata_path` is followed.
 
 **Verification:**
-- [ ] Tests with temporary inventory and config files.
-- [ ] `scripts/check.sh task`.
+- [x] Tests with temporary inventory and config files.
+- [x] `scripts/check.sh task`.
 
 **Dependencies:** Task 8
-**Files:** `crates/cli-core/src/{config.rs,theme/mod.rs}`, `crates/cli-core/tests/theme_config.rs`
+**Files:** `crates/cli-core/src/{config.rs,theme.rs}`, `crates/sb/src/main.rs`, `crates/sb/tests/theme_config.rs`
 **Scope:** M
 
 ## Task 10: Startup wiring, contract test and success criteria

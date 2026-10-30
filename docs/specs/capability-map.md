@@ -165,6 +165,7 @@ GitHub API (last push, archived flag).
 | systemctl JSON output | `serde_json` | 1.0.154 / 2026-10 | 389M | parsing systemctl's human-readable columns | proto-logs |
 | Timestamps | `jiff` | 0.2.38 / 2026-10 | 98M | time | proto-logs |
 | Atomic file saves (facts, config) | `tempfile` (`NamedTempFile::persist`), keeping owner and mode | 3.27.0 / 2026-03 | 227M | os.CreateTemp + rename | proto-facts |
+| TOML (sb's own config) | `toml` (serde, parse only) | 1.1.8 / 2026-10 | 286M | viper/koanf config | cli-core (theme file) |
 | YAML, typed | `serde-saphyr` | 2.0.0 / 2026-10 | 10M | yaml.v3 | proto-yaml, proto-markdown |
 | YAML, schema-validated config | `saphyr` (`MarkedYaml`, positions, duplicate-key rejection) | 0.3.3 / 2026-10 | 1.1M | yaml.v3 nodes + custom duplicate-key walker | proto-yaml |
 | Schema `pattern` rules | `regex` | — | — | (not enforced by sb-go) | proto-yaml |

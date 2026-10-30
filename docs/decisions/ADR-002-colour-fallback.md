@@ -42,8 +42,9 @@ Facts checked at source (2026-10-30):
 1. **Default stays truecolor, forced**, as sb-go: no detection.
 2. **`SB_COLOR_PROFILE`** keeps sb-go's values: `truecolor`, `ansi256`,
    `ansi` (16 colours), `ascii` (no colour). An unknown value is a warning
-   and means `truecolor`, as in sb-go. The theme config may also set
-   `color_profile` with the same values; the environment variable wins.
+   and means `truecolor`, as in sb-go (see Amendments). The theme config
+   may also set `color_profile` with the same values; the environment
+   variable wins.
 3. **Conversion with `anstyle-lossy`, once at startup.** cli-core resolves
    every palette role for the chosen profile into an `anstyle::Color`
    (`Rgb`, `Ansi256` via `rgb_to_xterm`, or `Ansi` via `rgb_to_ansi`), and
@@ -87,3 +88,11 @@ Facts checked at source (2026-10-30):
   don't write 256 or 16-colour variants.
 - 16-colour output depends on the terminal's own palette, so roles can look
   different between terminals; that is accepted for a fallback.
+
+## Amendments
+
+- 2026-10-30, cli-core Task 9 (theme config): an unknown
+  `SB_COLOR_PROFILE` still warns, but falls back to the theme file's
+  `color_profile` when the file sets one, and to `truecolor` otherwise.
+  An unusable environment value shouldn't discard a valid choice in the
+  file; with no file profile this is decision 2 unchanged.

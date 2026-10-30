@@ -55,6 +55,31 @@ fn a_root_run_logs_its_command_and_outcome_but_no_arguments() {
     );
 }
 
+/// Startup warnings (here: an invalid theme file) reach the run log too
+/// (spec success criterion 8: "warns (and logs)").
+#[test]
+fn startup_warnings_reach_the_run_log() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[theme.colors]\nproblem = \"red\"\n").expect("write config");
+    let logs = dir.path().join("logs");
+    let out = common::sb()
+        .env("SB_LOG_DIR", &logs)
+        .env("SB_CONFIG", &config)
+        .arg("version")
+        .output()
+        .expect("run sb");
+    assert!(out.status.success());
+    let text = log_text(&logs);
+    assert!(
+        text.contains("WARN") && text.contains("isn't a #RRGGBB colour"),
+        "{text}"
+    );
+}
+
 /// A failed root run points at its log from the error block.
 #[test]
 fn a_failed_run_points_at_the_log() {

@@ -7,6 +7,7 @@
 pub mod build_info;
 pub mod cancel;
 pub mod colour;
+pub mod config;
 pub mod exit;
 pub mod log;
 pub mod root;

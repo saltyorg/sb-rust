@@ -24,10 +24,9 @@ per-command startup code.
 ### Behaviour
 
 **Startup order** (each step is one function, unit-testable on its own).
-The colour choice (step 5) and the colour profile are settled before step
-1, from the arguments and environment only, so every message follows
-`--color` and the profile; the theme file (step 6) is read after the
-relaunch.
+The colour choice (step 5) and the theme (step 6: the theme file, then the
+colour profile) are settled before step 1, so every message follows them;
+both files they read are readable without root.
 
 1. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
@@ -254,6 +253,21 @@ boundaries that callers match on.
   When it fails, a partial parse and then clap's lexer look for the flag;
   the lexer may then mistake another option's value for it, which only
   colours clap's exit-2 error. The real parse's choice is re-applied.
+- `SB_CONFIG` names the config file instead of
+  `<server_appdata_path>/sb/config.toml` (tests and debugging; sudo
+  doesn't pass it through, so a relaunched root run reads the real file,
+  and its log records that file's warnings). Startup warnings (theme
+  file, colour profile) show once, in the first run, and go to the run
+  log in the run that has one. Config and inventory are read up to 1 MiB;
+  config errors are one line with control characters escaped (the file is
+  group-writable). The real config is opened beneath
+  `<server_appdata_path>` with `openat2` (no symlinks, no mount crossing),
+  non-blocking and without taking a controlling terminal, and only a
+  regular file is read: a planted link, FIFO or device can't hang or
+  redirect a root run.
+- `SB_COLOR_PROFILE` beats the theme file's `color_profile` (ADR-002);
+  empty means unset, and an unknown value warns and falls back to the
+  file's profile, else truecolor. An empty `SB_CONFIG` is unset too.
 - `SB_LOG_DIR` stays in release builds. The log directory must belong to
   the user running sb (another user's could hold a planted
   `sb.<date>.log` link to a root file); an existing one that isn't

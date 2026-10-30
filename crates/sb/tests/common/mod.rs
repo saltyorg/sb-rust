@@ -16,5 +16,7 @@ pub fn test_log_dir() -> PathBuf {
 pub fn sb() -> std::process::Command {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("sb"));
     cmd.env("SB_LOG_DIR", test_log_dir());
+    // No test reads a real /opt/sb/config.toml; tests that want one set it.
+    cmd.env("SB_CONFIG", test_log_dir().join("no-such-config.toml"));
     cmd
 }

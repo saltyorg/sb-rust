@@ -72,7 +72,7 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 ### Phase 3: Colour and theme
 - [x] Task 7: `--color` on every output path, including help
 - [x] Task 8: Colour profiles (ADR-002)
-- [ ] Task 9: Theme config
+- [x] Task 9: Theme config
 
 ### Checkpoint C: Complete
 - [ ] Task 10: Startup wiring, contract test and success criteria
