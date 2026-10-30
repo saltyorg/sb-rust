@@ -16,6 +16,9 @@ shopt -s inherit_errexit
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+# Root runs of sb log; nothing run from here (tests, mutants, timing) may
+# reach the host's /var/log/sb. Tests set their own directories too.
+export SB_LOG_DIR="$root/target/test-logs"
 
 stage="${1:-}"
 base="${2:-HEAD}"
