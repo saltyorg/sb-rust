@@ -1,296 +1,219 @@
-# Tasks: Stack prototypes
+# Tasks: `cli-core`
 
-Plan: `tasks/plan.md`. Each prototype task ends with `prototypes/<name>/FINDINGS.md`
-in the format the plan defines.
+Plan: [tasks/plan.md](plan.md). Spec: [docs/specs/cli-core.md](../docs/specs/cli-core.md).
+Prototype tasks and their open items: [tasks/prototypes/todo.md](prototypes/todo.md).
 
-Every task also requires:
-`cargo build -p <name>` and `cargo clippy -p <name>` with no warnings.
+Every task follows CONSTRAINTS.md: test first, `scripts/check.sh fast`
+after edits, `task` before handing back, `full` before committing, a
+`Library-check:` line in each commit changing Rust, and the library-reviewer
+agent before committing terminal, process or I/O code.
 
-## Task 0: Workspace scaffold
+## Task 1: Workspace, `sb` binary and `sb version`
 
-**Description:** Create the Cargo workspace, the toolchain pin, and shared lint
-settings so prototypes build consistently.
+**Description:** Add `crates/*` to the workspace with `sb-cli-core`
+(library) and `sb` (binary). `sb version` prints
+`Saltbox CLI version: <v> (commit: <c>)`; `--json` prints
+`{"version","git_commit","uv_version"}`, as sb-go. Version from the package,
+commit and uv version set at build time (approach confirmed at source).
+Add the cargo-deny `wrappers` entry for `sb-cli-core` and record the first
+measurements in CONSTRAINTS.md's "Measured" table.
 
 **Acceptance criteria:**
-- [x] `Cargo.toml` workspace (resolver 3) with `prototypes/*` members and
-      workspace-level `[workspace.lints]`.
-- [x] `rust-toolchain.toml` pins 1.99.1 with the `x86_64-unknown-linux-musl` and
-      `aarch64-unknown-linux-musl` targets.
+- [ ] `sb version` and `sb version --json` match sb-go's output shape.
+- [ ] `scripts/check.sh full` runs every step (none skipped) and passes.
+- [ ] Startup, binary size and project coverage are recorded in CONSTRAINTS.md.
 
 **Verification:**
-- [x] `cargo metadata --no-deps` succeeds.
+- [ ] `cargo test -p sb -p sb-cli-core`; CLI tests with `assert_cmd`.
+- [ ] `scripts/check.sh full`.
 
 **Dependencies:** None
-**Files:** `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`
+**Files:** `Cargo.toml`, `crates/cli-core/{Cargo.toml,src/lib.rs,src/build_info.rs}`, `crates/sb/{Cargo.toml,src/main.rs,tests/version.rs}`, `deny.toml`, `CONSTRAINTS.md`
+**Scope:** M
+
+## Task 2: Exit codes and the error block
+
+**Description:** One exit-code policy (0, 1, a requested code, a passed-
+through child code; 130/143 come in Task 3) and one error block on stderr:
+`✗` and the message, each cause on its own line, then the log pointer when
+there is one. Errors already shown exit quietly.
+
+**Acceptance criteria:**
+- [ ] An error prints one block with its causes and exits 1.
+- [ ] A command can request its own exit code; a quiet error prints nothing more.
+- [ ] A parse error keeps clap's message and exit code.
+
+**Verification:**
+- [ ] Unit tests for formatting and the code mapping; CLI test for a parse error.
+- [ ] `scripts/check.sh task`.
+
+**Dependencies:** Task 1
+**Files:** `crates/cli-core/src/{exit.rs,error.rs,lib.rs}`, `crates/sb/src/main.rs`, `crates/sb/tests/errors.rs`
 **Scope:** S
 
-## Task 1: Static musl build (`proto-musl`)
+## Task 3: Cancellation on SIGINT and SIGTERM
 
-**Question:** Do clap, tokio, reqwest (rustls), bollard and portable-pty build
-into one static musl binary for both architectures, at an acceptable size and
-build time?
-
-**Acceptance criteria:**
-- [x] The binary makes an HTTPS GET, lists containers via bollard, and runs a
-      command under a PTY.
-- [x] It builds for x86_64 and aarch64 musl. `file` reports both as statically
-      linked.
-- [x] FINDINGS records release size (stripped), clean build time, and any
-      feature flags needed.
-
-**Verification:**
-- [x] The x86_64 binary runs on Ubuntu and does all three actions.
-- [x] The aarch64 build is checked under `cross` or `qemu`, or FINDINGS says
-      it wasn't run.
-
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-musl/{Cargo.toml,src/main.rs,FINDINGS.md}`
-**Scope:** S
-
-## Task 2: YAML on real config (`proto-yaml`)
-
-**Question:** Can serde-saphyr cover validate-config: typed load, duplicate-key
-rejection, and line/column errors, on the real Saltbox config files?
+**Description:** A `CancellationToken` reaches every command. The first
+SIGINT or SIGTERM cancels it; a second exits at once with the same code
+(130 or 143). Cancellation shows "interrupted", not an error chain. A
+command can request shutdown with its own code.
 
 **Acceptance criteria:**
-- [x] It loads the main Saltbox config files from a directory argument into
-      typed structs.
-- [x] Synthetic fixtures prove duplicate keys, wrong types, and missing
-      required keys each give an error with file, line and column.
-- [x] FINDINGS compares the error messages with sb-go's for the same fixtures.
+- [ ] SIGINT exits 130 and SIGTERM 143; a second signal exits immediately.
+- [ ] An interrupted run shows "interrupted" and the terminal is restored.
+- [ ] Commands receive the token through the run context.
 
 **Verification:**
-- [x] It runs clean against a real Saltbox config directory.
-- [x] Each synthetic fixture produces the expected error.
+- [ ] One integration-test file per signal (own process); rexpect PTY smoke test on the built binary.
+- [ ] `scripts/check.sh task`; library-reviewer on the diff.
 
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-yaml/{Cargo.toml,src/main.rs,fixtures/*.yml,FINDINGS.md}`
+**Dependencies:** Task 2
+**Files:** `crates/cli-core/src/{cancel.rs,lib.rs}`, `crates/cli-core/tests/{sigint.rs,sigterm.rs}`, `crates/sb/tests/interrupt_pty.rs`
 **Scope:** M
 
-## Task 3: Task runner and PTY (`proto-runner`)
+## Checkpoint A: Foundation
+- [ ] `scripts/check.sh full` passes; `sb version` works on this host.
+- [ ] Review with the maintainer before Phase 2.
 
-**Question:** Can indicatif and portable-pty reproduce sb-go's task runner:
-spinner per step, live child output under a PTY, a tail of output on failure,
-and clean Ctrl-C?
+## Task 4: Host support check hook (`sb-host`)
+
+**Description:** `cli-core` runs a startup hook before anything else.
+Start `crates/host` with only the OS release check: supported Ubuntu
+releases as sb-go's `layout` lists them, `/etc/os-release` parsed with a
+library if one fits (confirmed at source), sb-go's messages. Every command
+is blocked on an unsupported host, `--help` and `version` included.
 
 **Acceptance criteria:**
-- [x] It runs a sequence of steps, including an `ansible-playbook --version`
-      style command under a PTY, keeping colours.
-- [x] A failing step shows the last N output lines and a non-zero exit.
-- [x] Ctrl-C kills the child process group and restores the terminal.
-- [x] Output is sensible when piped (no spinner control codes).
+- [ ] On a supported host every command runs; otherwise each exits 1 with sb-go's message.
+- [ ] The check reads an injected path in tests; cargo-deny `wrappers` allow only `sb` to use `sb-host` for now.
 
 **Verification:**
-- [x] Manual runs on a TTY, piped to `cat`, and interrupted with Ctrl-C.
-- [x] Look and feel reviewed and marked done for now by the maintainer
-      (2026-10-29).
+- [ ] Unit tests with sample os-release files (supported, unsupported, not Ubuntu, missing).
+- [ ] `scripts/check.sh full`.
 
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-runner/{Cargo.toml,src/main.rs,FINDINGS.md}`
+**Dependencies:** Task 2
+**Files:** `crates/host/{Cargo.toml,src/lib.rs}`, `crates/cli-core/src/startup.rs`, `crates/sb/src/main.rs`, `deny.toml`
 **Scope:** M
 
-## Checkpoint A: after Tasks 1–3
-- [x] All three FINDINGS have a verdict.
-- [x] Review with the user before starting the screen prototypes.
+## Task 5: Root relaunch for commands that need it
 
-## Task 4: Fact editor, keyboard (`proto-facts`)
-
-**Question:** Do ratatui and ratatui-textarea give a good keyboard-driven fact
-editor on real facts data?
+**Description:** Each command declares `needs_root` (default yes). When
+needed and not root, exec `sudo --preserve-env=VISUAL,EDITOR <exe> <args>`;
+otherwise run as the user. sudo's own prompt handles passwords.
 
 **Acceptance criteria:**
-- [x] It reads facts from a path argument and shows role → instance → key/value
-      navigation.
-- [x] It edits a value inline, deletes a fact, and shows a pending-changes
-      summary. Writes go to a copy, never the live file.
-- [x] It handles resize and narrow terminals without panics.
+- [ ] `version`, `--help` and completion never relaunch; a root-needing command does, with the same arguments.
+- [ ] Exec replaces the process: the exit code and signals belong to the real run.
 
 **Verification:**
-- [x] Manual session against a copy of a real facts directory.
-- [x] The diff of the copy shows only the intended changes.
-
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-facts/{Cargo.toml,src/main.rs,src/model.rs,FINDINGS.md}`
-**Scope:** M
-
-## Task 5: Fact editor, mouse (`proto-facts`)
-
-**Question:** Can crossterm mouse events mapped to ratatui layout areas
-replace sb-go's hand-written hit-map, without owning ANSI or width code?
-
-**Acceptance criteria:**
-- [x] Clicking selects rows and focuses the editor, and the scroll wheel
-      scrolls lists.
-- [x] Click targets stay correct after resize and with wide (CJK/emoji)
-      values.
-- [x] FINDINGS lists any gap that needs custom code and how big it is.
-
-**Verification:**
-- [ ] Manual mouse session in at least two terminal emulators, named in
-      FINDINGS.
-
-- [x] Look and feel reviewed by the maintainer (2026-10-29); the
-      two-emulator manual check above is still open.
+- [ ] Unit tests for the decision; integration test with a fake `sudo` on `PATH` (records arguments, exits 7) through a test-only root-needing command compiled only in tests.
+- [ ] `scripts/check.sh task`; library-reviewer on the diff.
 
 **Dependencies:** Task 4
-**Files:** `prototypes/proto-facts/src/{main.rs,model.rs}`, `FINDINGS.md`
+**Files:** `crates/cli-core/src/{root.rs,command.rs}`, `crates/cli-core/tests/relaunch.rs`
 **Scope:** S
 
-## Task 6: Log viewer streaming (`proto-logs`)
+## Task 6: Run log on the host
 
-**Question:** Can bollard log streams and `journalctl -f` output feed a
-ratatui viewer with follow, scroll, and search, without blocking input?
+**Description:** Root runs log to `/var/log/sb` (directory injectable for
+tests), rotated daily by tracing-appender (`max_log_files`), with a run
+span carrying the run id and arguments, each event plain text, and the
+outcome at the end. Unprivileged runs don't log. A log that can't be
+opened is a warning. The error block's pointer names the log and run id.
 
 **Acceptance criteria:**
-- [x] It picks a running container or a Saltbox systemd service, then streams
-      its logs.
-- [x] Follow mode toggles, scrolling back works, and `/` search highlights
-      matches.
-- [x] Switching the source mid-stream cancels the old stream cleanly.
-- [x] FINDINGS compares this with a simpler inline design (picker, then plain
-      streamed output).
+- [ ] A root run writes its start, events and outcome; failures point at the log.
+- [ ] A test feeds a known secret through the logging path and asserts it never appears (CONSTRAINTS.md, Logging).
+- [ ] Unwritable log directory: a warning and the run continues.
 
 **Verification:**
-- [x] Manual session against a running container and a Saltbox service.
-- [x] Look and feel reviewed and verified by the maintainer (2026-10-29).
+- [ ] Tests against a temporary directory; `SB_TEST_ROOT=1` test for the real path.
+- [ ] `scripts/check.sh task`; library-reviewer on the diff.
 
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-logs/{Cargo.toml,src/main.rs,src/sources.rs,src/theme.rs,FINDINGS.md}`
+**Dependencies:** Task 5
+**Files:** `crates/cli-core/src/{log.rs,error.rs}`, `crates/cli-core/tests/run_log.rs`
 **Scope:** M
 
-## Task 7: Announcements markdown (`proto-markdown`)
+## Checkpoint B: Startup
+- [ ] `scripts/check.sh full` passes.
+- [ ] Review with the maintainer before Phase 3.
 
-**Question:** Do tui-markdown or termimad render Saltbox announcements well
-enough to replace glamour?
+## Task 7: `--color` on every output path, including help
+
+**Description:** `colorchoice-clap` flag; `always`/`never` passed on to
+anstream, console and crossterm; clap's help follows it (`Command::color`).
+`auto` honours NO_COLOR and terminal detection.
 
 **Acceptance criteria:**
-- [x] It renders a real announcements file with each crate, inline and in a
-      scrollable view.
-- [x] Headings, lists, code, links and emphasis are compared side by side in
-      FINDINGS.
+- [ ] `--color=never` gives no escape codes anywhere, help included; `--color=always` colours piped output.
+- [ ] `NO_COLOR` turns colour off unless `--color=always`.
 
 **Verification:**
-- [x] Manual review at 80 columns and at a wide width.
+- [ ] CLI tests piped and in a PTY.
+- [ ] `scripts/check.sh task`.
 
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-markdown/{Cargo.toml,src/main.rs,FINDINGS.md}`
-
-- [x] Look and feel reviewed and marked ready by the maintainer (2026-10-29).
+**Dependencies:** Task 2
+**Files:** `crates/cli-core/src/{colour.rs,lib.rs}`, `crates/sb/tests/colour.rs`
 **Scope:** S
 
-## Checkpoint B: after Tasks 4–7
-- [x] All screen FINDINGS have a verdict and a proposed screen design.
-- [x] Review with the user.
+## Task 8: Colour profiles (ADR-002)
 
-## Task 8: Inline output kit (`proto-inline`)
-
-**Question:** Do comfy-table, anstyle and dialoguer give the non-TUI look for
-`docker ps`-style tables and restore-style prompts, on a TTY and when piped?
-
-**Acceptance criteria:**
-- [x] Renders a docker ps table from live bollard data, with colours, and
-      adapts to terminal width.
-- [x] Shows username and password prompts with validation, plus a confirm
-      prompt.
-- [x] When piped or with `NO_COLOR` set, output is plain, and prompts fail
-      clearly without a TTY.
-
-**Verification:**
-- [x] Manual runs on a TTY, piped, and with `NO_COLOR=1`.
-- [x] Look and feel of the `docker ps` table reviewed by the maintainer
-      (2026-10-29): liked. The table follows sb-go's `docker ps` on tabled.
-      Theme configuration for the real CLI is noted in the capability map.
-- Deferred: the restore prompts. The restore backend is being rewritten,
-  so its CLI takes shape after that work.
-
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-inline/{Cargo.toml,src/main.rs,FINDINGS.md}`
-**Scope:** S
-
-## Task 9: Dynamic completions (`proto-complete`)
-
-**Question:** Can clap_complete's runtime completion supply Ansible tags
-dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
+**Description:** Move the palette into `sb-cli-core::theme` as role names.
+`SB_COLOR_PROFILE` (`truecolor`, `ansi256`, `ansi`, `ascii`; unknown warns
+and means truecolor) resolves every role once with anstyle-lossy into an
+`anstyle::Color`, with adapters for ratatui (ratatui-core `anstyle`),
+console, tabled and anstream.
 
 **Acceptance criteria:**
-- [x] `install <TAB>` completes tags from a tag source (a static list in the
-      prototype).
-- [ ] It works in bash, zsh and fish, with the install steps recorded.
-- [x] FINDINGS notes the API's stability status (unstable feature flags, if
-      any).
+- [ ] Each profile's output uses only its kind of colour code (guard tests per profile).
+- [ ] Nothing outside the resolver converts colours.
 
 **Verification:**
-- [x] Manual completion in each shell, or one tested with `rexpect`.
+- [ ] Profile guard tests; `scripts/check.sh task`; library-reviewer on the diff.
 
-**Dependencies:** Task 0
-**Files:** `prototypes/proto-complete/{Cargo.toml,src/main.rs,FINDINGS.md}`
-**Scope:** S
+**Dependencies:** Task 7
+**Files:** `crates/cli-core/src/theme/{mod.rs,palette.rs,profile.rs}`, `crates/cli-core/Cargo.toml`
+**Scope:** M
 
-## Task 10: Update the capability map from the findings
+## Task 9: Theme config
+
+**Description:** Read `<server_appdata_path>/sb/config.toml`
+(`server_appdata_path` from the Saltbox inventory, `/opt` by default): a
+named built-in theme (`default`) plus per-role overrides, and an optional
+`color_profile` (the environment variable wins). Missing means built-in;
+invalid warns (and logs) and falls back.
 
 **Acceptance criteria:**
-- [x] The stack table reflects every verdict, with rejected crates moved to
-      "Rejected" with reasons.
-- [x] Module boundaries are adjusted where findings require it.
-- [x] The status line changes to "ready for approval".
+- [ ] A theme file changes the resolved palette; no file means the built-in theme.
+- [ ] An invalid file or unreadable inventory warns and falls back; a moved `server_appdata_path` is followed.
 
 **Verification:**
-- [x] Every FINDINGS verdict traces to a map change, or to an explicit "no
-      change".
+- [ ] Tests with temporary inventory and config files.
+- [ ] `scripts/check.sh task`.
 
-**Dependencies:** Tasks 1–9
-**Files:** `docs/specs/capability-map.md`
-**Scope:** XS
+**Dependencies:** Task 8
+**Files:** `crates/cli-core/src/{config.rs,theme/mod.rs}`, `crates/cli-core/tests/theme_config.rs`
+**Scope:** M
 
-## Checkpoint C
-- [x] User approves the updated map (2026-10-29), with proto-complete's
-      review carried as an open item. Module specs start with `cli-core`.
+## Task 10: Startup wiring, contract test and success criteria
 
-## Later: Install script lives in this repository
-
-Not part of the prototype plan; recorded so it isn't lost. To be specified
-once cli-core and the runner module exist.
-
-**Why:** today's installer (`sb_install.sh` in the `sb` repository) captures
-`sb setup`'s output in a shell variable when not verbose. sb then sees no
-terminal, so the user gets no progress and no colour, only a dump of the
-captured text if setup fails. sb-rust draws its own progress and keeps a
-failed step's last lines, so the installer should stop capturing.
-
-**How it must work** (documented usage, step 1 of
-https://docs.saltbox.dev/saltbox/install/install/#step-1-dependencies):
-- Run as root via `curl -sL https://install.saltbox.dev | sudo -H bash`, or
-  the `wget -qO-` equivalent, then `&& cd /srv/git/saltbox` on success.
-- Verbose via `bash -s -- -v` (`-v`), for both curl and wget.
-
-**Design latitude (maintainer, 2026-10-29):** we own both the script and
-sb, so sb may gain flags that let the script state what it wants instead of
-sb guessing from its environment. Use them only where they remove a guess.
-Candidates to weigh in the spec, not decisions:
-- an explicit non-interactive mode (fail instead of prompting);
-- `--color` set from the script's own terminal check;
-- distinct exit codes, or a final summary line the script can rely on.
+**Description:** `sb` runs the steps in the spec's order with one call into
+`cli-core`. A contract test compares sb-rust's commands and flags with
+sb-go's (every sb-rust name exists in sb-go). Walk the spec's success
+criteria.
 
 **Acceptance criteria:**
-- [ ] The script lives in sb-rust, replacing `sb_install.sh` in the `sb`
-      repository. Publishing it at install.saltbox.dev is a separate,
-      explicitly authorised step.
-- [ ] Both documented forms work, with and without `-v`, and exit non-zero
-      on failure so `&& cd /srv/git/saltbox` only runs after success.
-- [ ] `sb setup` runs attached to the terminal, never captured, so sb draws
-      its own progress and failure output. Without `-v` sb shows its normal
-      tree; `-v` gets sb's verbose output.
-- [ ] Nothing reads stdin. Under `curl … | bash`, stdin is the script itself:
-      a read would swallow the rest of it. Any prompt uses `/dev/tty` or is
-      avoided.
-- [ ] With no terminal (CI, output redirected to a log), sb's own detection
-      gives plain output, and no `--color` flag is needed.
+- [ ] Spec success criteria 1, 2, 4, 5, 6 (with `SB_TEST_ROOT=1`), 7, 8 and 9 pass; 3 is covered by Task 5's test until a root command exists.
+- [ ] Startup budget holds: `sb --help` and `sb version` median ≤ 10 ms.
 
 **Verification:**
-- [ ] Each documented command run against a test server (one at a time,
-      endpoint from environment variables), with and without `-v`, plus a
-      forced failure to check the exit code and failure output.
+- [ ] `scripts/check.sh full`.
+- [ ] Manual: `sb --help`, `sb version`, Ctrl-C and `--color` on this host, shown to the maintainer.
 
-**Dependencies:** cli-core, runner module
-**Files:** a new install script in this repository (path decided in the spec)
-**Scope:** S
+**Dependencies:** Tasks 3, 6, 9
+**Files:** `crates/sb/src/main.rs`, `crates/cli-core/src/startup.rs`, `crates/sb/tests/contract.rs`
+**Scope:** M
+
+## Checkpoint C: Complete
+- [ ] All tasks done; `scripts/check.sh full` passes.
+- [ ] Spec success criteria met; the maintainer reviews `sb --help`, `sb version` and Ctrl-C.

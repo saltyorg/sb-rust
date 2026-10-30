@@ -1,91 +1,92 @@
-# Implementation Plan: Stack prototypes
+# Implementation Plan: `cli-core`
+
+Spec: [docs/specs/cli-core.md](../docs/specs/cli-core.md) (approved
+2026-10-29, revised 2026-10-30). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
+Decisions: [ADR-001](../docs/decisions/ADR-001-unstable-feature-pins.md),
+[ADR-002](../docs/decisions/ADR-002-colour-fallback.md). The prototype plan,
+with its open items, is in [tasks/prototypes/](prototypes/plan.md).
 
 ## Overview
 
-Before any module spec is locked, build eight throwaway prototypes. Each one
-answers a single question about the proposed stack in
-`docs/specs/capability-map.md`. Every prototype ends with a `FINDINGS.md`
-verdict, and the verdicts update the capability map. Module specs come after.
+Build the frame every sb-rust command runs in: the `crates/` workspace, the
+`sb` binary with `sb version`, and in `sb-cli-core` the startup steps (host
+check hook, argument parsing, root relaunch only for commands that need it,
+logging, colour, theme), cancellation, exit codes and error presentation.
+When this is done, the first vertical slice's other commands
+(`sb docker ps`, `sb validate-config`) need no startup code of their own.
 
-## Architecture Decisions
+## Architecture decisions
 
-- **Layout:** one Cargo workspace. Each prototype is a member crate under
-  `prototypes/<name>/` with a `FINDINGS.md` next to its `Cargo.toml`.
-- **Throwaway code:** prototype code is never promoted into modules. Modules
-  are rewritten from the findings. This keeps the quality bar of real modules
-  separate from spike speed.
-- **Prototype bar:** builds with `cargo build`, and `cargo clippy` is clean
-  under default lints. `#[allow]` stays forbidden (use
-  `#[expect(..., reason)]`). No test-coverage requirement. `CONSTRAINTS.md` is
-  written after the prototypes and before the first module code, as
-  `CLAUDE.md` requires.
-- **Real data:** prototypes may read the live Saltbox config, facts, and
-  Docker/systemd at runtime, taking paths as arguments. Committed fixtures are
-  synthetic only (public-repo rules).
-- **Toolchain:** `rust-toolchain.toml` pins the stable release
-  (1.99.1), edition 2024, with the x86_64 and aarch64 musl targets.
+- **Crates:** `crates/cli-core` (package `sb-cli-core`, a library) and
+  `crates/sb` (package `sb`, the binary). One crate per map module, named
+  `sb-<module-id>`. cargo-deny's `bans.deny` + `wrappers` enforce the map's
+  edges from the first crate (CONSTRAINTS.md, Architecture).
+- **Host check without a dependency cycle:** `cli-core` takes the host
+  support check as a startup hook. A small `crates/host` (package
+  `sb-host`) is started now with only the OS release check (it needs
+  neither `exec` nor `term-ui` yet); the rest of `host` comes in its own
+  module spec. `sb` passes `sb_host::check_support` to `cli-core`.
+- **Root decision per command:** each command declares whether it needs
+  root; the default is yes. `--help`, `version` and completion don't.
+  Every cli-core command is unprivileged, so the relaunch is tested through
+  its decision and exec functions here and end to end with the first root
+  command (`sb docker ps`).
+- **Command tree grows with the modules:** cli-core adds only `version`
+  and the hidden `help`. The contract test checks that every sb-rust
+  command and flag exists in sb-go with the same name; full equality is the
+  `ops` module's done criterion.
+- **Palette in cli-core:** the role-named palette (from proto-theme) moves
+  into `sb-cli-core::theme`, resolved once at startup for the colour
+  profile (ADR-002) and the theme config. Screens and inline output take
+  colours from it.
+- **Libraries are confirmed at source in their task** (CLAUDE.md, library
+  first) and cited in code: clap, colorchoice-clap, tokio and
+  `tokio-util`'s `CancellationToken`, tracing + tracing-subscriber +
+  tracing-appender, rustix, `toml` + serde, the YAML parser proto-yaml
+  chose for the inventory, anstyle-lossy, ratatui-core's `anstyle`
+  feature. Each new crate passes cargo-deny before it lands.
+- **Testability:** each startup step is a function taking its inputs
+  (environment, paths, euid) rather than reading globals, so unit tests
+  need no root, no real `/var/log/sb` and no real `/opt/sb`. Tests that
+  need root run only when `SB_TEST_ROOT=1`.
 
-## FINDINGS.md format
+## Task list
 
-```markdown
-# Prototype: <name>
-**Question:** <the one question>
-**Crates tried:** <crate@version, ...>
-**What was built:** <1–3 sentences>
-**Result:** <observations, numbers, screenshots described in text>
-**Verdict:** adopt | adopt with changes | reject → <alternative>
-**Map impact:** <stack-table or module changes to make>
-```
+Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 
-## Task List
+### Phase 1: Foundation
+- [ ] Task 1: Workspace, `sb` binary and `sb version`
+- [ ] Task 2: Exit codes and the error block
+- [ ] Task 3: Cancellation on SIGINT and SIGTERM
 
-See `tasks/todo.md` for acceptance criteria and verification for each task.
+### Checkpoint A: Foundation
 
-### Phase 0: Foundation
-- [x] Task 0: Workspace scaffold
+### Phase 2: Startup
+- [ ] Task 4: Host support check hook (`sb-host`)
+- [ ] Task 5: Root relaunch for commands that need it
+- [ ] Task 6: Run log on the host
 
-### Phase 1: Highest-risk plumbing
-- [x] Task 1: Static musl build
-- [x] Task 2: YAML on real config
-- [x] Task 3: Task runner and PTY
+### Checkpoint B: Startup
 
-### Checkpoint A: plumbing verdicts reviewed
+### Phase 3: Colour and theme
+- [ ] Task 7: `--color` on every output path, including help
+- [ ] Task 8: Colour profiles (ADR-002)
+- [ ] Task 9: Theme config
 
-### Phase 2: Interactive screens
-- [x] Task 4: Fact editor, keyboard
-- [x] Task 5: Fact editor, mouse
-- [x] Task 6: Log viewer streaming
-- [x] Task 7: Announcements markdown
+### Checkpoint C: Complete
+- [ ] Task 10: Startup wiring, contract test and success criteria
 
-### Checkpoint B: screen verdicts reviewed
-
-### Phase 3: Remaining surface
-- [x] Task 8: Inline output kit
-- [x] Task 9: Dynamic completions
-- [x] Task 10: Update the capability map from the findings
-
-### Checkpoint C: map ready for approval
-
-## Parallelization
-
-After Task 0, Tasks 1–9 are independent of each other, apart from Task 5
-building on Task 4. They can run in parallel worktrees if you want that.
-Otherwise run them in the listed order, which goes riskiest first.
-
-## Risks and Mitigations
+## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| A prototype reads real config containing secrets and output leaks into FINDINGS.md | High | Findings describe behaviour only. No raw output is pasted. |
-| musl static build breaks with a chosen crate (e.g. TLS or PTY) | High | Task 1 goes first and includes reqwest, bollard and portable-pty. |
-| ratatui-textarea or mouse handling is too limited for the fact editor | Med | Task 5 records exactly what is missing. A fallback is tui-input or a custom widget on ratatui primitives, without hand-rolled ANSI. |
-| Prototypes drift into real implementation | Med | Each one answers its one question and stops. Code is never promoted. |
+| The 10 ms startup budget breaks once tokio, config and YAML reads land | Med | Measure from Task 1 (`check.sh task`); read the inventory and theme only when needed for the run, and build the tokio runtime after argument parsing |
+| Signal tests interfere with the test harness | Med | One signal test per integration-test file (each is its own process); PTY smoke test with rexpect against the built binary |
+| Root relaunch can't run end to end in cli-core (no root command yet) | Low | Unit-test the decision and exec construction with a fake `sudo` on `PATH`; end-to-end with `sb docker ps` |
+| Exact pins (ADR-001) clash with other crates' requirements | Low | cargo-deny duplicates warn; resolve when it happens, recorded in the pin's commit |
+| `/opt/sb` and `/var/log/sb` touched on this host by tests | High | Paths are injected; default-path tests run only with `SB_TEST_ROOT=1`, never by default (spec boundaries) |
 
-## Open Questions
+## Open questions
 
-- None blocking. Decisions made while prototyping go in each FINDINGS.md and
-  then into the map.
-- **Colour fallback:** truecolor is the default (capability map, decision 10).
-  The `SB_COLOR_PROFILE` and `NO_COLOR` fallback is planned through
-  `anstyle-query` and `anstyle-lossy` (or `termprofile`). It gets built, with
-  an ADR, in the `term-ui`/`tui` module work, not in the prototypes.
+None. Library choices are confirmed in their tasks; anything that changes
+the spec goes back to the maintainer first.

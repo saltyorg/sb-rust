@@ -85,7 +85,7 @@ Rust libraries in place of sb-go's internals.
     console's NO_COLOR and CLICOLOR rules). A `--color=auto|always|never` flag (clap's
     `ColorChoice`, the git/ls/cargo convention) forces it either way.
     The install script will run `sb setup` attached to the terminal instead
-    (tasks/todo.md), so it needs no flag; `--color` stays as a general
+    (tasks/prototypes/todo.md), so it needs no flag; `--color` stays as a general
     override. Proved in proto-runner and proto-inline; the flag itself is
     `colorchoice-clap` (anstream's clap mixin), which sets anstream's
     choice, and cli-core passes `always`/`never` on to console and to
@@ -256,7 +256,7 @@ sb-go has never enforced them. sb-rust will.
   The config format and where it lives go in the cli-core spec, alongside
   the colour fallback (decision 10).
 - **Install script:** moves into this repository and runs `sb setup`
-  attached to the terminal instead of capturing it (tasks/todo.md, "Later:
+  attached to the terminal instead of capturing it (tasks/prototypes/todo.md, "Later:
   Install script lives in this repository").
 - **Shell completion:** proto-complete's look and feel is not yet reviewed
   by the maintainer; review it before the `completion` module spec. fish
