@@ -4,7 +4,8 @@
 //! `SB_DISABLE_SELF_UPDATE` in the build environment, as sb-go's release
 //! sets them with `-ldflags -X`. `option_env!` reads them at compile time,
 //! and rustc records them in its dep-info, so Cargo rebuilds when they
-//! change (https://doc.rust-lang.org/std/macro.option_env.html). Why not
+//! change (https://doc.rust-lang.org/std/macro.option_env.html). Any of
+//! them exported in a developer's shell is baked in the same way. Why not
 //! vergen or built: they work the commit out in build.rs, while here the
 //! release injects the values, as sb-go's ldflags do.
 
@@ -33,9 +34,12 @@ struct VersionJson<'a> {
 }
 
 impl BuildInfo {
-    /// This binary's build information.
-    pub fn current() -> Self {
+    /// The binary's build information. `package_version` is the binary's
+    /// own `env!("CARGO_PKG_VERSION")`: expanded here it would be this
+    /// library's version.
+    pub fn current(package_version: &str) -> Self {
         Self::from_env(
+            package_version,
             option_env!("SB_VERSION"),
             option_env!("SB_GIT_COMMIT"),
             option_env!("SB_DISABLE_SELF_UPDATE"),
@@ -43,14 +47,15 @@ impl BuildInfo {
     }
 
     /// Build information from the release variables, falling back to the
-    /// package version and an empty commit, as sb-go's raw builds.
+    /// binary's package version and an empty commit, as sb-go's raw builds.
     pub fn from_env(
+        package_version: &str,
         version: Option<&str>,
         git_commit: Option<&str>,
         disable_self_update: Option<&str>,
     ) -> Self {
         Self {
-            version: version.unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
+            version: version.unwrap_or(package_version).to_string(),
             git_commit: git_commit.unwrap_or_default().to_string(),
             uv_version: UV_VERSION.to_string(),
             self_update_disabled: disable_self_update == Some("true"),
@@ -117,16 +122,24 @@ mod tests {
     /// in sb-go's raw builds.
     #[test]
     fn current_falls_back_to_package_values() {
-        let current = BuildInfo::from_env(None, None, None);
+        let current = BuildInfo::from_env(env!("CARGO_PKG_VERSION"), None, None, None);
         assert_eq!(current.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(current.git_commit, "");
         assert_eq!(current.uv_version, UV_VERSION);
         assert!(!current.self_update_disabled);
     }
 
+    /// The fallback is the version the caller passes: the binary's own
+    /// package version, not this library's.
+    #[test]
+    fn the_fallback_is_the_binary_package_version() {
+        let current = BuildInfo::from_env("9.8.7", None, None, None);
+        assert_eq!(current.version, "9.8.7");
+    }
+
     #[test]
     fn release_variables_override_the_defaults() {
-        let current = BuildInfo::from_env(Some("3.0.0"), Some("abc1234"), Some("true"));
+        let current = BuildInfo::from_env("0.1.0", Some("3.0.0"), Some("abc1234"), Some("true"));
         assert_eq!(current.version, "3.0.0");
         assert_eq!(current.git_commit, "abc1234");
         assert!(current.self_update_disabled);
@@ -138,7 +151,7 @@ mod tests {
     fn only_true_disables_self_update() {
         for value in ["1", "yes", "TRUE", ""] {
             assert!(
-                !BuildInfo::from_env(None, None, Some(value)).self_update_disabled,
+                !BuildInfo::from_env("0.1.0", None, None, Some(value)).self_update_disabled,
                 "{value}"
             );
         }

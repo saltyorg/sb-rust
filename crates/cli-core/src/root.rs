@@ -12,6 +12,9 @@
 //! other than root (a sudoers rule with another run-as user), the marked
 //! run stops with an error instead of relaunching again: each relaunch is
 //! a new sudo process, so the loop piles them up. sb-go has no such guard.
+//! The marker stays set for the whole root run; the exec module must remove
+//! it from child processes (`env_remove`), or an unprivileged sb started by
+//! one would refuse to relaunch.
 //! Why not the `sudo` crate: it hardcodes /usr/bin/sudo, spawns rather than
 //! execs and can't pass `--preserve-env`.
 

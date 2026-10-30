@@ -15,6 +15,32 @@ const CHILD: &str = "SB_SIGNAL_CHILD";
 
 type Lines = std::io::Lines<BufReader<ChildStdout>>;
 
+/// The child, killed if a test fails before it exits (otherwise it would
+/// linger for up to 40 seconds). std's `Child` has no `Drop`; why not
+/// tokio's `Command::kill_on_drop`: async-only, and this test drives a std
+/// `Child` synchronously.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for KillOnDrop {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
 /// In the child: listen for signals, say so, wait for cancellation, report
 /// it, then stay busy (as if cleaning up) for longer than any test waits.
 fn child_main() {
@@ -36,13 +62,17 @@ fn child_main() {
     std::thread::sleep(Duration::from_secs(20));
 }
 
-fn spawn(test: &str) -> (Child, Lines) {
-    let mut child = Command::new(std::env::current_exe().expect("test binary"))
-        .args([test, "--exact", "--nocapture", "--test-threads=1"])
-        .env(CHILD, "1")
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn child");
+fn spawn(test: &str) -> (KillOnDrop, Lines) {
+    // Guarded from the start, so a failure while waiting for "ready" kills
+    // it too.
+    let mut child = KillOnDrop(
+        Command::new(std::env::current_exe().expect("test binary"))
+            .args([test, "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn child"),
+    );
     let mut lines = BufReader::new(child.stdout.take().expect("stdout")).lines();
     // libtest prints "test <name> ... " (no newline) before the child's own
     // output, so "ready" ends a line rather than being one.

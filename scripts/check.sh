@@ -19,6 +19,11 @@ cd "$root"
 # Root runs of sb log; nothing run from here (tests, mutants, timing) may
 # reach the host's /var/log/sb. Tests set their own directories too.
 export SB_LOG_DIR="$root/target/test-logs"
+# Run the tests that need root (namespaces, switching users) when we are
+# root; they never touch the host (cli-core spec, Testing strategy).
+if [[ "$(id -u)" == 0 ]]; then
+  export SB_TEST_ROOT=1
+fi
 
 stage="${1:-}"
 base="${2:-HEAD}"

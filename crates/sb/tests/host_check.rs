@@ -4,27 +4,28 @@
 //! The host's `/etc/os-release` is never touched: each run happens in a
 //! private mount namespace (`unshare --mount`) where a temporary file is
 //! bind-mounted over it, seen only by that process and gone when it exits.
-//! Creating the namespace needs root; elsewhere the test says it skipped.
+//! Creating the namespace needs root, so these run only with
+//! `SB_TEST_ROOT=1` (root_gate).
 
 mod common;
+mod root_gate;
 
 use std::io::Write;
 use std::process::{Command, Output};
 
-/// Run sb with `args` in a namespace whose `/etc/os-release` is `content`,
-/// or `None` when no mount namespace can be created here.
-fn sb_with_os_release(content: &str, args: &[&str]) -> Option<Output> {
+/// Run sb with `args` in a namespace whose `/etc/os-release` is `content`.
+/// Only called when the root tests were asked for, so a namespace that
+/// can't be made is a failure.
+fn sb_with_os_release(content: &str, args: &[&str]) -> Output {
     let probe = Command::new("unshare")
         .args(["--mount", "true"])
         .output()
-        .ok()?;
-    if !probe.status.success() {
-        return None;
-    }
+        .expect("run unshare");
+    assert!(probe.status.success(), "no mount namespace: {probe:?}");
     let mut fake = tempfile::NamedTempFile::new().expect("temp file");
     fake.write_all(content.as_bytes()).expect("write");
     let script = r#"mount --bind "$1" /etc/os-release && shift && exec "$@""#;
-    let output = Command::new("unshare")
+    Command::new("unshare")
         .env("SB_LOG_DIR", common::test_log_dir())
         .args([
             "--mount",
@@ -39,17 +40,16 @@ fn sb_with_os_release(content: &str, args: &[&str]) -> Option<Output> {
         .arg(common::sb().get_program())
         .args(args)
         .output()
-        .expect("run unshare");
-    Some(output)
+        .expect("run unshare")
 }
 
 #[test]
 fn an_unsupported_release_refuses_every_command() {
+    if !root_gate::requested() {
+        return;
+    }
     for args in [&["version"][..], &["--help"][..]] {
-        let Some(out) = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"20.04\"\n", args) else {
-            eprintln!("skipped: no mount namespace here (needs root)");
-            return;
-        };
+        let out = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"20.04\"\n", args);
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert_eq!(
             String::from_utf8(out.stderr).expect("utf-8"),
@@ -62,10 +62,10 @@ fn an_unsupported_release_refuses_every_command() {
 
 #[test]
 fn another_distribution_is_refused() {
-    let Some(out) = sb_with_os_release("ID=debian\nVERSION_ID=\"12\"\n", &["version"]) else {
-        eprintln!("skipped: no mount namespace here (needs root)");
+    if !root_gate::requested() {
         return;
-    };
+    }
+    let out = sb_with_os_release("ID=debian\nVERSION_ID=\"12\"\n", &["version"]);
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(out.stderr).expect("utf-8"),
@@ -75,9 +75,9 @@ fn another_distribution_is_refused() {
 
 #[test]
 fn a_supported_release_runs() {
-    let Some(out) = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"26.04\"\n", &["version"]) else {
-        eprintln!("skipped: no mount namespace here (needs root)");
+    if !root_gate::requested() {
         return;
-    };
+    }
+    let out = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"26.04\"\n", &["version"]);
     assert_eq!(out.status.code(), Some(0));
 }

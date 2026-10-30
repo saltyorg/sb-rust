@@ -1,6 +1,10 @@
 //! The Saltbox CLI: wires the modules into one command tree
 //! (capability map, `sb`; spec docs/specs/cli-core.md).
 
+// Output goes through `Write` and `exit::output_error`: `print!`/`eprint!`
+// panic when the reader goes away (exit 101) instead of the quiet 141.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 use std::io::Write;
 
 use clap::{Parser, Subcommand};
@@ -72,7 +76,10 @@ fn main() -> ExitCode {
         .flatten();
     let _run = log.as_ref().map(RunLog::enter);
     if let Some(log) = &log {
-        log.started(cli.command.name());
+        log.started(
+            cli.command.name(),
+            &BuildInfo::current(env!("CARGO_PKG_VERSION")).version,
+        );
     }
     let shutdown = Shutdown::new();
     let result = shutdown
@@ -80,11 +87,14 @@ fn main() -> ExitCode {
         .map_err(anyhow::Error::from)
         .and_then(|()| run(cli, &shutdown));
     let error = result.as_ref().err().map(|e| e.as_ref() as _);
+    // One frozen view of how the run ended, so the log and the screen agree
+    // even if a signal arrives between them.
+    let ending = shutdown.snapshot();
     if let Some(log) = &log {
-        log.finished(&log::outcome(&shutdown, error), error);
+        log.finished(&log::outcome(&ending, error), error);
     }
     let pointer = log.as_ref().map(RunLog::pointer);
-    exit::finish_run(&shutdown, error, pointer.as_deref(), &mut std::io::stderr())
+    exit::finish_run(&ending, error, pointer.as_deref(), &mut std::io::stderr())
 }
 
 /// Open the run log and make it the process's subscriber; a log that can't
@@ -95,14 +105,18 @@ fn open_log(dir: &std::path::Path) -> Option<RunLog> {
             .is_ok()
             .then_some(log),
         Err(err) => {
-            eprintln!("warning: no run log this time ({}: {err})", dir.display());
+            let _ = writeln!(
+                std::io::stderr(),
+                "warning: no run log this time ({}: {err})",
+                dir.display()
+            );
             None
         }
     }
 }
 
 fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {
-    let info = BuildInfo::current();
+    let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
     let mut out = std::io::stdout().lock();
     match cli.command {
         Command::Version { json } => {
@@ -111,7 +125,12 @@ fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {
             } else {
                 info.version_line()
             };
-            out.write_all(text.as_bytes())?;
+            out.write_all(text.as_bytes()).map_err(exit::output_error)?;
+            // Flush through the output-error path. Today's outputs end in a
+            // newline and go out on write; this covers output that doesn't,
+            // whose broken pipe would otherwise hit the implicit flush at
+            // exit and be ignored (exit 0, not 141).
+            out.flush().map_err(exit::output_error)?;
         }
     }
     Ok(())
@@ -121,13 +140,13 @@ fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    /// `version` runs as the calling user, with no sudo (spec success
-    /// criterion 1).
     #[test]
     fn the_log_gets_the_command_name_not_its_arguments() {
         assert_eq!(Command::Version { json: true }.name(), "version");
     }
 
+    /// `version` runs as the calling user, with no sudo (spec success
+    /// criterion 1).
     #[test]
     fn version_does_not_need_root() {
         assert!(!Command::Version { json: false }.needs_root());

@@ -202,7 +202,8 @@ boundaries that callers match on.
    completion runs without sudo and offers commands, flags and Ansible
    tags.
 2. On an unsupported host every command, including `--help`, exits 1 with
-   sb-go's message.
+   sb-go's message, as sb-rust's error block on stderr (`✗ <message>`;
+   sb-go prints it plainly to stdout; maintainer, 2026-10-30).
 3. Every other command run as a normal user execs `sudo` with `VISUAL`
    and `EDITOR` kept, and its exit code is the command's own. If sudo
    wants a password, its own prompt appears and the run continues once
@@ -224,6 +225,15 @@ boundaries that callers match on.
 - Invalid theme config: warn, log and use the built-in theme.
 - Theme shape: named built-in themes plus per-role overrides.
 - Second signal: exit at once.
+- Unsupported host: the message is sb-go's, shown as sb-rust's error
+  block on stderr rather than plain on stdout.
+- Tests that need root run only with `SB_TEST_ROOT=1` and fail, never
+  skip, when asked without root; `scripts/check.sh` asks when it runs as
+  root.
+- `SB_LOG_DIR` stays in release builds. The log directory must belong to
+  the user running sb (another user's could hold a planted
+  `sb.<date>.log` link to a root file); an existing one that isn't
+  already 0700 and holds anything but sb's logs is refused, not changed.
 - Root: only commands that need root relaunch through `sudo`; help,
   version and Tab completion run as the calling user. (Revised twice: an
   always-root draft, as sb-go, was dropped once completion could read a

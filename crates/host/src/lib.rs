@@ -2,6 +2,9 @@
 //! check that every command passes first (cli-core spec, startup step 1);
 //! the rest of the `host` module comes with its own spec.
 
+// Output goes through `Write`; `print!`/`eprint!` panic on a closed pipe.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 use sysinfo::System;
 
 /// Ubuntu releases sb runs on: sb-go's `SupportedUbuntuRuntimeReleases`.

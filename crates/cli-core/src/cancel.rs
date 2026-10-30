@@ -9,7 +9,7 @@
 //! `.await` cancellation
 //! (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -23,18 +23,36 @@ pub fn signal_exit_code(signal: i32) -> u8 {
     u8::try_from(128 + signal).unwrap_or(u8::MAX)
 }
 
-/// Shared shutdown state: the token commands watch, and the exit code the
-/// first request chose.
+/// How the run is to end: the first request's code, and whether a signal
+/// sent it. One record, so nothing can see the code without its origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Ending {
+    code: u8,
+    by_signal: bool,
+}
+
+/// Shared shutdown state: the token commands watch, and how the run is to
+/// end once the first request or signal says so.
 #[derive(Clone, Default)]
 pub struct Shutdown {
     token: CancellationToken,
-    code: Arc<OnceLock<u8>>,
-    by_signal: Arc<AtomicBool>,
+    first: Arc<OnceLock<Ending>>,
 }
 
 impl Shutdown {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A frozen copy of the current state, for reading the ending more than
+    /// once (the log and the screen) without a signal changing it between.
+    pub fn snapshot(&self) -> Self {
+        let frozen = Self::new();
+        if let Some(&ending) = self.first.get() {
+            let _ = frozen.first.set(ending);
+            frozen.token.cancel();
+        }
+        frozen
     }
 
     /// The token to watch; cancelled by the first request or signal.
@@ -46,29 +64,31 @@ impl Shutdown {
     /// successfully). Returns whether this was the first request; only the
     /// first sets the code.
     pub fn request(&self, code: u8) -> bool {
-        let first = self.code.set(code).is_ok();
+        self.record(code, false)
+    }
+
+    fn record(&self, code: u8, by_signal: bool) -> bool {
+        let first = self.first.set(Ending { code, by_signal }).is_ok();
         self.token.cancel();
         first
     }
 
     /// The requested exit code, if the run was asked to end.
     pub fn requested(&self) -> Option<u8> {
-        self.code.get().copied()
+        self.first.get().map(|ending| ending.code)
     }
 
     /// Whether a signal (not a command) ended the run.
     pub fn interrupted(&self) -> bool {
-        self.by_signal.load(Ordering::SeqCst)
+        self.first.get().is_some_and(|ending| ending.by_signal)
     }
 
-    /// A signal arrived: record it and cancel with its code. Only the first
+    /// A signal arrived: record it with its code and cancel. Only the first
     /// counts; a second never gets here (see [`listen_for_signals`]).
     ///
     /// [`listen_for_signals`]: Shutdown::listen_for_signals
     pub fn signalled(&self, signal: i32) {
-        if self.request(signal_exit_code(signal)) {
-            self.by_signal.store(true, Ordering::SeqCst);
-        }
+        self.record(signal_exit_code(signal), true);
     }
 
     /// Turn SIGINT and SIGTERM into [`signalled`] on a thread, and make a
@@ -146,6 +166,21 @@ mod tests {
         assert!(shutdown.request(130));
         assert!(!shutdown.request(143));
         assert_eq!(shutdown.requested(), Some(130));
+    }
+
+    /// A snapshot is frozen: a signal after it doesn't change it, so the
+    /// log and the screen (both read from it) agree.
+    #[test]
+    fn a_snapshot_does_not_change_after_a_later_signal() {
+        let shutdown = Shutdown::new();
+        let before = shutdown.snapshot();
+        shutdown.signalled(signal_hook::consts::SIGINT);
+        assert_eq!(before.requested(), None);
+        assert!(!before.token().is_cancelled());
+        let after = shutdown.snapshot();
+        assert_eq!(after.requested(), Some(130));
+        assert!(after.interrupted());
+        assert!(after.token().is_cancelled());
     }
 
     /// A signal's code is the shell convention, 128 + the signal number.

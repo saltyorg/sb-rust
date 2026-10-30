@@ -56,7 +56,9 @@ blocks.
 
 ## Measured, not yet enforced
 
-Recorded from the first `crates/` build and updated at each checkpoint.
+Recorded from the first `crates/` build and updated at each checkpoint,
+measured the way `scripts/check.sh` runs (as root, so the root tests run;
+without them coverage reads lower).
 The "Today" values are written as limits, so the floor guard reports any
 value that gets worse. Within its tolerance, the reason goes in the
 commit; beyond it, the change needs an ADR (docs/decisions/), as any

@@ -1,15 +1,14 @@
 //! Shared by the `sb` binary tests.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 /// A log directory for every test run of sb: tests run as root here, and a
-/// root run logs; it must never reach the host's `/var/log/sb`.
+/// root run logs; it must never reach the host's `/var/log/sb`. It lives in
+/// Cargo's temporary directory for integration tests (under `target/`), so
+/// `cargo clean` removes it and no run leaves a folder in /tmp
+/// (https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates).
 pub fn test_log_dir() -> PathBuf {
-    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    DIR.get_or_init(|| tempfile::tempdir().expect("temp log dir"))
-        .path()
-        .to_path_buf()
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sb-test-logs")
 }
 
 /// The built `sb`, logging to [`test_log_dir`]. assert_cmd's prelude adds

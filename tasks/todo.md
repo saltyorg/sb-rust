@@ -105,9 +105,11 @@ is blocked on an unsupported host, `--help` and `version` included.
 
 ## Task 5: Root relaunch for commands that need it
 
-**Description:** Each command declares `needs_root` (default yes). When
-needed and not root, exec `sudo --preserve-env=VISUAL,EDITOR <exe> <args>`;
-otherwise run as the user. sudo's own prompt handles passwords.
+**Description:** Each command declares `needs_root` in an exhaustive match
+(no default). When needed and not root, exec
+`sudo --preserve-env=VISUAL,EDITOR,SB_RELAUNCHED <exe> <args>`; otherwise
+run as the user. sudo's own prompt handles passwords; a relaunched run that
+still isn't root stops instead of looping.
 
 **Acceptance criteria:**
 - [x] `version`, `--help` and completion never relaunch; a root-needing command does, with the same arguments.
@@ -133,8 +135,8 @@ otherwise run as the user. sudo's own prompt handles passwords.
 
 **Description:** Root runs log to `/var/log/sb` (directory injectable for
 tests), rotated daily by tracing-appender (`max_log_files`), with a run
-span carrying the run id and arguments, each event plain text, and the
-outcome at the end. Unprivileged runs don't log. A log that can't be
+span carrying the run id, the command's name (never its arguments), each
+event plain text, and the outcome at the end. Unprivileged runs don't log. A log that can't be
 opened is a warning. The error block's pointer names the log and run id.
 
 **Acceptance criteria:**
@@ -145,12 +147,24 @@ opened is a warning. The error block's pointer names the log and run id.
 - [x] Unwritable log directory: a warning and the run continues.
 
 **Verification:**
-- [x] Tests against a temporary directory; `SB_TEST_ROOT=1` test for the real path.
+- [x] Tests against temporary directories (root tests gated on
+      `SB_TEST_ROOT=1`).
+- [ ] The real `/var/log/sb`: moved to Task 10's manual verification, run
+      only with the maintainer's go-ahead (an automatic test would create
+      it on this host at every check run).
 - [x] `scripts/check.sh task`; library-reviewer on the diff.
 
 **Dependencies:** Task 5
 **Files:** `crates/cli-core/src/{log.rs,error.rs}`, `crates/cli-core/tests/run_log.rs`
 **Scope:** M
+
+Carried forward from the cli-core code review (2026-10-30):
+- The exec module removes `SB_RELAUNCHED` from child processes
+  (`env_remove`), or an unprivileged sb started by one would refuse to
+  relaunch (root.rs module docs).
+- The first command that takes argument values (for example
+  `install -e`) adds an end-to-end test that a real secret value never
+  reaches the run log; today's test uses a flag.
 
 ## Checkpoint B: Startup
 - [ ] `scripts/check.sh full` passes.
@@ -227,6 +241,8 @@ criteria.
 **Verification:**
 - [ ] `scripts/check.sh full`.
 - [ ] Manual: `sb --help`, `sb version`, Ctrl-C and `--color` on this host, shown to the maintainer.
+- [ ] Manual, with the maintainer's go-ahead: one root run against the real
+      `/var/log/sb` (created 0700, record written, pointer names the file).
 
 **Dependencies:** Tasks 3, 6, 9
 **Files:** `crates/sb/src/main.rs`, `crates/cli-core/src/startup.rs`, `crates/sb/tests/contract.rs`

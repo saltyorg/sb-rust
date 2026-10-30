@@ -49,11 +49,25 @@ fn chain<'a>(err: &'a (dyn Error + 'static)) -> impl Iterator<Item = &'a (dyn Er
     std::iter::successors(Some(err), |&e| e.source())
 }
 
+/// An error writing sb's own output (stdout or stderr). Commands wrap their
+/// output errors in it, so a broken pipe here (and only here) means the
+/// reader of sb's output went away.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct OutputError(std::io::Error);
+
+/// Mark an error as one writing sb's own output.
+pub fn output_error(err: std::io::Error) -> OutputError {
+    OutputError(err)
+}
+
 /// The code an error ends the run with quietly, if it is a quiet exit: a
-/// requested [`Exit`] anywhere in the chain, or a broken pipe. The reader
-/// of our output went away (`sb ... | head`); Rust ignores SIGPIPE, so this
-/// arrives as an error, and the run ends with the code a process killed by
-/// SIGPIPE gets (128 + 13), as sb-go does. Why not `-Zon-broken-pipe=kill`:
+/// requested [`Exit`] anywhere in the chain, or a broken pipe on sb's own
+/// output ([`OutputError`]). The reader went away (`sb ... | head`); Rust
+/// ignores SIGPIPE, so this arrives as an error, and the run ends with the
+/// code a process killed by SIGPIPE gets (128 + 13), as sb-go does. A broken
+/// pipe anywhere else (a child sb writes to died) is a real failure, as in
+/// sb-go, where only writes to fd 1 and 2 raise SIGPIPE. Why not `-Zon-broken-pipe=kill`:
 /// unstable, so it would need an ADR
 /// (https://doc.rust-lang.org/beta/unstable-book/compiler-flags/on-broken-pipe.html);
 /// why not resetting SIGPIPE with libc: unsafe code, forbidden here. One
@@ -63,8 +77,8 @@ pub fn quiet_exit(err: &(dyn Error + 'static)) -> Option<u8> {
         return Some(*code);
     }
     chain(err)
-        .filter_map(|e| e.downcast_ref::<std::io::Error>())
-        .any(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+        .filter_map(|e| e.downcast_ref::<OutputError>())
+        .any(|e| e.0.kind() == std::io::ErrorKind::BrokenPipe)
         .then_some(141)
 }
 
@@ -184,7 +198,7 @@ mod tests {
     /// process killed by SIGPIPE gets (128 + 13), as sb-go's.
     #[test]
     fn a_broken_pipe_is_quiet_with_141() {
-        let err = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+        let err = output_error(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         let (text, code) = report_text(&err, None);
         assert_eq!(text, "");
         assert_eq!(code, ExitCode::from(141));
@@ -259,9 +273,32 @@ mod tests {
     #[test]
     fn quiet_exits_are_classified_once() {
         assert_eq!(quiet_exit(&Exit(4)), Some(4));
-        let pipe = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+        let pipe = output_error(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         assert_eq!(quiet_exit(&pipe), Some(141));
         assert_eq!(quiet_exit(&failure("boom")), None);
+    }
+
+    /// A broken pipe elsewhere (a child sb writes to died) is a real
+    /// failure, not the reader of sb's output going away: sb-go reports it.
+    #[test]
+    fn a_broken_pipe_to_a_child_is_a_failure() {
+        let err = Failure {
+            message: "writing to ansible",
+            cause: Some(Box::new(std::io::Error::from(
+                std::io::ErrorKind::BrokenPipe,
+            ))),
+        };
+        assert_eq!(quiet_exit(&err), None);
+        let (text, code) = report_text(&err, None);
+        assert_eq!(code, ExitCode::from(1));
+        assert!(text.starts_with("✗ writing to ansible\n"), "{text}");
+    }
+
+    /// Other output errors (a full disk) stay errors.
+    #[test]
+    fn other_output_errors_stay_errors() {
+        let err = output_error(std::io::Error::from(std::io::ErrorKind::StorageFull));
+        assert_eq!(quiet_exit(&err), None);
     }
 
     /// A requested exit wrapped in context (as anyhow's `context` does)
