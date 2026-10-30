@@ -71,7 +71,7 @@ both files they read are readable without root.
    directory (tests and debugging; sudo doesn't pass it through).
 5. **Colour** (decision 10): `--color=auto|always|never` (colorchoice-clap)
    decides once and becomes anstream's global choice (console and
-   crossterm get it when term-ui brings them in). clap's help and errors
+   crossterm get it when term-ui brings them in). Help and parse errors
    follow it through that global choice, set by a pre-pass before the real
    parse (see Decided in review). Truecolor is the default; the fallback
    for other terminals (`SB_COLOR_PROFILE`, NO_COLOR) follows the colour
@@ -100,7 +100,7 @@ killed through `exec`. A second signal exits at once with the same code,
 skipping remaining cleanup. A command can also
 request shutdown with its own exit code (sb-go's `Shutdown(code)`).
 
-**Exit codes:** 0 success; 1 error; 130 after SIGINT, 143 after SIGTERM; a
+**Exit codes:** 0 success; 1 error; 2 for a parse error; 130 after SIGINT, 143 after SIGTERM; a
 code a command requested; a wrapped child's own code when sb only passes it
 through (`sudo` relaunch, plain pass-through commands); 141, quietly, when
 the reader of sb's output goes away (`sb ... | head`), as sb-go gets when
@@ -111,6 +111,22 @@ own line, then the log pointer (`details: /var/log/sb/sb.log (run <id>)`)
 when the run is logged. A cancellation shows "interrupted" rather than an
 error chain. Errors already shown (a failed step's tree) exit quietly, as
 the runner does.
+
+**Help and parse errors** (maintainer, 2026-10-30, after proto-help): help
+follows sb-go's (fang's) format in sb's palette: the about (long text when
+there is one), bold section headings, the usage line in a shaded block,
+commands with fang's usage hints (`[command]`, the arguments, `[--flags]`),
+flags as `-s --long` with defaults as ` (value)`, all in one column. sb
+draws it from clap's own command data at startup and sets each command's
+text with clap's `Command::override_help`, so `-h`, `--help`,
+`sb help <cmd>`, the colour choice and the exit code stay clap's. Bare
+`sb` prints the help on stdout and exits 0, as sb-go (clap would treat it
+as an error). Not copied yet: fang's 120-column wrap of the about;
+`sb help help` stays clap's own (clap adds that subcommand after sb sets
+the others). Parse errors (unknown command
+or flag, bad value) are drawn in the same style as sb's `✗` error block, on
+stderr, and exit 2, the usage-error convention (sb-go exits 1; a deliberate
+difference).
 
 **Build info:** version, git commit and the pinned uv version are set at
 build time; release builds can switch self-update off. `sb version` prints
@@ -240,8 +256,9 @@ boundaries that callers match on.
   (sb-go loses them), so a user's colour settings reach root commands; an
   unknown profile warns only in the first run. An empty value is unset,
   as in sb-go; an unknown one warns where sb-go is silent.
-- Under `ascii`, clap's help and errors get clap's plain styles, so no
-  output is coloured; the other profiles keep clap's 16-colour defaults.
+- Under `ascii`, help and parse errors are plain, so no output is
+  coloured. (Before the sb-go format, clap's 16-colour defaults applied to
+  the other profiles; help now takes the theme's colours.)
 - Colour profiles (ADR-002) resolve the palette once at startup with
   anstyle-lossy (16 colours matched against its VGA palette) and are
   installed as the run's theme; sb's own messages go through anstream, so

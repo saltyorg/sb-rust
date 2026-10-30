@@ -13,6 +13,7 @@ use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::colour;
 use sb_cli_core::config;
 use sb_cli_core::exit::{self, ExitCode};
+use sb_cli_core::help;
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
 use sb_cli_core::theme;
@@ -168,16 +169,35 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
         .map(std::path::PathBuf::from)
 }
 
-/// The real parse. clap's help and errors use clap's own styles, not the
-/// theme, so the `ascii` profile (no colour) gives clap its plain styles
-/// (https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain);
-/// the other profiles keep clap's 16-colour defaults.
+/// The real parse, with every command's help in sb-go's format, in the
+/// theme's colours (`help::apply`). Under `ascii` clap's own output (its
+/// errors, for now) gets clap's plain styles
+/// (https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain).
 fn parse(profile: theme::Profile) -> Cli {
     let cmd = match profile {
         theme::Profile::Ascii => Cli::command().styles(clap::builder::Styles::plain()),
         _ => Cli::command(),
     };
-    Cli::from_arg_matches(&cmd.get_matches()).unwrap_or_else(|err| err.exit())
+    // Help goes to stdout; whether it shows in colour decides the shaded
+    // usage block's padding rows.
+    let colour = profile != theme::Profile::Ascii
+        && anstream::AutoStream::choice(&std::io::stdout()) != anstream::ColorChoice::Never;
+    let cmd = help::apply(cmd, theme::current(), colour);
+    match cmd.try_get_matches() {
+        Ok(matches) => Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit()),
+        // Bare `sb`: sb-go prints the help on stdout and succeeds; clap would
+        // print it as an error, on stderr with exit 2
+        // (https://docs.rs/clap/4.6.7/clap/error/enum.ErrorKind.html#variant.DisplayHelpOnMissingArgumentOrSubcommand).
+        Err(err)
+            if err.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand =>
+        {
+            // Write errors are ignored, as clap ignores them for `--help`.
+            let mut out = anstream::stdout();
+            let _ = write!(out, "{}", err.render().ansi()).and_then(|()| out.flush());
+            std::process::exit(0)
+        }
+        Err(err) => err.exit(),
+    }
 }
 
 /// Open the run log and make it the process's subscriber; a log that can't

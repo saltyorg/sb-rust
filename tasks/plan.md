@@ -77,6 +77,8 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 
 ### Checkpoint C: Complete
 - [ ] Task 10: Startup wiring, contract test and success criteria
+- [ ] Task 11: Help in sb-go's format (maintainer, Checkpoint C)
+- [ ] Task 12: Parse errors in sb's error style
 
 ## Risks and mitigations
 

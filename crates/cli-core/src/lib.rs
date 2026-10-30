@@ -9,6 +9,7 @@ pub mod cancel;
 pub mod colour;
 pub mod config;
 pub mod exit;
+pub mod help;
 pub mod log;
 pub mod root;
 pub mod theme;

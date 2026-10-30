@@ -269,6 +269,57 @@ criteria.
 **Files:** `crates/sb/src/{main.rs,contract.rs}`, `crates/sb/tests/fixtures/sb-go-command-tree.tsv`, `crates/cli-core/src/config.rs` (inventory read with saphyr)
 **Scope:** M
 
+## Task 11: Help in sb-go's format
+
+**Description:** At Checkpoint C the maintainer found clap's default help
+far behind sb-go's; proto-help compared the options and the maintainer
+chose sb-go's format (look 6). sb draws each command's help from clap's
+command data in that format, in the palette, and sets it with clap's
+`Command::override_help`, so `-h`, `--help` and `sb help <cmd>` keep
+working (spec: Help and parse errors).
+
+**Acceptance criteria:**
+- [x] `sb --help`, `sb version --help` and `sb help version` show the
+      format: about, headings, shaded usage block (only with colour),
+      commands with hints, flags with defaults, one column.
+- [x] Colours from the theme; none with `--color=never`, NO_COLOR, piped
+      or under `ascii`.
+- [x] Startup budget holds (help median ≤ 10 ms; the ratchet value is
+      re-measured).
+
+**Verification:**
+- [x] Unit tests on the rendering (fixed commands, colour on and off);
+      end-to-end help tests; `scripts/check.sh full`.
+- [ ] Manual: the maintainer compares `sb --help` with sb-go's.
+
+Deferred: fang wraps the about at min(terminal, 120) columns; today's
+abouts are one line, so the wrap comes with the first ported command
+whose long text needs it. `sb help help` stays clap's own format.
+
+**Dependencies:** Tasks 7, 8
+**Files:** `crates/cli-core/src/help.rs`, `crates/sb/src/main.rs`, `crates/sb/tests/help.rs`
+**Scope:** M
+
+## Task 12: Parse errors in sb's error style
+
+**Description:** clap's parse errors (unknown command or flag, bad value)
+are drawn like sb's `✗` block through clap's `ErrorFormatter`, on stderr,
+exit 2 (maintainer: the usage-error convention, a deliberate difference
+from sb-go's 1).
+
+**Acceptance criteria:**
+- [ ] An unknown command, an unknown flag and a bad value each show one
+      `✗` block with clap's message and tip, exit 2.
+- [ ] `--color` and the profile apply as for help.
+
+**Verification:**
+- [ ] End-to-end tests; `scripts/check.sh full`.
+- [ ] Manual: the maintainer compares with sb-go's error.
+
+**Dependencies:** Task 11
+**Files:** `crates/cli-core/src/help.rs` (or `exit.rs`), `crates/sb/src/main.rs`, `crates/sb/tests/errors.rs`
+**Scope:** S
+
 ## Checkpoint C: Complete
 - [ ] All tasks done; `scripts/check.sh full` passes.
 - [ ] Spec success criteria met; the maintainer reviews `sb --help`, `sb version` and Ctrl-C.
