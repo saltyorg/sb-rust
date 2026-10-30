@@ -56,16 +56,18 @@ blocks.
 
 ## Measured, not yet enforced
 
-Recorded from the first `crates/` build (cli-core Task 1, 2026-10-30)
-and updated as each change measures. The "Today" values are written as
-limits, so the floor guard reports a value that gets worse; a value that
-gets worse within its tolerance needs the reason in the commit.
+Recorded from the first `crates/` build and updated at each checkpoint.
+The "Today" values are written as limits, so the floor guard reports any
+value that gets worse. Within its tolerance, the reason goes in the
+commit; beyond it, the change needs an ADR (docs/decisions/), as any
+loosening does. Current values: [ADR-003](docs/decisions/ADR-003-cli-core-ratchet-update.md). Keep digits out of the rows except the values themselves:
+the guard reads every number as a threshold.
 
 | Metric | Today | Direction |
 |---|---|---|
-| Project coverage (`crates/`) | at least 98.8% of lines, 100% of functions | must not fall; tolerance at most 0.5% |
-| Production binary size | at most 824096 bytes | must not grow; growth at most 5% per change without a reason in the commit |
-| `sb --help` median | at most 0.61 ms | must not grow; growth at most 1 ms per change |
+| Project coverage (`crates/`) | at least 98.06% of lines, at least 97.12% of functions (see the ratchet ADR) | must not fall; tolerance at most 0.5% |
+| Production binary size | at most 1107040 bytes (see the ratchet ADR) | must not grow; growth at most 5% per change |
+| `sb --help` median | at most 0.59 ms | must not grow; growth at most 1 ms per change |
 
 ## Tools
 

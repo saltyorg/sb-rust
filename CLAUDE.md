@@ -77,6 +77,30 @@ repository (see the hooks in `.claude/settings.json`).
     whether the reviewer ran. `scripts/check-commit-messages.sh` rejects
     commits without it.
 
+## Fresh-context review of every change
+
+A second pair of eyes catches what the author missed.
+
+- **Before committing or handing back any change** (code, tests, scripts,
+  specs, docs), run a review subagent on it: `agent-skills:code-reviewer`
+  (correctness, readability, architecture, security, performance), plus
+  the `library-reviewer` where the library rule applies. Run them in
+  parallel with `scripts/check.sh full`. The subagent is the fresh-context
+  reviewer; use `agent-skills:code-review-and-quality` when you review
+  yourself or weigh its findings.
+- **Brief it with the range and the goal, not your conclusions.** Tell it
+  to edit nothing and to report findings with file:line.
+- **Act on every finding:** fix it (test-first when it changes behaviour,
+  per `agent-skills:test-driven-development`), or record in the commit body
+  why not. After fixing, re-run `scripts/check.sh full`, and review the fix
+  again unless it is a mechanical change the finding spelled out.
+- **Every commit carries a `Review:` line** in its body: which reviewers
+  ran, on what diff (a commit range, or the working tree against a base),
+  and what was fixed or declined with reasons.
+  `scripts/check-commit-messages.sh` rejects commits without it.
+- A review is not optional for small or "obvious" changes; those are where
+  unchecked assumptions hide.
+
 ## Project artifacts
 
 - **Specs before code:** `docs/specs/`. Tasks: `tasks/plan.md`, `tasks/todo.md`.

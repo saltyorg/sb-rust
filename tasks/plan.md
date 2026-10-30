@@ -3,7 +3,8 @@
 Spec: [docs/specs/cli-core.md](../docs/specs/cli-core.md) (approved
 2026-10-29, revised 2026-10-30). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
 Decisions: [ADR-001](../docs/decisions/ADR-001-unstable-feature-pins.md),
-[ADR-002](../docs/decisions/ADR-002-colour-fallback.md). The prototype plan,
+[ADR-002](../docs/decisions/ADR-002-colour-fallback.md),
+[ADR-003](../docs/decisions/ADR-003-cli-core-ratchet-update.md). The prototype plan,
 with its open items, is in [tasks/prototypes/](prototypes/plan.md).
 
 ## Overview
