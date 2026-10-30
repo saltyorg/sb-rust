@@ -170,8 +170,9 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
 }
 
 /// The real parse, with every command's help in sb-go's format, in the
-/// theme's colours (`help::apply`). Under `ascii` clap's own output (its
-/// errors, for now) gets clap's plain styles
+/// theme's colours (`help::apply`), and parse errors in sb's error style
+/// (`help::parse_error_block`). Under `ascii` what clap still draws itself
+/// (`sb help help`) gets clap's plain styles
 /// (https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain).
 fn parse(profile: theme::Profile) -> Cli {
     let cmd = match profile {
@@ -184,7 +185,7 @@ fn parse(profile: theme::Profile) -> Cli {
         && anstream::AutoStream::choice(&std::io::stdout()) != anstream::ColorChoice::Never;
     let cmd = help::apply(cmd, theme::current(), colour);
     match cmd.try_get_matches() {
-        Ok(matches) => Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit()),
+        Ok(matches) => Cli::from_arg_matches(&matches).unwrap_or_else(|err| parse_error(err)),
         // Bare `sb`: sb-go prints the help on stdout and succeeds; clap would
         // print it as an error, on stderr with exit 2
         // (https://docs.rs/clap/4.6.7/clap/error/enum.ErrorKind.html#variant.DisplayHelpOnMissingArgumentOrSubcommand).
@@ -196,8 +197,25 @@ fn parse(profile: theme::Profile) -> Cli {
             let _ = write!(out, "{}", err.render().ansi()).and_then(|()| out.flush());
             std::process::exit(0)
         }
-        Err(err) => err.exit(),
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            err.exit()
+        }
+        Err(err) => parse_error(err),
     }
+}
+
+/// A parse error in sb's error style, on stderr, ending the run with
+/// clap's exit code (2, the usage-error convention; cli-core spec).
+fn parse_error(err: clap::Error) -> ! {
+    let code = err.exit_code();
+    let block = help::parse_error_block(err, "sb", theme::current());
+    let _ = write!(anstream::stderr(), "{block}");
+    std::process::exit(code)
 }
 
 /// Open the run log and make it the process's subscriber; a log that can't

@@ -233,6 +233,85 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
     )
 }
 
+/// A clap parse error drawn like sb's error block (`exit::render_block`):
+/// `✗` and clap's message, clap's tips and context lines (`[possible
+/// values: …]`), then where to look, naming the command that failed
+/// (`help: try 'sb version --help'`), or `program` when clap doesn't say
+/// (a bad value carries no usage). clap's usage paragraph is left out
+/// (help has it): removed with clap's `Error::remove(ContextKind::Usage)`
+/// (https://docs.rs/clap/4.6.7/clap/error/struct.Error.html#method.remove),
+/// and skipped by line for errors whose usage is part of their message
+/// (`Error::format`ted ones, which sb doesn't produce today). The command's
+/// name is read from clap's usage format; a free-text `override_usage`
+/// would give a wrong one.
+///
+/// Why not a clap `ErrorFormatter`
+/// (https://docs.rs/clap/4.6.7/clap/error/trait.ErrorFormatter.html): clap
+/// builds its messages in crate-private code (`write_dynamic_context`,
+/// `did_you_mean`, `try_help` in clap_builder 4.6.7 `error/format.rs`), so a
+/// formatter of ours would have to rewrite every message, and clap skips it
+/// for errors that carry their own message. This keeps clap's wording and
+/// re-lays it out from its plain rendering (`StyledStr`'s Display drops
+/// styles). It keys on clap's English (`error: `, `tip: `, `Usage:`, `For
+/// more information`); the tests pin each shape, so a clap update that
+/// changes one fails them.
+pub fn parse_error_block(mut err: clap::Error, program: &str, theme: &Theme) -> String {
+    use clap::error::{ContextKind, ContextValue};
+    let command = match err.remove(ContextKind::Usage) {
+        Some(ContextValue::StyledStr(usage)) => command_path(&usage.to_string()),
+        _ => None,
+    };
+    let text = err.render().to_string();
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or_default();
+    let headline = first.strip_prefix("error: ").unwrap_or(first);
+    let mut body: Vec<(Option<&str>, String)> = Vec::new();
+    let mut in_usage = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            in_usage = false;
+        } else if trimmed.starts_with("Usage:") {
+            in_usage = true;
+        } else if let Some(pointer) = trimmed.strip_prefix("For more information, ") {
+            // clap names the help it offers (`'--help'`, a custom flag, or
+            // the `help` subcommand); a flag gets the failing command's name.
+            let target = pointer
+                .trim_end_matches('.')
+                .strip_prefix("try '")
+                .and_then(|t| t.strip_suffix('\''));
+            let pointer = match target {
+                Some(flag) if flag.starts_with('-') => {
+                    format!("try '{} {flag}'", command.as_deref().unwrap_or(program))
+                }
+                _ => pointer.trim_end_matches('.').to_string(),
+            };
+            body.push((Some("help:"), pointer));
+        } else if in_usage {
+            continue;
+        } else if let Some(tip) = trimmed.strip_prefix("tip: ") {
+            body.push((Some("tip:"), tip.to_string()));
+        } else {
+            body.push((None, trimmed.to_string()));
+        }
+    }
+    crate::exit::render_block(headline, body, theme)
+}
+
+/// The command a usage line is for: `Usage: sb version [OPTIONS]` gives
+/// `sb version` (the words before the first argument, option or
+/// placeholder).
+fn command_path(usage: &str) -> Option<String> {
+    let first = usage.lines().next()?.trim();
+    let words: Vec<&str> = first
+        .strip_prefix("Usage:")
+        .unwrap_or(first)
+        .split_whitespace()
+        .take_while(|w| !w.starts_with(['[', '<', '-']))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{Arg, ArgAction};
@@ -478,5 +557,128 @@ mod tests {
         let text = plain(&cmd, "sb", &[]);
         assert!(text.contains("    fact  "), "{text}");
         assert!(!text.contains("fact [--flags]"), "{text}");
+    }
+
+    /// clap's usage paragraph, every line of it, is left out; tips and
+    /// context lines stay; clap's pointer becomes `help:`.
+    #[test]
+    fn a_parse_error_keeps_claps_message_without_its_usage() {
+        let err = clap::Error::raw(
+            clap::error::ErrorKind::InvalidValue,
+            "invalid value 'x'\n  [possible values: a, b]\n\n  tip: try 'a'\n\nUsage: sb one\n       sb two\n\nFor more information, try '--help'.\n",
+        );
+        assert_eq!(
+            parse_error_block(err, "sb", &Theme::plain()),
+            "✗ invalid value 'x'\n  [possible values: a, b]\n  tip: try 'a'\n  help: try 'sb --help'\n"
+        );
+    }
+
+    /// With colour the mark is the theme's problem colour and the labels
+    /// are muted, as in sb's own error block.
+    #[test]
+    fn a_parse_error_takes_the_themes_colours() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let err = Command::new("sb")
+            .subcommand(Command::new("version"))
+            .try_get_matches_from(["sb", "nope"])
+            .expect_err("unknown command");
+        let block = parse_error_block(err, "sb", &theme);
+        assert!(
+            block.starts_with(&format!("{}✗", theme.style(Role::Problem))),
+            "{block:?}"
+        );
+        assert!(
+            block.contains(&format!("{}help:", theme.style(Role::Muted))),
+            "{block:?}"
+        );
+        let typo = Command::new("sb")
+            .subcommand(Command::new("version"))
+            .try_get_matches_from(["sb", "verison"])
+            .expect_err("typo");
+        let block = parse_error_block(typo, "sb", &theme);
+        assert!(
+            block.contains(&format!("{}tip:", theme.style(Role::Muted))),
+            "{block:?}"
+        );
+    }
+
+    fn plain_error(cmd: Command, argv: &[&str]) -> String {
+        parse_error_block(
+            cmd.try_get_matches_from(argv).expect_err("a parse error"),
+            "sb",
+            &Theme::plain(),
+        )
+    }
+
+    /// clap's real output for the kinds with extra lines, so a clap update
+    /// that changes their shape fails here: missing arguments, a conflict
+    /// with several arguments, a missing subcommand, a multi-line usage, and
+    /// the help pointer naming the command that failed.
+    #[test]
+    fn claps_multi_line_errors_keep_their_lines() {
+        let add = Command::new("sb").subcommand(
+            Command::new("add")
+                .arg(Arg::new("name").required(true))
+                .arg(Arg::new("path").required(true)),
+        );
+        assert_eq!(
+            plain_error(add, &["sb", "add"]),
+            "✗ the following required arguments were not provided:\n  <name>\n  <path>\n  help: try 'sb add --help'\n"
+        );
+        let flag = |id: &'static str| Arg::new(id).long(id).action(ArgAction::SetTrue);
+        let conflict = Command::new("sb")
+            .arg(flag("a"))
+            .arg(flag("b"))
+            .arg(flag("c").conflicts_with_all(["a", "b"]));
+        assert_eq!(
+            plain_error(conflict, &["sb", "--c", "--a", "--b"]),
+            "✗ the argument '--c' cannot be used with:\n  --a\n  --b\n  help: try 'sb --help'\n"
+        );
+        let required = Command::new("sb")
+            .subcommand_required(true)
+            .arg(flag("verbose"))
+            .subcommand(Command::new("version"));
+        assert_eq!(
+            plain_error(required, &["sb", "--verbose"]),
+            "✗ 'sb' requires a subcommand but one was not provided\n  [subcommands: version, help]\n  help: try 'sb --help'\n"
+        );
+        let two_usages = Command::new("sb")
+            .args_conflicts_with_subcommands(true)
+            .arg(Arg::new("x").long("x").required(true))
+            .subcommand(Command::new("version"));
+        assert_eq!(
+            plain_error(two_usages, &["sb", "--bogus"]),
+            "✗ unexpected argument '--bogus' found\n  help: try 'sb --help'\n"
+        );
+    }
+
+    /// Without clap's help flag there is nothing to point at, so no `help:`.
+    #[test]
+    fn no_help_flag_means_no_help_line() {
+        let cmd = Command::new("sb")
+            .disable_help_flag(true)
+            .disable_help_subcommand(true)
+            .arg(
+                Arg::new("verbose")
+                    .long("verbose")
+                    .action(ArgAction::SetTrue),
+            );
+        assert_eq!(
+            plain_error(cmd, &["sb", "--bogus"]),
+            "✗ unexpected argument '--bogus' found\n"
+        );
+    }
+
+    /// clap names the help it can offer: with the flag off but the help
+    /// subcommand on, that's `help`, kept as clap says it.
+    #[test]
+    fn the_pointer_keeps_claps_help_target() {
+        let cmd = Command::new("sb")
+            .disable_help_flag(true)
+            .subcommand(Command::new("version"));
+        assert_eq!(
+            plain_error(cmd, &["sb", "--bogus"]),
+            "✗ unexpected argument '--bogus' found\n  help: try 'help'\n"
+        );
     }
 }

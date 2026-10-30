@@ -112,21 +112,33 @@ pub fn error_block(
     block(&err.to_string(), causes, log_pointer, theme)
 }
 
-/// The mark in the problem colour, the labels muted; a plain theme renders
-/// no codes at all (anstyle renders an empty style as nothing).
 fn block(
     headline: &str,
     causes: impl IntoIterator<Item = String>,
     log_pointer: Option<&str>,
     theme: &Theme,
 ) -> String {
+    let causes = causes.into_iter().map(|cause| (Some("caused by:"), cause));
+    let pointer = log_pointer.map(|pointer| (Some("details:"), pointer.to_string()));
+    render_block(headline, causes.chain(pointer), theme)
+}
+
+/// sb's error block, shared by run errors and parse errors (`help`): the
+/// mark in the problem colour and the headline, then indented lines, each
+/// with an optional muted label. A plain theme renders no codes at all
+/// (anstyle renders an empty style as nothing).
+pub(crate) fn render_block<'a>(
+    headline: &str,
+    lines: impl IntoIterator<Item = (Option<&'a str>, String)>,
+    theme: &Theme,
+) -> String {
     let (mark, label) = (theme.style(Role::Problem), theme.style(Role::Muted));
     let mut block = format!("{mark}✗{mark:#} {headline}\n");
-    for cause in causes {
-        let _ = writeln!(block, "  {label}caused by:{label:#} {cause}");
-    }
-    if let Some(pointer) = log_pointer {
-        let _ = writeln!(block, "  {label}details:{label:#} {pointer}");
+    for (name, text) in lines {
+        let _ = match name {
+            Some(name) => writeln!(block, "  {label}{name}{label:#} {text}"),
+            None => writeln!(block, "  {text}"),
+        };
     }
     block
 }

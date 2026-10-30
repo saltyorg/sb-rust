@@ -87,6 +87,20 @@ fang also queries the terminal's background colour (OSC 11) at start.
     errors (clap's "unrecognized subcommand", sb's own) would need the same
     treatment to match.
 
+## Parse errors (cli-core Task 12)
+
+The maintainer asked for parse errors in the same style. clap's
+`ErrorFormatter` trait is its documented hook, but clap builds every
+message in crate-private code (`write_dynamic_context`, `did_you_mean`,
+`try_help` in clap_builder 4.6.7 `error/format.rs`) and skips a custom
+formatter for errors that carry their own message, so a formatter of ours
+would rewrite every message. `KindFormatter` prints the kind alone, losing
+the values and tips. sb therefore keeps clap's wording: it removes the
+usage context (`Error::remove(ContextKind::Usage)`, after reading the
+failing command's name from it), renders the error plain, and lays the
+message, tips and context lines out as sb's `✗` block. Tests built on
+real clap errors pin each shape, so a clap update that changes one fails.
+
 ## Verdict
 
 _Reviewed by the maintainer (2026-10-30): sb's help follows sb-go's format

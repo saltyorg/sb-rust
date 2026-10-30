@@ -303,17 +303,20 @@ whose long text needs it. `sb help help` stays clap's own format.
 ## Task 12: Parse errors in sb's error style
 
 **Description:** clap's parse errors (unknown command or flag, bad value)
-are drawn like sb's `✗` block through clap's `ErrorFormatter`, on stderr,
-exit 2 (maintainer: the usage-error convention, a deliberate difference
-from sb-go's 1).
+are drawn like sb's `✗` block, on stderr, exit 2 (maintainer: the
+usage-error convention, a deliberate difference from sb-go's 1). Not
+through a clap `ErrorFormatter`: clap builds its messages in private code,
+so sb keeps clap's wording and re-lays out its plain rendering, with the
+usage paragraph removed through `Error::remove(ContextKind::Usage)`
+(recorded in prototypes/proto-help/FINDINGS.md).
 
 **Acceptance criteria:**
-- [ ] An unknown command, an unknown flag and a bad value each show one
+- [x] An unknown command, an unknown flag and a bad value each show one
       `✗` block with clap's message and tip, exit 2.
-- [ ] `--color` and the profile apply as for help.
+- [x] `--color` and the profile apply as for help.
 
 **Verification:**
-- [ ] End-to-end tests; `scripts/check.sh full`.
+- [x] End-to-end tests; `scripts/check.sh full`.
 - [ ] Manual: the maintainer compares with sb-go's error.
 
 **Dependencies:** Task 11

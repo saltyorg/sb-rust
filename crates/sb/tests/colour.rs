@@ -89,8 +89,8 @@ fn parse_errors_are_coloured_on_a_terminal_by_default() {
     }
 }
 
-/// Parse errors follow `never` too, wherever the flag is: clap prints them
-/// before sb runs, through the same global choice.
+/// Parse errors follow `never` too, wherever the flag is: they're printed
+/// before the run starts, through the same global choice.
 #[test]
 fn never_means_no_escapes_in_parse_errors() {
     for args in [
@@ -219,8 +219,8 @@ fn a_relaunched_run_does_not_repeat_the_profile_warning() {
     assert!(String::from_utf8_lossy(&first.stderr).contains("SB_COLOR_PROFILE"));
 }
 
-/// `ascii` means no colour anywhere, clap's own errors and help included
-/// (their styles are clap's, not the theme's).
+/// `ascii` means no colour anywhere, parse errors and help included (drawn
+/// from the theme, which `ascii` leaves plain).
 #[test]
 fn ascii_reaches_clap_output_too() {
     for args in [
