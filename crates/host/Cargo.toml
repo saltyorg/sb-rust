@@ -1,0 +1,15 @@
+[package]
+name = "sb-host"
+version = "0.1.0"
+description = "The host sb runs on: started with the supported-release check (capability map, host)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sysinfo.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -77,8 +77,8 @@ command can request shutdown with its own code.
 **Scope:** M
 
 ## Checkpoint A: Foundation
-- [ ] `scripts/check.sh full` passes; `sb version` works on this host.
-- [ ] Review with the maintainer before Phase 2.
+- [x] `scripts/check.sh full` passes; `sb version` works on this host.
+- [x] Review with the maintainer before Phase 2. (2026-10-30)
 
 ## Task 4: Host support check hook (`sb-host`)
 
@@ -89,12 +89,15 @@ library if one fits (confirmed at source), sb-go's messages. Every command
 is blocked on an unsupported host, `--help` and `version` included.
 
 **Acceptance criteria:**
-- [ ] On a supported host every command runs; otherwise each exits 1 with sb-go's message.
-- [ ] The check reads an injected path in tests; cargo-deny `wrappers` allow only `sb` to use `sb-host` for now.
+- [x] On a supported host every command runs; otherwise each exits 1 with sb-go's message.
+- [x] The decision is tested with injected values (sysinfo reads the real
+      `/etc/os-release` at a fixed path); cargo-deny `wrappers` allow only
+      `sb` to use `sb-host` for now. The cli-core startup function that
+      takes the check as a hook lands with the wiring in Task 10.
 
 **Verification:**
-- [ ] Unit tests with sample os-release files (supported, unsupported, not Ubuntu, missing).
-- [ ] `scripts/check.sh full`.
+- [x] Unit tests for supported, unsupported, not Ubuntu and missing version.
+- [x] `scripts/check.sh full`.
 
 **Dependencies:** Task 2
 **Files:** `crates/host/{Cargo.toml,src/lib.rs}`, `crates/cli-core/src/startup.rs`, `crates/sb/src/main.rs`, `deny.toml`

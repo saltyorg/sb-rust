@@ -30,6 +30,11 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Every command, help and version included, refuses an unsupported
+    // host first, as sb-go does (cli-core spec, startup step 1).
+    if let Err(unsupported) = sb_host::check_support() {
+        return exit::report(&unsupported, None, &mut std::io::stderr());
+    }
     let cli = Cli::parse();
     let shutdown = Shutdown::new();
     let result = shutdown

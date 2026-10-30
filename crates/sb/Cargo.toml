@@ -9,12 +9,14 @@ publish.workspace = true
 
 [dependencies]
 sb-cli-core.workspace = true
+sb-host.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
