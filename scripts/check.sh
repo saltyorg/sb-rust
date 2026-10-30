@@ -88,11 +88,18 @@ task() {
   if [[ ! -s target/changes.diff ]]; then
     skip "no changed crate code"
   else
+    # A mutant can make sb relaunch itself through sudo; as root with
+    # passwordless sudo that once looped into thousands of processes. A
+    # refusing sudo first on PATH keeps every mutant away from the real one.
+    mkdir -p target/no-sudo
+    printf '#!/bin/sh\necho "sudo blocked during mutation testing" >&2\nexit 97\n' \
+      >target/no-sudo/sudo
+    chmod 755 target/no-sudo/sudo
     # Every crate's tests judge every mutant: end-to-end tests in `sb`
     # cover code in the library crates (cargo-mutants otherwise runs only
     # the mutated package's tests).
-    cargo mutants --in-diff target/changes.diff -o target --timeout 300 \
-      "${pkg_args[@]}" "${test_pkg_args[@]}" || true
+    PATH="$root/target/no-sudo:$PATH" cargo mutants --in-diff target/changes.diff -o target \
+      --timeout 300 "${pkg_args[@]}" "${test_pkg_args[@]}" || true
     node -e '
       const d = require("./target/mutants.out/outcomes.json");
       const tested = d.caught + d.missed + d.timeout;
