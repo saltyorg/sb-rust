@@ -232,7 +232,10 @@ boundaries that callers match on.
 
 - Invalid theme config: warn, log and use the built-in theme.
 - Theme shape: named built-in themes plus per-role overrides.
-- Second signal: exit at once.
+- Second signal: exit at once. Amended 2026-10-30 (term-ui spec, decision
+  5): the second signal is handled on the signals thread, which runs
+  registered terminal-restore hooks (term-ui's cursor and `ECHOCTL`) and
+  then exits with the same code, instead of exiting inside the handler.
 - The root relaunch keeps `SB_COLOR_PROFILE` and NO_COLOR through sudo
   (sb-go loses them), so a user's colour settings reach root commands; an
   unknown profile warns only in the first run. An empty value is unset,
