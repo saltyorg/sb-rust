@@ -56,6 +56,8 @@ Rust libraries in place of sb-go's internals.
    - ratatui `unstable-rendered-line-info` (`Paragraph::line_count`): used by
      the log viewer, the announcement viewer and inline Markdown output.
    - The `cross` image version used for releases.
+
+   See [ADR-001](../decisions/ADR-001-unstable-feature-pins.md).
 10. **Colour:** screens are designed for truecolor and emit it by default,
     as sb-go does. sb-go sets `COLORTERM=truecolor` and a TrueColor
     colorprofile writer unless `SB_COLOR_PROFILE` says otherwise. sb-rust has
@@ -74,7 +76,10 @@ Rust libraries in place of sb-go's internals.
       - **Alternative:** `termprofile`, which does detection and conversion
         in one crate with a ratatui feature, but has low adoption.
     - The palette is converted once at startup for the chosen profile.
-    - The choice goes in an ADR when it is built.
+    - Decided in [ADR-002](../decisions/ADR-002-colour-fallback.md):
+      forced truecolor, `SB_COLOR_PROFILE` (or the theme config's
+      `color_profile`) to step down, one conversion at startup with
+      `anstyle-lossy`.
 
     **Piped output** is plain by default (colour only on a terminal, and
     console's NO_COLOR and CLICOLOR rules). A `--color=auto|always|never` flag (clap's
