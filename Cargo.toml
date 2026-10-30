@@ -29,7 +29,6 @@ signal-hook = "0.4.5"
 tokio-util = "0.7.20"
 rustix = { version = "1.1.6", features = ["fs", "process"] }
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
-time = "0.3.55"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }

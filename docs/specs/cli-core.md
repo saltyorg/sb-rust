@@ -60,10 +60,10 @@ both files they read are readable without root.
      that gives `server_appdata_path` is world-readable, so help and
      version use the theme too. If either can't be read, the built-in
      theme is used.
-4. **Logging** (decision 11): a run record to `/var/log/sb` (0700),
-   rotated daily by tracing-appender, kept regardless of outcome, for every
-   run as root. The record holds sb's version and the command's name,
-   never argument values (they can carry secrets), then the command's
+4. **Logging** (decision 11): a run record to `/var/log/sb/sb.log` (the
+   directory 0700), one file that Saltbox's logrotate rotates, kept
+   regardless of outcome, for every run as root. The record holds sb's
+   version and the command's name, never argument values (they can carry secrets), then the command's
    events and how the run ended; a failure's error and causes go in as
    tracing's error field. Help, version and completion, which run as the
    calling user, aren't logged (the directory is root-only). A log that
@@ -107,7 +107,7 @@ the reader of sb's output goes away (`sb ... | head`), as sb-go gets when
 SIGPIPE kills it.
 
 **Errors:** one block on stderr: `✗` and the message, each cause on its
-own line, then the log pointer (`details: /var/log/sb/<file> (run <id>)`)
+own line, then the log pointer (`details: /var/log/sb/sb.log (run <id>)`)
 when the run is logged. A cancellation shows "interrupted" rather than an
 error chain. Errors already shown (a failed step's tree) exit quietly, as
 the runner does.
@@ -219,8 +219,8 @@ boundaries that callers match on.
 4. SIGINT exits 130 and SIGTERM 143, with the terminal restored.
 5. An error shows one `✗` block with its causes and the log pointer, and
    exits 1.
-6. Every root run writes its run record and outcome to `/var/log/sb`;
-   files rotate daily.
+6. Every root run writes its run record and outcome to
+   `/var/log/sb/sb.log`; logrotate's rotated copies count as sb's logs.
 7. `--color=never` gives no escape codes on any path, including help.
    `--color=always` gives truecolor when piped.
 8. A theme in `/opt/sb/config.toml` (or under a moved `server_appdata_path`)
@@ -272,8 +272,17 @@ boundaries that callers match on.
   file's profile, else truecolor. An empty `SB_CONFIG` is unset too.
 - `SB_LOG_DIR` stays in release builds. The log directory must belong to
   the user running sb (another user's could hold a planted
-  `sb.<date>.log` link to a root file); an existing one that isn't
-  already 0700 and holds anything but sb's logs is refused, not changed.
+  `sb.log` link to a root file); an existing one that isn't already 0700
+  and holds anything but sb's logs (`sb.log` and logrotate's copies) is
+  refused, not changed.
+- One log file, `sb.log`, rotated by Saltbox's logrotate instead of daily
+  files that sb prunes (maintainer, 2026-10-30): one path to follow,
+  compressed history, handled like Saltbox's other logs. No signal from
+  logrotate is needed or wanted: each run opens the file afresh, a run
+  overlapping a rotation finishes in the renamed copy, and sb doesn't
+  handle SIGHUP. The rule (docs/platform-notes/logrotate.md) uses
+  `delaycompress` so that copy isn't compressed under a running sb, and
+  `nocreate`: sb creates the file itself.
 - Root: only commands that need root relaunch through `sudo`; help,
   version and Tab completion run as the calling user. (Revised twice: an
   always-root draft, as sb-go, was dropped once completion could read a

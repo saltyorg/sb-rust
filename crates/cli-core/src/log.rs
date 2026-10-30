@@ -5,10 +5,19 @@
 //! the command's name, the command's own events, and how the run ended.
 //! Argument values are never logged: they can carry secrets
 //! (`sb install -e password=...`). tracing-subscriber's fmt layer writes
-//! plain text to a tracing-appender `RollingFileAppender` that starts a new
-//! file each UTC day and keeps the last 13 to 14 (it prunes to one below
-//! `max_log_files` at every start), as proved in proto-runner
+//! plain text to one file, `sb.log`, through a tracing-appender
+//! `RollingFileAppender` that never rotates, built with `Builder` and
+//! `Rotation::NEVER`
 //! (https://docs.rs/tracing-appender/0.2.5/tracing_appender/rolling/struct.Builder.html).
+//! Why not `rolling::never`
+//! (https://docs.rs/tracing-appender/0.2.5/tracing_appender/rolling/fn.never.html):
+//! it panics when the file can't be opened; `Builder::build` returns the
+//! error, and an unopenable log is only a warning.
+//! Saltbox's logrotate rotates it (maintainer, 2026-10-30): one path to
+//! follow, compressed history, managed like Saltbox's other logs. Each run
+//! opens the file afresh, so logrotate needs no signal: a run that
+//! overlaps a rotation finishes in the renamed file, its record whole (the
+//! rule uses `delaycompress`; docs/platform-notes/logrotate.md).
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -19,8 +28,8 @@ use tracing::span::EnteredSpan;
 
 use crate::cancel::Shutdown;
 
-/// Daily files tracing-appender keeps (13 to 14 days, see above).
-const LOG_FILES_KEPT: usize = 14;
+/// The log file's name in the log directory.
+const LOG_FILE: &str = "sb.log";
 
 /// Where runs log: `SB_LOG_DIR` when set (tests, debugging), otherwise
 /// `/var/log/sb`.
@@ -31,7 +40,7 @@ pub fn log_dir(override_dir: Option<OsString>) -> PathBuf {
 /// One run's log: its id and where it is written.
 pub struct RunLog {
     id: String,
-    /// The daily file the run started in.
+    /// The file the run writes to.
     file: PathBuf,
 }
 
@@ -51,8 +60,8 @@ impl RunLog {
             .create(dir)?;
         let meta = std::fs::metadata(dir)?;
         // Only a directory of the user running sb: another user's could hold
-        // `sb.<today>.log` as a link to a root file, which the appender would
-        // follow and append to.
+        // `sb.log` as a link to a root file, which the appender would follow
+        // and append to.
         if meta.uid() != crate::root::effective_uid() {
             return Err(std::io::Error::other(format!(
                 "{} belongs to another user; not logging there",
@@ -69,10 +78,8 @@ impl RunLog {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
         let appender = tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("sb")
-            .filename_suffix("log")
-            .max_log_files(LOG_FILES_KEPT)
+            .rotation(tracing_appender::rolling::Rotation::NEVER)
+            .filename_prefix(LOG_FILE)
             .build(dir)
             .map_err(std::io::Error::other)?;
         // No colours of fmt's own. Escape codes inside logged values are
@@ -95,12 +102,9 @@ impl RunLog {
             .map_or(0, |d| d.as_nanos());
         // The low 64 bits move fastest; keeping only them is the point.
         let id = format!("{:016x}", (nanos as u64) ^ u64::from(std::process::id()));
-        // The appender names daily files `sb.<UTC date>.log`
-        // (tracing-appender 0.2.5 rolling.rs, `[year]-[month]-[day]`, which
-        // is how time's `Date` displays). It read the clock in `build()`; a
-        // run starting within microseconds of midnight UTC could name the
-        // other day's file, which the run id still finds.
-        let file = dir.join(format!("sb.{}.log", time::OffsetDateTime::now_utc().date()));
+        // Never rotating, the appender names the file by its prefix alone
+        // (tracing-appender 0.2.5 rolling.rs `join_date`).
+        let file = dir.join(LOG_FILE);
         Ok((Self { id, file }, subscriber))
     }
 
@@ -138,14 +142,19 @@ impl RunLog {
 }
 
 /// Whether every entry in `dir` is one of sb's log files: a regular file
-/// named `sb.*.log` (`file_type` doesn't follow symlinks). An empty
-/// directory counts as sb's.
+/// (`file_type` doesn't follow symlinks) named `sb.log` or one of
+/// logrotate's names for its rotated copies (`sb.log.1`, `sb.log.2.gz`,
+/// `sb.log-20261030` with `dateext`; not `extension`, other `dateformat`s
+/// or `olddir`: docs/platform-notes/logrotate.md). An empty directory
+/// counts as sb's.
 fn holds_only_sb_logs(dir: &Path) -> std::io::Result<bool> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let is_sb_log = name.starts_with("sb.") && name.ends_with(".log");
+        let is_sb_log = name
+            .strip_prefix(LOG_FILE)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '-']));
         if !(entry.file_type()?.is_file() && is_sb_log) {
             return Ok(false);
         }
@@ -247,7 +256,7 @@ mod tests {
     #[test]
     fn an_open_directory_of_sb_logs_is_made_private() {
         let dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(dir.path().join("sb.2026-10-29.log"), "old run\n").expect("write");
+        std::fs::write(dir.path().join("sb.log.1"), "old run\n").expect("write");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
             .expect("chmod");
         assert!(RunLog::open(dir.path()).is_ok());
@@ -285,9 +294,7 @@ mod tests {
         assert!(RunLog::open(&file.path().join("sb")).is_err());
     }
 
-    /// The pointer names the daily file the run started in (a run that
-    /// passes midnight UTC carries on in the next file; its run id finds
-    /// the rest), and that file is the one the appender writes.
+    /// The pointer names the file the appender writes, and the run.
     #[test]
     fn the_pointer_names_the_file_and_run() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -330,13 +337,12 @@ mod tests {
     }
 
     /// A symlink (or directory) named like a log isn't one of sb's logs:
-    /// only regular `sb.*.log` files count.
+    /// only regular files with sb's log names count.
     #[test]
     fn a_link_named_like_a_log_is_not_sbs() {
         let dir = tempfile::tempdir().expect("temp dir");
         let elsewhere = tempfile::NamedTempFile::new().expect("temp file");
-        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("sb.2026-01-01.log"))
-            .expect("symlink");
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("sb.log")).expect("symlink");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
             .expect("chmod");
         assert!(RunLog::open(dir.path()).is_err());
@@ -349,7 +355,7 @@ mod tests {
     }
 
     /// A directory owned by another user isn't trusted, private or not: its
-    /// owner could plant `sb.<today>.log` as a link to a root file for a
+    /// owner could plant `sb.log` as a link to a root file for a
     /// root run to append to. Making one needs root (`SB_TEST_ROOT=1`).
     #[test]
     fn another_users_directory_is_refused() {
@@ -363,7 +369,7 @@ mod tests {
         assert!(RunLog::open(dir.path()).is_err());
     }
 
-    /// Only `sb.*.log` files count as sb's: another program's `.log` makes
+    /// Only sb's log names count: another program's `.log` makes
     /// the directory someone else's.
     #[test]
     fn another_programs_log_is_not_sbs() {
@@ -371,6 +377,53 @@ mod tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
             .expect("chmod");
         std::fs::write(dir.path().join("notes.log"), "x").expect("write");
+        assert!(RunLog::open(dir.path()).is_err());
+    }
+
+    /// One file, `sb.log`, whatever the date: Saltbox's logrotate rotates
+    /// it.
+    #[test]
+    fn runs_write_to_sb_log() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (log, subscriber) = RunLog::open(dir.path()).expect("open");
+        tracing::subscriber::with_default(subscriber, || {
+            let _run = log.enter();
+            log.started("version", "0.1.0");
+        });
+        assert!(dir.path().join("sb.log").is_file());
+        assert!(
+            log.pointer()
+                .starts_with(&format!("{} ", dir.path().join("sb.log").display()))
+        );
+    }
+
+    /// logrotate's names for rotated copies (numbered, dated with
+    /// `dateext`, compressed) are sb's logs too, so a too-open directory
+    /// holding them is still made private.
+    #[test]
+    fn rotated_logs_are_sbs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for name in [
+            "sb.log",
+            "sb.log.1",
+            "sb.log.2.gz",
+            "sb.log-20261030",
+            "sb.log-20261029.gz",
+        ] {
+            std::fs::write(dir.path().join(name), "old run\n").expect("write");
+        }
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        assert!(RunLog::open(dir.path()).is_ok());
+    }
+
+    /// A name that only starts like sb's log isn't one.
+    #[test]
+    fn a_name_like_sb_log_is_not_sbs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("sb.logger"), "x").expect("write");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
         assert!(RunLog::open(dir.path()).is_err());
     }
 

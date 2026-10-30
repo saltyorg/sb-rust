@@ -106,12 +106,11 @@ Rust libraries in place of sb-go's internals.
         screen)?
       - How long did each step take?
     - **Libraries:** `tracing` events, written by `tracing-subscriber` to a
-      `tracing-appender` `RollingFileAppender`. It rotates by time and
-      prunes with `max_log_files` (checked in tracing-appender 0.2.5 source).
-      It has no size-based rotation, so retention is "N days" (for example
-      daily files dated in UTC; `max_log_files(14)` keeps 13 to 14, as it
-      prunes to one below the limit at each start). No logrotate
-      configuration is needed.
+      `tracing-appender` `RollingFileAppender` that never rotates: one file,
+      `/var/log/sb/sb.log`. Saltbox's logrotate, which Saltbox already
+      manages, rotates and compresses it (maintainer, 2026-10-30; replaces
+      daily files pruned by `max_log_files`). The rule:
+      docs/platform-notes/logrotate.md.
     - **What is logged:**
       - one record per run, with a run id and the entry point (command, and
         whether the install script started it);
@@ -119,7 +118,7 @@ Rust libraries in place of sb-go's internals.
       - each step's output lines, tagged with run id and step.
 
       Logging is general: every run is logged and kept, successful or not.
-      Only rotation retires old files. A failed step's `full output:` line
+      Only logrotate retires old copies. A failed step's `full output:` line
       points at the log and the run id. Proved in proto-runner.
     - **Format:** to be decided in the spec. tracing-subscriber's readable
       key=value format suits users reading the file; its JSON format suits
@@ -159,7 +158,7 @@ GitHub API (last push, archived flag).
 | Signals | `signal-hook` | 0.4.5 / 2026-10 | 67M | signals pkg | proto-runner |
 | Host OS release | `sysinfo` (`system` feature only), reading `/etc/os-release` | 0.40.0 / 2026-10 | 58M | host/ubuntu.go parser | cli-core (approved 2026-10-30; os_info rejected: runs `lsb_release`) |
 | Errors | `anyhow` (bin), `thiserror` (lib modules) | 2026 | 260M / 464M | — | untested |
-| Logging | `tracing` + `tracing-subscriber`, files via `tracing-appender` (rolling, `max_log_files`) | 0.2.5 (appender) / 2026-04 | 240M / 42M | terminal/logging (screen only) | proto-runner; decision 11 |
+| Logging | `tracing` + `tracing-subscriber`, one file via `tracing-appender` (never rotating; Saltbox's logrotate rotates it) | 0.2.5 (appender) / 2026-04 | 240M / 42M | terminal/logging (screen only) | proto-runner; decision 11 |
 | Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs) | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs |
 | Docker | `bollard` | 0.21.1 / 2026-08 | 20M | moby client | proto-musl, proto-logs, proto-inline |
 | systemctl JSON output | `serde_json` | 1.0.154 / 2026-10 | 389M | parsing systemctl's human-readable columns | proto-logs |

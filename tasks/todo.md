@@ -134,7 +134,8 @@ still isn't root stops instead of looping.
 ## Task 6: Run log on the host
 
 **Description:** Root runs log to `/var/log/sb` (directory injectable for
-tests), rotated daily by tracing-appender (`max_log_files`), with a run
+tests), rotated daily by tracing-appender (`max_log_files`; since
+2026-10-30 one `sb.log` rotated by Saltbox's logrotate), with a run
 span carrying the run id, the command's name (never its arguments), each
 event plain text, and the outcome at the end. Unprivileged runs don't log. A log that can't be
 opened is a warning. The error block's pointer names the log and run id.
