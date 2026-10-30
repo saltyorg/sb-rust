@@ -39,7 +39,11 @@ need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONS
 mapfile -t crates < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml -printf '%h\n' 2>/dev/null |
   sed 's|^crates/|sb-|; s|^sb-sb$|sb|' | sort)
 pkg_args=()
-for c in "${crates[@]}"; do pkg_args+=(-p "$c"); done
+test_pkg_args=()
+for c in "${crates[@]}"; do
+  pkg_args+=(-p "$c")
+  test_pkg_args+=(--test-package "$c")
+done
 
 fast() {
   step "format"
@@ -84,7 +88,11 @@ task() {
   if [[ ! -s target/changes.diff ]]; then
     skip "no changed crate code"
   else
-    cargo mutants --in-diff target/changes.diff -o target --timeout 300 "${pkg_args[@]}" || true
+    # Every crate's tests judge every mutant: end-to-end tests in `sb`
+    # cover code in the library crates (cargo-mutants otherwise runs only
+    # the mutated package's tests).
+    cargo mutants --in-diff target/changes.diff -o target --timeout 300 \
+      "${pkg_args[@]}" "${test_pkg_args[@]}" || true
     node -e '
       const d = require("./target/mutants.out/outcomes.json");
       const tested = d.caught + d.missed + d.timeout;
