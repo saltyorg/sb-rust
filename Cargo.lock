@@ -3119,6 +3119,7 @@ dependencies = [
  "sb-cli-core",
  "sb-host",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -3133,6 +3134,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio-util",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]

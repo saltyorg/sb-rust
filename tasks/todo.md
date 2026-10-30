@@ -138,13 +138,15 @@ outcome at the end. Unprivileged runs don't log. A log that can't be
 opened is a warning. The error block's pointer names the log and run id.
 
 **Acceptance criteria:**
-- [ ] A root run writes its start, events and outcome; failures point at the log.
-- [ ] A test feeds a known secret through the logging path and asserts it never appears (CONSTRAINTS.md, Logging).
-- [ ] Unwritable log directory: a warning and the run continues.
+- [x] A root run writes its start, events and outcome; failures point at the log.
+- [x] Argument values are never logged (they can carry secrets): the
+      record holds the command's name; an end-to-end test checks an
+      argument never reaches the log (CONSTRAINTS.md, Logging).
+- [x] Unwritable log directory: a warning and the run continues.
 
 **Verification:**
-- [ ] Tests against a temporary directory; `SB_TEST_ROOT=1` test for the real path.
-- [ ] `scripts/check.sh task`; library-reviewer on the diff.
+- [x] Tests against a temporary directory; `SB_TEST_ROOT=1` test for the real path.
+- [x] `scripts/check.sh task`; library-reviewer on the diff.
 
 **Dependencies:** Task 5
 **Files:** `crates/cli-core/src/{log.rs,error.rs}`, `crates/cli-core/tests/run_log.rs`

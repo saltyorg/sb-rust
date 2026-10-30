@@ -6,6 +6,8 @@
 //! bind-mounted over it, seen only by that process and gone when it exits.
 //! Creating the namespace needs root; elsewhere the test says it skipped.
 
+mod common;
+
 use std::io::Write;
 use std::process::{Command, Output};
 
@@ -23,6 +25,7 @@ fn sb_with_os_release(content: &str, args: &[&str]) -> Option<Output> {
     fake.write_all(content.as_bytes()).expect("write");
     let script = r#"mount --bind "$1" /etc/os-release && shift && exec "$@""#;
     let output = Command::new("unshare")
+        .env("SB_LOG_DIR", common::test_log_dir())
         .args([
             "--mount",
             "--propagation",
@@ -33,7 +36,7 @@ fn sb_with_os_release(content: &str, args: &[&str]) -> Option<Output> {
             "sh",
         ])
         .arg(fake.path())
-        .arg(assert_cmd::cargo::cargo_bin("sb"))
+        .arg(common::sb().get_program())
         .args(args)
         .output()
         .expect("run unshare");

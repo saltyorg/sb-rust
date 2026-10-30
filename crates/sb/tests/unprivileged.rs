@@ -6,6 +6,8 @@
 //! show as that code. Switching users needs root; elsewhere the test says
 //! it skipped.
 
+mod common;
+
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output};
 
@@ -19,7 +21,8 @@ fn sb_as_nobody(args: &[&str]) -> Option<Output> {
     let output = Command::new("setpriv")
         .args(["--reuid=65534", "--regid=65534", "--clear-groups", "env"])
         .arg(format!("PATH={}:/usr/bin:/bin", dir.path().display()))
-        .arg(assert_cmd::cargo::cargo_bin("sb"))
+        .arg(format!("SB_LOG_DIR={}", common::test_log_dir().display()))
+        .arg(common::sb().get_program())
         .args(args)
         .output()
         .ok()?;

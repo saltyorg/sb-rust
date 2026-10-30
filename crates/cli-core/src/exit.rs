@@ -43,6 +43,31 @@ pub fn finish_run(
     }
 }
 
+/// The error and its causes, outermost first. Why not `Error::sources()`:
+/// still unstable (`error_iter`).
+fn chain<'a>(err: &'a (dyn Error + 'static)) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
+    std::iter::successors(Some(err), |&e| e.source())
+}
+
+/// The code an error ends the run with quietly, if it is a quiet exit: a
+/// requested [`Exit`] anywhere in the chain, or a broken pipe. The reader
+/// of our output went away (`sb ... | head`); Rust ignores SIGPIPE, so this
+/// arrives as an error, and the run ends with the code a process killed by
+/// SIGPIPE gets (128 + 13), as sb-go does. Why not `-Zon-broken-pipe=kill`:
+/// unstable, so it would need an ADR
+/// (https://doc.rust-lang.org/beta/unstable-book/compiler-flags/on-broken-pipe.html);
+/// why not resetting SIGPIPE with libc: unsafe code, forbidden here. One
+/// classification serves the screen ([`report`]) and the run log.
+pub fn quiet_exit(err: &(dyn Error + 'static)) -> Option<u8> {
+    if let Some(Exit(code)) = chain(err).find_map(|e| e.downcast_ref::<Exit>()) {
+        return Some(*code);
+    }
+    chain(err)
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+        .then_some(141)
+}
+
 /// Print one error block (`✗` and the message, each cause on its own line,
 /// then the log pointer) and return 1, or return a requested [`Exit`] code
 /// quietly when one is anywhere in the chain.
@@ -51,27 +76,13 @@ pub fn report(
     log_pointer: Option<&str>,
     out: &mut impl Write,
 ) -> ExitCode {
-    // Why not `Error::sources()`: still unstable (`error_iter`).
-    let chain = || std::iter::successors(Some(err), |&e| e.source());
-    if let Some(Exit(code)) = chain().find_map(|e| e.downcast_ref::<Exit>()) {
-        return ExitCode::from(*code);
-    }
-    // The reader of our output went away (`sb ... | head`). Rust ignores
-    // SIGPIPE, so this arrives as an error; end quietly with the code a
-    // process killed by SIGPIPE gets (128 + 13), as sb-go does. Why not
-    // `-Zon-broken-pipe=kill`: unstable, so it would need an ADR
-    // (https://doc.rust-lang.org/beta/unstable-book/compiler-flags/on-broken-pipe.html);
-    // why not resetting SIGPIPE with libc: unsafe code, forbidden here.
-    let broken_pipe = chain()
-        .filter_map(|e| e.downcast_ref::<std::io::Error>())
-        .any(|e| e.kind() == std::io::ErrorKind::BrokenPipe);
-    if broken_pipe {
-        return ExitCode::from(141);
+    if let Some(code) = quiet_exit(err) {
+        return ExitCode::from(code);
     }
     // The spec's block; why not anyhow's `{:#}` or `{:?}`: one line, or
     // numbered causes and a backtrace, neither the spec's format.
     let mut block = format!("✗ {err}\n");
-    for cause in chain().skip(1) {
+    for cause in chain(err).skip(1) {
         let _ = writeln!(block, "  caused by: {cause}");
     }
     if let Some(pointer) = log_pointer {
@@ -241,6 +252,16 @@ mod tests {
             ExitCode::from(1)
         );
         assert_eq!(String::from_utf8(out).expect("utf-8"), "✗ boom\n");
+    }
+
+    /// One classification for the screen and the log: a requested code or
+    /// a broken pipe is a quiet exit, anything else a failure.
+    #[test]
+    fn quiet_exits_are_classified_once() {
+        assert_eq!(quiet_exit(&Exit(4)), Some(4));
+        let pipe = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+        assert_eq!(quiet_exit(&pipe), Some(141));
+        assert_eq!(quiet_exit(&failure("boom")), None);
     }
 
     /// A requested exit wrapped in context (as anyhow's `context` does)

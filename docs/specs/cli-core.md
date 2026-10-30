@@ -56,11 +56,15 @@ per-command startup code.
      that gives `server_appdata_path` is world-readable, so help and
      version use the theme too. If either can't be read, the built-in
      theme is used.
-4. **Logging** (decision 11): a run record to `/var/log/sb`, rotated
-   daily by tracing-appender, kept regardless of outcome, for every run
-   as root. Help, version and completion, which run as the calling user,
-   aren't logged (the directory is root-only). A log that can't be opened
-   is a warning, not a failure.
+4. **Logging** (decision 11): a run record to `/var/log/sb` (0700),
+   rotated daily by tracing-appender, kept regardless of outcome, for every
+   run as root. The record holds sb's version and the command's name,
+   never argument values (they can carry secrets), then the command's
+   events and how the run ended; a failure's error and causes go in as
+   tracing's error field. Help, version and completion, which run as the
+   calling user, aren't logged (the directory is root-only). A log that
+   can't be opened is a warning, not a failure. `SB_LOG_DIR` overrides the
+   directory (tests and debugging; sudo doesn't pass it through).
 5. **Colour** (decision 10): `--color=auto|always|never` (colorchoice-clap)
    decides once and is passed on to anstream, console and crossterm. clap's
    own help follows it (`Command::color`). Truecolor is the default; the

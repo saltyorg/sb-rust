@@ -64,7 +64,7 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 ### Phase 2: Startup
 - [x] Task 4: Host support check hook (`sb-host`)
 - [x] Task 5: Root relaunch for commands that need it
-- [ ] Task 6: Run log on the host
+- [x] Task 6: Run log on the host
 
 ### Checkpoint B: Startup
 

@@ -15,6 +15,9 @@ thiserror.workspace = true
 signal-hook.workspace = true
 tokio-util.workspace = true
 rustix.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
