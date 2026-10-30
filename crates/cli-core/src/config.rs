@@ -4,7 +4,7 @@
 //! `<server_appdata_path>/sb/config.toml` (`/opt/sb/config.toml` by
 //! default), so Saltbox backups cover it. `server_appdata_path` comes from
 //! the Saltbox inventory with sb-go's rules (layout/paths.go
-//! `loadServerAppdataPath`), read with serde-saphyr. The file is TOML,
+//! `loadServerAppdataPath`), read with saphyr. The file is TOML,
 //! read with the `toml` crate through serde, strictly: an unknown key,
 //! theme or role is an error, which the caller shows as a warning before
 //! using the built-in theme. Both files are readable without root (the
@@ -112,28 +112,50 @@ fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigErro
 }
 
 /// `server_appdata_path` from `inventory`: an absolute value, cleaned; a
-/// missing, unreadable or oversized file, a parse error, or an empty or
-/// relative value all mean `/opt`, as in sb-go. Cleaning is std's
+/// missing, unreadable or oversized file, a parse error in the first
+/// document (a duplicate key included), or an empty or relative value all
+/// mean `/opt`, as in sb-go. Like sb-go's yaml.v3 it parses only the first
+/// document (`Parser::load` with `multi` off:
+/// https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load)
+/// and reads a custom-tagged scalar as its string. Unlike yaml.v3, a merge
+/// key (`<<`) isn't followed (saphyr has none); Saltbox's host_vars don't
+/// use one. The inventory is Saltbox config, read with saphyr as the
+/// capability map has it for Saltbox YAML
+/// (https://docs.rs/saphyr/0.3.3/saphyr/); serde-saphyr would make sb
+/// 741408 bytes bigger for this one key (ADR-004). Cleaning is std's
 /// `Path::components` (repeated separators and `.` parts go:
 /// https://doc.rust-lang.org/std/path/struct.Path.html#method.components);
 /// unlike Go's `filepath.Clean` it keeps `..` (std's `normalize_lexically`
-/// is unstable). Also unlike sb-go's yaml.v3: a second YAML document, or
-/// nesting deeper than serde-saphyr's limits, gives `/opt`; neither occurs
-/// in Saltbox's host_vars.
+/// is unstable).
 pub fn appdata_path(inventory: &Path) -> PathBuf {
-    #[derive(Deserialize)]
-    struct Inventory {
-        server_appdata_path: Option<String>,
-    }
     read_small(inventory)
         .ok()
         .flatten()
-        .and_then(|text| serde_saphyr::from_str::<Inventory>(&text).ok())
-        .and_then(|inventory| inventory.server_appdata_path)
-        .map(PathBuf::from)
+        .and_then(|text| {
+            let document = first_document(&text)?;
+            let value = document.as_mapping_get("server_appdata_path")?;
+            value
+                .get_tagged_node()
+                .unwrap_or(value)
+                .as_str()
+                .map(PathBuf::from)
+        })
         .filter(|path| path.is_absolute())
         .map(|path| path.components().collect())
         .unwrap_or_else(|| PathBuf::from("/opt"))
+}
+
+/// The first YAML document in `text`, parsed no further, or `None` on an
+/// error in it.
+fn first_document(text: &str) -> Option<saphyr::Yaml<'_>> {
+    let mut loader = saphyr::YamlLoader::default();
+    saphyr_parser::Parser::new_from_str(text)
+        .load(&mut loader, false)
+        .ok()?;
+    if loader.error().is_some() {
+        return None;
+    }
+    loader.into_documents().into_iter().next()
 }
 
 /// sb's config file under the appdata path.
@@ -312,6 +334,37 @@ mod tests {
         assert_eq!(
             appdata_path(&dir.path().join("missing.yml")),
             PathBuf::from("/opt")
+        );
+    }
+
+    /// yaml.v3 refuses a mapping with a duplicate key, so sb-go falls back
+    /// to `/opt`; a second document is ignored (yaml.v3 reads the first).
+    #[test]
+    fn duplicate_keys_and_extra_documents_follow_sb_go() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let case = |text: &str| appdata_path(&file(dir.path(), "localhost.yml", text));
+        assert_eq!(
+            case("server_appdata_path: /a\nserver_appdata_path: /b\n"),
+            PathBuf::from("/opt")
+        );
+        assert_eq!(
+            case("server_appdata_path: /a\n---\nserver_appdata_path: /b\n"),
+            PathBuf::from("/a")
+        );
+        // yaml.v3 doesn't parse past the first document, so a broken later
+        // one doesn't matter.
+        assert_eq!(
+            case("server_appdata_path: /a\n---\n[unclosed\n"),
+            PathBuf::from("/a")
+        );
+        assert_eq!(
+            case("server_appdata_path: /a\n---\nx: 1\nx: 2\n"),
+            PathBuf::from("/a")
+        );
+        // yaml.v3 decodes a custom-tagged scalar into a string.
+        assert_eq!(
+            case("server_appdata_path: !custom /srv\n"),
+            PathBuf::from("/srv")
         );
     }
 
