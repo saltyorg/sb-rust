@@ -110,12 +110,20 @@ needed and not root, exec `sudo --preserve-env=VISUAL,EDITOR <exe> <args>`;
 otherwise run as the user. sudo's own prompt handles passwords.
 
 **Acceptance criteria:**
-- [ ] `version`, `--help` and completion never relaunch; a root-needing command does, with the same arguments.
-- [ ] Exec replaces the process: the exit code and signals belong to the real run.
+- [x] `version`, `--help` and completion never relaunch; a root-needing command does, with the same arguments.
+- [x] Exec replaces the process: the exit code and signals belong to the real run.
+- [x] A relaunched run that still isn't root stops instead of looping
+      (found when a mutant looped through the real sudo; see the commit).
 
 **Verification:**
-- [ ] Unit tests for the decision; integration test with a fake `sudo` on `PATH` (records arguments, exits 7) through a test-only root-needing command compiled only in tests.
-- [ ] `scripts/check.sh task`; library-reviewer on the diff.
+- [x] Unit tests for the decision and `ensure_root` (injected exec); the
+      real exec tested with a fake `sudo` on `PATH` (records arguments and
+      the marker, exits 7); `version` and `--help` run as `nobody` with a
+      fake sudo that would show as exit 42.
+- [x] `scripts/check.sh task`; library-reviewer on the diff.
+- Open until the first root-needing command (`sb docker ps`): two
+  mutants are equivalent today (`needs_root` always false, effective UID
+  always 0) and the relaunch path in `main` runs end to end only then.
 
 **Dependencies:** Task 4
 **Files:** `crates/cli-core/src/{root.rs,command.rs}`, `crates/cli-core/tests/relaunch.rs`

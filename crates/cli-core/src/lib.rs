@@ -4,3 +4,4 @@
 pub mod build_info;
 pub mod cancel;
 pub mod exit;
+pub mod root;

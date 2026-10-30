@@ -37,10 +37,15 @@ per-command startup code.
    2026-10-30; a factual improvement under decision 1). `--help`,
    `version` and Tab completion run as the calling user, with no sudo.
    Every other command, when not root, replaces itself with
-   `sudo --preserve-env=VISUAL,EDITOR <exe> <args>` (exec, not a child:
-   signals and the exit code then belong to the real run); if sudo asks
-   for a password, the user answers its own prompt. Each command declares
-   whether it needs root; the default is yes.
+   `sudo --preserve-env=VISUAL,EDITOR,SB_RELAUNCHED <exe> <args>` (exec,
+   not a child as in sb-go: signals and the exit code then belong to the
+   real run); if sudo asks for a password, the user answers its own
+   prompt. Each command declares whether it needs root, in an exhaustive
+   match, so a new command can't skip the decision.
+   - **No relaunch loop:** the relaunched run carries `SB_RELAUNCHED=1`.
+     If sudo ran sb as someone other than root, it stops with
+     "relaunched through sudo but still not root" instead of relaunching
+     again (sb-go would loop, piling up sudo processes).
    - **Completion without root:** commands, subcommands and flags come
      from the binary. Dynamic values (Ansible tags) come from the tag cache
      (`/srv/git/saltbox/cache.json`, as sb-go), which must stay readable
