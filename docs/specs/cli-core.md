@@ -85,7 +85,9 @@ request shutdown with its own exit code (sb-go's `Shutdown(code)`).
 
 **Exit codes:** 0 success; 1 error; 130 after SIGINT, 143 after SIGTERM; a
 code a command requested; a wrapped child's own code when sb only passes it
-through (`sudo` relaunch, plain pass-through commands).
+through (`sudo` relaunch, plain pass-through commands); 141, quietly, when
+the reader of sb's output goes away (`sb ... | head`), as sb-go gets when
+SIGPIPE kills it.
 
 **Errors:** one block on stderr: `✗` and the message, each cause on its
 own line, then the log pointer (`details: /var/log/sb/<file> (run <id>)`)

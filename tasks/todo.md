@@ -39,13 +39,13 @@ through child code; 130/143 come in Task 3) and one error block on stderr:
 there is one. Errors already shown exit quietly.
 
 **Acceptance criteria:**
-- [ ] An error prints one block with its causes and exits 1.
-- [ ] A command can request its own exit code; a quiet error prints nothing more.
-- [ ] A parse error keeps clap's message and exit code.
+- [x] An error prints one block with its causes and exits 1.
+- [x] A command can request its own exit code; a quiet error prints nothing more.
+- [x] A parse error keeps clap's message and exit code.
 
 **Verification:**
-- [ ] Unit tests for formatting and the code mapping; CLI test for a parse error.
-- [ ] `scripts/check.sh task`.
+- [x] Unit tests for formatting and the code mapping; CLI test for a parse error.
+- [x] `scripts/check.sh task`.
 
 **Dependencies:** Task 1
 **Files:** `crates/cli-core/src/{exit.rs,error.rs,lib.rs}`, `crates/sb/src/main.rs`, `crates/sb/tests/errors.rs`

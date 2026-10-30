@@ -56,7 +56,7 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 
 ### Phase 1: Foundation
 - [x] Task 1: Workspace, `sb` binary and `sb version`
-- [ ] Task 2: Exit codes and the error block
+- [x] Task 2: Exit codes and the error block
 - [ ] Task 3: Cancellation on SIGINT and SIGTERM
 
 ### Checkpoint A: Foundation
