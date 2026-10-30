@@ -1,0 +1,53 @@
+# cargo-deny configuration (CONSTRAINTS.md, "Dependencies" and
+# "Architecture"). Format: https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+# The gate runs on the shipped binary's graph:
+#   cargo deny --manifest-path crates/sb/Cargo.toml check
+# so the prototypes' dependencies don't count.
+
+[graph]
+# Only what we ship (decision 6): static musl on amd64 and arm64.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+
+[advisories]
+# Any RustSec vulnerability fails; unmaintained crates fail anywhere in the
+# graph. An ignore needs a CONSTRAINTS.md Exceptions row.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Compatible with the project's GPL-3.0-only licence. Adding one needs a
+# reason in the commit and a CONSTRAINTS.md review.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "GPL-3.0-only",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicates are reported, not failed: they come from upstream version
+# skew we don't control. Wildcard version requirements fail.
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path dependencies have no version requirement.
+allow-wildcard-paths = true
+# Architecture: one entry per crates/ crate, listing the crates allowed to
+# depend on it directly (`wrappers`), from the capability map's
+# "Depends on" column. Added with each crate.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

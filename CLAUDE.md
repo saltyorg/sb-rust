@@ -86,10 +86,10 @@ repository (see the hooks in `.claude/settings.json`).
 
 ## Quality bar (never weaken silently)
 
-- **`CONSTRAINTS.md` is the quality contract.** It does not exist yet: create it
-  with `agent-skills:constraint-driven-development` before the first production
-  code lands. Once it exists, read it before writing code and never weaken it to
-  make a change pass.
+- **`CONSTRAINTS.md` is the quality contract.** Read CONSTRAINTS.md before
+  writing code. Do not weaken it to make a change pass. Run
+  `scripts/check.sh fast` after edits, `task` before handing work back and
+  `full` before committing.
 - **Fix the code, not the lint.** `#[allow]` is forbidden. A truly justified
   exception uses `#[expect(lint, reason = "...")]`, needs a row in the
   `CONSTRAINTS.md` Exceptions table, and must be called out in review.

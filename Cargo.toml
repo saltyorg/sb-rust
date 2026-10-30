@@ -15,6 +15,10 @@ unsafe_code = "forbid"
 # CLAUDE.md: #[allow] is forbidden; justified exceptions use #[expect(lint, reason = "...")].
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+# CONSTRAINTS.md floor: no unfinished stubs or leftover debug output.
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
 
 # What a shipped binary would be built with (`--profile production`).
 [profile.production]
