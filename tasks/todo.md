@@ -172,17 +172,19 @@ Carried forward from the cli-core code review (2026-10-30):
 
 ## Task 7: `--color` on every output path, including help
 
-**Description:** `colorchoice-clap` flag; `always`/`never` passed on to
-anstream, console and crossterm; clap's help follows it (`Command::color`).
+**Description:** `colorchoice-clap` flag; its choice becomes anstream's
+global one before the real parse, through a clap pre-pass, so clap's help
+follows it. console and crossterm get `always`/`never` when term-ui brings
+them in.
 `auto` honours NO_COLOR and terminal detection.
 
 **Acceptance criteria:**
-- [ ] `--color=never` gives no escape codes anywhere, help included; `--color=always` colours piped output.
-- [ ] `NO_COLOR` turns colour off unless `--color=always`.
+- [x] `--color=never` gives no escape codes anywhere, help included; `--color=always` colours piped output.
+- [x] `NO_COLOR` turns colour off unless `--color=always`.
 
 **Verification:**
-- [ ] CLI tests piped and in a PTY.
-- [ ] `scripts/check.sh task`.
+- [x] CLI tests piped and in a PTY.
+- [x] `scripts/check.sh task`.
 
 **Dependencies:** Task 2
 **Files:** `crates/cli-core/src/{colour.rs,lib.rs}`, `crates/sb/tests/colour.rs`

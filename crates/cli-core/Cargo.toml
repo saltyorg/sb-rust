@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+colorchoice-clap.workspace = true
+clap_lex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

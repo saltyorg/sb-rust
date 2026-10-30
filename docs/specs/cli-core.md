@@ -66,10 +66,12 @@ per-command startup code.
    can't be opened is a warning, not a failure. `SB_LOG_DIR` overrides the
    directory (tests and debugging; sudo doesn't pass it through).
 5. **Colour** (decision 10): `--color=auto|always|never` (colorchoice-clap)
-   decides once and is passed on to anstream, console and crossterm. clap's
-   own help follows it (`Command::color`). Truecolor is the default; the
-   fallback for other terminals (`SB_COLOR_PROFILE`, NO_COLOR) follows the
-   colour ADR.
+   decides once and becomes anstream's global choice (console and
+   crossterm get it when term-ui brings them in). clap's help and errors
+   follow it through that global choice, set by a pre-pass before the real
+   parse (see Decided in review). Truecolor is the default; the fallback
+   for other terminals (`SB_COLOR_PROFILE`, NO_COLOR) follows the colour
+   ADR.
 6. **Theme:** the palette roles (from proto-theme) take their values from
    `<server_appdata_path>/sb/config.toml`, `/opt/sb/config.toml` by
    default, so Saltbox backups cover it (maintainer, 2026-10-29).
@@ -230,6 +232,12 @@ boundaries that callers match on.
 - Tests that need root run only with `SB_TEST_ROOT=1` and fail, never
   skip, when asked without root; `scripts/check.sh` asks when it runs as
   root.
+- `--color` reaches clap's help and errors through a pre-pass of the
+  same command (`--help` and `help` made plain) that sets anstream's
+  global choice before the real parse. A pre-pass that parses is final.
+  When it fails, a partial parse and then clap's lexer look for the flag;
+  the lexer may then mistake another option's value for it, which only
+  colours clap's exit-2 error. The real parse's choice is re-applied.
 - `SB_LOG_DIR` stays in release builds. The log directory must belong to
   the user running sb (another user's could hold a planted
   `sb.<date>.log` link to a root file); an existing one that isn't

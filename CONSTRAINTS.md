@@ -84,6 +84,7 @@ Installed locally; `scripts/check.sh` exits 2 naming any tool that's missing.
 | hyperfine | 2.0.0 | `cargo install --locked hyperfine` |
 | gitleaks | 8.30.1 | `go install github.com/zricethezav/gitleaks/v8@v8.30.1` |
 | node | 24 | system package (runs the floor guard) |
+| script (util-linux) | 2.39 | system package (gives the colour tests a terminal) |
 
 ## Exceptions
 

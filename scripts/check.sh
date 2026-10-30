@@ -69,6 +69,7 @@ fast() {
 task() {
   fast
   step "tests"
+  need script
   cargo test --workspace --quiet
   if ((${#crates[@]} == 0)); then
     step "coverage, mutation, startup"

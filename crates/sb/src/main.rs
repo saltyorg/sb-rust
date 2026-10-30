@@ -7,9 +7,10 @@
 
 use std::io::Write;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use sb_cli_core::build_info::BuildInfo;
 use sb_cli_core::cancel::Shutdown;
+use sb_cli_core::colour;
 use sb_cli_core::exit::{self, ExitCode};
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
@@ -18,6 +19,9 @@ use sb_cli_core::root;
 #[derive(Parser)]
 #[command(name = "sb", about = "Saltbox CLI")]
 struct Cli {
+    /// `--color=auto|always|never` (spec: startup step 5).
+    #[command(flatten)]
+    color: colour::Color,
     #[command(subcommand)]
     command: Command,
 }
@@ -59,7 +63,12 @@ fn main() -> ExitCode {
     if let Err(unsupported) = sb_host::check_support() {
         return exit::report(&unsupported, None, &mut std::io::stderr());
     }
+    // Before the real parse, which prints help: the choice must already be
+    // anstream's global one (spec: startup step 5).
+    colour::early_choice(Cli::command(), std::env::args_os()).write_global();
     let cli = Cli::parse();
+    // The real parse's choice is the one that counts for the run.
+    cli.color.write_global();
     let relaunch = root::ensure_root(
         cli.command.needs_root(),
         root::effective_uid(),
