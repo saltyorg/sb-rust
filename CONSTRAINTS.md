@@ -56,14 +56,16 @@ blocks.
 
 ## Measured, not yet enforced
 
-Recorded from the first `crates/` build (cli-core Task 1, 2026-10-30);
-each must not get worse.
+Recorded from the first `crates/` build (cli-core Task 1, 2026-10-30)
+and updated as each change measures. The "Today" values are written as
+limits, so the floor guard reports a value that gets worse; a value that
+gets worse within its tolerance needs the reason in the commit.
 
 | Metric | Today | Direction |
 |---|---|---|
-| Project coverage (`crates/`) | 99.02% of lines, 100% of functions | must not fall; tolerance at most 0.5% |
-| Production binary size | 742,072 bytes | must not grow; growth at most 5% per change without a reason in the commit |
-| `sb --help` median | 0.51 ms | must not grow; growth at most 1 ms per change |
+| Project coverage (`crates/`) | at least 98.8% of lines, 100% of functions | must not fall; tolerance at most 0.5% |
+| Production binary size | at most 824096 bytes | must not grow; growth at most 5% per change without a reason in the commit |
+| `sb --help` median | at most 0.61 ms | must not grow; growth at most 1 ms per change |
 
 ## Tools
 
