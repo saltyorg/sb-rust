@@ -139,3 +139,102 @@ fn piped_help_is_plain_by_default() {
         .expect("run sb");
     assert!(!has_escape(&out.stdout));
 }
+
+/// sb's own error block (here: a write to a full disk) in each
+/// `SB_COLOR_PROFILE`, coloured with `--color=always` though piped.
+fn error_block_with_profile(profile: Option<&str>) -> String {
+    let full = std::fs::File::create("/dev/full").expect("/dev/full");
+    let mut cmd = common::sb();
+    cmd.args(["--color=always", "version"])
+        .stdout(full)
+        .env_remove("SB_COLOR_PROFILE");
+    if let Some(profile) = profile {
+        cmd.env("SB_COLOR_PROFILE", profile);
+    }
+    let out = cmd.output().expect("run sb");
+    String::from_utf8(out.stderr).expect("utf-8")
+}
+
+/// The mark's colour: truecolor by default, 256 colours, 16, or none
+/// (ADR-002), the message itself unchanged.
+#[test]
+fn the_error_block_follows_the_colour_profile() {
+    let mark = |stderr: &str| stderr.split('✗').next().unwrap_or_default().to_string();
+    assert!(mark(&error_block_with_profile(None)).ends_with("\x1b[38;2;255;110;122m"));
+    assert!(mark(&error_block_with_profile(Some("ansi256"))).contains("\x1b[38;5;"));
+    assert!(mark(&error_block_with_profile(Some("ansi"))).ends_with("\x1b[91m"));
+    let ascii = error_block_with_profile(Some("ascii"));
+    assert!(!has_escape(ascii.as_bytes()), "{ascii:?}");
+    assert!(
+        ascii.starts_with("✗ No space left on device (os error 28)"),
+        "{ascii:?}"
+    );
+}
+
+/// An unknown profile warns and uses truecolor, as sb-go.
+#[test]
+fn an_unknown_profile_warns_and_uses_truecolor() {
+    let stderr = error_block_with_profile(Some("16bit"));
+    assert!(
+        stderr.contains("unknown SB_COLOR_PROFILE \"16bit\""),
+        "{stderr:?}"
+    );
+    assert!(stderr.contains("\x1b[38;2;255;110;122m✗"), "{stderr:?}");
+}
+
+/// `--color=never` wins over any profile.
+#[test]
+fn never_wins_over_the_profile() {
+    let full = std::fs::File::create("/dev/full").expect("/dev/full");
+    let out = common::sb()
+        .args(["--color=never", "version"])
+        .stdout(full)
+        .env("SB_COLOR_PROFILE", "truecolor")
+        .output()
+        .expect("run sb");
+    assert!(!has_escape(&out.stderr));
+}
+
+/// The relaunched run (sudo keeps `SB_COLOR_PROFILE` now) doesn't repeat
+/// the warning the first run already gave.
+#[test]
+fn a_relaunched_run_does_not_repeat_the_profile_warning() {
+    let out = common::sb()
+        .args(["--color=never", "version"])
+        .env("SB_COLOR_PROFILE", "16bit")
+        .env("SB_RELAUNCHED", "1")
+        .output()
+        .expect("run sb");
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("SB_COLOR_PROFILE"), "{stderr}");
+    // The control: the same run, not relaunched, does warn.
+    let first = common::sb()
+        .args(["--color=never", "version"])
+        .env("SB_COLOR_PROFILE", "16bit")
+        .env_remove("SB_RELAUNCHED")
+        .output()
+        .expect("run sb");
+    assert!(String::from_utf8_lossy(&first.stderr).contains("SB_COLOR_PROFILE"));
+}
+
+/// `ascii` means no colour anywhere, clap's own errors and help included
+/// (their styles are clap's, not the theme's).
+#[test]
+fn ascii_reaches_clap_output_too() {
+    for args in [
+        &["--color=always", "--bogus"][..],
+        &["--color=always", "--help"][..],
+    ] {
+        let out = common::sb()
+            .args(args)
+            .env("SB_COLOR_PROFILE", "ascii")
+            .output()
+            .expect("run sb");
+        assert!(
+            !has_escape(&out.stdout) && !has_escape(&out.stderr),
+            "{args:?}: {out:?}"
+        );
+        assert!(!out.stdout.is_empty() || !out.stderr.is_empty(), "{args:?}");
+    }
+}

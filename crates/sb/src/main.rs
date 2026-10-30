@@ -7,13 +7,14 @@
 
 use std::io::Write;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use sb_cli_core::build_info::BuildInfo;
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::colour;
 use sb_cli_core::exit::{self, ExitCode};
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
+use sb_cli_core::theme;
 
 /// Saltbox CLI
 #[derive(Parser)]
@@ -58,15 +59,27 @@ impl Command {
 }
 
 fn main() -> ExitCode {
+    // Colour and theme first (reading only the arguments and environment),
+    // so every message below follows `--color` and the profile. The colour
+    // choice must be anstream's global one before the real parse, which
+    // prints help (spec: startup steps 5 and 6).
+    colour::early_choice(Cli::command(), std::env::args_os()).write_global();
+    let (profile, warning) =
+        theme::Profile::parse(std::env::var("SB_COLOR_PROFILE").ok().as_deref());
+    theme::install(theme::Theme::resolve(&theme::Palette::default(), profile));
+    // sb's own messages go through anstream, so `--color` and NO_COLOR win.
+    // Each write makes its stream then: anstream reads the colour choice
+    // when a stream is made, and the real parse can still change it.
+    // The relaunched run (through sudo) already warned in the first one.
+    if let Some(warning) = warning.filter(|_| std::env::var_os(root::RELAUNCHED).is_none()) {
+        warn(warning);
+    }
     // Every command, help and version included, refuses an unsupported
     // host first, as sb-go does (cli-core spec, startup step 1).
     if let Err(unsupported) = sb_host::check_support() {
-        return exit::report(&unsupported, None, &mut std::io::stderr());
+        return exit::report(&unsupported, None, &mut anstream::stderr());
     }
-    // Before the real parse, which prints help: the choice must already be
-    // anstream's global one (spec: startup step 5).
-    colour::early_choice(Cli::command(), std::env::args_os()).write_global();
-    let cli = Cli::parse();
+    let cli = parse(profile);
     // The real parse's choice is the one that counts for the run.
     cli.color.write_global();
     let relaunch = root::ensure_root(
@@ -76,7 +89,7 @@ fn main() -> ExitCode {
         root::relaunch_as_root,
     );
     if let Err(err) = relaunch {
-        return exit::report(&err, None, &mut std::io::stderr());
+        return exit::report(&err, None, &mut anstream::stderr());
     }
     // Root runs log on the host (spec: startup step 4); the log directory
     // is root-only, so unprivileged runs (help, version) don't.
@@ -103,7 +116,19 @@ fn main() -> ExitCode {
         log.finished(&log::outcome(&ending, error), error);
     }
     let pointer = log.as_ref().map(RunLog::pointer);
-    exit::finish_run(&ending, error, pointer.as_deref(), &mut std::io::stderr())
+    exit::finish_run(&ending, error, pointer.as_deref(), &mut anstream::stderr())
+}
+
+/// The real parse. clap's help and errors use clap's own styles, not the
+/// theme, so the `ascii` profile (no colour) gives clap its plain styles
+/// (https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain);
+/// the other profiles keep clap's 16-colour defaults.
+fn parse(profile: theme::Profile) -> Cli {
+    let cmd = match profile {
+        theme::Profile::Ascii => Cli::command().styles(clap::builder::Styles::plain()),
+        _ => Cli::command(),
+    };
+    Cli::from_arg_matches(&cmd.get_matches()).unwrap_or_else(|err| err.exit())
 }
 
 /// Open the run log and make it the process's subscriber; a log that can't
@@ -114,14 +139,20 @@ fn open_log(dir: &std::path::Path) -> Option<RunLog> {
             .is_ok()
             .then_some(log),
         Err(err) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "warning: no run log this time ({}: {err})",
+            warn(format_args!(
+                "no run log this time ({}: {err})",
                 dir.display()
-            );
+            ));
             None
         }
     }
+}
+
+/// sb's `warning:` line, in the theme's warn colour, through anstream so
+/// `--color` and NO_COLOR are honoured.
+fn warn(message: impl std::fmt::Display) {
+    let style = theme::current().style(theme::Role::Warn);
+    let _ = writeln!(anstream::stderr(), "{style}warning:{style:#} {message}");
 }
 
 fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {

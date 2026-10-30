@@ -53,6 +53,6 @@ fn relaunch_execs_sudo_with_the_same_arguments() {
     assert_eq!(status.code(), Some(7), "exit code is sudo's own");
     assert_eq!(
         std::fs::read_to_string(&record).expect("args recorded"),
-        "--preserve-env=VISUAL,EDITOR,SB_RELAUNCHED\n/usr/local/bin/sb\nupdate\n--yes\nSB_RELAUNCHED=1\n"
+        "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED\n/usr/local/bin/sb\nupdate\n--yes\nSB_RELAUNCHED=1\n"
     );
 }

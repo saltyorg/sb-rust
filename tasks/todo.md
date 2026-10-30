@@ -162,6 +162,14 @@ Carried forward from the cli-core code review (2026-10-30):
 - The exec module removes `SB_RELAUNCHED` from child processes
   (`env_remove`), or an unprivileged sb started by one would refuse to
   relaunch (root.rs module docs).
+- sb-go also exports COLORTERM for child processes (truecolor, 256color,
+  unset for ansi and ascii); sb-rust doesn't yet. Decide when the exec
+  module starts children (ansible).
+- The colour-profile warning isn't written to the run log (it is shown in
+  the first, unprivileged run, before any log exists).
+- Check sudoers(5): a policy without `setenv` may refuse `--preserve-env`
+  names outside env_keep (VISUAL and EDITOR carry the same risk); record
+  the answer in docs/platform-notes/.
 - The first command that takes argument values (for example
   `install -e`) adds an end-to-end test that a real secret value never
   reaches the run log; today's test uses a flag.
@@ -195,18 +203,19 @@ them in.
 **Description:** Move the palette into `sb-cli-core::theme` as role names.
 `SB_COLOR_PROFILE` (`truecolor`, `ansi256`, `ansi`, `ascii`; unknown warns
 and means truecolor) resolves every role once with anstyle-lossy into an
-`anstyle::Color`, with adapters for ratatui (ratatui-core `anstyle`),
-console, tabled and anstream.
+`anstyle::Color`, installed as the run's theme. sb's error block is its
+first user, through anstream. The ratatui, console and tabled adapters
+come with term-ui and tui, which bring those libraries.
 
 **Acceptance criteria:**
-- [ ] Each profile's output uses only its kind of colour code (guard tests per profile).
-- [ ] Nothing outside the resolver converts colours.
+- [x] Each profile's output uses only its kind of colour code (guard tests per profile).
+- [x] Nothing outside the resolver converts colours.
 
 **Verification:**
-- [ ] Profile guard tests; `scripts/check.sh task`; library-reviewer on the diff.
+- [x] Profile guard tests; `scripts/check.sh task`; library-reviewer on the diff.
 
 **Dependencies:** Task 7
-**Files:** `crates/cli-core/src/theme/{mod.rs,palette.rs,profile.rs}`, `crates/cli-core/Cargo.toml`
+**Files:** `crates/cli-core/src/{theme.rs,exit.rs,root.rs}`, `crates/sb/src/main.rs`, `crates/sb/tests/colour.rs`
 **Scope:** M
 
 ## Task 9: Theme config

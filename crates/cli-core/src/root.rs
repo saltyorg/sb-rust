@@ -2,7 +2,8 @@
 //!
 //! `--help`, `version` and completion run as the calling user. Every other
 //! command, when not root, replaces sb with
-//! `sudo --preserve-env=VISUAL,EDITOR,SB_RELAUNCHED <exe> <args>`. sb-go
+//! `sudo --preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED
+//! <exe> <args>`. sb-go
 //! spawns sudo as a child and forwards its exit code (host/system.go
 //! `RelaunchAsRoot`); sb-rust execs instead, so signals and the exit code
 //! belong to the real run and nothing of the first process is left. If
@@ -37,11 +38,15 @@ pub fn effective_uid() -> u32 {
 /// The environment variable marking a relaunched run.
 pub const RELAUNCHED: &str = "SB_RELAUNCHED";
 
-/// sudo's arguments: keep the user's editor choice and the relaunch marker
-/// (sudo filters the environment), then sb and its arguments unchanged.
+/// sudo's arguments: keep the user's editor choice, colour profile and
+/// NO_COLOR, and the relaunch marker (sudo's env_reset drops them, which
+/// sb-go also loses; maintainer, 2026-10-30), then sb and its arguments
+/// unchanged.
 pub fn sudo_args(exe: &Path, args: &[OsString]) -> Vec<OsString> {
     let mut all = vec![
-        OsString::from(format!("--preserve-env=VISUAL,EDITOR,{RELAUNCHED}")),
+        OsString::from(format!(
+            "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,{RELAUNCHED}"
+        )),
         exe.into(),
     ];
     all.extend(args.iter().cloned());
@@ -177,7 +182,9 @@ mod tests {
         assert_eq!(
             args,
             [
-                OsString::from("--preserve-env=VISUAL,EDITOR,SB_RELAUNCHED"),
+                OsString::from(
+                    "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED"
+                ),
                 OsString::from("/usr/local/bin/sb"),
                 OsString::from("install"),
                 OsString::from("-e"),

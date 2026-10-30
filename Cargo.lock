@@ -88,6 +88,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "anstyle-lossy"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9ca7d0f520afcd6d817970d0b2d5fd7c630c75e7783cae046b8b8a783c5befa"
+dependencies = [
+ "anstyle",
+]
+
+[[package]]
 name = "anstyle-parse"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3112,6 +3121,7 @@ dependencies = [
 name = "sb"
 version = "0.1.0"
 dependencies = [
+ "anstream",
  "anyhow",
  "assert_cmd",
  "clap",
@@ -3127,6 +3137,9 @@ dependencies = [
 name = "sb-cli-core"
 version = "0.1.0"
 dependencies = [
+ "anstream",
+ "anstyle",
+ "anstyle-lossy",
  "clap",
  "clap_lex",
  "colorchoice-clap",

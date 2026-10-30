@@ -23,7 +23,11 @@ per-command startup code.
 
 ### Behaviour
 
-**Startup order** (each step is one function, unit-testable on its own):
+**Startup order** (each step is one function, unit-testable on its own).
+The colour choice (step 5) and the colour profile are settled before step
+1, from the arguments and environment only, so every message follows
+`--color` and the profile; the theme file (step 6) is read after the
+relaunch.
 
 1. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
@@ -37,7 +41,8 @@ per-command startup code.
    2026-10-30; a factual improvement under decision 1). `--help`,
    `version` and Tab completion run as the calling user, with no sudo.
    Every other command, when not root, replaces itself with
-   `sudo --preserve-env=VISUAL,EDITOR,SB_RELAUNCHED <exe> <args>` (exec,
+   `sudo --preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED
+   <exe> <args>` (exec,
    not a child as in sb-go: signals and the exit code then belong to the
    real run); if sudo asks for a password, the user answers its own
    prompt. Each command declares whether it needs root, in an exhaustive
@@ -227,6 +232,17 @@ boundaries that callers match on.
 - Invalid theme config: warn, log and use the built-in theme.
 - Theme shape: named built-in themes plus per-role overrides.
 - Second signal: exit at once.
+- The root relaunch keeps `SB_COLOR_PROFILE` and NO_COLOR through sudo
+  (sb-go loses them), so a user's colour settings reach root commands; an
+  unknown profile warns only in the first run. An empty value is unset,
+  as in sb-go; an unknown one warns where sb-go is silent.
+- Under `ascii`, clap's help and errors get clap's plain styles, so no
+  output is coloured; the other profiles keep clap's 16-colour defaults.
+- Colour profiles (ADR-002) resolve the palette once at startup with
+  anstyle-lossy (16 colours matched against its VGA palette) and are
+  installed as the run's theme; sb's own messages go through anstream, so
+  `--color` and NO_COLOR win. Each output library's adapter (ratatui,
+  console, tabled) comes with the module that brings that library.
 - Unsupported host: the message is sb-go's, shown as sb-rust's error
   block on stderr rather than plain on stdout.
 - Tests that need root run only with `SB_TEST_ROOT=1` and fail, never

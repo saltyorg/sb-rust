@@ -10,6 +10,7 @@ use std::io::Write;
 pub use std::process::ExitCode;
 
 use crate::cancel::Shutdown;
+use crate::theme::{self, Role, Theme};
 
 /// End the run with this exit code and print nothing more: a wrapped
 /// child's own code, or an error the command has already shown.
@@ -21,6 +22,9 @@ pub struct Exit(pub u8);
 /// that rather than an error chain) and exits with its code; a command's
 /// own shutdown request exits quietly with its code; otherwise the result
 /// decides, through [`report`] for an error.
+///
+/// Write to an anstream stream, so `--color` and NO_COLOR are honoured:
+/// the block carries the theme's colour codes.
 pub fn finish_run(
     shutdown: &Shutdown,
     error: Option<&(dyn Error + 'static)>,
@@ -29,10 +33,7 @@ pub fn finish_run(
 ) -> ExitCode {
     if let Some(code) = shutdown.requested() {
         if shutdown.interrupted() {
-            let mut block = String::from("✗ interrupted\n");
-            if let Some(pointer) = log_pointer {
-                let _ = writeln!(block, "  details: {pointer}");
-            }
+            let block = block("interrupted", [], log_pointer, theme::current());
             let _ = out.write_all(block.as_bytes());
         }
         return ExitCode::from(code);
@@ -83,7 +84,8 @@ pub fn quiet_exit(err: &(dyn Error + 'static)) -> Option<u8> {
 }
 
 /// Print one error block (`✗` and the message, each cause on its own line,
-/// then the log pointer) and return 1, or return a requested [`Exit`] code
+/// then the log pointer; write to an anstream stream, so `--color` and
+/// NO_COLOR are honoured) and return 1, or return a requested [`Exit`] code
 /// quietly when one is anywhere in the chain.
 pub fn report(
     err: &(dyn Error + 'static),
@@ -93,18 +95,40 @@ pub fn report(
     if let Some(code) = quiet_exit(err) {
         return ExitCode::from(code);
     }
-    // The spec's block; why not anyhow's `{:#}` or `{:?}`: one line, or
-    // numbered causes and a backtrace, neither the spec's format.
-    let mut block = format!("✗ {err}\n");
-    for cause in chain(err).skip(1) {
-        let _ = writeln!(block, "  caused by: {cause}");
+    // Nothing better to do if stderr itself fails; the exit code still says so.
+    let _ = out.write_all(error_block(err, log_pointer, theme::current()).as_bytes());
+    ExitCode::from(1)
+}
+
+/// The error block for `err` in `theme`: `✗` and the message, each cause on
+/// its own line, then the log pointer. Why not anyhow's `{:#}` or `{:?}`:
+/// one line, or numbered causes and a backtrace, neither the spec's format.
+pub fn error_block(
+    err: &(dyn Error + 'static),
+    log_pointer: Option<&str>,
+    theme: &Theme,
+) -> String {
+    let causes: Vec<String> = chain(err).skip(1).map(ToString::to_string).collect();
+    block(&err.to_string(), causes, log_pointer, theme)
+}
+
+/// The mark in the problem colour, the labels muted; a plain theme renders
+/// no codes at all (anstyle renders an empty style as nothing).
+fn block(
+    headline: &str,
+    causes: impl IntoIterator<Item = String>,
+    log_pointer: Option<&str>,
+    theme: &Theme,
+) -> String {
+    let (mark, label) = (theme.style(Role::Problem), theme.style(Role::Muted));
+    let mut block = format!("{mark}✗{mark:#} {headline}\n");
+    for cause in causes {
+        let _ = writeln!(block, "  {label}caused by:{label:#} {cause}");
     }
     if let Some(pointer) = log_pointer {
-        let _ = writeln!(block, "  details: {pointer}");
+        let _ = writeln!(block, "  {label}details:{label:#} {pointer}");
     }
-    // Nothing better to do if stderr itself fails; the exit code still says so.
-    let _ = out.write_all(block.as_bytes());
-    ExitCode::from(1)
+    block
 }
 
 #[cfg(test)]
@@ -299,6 +323,77 @@ mod tests {
     fn other_output_errors_stay_errors() {
         let err = output_error(std::io::Error::from(std::io::ErrorKind::StorageFull));
         assert_eq!(quiet_exit(&err), None);
+    }
+
+    /// SGR parameter lists in `text`, e.g. `[[38, 2, 255, 110, 122]]`. A
+    /// plain split is enough: the input is anstyle's own rendering.
+    fn sgr(text: &str) -> Vec<Vec<u16>> {
+        text.split("\x1b[")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('m'))
+            .map(|(params, _)| params.split(';').filter_map(|p| p.parse().ok()).collect())
+            .collect()
+    }
+
+    fn block_in(profile: crate::theme::Profile) -> String {
+        let theme = crate::theme::Theme::resolve(&crate::theme::Palette::default(), profile);
+        let err = Failure {
+            message: "boom",
+            cause: Some(Box::new(failure("why"))),
+        };
+        error_block(&err, Some("/var/log/sb/sb.2026-10-30.log (run 1)"), &theme)
+    }
+
+    /// Each profile's block uses only its kind of colour code (ADR-002's
+    /// profile guards), and the text stays the same.
+    #[test]
+    fn each_profile_writes_only_its_kind_of_colour() {
+        use crate::theme::Profile;
+        let colours = |profile| -> Vec<Vec<u16>> {
+            sgr(&block_in(profile))
+                .into_iter()
+                .filter(|c| !c.is_empty() && c.first() != Some(&0))
+                .collect()
+        };
+        let truecolor = colours(Profile::TrueColor);
+        assert!(
+            !truecolor.is_empty() && truecolor.iter().all(|c| c.starts_with(&[38, 2])),
+            "{truecolor:?}"
+        );
+        let ansi256 = colours(Profile::Ansi256);
+        assert!(
+            !ansi256.is_empty() && ansi256.iter().all(|c| c.starts_with(&[38, 5])),
+            "{ansi256:?}"
+        );
+        let ansi = colours(Profile::Ansi);
+        assert!(
+            !ansi.is_empty()
+                && ansi
+                    .iter()
+                    .all(|c| c.len() == 1 && matches!(c[0], 30..=37 | 90..=97)),
+            "{ansi:?}"
+        );
+        assert!(!block_in(Profile::Ascii).contains('\x1b'));
+        let plain = |text: &str| anstream::adapter::strip_str(text).to_string();
+        assert_eq!(
+            plain(&block_in(Profile::TrueColor)),
+            "✗ boom\n  caused by: why\n  details: /var/log/sb/sb.2026-10-30.log (run 1)\n"
+        );
+        // Every profile writes the same text; only the colour codes differ.
+        for profile in [Profile::Ansi256, Profile::Ansi, Profile::Ascii] {
+            assert_eq!(
+                plain(&block_in(profile)),
+                plain(&block_in(Profile::TrueColor)),
+                "{profile:?}"
+            );
+        }
+    }
+
+    /// The mark takes the problem colour.
+    #[test]
+    fn the_mark_is_in_the_problem_colour() {
+        let block = block_in(crate::theme::Profile::TrueColor);
+        assert!(block.starts_with("\x1b[38;2;255;110;122m✗"), "{block:?}");
     }
 
     /// A requested exit wrapped in context (as anyhow's `context` does)

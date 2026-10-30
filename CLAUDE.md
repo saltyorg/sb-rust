@@ -89,7 +89,8 @@ A second pair of eyes catches what the author missed.
   reviewer; use `agent-skills:code-review-and-quality` when you review
   yourself or weigh its findings.
 - **Brief it with the range and the goal, not your conclusions.** Tell it
-  to edit nothing and to report findings with file:line.
+  to edit nothing, to run sb only with `SB_LOG_DIR` in the scratchpad, and
+  to report findings with file:line.
 - **Act on every finding:** fix it (test-first when it changes behaviour,
   per `agent-skills:test-driven-development`), or record in the commit body
   why not. After fixing, re-run `scripts/check.sh full`, and review the fix
@@ -141,6 +142,11 @@ A second pair of eyes catches what the author missed.
 - **Output:** keep it unbuffered so progress is visible.
 - **Diagnosis:** when resources spike, measure (process list by memory,
   profiling) before attributing the cause.
+- **Never run the `sb` binary as root without `SB_LOG_DIR`** pointing into
+  `target/` or the session scratchpad: a root run logs to the host's
+  `/var/log/sb`. This applies
+  to subagents too: say it in every brief that may run sb. Tests and
+  `scripts/check.sh` set it already.
 
 ## Precedence
 

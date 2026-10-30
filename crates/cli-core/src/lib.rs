@@ -10,3 +10,4 @@ pub mod colour;
 pub mod exit;
 pub mod log;
 pub mod root;
+pub mod theme;

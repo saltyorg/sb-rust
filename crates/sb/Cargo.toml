@@ -11,6 +11,7 @@ publish.workspace = true
 sb-cli-core.workspace = true
 sb-host.workspace = true
 anyhow.workspace = true
+anstream.workspace = true
 clap.workspace = true
 colorchoice-clap.workspace = true
 tracing.workspace = true
