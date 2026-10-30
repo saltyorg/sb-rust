@@ -255,7 +255,9 @@ sb-go has never enforced them. sb-rust will.
   Install script lives in this repository").
 - **Shell completion:** proto-complete's look and feel is not yet reviewed
   by the maintainer; review it before the `completion` module spec. fish
-  registration is generated but untested.
+  registration is generated but untested. Completion runs without sudo
+  (cli-core spec), so the tag cache stays readable by any user: `ansible`
+  writes it 0644, set explicitly.
 - **Runner:** nested subtasks (`insert_after`) and forwarding terminal resize
   to the PTY haven't been prototyped. Evaluate a terminal-emulator crate
   (`vt100`, or termwiz's escape parser) for the output tail instead of the

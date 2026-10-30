@@ -25,29 +25,37 @@ per-command startup code.
 
 **Startup order** (each step is one function, unit-testable on its own):
 
-1. **Root relaunch, always**, as sb-go (maintainer, 2026-10-29). When not
-   root, `sb` replaces itself with
-   `sudo --preserve-env=VISUAL,EDITOR <exe> <args>` before anything else,
-   for every command including `--help`, `version` and Tab completion
-   (exec, not a child: signals and the exit code then belong to the real
-   run). One environment for every run, and every run is logged.
-   If sudo asks for a password, the user answers sudo's own prompt (exec
-   hands it the terminal). Tab completion is the exception: it runs
-   `sudo -n` as a child instead, so a password prompt never lands in the
-   middle of the command line. If sudo refuses (it wants a password), sb
-   completes as the calling user: commands, subcommands and flags come
-   from the binary and need no root, and dynamic values (Ansible tags)
-   are offered when their cache is readable. A message in place of
-   completions isn't used: bash can't show one cleanly.
-2. **Host support check.** Refuse to run on anything but a supported
+1. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
-   sb-go does (maintainer, 2026-10-29). The supported releases list
-   belongs to `host`; `cli-core` calls it through a startup hook so the
-   dependency stays one-way (see Project structure).
-3. **Parse arguments** with clap. Parse errors and help are printed here.
+   sb-go does (maintainer, 2026-10-29). It reads `/etc/os-release` and
+   needs no root. The supported releases list belongs to `host`;
+   `cli-core` calls it through a startup hook so the dependency stays
+   one-way (see Project structure).
+2. **Parse arguments** with clap. Parse errors and help are printed here,
+   as the calling user.
+3. **Root relaunch, only for commands that need it** (maintainer,
+   2026-10-30; a factual improvement under decision 1). `--help`,
+   `version` and Tab completion run as the calling user, with no sudo.
+   Every other command, when not root, replaces itself with
+   `sudo --preserve-env=VISUAL,EDITOR <exe> <args>` (exec, not a child:
+   signals and the exit code then belong to the real run); if sudo asks
+   for a password, the user answers its own prompt. Each command declares
+   whether it needs root; the default is yes.
+   - **Completion without root:** commands, subcommands and flags come
+     from the binary. Dynamic values (Ansible tags) come from the tag cache
+     (`/srv/git/saltbox/cache.json`, as sb-go), which must stay readable
+     by any user: the `ansible` module writes it with mode 0644 set
+     explicitly, so a restrictive umask can't narrow it (sb-go writes
+     0644 too).
+   - **Theme without root:** the config file is 0664 and the inventory
+     that gives `server_appdata_path` is world-readable, so help and
+     version use the theme too. If either can't be read, the built-in
+     theme is used.
 4. **Logging** (decision 11): a run record to `/var/log/sb`, rotated
-   daily by tracing-appender, kept regardless of outcome, for every run. A
-   log that can't be opened is a warning, not a failure.
+   daily by tracing-appender, kept regardless of outcome, for every run
+   as root. Help, version and completion, which run as the calling user,
+   aren't logged (the directory is root-only). A log that can't be opened
+   is a warning, not a failure.
 5. **Colour** (decision 10): `--color=auto|always|never` (colorchoice-clap)
    decides once and is passed on to anstream, console and crossterm. clap's
    own help follows it (`Command::color`). Truecolor is the default; the
@@ -178,15 +186,16 @@ boundaries that callers match on.
 
 ## Success criteria
 
-1. `sb --help`, `sb version` and `sb version --json` give sb-go's output
-   shape; run as a normal user, they go through `sudo` first, as sb-go.
+1. `sb --help`, `sb version` and `sb version --json` run as a normal user,
+   with no sudo, on a supported host, and give sb-go's output shape. Tab
+   completion runs without sudo and offers commands, flags and Ansible
+   tags.
 2. On an unsupported host every command, including `--help`, exits 1 with
    sb-go's message.
-3. Any command run as a normal user execs `sudo` with `VISUAL` and `EDITOR`
-   kept, and its exit code is the command's own. When sudo wants a
-   password, its own prompt appears and the run continues once answered;
-   during Tab completion there is no prompt, and commands and flags still
-   complete.
+3. Every other command run as a normal user execs `sudo` with `VISUAL`
+   and `EDITOR` kept, and its exit code is the command's own. If sudo
+   wants a password, its own prompt appears and the run continues once
+   answered.
 4. SIGINT exits 130 and SIGTERM 143, with the terminal restored.
 5. An error shows one `✗` block with its causes and the log pointer, and
    exits 1.
@@ -204,10 +213,10 @@ boundaries that callers match on.
 - Invalid theme config: warn, log and use the built-in theme.
 - Theme shape: named built-in themes plus per-role overrides.
 - Second signal: exit at once.
-- Root: every command relaunches through `sudo`, as sb-go, including help,
-  version and Tab completion. A first draft relaunched only commands that
-  need root; reading the config doesn't need root (it is 0664), but the
-  maintainer chose one environment and a logged record for every run.
+- Root: only commands that need root relaunch through `sudo`; help,
+  version and Tab completion run as the calling user. (Revised twice: an
+  always-root draft, as sb-go, was dropped once completion could read a
+  world-readable tag cache instead of going through sudo.)
 - Config file ownership: like Saltbox's own configuration, the file and
   its `sb` directory belong to the Saltbox user (from `accounts.yml`, as
   sb-go's `GetSaltboxUser` reads it) and their group, with fairly open
