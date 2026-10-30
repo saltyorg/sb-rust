@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (maintainer, 2026-10-30)
 
 ## Date
 
