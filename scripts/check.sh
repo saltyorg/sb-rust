@@ -67,10 +67,20 @@ task() {
   need cargo-llvm-cov
   need diff-cover
   cargo llvm-cov --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
-  diff-cover target/lcov.info --compare-branch="$base" --fail-under="$COVERAGE_MIN"
+  # New files are untracked until committed; without --include-untracked
+  # they would not count as changed lines.
+  diff-cover target/lcov.info --compare-branch="$base" --include-untracked \
+    --fail-under="$COVERAGE_MIN"
   step "mutation score on changed code >= ${MUTATION_MIN}%"
   need cargo-mutants
-  git diff "$base" -- crates >target/changes.diff
+  # Tracked changes plus untracked crate files (git diff alone misses new
+  # files; `--no-index` exits 1 when the files differ, which they do).
+  {
+    git diff "$base" -- crates
+    git ls-files -z --others --exclude-standard -- crates | while IFS= read -r -d '' f; do
+      git diff --no-index -- /dev/null "$f" || true
+    done
+  } >target/changes.diff
   if [[ ! -s target/changes.diff ]]; then
     skip "no changed crate code"
   else
@@ -92,7 +102,12 @@ task() {
     const r = require("./target/startup.json").results;
     let ok = true;
     for (const x of r) {
-      const ms = x.median * 1000;
+      // hyperfine 2.0 keeps wall-clock statistics under summary.
+      const ms = x.summary?.time_wall_clock?.median * 1000;
+      if (!Number.isFinite(ms)) {
+        console.error(x.command + ": no wall-clock median in the hyperfine output");
+        process.exit(2);
+      }
       console.log(x.command + ": median " + ms.toFixed(2) + " ms");
       if (ms > Number(process.argv[1])) ok = false;
     }
