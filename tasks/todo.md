@@ -238,23 +238,33 @@ invalid warns (and logs) and falls back.
 
 ## Task 10: Startup wiring, contract test and success criteria
 
-**Description:** `sb` runs the steps in the spec's order with one call into
-`cli-core`. A contract test compares sb-rust's commands and flags with
+**Description:** `sb` runs the steps in the spec's order. (Planned as one
+call into `cli-core`; kept in `sb`'s `main` instead: a generic startup
+would need a trait over the clap type with sb as its only user, and the
+order is held by the end-to-end tests. Each step is a cli-core function.)
+A contract test compares sb-rust's commands and flags with
 sb-go's (every sb-rust name exists in sb-go). Walk the spec's success
 criteria.
 
 **Acceptance criteria:**
-- [ ] Spec success criteria 1, 2, 4, 5, 6 (with `SB_TEST_ROOT=1`), 7, 8 and 9 pass; 3 is covered by Task 5's test until a root command exists.
-- [ ] Startup budget holds: `sb --help` and `sb version` median ≤ 10 ms.
+- [x] Spec success criteria 2, 5, 6 (with `SB_TEST_ROOT=1`), 7, 8 and 9 pass; 3 is covered by Task 5's test until a root command exists.
+- [ ] Criterion 1: help and version as a normal user pass; tab completion
+  comes with the completion module.
+- [ ] Criterion 4: SIGINT 130 and SIGTERM 143 pass; nothing draws to the
+  terminal yet, so the restore is checked when term-ui lands.
+- [ ] The `help` subcommand: the spec says "hidden", but sb-go removes it
+  (`SetHelpCommand` with an empty name: `sb help` is an unknown command);
+  maintainer to decide.
+- [x] Startup budget holds: `sb --help` and `sb version` median ≤ 10 ms (0.76 and 0.90 ms).
 
 **Verification:**
-- [ ] `scripts/check.sh full`.
+- [x] `scripts/check.sh full`.
 - [ ] Manual: `sb --help`, `sb version`, Ctrl-C and `--color` on this host, shown to the maintainer.
 - [ ] Manual, with the maintainer's go-ahead: one root run against the real
       `/var/log/sb` (created 0700, record written, pointer names the file).
 
 **Dependencies:** Tasks 3, 6, 9
-**Files:** `crates/sb/src/main.rs`, `crates/cli-core/src/startup.rs`, `crates/sb/tests/contract.rs`
+**Files:** `crates/sb/src/{main.rs,contract.rs}`, `crates/sb/tests/fixtures/sb-go-command-tree.tsv`, `crates/cli-core/src/config.rs` (inventory read with saphyr)
 **Scope:** M
 
 ## Checkpoint C: Complete

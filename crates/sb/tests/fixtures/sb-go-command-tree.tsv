@@ -1,0 +1,153 @@
+# sb-go's command tree: every command and flag of sb-go 0.1.3 (commit
+# 5a7bf75c735a2dd49134f87aacfd35dd9705f01a, whose TestCommandTreeContract
+# hash is 4eec0a10ab615cc2fc5f774ed9ed677ac5a280493876769a024a677a60ec5d43),
+# from its NewRootCommand (cmd/root.go), walked as that test walks it
+# (cmd/root_contract_test.go). cobra adds -h/--help when a command
+# runs, so help flags aren't listed. Read by crates/sb/src/contract.rs.
+#
+# command <TAB> path <TAB> hidden <TAB> short help
+# flag <TAB> path <TAB> local|global <TAB> name <TAB> shorthand <TAB>
+#      switch|value <TAB> hidden <TAB> usage
+#
+# To regenerate: in an export of the sb-go tag (git archive <tag>), add
+# this test to package cmd and run `DUMP=<out> go test ./cmd -run
+# TestDumpTree`, then put this header back on top of <out>:
+#
+#   func TestDumpTree(t *testing.T) {
+#       var lines []string
+#       clean := func(s string) string {
+#           return strings.NewReplacer("\t", " ", "\n", " ").Replace(s)
+#       }
+#       var walk func(*cobra.Command)
+#       walk = func(c *cobra.Command) {
+#           lines = append(lines, fmt.Sprintf("command\t%s\t%t\t%s",
+#               c.CommandPath(), c.Hidden, clean(c.Short)))
+#           add := func(scope string, fs *pflag.FlagSet) {
+#               fs.VisitAll(func(f *pflag.Flag) {
+#                   shape := "value"
+#                   if f.NoOptDefVal != "" {
+#                       shape = "switch"
+#                   }
+#                   lines = append(lines, fmt.Sprintf("flag\t%s\t%s\t%s\t%s\t%s\t%t\t%s",
+#                       c.CommandPath(), scope, f.Name, f.Shorthand, shape,
+#                       f.Hidden, clean(f.Usage)))
+#               })
+#           }
+#           add("local", c.LocalNonPersistentFlags())
+#           add("global", c.PersistentFlags())
+#           kids := append([]*cobra.Command(nil), c.Commands()...)
+#           sort.Slice(kids, func(i, j int) bool { return kids[i].Name() < kids[j].Name() })
+#           for _, k := range kids {
+#               walk(k)
+#           }
+#       }
+#       walk(NewRootCommand(Dependencies{}))
+#       os.WriteFile(os.Getenv("DUMP"), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+#   }
+command	sb	false	Saltbox CLI
+command	sb announcements	true	Display announcements from announcement files
+flag	sb announcements	global	after	a	value	false	Path to the after announcements.yml file
+flag	sb announcements	global	before	b	value	false	Path to the before announcements.yml file
+flag	sb announcements	global	repo	r	value	false	Repository name (Saltbox or Sandbox)
+flag	sb announcements	global	verbose	v	switch	false	Enable verbose output
+command	sb bench	false	Runs bench.sh benchmark
+command	sb branch	false	Change the branch used by Saltbox
+command	sb branch-sandbox	false	Change the branch used by Sandbox
+command	sb completion	true	Install shell completion for sb
+command	sb completion bash	false	Install bash completion
+command	sb completion fish	false	Install fish completion
+command	sb completion generate	false	Write a completion script to standard output
+command	sb completion install	false	Install completion for installed shells
+flag	sb completion install	local	allow-unavailable		switch	true	Allow an unavailable shell during automatic completion refresh
+command	sb completion zsh	false	Install zsh completion
+command	sb diag	false	Runs Saltbox diagnostics role
+command	sb docker	false	Manage Docker containers managed by Saltbox
+command	sb docker logs	false	Display logs of Docker containers
+command	sb docker ps	false	List Docker containers with port mappings
+command	sb docker restart	false	Restart Docker containers managed by Saltbox
+flag	sb docker restart	local	ignore		value	false	Containers to ignore during restart operation (can be specified multiple times)
+flag	sb docker restart	local	verbose	v	switch	false	Enable verbose output
+command	sb docker start	false	Start Docker containers managed by Saltbox
+flag	sb docker start	local	verbose	v	switch	false	Enable verbose output
+command	sb docker stop	false	Stop Docker containers managed by Saltbox
+flag	sb docker stop	local	ignore		value	false	Containers to ignore during stop operation (can be specified multiple times)
+flag	sb docker stop	local	verbose	v	switch	false	Enable verbose output
+command	sb edit	false	Edit Saltbox configuration files
+command	sb edit accounts	false	Accounts
+command	sb edit adv_settings	false	Advanced Settings
+command	sb edit backup_config	false	Backup Settings
+command	sb edit hetzner_vlan	false	Hetzner VLAN Settings
+command	sb edit inventory	false	Inventory Settings
+command	sb edit settings	false	Settings
+command	sb fact	false	Manage Saltbox configuration facts
+command	sb gha	true	Install GHA dependencies
+command	sb install	false	Runs Ansible playbooks with specified tags
+flag	sb install	local	extra-vars	e	value	false	Extra variables to pass to Ansible
+flag	sb install	local	force-disk-full		switch	true	Force disk space failure (debug)
+flag	sb install	local	no-cache		switch	false	Skip cache validation and always perform tag checks
+flag	sb install	local	skip-tags	s	value	false	Tags to skip during Ansible playbook execution
+flag	sb install	local	verbose	v	switch	false	Increase verbosity level (can be used multiple times, e.g. -vvv)
+command	sb list	false	List available Saltbox, Sandbox or Saltbox-mod tags
+flag	sb list	local	include-mod	m	switch	false	Include Saltbox-mod tags
+flag	sb list	local	verbose	v	switch	false	Increase verbosity level (can be used multiple times, e.g. -vvv)
+command	sb logs	false	Display logs of managed systemd services
+command	sb motd	false	Display system information
+flag	sb motd	local	all		switch	false	Show all information
+flag	sb motd	local	apt		switch	false	Show apt package status
+flag	sb motd	local	banner-file		value	false	Path to a file containing a custom banner to display
+flag	sb motd	local	banner-file-toilet		value	false	A string of arguments for toilet when using --banner-file
+flag	sb motd	local	cpu		switch	false	Show CPU load averages
+flag	sb motd	local	cpu-info		switch	false	Show CPU model and core count information
+flag	sb motd	local	disk		switch	false	Show disk usage for all partitions
+flag	sb motd	local	distro		switch	false	Show distribution information
+flag	sb motd	local	docker		switch	false	Show Docker container information
+flag	sb motd	local	emby		switch	false	Show Emby streaming information
+flag	sb motd	local	font		value	false	Font for toilet cli
+flag	sb motd	local	generate-config		switch	false	Print an example MOTD configuration file to stdout
+flag	sb motd	local	gpu		switch	false	Show GPU information
+flag	sb motd	local	jellyfin		switch	false	Show Jellyfin streaming information
+flag	sb motd	local	kernel		switch	false	Show kernel information
+flag	sb motd	local	login		switch	false	Show last login information
+flag	sb motd	local	memory		switch	false	Show memory usage
+flag	sb motd	local	nzbget		switch	false	Show NZBGet queue information
+flag	sb motd	local	plex		switch	false	Show Plex streaming information
+flag	sb motd	local	processes		switch	false	Show process count
+flag	sb motd	local	qbittorrent		switch	false	Show qBittorrent queue information
+flag	sb motd	local	queues		switch	false	Show download queue information from Sonarr, Radarr, etc.
+flag	sb motd	local	reboot		switch	false	Show if reboot is required
+flag	sb motd	local	rtorrent		switch	false	Show rTorrent queue information
+flag	sb motd	local	sabnzbd		switch	false	Show SABnzbd queue information
+flag	sb motd	local	sessions		switch	false	Show active user sessions
+flag	sb motd	local	share		switch	false	Obscure sensitive information like IP addresses for sharing screenshots
+flag	sb motd	local	systemd		switch	false	Show systemd services status
+flag	sb motd	local	title		value	false	Text to display in the banner
+flag	sb motd	local	traefik		switch	false	Show Traefik router status information
+flag	sb motd	local	type		value	false	Banner type for boxes (use 'none' to omit box)
+flag	sb motd	local	uptime		switch	false	Show uptime information
+flag	sb motd	local	verbose	v	switch	false	Increase verbosity level (can be used multiple times, e.g. -vvv)
+command	sb reinstall-facts	false	Reinstall the Rust saltbox.fact file
+flag	sb reinstall-facts	global	verbose	v	switch	false	Enable verbose output
+command	sb reinstall-python	false	Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv
+flag	sb reinstall-python	global	verbose	v	switch	false	Enable verbose output
+command	sb reinstall-venv	false	Reinstall the Ansible virtual environment
+flag	sb reinstall-venv	global	verbose	v	switch	false	Enable verbose output
+command	sb restore	true	Fetches and decrypts files based on username and password
+flag	sb restore	local	verbose	v	switch	false	Enable verbose output
+command	sb self-update	true	Update Saltbox CLI
+flag	sb self-update	local	verbose	v	switch	false	Enable verbose debug output
+flag	sb self-update	local	yes	y	switch	false	Automatically accept update without confirmation
+command	sb setup	true	Install Saltbox and its dependencies
+flag	sb setup	global	branch	b	value	false	Branch to use for Saltbox repository
+flag	sb setup	global	force		switch	false	Allow setup to run when an existing Saltbox installation is present
+flag	sb setup	global	verbose	v	switch	false	Enable verbose output
+command	sb update	false	Update Saltbox & Sandbox
+flag	sb update	global	keep-branch		switch	false	Skip branch reset prompt and stay on current branch
+flag	sb update	global	reset-branch		switch	false	Skip branch reset prompt and reset to default branch
+flag	sb update	global	skip-self-update		switch	false	Skip CLI self-update check
+flag	sb update	global	verbose	v	switch	false	Enable verbose output
+command	sb update-venv	true	Update the Ansible virtual environment and saltbox.fact
+flag	sb update-venv	global	verbose	v	switch	false	Enable verbose output
+command	sb validate-config	false	Validate Saltbox configuration files
+flag	sb validate-config	global	verbose	v	switch	false	Enable verbose output
+command	sb version	false	Print Saltbox CLI version
+flag	sb version	local	json		switch	false	Print machine-readable version information

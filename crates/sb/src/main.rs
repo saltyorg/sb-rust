@@ -226,6 +226,9 @@ fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+mod contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
