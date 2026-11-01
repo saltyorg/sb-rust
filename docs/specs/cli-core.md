@@ -125,8 +125,11 @@ as an error). Not copied yet: fang's 120-column wrap of the about;
 `sb help help` stays clap's own (clap adds that subcommand after sb sets
 the others). Parse errors (unknown command
 or flag, bad value) follow sb-go's layout in sb's palette (maintainer,
-2026-10-30): an `ERROR` badge, clap's message, its tips and context lines,
-and `help: try '<command> --help'`, on stderr, exiting 2, the usage-error
+2026-11-01, look H1 from proto-help): an `ERROR` badge, clap's message with
+the value you typed in the problem colour, clap's tips as `hint:` lines
+(label orange, the fix green; "a similar … exists: 'x'" reads "did you
+mean 'x'?") and its context lines (possible values in green), with no
+pointer to help, as sb-go. They go to stderr and exit 2, the usage-error
 convention (sb-go exits 1; a deliberate difference). Run errors keep sb's
 `✗` block.
 

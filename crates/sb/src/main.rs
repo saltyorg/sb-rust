@@ -213,7 +213,7 @@ fn parse(profile: theme::Profile) -> Cli {
 /// clap's exit code (2, the usage-error convention; cli-core spec).
 fn parse_error(err: clap::Error) -> ! {
     let code = err.exit_code();
-    let block = help::parse_error_block(err, "sb", theme::current());
+    let block = help::parse_error_block(err, theme::current());
     let _ = write!(anstream::stderr(), "{block}");
     std::process::exit(code)
 }

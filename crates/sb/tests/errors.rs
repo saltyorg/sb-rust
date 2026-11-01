@@ -54,27 +54,55 @@ fn a_closed_pipe_is_quiet() {
 #[test]
 fn a_parse_error_is_an_sb_error_block() {
     sb().arg("nope").assert().code(2).stderr(predicate::eq(
-        "\n   ERROR \n\n  unrecognized subcommand 'nope'\n\n  help: try 'sb --help'\n\n",
+        "\n   ERROR \n\n  unrecognized subcommand 'nope'\n\n",
     ));
 }
 
 #[test]
 fn a_parse_error_keeps_claps_tips_and_context() {
     sb().arg("verison").assert().code(2).stderr(predicate::eq(
-        "\n   ERROR \n\n  unrecognized subcommand 'verison'\n\n  tip: a similar subcommand exists: 'version'\n  help: try 'sb --help'\n\n",
+        "\n   ERROR \n\n  unrecognized subcommand 'verison'\n\n  hint: did you mean 'version'?\n\n",
     ));
     sb().args(["--color=bad", "version"]).assert().code(2).stderr(predicate::eq(
-        "\n   ERROR \n\n  invalid value 'bad' for '--color <WHEN>'\n\n  [possible values: auto, always, never]\n  help: try 'sb --help'\n\n",
+        "\n   ERROR \n\n  invalid value 'bad' for '--color <WHEN>'\n\n  [possible values: auto, always, never]\n\n",
     ));
 }
 
-/// The help pointer names the command that failed.
+/// An error on a subcommand is one block too, with no pointer to help (as
+/// sb-go).
 #[test]
-fn a_parse_error_points_at_the_failing_commands_help() {
+fn a_parse_error_on_a_subcommand_is_one_block() {
     sb().args(["version", "--bogus"])
         .assert()
         .code(2)
         .stderr(predicate::eq(
-            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n  help: try 'sb version --help'\n\n",
+            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n",
         ));
+}
+
+/// clap's suggestions for a flag and for a value read as "did you mean";
+/// a value suggestion follows the possible values.
+#[test]
+fn flag_and_value_suggestions_read_as_did_you_mean() {
+    sb().args(["--colr=always", "version"]).assert().code(2).stderr(predicate::eq(
+        "\n   ERROR \n\n  unexpected argument '--colr' found\n\n  hint: did you mean '--color'?\n\n",
+    ));
+    sb().args(["--color=alw", "version"]).assert().code(2).stderr(predicate::eq(
+        "\n   ERROR \n\n  invalid value 'alw' for '--color <WHEN>'\n\n  [possible values: auto, always, never]\n  hint: did you mean 'always'?\n\n",
+    ));
+}
+
+/// With colour forced, the whole block is pinned: the badge, the typed
+/// value in the problem colour, the orange label and the green fix.
+#[test]
+fn a_coloured_parse_error_is_pinned() {
+    let out = sb()
+        .args(["--color=always", "verison"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    let expected = "\n  \u{1b}[1m\u{1b}[38;2;11;26;36m\u{1b}[48;2;255;110;122m ERROR \u{1b}[0m\n\n  unrecognized subcommand '\u{1b}[38;2;255;110;122mverison\u{1b}[0m'\n\n  \u{1b}[38;2;245;181;91mhint:\u{1b}[0m did you mean '\u{1b}[38;2;111;211;154mversion\u{1b}[0m'?\n\n";
+    assert_eq!(String::from_utf8(out).expect("utf-8"), expected);
 }

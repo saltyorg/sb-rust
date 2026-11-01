@@ -96,12 +96,13 @@ message in crate-private code (`write_dynamic_context`, `did_you_mean`,
 formatter for errors that carry their own message, so a formatter of ours
 would rewrite every message. `KindFormatter` prints the kind alone, losing
 the values and tips. sb therefore keeps clap's wording: it removes the
-usage context (`Error::remove(ContextKind::Usage)`, after reading the
-failing command's name from it), renders the error plain, and lays the
+usage context (`Error::remove(ContextKind::Usage)`), renders the error
+plain, and lays the
 message, tips and context lines out in sb-go's layout (an ERROR badge on
-the problem colour; the maintainer chose it over a `✗` block). After four
-rounds of variants (`proto-help errors sbgo|tips|focus`, rounds 2 and 3),
-the maintainer chose H1: clap's tips as `hint:`
+the problem colour; the maintainer chose it over a `✗` block). Then came
+rounds of variants (the sb-go-style page, orange tips and badges, focus
+variants, round 2 (R) and round 3 (H)), after which the maintainer
+chose H1: clap's tips as `hint:`
 lines with an orange label, the typed value in the problem colour, fixes
 and possible values in green, the suggestion reworded so no line has two
 colons, no dimming and no help pointer. Tests built on

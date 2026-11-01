@@ -234,17 +234,17 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
 }
 
 /// A clap parse error in sb-go's (fang's) layout, in sb's palette
-/// (maintainer, 2026-10-30): an `ERROR` badge on the problem colour, a blank
-/// line, clap's message, then clap's tips and context lines (`[possible
-/// values: …]`) and where to look, naming the command that failed
-/// (`help: try 'sb version --help'`), or `program` when clap doesn't say
-/// (a bad value carries no usage). clap's usage paragraph is left out
-/// (help has it): removed with clap's `Error::remove(ContextKind::Usage)`
+/// (maintainer, 2026-11-01, look H1 in proto-help): an `ERROR` badge on the
+/// problem colour, a blank line, clap's message with the value you typed in
+/// the problem colour (taken from clap's error context, so it is exact),
+/// then clap's tips as `hint:` lines (see [`tip_hint`]; the label in the
+/// warn colour) and clap's context lines (`[possible values: …]`, the
+/// values in the OK colour).
+/// No pointer to help, as sb-go. clap's usage paragraph is left out:
+/// removed with clap's `Error::remove(ContextKind::Usage)`
 /// (https://docs.rs/clap/4.6.7/clap/error/struct.Error.html#method.remove),
 /// and skipped by line for errors whose usage is part of their message
-/// (`Error::format`ted ones, which sb doesn't produce today). The command's
-/// name is read from clap's usage format; a free-text `override_usage`
-/// would give a wrong one.
+/// (`Error::format`ted ones, which sb doesn't produce today).
 ///
 /// Why not a clap `ErrorFormatter`
 /// (https://docs.rs/clap/4.6.7/clap/error/trait.ErrorFormatter.html): clap
@@ -254,19 +254,44 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
 /// for errors that carry their own message. This keeps clap's wording and
 /// re-lays it out from its plain rendering (`StyledStr`'s Display drops
 /// styles). It keys on clap's English (`error: `, `tip: `, `Usage:`, `For
-/// more information`); the tests pin each shape, so a clap update that
-/// changes one fails them.
-pub fn parse_error_block(mut err: clap::Error, program: &str, theme: &Theme) -> String {
-    use clap::error::{ContextKind, ContextValue};
-    let command = match err.remove(ContextKind::Usage) {
-        Some(ContextValue::StyledStr(usage)) => command_path(&usage.to_string()),
+/// more information`, `[possible values: `, `a similar `, `some similar `,
+/// `, use '`); the tests pin each shape, so a clap update that changes one
+/// fails them.
+pub fn parse_error_block(mut err: clap::Error, theme: &Theme) -> String {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    let _ = err.remove(ContextKind::Usage);
+    // The value the user typed, exactly as clap recorded it (so an
+    // apostrophe in it can't shift what gets coloured).
+    let typed = match err.kind() {
+        ErrorKind::InvalidSubcommand => err.get(ContextKind::InvalidSubcommand),
+        ErrorKind::UnknownArgument => err.get(ContextKind::InvalidArg),
+        ErrorKind::InvalidValue | ErrorKind::ValueValidation | ErrorKind::TooManyValues => {
+            err.get(ContextKind::InvalidValue)
+        }
         _ => None,
-    };
+    }
+    .and_then(|value| match value {
+        ContextValue::String(value) if !value.is_empty() => Some(value.clone()),
+        _ => None,
+    });
     let text = err.render().to_string();
+    let (problem, ok, warn) = (
+        theme.style(Role::Problem),
+        theme.style(Role::Ok),
+        theme.style(Role::Warn),
+    );
     let mut lines = text.lines();
     let first = lines.next().unwrap_or_default();
     let headline = first.strip_prefix("error: ").unwrap_or(first);
-    let mut body: Vec<(Option<&str>, String)> = Vec::new();
+    let headline = match &typed {
+        Some(value) => headline.replacen(
+            &format!("'{value}'"),
+            &format!("'{problem}{value}{problem:#}'"),
+            1,
+        ),
+        None => headline.to_string(),
+    };
+    let mut body = Vec::new();
     let mut in_usage = false;
     for line in lines {
         let trimmed = line.trim();
@@ -274,65 +299,70 @@ pub fn parse_error_block(mut err: clap::Error, program: &str, theme: &Theme) -> 
             in_usage = false;
         } else if trimmed.starts_with("Usage:") {
             in_usage = true;
-        } else if let Some(pointer) = trimmed.strip_prefix("For more information, ") {
-            // clap names the help it offers (`'--help'`, a custom flag, or
-            // the `help` subcommand); a flag gets the failing command's name.
-            let target = pointer
-                .trim_end_matches('.')
-                .strip_prefix("try '")
-                .and_then(|t| t.strip_suffix('\''));
-            let pointer = match target {
-                Some(flag) if flag.starts_with('-') => {
-                    format!("try '{} {flag}'", command.as_deref().unwrap_or(program))
-                }
-                _ => pointer.trim_end_matches('.').to_string(),
-            };
-            body.push((Some("help:"), pointer));
-        } else if in_usage {
+        } else if in_usage || trimmed.starts_with("For more information, ") {
             continue;
         } else if let Some(tip) = trimmed.strip_prefix("tip: ") {
-            body.push((Some("tip:"), tip.to_string()));
+            body.push(format!("{warn}hint:{warn:#} {}", tip_hint(tip, ok)));
+        } else if let Some(list) = trimmed
+            .strip_prefix("[possible values: ")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            let values: Vec<String> = list.split(", ").map(|v| format!("{ok}{v}{ok:#}")).collect();
+            body.push(format!("[possible values: {}]", values.join(", ")));
         } else {
-            body.push((None, trimmed.to_string()));
+            body.push(trimmed.to_string());
         }
     }
-    // The badge text takes the on-accent colour, the palette's dark text
-    // for a bright background (the theme's `text` is light and wouldn't
-    // read on the problem colour).
     let badge = match theme.color(Role::Problem) {
+        // The badge text takes the on-accent colour, the palette's dark text
+        // for a bright background (the theme's `text` is light and wouldn't
+        // read on the problem colour).
         Some(bg) => Style::new()
             .bg_color(Some(bg))
             .fg_color(theme.color(Role::OnAccent))
             .bold(),
         None => Style::new(),
     };
-    let (text, label) = (theme.style(Role::Text), theme.style(Role::Muted));
-    let mut out = format!("\n  {badge} ERROR {badge:#}\n\n  {text}{headline}{text:#}\n");
+    let mut out = format!("\n  {badge} ERROR {badge:#}\n\n  {headline}\n");
     if !body.is_empty() {
         out.push('\n');
     }
-    for (name, line) in body {
-        match name {
-            Some(name) => out.push_str(&format!("  {label}{name}{label:#} {line}\n")),
-            None => out.push_str(&format!("  {line}\n")),
-        }
+    for line in body {
+        out.push_str(&format!("  {line}\n"));
     }
     out.push('\n');
     out
 }
 
-/// The command a usage line is for: `Usage: sb version [OPTIONS]` gives
-/// `sb version` (the words before the first argument, option or
-/// placeholder).
-fn command_path(usage: &str) -> Option<String> {
-    let first = usage.lines().next()?.trim();
-    let words: Vec<&str> = first
-        .strip_prefix("Usage:")
-        .unwrap_or(first)
-        .split_whitespace()
-        .take_while(|w| !w.starts_with(['[', '<', '-']))
-        .collect();
-    (!words.is_empty()).then(|| words.join(" "))
+/// One of clap's tips as a hint. clap's suggestions ("a similar subcommand
+/// exists: 'x'", "some similar subcommands exist: 'x', 'y'") read as "did
+/// you mean 'x' or 'y'?", each name in `ok`, so no line has two colons; a
+/// tip that names a fix ("…, use '-- --x'") has it in `ok`; others stay
+/// clap's text.
+fn tip_hint(tip: &str, ok: Style) -> String {
+    let suggested = tip
+        .strip_prefix("a similar ")
+        .or_else(|| tip.strip_prefix("some similar "))
+        .and_then(|rest| rest.split_once(": '"))
+        .and_then(|(_, names)| names.strip_suffix('\''));
+    if let Some(names) = suggested {
+        let names: Vec<String> = names
+            .split("', '")
+            .map(|name| format!("'{ok}{name}{ok:#}'"))
+            .collect();
+        let names = match names.split_last() {
+            Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+            _ => names.concat(),
+        };
+        return format!("did you mean {names}?");
+    }
+    match tip
+        .rsplit_once(", use '")
+        .and_then(|(before, fix)| Some((before, fix.strip_suffix('\'')?)))
+    {
+        Some((before, fix)) => format!("{before}, use '{ok}{fix}{ok:#}'"),
+        None => tip.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -582,8 +612,8 @@ mod tests {
         assert!(!text.contains("fact [--flags]"), "{text}");
     }
 
-    /// clap's usage paragraph, every line of it, is left out; tips and
-    /// context lines stay; clap's pointer becomes `help:`.
+    /// clap's usage paragraph, every line of it, and its pointer to help are
+    /// left out; tips become `hint:` lines; context lines stay.
     #[test]
     fn a_parse_error_keeps_claps_message_without_its_usage() {
         let err = clap::Error::raw(
@@ -591,8 +621,8 @@ mod tests {
             "invalid value 'x'\n  [possible values: a, b]\n\n  tip: try 'a'\n\nUsage: sb one\n       sb two\n\nFor more information, try '--help'.\n",
         );
         assert_eq!(
-            parse_error_block(err, "sb", &Theme::plain()),
-            "\n   ERROR \n\n  invalid value 'x'\n\n  [possible values: a, b]\n  tip: try 'a'\n  help: try 'sb --help'\n\n"
+            parse_error_block(err, &Theme::plain()),
+            "\n   ERROR \n\n  invalid value 'x'\n\n  [possible values: a, b]\n  hint: try 'a'\n\n"
         );
     }
 
@@ -605,7 +635,7 @@ mod tests {
             .subcommand(Command::new("version"))
             .try_get_matches_from(["sb", "nope"])
             .expect_err("unknown command");
-        let block = parse_error_block(err, "sb", &theme);
+        let block = parse_error_block(err, &theme);
         assert!(
             block.starts_with(&format!(
                 "\n  {badge} ERROR {badge:#}\n",
@@ -617,16 +647,17 @@ mod tests {
             "{block:?}"
         );
         assert!(
-            block.contains(&format!("{}help:", theme.style(Role::Muted))),
+            block.contains(&format!("'{}nope", theme.style(Role::Problem))),
             "{block:?}"
         );
         let typo = Command::new("sb")
             .subcommand(Command::new("version"))
             .try_get_matches_from(["sb", "verison"])
             .expect_err("typo");
-        let block = parse_error_block(typo, "sb", &theme);
+        let block = parse_error_block(typo, &theme);
         assert!(
-            block.contains(&format!("{}tip:", theme.style(Role::Muted))),
+            block.contains(&format!("{}hint:", theme.style(Role::Warn)))
+                && block.contains(&format!("'{}version", theme.style(Role::Ok))),
             "{block:?}"
         );
     }
@@ -634,15 +665,13 @@ mod tests {
     fn plain_error(cmd: Command, argv: &[&str]) -> String {
         parse_error_block(
             cmd.try_get_matches_from(argv).expect_err("a parse error"),
-            "sb",
             &Theme::plain(),
         )
     }
 
     /// clap's real output for the kinds with extra lines, so a clap update
     /// that changes their shape fails here: missing arguments, a conflict
-    /// with several arguments, a missing subcommand, a multi-line usage, and
-    /// the help pointer naming the command that failed.
+    /// with several arguments, a missing subcommand and a multi-line usage.
     #[test]
     fn claps_multi_line_errors_keep_their_lines() {
         let add = Command::new("sb").subcommand(
@@ -652,7 +681,7 @@ mod tests {
         );
         assert_eq!(
             plain_error(add, &["sb", "add"]),
-            "\n   ERROR \n\n  the following required arguments were not provided:\n\n  <name>\n  <path>\n  help: try 'sb add --help'\n\n"
+            "\n   ERROR \n\n  the following required arguments were not provided:\n\n  <name>\n  <path>\n\n"
         );
         let flag = |id: &'static str| Arg::new(id).long(id).action(ArgAction::SetTrue);
         let conflict = Command::new("sb")
@@ -661,7 +690,7 @@ mod tests {
             .arg(flag("c").conflicts_with_all(["a", "b"]));
         assert_eq!(
             plain_error(conflict, &["sb", "--c", "--a", "--b"]),
-            "\n   ERROR \n\n  the argument '--c' cannot be used with:\n\n  --a\n  --b\n  help: try 'sb --help'\n\n"
+            "\n   ERROR \n\n  the argument '--c' cannot be used with:\n\n  --a\n  --b\n\n"
         );
         let required = Command::new("sb")
             .subcommand_required(true)
@@ -669,7 +698,7 @@ mod tests {
             .subcommand(Command::new("version"));
         assert_eq!(
             plain_error(required, &["sb", "--verbose"]),
-            "\n   ERROR \n\n  'sb' requires a subcommand but one was not provided\n\n  [subcommands: version, help]\n  help: try 'sb --help'\n\n"
+            "\n   ERROR \n\n  'sb' requires a subcommand but one was not provided\n\n  [subcommands: version, help]\n\n"
         );
         let two_usages = Command::new("sb")
             .args_conflicts_with_subcommands(true)
@@ -677,11 +706,12 @@ mod tests {
             .subcommand(Command::new("version"));
         assert_eq!(
             plain_error(two_usages, &["sb", "--bogus"]),
-            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n  help: try 'sb --help'\n\n"
+            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n"
         );
     }
 
-    /// Without clap's help flag there is nothing to point at, so no `help:`.
+    /// No pointer to help, here with neither clap's help flag nor its help
+    /// subcommand.
     #[test]
     fn no_help_flag_means_no_help_line() {
         let cmd = Command::new("sb")
@@ -698,16 +728,121 @@ mod tests {
         );
     }
 
-    /// clap names the help it can offer: with the flag off but the help
-    /// subcommand on, that's `help`, kept as clap says it.
+    /// No pointer to help either way, as sb-go (here with clap's help
+    /// subcommand on and its flag off).
     #[test]
-    fn the_pointer_keeps_claps_help_target() {
+    fn no_help_pointer_with_only_the_help_subcommand() {
         let cmd = Command::new("sb")
             .disable_help_flag(true)
             .subcommand(Command::new("version"));
         assert_eq!(
             plain_error(cmd, &["sb", "--bogus"]),
-            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n  help: try 'help'\n\n"
+            "\n   ERROR \n\n  unexpected argument '--bogus' found\n\n"
         );
+    }
+
+    /// Possible values are green; an error whose first quoted value isn't
+    /// what the user typed ('sb' requires a subcommand) leaves it uncoloured.
+    #[test]
+    fn values_are_green_and_only_typed_values_are_marked() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let (ok, problem) = (theme.style(Role::Ok), theme.style(Role::Problem));
+        let bad = Command::new("sb")
+            .arg(Arg::new("mode").long("mode").value_parser(["a", "b"]))
+            .try_get_matches_from(["sb", "--mode=c"])
+            .expect_err("bad value");
+        let block = parse_error_block(bad, &theme);
+        assert!(
+            block.contains(&format!("'{problem}c{problem:#}'")),
+            "{block:?}"
+        );
+        assert!(
+            block.contains(&format!("[possible values: {ok}a{ok:#}, {ok}b{ok:#}]")),
+            "{block:?}"
+        );
+        let missing = Command::new("sb")
+            .subcommand_required(true)
+            .arg(
+                Arg::new("verbose")
+                    .long("verbose")
+                    .action(ArgAction::SetTrue),
+            )
+            .subcommand(Command::new("version"))
+            .try_get_matches_from(["sb", "--verbose"])
+            .expect_err("missing subcommand");
+        let block = parse_error_block(missing, &theme);
+        assert!(block.contains("  'sb' requires a subcommand"), "{block:?}");
+    }
+
+    /// Several similar names read as one question, each candidate green.
+    #[test]
+    fn several_suggestions_read_as_one_question() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let ok = theme.style(Role::Ok);
+        let err = Command::new("sb")
+            .subcommand(Command::new("install"))
+            .subcommand(Command::new("instal1"))
+            .try_get_matches_from(["sb", "instal"])
+            .expect_err("typo");
+        let block = parse_error_block(err, &theme);
+        assert!(
+            block.contains(&format!(
+                "did you mean '{ok}instal1{ok:#}' or '{ok}install{ok:#}'?"
+            )) || block.contains(&format!(
+                "did you mean '{ok}install{ok:#}' or '{ok}instal1{ok:#}'?"
+            )),
+            "{block:?}"
+        );
+        assert!(!block.contains("exist:"), "{block:?}");
+    }
+
+    /// The typed value is coloured whole, apostrophes and all, and a tip's
+    /// fix only where the tip names one ("use '…'").
+    #[test]
+    fn typed_values_with_apostrophes_are_coloured_whole() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let (ok, problem) = (theme.style(Role::Ok), theme.style(Role::Problem));
+        let err = Command::new("sb")
+            .subcommand(Command::new("version"))
+            .try_get_matches_from(["sb", "it's"])
+            .expect_err("unknown command");
+        let block = parse_error_block(err, &theme);
+        assert!(
+            block.contains(&format!("'{problem}it's{problem:#}'")),
+            "{block:?}"
+        );
+        let err = Command::new("sb")
+            .arg(Arg::new("name"))
+            .try_get_matches_from(["sb", "--it's"])
+            .expect_err("unknown flag");
+        let block = parse_error_block(err, &theme);
+        assert!(
+            block.contains(&format!("'{problem}--it's{problem:#}'")),
+            "{block:?}"
+        );
+        assert!(
+            block.contains(&format!("use '{ok}-- --it's{ok:#}'")),
+            "{block:?}"
+        );
+        let err = Command::new("sb")
+            .subcommand(Command::new("version"))
+            .try_get_matches_from(["sb", "--", "version"])
+            .expect_err("subcommand after --");
+        let block = parse_error_block(err, &theme);
+        assert!(!block.contains(&format!("{ok}--{ok:#}")), "{block:?}");
+    }
+
+    /// An empty value ("a value is required for …") has nothing typed to
+    /// colour, so the message stays plain.
+    #[test]
+    fn an_empty_value_colours_nothing() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let err = Command::new("sb")
+            .arg(Arg::new("mode").long("mode").value_parser(["a", "b"]))
+            .try_get_matches_from(["sb", "--mode="])
+            .expect_err("empty value");
+        let block = parse_error_block(err, &theme);
+        let headline = block.lines().nth(3).expect("headline");
+        assert!(!headline.contains('\x1b'), "{block:?}");
     }
 }

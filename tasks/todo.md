@@ -304,7 +304,9 @@ whose long text needs it. `sb help help` stays clap's own format.
 
 **Description:** clap's parse errors (unknown command or flag, bad value)
 are drawn in sb-go's layout (an ERROR badge, chosen by the maintainer over
-a `✗` block), on stderr, exit 2 (maintainer: the
+a `✗` block; look H1: `hint:` lines, the typed value in the problem
+colour, fixes and possible values in green, no help pointer), on stderr,
+exit 2 (maintainer: the
 usage-error convention, a deliberate difference from sb-go's 1). Not
 through a clap `ErrorFormatter`: clap builds its messages in private code,
 so sb keeps clap's wording and re-lays out its plain rendering, with the
