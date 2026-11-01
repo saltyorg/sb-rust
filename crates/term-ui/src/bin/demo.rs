@@ -1,8 +1,10 @@
 //! The runner on stderr, for trying it and for the PTY tests: `cargo run
 //! -p sb-term-ui --bin demo [-- FLAGS]`, the flags being test hooks:
 //! `--fail`, `--sensitive` (wins over `--fail`), `--new-token`, `--panic`,
-//! `--interrupt`, `--interrupt-twice`, `--terminate` and
-//! `--leave-foreground`. A binary
+//! `--interrupt`, `--interrupt-twice`, `--terminate`,
+//! `--leave-foreground`, `--table` (a table instead of the run, which
+//! returns early: any output error is exit 1 there) and `--colour` /
+//! `--no-colour`. A binary
 //! rather than an example because `cargo test --tests` (the coverage run)
 //! builds bins for the integration tests but not examples; sb's build
 //! never includes it. It ends through cli-core's `finish_run`,
@@ -15,8 +17,8 @@ use rustix::process::{Signal, getpid, kill_process, setpgid};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{ExitCode, finish_run};
 use sb_cli_core::log::{RunLog, Secret, outcome};
-use sb_cli_core::theme::{self, Palette, Profile, Theme};
-use sb_term_ui::{Labels, Line, Options, Runner, Step};
+use sb_cli_core::theme::{self, Palette, Profile, Role, Theme};
+use sb_term_ui::{Cell, Labels, Line, Options, Runner, Step, Table};
 
 /// `lines` output lines, one every `pace`, stopping when cancelled.
 async fn work(step: &mut Step, lines: usize, pace: Duration) -> anyhow::Result<()> {
@@ -168,9 +170,49 @@ async fn demo(
     Ok(())
 }
 
+/// `--table`: a `docker ps`-like table on stdout, in the reviewed look.
+fn table() -> ExitCode {
+    let mut table = Table::new(["Container", "Status", "Traefik Port", "Port Bindings"])
+        .right_align(2)
+        .right_align(3)
+        .max_column_width(100);
+    table.row([
+        Cell::new("authelia"),
+        Cell::new("running").role(Role::Ok),
+        Cell::new("9091"),
+        Cell::new(""),
+    ]);
+    table.row([
+        Cell::new("plex"),
+        Cell::new("running").role(Role::Ok),
+        Cell::new("32400"),
+        Cell::new("0.0.0.0:32400->32400/tcp"),
+    ]);
+    table.row([
+        Cell::new("sonarr"),
+        Cell::new("exited (1)").role(Role::Problem),
+        Cell::new("8989"),
+        Cell::new(""),
+    ]);
+    match table.print() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::from(1),
+    }
+}
+
 fn main() -> ExitCode {
     theme::install(Theme::resolve(&Palette::default(), Profile::TrueColor));
+    // `--colour` / `--no-colour`: sb's `--color=always|never`, as anstream's
+    // global choice (the real binary sets it from its flag).
+    if arg("--colour") {
+        anstream::ColorChoice::Always.write_global();
+    } else if arg("--no-colour") {
+        anstream::ColorChoice::Never.write_global();
+    }
     sb_term_ui::follow_colour_choice(Profile::TrueColor);
+    if arg("--table") {
+        return table();
+    }
     let fail = std::env::args().any(|a| a == "--fail");
     let sensitive = std::env::args().any(|a| a == "--sensitive");
     // A run log only under SB_LOG_DIR (the tests' temporary directory),

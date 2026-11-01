@@ -75,10 +75,10 @@ restore hooks (decision 5).
 - [x] Task 9: Nested and concurrent steps
 
 ### Checkpoint B: Runner
-- [ ] The maintainer has tried the runner demo
+- [x] The maintainer has tried the runner demo
 
 ### Phase 3: Tables and close
-- [ ] Task 10: Tables in the reviewed `docker ps` look
+- [x] Task 10: Tables in the reviewed `docker ps` look
 - [ ] Task 11: Success criteria and measurements
 - [ ] Task 12: 16-colour OK green (maintainer decision)
 

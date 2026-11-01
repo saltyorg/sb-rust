@@ -3,10 +3,12 @@
 
 mod runner;
 pub mod style;
+mod table;
 mod tree;
 mod tty;
 
 pub use runner::{Group, Labels, Line, Options, Runner, Step, Target};
+pub use table::{Cell, Table};
 
 use anstream::{AutoStream, ColorChoice};
 use sb_cli_core::theme::Profile;

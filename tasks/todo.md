@@ -291,8 +291,10 @@ cited).
 **Scope:** M
 
 ## Checkpoint B: Runner
-- [ ] Tasks 5-9 committed; `scripts/check.sh full` passes.
-- [ ] The maintainer has tried the runner demo in a real terminal.
+- [x] Tasks 5-9 committed; `scripts/check.sh full` passes.
+- [x] The maintainer has tried the runner demo in a real terminal
+      (approved 2026-11-01, after dropping the verbose option, decision 9,
+      and masking secrets inline, decision 8 amended).
 
 ## Task 10: Tables in the reviewed `docker ps` look
 
@@ -303,14 +305,14 @@ fitted to the terminal (console's size on stdout), natural width when not
 a terminal.
 
 **Acceptance criteria:**
-- [ ] Matches proto-inline's reviewed table (snapshot from its output) and
+- [x] Matches proto-inline's reviewed table (snapshot from its output) and
       fits 120, 70 and 50 columns.
-- [ ] Not a terminal: natural width, no escape codes; `--color=never` on a
+- [x] Not a terminal: natural width, no escape codes; `--color=never` on a
       terminal: no SGR codes, bold included; `--color=always` piped: the
       theme's colours; per-profile guard tests.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; the demo's table; `scripts/check.sh full`.
+- [x] `cargo test -p sb-term-ui`; the demo's table; `scripts/check.sh full`.
 
 **Dependencies:** Task 5 (the demo and insta)
 **Files:** `crates/term-ui/{Cargo.toml,src/table.rs,tests/table.rs,src/bin/demo.rs}`, `Cargo.toml` (tabled)
