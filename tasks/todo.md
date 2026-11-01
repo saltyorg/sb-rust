@@ -132,12 +132,13 @@ spec's code-style section, marked "proposed" until the maintainer approves
 it at Checkpoint A, reviewed before any runner code.
 
 **Acceptance criteria:**
-- [ ] The API covers every runner behaviour in the spec, including nested
+- [x] The API covers every runner behaviour in the spec, including nested
       and concurrent steps, failure and interruption.
-- [ ] Reviewed; approved by the maintainer at Checkpoint A.
+- [x] Reviewed (three rounds).
+- [ ] Approved by the maintainer at Checkpoint A.
 
 **Verification:**
-- [ ] Review.
+- [x] Review.
 
 **Dependencies:** Task 1
 **Files:** `docs/specs/term-ui.md`

@@ -183,6 +183,9 @@ Pinned in the workspace when added, each confirmed at source in its task:
 | Async steps (decision 4) | `tokio`, minimal features (approved with the plan, 2026-11-01) | proto-logs, proto-runner |
 | Snapshot tests (dev) | `insta` (approved with the plan, 2026-11-01) | capability map |
 | Colour, theme, `Shutdown`, exit, run log | `sb-cli-core` | cli-core |
+| Step errors (proposed with the runner API, Task 4) | `anyhow` (already the binary's) | cli-core's binary |
+| Step records in the run's span (proposed, Task 4) | `tracing` with `Instrument` (already cli-core's) | cli-core |
+| In-memory screen for snapshots (proposed, Task 4; dev only, term-ui's `testing` feature) | indicatif's `in_memory` feature (pulls `vt100`) | indicatif docs |
 
 The binary will grow past the 5% ratchet; the plan writes that ADR, as
 ADR-004 did.
@@ -212,18 +215,241 @@ modules may depend on it).
 ## Code style
 
 As cli-core: library-first, every pattern cited with its documentation URL,
-no `#[allow]`, output through `Write`, never `print!`. Illustration only;
-the API is designed in the plan (`agent-skills:api-and-interface-design`)
-after decisions 2 to 4:
+no `#[allow]`, output through `Write`, never `print!`.
+
+### Runner API (Task 4; proposed, awaiting the maintainer at Checkpoint A)
+
+Signatures as they would be written; bodies come with Tasks 5-9.
 
 ```rust
-let run = Runner::start("Validating Saltbox config", &shutdown, log.as_ref())?;
-run.step(Labels::new("Checking accounts.yml", "accounts.yml checked"), |step| {
-    step.warn("unknown key: foo");
-    check_accounts(&config)
-})?;
-run.finish()
+/// One run of steps, drawn as one tree (the root line is the title).
+/// Live on a terminal; plain when the target isn't one or the command
+/// asks for verbose output.
+pub struct Runner { /* … */ }
+
+impl Runner {
+    /// Start drawing. Called inside the command's tokio runtime (sb builds
+    /// it after argument parsing); the frame task runs on it. Never fails:
+    /// if the terminal's modes can't be read, `ECHOCTL` is left alone.
+    /// Registers a restore hook with `shutdown` for a second Ctrl-C (it
+    /// first stops the frame task drawing, then writes through its own
+    /// tty fd and puts `ECHOCTL` back), removed when the runner ends.
+    /// `log` gives the failure block's pointer; step records go through
+    /// `tracing` in the current span, which the runner captures here and
+    /// carries onto concurrent steps' tasks (`Instrument`).
+    pub async fn start(
+        title: &str,
+        shutdown: &Shutdown,
+        log: Option<&RunLog>,
+        options: Options,
+    ) -> Runner;
+
+    /// Run one top-level step to its end; see [`Step::step`]. `&mut self`
+    /// keeps top-level steps one after another (concurrency is
+    /// [`Step::group`]'s).
+    pub async fn step<T>(
+        &mut self,
+        labels: Labels,
+        body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<T>,
+    ) -> Result<T, Exit>;
+
+    /// End the run at its happy end: print what is still live, show the
+    /// cursor, put the terminal back, remove the restore hook. Dropping
+    /// the runner is the safety net (a command leaving early with `?`, or
+    /// a panic): it does the same without panicking and stops the frame
+    /// task first, so no frame lands after the last lines.
+    pub fn finish(self);
+}
+
+/// How and where the runner draws.
+#[derive(Default)]
+pub struct Options {
+    /// The command's `-v` (sb has none yet): plain output even on a
+    /// terminal.
+    pub verbose: bool,
+    /// Where to draw: stderr by default.
+    pub target: Target,
+}
+
+#[derive(Default)]
+pub enum Target {
+    #[default]
+    Stderr,
+    /// An in-memory screen of a fixed size, colour on or off, for the
+    /// snapshot tests: indicatif's `InMemoryTerm` (its `in_memory`
+    /// feature, which pulls vt100), only with term-ui's `testing` feature,
+    /// so it never ships in sb.
+    #[cfg(feature = "testing")]
+    InMemory(indicatif::InMemoryTerm),
+}
+
+/// A step's words: running, done, and (optional) failure, as sb-go's
+/// Running/Success/Failure. "stopped", "interrupted" and "sub-step
+/// failed" are shown after the running label; ✗ shows the failure label,
+/// else the running label.
+#[derive(Clone, Debug)]
+pub struct Labels { /* … */ }
+
+impl Labels {
+    pub fn new(running: impl Into<String>, done: impl Into<String>) -> Self;
+    pub fn failure(self, failure: impl Into<String>) -> Self;
+}
+
+/// A running step. Sequential bodies borrow it (`&mut`), so it can't
+/// outlive their step or start siblings behind the runner's back. A
+/// concurrent sibling owns its `Step` (its task is `'static`); if the body
+/// keeps it past its end (a detached task), later lines are logged only
+/// and `step`/`group` return `Exit(1)` without drawing. `Send + Sync`.
+pub struct Step { /* … */ }
+
+impl Step {
+    /// The token this step watches: a child of `shutdown.token()`,
+    /// cancelled by Ctrl-C, by the command's own `Shutdown::request`, or
+    /// by a failing concurrent sibling (decision 7). A body stops early
+    /// when it is cancelled and returns its error.
+    pub fn token(&self) -> CancellationToken;
+
+    /// An info notice (`›`, muted) under this step, kept and logged.
+    pub fn info(&mut self, text: impl Into<Line>);
+    /// A warning notice (orange `!`) under this step, kept and logged.
+    pub fn warn(&mut self, text: impl Into<Line>);
+    /// Output: shown in the live tail (or plainly) and logged. Text is
+    /// split into lines at `\n`; a `\r` keeps what follows it (progress
+    /// output); escape codes are kept on a coloured target and stripped
+    /// otherwise; a line wider than the screen is cut with `…` on screen
+    /// and logged whole.
+    pub fn output(&mut self, text: impl Into<Line>);
+
+    /// Run a sub-step (a deeper branch) to its end; this step's subtree
+    /// stays live until this step ends (decision 7). See "Step endings".
+    pub async fn step<T>(
+        &mut self,
+        labels: Labels,
+        body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<T>,
+    ) -> Result<T, Exit>;
+
+    /// Concurrent sub-steps: [`Group::spawn`] each, then [`Group::join`].
+    pub fn group<T: Send + 'static>(&mut self) -> Group<'_, T>;
+}
+
+/// Concurrent sibling steps under one parent, drawn in full in start
+/// order (decision 7). Each runs as a tokio task (`JoinSet`,
+/// https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinSet.html), so bodies
+/// own what they use and get their own `Step`. Borrows the parent, so the
+/// parent can't add lines or steps meanwhile.
+#[must_use = "join the group; dropping it stops its steps"]
+pub struct Group<'a, T> { /* … */ }
+
+impl<T: Send + 'static> Group<'_, T> {
+    pub fn spawn<F, Fut>(&mut self, labels: Labels, body: F)
+    where
+        F: FnOnce(Step) -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<T>> + Send + 'static;
+
+    /// Wait for every sibling; results in spawn order (`join_next_with_id`
+    /// mapped back, not `join_all`'s completion order). The first failure
+    /// seen cancels the others' tokens and its `Exit` comes back once all
+    /// have returned (errgroup also waits for them). A panicking sibling
+    /// is marked failed, the others are cancelled and waited for, then the
+    /// panic resumes (`std::panic::resume_unwind`, as tokio's docs
+    /// advise); the default panic hook's message lands in the live area
+    /// first. An aborted sibling's `spawn_blocking` work runs on, detached
+    /// (an accepted limit).
+    pub async fn join(self) -> Result<Vec<T>, Exit>;
+}
+
+/// A notice or output line, and whether it may be logged. From `&str`,
+/// `String` and `&String`: loggable.
+pub struct Line { /* … */ }
+
+impl Line {
+    /// Shown on screen to the user who ran the command, never logged
+    /// (credentials, tokens); the log records that a line was withheld.
+    pub fn sensitive(text: impl Into<String>) -> Self;
+}
 ```
+
+And in cli-core, so the run record can honour it too (cli-core can't
+depend on term-ui):
+
+```rust
+/// sb_cli_core::log: an error whose text must not be logged. Wherever it
+/// sits in a chain, it and every cause below it are shown on screen and
+/// logged as withheld, by a runner step's record and by
+/// `RunLog::finished` alike. A boxed error, as cli-core takes any
+/// `std::error::Error` (only the binary and term-ui use anyhow).
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct Sensitive(pub Box<dyn std::error::Error + Send + Sync>);
+```
+
+**Step endings** (for [`Runner::step`], [`Step::step`] and each sibling).
+The first matching row decides, so a parent of an interrupted step reads
+"interrupted", not "sub-step failed". Every row logs the step's start,
+outcome and elapsed time (criterion 8); a cancelled body's error is
+logged with the outcome, never shown.
+
+| The body | The step reads | Shown | Returns |
+|---|---|---|---|
+| would start after the token was cancelled | not drawn; the body doesn't run | nothing | `Exit(1)` |
+| returns `Ok` (even after a cancel) | ✓ done label | | `Ok` |
+| panics, or is dropped while panicking | ✗ failure label | nothing (the panic message) | (the panic goes on) |
+| is dropped unfinished (`select!`, a timeout, an unjoined `Group`) | "stopped" (its subtree too) | nothing | (none) |
+| returns `Err` after Ctrl-C (`Shutdown::interrupted`) | "interrupted", its last lines kept; parents too | nothing (cli-core shows "interrupted" once) | `Exit(1)` |
+| returns `Err` after the command's own `Shutdown::request` | "stopped" | nothing (cli-core exits quietly with the requested code) | `Exit(1)` |
+| returns `Err` after a sibling failed | "stopped" | nothing | `Exit(1)` |
+| returns `Err` carrying a quiet exit (`quiet_exit` is `Some`: a sub-step's `Exit`, exec's child code later, a broken pipe) | "sub-step failed" (✗ for a broken pipe) | nothing more | the same `Exit(code)` |
+| returns `Err` | ✗ failure label | the error's every line, the last 10 output lines, the log pointer; logged with its causes | `Exit(1)` |
+
+In use, `validate-config` (illustration):
+
+```rust
+let options = Options::default();
+let mut run = Runner::start("Validating Saltbox config", &shutdown, log.as_ref(), options).await;
+let accounts_step = Labels::new("Checking accounts.yml", "accounts.yml checked");
+run.step(accounts_step, async |step| {
+    for key in unknown_keys(&accounts) {
+        step.warn(format!("unknown key: {key}"));
+    }
+    // Short and in memory; longer blocking work goes through
+    // `spawn_blocking` with cloned data.
+    check_accounts(&accounts)
+})
+.await?;
+run.step(Labels::new("Checking credentials", "credentials valid"), async |step| {
+    let mut group = step.group();
+    // Each check takes its `Step` and its (cloned) settings by value.
+    let cloudflare = Labels::new("Checking Cloudflare token", "Cloudflare token valid");
+    group.spawn(cloudflare, |s| check_cloudflare(s, cf));
+    let docker_hub = Labels::new("Checking Docker Hub login", "Docker Hub login valid");
+    group.spawn(docker_hub, |s| check_docker_hub(s, hub));
+    group.join().await?;
+    Ok(())
+})
+.await?;
+run.finish();
+```
+
+Choices behind it:
+
+- **The body's result decides the step's ending** (the table), not calls
+  on `Step`: there is no way to end a step twice or forget to end it, and
+  a `&mut Step` can't outlive it.
+- **`Exit` as the error** is cli-core's quiet exit, so a shown failure is
+  never repeated, a sub-step's or a child's code passes up unchanged, and
+  cli-core needs no new error type.
+- **Async closures** (`AsyncFnOnce`, stable since Rust 1.85) for
+  sequential steps borrow freely; concurrent siblings are tokio tasks and
+  own their data.
+- **Runtime: tokio's current-thread runtime** (the stack table's minimal
+  features). Bodies do their blocking work through `spawn_blocking`, or
+  the spinner stops while they run; config and docker reads are async or
+  short. The runner starts no runtime and no processes.
+- **Sensitive text is marked where it is made** (`Line::sensitive`,
+  `Sensitive` in an error chain), so logging can't forget a case.
+- **Not here yet:** a child process's output and exit code in the times
+  column (exec), prompts inside a step (decision 1), progress counts.
+  Each can be added without changing these signatures.
 
 ## Testing strategy
 
