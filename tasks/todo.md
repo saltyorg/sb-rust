@@ -150,7 +150,7 @@ opened is a warning. The error block's pointer names the log and run id.
 **Verification:**
 - [x] Tests against temporary directories (root tests gated on
       `SB_TEST_ROOT=1`).
-- [ ] The real `/var/log/sb`: moved to Task 10's manual verification, run
+- [x] The real `/var/log/sb`: moved to Task 10's manual verification, run
       only with the maintainer's go-ahead (an automatic test would create
       it on this host at every check run).
 - [x] `scripts/check.sh task`; library-reviewer on the diff.
@@ -166,6 +166,11 @@ Carried forward from the cli-core code review (2026-10-30):
 - sb-go also exports COLORTERM for child processes (truecolor, 256color,
   unset for ansi and ascii); sb-rust doesn't yet. Decide when the exec
   module starts children (ansible).
+- Under `SB_COLOR_PROFILE=ansi`, anstyle-lossy maps the palette's OK green
+  to White (light grey, the same as muted text), so help's flag names and
+  H1's green fixes don't stand out in 16-colour mode (2026-11-01 review). Accepted for now (maintainer, 2026-11-01); revisit
+  when term-ui brings more colour users (an explicit 16-colour colour per
+  role is the likely fix).
 - Check sudoers(5): a policy without `setenv` may refuse `--preserve-env`
   names outside env_keep (VISUAL and EDITOR carry the same risk); record
   the answer in docs/platform-notes/.
@@ -174,8 +179,8 @@ Carried forward from the cli-core code review (2026-10-30):
   reaches the run log; today's test uses a flag.
 
 ## Checkpoint B: Startup
-- [ ] `scripts/check.sh full` passes.
-- [ ] Review with the maintainer before Phase 3.
+- [x] `scripts/check.sh full` passes.
+- [x] Review with the maintainer before Phase 3.
 
 ## Task 7: `--color` on every output path, including help
 
@@ -249,17 +254,18 @@ criteria.
 
 **Acceptance criteria:**
 - [x] Spec success criteria 2, 5, 6 (with `SB_TEST_ROOT=1`), 7, 8 and 9 pass; 3 is covered by Task 5's test until a root command exists.
-- [ ] Criterion 1: help and version as a normal user pass; tab completion
-  comes with the completion module.
-- [ ] Criterion 4: SIGINT 130 and SIGTERM 143 pass; nothing draws to the
-  terminal yet, so the restore is checked when term-ui lands.
+- [x] Criterion 1: help and version as a normal user pass. Carried: tab
+  completion comes with the completion module.
+- [x] Criterion 4: SIGINT 130 and SIGTERM 143 pass. Carried: nothing draws
+  to the terminal yet, so the restore is checked when term-ui lands
+  (term-ui spec, decision 5).
 - [x] The `help` subcommand: sb-go removes it; the maintainer chose to keep
   clap's `help` listed (spec updated, 2026-10-30).
 - [x] Startup budget holds: `sb --help` and `sb version` median ≤ 10 ms (0.76 and 0.90 ms).
 
 **Verification:**
 - [x] `scripts/check.sh full`.
-- [ ] Manual: `sb --help`, `sb version`, Ctrl-C and `--color` on this host, shown to the maintainer.
+- [x] Manual: `sb --help` and `sb version` on this host, shown to the maintainer (`--color`: covered by crates/sb/tests/colour.rs, piped and on a pty; Ctrl-C: no long-running command yet, covered by the signal tests).
 - [x] Manual, with the maintainer's go-ahead: root runs against the real
       `/var/log/sb` (created root-owned 0700, record written; kept). A
       failed root run (`sb version >/dev/full`) printed the pointer with
@@ -290,7 +296,7 @@ working (spec: Help and parse errors).
 **Verification:**
 - [x] Unit tests on the rendering (fixed commands, colour on and off);
       end-to-end help tests; `scripts/check.sh full`.
-- [ ] Manual: the maintainer compares `sb --help` with sb-go's.
+- [x] Manual: the maintainer compares `sb --help` with sb-go's.
 
 Deferred: fang wraps the about at min(terminal, 120) columns; today's
 abouts are one line, so the wrap comes with the first ported command
@@ -320,12 +326,14 @@ usage paragraph removed through `Error::remove(ContextKind::Usage)`
 
 **Verification:**
 - [x] End-to-end tests; `scripts/check.sh full`.
-- [ ] Manual: the maintainer compares with sb-go's error.
+- [x] Manual: the maintainer compares with sb-go's error (H1 chosen).
 
 **Dependencies:** Task 11
 **Files:** `crates/cli-core/src/help.rs` (or `exit.rs`), `crates/sb/src/main.rs`, `crates/sb/tests/errors.rs`
 **Scope:** S
 
 ## Checkpoint C: Complete
-- [ ] All tasks done; `scripts/check.sh full` passes.
-- [ ] Spec success criteria met; the maintainer reviews `sb --help`, `sb version` and Ctrl-C.
+- [x] All tasks done; `scripts/check.sh full` passes.
+- [x] Spec success criteria met (completion and terminal restore carried
+      to their modules); the maintainer reviewed `sb --help`, `sb version`
+      and parse errors (2026-11-01); Ctrl-C is covered by the signal tests.

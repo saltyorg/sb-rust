@@ -76,9 +76,9 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 - [x] Task 9: Theme config
 
 ### Checkpoint C: Complete
-- [ ] Task 10: Startup wiring, contract test and success criteria
-- [ ] Task 11: Help in sb-go's format (maintainer, Checkpoint C)
-- [ ] Task 12: Parse errors in sb-go's layout
+- [x] Task 10: Startup wiring, contract test and success criteria
+- [x] Task 11: Help in sb-go's format (maintainer, Checkpoint C)
+- [x] Task 12: Parse errors in sb-go's layout
 
 ## Risks and mitigations
 
