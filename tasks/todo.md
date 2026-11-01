@@ -327,6 +327,21 @@ of the binary: unless an earlier task already crossed the tolerance (and
 wrote its ADR), the size ADR for term-ui's growth comes with the first
 command that uses it, and this task records that.
 
+**Evidence (2026-11-01):**
+
+| Criterion | Evidence |
+|---|---|
+| 1. No SGR with colour off; cursor movement stays; piped auto plain; always piped coloured | runner: tests/runner.rs `colour_off_keeps_the_cursor_movement_only` (`NO_COLOR` and `--color=never`, with auto on the same terminal as the control), `piped_output_is_plain`, `always_colours_piped_runner_output`; tables: tests/table.rs `never_means_no_codes_on_a_terminal`, `piped_tables_are_plain_and_natural_width`, `always_colours_a_piped_table`; prompts: carried to their first user (decision 1) |
+| 2. Each profile's kind of colour codes; ascii none | style.rs `every_colour_code_is_of_the_profiles_kind`, `ascii_writes_no_escape_codes`; tree.rs `tree_colours_follow_the_profile`; runner.rs `plain_end_lines_follow_the_profile`; table.rs `table_colours_follow_the_profile`, `no_colour_writes_no_escape_codes` |
+| 3. Reviewed tree, tails, nesting and concurrency, 0 erases | tree.rs snapshots and tail tests; runner.rs nesting, group, failing-sibling, request, Ctrl-C and dropped-group tests; tests/runner.rs `nothing_is_erased_while_running` (PTY) |
+| 4. Failure block once, exit 1 | tests/failure.rs (piped, PTY, no log, panic); with sb's own commands: carried to the first runner command (`sb docker ps`) |
+| 5. Plain fallback | tests/runner.rs `piped_output_is_plain`, `a_dumb_terminal_gets_plain_output` |
+| 6. Ctrl-C endings, restore, 130/143 | tests/signals.rs (one and two SIGINTs, SIGTERM, background, foreground lost mid-run, TERM=dumb); with sb's own commands: carried to the first runner command |
+| 7. Table look, fits 120/70/50, natural width piped | table.rs snapshots and fit test (a sample wider than each width); tests/table.rs |
+| 8. Run-log records; a known secret absent | tests/run_log.rs (own binary), tests/failure.rs log checks, cli-core log tests |
+| 9. Startup budget; size ADR | check.sh full: `sb --help` median 0.77 ms, `sb version` 0.92 ms (budget 10 ms); binary 1652096 bytes, 7.46% over ADR-004's recorded limit through steps each within the 5% tolerance; coverage (as root) 98.32% of lines, 98.20% of functions, lines 0.69 points under the recorded value, 0.19 beyond the tolerance: ADR-005 (Proposed) records the new values (term-ui's runner and tables add nothing yet: nothing in sb calls them; their size comes with `sb docker ps`) |
+| 10. Prompts | carried to their first user (decision 1) |
+
 **Acceptance criteria:**
 - [ ] Each success criterion has a test or a recorded manual check, or is
       named as carried (criteria 4 and 6 beyond the demo, and criterion 9's
