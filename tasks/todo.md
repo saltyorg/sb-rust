@@ -102,17 +102,17 @@ SIGTERM is handled on cli-core's signals thread, which runs registered
 restore hooks, then exits 130 or 143, instead of exiting in the handler.
 Hooks can be removed (a runner that has ended mustn't restore stale
 terminal state later), and a panicking hook can't stop the exit; a hook
-that blocks would, so hooks stay tiny (write a few bytes, one `tcsetattr`)
-and Ctrl-\ stays the documented hard escape.
+that blocks is abandoned after a 500 ms deadline and sb exits anyway.
+Hooks stay tiny (write a few bytes, one `tcsetattr`).
 
 **Acceptance criteria:**
-- [ ] A registered hook runs once before the second-signal exit, code
+- [x] A registered hook runs once before the second-signal exit, code
       unchanged; a removed hook doesn't run; a panicking hook doesn't stop
       the exit.
-- [ ] Without hooks behaviour is as today; the signal tests still pass.
+- [x] Without hooks behaviour is as today; the signal tests still pass.
 
 **Verification:**
-- [ ] cli-core's signal tests plus new ones (re-exec child);
+- [x] cli-core's signal tests plus new ones (re-exec child);
       `scripts/check.sh full`.
 
 **Dependencies:** None

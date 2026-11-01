@@ -1,19 +1,21 @@
 //! Cancellation on SIGINT and SIGTERM (spec: "Cancellation").
 //!
 //! The first signal cancels a token every command holds and records the
-//! exit code; a second exits at once with that code. Signals are read on a
-//! thread with signal-hook's iterator, its documented high-level API
+//! exit code; a second runs the registered restore hooks (term-ui's
+//! cursor and `ECHOCTL`; term-ui spec, decision 5), then exits at once
+//! with that code. Signals are read on a thread with signal-hook's
+//! iterator, its documented high-level API
 //! (https://docs.rs/signal-hook/0.4.5/signal_hook/iterator/index.html), so
 //! no async runtime is needed until a command wants one. The token is
 //! tokio-util's, which works without a runtime and lets async commands
 //! `.await` cancellation
 //! (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html).
 
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, OnceLock};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::time::Duration;
 
 use signal_hook::consts::{SIGINT, SIGTERM};
-use signal_hook::flag;
 use signal_hook::iterator::Signals;
 pub use tokio_util::sync::CancellationToken;
 
@@ -31,12 +33,87 @@ struct Ending {
     by_signal: bool,
 }
 
-/// Shared shutdown state: the token commands watch, and how the run is to
-/// end once the first request or signal says so.
+type Hook = Box<dyn Fn() + Send>;
+
+/// How long the second-signal exit waits for the restore hooks: a hook
+/// that blocks (a held stdout lock, a paused terminal) can't keep sb from
+/// exiting, and working hooks take microseconds.
+const RESTORE_DEADLINE: Duration = Duration::from_millis(500);
+
+/// Restore hooks by id, so a [`RestoreHook`] can remove its own. Custom:
+/// neither signal-hook nor std has ordered, removable exit hooks.
+#[derive(Default)]
+struct Hooks(Mutex<HookList>);
+
+#[derive(Default)]
+struct HookList {
+    next: u64,
+    hooks: Vec<(u64, Hook)>,
+}
+
+impl Hooks {
+    fn lock(&self) -> MutexGuard<'_, HookList> {
+        // A panic while the list was held can't leave it half-changed
+        // (push and retain), so a poisoned lock is still usable.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Take every hook out, so running them holds no lock: a hook (or a
+    /// guard dropped meanwhile) that needs the list can't deadlock the
+    /// exit. The process is about to exit, so the list stays empty.
+    fn take(&self) -> Vec<(u64, Hook)> {
+        std::mem::take(&mut self.lock().hooks)
+    }
+
+    /// Run every hook in registration order. A panicking hook is caught,
+    /// so it stops neither the others nor the exit (with sb's default
+    /// `panic = "unwind"`).
+    fn run(&self) {
+        for (_, hook) in &self.take() {
+            let _ = catch_unwind(AssertUnwindSafe(hook));
+        }
+    }
+
+    /// Run the hooks on their own thread, wait for them up to
+    /// [`RESTORE_DEADLINE`], then exit with `code` either way.
+    fn run_then_exit(self: Arc<Self>, code: u8) -> ! {
+        let (done, finished) = mpsc::channel();
+        let restore = std::thread::Builder::new()
+            .name("restore".into())
+            .spawn(move || {
+                self.run();
+                let _ = done.send(());
+            });
+        // No thread (out of resources): exit without the hooks rather than
+        // risk running a blocking one here.
+        if restore.is_ok() {
+            let _ = finished.recv_timeout(RESTORE_DEADLINE);
+        }
+        std::process::exit(i32::from(code))
+    }
+}
+
+/// A registered restore hook; dropping it removes the hook.
+#[must_use = "the hook is removed when this is dropped"]
+pub struct RestoreHook {
+    hooks: Arc<Hooks>,
+    id: u64,
+}
+
+impl Drop for RestoreHook {
+    fn drop(&mut self) {
+        self.hooks.lock().hooks.retain(|(id, _)| *id != self.id);
+    }
+}
+
+/// Shared shutdown state: the token commands watch, how the run is to end
+/// once the first request or signal says so, and the hooks a second
+/// signal runs before exiting.
 #[derive(Clone, Default)]
 pub struct Shutdown {
     token: CancellationToken,
     first: Arc<OnceLock<Ending>>,
+    hooks: Arc<Hooks>,
 }
 
 impl Shutdown {
@@ -91,39 +168,62 @@ impl Shutdown {
         self.record(signal_exit_code(signal), true);
     }
 
-    /// Turn SIGINT and SIGTERM into [`signalled`] on a thread, and make a
-    /// second signal exit at once with the first one's code.
+    /// Run `hook` before a second signal's exit, until the returned guard
+    /// is dropped. Hooks run on their own thread while the rest of the run
+    /// may still be busy, so they stay tiny (write a few bytes, one
+    /// `tcsetattr`) and write through their own handle (the tty's fd or
+    /// `/dev/tty`), never std's `stdout()`/`stderr()`, whose lock a stuck
+    /// writer may hold. A hook still running after a short deadline is
+    /// abandoned and sb exits; one that panics doesn't stop the exit.
+    pub fn on_forced_exit(&self, hook: impl Fn() + Send + 'static) -> RestoreHook {
+        let mut list = self.hooks.lock();
+        let id = list.next;
+        list.next += 1;
+        list.hooks.push((id, Box::new(hook)));
+        drop(list);
+        RestoreHook {
+            hooks: Arc::clone(&self.hooks),
+            id,
+        }
+    }
+
+    /// Turn SIGINT and SIGTERM into [`signalled`] on a thread; a second
+    /// signal runs the restore hooks, then exits at once with the first
+    /// signal's code (a command's own earlier request doesn't change it),
+    /// skipping remaining cleanup.
     ///
-    /// The second-signal exit is signal-hook's documented double-Ctrl-C
-    /// pattern, `flag::register_conditional_shutdown` armed by
-    /// `flag::register`, registered first so a first signal only arms it
-    /// (https://docs.rs/signal-hook/0.4.5/signal_hook/flag/fn.register_conditional_shutdown.html).
-    /// It exits in the handler itself, skipping remaining cleanup. Each
-    /// shutdown has a fixed code, so there is one per possible first signal:
-    /// whichever flag the first signal set decides the code.
+    /// The structure of signal-hook's background-thread example, an
+    /// iterator thread that restores the terminal (there for SIGTSTP)
+    /// (https://docs.rs/signal-hook/0.4.5/signal_hook/#a-complex-signal-handling-with-a-background-thread).
+    /// Why not that example's double Ctrl-C (`flag::register_conditional_shutdown`,
+    /// used here before): it exits inside the signal handler, where
+    /// restoring the terminal isn't async-signal-safe (term-ui spec,
+    /// decision 5). Accepted limits: the iterator reports a signal that
+    /// arrived twice before the thread read it once, and signals read
+    /// together in arbitrary order (`SignalsInfo::pending`), so two signals
+    /// within microseconds count as one (a third exits) and which of
+    /// SIGINT and SIGTERM was first is then arbitrary; a person's two
+    /// Ctrl-C presses are far apart. A third signal while the hooks run
+    /// waits for the deadline.
     ///
     /// [`signalled`]: Shutdown::signalled
     pub fn listen_for_signals(&self) -> std::io::Result<()> {
-        let firsts = [SIGINT, SIGTERM].map(|signal| (signal, Arc::new(AtomicBool::new(false))));
-        for second in [SIGINT, SIGTERM] {
-            for (first, armed) in &firsts {
-                flag::register_conditional_shutdown(
-                    second,
-                    i32::from(signal_exit_code(*first)),
-                    Arc::clone(armed),
-                )?;
-            }
-        }
-        for (first, armed) in &firsts {
-            flag::register(*first, Arc::clone(armed))?;
-        }
         let mut signals = Signals::new([SIGINT, SIGTERM])?;
         let shutdown = self.clone();
         std::thread::Builder::new()
             .name("signals".into())
             .spawn(move || {
+                let mut first = None;
                 for signal in signals.forever() {
-                    shutdown.signalled(signal);
+                    match first {
+                        None => {
+                            first = Some(signal);
+                            shutdown.signalled(signal);
+                        }
+                        Some(first) => {
+                            Arc::clone(&shutdown.hooks).run_then_exit(signal_exit_code(first))
+                        }
+                    }
                 }
             })?;
         Ok(())
@@ -188,6 +288,51 @@ mod tests {
     fn signal_codes_follow_the_shell_convention() {
         assert_eq!(signal_exit_code(signal_hook::consts::SIGINT), 130);
         assert_eq!(signal_exit_code(signal_hook::consts::SIGTERM), 143);
+    }
+
+    /// Hooks run in order; a removed one doesn't, a panicking one doesn't
+    /// stop the rest.
+    #[test]
+    fn restore_hooks_run_unless_removed_and_survive_a_panic() {
+        let shutdown = Shutdown::new();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let hook = |name: &'static str| {
+            let ran = Arc::clone(&ran);
+            move || ran.lock().expect("lock").push(name)
+        };
+        let _first = shutdown.on_forced_exit(hook("first"));
+        drop(shutdown.on_forced_exit(hook("removed")));
+        let _broken = shutdown.on_forced_exit(|| panic!("a broken hook"));
+        let _last = shutdown.on_forced_exit(hook("last"));
+        shutdown.hooks.run();
+        assert_eq!(*ran.lock().expect("lock"), ["first", "last"]);
+    }
+
+    /// Running the hooks holds no lock a hook or a dropping guard needs: a
+    /// hook that drops another hook's guard returns (bounded, so a
+    /// regression fails instead of hanging).
+    #[test]
+    fn a_hook_can_drop_a_guard_while_hooks_run() {
+        let shutdown = Shutdown::new();
+        let slot = Arc::new(Mutex::new(Some(shutdown.on_forced_exit(|| {}))));
+        let held = Arc::clone(&slot);
+        // Never dropped: on a regression its drop would wait on the stuck
+        // run and hang the test instead of failing it.
+        let _dropper = std::mem::ManuallyDrop::new(
+            shutdown.on_forced_exit(move || drop(held.lock().expect("lock").take())),
+        );
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            shutdown.hooks.run();
+            let _ = done.send(());
+        });
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok(),
+            "running the hooks deadlocked"
+        );
+        assert!(slot.lock().expect("lock").is_none());
     }
 
     /// A command's own request isn't an interruption; a signal is.
