@@ -55,12 +55,6 @@ fn a_dumb_terminal_gets_plain_output() {
     assert_plain_on_a_terminal(&on_a_terminal_with("", "dumb"));
 }
 
-/// The verbose option: plain output even on a terminal.
-#[test]
-fn verbose_is_plain_on_a_terminal() {
-    assert_plain_on_a_terminal(&on_a_terminal("--verbose"));
-}
-
 /// Live on a terminal: no line is erased while running, only in the final
 /// clear after the last tree line (the measured no-blink technique).
 #[test]

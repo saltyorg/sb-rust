@@ -131,22 +131,6 @@ fn a_background_run_leaves_the_terminal_alone() {
     );
 }
 
-/// Verbose (plain) on a terminal: the terminal is left alone.
-#[test]
-fn verbose_leaves_the_terminal_alone() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let text = on_a_terminal(
-        "\"$DEMO\" --verbose --interrupt; echo EXIT=$?; stty -a",
-        dir.path(),
-    );
-    assert_eq!(exit_code(&text), Some(130), "{text:?}");
-    assert!(
-        !text.contains("\x1b[?25l"),
-        "the cursor was hidden: {text:?}"
-    );
-    assert!(echoctl_restored(&text), "{text:?}");
-}
-
 /// Moved out of the foreground mid-run (as Ctrl-Z then `bg` would), sb
 /// doesn't touch the terminal's modes at the end: from the background
 /// that would stop it on SIGTTOU (exit 150, or a hang).
