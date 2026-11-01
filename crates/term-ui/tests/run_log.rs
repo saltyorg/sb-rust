@@ -67,6 +67,8 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
         step.output("w".repeat(300));
         step.output(Line::sensitive(format!("ok\ntoken={secret}")));
         step.warn(Line::sensitive(format!("bad token {secret}")));
+        // Shown to the user on purpose, still never logged.
+        step.info(Line::sensitive(format!("your token: {secret}")).shown());
         Ok(())
     })
     .await
@@ -99,11 +101,21 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
         "{text}"
     );
     line_with(&format!("text=\"{}\"", "w".repeat(300)));
-    // Both lines of the sensitive output are withheld.
+    // Sensitive output is one withheld record, whatever its line count.
     assert_eq!(
         text.matches("output withheld (sensitive)").count(),
+        1,
+        "{text}"
+    );
+    // The shown notice is withheld from the log too, at its own level.
+    assert_eq!(
+        text.matches("notice withheld (sensitive)").count(),
         2,
         "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.contains(" INFO ") && l.contains("notice withheld"))
     );
     assert!(line_with("outcome=\"done\"").contains(" INFO "));
     assert!(line_with("step=\"Pulling\" outcome=\"failed\"").contains(" WARN "));

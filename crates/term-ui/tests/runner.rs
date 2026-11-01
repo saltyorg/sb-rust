@@ -96,6 +96,8 @@ fn piped_output_is_plain() {
         text.starts_with("sb demo\n- Reading accounts.yml\n"),
         "{text:?}"
     );
+    // Without `--sensitive` the demo has no sensitive lines.
+    assert!(!text.contains("(sensitive, withheld)"), "{text:?}");
     // Notices and output lines come through too (criterion 5).
     assert!(text.contains("\nchecking item 1 of 4\n"), "{text:?}");
     assert!(text.contains("\n› 3 accounts\n"), "{text:?}");
@@ -123,4 +125,25 @@ fn a_failed_step_exits_1_quietly() {
     let text = String::from_utf8_lossy(&out.stderr);
     let last = text.lines().last().unwrap_or_default();
     assert!(last.starts_with("✗ credentials invalid "), "{text:?}");
+}
+
+/// Sensitive text (decision 8): piped, both lines show as the placeholder;
+/// on a terminal, only the one the command chose to show appears.
+#[test]
+fn sensitive_text_is_withheld_off_a_terminal() {
+    let piped = Command::new(demo())
+        .arg("--sensitive")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("run demo");
+    assert_eq!(piped.status.code(), Some(0), "{piped:?}");
+    let text = String::from_utf8_lossy(&piped.stderr);
+    assert!(!text.contains("demo-secret"), "{text:?}");
+    assert!(text.contains("\n(sensitive, withheld)\n"), "{text:?}");
+    assert!(text.contains("\n› (sensitive, withheld)\n"), "{text:?}");
+    let terminal = on_a_terminal("--sensitive");
+    assert_eq!(terminal.status.code(), Some(0), "{terminal:?}");
+    let text = String::from_utf8_lossy(&terminal.stdout);
+    assert!(!text.contains("demo-secret-withheld"), "{text:?}");
+    assert!(text.contains("demo-secret-shown"), "{text:?}");
 }

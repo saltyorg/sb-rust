@@ -136,8 +136,10 @@ appears only under CI, redirection or `-v`.
   and its output lines go to the run log (capability map, decision 11), in the run's span
   (carried onto other threads for concurrent steps). Output, notices or
   error text a step marks as sensitive (credentials, tokens) are never
-  logged, and prompt answers never are. Sensitive output still shows on
-  screen, to the user who ran the command.
+  logged, and prompt answers never are. Sensitive text is withheld on
+  screen too (a placeholder shows), unless the command's job is to show
+  it to its user, such as editing a config, and then only on a terminal
+  (decision 8).
 
 ### Tables
 
@@ -310,11 +312,14 @@ impl Step {
     /// when it is cancelled and returns its error.
     pub fn token(&self) -> CancellationToken;
 
-    /// An info notice (`›`, muted) under this step, kept and logged.
+    /// An info notice (`›`, muted) under this step, kept and logged
+    /// (sensitive text: see `Line`).
     pub fn info(&mut self, text: impl Into<Line>);
-    /// A warning notice (orange `!`) under this step, kept and logged.
+    /// A warning notice (orange `!`) under this step, kept and logged
+    /// (sensitive text: see `Line`).
     pub fn warn(&mut self, text: impl Into<Line>);
-    /// Output: shown in the live tail (or plainly) and logged. Text is
+    /// Output: shown in the live tail (or plainly) and logged (sensitive
+    /// text: see `Line`). Text is
     /// split into lines at `\n`; a `\r` keeps what follows it (progress
     /// output); escape codes are kept on a coloured target and stripped
     /// otherwise; a line wider than the screen is cut with `…` on screen
@@ -359,14 +364,20 @@ impl<T: Send + 'static> Group<'_, T> {
     pub async fn join(self) -> Result<Vec<T>, Exit>;
 }
 
-/// A notice or output line, and whether it may be logged. From `&str`,
-/// `String` and `&String`: loggable.
+/// A notice or output line, and whether it may be shown and logged.
+/// From `&str`, `String` and `&String`: shown and logged.
 pub struct Line { /* … */ }
 
 impl Line {
-    /// Shown on screen to the user who ran the command, never logged
-    /// (credentials, tokens); the log records that a line was withheld.
+    /// Sensitive text (credentials, tokens): never logged (the log
+    /// records that a line was withheld), and withheld on screen too,
+    /// where a placeholder shows, unless the command opts in with
+    /// `shown` (decision 8).
     pub fn sensitive(text: impl Into<String>) -> Self;
+    /// Show this sensitive text to the command's user (editing a config,
+    /// say): on a terminal only, since stderr anywhere else is a log.
+    /// Still never logged.
+    pub fn shown(self) -> Self;
 }
 ```
 
@@ -374,8 +385,9 @@ And in cli-core, so the run record can honour it too (cli-core can't
 depend on term-ui):
 
 ```rust
-/// sb_cli_core::log: an error whose text must not be logged. Wherever it
-/// sits in a chain, it and every cause below it are shown on screen and
+/// sb_cli_core::log: an error whose text must not be shown or logged.
+/// Wherever it sits in a chain, it and every cause below it show as a
+/// placeholder on screen (decision 8; errors have no `shown`) and are
 /// logged as withheld, by a runner step's record and by
 /// `RunLog::finished` alike. A boxed error, as cli-core takes any
 /// `std::error::Error` (only the binary and term-ui use anyhow).
@@ -517,7 +529,7 @@ Choices behind it:
 10. (With their first user) a prompt with no terminal and no answer fails
     with a message naming the flag; a given answer is used without asking.
 
-## Decided (maintainer, 2026-10-30; amendments and decision 7 on 2026-11-01)
+## Decided (maintainer, 2026-10-30; amendments and decisions 7-8 on 2026-11-01)
 
 1. **Prompts** are specified here and built with their first user
    (self-update or git's confirm).
@@ -568,3 +580,9 @@ Choices behind it:
    - Output under a running step: up to 8 lines in the muted colour, all
      running steps' tails together within half the terminal's height.
    - The braille spinner; concurrent steps shown in full while running.
+8. **Sensitive text (maintainer, 2026-11-01, Task 6):** never shown,
+   unless the command's job is to show it to its user (editing a config,
+   say), and never logged either way. Wherever stderr goes (a terminal, a
+   file, the journal, CI), sensitive text shows as a placeholder unless the
+   command opts in (`Line::sensitive(..).shown()`), and even then only on
+   a terminal: stderr anywhere else is a log.

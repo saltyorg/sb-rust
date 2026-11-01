@@ -223,7 +223,8 @@ Carried from Task 6's review: a failed step's own record carries its
 error and causes here (Task 6 logs only the outcome, at WARN), through
 cli-core's `Sensitive` check; the tree keeps output lines without their
 sensitive flag, so the failure block's last lines must not be logged from
-the tree (or the tree carries the flag).
+the tree (or the tree carries the flag). Decision 8: an error marked
+`Sensitive` is withheld on screen too (a placeholder), not only in the log.
 
 **Acceptance criteria:**
 - [ ] The failure block as specified, multi-line errors included; no

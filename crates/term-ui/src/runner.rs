@@ -140,6 +140,9 @@ struct State {
     tree: Tree,
     mode: Mode,
     colour: bool,
+    /// Whether the target is a terminal: shown sensitive text shows only
+    /// there (anywhere else stderr is a log; decision 8).
+    terminal: bool,
     size: Size,
     frame: usize,
     ended: bool,
@@ -241,7 +244,7 @@ impl Runner {
         // The title goes out before the live area exists: a
         // `MultiProgress::println` before its bar first drew was lost
         // (seen on indicatif's in-memory terminal).
-        let (mode, colour, size) = match options.target {
+        let (mode, colour, size, terminal) = match options.target {
             Target::Stderr => {
                 plain_line(title);
                 // indicatif hides its stderr target when stderr isn't a
@@ -254,7 +257,13 @@ impl Runner {
                 } else {
                     Mode::Live(Area::new(target))
                 };
-                (mode, crate::colour_on(crate::Stream::Stderr), Size::Stderr)
+                let terminal = console::Term::stderr().is_term();
+                (
+                    mode,
+                    crate::colour_on(crate::Stream::Stderr),
+                    Size::Stderr,
+                    terminal,
+                )
             }
             // Always live: the in-memory screen is for the live snapshots.
             #[cfg(any(test, feature = "testing"))]
@@ -266,7 +275,7 @@ impl Runner {
                 };
                 // No refresh limit, so every redraw reaches the screen.
                 let target = ProgressDrawTarget::term_like_with_hz(Box::new(term), u8::MAX);
-                (Mode::Live(Area::new(target)), colour, size)
+                (Mode::Live(Area::new(target)), colour, size, true)
             }
         };
         let plain = matches!(mode, Mode::Plain);
@@ -274,6 +283,7 @@ impl Runner {
             tree: Tree::default(),
             mode,
             colour,
+            terminal,
             size,
             frame: 0,
             ended: false,
@@ -466,21 +476,28 @@ impl Step {
     }
 
     fn notice(&mut self, warn: bool, line: Line) {
-        let colour = lock(&self.shared).colour;
-        let texts = lines(&line.text, colour);
+        let (colour, terminal) = {
+            let state = lock(&self.shared);
+            (state.colour, state.terminal)
+        };
         // Logged outside the lock: the log write blocks on the file.
         let step = self.name.as_str();
-        for text in &texts {
-            let text = console::strip_ansi_codes(text);
-            match (line.sensitive, warn) {
-                (true, true) => tracing::warn!(step, "notice withheld (sensitive)"),
-                (true, false) => tracing::info!(step, "notice withheld (sensitive)"),
-                (false, true) => tracing::warn!(step, text = ?text, "notice"),
-                (false, false) => tracing::info!(step, text = ?text, "notice"),
+        match (line.is_sensitive(), warn) {
+            (true, true) => tracing::warn!(step, "notice withheld (sensitive)"),
+            (true, false) => tracing::info!(step, "notice withheld (sensitive)"),
+            (false, _) => {
+                for text in &lines(&line.text, colour) {
+                    let text = console::strip_ansi_codes(text);
+                    if warn {
+                        tracing::warn!(step, text = ?text, "notice");
+                    } else {
+                        tracing::info!(step, text = ?text, "notice");
+                    }
+                }
             }
         }
         let mut state = lock(&self.shared);
-        for text in texts {
+        for text in line.on_screen(colour, terminal) {
             if matches!(state.mode, Mode::Plain) {
                 let (role, mark) = if warn {
                     (Role::Warn, "!")
@@ -495,7 +512,8 @@ impl Step {
         state.redraw();
     }
 
-    /// Output: shown in the live tail (or plainly) and logged. Text is
+    /// Output: shown in the live tail (or plainly) and logged (sensitive
+    /// text: see [`Line`]). Text is
     /// split into lines (`\n` or `\r\n`); a `\r` keeps what follows it
     /// (progress output); only colour codes are kept, and only on a
     /// coloured target; tabs become spaces and other control characters
@@ -505,20 +523,23 @@ impl Step {
     /// redraw the tree per line.
     pub fn output(&mut self, text: impl Into<Line>) {
         let line = text.into();
-        let colour = lock(&self.shared).colour;
-        let texts = lines(&line.text, colour);
+        let (colour, terminal) = {
+            let state = lock(&self.shared);
+            (state.colour, state.terminal)
+        };
         // Logged outside the lock (the log write blocks on the file), as
-        // plain text whatever the screen gets, and whole.
+        // plain text whatever the screen gets, and whole; sensitive text as
+        // one record, which says nothing about it.
         let step = self.name.as_str();
-        for text in &texts {
-            if line.sensitive {
-                tracing::info!(step, "output withheld (sensitive)");
-            } else {
+        if line.is_sensitive() {
+            tracing::info!(step, "output withheld (sensitive)");
+        } else {
+            for text in &lines(&line.text, colour) {
                 tracing::info!(step, text = ?console::strip_ansi_codes(text), "output");
             }
         }
         let mut state = lock(&self.shared);
-        for text in texts {
+        for text in line.on_screen(colour, terminal) {
             if matches!(state.mode, Mode::Plain) {
                 plain_line(&text);
             }
@@ -573,20 +594,63 @@ fn clean(line: &str, colour: bool) -> String {
     out
 }
 
-/// A notice or output line, and whether it may be logged. From `&str`,
-/// `String` and `&String`: loggable.
+/// What the screen shows for sensitive text a command hasn't chosen to
+/// show (decision 8).
+const WITHHELD: &str = "(sensitive, withheld)";
+
+/// Who may see a line.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Visibility {
+    /// Shown and logged.
+    Plain,
+    /// Withheld on screen (a placeholder) and in the log.
+    Sensitive,
+    /// Shown on a terminal for the command's user; withheld elsewhere and
+    /// in the log.
+    SensitiveShown,
+}
+
+/// A notice or output line, and who may see it. From `&str`, `String` and
+/// `&String`: shown and logged.
 pub struct Line {
     text: String,
-    sensitive: bool,
+    visibility: Visibility,
 }
 
 impl Line {
-    /// Shown on screen to the user who ran the command, never logged
-    /// (credentials, tokens); the log records that a line was withheld.
+    /// Sensitive text (credentials, tokens): never logged (the log records
+    /// that a line was withheld), and withheld on screen too, where a
+    /// placeholder shows, unless the command opts in with [`Line::shown`]
+    /// (decision 8).
     pub fn sensitive(text: impl Into<String>) -> Self {
         Line {
             text: text.into(),
-            sensitive: true,
+            visibility: Visibility::Sensitive,
+        }
+    }
+
+    /// Show this sensitive text to the command's user (editing a config,
+    /// say): on a terminal only, since stderr anywhere else (a file, the
+    /// journal, CI) is a log. Still never logged. No effect on a line that
+    /// isn't sensitive.
+    pub fn shown(self) -> Self {
+        let visibility = match self.visibility {
+            Visibility::Plain => Visibility::Plain,
+            Visibility::Sensitive | Visibility::SensitiveShown => Visibility::SensitiveShown,
+        };
+        Line { visibility, ..self }
+    }
+
+    fn is_sensitive(&self) -> bool {
+        self.visibility != Visibility::Plain
+    }
+
+    /// The lines the screen gets.
+    fn on_screen(&self, colour: bool, terminal: bool) -> Vec<String> {
+        match self.visibility {
+            Visibility::Plain => lines(&self.text, colour),
+            Visibility::SensitiveShown if terminal => lines(&self.text, colour),
+            Visibility::Sensitive | Visibility::SensitiveShown => vec![WITHHELD.to_string()],
         }
     }
 }
@@ -601,7 +665,7 @@ impl From<String> for Line {
     fn from(text: String) -> Self {
         Line {
             text,
-            sensitive: false,
+            visibility: Visibility::Plain,
         }
     }
 }
@@ -1027,6 +1091,45 @@ mod tests {
             "{before}\n{after}"
         );
         run.finish();
+    }
+
+    /// Sensitive text is withheld on screen too (maintainer, decision 8):
+    /// only a placeholder shows, unless the command opts in with `shown`
+    /// (the in-memory screen counts as a terminal).
+    #[tokio::test(start_paused = true)]
+    async fn sensitive_text_is_withheld_on_screen_unless_shown() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let live = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                step.warn(Line::sensitive("hidden-secret-1"));
+                step.info(Line::sensitive("password: shown-to-the-user").shown());
+                step.output(Line::sensitive("hidden-secret-2"));
+                step.output(Line::sensitive("shown-output").shown());
+                // Past the next frame, so the output tail is on screen.
+                tokio::time::sleep(FRAME * 2).await;
+                Ok(term.contents())
+            })
+            .await
+            .expect("step");
+        run.finish();
+        assert!(!live.contains("hidden-secret"), "{live}");
+        assert!(live.contains("! (sensitive, withheld)"), "{live}");
+        assert!(live.contains("│   (sensitive, withheld)"), "{live}");
+        assert!(live.contains("› password: shown-to-the-user"), "{live}");
+        assert!(live.contains("│   shown-output"), "{live}");
+        assert!(!term.contents().contains("hidden-secret"));
+    }
+
+    /// Off a terminal, shown sensitive text is withheld too: stderr there
+    /// is a log. `shown` on a plain line changes nothing.
+    #[test]
+    fn shown_text_needs_a_terminal() {
+        let shown = Line::sensitive("s").shown();
+        assert_eq!(shown.on_screen(false, true), ["s"]);
+        assert_eq!(shown.on_screen(false, false), [WITHHELD]);
+        assert_eq!(Line::from("p").shown().on_screen(false, false), ["p"]);
     }
 
     /// Each ending's word in the run log.

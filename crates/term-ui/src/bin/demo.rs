@@ -1,16 +1,16 @@
 //! The runner on stderr, for trying it and for the PTY tests: `cargo run
-//! -p sb-term-ui --bin demo [-- --fail] [--verbose]`. A binary rather than an example
-//! because `cargo test --tests` (the coverage run) builds bins for the
-//! integration tests but not examples; sb's build never includes it. It
-//! ends through cli-core's `finish_run`, as sb's `main` does, and writes no
-//! log.
+//! -p sb-term-ui --bin demo [-- --fail] [--verbose] [--sensitive]`. A
+//! binary rather than an example because `cargo test --tests` (the
+//! coverage run) builds bins for the integration tests but not examples;
+//! sb's build never includes it. It ends through cli-core's `finish_run`,
+//! as sb's `main` does, and writes no log.
 
 use std::time::Duration;
 
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{ExitCode, finish_run};
 use sb_cli_core::theme::{self, Palette, Profile, Theme};
-use sb_term_ui::{Labels, Options, Runner, Step};
+use sb_term_ui::{Labels, Line, Options, Runner, Step};
 
 /// `lines` output lines, one every `pace`, stopping when cancelled.
 async fn work(step: &mut Step, lines: usize, pace: Duration) -> anyhow::Result<()> {
@@ -29,7 +29,12 @@ async fn work(step: &mut Step, lines: usize, pace: Duration) -> anyhow::Result<(
     Ok(())
 }
 
-async fn demo(shutdown: &Shutdown, fail: bool, verbose: bool) -> anyhow::Result<()> {
+async fn demo(
+    shutdown: &Shutdown,
+    fail: bool,
+    verbose: bool,
+    sensitive: bool,
+) -> anyhow::Result<()> {
     let pace = Duration::from_millis(120);
     let options = Options {
         verbose,
@@ -41,6 +46,10 @@ async fn demo(shutdown: &Shutdown, fail: bool, verbose: bool) -> anyhow::Result<
         async |step| {
             work(step, 4, pace).await?;
             step.info("3 accounts");
+            if sensitive {
+                step.output(Line::sensitive("demo-secret-withheld"));
+                step.info(Line::sensitive("demo-secret-shown").shown());
+            }
             Ok(())
         },
     )
@@ -72,12 +81,13 @@ fn main() -> ExitCode {
     sb_term_ui::follow_colour_choice(Profile::TrueColor);
     let fail = std::env::args().any(|a| a == "--fail");
     let verbose = std::env::args().any(|a| a == "--verbose");
+    let sensitive = std::env::args().any(|a| a == "--sensitive");
     let shutdown = Shutdown::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build();
     let result = match (shutdown.listen_for_signals(), runtime) {
-        (Ok(()), Ok(runtime)) => runtime.block_on(demo(&shutdown, fail, verbose)),
+        (Ok(()), Ok(runtime)) => runtime.block_on(demo(&shutdown, fail, verbose, sensitive)),
         (Err(err), _) | (_, Err(err)) => Err(err.into()),
     };
     let error = result.as_ref().err().map(|e| e.as_ref() as _);
