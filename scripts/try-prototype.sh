@@ -21,6 +21,7 @@ Usage: scripts/try-prototype.sh <prototype>
   runner-gallery  Task runner output in eight formats, to compare (static)
   inline       docker ps table in sb-go's layout (plain, NO_COLOR, piped)
   help         sb --help in six looks (Rust libraries, then sb-go's format copied)
+  help-errors  parse errors: the 32 sb-go-style variants (H1 chosen), then sb-go's
   complete     Shell with dynamic tag completion loaded (bash)
 
 Each run builds the prototype (release mode) first. Nothing touches real Saltbox files.
@@ -173,6 +174,21 @@ case "${1:-}" in
       logdir="$(mktemp -d)"
       trap 'rm -rf "$logdir"' EXIT
       SB_LOG_DIR="$logdir" sb --help
+    fi
+    ;;
+  help-errors)
+    b="$(bin help)"
+    intro "Parse errors: the 32 sb-go-style variants on a typo (static), then the installed sb's" \
+      "H1 (hint-ask) is the chosen look. Other pages: errors tips, errors focus, or all 65" \
+      "layouts with plain errors. One layout on three errors, e.g.:" \
+      "  target/release/proto-help errors hint-ask"
+    "$b" errors sbgo
+    if command -v sb >/dev/null; then
+      printf '\n\033[2m━━━━ the installed sb (%s) ━━━━\033[0m\n' "$(command -v sb)"
+      logdir="$(mktemp -d)"
+      trap 'rm -rf "$logdir"' EXIT
+      SB_LOG_DIR="$logdir" sb verison || true
+      SB_LOG_DIR="$logdir" sb install --bogus || true
     fi
     ;;
   inline)
