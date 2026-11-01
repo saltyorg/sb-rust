@@ -163,22 +163,23 @@ cited; no ratatui). Snapshots are taken from proto-runner's reviewed
 output at a fixed width, so the new code is checked against the reviewed
 look. Snapshots draw on indicatif's `InMemoryTerm` (`Target::InMemory`,
 behind term-ui's `testing` feature); the no-erase and ending checks run in
-a PTY. A `demo` example shows the runner; it
+a PTY. A `demo` binary shows the runner (a bin, not an example: the
+coverage run builds bins for integration tests, not examples); it
 logs only under `SB_LOG_DIR` in a temporary directory, never /var/log/sb.
 
 **Acceptance criteria:**
-- [ ] Rendering matches the reviewed tree snapshots, times aligned; 0 line
+- [x] Rendering matches the reviewed tree snapshots, times aligned; 0 line
       erases while running.
-- [ ] Plain mode prints start and end lines; no escape codes when not a
+- [x] Plain mode prints start and end lines; no escape codes when not a
       terminal with `auto`; per-profile guard tests on runner output.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; `cargo run -p sb-term-ui --example demo`;
+- [x] `cargo test -p sb-term-ui`; `cargo run -p sb-term-ui --bin demo`;
       `scripts/check.sh full` (size measured; the demo's lines and diff-cover
       checked).
 
 **Dependencies:** Checkpoint A
-**Files:** `crates/term-ui/{Cargo.toml,src/runner.rs,examples/demo.rs,tests/runner.rs}`, `Cargo.toml` (indicatif, console, termtree, tokio minimal features, anyhow, tracing; insta and indicatif's `in_memory` through the `testing` feature, dev only)
+**Files:** `crates/term-ui/{Cargo.toml,src/runner.rs,src/bin/demo.rs,tests/runner.rs}`, `Cargo.toml` (indicatif, console, termtree, tokio minimal features, anyhow, tracing; insta and indicatif's `in_memory` through the `testing` feature, dev only)
 **Scope:** M
 
 ## Task 6: Output lines, live tail, notices and run-log records
@@ -189,6 +190,11 @@ capped at half the terminal height, keeping each line's colours; notices
 (escape codes stripped with colour off) and notices. Every step's start,
 outcome, elapsed time, notices and output lines go to the run log in the
 run's span; output a step marks sensitive is never logged.
+
+Carried from Task 5's review: notices are not capped in the live area
+(running tails are), so many warnings could make it taller than the
+terminal; decide and test a cap here. Stream output marks the tree dirty
+and redraws on frames rather than per line, if the volume needs it.
 
 **Acceptance criteria:**
 - [ ] Tail length and cap; notices' look as settled at Checkpoint A; plain
@@ -223,7 +229,7 @@ criterion 4 ("shown once, exit 1") end to end.
 - [ ] `cargo test -p sb-term-ui`; `scripts/check.sh full`.
 
 **Dependencies:** Task 6
-**Files:** `crates/term-ui/{src/runner.rs,examples/demo.rs,tests/failure.rs}`
+**Files:** `crates/term-ui/{src/runner.rs,src/bin/demo.rs,tests/failure.rs}`
 **Scope:** S
 
 ## Task 8: Interruption and terminal restore
@@ -270,7 +276,7 @@ cited).
       `scripts/check.sh full`.
 
 **Dependencies:** Task 8
-**Files:** `crates/term-ui/{src/runner.rs,tests/runner.rs,examples/demo.rs}`
+**Files:** `crates/term-ui/{src/runner.rs,tests/runner.rs,src/bin/demo.rs}`
 **Scope:** M
 
 ## Checkpoint B: Runner
@@ -296,7 +302,7 @@ a terminal.
 - [ ] `cargo test -p sb-term-ui`; the demo's table; `scripts/check.sh full`.
 
 **Dependencies:** Task 5 (the demo and insta)
-**Files:** `crates/term-ui/{Cargo.toml,src/table.rs,tests/table.rs,examples/demo.rs}`, `Cargo.toml` (tabled)
+**Files:** `crates/term-ui/{Cargo.toml,src/table.rs,tests/table.rs,src/bin/demo.rs}`, `Cargo.toml` (tabled)
 **Scope:** S
 
 ## Task 11: Success criteria and measurements

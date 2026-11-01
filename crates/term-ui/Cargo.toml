@@ -7,12 +7,25 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The in-memory screen for snapshot tests (pulls vt100); never in sb.
+testing = ["indicatif/in_memory"]
+
 [dependencies]
 sb-cli-core.workspace = true
+anyhow.workspace = true
 anstream.workspace = true
+indicatif.workspace = true
+tokio.workspace = true
 anstyle.workspace = true
 console.workspace = true
 tabled.workspace = true
+termtree.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+indicatif = { workspace = true, features = ["in_memory"] }
+tokio = { workspace = true, features = ["macros", "test-util"] }
 
 [lints]
 workspace = true

@@ -36,10 +36,11 @@ restore hooks (decision 5).
   after the runner has shown it; an interruption is marked in the tree and
   cli-core's block shows "interrupted" once.
 - **A demo instead of a command.** Until `docker` and `config` exist, the
-  runner and tables are shown through `cargo run -p sb-term-ui --example
-  demo`. It ends through the same cli-core functions sb's `main` uses, so
-  PTY tests on it cover the "shown once" criteria; it logs only under a
-  temporary `SB_LOG_DIR`.
+  runner and tables are shown through `cargo run -p sb-term-ui --bin
+  demo` (a bin of term-ui, never part of sb's build; the coverage run
+  builds bins for integration tests, not examples). It ends through the
+  same cli-core functions sb's `main` uses, so PTY tests on it cover the
+  "shown once" criteria; it logs only under a temporary `SB_LOG_DIR`.
 - **Binary size follows use.** Link-time optimisation leaves out what sb
   doesn't call, so term-ui's real cost appears with its first command
   (`docker ps`). Size is measured in every task; an ADR comes in the commit
@@ -67,7 +68,7 @@ restore hooks (decision 5).
       by the maintainer
 
 ### Phase 2: Runner
-- [ ] Task 5: Sequential runner: tree, labels, async steps, plain mode
+- [x] Task 5: Sequential runner: tree, labels, async steps, plain mode
 - [ ] Task 6: Output lines, live tail, notices and run-log records
 - [ ] Task 7: Failure block
 - [ ] Task 8: Interruption and terminal restore

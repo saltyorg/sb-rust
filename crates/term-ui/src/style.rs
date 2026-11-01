@@ -40,16 +40,16 @@ pub fn table_colour(theme: &Theme, role: Role, on: bool) -> Option<tabled::setti
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sb_cli_core::theme::{Palette, Profile, Role, Theme};
+pub(crate) mod sgr {
+    //! Reading the colour codes text carries, for the profile guard tests.
+    use sb_cli_core::theme::Profile;
 
     // Why not anstyle-parse's VTE parser: these only read what anstyle
     // itself wrote, and a `Perform` impl would outweigh the tests.
 
     /// The colour parameters of every SGR sequence in `text`, e.g.
     /// `["38;2;111;211;154"]` (bold and resets are left out).
-    fn colour_codes(text: &str) -> Vec<String> {
+    pub(crate) fn colour_codes(text: &str) -> Vec<String> {
         text.split('\x1b')
             .filter_map(|s| s.strip_prefix('['))
             .filter_map(|s| s.split_once('m').map(|(params, _)| params.to_string()))
@@ -58,7 +58,7 @@ mod tests {
     }
 
     /// Whether one SGR colour parameter list is of `profile`'s kind.
-    fn of_kind(params: &str, profile: Profile) -> bool {
+    pub(crate) fn of_kind(params: &str, profile: Profile) -> bool {
         let first: Vec<&str> = params.splitn(3, ';').collect();
         match (profile, first.as_slice()) {
             (Profile::TrueColor, ["38" | "48", "2", _]) => true,
@@ -70,6 +70,13 @@ mod tests {
             _ => false,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sgr::{colour_codes, of_kind};
+    use super::*;
+    use sb_cli_core::theme::{Palette, Profile, Role, Theme};
 
     /// Everything the adapters write for every role under `profile`.
     fn written(profile: Profile) -> String {

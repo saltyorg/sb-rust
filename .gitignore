@@ -1,1 +1,4 @@
 /target/
+# insta writes these when a snapshot differs; never committed.
+*.pending-snap
+*.snap.new

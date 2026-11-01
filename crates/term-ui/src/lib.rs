@@ -1,7 +1,11 @@
 //! sb's inline terminal output (term-ui spec): colour on every inline
 //! path, theme adapters, and later the task runner and tables.
 
+mod runner;
 pub mod style;
+mod tree;
+
+pub use runner::{Labels, Line, Options, Runner, Step, Target};
 
 use anstream::{AutoStream, ColorChoice};
 use sb_cli_core::theme::Profile;

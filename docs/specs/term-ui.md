@@ -280,8 +280,8 @@ pub enum Target {
     /// snapshot tests: indicatif's `InMemoryTerm` (its `in_memory`
     /// feature, which pulls vt100), only with term-ui's `testing` feature,
     /// so it never ships in sb.
-    #[cfg(feature = "testing")]
-    InMemory(indicatif::InMemoryTerm),
+    #[cfg(any(test, feature = "testing"))]
+    InMemory { term: indicatif::InMemoryTerm, colour: bool },
 }
 
 /// A step's words: running, done, and (optional) failure, as sb-go's
@@ -394,7 +394,7 @@ logged with the outcome, never shown.
 |---|---|---|---|
 | would start after the token was cancelled | not drawn; the body doesn't run | nothing | `Exit(1)` |
 | returns `Ok` (even after a cancel) | ✓ done label | | `Ok` |
-| panics, or is dropped while panicking | ✗ failure label | nothing (the panic message) | (the panic goes on) |
+| panics, or is dropped while panicking | ✗ failure label in the tree; the screen keeps its last frame (indicatif draws nothing while a panic unwinds) | nothing (the panic message) | (the panic goes on) |
 | is dropped unfinished (`select!`, a timeout, an unjoined `Group`) | "stopped" (its subtree too) | nothing | (none) |
 | returns `Err` after Ctrl-C (`Shutdown::interrupted`) | "interrupted", its last lines kept; parents too | nothing (cli-core shows "interrupted" once) | `Exit(1)` |
 | returns `Err` after the command's own `Shutdown::request` | "stopped" | nothing (cli-core exits quietly with the requested code) | `Exit(1)` |
