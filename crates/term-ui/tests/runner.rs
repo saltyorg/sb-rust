@@ -76,6 +76,8 @@ fn nothing_is_erased_while_running() {
         .map(|e| text[..last_line].matches(e).count())
         .sum();
     assert_eq!(erases_before, 0);
+    // Live, no plain-mode end line is written beside the tree.
+    assert!(!text.contains("✓ accounts.yml read 0s"), "{text:?}");
     assert!(
         text[last_line..].contains("\x1b[2K"),
         "the live area is cleared at the end"
@@ -98,6 +100,24 @@ fn piped_output_is_plain() {
     );
     // Without `--sensitive` the demo has no sensitive lines.
     assert!(!text.contains("(sensitive, withheld)"), "{text:?}");
+    // Concurrent steps' lines carry their label (they interleave).
+    assert!(
+        text.contains("\nChecking Cloudflare token: checking item 1 of 6\n"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("\nChecking Docker Hub login: checking item 1 of 4\n"),
+        "{text:?}"
+    );
+    // A sub-step inside a sibling keeps the sibling's label in front.
+    assert!(
+        text.contains("\nChecking Docker Hub login: - Logging in\n"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("\nChecking Docker Hub login: ✓ logged in "),
+        "{text:?}"
+    );
     // Notices and output lines come through too (criterion 5).
     assert!(text.contains("\nchecking item 1 of 4\n"), "{text:?}");
     assert!(text.contains("\n› 3 accounts\n"), "{text:?}");

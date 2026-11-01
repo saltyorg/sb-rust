@@ -72,7 +72,7 @@ restore hooks (decision 5).
 - [x] Task 6: Output lines, live tail, notices and run-log records
 - [x] Task 7: Failure block
 - [x] Task 8: Interruption and terminal restore
-- [ ] Task 9: Nested and concurrent steps
+- [x] Task 9: Nested and concurrent steps
 
 ### Checkpoint B: Runner
 - [ ] The maintainer has tried the runner demo

@@ -13,6 +13,7 @@
 //! `ProgressStyle::with_key` callback would need the shared state locked
 //! from inside indicatif's draw while callers of `set_message` hold it.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
@@ -23,6 +24,9 @@ use sb_cli_core::cancel::{CancellationToken, RestoreHook, Shutdown};
 use sb_cli_core::exit::{Exit, quiet_exit, shown_chain};
 use sb_cli_core::log::{RunLog, WITHHELD};
 use sb_cli_core::theme::{self, Role};
+
+use tokio::task::JoinSet;
+use tracing::Instrument;
 
 use crate::style::paint;
 use crate::tree::{Draw, Status, Tree};
@@ -180,7 +184,10 @@ impl Size {
 impl State {
     /// Print what can be printed and redraw the live area (live mode).
     fn redraw(&mut self) {
-        if self.stop.load(Ordering::SeqCst) {
+        // Nothing after the restore hook ran, nor after the run's end (a
+        // late close; indicatif's finished bar ignores messages anyway, so
+        // this is defence in depth there).
+        if self.stop.load(Ordering::SeqCst) || self.ended {
             return;
         }
         let Mode::Live(area) = &mut self.mode else {
@@ -208,12 +215,14 @@ impl State {
         if self.ended {
             return;
         }
-        self.ended = true;
         self.tree.end();
         if std::thread::panicking() {
+            self.ended = true;
             return;
         }
+        // The last draw, then nothing more (see `redraw`).
         self.redraw();
+        self.ended = true;
         // After the restore hook ran (`stop`), nothing more is drawn.
         if let Mode::Live(area) = &self.mode
             && !self.stop.load(Ordering::SeqCst)
@@ -350,57 +359,12 @@ impl Runner {
         labels: Labels,
         body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<T>,
     ) -> Result<T, Exit> {
+        let context = Context {
+            shared: Arc::clone(&self.shared),
+            shutdown: self.shutdown.clone(),
+        };
         let token = self.shutdown.token();
-        if token.is_cancelled() {
-            tracing::info!(step = labels.running.as_str(), "step skipped (cancelled)");
-            return Err(Exit(1));
-        }
-        let started = Instant::now();
-        let id = {
-            let mut state = lock(&self.shared);
-            let id = state.tree.add(None, labels.clone(), started);
-            tracing::info!(step = labels.running.as_str(), "step started");
-            if matches!(state.mode, Mode::Plain) {
-                plain_line(&format!("- {}", labels.running));
-            }
-            state.redraw();
-            id
-        };
-        // Ends the step if this future is dropped before the body returns.
-        let mut guard = Ending {
-            shared: Arc::clone(&self.shared),
-            id,
-            labels,
-            started,
-            open: true,
-        };
-        let mut step = Step {
-            shared: Arc::clone(&self.shared),
-            id,
-            name: guard.labels.running.clone(),
-            token: token.child_token(),
-        };
-        let result = body(&mut step).await;
-        let (status, outcome, failure) = match result {
-            Ok(value) => (Status::Done, Ok(value), None),
-            Err(err) => {
-                let (status, outcome) = ending(&self.shutdown, &err);
-                // A failure shows its error (a sensitive part withheld,
-                // decision 8); other endings don't.
-                let failure = (status == Status::Failed).then(|| {
-                    let chain = shown_chain(err.as_ref());
-                    let colour = lock(&self.shared).colour;
-                    let screen = chain.iter().flat_map(|line| lines(line, colour)).collect();
-                    Failure {
-                        screen,
-                        record: chain.join(": "),
-                    }
-                });
-                (status, outcome, failure)
-            }
-        };
-        guard.close(status, failure);
-        outcome
+        run_step(&context, None, labels, &token, None, body).await
     }
 
     /// End the run at its happy end: print what is still live and clear
@@ -428,9 +392,115 @@ impl Drop for Runner {
     }
 }
 
-/// A failed step's error: its lines for the screen (cleaned), and the
-/// chain as one string for the step's record (logged as is; the tracing
-/// subscriber escapes control characters).
+/// What every step needs: the drawing state and the run's shutdown.
+#[derive(Clone)]
+struct Context {
+    shared: Shared,
+    shutdown: Shutdown,
+}
+
+/// Start step `labels` under `parent` (none: at the top), unless `token`
+/// is already cancelled (then it isn't drawn and its body doesn't run).
+/// Inside a concurrent sibling, `prefix` (its label) goes in front of the
+/// plain start line.
+fn begin(
+    context: &Context,
+    parent: Option<usize>,
+    labels: &Labels,
+    token: &CancellationToken,
+    prefix: Option<&str>,
+) -> Option<(usize, Instant)> {
+    if token.is_cancelled() {
+        tracing::info!(step = labels.running.as_str(), "step skipped (cancelled)");
+        return None;
+    }
+    let started = Instant::now();
+    let mut state = lock(&context.shared);
+    let id = state.tree.add(parent, labels.clone(), started);
+    tracing::info!(step = labels.running.as_str(), "step started");
+    if matches!(state.mode, Mode::Plain) {
+        plain_line(&prefixed(prefix, &format!("- {}", labels.running)));
+    }
+    state.redraw();
+    Some((id, started))
+}
+
+/// `text` with a concurrent sibling's label in front, for plain mode.
+fn prefixed(prefix: Option<&str>, text: &str) -> String {
+    match prefix {
+        Some(label) => format!("{label}: {text}"),
+        None => text.to_string(),
+    }
+}
+
+/// How a step's body ended, written once: `stopped_by` is the step's (or
+/// its group's) token, cancelled when a sibling failed (the shutdown's own
+/// cancels are told apart first).
+fn conclude<T>(
+    context: &Context,
+    mut guard: Ending,
+    result: anyhow::Result<T>,
+    stopped_by: Option<&CancellationToken>,
+) -> Result<T, Exit> {
+    let (status, outcome, failure) = match result {
+        Ok(value) => (Status::Done, Ok(value), None),
+        Err(err) => {
+            let sibling_failed = stopped_by.is_some_and(CancellationToken::is_cancelled);
+            let (status, outcome) = ending(&context.shutdown, &err, sibling_failed);
+            // The error is logged with every ending (the spec's endings
+            // table); only a failure shows it (a sensitive part withheld,
+            // decision 8).
+            let chain = shown_chain(err.as_ref());
+            let screen = if status == Status::Failed {
+                let colour = lock(&context.shared).colour;
+                chain.iter().flat_map(|line| lines(line, colour)).collect()
+            } else {
+                Vec::new()
+            };
+            let failure = Failure {
+                screen,
+                record: chain.join(": "),
+            };
+            (status, outcome, Some(failure))
+        }
+    };
+    guard.close(status, failure);
+    outcome
+}
+
+/// Run a step under `parent` to its end (a top-level step, or a sub-step
+/// one after another): the body borrows its `Step`. `prefix` is a
+/// concurrent sibling's label, inherited by its sub-steps in plain mode.
+async fn run_step<T>(
+    context: &Context,
+    parent: Option<usize>,
+    labels: Labels,
+    token: &CancellationToken,
+    prefix: Option<String>,
+    body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<T>,
+) -> Result<T, Exit> {
+    let Some((id, started)) = begin(context, parent, &labels, token, prefix.as_deref()) else {
+        return Err(Exit(1));
+    };
+    // Ends the step if this future is dropped before the body returns.
+    let guard = Ending::new(context, id, labels, started, prefix.clone());
+    let mut step = Step {
+        context: context.clone(),
+        id,
+        name: guard.labels.running.clone(),
+        token: token.child_token(),
+        prefix,
+    };
+    let result = body(&mut step).await;
+    // The step's own token: cancelled, past the shutdown's checks, only by
+    // an ancestor group's stop, so a sub-step inside a stopped sibling
+    // reads "stopped" too, at any depth.
+    conclude(context, guard, result, Some(&step.token))
+}
+
+/// A step's error: its lines for the screen (a failure's only; cleaned),
+/// and the chain as one string for the step's record (logged as is; the
+/// tracing subscriber escapes control characters).
 struct Failure {
     screen: Vec<String>,
     record: String,
@@ -445,11 +515,32 @@ struct Ending {
     labels: Labels,
     started: Instant,
     open: bool,
+    /// A concurrent sibling's label, in front of the plain end line of a
+    /// sub-step inside it.
+    prefix: Option<String>,
 }
 
 impl Ending {
-    /// Write the ending; `failure` is a failed body's error (none for a
-    /// panic, which shows only its own message).
+    fn new(
+        context: &Context,
+        id: usize,
+        labels: Labels,
+        started: Instant,
+        prefix: Option<String>,
+    ) -> Self {
+        Ending {
+            shared: Arc::clone(&context.shared),
+            id,
+            labels,
+            started,
+            open: true,
+            prefix,
+        }
+    }
+
+    /// Write the ending; `failure` is a failed or cancelled body's error
+    /// (none for a panic, which shows only its own message). After the
+    /// run's end (a late close), only the tree and the log hear of it.
     fn close(&mut self, status: Status, failure: Option<Failure>) {
         self.open = false;
         {
@@ -462,13 +553,13 @@ impl Ending {
             state.tree.finish(self.id, status, Instant::now());
             // Plain lines go through anstream, so they still print while a
             // panic unwinds; the live area doesn't (see `State::end`).
-            if matches!(state.mode, Mode::Plain) {
+            if matches!(state.mode, Mode::Plain) && !state.ended {
                 let colour = state.colour;
                 let elapsed = self.started.elapsed();
                 let line = end_line(theme::current(), &self.labels, status, elapsed, colour);
-                plain_line(&line);
+                plain_line(&prefixed(self.prefix.as_deref(), &line));
                 // The failure block, plainly: the error, then the pointer.
-                if let Some(failure) = &failure {
+                if let (Status::Failed, Some(failure)) = (status, &failure) {
                     for line in &failure.screen {
                         plain_line(&format!("  {line}"));
                     }
@@ -512,16 +603,19 @@ impl Drop for Ending {
     }
 }
 
-/// How a failed body's step ends, and what comes back: interrupted,
-/// stopped by the command's own request, a quiet exit passed up, or
-/// failed.
-/// A signal and the command's own request both cancel every step's token,
-/// so the shutdown alone says which it was (a sibling's stop, Task 9, has
-/// its own token).
-fn ending<T>(shutdown: &Shutdown, err: &anyhow::Error) -> (Status, Result<T, Exit>) {
+/// How a failed body's step ends, and what comes back, in the spec's
+/// order: interrupted, stopped by the command's own request, stopped by a
+/// failing sibling, a quiet exit passed up, or failed. A signal and the
+/// command's own request both cancel every step's token, so the shutdown
+/// alone says which it was; a sibling's failure cancels only its group's.
+fn ending<T>(
+    shutdown: &Shutdown,
+    err: &anyhow::Error,
+    sibling_failed: bool,
+) -> (Status, Result<T, Exit>) {
     if shutdown.interrupted() {
         (Status::Interrupted, Err(Exit(1)))
-    } else if shutdown.requested().is_some() {
+    } else if shutdown.requested().is_some() || sibling_failed {
         (Status::Stopped, Err(Exit(1)))
     } else if let Some(code) = quiet_exit(err.as_ref()) {
         (Status::SubStepFailed, Err(Exit(code)))
@@ -542,19 +636,64 @@ fn outcome(status: Status) -> &'static str {
     }
 }
 
-/// A running step, lent to its body.
+/// A running step. Sequential bodies borrow it (`&mut`), so it can't
+/// outlive their step; a concurrent sibling owns its own, and if it keeps
+/// it past its end (a detached task), later lines are logged only and
+/// `step`/`group` return `Exit(1)` without drawing.
 pub struct Step {
-    shared: Shared,
+    context: Context,
     id: usize,
     /// The running label, naming the step in the run log.
     name: String,
     token: CancellationToken,
+    /// A concurrent sibling's label, in front of its lines (and its
+    /// sub-steps' lines) in plain mode.
+    prefix: Option<String>,
 }
 
 impl Step {
+    /// Whether the step is still running (read from the tree, under the
+    /// drawing lock, so it can't race the step's ending).
+    fn is_open(&self) -> bool {
+        lock(&self.context.shared).tree.is_running(self.id)
+    }
+
+    /// Run a sub-step (a deeper branch) to its end; this step's subtree
+    /// stays live until this step ends (decision 7). See the spec's "Step
+    /// endings".
+    pub async fn step<T>(
+        &mut self,
+        labels: Labels,
+        body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<T>,
+    ) -> Result<T, Exit> {
+        if !self.is_open() {
+            tracing::info!(
+                step = labels.running.as_str(),
+                "step skipped (its parent ended)"
+            );
+            return Err(Exit(1));
+        }
+        let context = self.context.clone();
+        let token = self.token.clone();
+        let prefix = self.prefix.clone();
+        run_step(&context, Some(self.id), labels, &token, prefix, body).await
+    }
+
+    /// Concurrent sub-steps: [`Group::spawn`] each, then [`Group::join`].
+    pub fn group<T: Send + 'static>(&mut self) -> Group<'_, T> {
+        Group {
+            token: self.token.child_token(),
+            parent: self,
+            tasks: JoinSet::new(),
+            slots: Vec::new(),
+            indexes: HashMap::new(),
+        }
+    }
+
     /// The token this step watches: a child of `shutdown.token()`,
-    /// cancelled by Ctrl-C or the command's own `Shutdown::request`. A
-    /// body stops early when it is cancelled and returns its error.
+    /// cancelled by Ctrl-C, by the command's own `Shutdown::request`, or by
+    /// a failing concurrent sibling (decision 7). A body stops early when
+    /// it is cancelled and returns its error.
     pub fn token(&self) -> CancellationToken {
         self.token.clone()
     }
@@ -571,7 +710,7 @@ impl Step {
 
     fn notice(&mut self, warn: bool, line: Line) {
         let (colour, terminal) = {
-            let state = lock(&self.shared);
+            let state = lock(&self.context.shared);
             (state.colour, state.terminal)
         };
         // Logged outside the lock: the log write blocks on the file.
@@ -590,7 +729,11 @@ impl Step {
                 }
             }
         }
-        let mut state = lock(&self.shared);
+        let mut state = lock(&self.context.shared);
+        // A step kept past its end draws nothing more.
+        if !state.tree.is_running(self.id) {
+            return;
+        }
         for text in line.on_screen(colour, terminal) {
             if matches!(state.mode, Mode::Plain) {
                 let (role, mark) = if warn {
@@ -599,7 +742,7 @@ impl Step {
                     (Role::Muted, "›")
                 };
                 let mark = paint(theme::current(), role, colour, mark);
-                plain_line(&format!("{mark} {text}"));
+                plain_line(&prefixed(self.prefix.as_deref(), &format!("{mark} {text}")));
             }
             state.tree.notice(self.id, warn, text);
         }
@@ -618,7 +761,7 @@ impl Step {
     pub fn output(&mut self, text: impl Into<Line>) {
         let line = text.into();
         let (colour, terminal) = {
-            let state = lock(&self.shared);
+            let state = lock(&self.context.shared);
             (state.colour, state.terminal)
         };
         // Logged outside the lock (the log write blocks on the file), as
@@ -632,10 +775,14 @@ impl Step {
                 tracing::info!(step, text = ?console::strip_ansi_codes(text), "output");
             }
         }
-        let mut state = lock(&self.shared);
+        let mut state = lock(&self.context.shared);
+        // A step kept past its end draws nothing more.
+        if !state.tree.is_running(self.id) {
+            return;
+        }
         for text in line.on_screen(colour, terminal) {
             if matches!(state.mode, Mode::Plain) {
-                plain_line(&text);
+                plain_line(&prefixed(self.prefix.as_deref(), &text));
             }
             state.tree.output(self.id, text);
         }
@@ -698,6 +845,163 @@ enum Visibility {
     /// Shown on a terminal for the command's user; withheld elsewhere and
     /// in the log.
     SensitiveShown,
+}
+
+/// Concurrent sibling steps under one parent, drawn in full in start
+/// order (decision 7). Each runs as a tokio task (`JoinSet`,
+/// https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinSet.html), so bodies
+/// own what they use and get their own `Step`; each runs in the run's span
+/// (https://docs.rs/tracing/0.1.44/tracing/trait.Instrument.html#method.in_current_span).
+/// The errgroup-style stop is a child `CancellationToken`
+/// (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html),
+/// cancelled as soon as a sibling fails or panics. Borrows the parent, so
+/// it can't add lines or steps meanwhile. Dropped without
+/// [`Group::join`], its open steps read "stopped" at once (their tasks are
+/// aborted too). Known limit: a sibling that panicked in a group dropped
+/// without `join` reads "stopped", as tokio keeps the panic in the dropped
+/// `JoinSet`.
+#[must_use = "join the group; dropping it stops its steps"]
+pub struct Group<'a, T> {
+    parent: &'a mut Step,
+    /// Cancelled when a sibling fails (and by Ctrl-C, through the parent's).
+    token: CancellationToken,
+    tasks: JoinSet<(usize, Result<T, Exit>)>,
+    /// Each sibling's ending, until it is written: a task takes its own
+    /// when its body returns; the group closes what is left when dropped,
+    /// and a panicked sibling's when joined.
+    slots: Vec<Slot>,
+    /// Which sibling a task is, for a panic's `JoinError`.
+    indexes: HashMap<tokio::task::Id, usize>,
+}
+
+type Slot = Arc<Mutex<Option<Ending>>>;
+
+fn take(slot: &Slot) -> Option<Ending> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Cancels a group's token if a sibling's body panics, so the others stop
+/// at once.
+struct CancelOnPanic(CancellationToken);
+
+impl Drop for CancelOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.cancel();
+        }
+    }
+}
+
+impl<T: Send + 'static> Group<'_, T> {
+    /// Start a sibling now (its place in the tree is its start order).
+    pub fn spawn<F, Fut>(&mut self, labels: Labels, body: F)
+    where
+        F: FnOnce(Step) -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<T>> + Send + 'static,
+    {
+        let index = self.slots.len();
+        let context = self.parent.context.clone();
+        let parent = self.parent.is_open().then_some(self.parent.id);
+        let begun =
+            parent.and_then(|parent| begin(&context, Some(parent), &labels, &self.token, None));
+        // The ending exists from the start, so a sibling aborted before it
+        // ever ran still ends.
+        let ending = begun.map(|(id, started)| Ending::new(&context, id, labels, started, None));
+        let step = ending.as_ref().map(|ending| Step {
+            context: context.clone(),
+            id: ending.id,
+            name: ending.labels.running.clone(),
+            token: self.token.child_token(),
+            prefix: Some(ending.labels.running.clone()),
+        });
+        let slot: Slot = Arc::new(Mutex::new(ending));
+        self.slots.push(Arc::clone(&slot));
+        let token = self.token.clone();
+        let handle = self.tasks.spawn(
+            async move {
+                let Some(step) = step else {
+                    return (index, Err(Exit(1)));
+                };
+                let _cancel_on_panic = CancelOnPanic(token.clone());
+                let result = body(step).await;
+                // Already closed: the group was dropped meanwhile.
+                let Some(guard) = take(&slot) else {
+                    return (index, Err(Exit(1)));
+                };
+                let outcome = conclude(&context, guard, result, Some(&token));
+                // A failure stops the others at once (after its own ending,
+                // so it doesn't read itself as stopped).
+                if outcome.is_err() {
+                    token.cancel();
+                }
+                (index, outcome)
+            }
+            .in_current_span(),
+        );
+        self.indexes.insert(handle.id(), index);
+    }
+
+    /// Wait for every sibling; results in spawn order (`join_next` mapped
+    /// back by index; why not `JoinSet::join_all`: it returns completion
+    /// order and panics on any `JoinError`; why not tokio-util's
+    /// `JoinQueue`: joining in spawn order would see a later sibling's
+    /// failure only after earlier ones finish). The first failure's `Exit`
+    /// comes back once all have returned, as errgroup waits too. A
+    /// panicking sibling is marked failed and the others are waited for,
+    /// then the panic resumes (tokio's `JoinError::into_panic` with
+    /// `std::panic::resume_unwind`, as tokio's docs advise).
+    pub async fn join(mut self) -> Result<Vec<T>, Exit> {
+        let mut results: Vec<Option<T>> = (0..self.slots.len()).map(|_| None).collect();
+        let mut first = None;
+        let mut panic = None;
+        while let Some(joined) = self.tasks.join_next().await {
+            match joined {
+                Ok((index, Ok(value))) => results[index] = Some(value),
+                Ok((_, Err(exit))) => {
+                    self.token.cancel();
+                    first.get_or_insert(exit);
+                }
+                Err(err) if err.is_panic() => {
+                    self.token.cancel();
+                    if let Some(mut ending) = self
+                        .indexes
+                        .get(&err.id())
+                        .and_then(|&i| take(&self.slots[i]))
+                    {
+                        ending.close(Status::Failed, None);
+                    }
+                    panic.get_or_insert(err.into_panic());
+                }
+                // A cancelled task (the runtime shutting down): no result.
+                Err(_) => {
+                    first.get_or_insert(Exit(1));
+                }
+            }
+        }
+        if let Some(panic) = panic {
+            std::panic::resume_unwind(panic);
+        }
+        match first {
+            Some(exit) => Err(exit),
+            None => Ok(results.into_iter().flatten().collect()),
+        }
+    }
+}
+
+impl<T> Drop for Group<'_, T> {
+    /// Close every sibling still open, at once ("stopped", or ✗ while a
+    /// panic unwinds): their tasks are aborted with the `JoinSet`, but only
+    /// on a later scheduler tick. The group's token is cancelled too, also
+    /// after a successful `join`, so a `Step` kept past its end has a
+    /// cancelled token.
+    fn drop(&mut self) {
+        self.token.cancel();
+        // Each ending's own drop decides: "stopped", or ✗ while a panic
+        // unwinds (the endings table's order).
+        for slot in &self.slots {
+            drop(take(slot));
+        }
+    }
 }
 
 /// A notice or output line, and who may see it. From `&str`, `String` and
@@ -1253,6 +1557,463 @@ mod tests {
             screen.contains("    the token was refused\n    (sensitive, withheld)"),
             "{screen}"
         );
+    }
+
+    /// A sub-step is a deeper branch; its parent ends after it.
+    #[tokio::test]
+    async fn sub_steps_nest_under_their_parent() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        run.step(Labels::new("Checking", "checked"), async |step| {
+            step.step(Labels::new("Reading", "read"), async |_| Ok(()))
+                .await?;
+            step.step(Labels::new("Parsing", "parsed"), async |_| Ok(()))
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("step");
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb demo
+        ╰── ✓ checked                                                 0s
+            ├── ✓ read                                                0s
+            ╰── ✓ parsed                                              0s
+        ");
+    }
+
+    /// Concurrent siblings run in a group; their results come back in
+    /// spawn order, whatever order they finish in.
+    #[tokio::test(start_paused = true)]
+    async fn a_group_returns_results_in_spawn_order() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let results = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut group = step.group();
+                group.spawn(Labels::new("Slow", "slow done"), |_| async {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    Ok(1)
+                });
+                group.spawn(Labels::new("Fast", "fast done"), |_| async { Ok(2) });
+                Ok(group.join().await?)
+            })
+            .await
+            .expect("step");
+        assert_eq!(results, [1, 2]);
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb demo
+        ╰── ✓ checked                                                 0s
+            ├── ✓ slow done                                           0s
+            ╰── ✓ fast done                                           0s
+        ");
+    }
+
+    /// A failing sibling stops the others ("stopped"), its parent reads
+    /// "sub-step failed", and its `Exit` comes back (decision 7).
+    #[tokio::test(start_paused = true)]
+    async fn a_failing_sibling_stops_the_others() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let result: Result<(), Exit> = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut group = step.group();
+                group.spawn(Labels::new("Waiting", "waited"), |step| async move {
+                    let token = step.token();
+                    match token
+                        .run_until_cancelled(tokio::time::sleep(Duration::from_secs(9)))
+                        .await
+                    {
+                        Some(()) => Ok(()),
+                        None => anyhow::bail!("cancelled"),
+                    }
+                });
+                group.spawn(
+                    Labels::new("Failing", "never").failure("failed"),
+                    |_| async {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        anyhow::bail!("refused")
+                    },
+                );
+                group.join().await?;
+                Ok(())
+            })
+            .await;
+        assert!(matches!(result, Err(Exit(1))));
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb demo
+        ╰── ✗ Checking                              sub-step failed · 0s
+            ├── ✗ Waiting                                   stopped · 0s
+            ╰── ✗ failed                                              0s
+                refused
+        ");
+    }
+
+    /// Ctrl-C with two siblings running marks both and their parent
+    /// interrupted (decision 7).
+    #[tokio::test(start_paused = true)]
+    async fn ctrl_c_interrupts_every_running_step() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let signal = shutdown.clone();
+        let _ = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut group = step.group::<()>();
+                for name in ["A", "B"] {
+                    group.spawn(Labels::new(name, "done"), |step| async move {
+                        let token = step.token();
+                        match token
+                            .run_until_cancelled(tokio::time::sleep(Duration::from_secs(9)))
+                            .await
+                        {
+                            Some(()) => Ok(()),
+                            None => anyhow::bail!("cancelled"),
+                        }
+                    });
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                signal.signalled(2);
+                group.join().await?;
+                Ok(())
+            })
+            .await;
+        run.finish();
+        let screen = term.contents();
+        // (Times read 0s: tokio's paused clock doesn't move std's Instant.)
+        assert_eq!(screen.matches("interrupted · 0s").count(), 3, "{screen}");
+    }
+
+    /// A group dropped without `join` (a `?` before it) stops its steps at
+    /// once, even one never run, and nothing is drawn after the run ends.
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_group_stops_its_steps_at_once() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let _ = run
+            .step(
+                Labels::new("Checking", "checked"),
+                async |step| -> anyhow::Result<()> {
+                    let mut group = step.group::<()>();
+                    group.spawn(Labels::new("Waiting", "waited"), |_| async {
+                        tokio::time::sleep(Duration::from_secs(9)).await;
+                        Ok(())
+                    });
+                    drop(group);
+                    anyhow::bail!("gave up")
+                },
+            )
+            .await;
+        run.finish();
+        let at_end = term.contents();
+        insta::assert_snapshot!(at_end, @r"
+        sb demo
+        ╰── ✗ Checking                                                0s
+            gave up
+            ╰── ✗ Waiting                                   stopped · 0s
+        ");
+        // The aborted task's late drop draws nothing more.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(term.contents(), at_end);
+    }
+
+    /// A failing sibling stops the others at once, not when `join` is
+    /// finally polled (errgroup's stop).
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_stops_its_siblings_at_once() {
+        let (_term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let start = tokio::time::Instant::now();
+        let stopped_after = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&stopped_after);
+        let _ = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut group = step.group::<()>();
+                group.spawn(Labels::new("Waiting", "waited"), move |step| async move {
+                    step.token().cancelled().await;
+                    *seen.lock().expect("lock") = Some(start.elapsed());
+                    anyhow::bail!("stopped")
+                });
+                group.spawn(Labels::new("Failing", "never"), |_| async {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    anyhow::bail!("refused")
+                });
+                // The parent is busy before it joins.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                group.join().await?;
+                Ok(())
+            })
+            .await;
+        run.finish();
+        let after = stopped_after.lock().expect("lock").expect("stopped");
+        assert!(after < Duration::from_secs(2), "stopped after {after:?}");
+    }
+
+    /// A sibling that keeps its `Step` past its end (a detached task) draws
+    /// nothing more, and its sub-steps and groups don't start: tried while
+    /// another sibling still runs, so the group's token isn't cancelled
+    /// yet and only the step's own end decides.
+    #[tokio::test(start_paused = true)]
+    async fn a_detached_step_draws_nothing() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let observed = term.clone();
+        run.step(Labels::new("Checking", "checked"), async |step| {
+            let (kept_tx, kept_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            let mut group = step.group();
+            group.spawn(Labels::new("Leaking", "leaked"), move |step| async move {
+                let _ = kept_tx.send(step);
+                Ok(())
+            });
+            group.spawn(Labels::new("Holding", "held"), move |_| async move {
+                let _ = release_rx.await;
+                Ok(())
+            });
+            let mut kept = kept_rx.await.expect("the kept step");
+            tokio::time::sleep(FRAME * 2).await;
+            let before = observed.contents();
+            kept.output("too late");
+            kept.warn("too late");
+            let late = kept
+                .step(Labels::new("Late", "late"), async |_| Ok(()))
+                .await;
+            assert!(matches!(late, Err(Exit(1))));
+            let mut inner = kept.group::<()>();
+            inner.spawn(Labels::new("Late", "late"), |_| async { Ok(()) });
+            assert!(matches!(inner.join().await, Err(Exit(1))));
+            tokio::time::sleep(FRAME * 2).await;
+            // The same screen, the spinner's frame aside.
+            let still = |screen: String| -> String {
+                screen
+                    .chars()
+                    .filter(|c| !('\u{2800}'..='\u{28FF}').contains(c))
+                    .collect()
+            };
+            assert_eq!(still(observed.contents()), still(before));
+            let _ = release_tx.send(());
+            group.join().await?;
+            Ok(())
+        })
+        .await
+        .expect("step");
+        run.finish();
+        assert!(!term.contents().contains("too late") && !term.contents().contains("Late"));
+    }
+
+    /// A panicking sibling stops the others at once too, not when `join`
+    /// is polled.
+    #[tokio::test(start_paused = true)]
+    async fn a_panic_stops_its_siblings_at_once() {
+        let (_term, options) = screen();
+        let start = tokio::time::Instant::now();
+        let stopped_after = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&stopped_after);
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let joined = tokio::spawn(async move {
+            let _ = run
+                .step(Labels::new("Checking", "checked"), async |step| {
+                    let mut group = step.group::<()>();
+                    group.spawn(Labels::new("Waiting", "waited"), move |step| async move {
+                        step.token().cancelled().await;
+                        *seen.lock().expect("lock") = Some(start.elapsed());
+                        anyhow::bail!("stopped")
+                    });
+                    group.spawn(Labels::new("Boom", "boom"), |_| async {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        panic!("a broken sibling")
+                    });
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    group.join().await?;
+                    Ok(())
+                })
+                .await;
+        })
+        .await;
+        assert!(joined.is_err_and(|e| e.is_panic()));
+        let after = stopped_after.lock().expect("lock").expect("stopped");
+        assert!(after < Duration::from_secs(2), "stopped after {after:?}");
+    }
+
+    /// A parent that panics with a group not joined: its open siblings are
+    /// dropped while the panic unwinds, and read ✗ (the endings table puts
+    /// that row first).
+    #[tokio::test(start_paused = true)]
+    async fn siblings_dropped_by_a_panic_read_failed() {
+        let (_term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let shared = Arc::clone(&run.shared);
+        let joined = tokio::spawn(async move {
+            let _ = run
+                .step(
+                    Labels::new("Checking", "checked"),
+                    async |step| -> anyhow::Result<()> {
+                        let mut group = step.group::<()>();
+                        group.spawn(Labels::new("Waiting", "waited"), |_| async {
+                            tokio::time::sleep(Duration::from_secs(9)).await;
+                            Ok(())
+                        });
+                        panic!("the parent broke")
+                    },
+                )
+                .await;
+        })
+        .await;
+        assert!(joined.is_err_and(|e| e.is_panic()));
+        assert_eq!(
+            lock(&shared).tree.statuses(),
+            [Status::Failed, Status::Failed]
+        );
+    }
+
+    /// A sub-step inside a stopped sibling reads "stopped" too: one failure
+    /// block, the failing sibling's.
+    #[tokio::test(start_paused = true)]
+    async fn a_sub_step_of_a_stopped_sibling_reads_stopped() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let _ = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut group = step.group::<()>();
+                group.spawn(Labels::new("Outer", "outer done"), |mut step| async move {
+                    let inner = Labels::new("Inner", "inner done");
+                    step.step(inner, async |step| {
+                        step.token().cancelled().await;
+                        anyhow::bail!("cancelled")
+                    })
+                    .await?;
+                    Ok(())
+                });
+                group.spawn(Labels::new("Failing", "never"), |_| async {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    anyhow::bail!("refused")
+                });
+                group.join().await?;
+                Ok(())
+            })
+            .await;
+        run.finish();
+        let screen = term.contents();
+        assert!(
+            screen.contains("✗ Inner") && !screen.contains("cancelled"),
+            "{screen}"
+        );
+        assert_eq!(screen.matches("stopped · 0s").count(), 2, "{screen}");
+        assert_eq!(screen.matches("refused").count(), 1, "{screen}");
+    }
+
+    /// A failed sibling's kept `Step` adds no line to its drawn tail.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_siblings_kept_step_adds_no_lines() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let (kept_tx, kept_rx) = tokio::sync::oneshot::channel();
+        let _ = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut group = step.group::<()>();
+                group.spawn(
+                    Labels::new("Leaking", "leaked"),
+                    move |mut step| async move {
+                        step.output("a last line");
+                        let _ = kept_tx.send(step);
+                        anyhow::bail!("refused")
+                    },
+                );
+                group.join().await?;
+                Ok(())
+            })
+            .await;
+        let mut kept = kept_rx.await.expect("the kept step");
+        kept.output("too late");
+        run.finish();
+        let screen = term.contents();
+        assert!(
+            screen.contains("a last line") && !screen.contains("too late"),
+            "{screen}"
+        );
+    }
+
+    /// The command's own request during a group: siblings and parent read
+    /// "stopped", not interrupted.
+    #[tokio::test(start_paused = true)]
+    async fn a_request_stops_a_group() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let request = shutdown.clone();
+        let _ = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut group = step.group::<()>();
+                group.spawn(Labels::new("Waiting", "waited"), |step| async move {
+                    step.token().cancelled().await;
+                    anyhow::bail!("stopped")
+                });
+                tokio::task::yield_now().await;
+                request.request(0);
+                group.join().await?;
+                Ok(())
+            })
+            .await;
+        run.finish();
+        let screen = term.contents();
+        assert_eq!(screen.matches("stopped · 0s").count(), 2, "{screen}");
+        assert!(!screen.contains("interrupted"), "{screen}");
+    }
+
+    /// A panicking sibling: the others are stopped, then the panic goes on.
+    #[tokio::test(start_paused = true)]
+    async fn a_panicking_sibling_resumes_its_panic() {
+        let (_term, options) = screen();
+        let waited = Arc::new(Mutex::new(false));
+        let ended = Arc::clone(&waited);
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        // Read the tree itself: the in-memory screen drops draws closer
+        // than its refresh rate allows, and nothing forces one after a panic.
+        let shared = Arc::clone(&run.shared);
+        let joined = tokio::spawn(async move {
+            let _ = run
+                .step(Labels::new("Checking", "checked"), async |step| {
+                    let mut group = step.group::<()>();
+                    group.spawn(Labels::new("Waiting", "waited"), move |step| async move {
+                        step.token().cancelled().await;
+                        *ended.lock().expect("lock") = true;
+                        anyhow::bail!("stopped")
+                    });
+                    group.spawn(Labels::new("Boom", "boom"), |_| async {
+                        tokio::task::yield_now().await;
+                        panic!("a broken sibling")
+                    });
+                    group.join().await?;
+                    Ok(())
+                })
+                .await;
+        })
+        .await;
+        let panic = joined.expect_err("the panic").into_panic();
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"a broken sibling"));
+        // The other was stopped (at once) and waited for; the panicking one
+        // and their parent read ✗.
+        assert!(
+            *waited.lock().expect("lock"),
+            "the other sibling wasn't waited for"
+        );
+        let statuses = lock(&shared).tree.statuses();
+        assert_eq!(statuses, [Status::Failed, Status::Stopped, Status::Failed]);
     }
 
     /// Each ending's word in the run log.

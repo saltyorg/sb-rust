@@ -108,22 +108,42 @@ async fn demo(
         },
     )
     .await?;
-    let labels =
-        Labels::new("Checking credentials", "credentials valid").failure("credentials invalid");
-    run.step(labels, async |step| {
-        work(step, 6, pace).await?;
-        // `--panic`: a body that panics, for the test that a panic shows
-        // only its own message (no failure block, no pointer).
-        if arg("--panic") {
-            panic!("the demo was asked to panic");
-        }
-        if fail {
-            let why =
-                anyhow::anyhow!("HTTP 403 from the Cloudflare API\nthe token lacks Zone:Read");
-            return Err(why.context("the Cloudflare token was refused"));
-        }
-        Ok(())
-    })
+    // Two checks at once (a group); with `--fail` the first fails early,
+    // stopping the other, and its parent reads "sub-step failed".
+    run.step(
+        Labels::new("Checking credentials", "credentials valid"),
+        async |step| {
+            // `--panic`: a body that panics, for the test that a panic shows
+            // only its own message (no failure block, no pointer).
+            if arg("--panic") {
+                panic!("the demo was asked to panic");
+            }
+            let mut group = step.group();
+            let cloudflare = Labels::new("Checking Cloudflare token", "Cloudflare token valid")
+                .failure("Cloudflare token invalid");
+            group.spawn(cloudflare, move |mut step| async move {
+                work(&mut step, if fail { 2 } else { 6 }, pace).await?;
+                if fail {
+                    let why = anyhow::anyhow!(
+                        "HTTP 403 from the Cloudflare API\nthe token lacks Zone:Read"
+                    );
+                    return Err(why.context("the Cloudflare token was refused"));
+                }
+                Ok(())
+            });
+            let docker_hub = Labels::new("Checking Docker Hub login", "Docker Hub login valid");
+            // A sub-step inside a sibling: in plain mode its lines carry the
+            // sibling's label too.
+            group.spawn(docker_hub, move |mut step| async move {
+                let login = Labels::new("Logging in", "logged in");
+                step.step(login, async |step| work(step, 4, pace).await)
+                    .await?;
+                work(&mut step, 1, pace).await
+            });
+            group.join().await?;
+            Ok(())
+        },
+    )
     .await?;
     run.finish();
     Ok(())

@@ -32,7 +32,7 @@ fn a_failure_is_shown_once_with_its_error_and_pointer() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let text = String::from_utf8_lossy(&out.stderr);
     let block = text
-        .split_once("✗ credentials invalid ")
+        .split_once("✗ Cloudflare token invalid ")
         .map(|(_, rest)| rest)
         .expect("the failed step's line");
     let lines: Vec<&str> = block.lines().skip(1).collect();
@@ -41,7 +41,24 @@ fn a_failure_is_shown_once_with_its_error_and_pointer() {
     assert_eq!(lines[2], "  the token lacks Zone:Read");
     let pointer = format!("  full output: {}", dir.path().join("sb.log").display());
     assert!(lines[3].starts_with(&pointer), "{text}");
+    // Then the sibling it stopped (which may print a last line before it
+    // sees the stop) and their parent, last.
+    let after = &lines[4..];
+    let stopped = "✗ Checking Docker Hub login stopped ";
+    assert!(after.iter().any(|l| l.starts_with(stopped)), "{text}");
+    let last = lines.last().copied().unwrap_or_default();
+    assert!(
+        last.starts_with("✗ Checking credentials sub-step failed "),
+        "{text}"
+    );
     assert_eq!(text.matches("the Cloudflare token was refused").count(), 1);
+    // One failure block: the sub-step inside the stopped sibling reads
+    // "stopped" with no block (and no pointer) of its own.
+    assert_eq!(text.matches("full output").count(), 1, "{text}");
+    assert!(
+        text.contains("\nChecking Docker Hub login: ✗ Logging in stopped "),
+        "{text}"
+    );
     assert!(!text.contains("caused by:"), "cli-core repeated it: {text}");
 }
 
@@ -113,5 +130,6 @@ fn a_panic_shows_no_failure_block() {
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(text.contains("the demo was asked to panic"), "{text}");
+    assert!(text.contains("✗ Checking credentials "), "{text}");
     assert!(!text.contains("full output"), "{text}");
 }

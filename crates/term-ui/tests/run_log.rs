@@ -10,6 +10,10 @@ use std::sync::{Arc, Mutex};
 
 use sb_cli_core::cancel::Shutdown;
 use sb_term_ui::{Labels, Line, Options, Runner};
+use tracing::Instrument;
+
+/// A known secret, marked sensitive wherever the steps print it.
+const SECRET: &str = "hunter2-not-a-real-token";
 
 /// A log writer the test can read back.
 #[derive(Clone, Default)]
@@ -45,9 +49,17 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
         .with_ansi(false)
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
-    // The run's span, as cli-core's `RunLog::enter` opens it.
-    let _span = tracing::info_span!("run", run = "t").entered();
-    let secret = "hunter2-not-a-real-token";
+    // The run's span, current only while the test's own future is polled
+    // (`Instrument`, not `entered`): a sibling's task, polled on its own,
+    // has the span only because the runner carries it there.
+    let span = tracing::info_span!("run", run = "t");
+    run_steps().instrument(span).await;
+    check(&log.text());
+}
+
+/// The steps, run inside the test's span.
+async fn run_steps() {
+    let secret = SECRET;
     // Colour on, so the screen keeps colour codes and the log must strip
     // them itself (safe: this binary holds one test).
     anstream::ColorChoice::Always.write_global();
@@ -83,12 +95,34 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
     let _ = run
         .step(Labels::new("Checking token", "token valid"), sensitive)
         .await;
-    shutdown.request(0);
+    // Concurrent siblings run as tasks; their records keep the run's span.
+    run.step(Labels::new("Checking both", "both checked"), async |step| {
+        let mut group = step.group();
+        group.spawn(Labels::new("Sibling A", "a done"), |mut step| async move {
+            step.output("from a task");
+            Ok(())
+        });
+        group.join().await?;
+        Ok(())
+    })
+    .await
+    .expect("group");
+    // A body cancelled by the command's own request: "stopped", and its
+    // error still in the record (never shown).
+    let stopping = async |_: &mut sb_term_ui::Step| -> anyhow::Result<()> {
+        shutdown.request(0);
+        anyhow::bail!("asked to stop")
+    };
+    let _ = run.step(Labels::new("Stopping", "stopped"), stopping).await;
     let _ = run
         .step(Labels::new("Late", "late"), async |_| Ok(()))
         .await;
     run.finish();
-    let text = log.text();
+}
+
+/// What the log must and mustn't hold.
+fn check(text: &str) {
+    let secret = SECRET;
     assert!(!text.contains(secret), "{text}");
     let line_with = |part: &str| {
         text.lines()
@@ -127,6 +161,9 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
     assert!(line_with("outcome=\"done\"").contains(" INFO "));
     assert!(line_with("step=\"Pulling\" outcome=\"failed\"").contains(" WARN "));
     line_with("elapsed_ms=");
+    assert!(line_with("text=\"from a task\"").contains("run{run=\"t\"}"));
+    let stopping = line_with("step=\"Stopping\" outcome=\"stopped\"");
+    assert!(stopping.contains("error=\"asked to stop\""), "{stopping}");
     let refused = line_with("step=\"Checking token\" outcome=\"failed\"");
     assert!(
         refused.contains("error=\"the token was refused: (sensitive, withheld)\""),

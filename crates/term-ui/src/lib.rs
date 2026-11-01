@@ -6,7 +6,7 @@ pub mod style;
 mod tree;
 mod tty;
 
-pub use runner::{Labels, Line, Options, Runner, Step, Target};
+pub use runner::{Group, Labels, Line, Options, Runner, Step, Target};
 
 use anstream::{AutoStream, ColorChoice};
 use sb_cli_core::theme::Profile;

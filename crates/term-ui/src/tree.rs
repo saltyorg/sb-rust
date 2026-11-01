@@ -136,6 +136,17 @@ impl Tree {
         self.nodes[id].error = lines;
     }
 
+    /// Every step's status, in start order (for tests).
+    #[cfg(test)]
+    pub fn statuses(&self) -> Vec<Status> {
+        self.nodes.iter().map(|n| n.status).collect()
+    }
+
+    /// Whether step `id` is still running.
+    pub fn is_running(&self, id: usize) -> bool {
+        self.nodes[id].status == Status::Running
+    }
+
     /// End step `id`, once: a later ending is ignored.
     pub fn finish(&mut self, id: usize, status: Status, now: Instant) {
         let node = &mut self.nodes[id];

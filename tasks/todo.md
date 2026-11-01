@@ -272,14 +272,14 @@ concurrent steps' log records carry the run's span (tokio's `Instrument`,
 cited).
 
 **Acceptance criteria:**
-- [ ] Nested and concurrent runs render as settled, with the erase result
+- [x] Nested and concurrent runs render as settled, with the erase result
       Task 1 accepted; plain mode stays readable.
-- [ ] A sibling failing while another runs, and SIGINT with two steps
+- [x] A sibling failing while another runs, and SIGINT with two steps
       running, behave as settled at Checkpoint A.
-- [ ] Concurrent steps' run-log records carry the run span.
+- [x] Concurrent steps' run-log records carry the run span.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; the demo's nested and concurrent modes;
+- [x] `cargo test -p sb-term-ui`; the demo's nested and concurrent modes;
       `scripts/check.sh full`.
 
 **Dependencies:** Task 8
