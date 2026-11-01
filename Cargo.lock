@@ -3248,6 +3248,7 @@ dependencies = [
  "console",
  "indicatif",
  "insta",
+ "rustix",
  "sb-cli-core",
  "tabled",
  "tempfile",

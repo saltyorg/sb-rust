@@ -35,7 +35,7 @@ toml = { version = "1.1.8", default-features = false, features = ["std", "serde"
 thiserror = "2.0.21"
 signal-hook = "0.4.5"
 tokio-util = "0.7.20"
-rustix = { version = "1.1.6", features = ["fs", "process"] }
+rustix = { version = "1.1.6", features = ["fs", "process", "stdio", "termios"] }
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"

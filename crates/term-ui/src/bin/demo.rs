@@ -1,13 +1,16 @@
 //! The runner on stderr, for trying it and for the PTY tests: `cargo run
-//! -p sb-term-ui --bin demo [-- --fail] [--verbose] [--sensitive]
-//! [--panic]`. A binary rather than an example because `cargo test --tests` (the
-//! coverage run) builds bins for the integration tests but not examples;
-//! sb's build never includes it. It ends through cli-core's `finish_run`,
+//! -p sb-term-ui --bin demo [-- FLAGS]`, the flags being test hooks:
+//! `--fail`, `--verbose`, `--sensitive`, `--panic`, `--interrupt`,
+//! `--interrupt-twice`, `--terminate` and `--leave-foreground`. A binary
+//! rather than an example because `cargo test --tests` (the coverage run)
+//! builds bins for the integration tests but not examples; sb's build
+//! never includes it. It ends through cli-core's `finish_run`,
 //! as sb's `main` does, and logs only under `SB_LOG_DIR`.
 
 use std::path::Path;
 use std::time::Duration;
 
+use rustix::process::{Signal, getpid, kill_process, setpgid};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{ExitCode, finish_run};
 use sb_cli_core::log::{RunLog, outcome};
@@ -24,11 +27,51 @@ async fn work(step: &mut Step, lines: usize, pace: Duration) -> anyhow::Result<(
             .await
             .is_none()
         {
+            // `--interrupt-twice`: a body slow to stop, so the second signal
+            // arrives while it still runs (cli-core's hard exit).
+            if arg("--interrupt-twice") {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
             anyhow::bail!("cancelled");
         }
         step.output(format!("checking item {n} of {lines}"));
     }
     Ok(())
+}
+
+/// Whether the demo was started with `flag`.
+fn arg(flag: &str) -> bool {
+    std::env::args().any(|a| a == flag)
+}
+
+/// The test hooks `--interrupt`, `--interrupt-twice` and `--terminate`
+/// (the demo signals itself while the second step runs, as a user's Ctrl-C
+/// or a `kill` would, once or twice), and `--leave-foreground`.
+fn signal_self() {
+    // `--leave-foreground`: move into a process group of its own mid-run,
+    // as Ctrl-Z then `bg` would, so the terminal's foreground is another.
+    if arg("--leave-foreground") {
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = setpgid(None, None);
+        });
+    }
+    let (signal, times) = if arg("--terminate") {
+        (Signal::TERM, 1)
+    } else if arg("--interrupt-twice") {
+        (Signal::INT, 2)
+    } else if arg("--interrupt") {
+        (Signal::INT, 1)
+    } else {
+        return;
+    };
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        for _ in 0..times {
+            let _ = kill_process(getpid(), signal);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    });
 }
 
 async fn demo(
@@ -71,7 +114,7 @@ async fn demo(
         work(step, 6, pace).await?;
         // `--panic`: a body that panics, for the test that a panic shows
         // only its own message (no failure block, no pointer).
-        if std::env::args().any(|a| a == "--panic") {
+        if arg("--panic") {
             panic!("the demo was asked to panic");
         }
         if fail {
@@ -105,6 +148,7 @@ fn main() -> ExitCode {
         log.started("demo", env!("CARGO_PKG_VERSION"));
     }
     let shutdown = Shutdown::new();
+    signal_self();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build();

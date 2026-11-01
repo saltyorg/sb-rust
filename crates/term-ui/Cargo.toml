@@ -16,6 +16,7 @@ sb-cli-core.workspace = true
 anyhow.workspace = true
 anstream.workspace = true
 indicatif.workspace = true
+rustix.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anstyle.workspace = true

@@ -245,19 +245,19 @@ the tree (or the tree carries the flag). Decision 8: an error marked
 (`Warn`), keeping its last lines, with no pointer of its own; cli-core's
 block then shows "interrupted" and the pointer once. A command's own
 `Shutdown::request` is not an interruption. `ECHOCTL` is switched off while
-live on the terminal sb draws on (stderr's, or `/dev/tty`), only in the
+live on the terminal sb draws on (stderr's), only in the
 foreground process group, and restored at every ending; the runner
 registers its restore with Task 3's hook and removes it when it ends. This
 closes cli-core's carried criterion 4.
 
 **Acceptance criteria:**
-- [ ] SIGINT gives 130, SIGTERM 143; "interrupted" shown once; a requested
+- [x] SIGINT gives 130, SIGTERM 143; "interrupted" shown once; a requested
       shutdown isn't marked interrupted.
-- [ ] Cursor and `ECHOCTL` restored after one signal and after two; a
+- [x] Cursor and `ECHOCTL` restored after one signal and after two; a
       background run doesn't touch the terminal (PTY tests on the demo).
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui` (PTY tests); `scripts/check.sh full`.
+- [x] `cargo test -p sb-term-ui` (PTY tests); `scripts/check.sh full`.
 
 **Dependencies:** Tasks 3, 7
 **Files:** `crates/term-ui/{src/runner.rs,src/tty.rs,tests/signals.rs}`, `Cargo.toml` (rustix `termios`)

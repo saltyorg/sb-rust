@@ -14,17 +14,19 @@
 //! from inside indicatif's draw while callers of `set_message` hold it.
 
 use std::io::Write;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use sb_cli_core::cancel::{CancellationToken, Shutdown};
+use sb_cli_core::cancel::{CancellationToken, RestoreHook, Shutdown};
 use sb_cli_core::exit::{Exit, quiet_exit, shown_chain};
 use sb_cli_core::log::{RunLog, WITHHELD};
 use sb_cli_core::theme::{self, Role};
 
 use crate::style::paint;
 use crate::tree::{Draw, Status, Tree};
+use crate::tty::Saved;
 
 /// How often the spinner moves (proto-runner's reviewed pace).
 const FRAME: Duration = Duration::from_millis(80);
@@ -137,6 +139,8 @@ enum Mode {
 }
 
 struct State {
+    /// Set by the restore hook on a second Ctrl-C: no more drawing.
+    stop: Arc<AtomicBool>,
     tree: Tree,
     mode: Mode,
     colour: bool,
@@ -176,6 +180,9 @@ impl Size {
 impl State {
     /// Print what can be printed and redraw the live area (live mode).
     fn redraw(&mut self) {
+        if self.stop.load(Ordering::SeqCst) {
+            return;
+        }
         let Mode::Live(area) = &mut self.mode else {
             return;
         };
@@ -207,7 +214,10 @@ impl State {
             return;
         }
         self.redraw();
-        if let Mode::Live(area) = &self.mode {
+        // After the restore hook ran (`stop`), nothing more is drawn.
+        if let Mode::Live(area) = &self.mode
+            && !self.stop.load(Ordering::SeqCst)
+        {
             area.clear();
         }
     }
@@ -227,6 +237,10 @@ pub struct Runner {
     shared: Shared,
     shutdown: Shutdown,
     frames: Option<tokio::task::JoinHandle<()>>,
+    /// The terminal's modes and cursor, put back at the end.
+    saved: Saved,
+    /// Puts the terminal back on a second Ctrl-C; removed at the end.
+    restore: Option<RestoreHook>,
 }
 
 impl Runner {
@@ -243,6 +257,7 @@ impl Runner {
         // The title goes out before the live area exists: a
         // `MultiProgress::println` before its bar first drew was lost
         // (seen on indicatif's in-memory terminal).
+        let on_stderr = matches!(options.target, Target::Stderr);
         let (mode, colour, size, terminal) = match options.target {
             Target::Stderr => {
                 plain_line(title);
@@ -278,7 +293,16 @@ impl Runner {
             }
         };
         let plain = matches!(mode, Mode::Plain);
+        // Live on stderr's terminal: quiet it (`ECHOCTL` off, the cursor
+        // hidden) before the first frame.
+        let saved = if plain || !on_stderr {
+            Saved::default()
+        } else {
+            Saved::quiet()
+        };
+        let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Mutex::new(State {
+            stop: Arc::clone(&stop),
             tree: {
                 let mut tree = Tree::default();
                 tree.set_pointer(pointer);
@@ -292,11 +316,30 @@ impl Runner {
             ended: false,
         }));
         lock(&shared).redraw();
-        let frames = (!plain).then(|| tokio::spawn(frames(Arc::clone(&shared))));
+        // cli-core puts the terminal back on a second Ctrl-C: drawing stops
+        // first (no redraw starts once `stop` is set, and one under way is
+        // waited for, briefly, well inside cli-core's 500 ms deadline).
+        let restore = saved.changed().then(|| {
+            let (saved, stop, shared) = (saved.clone(), Arc::clone(&stop), Arc::clone(&shared));
+            shutdown.on_forced_exit(move || {
+                stop.store(true, Ordering::SeqCst);
+                for _ in 0..20 {
+                    // Free, or poisoned (no draw under way either).
+                    if !matches!(shared.try_lock(), Err(TryLockError::WouldBlock)) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                saved.clone().restore_for_exit();
+            })
+        });
+        let frames = (!plain).then(|| tokio::spawn(frames(Arc::clone(&shared), stop)));
         Runner {
             shared,
             shutdown: shutdown.clone(),
             frames,
+            saved,
+            restore,
         }
     }
 
@@ -372,6 +415,10 @@ impl Runner {
             frames.abort();
         }
         lock(&self.shared).end();
+        // Then the terminal, every ending; the hook goes with it, so a
+        // later second Ctrl-C can't restore stale modes.
+        self.saved.restore();
+        self.restore = None;
     }
 }
 
@@ -721,11 +768,17 @@ impl From<&String> for Line {
 
 /// Move the spinner every [`FRAME`], skipping missed ticks
 /// (https://docs.rs/tokio/1.54.1/tokio/time/enum.MissedTickBehavior.html).
-async fn frames(shared: Shared) {
+/// `stop` is set by the restore hook on a second Ctrl-C, before it puts the
+/// terminal back; the frame task then ends (and `State::redraw` draws
+/// nothing more either).
+async fn frames(shared: Shared, stop: Arc<AtomicBool>) {
     let mut tick = tokio::time::interval(FRAME);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
         let mut state = lock(&shared);
         if state.ended {
             return;

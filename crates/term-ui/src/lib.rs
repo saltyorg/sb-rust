@@ -4,6 +4,7 @@
 mod runner;
 pub mod style;
 mod tree;
+mod tty;
 
 pub use runner::{Labels, Line, Options, Runner, Step, Target};
 

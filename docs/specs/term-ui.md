@@ -124,11 +124,17 @@ appears only under CI, redirection or `-v`.
   Ctrl-C doesn't echo `^C` into the tree, and restored it (rustix
   `termios`, a feature the workspace doesn't enable yet; UNVERIFIED in the
   prototype). It changed stdin, which is a pipe under `curl … | sudo bash`;
-  term-ui changes the terminal sb draws on (stderr's, or `/dev/tty`)
-  instead. The tty is only touched in the foreground process group
-  (sb-go's `tty.go` guard), so a background sb doesn't stop on SIGTTOU.
-  A second Ctrl-C restores the terminal through a hook cli-core runs
-  before its immediate exit (decision 5).
+  term-ui changes the terminal sb draws on instead: stderr's, which is a
+  terminal whenever the runner is live (no `/dev/tty` is needed). The
+  cursor is hidden while live. The tty is only touched in the foreground
+  process group (sb-go's `tty.go` guard), checked again at every restore,
+  so a background sb (or one moved there with Ctrl-Z and `bg`) never stops
+  on SIGTTOU; a job-control shell puts its own modes back then. A second
+  Ctrl-C restores the terminal through a hook cli-core runs before its
+  immediate exit (decision 5), which also ends the live area's line.
+  Known limit: Ctrl-Z itself (SIGTSTP) leaves the cursor hidden at the
+  shell's prompt until sb resumes (bash restores the modes, not the
+  cursor).
 - **Resize:** known limit from proto-runner: the live area's line count
   never shrinks while running (decision 2), so shrinking the terminal
   mid-run can leave stale lines.
