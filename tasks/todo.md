@@ -197,13 +197,13 @@ terminal; decide and test a cap here. Stream output marks the tree dirty
 and redraws on frames rather than per line, if the volume needs it.
 
 **Acceptance criteria:**
-- [ ] Tail length and cap; notices' look as settled at Checkpoint A; plain
+- [x] Tail length and cap; notices' look as settled at Checkpoint A; plain
       mode includes output lines and notices.
-- [ ] Run log holds each step's record; a known secret marked sensitive is
+- [x] Run log holds each step's record; a known secret marked sensitive is
       absent (CONSTRAINTS.md logging rule).
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-term-ui`; `scripts/check.sh full`.
 
 **Dependencies:** Task 5
 **Files:** `crates/term-ui/{src/runner.rs,tests/runner.rs,tests/run_log.rs}`
@@ -218,6 +218,12 @@ run returns a quiet `Exit(1)` so cli-core doesn't repeat it. The demo ends
 through the same cli-core functions sb's `main` uses (`log::outcome`,
 `exit::finish_run`, `RunLog::pointer`), so a PTY test on the demo shows
 criterion 4 ("shown once, exit 1") end to end.
+
+Carried from Task 6's review: a failed step's own record carries its
+error and causes here (Task 6 logs only the outcome, at WARN), through
+cli-core's `Sensitive` check; the tree keeps output lines without their
+sensitive flag, so the failure block's last lines must not be logged from
+the tree (or the tree carries the flag).
 
 **Acceptance criteria:**
 - [ ] The failure block as specified, multi-line errors included; no

@@ -213,15 +213,7 @@ impl Tree {
         // Times end in one column; a label too long for it is cut with `…`.
         let column = COLUMN.min(d.width);
         let room = column.saturating_sub(width(&lead) + width(&right) + 1);
-        let left = if room == 0 {
-            String::new()
-        } else if width(&left) > room {
-            // console's own cut, then no space left before the `…`.
-            let cut = console::truncate_str(&left, room.saturating_sub(1), "");
-            format!("{}…", cut.trim_end())
-        } else {
-            left
-        };
+        let left = cut(&left, room);
         let painted = d.paint(role, &left);
         let left = console::pad_str(&painted, room, console::Alignment::Left, None);
         format!(
@@ -234,24 +226,34 @@ impl Tree {
     /// Lines under `id`: its notices (bullets: `›` info, orange `!`
     /// warning), then its newest output lines while it runs, or kept after
     /// a failure or an interruption.
-    fn under(&self, id: usize, d: &Draw) -> Vec<String> {
+    fn under(&self, id: usize, d: &Draw, live: bool) -> Vec<String> {
         let node = &self.nodes[id];
-        let lead = d.paint(
-            Role::Faint,
-            &format!("{}{}", self.indent(id), self.skip(id)),
-        );
-        let mut lines: Vec<String> = node
-            .notices
-            .iter()
-            .map(|notice| {
-                let mark = if notice.warn {
-                    format!("{} {}", d.paint(Role::Warn, "!"), notice.text)
-                } else {
-                    d.paint(Role::Muted, &format!("› {}", notice.text))
-                };
-                format!("{lead}{mark}")
-            })
-            .collect();
+        let lead_text = format!("{}{}", self.indent(id), self.skip(id));
+        let lead = d.paint(Role::Faint, &lead_text);
+        // Live, a step shows its newest notices under a count of the
+        // earlier ones, so many warnings can't outgrow the screen; the
+        // finished tree prints them all.
+        let cap = (d.rows / 4).clamp(1, TAIL);
+        let hidden = if live {
+            node.notices.len().saturating_sub(cap)
+        } else {
+            0
+        };
+        let room = d.width.saturating_sub(width(&lead_text));
+        let mut lines: Vec<String> = Vec::new();
+        if hidden > 0 {
+            let count = format!("… {hidden} earlier");
+            lines.push(format!("{lead}{}", d.paint(Role::Muted, &count)));
+        }
+        lines.extend(node.notices.iter().skip(hidden).map(|notice| {
+            let text = cut(&notice.text, room.saturating_sub(2));
+            let mark = if notice.warn {
+                format!("{} {text}", d.paint(Role::Warn, "!"))
+            } else {
+                d.paint(Role::Muted, &format!("› {text}"))
+            };
+            format!("{lead}{mark}")
+        }));
         let shown = match node.status {
             Status::Running => self.tail_shown(d.rows),
             Status::Failed | Status::Interrupted => TAIL,
@@ -262,7 +264,7 @@ impl Tree {
             node.tail
                 .iter()
                 .skip(skip)
-                .map(|line| format!("{lead}{}", d.paint(Role::Muted, line))),
+                .map(|line| format!("{lead}{}", d.paint(Role::Muted, &cut(line, room)))),
         );
         lines
     }
@@ -309,7 +311,7 @@ impl Tree {
                 break;
             }
             out.push(self.line(next, d));
-            out.extend(self.under(next, d));
+            out.extend(self.under(next, d, false));
             printed = next + 1;
         }
         self.printed = printed;
@@ -319,8 +321,23 @@ impl Tree {
     /// The live lines: every step not yet printed, with what hangs under it.
     pub fn live(&self, d: &Draw) -> Vec<String> {
         (self.printed..self.nodes.len())
-            .flat_map(|id| std::iter::once(self.line(id, d)).chain(self.under(id, d)))
+            .flat_map(|id| std::iter::once(self.line(id, d)).chain(self.under(id, d, true)))
             .collect()
+    }
+}
+
+/// `text` cut to `room` columns with `…` (console's cut, which keeps
+/// escape codes whole, then no space left before the `…`;
+/// https://docs.rs/console/0.16.6/console/fn.truncate_str.html), or whole
+/// when it fits.
+fn cut(text: &str, room: usize) -> String {
+    if room == 0 {
+        String::new()
+    } else if width(text) > room {
+        let cut = console::truncate_str(text, room.saturating_sub(1), "");
+        format!("{}…", cut.trim_end())
+    } else {
+        text.to_string()
     }
 }
 
@@ -470,6 +487,69 @@ mod tests {
         ├── ✗ Starting                                      stopped · 1s
         ╰── ✗ Starting                              sub-step failed · 1s
         ");
+    }
+
+    /// In the live area a step shows its newest 8 notices under a count of
+    /// the earlier ones, so many warnings can't outgrow the screen; the
+    /// finished tree keeps them all.
+    #[test]
+    fn live_notices_are_capped_and_printed_in_full() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(None, Labels::new("Checking", "checked"), t0);
+        for n in 0..12 {
+            tree.notice(id, true, format!("warning {n}"));
+        }
+        let mut d = draw(&theme, t0);
+        d.rows = 40;
+        let live = tree.live(&d);
+        assert_eq!(live.len(), 1 + 1 + TAIL, "{live:#?}");
+        assert_eq!(live[1], "│   … 4 earlier");
+        assert_eq!(live[2], "│   ! warning 4");
+        // A small screen shows fewer: a quarter of its rows.
+        d.rows = 12;
+        assert_eq!(tree.live(&d).len(), 1 + 1 + 3);
+        tree.finish(id, Status::Done, t0);
+        tree.end();
+        let printed = tree.take_printable(&d);
+        assert_eq!(printed.len(), 1 + 12);
+        assert_eq!(printed[1], "    ! warning 0");
+    }
+
+    /// A notice wider than the screen is cut with `…` too.
+    #[test]
+    fn wide_notices_are_cut() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(None, Labels::new("Pulling", "pulled"), t0);
+        tree.notice(id, true, "w".repeat(200));
+        let mut d = draw(&theme, t0);
+        d.width = 40;
+        assert_eq!(tree.live(&d)[1], format!("│   ! {}…", "w".repeat(33)));
+    }
+
+    /// Text that exactly fills its room isn't cut; no room gives nothing.
+    #[test]
+    fn cut_keeps_what_fits() {
+        assert_eq!(cut("abc", 3), "abc");
+        assert_eq!(cut("abcd", 3), "ab…");
+        assert_eq!(cut("abc", 0), "");
+    }
+
+    /// An output line wider than the screen is cut with `…`.
+    #[test]
+    fn wide_output_lines_are_cut() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(None, Labels::new("Pulling", "pulled"), t0);
+        tree.output(id, "x".repeat(200));
+        let mut d = draw(&theme, t0);
+        d.width = 40;
+        let live = tree.live(&d);
+        assert_eq!(live[1], format!("│   {}…", "x".repeat(35)));
     }
 
     /// A step ends once: a later ending doesn't change it.

@@ -296,12 +296,14 @@ impl Runner {
     ) -> Result<T, Exit> {
         let token = self.shutdown.token();
         if token.is_cancelled() {
+            tracing::info!(step = labels.running.as_str(), "step skipped (cancelled)");
             return Err(Exit(1));
         }
         let started = Instant::now();
         let id = {
             let mut state = lock(&self.shared);
             let id = state.tree.add(None, labels.clone(), started);
+            tracing::info!(step = labels.running.as_str(), "step started");
             if matches!(state.mode, Mode::Plain) {
                 plain_line(&format!("- {}", labels.running));
             }
@@ -319,6 +321,7 @@ impl Runner {
         let mut step = Step {
             shared: Arc::clone(&self.shared),
             id,
+            name: guard.labels.running.clone(),
             token: token.child_token(),
         };
         let result = body(&mut step).await;
@@ -365,23 +368,29 @@ struct Ending {
 impl Ending {
     fn close(&mut self, status: Status) {
         self.open = false;
-        let mut state = lock(&self.shared);
-        state.tree.finish(self.id, status, Instant::now());
-        // Plain lines go through anstream, so they still print while a
-        // panic unwinds; the live area doesn't (see `State::end`).
-        if matches!(state.mode, Mode::Plain) {
-            let colour = state.colour;
-            let line = end_line(
-                theme::current(),
-                &self.labels,
-                status,
-                self.started.elapsed(),
-                colour,
-            );
-            plain_line(&line);
+        {
+            let mut state = lock(&self.shared);
+            state.tree.finish(self.id, status, Instant::now());
+            // Plain lines go through anstream, so they still print while a
+            // panic unwinds; the live area doesn't (see `State::end`).
+            if matches!(state.mode, Mode::Plain) {
+                let colour = state.colour;
+                let elapsed = self.started.elapsed();
+                let line = end_line(theme::current(), &self.labels, status, elapsed, colour);
+                plain_line(&line);
+            }
+            if !std::thread::panicking() {
+                state.redraw();
+            }
         }
-        if !std::thread::panicking() {
-            state.redraw();
+        // Logged outside the lock: the log write blocks on the file.
+        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let step = self.labels.running.as_str();
+        let outcome = outcome(status);
+        if status == Status::Done {
+            tracing::info!(step, outcome, elapsed_ms, "step finished");
+        } else {
+            tracing::warn!(step, outcome, elapsed_ms, "step finished");
         }
     }
 }
@@ -417,10 +426,24 @@ fn ending<T>(shutdown: &Shutdown, err: &anyhow::Error) -> (Status, Result<T, Exi
     }
 }
 
+/// A step's outcome in the run log.
+fn outcome(status: Status) -> &'static str {
+    match status {
+        Status::Running => "running",
+        Status::Done => "done",
+        Status::Failed => "failed",
+        Status::Interrupted => "interrupted",
+        Status::Stopped => "stopped",
+        Status::SubStepFailed => "sub-step failed",
+    }
+}
+
 /// A running step, lent to its body.
 pub struct Step {
     shared: Shared,
     id: usize,
+    /// The running label, naming the step in the run log.
+    name: String,
     token: CancellationToken,
 }
 
@@ -443,56 +466,149 @@ impl Step {
     }
 
     fn notice(&mut self, warn: bool, line: Line) {
-        let mut state = lock(&self.shared);
-        if matches!(state.mode, Mode::Plain) {
-            let (role, mark) = if warn {
-                (Role::Warn, "!")
-            } else {
-                (Role::Muted, "›")
-            };
-            let colour = state.colour;
-            plain_line(&format!(
-                "{} {}",
-                paint(theme::current(), role, colour, mark),
-                line.text
-            ));
+        let colour = lock(&self.shared).colour;
+        let texts = lines(&line.text, colour);
+        // Logged outside the lock: the log write blocks on the file.
+        let step = self.name.as_str();
+        for text in &texts {
+            let text = console::strip_ansi_codes(text);
+            match (line.sensitive, warn) {
+                (true, true) => tracing::warn!(step, "notice withheld (sensitive)"),
+                (true, false) => tracing::info!(step, "notice withheld (sensitive)"),
+                (false, true) => tracing::warn!(step, text = ?text, "notice"),
+                (false, false) => tracing::info!(step, text = ?text, "notice"),
+            }
         }
-        state.tree.notice(self.id, warn, line.text);
+        let mut state = lock(&self.shared);
+        for text in texts {
+            if matches!(state.mode, Mode::Plain) {
+                let (role, mark) = if warn {
+                    (Role::Warn, "!")
+                } else {
+                    (Role::Muted, "›")
+                };
+                let mark = paint(theme::current(), role, colour, mark);
+                plain_line(&format!("{mark} {text}"));
+            }
+            state.tree.notice(self.id, warn, text);
+        }
         state.redraw();
     }
 
-    /// Output: shown in the live tail (or plainly).
+    /// Output: shown in the live tail (or plainly) and logged. Text is
+    /// split into lines (`\n` or `\r\n`); a `\r` keeps what follows it
+    /// (progress output); only colour codes are kept, and only on a
+    /// coloured target; tabs become spaces and other control characters
+    /// are dropped; a line wider than the screen is cut with `…` on
+    /// screen. The log gets each line as plain text, whole. The live area
+    /// shows new lines on the next frame, so streamed output doesn't
+    /// redraw the tree per line.
     pub fn output(&mut self, text: impl Into<Line>) {
         let line = text.into();
-        let mut state = lock(&self.shared);
-        if matches!(state.mode, Mode::Plain) {
-            plain_line(&line.text);
+        let colour = lock(&self.shared).colour;
+        let texts = lines(&line.text, colour);
+        // Logged outside the lock (the log write blocks on the file), as
+        // plain text whatever the screen gets, and whole.
+        let step = self.name.as_str();
+        for text in &texts {
+            if line.sensitive {
+                tracing::info!(step, "output withheld (sensitive)");
+            } else {
+                tracing::info!(step, text = ?console::strip_ansi_codes(text), "output");
+            }
         }
-        state.tree.output(self.id, line.text);
-        state.redraw();
+        let mut state = lock(&self.shared);
+        for text in texts {
+            if matches!(state.mode, Mode::Plain) {
+                plain_line(&text);
+            }
+            state.tree.output(self.id, text);
+        }
     }
 }
 
-/// A notice or output line. From `&str`, `String` and `&String`.
+/// Text as lines that draw predictably: std's `str::lines` (so `\r\n`
+/// ends a line, and a final newline adds none), then only what follows the
+/// last `\r` (progress output; a trailing one ignored). Empty text is one
+/// empty line.
+fn lines(text: &str, colour: bool) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    text.lines()
+        .map(|line| {
+            let line = line.trim_end_matches('\r');
+            clean(line.rsplit('\r').next().unwrap_or(line), colour)
+        })
+        .collect()
+}
+
+/// One line with what would move the cursor or change widths behind the
+/// tree's back taken out: escape codes other than colours (all of them with
+/// colour off), and control characters; tabs become spaces to the next
+/// 8-column stop. Escape codes found with console's `AnsiCodeIterator`
+/// (https://docs.rs/console/0.16.6/console/struct.AnsiCodeIterator.html).
+fn clean(line: &str, colour: bool) -> String {
+    let mut out = String::new();
+    let mut column = 0;
+    for (piece, is_ansi) in console::AnsiCodeIterator::new(line) {
+        if is_ansi {
+            let sgr = piece.starts_with("\x1b[") && piece.ends_with('m');
+            if colour && sgr {
+                out.push_str(piece);
+            }
+            continue;
+        }
+        for c in piece.chars() {
+            if c == '\t' {
+                let spaces = 8 - column % 8;
+                out.extend(std::iter::repeat_n(' ', spaces));
+                column += spaces;
+            } else if !c.is_control() {
+                out.push(c);
+                column += console::measure_text_width(c.encode_utf8(&mut [0; 4]));
+            }
+        }
+    }
+    out
+}
+
+/// A notice or output line, and whether it may be logged. From `&str`,
+/// `String` and `&String`: loggable.
 pub struct Line {
     text: String,
+    sensitive: bool,
+}
+
+impl Line {
+    /// Shown on screen to the user who ran the command, never logged
+    /// (credentials, tokens); the log records that a line was withheld.
+    pub fn sensitive(text: impl Into<String>) -> Self {
+        Line {
+            text: text.into(),
+            sensitive: true,
+        }
+    }
 }
 
 impl From<&str> for Line {
     fn from(text: &str) -> Self {
-        Line { text: text.into() }
+        String::from(text).into()
     }
 }
 
 impl From<String> for Line {
     fn from(text: String) -> Self {
-        Line { text }
+        Line {
+            text,
+            sensitive: false,
+        }
     }
 }
 
 impl From<&String> for Line {
     fn from(text: &String) -> Self {
-        Line { text: text.clone() }
+        text.clone().into()
     }
 }
 
@@ -612,8 +728,9 @@ mod tests {
         ");
     }
 
-    /// While a step runs, the live area shows it with its spinner.
-    #[tokio::test]
+    /// While a step runs, the live area shows it with its spinner, and its
+    /// output from the next frame on.
+    #[tokio::test(start_paused = true)]
     async fn a_running_step_is_live() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
@@ -623,6 +740,7 @@ mod tests {
                 Labels::new("Pulling images", "images pulled"),
                 async |step| {
                     step.output("pulling sonarr");
+                    tokio::time::sleep(FRAME).await;
                     Ok(term.contents())
                 },
             )
@@ -630,7 +748,7 @@ mod tests {
             .expect("step");
         insta::assert_snapshot!(seen, @r"
         sb demo
-        ├── ⠋ Pulling images                                          0s
+        ├── ⠙ Pulling images                                          0s
         │   pulling sonarr
         ");
         drop(run);
@@ -801,7 +919,7 @@ mod tests {
     /// The live area never shrinks while running: a long tail followed by a
     /// short step leaves no old line on screen (blank lines are drawn over
     /// it), and an empty output line is drawn as a blank one.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_live_area_never_shrinks() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
@@ -817,6 +935,7 @@ mod tests {
         let during = run
             .step(Labels::new("Short", "short done"), async |step| {
                 step.output("");
+                tokio::time::sleep(FRAME).await;
                 Ok(term.contents())
             })
             .await
@@ -825,7 +944,7 @@ mod tests {
         insta::assert_snapshot!(during, @r"
         sb demo
         ├── ✓ long done                                               0s
-        ├── ⠋ Short                                                   0s
+        ├── ⠙ Short                                                   0s
         │
         ");
         run.finish();
@@ -859,6 +978,71 @@ mod tests {
 
     fn plain_theme() -> theme::Theme {
         theme::Theme::resolve(&theme::Palette::default(), theme::Profile::Ascii)
+    }
+
+    /// Output text becomes lines: split at `\n`, only what follows the
+    /// last `\r` kept (progress output), escape codes stripped with colour
+    /// off.
+    #[test]
+    fn output_text_becomes_lines() {
+        assert_eq!(lines("a\nb", true), ["a", "b"]);
+        assert_eq!(lines("a\r\nb\r\n", true), ["a", "b"]);
+        assert_eq!(lines("a\n", true), ["a"]);
+        assert_eq!(lines("10%\r50%\r100%", true), ["100%"]);
+        assert_eq!(lines("10%\r50%\r", true), ["50%"]);
+        assert_eq!(lines("\x1b[32mok\x1b[0m", false), ["ok"]);
+        assert_eq!(lines("\x1b[32mok\x1b[0m", true), ["\x1b[32mok\x1b[0m"]);
+        assert_eq!(lines("", true), [""]);
+        // Tabs to the next 8-column stop; other controls and escapes that
+        // move the cursor are dropped, so widths are what the screen shows.
+        assert_eq!(lines("ab\tc", true), ["ab      c"]);
+        assert_eq!(lines("a\tb\tc", true), ["a       b       c"]);
+        assert_eq!(
+            lines("\x1b[31mab\x1b[0m\tc", true),
+            ["\x1b[31mab\x1b[0m      c"]
+        );
+        assert_eq!(lines("a\x07b\x1b[K\x1b[1A", true), ["ab"]);
+    }
+
+    /// Output reaches the live area on the next frame, not per line.
+    #[tokio::test(start_paused = true)]
+    async fn output_waits_for_the_next_frame() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let (before, after) = run
+            .step(Labels::new("Pulling", "pulled"), async |step| {
+                tokio::task::yield_now().await;
+                step.output("layer 1");
+                let before = term.contents();
+                // Past the next tick (a tick sharing this sleep's deadline may
+                // run after it).
+                tokio::time::sleep(FRAME * 2).await;
+                Ok((before, term.contents()))
+            })
+            .await
+            .expect("step");
+        assert!(
+            !before.contains("layer 1") && after.contains("layer 1"),
+            "{before}\n{after}"
+        );
+        run.finish();
+    }
+
+    /// Each ending's word in the run log.
+    #[test]
+    fn outcomes_name_every_ending() {
+        let names = [
+            (Status::Done, "done"),
+            (Status::Failed, "failed"),
+            (Status::Interrupted, "interrupted"),
+            (Status::Stopped, "stopped"),
+            (Status::SubStepFailed, "sub-step failed"),
+            (Status::Running, "running"),
+        ];
+        for (status, name) in names {
+            assert_eq!(outcome(status), name);
+        }
     }
 
     /// Plain end lines: ✓ with the done label and time, ✗ with why.

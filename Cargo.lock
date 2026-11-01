@@ -3252,6 +3252,8 @@ dependencies = [
  "tabled",
  "termtree 1.0.0",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ anyhow.workspace = true
 anstream.workspace = true
 indicatif.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 anstyle.workspace = true
 console.workspace = true
 tabled.workspace = true
@@ -24,6 +25,9 @@ termtree.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
 indicatif = { workspace = true, features = ["in_memory"] }
 tokio = { workspace = true, features = ["macros", "test-util"] }
 
