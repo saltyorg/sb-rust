@@ -60,7 +60,8 @@ running; whose output tail and which pointer a failure shows.
 **Verification:**
 - [x] `scripts/try-prototype.sh runner-spike` shows the new modes; the
       runner lookbook (artifact) replays them with the design options.
-- [ ] Manual: the maintainer tries it (Checkpoint A).
+- [x] Manual: the maintainer reviewed it through the lookbook (Checkpoint A,
+      2026-11-01; spec decision 7).
 
 **Dependencies:** None
 **Files:** `prototypes/proto-runner/{Cargo.toml,src/main.rs,FINDINGS.md}`, `scripts/try-prototype.sh`
@@ -142,8 +143,9 @@ it at Checkpoint A, reviewed before any runner code.
 
 ## Checkpoint A: Foundation
 - [ ] Tasks 1-4 committed; `scripts/check.sh full` passes.
-- [ ] The maintainer has seen the spike and the look of notices, settled
-      the concurrency questions, and approved the runner API.
+- [x] The maintainer has seen the spike and the look of notices and
+      settled the concurrency questions (2026-11-01, spec decision 7).
+- [ ] The maintainer has approved the runner API (Task 4).
 
 ## Task 5: Sequential runner: tree, labels, async steps, plain mode
 

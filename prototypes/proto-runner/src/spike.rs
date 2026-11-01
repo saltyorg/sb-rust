@@ -20,7 +20,7 @@
 //! main.rs's `glyphs` explains (termtree renders only finished trees).
 //!
 //! `SPIKE_STYLE` picks design options, comma-separated `key=value`:
-//! `notice=label|bullet|inline`, `tail=muted|faint|last`,
+//! `notice=label|bullet|branch|guide|child|inline`, `tail=muted|faint|last`,
 //! `spin=braille|dots|arc`, `conc=full|compact`.
 
 use std::collections::VecDeque;
@@ -55,8 +55,9 @@ pub(crate) enum Strategy {
 
 /// Bars in the pool: enough for the widest live area these shapes draw.
 const POOL: usize = 14;
-/// Output lines shown under a running step.
-const TAIL: usize = 3;
+/// Output lines kept per step: sb-go's 8 (`liveTaskOutputLines`), the
+/// reviewed proto-runner tail. How many show is capped in `tail_shown`.
+const TAIL: usize = 8;
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DOTS: [&str; 4] = ["∙∙∙", "●∙∙", "∙●∙", "∙∙●"];
 const ARC: [&str; 6] = ["◜", "◠", "◝", "◞", "◡", "◟"];
@@ -254,34 +255,7 @@ impl Tree {
                 _ => format!("{}{}", g.middle_skip, g.skip_indent),
             }
         );
-        let notice = style("notice", "label");
-        let mut lines: Vec<String> = node
-            .notices
-            .iter()
-            .filter(|(warn, _)| *warn || notice != "inline" || node.status != Status::Done)
-            .map(|(warn, text)| match (notice.as_str(), warn) {
-                ("label", true) => format!(
-                    "{}{} {text}",
-                    faint(&child_lead),
-                    palette(theme::WARN).apply_to("warning:")
-                ),
-                ("label", false) => format!(
-                    "{}{} {text}",
-                    faint(&child_lead),
-                    palette(theme::MUTED).apply_to("info:")
-                ),
-                (_, true) => format!(
-                    "{}{} {text}",
-                    faint(&child_lead),
-                    palette(theme::WARN).apply_to("!")
-                ),
-                (_, false) => format!(
-                    "{}{}",
-                    faint(&child_lead),
-                    palette(theme::MUTED).apply_to(format!("› {text}"))
-                ),
-            })
-            .collect();
+        let mut tail_lines = Vec::new();
         // The spec keeps an interrupted step's last lines too.
         if matches!(
             node.status,
@@ -296,16 +270,79 @@ impl Tree {
             let skip = if tail == "last" && node.status == Status::Running {
                 node.tail.len().saturating_sub(1)
             } else {
-                0
+                // Only running steps share the height; a finished one keeps its tail.
+                node.tail
+                    .len()
+                    .saturating_sub(if node.status == Status::Running {
+                        self.tail_shown()
+                    } else {
+                        TAIL
+                    })
             };
-            lines.extend(
+            tail_lines.extend(
                 node.tail
                     .iter()
                     .skip(skip)
                     .map(|l| format!("{}{}", faint(&child_lead), palette(colour).apply_to(l))),
             );
         }
+        // A notice closes the branch only when nothing follows it under
+        // the step: no output lines and no sub-steps.
+        let followed = !tail_lines.is_empty() || self.nodes.iter().any(|n| n.parent == Some(id));
+        let notice = style("notice", "bullet");
+        let shown: Vec<&(bool, String)> = node
+            .notices
+            .iter()
+            .filter(|(warn, _)| *warn || notice != "inline" || node.status != Status::Done)
+            .collect();
+        let count = shown.len();
+        let mut lines: Vec<String> = shown
+            .into_iter()
+            .enumerate()
+            .map(|(i, (warn, text))| {
+                let last = i + 1 == count && !followed;
+                // The mark: label words, or bullets (› info, orange ! warning).
+                let mark = match (notice.as_str(), warn) {
+                    ("label", true) => {
+                        format!("{} {text}", palette(theme::WARN).apply_to("warning:"))
+                    }
+                    ("label", false) => {
+                        format!("{} {text}", palette(theme::MUTED).apply_to("info:"))
+                    }
+                    (_, true) => format!("{} {text}", palette(theme::WARN).apply_to("!")),
+                    (_, false) => palette(theme::MUTED)
+                        .apply_to(format!("› {text}"))
+                        .to_string(),
+                };
+                // What ties the notice to its step.
+                let tie = match notice.as_str() {
+                    "branch" => if last { "╰╴" } else { "├╴" }.to_string(),
+                    "guide" => "┆ ".to_string(),
+                    "child" => if last { "╰── " } else { "├── " }.to_string(),
+                    _ => String::new(),
+                };
+                format!("{}{mark}", faint(format!("{child_lead}{tie}")))
+            })
+            .collect();
+        lines.extend(tail_lines);
         lines
+    }
+
+    /// Output lines shown per running step: up to 8, with all running
+    /// steps' tails together within half the terminal's height (the
+    /// reviewed proto-runner rule, shared between parallel steps).
+    fn tail_shown(&self) -> usize {
+        // The reviewed proto-runner rule: the terminal's height, else 24.
+        let rows = console::Term::stderr()
+            .size_checked()
+            .map_or(24, |(rows, _)| usize::from(rows));
+        let running = self
+            .nodes
+            .iter()
+            .filter(|n| n.status == Status::Running && !n.tail.is_empty())
+            .count()
+            .max(1);
+        (rows / 2 / running).clamp(1, TAIL)
     }
 
     /// Whether node `id` and everything under it are finished.
@@ -536,7 +573,7 @@ async fn scenario(
             lock(&tree).nodes[b]
                 .notices
                 .push((true, "unknown key: downloads.extra".into()));
-            work(&tree, b, 4, ms(250), false, &stop).await?;
+            work(&tree, b, 11, ms(180), false, &stop).await?;
             let c = step(&tree, None, "Checking credentials", "credentials valid");
             let cf = step(
                 &tree,
@@ -555,14 +592,14 @@ async fn scenario(
             let (t1, t2) = (tree.clone(), tree.clone());
             let (g1, g2) = (group.clone(), group.clone());
             let a1 = tokio::spawn(async move {
-                let r = work(&t1, cf, 9, ms(250), fail, &g1).await;
+                let r = work(&t1, cf, 14, ms(180), fail, &g1).await;
                 if r.is_err() {
                     g1.cancel();
                 }
                 r
             });
             let a2 = tokio::spawn(async move {
-                let r = work(&t2, dh, 5, ms(250), false, &g2).await;
+                let r = work(&t2, dh, 9, ms(180), false, &g2).await;
                 if r.is_err() {
                     g2.cancel();
                 }

@@ -267,7 +267,8 @@ async steps on a tokio runtime, a tree model in start order, frames drawn
 by a tokio interval (80 ms, skipping missed ticks), notices under steps,
 two ways to draw the live area (`--strategy single|pool`), sb's exit codes
 (1 after a failure, 130 after Ctrl-C). Design options for review through
-`SPIKE_STYLE` (`notice=label|bullet|inline`, `tail=muted|faint|last`,
+`SPIKE_STYLE` (`notice=label|bullet|branch|guide|child|inline`, bullet by
+default since Checkpoint A; `tail=muted|faint|last`,
 `spin=braille|dots|arc`, `conc=full|compact`); `SPIKE_CLEAR=off|keep|blank`
 picks how the live area is cleared. The `ECHOCTL` guard is on only when
 stderr is a terminal. Measured in `script` recordings at
@@ -351,3 +352,12 @@ a sibling failed".
   they complete (the parent's line printed early, without its result)?
 - The design options (notices, output, spinner, compact parallel steps):
   see the runner lookbook recordings.
+
+**Answered (maintainer, Checkpoint A, 2026-11-01; term-ui spec decision 7):**
+one bar for the live area, frames from a tokio task, a failing sibling
+stops the others ("stopped", parents "sub-step failed"), a subtree stays
+live until its parent ends, Ctrl-C marks running steps and their parents
+"interrupted" keeping their last lines, notices as bullets, the braille
+spinner, concurrent steps in full. Output: up to 8 muted lines per running
+step (the reviewed length; the spike had fallen back to 3), all running
+tails together within half the terminal's height.

@@ -64,21 +64,23 @@ appears only under CI, redirection or `-v`.
 - **Look (proto-runner, reviewed):** a root line, then one branch per step
   (`├──`, the last `╰──`), times and exit codes ending in one column. The
   running step is a branch with its running label, spinner and label in
-  the `Accent` role, and a live tail of its newest output lines under it
-  (sb-go's 8, capped at half the terminal height). Glyphs `Faint`; ✓ `Ok`
-  with the done label, ✗ `Problem` with the failure label, interrupted
-  `Warn`; elapsed `Muted`; output lines keep their own colours.
+  the `Accent` role, and a live tail of its newest output lines under it:
+  each running step's tail at most sb-go's 8 lines, all running tails
+  together within half the terminal height (decision 7). Glyphs `Faint`;
+  ✓ `Ok` with the done label, ✗ `Problem` with the failure label,
+  interrupted `Warn`; elapsed `Muted`; output lines in `Muted`, a line's
+  own colours kept where it has them.
 - **Labels:** each step has a running label and a done label
   ("Checking accounts.yml" → "accounts.yml checked"), and optionally a
   failure label, as proto-runner and sb-go's Running/Success/Failure.
-- **Notices:** a step can add info and warning lines (`Muted` and `Warn`
-  proposed; sb-go shows info in light blue), which stay under it in the
-  finished tree (sb-go's `Task.Info` and `Task.Warning`). Notices are new
-  to the reviewed look, so their look is shown to the maintainer with the
-  decision 2 spike.
+- **Notices:** a step can add info and warning lines, which stay under it
+  in the finished tree (sb-go's `Task.Info` and `Task.Warning`), drawn as
+  bullets: `›` for info in the muted colour, an orange `!` for warnings
+  (decision 7).
 - **Nesting and concurrency:** a step can run sub-steps (a deeper branch),
   and sibling steps can run at the same time. How this fits the no-blink
-  technique and the last-branch glyph: decisions 2 and 3.
+  technique and the last-branch glyph: decisions 2 and 3; what a failing
+  sibling and Ctrl-C do to the others: decision 7.
 - **Failure:** the failed step prints ✗, the failure label, the error
   (every line of a multi-line error, indented under it) and its last 10
   output lines, then the log pointer (`╰── full output: <file> (run <id>)`,
@@ -87,9 +89,9 @@ appears only under CI, redirection or `-v`.
   (cli-core spec: errors already shown exit quietly). The step's own log
   record carries the error and its causes, since the run record then only
   says `exit 1`.
-- **No blinking:** live bars are reused, not added and removed
-  (indicatif's `set_move_cursor`, as proto-runner measured: 0 line
-  erases), within decisions 2 and 3.
+- **No blinking:** one live bar holds the whole live area and is redrawn
+  in place (indicatif's `set_move_cursor`, as proto-runner and the spike
+  measured: 0 line erases while running), per amended decision 2.
 - **Verbose (`-v`) or stderr not a terminal** (`TERM=dumb`, CI,
   redirection): no live parts. The runner draws on stderr, so stderr
   decides (indicatif's target; sb-go checks stdout, so `sb validate-config
@@ -100,10 +102,11 @@ appears only under CI, redirection or `-v`.
   (`Verbose || !IsInteractive()`). Lines from concurrent steps are prefixed
   with their step's running label, so interleaved lines stay readable.
 - **Cancellation:** steps see cli-core's `Shutdown` (decision 4).
-  When a signal interrupted the run, the running step is marked
-  interrupted in the tree (`Warn`), keeping its last output lines, with no
-  pointer of its own; the cursor is shown again. cli-core's existing block
-  then prints "✗ interrupted" and the `details:` pointer once, unchanged.
+  When a signal interrupted the run, every running step and its parents
+  are marked interrupted in the tree (`Warn`), each keeping its last
+  output lines, with no pointer of its own (decision 7); the cursor is
+  shown again. cli-core's existing block then prints "✗ interrupted" and
+  the `details:` pointer once, unchanged.
   A command's own `Shutdown::request` is not an interruption.
 - **Terminal restore:** proto-runner switched off `ECHOCTL` while live so
   Ctrl-C doesn't echo `^C` into the tree, and restored it (rustix
@@ -114,8 +117,9 @@ appears only under CI, redirection or `-v`.
   (sb-go's `tty.go` guard), so a background sb doesn't stop on SIGTTOU.
   A second Ctrl-C restores the terminal through a hook cli-core runs
   before its immediate exit (decision 5).
-- **Resize:** known limit from proto-runner: the tail length is fixed at
-  the start, and shrinking the terminal mid-run can leave stale lines.
+- **Resize:** known limit from proto-runner: the live area's line count
+  never shrinks while running (decision 2), so shrinking the terminal
+  mid-run can leave stale lines.
 - **Run log:** every step's start, outcome and elapsed time, its notices,
   and its output lines go to the run log (capability map, decision 11), in the run's span
   (carried onto other threads for concurrent steps). Output, notices or
@@ -252,18 +256,20 @@ run.finish()
    of that profile's kind; `ascii` writes no SGR codes (as cli-core's
    plain styles).
 3. The runner matches the reviewed tree (snapshot), with running and done
-   labels, notices, and times in one column; the live tail is at most 8
-   lines and half the terminal height; nesting and concurrent steps as
-   decisions 2 and 3 decide; 0 line erases while running (PTY
+   labels, notices, and times in one column; each running step's tail at
+   most 8 lines, all running tails together within half the terminal
+   height; nesting and concurrent steps as decisions 2, 3 and 7 decide (a
+   failing sibling stops the others, marked "stopped", and its parents
+   read "sub-step failed"); 0 line erases while running (PTY
    measurement).
 4. A failed step shows ✗, its error in full, its last 10 lines and the log
    pointer, once; sb exits 1 without cli-core repeating the error.
 5. With `-v` or stderr not on a terminal, the runner prints start lines,
    output lines, notices and end lines; not on a terminal with `auto`, no
    escape codes.
-6. Ctrl-C during a step marks it interrupted in the tree, cli-core shows
-   "interrupted" and the pointer once, the cursor and `ECHOCTL` are
-   restored, and sb exits 130 (SIGTERM 143).
+6. Ctrl-C marks every running step and its parents interrupted in the
+   tree, cli-core shows "interrupted" and the pointer once, the cursor and
+   `ECHOCTL` are restored, and sb exits 130 (SIGTERM 143).
 7. A table matches the reviewed `docker ps` look (snapshot) and fits 120,
    70 and 50 columns; not on a terminal it keeps its natural width.
 8. Every runner step's start, outcome, elapsed time, notices and output
@@ -273,7 +279,7 @@ run.finish()
 10. (With their first user) a prompt with no terminal and no answer fails
     with a message naming the flag; a given answer is used without asking.
 
-## Decided (maintainer, 2026-10-30)
+## Decided (maintainer, 2026-10-30; decision 7 on 2026-11-01)
 
 1. **Prompts** are specified here and built with their first user
    (self-update or git's confirm).
@@ -283,12 +289,21 @@ run.finish()
    plan's first task is a spike measuring erases with a fixed pool of bars
    sized for the deepest nesting and widest concurrency used, shown to the
    maintainer with the look of notices, before the runner's API is fixed.
+   **Amended at Checkpoint A (maintainer, 2026-11-01), from the spike
+   (prototypes/proto-runner/FINDINGS.md):** one indicatif bar holds the
+   whole live area (no pool to size; equally flicker-free), and the area's
+   line count never shrinks while running (indicatif drops empty lines and
+   its cursor-moving redraw can't clear lines that fall off the bottom).
 3. **The last branch:** the newest finished step stays a live line until
    the next step starts or the run ends, then is printed with the right
-   glyph (one more live bar, part of the spike). With concurrent siblings
-   the tree keeps start order, so "newest" means the last started.
+   glyph (a line in the live area, per amended decision 2). With
+   concurrent siblings the tree keeps start order, so "newest" means the
+   last started.
 4. **Steps are async** and get cli-core's cancellation token; the runner
    draws on indicatif's own ticker (tokio, capability map decision 8).
+   **Amended at Checkpoint A:** a tokio task drives the frames (several
+   spinners share one live area, and indicatif's `{spinner}` is one per
+   bar); indicatif draws them.
 5. **Double Ctrl-C restores the terminal, then exits.** A second signal
    still exits without waiting for cleanup, but the terminal is put back
    first, as well-behaved CLIs do: cli-core handles the second signal on
@@ -300,3 +315,17 @@ run.finish()
 6. **The capability map's `docker` row** (start/stop/restart "via
    bollard"; sb-go uses `systemctl` and the Saltbox Docker controller's HTTP
    API) is corrected in the `docker` spec, with its dependencies.
+7. **Checkpoint A (maintainer, 2026-11-01), from the spike and the runner
+   lookbook:**
+   - When one of several concurrent steps fails, the others are stopped
+     (sb-go's errgroup) and shown ✗ "stopped"; parents of a failure read
+     "sub-step failed".
+   - A step with sub-steps keeps its whole subtree live until it ends.
+   - Ctrl-C marks every running step and its parents "interrupted", each
+     keeping its last output lines; on a failure only the failed step keeps
+     its output.
+   - Notices are bullets: `›` for info in the muted colour, an orange `!`
+     for warnings, indented under their step.
+   - Output under a running step: up to 8 lines in the muted colour, all
+     running steps' tails together within half the terminal's height.
+   - The braille spinner; concurrent steps shown in full while running.
