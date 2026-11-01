@@ -2642,6 +2642,8 @@ dependencies = [
  "signal-hook 0.4.5",
  "tempfile",
  "termtree 1.0.0",
+ "tokio",
+ "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

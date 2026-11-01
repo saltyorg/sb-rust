@@ -6,6 +6,7 @@
 //! FINDINGS.md.
 
 mod gallery;
+mod spike;
 
 use std::collections::VecDeque;
 use std::io::Read;
@@ -39,6 +40,12 @@ struct Cli {
     /// piped, e.g. by the Saltbox installer script) or never.
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto)]
     color: clap::ColorChoice,
+    /// term-ui spike: run a nested or concurrent tree of async steps.
+    #[arg(long, value_enum)]
+    spike: Option<spike::Shape>,
+    /// How the spike draws its live area.
+    #[arg(long, value_enum, default_value_t = spike::Strategy::Single)]
+    strategy: spike::Strategy,
 }
 
 struct Step {
@@ -59,6 +66,9 @@ fn sh(script: &str) -> Vec<String> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     apply_colour_choice(cli.color);
+    if let Some(shape) = cli.spike {
+        return spike::run(shape, cli.strategy, cli.fail);
+    }
     // Every run is logged, whatever its outcome (capability map, decision
     // 11). A log that can't be opened must not stop the run, so it is
     // reported once and the run goes on without it.

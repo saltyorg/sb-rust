@@ -255,3 +255,99 @@ pattern is followed.
   forwarding when the module is specified.
 - `exec` module: PTY spawn with a process-group kill. The sync reader thread
   is sufficient.
+
+## term-ui spike: nested and concurrent async steps (term-ui Task 1)
+
+**Question:** can the runner draw nested and concurrent async steps (tokio)
+without blinking, keeping the newest finished line live until its place in
+the tree is known (term-ui spec, decisions 2-4)?
+
+**Built:** `--spike seq|nested|concurrent|tour [--fail]` (src/spike.rs):
+async steps on a tokio runtime, a tree model in start order, frames drawn
+by a tokio interval (80 ms, skipping missed ticks), notices under steps,
+two ways to draw the live area (`--strategy single|pool`), sb's exit codes
+(1 after a failure, 130 after Ctrl-C). Design options for review through
+`SPIKE_STYLE` (`notice=label|bullet|inline`, `tail=muted|faint|last`,
+`spin=braille|dots|arc`, `conc=full|compact`); `SPIKE_CLEAR=off|keep|blank`
+picks how the live area is cleared. The `ECHOCTL` guard is on only when
+stderr is a terminal. Measured in `script` recordings at
+100x40 (sized with `stty`), final screens replayed in pyte 0.8.2; erases
+counted as `ESC[2K`; stale lines counted as spinner lines left on the final
+screen.
+
+**Measurements** (seq, nested, concurrent and tour shapes; endings: success,
+`--fail`, `kill -INT`, a Ctrl-C keypress typed into the pty):
+
+| Strategy | Clear | Erases per run | Stale lines | Exit codes |
+|---|---|---|---|---|
+| single | off | 4-9, all in the final clear | 0 (see the keypress note) | 0, 1, 130 |
+| pool (14 bars) | off | 105: each `finish_and_clear` redraws the rest | 0 (see the keypress note) | 0, 1, 130 |
+| pool (14 bars) | keep | 1 | 0 (see the keypress note) | 0, 1, 130 |
+
+**Result:**
+- **No blinking with either strategy:** the cursor-moving redraw
+  (`MultiProgress::set_move_cursor`) erases nothing while running. Against
+  indicatif's default redraw (349 erases in 3 s, measured earlier), every
+  erase left is in the final clear.
+- **A shrinking live area leaves old text behind** (2-6 stale lines per
+  run at first). indicatif pads each line to the terminal's width in its
+  cursor-moving redraw (draw_target.rs `draw_to_term`) but drops empty
+  lines (style.rs), so a blank line shrinks the area, and that redraw never
+  clears lines that fall off the bottom (`set_move_cursor`'s docs: the
+  number of lines must not change). Fix: never shrink the area while
+  running, a blank line being one space. After: 0 stale lines (the
+  library-reviewer found the cause).
+- **Single bar vs pool:** both are flicker-free and both clear cleanly (the
+  pool in one erase when its bars are cleared with the cursor-moving redraw
+  kept on). The single bar needs no count of bars sized in advance; a pool
+  cuts off a live area taller than its bars. Recommended: single.
+- **A Ctrl-C keypress showed one stale line in the replays: an artifact of
+  pyte, not of the runner.** With the `ECHOCTL` guard on, the terminal
+  still echoes the keypress as one raw `0x03` byte. indicatif leaves the
+  cursor at the last column of a full-width line, and pyte 0.8.2 draws the
+  unknown control byte, wrapping to the next row; real terminals ignore it.
+  Removing that byte from the recordings gives 0 stale lines in every
+  keypress run (found by the code reviewer). `NOFLSH` made no difference
+  and was dropped. To confirm in a real terminal in Task 8, as
+  proto-runner's tmux check did for its guard.
+- **The tree is right:** glyphs, rounded last branches, times in one
+  column, two levels of nesting, a failing step's output tail, a failing
+  sibling stopping the other (errgroup, through a child cancellation token,
+  marked "stopped"; a longer reason pushed the time out of its column),
+  parents of a failure marked "sub-step failed", Ctrl-C marking running steps and
+  their parents "interrupted" with their last lines kept.
+- **Placement rule that works:** a finished step is printed for good when
+  its subtree is settled and its place is known (a later sibling, its
+  parent finished, or the run's end); until then it stays live. A step with
+  sub-steps keeps its whole subtree live until it ends.
+- **Frames from tokio, not indicatif's ticker:** indicatif's `{spinner}`
+  is one per bar, and a single live area holds several spinners, so the
+  frames (and spinner glyphs) come from a tokio interval task. indicatif's
+  steady tick was not tested.
+
+**What the runner's API must allow:** async steps that start sub-steps
+(nested) and spawn concurrent siblings under one parent, each with
+running/done labels, output lines and notices (a notice must arrive before
+its step's outcome, or the runner holds the line until it does); a step's
+outcome (done, failed with a reason, stopped); the run's end; a shared
+cancellation token that tells "interrupted" (Ctrl-C) from "stopped because
+a sibling failed".
+
+**Questions for the maintainer (Checkpoint A):**
+- One bar holding the whole live area instead of decision 2's fixed pool
+  of bars (same no-blink result, nothing to size)?
+- Frames driven by a tokio task instead of decision 4's "indicatif's own
+  ticker" (needed for several spinners in one area)?
+- When one concurrent sibling fails, stop the others (sb-go's errgroup,
+  as the spike does) or let them finish?
+- Ctrl-C with two steps running: both, and their parent, marked
+  interrupted with their last lines (as the spike does)?
+- On a failure, which steps show their output tail and where the log
+  pointer goes: the spike shows the failed step's tail only, marks its
+  parents "sub-step failed" and a stopped sibling "stopped", both in the
+  warn colour, and has no pointer line yet.
+- A step with sub-steps keeps its whole subtree live until it ends; for a
+  long subtree, is that acceptable, or should finished sub-steps print as
+  they complete (the parent's line printed early, without its result)?
+- The design options (notices, output, spinner, compact parallel steps):
+  see the runner lookbook recordings.

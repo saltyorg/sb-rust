@@ -19,6 +19,7 @@ Usage: scripts/try-prototype.sh <prototype>
   markdown     Announcements renderer (full-screen view, then inline, then termimad)
   runner       Task runner with spinners, live output and a failing step
   runner-gallery  Task runner output in eight formats, to compare (static)
+  runner-spike    term-ui spike: nested and parallel async steps (Ctrl-C to try)
   inline       docker ps table in sb-go's layout (plain, NO_COLOR, piped)
   help         sb --help in six looks (Rust libraries, then sb-go's format copied)
   help-errors  parse errors: the 32 sb-go-style variants (H1 chosen), then sb-go's
@@ -150,6 +151,18 @@ case "${1:-}" in
     "$b" --fail 2>&1 | cat || true
     printf '\n\033[1m--- Run 4: piped with --color=always ---\033[0m\n'
     "$b" --fail --color=always 2>&1 | cat || true
+    ;;
+  runner-spike)
+    b="$(bin runner)"
+    intro "term-ui spike: async steps on tokio, nested and in parallel (simulated)" \
+      "1. three steps in a row with notices  2. a step with nested sub-steps" \
+      "3. two sub-steps in parallel  4. the same with one failing (the other is stopped)." \
+      "Press Ctrl-C during any run to see the interrupted ending."
+    for args in "seq" "nested" "concurrent" "concurrent --fail" "tour"; do
+      # shellcheck disable=SC2086
+      "$b" --spike $args --strategy single || true
+      echo
+    done
     ;;
   runner-gallery)
     b="$(bin runner)"

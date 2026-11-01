@@ -51,13 +51,15 @@ fails (sb-go's errgroup cancels them) and on Ctrl-C with two steps
 running; whose output tail and which pointer a failure shows.
 
 **Acceptance criteria:**
-- [ ] Erases measured for sequential, nested and concurrent runs with
-      success, failure and Ctrl-C endings, in a PTY; ticker behaviour noted.
-- [ ] The tree draws correctly (glyphs, last branch, times column) in all
+- [x] Erases measured for sequential, nested and concurrent runs with
+      success, failure and Ctrl-C endings, in a PTY; ticker behaviour noted
+      (not tested: frames come from a tokio task; raised as a question).
+- [x] The tree draws correctly (glyphs, last branch, times column) in all
       three; FINDINGS lists the API needs and the open questions.
 
 **Verification:**
-- [ ] `scripts/try-prototype.sh runner` shows the new modes.
+- [x] `scripts/try-prototype.sh runner-spike` shows the new modes; the
+      runner lookbook (artifact) replays them with the design options.
 - [ ] Manual: the maintainer tries it (Checkpoint A).
 
 **Dependencies:** None
