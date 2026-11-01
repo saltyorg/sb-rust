@@ -15,8 +15,12 @@ use crate::style::paint;
 /// The column times end in (proto-runner's reviewed layout), or the
 /// screen's width when that is narrower.
 const COLUMN: usize = 64;
-/// Output lines kept per step: sb-go's 8 (`liveTaskOutputLines`).
+/// Output lines shown under a running or interrupted step: sb-go's 8
+/// (`liveTaskOutputLines`).
 pub(crate) const TAIL: usize = 8;
+/// Output lines a failed step shows: its last 10 (the spec's failure block),
+/// so each step keeps that many.
+const KEPT: usize = 10;
 /// The braille spinner (decision 7).
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -53,6 +57,8 @@ struct Node {
     elapsed: Option<Duration>,
     tail: VecDeque<String>,
     notices: Vec<Notice>,
+    /// A failed step's error, line by line, as it may be shown.
+    error: Vec<String>,
 }
 
 /// What drawing needs besides the tree: the theme, whether colour is on,
@@ -79,6 +85,8 @@ pub(crate) struct Tree {
     /// Steps before this index are printed for good.
     printed: usize,
     ended: bool,
+    /// Where the run's log is (`RunLog::pointer`), for a failure's block.
+    pointer: Option<String>,
 }
 
 impl Tree {
@@ -92,6 +100,7 @@ impl Tree {
             elapsed: None,
             tail: VecDeque::new(),
             notices: Vec::new(),
+            error: Vec::new(),
         });
         self.nodes.len() - 1
     }
@@ -103,13 +112,28 @@ impl Tree {
         });
     }
 
-    /// One output line; only the newest [`TAIL`] are kept.
+    /// One output line; only the newest [`KEPT`] are kept.
     pub fn output(&mut self, id: usize, line: impl Into<String>) {
         let tail = &mut self.nodes[id].tail;
         tail.push_back(line.into());
-        if tail.len() > TAIL {
+        if tail.len() > KEPT {
             tail.pop_front();
         }
+    }
+
+    /// Where the run's log is, shown under a failed step.
+    pub fn set_pointer(&mut self, pointer: Option<String>) {
+        self.pointer = pointer;
+    }
+
+    /// Where the run's log is, if it is logged.
+    pub fn pointer(&self) -> Option<&str> {
+        self.pointer.as_deref()
+    }
+
+    /// A failed step's error, line by line, shown under it.
+    pub fn set_error(&mut self, id: usize, lines: Vec<String>) {
+        self.nodes[id].error = lines;
     }
 
     /// End step `id`, once: a later ending is ignored.
@@ -254,9 +278,27 @@ impl Tree {
             };
             format!("{lead}{mark}")
         }));
+        // The failure block: the error, every line, under the step. Cut to
+        // the screen only while live (a wrapped live line would break the
+        // redraw); printed for good, nothing of it is lost.
+        let fit = |text: &str, room: usize| {
+            if live {
+                cut(text, room)
+            } else {
+                text.to_string()
+            }
+        };
+        if node.status == Status::Failed {
+            lines.extend(
+                node.error
+                    .iter()
+                    .map(|line| format!("{lead}{}", d.paint(Role::Problem, &fit(line, room)))),
+            );
+        }
         let shown = match node.status {
             Status::Running => self.tail_shown(d.rows),
-            Status::Failed | Status::Interrupted => TAIL,
+            Status::Failed => KEPT,
+            Status::Interrupted => TAIL,
             _ => 0,
         };
         let skip = node.tail.len().saturating_sub(shown);
@@ -266,6 +308,16 @@ impl Tree {
                 .skip(skip)
                 .map(|line| format!("{lead}{}", d.paint(Role::Muted, &cut(line, room)))),
         );
+        // Then where the full output is, when the run is logged.
+        if let (Status::Failed, Some(pointer)) = (node.status, &self.pointer) {
+            let branch = format!("{}{}", GLYPHS.last_item, GLYPHS.item_indent);
+            let text = fit(&format!("full output: {pointer}"), room.saturating_sub(4));
+            lines.push(format!(
+                "{lead}{}{}",
+                d.paint(Role::Faint, &branch),
+                d.paint(Role::Muted, &text)
+            ));
+        }
         lines
     }
 
@@ -550,6 +602,90 @@ mod tests {
         d.width = 40;
         let live = tree.live(&d);
         assert_eq!(live[1], format!("│   {}…", "x".repeat(35)));
+    }
+
+    /// A failed step shows its error, every line, its last 10 output lines
+    /// and where the full output is (the failure block); without a log, no
+    /// pointer.
+    #[test]
+    fn a_failed_step_shows_the_failure_block() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        tree.set_pointer(Some("/var/log/sb/sb.log (run 1a2b)".into()));
+        let id = tree.add(
+            None,
+            Labels::new("Pulling", "pulled").failure("pull failed"),
+            t0,
+        );
+        for n in 0..12 {
+            tree.output(id, format!("line {n}"));
+        }
+        tree.set_error(id, vec!["pull failed: timeout".into(), "after 30s".into()]);
+        tree.finish(id, Status::Failed, secs(t0, 3));
+        tree.end();
+        let printed = tree.take_printable(&draw(&theme, secs(t0, 3))).join("\n");
+        insta::assert_snapshot!(printed, @r"
+        ╰── ✗ pull failed                                             3s
+            pull failed: timeout
+            after 30s
+            line 2
+            line 3
+            line 4
+            line 5
+            line 6
+            line 7
+            line 8
+            line 9
+            line 10
+            line 11
+            ╰── full output: /var/log/sb/sb.log (run 1a2b)
+        ");
+        // Live, a long pointer is cut to the screen; printed, it is whole.
+        let mut live = Tree::default();
+        live.set_pointer(Some(
+            "/a/very/long/path/to/the/log/sb.log (run 1a2b)".into(),
+        ));
+        let id = live.add(None, Labels::new("Pulling", "pulled"), t0);
+        live.set_error(id, vec!["timeout".into()]);
+        live.finish(id, Status::Failed, t0);
+        let mut narrow = draw(&theme, t0);
+        narrow.width = 30;
+        let pointer = live.live(&narrow).pop().unwrap_or_default();
+        assert!(
+            pointer.ends_with('…') && width(&pointer) <= 30,
+            "{pointer:?}"
+        );
+        live.end();
+        let printed = live.take_printable(&narrow);
+        assert!(
+            printed.iter().any(|l| l.ends_with("(run 1a2b)")),
+            "{printed:?}"
+        );
+        let mut again = Tree::default();
+        let id = again.add(None, Labels::new("Pulling", "pulled"), t0);
+        again.set_error(id, vec!["timeout".into()]);
+        again.finish(id, Status::Failed, t0);
+        again.end();
+        let printed = again.take_printable(&draw(&theme, t0));
+        assert!(
+            !printed.iter().any(|l| l.contains("full output")),
+            "{printed:?}"
+        );
+    }
+
+    /// An interrupted step keeps its last lines in the finished tree.
+    #[test]
+    fn an_interrupted_step_keeps_its_last_lines() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(None, Labels::new("Pulling", "pulled"), t0);
+        tree.output(id, "layer 3 of 7");
+        tree.finish(id, Status::Interrupted, t0);
+        tree.end();
+        let printed = tree.take_printable(&draw(&theme, t0));
+        assert_eq!(printed.last().map(String::as_str), Some("    layer 3 of 7"));
     }
 
     /// A step ends once: a later ending doesn't change it.

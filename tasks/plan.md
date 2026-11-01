@@ -70,7 +70,7 @@ restore hooks (decision 5).
 ### Phase 2: Runner
 - [x] Task 5: Sequential runner: tree, labels, async steps, plain mode
 - [x] Task 6: Output lines, live tail, notices and run-log records
-- [ ] Task 7: Failure block
+- [x] Task 7: Failure block
 - [ ] Task 8: Interruption and terminal restore
 - [ ] Task 9: Nested and concurrent steps
 

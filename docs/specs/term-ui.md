@@ -386,14 +386,21 @@ depend on term-ui):
 
 ```rust
 /// sb_cli_core::log: an error whose text must not be shown or logged.
-/// Wherever it sits in a chain, it and every cause below it show as a
-/// placeholder on screen (decision 8; errors have no `shown`) and are
-/// logged as withheld, by a runner step's record and by
-/// `RunLog::finished` alike. A boxed error, as cli-core takes any
-/// `std::error::Error` (only the binary and term-ui use anyhow).
-#[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-pub struct Sensitive(pub Box<dyn std::error::Error + Send + Sync>);
+/// It says nothing of what it holds: its Display and Debug are the
+/// placeholder and it has no cause, so wherever it sits in a chain (even
+/// behind a transparent wrapper, or in anyhow's `{:?}`) it and everything
+/// below it show as the placeholder on screen (decision 8; errors have no
+/// `shown`) and are logged as withheld, by a runner step's record and by
+/// `RunLog::finished` alike. Not `#[error(transparent)]`, which forwards
+/// Display and causes to the secret (found in Task 7's review). A boxed
+/// error, as cli-core takes any `std::error::Error`; reachable only
+/// through `inner()`. It carries text, not control flow.
+pub struct Sensitive(/* private: Box<dyn std::error::Error + Send + Sync> */);
+
+impl Sensitive {
+    pub fn new(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self;
+    pub fn inner(&self) -> &(dyn std::error::Error + Send + Sync + 'static);
+}
 ```
 
 **Step endings** (for [`Runner::step`], [`Step::step`] and each sibling).

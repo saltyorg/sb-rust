@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use sb_cli_core::cancel::{CancellationToken, Shutdown};
-use sb_cli_core::exit::{Exit, quiet_exit};
-use sb_cli_core::log::RunLog;
+use sb_cli_core::exit::{Exit, quiet_exit, shown_chain};
+use sb_cli_core::log::{RunLog, WITHHELD};
 use sb_cli_core::theme::{self, Role};
 
 use crate::style::paint;
@@ -239,8 +239,7 @@ impl Runner {
         log: Option<&RunLog>,
         options: Options,
     ) -> Runner {
-        // The failure block's pointer comes with Task 7.
-        let _ = log;
+        let pointer = log.map(RunLog::pointer);
         // The title goes out before the live area exists: a
         // `MultiProgress::println` before its bar first drew was lost
         // (seen on indicatif's in-memory terminal).
@@ -280,7 +279,11 @@ impl Runner {
         };
         let plain = matches!(mode, Mode::Plain);
         let shared = Arc::new(Mutex::new(State {
-            tree: Tree::default(),
+            tree: {
+                let mut tree = Tree::default();
+                tree.set_pointer(pointer);
+                tree
+            },
             mode,
             colour,
             terminal,
@@ -335,11 +338,25 @@ impl Runner {
             token: token.child_token(),
         };
         let result = body(&mut step).await;
-        let (status, outcome) = match result {
-            Ok(value) => (Status::Done, Ok(value)),
-            Err(err) => ending(&self.shutdown, &err),
+        let (status, outcome, failure) = match result {
+            Ok(value) => (Status::Done, Ok(value), None),
+            Err(err) => {
+                let (status, outcome) = ending(&self.shutdown, &err);
+                // A failure shows its error (a sensitive part withheld,
+                // decision 8); other endings don't.
+                let failure = (status == Status::Failed).then(|| {
+                    let chain = shown_chain(err.as_ref());
+                    let colour = lock(&self.shared).colour;
+                    let screen = chain.iter().flat_map(|line| lines(line, colour)).collect();
+                    Failure {
+                        screen,
+                        record: chain.join(": "),
+                    }
+                });
+                (status, outcome, failure)
+            }
         };
-        guard.close(status);
+        guard.close(status, failure);
         outcome
     }
 
@@ -364,6 +381,14 @@ impl Drop for Runner {
     }
 }
 
+/// A failed step's error: its lines for the screen (cleaned), and the
+/// chain as one string for the step's record (logged as is; the tracing
+/// subscriber escapes control characters).
+struct Failure {
+    screen: Vec<String>,
+    record: String,
+}
+
 /// A started step's ending, written once: by [`Ending::close`] when the
 /// body returned, or on drop when the step's future was dropped first
 /// ("stopped": `select!`, a timeout) or a panic unwound through it (✗).
@@ -376,10 +401,17 @@ struct Ending {
 }
 
 impl Ending {
-    fn close(&mut self, status: Status) {
+    /// Write the ending; `failure` is a failed body's error (none for a
+    /// panic, which shows only its own message).
+    fn close(&mut self, status: Status, failure: Option<Failure>) {
         self.open = false;
         {
             let mut state = lock(&self.shared);
+            let screen = failure
+                .as_ref()
+                .map(|f| f.screen.clone())
+                .unwrap_or_default();
+            state.tree.set_error(self.id, screen);
             state.tree.finish(self.id, status, Instant::now());
             // Plain lines go through anstream, so they still print while a
             // panic unwinds; the live area doesn't (see `State::end`).
@@ -388,6 +420,15 @@ impl Ending {
                 let elapsed = self.started.elapsed();
                 let line = end_line(theme::current(), &self.labels, status, elapsed, colour);
                 plain_line(&line);
+                // The failure block, plainly: the error, then the pointer.
+                if let Some(failure) = &failure {
+                    for line in &failure.screen {
+                        plain_line(&format!("  {line}"));
+                    }
+                    if let Some(pointer) = state.tree.pointer() {
+                        plain_line(&format!("  full output: {pointer}"));
+                    }
+                }
             }
             if !std::thread::panicking() {
                 state.redraw();
@@ -397,10 +438,16 @@ impl Ending {
         let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let step = self.labels.running.as_str();
         let outcome = outcome(status);
-        if status == Status::Done {
-            tracing::info!(step, outcome, elapsed_ms, "step finished");
-        } else {
-            tracing::warn!(step, outcome, elapsed_ms, "step finished");
+        match (status, failure) {
+            (Status::Done, _) => tracing::info!(step, outcome, elapsed_ms, "step finished"),
+            // The step's own record carries its error and causes, since the
+            // run record then only says `exit 1`; the sensitive part is
+            // already withheld (`shown_chain`).
+            (_, Some(failure)) => {
+                let error = failure.record;
+                tracing::warn!(step, outcome, elapsed_ms, error, "step finished");
+            }
+            (_, None) => tracing::warn!(step, outcome, elapsed_ms, "step finished"),
         }
     }
 }
@@ -413,7 +460,7 @@ impl Drop for Ending {
             } else {
                 Status::Stopped
             };
-            self.close(status);
+            self.close(status, None);
         }
     }
 }
@@ -593,10 +640,6 @@ fn clean(line: &str, colour: bool) -> String {
     }
     out
 }
-
-/// What the screen shows for sensitive text a command hasn't chosen to
-/// show (decision 8).
-const WITHHELD: &str = "(sensitive, withheld)";
 
 /// Who may see a line.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -947,6 +990,7 @@ mod tests {
             .run_until(async move {
                 tokio::task::spawn_local(async move {
                     let shutdown = Shutdown::new();
+                    // (A panic shows no failure block: see the plain test.)
                     let mut run = Runner::start("sb demo", &shutdown, None, options).await;
                     let _ = run
                         .step(
@@ -1130,6 +1174,32 @@ mod tests {
         assert_eq!(shown.on_screen(false, true), ["s"]);
         assert_eq!(shown.on_screen(false, false), [WITHHELD]);
         assert_eq!(Line::from("p").shown().on_screen(false, false), ["p"]);
+    }
+
+    /// A failure whose cause is sensitive shows the placeholder, never the
+    /// secret (decision 8), even behind anyhow's context.
+    #[tokio::test]
+    async fn a_sensitive_cause_is_withheld_in_the_failure_block() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let _ = run
+            .step(
+                Labels::new("Checking", "checked"),
+                async |_| -> anyhow::Result<()> {
+                    let secret =
+                        sb_cli_core::log::Sensitive::new(std::io::Error::other("token=hunter2"));
+                    Err(anyhow::Error::new(secret).context("the token was refused"))
+                },
+            )
+            .await;
+        run.finish();
+        let screen = term.contents();
+        assert!(!screen.contains("hunter2"), "{screen}");
+        assert!(
+            screen.contains("    the token was refused\n    (sensitive, withheld)"),
+            "{screen}"
+        );
     }
 
     /// Each ending's word in the run log.

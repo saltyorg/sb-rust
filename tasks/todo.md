@@ -227,13 +227,13 @@ the tree (or the tree carries the flag). Decision 8: an error marked
 `Sensitive` is withheld on screen too (a placeholder), not only in the log.
 
 **Acceptance criteria:**
-- [ ] The failure block as specified, multi-line errors included; no
+- [x] The failure block as specified, multi-line errors included; no
       pointer when the run isn't logged.
-- [ ] Exit 1 with the error shown once (PTY test on the demo).
-- [ ] Plain mode ends a failed step with ✗, the error and the pointer.
+- [x] Exit 1 with the error shown once (PTY test on the demo).
+- [x] Plain mode ends a failed step with ✗, the error and the pointer.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-term-ui`; `scripts/check.sh full`.
 
 **Dependencies:** Task 6
 **Files:** `crates/term-ui/{src/runner.rs,src/bin/demo.rs,tests/failure.rs}`

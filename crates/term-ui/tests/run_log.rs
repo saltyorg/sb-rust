@@ -76,6 +76,13 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
     let failing =
         async |_: &mut sb_term_ui::Step| -> anyhow::Result<()> { anyhow::bail!("timeout") };
     let _ = run.step(Labels::new("Pulling", "pulled"), failing).await;
+    let sensitive = async |_: &mut sb_term_ui::Step| -> anyhow::Result<()> {
+        let marked = sb_cli_core::log::Sensitive::new(std::io::Error::other(format!("t={secret}")));
+        Err(anyhow::Error::new(marked).context("the token was refused"))
+    };
+    let _ = run
+        .step(Labels::new("Checking token", "token valid"), sensitive)
+        .await;
     shutdown.request(0);
     let _ = run
         .step(Labels::new("Late", "late"), async |_| Ok(()))
@@ -120,5 +127,10 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
     assert!(line_with("outcome=\"done\"").contains(" INFO "));
     assert!(line_with("step=\"Pulling\" outcome=\"failed\"").contains(" WARN "));
     line_with("elapsed_ms=");
+    let refused = line_with("step=\"Checking token\" outcome=\"failed\"");
+    assert!(
+        refused.contains("error=\"the token was refused: (sensitive, withheld)\""),
+        "{refused}"
+    );
     line_with("step skipped (cancelled) step=\"Late\"");
 }

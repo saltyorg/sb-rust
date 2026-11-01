@@ -45,7 +45,8 @@ pub fn finish_run(
 }
 
 /// The error and its causes, outermost first. Why not `Error::sources()`:
-/// still unstable (`error_iter`).
+/// still unstable (`error_iter`); why not anyhow's `Chain`: cli-core takes
+/// any `std::error::Error` and doesn't depend on anyhow.
 fn chain<'a>(err: &'a (dyn Error + 'static)) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
     std::iter::successors(Some(err), |&e| e.source())
 }
@@ -108,8 +109,26 @@ pub fn error_block(
     log_pointer: Option<&str>,
     theme: &Theme,
 ) -> String {
-    let causes: Vec<String> = chain(err).skip(1).map(ToString::to_string).collect();
-    block(&err.to_string(), causes, log_pointer, theme)
+    let mut lines = shown_chain(err).into_iter();
+    let headline = lines.next().unwrap_or_default();
+    block(&headline, lines, log_pointer, theme)
+}
+
+/// The error and its causes as they may be shown, outermost first: a
+/// [`Sensitive`](crate::log::Sensitive) error and everything below it
+/// become one [`WITHHELD`](crate::log::WITHHELD) line (term-ui decision 8).
+/// Belt and braces: the marker's own Display is already the placeholder
+/// and it has no cause; stopping at it here keeps that true if it changes.
+pub fn shown_chain(err: &(dyn Error + 'static)) -> Vec<String> {
+    let mut lines = Vec::new();
+    for e in chain(err) {
+        if e.downcast_ref::<crate::log::Sensitive>().is_some() {
+            lines.push(crate::log::WITHHELD.to_string());
+            break;
+        }
+        lines.push(e.to_string());
+    }
+    lines
 }
 
 fn block(
@@ -418,5 +437,49 @@ mod tests {
         let (text, code) = report_text(&err, None);
         assert_eq!(text, "");
         assert_eq!(code, ExitCode::from(4));
+    }
+
+    /// A sensitive error, and everything below it, shows as the
+    /// placeholder; what is above it shows as usual (term-ui decision 8).
+    #[test]
+    fn a_sensitive_cause_is_withheld_on_screen() {
+        let secret = std::io::Error::other("secret hunter2-not-real");
+        let err = Failure {
+            message: "Cloudflare check failed",
+            cause: Some(Box::new(crate::log::Sensitive::new(secret))),
+        };
+        assert_eq!(
+            shown_chain(&err),
+            ["Cloudflare check failed", crate::log::WITHHELD]
+        );
+        let block = error_block(&err, None, &Theme::plain());
+        assert!(!block.contains("hunter2"), "{block}");
+        assert!(
+            block.contains("caused by: (sensitive, withheld)"),
+            "{block}"
+        );
+        let whole = crate::log::Sensitive::new(std::io::Error::other("hunter2"));
+        assert_eq!(shown_chain(&whole), [crate::log::WITHHELD]);
+    }
+
+    /// A transparent wrapper (a common thiserror pattern) forwards Display
+    /// and causes to what it wraps: the marker itself must say nothing, so
+    /// the secret can't leak through it, nor through Debug.
+    #[test]
+    fn a_wrapped_sensitive_error_still_says_nothing() {
+        #[derive(Debug, thiserror::Error)]
+        enum Credentials {
+            #[error(transparent)]
+            Secret(#[from] crate::log::Sensitive),
+        }
+        let secret = std::io::Error::other("secret hunter2-not-real");
+        let err = Credentials::from(crate::log::Sensitive::new(secret));
+        assert_eq!(shown_chain(&err), [crate::log::WITHHELD]);
+        let block = error_block(&err, None, &Theme::plain());
+        assert!(!block.contains("hunter2"), "{block}");
+        assert!(!format!("{err:?}").contains("hunter2"), "{err:?}");
+        let marker = crate::log::Sensitive::new(std::io::Error::other("hunter2"));
+        assert_eq!(format!("{marker:?}"), "Sensitive((sensitive, withheld))");
+        assert!(!err.to_string().contains("hunter2"));
     }
 }

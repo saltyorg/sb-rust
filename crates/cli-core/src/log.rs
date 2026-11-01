@@ -37,6 +37,48 @@ pub fn log_dir(override_dir: Option<OsString>) -> PathBuf {
     override_dir.map_or_else(|| PathBuf::from("/var/log/sb"), PathBuf::from)
 }
 
+/// What sensitive text shows as, on screen and in the log (term-ui
+/// decision 8).
+pub const WITHHELD: &str = "(sensitive, withheld)";
+
+/// An error whose text must not be shown or logged (credentials, tokens).
+/// It says nothing of what it holds: its Display and Debug are
+/// [`WITHHELD`] and it has no cause, so wherever it sits in a chain, even
+/// behind a transparent wrapper or in anyhow's `{:?}`, it and everything
+/// below it show and log as the placeholder; what is above it shows as
+/// usual. Why not `#[error(transparent)]`: it forwards Display and causes
+/// to the secret, and a transparent wrapper around it then skips the
+/// marker. The held error is reachable only through [`Sensitive::inner`].
+/// It carries text, not control flow: an `Exit` inside it isn't a quiet
+/// exit.
+pub struct Sensitive(Box<dyn Error + Send + Sync>);
+
+impl Sensitive {
+    /// Mark `err` as sensitive.
+    pub fn new(err: impl Into<Box<dyn Error + Send + Sync>>) -> Self {
+        Self(err.into())
+    }
+
+    /// The held error, for code that must act on it (never to show or log).
+    pub fn inner(&self) -> &(dyn Error + Send + Sync + 'static) {
+        self.0.as_ref()
+    }
+}
+
+impl std::fmt::Display for Sensitive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(WITHHELD)
+    }
+}
+
+impl std::fmt::Debug for Sensitive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Sensitive({WITHHELD})")
+    }
+}
+
+impl Error for Sensitive {}
+
 /// One run's log: its id and where it is written.
 pub struct RunLog {
     id: String,
@@ -127,7 +169,9 @@ impl RunLog {
 
     /// How the run ended (see [`outcome`]). A failure's error goes in as
     /// tracing's error field, which prints its causes too
-    /// (`error=... error.sources=[...]`).
+    /// (`error=... error.sources=[...]`); a [`Sensitive`] error in the chain
+    /// writes only the placeholder, as its Display is that and it has no
+    /// cause.
     pub fn finished(&self, outcome: &str, error: Option<&(dyn Error + 'static)>) {
         match error {
             Some(error) => tracing::info!(outcome, error, "run finished"),
@@ -471,4 +515,47 @@ mod tests {
         );
         assert!(text.contains("error.sources=[no sudo]"), "{text}");
     }
+
+    /// An error marked sensitive never reaches the log: the record says it
+    /// was withheld (term-ui decision 8; CONSTRAINTS.md, logging).
+    #[test]
+    fn a_sensitive_error_is_withheld_from_the_log() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (log, subscriber) = RunLog::open(dir.path()).expect("open");
+        let secret = std::io::Error::other("secret hunter2-not-real");
+        let err = Sensitive::new(secret);
+        tracing::subscriber::with_default(subscriber, || {
+            let _run = log.enter();
+            log.finished("failed", Some(&err));
+        });
+        let text = log_text(dir.path());
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(text.contains(WITHHELD), "{text}");
+        assert!(text.contains("outcome=\"failed\""), "{text}");
+    }
+
+    /// An outer error with a sensitive cause logs the outer part and the
+    /// placeholder.
+    #[test]
+    fn a_sensitive_cause_is_withheld_from_the_log() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (log, subscriber) = RunLog::open(dir.path()).expect("open");
+        let secret = Sensitive::new(std::io::Error::other("secret hunter2-not-real"));
+        let err = Outer(secret);
+        tracing::subscriber::with_default(subscriber, || {
+            let _run = log.enter();
+            log.finished("failed", Some(&err));
+        });
+        let text = log_text(dir.path());
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(
+            text.contains("error=check failed error.sources=[(sensitive, withheld)]"),
+            "{text}"
+        );
+    }
+
+    /// An error with one cause, for the test above.
+    #[derive(Debug, thiserror::Error)]
+    #[error("check failed")]
+    struct Outer(#[source] Sensitive);
 }
