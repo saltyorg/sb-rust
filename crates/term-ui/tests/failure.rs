@@ -96,17 +96,7 @@ fn no_pointer_without_a_log() {
 #[test]
 fn a_failure_on_a_terminal_exits_1_with_the_block() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let program = demo().display().to_string();
-    let out = Command::new("script")
-        .args([
-            "-qec",
-            &format!("stty cols 100 rows 30; exec '{program}' --fail"),
-            "/dev/null",
-        ])
-        .env("TERM", "xterm-256color")
-        .env("SB_LOG_DIR", dir.path())
-        .output()
-        .expect("run script");
+    let out = on_a_terminal("--fail", dir.path());
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("the token lacks Zone:Read"), "{text:?}");
@@ -132,4 +122,92 @@ fn a_panic_shows_no_failure_block() {
     assert!(text.contains("the demo was asked to panic"), "{text}");
     assert!(text.contains("✗ Checking credentials "), "{text}");
     assert!(!text.contains("full output"), "{text}");
+}
+
+/// The demo's made-up token's prefix (`DEMO_TOKEN` in the demo).
+const TOKEN: &str = "cf-demo";
+
+/// The demo with `args` on a 100x30 pseudo-terminal, logging under
+/// `log_dir`; what the terminal received.
+fn on_a_terminal(args: &str, log_dir: &Path) -> Output {
+    let program = demo().display().to_string();
+    Command::new("script")
+        .args([
+            "-qec",
+            &format!("stty cols 100 rows 30; exec '{program}' {args}"),
+            "/dev/null",
+        ])
+        .env("TERM", "xterm-256color")
+        .env("SB_LOG_DIR", log_dir)
+        .output()
+        .expect("run script")
+}
+
+/// A secret in a failure (validation quoting a malformed token read from
+/// settings.yml) never shows: the output tail and the failure block show
+/// the placeholder, piped and on a terminal, and the log withholds it too
+/// (decision 8).
+#[test]
+fn a_secret_in_a_failure_never_shows() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let out = Command::new(demo())
+        .arg("--sensitive")
+        .env("SB_LOG_DIR", dir.path())
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("run demo");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(!text.contains(TOKEN), "{text}");
+    assert!(
+        text.contains("\nChecking Cloudflare token: (sensitive, withheld)\n"),
+        "{text}"
+    );
+    let block =
+        "  settings.yml: cloudflare.token is not a valid API token\n  (sensitive, withheld)\n";
+    assert!(text.contains(block), "{text}");
+    let terminal = on_a_terminal("--sensitive", dir.path());
+    assert_eq!(terminal.status.code(), Some(1), "{terminal:?}");
+    let screen = console::strip_ansi_codes(&String::from_utf8_lossy(&terminal.stdout)).into_owned();
+    assert!(!screen.contains(TOKEN), "{screen:?}");
+    // The final block: the placeholder is the next text after the error's
+    // own line (box glyphs and spaces aside).
+    let error = "settings.yml: cloudflare.token is not a valid API token";
+    let after = screen.rsplit(error).next().unwrap_or_default();
+    let next = after.trim_start_matches(|c: char| c.is_whitespace() || "│├╰─".contains(c));
+    assert!(next.starts_with("(sensitive, withheld)"), "{screen:?}");
+    // Neither run's log has it.
+    let log = std::fs::read_to_string(dir.path().join("sb.log")).expect("log");
+    assert!(!log.contains(TOKEN), "{log}");
+    assert!(log.contains("output withheld (sensitive)"), "{log}");
+    let record = format!("error=\"{error}: (sensitive, withheld)\"");
+    assert!(log.contains(&record), "{log}");
+}
+
+/// A secret a command shows its user on purpose (`Line::sensitive(..)
+/// .shown()`, as one creating a token would): on a terminal the user sees
+/// it; piped (CI, the journal, a file) it is the placeholder, as stderr
+/// there is a log; and it is never logged (decision 8).
+#[test]
+fn a_shown_secret_shows_only_on_a_terminal() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let terminal = on_a_terminal("--new-token", dir.path());
+    assert_eq!(terminal.status.code(), Some(0), "{terminal:?}");
+    let screen = String::from_utf8_lossy(&terminal.stdout);
+    assert!(
+        screen.contains(&format!("new token: {TOKEN}")),
+        "{screen:?}"
+    );
+    let piped = Command::new(demo())
+        .arg("--new-token")
+        .env("SB_LOG_DIR", dir.path())
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("run demo");
+    assert_eq!(piped.status.code(), Some(0), "{piped:?}");
+    let text = String::from_utf8_lossy(&piped.stderr);
+    assert!(!text.contains(TOKEN), "{text}");
+    assert!(text.contains("\n› (sensitive, withheld)\n"), "{text}");
+    let log = std::fs::read_to_string(dir.path().join("sb.log")).expect("log");
+    assert!(!log.contains(TOKEN), "{log}");
 }

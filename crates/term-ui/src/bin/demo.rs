@@ -1,7 +1,8 @@
 //! The runner on stderr, for trying it and for the PTY tests: `cargo run
 //! -p sb-term-ui --bin demo [-- FLAGS]`, the flags being test hooks:
-//! `--fail`, `--sensitive`, `--panic`, `--interrupt`,
-//! `--interrupt-twice`, `--terminate` and `--leave-foreground`. A binary
+//! `--fail`, `--sensitive` (wins over `--fail`), `--new-token`, `--panic`,
+//! `--interrupt`, `--interrupt-twice`, `--terminate` and
+//! `--leave-foreground`. A binary
 //! rather than an example because `cargo test --tests` (the coverage run)
 //! builds bins for the integration tests but not examples; sb's build
 //! never includes it. It ends through cli-core's `finish_run`,
@@ -13,7 +14,7 @@ use std::time::Duration;
 use rustix::process::{Signal, getpid, kill_process, setpgid};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{ExitCode, finish_run};
-use sb_cli_core::log::{RunLog, outcome};
+use sb_cli_core::log::{RunLog, Sensitive, outcome};
 use sb_cli_core::theme::{self, Palette, Profile, Theme};
 use sb_term_ui::{Labels, Line, Options, Runner, Step};
 
@@ -38,6 +39,10 @@ async fn work(step: &mut Step, lines: usize, pace: Duration) -> anyhow::Result<(
     }
     Ok(())
 }
+
+/// A made-up token, for `--sensitive` and `--new-token` (the tests look for
+/// its `cf-demo` prefix).
+const DEMO_TOKEN: &str = "cf-demo-NOT-A-REAL-TOKEN";
 
 /// Whether the demo was started with `flag`.
 fn arg(flag: &str) -> bool {
@@ -88,9 +93,12 @@ async fn demo(
         async |step| {
             work(step, 4, pace).await?;
             step.info("3 accounts");
-            if sensitive {
-                step.output(Line::sensitive("demo-secret-withheld"));
-                step.info(Line::sensitive("demo-secret-shown").shown());
+            // `--new-token`: a step whose job is to show a secret to its
+            // user (as a command creating an API token would): shown on a
+            // terminal only, never logged (decision 8).
+            if arg("--new-token") {
+                let token = format!("new token: {DEMO_TOKEN}");
+                step.info(Line::sensitive(token).shown());
             }
             Ok(())
         },
@@ -118,7 +126,19 @@ async fn demo(
             let cloudflare = Labels::new("Checking Cloudflare token", "Cloudflare token valid")
                 .failure("Cloudflare token invalid");
             group.spawn(cloudflare, move |mut step| async move {
-                work(&mut step, if fail { 2 } else { 6 }, pace).await?;
+                work(&mut step, if fail || sensitive { 2 } else { 6 }, pace).await?;
+                // `--sensitive`: the token read from settings.yml is malformed,
+                // and validation names the bad value, which is the secret: the
+                // line showing what was read and the error's quote of it are
+                // both marked sensitive, so the token never shows or logs.
+                if sensitive {
+                    step.output(Line::sensitive(format!("cloudflare.token: {DEMO_TOKEN}")));
+                    let quoted = std::io::Error::other(format!("got {DEMO_TOKEN:?}"));
+                    let why = anyhow::Error::new(Sensitive::new(quoted));
+                    return Err(
+                        why.context("settings.yml: cloudflare.token is not a valid API token")
+                    );
+                }
                 if fail {
                     let why = anyhow::anyhow!(
                         "HTTP 403 from the Cloudflare API\nthe token lacks Zone:Read"
