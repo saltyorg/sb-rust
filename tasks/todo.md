@@ -135,7 +135,7 @@ it at Checkpoint A, reviewed before any runner code.
 - [x] The API covers every runner behaviour in the spec, including nested
       and concurrent steps, failure and interruption.
 - [x] Reviewed (three rounds).
-- [ ] Approved by the maintainer at Checkpoint A.
+- [x] Approved by the maintainer at Checkpoint A (2026-11-01).
 
 **Verification:**
 - [x] Review.
@@ -145,10 +145,11 @@ it at Checkpoint A, reviewed before any runner code.
 **Scope:** S
 
 ## Checkpoint A: Foundation
-- [ ] Tasks 1-4 committed; `scripts/check.sh full` passes.
+- [x] Tasks 1-4 committed; `scripts/check.sh full` passes.
 - [x] The maintainer has seen the spike and the look of notices and
       settled the concurrency questions (2026-11-01, spec decision 7).
-- [ ] The maintainer has approved the runner API (Task 4).
+- [x] The maintainer has approved the runner API (Task 4), anstyle styling,
+      the new dependencies and the current-thread runtime (2026-11-01).
 
 ## Task 5: Sequential runner: tree, labels, async steps, plain mode
 
@@ -160,8 +161,9 @@ terminal) prints start and end lines. The last branch's `╰` comes from
 termtree's `GlyphPalette` with a custom last item (checked at source,
 cited; no ratatui). Snapshots are taken from proto-runner's reviewed
 output at a fixed width, so the new code is checked against the reviewed
-look. Live frames tested with indicatif's in-memory terminal if it fits
-(checked at source), else in a PTY. A `demo` example shows the runner; it
+look. Snapshots draw on indicatif's `InMemoryTerm` (`Target::InMemory`,
+behind term-ui's `testing` feature); the no-erase and ending checks run in
+a PTY. A `demo` example shows the runner; it
 logs only under `SB_LOG_DIR` in a temporary directory, never /var/log/sb.
 
 **Acceptance criteria:**
@@ -176,7 +178,7 @@ logs only under `SB_LOG_DIR` in a temporary directory, never /var/log/sb.
       checked).
 
 **Dependencies:** Checkpoint A
-**Files:** `crates/term-ui/{Cargo.toml,src/runner.rs,examples/demo.rs,tests/runner.rs}`, `Cargo.toml` (indicatif, console, termtree, tokio minimal features, insta dev-dependency)
+**Files:** `crates/term-ui/{Cargo.toml,src/runner.rs,examples/demo.rs,tests/runner.rs}`, `Cargo.toml` (indicatif, console, termtree, tokio minimal features, anyhow, tracing; insta and indicatif's `in_memory` through the `testing` feature, dev only)
 **Scope:** M
 
 ## Task 6: Output lines, live tail, notices and run-log records

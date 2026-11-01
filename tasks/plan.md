@@ -1,7 +1,8 @@
 # Implementation Plan: `term-ui` (approved 2026-11-01)
 
 Spec: [docs/specs/term-ui.md](../docs/specs/term-ui.md) (approved
-2026-10-30, decisions 1-6). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
+2026-10-30, decisions 1-6; Checkpoint A 2026-11-01, decision 7).
+Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
 Earlier plans: [tasks/cli-core/](cli-core/plan.md) (done; its open items
 are carried in [tasks/todo.md](todo.md)), [tasks/prototypes/](prototypes/plan.md).
 
@@ -26,8 +27,9 @@ restore hooks (decision 5).
   semantics at Checkpoint A, before any runner code.
 - **Async steps on the command's runtime (decision 4).** Steps are `async`
   closures given cli-core's cancellation token. sb builds its tokio runtime
-  after argument parsing (help and version never pay for it); the runner
-  uses the current runtime and draws on indicatif's own ticker thread.
+  after argument parsing (help and version never pay for it): tokio's
+  current-thread runtime, and a tokio task drives the frames (amended
+  decision 4; approved at Checkpoint A).
 - **Rendering only.** term-ui starts no processes; output lines are handed
   in (exec, later, will feed child output).
 - **Errors through cli-core.** A failed step returns a quiet `Exit(1)`
@@ -49,6 +51,8 @@ restore hooks (decision 5).
   (decision 4's async steps; the workspace has only tokio-util) and
   **insta** (snapshot tests, named in the spec's testing strategy and the
   capability map).
+  Approved at Checkpoint A (2026-11-01): anyhow and tracing in term-ui,
+  and indicatif's `in_memory` feature for tests only.
 
 ## Task list
 
@@ -56,10 +60,10 @@ restore hooks (decision 5).
 - [x] Task 1: No-blink spike for nested and concurrent steps
 - [x] Task 2: `sb-term-ui` crate, colour hook-up and theme adapters
 - [x] Task 3: cli-core runs restore hooks before the second-signal exit
-- [ ] Task 4: Runner API design
+- [x] Task 4: Runner API design
 
 ### Checkpoint A: Foundation
-- [ ] Spike, notices' look, concurrency semantics and runner API reviewed
+- [x] Spike, notices' look, concurrency semantics and runner API reviewed
       by the maintainer
 
 ### Phase 2: Runner

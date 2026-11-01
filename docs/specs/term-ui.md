@@ -1,4 +1,4 @@
-# Spec: `term-ui` (approved 2026-10-30)
+# Spec: `term-ui` (approved 2026-10-30; Checkpoint A 2026-11-01)
 
 Module of the approved capability map (`term-ui`: inline UI only; depends
 on `cli-core`). The first vertical slice is `sb version` (done) →
@@ -52,14 +52,15 @@ appears only under CI, redirection or `-v`.
   for stdout and for stderr (`AutoStream::choice`, as proto-inline did) and
   sets both of console's switches from them every time, so console's own
   `auto` rules can't disagree; indicatif and dialoguer follow console.
-  Under `ascii` both switches are off (proposed in Task 2, below).
+  Under `ascii` both switches are off (Task 2, approved at Checkpoint A, below).
 - **Adapters** from cli-core's resolved theme: a role's colour (resolved
   for the profile by anstyle-lossy) becomes styled text and a tabled
   colour, both rendered by anstyle. No colour maths in term-ui. Under
   `ascii` or with colour off the adapters give no styling.
-- **Proposed in Task 2, awaiting the maintainer** (with the anstyle
-  rendering above, console's switches off under `ascii`, and the stack
-  table's console row and `src/style.rs` line): not console's `Style`,
+- **Chosen in Task 2, approved at Checkpoint A (maintainer,
+  2026-11-01)** (with the anstyle rendering above, console's switches off
+  under `ascii`, and the stack table's console row and `src/style.rs`
+  line): not console's `Style`,
   because console writes a bright 16-colour as `38;5;8`-`15`, a
   256-colour code, which criterion 2 forbids under `ansi`; indicatif and
   console draw styled text as is, measuring it with escape codes
@@ -183,12 +184,12 @@ Pinned in the workspace when added, each confirmed at source in its task:
 | Async steps (decision 4) | `tokio`, minimal features (approved with the plan, 2026-11-01) | proto-logs, proto-runner |
 | Snapshot tests (dev) | `insta` (approved with the plan, 2026-11-01) | capability map |
 | Colour, theme, `Shutdown`, exit, run log | `sb-cli-core` | cli-core |
-| Step errors (proposed with the runner API, Task 4) | `anyhow` (already the binary's) | cli-core's binary |
-| Step records in the run's span (proposed, Task 4) | `tracing` with `Instrument` (already cli-core's) | cli-core |
-| In-memory screen for snapshots (proposed, Task 4; dev only, term-ui's `testing` feature) | indicatif's `in_memory` feature (pulls `vt100`) | indicatif docs |
+| Step errors (runner API, approved 2026-11-01) | `anyhow` (already the binary's) | cli-core's binary |
+| Step records in the run's span (approved 2026-11-01) | `tracing` with `Instrument` (already cli-core's) | cli-core |
+| In-memory screen for snapshots (approved 2026-11-01; dev only, term-ui's `testing` feature) | indicatif's `in_memory` feature (pulls `vt100`) | indicatif docs |
 
-The binary will grow past the 5% ratchet; the plan writes that ADR, as
-ADR-004 did.
+The binary is expected to grow past the 5% ratchet; the ADR comes with
+the commit that crosses it (Task 11 records it), as ADR-004 did.
 
 ## Commands
 
@@ -217,7 +218,7 @@ modules may depend on it).
 As cli-core: library-first, every pattern cited with its documentation URL,
 no `#[allow]`, output through `Write`, never `print!`.
 
-### Runner API (Task 4; proposed, awaiting the maintainer at Checkpoint A)
+### Runner API (Task 4; approved at Checkpoint A, maintainer, 2026-11-01)
 
 Signatures as they would be written; bodies come with Tasks 5-9.
 
@@ -442,9 +443,9 @@ Choices behind it:
   sequential steps borrow freely; concurrent siblings are tokio tasks and
   own their data.
 - **Runtime: tokio's current-thread runtime** (the stack table's minimal
-  features). Bodies do their blocking work through `spawn_blocking`, or
-  the spinner stops while they run; config and docker reads are async or
-  short. The runner starts no runtime and no processes.
+  features; approved at Checkpoint A). Bodies do their blocking work
+  through `spawn_blocking`, or the spinner stops while they run; config
+  and docker reads are async or short. The runner starts no runtime and no processes.
 - **Sensitive text is marked where it is made** (`Line::sensitive`,
   `Sensitive` in an error chain), so logging can't forget a case.
 - **Not here yet:** a child process's output and exit code in the times
@@ -456,9 +457,9 @@ Choices behind it:
 - Rendering tests at a fixed width with colour on and off: tree glyphs,
   the one time column, notices, the failure block, table layout at 120, 70
   and 50 columns, the rule between rows. References are insta snapshots
-  taken from the reviewed prototypes' output. indicatif's in-memory
-  terminal is checked at source as a way to test live frames without a
-  PTY.
+  taken from the reviewed prototypes' output, drawn on indicatif's
+  in-memory terminal (`Target::InMemory`, term-ui's `testing` feature);
+  PTY tests measure erases and endings.
 - Guard tests per profile: every SGR colour code term-ui writes is 24-bit
   under `truecolor`, 256-colour under `ansi256`, 16-colour under `ansi`,
   none under `ascii` or with colour off.
@@ -516,7 +517,7 @@ Choices behind it:
 10. (With their first user) a prompt with no terminal and no answer fails
     with a message naming the flag; a given answer is used without asking.
 
-## Decided (maintainer, 2026-10-30; decision 7 on 2026-11-01)
+## Decided (maintainer, 2026-10-30; amendments and decision 7 on 2026-11-01)
 
 1. **Prompts** are specified here and built with their first user
    (self-update or git's confirm).
@@ -540,7 +541,8 @@ Choices behind it:
    draws on indicatif's own ticker (tokio, capability map decision 8).
    **Amended at Checkpoint A:** a tokio task drives the frames (several
    spinners share one live area, and indicatif's `{spinner}` is one per
-   bar); indicatif draws them.
+   bar); indicatif draws them. The runtime is tokio's current-thread one,
+   with blocking work in steps through `spawn_blocking`.
 5. **Double Ctrl-C restores the terminal, then exits.** A second signal
    still exits without waiting for cleanup, but the terminal is put back
    first, as well-behaved CLIs do: cli-core handles the second signal on
