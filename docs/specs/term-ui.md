@@ -165,6 +165,8 @@ Pinned in the workspace when added, each confirmed at source in its task:
 | Tables | `tabled` 0.22 (`ansi` feature) | proto-inline |
 | Prompts | `dialoguer` 0.12 (console 0.16) | proto-inline |
 | `ECHOCTL` | `rustix` `termios` feature (already a dependency) | proto-runner |
+| Async steps (decision 4) | `tokio`, minimal features (approved with the plan, 2026-11-01) | proto-logs, proto-runner |
+| Snapshot tests (dev) | `insta` (approved with the plan, 2026-11-01) | capability map |
 | Colour, theme, `Shutdown`, exit, run log | `sb-cli-core` | cli-core |
 
 The binary will grow past the 5% ratchet; the plan writes that ADR, as

@@ -13,7 +13,7 @@
 //! hand since `{:<w$}` counts chars and clap's width helper is private.
 //!
 //! Differences from fang: clap trims the blank line fang prints before and
-//! after help; the about isn't wrapped at 120 columns yet (tasks/todo.md);
+//! after help; the about isn't wrapped at 120 columns yet (tasks/cli-core/todo.md);
 //! `sb help help` is clap's own, since clap adds that subcommand after
 //! `apply` runs. clap settings fang's format has no place for (short-only
 //! help texts, `hide_default_value`, `last` positionals, visible aliases)

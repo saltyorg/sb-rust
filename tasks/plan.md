@@ -1,96 +1,100 @@
-# Implementation Plan: `cli-core`
+# Implementation Plan: `term-ui` (approved 2026-11-01)
 
-Spec: [docs/specs/cli-core.md](../docs/specs/cli-core.md) (approved
-2026-10-29, revised 2026-10-30). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
-Decisions: [ADR-001](../docs/decisions/ADR-001-unstable-feature-pins.md),
-[ADR-002](../docs/decisions/ADR-002-colour-fallback.md),
-[ADR-003](../docs/decisions/ADR-003-cli-core-ratchet-update.md),
-[ADR-004](../docs/decisions/ADR-004-yaml-stack-binary-size.md). The prototype plan,
-with its open items, is in [tasks/prototypes/](prototypes/plan.md).
+Spec: [docs/specs/term-ui.md](../docs/specs/term-ui.md) (approved
+2026-10-30, decisions 1-6). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
+Earlier plans: [tasks/cli-core/](cli-core/plan.md) (done; its open items
+are carried in [tasks/todo.md](todo.md)), [tasks/prototypes/](prototypes/plan.md).
 
 ## Overview
 
-Build the frame every sb-rust command runs in: the `crates/` workspace, the
-`sb` binary with `sb version`, and in `sb-cli-core` the startup steps (host
-check hook, argument parsing, root relaunch only for commands that need it,
-logging, colour, theme), cancellation, exit codes and error presentation.
-When this is done, the first vertical slice's other commands
-(`sb docker ps`, `sb validate-config`) need no startup code of their own.
+Build `sb-term-ui`, the inline output layer the first slice draws through:
+the colour hook-up and theme adapters for console and tabled, the task
+runner (proto-runner's reviewed tree, with labels, notices, nesting,
+concurrent steps, plain mode, the failure block, run-log records), and
+tables (proto-inline's `docker ps` look). Prompts are specified but built
+with their first user (decision 1). cli-core gains the second-signal
+restore hooks (decision 5).
 
 ## Architecture decisions
 
-- **Crates:** `crates/cli-core` (package `sb-cli-core`, a library) and
-  `crates/sb` (package `sb`, the binary). One crate per map module, named
-  `sb-<module-id>`. cargo-deny's `bans.deny` + `wrappers` enforce the map's
-  edges from the first crate (CONSTRAINTS.md, Architecture).
-- **Host check without a dependency cycle:** `cli-core` takes the host
-  support check as a startup hook. A small `crates/host` (package
-  `sb-host`) is started now with only the OS release check (it needs
-  neither `exec` nor `term-ui` yet); the rest of `host` comes in its own
-  module spec. `sb` passes `sb_host::check_support` to `cli-core`.
-- **Root decision per command:** each command declares whether it needs
-  root; the default is yes. `--help`, `version` and completion don't.
-  Every cli-core command is unprivileged, so the relaunch is tested through
-  its decision and exec functions here and end to end with the first root
-  command (`sb docker ps`).
-- **Command tree grows with the modules:** cli-core adds only `version`
-  and the hidden `help`. The contract test checks that every sb-rust
-  command and flag exists in sb-go with the same name; full equality is the
-  `ops` module's done criterion.
-- **Palette in cli-core:** the role-named palette (from proto-theme) moves
-  into `sb-cli-core::theme`, resolved once at startup for the colour
-  profile (ADR-002) and the theme config. Screens and inline output take
-  colours from it.
-- **Libraries are confirmed at source in their task** (CLAUDE.md, library
-  first) and cited in code: clap, colorchoice-clap, tokio and
-  `tokio-util`'s `CancellationToken`, tracing + tracing-subscriber +
-  tracing-appender, rustix, `toml` + serde, the YAML parser proto-yaml
-  chose for the inventory, anstyle-lossy, ratatui-core's `anstyle`
-  feature. Each new crate passes cargo-deny before it lands.
-- **Testability:** each startup step is a function taking its inputs
-  (environment, paths, euid) rather than reading globals, so unit tests
-  need no root, no real `/var/log/sb` and no real `/opt/sb`. Tests that
-  need root run only when `SB_TEST_ROOT=1`.
+- **Spike, then API, then code (decisions 2-4).** Nesting and concurrent
+  steps need more live bars than proto-runner's fixed pair, and its
+  no-blink fix relied on a constant bar count. Task 1 measures a fixed pool
+  sized for the deepest nesting and widest concurrency, with decision 3's
+  newest-line-live. Task 4 designs the runner API from those findings. The
+  maintainer reviews both, the look of notices and the concurrency
+  semantics at Checkpoint A, before any runner code.
+- **Async steps on the command's runtime (decision 4).** Steps are `async`
+  closures given cli-core's cancellation token. sb builds its tokio runtime
+  after argument parsing (help and version never pay for it); the runner
+  uses the current runtime and draws on indicatif's own ticker thread.
+- **Rendering only.** term-ui starts no processes; output lines are handed
+  in (exec, later, will feed child output).
+- **Errors through cli-core.** A failed step returns a quiet `Exit(1)`
+  after the runner has shown it; an interruption is marked in the tree and
+  cli-core's block shows "interrupted" once.
+- **A demo instead of a command.** Until `docker` and `config` exist, the
+  runner and tables are shown through `cargo run -p sb-term-ui --example
+  demo`. It ends through the same cli-core functions sb's `main` uses, so
+  PTY tests on it cover the "shown once" criteria; it logs only under a
+  temporary `SB_LOG_DIR`.
+- **Binary size follows use.** Link-time optimisation leaves out what sb
+  doesn't call, so term-ui's real cost appears with its first command
+  (`docker ps`). Size is measured in every task; an ADR comes in the commit
+  that crosses the tolerance.
+- **Dependencies, confirmed at source in their task and cited:** indicatif
+  0.18.6, console 0.16, termtree, tabled 0.22, rustix `termios` (all in the
+  spec's table), plus two the spec's table doesn't list, which need the
+  maintainer's approval ("ask first"), given with the plan: **tokio**
+  (decision 4's async steps; the workspace has only tokio-util) and
+  **insta** (snapshot tests, named in the spec's testing strategy and the
+  capability map).
 
 ## Task list
 
-Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
-
 ### Phase 1: Foundation
-- [x] Task 1: Workspace, `sb` binary and `sb version`
-- [x] Task 2: Exit codes and the error block
-- [x] Task 3: Cancellation on SIGINT and SIGTERM
+- [ ] Task 1: No-blink spike for nested and concurrent steps
+- [ ] Task 2: `sb-term-ui` crate, colour hook-up and theme adapters
+- [ ] Task 3: cli-core runs restore hooks before the second-signal exit
+- [ ] Task 4: Runner API design
 
 ### Checkpoint A: Foundation
+- [ ] Spike, notices' look, concurrency semantics and runner API reviewed
+      by the maintainer
 
-### Phase 2: Startup
-- [x] Task 4: Host support check hook (`sb-host`)
-- [x] Task 5: Root relaunch for commands that need it
-- [x] Task 6: Run log on the host
+### Phase 2: Runner
+- [ ] Task 5: Sequential runner: tree, labels, async steps, plain mode
+- [ ] Task 6: Output lines, live tail, notices and run-log records
+- [ ] Task 7: Failure block
+- [ ] Task 8: Interruption and terminal restore
+- [ ] Task 9: Nested and concurrent steps
 
-### Checkpoint B: Startup
+### Checkpoint B: Runner
+- [ ] The maintainer has tried the runner demo
 
-### Phase 3: Colour and theme
-- [x] Task 7: `--color` on every output path, including help
-- [x] Task 8: Colour profiles (ADR-002)
-- [x] Task 9: Theme config
+### Phase 3: Tables and close
+- [ ] Task 10: Tables in the reviewed `docker ps` look
+- [ ] Task 11: Success criteria and measurements
+- [ ] Task 12: 16-colour OK green (maintainer decision)
 
 ### Checkpoint C: Complete
-- [x] Task 10: Startup wiring, contract test and success criteria
-- [x] Task 11: Help in sb-go's format (maintainer, Checkpoint C)
-- [x] Task 12: Parse errors in sb-go's layout
+- [ ] All tasks done; spec success criteria met or carried by name;
+      `scripts/check.sh full`
+
+Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| The 10 ms startup budget breaks once tokio, config and YAML reads land | Med | Measure from Task 1 (`check.sh task`); read the inventory and theme only when needed for the run, and build the tokio runtime after argument parsing |
-| Signal tests interfere with the test harness | Med | One signal test per integration-test file (each is its own process); PTY smoke test with rexpect against the built binary |
-| Root relaunch can't run end to end in cli-core (no root command yet) | Low | Unit-test the decision and exec construction with a fake `sudo` on `PATH`; end-to-end with `sb docker ps` |
-| Exact pins (ADR-001) clash with other crates' requirements | Low | cargo-deny duplicates warn; resolve when it happens, recorded in the pin's commit |
-| `/opt/sb` and `/var/log/sb` touched on this host by tests | High | Paths are injected; default-path tests run only with `SB_TEST_ROOT=1`, never by default (spec boundaries) |
+| A fixed bar pool can't hide nesting and concurrency without blinking | High | Task 1 measures it first; fallbacks in its findings (cap the concurrency shown, or accept erases only when the tree's shape changes) for the maintainer to choose |
+| indicatif's ticker and tokio interact badly | Med | Task 1 runs steps on tokio with indicatif's steady tick and notes the behaviour |
+| Terminal restore races on double Ctrl-C | Med | Task 3's hooks on cli-core's signals thread, with a deadline; PTY tests in Task 8 |
+| Concurrency semantics (a failing sibling, Ctrl-C with two running) left implicit | Med | Task 1 lists them; settled at Checkpoint A; tested in Task 9 |
+| Secrets in step output reach the run log | High | Task 6's sensitive marking and the CONSTRAINTS logging test |
+| Binary growth hidden until the first command | Low | Measured each task; ADR with the first runner command (Task 11 records it) |
 
 ## Open questions
 
-None. Library choices are confirmed in their tasks; anything that changes
-the spec goes back to the maintainer first.
+None. tokio and insta were approved with the plan (maintainer,
+2026-11-01).

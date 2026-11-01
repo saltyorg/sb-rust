@@ -1,339 +1,338 @@
-# Tasks: `cli-core`
+# term-ui tasks
 
-Plan: [tasks/plan.md](plan.md). Spec: [docs/specs/cli-core.md](../docs/specs/cli-core.md).
-Prototype tasks and their open items: [tasks/prototypes/todo.md](prototypes/todo.md).
+Plan: [tasks/plan.md](plan.md). Spec: [docs/specs/term-ui.md](../docs/specs/term-ui.md).
+Every task: TDD where it changes behaviour, a code review (and the
+library-reviewer for terminal code) before committing, `scripts/check.sh
+full` before committing, Library-check and Review lines in each commit,
+and the binary size measured: a change past the 5% ratchet tolerance
+carries its ADR in the same commit (CONSTRAINTS.md).
 
-Every task follows CONSTRAINTS.md: test first, `scripts/check.sh fast`
-after edits, `task` before handing back, `full` before committing, a
-`Library-check:` line in each commit changing Rust, and the library-reviewer
-agent before committing terminal, process or I/O code.
+Carried forward (open items owned by later work):
+- From cli-core:
+  - Task 5: the root relaunch path in `main` first runs end to end with
+    the first root-needing command (`sb docker ps`); two of its mutants
+    are equivalent until then.
+  - Task 3: the rexpect PTY smoke test on the built binary moves to the
+    first long-running command.
+  - Criterion 1: tab completion comes with the completion module.
+  - Criterion 4: the terminal restore is checked in Task 8 here.
+  - The exec module removes `SB_RELAUNCHED` from child processes
+    (`env_remove`), or an unprivileged sb started by one would refuse to
+    relaunch (root.rs module docs).
+  - sb-go exports COLORTERM for child processes (truecolor, 256color,
+    unset for ansi and ascii); decide when the exec module starts children.
+  - Check sudoers(5) for `--preserve-env` names outside env_keep; record
+    the answer in docs/platform-notes/.
+  - The first command that takes argument values (`install -e`) adds an
+    end-to-end test that a real secret never reaches the run log.
+  - Help: fang's 120-column wrap of long abouts comes with the first ported
+    command whose long text needs it (cli-core Task 11).
+  - Under `SB_COLOR_PROFILE=ansi` the palette's OK green maps to the same
+    light grey as muted text (help's flags, H1's fixes); see Task 12.
+- From term-ui's spec: prompts (criterion 10) are built with their first
+  user, self-update or git's confirm (decision 1).
+- From this plan: the first runner command builds sb's tokio runtime after
+  argument parsing (help and version never pay for it) and keeps the
+  startup budget; the demo builds its own.
+- From the prototypes: the install script (tasks/prototypes/todo.md,
+  "Later") depends on cli-core and the runner, so this plan unblocks it.
 
-## Task 1: Workspace, `sb` binary and `sb version`
+## Task 1: No-blink spike for nested and concurrent steps
 
-**Description:** Add `crates/*` to the workspace with `sb-cli-core`
-(library) and `sb` (binary). `sb version` prints
-`Saltbox CLI version: <v> (commit: <c>)`; `--json` prints
-`{"version","git_commit","uv_version"}`, as sb-go. Version from the package,
-commit and uv version set at build time (approach confirmed at source).
-Add the cargo-deny `wrappers` entry for `sb-cli-core` and record the first
-measurements in CONSTRAINTS.md's "Measured" table.
+**Description:** Extend proto-runner (evidence only) to run async steps on
+tokio with nested sub-steps (two levels) and two concurrent siblings,
+drawing through one fixed pool of indicatif bars sized for that shape, with
+the newest finished line kept live until the next step or the end (decision
+3), and info/warning notices under steps. Measure line erases as
+proto-runner did, and how indicatif's ticker thread behaves next to tokio.
+FINDINGS records the results, what the runner's API must allow, and the
+questions for Checkpoint A: what happens to the other siblings when one
+fails (sb-go's errgroup cancels them) and on Ctrl-C with two steps
+running; whose output tail and which pointer a failure shows.
 
 **Acceptance criteria:**
-- [x] `sb version` and `sb version --json` match sb-go's output shape.
-- [x] `scripts/check.sh full` runs every step (none skipped) and passes.
-- [x] Startup, binary size and project coverage are recorded in CONSTRAINTS.md.
+- [ ] Erases measured for sequential, nested and concurrent runs with
+      success, failure and Ctrl-C endings, in a PTY; ticker behaviour noted.
+- [ ] The tree draws correctly (glyphs, last branch, times column) in all
+      three; FINDINGS lists the API needs and the open questions.
 
 **Verification:**
-- [x] `cargo test -p sb -p sb-cli-core`; CLI tests with `assert_cmd`.
-- [x] `scripts/check.sh full`.
+- [ ] `scripts/try-prototype.sh runner` shows the new modes.
+- [ ] Manual: the maintainer tries it (Checkpoint A).
 
 **Dependencies:** None
-**Files:** `Cargo.toml`, `crates/cli-core/{Cargo.toml,src/lib.rs,src/build_info.rs}`, `crates/sb/{Cargo.toml,src/main.rs,tests/version.rs}`, `deny.toml`, `CONSTRAINTS.md`
+**Files:** `prototypes/proto-runner/{Cargo.toml,src/main.rs,FINDINGS.md}`, `scripts/try-prototype.sh`
 **Scope:** M
 
-## Task 2: Exit codes and the error block
+## Task 2: `sb-term-ui` crate, colour hook-up and theme adapters
 
-**Description:** One exit-code policy (0, 1, a requested code, a passed-
-through child code; 130/143 come in Task 3) and one error block on stderr:
-`✗` and the message, each cause on its own line, then the log pointer when
-there is one. Errors already shown exit quietly.
+**Description:** Create `crates/term-ui` (`sb-term-ui`) on `sb-cli-core`.
+One function, called from sb's `main` right after the real parse's colour
+choice is written (`cli.color.write_global()`), sets console's stdout and
+stderr switches from anstream's resolved
+choice per stream. Adapters turn a theme role into a console `Style` and a
+tabled colour; nothing under `ascii` or with colour off. deny.toml: the
+cli-core entry becomes `wrappers = ["sb", "sb-term-ui"]` and a new
+`{ crate = "sb-term-ui", wrappers = ["sb"] }` entry is added.
 
 **Acceptance criteria:**
-- [x] An error prints one block with its causes and exits 1.
-- [x] A command can request its own exit code; a quiet error prints nothing more.
-- [x] A parse error keeps clap's message and exit code.
+- [ ] console's switches follow the choice per stream (unit tests with an
+      injected choice: nothing in sb draws through console yet); help exits
+      before the hook-up, and for `version` it only sets the two switches;
+      the `sb --help` and `sb version` medians hold.
+- [ ] Per-profile guard tests on the adapters (24-bit, 256, 16, none).
+- [ ] `cargo deny` passes with the new architecture entries.
 
 **Verification:**
-- [x] Unit tests for formatting and the code mapping; CLI test for a parse error.
-- [x] `scripts/check.sh task`.
+- [ ] `cargo test -p sb-term-ui`; `scripts/check.sh full` (size measured).
+
+**Dependencies:** None
+**Files:** `crates/term-ui/{Cargo.toml,src/lib.rs,src/style.rs}`, `crates/sb/{Cargo.toml,src/main.rs}`, `deny.toml`, `Cargo.toml`
+**Scope:** M
+
+## Task 3: cli-core runs restore hooks before the second-signal exit
+
+**Description:** Decision 5 (cli-core spec amended): the second SIGINT or
+SIGTERM is handled on cli-core's signals thread, which runs registered
+restore hooks, then exits 130 or 143, instead of exiting in the handler.
+Hooks can be removed (a runner that has ended mustn't restore stale
+terminal state later), and a panicking hook can't stop the exit; a hook
+that blocks would, so hooks stay tiny (write a few bytes, one `tcsetattr`)
+and Ctrl-\ stays the documented hard escape.
+
+**Acceptance criteria:**
+- [ ] A registered hook runs once before the second-signal exit, code
+      unchanged; a removed hook doesn't run; a panicking hook doesn't stop
+      the exit.
+- [ ] Without hooks behaviour is as today; the signal tests still pass.
+
+**Verification:**
+- [ ] cli-core's signal tests plus new ones (re-exec child);
+      `scripts/check.sh full`.
+
+**Dependencies:** None
+**Files:** `crates/cli-core/src/cancel.rs`, `crates/cli-core/tests/signals.rs`
+**Scope:** S
+
+## Task 4: Runner API design
+
+**Description:** Design the `Runner`/`Step` API from Task 1's findings
+with `agent-skills:api-and-interface-design`, as the spec asks: async
+steps given the token, labels, notices, output lines and sensitive output,
+nested and concurrent steps with the semantics settled at Checkpoint A,
+the verbose option (sb has no `-v` yet; commands pass it), and runtime
+ownership (the command's tokio runtime, built after argument parsing; the
+runner uses the current one). Written as rustdoc'd signatures in the
+spec's code-style section, marked "proposed" until the maintainer approves
+it at Checkpoint A, reviewed before any runner code.
+
+**Acceptance criteria:**
+- [ ] The API covers every runner behaviour in the spec, including nested
+      and concurrent steps, failure and interruption.
+- [ ] Reviewed; approved by the maintainer at Checkpoint A.
+
+**Verification:**
+- [ ] Review.
 
 **Dependencies:** Task 1
-**Files:** `crates/cli-core/src/{exit.rs,error.rs,lib.rs}`, `crates/sb/src/main.rs`, `crates/sb/tests/errors.rs`
+**Files:** `docs/specs/term-ui.md`
 **Scope:** S
-
-## Task 3: Cancellation on SIGINT and SIGTERM
-
-**Description:** A `CancellationToken` reaches every command. The first
-SIGINT or SIGTERM cancels it; a second exits at once with the same code
-(130 or 143). Cancellation shows "interrupted", not an error chain. A
-command can request shutdown with its own code.
-
-**Acceptance criteria:**
-- [x] SIGINT exits 130 and SIGTERM 143; a second signal exits immediately.
-- [x] An interrupted run shows "interrupted". Terminal restore moves to the
-      first command that changes the terminal (term-ui), where it can be
-      tested.
-- [x] Commands receive the shutdown handle (and its token).
-
-**Verification:**
-- [x] Signal tests against a real process (the test binary re-runs itself
-      as the child). The rexpect PTY smoke test on the built binary moves to
-      the first long-running command: `sb version` ends before a signal can
-      reach it.
-- [x] `scripts/check.sh task`; library-reviewer on the diff.
-
-**Dependencies:** Task 2
-**Files:** `crates/cli-core/src/{cancel.rs,lib.rs}`, `crates/cli-core/tests/{sigint.rs,sigterm.rs}`, `crates/sb/tests/interrupt_pty.rs`
-**Scope:** M
 
 ## Checkpoint A: Foundation
-- [x] `scripts/check.sh full` passes; `sb version` works on this host.
-- [x] Review with the maintainer before Phase 2. (2026-10-30)
+- [ ] Tasks 1-4 committed; `scripts/check.sh full` passes.
+- [ ] The maintainer has seen the spike and the look of notices, settled
+      the concurrency questions, and approved the runner API.
 
-## Task 4: Host support check hook (`sb-host`)
+## Task 5: Sequential runner: tree, labels, async steps, plain mode
 
-**Description:** `cli-core` runs a startup hook before anything else.
-Start `crates/host` with only the OS release check: supported Ubuntu
-releases as sb-go's `layout` lists them, `/etc/os-release` parsed with a
-library if one fits (confirmed at source), sb-go's messages. Every command
-is blocked on an unsupported host, `--help` and `version` included.
+**Description:** The runner core on Task 4's API: a root line, async steps
+with the token, running/done/failure labels, finished lines printed for
+good with the newest kept live (decision 3), times in one column, spinner
+and label in the accent colour; plain mode (verbose option, or stderr not a
+terminal) prints start and end lines. The last branch's `╰` comes from
+termtree's `GlyphPalette` with a custom last item (checked at source,
+cited; no ratatui). Snapshots are taken from proto-runner's reviewed
+output at a fixed width, so the new code is checked against the reviewed
+look. Live frames tested with indicatif's in-memory terminal if it fits
+(checked at source), else in a PTY. A `demo` example shows the runner; it
+logs only under `SB_LOG_DIR` in a temporary directory, never /var/log/sb.
 
 **Acceptance criteria:**
-- [x] On a supported host every command runs; otherwise each exits 1 with sb-go's message.
-- [x] The decision is tested with injected values (sysinfo reads the real
-      `/etc/os-release` at a fixed path); cargo-deny `wrappers` allow only
-      `sb` to use `sb-host` for now. The cli-core startup function that
-      takes the check as a hook lands with the wiring in Task 10.
+- [ ] Rendering matches the reviewed tree snapshots, times aligned; 0 line
+      erases while running.
+- [ ] Plain mode prints start and end lines; no escape codes when not a
+      terminal with `auto`; per-profile guard tests on runner output.
 
 **Verification:**
-- [x] Unit tests for supported, unsupported, not Ubuntu and missing version.
-- [x] `scripts/check.sh full`.
+- [ ] `cargo test -p sb-term-ui`; `cargo run -p sb-term-ui --example demo`;
+      `scripts/check.sh full` (size measured; the demo's lines and diff-cover
+      checked).
 
-**Dependencies:** Task 2
-**Files:** `crates/host/{Cargo.toml,src/lib.rs}`, `crates/cli-core/src/startup.rs`, `crates/sb/src/main.rs`, `deny.toml`
+**Dependencies:** Checkpoint A
+**Files:** `crates/term-ui/{Cargo.toml,src/runner.rs,examples/demo.rs,tests/runner.rs}`, `Cargo.toml` (indicatif, console, termtree, tokio minimal features, insta dev-dependency)
 **Scope:** M
 
-## Task 5: Root relaunch for commands that need it
+## Task 6: Output lines, live tail, notices and run-log records
 
-**Description:** Each command declares `needs_root` in an exhaustive match
-(no default). When needed and not root, exec
-`sudo --preserve-env=VISUAL,EDITOR,SB_RELAUNCHED <exe> <args>`; otherwise
-run as the user. sudo's own prompt handles passwords; a relaunched run that
-still isn't root stops instead of looping.
-
-**Acceptance criteria:**
-- [x] `version`, `--help` and completion never relaunch; a root-needing command does, with the same arguments.
-- [x] Exec replaces the process: the exit code and signals belong to the real run.
-- [x] A relaunched run that still isn't root stops instead of looping
-      (found when a mutant looped through the real sudo; see the commit).
-
-**Verification:**
-- [x] Unit tests for the decision and `ensure_root` (injected exec); the
-      real exec tested with a fake `sudo` on `PATH` (records arguments and
-      the marker, exits 7); `version` and `--help` run as `nobody` with a
-      fake sudo that would show as exit 42.
-- [x] `scripts/check.sh task`; library-reviewer on the diff.
-- Open until the first root-needing command (`sb docker ps`): two
-  mutants are equivalent today (`needs_root` always false, effective UID
-  always 0) and the relaunch path in `main` runs end to end only then.
-
-**Dependencies:** Task 4
-**Files:** `crates/cli-core/src/{root.rs,command.rs}`, `crates/cli-core/tests/relaunch.rs`
-**Scope:** S
-
-## Task 6: Run log on the host
-
-**Description:** Root runs log to `/var/log/sb` (directory injectable for
-tests), rotated daily by tracing-appender (`max_log_files`; since
-2026-10-30 one `sb.log` rotated by Saltbox's logrotate), with a run
-span carrying the run id, the command's name (never its arguments), each
-event plain text, and the outcome at the end. Unprivileged runs don't log. A log that can't be
-opened is a warning. The error block's pointer names the log and run id.
+**Description:** Steps stream output lines: a live tail of the newest 8,
+capped at half the terminal height, keeping each line's colours; notices
+(info, warning) stay under their step. Plain mode prints output lines
+(escape codes stripped with colour off) and notices. Every step's start,
+outcome, elapsed time, notices and output lines go to the run log in the
+run's span; output a step marks sensitive is never logged.
 
 **Acceptance criteria:**
-- [x] A root run writes its start, events and outcome; failures point at the log.
-- [x] Argument values are never logged (they can carry secrets): the
-      record holds the command's name; an end-to-end test checks an
-      argument never reaches the log (CONSTRAINTS.md, Logging).
-- [x] Unwritable log directory: a warning and the run continues.
+- [ ] Tail length and cap; notices' look as settled at Checkpoint A; plain
+      mode includes output lines and notices.
+- [ ] Run log holds each step's record; a known secret marked sensitive is
+      absent (CONSTRAINTS.md logging rule).
 
 **Verification:**
-- [x] Tests against temporary directories (root tests gated on
-      `SB_TEST_ROOT=1`).
-- [x] The real `/var/log/sb`: moved to Task 10's manual verification, run
-      only with the maintainer's go-ahead (an automatic test would create
-      it on this host at every check run).
-- [x] `scripts/check.sh task`; library-reviewer on the diff.
+- [ ] `cargo test -p sb-term-ui`; `scripts/check.sh full`.
 
 **Dependencies:** Task 5
-**Files:** `crates/cli-core/src/{log.rs,error.rs}`, `crates/cli-core/tests/run_log.rs`
+**Files:** `crates/term-ui/{src/runner.rs,tests/runner.rs,tests/run_log.rs}`
 **Scope:** M
 
-Carried forward from the cli-core code review (2026-10-30):
-- The exec module removes `SB_RELAUNCHED` from child processes
-  (`env_remove`), or an unprivileged sb started by one would refuse to
-  relaunch (root.rs module docs).
-- sb-go also exports COLORTERM for child processes (truecolor, 256color,
-  unset for ansi and ascii); sb-rust doesn't yet. Decide when the exec
-  module starts children (ansible).
-- Under `SB_COLOR_PROFILE=ansi`, anstyle-lossy maps the palette's OK green
-  to White (light grey, the same as muted text), so help's flag names and
-  H1's green fixes don't stand out in 16-colour mode (2026-11-01 review). Accepted for now (maintainer, 2026-11-01); revisit
-  when term-ui brings more colour users (an explicit 16-colour colour per
-  role is the likely fix).
-- Check sudoers(5): a policy without `setenv` may refuse `--preserve-env`
-  names outside env_keep (VISUAL and EDITOR carry the same risk); record
-  the answer in docs/platform-notes/.
-- The first command that takes argument values (for example
-  `install -e`) adds an end-to-end test that a real secret value never
-  reaches the run log; today's test uses a flag.
+## Task 7: Failure block
 
-## Checkpoint B: Startup
-- [x] `scripts/check.sh full` passes.
-- [x] Review with the maintainer before Phase 3.
-
-## Task 7: `--color` on every output path, including help
-
-**Description:** `colorchoice-clap` flag; its choice becomes anstream's
-global one before the real parse, through a clap pre-pass, so clap's help
-follows it. console and crossterm get `always`/`never` when term-ui brings
-them in.
-`auto` honours NO_COLOR and terminal detection.
+**Description:** A failed step shows ✗, its failure label, every line of
+its error (indented), its last 10 output lines, then the log pointer when
+the run is logged; its own log record carries the error and causes; the
+run returns a quiet `Exit(1)` so cli-core doesn't repeat it. The demo ends
+through the same cli-core functions sb's `main` uses (`log::outcome`,
+`exit::finish_run`, `RunLog::pointer`), so a PTY test on the demo shows
+criterion 4 ("shown once, exit 1") end to end.
 
 **Acceptance criteria:**
-- [x] `--color=never` gives no escape codes anywhere, help included; `--color=always` colours piped output.
-- [x] `NO_COLOR` turns colour off unless `--color=always`.
+- [ ] The failure block as specified, multi-line errors included; no
+      pointer when the run isn't logged.
+- [ ] Exit 1 with the error shown once (PTY test on the demo).
+- [ ] Plain mode ends a failed step with ✗, the error and the pointer.
 
 **Verification:**
-- [x] CLI tests piped and in a PTY.
-- [x] `scripts/check.sh task`.
+- [ ] `cargo test -p sb-term-ui`; `scripts/check.sh full`.
 
-**Dependencies:** Task 2
-**Files:** `crates/cli-core/src/{colour.rs,lib.rs}`, `crates/sb/tests/colour.rs`
+**Dependencies:** Task 6
+**Files:** `crates/term-ui/{src/runner.rs,examples/demo.rs,tests/failure.rs}`
 **Scope:** S
 
-## Task 8: Colour profiles (ADR-002)
+## Task 8: Interruption and terminal restore
 
-**Description:** Move the palette into `sb-cli-core::theme` as role names.
-`SB_COLOR_PROFILE` (`truecolor`, `ansi256`, `ansi`, `ascii`; unknown warns
-and means truecolor) resolves every role once with anstyle-lossy into an
-`anstyle::Color`, installed as the run's theme. sb's error block is its
-first user, through anstream. The ratatui, console and tabled adapters
-come with term-ui and tui, which bring those libraries.
+**Description:** Ctrl-C or SIGTERM marks the running step interrupted
+(`Warn`), keeping its last lines, with no pointer of its own; cli-core's
+block then shows "interrupted" and the pointer once. A command's own
+`Shutdown::request` is not an interruption. `ECHOCTL` is switched off while
+live on the terminal sb draws on (stderr's, or `/dev/tty`), only in the
+foreground process group, and restored at every ending; the runner
+registers its restore with Task 3's hook and removes it when it ends. This
+closes cli-core's carried criterion 4.
 
 **Acceptance criteria:**
-- [x] Each profile's output uses only its kind of colour code (guard tests per profile).
-- [x] Nothing outside the resolver converts colours.
+- [ ] SIGINT gives 130, SIGTERM 143; "interrupted" shown once; a requested
+      shutdown isn't marked interrupted.
+- [ ] Cursor and `ECHOCTL` restored after one signal and after two; a
+      background run doesn't touch the terminal (PTY tests on the demo).
 
 **Verification:**
-- [x] Profile guard tests; `scripts/check.sh task`; library-reviewer on the diff.
+- [ ] `cargo test -p sb-term-ui` (PTY tests); `scripts/check.sh full`.
 
-**Dependencies:** Task 7
-**Files:** `crates/cli-core/src/{theme.rs,exit.rs,root.rs}`, `crates/sb/src/main.rs`, `crates/sb/tests/colour.rs`
+**Dependencies:** Tasks 3, 7
+**Files:** `crates/term-ui/{src/runner.rs,src/tty.rs,tests/signals.rs}`, `Cargo.toml` (rustix `termios`)
 **Scope:** M
 
-## Task 9: Theme config
+## Task 9: Nested and concurrent steps
 
-**Description:** Read `<server_appdata_path>/sb/config.toml`
-(`server_appdata_path` from the Saltbox inventory, `/opt` by default): a
-named built-in theme (`default`) plus per-role overrides, and an optional
-`color_profile` (the environment variable wins). Missing means built-in;
-invalid warns (and logs) and falls back.
+**Description:** Sub-steps (a deeper branch) and concurrent siblings in
+the shape and with the semantics settled at Checkpoint A, kept in start
+order; plain mode prefixes concurrent steps' lines with their label;
+concurrent steps' log records carry the run's span (tokio's `Instrument`,
+cited).
 
 **Acceptance criteria:**
-- [x] A theme file changes the resolved palette; no file means the built-in theme.
-- [x] An invalid file or unreadable inventory warns and falls back; a moved `server_appdata_path` is followed.
+- [ ] Nested and concurrent runs render as settled, with the erase result
+      Task 1 accepted; plain mode stays readable.
+- [ ] A sibling failing while another runs, and SIGINT with two steps
+      running, behave as settled at Checkpoint A.
+- [ ] Concurrent steps' run-log records carry the run span.
 
 **Verification:**
-- [x] Tests with temporary inventory and config files.
-- [x] `scripts/check.sh task`.
+- [ ] `cargo test -p sb-term-ui`; the demo's nested and concurrent modes;
+      `scripts/check.sh full`.
 
 **Dependencies:** Task 8
-**Files:** `crates/cli-core/src/{config.rs,theme.rs}`, `crates/sb/src/main.rs`, `crates/sb/tests/theme_config.rs`
+**Files:** `crates/term-ui/{src/runner.rs,tests/runner.rs,examples/demo.rs}`
 **Scope:** M
 
-## Task 10: Startup wiring, contract test and success criteria
+## Checkpoint B: Runner
+- [ ] Tasks 5-9 committed; `scripts/check.sh full` passes.
+- [ ] The maintainer has tried the runner demo in a real terminal.
 
-**Description:** `sb` runs the steps in the spec's order. (Planned as one
-call into `cli-core`; kept in `sb`'s `main` instead: a generic startup
-would need a trait over the clap type with sb as its only user, and the
-order is held by the end-to-end tests. Each step is a cli-core function.)
-A contract test compares sb-rust's commands and flags with
-sb-go's (every sb-rust name exists in sb-go). Walk the spec's success
-criteria.
+## Task 10: Tables in the reviewed `docker ps` look
 
-**Acceptance criteria:**
-- [x] Spec success criteria 2, 5, 6 (with `SB_TEST_ROOT=1`), 7, 8 and 9 pass; 3 is covered by Task 5's test until a root command exists.
-- [x] Criterion 1: help and version as a normal user pass. Carried: tab
-  completion comes with the completion module.
-- [x] Criterion 4: SIGINT 130 and SIGTERM 143 pass. Carried: nothing draws
-  to the terminal yet, so the restore is checked when term-ui lands
-  (term-ui spec, decision 5).
-- [x] The `help` subcommand: sb-go removes it; the maintainer chose to keep
-  clap's `help` listed (spec updated, 2026-10-30).
-- [x] Startup budget holds: `sb --help` and `sb version` median ≤ 10 ms (0.76 and 0.90 ms).
-
-**Verification:**
-- [x] `scripts/check.sh full`.
-- [x] Manual: `sb --help` and `sb version` on this host, shown to the maintainer (`--color`: covered by crates/sb/tests/colour.rs, piped and on a pty; Ctrl-C: no long-running command yet, covered by the signal tests).
-- [x] Manual, with the maintainer's go-ahead: root runs against the real
-      `/var/log/sb` (created root-owned 0700, record written; kept). A
-      failed root run (`sb version >/dev/full`) printed the pointer with
-      the real file and run id, and the log recorded the failure.
-
-**Dependencies:** Tasks 3, 6, 9
-**Files:** `crates/sb/src/{main.rs,contract.rs}`, `crates/sb/tests/fixtures/sb-go-command-tree.tsv`, `crates/cli-core/src/config.rs` (inventory read with saphyr)
-**Scope:** M
-
-## Task 11: Help in sb-go's format
-
-**Description:** At Checkpoint C the maintainer found clap's default help
-far behind sb-go's; proto-help compared the options and the maintainer
-chose sb-go's format (look 6). sb draws each command's help from clap's
-command data in that format, in the palette, and sets it with clap's
-`Command::override_help`, so `-h`, `--help` and `sb help <cmd>` keep
-working (spec: Help and parse errors).
+**Description:** A table type over tabled: rounded style, a rule between
+rows, bold centred headings, the border in the `Border` role, per-cell
+roles and alignment from the caller, an optional maximum column width,
+fitted to the terminal (console's size on stdout), natural width when not
+a terminal.
 
 **Acceptance criteria:**
-- [x] `sb --help`, `sb version --help` and `sb help version` show the
-      format: about, headings, shaded usage block (only with colour),
-      commands with hints, flags with defaults, one column.
-- [x] Colours from the theme; none with `--color=never`, NO_COLOR, piped
-      or under `ascii`.
-- [x] Startup budget holds (help median ≤ 10 ms; the ratchet value is
-      re-measured).
+- [ ] Matches proto-inline's reviewed table (snapshot from its output) and
+      fits 120, 70 and 50 columns.
+- [ ] Not a terminal: natural width, no escape codes; `--color=never` on a
+      terminal: no SGR codes, bold included; `--color=always` piped: the
+      theme's colours; per-profile guard tests.
 
 **Verification:**
-- [x] Unit tests on the rendering (fixed commands, colour on and off);
-      end-to-end help tests; `scripts/check.sh full`.
-- [x] Manual: the maintainer compares `sb --help` with sb-go's.
+- [ ] `cargo test -p sb-term-ui`; the demo's table; `scripts/check.sh full`.
 
-Deferred: fang wraps the about at min(terminal, 120) columns; today's
-abouts are one line, so the wrap comes with the first ported command
-whose long text needs it. `sb help help` stays clap's own format.
-
-**Dependencies:** Tasks 7, 8
-**Files:** `crates/cli-core/src/help.rs`, `crates/sb/src/main.rs`, `crates/sb/tests/help.rs`
-**Scope:** M
-
-## Task 12: Parse errors in sb-go's layout
-
-**Description:** clap's parse errors (unknown command or flag, bad value)
-are drawn in sb-go's layout (an ERROR badge, chosen by the maintainer over
-a `✗` block; look H1: `hint:` lines, the typed value in the problem
-colour, fixes and possible values in green, no help pointer), on stderr,
-exit 2 (maintainer: the
-usage-error convention, a deliberate difference from sb-go's 1). Not
-through a clap `ErrorFormatter`: clap builds its messages in private code,
-so sb keeps clap's wording and re-lays out its plain rendering, with the
-usage paragraph removed through `Error::remove(ContextKind::Usage)`
-(recorded in prototypes/proto-help/FINDINGS.md).
-
-**Acceptance criteria:**
-- [x] An unknown command, an unknown flag and a bad value each show one
-      ERROR block with clap's message and tip, exit 2.
-- [x] `--color` and the profile apply as for help.
-
-**Verification:**
-- [x] End-to-end tests; `scripts/check.sh full`.
-- [x] Manual: the maintainer compares with sb-go's error (H1 chosen).
-
-**Dependencies:** Task 11
-**Files:** `crates/cli-core/src/help.rs` (or `exit.rs`), `crates/sb/src/main.rs`, `crates/sb/tests/errors.rs`
+**Dependencies:** Task 5 (the demo and insta)
+**Files:** `crates/term-ui/{Cargo.toml,src/table.rs,tests/table.rs,examples/demo.rs}`, `Cargo.toml` (tabled)
 **Scope:** S
 
+## Task 11: Success criteria and measurements
+
+**Description:** Walk the spec's success criteria 1-9 with evidence and
+record startup and binary size. Nothing in sb calls the runner or tables
+until `sb docker ps`, so link-time optimisation leaves most of term-ui out
+of the binary: unless an earlier task already crossed the tolerance (and
+wrote its ADR), the size ADR for term-ui's growth comes with the first
+command that uses it, and this task records that.
+
+**Acceptance criteria:**
+- [ ] Each success criterion has a test or a recorded manual check, or is
+      named as carried (criteria 4 and 6 beyond the demo, and criterion 9's
+      size ADR unless an earlier task crossed the tolerance: the first runner
+      command).
+- [ ] Size and startup recorded; any ADR written where the tolerance was
+      crossed.
+
+**Verification:**
+- [ ] `scripts/check.sh full`; the maintainer reviews the demo.
+
+**Dependencies:** Tasks 9, 10
+**Files:** `tasks/todo.md`, `docs/decisions/` (if an ADR is due)
+**Scope:** S
+
+## Task 12: 16-colour OK green (maintainer decision)
+
+**Description:** Carried from cli-core: under `SB_COLOR_PROFILE=ansi` the
+OK green maps to the same grey as muted text. Ask the maintainer whether
+to give 16-colour mode an explicit colour per role (a change to
+cli-core's theme and a reviewed look), now that term-ui adds colour users.
+
+**Acceptance criteria:**
+- [ ] The maintainer's decision recorded; if yes, the mapping changed with
+      guard tests.
+
+**Verification:**
+- [ ] `scripts/check.sh full` if code changed.
+
+**Dependencies:** Task 11
+**Files:** `crates/cli-core/src/theme.rs` (if yes)
+**Scope:** XS
+
 ## Checkpoint C: Complete
-- [x] All tasks done; `scripts/check.sh full` passes.
-- [x] Spec success criteria met (completion and terminal restore carried
-      to their modules); the maintainer reviewed `sb --help`, `sb version`
-      and parse errors (2026-11-01); Ctrl-C is covered by the signal tests.
+- [ ] All tasks done; `scripts/check.sh full` passes.
+- [ ] Spec success criteria met or carried by name; the maintainer has
+      reviewed the runner and tables.
