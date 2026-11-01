@@ -1560,6 +1560,9 @@ mod tests {
         assert_eq!(shown.on_screen(false, true), ["s"]);
         assert_eq!(shown.on_screen(false, false), [WITHHELD]);
         assert_eq!(Line::from("p").shown().on_screen(false, false), ["p"]);
+        let owned = String::from("o");
+        assert_eq!(Line::from(&owned).on_screen(false, false), ["o"]);
+        assert_eq!(Line::from(owned).on_screen(false, false), ["o"]);
         let mixed = Line::new("token: ").secret("s").text(" (24 characters)");
         assert_eq!(
             mixed.on_screen(false, false),

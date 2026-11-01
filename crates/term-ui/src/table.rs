@@ -279,6 +279,15 @@ mod tests {
         );
     }
 
+    /// A cell made from a `String` or a `&str` holds its text, no role.
+    #[test]
+    fn cells_convert_from_text() {
+        for cell in [Cell::from("a"), Cell::from(String::from("a"))] {
+            assert_eq!(cell.text, "a");
+            assert!(cell.role.is_none());
+        }
+    }
+
     /// Colour off, or `ascii`: no escape codes at all, bold included.
     #[test]
     fn no_colour_writes_no_escape_codes() {

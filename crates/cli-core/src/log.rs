@@ -572,6 +572,16 @@ mod tests {
         assert!(text.contains("outcome=\"failed\""), "{text}");
     }
 
+    /// The held error stays reachable for code that acts on it, while the
+    /// marker itself prints only the placeholder.
+    #[test]
+    fn a_sensitive_error_keeps_its_inner_error() {
+        let err = Sensitive::new(std::io::Error::other("secret hunter2-not-real"));
+        assert_eq!(err.inner().to_string(), "secret hunter2-not-real");
+        assert_eq!(err.to_string(), WITHHELD);
+        assert_eq!(format!("{err:?}"), format!("Sensitive({WITHHELD})"));
+    }
+
     /// An outer error with a sensitive cause logs the outer part and the
     /// placeholder.
     #[test]

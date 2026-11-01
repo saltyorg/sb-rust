@@ -1,5 +1,5 @@
 //! The runner on a real terminal and piped, through the `demo` binary
-//! (term-ui spec, success criteria 3 and 5). Terminal runs go through
+//! (term-ui spec, success criteria 1, 3 and 5). Terminal runs go through
 //! util-linux `script`, as sb's colour tests do.
 
 use std::path::PathBuf;
@@ -15,17 +15,25 @@ fn on_a_terminal(args: &str) -> Output {
 }
 
 fn on_a_terminal_with(args: &str, term: &str) -> Output {
+    on_a_terminal_env(args, term, None)
+}
+
+/// The demo with `args` on a 100x30 pseudo-terminal; `NO_COLOR` set to
+/// `no_color` when given, removed otherwise.
+fn on_a_terminal_env(args: &str, term: &str, no_color: Option<&str>) -> Output {
     let program = demo().display().to_string();
-    Command::new("script")
-        .args([
-            "-qec",
-            &format!("stty cols 100 rows 30; exec '{program}' {args}"),
-            "/dev/null",
-        ])
-        .env("TERM", term)
-        .env_remove("NO_COLOR")
-        .output()
-        .expect("run script")
+    let mut cmd = Command::new("script");
+    cmd.args([
+        "-qec",
+        &format!("stty cols 100 rows 30; exec '{program}' {args}"),
+        "/dev/null",
+    ])
+    .env("TERM", term);
+    match no_color {
+        Some(value) => cmd.env("NO_COLOR", value),
+        None => cmd.env_remove("NO_COLOR"),
+    };
+    cmd.output().expect("run script")
 }
 
 /// Every way a terminal can be told to erase part of the screen.
@@ -126,4 +134,57 @@ fn piped_output_is_plain() {
         last.starts_with("✓ credentials valid ") && last.ends_with('s'),
         "{text:?}"
     );
+}
+
+/// The SGR sequences in `text` (`ESC [ params m`), resets included.
+fn sgr_codes(text: &str) -> Vec<&str> {
+    text.split("\x1b[")
+        .skip(1)
+        .filter_map(|rest| {
+            let params = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == ';')
+                .count();
+            rest[params..].starts_with('m').then(|| &rest[..params])
+        })
+        .collect()
+}
+
+/// `NO_COLOR` or `--color=never` on a terminal: no SGR codes at all, not
+/// even resets, but the live tree's cursor movement remains (success
+/// criterion 1). The same terminal with colour on has codes, so the
+/// counting finds them.
+#[test]
+fn colour_off_keeps_the_cursor_movement_only() {
+    let auto = on_a_terminal("");
+    assert_eq!(auto.status.code(), Some(0), "{auto:?}");
+    let text = String::from_utf8_lossy(&auto.stdout);
+    assert!(!sgr_codes(&text).is_empty(), "{text:?}");
+    let no_color = on_a_terminal_env("", "xterm-256color", Some("1"));
+    let never = on_a_terminal("--no-colour");
+    for out in [no_color, never] {
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(sgr_codes(&text), Vec::<&str>::new(), "{text:?}");
+        assert!(cursor_up(&text), "no cursor movement: {text:?}");
+    }
+}
+
+/// `--color=always` piped: the runner's plain lines in the theme's colours.
+#[test]
+fn always_colours_piped_runner_output() {
+    let out = Command::new(demo())
+        .arg("--colour")
+        .output()
+        .expect("run demo");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stderr);
+    // The runner's own end line, its glyph in a truecolor code (the demo's
+    // profile) right before it.
+    let line = text
+        .lines()
+        .find(|l| l.contains("accounts.yml read"))
+        .unwrap_or_default();
+    assert!(line.starts_with("\x1b[38;2;"), "{text:?}");
+    assert!(line.contains("✓"), "{text:?}");
 }
