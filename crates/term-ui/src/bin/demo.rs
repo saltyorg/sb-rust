@@ -1,6 +1,6 @@
 //! The runner on stderr, for trying it and for the PTY tests: `cargo run
 //! -p sb-term-ui --bin demo [-- FLAGS]`, the flags being test hooks:
-//! `--fail`, `--verbose`, `--sensitive`, `--panic`, `--interrupt`,
+//! `--fail`, `--sensitive`, `--panic`, `--interrupt`,
 //! `--interrupt-twice`, `--terminate` and `--leave-foreground`. A binary
 //! rather than an example because `cargo test --tests` (the coverage run)
 //! builds bins for the integration tests but not examples; sb's build
@@ -77,15 +77,11 @@ fn signal_self() {
 async fn demo(
     shutdown: &Shutdown,
     fail: bool,
-    verbose: bool,
     sensitive: bool,
     log: Option<&RunLog>,
 ) -> anyhow::Result<()> {
     let pace = Duration::from_millis(120);
-    let options = Options {
-        verbose,
-        ..Options::default()
-    };
+    let options = Options::default();
     let mut run = Runner::start("sb demo", shutdown, log, options).await;
     run.step(
         Labels::new("Reading accounts.yml", "accounts.yml read"),
@@ -153,7 +149,6 @@ fn main() -> ExitCode {
     theme::install(Theme::resolve(&Palette::default(), Profile::TrueColor));
     sb_term_ui::follow_colour_choice(Profile::TrueColor);
     let fail = std::env::args().any(|a| a == "--fail");
-    let verbose = std::env::args().any(|a| a == "--verbose");
     let sensitive = std::env::args().any(|a| a == "--sensitive");
     // A run log only under SB_LOG_DIR (the tests' temporary directory),
     // never the host's /var/log/sb; opened as sb's `main` opens it.
@@ -173,9 +168,7 @@ fn main() -> ExitCode {
         .enable_time()
         .build();
     let result = match (shutdown.listen_for_signals(), runtime) {
-        (Ok(()), Ok(runtime)) => {
-            runtime.block_on(demo(&shutdown, fail, verbose, sensitive, log.as_ref()))
-        }
+        (Ok(()), Ok(runtime)) => runtime.block_on(demo(&shutdown, fail, sensitive, log.as_ref())),
         (Err(err), _) | (_, Err(err)) => Err(err.into()),
     };
     let error = result.as_ref().err().map(|e| e.as_ref() as _);

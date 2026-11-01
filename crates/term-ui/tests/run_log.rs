@@ -64,11 +64,9 @@ async fn run_steps() {
     // them itself (safe: this binary holds one test).
     anstream::ColorChoice::Always.write_global();
     let shutdown = Shutdown::new();
-    // Plain (verbose), so the test draws no live area wherever it runs.
-    let options = Options {
-        verbose: true,
-        ..Options::default()
-    };
+    // Live or plain, as the test's stderr is (a run from a terminal draws
+    // live): only the log is checked, which both modes write the same.
+    let options = Options::default();
     let mut run = Runner::start("sb demo", &shutdown, None, options).await;
     let labels = Labels::new("Checking credentials", "credentials valid");
     run.step(labels, async |step| {

@@ -278,8 +278,9 @@ Candidates to weigh in the spec, not decisions:
 - [ ] Both documented forms work, with and without `-v`, and exit non-zero
       on failure so `&& cd /srv/git/saltbox` only runs after success.
 - [ ] `sb setup` runs attached to the terminal, never captured, so sb draws
-      its own progress and failure output. Without `-v` sb shows its normal
-      tree; `-v` gets sb's verbose output.
+      its own progress and failure output: its normal tree (sb has no
+      verbose mode, term-ui decision 9; an installer `-v` maps at most to
+      Ansible's verbosity).
 - [ ] Nothing reads stdin. Under `curl … | bash`, stdin is the script itself:
       a read would swallow the rest of it. Any prompt uses `/dev/tty` or is
       avoided.

@@ -143,3 +143,20 @@ fn leaving_the_foreground_mid_run_never_stops_on_sigttou() {
     // demo left them, as no job-control shell here puts its own back.
     assert!(cursor_hidden_then_shown(&text), "{text:?}");
 }
+
+/// Plain on a terminal (`TERM=dumb`): the terminal is left alone, the
+/// cursor never hidden and the control-character echo untouched.
+#[test]
+fn a_dumb_terminal_is_left_alone() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = on_a_terminal(
+        "TERM=dumb \"$DEMO\" --interrupt; echo EXIT=$?; stty -a",
+        dir.path(),
+    );
+    assert_eq!(exit_code(&text), Some(130), "{text:?}");
+    assert!(
+        !text.contains("\x1b[?25l"),
+        "the cursor was hidden: {text:?}"
+    );
+    assert!(echoctl_restored(&text), "{text:?}");
+}

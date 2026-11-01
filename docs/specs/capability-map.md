@@ -118,6 +118,11 @@ Rust libraries in place of sb-go's internals.
       - each step's output lines, tagged with run id and step.
 
       Logging is general: every run is logged and kept, successful or not.
+    - **Verbose by default, no flag (maintainer, 2026-11-01):** sb's own
+      output has no verbose mode (term-ui decision 9), so the log must
+      hold, by default, everything needed to debug odd behaviour: every
+      module logs the detail a debug flag would otherwise have turned on.
+      Ansible's own verbosity for installs is passed through separately.
       Only logrotate retires old copies. A failed step's `full output:` line
       points at the log and the run id. Proved in proto-runner.
     - **Format:** to be decided in the spec. tracing-subscriber's readable

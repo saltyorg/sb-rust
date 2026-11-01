@@ -40,7 +40,7 @@ terminal.
 
 Users: Saltbox users at a terminal. The install script runs `sb setup`
 attached to the terminal (capability map, decision 10), so plain output
-appears only under CI, redirection or `-v`.
+appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
 
 ## Behaviour
 
@@ -104,14 +104,15 @@ appears only under CI, redirection or `-v`.
 - **No blinking:** one live bar holds the whole live area and is redrawn
   in place (indicatif's `set_move_cursor`, as proto-runner and the spike
   measured: 0 line erases while running), per amended decision 2.
-- **Verbose (`-v`) or stderr not a terminal** (`TERM=dumb`, CI,
-  redirection): no live parts. The runner draws on stderr, so stderr
+- **Stderr not a terminal** (`TERM=dumb`, CI, redirection): no live
+  parts; there is no verbose option, the run log has the detail
+  (decision 9). The runner draws on stderr, so stderr
   decides (indicatif's target; sb-go checks stdout, so `sb validate-config
   > file` stays live here and goes plain in sb-go). Each step prints a
   start line (`- <running label>`), its output lines (escape codes
   stripped when colour is off), notices, and an end line (`✓ <done label>
   2s`, or ✗ with the error and the pointer), flat as in sb-go's plain mode
-  (`Verbose || !IsInteractive()`). Lines from concurrent steps are prefixed
+  when not interactive. Lines from concurrent steps are prefixed
   with their step's running label, so interleaved lines stay readable.
 - **Cancellation:** steps see cli-core's `Shutdown` (decision 4).
   When a signal interrupted the run, every running step and its parents
@@ -232,8 +233,9 @@ Signatures as they would be written; bodies come with Tasks 5-9.
 
 ```rust
 /// One run of steps, drawn as one tree (the root line is the title).
-/// Live on a terminal; plain when the target isn't one or the command
-/// asks for verbose output.
+/// Live on a terminal; plain when the target isn't one (piped, CI,
+/// `TERM=dumb`). No verbose option: the run log has the detail
+/// (decision 9).
 pub struct Runner { /* … */ }
 
 impl Runner {
@@ -273,9 +275,6 @@ impl Runner {
 /// How and where the runner draws.
 #[derive(Default)]
 pub struct Options {
-    /// The command's `-v` (sb has none yet): plain output even on a
-    /// terminal.
-    pub verbose: bool,
     /// Where to draw: stderr by default.
     pub target: Target,
 }
@@ -527,9 +526,9 @@ Choices behind it:
    measurement).
 4. A failed step shows ✗, its error in full, its last 10 lines and the log
    pointer, once; sb exits 1 without cli-core repeating the error.
-5. With `-v` or stderr not on a terminal, the runner prints start lines,
-   output lines, notices and end lines; not on a terminal with `auto`, no
-   escape codes.
+5. With stderr not a live terminal (piped, CI, `TERM=dumb`), the runner
+   prints start lines, output lines, notices and end lines; not on a
+   terminal with `auto`, no escape codes.
 6. Ctrl-C marks every running step and its parents interrupted in the
    tree, cli-core shows "interrupted" and the pointer once, the cursor and
    `ECHOCTL` are restored, and sb exits 130 (SIGTERM 143).
@@ -542,7 +541,7 @@ Choices behind it:
 10. (With their first user) a prompt with no terminal and no answer fails
     with a message naming the flag; a given answer is used without asking.
 
-## Decided (maintainer, 2026-10-30; amendments and decisions 7-8 on 2026-11-01)
+## Decided (maintainer, 2026-10-30; amendments and decisions 7-9 on 2026-11-01)
 
 1. **Prompts** are specified here and built with their first user
    (self-update or git's confirm).
@@ -599,3 +598,12 @@ Choices behind it:
    file, the journal, CI), sensitive text shows as a placeholder unless the
    command opts in (`Line::sensitive(..).shown()`), and even then only on
    a terminal: stderr anywhere else is a log.
+9. **No verbose option (maintainer, 2026-11-01, Checkpoint B):** the run
+   log records every step's start, notices, output and outcome, so plain
+   output on a terminal would only repeat it; `Options::verbose` is gone.
+   Plain output stays for stderr that isn't a live terminal. This is sb's
+   own output only: Ansible's verbosity is still passed through for
+   installs (the exec and install modules' concern, not the runner's).
+   With no flag, the log is verbose by default (capability map, decision
+   11): the runner logs every step's start, notices, output lines,
+   outcome, time and error.

@@ -66,9 +66,6 @@ impl Labels {
 /// How and where the runner draws.
 #[derive(Default)]
 pub struct Options {
-    /// The command's `-v` (sb has none yet): plain output even on a
-    /// terminal.
-    pub verbose: bool,
     /// Where to draw: stderr by default.
     pub target: Target,
 }
@@ -240,8 +237,9 @@ fn lock(shared: &Shared) -> MutexGuard<'_, State> {
 }
 
 /// One run of steps, drawn as one tree (the root line is the title).
-/// Live on a terminal; plain when the target isn't one or the command
-/// asks for verbose output.
+/// Live on a terminal; plain when the target isn't one (piped, CI,
+/// `TERM=dumb`). No verbose option: the run log has the detail
+/// (decision 9).
 pub struct Runner {
     shared: Shared,
     shutdown: Shutdown,
@@ -275,7 +273,7 @@ impl Runner {
                 // `ProgressDrawTarget::stderr`), so live follows it: a
                 // hidden target would swallow every line.
                 let target = ProgressDrawTarget::stderr();
-                let mode = if options.verbose || target.is_hidden() {
+                let mode = if target.is_hidden() {
                     Mode::Plain
                 } else {
                     Mode::Live(Area::new(target))
@@ -1092,8 +1090,8 @@ async fn frames(shared: Shared, stop: Arc<AtomicBool>) {
     }
 }
 
-/// A plain-mode line on stderr (sb-go's plain mode: `Verbose ||
-/// !IsInteractive()`).
+/// A plain-mode line on stderr (sb-go's plain mode when not interactive;
+/// its verbose half is dropped, decision 9).
 fn plain_line(line: &str) {
     // anstream strips the codes when stderr's choice is no colour.
     let _ = writeln!(anstream::stderr(), "{line}");
@@ -1140,7 +1138,6 @@ mod tests {
     fn screen() -> (InMemoryTerm, Options) {
         let term = InMemoryTerm::new(20, 100);
         let options = Options {
-            verbose: false,
             target: Target::InMemory {
                 term: term.clone(),
                 colour: false,

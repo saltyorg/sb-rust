@@ -8,6 +8,10 @@ and the binary size measured: a change past the 5% ratchet tolerance
 carries its ADR in the same commit (CONSTRAINTS.md).
 
 Carried forward (open items owned by later work):
+- From term-ui decision 9 (no verbose mode; the log verbose by default):
+  when the first chatty dependency arrives (bollard, with docker), log
+  sb's own crates at DEBUG and dependencies at WARN by default, so the
+  log carries what a debug flag would have, without the noise.
 - From cli-core:
   - Task 5: the root relaunch path in `main` first runs end to end with
     the first root-needing command (`sb docker ps`); two of its mutants
@@ -125,7 +129,7 @@ Hooks stay tiny (write a few bytes, one `tcsetattr`).
 with `agent-skills:api-and-interface-design`, as the spec asks: async
 steps given the token, labels, notices, output lines and sensitive output,
 nested and concurrent steps with the semantics settled at Checkpoint A,
-the verbose option (sb has no `-v` yet; commands pass it), and runtime
+the verbose option (since dropped at Checkpoint B, decision 9), and runtime
 ownership (the command's tokio runtime, built after argument parsing; the
 runner uses the current one). Written as rustdoc'd signatures in the
 spec's code-style section, marked "proposed" until the maintainer approves
@@ -156,7 +160,7 @@ it at Checkpoint A, reviewed before any runner code.
 **Description:** The runner core on Task 4's API: a root line, async steps
 with the token, running/done/failure labels, finished lines printed for
 good with the newest kept live (decision 3), times in one column, spinner
-and label in the accent colour; plain mode (verbose option, or stderr not a
+and label in the accent colour; plain mode (stderr not a
 terminal) prints start and end lines. The last branch's `╰` comes from
 termtree's `GlyphPalette` with a custom last item (checked at source,
 cited; no ratatui). Snapshots are taken from proto-runner's reviewed
