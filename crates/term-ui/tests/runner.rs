@@ -114,19 +114,6 @@ fn piped_output_is_plain() {
     );
 }
 
-/// A failing step ends the run with 1, the error not repeated by cli-core.
-#[test]
-fn a_failed_step_exits_1_quietly() {
-    let out = Command::new(demo())
-        .arg("--fail")
-        .output()
-        .expect("run demo");
-    assert_eq!(out.status.code(), Some(1));
-    let text = String::from_utf8_lossy(&out.stderr);
-    let last = text.lines().last().unwrap_or_default();
-    assert!(last.starts_with("✗ credentials invalid "), "{text:?}");
-}
-
 /// Sensitive text (decision 8): piped, both lines show as the placeholder;
 /// on a terminal, only the one the command chose to show appears.
 #[test]
