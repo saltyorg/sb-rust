@@ -160,25 +160,38 @@ fn a_secret_in_a_failure_never_shows() {
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(!text.contains(TOKEN), "{text}");
     assert!(
-        text.contains("\nChecking Cloudflare token: (sensitive, withheld)\n"),
+        text.contains("\nChecking Cloudflare token: cloudflare.token: [REDACTED]\n"),
         "{text}"
     );
-    let block =
-        "  settings.yml: cloudflare.token is not a valid API token\n  (sensitive, withheld)\n";
+    // Only the value is replaced; the rest of the error stays readable.
+    let block = "  settings.yml: cloudflare.token is not a valid API token\n  \
+                 got [REDACTED]: expected 40 characters, found 24\n";
     assert!(text.contains(block), "{text}");
     let terminal = on_a_terminal("--sensitive", dir.path());
     assert_eq!(terminal.status.code(), Some(1), "{terminal:?}");
     let screen = console::strip_ansi_codes(&String::from_utf8_lossy(&terminal.stdout)).into_owned();
     assert!(!screen.contains(TOKEN), "{screen:?}");
     let error = "settings.yml: cloudflare.token is not a valid API token";
-    // Neither run's log has it.
+    // The final block on the terminal: the placeholder in the cause, right
+    // after the error's own line (box glyphs and spaces aside).
+    let after = screen.rsplit(error).next().unwrap_or_default();
+    let next = after.trim_start_matches(|c: char| c.is_whitespace() || "│├╰─".contains(c));
+    assert!(
+        next.starts_with("got [REDACTED]: expected 40 characters"),
+        "{screen:?}"
+    );
+    // Neither run's log has it: the value replaced in place there too.
     let log = std::fs::read_to_string(dir.path().join("sb.log")).expect("log");
     assert!(!log.contains(TOKEN), "{log}");
-    let record = format!("error=\"{error}: (sensitive, withheld)\"");
+    assert!(
+        log.contains("text=\"cloudflare.token: [REDACTED]\""),
+        "{log}"
+    );
+    let record = format!("error=\"{error}: got [REDACTED]: expected 40 characters, found 24\"");
     assert!(log.contains(&record), "{log}");
 }
 
-/// A secret a command shows its user on purpose (`Line::sensitive(..)
+/// A secret a command shows its user on purpose (`Line::new(..).secret(..)
 /// .shown()`, as one creating a token would): on a terminal the user sees
 /// it; piped (CI, the journal, a file) it is the placeholder, as stderr
 /// there is a log; and it is never logged (decision 8).
@@ -201,6 +214,8 @@ fn a_shown_secret_shows_only_on_a_terminal() {
     assert_eq!(piped.status.code(), Some(0), "{piped:?}");
     let text = String::from_utf8_lossy(&piped.stderr);
     assert!(!text.contains(TOKEN), "{text}");
+    assert!(text.contains("\n› new token: [REDACTED]\n"), "{text}");
     let log = std::fs::read_to_string(dir.path().join("sb.log")).expect("log");
     assert!(!log.contains(TOKEN), "{log}");
+    assert!(log.contains("text=\"new token: [REDACTED]\""), "{log}");
 }

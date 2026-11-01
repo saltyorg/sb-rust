@@ -713,18 +713,13 @@ impl Step {
         };
         // Logged outside the lock: the log write blocks on the file.
         let step = self.name.as_str();
-        match (line.is_sensitive(), warn) {
-            (true, true) => tracing::warn!(step, "notice withheld (sensitive)"),
-            (true, false) => tracing::info!(step, "notice withheld (sensitive)"),
-            (false, _) => {
-                for text in &lines(&line.text, colour) {
-                    let text = console::strip_ansi_codes(text);
-                    if warn {
-                        tracing::warn!(step, text = ?text, "notice");
-                    } else {
-                        tracing::info!(step, text = ?text, "notice");
-                    }
-                }
+        // The log gets secret values replaced in place, always.
+        for text in &lines(&line.masked(), colour) {
+            let text = console::strip_ansi_codes(text);
+            if warn {
+                tracing::warn!(step, text = ?text, "notice");
+            } else {
+                tracing::info!(step, text = ?text, "notice");
             }
         }
         let mut state = lock(&self.context.shared);
@@ -763,15 +758,11 @@ impl Step {
             (state.colour, state.terminal)
         };
         // Logged outside the lock (the log write blocks on the file), as
-        // plain text whatever the screen gets, and whole; sensitive text as
-        // one record, which says nothing about it.
+        // plain text whatever the screen gets, and whole; secret values
+        // replaced in place, always.
         let step = self.name.as_str();
-        if line.is_sensitive() {
-            tracing::info!(step, "output withheld (sensitive)");
-        } else {
-            for text in &lines(&line.text, colour) {
-                tracing::info!(step, text = ?console::strip_ansi_codes(text), "output");
-            }
+        for text in &lines(&line.masked(), colour) {
+            tracing::info!(step, text = ?console::strip_ansi_codes(text), "output");
         }
         let mut state = lock(&self.context.shared);
         // A step kept past its end draws nothing more.
@@ -831,18 +822,6 @@ fn clean(line: &str, colour: bool) -> String {
         }
     }
     out
-}
-
-/// Who may see a line.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Visibility {
-    /// Shown and logged.
-    Plain,
-    /// Withheld on screen (a placeholder) and in the log.
-    Sensitive,
-    /// Shown on a terminal for the command's user; withheld elsewhere and
-    /// in the log.
-    SensitiveShown,
 }
 
 /// Concurrent sibling steps under one parent, drawn in full in start
@@ -1002,69 +981,114 @@ impl<T> Drop for Group<'_, T> {
     }
 }
 
-/// A notice or output line, and who may see it. From `&str`, `String` and
-/// `&String`: shown and logged.
+/// A notice or output line: plain text, with secret values marked where
+/// they sit (decision 8, amended): `Line::new("cloudflare.token: ")
+/// .secret(token)`. A secret value shows as `[REDACTED]` in its place, on
+/// screen and in the log; the rest of the line stays. From `&str`,
+/// `String` and `&String`: all plain.
 pub struct Line {
+    parts: Vec<Part>,
+    shown: bool,
+}
+
+/// A piece of a line: plain text, or a secret value.
+struct Part {
     text: String,
-    visibility: Visibility,
+    secret: bool,
 }
 
 impl Line {
-    /// Sensitive text (credentials, tokens): never logged (the log records
-    /// that a line was withheld), and withheld on screen too, where a
-    /// placeholder shows, unless the command opts in with [`Line::shown`]
-    /// (decision 8).
-    pub fn sensitive(text: impl Into<String>) -> Self {
+    /// A line of plain text; add secret values with [`Line::secret`].
+    pub fn new(text: impl Into<String>) -> Self {
         Line {
-            text: text.into(),
-            visibility: Visibility::Sensitive,
+            parts: vec![Part {
+                text: text.into(),
+                secret: false,
+            }],
+            shown: false,
         }
     }
 
-    /// Show this sensitive text to the command's user (editing a config,
-    /// say): on a terminal only, since stderr anywhere else (a file, the
-    /// journal, CI) is a log. Still never logged. No effect on a line that
-    /// isn't sensitive.
-    pub fn shown(self) -> Self {
-        let visibility = match self.visibility {
-            Visibility::Plain => Visibility::Plain,
-            Visibility::Sensitive | Visibility::SensitiveShown => Visibility::SensitiveShown,
-        };
-        Line { visibility, ..self }
+    /// A line that is a secret value as a whole (a credential printed on
+    /// its own): `Line::new("").secret(value)`.
+    pub fn sensitive(value: impl Into<String>) -> Self {
+        Line::new("").secret(value)
     }
 
-    fn is_sensitive(&self) -> bool {
-        self.visibility != Visibility::Plain
+    /// Add a secret value at the end of the line.
+    pub fn secret(mut self, value: impl Into<String>) -> Self {
+        self.parts.push(Part {
+            text: value.into(),
+            secret: true,
+        });
+        self
+    }
+
+    /// Add plain text after a secret value.
+    pub fn text(mut self, text: impl Into<String>) -> Self {
+        self.parts.push(Part {
+            text: text.into(),
+            secret: false,
+        });
+        self
+    }
+
+    /// Show the secret values to the command's user (a command whose job is
+    /// to show them, such as creating a token): on a terminal only, since
+    /// stderr anywhere else (a file, the journal, CI) is a log. Still never
+    /// logged. No effect on a line without secrets.
+    pub fn shown(self) -> Self {
+        Line {
+            shown: true,
+            ..self
+        }
+    }
+
+    /// The line with its secret values replaced in place.
+    fn masked(&self) -> String {
+        self.parts
+            .iter()
+            .map(|part| {
+                if part.secret {
+                    WITHHELD
+                } else {
+                    part.text.as_str()
+                }
+            })
+            .collect()
+    }
+
+    /// The line as written.
+    fn revealed(&self) -> String {
+        self.parts.iter().map(|part| part.text.as_str()).collect()
     }
 
     /// The lines the screen gets.
     fn on_screen(&self, colour: bool, terminal: bool) -> Vec<String> {
-        match self.visibility {
-            Visibility::Plain => lines(&self.text, colour),
-            Visibility::SensitiveShown if terminal => lines(&self.text, colour),
-            Visibility::Sensitive | Visibility::SensitiveShown => vec![WITHHELD.to_string()],
-        }
+        let text = if self.shown && terminal {
+            self.revealed()
+        } else {
+            self.masked()
+        };
+        lines(&text, colour)
     }
 }
 
 impl From<&str> for Line {
     fn from(text: &str) -> Self {
-        String::from(text).into()
+        Line::new(text)
     }
 }
 
 impl From<String> for Line {
     fn from(text: String) -> Self {
-        Line {
-            text,
-            visibility: Visibility::Plain,
-        }
+        Line::new(text)
     }
 }
 
 impl From<&String> for Line {
     fn from(text: &String) -> Self {
-        text.clone().into()
+        Line::new(text.clone())
     }
 }
 
@@ -1491,9 +1515,9 @@ mod tests {
         run.finish();
     }
 
-    /// Sensitive text is withheld on screen too (maintainer, decision 8):
-    /// only a placeholder shows, unless the command opts in with `shown`
-    /// (the in-memory screen counts as a terminal).
+    /// Secret values are replaced in place on screen too (maintainer,
+    /// decision 8, amended), unless the command opts in with `shown` (the
+    /// in-memory screen counts as a terminal).
     #[tokio::test(start_paused = true)]
     async fn sensitive_text_is_withheld_on_screen_unless_shown() {
         let (term, options) = screen();
@@ -1501,8 +1525,12 @@ mod tests {
         let mut run = Runner::start("sb demo", &shutdown, None, options).await;
         let live = run
             .step(Labels::new("Checking", "checked"), async |step| {
-                step.warn(Line::sensitive("hidden-secret-1"));
-                step.info(Line::sensitive("password: shown-to-the-user").shown());
+                step.warn(
+                    Line::new("bad token ")
+                        .secret("hidden-secret-1")
+                        .text(" in settings.yml"),
+                );
+                step.info(Line::new("password: ").secret("shown-to-the-user").shown());
                 step.output(Line::sensitive("hidden-secret-2"));
                 step.output(Line::sensitive("shown-output").shown());
                 // Past the next frame, so the output tail is on screen.
@@ -1513,6 +1541,12 @@ mod tests {
             .expect("step");
         run.finish();
         assert!(!live.contains("hidden-secret"), "{live}");
+        // Only the value is replaced, in its place.
+        assert!(
+            live.contains("! bad token [REDACTED] in settings.yml"),
+            "{live}"
+        );
+        assert!(live.contains("│   [REDACTED]"), "{live}");
         assert!(live.contains("› password: shown-to-the-user"), "{live}");
         assert!(live.contains("│   shown-output"), "{live}");
         assert!(!term.contents().contains("hidden-secret"));
@@ -1526,6 +1560,11 @@ mod tests {
         assert_eq!(shown.on_screen(false, true), ["s"]);
         assert_eq!(shown.on_screen(false, false), [WITHHELD]);
         assert_eq!(Line::from("p").shown().on_screen(false, false), ["p"]);
+        let mixed = Line::new("token: ").secret("s").text(" (24 characters)");
+        assert_eq!(
+            mixed.on_screen(false, false),
+            ["token: [REDACTED] (24 characters)"]
+        );
     }
 
     /// A failure whose cause is sensitive shows the placeholder, never the
@@ -1549,7 +1588,7 @@ mod tests {
         let screen = term.contents();
         assert!(!screen.contains("hunter2"), "{screen}");
         assert!(
-            screen.contains("    the token was refused\n    (sensitive, withheld)"),
+            screen.contains("    the token was refused\n    [REDACTED]"),
             "{screen}"
         );
     }

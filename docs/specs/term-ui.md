@@ -140,13 +140,14 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   never shrinks while running (decision 2), so shrinking the terminal
   mid-run can leave stale lines.
 - **Run log:** every step's start, outcome and elapsed time, its notices,
-  and its output lines go to the run log (capability map, decision 11), in the run's span
-  (carried onto other threads for concurrent steps). Output, notices or
-  error text a step marks as sensitive (credentials, tokens) are never
-  logged, and prompt answers never are. Sensitive text is withheld on
-  screen too (a placeholder shows), unless the command's job is to show
-  it to its user, such as editing a config, and then only on a terminal
-  (decision 8).
+  and its output lines go to the run log (capability map, decision 11),
+  in the run's span (carried onto other threads for concurrent steps).
+  Secret values in output, notices or error text (credentials, tokens)
+  are never logged: the rest of the line is, with `[REDACTED]` in their
+  place; prompt answers never are. Secret values are withheld on screen
+  too, the same way, unless the command's job is to show them to its
+  user, such as editing a config, and then only on a terminal (decision
+  8).
 
 ### Tables
 
@@ -369,17 +370,21 @@ impl<T: Send + 'static> Group<'_, T> {
     pub async fn join(self) -> Result<Vec<T>, Exit>;
 }
 
-/// A notice or output line, and whether it may be shown and logged.
-/// From `&str`, `String` and `&String`: shown and logged.
+/// A notice or output line: plain text, with secret values marked where
+/// they sit (decision 8, amended). A secret value shows as `[REDACTED]`
+/// in its place, on screen and in the log; the rest of the line stays.
+/// From `&str`, `String` and `&String`: all plain.
 pub struct Line { /* … */ }
 
 impl Line {
-    /// Sensitive text (credentials, tokens): never logged (the log
-    /// records that a line was withheld), and withheld on screen too,
-    /// where a placeholder shows, unless the command opts in with
-    /// `shown` (decision 8).
-    pub fn sensitive(text: impl Into<String>) -> Self;
-    /// Show this sensitive text to the command's user (editing a config,
+    pub fn new(text: impl Into<String>) -> Self;
+    /// Add a secret value: `Line::new("cloudflare.token: ").secret(token)`.
+    pub fn secret(self, value: impl Into<String>) -> Self;
+    /// Add plain text after a secret value.
+    pub fn text(self, text: impl Into<String>) -> Self;
+    /// A line that is a secret value as a whole.
+    pub fn sensitive(value: impl Into<String>) -> Self;
+    /// Show the secret values to the command's user (creating a token,
     /// say): on a terminal only, since stderr anywhere else is a log.
     /// Still never logged.
     pub fn shown(self) -> Self;
@@ -390,7 +395,15 @@ And in cli-core, so the run record can honour it too (cli-core can't
 depend on term-ui):
 
 ```rust
-/// sb_cli_core::log: an error whose text must not be shown or logged.
+/// sb_cli_core::log: a secret value inside a message sb writes. Its
+/// Display and Debug are `[REDACTED]`, so `anyhow!("got {}",
+/// Secret::new(&token))` never holds the token, only the placeholder in
+/// its place; reachable only through `expose()`.
+pub struct Secret<T>(/* private */);
+
+/// sb_cli_core::log: an error whose text must not be shown or logged at
+/// all, for errors sb doesn't write (a library's); for its own messages
+/// sb marks just the value with `Secret`.
 /// It says nothing of what it holds: its Display and Debug are the
 /// placeholder and it has no cause, so wherever it sits in a chain (even
 /// behind a transparent wrapper, or in anyhow's `{:?}`) it and everything
@@ -470,7 +483,7 @@ Choices behind it:
   features; approved at Checkpoint A). Bodies do their blocking work
   through `spawn_blocking`, or the spinner stops while they run; config
   and docker reads are async or short. The runner starts no runtime and no processes.
-- **Sensitive text is marked where it is made** (`Line::sensitive`,
+- **Sensitive text is marked where it is made** (`Line::secret`, `Secret`,
   `Sensitive` in an error chain), so logging can't forget a case.
 - **Not here yet:** a child process's output and exit code in the times
   column (exec), prompts inside a step (decision 1), progress counts.
@@ -596,8 +609,14 @@ Choices behind it:
    unless the command's job is to show it to its user (editing a config,
    say), and never logged either way. Wherever stderr goes (a terminal, a
    file, the journal, CI), sensitive text shows as a placeholder unless the
-   command opts in (`Line::sensitive(..).shown()`), and even then only on
-   a terminal: stderr anywhere else is a log.
+   command opts in (`Line::new(..).secret(..).shown()`), and even then only
+   on a terminal: stderr anywhere else is a log. **Amended at Checkpoint B
+   (maintainer, 2026-11-01):** only the secret value is replaced, in place,
+   by `[REDACTED]` (Rust's secrecy crate's form; compared with Ansible's
+   `********`, GitHub Actions' `***` and Terraform's `(sensitive value)`),
+   on screen and in the log, so the rest of the line or error stays
+   readable: `Line::secret` for lines, `Secret` inside error messages sb
+   writes; `Sensitive` still hides a whole error sb doesn't write.
 9. **No verbose option (maintainer, 2026-11-01, Checkpoint B):** the run
    log records every step's start, notices, output and outcome, so plain
    output on a terminal would only repeat it; `Options::verbose` is gone.

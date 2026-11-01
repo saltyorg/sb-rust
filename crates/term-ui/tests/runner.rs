@@ -92,7 +92,6 @@ fn piped_output_is_plain() {
         text.starts_with("sb demo\n- Reading accounts.yml\n"),
         "{text:?}"
     );
-    // Without `--sensitive` the demo has no sensitive lines.
     // Concurrent steps' lines carry their label (they interleave).
     assert!(
         text.contains("\nChecking Cloudflare token: checking item 1 of 6\n"),
@@ -111,6 +110,8 @@ fn piped_output_is_plain() {
         text.contains("\nChecking Docker Hub login: ✓ logged in "),
         "{text:?}"
     );
+    // Without `--sensitive` the demo has no secrets to mask.
+    assert!(!text.contains("[REDACTED]"), "{text:?}");
     // Notices and output lines come through too (criterion 5).
     assert!(text.contains("\nchecking item 1 of 4\n"), "{text:?}");
     assert!(text.contains("\n› 3 accounts\n"), "{text:?}");

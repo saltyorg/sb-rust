@@ -14,7 +14,7 @@ use std::time::Duration;
 use rustix::process::{Signal, getpid, kill_process, setpgid};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{ExitCode, finish_run};
-use sb_cli_core::log::{RunLog, Sensitive, outcome};
+use sb_cli_core::log::{RunLog, Secret, outcome};
 use sb_cli_core::theme::{self, Palette, Profile, Theme};
 use sb_term_ui::{Labels, Line, Options, Runner, Step};
 
@@ -95,10 +95,9 @@ async fn demo(
             step.info("3 accounts");
             // `--new-token`: a step whose job is to show a secret to its
             // user (as a command creating an API token would): shown on a
-            // terminal only, never logged (decision 8).
+            // terminal only, its value never logged (decision 8).
             if arg("--new-token") {
-                let token = format!("new token: {DEMO_TOKEN}");
-                step.info(Line::sensitive(token).shown());
+                step.info(Line::new("new token: ").secret(DEMO_TOKEN).shown());
             }
             Ok(())
         },
@@ -128,13 +127,17 @@ async fn demo(
             group.spawn(cloudflare, move |mut step| async move {
                 work(&mut step, if fail || sensitive { 2 } else { 6 }, pace).await?;
                 // `--sensitive`: the token read from settings.yml is malformed,
-                // and validation names the bad value, which is the secret: the
-                // line showing what was read and the error's quote of it are
-                // both marked sensitive, so the token never shows or logs.
+                // and validation names the bad value, which is the secret:
+                // just the value is marked, in the line showing what was read
+                // and in the error, so `[REDACTED]` stands in its place there
+                // and in the log; the rest stays readable. (The length it
+                // gives is a deliberate choice for this message.)
                 if sensitive {
-                    step.output(Line::sensitive(format!("cloudflare.token: {DEMO_TOKEN}")));
-                    let quoted = std::io::Error::other(format!("got {DEMO_TOKEN:?}"));
-                    let why = anyhow::Error::new(Sensitive::new(quoted));
+                    let read = Line::new("cloudflare.token: ").secret(DEMO_TOKEN);
+                    step.output(read);
+                    let found = DEMO_TOKEN.len();
+                    let token = Secret::new(DEMO_TOKEN);
+                    let why = anyhow::anyhow!("got {token}: expected 40 characters, found {found}");
                     return Err(
                         why.context("settings.yml: cloudflare.token is not a valid API token")
                     );

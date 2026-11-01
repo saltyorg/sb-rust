@@ -37,11 +37,49 @@ pub fn log_dir(override_dir: Option<OsString>) -> PathBuf {
     override_dir.map_or_else(|| PathBuf::from("/var/log/sb"), PathBuf::from)
 }
 
-/// What sensitive text shows as, on screen and in the log (term-ui
-/// decision 8).
-pub const WITHHELD: &str = "(sensitive, withheld)";
+/// What a secret shows as, in place, on screen and in the log (term-ui
+/// decision 8, amended: inline masking, in the form Rust's secrecy crate
+/// uses, https://docs.rs/secrecy/0.10.3/secrecy/).
+pub const WITHHELD: &str = "[REDACTED]";
 
-/// An error whose text must not be shown or logged (credentials, tokens).
+/// A secret value inside a message: its Display and Debug are
+/// [`WITHHELD`], so `format!("got {}", Secret::new(&token))` never holds
+/// the token, only the placeholder in its place; the rest of the message
+/// stays readable. The value is reachable only through
+/// [`Secret::expose`]. Why not secrecy's `SecretBox`: it has no `Display`
+/// on purpose, and inline masking needs one; it also zeroes the value on
+/// drop, which this type doesn't (sb's secrets live in config files and
+/// process memory anyway).
+#[derive(Clone)]
+pub struct Secret<T>(T);
+
+impl<T> Secret<T> {
+    /// Mark `value` as secret.
+    pub fn new(value: T) -> Self {
+        Self(value)
+    }
+
+    /// The value, for code that must use it (never to show or log).
+    pub fn expose(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::fmt::Display for Secret<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(WITHHELD)
+    }
+}
+
+impl<T> std::fmt::Debug for Secret<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(WITHHELD)
+    }
+}
+
+/// An error whose text must not be shown or logged at all (credentials,
+/// tokens), for errors whose message sb doesn't write (a library's); when
+/// sb writes the message, it marks just the value with [`Secret`].
 /// It says nothing of what it holds: its Display and Debug are
 /// [`WITHHELD`] and it has no cause, so wherever it sits in a chain, even
 /// behind a transparent wrapper or in anyhow's `{:?}`, it and everything
@@ -549,7 +587,7 @@ mod tests {
         let text = log_text(dir.path());
         assert!(!text.contains("hunter2"), "{text}");
         assert!(
-            text.contains("error=check failed error.sources=[(sensitive, withheld)]"),
+            text.contains("error=check failed error.sources=[[REDACTED]]"),
             "{text}"
         );
     }

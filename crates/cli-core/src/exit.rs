@@ -454,6 +454,7 @@ mod tests {
         );
         let block = error_block(&err, None, &Theme::plain());
         assert!(!block.contains("hunter2"), "{block}");
+        assert!(block.contains("caused by: [REDACTED]"), "{block}");
         let whole = crate::log::Sensitive::new(std::io::Error::other("hunter2"));
         assert_eq!(shown_chain(&whole), [crate::log::WITHHELD]);
     }
@@ -475,5 +476,18 @@ mod tests {
         assert!(!block.contains("hunter2"), "{block}");
         assert!(!format!("{err:?}").contains("hunter2"), "{err:?}");
         assert!(!err.to_string().contains("hunter2"));
+        let marker = crate::log::Sensitive::new(std::io::Error::other("hunter2"));
+        assert_eq!(format!("{marker:?}"), "Sensitive([REDACTED])");
+    }
+
+    /// A secret value marked inside a message shows as the placeholder in
+    /// its place; the rest of the message stays.
+    #[test]
+    fn a_secret_value_is_replaced_in_place() {
+        let token = crate::log::Secret::new("hunter2-not-real");
+        let message = format!("got {token}: expected 40 characters");
+        assert_eq!(message, "got [REDACTED]: expected 40 characters");
+        assert_eq!(format!("{token:?}"), "[REDACTED]");
+        assert_eq!(*token.expose(), "hunter2-not-real");
     }
 }

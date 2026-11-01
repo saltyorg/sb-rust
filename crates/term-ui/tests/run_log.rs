@@ -75,10 +75,12 @@ async fn run_steps() {
         step.output("checking item 1");
         step.output("\x1b[32mgreen\x1b[0m");
         step.output("w".repeat(300));
-        step.output(Line::sensitive(format!("ok\ntoken={secret}")));
-        step.warn(Line::sensitive(format!("bad token {secret}")));
-        // Shown to the user on purpose, still never logged.
-        step.info(Line::sensitive(format!("your token: {secret}")).shown());
+        step.output(Line::new("ok, token=").secret(secret));
+        // A secret spanning lines is masked whole, before the split.
+        step.output(Line::new("key: ").secret(format!("{secret}\nsecond-line")));
+        step.warn(Line::new("bad token: ").secret(secret));
+        // Shown to the user on purpose, its value still never logged.
+        step.info(Line::new("your token: ").secret(secret).shown());
         Ok(())
     })
     .await
@@ -139,16 +141,25 @@ fn check(text: &str) {
         "{text}"
     );
     line_with(&format!("text=\"{}\"", "w".repeat(300)));
-    // Sensitive output is one withheld record, whatever its line count.
+    // Secret values are replaced in place; the rest of the line is logged.
     assert_eq!(
-        text.matches("output withheld (sensitive)").count(),
+        text.matches("text=\"ok, token=[REDACTED]\"").count(),
         1,
         "{text}"
     );
+    // The warning, and the shown notice too, at their own levels.
+    assert_eq!(text.matches("token: [REDACTED]\"").count(), 2, "{text}");
     assert!(
         text.lines()
-            .any(|l| l.contains(" INFO ") && l.contains("notice withheld"))
+            .any(|l| l.contains(" INFO ") && l.contains("your token: [REDACTED]"))
     );
+    assert!(line_with("text=\"bad token: [REDACTED]\"").contains(" WARN "));
+    assert_eq!(
+        text.matches("text=\"key: [REDACTED]\"").count(),
+        1,
+        "{text}"
+    );
+    assert!(!text.contains("second-line"), "{text}");
     assert!(line_with("outcome=\"done\"").contains(" INFO "));
     assert!(line_with("step=\"Pulling\" outcome=\"failed\"").contains(" WARN "));
     line_with("elapsed_ms=");
@@ -157,7 +168,7 @@ fn check(text: &str) {
     assert!(stopping.contains("error=\"asked to stop\""), "{stopping}");
     let refused = line_with("step=\"Checking token\" outcome=\"failed\"");
     assert!(
-        refused.contains("error=\"the token was refused: (sensitive, withheld)\""),
+        refused.contains("error=\"the token was refused: [REDACTED]\""),
         "{refused}"
     );
     line_with("step skipped (cancelled) step=\"Late\"");
