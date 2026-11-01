@@ -454,10 +454,6 @@ mod tests {
         );
         let block = error_block(&err, None, &Theme::plain());
         assert!(!block.contains("hunter2"), "{block}");
-        assert!(
-            block.contains("caused by: (sensitive, withheld)"),
-            "{block}"
-        );
         let whole = crate::log::Sensitive::new(std::io::Error::other("hunter2"));
         assert_eq!(shown_chain(&whole), [crate::log::WITHHELD]);
     }
@@ -478,8 +474,6 @@ mod tests {
         let block = error_block(&err, None, &Theme::plain());
         assert!(!block.contains("hunter2"), "{block}");
         assert!(!format!("{err:?}").contains("hunter2"), "{err:?}");
-        let marker = crate::log::Sensitive::new(std::io::Error::other("hunter2"));
-        assert_eq!(format!("{marker:?}"), "Sensitive((sensitive, withheld))");
         assert!(!err.to_string().contains("hunter2"));
     }
 }

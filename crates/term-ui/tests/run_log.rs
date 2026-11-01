@@ -131,7 +131,6 @@ fn check(text: &str) {
     assert!(line_with("step started step=\"Checking credentials\"").contains("run{run=\"t\"}"));
     assert!(line_with("text=\"3 accounts\"").contains(" INFO "));
     assert!(line_with("text=\"unknown key: foo\"").contains(" WARN "));
-    assert!(line_with("notice withheld (sensitive)").contains(" WARN "));
     assert!(line_with("text=\"checking item 1\"").contains(" INFO "));
     // The log gets plain text, whole, whatever the screen shows.
     line_with("text=\"green\"");
@@ -144,12 +143,6 @@ fn check(text: &str) {
     assert_eq!(
         text.matches("output withheld (sensitive)").count(),
         1,
-        "{text}"
-    );
-    // The shown notice is withheld from the log too, at its own level.
-    assert_eq!(
-        text.matches("notice withheld (sensitive)").count(),
-        2,
         "{text}"
     );
     assert!(

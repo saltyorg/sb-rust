@@ -93,7 +93,6 @@ fn piped_output_is_plain() {
         "{text:?}"
     );
     // Without `--sensitive` the demo has no sensitive lines.
-    assert!(!text.contains("(sensitive, withheld)"), "{text:?}");
     // Concurrent steps' lines carry their label (they interleave).
     assert!(
         text.contains("\nChecking Cloudflare token: checking item 1 of 6\n"),

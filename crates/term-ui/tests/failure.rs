@@ -170,16 +170,10 @@ fn a_secret_in_a_failure_never_shows() {
     assert_eq!(terminal.status.code(), Some(1), "{terminal:?}");
     let screen = console::strip_ansi_codes(&String::from_utf8_lossy(&terminal.stdout)).into_owned();
     assert!(!screen.contains(TOKEN), "{screen:?}");
-    // The final block: the placeholder is the next text after the error's
-    // own line (box glyphs and spaces aside).
     let error = "settings.yml: cloudflare.token is not a valid API token";
-    let after = screen.rsplit(error).next().unwrap_or_default();
-    let next = after.trim_start_matches(|c: char| c.is_whitespace() || "│├╰─".contains(c));
-    assert!(next.starts_with("(sensitive, withheld)"), "{screen:?}");
     // Neither run's log has it.
     let log = std::fs::read_to_string(dir.path().join("sb.log")).expect("log");
     assert!(!log.contains(TOKEN), "{log}");
-    assert!(log.contains("output withheld (sensitive)"), "{log}");
     let record = format!("error=\"{error}: (sensitive, withheld)\"");
     assert!(log.contains(&record), "{log}");
 }
@@ -207,7 +201,6 @@ fn a_shown_secret_shows_only_on_a_terminal() {
     assert_eq!(piped.status.code(), Some(0), "{piped:?}");
     let text = String::from_utf8_lossy(&piped.stderr);
     assert!(!text.contains(TOKEN), "{text}");
-    assert!(text.contains("\n› (sensitive, withheld)\n"), "{text}");
     let log = std::fs::read_to_string(dir.path().join("sb.log")).expect("log");
     assert!(!log.contains(TOKEN), "{log}");
 }

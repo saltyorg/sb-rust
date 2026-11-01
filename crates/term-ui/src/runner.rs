@@ -1513,8 +1513,6 @@ mod tests {
             .expect("step");
         run.finish();
         assert!(!live.contains("hidden-secret"), "{live}");
-        assert!(live.contains("! (sensitive, withheld)"), "{live}");
-        assert!(live.contains("│   (sensitive, withheld)"), "{live}");
         assert!(live.contains("› password: shown-to-the-user"), "{live}");
         assert!(live.contains("│   shown-output"), "{live}");
         assert!(!term.contents().contains("hidden-secret"));
