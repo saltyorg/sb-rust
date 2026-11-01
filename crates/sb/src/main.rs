@@ -89,8 +89,10 @@ fn main() -> ExitCode {
         return exit::report(&unsupported, None, &mut anstream::stderr());
     }
     let cli = parse(profile);
-    // The real parse's choice is the one that counts for the run.
+    // The real parse's choice is the one that counts for the run, for
+    // anstream and console alike (term-ui spec: colour on every path).
     cli.color.write_global();
+    sb_term_ui::follow_colour_choice(profile);
     let relaunch = root::ensure_root(
         cli.command.needs_root(),
         root::effective_uid(),
@@ -181,8 +183,8 @@ fn parse(profile: theme::Profile) -> Cli {
     };
     // Help goes to stdout; whether it shows in colour decides the shaded
     // usage block's padding rows.
-    let colour = profile != theme::Profile::Ascii
-        && anstream::AutoStream::choice(&std::io::stdout()) != anstream::ColorChoice::Never;
+    let colour =
+        profile != theme::Profile::Ascii && sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
     let cmd = help::apply(cmd, theme::current(), colour);
     match cmd.try_get_matches() {
         Ok(matches) => Cli::from_arg_matches(&matches).unwrap_or_else(|err| parse_error(err)),

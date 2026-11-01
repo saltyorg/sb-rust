@@ -3186,6 +3186,7 @@ dependencies = [
  "predicates",
  "sb-cli-core",
  "sb-host",
+ "sb-term-ui",
  "tempfile",
  "tracing",
 ]
@@ -3222,6 +3223,17 @@ version = "0.1.0"
 dependencies = [
  "sysinfo",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sb-term-ui"
+version = "0.1.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "console",
+ "sb-cli-core",
+ "tabled",
 ]
 
 [[package]]

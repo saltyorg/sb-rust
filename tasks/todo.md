@@ -73,21 +73,23 @@ running; whose output tail and which pointer a failure shows.
 One function, called from sb's `main` right after the real parse's colour
 choice is written (`cli.color.write_global()`), sets console's stdout and
 stderr switches from anstream's resolved
-choice per stream. Adapters turn a theme role into a console `Style` and a
-tabled colour; nothing under `ascii` or with colour off. deny.toml: the
+choice per stream (both off under `ascii`). Adapters turn a theme role
+into styled text (anstyle; console's `Style` writes bright 16-colours as
+256-colour codes, spec "Colour on every inline path") and a tabled colour;
+nothing under `ascii` or with colour off. deny.toml: the
 cli-core entry becomes `wrappers = ["sb", "sb-term-ui"]` and a new
 `{ crate = "sb-term-ui", wrappers = ["sb"] }` entry is added.
 
 **Acceptance criteria:**
-- [ ] console's switches follow the choice per stream (unit tests with an
+- [x] console's switches follow the choice per stream (unit tests with an
       injected choice: nothing in sb draws through console yet); help exits
       before the hook-up, and for `version` it only sets the two switches;
       the `sb --help` and `sb version` medians hold.
-- [ ] Per-profile guard tests on the adapters (24-bit, 256, 16, none).
-- [ ] `cargo deny` passes with the new architecture entries.
+- [x] Per-profile guard tests on the adapters (24-bit, 256, 16, none).
+- [x] `cargo deny` passes with the new architecture entries.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; `scripts/check.sh full` (size measured).
+- [x] `cargo test -p sb-term-ui`; `scripts/check.sh full` (size measured).
 
 **Dependencies:** None
 **Files:** `crates/term-ui/{Cargo.toml,src/lib.rs,src/style.rs}`, `crates/sb/{Cargo.toml,src/main.rs}`, `deny.toml`, `Cargo.toml`

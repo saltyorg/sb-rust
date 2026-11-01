@@ -239,3 +239,23 @@ fn ascii_reaches_clap_output_too() {
         assert!(!out.stdout.is_empty() || !out.stderr.is_empty(), "{args:?}");
     }
 }
+
+/// Under `ascii`, help is the plain layout even with `--color=always`: no
+/// shaded usage block's padding rows (they only come with colour).
+#[test]
+fn ascii_help_is_the_plain_layout() {
+    let help = |args: &[&str], env: Option<&str>| {
+        let mut cmd = common::sb();
+        cmd.args(args).env_remove("NO_COLOR");
+        match env {
+            Some(profile) => cmd.env("SB_COLOR_PROFILE", profile),
+            None => cmd.env_remove("SB_COLOR_PROFILE"),
+        };
+        cmd.output().expect("run sb").stdout
+    };
+    let plain = help(&["--color=never", "--help"], None);
+    assert_eq!(
+        String::from_utf8_lossy(&help(&["--color=always", "--help"], Some("ascii"))),
+        String::from_utf8_lossy(&plain)
+    );
+}

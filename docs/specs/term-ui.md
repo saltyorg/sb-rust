@@ -52,10 +52,21 @@ appears only under CI, redirection or `-v`.
   for stdout and for stderr (`AutoStream::choice`, as proto-inline did) and
   sets both of console's switches from them every time, so console's own
   `auto` rules can't disagree; indicatif and dialoguer follow console.
+  Under `ascii` both switches are off (proposed in Task 2, below).
 - **Adapters** from cli-core's resolved theme: a role's colour (resolved
-  for the profile by anstyle-lossy) becomes a console `Style` and a tabled
-  colour. No colour maths in term-ui. Under `ascii` or with colour off the
-  adapters give no styling.
+  for the profile by anstyle-lossy) becomes styled text and a tabled
+  colour, both rendered by anstyle. No colour maths in term-ui. Under
+  `ascii` or with colour off the adapters give no styling.
+- **Proposed in Task 2, awaiting the maintainer** (with the anstyle
+  rendering above, console's switches off under `ascii`, and the stack
+  table's console row and `src/style.rs` line): not console's `Style`,
+  because console writes a bright 16-colour as `38;5;8`-`15`, a
+  256-colour code, which criterion 2 forbids under `ansi`; indicatif and
+  console draw styled text as is, measuring it with escape codes
+  stripped. dialoguer's themes take console styles; prompts
+  settle that with their first user (decision 1). The runner colours
+  its lines through the adapters, never through indicatif template
+  styles (`{spinner:.cyan}`), which console renders.
 - The runner and prompts write to stderr; tables and other results write
   to stdout. Each follows its own stream's choice.
 
@@ -164,7 +175,7 @@ Pinned in the workspace when added, each confirmed at source in its task:
 | Need | Crate | Backed by |
 |---|---|---|
 | Spinners, live lines | `indicatif` 0.18.6 (printed-lines pattern) | proto-runner |
-| Styled lines, widths, ANSI stripping, terminal size | `console` 0.16 (indicatif's own) | proto-runner |
+| Widths, ANSI stripping, terminal size, colour switches | `console` 0.16 (indicatif's own); styles rendered by anstyle (Adapters) | proto-runner |
 | Tree glyphs | `termtree` `GlyphPalette` (the rounded `╰` checked in the plan) | proto-runner |
 | Tables | `tabled` 0.22 (`ansi` feature) | proto-inline |
 | Prompts | `dialoguer` 0.12 (console 0.16) | proto-inline |
@@ -188,7 +199,7 @@ scripts/check.sh fast|task|full <base>
 ```
 crates/term-ui/            → sb-term-ui (library)
   src/lib.rs               → the colour hook-up called from sb's main
-  src/style.rs             → theme adapters (console, tabled)
+  src/style.rs             → theme adapters (anstyle text, tabled)
   src/runner.rs            → the task runner
   src/table.rs             → tables
   src/prompt.rs            → prompts (with their first user)

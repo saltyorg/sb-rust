@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 sb-cli-core.workspace = true
 sb-host.workspace = true
+sb-term-ui.workspace = true
 anyhow.workspace = true
 anstream.workspace = true
 clap.workspace = true

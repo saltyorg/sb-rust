@@ -1,0 +1,18 @@
+[package]
+name = "sb-term-ui"
+version = "0.1.0"
+description = "sb's inline terminal output: colour on every path, the task runner and tables (capability map, term-ui)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sb-cli-core.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
+console.workspace = true
+tabled.workspace = true
+
+[lints]
+workspace = true

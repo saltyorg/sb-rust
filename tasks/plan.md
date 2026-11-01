@@ -54,7 +54,7 @@ restore hooks (decision 5).
 
 ### Phase 1: Foundation
 - [x] Task 1: No-blink spike for nested and concurrent steps
-- [ ] Task 2: `sb-term-ui` crate, colour hook-up and theme adapters
+- [x] Task 2: `sb-term-ui` crate, colour hook-up and theme adapters
 - [ ] Task 3: cli-core runs restore hooks before the second-signal exit
 - [ ] Task 4: Runner API design
 
