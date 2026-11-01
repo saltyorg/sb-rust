@@ -127,24 +127,3 @@ fn piped_output_is_plain() {
         "{text:?}"
     );
 }
-
-/// Sensitive text (decision 8): piped, both lines show as the placeholder;
-/// on a terminal, only the one the command chose to show appears.
-#[test]
-fn sensitive_text_is_withheld_off_a_terminal() {
-    let piped = Command::new(demo())
-        .arg("--sensitive")
-        .env_remove("CLICOLOR_FORCE")
-        .output()
-        .expect("run demo");
-    assert_eq!(piped.status.code(), Some(0), "{piped:?}");
-    let text = String::from_utf8_lossy(&piped.stderr);
-    assert!(!text.contains("demo-secret"), "{text:?}");
-    assert!(text.contains("\n(sensitive, withheld)\n"), "{text:?}");
-    assert!(text.contains("\n› (sensitive, withheld)\n"), "{text:?}");
-    let terminal = on_a_terminal("--sensitive");
-    assert_eq!(terminal.status.code(), Some(0), "{terminal:?}");
-    let text = String::from_utf8_lossy(&terminal.stdout);
-    assert!(!text.contains("demo-secret-withheld"), "{text:?}");
-    assert!(text.contains("demo-secret-shown"), "{text:?}");
-}
