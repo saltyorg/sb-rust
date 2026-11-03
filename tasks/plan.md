@@ -83,8 +83,8 @@ restore hooks (decision 5).
 - [x] Task 12: 16-colour OK green (maintainer decision)
 
 ### Checkpoint C: Complete
-- [ ] All tasks done; spec success criteria met or carried by name;
-      `scripts/check.sh full`
+- [x] All tasks done; spec success criteria met or carried by name;
+      `scripts/check.sh full` (approved by the maintainer, 2026-11-03)
 
 Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 

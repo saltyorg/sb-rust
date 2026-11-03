@@ -377,6 +377,6 @@ cli-core's theme and a reviewed look), now that term-ui adds colour users.
 **Scope:** XS
 
 ## Checkpoint C: Complete
-- [ ] All tasks done; `scripts/check.sh full` passes.
-- [ ] Spec success criteria met or carried by name; the maintainer has
-      reviewed the runner and tables.
+- [x] All tasks done; `scripts/check.sh full` passes.
+- [x] Spec success criteria met or carried by name; the maintainer has
+      reviewed the runner and tables (Checkpoint C approved, 2026-11-03).
