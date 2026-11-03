@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (term-ui Task 11)
+Accepted (maintainer, 2026-11-03, term-ui Task 11)
 
 ## Date
 

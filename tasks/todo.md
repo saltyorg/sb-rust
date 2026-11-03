@@ -343,15 +343,16 @@ command that uses it, and this task records that.
 | 10. Prompts | carried to their first user (decision 1) |
 
 **Acceptance criteria:**
-- [ ] Each success criterion has a test or a recorded manual check, or is
+- [x] Each success criterion has a test or a recorded manual check, or is
       named as carried (criteria 4 and 6 beyond the demo, and criterion 9's
       size ADR unless an earlier task crossed the tolerance: the first runner
       command).
-- [ ] Size and startup recorded; any ADR written where the tolerance was
-      crossed.
+- [x] Size and startup recorded; any ADR written where the tolerance was
+      crossed (ADR-005, accepted 2026-11-03).
 
 **Verification:**
-- [ ] `scripts/check.sh full`; the maintainer reviews the demo.
+- [x] `scripts/check.sh full`; the maintainer reviews the demo (approved
+      2026-11-03).
 
 **Dependencies:** Tasks 9, 10
 **Files:** `tasks/todo.md`, `docs/decisions/` (if an ADR is due)

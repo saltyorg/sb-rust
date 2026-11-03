@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (maintainer, 2026-10-30, cli-core Checkpoint C)
+Accepted (maintainer, 2026-10-30, cli-core Checkpoint C); values superseded
+by [ADR-005](ADR-005-term-ui-ratchet-update.md)
 
 ## Date
 

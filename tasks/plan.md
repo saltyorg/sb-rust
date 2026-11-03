@@ -79,7 +79,7 @@ restore hooks (decision 5).
 
 ### Phase 3: Tables and close
 - [x] Task 10: Tables in the reviewed `docker ps` look
-- [ ] Task 11: Success criteria and measurements
+- [x] Task 11: Success criteria and measurements
 - [ ] Task 12: 16-colour OK green (maintainer decision)
 
 ### Checkpoint C: Complete
