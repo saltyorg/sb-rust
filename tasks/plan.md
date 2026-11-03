@@ -70,7 +70,7 @@ every sibling finish (decision 3).
 - [x] Task 6: The rules engine
 - [x] Task 7: The sync validators and secrets
 - [x] Task 8: The HTTP fake, the client and Docker Hub
-- [ ] Task 9: The Cloudflare check
+- [x] Task 9: The Cloudflare check
 - [ ] Task 10: The validation run in sb-config
 - [ ] Task 11: `sb validate-config` in sb (command, runner, basic
       end-to-end, size ADR)

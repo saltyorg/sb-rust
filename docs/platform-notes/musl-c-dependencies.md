@@ -9,7 +9,7 @@ portable-pty.
 (`default-features = false`, features `rustls`, `json`), which brings
 rustls 0.23.46, aws-lc-rs 1.19.0, aws-lc-sys 0.47.0 and
 rustls-platform-verifier 0.7.1; serde-saphyr 2.1.0; saphyr 0.3.3;
-saphyr-parser 0.3.3; regex 1.13.1; psl 2.1.246; jiff 0.2.39
+saphyr-parser 0.3.3; regex 1.13.1; psl 2.1.246 (sb-config pins 2.1.241, the newest release at least two weeks old when it was added); jiff 0.2.39
 (`default-features = false`, features `std`, `tz-system`,
 `tzdb-zoneinfo`); tokio 1 (`rt`, `net`, `time`); cross 0.2.5 with its
 `ghcr.io/cross-rs/*-unknown-linux-musl:0.2.5` images (GCC 9.2.0, CMake

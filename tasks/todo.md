@@ -356,15 +356,15 @@ connection errors, 408, 409, 429 and 5xx, honouring `Retry-After` and
 `x-should-retry`), backoff injectable.
 
 **Acceptance criteria:**
-- [ ] Each outcome against the fake, each failure's guidance text, the
+- [x] Each outcome against the fake, each failure's guidance text, the
       retries and their limits, flexible SSL, a timeout; skipped without
       credentials.
-- [ ] No token in any output, error or log record (a known-secret test);
+- [x] No token in any output, error or log record (a known-secret test);
       the crate's cargo-deny run (`--all-features`) passes with the
       public-suffix crate.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; library-reviewer on the diff;
+- [x] `cargo test -p sb-config`; library-reviewer on the diff;
       `scripts/check.sh full`.
 
 **Dependencies:** Task 8

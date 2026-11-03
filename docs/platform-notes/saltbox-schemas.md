@@ -6,7 +6,7 @@ Verified 2026-11-03 for the `config` module (config plan, Task 1).
 https://github.com/saltyorg/Saltbox commit
 6830b26bf004078f4d047fcf2a6abf7fc7a78131 (2026-11-01, GPL-3.0); sb-go's
 `saltbox/yaml_schema.go` and `saltbox/custom_validators.go` (read);
-saphyr 0.3.3 and saphyr-parser 0.3.3; regex 1.13.1; psl 2.1.246;
+saphyr 0.3.3 and saphyr-parser 0.3.3; regex 1.13.1; psl 2.1.246 (sb-config pins 2.1.241, the newest release at least two weeks old when it was added);
 jiff 0.2.39.
 
 **Method:** a fresh clone of the public repository (never a live

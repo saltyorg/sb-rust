@@ -11,7 +11,7 @@ publish.workspace = true
 # The fake HTTP server (`testing` module) for sb-config's tests and sb's
 # end-to-end tests: built into the sb that `cargo test` runs (dev-dependency
 # features unify), never into a release or production build.
-testing = ["dep:axum", "dep:tempfile", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/time"]
+testing = ["dep:axum", "dep:tempfile", "tokio/net", "tokio/rt", "tokio/sync"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -21,10 +21,12 @@ regex.workspace = true
 regex-syntax.workspace = true
 jiff.workspace = true
 reqwest.workspace = true
+psl.workspace = true
 serde_json.workspace = true
 axum = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
+# The Cloudflare check's wait between attempts (reqwest runs on tokio).
+tokio = { workspace = true, features = ["time"] }
 saphyr.workspace = true
 saphyr-parser.workspace = true
 thiserror.workspace = true
