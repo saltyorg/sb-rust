@@ -171,7 +171,8 @@ fn main() -> ExitCode {
 }
 
 /// The theme file's choice (`SB_CONFIG`, else
-/// `<server_appdata_path>/sb/config.toml`), or the built-in theme and a
+/// `<server_appdata_path>/sb/config.toml`, read from the inventory under
+/// `SB_SALTBOX_DIR`'s root), or the built-in theme and a
 /// warning saying why the file wasn't used.
 fn theme_choice() -> (config::ThemeChoice, Vec<String>) {
     let (path, loaded) = match config_override(std::env::var_os("SB_CONFIG")) {
@@ -180,7 +181,8 @@ fn theme_choice() -> (config::ThemeChoice, Vec<String>) {
             (path, loaded)
         }
         None => {
-            let appdata = config::appdata_path(std::path::Path::new(config::INVENTORY));
+            let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
+            let appdata = config::appdata_path(&config::inventory_path(&root));
             (
                 config::config_path(&appdata),
                 config::load_theme_in(&appdata),

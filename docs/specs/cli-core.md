@@ -287,11 +287,17 @@ boundaries that callers match on.
 - `SB_CONFIG` names the config file instead of
   `<server_appdata_path>/sb/config.toml` (tests and debugging; sudo
   doesn't pass it through, so a relaunched root run reads the real file,
-  and its log records that file's warnings). Startup warnings (theme
-  file, colour profile) show once, in the first run, and go to the run
-  log in the run that has one. Config and inventory are read up to 1 MiB;
-  config errors are one line with control characters escaped (the file is
-  group-writable). The real config is opened beneath
+  and its log records that file's warnings). `SB_SALTBOX_DIR` moves the
+  Saltbox root (`/srv/git/saltbox`) the inventory is read under (tests
+  and debugging, as `SB_CONFIG`; unset or empty means the default; sudo
+  drops it too). The completion tag cache (`cache.json`, above) moves
+  with it when the ansible and completion modules are built. *Amended
+  2026-11-03 (config spec, one Saltbox root; config plan Task 3).*
+  Startup warnings (theme file, colour profile) show once, in the first
+  run, and go to the run log in the run that has one. Config and
+  inventory are read up to 1 MiB; config errors are one line with
+  control characters escaped (the file is group-writable). The real
+  config is opened beneath
   `<server_appdata_path>` with `openat2` (no symlinks, no mount crossing),
   non-blocking and without taking a controlling terminal, and only a
   regular file is read: a planted link, FIFO or device can't hang or

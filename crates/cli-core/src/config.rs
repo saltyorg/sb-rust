@@ -12,6 +12,7 @@
 //! the theme too.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
@@ -19,9 +20,25 @@ use serde::Deserialize;
 
 use crate::theme::{Palette, Profile, Role};
 
-/// The Saltbox inventory holding `server_appdata_path` (sb-go's
-/// `SaltboxInventoryConfigPath`).
-pub const INVENTORY: &str = "/srv/git/saltbox/inventories/host_vars/localhost.yml";
+/// The Saltbox checkout (sb-go's `SaltboxRepoPath`), unless
+/// `SB_SALTBOX_DIR` moves it.
+const SALTBOX_DIR: &str = "/srv/git/saltbox";
+
+/// The Saltbox root: `SB_SALTBOX_DIR` (tests and debugging, as
+/// `SB_CONFIG`; sudo's relaunch drops it) when set and not empty, else
+/// `/srv/git/saltbox` (config spec: one root for the inventory and the
+/// config files). Why not clap's `Arg::env`: the root is read before the
+/// parse (the theme colours help), and it would need a flag.
+pub fn saltbox_dir(var: Option<OsString>) -> PathBuf {
+    var.filter(|value| !value.is_empty())
+        .map_or_else(|| PathBuf::from(SALTBOX_DIR), PathBuf::from)
+}
+
+/// The Saltbox inventory holding `server_appdata_path` under `root`
+/// (sb-go's `SaltboxInventoryConfigPath`).
+pub fn inventory_path(root: &Path) -> PathBuf {
+    root.join("inventories/host_vars/localhost.yml")
+}
 
 /// sb's config file, relative to the appdata path.
 const CONFIG_FILE: &str = "sb/config.toml";
@@ -291,6 +308,19 @@ fn hex_colour(value: &str) -> Option<anstyle::RgbColor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Saltbox root: `SB_SALTBOX_DIR` when set and not empty, else
+    /// `/srv/git/saltbox`; the inventory lives under it.
+    #[test]
+    fn the_saltbox_root_follows_sb_saltbox_dir() {
+        assert_eq!(saltbox_dir(None), Path::new("/srv/git/saltbox"));
+        assert_eq!(saltbox_dir(Some("".into())), Path::new("/srv/git/saltbox"));
+        assert_eq!(saltbox_dir(Some("/tmp/sbx".into())), Path::new("/tmp/sbx"));
+        assert_eq!(
+            inventory_path(Path::new("/tmp/sbx")),
+            Path::new("/tmp/sbx/inventories/host_vars/localhost.yml")
+        );
+    }
 
     /// `read`'s result, or a failure (not a hung test) when it blocks: a
     /// FIFO opened without `NONBLOCK` never returns.

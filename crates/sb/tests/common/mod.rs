@@ -29,9 +29,23 @@ pub fn sb() -> std::process::Command {
         })
         .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("sb"));
     let mut cmd = std::process::Command::new(program);
+    apply_sb_env(&mut cmd);
+    cmd
+}
+
+/// The environment every sb test run gets, for `cmd` (sb itself, or a
+/// program that starts it: `script`, `unshare`, `setpriv`); tests that
+/// want other values set them after. `tests/isolation.rs` checks that
+/// every test starting sb by its path calls this.
+pub fn apply_sb_env(cmd: &mut std::process::Command) {
     cmd.env("SB_LOG_DIR", test_log_dir());
     // No test reads a real /opt/sb/config.toml; tests that want one set it.
     cmd.env("SB_CONFIG", test_log_dir().join("no-such-config.toml"));
+    // Nor the real Saltbox checkout: a root with no Saltbox files; tests
+    // that want some point it at their own. (Without an inventory the
+    // theme file would be `/opt/sb/config.toml`: `SB_CONFIG` above keeps
+    // it off the host, not this.)
+    cmd.env("SB_SALTBOX_DIR", test_log_dir().join("no-saltbox"));
     // No test reaches the host's Docker daemon: a socket that doesn't
     // exist unless a test points DOCKER_HOST at its fake, and none of the
     // developer's Docker settings.
@@ -49,5 +63,4 @@ pub fn sb() -> std::process::Command {
     ] {
         cmd.env_remove(name);
     }
-    cmd
 }

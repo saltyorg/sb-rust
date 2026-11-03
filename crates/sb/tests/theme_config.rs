@@ -92,3 +92,34 @@ fn the_path_in_the_warning_is_escaped() {
     assert!(stderr.contains("unknown theme"), "{stderr:?}");
     assert!(!out.stderr.contains(&0x1b), "{stderr:?}");
 }
+
+/// Without `SB_CONFIG`, the theme file is found through the inventory
+/// under `SB_SALTBOX_DIR` (config spec: one Saltbox root).
+#[test]
+fn the_inventory_is_read_under_sb_saltbox_dir() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let appdata = root.path().join("appdata");
+    let host_vars = root.path().join("inventories/host_vars");
+    std::fs::create_dir_all(&host_vars).expect("inventory dir");
+    std::fs::write(
+        host_vars.join("localhost.yml"),
+        format!("server_appdata_path: {}\n", appdata.display()),
+    )
+    .expect("write inventory");
+    std::fs::create_dir_all(appdata.join("sb")).expect("config dir");
+    std::fs::write(
+        appdata.join("sb/config.toml"),
+        "[theme.colors]\nproblem = \"#102030\"\n",
+    )
+    .expect("write config");
+    let full = std::fs::File::create("/dev/full").expect("/dev/full");
+    let out = common::sb()
+        .args(["--color=always", "version"])
+        .stdout(full)
+        .env_remove("SB_CONFIG")
+        .env("SB_SALTBOX_DIR", root.path())
+        .output()
+        .expect("run sb");
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(stderr.contains("\x1b[38;2;16;32;48m✗"), "{stderr:?}");
+}

@@ -48,9 +48,9 @@ every sibling finish (decision 3).
 
 ### Phase 1: Evidence and groundwork
 
-- [ ] Task 1: Schemas, dependencies, the musl build and crate choices
-- [ ] Task 2: term-ui: a group that lets every sibling finish
-- [ ] Task 3: One Saltbox root: `SB_SALTBOX_DIR`
+- [x] Task 1: Schemas, dependencies, the musl build and crate choices
+- [x] Task 2: term-ui: a group that lets every sibling finish
+- [x] Task 3: One Saltbox root: `SB_SALTBOX_DIR`
 
 ### Checkpoint A: Evidence
 

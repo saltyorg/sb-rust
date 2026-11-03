@@ -18,8 +18,8 @@ fn has_escape(bytes: &[u8]) -> bool {
 fn sb_on_a_terminal(args: &str, env: &[(&str, &str)]) -> Output {
     let program = common::sb().get_program().to_string_lossy().into_owned();
     let mut cmd = std::process::Command::new("script");
+    common::apply_sb_env(&mut cmd);
     cmd.args(["-qec", &format!("exec '{program}' {args}"), "/dev/null"])
-        .env("SB_LOG_DIR", common::test_log_dir())
         .env("TERM", "xterm-256color")
         .env_remove("NO_COLOR")
         .env_remove("CLICOLOR")

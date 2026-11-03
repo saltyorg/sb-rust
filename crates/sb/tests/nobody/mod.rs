@@ -12,12 +12,12 @@ use std::process::{Command, Output};
 /// Run sb as `nobody` with `sudo_script` as its `sudo`, logging to
 /// `log_dir` if it logged at all. `sudo_dir` holds the script (made
 /// world-readable, so `nobody` can run it). Returns sb's process ID (the
-/// same through setpriv's and env's execs) and its output. As with
-/// `common::sb()`, the run never reaches the host's Docker daemon
-/// (`DOCKER_HOST` names a socket that doesn't exist, the developer's Docker
-/// settings are dropped) nor the host's theme file (`SB_CONFIG`), and an
-/// inherited relaunch marker is dropped. Only called when the root tests
-/// were asked for, so a switch that fails is a failure.
+/// same through setpriv's and env's execs) and its output. The run gets
+/// `common::sb()`'s environment (setpriv and env pass it on), with its
+/// log, theme, Saltbox and Docker paths moved under `log_dir`, so it never
+/// reaches the host's; an inherited relaunch marker is dropped. Only
+/// called when the root tests were asked for, so a switch that fails is a
+/// failure.
 pub fn sb_as_nobody(
     args: &[&str],
     log_dir: &Path,
@@ -41,27 +41,27 @@ pub fn sb_as_nobody(
         .status()
         .expect("run setpriv");
     assert!(runnable.success(), "nobody can't run {}", sudo.display());
-    let child = as_nobody()
+    let mut setpriv = as_nobody();
+    super::common::apply_sb_env(&mut setpriv);
+    let child = setpriv
         .arg("env")
-        .args([
-            "-u",
-            "DOCKER_API_VERSION",
-            "-u",
-            "DOCKER_TLS_VERIFY",
-            "-u",
-            "DOCKER_CERT_PATH",
-            "-u",
-            "SB_RELAUNCHED",
-        ])
+        .args(["-u", "SB_RELAUNCHED"])
         .arg(format!("PATH={}:/usr/bin:/bin", sudo_dir.display()))
         .arg(format!("SB_LOG_DIR={}", log_dir.display()))
-        .arg(format!(
-            "DOCKER_HOST=unix://{}",
-            log_dir.join("no-docker.sock").display()
-        ))
+        // The helper's own paths sit in a directory root made 0700, which
+        // nobody can't look into (an unreadable theme file warns); these
+        // are missing, not unreadable.
         .arg(format!(
             "SB_CONFIG={}",
             log_dir.join("no-such-config.toml").display()
+        ))
+        .arg(format!(
+            "SB_SALTBOX_DIR={}",
+            log_dir.join("no-saltbox").display()
+        ))
+        .arg(format!(
+            "DOCKER_HOST=unix://{}",
+            log_dir.join("no-docker.sock").display()
         ))
         .arg(super::common::sb().get_program())
         .args(args)

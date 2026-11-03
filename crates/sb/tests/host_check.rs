@@ -25,22 +25,22 @@ fn sb_with_os_release(content: &str, args: &[&str]) -> Output {
     let mut fake = tempfile::NamedTempFile::new().expect("temp file");
     fake.write_all(content.as_bytes()).expect("write");
     let script = r#"mount --bind "$1" /etc/os-release && shift && exec "$@""#;
-    Command::new("unshare")
-        .env("SB_LOG_DIR", common::test_log_dir())
-        .args([
-            "--mount",
-            "--propagation",
-            "private",
-            "sh",
-            "-c",
-            script,
-            "sh",
-        ])
-        .arg(fake.path())
-        .arg(common::sb().get_program())
-        .args(args)
-        .output()
-        .expect("run unshare")
+    let mut cmd = Command::new("unshare");
+    common::apply_sb_env(&mut cmd);
+    cmd.args([
+        "--mount",
+        "--propagation",
+        "private",
+        "sh",
+        "-c",
+        script,
+        "sh",
+    ])
+    .arg(fake.path())
+    .arg(common::sb().get_program())
+    .args(args)
+    .output()
+    .expect("run unshare")
 }
 
 #[test]

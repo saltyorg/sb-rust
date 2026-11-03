@@ -44,9 +44,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - **Arguments:** none (sb-go: `cobra.NoArgs`); help texts sb-go's
   ("Validate Saltbox configuration files"). No `--verbose/-v` (decision 1).
 - **The Saltbox root** is `/srv/git/saltbox`, or `SB_SALTBOX_DIR` when set
-  (tests and debugging, as `SB_CONFIG`; sudo's relaunch drops it). It
-  moves cli-core's inventory path too (read at startup for the theme), so
-  there is one root.
+  and not empty (tests and debugging, as `SB_CONFIG`; sudo's relaunch
+  drops it). It moves cli-core's inventory path too (read at startup for
+  the theme), so there is one root.
 - **Files**, in sb-go's order:
 
   | File | Schema | Missing |

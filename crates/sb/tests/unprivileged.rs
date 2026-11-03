@@ -33,6 +33,10 @@ fn version_and_help_never_call_sudo() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(!out.stdout.is_empty(), "{args:?}");
+        // No startup warning: the test's theme and Saltbox paths are ones
+        // nobody can look up (missing, not unreadable).
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("warning:"), "{args:?}: {stderr}");
     }
     // An unprivileged run doesn't log: the directory it could have made
     // (nobody may write the parent) doesn't exist.

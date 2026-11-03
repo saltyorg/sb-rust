@@ -37,20 +37,14 @@ fn ps(host: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
 /// `sb docker ps` on a pseudo-terminal `cols` wide (util-linux `script`,
 /// as sb's colour tests), with `common::sb()`'s environment and `env`.
 fn ps_on_a_terminal(host: &str, args: &str, cols: u16, env: &[(&str, &str)]) -> Output {
-    let base = common::sb();
-    let program = base.get_program().to_string_lossy().into_owned();
+    let program = common::sb().get_program().to_string_lossy().into_owned();
     let mut cmd = std::process::Command::new("script");
+    common::apply_sb_env(&mut cmd);
     cmd.args([
         "-qec",
         &format!("stty cols {cols} rows 30; exec '{program}' docker ps {args}"),
         "/dev/null",
     ]);
-    for (k, v) in base.get_envs() {
-        match v {
-            Some(v) => cmd.env(k, v),
-            None => cmd.env_remove(k),
-        };
-    }
     cmd.env("DOCKER_HOST", host)
         .env("TERM", "xterm-256color")
         .env_remove("NO_COLOR")

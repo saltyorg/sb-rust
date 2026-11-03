@@ -41,6 +41,13 @@ Carried forward (open items owned by later work):
   user, self-update or git's confirm (decision 1).
 - From docker Task 4's review: term-ui's `Cell` passes control characters
   through; escape them when a command shows less trusted text.
+- From config Task 3's review: docker.rs's
+  `ps_relaunches_through_sudo_when_not_root` gives `sb_as_nobody` a 0700
+  temporary directory as `log_dir`, so the `nobody` run's theme path is
+  unreadable and sb warns before relaunching (the test checks only the
+  exit code and the sudo record). Use a 0777 parent with a missing child,
+  as unprivileged.rs does, and assert no `warning:`; with the next docker
+  change.
 - From config Task 2: term-ui draws a nested concurrent sibling's lines
   in creation order, not tree order. With a group inside a group's
   sibling, a step the inner sibling starts late is drawn after a later
@@ -144,11 +151,11 @@ to a test directory with no Saltbox files, so no sb test reads the real
 checkout from now on.
 
 **Acceptance criteria:**
-- [ ] The theme reads the inventory under `SB_SALTBOX_DIR` (a test); unset
+- [x] The theme reads the inventory under `SB_SALTBOX_DIR` (a test); unset
       or empty means the default; the cli-core spec amended.
 
 **Verification:**
-- [ ] `scripts/check.sh full`.
+- [x] `scripts/check.sh full`.
 
 **Dependencies:** None (beside Tasks 1-2)
 **Files:** `crates/cli-core/src/config.rs`, `crates/sb/src/main.rs`,
