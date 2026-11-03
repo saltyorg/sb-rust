@@ -31,8 +31,6 @@ Carried forward (open items owned by later work):
     end-to-end test that a real secret never reaches the run log.
   - Help: fang's 120-column wrap of long abouts comes with the first ported
     command whose long text needs it (cli-core Task 11).
-  - Under `SB_COLOR_PROFILE=ansi` the palette's OK green maps to the same
-    light grey as muted text (help's flags, H1's fixes); see Task 12.
 - From term-ui's spec: prompts (criterion 10) are built with their first
   user, self-update or git's confirm (decision 1).
 - From this plan: the first runner command builds sb's tokio runtime after
@@ -366,11 +364,13 @@ to give 16-colour mode an explicit colour per role (a change to
 cli-core's theme and a reviewed look), now that term-ui adds colour users.
 
 **Acceptance criteria:**
-- [ ] The maintainer's decision recorded; if yes, the mapping changed with
-      guard tests.
+- [x] The maintainer's decision recorded; if yes, the mapping changed with
+      guard tests (2026-11-03: an explicit pick per role, chosen from a
+      preview on a real terminal; ADR-006; theme.rs pins every pick, keeps
+      the status roles apart and an overridden role on the nearest match).
 
 **Verification:**
-- [ ] `scripts/check.sh full` if code changed.
+- [x] `scripts/check.sh full` if code changed.
 
 **Dependencies:** Task 11
 **Files:** `crates/cli-core/src/theme.rs` (if yes)

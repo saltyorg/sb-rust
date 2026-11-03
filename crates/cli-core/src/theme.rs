@@ -5,14 +5,17 @@
 //! truecolor as is, or converted with anstyle-lossy, the anstream project's
 //! conversion crate (https://docs.rs/anstyle-lossy/1.1.5/anstyle_lossy/).
 //! The 16-colour palette of a terminal can't be known, so `ansi` matches
-//! against anstyle-lossy's VGA palette. Output libraries take their
-//! colours from the resolved [`Theme`]; each one's adapter comes with the
-//! module that brings that library (term-ui, tui), not before.
+//! against anstyle-lossy's VGA palette, except that the built-in palette's
+//! colours take a reviewed pick per role there (ADR-006): nearest-colour
+//! matching put OK, idle, container and accent_2 on muted text's grey.
+//! Output libraries take their colours from the resolved [`Theme`]; each
+//! one's adapter comes with the module that brings that library (term-ui,
+//! tui), not before.
 //! `--color=never` and NO_COLOR still win: output goes through anstream.
 
 use std::sync::OnceLock;
 
-use anstyle::{Color, RgbColor, Style};
+use anstyle::{AnsiColor, Color, RgbColor, Style};
 
 /// A colour's job, not its hue: screens share one meaning per role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +159,40 @@ impl Default for Palette {
     }
 }
 
+/// The 16-colour pick for each role's built-in colour (ADR-006), in
+/// [`Role::ALL`] order; a role a theme file sets to another colour is
+/// matched instead.
+const SIXTEEN: [AnsiColor; Role::ALL.len()] = {
+    use AnsiColor::*;
+    [
+        BrightWhite,   // text
+        White,         // muted
+        BrightBlack,   // faint
+        BrightBlack,   // border
+        BrightCyan,    // accent
+        Black,         // on_accent
+        BrightGreen,   // ok
+        BrightRed,     // problem
+        BrightYellow,  // warn
+        Cyan,          // idle
+        BrightBlue,    // service
+        Blue,          // service_rule
+        BrightMagenta, // container
+        Magenta,       // container_rule
+        Red,           // attention_rule
+        BrightYellow,  // highlight
+        BrightBlue,    // link
+        BrightYellow,  // code
+        Black,         // code_bg
+        BrightMagenta, // accent_2
+        BrightBlack,   // button_bg
+        Black,         // button_disabled_bg
+        Yellow,        // search_hit
+        BrightWhite,   // selected_fg
+        Blue,          // selected_bg
+    ]
+};
+
 impl Palette {
     pub fn get(&self, role: Role) -> RgbColor {
         self.0[role.index()]
@@ -241,8 +278,18 @@ impl Profile {
 pub struct Theme([Option<Color>; Role::ALL.len()]);
 
 impl Theme {
+    /// Every role in `profile`; under `ansi` a role still on its built-in
+    /// colour takes [`SIXTEEN`]'s pick (ADR-006).
     pub fn resolve(palette: &Palette, profile: Profile) -> Self {
-        Self(palette.0.map(|colour| profile.resolve(colour)))
+        let built_in = Palette::default();
+        Self(std::array::from_fn(|i| {
+            let colour = palette.0[i];
+            if profile == Profile::Ansi && colour == built_in.0[i] {
+                Some(Color::Ansi(SIXTEEN[i]))
+            } else {
+                profile.resolve(colour)
+            }
+        }))
     }
 
     /// No colour at all (before startup installs the real theme).
@@ -433,6 +480,114 @@ mod tests {
             Profile::Ansi.resolve(anstyle::RgbColor(0xFF, 0x6E, 0x7A)),
             Some(anstyle::Color::Ansi(anstyle::AnsiColor::BrightRed))
         );
+    }
+
+    /// Under 16 colours the built-in palette takes the reviewed pick for
+    /// each role, by name (term-ui Task 12; ADR-006): nearest-colour
+    /// matching put OK, idle, container and accent_2 on muted text's grey.
+    /// Each pick is tied to the nearest match of the colour it was chosen
+    /// for, so changing a built-in colour fails here until its pick is
+    /// reviewed too.
+    #[test]
+    fn sixteen_colours_use_the_reviewed_pick_per_role() {
+        use anstyle::AnsiColor::*;
+        // (role, nearest VGA match of its built-in colour, pick)
+        let reviewed: [(Role, anstyle::AnsiColor, anstyle::AnsiColor); Role::ALL.len()] = [
+            (Role::Text, BrightWhite, BrightWhite),
+            (Role::Muted, White, White),
+            (Role::Faint, BrightBlack, BrightBlack),
+            (Role::Border, BrightBlack, BrightBlack),
+            (Role::Accent, BrightCyan, BrightCyan),
+            (Role::OnAccent, Black, Black),
+            (Role::Ok, White, BrightGreen),
+            (Role::Problem, BrightRed, BrightRed),
+            (Role::Warn, BrightYellow, BrightYellow),
+            (Role::Idle, White, Cyan),
+            (Role::Service, BrightBlue, BrightBlue),
+            (Role::ServiceRule, BrightBlack, Blue),
+            (Role::Container, White, BrightMagenta),
+            (Role::ContainerRule, BrightBlack, Magenta),
+            (Role::AttentionRule, BrightBlack, Red),
+            (Role::Highlight, BrightYellow, BrightYellow),
+            (Role::Link, BrightBlue, BrightBlue),
+            (Role::Code, BrightYellow, BrightYellow),
+            (Role::CodeBg, Black, Black),
+            (Role::Accent2, White, BrightMagenta),
+            (Role::ButtonBg, BrightBlack, BrightBlack),
+            (Role::ButtonDisabledBg, Black, Black),
+            (Role::SearchHit, BrightBlack, Yellow),
+            (Role::SelectedFg, BrightWhite, BrightWhite),
+            (Role::SelectedBg, BrightBlack, Blue),
+        ];
+        let roles: Vec<_> = reviewed.iter().map(|(role, _, _)| *role).collect();
+        assert_eq!(roles, Role::ALL, "every role once, in order");
+        let palette = Palette::default();
+        let theme = Theme::resolve(&palette, Profile::Ansi);
+        for (role, nearest, pick) in reviewed {
+            assert_eq!(
+                Profile::Ansi.resolve(palette.get(role)),
+                Some(anstyle::Color::Ansi(nearest)),
+                "{}: built-in colour changed; review its pick",
+                role.name()
+            );
+            assert_eq!(
+                theme.color(role),
+                Some(anstyle::Color::Ansi(pick)),
+                "{}",
+                role.name()
+            );
+        }
+    }
+
+    /// The roles a status or a list tells apart never share a colour under
+    /// 16 colours.
+    #[test]
+    fn status_roles_stay_apart_in_sixteen_colours() {
+        let theme = Theme::resolve(&Palette::default(), Profile::Ansi);
+        let roles = [
+            Role::Muted,
+            Role::Ok,
+            Role::Problem,
+            Role::Warn,
+            Role::Idle,
+            Role::Service,
+            Role::Container,
+        ];
+        let colours: std::collections::HashSet<_> = roles.iter().map(|&r| theme.color(r)).collect();
+        assert_eq!(colours.len(), roles.len(), "{colours:?}");
+    }
+
+    /// A role a theme file sets to another colour keeps the nearest match:
+    /// the pick belongs to the role on its built-in colour.
+    #[test]
+    fn an_overridden_role_keeps_the_nearest_match() {
+        let mut palette = Palette::default();
+        let red = anstyle::RgbColor(0xFF, 0x6E, 0x7A);
+        palette.set(Role::Ok, red);
+        let theme = Theme::resolve(&palette, Profile::Ansi);
+        assert_eq!(theme.color(Role::Ok), Profile::Ansi.resolve(red));
+        assert_eq!(
+            theme.color(Role::Ok),
+            Some(anstyle::Color::Ansi(anstyle::AnsiColor::BrightRed))
+        );
+    }
+
+    /// The other profiles never use the picks: every role resolves as its
+    /// colour does on its own.
+    #[test]
+    fn other_profiles_resolve_every_role_directly() {
+        let palette = Palette::default();
+        for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ascii] {
+            let theme = Theme::resolve(&palette, profile);
+            for role in Role::ALL {
+                assert_eq!(
+                    theme.color(role),
+                    profile.resolve(palette.get(role)),
+                    "{profile:?} {}",
+                    role.name()
+                );
+            }
+        }
     }
 
     /// Every role has a unique config name (the theme file uses them).

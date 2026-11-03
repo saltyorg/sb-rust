@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (maintainer, 2026-10-30)
+Accepted (maintainer, 2026-10-30); amended by
+[ADR-006](ADR-006-sixteen-colour-picks.md)
 
 ## Date
 
@@ -96,3 +97,7 @@ Facts checked at source (2026-10-30):
   `color_profile` when the file sets one, and to `truecolor` otherwise.
   An unusable environment value shouldn't discard a valid choice in the
   file; with no file profile this is decision 2 unchanged.
+- 2026-11-03, term-ui Task 12: under `ansi`, the built-in palette's
+  colours take a reviewed pick per role instead of the nearest VGA match;
+  colours a theme file sets are still matched. See
+  [ADR-006](ADR-006-sixteen-colour-picks.md).

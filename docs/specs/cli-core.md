@@ -267,7 +267,8 @@ boundaries that callers match on.
   coloured. (Before the sb-go format, clap's 16-colour defaults applied to
   the other profiles; help now takes the theme's colours.)
 - Colour profiles (ADR-002) resolve the palette once at startup with
-  anstyle-lossy (16 colours matched against its VGA palette) and are
+  anstyle-lossy (16 colours matched against its VGA palette, except the
+  built-in palette's reviewed picks per role, ADR-006) and are
   installed as the run's theme; sb's own messages go through anstream, so
   `--color` and NO_COLOR win. Each output library's adapter (ratatui,
   console, tabled) comes with the module that brings that library.

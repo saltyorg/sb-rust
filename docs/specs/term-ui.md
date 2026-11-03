@@ -54,9 +54,10 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   `auto` rules can't disagree; indicatif and dialoguer follow console.
   Under `ascii` both switches are off (Task 2, approved at Checkpoint A, below).
 - **Adapters** from cli-core's resolved theme: a role's colour (resolved
-  for the profile by anstyle-lossy) becomes styled text and a tabled
-  colour, both rendered by anstyle. No colour maths in term-ui. Under
-  `ascii` or with colour off the adapters give no styling.
+  for the profile by anstyle-lossy, or ADR-006's pick under `ansi`)
+  becomes styled text and a tabled colour, both rendered by anstyle. No
+  colour maths in term-ui. Under `ascii` or with colour off the adapters
+  give no styling.
 - **Chosen in Task 2, approved at Checkpoint A (maintainer,
   2026-11-01)** (with the anstyle rendering above, console's switches off
   under `ascii`, and the stack table's console row and `src/style.rs`
