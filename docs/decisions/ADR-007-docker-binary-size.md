@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (docker plan Task 6a)
+Accepted (maintainer, 2026-11-03, docker Checkpoint B)
 
 ## Date
 

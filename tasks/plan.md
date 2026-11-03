@@ -76,8 +76,8 @@ and log streams are later plans.
 
 ### Checkpoint B: The command works
 
-- [ ] `scripts/check.sh full`; the maintainer tries a release build on a
-      real host
+- [x] `scripts/check.sh full`; the maintainer tries a release build on a
+      real host (approved 2026-11-03)
 
 ### Phase 3: Proof
 

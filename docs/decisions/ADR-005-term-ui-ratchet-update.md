@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-03, term-ui Task 11)
+Accepted (maintainer, 2026-11-03, term-ui Task 11); binary size value
+superseded by [ADR-007](ADR-007-docker-binary-size.md)
 
 ## Date
 

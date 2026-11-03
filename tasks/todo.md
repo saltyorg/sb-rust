@@ -300,9 +300,10 @@ looped into thousands of processes), `SB_LOG_DIR` in `target/`, a timeout.
 **Scope:** S
 
 ## Checkpoint B: The command works
-- [ ] `scripts/check.sh full` passes.
-- [ ] The maintainer runs a release build of `sb docker ps` and `--json`
-      on a real host (standalone binary, `SB_LOG_DIR` set).
+- [x] `scripts/check.sh full` passes.
+- [x] The maintainer runs a release build of `sb docker ps` and `--json`
+      on a real host (standalone binary, `SB_LOG_DIR` set): looks right
+      (2026-11-03); ADR-007 accepted.
 
 ## Task 7: End-to-end: errors, settings and output modes
 

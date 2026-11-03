@@ -62,13 +62,13 @@ without them coverage reads lower).
 The "Today" values are written as limits, so the floor guard reports any
 value that gets worse. Within its tolerance, the reason goes in the
 commit; beyond it, the change needs an ADR (docs/decisions/), as any
-loosening does. Current values: [ADR-005](docs/decisions/ADR-005-term-ui-ratchet-update.md). Keep digits out of the rows except the values themselves:
+loosening does. Current values: [ADR-005](docs/decisions/ADR-005-term-ui-ratchet-update.md), the binary size [ADR-007](docs/decisions/ADR-007-docker-binary-size.md). Keep digits out of the rows except the values themselves:
 the guard reads every number as a threshold.
 
 | Metric | Today | Direction |
 |---|---|---|
 | Project coverage (`crates/`) | at least 98.32% of lines, at least 98.20% of functions (see the ratchet ADR) | must not fall; tolerance at most 0.5% |
-| Production binary size | at most 1652096 bytes (see the ratchet ADR) | must not grow; growth at most 5% per change |
+| Production binary size | at most 3595968 bytes (see the ratchet ADR) | must not grow; growth at most 5% per change |
 | `sb --help` median | at most 0.76 ms | must not grow; growth at most 1 ms per change |
 
 ## Tools
