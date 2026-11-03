@@ -1,7 +1,8 @@
 # Implementation Plan: `config` — `sb validate-config` (approved 2026-11-03)
 
 Spec: [docs/specs/config.md](../docs/specs/config.md) (approved
-2026-11-03, decisions 1-6). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
+2026-11-03, decisions 1-6; 7-8 at Checkpoint A). Quality bar:
+[CONSTRAINTS.md](../CONSTRAINTS.md).
 Earlier plans: [tasks/docker/](docker/plan.md), [tasks/term-ui/](term-ui/plan.md)
 and [tasks/cli-core/](cli-core/plan.md) (done; their open items are
 carried in [tasks/todo.md](todo.md)), [tasks/prototypes/](prototypes/plan.md).
@@ -54,8 +55,13 @@ every sibling finish (decision 3).
 
 ### Checkpoint A: Evidence
 
-- [ ] Findings reviewed and the musl route picked by the maintainer;
-      term-ui's amendment reviewed
+- [x] Findings reviewed and the musl route picked by the maintainer
+      (`cross`, ADR-008; timezones as Go); term-ui's amendment approved
+
+### Added at Checkpoint A
+
+- [ ] Task 3a: term-ui: nested siblings drawn in tree order (before
+      Task 4, the maintainer's call; nothing in Phase 2 depends on it)
 
 ### Phase 2: Validation
 
@@ -92,7 +98,7 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 |---|---|---|
 | A pinned schema uses something sb-go accepts loosely (a key, a pattern dialect sb can't compile) | High | Task 1 checks before code; the spec is amended at Checkpoint A if needed |
 | yaml.v3's scalar resolution is hard to match from saphyr | Med | Task 1 confirms saphyr keeps the source text; Task 5 resolves scalars from it, a test at each edge |
-| check.sh's plain musl build fails once aws-lc-sys needs a musl C compiler (proto-musl) | High | Task 1 builds the stack the way check.sh does and lays out the routes; the maintainer picks one at Checkpoint A, before Task 11 links it |
+| check.sh's plain musl build fails once aws-lc-sys needs a musl C compiler (proto-musl) | High | Task 1 confirmed it; the maintainer picked `cross` (ADR-008), which Task 11 puts into check.sh |
 | reqwest, rustls, serde-saphyr, regex and the public-suffix list grow the binary a lot | Med | Task 1 measures each; Task 11's ADR attributes each; still far below sb-go |
 | A developer's proxy carries test traffic (and test tokens) to a real proxy | Med | Unit clients built with proxies off; `common::sb()` removes the proxy variables |
 | Cloudflare's retry and timeout behaviour makes tests slow or flaky | Med | Timeouts and backoff injectable; the fake answers or holds on demand |
@@ -101,4 +107,4 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 
 ## Open questions
 
-None beyond Task 1's findings, which go to Checkpoint A.
+None (Checkpoint A answered Task 1's).

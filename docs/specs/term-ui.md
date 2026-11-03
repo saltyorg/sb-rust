@@ -655,7 +655,8 @@ Choices behind it:
    11): the runner logs every step's start, notices, output lines,
    outcome, time and error.
 10. **A group that lets every sibling finish (config spec, decision 3;
-    pending the maintainer's review at the config plan's Checkpoint A):**
+    approved by the maintainer at the config plan's Checkpoint A,
+    2026-11-03):**
     `Step::group_all` gives a `GroupAll`, beside decision 7's stopping
     group, which is unchanged. A failing or panicking sibling cancels no
     other; every sibling's ending is drawn and its result returned in

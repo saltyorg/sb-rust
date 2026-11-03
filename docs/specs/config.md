@@ -139,7 +139,7 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   saphyr's loader keeps with `early_parse(false)` (quoted scalars
   arrive unescaped, with their style), following yaml.v3's rules
   (domain code, a test at each edge). *Wording amended from Task 1's
-  findings, pending Checkpoint A.*
+  findings, approved at Checkpoint A.*
 - **`pattern`:** a Rust `regex` (no lookaround or backreferences), an
   unanchored search as JSON Schema's, on string values only (a non-string
   with a pattern: `must be a string`). A pattern that doesn't compile fails
@@ -160,11 +160,20 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   Everywhere, also in a user's run (decision 5).
 - **Validators.** Type validators (usable as `type`): `ansible_bool`
   (sb-go trims for `required_when_true` but not here: kept),
-  `subdomain`, `hostname`, `directory_path`, `url`, `timezone` (`auto`,
-  `UTC`, `Local` and empty as Go's `LoadLocation`, or a name in the
-  system's tz database, read through a maintained crate chosen in the
-  plan), `cron_time`, `rclone_template` (dropbox/google/sftp/nfs in any
-  case, or an absolute path that must exist), `ssh_key_or_url`,
+  `subdomain`, `hostname`, `directory_path`, `url`, `timezone`
+  (decision 7, as Go's `LoadLocation`: `auto` in any case first, as
+  sb-go; `UTC`, `Local` and empty accepted; a name containing `..` or
+  starting with `/` or `\` rejected before any file is opened; else
+  the file of exactly that name, `posix/` and `right/` included, under
+  `ZONEINFO` when it names a directory, then `/usr/share/zoneinfo/`,
+  `/usr/share/lib/zoneinfo/`, `/usr/lib/locale/TZ/` and
+  `/etc/zoneinfo`, in that order, each file read up to 10 MB (Go's
+  limit) and parsed with jiff's `TimeZone::tzif`. The first place
+  holding a valid TZif file of that name wins; a missing file, a
+  directory, a larger file or one that isn't TZif moves on to the next;
+  the name is invalid only when none has one), `cron_time`,
+  `rclone_template` (dropbox/google/sftp/nfs in any case, or an absolute
+  path that must exist), `ssh_key_or_url`,
   `password` (its short-password warning only through `type: password`,
   as in sb-go). Custom validators (`custom_validator`), sb-go's registry
   exactly: `validate_ansible_bool`, `validate_subdomain`,
@@ -229,6 +238,10 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - Docker Hub's login body properly encoded; `CLOUDFLARE_CUSTOM_HEADERS`
   and cloudflare-go's other environment variables not read.
 - `required_with`'s list printed as `a, b`.
+- `ZONEINFO` naming a zip file (Go reads one) isn't read: sb reads it
+  only as a directory; nor is Go's last fallback, the build machine's
+  `$GOROOT/lib/time/zoneinfo.zip`, which only a host with a Go
+  installation at that path has (decision 7).
 - No `--verbose/-v` (decision 1): `-v` is a parse error, exit 2.
 - No `validate_rclone_remote` (decision 6): a schema naming it fails
   loading, naming it.
@@ -255,10 +268,12 @@ on `sb-config`).
   schema files (typed, `deny_unknown_fields`); `regex` for `pattern`.
 - reqwest (rustls, aws-lc-rs; the stack table) for the two checks; `psl`
   for the public suffix list (both sections, compiled in) and `jiff`
-  (system zoneinfo only, `TZDIR` honoured) for `timezone`. Evidence:
+  (`TimeZone::tzif` on the zoneinfo file sb finds as Go does; decision
+  7; only the features `tzif` needs, checked on docs.rs in Task 7, not
+  jiff's own zoneinfo lookup) for `timezone`. Evidence:
   [saltbox-schemas.md](../platform-notes/saltbox-schemas.md),
   [musl-c-dependencies.md](../platform-notes/musl-c-dependencies.md).
-  *Amended from Task 1's findings, pending Checkpoint A.*
+  *Amended from Task 1's findings, approved at Checkpoint A.*
 - term-ui's runner; cli-core's exit codes, `Shutdown`, run log, secrets.
 
 ## Commands
@@ -371,3 +386,15 @@ docs/specs/config.md      this spec
 6. **`validate_rclone_remote` left out** while no Saltbox schema uses it
    (the plan's first task checks the pinned schemas); a schema that
    starts to fails loading, naming it.
+7. **Timezones as Go (Checkpoint A, 2026-11-03):** jiff's own lookup
+   differs from Go's `LoadLocation` (case-insensitive names, no `posix/`
+   or `right/`, `TZDIR` rather than `ZONEINFO`;
+   [saltbox-schemas.md](../platform-notes/saltbox-schemas.md)). sb
+   resolves the file path as Go does (the rules under Validators) and
+   parses it with jiff, so results match sb-go; tests pass a fixture
+   zoneinfo directory. Only a `ZONEINFO` zip file isn't read (listed
+   under the differences).
+8. **musl builds through `cross` (Checkpoint A, 2026-11-03):** aws-lc-sys
+   compiles C, so check.sh's production musl build moves to `cross`
+   ([ADR-008](../decisions/ADR-008-musl-builds-through-cross.md)), with
+   the commit that first links it (plan Task 11).

@@ -48,14 +48,6 @@ Carried forward (open items owned by later work):
   exit code and the sudo record). Use a 0777 parent with a missing child,
   as unprivileged.rs does, and assert no `warning:`; with the next docker
   change.
-- From config Task 2: term-ui draws a nested concurrent sibling's lines
-  in creation order, not tree order. With a group inside a group's
-  sibling, a step the inner sibling starts late is drawn after a later
-  outer sibling, with the right glyphs but out of place (any group mode;
-  the statuses are right; a screen dump of
-  `a_group_all_under_a_failed_sibling_reads_stopped` shows it). sb-go has no nesting of this kind, and
-  validate-config doesn't nest groups. Fix with the first command that
-  nests them, or earlier if the maintainer says so.
 - From the docker spec, for later docker plans: start/stop/restart (no
   `--verbose`, config decision 1; the unit-file check, timeouts and
   response cap); the picker's container list with the event stream.
@@ -110,8 +102,8 @@ details) and a spec amendment if anything contradicts the spec.
 
 **Verification:**
 - [x] The scratch project removed.
-- [ ] The maintainer reviews the findings and picks the musl route
-      (Checkpoint A).
+- [x] The maintainer reviews the findings and picks the musl route
+      (Checkpoint A, 2026-11-03: `cross`, ADR-008).
 
 **Dependencies:** None
 **Files:** `docs/platform-notes/saltbox-schemas.md`,
@@ -163,9 +155,36 @@ checkout from now on.
 **Scope:** S
 
 ## Checkpoint A: Evidence
-- [ ] Task 1's findings reviewed; the musl route picked (an ADR if
+- [x] Task 1's findings reviewed; the musl route picked (an ADR if
       check.sh's gate changes); the spec amended and approved if needed.
-- [ ] Task 2's term-ui spec amendment reviewed.
+      (Maintainer, 2026-11-03: `cross`, ADR-008; timezones as Go,
+      decision 7; the amendments approved.)
+- [x] Task 2's term-ui spec amendment reviewed (approved, term-ui
+      decision 10).
+
+## Task 3a: term-ui: nested siblings drawn in tree order
+
+**Description:** Added at Checkpoint A (the maintainer: fix it now). The
+live area and the printed tree put a step's lines in creation order, so
+a step a nested sibling starts late is drawn after a later outer sibling,
+with the right glyphs but out of place (carried from Task 2). Draw every
+step in tree order: a parent's children in start order, each subtree
+whole, at any depth, in both group modes, live and finished.
+
+**Acceptance criteria:**
+- [ ] A group inside a group's sibling draws each subtree in place, live
+      and at the end (snapshots; Task 2's nested test gains its screen);
+      the new tree test fails first, showing the out-of-order lines.
+- [ ] term-ui's existing tests and snapshots pass unchanged.
+
+**Verification:**
+- [ ] `scripts/check.sh full`; library-reviewer on the diff.
+
+**Dependencies:** Task 2
+**Files:** `crates/term-ui/src/tree.rs`, `crates/term-ui/src/runner.rs`
+(the nested test's screen), `docs/specs/term-ui.md` (decision 3: tree
+order at any depth), `tasks/todo.md`
+**Scope:** S
 
 ## Task 4: Crate and strict schema loading
 
@@ -255,7 +274,9 @@ set passes the pinned schemas.
 **Description:** The type validators and their `validate_*` names, sb-go's
 messages and its `custom_validators_test.go` tables ported. Validators
 that touch the host take their paths as parameters: `timezone`'s tz
-database (the chosen crate, tests pointing it at a fixture zoneinfo),
+database (decision 7: the name resolved to a file as Go's `LoadLocation`
+does, exact case, `posix/` and `right/` included, then parsed with jiff's
+`TimeZone::tzif`; tests pass a fixture zoneinfo directory),
 `rclone_template`'s file (tests use tempdirs); check sb-go for
 `directory_path` and `ssh_key_or_url`. The secret fields never appear in
 an issue or warning: an issue names the key, never the value. The crate's
@@ -263,7 +284,12 @@ cargo-deny run repeated for the tz crate.
 
 **Acceptance criteria:**
 - [ ] Every validator's cases (sb-go's included) pass without reading host
-      paths; the password warning is a warning.
+      paths; the password warning is a warning; `timezone` rejects `..`,
+      an absolute name, a directory (`Europe`) and a non-TZif file
+      (`zone.tab`), and finds names in `ZONEINFO` and the system
+      directories in Go's order; a non-TZif file in the fixture
+      `ZONEINFO` with a valid one in the next directory is accepted
+      (decision 7).
 - [ ] No secret value in any issue or warning (a known-secret test per
       field); the crate's cargo-deny run passes.
 
@@ -388,15 +414,17 @@ unless a test points them at its fake, and remove `HTTP_PROXY`,
 `SSL_CERT_DIR`. The basic end-to-end cases (root-gated): a valid fixture
 set (exit 0), a broken one (exit 1). reqwest, rustls, serde-saphyr, regex
 and the two crates first enter sb's binary here: this commit carries the
-size ADR (Proposed), attributing each, and check.sh's musl step follows
-the route picked at Checkpoint A; cargo-deny now checks the trees through
-sb.
+size ADR (Proposed), attributing each, and check.sh's musl step moves to
+`cross` with its own target directory, Docker and cross 0.2.5 added to
+CONSTRAINTS.md "Tools" (ADR-008, decision 8); cargo-deny now checks the
+trees through sb.
 
 **Acceptance criteria:**
 - [ ] The valid and broken fixture runs pass through the binary; `sb
       validate-config -v` exit 2; the contract test passes.
 - [ ] `sb --help` within its ratchet, `sb version` within 10 ms; the size
-      ADR written; `cargo deny check` passes; the musl step works.
+      ADR written; `cargo deny check` passes; the musl step works through
+      `cross` (ADR-008).
 
 **Verification:**
 - [ ] `scripts/check.sh full` (root tests included); library-reviewer on
@@ -406,8 +434,8 @@ sb.
 **Files:** `Cargo.lock`, `crates/sb/Cargo.toml`, `crates/sb/src/main.rs`,
 `crates/sb/tests/common/mod.rs`, `crates/sb/tests/nobody/mod.rs`,
 `crates/sb/tests/validate_config.rs`, `docs/decisions/` (the size ADR),
-`scripts/check.sh` and `CONSTRAINTS.md` (the musl route, if it changes
-them)
+`scripts/check.sh` and `CONSTRAINTS.md` (the musl step through `cross`,
+ADR-008)
 **Scope:** M
 
 ## Checkpoint B: The command works
