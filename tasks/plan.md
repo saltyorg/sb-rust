@@ -1,4 +1,4 @@
-# Implementation Plan: `docker` — `sb docker ps` (draft)
+# Implementation Plan: `docker` — `sb docker ps` (approved 2026-11-03)
 
 Spec: [docs/specs/docker.md](../docs/specs/docker.md) (approved
 2026-11-03, decisions 1-4). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
