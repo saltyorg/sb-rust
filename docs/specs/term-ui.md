@@ -93,7 +93,8 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
 - **Nesting and concurrency:** a step can run sub-steps (a deeper branch),
   and sibling steps can run at the same time. How this fits the no-blink
   technique and the last-branch glyph: decisions 2 and 3; what a failing
-  sibling and Ctrl-C do to the others: decision 7.
+  sibling and Ctrl-C do to the others: decision 7, and a group that lets
+  every sibling finish: decision 10.
 - **Failure:** the failed step prints ✗, the failure label, the error
   (every line of a multi-line error, indented under it) and its last 10
   output lines, then the log pointer (`╰── full output: <file> (run <id>)`,
@@ -345,6 +346,10 @@ impl Step {
 
     /// Concurrent sub-steps: [`Group::spawn`] each, then [`Group::join`].
     pub fn group<T: Send + 'static>(&mut self) -> Group<'_, T>;
+
+    /// Concurrent sub-steps that all run to their end (decision 10):
+    /// [`GroupAll::spawn`] each, then [`GroupAll::join`].
+    pub fn group_all<T: Send + 'static>(&mut self) -> GroupAll<'_, T>;
 }
 
 /// Concurrent sibling steps under one parent, drawn in full in start
@@ -371,6 +376,26 @@ impl<T: Send + 'static> Group<'_, T> {
     /// first. An aborted sibling's `spawn_blocking` work runs on, detached
     /// (an accepted limit).
     pub async fn join(self) -> Result<Vec<T>, Exit>;
+}
+
+/// A `Group` whose failures and panics cancel no sibling (decision 10).
+/// Ctrl-C, the command's own request and dropping it unjoined act as on
+/// a `Group`.
+#[must_use = "join the group; dropping it stops its steps"]
+pub struct GroupAll<'a, T>(/* … */);
+
+impl<T: Send + 'static> GroupAll<'_, T> {
+    pub fn spawn<F, Fut>(&mut self, labels: Labels, body: F)
+    where
+        F: FnOnce(Step) -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<T>> + Send + 'static;
+
+    /// Wait for every sibling; each one's result in spawn order (`Exit(1)`
+    /// for one the runtime cancelled). A panicking sibling is marked
+    /// failed, the others are waited for (not cancelled), then the panic
+    /// resumes. The parent's body returning the first failure with `?`
+    /// reads "sub-step failed", as after `Group::join`.
+    pub async fn join(self) -> Vec<Result<T, Exit>>;
 }
 
 /// A notice or output line: plain text, with secret values marked where
@@ -629,3 +654,11 @@ Choices behind it:
    With no flag, the log is verbose by default (capability map, decision
    11): the runner logs every step's start, notices, output lines,
    outcome, time and error.
+10. **A group that lets every sibling finish (config spec, decision 3;
+    pending the maintainer's review at the config plan's Checkpoint A):**
+    `Step::group_all` gives a `GroupAll`, beside decision 7's stopping
+    group, which is unchanged. A failing or panicking sibling cancels no
+    other; every sibling's ending is drawn and its result returned in
+    spawn order; a panic resumes once all have returned. Ctrl-C and the
+    command's own request still end every running sibling (the endings
+    table). `sb validate-config` checks every file this way.

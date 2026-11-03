@@ -7,7 +7,7 @@ mod table;
 mod tree;
 mod tty;
 
-pub use runner::{Group, Labels, Line, Options, Runner, Step, Target};
+pub use runner::{Group, GroupAll, Labels, Line, Options, Runner, Step, Target};
 pub use table::{Cell, Table};
 
 use anstream::{AutoStream, ColorChoice};

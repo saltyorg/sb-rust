@@ -41,6 +41,14 @@ Carried forward (open items owned by later work):
   user, self-update or git's confirm (decision 1).
 - From docker Task 4's review: term-ui's `Cell` passes control characters
   through; escape them when a command shows less trusted text.
+- From config Task 2: term-ui draws a nested concurrent sibling's lines
+  in creation order, not tree order. With a group inside a group's
+  sibling, a step the inner sibling starts late is drawn after a later
+  outer sibling, with the right glyphs but out of place (any group mode;
+  the statuses are right; a screen dump of
+  `a_group_all_under_a_failed_sibling_reads_stopped` shows it). sb-go has no nesting of this kind, and
+  validate-config doesn't nest groups. Fix with the first command that
+  nests them, or earlier if the maintainer says so.
 - From the docker spec, for later docker plans: start/stop/restart (no
   `--verbose`, config decision 1; the unit-file check, timeouts and
   response cap); the picker's container list with the event stream.
@@ -114,16 +122,17 @@ and term-ui decision 7 stay as they are; term-ui's spec gains the mode
 (an amendment for the maintainer at Checkpoint A).
 
 **Acceptance criteria:**
-- [ ] A failing sibling doesn't stop the others; all endings drawn and
+- [x] A failing sibling doesn't stop the others; all endings drawn and
       returned; a panic and Ctrl-C still follow term-ui's endings table.
-- [ ] The existing group's tests pass unchanged; the spec amended.
+- [x] The existing group's tests pass unchanged; the spec amended.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; library-reviewer on the diff.
+- [x] `scripts/check.sh full`; library-reviewer on the diff.
 
 **Dependencies:** None (beside Task 1)
-**Files:** `crates/term-ui/src/runner.rs`, `crates/term-ui/tests/runner.rs`,
-`docs/specs/term-ui.md`
+**Files:** `crates/term-ui/src/runner.rs` (its unit tests; the
+integration tests drive the demo binary, which has no group),
+`crates/term-ui/src/lib.rs`, `docs/specs/term-ui.md`
 **Scope:** S
 
 ## Task 3: One Saltbox root: `SB_SALTBOX_DIR`
