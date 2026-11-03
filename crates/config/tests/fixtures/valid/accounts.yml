@@ -1,0 +1,11 @@
+# A synthetic valid accounts.yml for the pinned schema (no real values).
+user:
+  name: seed
+  email: seed@example.com
+  domain: example.com
+  pass: correct-horse-battery
+cloudflare:
+  scoped_token: not-a-real-token
+dockerhub:
+  user: seed
+  token: not-a-real-token

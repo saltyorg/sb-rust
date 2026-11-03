@@ -90,7 +90,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   loses their results when the walk fails, and reports the structure errors
   from the checks' own steps.)
 - **Issues:** `<file>:<line>:<column>: <key path>: <message>`, the file
-  relative to the Saltbox root, sorted by position. "is required" points
+  relative to the Saltbox root, sorted by position (a value taken from
+  an alias at the alias). "is required" points
   at the parent key (a missing top-level key at 1:1), "unknown field" at
   the key. Messages keep sb-go's wording where it has one (`field
   'user.email' must be a valid email address` becomes `accounts.yml:3:10:
@@ -142,7 +143,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   findings, approved at Checkpoint A.*
 - **`pattern`:** a Rust `regex` (no lookaround or backreferences), an
   unanchored search as JSON Schema's, on string values only (a non-string
-  with a pattern: `must be a string`). A pattern that doesn't compile
+  with a pattern: `must be a string`), checked after `min_length` and
+  `max_length`, before the type's own checks. A pattern that doesn't compile
   fails schema loading, naming the schema file, the pattern and its
   position. The plan's first task checks the pinned schemas' patterns:
   that they compile under Rust's syntax, mean the same as their ECMA-262
@@ -241,8 +243,14 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   and cloudflare-go's other environment variables not read.
 - `required_with`'s list printed as `a, b`.
 - `not_equals` takes its value as serde-saphyr resolves it: unquoted
-  `yes`, `on` and `y` are booleans and `017` is 17 (yaml.v3: the strings,
-  and 15). Saltbox quotes its `not_equals` values.
+  `yes`, `on` and `y` are booleans, `017` is 17 and a date is a string
+  (yaml.v3: the strings, 15, and a `time.Time` that matches a date in the
+  config). Saltbox quotes its `not_equals` values.
+- A nested mapping with a key that isn't a string (`1:`, `true:`) is
+  checked like any other (sb-go's yaml.v3 decodes it into a map its rules
+  skip, so its keys and values go unchecked there).
+- A `type: float` string in Go's hex-float form (`0x1p-2`) isn't a
+  float (Go's `ParseFloat` reads it).
 - A `!!binary` scalar keeps its text (yaml.v3 decodes the base64); no
   Saltbox file uses one.
 - Nothing after the first document is read; yaml.v3's scanner reads a

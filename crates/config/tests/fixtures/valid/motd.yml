@@ -1,0 +1,13 @@
+# A synthetic valid motd.yml for the pinned schema: its colour patterns
+# (both lengths) and display_names' additionalProperties rule.
+colors:
+  text:
+    app_name: "#ff8800"
+    label: "#abc"
+  status:
+    success: "#00FF00"
+systemd:
+  enabled: true
+  display_names:
+    plex: Plex Media Server
+    sonarr: Sonarr

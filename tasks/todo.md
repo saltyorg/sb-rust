@@ -261,12 +261,12 @@ copied into the fixtures with every issue found; a valid synthetic config
 set passes the pinned schemas.
 
 **Acceptance criteria:**
-- [ ] Every rule and quirk has a test that failed against a stub first;
+- [x] Every rule and quirk has a test that failed against a stub first;
       the many-errors case yields every issue, sorted, with positions; the
       valid set yields none.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-config`; `scripts/check.sh full`.
 
 **Dependencies:** Task 5
 **Files:** `crates/config/src/rules.rs`, `crates/config/tests/fixtures/`

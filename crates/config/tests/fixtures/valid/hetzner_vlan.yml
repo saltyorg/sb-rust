@@ -1,0 +1,4 @@
+# A synthetic valid hetzner_vlan.yml for the pinned schema.
+hetzner_vlan:
+  client_number: 1
+  vlan_id: 4000

@@ -1,0 +1,18 @@
+# A synthetic valid backup_config.yml for the pinned schema.
+backup:
+  cron:
+    cron_time: weekly
+  local:
+    enable: true
+    destination: /mnt/local/Backups/Saltbox
+  misc:
+    snapshot: true
+  rclone:
+    enable: false
+    destination: google:/Backups/Saltbox
+    template: google
+  restore_service: {}
+  rsync:
+    enable: false
+    destination: rsync://somehost.example.com/Backups/Saltbox
+    port: 22

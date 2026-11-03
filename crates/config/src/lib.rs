@@ -3,5 +3,7 @@
 
 pub mod issue;
 pub mod parse;
+pub mod rules;
 pub mod scalar;
 pub mod schema;
+pub mod tree;

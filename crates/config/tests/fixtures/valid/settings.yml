@@ -1,0 +1,10 @@
+# A synthetic valid settings.yml for the pinned schema.
+authelia:
+  master: yes
+  subdomain: login
+downloads: /mnt/unionfs/downloads
+shell: bash
+transcodes: /mnt/local/transcodes
+rclone:
+  enabled: false
+  version: latest

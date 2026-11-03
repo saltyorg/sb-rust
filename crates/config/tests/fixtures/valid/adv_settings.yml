@@ -1,0 +1,24 @@
+# A synthetic valid adv_settings.yml for the pinned schema.
+dns:
+  ipv4: yes
+  ipv6: no
+  proxied: yes
+docker:
+  json_driver: no
+gpu:
+  intel: yes
+mounts:
+  ipv4_only: no
+system:
+  timezone: auto
+traefik:
+  cert:
+    http_validation: no
+    zerossl: no
+  error_pages: no
+  hsts: no
+  metrics: no
+  provider: cloudflare
+  subdomains:
+    dash: dash
+    metrics: metrics
