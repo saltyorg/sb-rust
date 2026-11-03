@@ -3312,7 +3312,9 @@ dependencies = [
 name = "sb-config"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
+ "indicatif",
  "jiff",
  "psl",
  "regex",
@@ -3321,12 +3323,15 @@ dependencies = [
  "saphyr",
  "saphyr-parser",
  "sb-cli-core",
+ "sb-term-ui",
  "serde",
  "serde-saphyr",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

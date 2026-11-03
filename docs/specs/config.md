@@ -114,9 +114,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   reports every duplicate in the file, each with its key path and its
   position and every earlier one's. A file with duplicates is not
   schema-validated further (sb-go's decode fails there too); its
-  duplicates are its issues. (sb-go: yaml.v3 lists each duplicate with
-  line numbers for the schema-backed files; its own walker lists
-  localhost.yml's with paths and counts, no positions.)
+  duplicates are its issues. So too a value that can't be decoded as its
+  tag (`!!int abc`) or a mapping key that is a collection: those are the
+  file's issues, its rules and credential checks don't run. (sb-go:
+  yaml.v3 lists each duplicate with line numbers for the schema-backed
+  files; its own walker lists localhost.yml's with paths and counts, no
+  positions.)
 - **Schema rules**, as sb-go's `SchemaRule`: `type` (object, array,
   string, boolean, number, float, and the type validators below),
   `required`, `required_when_true`, `validate_when_true`, `required_with`,

@@ -7,6 +7,7 @@ pub mod http;
 pub mod issue;
 pub mod parse;
 pub mod rules;
+pub mod run;
 pub mod scalar;
 pub mod schema;
 pub mod secret;

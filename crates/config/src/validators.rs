@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
+use crate::cloudflare;
 use crate::rules::{Credentials, Validators, Verdict, go_float, go_type};
 use crate::scalar::Value;
 use crate::schema::Validator;
@@ -198,31 +199,70 @@ fn cloudflare(value: &Node, parent: &Node) -> Credentials {
             }
         }
     }
-    let Some(user) = parent
+    if parent
         .get("user")
         .filter(|user| matches!(user.data, Data::Mapping(_)))
-    else {
+        .is_none()
+    {
         return Credentials::Invalid(
             "user config is required for Cloudflare validation".to_string(),
         );
-    };
-    if user.get("domain").and_then(string).is_none() {
-        return Credentials::Invalid(
-            "user domain is required for Cloudflare validation".to_string(),
-        );
     }
-    Credentials::Ready
+    match cloudflare_login(value, parent) {
+        Some(_) => Credentials::Ready,
+        None => {
+            Credentials::Invalid("user domain is required for Cloudflare validation".to_string())
+        }
+    }
 }
 
 fn dockerhub(value: &Node) -> Credentials {
     if !matches!(value.data, Data::Mapping(_)) {
         return Credentials::Invalid("dockerhub config must be an object".to_string());
     }
+    if dockerhub_login(value).is_some() {
+        return Credentials::Ready;
+    }
     match (non_empty(value, "user"), non_empty(value, "token")) {
         (false, false) => Credentials::Missing,
-        (true, true) => Credentials::Ready,
         _ => Credentials::Invalid("both 'user' and 'token' must be provided together".to_string()),
     }
+}
+
+/// A non-empty string at `key` in `section`.
+fn login_text(section: &Node, key: &str) -> Option<String> {
+    section
+        .get(key)
+        .and_then(string)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// The Cloudflare check's credentials and domain in a `cloudflare:`
+/// section `value` of `parent` (accounts.yml's root): what makes the
+/// section `Ready`, so the run checks exactly what the rules accepted.
+pub fn cloudflare_login(value: &Node, parent: &Node) -> Option<(cloudflare::Credentials, String)> {
+    let domain = parent
+        .get("user")?
+        .get("domain")
+        .and_then(string)?
+        .to_string();
+    let credentials = match (
+        login_text(value, "scoped_token"),
+        login_text(value, "api"),
+        login_text(value, "email"),
+    ) {
+        (Some(token), None, None) => cloudflare::Credentials::Token(token),
+        (None, Some(key), Some(email)) => cloudflare::Credentials::Global { key, email },
+        _ => return None,
+    };
+    Some((credentials, domain))
+}
+
+/// The Docker Hub user and token in a `dockerhub:` section `value`: what
+/// makes the section `Ready`.
+pub fn dockerhub_login(value: &Node) -> Option<(String, String)> {
+    Some((login_text(value, "user")?, login_text(value, "token")?))
 }
 
 /// sb-go's `validateAnsibleBoolValue`: a boolean, or the Ansible words in

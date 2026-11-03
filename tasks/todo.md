@@ -395,11 +395,11 @@ on tempdir fixture sets through term-ui's in-memory target.
 values, and this task keeps it so.)
 
 **Acceptance criteria:**
-- [ ] Each table row and the check gating tested on fixture sets, failing
+- [x] Each table row and the check gating tested on fixture sets, failing
       against a stub first; the log records present with no known secret.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-config`; `scripts/check.sh full`.
 
 **Dependencies:** Tasks 7, 9
 **Files:** `crates/config/Cargo.toml` (sb-term-ui's `testing` feature
