@@ -75,15 +75,15 @@ end-to-end tests live in `crates/sb/tests/`, as they drive the built
 binary, not `crates/docker/tests/` as the spec's layout says).
 
 **Acceptance criteria:**
-- [ ] The paths bollard sends and the daemon's answers recorded with
+- [x] The paths bollard sends and the daemon's answers recorded with
       versions and method; a version mechanism chosen with evidence.
-- [ ] The failed-start row confirmed or dropped from documented
+- [x] The failed-start row confirmed or dropped from documented
       behaviour; bollard's tree passes sb's deny.toml (or the problem is
       named); the test server crate chosen (library first).
 
 **Verification:**
-- [ ] The scratch project removed; the maintainer reviews the
-      findings (Checkpoint A).
+- [x] The scratch project removed.
+- [ ] The maintainer reviews the findings (Checkpoint A).
 
 **Dependencies:** None
 **Files:** `docs/platform-notes/docker-engine-api.md`,
@@ -104,12 +104,12 @@ so sb's DEBUG records are dropped). Independent of the docker code, so it comes 
 later tasks can check their records as they write them.
 
 **Acceptance criteria:**
-- [ ] A dependency's `log` WARN record reaches the run log and its DEBUG
+- [x] A dependency's `log` WARN record reaches the run log and its DEBUG
       record doesn't; sb's own DEBUG records do (a separate test binary,
       as the existing log tests, since tracing caches callsite interest).
 
 **Verification:**
-- [ ] `scripts/check.sh full`.
+- [x] `scripts/check.sh full`.
 
 **Dependencies:** None (may run beside Task 1)
 **Files:** `Cargo.toml`, `crates/cli-core/Cargo.toml`,
@@ -179,18 +179,27 @@ own (no exclusion). Then the
 connection: `DOCKER_HOST` dispatch (`unix://`, `tcp://`, `http://`;
 unset or empty: the default socket; `https://`, `ssh://`,
 `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`: an error naming the setting),
-`DOCKER_API_VERSION` (used when set; unparsable: an error), Task 1's
-version mechanism, bollard's 120 s timeout kept, the list (`all=true`)
+bollard pinned to `=0.21.1`; one `version()` call after connecting,
+logged (Checkpoint A: bollard 0.21.1 sends unversioned paths;
+`negotiate_version()` and `DOCKER_API_VERSION` are not used), bollard's
+120 s timeout kept, the list (`all=true`)
 and inspect by ID at most 16 at a time (`futures-util`
 `buffer_unordered`), a 404 on inspect skipped (DEBUG), other failures
 collected with the short ID, cancellation through cli-core's token.
 sb-docker's test helpers never inherit `DOCKER_*` from the environment.
 
 **Acceptance criteria:**
-- [ ] The dispatch and version decision are pure functions with a test
-      per case, failing first.
+- [ ] The `DOCKER_HOST` decision (scheme, empty, TLS settings) is a pure
+      function with a test per case, failing first.
 - [ ] Against the fake: rows, a vanished container, a failing inspect, an
-      unreachable socket, an old daemon, the 120 s timeout set; with more
+      unreachable socket, an old daemon (unversioned paths at its own
+      version, versioned ones above it refused), a newer daemon's shape,
+      a daemon refusing unversioned paths (error); the recorded paths
+      asserted unversioned, the failure message pointing at the spec's
+      API version bullet; the 120 s timeout set; axum's tree passes
+      cargo-deny (`cargo deny --manifest-path crates/docker/Cargo.toml
+      --features testing check`; check.sh's gate covers it from Task 6a,
+      once sb dev-depends on the feature); with more
       than 16 inspects held open, the recorded peak is above 1 and at
       most 16. The fake's own behaviours have tests.
 

@@ -57,8 +57,8 @@ and log streams are later plans.
 
 ### Phase 1: Evidence and groundwork
 
-- [ ] Task 1: Engine API version and dependency spike
-- [ ] Task 2: Logging: the `log` bridge and default levels
+- [x] Task 1: Engine API version and dependency spike
+- [x] Task 2: Logging: the `log` bridge and default levels
 
 ### Checkpoint A: Evidence
 

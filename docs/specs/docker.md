@@ -62,26 +62,53 @@ logging levels end to end.
   --color=never`) clap reports a missing subcommand, exit 2, as bare `sb
   --color=never` does today (a difference, below).
 - **Daemon:** `DOCKER_HOST` with `unix://`, `tcp://` or `http://` is
-  followed; unset or empty means the default socket (as sb-go, which
-  treats empty as unset). sb dispatches the scheme itself
-  (`Docker::connect_with_unix` / `connect_with_http` with a
-  `ClientVersion`), because `connect_with_defaults()` fixes bollard's API
-  version and has no setter. bollard's default features (`http`, `pipe`;
-  no TLS) are kept. `https://`, `ssh://`, `DOCKER_TLS_VERIFY` or
-  `DOCKER_CERT_PATH` stop with an error naming the unsupported setting:
-  without TLS compiled in, bollard would otherwise connect `tcp://` in
-  plain text where sb-go uses TLS.
-- **API version:** bollard prefixes every path with its version
-  (`/v1.53/...`, `/version` included), and dockerd refuses a version above
-  its own maximum, so bollard's `negotiate_version` fails on exactly the
-  older daemons it is meant for. sb therefore connects at a floor version
-  every supported daemon accepts, reads the daemon's `ApiVersion` from
-  `/version`, and connects again at the lower of that and bollard's 1.53
-  (the floor and the check against the Engine API documentation are the
-  plan's first task). sb-go's client negotiates through `/_ping`, which
-  carries no version. `DOCKER_API_VERSION`, when set, is used instead, as
-  sb-go's `FromEnv`; one that doesn't parse is an error naming it. Requests keep bollard's 120 s timeout (sb-go has
-  none).
+  followed; unset or empty means bollard's default socket (as sb-go,
+  which treats empty as unset). sb reads the variable itself (bollard's
+  `connect_with_defaults()` would fail on an empty one), checks it, and
+  connects with `Docker::connect_with_host`. bollard's default features
+  (`http`, `pipe`; no TLS) are kept. `https://`, `ssh://`,
+  `DOCKER_TLS_VERIFY` or `DOCKER_CERT_PATH` stop with an error naming the
+  unsupported setting: without TLS compiled in, bollard would otherwise
+  connect `tcp://` in plain text where sb-go uses TLS.
+- **API version:** bollard 0.21.1 sends every request without a version
+  prefix (its `Url::join` replaces the `/v1.53` it formats), which the
+  daemon serves at its own current API version, so daemons older and newer
+  than bollard's 1.53 both work; a fixed floor version wouldn't (Docker 29
+  refuses anything below 1.40 by default). A newer daemon answers in its
+  own, newer shape; bollard's models are mostly optional fields, which
+  tolerate that. sb calls bollard's `version()` once after connecting and
+  logs the daemon's `Version` and `ApiVersion` (bollard's
+  `negotiate_version()` is not used: it discards the response and changes
+  nothing on the wire). A failed `version()` call (unreachable, a 4xx or 5xx
+  answer) ends the run as an unreachable daemon does: error block, exit 1. A
+  good answer without `Version` or `ApiVersion` (both optional in bollard's
+  model) logs them as unknown and the run goes on. `DOCKER_API_VERSION` is
+  not read: with this bollard a pinned version never reaches the daemon (a
+  difference, below). Requests keep bollard's 120 s timeout (sb-go has
+  none). Evidence: docs/platform-notes/docker-engine-api.md (Checkpoint A).
+- **Guarding that behaviour:** bollard is pinned to exactly 0.21.1
+  (`=0.21.1`), since a compatible release could start prefixing versions;
+  the fake Engine API records the paths it is sent and a test asserts
+  they are unversioned, its failure message pointing here. A bollard
+  upgrade re-checks what paths it sends and how a version would be
+  chosen; if it prefixes them, sb chooses the version itself: the
+  daemon's `ApiVersion` from an unversioned `/version` (or the
+  `Api-Version` header every answer carries), capped at bollard's, passed
+  as the `ClientVersion` to `connect_with_unix` / `connect_with_http`
+  (`connect_with_host` takes none). A daemon whose minimum is above
+  bollard's version needs a bollard upgrade either way.
+- **Docker removing unversioned paths** (deprecated in moby's API
+  description, "will be removed in a future release") would break this
+  bollard against every daemon: each request would get the daemon's 4xx,
+  shown in cli-core's error block, exit 1. The response then is a bollard
+  release that prefixes versions or, until one exists, bollard's documented
+  `Docker::with_request_modifier` adding the prefix. Without unversioned
+  paths the daemon's version can't come from an unversioned `/version`; it
+  would come from the `Api-Version` header, which the daemon sets on every
+  answer including the 400 for a too-new version (whose message also names
+  the maximum). Which of the two is read is decided then, with evidence. A
+  fake Engine API variant that refuses unversioned paths shows that failure
+  mode in a test.
 - **Rows:** every container from the list endpoint (`all=true`), each
   inspected by ID (as sb-go) for state, health, exit code, labels and
   bindings, at most 16 at a time (`futures-util`'s `buffer_unordered`,
@@ -111,9 +138,9 @@ logging levels end to end.
   | restarting, dead | the state | problem |
   | removing, or a state bollard doesn't know | the state | warn |
 
-  The failed-start row is checked against the Engine API documentation
-  and a real failed start in the plan's first task (synthetic fixture
-  only); if Docker doesn't record it that way the row is dropped.
+  The failed-start row follows moby's `daemon/start.go`: a failed first
+  start leaves the container `created` with `State.Error` set and exit
+  code 128 unless a more specific one was set (platform note).
 - **Table:** term-ui's `Table` (rounded, a rule between rows, border in
   the Border role, maximum column width 100 as sb-go), fitted to the
   terminal, natural width and plain when piped (`auto`); `--color`,
@@ -155,7 +182,7 @@ logging levels end to end.
 - **Ctrl-C / SIGTERM:** cancels the requests; cli-core's quiet 130 / 143,
   no table, terminal as it was.
 - **Logging** (run log, capability-map decision 11; term-ui decision 9,
-  verbose by default): the daemon address, the negotiated API version,
+  verbose by default): the daemon address, the daemon's API version,
   how many containers were listed and inspected, each failure with its
   cause, and the time taken. bollard logs through the `log` crate, which
   sb's tracing subscriber doesn't receive today; `tracing-log` (the
@@ -179,11 +206,12 @@ logging levels end to end.
 - **`--json`** exists (sb-go has no machine-readable `ps`).
 - **`DOCKER_HOST`:** no TLS or ssh; such a setting is an error (sb-go's
   client supports TLS).
+- **`DOCKER_API_VERSION`** is not read (sb-go pins its client to it).
 - **Requests:** inspected at most 16 at a time (sb-go: one after another);
   bollard's 120 s request timeout (sb-go: none).
 - **Piped output:** sb's table is plain and at its natural width. sb-go's
-  table library falls back to 80 columns when it can't read a terminal
-  size (a pipe), so sb-go's piped table wraps at 80 columns, and it writes its
+  table library falls back to 80 columns when it can't read a terminal size
+  (a pipe), so sb-go's piped table wraps at 80 columns, and it writes its
   bold headings and blue border codes even when piped (only the status
   colour turns off).
 - **Errors** are cli-core's error block (sb-go: the bare error text).
@@ -226,6 +254,8 @@ Docker controller's HTTP API after a `systemctl` check" — depends on
 - tokio (current-thread runtime, as term-ui's demo); futures-util
   (`buffer_unordered`, already a bollard dependency).
 - tracing-log, to forward `log` records into the run log.
+- axum 0.8: an optional dependency behind `sb-docker`'s `testing` feature
+  (the fake Engine API on a Unix listener); not in the release binary.
 - term-ui's `Table`; cli-core's exit codes, error block, `Shutdown` and
   run log.
 
@@ -244,8 +274,10 @@ Try:     the production musl build of sb, run as root with SB_LOG_DIR set
 crates/docker/            sb-docker: ps (rows, status rule, Traefik rule,
   src/lib.rs              bindings, table); later start/stop/restart, the
   src/ps.rs               picker's list, log streams
-  tests/                  fake Engine API tests, live test (opt-in)
+  src/testing.rs          the fake Engine API (`testing` feature)
+  tests/                  live test (opt-in)
 crates/sb/src/main.rs     the `docker` command group, runtime after parsing
+crates/sb/tests/          end-to-end tests on the fake Engine API
 docs/specs/docker.md      this spec
 docs/decisions/           the size ADR
 ```
@@ -285,13 +317,17 @@ pub fn status(state: &ContainerState) -> (String, Role) {
   ps` end to end as root (as sb's other root tests: `SB_TEST_ROOT`,
   `SB_LOG_DIR` in the test's directory). Cases: rows; no containers; a
   vanished container; a failing inspect; an unreachable daemon; an old
-  daemon (every path above its version refused with 400, `/version`
-  included, as dockerd does, and its responses in that older version's
-  shape, so bollard's models are shown to parse them); `DOCKER_TLS_VERIFY` set and an `https://`
-  host (errors); an empty `DOCKER_HOST`; an
+  daemon (unversioned paths served at its own older version, versioned
+  paths above it refused with 400, as dockerd does, and its responses in
+  that version's shape, so bollard's models are shown to parse them; the
+  fake records the paths it was sent and the test asserts they are
+  unversioned); a newer daemon (a field bollard expects left out, an
+  unknown field added); a daemon refusing unversioned paths (the error
+  block, exit 1); `DOCKER_TLS_VERIFY` set and an
+  `https://` host (errors); an empty `DOCKER_HOST`; an
   inspect held open while the test sends SIGINT, then SIGTERM; piped and
-  on a PTY; the log records. The server comes from a maintained crate
-  (chosen in the plan, library first).
+  on a PTY; the log records. The server is axum 0.8 on a Unix listener
+  (platform note), behind `sb-docker`'s `testing` feature.
 - **Relaunch:** cli-core's fake-sudo pattern (tests/relaunch.rs): `sb
   docker ps` run as `nobody` with a stand-in `sudo` first on `PATH`; the
   test asserts the arguments and the marker. A real sudo run would log to
@@ -313,9 +349,9 @@ pub fn status(state: &ContainerState) -> (String, Role) {
   root only with `SB_LOG_DIR` in `target/` or a temporary directory; synthetic
   fixtures.
 - **Ask first:** any write to Docker or the controller (start/stop/restart
-  are later work); dependencies beyond bollard, futures-util,
-  tracing-log and a test server; any difference from sb-go not in the
-  list above.
+  are later work); dependencies beyond bollard, futures-util, tracing-log
+  and axum (the `testing` feature only); any difference from sb-go not in
+  the list above.
 - **Never:** run the `docker` binary for `ps`; commit host details
   (container names, addresses, ports from a real host); touch the
   Saltbox repository.
@@ -347,7 +383,9 @@ pub fn status(state: &ContainerState) -> (String, Role) {
 6. SIGINT or SIGTERM while an inspect is held open: 130 or 143, quiet, no
    table (with `--json`, nothing on stdout), terminal restored (fake
    Engine API on a PTY).
-7. The run log records the daemon address, the negotiated version, the
+7. The run log records the daemon address, the daemon's version and API
+   version (a fake daemon above bollard's 1.53, so logging bollard's capped
+   1.53 instead fails the test), the
    counts and each failure; a dependency's WARN record reaches the log
    and its DEBUG record does not (positive and negative control).
 8. A root run follows `DOCKER_HOST` (fake Engine API test).
@@ -367,7 +405,7 @@ pub fn status(state: &ContainerState) -> (String, Role) {
    commands) move to `sb validate-config`.
 2. **`--json` now,** in the shape above.
 3. **Vanished containers are skipped,** logged at DEBUG, exit 0.
-4. **`DOCKER_HOST` through the sudo relaunch:** sb-go's behaviour; cli-core's
-   preserve list is unchanged, so a non-root user's `DOCKER_HOST` and
-   `DOCKER_API_VERSION` don't reach the root run (Saltbox's Docker is
+4. **`DOCKER_HOST` through the sudo relaunch:** sb-go's behaviour;
+   cli-core's preserve list is unchanged, so a non-root user's `DOCKER_HOST`
+   and `DOCKER_API_VERSION` don't reach the root run (Saltbox's Docker is
    local).
