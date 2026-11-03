@@ -39,7 +39,8 @@ rustix = { version = "1.1.6", features = ["fs", "process", "stdio", "termios"] }
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+tracing-log = { version = "0.2.0", default-features = false, features = ["std", "log-tracer"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "tracing-log"] }
 unicode-width = "0.2.3"
 assert_cmd = "2.2.1"
 predicates = "3.1.4"

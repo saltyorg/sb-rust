@@ -25,11 +25,19 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use tracing::span::EnteredSpan;
+use tracing_log::AsLog;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::{LevelFilter, Targets};
 
 use crate::cancel::Shutdown;
 
 /// The log file's name in the log directory.
 const LOG_FILE: &str = "sb.log";
+
+/// The level dependencies log at by default (term-ui decision 9), for the
+/// tracing filter and the `log` bridge alike (converted with tracing-log's
+/// `AsLog`): a `log` record the bridge drops never reaches the filter.
+const DEPENDENCY_LEVEL: LevelFilter = LevelFilter::WARN;
 
 /// Where runs log: `SB_LOG_DIR` when set (tests, debugging), otherwise
 /// `/var/log/sb`.
@@ -127,6 +135,8 @@ pub struct RunLog {
 impl RunLog {
     /// Open the log in `dir`, creating it root-only (0700), and the
     /// subscriber that writes to it; the caller installs the subscriber.
+    /// It also installs the process's `log` logger, tracing-log's bridge,
+    /// so dependencies logging through `log` reach that subscriber.
     pub fn open(
         dir: &Path,
     ) -> std::io::Result<(Self, impl tracing::Subscriber + Send + Sync + use<>)> {
@@ -172,7 +182,33 @@ impl RunLog {
             .with_ansi(false)
             .with_target(false)
             .log_internal_errors(false)
+            // fmt's own default is INFO for everything.
+            .with_max_level(LevelFilter::TRACE)
             .finish();
+        // Verbose by default, no flag (term-ui decision 9): sb's own crates
+        // (every target starting with `sb`: sb, sb_cli_core, sb_term_ui,
+        // sb_host, sb_docker; a prefix, so a dependency named `sb…` would
+        // log at DEBUG too, and none is in the tree) at DEBUG, dependencies
+        // at WARN, so the log carries what a debug flag would have without
+        // their noise.
+        // https://docs.rs/tracing-subscriber/0.3.23/tracing_subscriber/filter/targets/struct.Targets.html
+        let subscriber = Targets::new()
+            .with_default(DEPENDENCY_LEVEL)
+            .with_target("sb", LevelFilter::DEBUG)
+            .with_subscriber(subscriber);
+        // Dependencies that log through the `log` crate (bollard) reach the
+        // run log through tracing-log's bridge, installed here as the
+        // process's `log` logger; only what the filter keeps for
+        // dependencies is turned into events (and tracing-subscriber's
+        // `tracing-log` feature has fmt write them under their own target,
+        // without tracing-log's `log.*` fields). A second install (a second
+        // RunLog in one process, as in tests) fails and changes nothing:
+        // the bridge forwards to whichever subscriber is current, so the
+        // first one serves every RunLog. sb sets no other `log` logger.
+        // https://docs.rs/tracing-log/0.2.0/tracing_log/struct.LogTracer.html
+        let _ = tracing_log::LogTracer::builder()
+            .with_max_level(DEPENDENCY_LEVEL.as_log())
+            .init();
         // Only needs to tell runs apart within the log: start time and pid.
         // Why not uuid or fastrand: neither (nor getrandom) is in sb's
         // dependency tree, and the id only has to differ between runs on
