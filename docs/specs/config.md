@@ -255,6 +255,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   prints its `time.Time`); `validate_directory_path` doesn't fail when
   the working directory can't be read (sb-go does, for a relative path).
   No pinned schema uses either.
+- The credential checks follow no redirects (Go's client follows up to
+  10, re-sending a login's body): neither service redirects, and
+  following one would send the credentials on.
+- A proxy variable applies to loopback addresses too (Go's transport
+  never proxies `localhost` or a loopback IP); only a test or debugging
+  base URL is ever loopback.
 - A `!!binary` scalar keeps its text (yaml.v3 decodes the base64); no
   Saltbox file uses one.
 - Nothing after the first document is read; yaml.v3's scanner reads a

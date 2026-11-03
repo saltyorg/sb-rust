@@ -324,17 +324,18 @@ accounts.yml issues, the login with an encoded JSON body (a password with
 cargo-deny run with `--all-features`.
 
 **Acceptance criteria:**
-- [ ] The fake's behaviours tested; Docker Hub's outcomes against it
-      (success, failure text, the encoding, a timeout, skipped without
-      credentials); the body cap and the text cut tested; a proxy test:
+- [x] The fake's behaviours tested; Docker Hub's outcomes against it
+      (success, failure text, the encoding, a timeout; skipped without
+      credentials is the rules' `Credentials::Missing`, Tasks 6-7, and
+      reaches the run in Task 10); the body cap and the text cut tested; a proxy test:
       the client, given the fake as its proxy, sends `CONNECT
       <host>.invalid:443` for an `https://` request (the fake refuses it,
       so no TLS is needed).
-- [ ] No token in any output, error or log record (a known-secret test);
+- [x] No token in any output, error or log record (a known-secret test);
       the crate's cargo-deny run passes.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; library-reviewer on the diff;
+- [x] `cargo test -p sb-config`; library-reviewer on the diff;
       `scripts/check.sh full`.
 
 **Dependencies:** Task 5 (beside Tasks 6-7)

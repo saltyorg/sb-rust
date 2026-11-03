@@ -47,7 +47,9 @@ pub fn finish_run(
 /// The error and its causes, outermost first. Why not `Error::sources()`:
 /// still unstable (`error_iter`); why not anyhow's `Chain`: cli-core takes
 /// any `std::error::Error` and doesn't depend on anyhow.
-fn chain<'a>(err: &'a (dyn Error + 'static)) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
+pub fn chain<'a>(
+    err: &'a (dyn Error + 'static),
+) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
     std::iter::successors(Some(err), |&e| e.source())
 }
 

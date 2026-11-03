@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The fake HTTP server (`testing` module) for sb-config's tests and sb's
+# end-to-end tests: built into the sb that `cargo test` runs (dev-dependency
+# features unify), never into a release or production build.
+testing = ["dep:axum", "dep:tempfile", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/time"]
+
 [dependencies]
 sb-cli-core.workspace = true
 serde.workspace = true
@@ -14,12 +20,19 @@ serde-saphyr.workspace = true
 regex.workspace = true
 regex-syntax.workspace = true
 jiff.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+axum = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 saphyr.workspace = true
 saphyr-parser.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time", "io-util"] }
 
 [lints]
 workspace = true

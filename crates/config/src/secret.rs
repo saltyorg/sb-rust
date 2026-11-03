@@ -29,6 +29,35 @@ pub fn shown(text: &str, secret: bool) -> String {
     }
 }
 
+/// `text` with `value` (a secret) taken out wherever it appears: every
+/// occurrence for a value of 8 characters or more; for a shorter one only
+/// where it stands as a whole word (no letter, digit, `-` or `_` beside
+/// it), so it doesn't eat the letters of other words. Run on raw text,
+/// before it is escaped or cut. Why not `regex`: it has no lookaround, so
+/// word edges would be consumed and adjacent matches missed.
+pub fn hide(text: &str, value: &str) -> String {
+    if value.is_empty() {
+        return text.to_string();
+    }
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_');
+    let short = value.chars().count() < 8;
+    let mut out = String::new();
+    let mut rest = 0;
+    for (at, _) in text.match_indices(value) {
+        let end = at + value.len();
+        if at < rest
+            || (short && (word(text[..at].chars().next_back()) || word(text[end..].chars().next())))
+        {
+            continue;
+        }
+        out.push_str(&text[rest..at]);
+        out.push_str(REDACTED);
+        rest = end;
+    }
+    out.push_str(&text[rest..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +82,32 @@ mod tests {
     fn a_secret_is_shown_redacted() {
         assert_eq!(shown("hunter2", true), "[REDACTED]");
         assert_eq!(shown("plain", false), "plain");
+    }
+
+    #[test]
+    fn hide_takes_out_every_long_secret() {
+        assert_eq!(
+            hide("bad token s3cret-token.", "s3cret-token"),
+            "bad token [REDACTED]."
+        );
+        assert_eq!(
+            hide("xs3cret-tokenx and s3cret-token", "s3cret-token"),
+            "x[REDACTED]x and [REDACTED]"
+        );
+        assert_eq!(hide("dckr_pat_abcd", "dckr_pat_abc"), "[REDACTED]d");
+        // Eight characters is long: taken out inside a word too.
+        assert_eq!(hide("xabcdefghx", "abcdefgh"), "x[REDACTED]x");
+        assert_eq!(hide("xabcdefgx", "abcdefg"), "xabcdefgx");
+    }
+
+    #[test]
+    fn hide_takes_out_a_short_secret_only_as_a_word() {
+        assert_eq!(
+            hide("Incorrect token t. here", "t"),
+            "Incorrect token [REDACTED]. here"
+        );
+        assert_eq!(hide("aa aa", "aa"), "[REDACTED] [REDACTED]");
+        assert_eq!(hide("a-aa_aa", "aa"), "a-aa_aa");
+        assert_eq!(hide("x", ""), "x");
     }
 }
