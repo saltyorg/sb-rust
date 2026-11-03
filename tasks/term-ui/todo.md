@@ -1,6 +1,6 @@
 # term-ui tasks
 
-Plan: [tasks/plan.md](plan.md). Spec: [docs/specs/term-ui.md](../docs/specs/term-ui.md).
+Plan: [tasks/term-ui/plan.md](plan.md). Spec: [docs/specs/term-ui.md](../../docs/specs/term-ui.md).
 Every task: TDD where it changes behaviour, a code review (and the
 library-reviewer for terminal code) before committing, `scripts/check.sh
 full` before committing, Library-check and Review lines in each commit,

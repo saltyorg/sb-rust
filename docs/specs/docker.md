@@ -1,4 +1,4 @@
-# Spec: `docker` (draft)
+# Spec: `docker` (approved 2026-11-03)
 
 Module of the approved capability map (`docker`). The first vertical slice
 is `sb version` (done) → `sb docker ps` → `sb validate-config`, built as

@@ -218,7 +218,7 @@ GitHub API (last push, archived flag).
 | `python-env` | uv-managed Python, Ansible venv build/update, deadsnakes cleanup | exec, host, release | python |
 | `ansible` | Playbook execution with tags, tag listing/cache, `install`/`list` | exec, repo, term-ui | ansible, cmd/install, cmd/list |
 | `config` | Saltbox YAML: strict schema loading (drift fails loudly), position-carrying validation collecting all issues, `pattern` and `additionalProperties` support, `validate-config`; facts with a line-preserving writer (round-trip tests), locking and drift detection | exec, host, ansible, release | saltbox, facts |
-| `docker` | ps/start/stop/restart and log streams via bollard | cli-core, term-ui | cmd/docker* |
+| `docker` | ps, the container list (kept live by the event stream) and log streams via bollard; start/stop/restart via the Saltbox Docker controller's HTTP API after a `systemctl` check (docker spec) | cli-core, term-ui; exec and an HTTP client from start/stop/restart on | cmd/docker* |
 | `motd` | System info plus media-server and downloader providers (thin reqwest clients), parallel collection | host, config, term-ui | motd |
 | `tui` | ratatui screens: one shared streaming log viewer (docker and systemd) with an inline fallback; fact editor (modal editor, masked secrets, mouse); edit picker; announcements viewer (tui-markdown, announcement list, tui-scrollview). Mouse via recorded layout rects on all screens | docker, host, config | cmd/logs, cmd/dockerLogs, cmd/edit, factui, saltbox/announcements |
 | `ops` | Workflow commands: setup, update, branch, branch-sandbox, reinstall-*, update-venv, restore, diag, bench, gha | all of the above as needed | remaining cmd/* |

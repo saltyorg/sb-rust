@@ -1,10 +1,10 @@
 # Implementation Plan: `term-ui` (approved 2026-11-01)
 
-Spec: [docs/specs/term-ui.md](../docs/specs/term-ui.md) (approved
+Spec: [docs/specs/term-ui.md](../../docs/specs/term-ui.md) (approved
 2026-10-30, decisions 1-6; Checkpoint A 2026-11-01, decision 7).
-Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
-Earlier plans: [tasks/cli-core/](cli-core/plan.md) (done; its open items
-are carried in [tasks/todo.md](todo.md)), [tasks/prototypes/](prototypes/plan.md).
+Quality bar: [CONSTRAINTS.md](../../CONSTRAINTS.md).
+Earlier plans: [tasks/cli-core/](../cli-core/plan.md) (done; its open items
+are carried in [tasks/term-ui/todo.md](todo.md)), [tasks/prototypes/](../prototypes/plan.md).
 
 ## Overview
 
@@ -86,7 +86,7 @@ restore hooks (decision 5).
 - [x] All tasks done; spec success criteria met or carried by name;
       `scripts/check.sh full` (approved by the maintainer, 2026-11-03)
 
-Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
+Details, acceptance criteria and verification: [tasks/term-ui/todo.md](todo.md).
 
 ## Risks and mitigations
 
