@@ -1,10 +1,10 @@
 # Implementation Plan: `docker` — `sb docker ps` (approved 2026-11-03)
 
-Spec: [docs/specs/docker.md](../docs/specs/docker.md) (approved
-2026-11-03, decisions 1-4). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
-Earlier plans: [tasks/term-ui/](term-ui/plan.md) and
-[tasks/cli-core/](cli-core/plan.md) (done; their open items are carried in
-[tasks/todo.md](todo.md)), [tasks/prototypes/](prototypes/plan.md).
+Spec: [docs/specs/docker.md](../../docs/specs/docker.md) (approved
+2026-11-03, decisions 1-4). Quality bar: [CONSTRAINTS.md](../../CONSTRAINTS.md).
+Earlier plans: [tasks/term-ui/](../term-ui/plan.md) and
+[tasks/cli-core/](../cli-core/plan.md) (done; their open items are carried in
+[tasks/docker/todo.md](todo.md)), [tasks/prototypes/](../prototypes/plan.md).
 
 ## Overview
 
@@ -90,7 +90,7 @@ and log streams are later plans.
 - [x] All tasks done; spec success criteria met or carried by name;
       `scripts/check.sh full` (approved 2026-11-03)
 
-Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
+Details, acceptance criteria and verification: [tasks/docker/todo.md](todo.md).
 
 ## Risks and mitigations
 

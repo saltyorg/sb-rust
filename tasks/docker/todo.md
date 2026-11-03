@@ -1,6 +1,6 @@
 # docker tasks
 
-Plan: [tasks/plan.md](plan.md). Spec: [docs/specs/docker.md](../docs/specs/docker.md).
+Plan: [tasks/docker/plan.md](plan.md). Spec: [docs/specs/docker.md](../../docs/specs/docker.md).
 Every task: TDD where it changes behaviour, a code review (and the
 library-reviewer for I/O and terminal code) before committing,
 `scripts/check.sh full` before committing, Library-check and Review lines
