@@ -100,7 +100,7 @@ fn every_sb_command_and_flag_matches_sb_go() {
 }
 
 /// The walk sees what it should (so an empty walk can't pass): the root,
-/// `version`, its `--json`, and `--color` as an extension.
+/// `version`, its `--json`, and every extension.
 #[test]
 fn the_walk_covers_the_tree() {
     let tree = sb_tree();
@@ -110,7 +110,10 @@ fn the_walk_covers_the_tree() {
         tree.iter()
             .any(|l| l.starts_with("flag\tsb version\tlocal\tjson\t"))
     );
-    assert_eq!(tree.iter().filter(|l| is_extension(l)).count(), 1);
+    assert_eq!(
+        tree.iter().filter(|l| is_extension(l)).count(),
+        EXTENSIONS.len()
+    );
 }
 
 /// A flag with only a short name, or one sb-go lacks, is reported, not
