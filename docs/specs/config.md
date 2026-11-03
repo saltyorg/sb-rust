@@ -251,6 +251,10 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   skip, so its keys and values go unchecked there).
 - A `type: float` string in Go's hex-float form (`0x1p-2`) isn't a
   float (Go's `ParseFloat` reads it).
+- `validate_whole_number`'s "got:" shows a timestamp as written (Go
+  prints its `time.Time`); `validate_directory_path` doesn't fail when
+  the working directory can't be read (sb-go does, for a relative path).
+  No pinned schema uses either.
 - A `!!binary` scalar keeps its text (yaml.v3 decodes the base64); no
   Saltbox file uses one.
 - Nothing after the first document is read; yaml.v3's scanner reads a
@@ -409,9 +413,10 @@ docs/specs/config.md      this spec
    or `right/`, `TZDIR` rather than `ZONEINFO`;
    [saltbox-schemas.md](../platform-notes/saltbox-schemas.md)). sb
    resolves the file path as Go does (the rules under Validators) and
-   parses it with jiff, so results match sb-go; tests pass a fixture
-   zoneinfo directory. Only a `ZONEINFO` zip file isn't read (listed
-   under the differences).
+   parses it with jiff, so results match sb-go (they agree on every zone
+   zic writes; only a TZif file with a malformed footer, which Go
+   accepts, is refused); tests pass a fixture zoneinfo directory. Only a
+   `ZONEINFO` zip file isn't read (listed under the differences).
 8. **musl builds through `cross` (Checkpoint A, 2026-11-03):** aws-lc-sys
    compiles C, so check.sh's production musl build moves to `cross`
    ([ADR-008](../decisions/ADR-008-musl-builds-through-cross.md)), with

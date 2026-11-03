@@ -59,10 +59,15 @@ impl Node {
 }
 
 /// `root`, a parsed file shown as `file`, resolved; or every scalar whose
-/// tag doesn't fit its text, each an issue.
-pub fn build(file: &str, root: &MarkedYamlOwned) -> Result<Node, Vec<Issue>> {
+/// tag doesn't fit its text, each an issue, which never shows the value of
+/// a path `secret` names (`rules::secret_paths`).
+pub fn build(
+    file: &str,
+    root: &MarkedYamlOwned,
+    secret: &dyn Fn(&str) -> bool,
+) -> Result<Node, Vec<Issue>> {
     let mut issues = Vec::new();
-    let node = convert(file, root, "", &mut issues);
+    let node = convert(file, root, "", secret, false, &mut issues);
     if issues.is_empty() {
         Ok(node)
     } else {
@@ -81,7 +86,16 @@ fn untagged(node: &MarkedYamlOwned) -> &MarkedYamlOwned {
 }
 
 /// `node` at key path `path`, its tag errors added to `issues`.
-fn convert(file: &str, node: &MarkedYamlOwned, path: &str, issues: &mut Vec<Issue>) -> Node {
+fn convert(
+    file: &str,
+    node: &MarkedYamlOwned,
+    path: &str,
+    secret: &dyn Fn(&str) -> bool,
+    under_secret: bool,
+    issues: &mut Vec<Issue>,
+) -> Node {
+    // Everything under a secret key is secret too.
+    let hidden = under_secret || secret(path);
     let (line, column) = (node.span.start.line(), node.span.start.col() + 1);
     let data = match &untagged(node).data {
         YamlDataOwned::Mapping(map) => Data::Mapping(
@@ -116,7 +130,7 @@ fn convert(file: &str, node: &MarkedYamlOwned, path: &str, issues: &mut Vec<Issu
                         line: key.span.start.line(),
                         column: key.span.start.col() + 1,
                     };
-                    (key, convert(file, value, &child, issues))
+                    (key, convert(file, value, &child, secret, hidden, issues))
                 })
                 .collect(),
         ),
@@ -124,13 +138,32 @@ fn convert(file: &str, node: &MarkedYamlOwned, path: &str, issues: &mut Vec<Issu
             items
                 .iter()
                 .enumerate()
-                .map(|(index, item)| convert(file, item, &format!("{path}[{index}]"), issues))
+                .map(|(index, item)| {
+                    convert(
+                        file,
+                        item,
+                        &format!("{path}[{index}]"),
+                        secret,
+                        hidden,
+                        issues,
+                    )
+                })
                 .collect(),
         ),
         YamlDataOwned::Representation(text, style, tag) => {
             match resolve(text, *style, tag.as_ref()) {
                 Ok(value) => Data::Scalar(value),
                 Err(message) => {
+                    // yaml.v3's message quotes the text: not a secret's.
+                    let message = if hidden {
+                        message.replacen(
+                            &format!("`{text}`"),
+                            &format!("`{}`", crate::secret::REDACTED),
+                            1,
+                        )
+                    } else {
+                        message
+                    };
                     issues.push(Issue {
                         file: file.to_string(),
                         line,
@@ -156,7 +189,7 @@ mod tests {
 
     fn tree(text: &str) -> Node {
         let root = parse("t.yml", text).expect("parses");
-        build("t.yml", &root).unwrap_or_else(|issues| panic!("{issues:?}"))
+        build("t.yml", &root, &|_| false).unwrap_or_else(|issues| panic!("{issues:?}"))
     }
 
     #[test]
@@ -205,7 +238,7 @@ mod tests {
     #[test]
     fn a_collection_key_is_an_issue() {
         let root = parse("t.yml", "a: 1\n? [x]\n: three\n").expect("parses");
-        let issues: Vec<String> = build("t.yml", &root)
+        let issues: Vec<String> = build("t.yml", &root, &|_| false)
             .expect_err("fails")
             .iter()
             .map(ToString::to_string)
@@ -251,7 +284,7 @@ mod tests {
     #[test]
     fn a_tag_that_does_not_fit_is_an_issue() {
         let root = parse("t.yml", "a: !!int x\nb:\n  c: !!bool maybe\n").expect("parses");
-        let issues: Vec<String> = build("t.yml", &root)
+        let issues: Vec<String> = build("t.yml", &root, &|_| false)
             .expect_err("fails")
             .iter()
             .map(ToString::to_string)
@@ -283,11 +316,50 @@ mod tests {
     #[test]
     fn a_mapping_key_is_an_issue_too() {
         let root = parse("t.yml", "? {a: 1}\n: x\n").expect("parses");
-        let issues: Vec<String> = build("t.yml", &root)
+        let issues: Vec<String> = build("t.yml", &root, &|_| false)
             .expect_err("fails")
             .iter()
             .map(ToString::to_string)
             .collect();
         assert_eq!(issues, ["t.yml:1:3: a key must be a scalar, not a mapping"]);
+    }
+
+    /// A secret's value isn't echoed in a tag error (term-ui decision 8).
+    #[test]
+    fn a_secret_tag_error_hides_the_value() {
+        let root = parse("t.yml", "dockerhub:\n  token: !!int s3cret\n").expect("parses");
+        let issues: Vec<String> = build("t.yml", &root, &|path| path == "dockerhub.token")
+            .expect_err("fails")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            issues,
+            ["t.yml:2:10: dockerhub.token: cannot decode !!str `[REDACTED]` as a !!int"]
+        );
+    }
+
+    /// Everything under a secret key is secret too: a list or a mapping
+    /// under one hides its values as well.
+    #[test]
+    fn values_under_a_secret_are_hidden() {
+        let secret = |path: &str| path == "dockerhub.token" || path == "cloudflare.api";
+        let root = parse(
+            "t.yml",
+            "dockerhub:\n  token: [!!int s3cret]\ncloudflare:\n  api: {x: !!int s3cret}\n",
+        )
+        .expect("parses");
+        let issues: Vec<String> = build("t.yml", &root, &secret)
+            .expect_err("fails")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            issues,
+            [
+                "t.yml:2:11: dockerhub.token[0]: cannot decode !!str `[REDACTED]` as a !!int",
+                "t.yml:4:12: cloudflare.api.x: cannot decode !!str `[REDACTED]` as a !!int",
+            ]
+        );
     }
 }

@@ -286,18 +286,18 @@ an issue or warning: an issue names the key, never the value. The crate's
 cargo-deny run repeated for the tz crate.
 
 **Acceptance criteria:**
-- [ ] Every validator's cases (sb-go's included) pass without reading host
+- [x] Every validator's cases (sb-go's included) pass without reading host
       paths; the password warning is a warning; `timezone` rejects `..`,
       an absolute name, a directory (`Europe`) and a non-TZif file
       (`zone.tab`), and finds names in `ZONEINFO` and the system
       directories in Go's order; a non-TZif file in the fixture
       `ZONEINFO` with a valid one in the next directory is accepted
       (decision 7).
-- [ ] No secret value in any issue or warning (a known-secret test per
+- [x] No secret value in any issue or warning (a known-secret test per
       field); the crate's cargo-deny run passes.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-config`; `scripts/check.sh full`.
 
 **Dependencies:** Task 6
 **Files:** `crates/config/src/validators.rs`, `crates/config/src/secret.rs`
@@ -387,6 +387,11 @@ the runner and calls it, so nothing is decided twice. It logs each file,
 its issues, each check's outcome and timing, never a secret (the log test
 in its own test binary, as tracing caches callsite interest). Unit tests
 on tempdir fixture sets through term-ui's in-memory target.
+
+(From Task 7's review: the run builds each tree with
+`rules::secret_paths(&rules)`, never a predicate that returns false. sb-go also keeps `cloudflare.email` and
+`dockerhub.user` out of its verbose output; the run log here records no
+values, and this task keeps it so.)
 
 **Acceptance criteria:**
 - [ ] Each table row and the check gating tested on fixture sets, failing

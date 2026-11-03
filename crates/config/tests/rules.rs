@@ -1,60 +1,18 @@
-//! The rules end to end over fixture files (config plan Task 6): a valid
+//! The rules end to end over fixture files, with the real validators
+//! (config plan Tasks 6-7): a valid
 //! synthetic set passes Saltbox's pinned schemas, and proto-yaml's
 //! many-errors case yields every issue, sorted, with positions.
 
 use std::path::{Path, PathBuf};
 
-use sb_config::rules::{self, Credentials, Validators, Verdict};
-use sb_config::scalar::Value;
+use sb_config::rules::{self, Validators};
 use sb_config::schema::{self, Validator};
-use sb_config::tree::{Data, Node};
+use sb_config::validators::Saltbox;
 
 fn fixture(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(path)
-}
-
-/// Validators that accept everything (Task 7 brings the real ones).
-struct AcceptAll;
-
-impl Validators for AcceptAll {
-    fn validate(&self, _: Validator, _: &Node, _: &Node) -> Verdict {
-        Verdict::Valid
-    }
-    fn password_warning(&self, _: &Node) -> Option<String> {
-        None
-    }
-    fn credentials(&self, _: Validator, _: &Node, _: &Node) -> Credentials {
-        Credentials::Ready
-    }
-}
-
-/// Just enough of `validate_ansible_bool` and `validate_url` for the
-/// many-errors case.
-struct Minimal;
-
-impl Validators for Minimal {
-    fn validate(&self, validator: Validator, value: &Node, _: &Node) -> Verdict {
-        let Data::Scalar(Value::Str(text)) = &value.data else {
-            return Verdict::Valid;
-        };
-        match validator {
-            Validator::ValidateAnsibleBool if text == "maybe" => {
-                Verdict::Invalid("must be a valid Ansible boolean".into())
-            }
-            Validator::ValidateUrl if !text.starts_with("http") => {
-                Verdict::Invalid("must be a valid URL".into())
-            }
-            _ => Verdict::Valid,
-        }
-    }
-    fn password_warning(&self, _: &Node) -> Option<String> {
-        None
-    }
-    fn credentials(&self, _: Validator, _: &Node, _: &Node) -> Credentials {
-        Credentials::Ready
-    }
 }
 
 fn report(
@@ -65,7 +23,8 @@ fn report(
 ) -> rules::Report {
     let rules = schema::load(schema_path, "schema").unwrap_or_else(|err| panic!("{err}"));
     let root = sb_config::parse::parse(name, text).unwrap_or_else(|i| panic!("{i:?}"));
-    let tree = sb_config::tree::build(name, &root).unwrap_or_else(|i| panic!("{i:?}"));
+    let tree = sb_config::tree::build(name, &root, &rules::secret_paths(&rules))
+        .unwrap_or_else(|i| panic!("{i:?}"));
     rules::validate(name, &tree, &rules, validators)
 }
 
@@ -97,7 +56,7 @@ fn the_valid_set_passes_the_pinned_schemas() {
             &fixture(&format!("valid/{name}.yml")),
             &format!("{name}.yml"),
             &fixture(&format!("saltbox-schemas/{name}.schema.yml")),
-            &AcceptAll,
+            &Saltbox::with_zoneinfo(Vec::new()),
         );
         assert_eq!(found, Vec::<String>::new(), "{name}");
     }
@@ -109,7 +68,7 @@ fn many_errors_yields_every_issue_in_order() {
         &fixture("many-errors/many-errors.yml"),
         "many-errors.yml",
         &fixture("many-errors/schema.yml"),
-        &Minimal,
+        &Saltbox::with_zoneinfo(Vec::new()),
     );
     assert_eq!(
         found,
@@ -117,9 +76,9 @@ fn many_errors_yields_every_issue_in_order() {
             "many-errors.yml:1:1: user.domain: is required",
             "many-errors.yml:2:9: user.name: must be at least 1 characters long, got 0",
             "many-errors.yml:3:10: user.email: must not equal its configured default value",
-            "many-errors.yml:5:12: backup.enabled: must be a valid Ansible boolean",
+            "many-errors.yml:5:12: backup.enabled: must be a valid Ansible boolean (yes/no, true/false, on/off, 1/0), got: maybe",
             "many-errors.yml:6:12: backup.retries: must be a whole number (integer), got: lots",
-            "many-errors.yml:8:7: backup.hosts[0]: must be a valid URL",
+            "many-errors.yml:8:7: backup.hosts[0]: must be a valid URL format (e.g., https://example.com)",
             "many-errors.yml:9:3: backup.colour: unknown field",
             "many-errors.yml:11:8: labels.web: must be at least 2 characters long, got 1",
         ]
@@ -134,7 +93,7 @@ fn the_valid_accounts_asks_for_both_checks() {
         &text,
         "accounts.yml",
         &fixture("saltbox-schemas/accounts.schema.yml"),
-        &AcceptAll,
+        &Saltbox::with_zoneinfo(Vec::new()),
     );
     let asked: Vec<(Validator, &str)> = found
         .requests
@@ -158,7 +117,7 @@ fn the_pinned_motd_schema_checks_colours_and_names() {
         "colors:\n  text:\n    label: \"#abcd\"\nsystemd:\n  display_names:\n    plex: 5\n",
         "motd.yml",
         &fixture("saltbox-schemas/motd.schema.yml"),
-        &AcceptAll,
+        &Saltbox::with_zoneinfo(Vec::new()),
     )
     .issues
     .iter()
@@ -169,5 +128,87 @@ fn the_pinned_motd_schema_checks_colours_and_names() {
         [
             "motd.yml:3:12: colors.text.label: must match the pattern `^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$`"
         ]
+    );
+}
+
+/// No secret value in any issue or warning (config spec, "Secrets"): each
+/// secret field given a rule that echoes what it checks.
+#[test]
+fn secrets_are_never_shown() {
+    let schema = r#"
+cloudflare:
+  type: object
+  properties:
+    api: {type: number}
+    scoped_token: {type: cron_time}
+dockerhub:
+  type: object
+  properties:
+    token: {type: ansible_bool}
+user:
+  type: object
+  properties:
+    pass: {type: password, min_length: 30}
+"#;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let schema_path = dir.path().join("secrets.schema.yml");
+    std::fs::write(&schema_path, schema).expect("write schema");
+    let config = "cloudflare:\n  api: s3cret-one\n  scoped_token: s3cret-two\ndockerhub:\n  token: s3cret-three\nuser:\n  pass: s3cret-4\n";
+    let found = report(
+        config,
+        "accounts.yml",
+        &schema_path,
+        &Saltbox::with_zoneinfo(Vec::new()),
+    );
+    let shown: Vec<String> = found.issues.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown,
+        [
+            "accounts.yml:2:8: cloudflare.api: must be a whole number (integer), got: [REDACTED]",
+            "accounts.yml:3:17: cloudflare.scoped_token: must be a valid Ansible cron special time (annually, daily, hourly, monthly, reboot, weekly, yearly), got: [REDACTED]",
+            "accounts.yml:5:10: dockerhub.token: must be a valid Ansible boolean (yes/no, true/false, on/off, 1/0), got: [REDACTED]",
+            "accounts.yml:7:9: user.pass: must be at least 30 characters long, got 8",
+        ]
+    );
+    for line in shown.iter().chain(&found.warnings) {
+        assert!(!line.contains("s3cret"), "{line}");
+    }
+}
+
+/// A tag error on a password-typed field doesn't show the value either.
+#[test]
+fn a_secret_tag_error_is_redacted() {
+    let rules =
+        schema::load(&fixture("saltbox-schemas/accounts.schema.yml"), "schema").expect("schema");
+    let root =
+        sb_config::parse::parse("accounts.yml", "user:\n  pass: !!int s3cret\n").expect("parses");
+    let issues: Vec<String> =
+        sb_config::tree::build("accounts.yml", &root, &rules::secret_paths(&rules))
+            .expect_err("fails")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+    assert_eq!(
+        issues,
+        ["accounts.yml:2:9: user.pass: cannot decode !!str `[REDACTED]` as a !!int"]
+    );
+}
+
+/// A list under a password-typed field hides its values too.
+#[test]
+fn values_under_a_secret_field_are_redacted() {
+    let rules =
+        schema::load(&fixture("saltbox-schemas/accounts.schema.yml"), "schema").expect("schema");
+    let root = sb_config::parse::parse("accounts.yml", "user:\n  pass:\n    - !!bool s3cret\n")
+        .expect("parses");
+    let issues: Vec<String> =
+        sb_config::tree::build("accounts.yml", &root, &rules::secret_paths(&rules))
+            .expect_err("fails")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+    assert_eq!(
+        issues,
+        ["accounts.yml:3:7: user.pass[0]: cannot decode !!str `[REDACTED]` as a !!bool"]
     );
 }

@@ -50,6 +50,9 @@ regex = "1.13.1"
 # Its parser, for a pattern error's reason on one line (regex's own
 # error carries only the multi-line rendering).
 regex-syntax = { version = "0.8.11", default-features = false, features = ["std", "unicode"] }
+# Time zone files, parsed as found (`TimeZone::tzif`): no embedded
+# database and no lookup of its own (config spec, decision 7).
+jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 thiserror = "2.0.21"
 signal-hook = "0.4.5"

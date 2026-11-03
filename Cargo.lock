@@ -3295,6 +3295,7 @@ dependencies = [
 name = "sb-config"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "regex",
  "regex-syntax",
  "saphyr",

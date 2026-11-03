@@ -6,4 +6,6 @@ pub mod parse;
 pub mod rules;
 pub mod scalar;
 pub mod schema;
+pub mod secret;
 pub mod tree;
+pub mod validators;

@@ -12,6 +12,7 @@ use std::sync::LazyLock;
 use crate::issue::Issue;
 use crate::scalar::Value;
 use crate::schema::{Additional, Format, Kind, Rule, Rules, Validator};
+use crate::secret;
 use crate::tree::{Data, Node};
 
 /// The validators the rules call (Task 7's): type validators through the
@@ -19,8 +20,9 @@ use crate::tree::{Data, Node};
 /// warning, and the credential sections' structure.
 pub trait Validators {
     /// `validator` on `value`, whose parent mapping is `parent`: an error
-    /// message, or a warning that doesn't fail the file.
-    fn validate(&self, validator: Validator, value: &Node, parent: &Node) -> Verdict;
+    /// message, or a warning that doesn't fail the file. A `secret` value
+    /// is never echoed in either (`secret::shown`).
+    fn validate(&self, validator: Validator, value: &Node, parent: &Node, secret: bool) -> Verdict;
 
     /// The short-password warning for a `type: password` value, if any.
     fn password_warning(&self, value: &Node) -> Option<String>;
@@ -91,6 +93,33 @@ pub fn validate(file: &str, root: &Node, rules: &Rules, validators: &dyn Validat
     walk.object(root, rules, None, "", (1, 1));
     walk.report.issues.sort();
     walk.report
+}
+
+/// The secret paths of files checked against `rules` (`secret::is_secret`
+/// with each path's type), for `tree::build`'s messages before the rules
+/// run: through properties, `[n]` items and `additionalProperties`.
+pub fn secret_paths(rules: &Rules) -> impl Fn(&str) -> bool + '_ {
+    move |path| secret::is_secret(path, kind_at(rules, path))
+}
+
+/// The type of the rule a dotted path (with `[n]` items) reaches.
+fn kind_at(rules: &Rules, path: &str) -> Option<Kind> {
+    let mut properties = Some(rules);
+    let mut additional: Option<&Additional> = None;
+    let mut rule: Option<&Rule> = None;
+    for segment in path.split('.') {
+        let name = segment.split('[').next().unwrap_or(segment);
+        rule = properties.and_then(|p| p.get(name)).or(match additional {
+            Some(Additional::Rule(r)) => Some(r),
+            _ => None,
+        });
+        for _ in 0..segment.matches('[').count() {
+            rule = rule.and_then(|r| r.items.as_deref());
+        }
+        properties = rule.and_then(|r| r.properties.as_ref());
+        additional = rule.and_then(|r| r.additional_properties.as_ref());
+    }
+    rule.and_then(|r| r.kind)
 }
 
 /// The type validators and the validator each stands for (sb-go's
@@ -198,7 +227,8 @@ impl Walk<'_> {
         parent: &Node,
         key_at: (usize, usize),
     ) {
-        if let Some(message) = self.checks(value, rule, parent) {
+        if let Some(message) = self.checks(value, rule, parent, secret::is_secret(path, rule.kind))
+        {
             self.issue((value.line, value.column), path, message);
             return;
         }
@@ -257,7 +287,7 @@ impl Walk<'_> {
     }
 
     /// The checks on one value in sb-go's order; the first that fails.
-    fn checks(&mut self, value: &Node, rule: &Rule, parent: &Node) -> Option<String> {
+    fn checks(&mut self, value: &Node, rule: &Rule, parent: &Node, secret: bool) -> Option<String> {
         if rule
             .not_equals
             .as_ref()
@@ -286,8 +316,8 @@ impl Walk<'_> {
             };
             let (valid, name) = match format {
                 Format::Email => (EMAIL.is_match(text), "a valid email address"),
-                Format::Hostname => (hostname(text), "a valid hostname"),
-                Format::Url => (URL.is_match(text), "a valid URL"),
+                Format::Hostname => (valid_hostname(text), "a valid hostname"),
+                Format::Url => (valid_url(text), "a valid URL"),
             };
             if !valid {
                 return Some(format!("must be {name}"));
@@ -321,19 +351,19 @@ impl Walk<'_> {
         }
         match rule.kind {
             Some(Kind::Number) => {
-                if let Some(message) = whole_number(value) {
+                if let Some(message) = whole_number(value, secret) {
                     return Some(message);
                 }
             }
             Some(Kind::Float) => {
-                if let Some(message) = float(value) {
+                if let Some(message) = float(value, secret) {
                     return Some(message);
                 }
             }
             _ => {}
         }
         if let Some(validator) = rule.kind.and_then(type_validator) {
-            if let Some(message) = self.run(validator, value, parent) {
+            if let Some(message) = self.run(validator, value, parent, secret) {
                 return Some(message);
             }
             if rule.kind == Some(Kind::Password)
@@ -345,14 +375,20 @@ impl Walk<'_> {
         match rule.custom_validator {
             // The credential checks: `field`'s.
             Some(Validator::ValidateCloudflareConfig | Validator::ValidateDockerhubConfig) => None,
-            Some(validator) => self.run(validator, value, parent),
+            Some(validator) => self.run(validator, value, parent, secret),
             None => None,
         }
     }
 
     /// A sync validator's error; its warning is kept.
-    fn run(&mut self, validator: Validator, value: &Node, parent: &Node) -> Option<String> {
-        match self.validators.validate(validator, value, parent) {
+    fn run(
+        &mut self,
+        validator: Validator,
+        value: &Node,
+        parent: &Node,
+        secret: bool,
+    ) -> Option<String> {
+        match self.validators.validate(validator, value, parent, secret) {
             Verdict::Valid => None,
             Verdict::Warning(warning) => {
                 self.report.warnings.push(warning);
@@ -443,33 +479,38 @@ static HOSTNAME: LazyLock<regex::Regex> = LazyLock::new(|| {
 static URL: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^https?://[^\t\n\f\r ]+$").expect("a valid pattern"));
 
+/// sb-go's `isValidURL`.
+pub(crate) fn valid_url(text: &str) -> bool {
+    URL.is_match(text)
+}
+
 /// sb-go's `isValidHostname`: 1 to 253 bytes, then the pattern.
-fn hostname(text: &str) -> bool {
+pub(crate) fn valid_hostname(text: &str) -> bool {
     (1..=253).contains(&text.len()) && HOSTNAME.is_match(text)
 }
 
 /// sb-go's `validateNumberValue`: an integer, or a string Go's `Atoi`
-/// reads.
-fn whole_number(value: &Node) -> Option<String> {
+/// reads (as `i64`'s parse: a sign, digits, no underscores; Go's `int`
+/// is 64 bits where sb runs). A secret isn't echoed.
+fn whole_number(value: &Node, secret: bool) -> Option<String> {
     let got = match &value.data {
         Data::Scalar(Value::Str(text)) if text.parse::<i64>().is_ok() => return None,
-        Data::Scalar(Value::Str(text)) => text.clone(),
+        Data::Scalar(Value::Str(text)) => secret::shown(text, secret),
         Data::Scalar(Value::Int(_)) => return None,
-        Data::Scalar(Value::Float(f)) => go_float(*f),
+        Data::Scalar(Value::Float(f)) => secret::shown(&go_float(*f), secret),
         _ => go_type(value).to_string(),
     };
     Some(format!("must be a whole number (integer), got: {got}"))
 }
 
 /// sb-go's `validateFloatValue`: a float, or a string Go's `ParseFloat`
-/// reads (decimal, `inf`, `infinity` and `nan` in any case, signed; Go's
-/// hex floats aren't read, a listed difference).
-fn float(value: &Node) -> Option<String> {
+/// reads. A secret isn't echoed.
+fn float(value: &Node, secret: bool) -> Option<String> {
     let got = match &value.data {
         Data::Scalar(Value::Str(text)) if go_parses_float(text) => return None,
-        Data::Scalar(Value::Str(text)) => text.clone(),
+        Data::Scalar(Value::Str(text)) => secret::shown(text, secret),
         Data::Scalar(Value::Float(_)) => return None,
-        Data::Scalar(Value::Int(i)) => i.to_string(),
+        Data::Scalar(Value::Int(i)) => secret::shown(&i.to_string(), secret),
         _ => go_type(value).to_string(),
     };
     Some(format!("must be a float, got: {got}"))
@@ -481,7 +522,7 @@ fn float(value: &Node) -> Option<String> {
 /// parse reads the same decimal and named forms but no underscores, takes
 /// a signed nan, and turns an overflow into infinity, so those are
 /// handled here. Go's hex floats aren't read (a listed difference).
-fn go_parses_float(text: &str) -> bool {
+pub(crate) fn go_parses_float(text: &str) -> bool {
     let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
     match unsigned.to_ascii_lowercase().as_str() {
         "nan" => return unsigned.len() == text.len(),
@@ -502,12 +543,14 @@ fn go_parses_float(text: &str) -> bool {
 }
 
 /// Go's `%T` for a decoded value, as sb-go's messages print it.
-fn go_type(value: &Node) -> &'static str {
+pub(crate) fn go_type(value: &Node) -> &'static str {
     match &value.data {
         Data::Mapping(_) => "map[string]interface {}",
         Data::Sequence(_) => "[]interface {}",
         Data::Scalar(Value::Null) => "<nil>",
         Data::Scalar(Value::Bool(_)) => "bool",
+        // yaml.v3 decodes an integer past i64 as a `uint64`.
+        Data::Scalar(Value::Int(i)) if i64::try_from(*i).is_err() => "uint64",
         Data::Scalar(Value::Int(_)) => "int",
         Data::Scalar(Value::Float(_)) => "float64",
         Data::Scalar(Value::Str(_)) => "string",
@@ -521,7 +564,7 @@ fn go_type(value: &Node) -> &'static str {
 /// a sign and at least two exponent digits; `NaN`, `+Inf`, `-Inf`. No
 /// crate reproduces Go's `%g` (ryu has its own cutoffs); Rust's `{:e}`
 /// gives the same shortest digits.
-fn go_float(f: f64) -> String {
+pub(crate) fn go_float(f: f64) -> String {
     if f.is_nan() {
         return "NaN".to_string();
     }
@@ -553,7 +596,7 @@ mod tests {
     }
 
     impl Validators for Fake {
-        fn validate(&self, validator: Validator, value: &Node, parent: &Node) -> Verdict {
+        fn validate(&self, validator: Validator, value: &Node, parent: &Node, _: bool) -> Verdict {
             let parent_keys = match &parent.data {
                 crate::tree::Data::Mapping(entries) => entries
                     .iter()
@@ -599,7 +642,7 @@ mod tests {
     fn run_with(schema_text: &str, config: &str, fake: &Fake) -> Report {
         let rules = schema::parse("s.schema.yml", schema_text).expect("schema");
         let root = crate::parse::parse("c.yml", config).expect("parses");
-        let tree = crate::tree::build("c.yml", &root).expect("builds");
+        let tree = crate::tree::build("c.yml", &root, &|_| false).expect("builds");
         validate("c.yml", &tree, &rules, fake)
     }
 
@@ -1250,5 +1293,23 @@ mod tests {
             issues("p: {type: string, max_length: 2}\n", "p: abc\n"),
             ["c.yml:1:4: p: must be at most 2 characters long, got 3"]
         );
+    }
+
+    /// The secret fields by schema: the credential paths and every
+    /// password-typed field, through properties, items and other keys.
+    #[test]
+    fn secret_paths_follow_the_schema() {
+        let rules = schema::parse(
+            "s.schema.yml",
+            "user:\n  type: object\n  properties:\n    pass: {type: password}\n    name: {type: string}\nlist:\n  type: array\n  items:\n    type: object\n    properties:\n      key: {type: password}\nmore:\n  type: object\n  additionalProperties: {type: password}\n",
+        )
+        .expect("schema");
+        let secret = secret_paths(&rules);
+        assert!(secret("user.pass"));
+        assert!(!secret("user.name"));
+        assert!(secret("list[3].key"));
+        assert!(secret("more.anything"));
+        assert!(secret("dockerhub.token"));
+        assert!(!secret("nothing.here"));
     }
 }
