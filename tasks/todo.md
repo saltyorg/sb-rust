@@ -131,11 +131,11 @@ cases). cargo-deny's gate reads sb's graph, which doesn't include
 `sb-docker` until Task 6; bollard's tree was checked in Task 1.
 
 **Acceptance criteria:**
-- [ ] Every status row, Traefik case and binding case has a test that
+- [x] Every status row, Traefik case and binding case has a test that
       failed against a stub first.
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-docker`; `scripts/check.sh full`.
 
 **Dependencies:** Checkpoint A
 **Files:** `Cargo.toml`, `deny.toml`, `crates/docker/Cargo.toml`,
@@ -195,7 +195,9 @@ sb-docker's test helpers never inherit `DOCKER_*` from the environment.
 - [ ] Against the fake: rows, a vanished container, a failing inspect, an
       unreachable socket, an old daemon (unversioned paths at its own
       version, versioned ones above it refused), a newer daemon's shape,
-      a daemon refusing unversioned paths (error); the recorded paths
+      a daemon refusing unversioned paths (error), an unknown state word
+      in the list (list failure) and in one inspect (inspect failure);
+      the recorded paths
       asserted unversioned, the failure message pointing at the spec's
       API version bullet; the 120 s timeout set; axum's tree passes
       cargo-deny (`cargo deny --manifest-path crates/docker/Cargo.toml

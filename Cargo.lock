@@ -3232,6 +3232,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sb-docker"
+version = "0.1.0"
+dependencies = [
+ "bollard",
+ "sb-cli-core",
+]
+
+[[package]]
 name = "sb-host"
 version = "0.1.0"
 dependencies = [

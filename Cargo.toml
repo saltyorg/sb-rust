@@ -13,6 +13,7 @@ publish = false
 sb-cli-core = { path = "crates/cli-core" }
 sb-host = { path = "crates/host" }
 sb-term-ui = { path = "crates/term-ui" }
+sb-docker = { path = "crates/docker" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"
@@ -29,6 +30,10 @@ tokio = { version = "1.54.1", default-features = false, features = ["rt", "time"
 clap_lex = "1.1.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Pinned exactly: 0.21.1 sends unversioned request paths, which sb relies
+# on (docker spec, "API version"; docs/platform-notes/docker-engine-api.md).
+# An upgrade re-checks that before the pin moves.
+bollard = "=0.21.1"
 saphyr = { version = "0.3.3", default-features = false }
 saphyr-parser = "0.3.3"
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }

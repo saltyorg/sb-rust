@@ -120,7 +120,7 @@ logging levels end to end.
   | Container | the first name without its leading `/`; with no name, the short ID (12 characters, `unknown` when empty), as sb-go |
   | Status | the status rule below |
   | Traefik Port | values of labels containing `traefik.http.services` and `.loadbalancer.server.port`, not containing `-http`, with more than three dot-separated parts (sb-go's rule); empty values dropped, deduplicated, numeric values in numeric order then any others in text order, joined by `, ` |
-  | Port Bindings | one per line, `ip:host->port/proto`, host and container ports padded within the cell so the arrows line up (when the table wraps a narrow column, wrapped lines may not); an unset IP shown as `0.0.0.0`, every IPv6 address in brackets (`[::]`, `[::1]`); bindings without a host port left out; ordered by container port number, then protocol, then IPv4 before IPv6, then address, then host port |
+  | Port Bindings | one per line, `ip:host->port/proto`, host and container ports padded to one width, so the arrows line up in the right-aligned column whatever the address (when the table wraps a narrow column, wrapped lines may not); an unset IP shown as `0.0.0.0`, every IPv6 address in brackets (`[::]`, `[::1]`); bindings without a host port left out; ordered by container port number, then protocol, then IPv4 before IPv6, then address (numerically), then host port |
 
 - **Status rule** (bollard's state and health enums, so every state is
   handled; the text alone tells the states apart):
@@ -136,11 +136,18 @@ logging levels end to end.
   | created with a start error (`State.Error` set) | `created (failed to start)` | problem |
   | exited with 0, created, paused | the state | idle |
   | restarting, dead | the state | problem |
-  | removing, or a state bollard doesn't know | the state | warn |
+  | removing, stopping | the state | warn |
+  | empty or absent | `unknown` | warn |
 
   The failed-start row follows moby's `daemon/start.go`: a failed first
   start leaves the container `created` with `State.Error` set and exit
   code 128 unless a more specific one was set (platform note).
+  bollard's state and health enums have no catch-all, in the list's
+  models as in the inspect's: a state or health word it doesn't know
+  fails the whole list call (no table, the list-failure error, exit 1)
+  or, met only in an inspect, that container's inspect (an inspect
+  failure). Docker's words are a fixed set that changes with its API;
+  a new one means a bollard upgrade.
 - **Table:** term-ui's `Table` (rounded, a rule between rows, border in
   the Border role, maximum column width 100 as sb-go), fitted to the
   terminal, natural width and plain when piped (`auto`); `--color`,
@@ -154,7 +161,7 @@ logging levels end to end.
   |---|---|
   | `name` | the Container column (the short ID when unnamed) |
   | `id` | the full ID |
-  | `state` | Docker's state word as given (a state bollard doesn't know passes through) |
+  | `state` | Docker's state word (empty when Docker gives none) |
   | `health` | Docker's health word; `null` without a health check (none, empty or absent) |
   | `exit_code` | a number, always (Docker reports 0 for a running container) |
   | `oom_killed` | `true` or `false`, always |

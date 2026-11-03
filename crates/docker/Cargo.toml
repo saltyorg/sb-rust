@@ -1,0 +1,15 @@
+[package]
+name = "sb-docker"
+version = "0.1.0"
+description = "sb's Docker commands: sb docker ps through bollard (capability map, docker)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sb-cli-core.workspace = true
+bollard.workspace = true
+
+[lints]
+workspace = true

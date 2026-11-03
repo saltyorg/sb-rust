@@ -53,10 +53,13 @@ allow-wildcard-paths = true
 # "Depends on" column. Added with each crate.
 deny = [
     # cli-core: every module builds on it.
-    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui"] },
+    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates.
-    { crate = "sb-term-ui", wrappers = ["sb"] },
+    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker"] },
+    # docker: sb docker ps (and later start/stop/restart, the picker's
+    # list, log streams), used by the binary.
+    { crate = "sb-docker", wrappers = ["sb"] },
     # host: only the supported-release check so far, used by the binary.
     { crate = "sb-host", wrappers = ["sb"] },
 ]
