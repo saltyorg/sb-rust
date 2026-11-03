@@ -196,25 +196,27 @@ the spec (`description` and `example` accepted and ignored), sb-go's type
 and custom-validator names without `validate_rclone_remote`, formats,
 `additionalProperties` as a rule or a bool, `pattern` compiled at load;
 any unknown key, name or format, a malformed value or a pattern that
-doesn't compile is an error naming the schema file and key; files up to
+doesn't compile is an error naming the schema file and the position (and
+the key or value at fault); files up to
 1 MiB. The pinned schemas (Task 1: Saltbox commit 6830b26bf, with
 PROVENANCE.md) enter `crates/config/tests/fixtures/saltbox-schemas/` here,
 with the crate: the workspace's `crates/*` glob can't load a directory
 without a manifest. The placeholder address in accounts.schema.yml's
 `user.email` `not_equals` is Saltbox's placeholder, not a real address.
-serde-saphyr 2.1 with `default-features = false, features =
-["deserialize"]` (Task 1's findings); the capability map's stack table
-row follows. cargo-deny's gate reads sb's graph only, which includes sb-config
+serde-saphyr 2.0.0 with `default-features = false, features =
+["deserialize"]` (Task 1 measured 2.1.0, published the day of
+Task 4; 2.0.0 has the same feature and was already in the lockfile);
+the capability map's stack table row follows. cargo-deny's gate reads sb's graph only, which includes sb-config
 from Task 11; until then `cargo deny --manifest-path
 crates/config/Cargo.toml --all-features check` runs here, recorded.
 
 **Acceptance criteria:**
-- [ ] The pinned schemas load; a test per kind of strictness error, each
-      naming the file and key, failing against a stub first.
-- [ ] The crate's own cargo-deny run passes.
+- [x] The pinned schemas load; a test per kind of strictness error, each
+      naming the file and the position, failing against a stub first.
+- [x] The crate's own cargo-deny run passes.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-config`; `scripts/check.sh full`.
 
 **Dependencies:** Checkpoint A
 **Files:** `Cargo.toml`, `deny.toml`, `crates/config/Cargo.toml`,

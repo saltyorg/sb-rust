@@ -87,10 +87,12 @@ fn read_opened(
         .map_err(|_| ConfigError::NotUtf8)
 }
 
-/// `path`'s text, or `None` when there is no such file; for the inventory
-/// (its writer already controls root through Ansible, and sb-go reads it
-/// the same way) and an `SB_CONFIG` path (the user's own run).
-fn read_small(path: &Path) -> Result<Option<String>, ConfigError> {
+/// `path`'s text, or `None` when there is no such file: a regular file of
+/// at most 1 MiB in UTF-8, opened without blocking. For the inventory and
+/// Saltbox's schema files (their writer already controls root through
+/// Ansible, and sb-go reads them the same way) and an `SB_CONFIG` path
+/// (the user's own run).
+pub fn read_small(path: &Path) -> Result<Option<String>, ConfigError> {
     read_opened(rustix::fs::open(
         path,
         read_flags(),

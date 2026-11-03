@@ -142,12 +142,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   findings, approved at Checkpoint A.*
 - **`pattern`:** a Rust `regex` (no lookaround or backreferences), an
   unanchored search as JSON Schema's, on string values only (a non-string
-  with a pattern: `must be a string`). A pattern that doesn't compile fails
-  schema loading, naming the schema file and key. The plan's first task
-  checks the pinned schemas' patterns: that they compile under Rust's
-  syntax, mean the same as their ECMA-262 reading (`\d` is Unicode in Rust)
-  and anchor themselves. A string that doesn't match is an issue, exit 1,
-  from the start (decision 4).
+  with a pattern: `must be a string`). A pattern that doesn't compile
+  fails schema loading, naming the schema file, the pattern and its
+  position. The plan's first task checks the pinned schemas' patterns:
+  that they compile under Rust's syntax, mean the same as their ECMA-262
+  reading (`\d` is Unicode in Rust) and anchor themselves. A string that
+  doesn't match is an issue, exit 1, from the start (decision 4).
 - **`additionalProperties`:** with `properties` and no
   `additionalProperties`, other keys are errors (sb-go's unknown field);
   with neither, any keys are accepted (as sb-go). A rule (as motd's schema
@@ -156,8 +156,10 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   has no way to). As with sb-go's other object rules, a value that isn't a
   mapping skips them (type flexibility), pinned by a test.
 - **Strict loading:** an unknown schema key, rule type, format, validator
-  name, or a malformed value is an error naming the schema file and key.
-  Everywhere, also in a user's run (decision 5).
+  name, or a malformed value is an error naming the schema file and the
+  line and column (and the key or value at fault, where there is one;
+  serde-saphyr reports positions, not key paths). Everywhere, also in a
+  user's run (decision 5).
 - **Validators.** Type validators (usable as `type`): `ansible_bool`
   (sb-go trims for `required_when_true` but not here: kept),
   `subdomain`, `hostname`, `directory_path`, `url`, `timezone`
@@ -238,6 +240,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - Docker Hub's login body properly encoded; `CLOUDFLARE_CUSTOM_HEADERS`
   and cloudflare-go's other environment variables not read.
 - `required_with`'s list printed as `a, b`.
+- `not_equals` takes its value as serde-saphyr resolves it: unquoted
+  `yes`, `on` and `y` are booleans and `017` is 17 (yaml.v3: the strings,
+  and 15). Saltbox quotes its `not_equals` values.
 - `ZONEINFO` naming a zip file (Go reads one) isn't read: sb reads it
   only as a directory; nor is Go's last fallback, the build machine's
   `$GOROOT/lib/time/zoneinfo.zip`, which only a host with a Go
@@ -264,7 +269,7 @@ on `sb-config`).
 
 - saphyr 0.3.3 `MarkedYaml` for the config files (positions on every
   node; already in sb for the inventory) and saphyr-parser's events for
-  the duplicate-key pass; serde-saphyr 2.1 (`deserialize` only) for the
+  the duplicate-key pass; serde-saphyr 2.0 (`deserialize` only) for the
   schema files (typed, `deny_unknown_fields`); `regex` for `pattern`.
 - reqwest (rustls, aws-lc-rs; the stack table) for the two checks; `psl`
   for the public suffix list (both sections, compiled in) and `jiff`

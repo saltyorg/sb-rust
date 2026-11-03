@@ -1,0 +1,22 @@
+[package]
+name = "sb-config"
+version = "0.1.0"
+description = "Saltbox's configuration: sb validate-config's schemas and checks (capability map, config)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sb-cli-core.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
+regex.workspace = true
+regex-syntax.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

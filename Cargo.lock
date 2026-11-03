@@ -3292,6 +3292,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sb-config"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "regex-syntax",
+ "sb-cli-core",
+ "serde",
+ "serde-saphyr",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sb-docker"
 version = "0.1.0"
 dependencies = [

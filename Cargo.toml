@@ -14,6 +14,7 @@ sb-cli-core = { path = "crates/cli-core" }
 sb-host = { path = "crates/host" }
 sb-term-ui = { path = "crates/term-ui" }
 sb-docker = { path = "crates/docker" }
+sb-config = { path = "crates/config" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"
@@ -41,6 +42,14 @@ axum = { version = "0.8.9", default-features = false, features = ["tokio", "http
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 saphyr = { version = "0.3.3", default-features = false }
 saphyr-parser = "0.3.3"
+# Saltbox's schema files, typed and strict; only the deserializer
+# (docs/platform-notes/musl-c-dependencies.md: no serializer or comments).
+serde-saphyr = { version = "2.0.0", default-features = false, features = ["deserialize"] }
+# Schema `pattern` rules (config spec).
+regex = "1.13.1"
+# Its parser, for a pattern error's reason on one line (regex's own
+# error carries only the multi-line rendering).
+regex-syntax = { version = "0.8.11", default-features = false, features = ["std", "unicode"] }
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 thiserror = "2.0.21"
 signal-hook = "0.4.5"
