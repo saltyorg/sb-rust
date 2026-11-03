@@ -1,4 +1,4 @@
-# Implementation Plan: `config` — `sb validate-config` (draft)
+# Implementation Plan: `config` — `sb validate-config` (approved 2026-11-03)
 
 Spec: [docs/specs/config.md](../docs/specs/config.md) (approved
 2026-11-03, decisions 1-6). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
