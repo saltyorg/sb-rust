@@ -54,6 +54,10 @@ enum Command {
         #[command(subcommand)]
         command: DockerCommand,
     },
+    /// Validate Saltbox configuration files
+    // No `--verbose/-v`: the run log has the detail (config decision 1).
+    #[command(long_about = "Validate Saltbox configuration files")]
+    ValidateConfig,
 }
 
 /// `sb docker`'s subcommands (docker spec); start, stop, restart and logs
@@ -80,6 +84,7 @@ impl Command {
             Command::Docker {
                 command: DockerCommand::Ps { .. },
             } => "docker ps",
+            Command::ValidateConfig => "validate-config",
         }
     }
 
@@ -91,6 +96,8 @@ impl Command {
             // The Docker socket, and sb's rule that only version and
             // completion run unprivileged (cli-core decision 3).
             Command::Docker { .. } => true,
+            // Saltbox's config is root's to read (config spec).
+            Command::ValidateConfig => true,
         }
     }
 }
@@ -158,7 +165,7 @@ fn main() -> ExitCode {
     let result = shutdown
         .listen_for_signals()
         .map_err(anyhow::Error::from)
-        .and_then(|()| run(cli, &shutdown));
+        .and_then(|()| run(cli, &shutdown, log.as_ref()));
     let error = result.as_ref().err().map(|e| e.as_ref() as _);
     // One frozen view of how the run ended, so the log and the screen agree
     // even if a signal arrives between them.
@@ -281,8 +288,9 @@ fn warn(message: impl std::fmt::Display) {
     let _ = writeln!(anstream::stderr(), "{style}warning:{style:#} {message}");
 }
 
-fn run(cli: Cli, shutdown: &Shutdown) -> anyhow::Result<()> {
+fn run(cli: Cli, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     match cli.command {
+        Command::ValidateConfig => validate_config(shutdown, log)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -351,6 +359,54 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
     }
 }
 
+/// `sb validate-config` (config spec): sb-config's run under term-ui's
+/// runner, titled as sb-go's, on the Saltbox root that also holds the
+/// theme's inventory. The runtime is built here, after parsing, so help
+/// and version never pay for it: current-thread, with I/O and time
+/// (reqwest's sockets, the checks' timeouts and backoff). Exit 1 when
+/// anything failed: the run has shown every block, so it returns a quiet
+/// exit. An HTTP client that can't be built (TLS or proxy setup) fails
+/// before the runner starts, as sb's plain error block.
+fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
+    use sb_config::{cloudflare, dockerhub, http, run, validators};
+    // Empty means unset, as for `SB_SALTBOX_DIR`. A test or debugging URL
+    // in place of a service's is logged, without any credentials in it: a
+    // leftover export would otherwise send real credentials elsewhere
+    // unseen.
+    let service_url = |name| {
+        let value = std::env::var(name).ok().filter(|value| !value.is_empty());
+        if let Some(url) = &value {
+            tracing::info!(
+                variable = name,
+                url = http::loggable_url(url),
+                "service URL overridden"
+            );
+        }
+        value
+    };
+    let settings = run::Settings {
+        root: config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR")),
+        zoneinfo: validators::Saltbox::zoneinfo_places(std::env::var_os("ZONEINFO")),
+        http: http::Http::new(&http::Proxy::System, http::TIMEOUT).map_err(anyhow::Error::msg)?,
+        cloudflare_url: service_url("CLOUDFLARE_BASE_URL")
+            .unwrap_or_else(|| cloudflare::BASE_URL.to_string()),
+        dockerhub_url: service_url("SB_DOCKERHUB_URL")
+            .unwrap_or_else(|| dockerhub::LOGIN_URL.to_string()),
+        backoff: cloudflare::backoff,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let options = sb_term_ui::Options::default();
+        let mut runner =
+            sb_term_ui::Runner::start("sb validate-config", shutdown, log, options).await;
+        let result = run::run(&mut runner, &settings).await;
+        runner.finish();
+        result.map_err(anyhow::Error::from)
+    })
+}
+
 #[cfg(test)]
 mod contract;
 
@@ -376,6 +432,13 @@ mod tests {
             command: DockerCommand::Ps { json: true },
         };
         assert_eq!(ps.name(), "docker ps");
+    }
+
+    /// `validate-config` reads root's config and logs under its name.
+    #[test]
+    fn validate_config_needs_root() {
+        assert!(Command::ValidateConfig.needs_root());
+        assert_eq!(Command::ValidateConfig.name(), "validate-config");
     }
 
     /// `docker ps` needs root (cli-core decision 3).

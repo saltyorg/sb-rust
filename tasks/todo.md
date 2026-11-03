@@ -36,7 +36,8 @@ Carried forward (open items owned by later work):
     end-to-end test that a real secret never reaches the run log.
   - Help: fang's 120-column wrap of long abouts comes with the first ported
     command whose long text needs it (cli-core Task 11); validate-config's
-    long text is one short line, so it stays carried (Task 11 confirms).
+    long text is one short line, so it stays carried (confirmed by Task 11's
+    help snapshot).
 - From term-ui's spec: prompts (criterion 10) are built with their first
   user, self-update or git's confirm (decision 1).
 - From docker Task 4's review: term-ui's `Cell` passes control characters
@@ -429,14 +430,14 @@ CONSTRAINTS.md "Tools" (ADR-008, decision 8); cargo-deny now checks the
 trees through sb.
 
 **Acceptance criteria:**
-- [ ] The valid and broken fixture runs pass through the binary; `sb
+- [x] The valid and broken fixture runs pass through the binary; `sb
       validate-config -v` exit 2; the contract test passes.
-- [ ] `sb --help` within its ratchet, `sb version` within 10 ms; the size
+- [x] `sb --help` within its ratchet, `sb version` within 10 ms; the size
       ADR written; `cargo deny check` passes; the musl step works through
       `cross` (ADR-008).
 
 **Verification:**
-- [ ] `scripts/check.sh full` (root tests included); library-reviewer on
+- [x] `scripts/check.sh full` (root tests included); library-reviewer on
       the diff.
 
 **Dependencies:** Tasks 2, 3, 10

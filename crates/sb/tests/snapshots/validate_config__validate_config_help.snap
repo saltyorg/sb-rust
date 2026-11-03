@@ -1,0 +1,14 @@
+---
+source: crates/sb/tests/validate_config.rs
+expression: "String::from_utf8_lossy(&help.stdout)"
+---
+  Validate Saltbox configuration files
+
+  USAGE
+
+    sb validate-config [--flags]
+
+  FLAGS
+
+    --color    Controls when to use color (auto)
+    -h --help  Help for validate-config

@@ -46,7 +46,7 @@ pass clippy and their tests.
 | Startup | `sb --help` and `sb version` median ≤ 10 ms | `hyperfine --warmup 5 --runs 50`, release build | task | sb-go takes about 18 ms; the prototypes about 2 ms |
 | Dependencies | No RustSec vulnerability, no unmaintained or yanked crate, only GPL-3.0-compatible licences, crates.io only | `cargo deny --manifest-path crates/sb/Cargo.toml check` (`deny.toml`) | full | External opinion: the RustSec database |
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`) | full | The compiler can't see the map; cargo-deny can |
-| Binary size | Production musl binary ≤ 45,711,520 bytes | `stat` after `cargo build --profile production --target x86_64-unknown-linux-musl` | full | Never larger than sb-go's binary (2026-10-30) |
+| Binary size | Production musl binary ≤ 45,711,520 bytes | `stat` after `cross build --profile production --target x86_64-unknown-linux-musl`, in its own target directory (see the cross ADR) | full | Never larger than sb-go's binary (2026-10-30) |
 | Logging | Every root run writes its run record and outcome; logs never contain secret values | Tests in `sb-cli-core` (run log) and in each module that handles secrets (facts, accounts, credentials): the test feeds a known secret and asserts it isn't in the captured log | task | Decision 11; the run log is kept on the host |
 
 All of the above run through `scripts/check.sh fast|task|full [base]`.
@@ -85,6 +85,8 @@ Installed locally; `scripts/check.sh` exits 2 naming any tool that's missing.
 | gitleaks | 8.30.1 | `go install github.com/zricethezav/gitleaks/v8@v8.30.1` |
 | node | 24 | system package (runs the floor guard) |
 | script (util-linux) | 2.39 | system package (gives the colour tests a terminal) |
+| cross | 0.2.5 | `cargo install --locked cross --version 0.2.5` (the production musl build, ADR-008) |
+| Docker | 29 | system package (runs cross's build images; its first run pulls them) |
 
 ## Exceptions
 

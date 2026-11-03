@@ -3272,6 +3272,7 @@ dependencies = [
  "predicates",
  "rustix",
  "sb-cli-core",
+ "sb-config",
  "sb-docker",
  "sb-host",
  "sb-term-ui",

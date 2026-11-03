@@ -153,7 +153,7 @@ each library pattern is checked against its docs and cited in the code
 
 ```
 cargo build -p sb                                   # debug build
-cargo build -p sb --profile production --target x86_64-unknown-linux-musl
+CARGO_TARGET_DIR=target/cross-musl cross build -p sb --profile production --target x86_64-unknown-linux-musl  # ADR-008
 cargo test --workspace                              # all crates, prototypes included
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check -p sb -p sb-cli-core

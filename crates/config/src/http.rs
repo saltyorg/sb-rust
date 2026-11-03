@@ -112,10 +112,43 @@ pub fn transport_error(err: &reqwest::Error) -> String {
     remote_text(&error_chain(err))
 }
 
+/// `text`, a service URL, as a log record may show it: its user name
+/// and password taken out
+/// (https://docs.rs/url/2.5.8/url/struct.Url.html#method.set_password);
+/// text that isn't a URL is withheld whole, since it could be anything.
+/// A query string stays: neither service takes credentials there.
+pub fn loggable_url(text: &str) -> String {
+    match reqwest::Url::parse(text) {
+        Ok(mut url) => {
+            // Both fail only for URLs that can't have credentials.
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        Err(_) => "(not a URL)".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::{Answer, Fake};
+
+    /// A URL as a log record shows it: no user name or password; text
+    /// that isn't a URL is withheld whole.
+    #[test]
+    fn a_logged_url_has_no_credentials() {
+        assert_eq!(
+            loggable_url("http://u:hunter2@127.0.0.1:9/client/v4/"),
+            "http://127.0.0.1:9/client/v4/"
+        );
+        assert_eq!(
+            loggable_url("https://hunter2@example.com/"),
+            "https://example.com/"
+        );
+        assert_eq!(loggable_url("http://127.0.0.1:9/x"), "http://127.0.0.1:9/x");
+        assert_eq!(loggable_url("hunter2 not a url"), "(not a URL)");
+    }
 
     fn http() -> Http {
         Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client")

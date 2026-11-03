@@ -63,4 +63,32 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     ] {
         cmd.env_remove(name);
     }
+    // No test reaches Cloudflare or Docker Hub: both checks go to a
+    // loopback port nothing listens on unless a test points them at its
+    // fake, with no proxy, certificate or zoneinfo settings of the
+    // developer's.
+    let refused = refused_url();
+    cmd.env("CLOUDFLARE_BASE_URL", &refused);
+    cmd.env("SB_DOCKERHUB_URL", &refused);
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "ZONEINFO",
+    ] {
+        cmd.env_remove(name);
+        cmd.env_remove(name.to_lowercase());
+    }
+}
+
+/// A loopback URL whose port was bound and closed, so a request is
+/// refused at once. Another test could bind the port in between: a low
+/// risk, and such a run would fail rather than reach a real service.
+fn refused_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let port = listener.local_addr().expect("its address").port();
+    format!("http://127.0.0.1:{port}/")
 }

@@ -153,9 +153,16 @@ full() {
   step "dependencies and architecture (cargo-deny, shipped graph)"
   need cargo-deny
   cargo deny --manifest-path crates/sb/Cargo.toml check
-  step "binary size <= ${SIZE_MAX_BYTES} bytes (production musl)"
-  cargo build --quiet -p sb --profile production --target x86_64-unknown-linux-musl
-  size=$(stat -c %s target/x86_64-unknown-linux-musl/production/sb)
+  step "binary size <= ${SIZE_MAX_BYTES} bytes (production musl, through cross)"
+  # aws-lc-sys compiles C for the target, so the build runs in cross's
+  # image, with a target directory of its own: build scripts compiled in
+  # the image can't run on the host or in another image (ADR-008).
+  need cross
+  need docker
+  local cross_target="$root/target/cross-musl"
+  CARGO_TARGET_DIR="$cross_target" cross build --quiet -p sb --profile production \
+    --target x86_64-unknown-linux-musl
+  size=$(stat -c %s "$cross_target/x86_64-unknown-linux-musl/production/sb")
   echo "sb: ${size} bytes"
   ((size <= SIZE_MAX_BYTES))
 }
