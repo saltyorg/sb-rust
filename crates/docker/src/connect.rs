@@ -99,6 +99,22 @@ pub struct Failure {
     pub cause: String,
 }
 
+/// The error for failed inspects (docker spec, "Errors"): sb-go's
+/// headline, then one line per container, `error inspecting container
+/// <short ID>: <cause>`, each a cause in cli-core's error block. `None`
+/// when nothing failed. Why a chain of contexts for a list: anyhow and
+/// cli-core's error block (and the run log's `error.sources`) model one
+/// linear chain; a multi-error type would need a cli-core change.
+pub fn failures_error(failures: &[Failure]) -> Option<anyhow::Error> {
+    let mut lines = failures
+        .iter()
+        .rev()
+        .map(|f| format!("error inspecting container {}: {}", f.short_id, f.cause));
+    let last = anyhow::Error::msg(lines.next()?);
+    let chain = lines.fold(last, anyhow::Error::context);
+    Some(chain.context(format!("failed to inspect {} container(s)", failures.len())))
+}
+
 /// What `ps` found: the rows, sorted by name, and the failed inspects.
 #[derive(Debug)]
 pub struct Listing {
@@ -503,5 +519,32 @@ mod tests {
             .expect("ps");
         assert_eq!(listing.rows.len(), 20);
         assert_eq!(engine.open_inspects(), 0);
+    }
+
+    /// sb-go's headline, then each container's line, in order, as the
+    /// error block's causes.
+    #[test]
+    fn failures_become_one_error_with_a_line_each() {
+        assert!(failures_error(&[]).is_none());
+        let failures = [
+            Failure {
+                short_id: "aaaaaaaaaaaa".into(),
+                cause: "boom".into(),
+            },
+            Failure {
+                short_id: "bbbbbbbbbbbb".into(),
+                cause: "bang".into(),
+            },
+        ];
+        let err = failures_error(&failures).expect("an error");
+        let lines: Vec<_> = err.chain().map(ToString::to_string).collect();
+        assert_eq!(
+            lines,
+            [
+                "failed to inspect 2 container(s)",
+                "error inspecting container aaaaaaaaaaaa: boom",
+                "error inspecting container bbbbbbbbbbbb: bang",
+            ]
+        );
     }
 }

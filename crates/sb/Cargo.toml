@@ -11,13 +11,20 @@ publish.workspace = true
 sb-cli-core.workspace = true
 sb-host.workspace = true
 sb-term-ui.workspace = true
+sb-docker.workspace = true
 anyhow.workspace = true
+# `net` for the I/O driver bollard's sockets need (enable_all turns on
+# only what is compiled in).
+tokio = { workspace = true, features = ["net"] }
 anstream.workspace = true
 clap.workspace = true
 colorchoice-clap.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+sb-docker = { workspace = true, features = ["testing"] }
+insta.workspace = true
+serde_json.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true

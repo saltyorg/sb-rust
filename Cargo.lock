@@ -3250,11 +3250,15 @@ dependencies = [
  "assert_cmd",
  "clap",
  "colorchoice-clap",
+ "insta",
  "predicates",
  "sb-cli-core",
+ "sb-docker",
  "sb-host",
  "sb-term-ui",
+ "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 

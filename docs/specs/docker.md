@@ -186,8 +186,8 @@ logging levels end to end.
     `failed to inspect N container(s)`, with a cause line per container
     naming its short ID (sb-go's `error inspecting container <id>: …`);
     exit 1.
-- **Ctrl-C / SIGTERM:** cancels the requests; cli-core's quiet 130 / 143,
-  no table, terminal as it was.
+- **Ctrl-C / SIGTERM:** cancels the requests; cli-core's "interrupted" block
+  with 130 / 143, no table, terminal as it was.
 - **Logging** (run log, capability-map decision 11; term-ui decision 9,
   verbose by default): the daemon address, the daemon's API version,
   how many containers were listed and inspected, each failure with its
@@ -222,6 +222,8 @@ logging levels end to end.
   bold headings and blue border codes even when piped (only the status
   colour turns off).
 - **Errors** are cli-core's error block (sb-go: the bare error text).
+- **`sb docker help`:** no such subcommand, as in sb-go's docker group;
+  sb's parse error, exit 2.
 - **`sb docker <unknown>`:** cli-core's parse error, exit 2 (sb-go:
   `unknown command`, exit 1), as for every sb command; `sb docker` with
   only a global flag is a missing-subcommand error, exit 2 (sb-go: help,
@@ -387,7 +389,8 @@ pub fn status(state: &ContainerState) -> (String, Role) {
 5. Not root: `sb docker ps` execs the stand-in sudo with cli-core's
    arguments and marker (fake-sudo test); cli-core Task 5's two
    equivalent mutants are caught.
-6. SIGINT or SIGTERM while an inspect is held open: 130 or 143, quiet, no
+6. SIGINT or SIGTERM while an inspect is held open: cli-core's
+   "interrupted" block, 130 or 143, no
    table (with `--json`, nothing on stdout), terminal restored (fake
    Engine API on a PTY).
 7. The run log records the daemon address, the daemon's version and API

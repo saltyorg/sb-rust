@@ -40,6 +40,35 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage Docker containers managed by Saltbox
+    // Alone: help on stdout, exit 0, as sb-go (`arg_required_else_help`
+    // makes clap's missing-subcommand error the kind `parse` prints as
+    // help). No `help` subcommand: sb-go's docker group has none (cobra
+    // adds one at the root only).
+    #[command(
+        long_about = "Manage Docker containers managed by Saltbox",
+        arg_required_else_help = true,
+        disable_help_subcommand = true
+    )]
+    Docker {
+        #[command(subcommand)]
+        command: DockerCommand,
+    },
+}
+
+/// `sb docker`'s subcommands (docker spec); start, stop, restart and logs
+/// come with their own plans.
+#[derive(Subcommand)]
+enum DockerCommand {
+    /// List Docker containers with port mappings
+    #[command(
+        long_about = "List all Docker containers and their status, displaying their internal\nports (as potentially exposed by Traefik labels) and their external port bindings."
+    )]
+    Ps {
+        /// Print the containers as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl Command {
@@ -48,6 +77,9 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Version { .. } => "version",
+            Command::Docker {
+                command: DockerCommand::Ps { .. },
+            } => "docker ps",
         }
     }
 
@@ -56,6 +88,9 @@ impl Command {
     fn needs_root(&self) -> bool {
         match self {
             Command::Version { .. } => false,
+            // The Docker socket, and sb's rule that only version and
+            // completion run unprivileged (cli-core decision 3).
+            Command::Docker { .. } => true,
         }
     }
 }
@@ -244,11 +279,14 @@ fn warn(message: impl std::fmt::Display) {
     let _ = writeln!(anstream::stderr(), "{style}warning:{style:#} {message}");
 }
 
-fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {
-    let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
-    let mut out = std::io::stdout().lock();
+fn run(cli: Cli, shutdown: &Shutdown) -> anyhow::Result<()> {
     match cli.command {
+        Command::Docker {
+            command: DockerCommand::Ps { json },
+        } => docker_ps(json, shutdown)?,
         Command::Version { json } => {
+            let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
+            let mut out = std::io::stdout().lock();
             let text = if json {
                 info.version_json()
             } else {
@@ -263,6 +301,52 @@ fn run(cli: Cli, _shutdown: &Shutdown) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `sb docker ps [--json]` (docker spec): the table or the JSON on stdout,
+/// then, if inspects failed, their error (exit 1). The runtime is built
+/// here, after parsing, so help and version never pay for it (term-ui):
+/// current-thread, with I/O and time (bollard's sockets and its request
+/// timeout). A signal drops the requests
+/// (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled);
+/// cli-core's `finish_run` then shows "interrupted" with the signal's code
+/// and nothing reaches stdout.
+fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
+    use sb_docker::connect;
+    let env = |name| std::env::var(name).ok();
+    let address = connect::address(
+        env("DOCKER_HOST").as_deref(),
+        env("DOCKER_TLS_VERIFY").as_deref(),
+        env("DOCKER_CERT_PATH").as_deref(),
+    )?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let listing = runtime.block_on(shutdown.token().run_until_cancelled(async {
+        let daemon = connect::connect(&address).await?;
+        connect::list(&daemon).await
+    }));
+    let Some(listing) = listing else {
+        anyhow::bail!("interrupted");
+    };
+    let listing = listing?;
+    // A signal between the answers and the output: nothing reaches stdout
+    // (it narrows the window; finish_run still decides the ending).
+    if shutdown.token().is_cancelled() {
+        anyhow::bail!("interrupted");
+    }
+    if json {
+        let mut out = std::io::stdout().lock();
+        out.write_all(sb_docker::json::json(&listing.rows).as_bytes())
+            .map_err(exit::output_error)?;
+        out.flush().map_err(exit::output_error)?;
+    } else {
+        sb_docker::ps::table(&listing.rows).print()?;
+    }
+    match connect::failures_error(&listing.failures) {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +370,19 @@ mod tests {
     #[test]
     fn the_log_gets_the_command_name_not_its_arguments() {
         assert_eq!(Command::Version { json: true }.name(), "version");
+        let ps = Command::Docker {
+            command: DockerCommand::Ps { json: true },
+        };
+        assert_eq!(ps.name(), "docker ps");
+    }
+
+    /// `docker ps` needs root (cli-core decision 3).
+    #[test]
+    fn docker_needs_root() {
+        let ps = Command::Docker {
+            command: DockerCommand::Ps { json: false },
+        };
+        assert!(ps.needs_root());
     }
 
     /// `version` runs as the calling user, with no sudo (spec success

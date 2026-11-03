@@ -18,5 +18,19 @@ pub fn sb() -> std::process::Command {
     cmd.env("SB_LOG_DIR", test_log_dir());
     // No test reads a real /opt/sb/config.toml; tests that want one set it.
     cmd.env("SB_CONFIG", test_log_dir().join("no-such-config.toml"));
+    // No test reaches the host's Docker daemon: a socket that doesn't
+    // exist unless a test points DOCKER_HOST at its fake, and none of the
+    // developer's Docker settings.
+    cmd.env(
+        "DOCKER_HOST",
+        format!("unix://{}", test_log_dir().join("no-docker.sock").display()),
+    );
+    for name in [
+        "DOCKER_API_VERSION",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+    ] {
+        cmd.env_remove(name);
+    }
     cmd
 }

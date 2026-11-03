@@ -70,7 +70,7 @@ and log streams are later plans.
 - [x] Task 3: Crate and the pure rules (status, Traefik, bindings, name)
 - [x] Task 4: Rows, table and JSON from bollard's models
 - [x] Task 5: Fake Engine API, connection and requests
-- [ ] Task 6a: `sb docker ps` in sb (command, runtime, contract, basic
+- [x] Task 6a: `sb docker ps` in sb (command, runtime, contract, basic
       end-to-end, size ADR)
 - [ ] Task 6b: The relaunch end to end (fake sudo, cli-core's mutants)
 

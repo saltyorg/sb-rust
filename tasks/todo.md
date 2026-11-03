@@ -245,16 +245,16 @@ stack first enter sb's binary, so this commit carries the size ADR
 (Proposed), and cargo-deny now checks bollard's tree.
 
 **Acceptance criteria:**
-- [ ] `sb docker` alone: help on stdout, exit 0; `sb docker --color=never`
+- [x] `sb docker` alone: help on stdout, exit 0; `sb docker --color=never`
       and `sb docker nope`: exit 2; long texts snapshot (`insta` added to
       sb's dev-dependencies); the contract test passes with the new
       extension.
-- [ ] The basic end-to-end cases pass (root-gated).
-- [ ] `sb --help` within its ratchet and `sb version` within 10 ms; the
+- [x] The basic end-to-end cases pass (root-gated).
+- [x] `sb --help` within its ratchet and `sb version` within 10 ms; the
       size ADR written; `cargo deny check` passes.
 
 **Verification:**
-- [ ] `scripts/check.sh full` (root tests included).
+- [x] `scripts/check.sh full` (root tests included).
 
 From Task 5: `connect` and `list` are plain futures with nothing
 spawned, so cancelling is dropping them (`token.run_until_cancelled`, as

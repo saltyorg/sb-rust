@@ -21,9 +21,10 @@ use crate::Cli;
 
 const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv");
 
-/// What sb has that sb-go doesn't, on purpose: `--color` is the one new
-/// global flag (spec, command tree).
-const EXTENSIONS: &[&str] = &["flag\tsb\tglobal\tcolor"];
+/// What sb has that sb-go doesn't, on purpose: `--color`, the one new
+/// global flag, and `sb docker ps --json` (cli-core spec, command tree;
+/// docker spec decision 2).
+const EXTENSIONS: &[&str] = &["flag\tsb\tglobal\tcolor", "flag\tsb docker ps\tlocal\tjson"];
 
 /// sb's commands and flags in the fixture's line format.
 fn sb_tree() -> Vec<String> {
