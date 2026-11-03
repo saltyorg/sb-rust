@@ -66,7 +66,7 @@ every sibling finish (decision 3).
 ### Phase 2: Validation
 
 - [x] Task 4: Crate and strict schema loading
-- [ ] Task 5: Config parsing: positions, duplicate keys, scalars
+- [x] Task 5: Config parsing: positions, duplicate keys, scalars
 - [ ] Task 6: The rules engine
 - [ ] Task 7: The sync validators and secrets
 - [ ] Task 8: The HTTP fake, the client and Docker Hub

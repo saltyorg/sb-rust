@@ -243,6 +243,11 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - `not_equals` takes its value as serde-saphyr resolves it: unquoted
   `yes`, `on` and `y` are booleans and `017` is 17 (yaml.v3: the strings,
   and 15). Saltbox quotes its `not_equals` values.
+- A `!!binary` scalar keeps its text (yaml.v3 decodes the base64); no
+  Saltbox file uses one.
+- Nothing after the first document is read; yaml.v3's scanner reads a
+  little past a `...` end marker, so an error just after one fails the
+  file in sb-go and not in sb.
 - `ZONEINFO` naming a zip file (Go reads one) isn't read: sb reads it
   only as a directory; nor is Go's last fallback, the build machine's
   `$GOROOT/lib/time/zoneinfo.zip`, which only a host with a Go

@@ -227,8 +227,9 @@ crates/config/Cargo.toml --all-features check` runs here, recorded.
 
 ## Task 5: Config parsing: positions, duplicate keys, scalars
 
-**Description:** Files read up to 1 MiB, the first document only, an
-empty file as an empty mapping, a non-mapping root as one issue, a syntax
+**Description:** (Reading each file, up to 1 MiB through cli-core's
+`read_small`, is Task 10's, with the file table.) The first document
+only, an empty file as an empty mapping, a non-mapping root as one issue, a syntax
 error as an issue with line and column; merge keys (`<<`) not followed
 (an unknown field later, pinned by a test). The duplicate pass over
 saphyr-parser's events first: every duplicate with its key path, its
@@ -237,11 +238,11 @@ text by yaml.v3's rules, a test at each edge. `Issue` (file relative to the
 root, line, column, key path, message), sorting by position.
 
 **Acceptance criteria:**
-- [ ] Every duplicate reported with positions; the scalar edges and parse
+- [x] Every duplicate reported with positions; the scalar edges and parse
       cases tested, each failing against a stub first.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-config`; `scripts/check.sh full`.
 
 **Dependencies:** Task 4
 **Files:** `crates/config/src/parse.rs`, `crates/config/src/issue.rs`,
