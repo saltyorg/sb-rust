@@ -48,4 +48,19 @@ fn own_crates_log_at_debug_and_dependencies_at_warn() {
     // Bridged records are normalised: the real target, not tracing-log's
     // `log.*` fields, on the record's line.
     assert!(!text.contains("log.target"), "{text}");
+    // Every line names its source (maintainer, Checkpoint A), the bridged
+    // dependency's included.
+    let line = |marker: &str| {
+        text.lines()
+            .find(|l| l.contains(marker))
+            .unwrap_or_default()
+    };
+    assert!(
+        line("bollard-warn-marker").contains("bollard::docker: bollard-warn-marker"),
+        "{text}"
+    );
+    assert!(
+        line("sb-docker-debug-marker").contains("sb_docker::ps: sb-docker-debug-marker"),
+        "{text}"
+    );
 }

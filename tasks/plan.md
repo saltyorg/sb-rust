@@ -62,8 +62,8 @@ and log streams are later plans.
 
 ### Checkpoint A: Evidence
 
-- [ ] Task 1's findings reviewed by the maintainer; spec amended if the
-      version design changes
+- [x] Task 1's findings reviewed by the maintainer; spec amended if the
+      version design changes (approved 2026-11-03)
 
 ### Phase 2: The command
 

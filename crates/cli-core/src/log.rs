@@ -180,7 +180,9 @@ impl RunLog {
         let subscriber = tracing_subscriber::fmt()
             .with_writer(appender)
             .with_ansi(false)
-            .with_target(false)
+            // Every line names its source, so a dependency's warning says
+            // which crate wrote it (maintainer, docker Checkpoint A).
+            .with_target(true)
             .log_internal_errors(false)
             // fmt's own default is INFO for everything.
             .with_max_level(LevelFilter::TRACE)

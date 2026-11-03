@@ -83,7 +83,7 @@ binary, not `crates/docker/tests/` as the spec's layout says).
 
 **Verification:**
 - [x] The scratch project removed.
-- [ ] The maintainer reviews the findings (Checkpoint A).
+- [x] The maintainer reviews the findings (Checkpoint A).
 
 **Dependencies:** None
 **Files:** `docs/platform-notes/docker-engine-api.md`,
@@ -91,8 +91,9 @@ binary, not `crates/docker/tests/` as the spec's layout says).
 **Scope:** M
 
 ## Checkpoint A: Evidence
-- [ ] Task 1's findings reviewed; the spec amended and approved if the
-      version design changed.
+- [x] Task 1's findings reviewed; the spec amended and approved if the
+      version design changed (approved 2026-11-03; also: every log line
+      names its source).
 
 ## Task 2: Logging: the `log` bridge and default levels
 
