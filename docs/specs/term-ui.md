@@ -601,7 +601,11 @@ Choices behind it:
    the next step starts or the run ends, then is printed with the right
    glyph (a line in the live area, per amended decision 2). With
    concurrent siblings the tree keeps start order, so "newest" means the
-   last started.
+   last started. **Amended at the config plan's Checkpoint A
+   (maintainer, 2026-11-03):** the tree is drawn in tree order at any
+   depth (each parent's children in start order, each subtree whole), so
+   a step started late inside a nested sibling is drawn in its own
+   subtree, not after a later outer sibling.
 4. **Steps are async** and get cli-core's cancellation token; the runner
    draws on indicatif's own ticker (tokio, capability map decision 8).
    **Amended at Checkpoint A:** a tokio task drives the frames (several

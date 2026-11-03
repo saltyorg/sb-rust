@@ -60,7 +60,7 @@ every sibling finish (decision 3).
 
 ### Added at Checkpoint A
 
-- [ ] Task 3a: term-ui: nested siblings drawn in tree order (before
+- [x] Task 3a: term-ui: nested siblings drawn in tree order (before
       Task 4, the maintainer's call; nothing in Phase 2 depends on it)
 
 ### Phase 2: Validation

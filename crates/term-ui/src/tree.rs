@@ -1,5 +1,6 @@
 //! The runner's tree (term-ui spec, "Task runner"; proto-runner's reviewed
-//! look): steps in start order, each a branch with its label and time, the
+//! look): steps in tree order (each parent's children in start order, each
+//! subtree whole), each a branch with its label and time, the
 //! times ending in one column, notices and output lines hanging under it.
 //! Pure: it turns state into lines, and the runner decides where they go
 //! (printed for good, or the live area).
@@ -81,8 +82,16 @@ impl Draw<'_> {
 /// The steps under the run's title (the runner prints the title itself).
 #[derive(Default)]
 pub(crate) struct Tree {
+    /// Steps by id, in start order.
     nodes: Vec<Node>,
-    /// Steps before this index are printed for good.
+    /// Step ids in tree order, the order they are drawn in: a step goes
+    /// after its parent's last descendant, so a step started late inside
+    /// a nested sibling still sits in its subtree. Kept here because
+    /// termtree only draws a finished tree (see `GLYPHS`).
+    order: Vec<usize>,
+    /// Steps before this position in `order` are printed for good. Only a
+    /// running step gains children and a running step isn't printed, so
+    /// a new step always lands after them.
     printed: usize,
     ended: bool,
     /// Where the run's log is (`RunLog::pointer`), for a failure's block.
@@ -92,6 +101,16 @@ pub(crate) struct Tree {
 impl Tree {
     /// Start a step under `parent` (none: at the top).
     pub fn add(&mut self, parent: Option<usize>, labels: Labels, now: Instant) -> usize {
+        let id = self.nodes.len();
+        let at = match parent {
+            Some(p) => self
+                .order
+                .iter()
+                .rposition(|&n| n == p || self.descends(n, p))
+                .map_or(self.order.len(), |last| last + 1),
+            None => self.order.len(),
+        };
+        self.order.insert(at, id);
         self.nodes.push(Node {
             parent,
             labels,
@@ -102,7 +121,19 @@ impl Tree {
             notices: Vec::new(),
             error: Vec::new(),
         });
-        self.nodes.len() - 1
+        id
+    }
+
+    /// Whether step `id` is under `ancestor`, at any depth.
+    fn descends(&self, id: usize, ancestor: usize) -> bool {
+        let mut at = self.nodes[id].parent;
+        while let Some(p) = at {
+            if p == ancestor {
+                return true;
+            }
+            at = self.nodes[p].parent;
+        }
+        false
     }
 
     pub fn notice(&mut self, id: usize, warn: bool, text: impl Into<String>) {
@@ -355,36 +386,31 @@ impl Tree {
                 .all(|(child, _)| self.settled(child))
     }
 
-    /// Take the lines that can be printed for good, in start order: each
+    /// Take the lines that can be printed for good, in tree order: each
     /// step whose subtree has ended and whose place (middle or last) is
     /// known (decision 3).
     pub fn take_printable(&mut self, d: &Draw) -> Vec<String> {
         let mut out = Vec::new();
         let mut printed = self.printed;
         // A bounded loop over the steps not yet printed.
-        for next in self.printed..self.nodes.len() {
-            let mut top = next;
-            while let Some(p) = self.nodes[top].parent {
-                if p < next {
-                    break;
-                }
-                top = p;
-            }
-            if !self.settled(top) || self.last(next).is_none() {
+        for &next in &self.order[self.printed..] {
+            if !self.settled(next) || self.last(next).is_none() {
                 break;
             }
             out.push(self.line(next, d));
             out.extend(self.under(next, d, false));
-            printed = next + 1;
+            printed += 1;
         }
         self.printed = printed;
         out
     }
 
-    /// The live lines: every step not yet printed, with what hangs under it.
+    /// The live lines: every step not yet printed, in tree order, with what
+    /// hangs under it.
     pub fn live(&self, d: &Draw) -> Vec<String> {
-        (self.printed..self.nodes.len())
-            .flat_map(|id| std::iter::once(self.line(id, d)).chain(self.under(id, d, true)))
+        self.order[self.printed..]
+            .iter()
+            .flat_map(|&id| std::iter::once(self.line(id, d)).chain(self.under(id, d, true)))
             .collect()
     }
 }
@@ -869,5 +895,37 @@ mod tests {
             printed.contains(&paint(&theme, Role::Ok, true, "✓ pulled")),
             "{printed:?}"
         );
+    }
+
+    /// A step started inside a nested sibling after a later outer sibling
+    /// is drawn in its subtree, live and printed: tree order, not start
+    /// order.
+    #[test]
+    fn nested_steps_are_drawn_in_tree_order() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let check = tree.add(None, Labels::new("Checking", "checked"), t0);
+        let inner = tree.add(Some(check), Labels::new("Inner", "inner done"), t0);
+        let outer = tree.add(Some(check), Labels::new("Outer", "outer done"), t0);
+        let leaf = tree.add(Some(inner), Labels::new("Leaf", "leaf done"), t0);
+        let d = draw(&theme, secs(t0, 1));
+        insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ⠋ Checking                                                1s
+        │   ├── ⠋ Inner                                               1s
+        │   │   ├── ⠋ Leaf                                            1s
+        │   ├── ⠋ Outer                                               1s
+        ");
+        tree.finish(leaf, Status::Done, secs(t0, 1));
+        tree.finish(inner, Status::Done, secs(t0, 1));
+        tree.finish(outer, Status::Done, secs(t0, 1));
+        tree.finish(check, Status::Done, secs(t0, 1));
+        tree.end();
+        insta::assert_snapshot!(tree.take_printable(&d).join("\n"), @r"
+        ╰── ✓ checked                                                 1s
+            ├── ✓ inner done                                          1s
+            │   ╰── ✓ leaf done                                       1s
+            ╰── ✓ outer done                                          1s
+        ");
     }
 }

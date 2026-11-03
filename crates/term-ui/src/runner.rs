@@ -2175,7 +2175,7 @@ mod tests {
     /// "stopped" (the endings table, at any depth).
     #[tokio::test(start_paused = true)]
     async fn a_group_all_under_a_failed_sibling_reads_stopped() {
-        let (_term, options) = screen();
+        let (term, options) = screen();
         let shutdown = Shutdown::new();
         let mut run = Runner::start("sb demo", &shutdown, None, options).await;
         let shared = Arc::clone(&run.shared);
@@ -2211,10 +2211,17 @@ mod tests {
             })
             .await;
         run.finish();
-        // The tree itself, in creation order (Checking, Inner, Bad, then
-        // Leaf, created by Inner's task): the screen draws a nested
-        // sibling's line out of tree order (carried in tasks/todo.md, as
-        // with `Group`).
+        // Leaf sits under Inner on screen (tree order), though Inner's task
+        // created it after Bad.
+        insta::assert_snapshot!(term.contents(), @r"
+        sb demo
+        ╰── ✗ Checking                              sub-step failed · 0s
+            ├── ✗ Inner                                     stopped · 0s
+            │   ╰── ✗ Leaf                                  stopped · 0s
+            ╰── ✗ bad failed                                          0s
+                refused
+        ");
+        // The statuses, in start order (Checking, Inner, Bad, Leaf).
         let statuses = lock(&shared).tree.statuses();
         assert_eq!(
             statuses,

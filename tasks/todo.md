@@ -172,13 +172,13 @@ step in tree order: a parent's children in start order, each subtree
 whole, at any depth, in both group modes, live and finished.
 
 **Acceptance criteria:**
-- [ ] A group inside a group's sibling draws each subtree in place, live
+- [x] A group inside a group's sibling draws each subtree in place, live
       and at the end (snapshots; Task 2's nested test gains its screen);
       the new tree test fails first, showing the out-of-order lines.
-- [ ] term-ui's existing tests and snapshots pass unchanged.
+- [x] term-ui's existing tests and snapshots pass unchanged.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; library-reviewer on the diff.
+- [x] `scripts/check.sh full`; library-reviewer on the diff.
 
 **Dependencies:** Task 2
 **Files:** `crates/term-ui/src/tree.rs`, `crates/term-ui/src/runner.rs`
