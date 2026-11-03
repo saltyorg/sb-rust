@@ -67,7 +67,7 @@ pub fn json(rows: &[Row]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ps::tests::fixture_rows;
+    use crate::testing::fixture_rows;
 
     /// The documented shape, exactly: key order, `null` health without a
     /// health check, the short ID for an unnamed container, bindings with

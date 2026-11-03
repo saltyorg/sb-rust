@@ -34,6 +34,11 @@ serde_json = "1.0.154"
 # on (docker spec, "API version"; docs/platform-notes/docker-engine-api.md).
 # An upgrade re-checks that before the pin moves.
 bollard = "=0.21.1"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+# The fake Engine API for tests only (sb-docker's `testing` feature).
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
+# axum's testing pattern for the fake's own tests (`ServiceExt::oneshot`).
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
 saphyr = { version = "0.3.3", default-features = false }
 saphyr-parser = "0.3.3"
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }

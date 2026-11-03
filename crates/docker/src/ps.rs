@@ -278,8 +278,9 @@ pub fn table(rows: &[Row]) -> Table {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
+    use crate::testing::fixture_rows;
     use bollard::models::{
         ContainerStateStatusEnum as S, Health, HealthStatusEnum as H, PortBinding,
     };
@@ -543,25 +544,6 @@ pub(crate) mod tests {
         assert_eq!(short_id(""), "unknown");
         assert_eq!(short_id("123456789012345"), "123456789012");
         assert_eq!(short_id("123456789012"), "123456789012");
-    }
-
-    /// The synthetic fixture set (documentation addresses only), shared
-    /// with the fake Engine API: inspect answers, the list built from them.
-    pub(crate) fn fixture_rows() -> Vec<Row> {
-        let inspected: Vec<ContainerInspectResponse> =
-            serde_json::from_str(include_str!("fixtures/containers.json")).expect("fixture");
-        let rows = inspected
-            .iter()
-            .map(|inspect| {
-                let summary = ContainerSummary {
-                    id: inspect.id.clone(),
-                    names: inspect.name.clone().map(|name| vec![name]),
-                    ..ContainerSummary::default()
-                };
-                Row::new(&summary, inspect)
-            })
-            .collect();
-        sorted(rows)
     }
 
     #[test]

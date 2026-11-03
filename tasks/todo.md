@@ -202,9 +202,9 @@ leaves `Names` out; the rows are sorted where they are collected (after
 must remember.
 
 **Acceptance criteria:**
-- [ ] The `DOCKER_HOST` decision (scheme, empty, TLS settings) is a pure
+- [x] The `DOCKER_HOST` decision (scheme, empty, TLS settings) is a pure
       function with a test per case, failing first.
-- [ ] Against the fake: rows, a vanished container, a failing inspect, an
+- [x] Against the fake: rows, a vanished container, a failing inspect, an
       unreachable socket, an old daemon (unversioned paths at its own
       version, versioned ones above it refused), a newer daemon's shape,
       a daemon refusing unversioned paths (error), an unknown state word
@@ -219,7 +219,7 @@ must remember.
       most 16. The fake's own behaviours have tests.
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`; library-reviewer on the diff;
+- [x] `cargo test -p sb-docker`; library-reviewer on the diff;
       `scripts/check.sh full`.
 
 **Dependencies:** Task 4
@@ -255,6 +255,13 @@ stack first enter sb's binary, so this commit carries the size ADR
 
 **Verification:**
 - [ ] `scripts/check.sh full` (root tests included).
+
+From Task 5: `connect` and `list` are plain futures with nothing
+spawned, so cancelling is dropping them (`token.run_until_cancelled`, as
+term-ui's demo does); the runtime needs the time driver too (bollard
+wraps each request in `tokio::time::timeout`); the fake's socket sits in a
+root-only temporary directory, so a `nobody` run can't reach it (6b only
+checks the sudo exec).
 
 **Dependencies:** Tasks 2, 5
 **Files:** `crates/sb/Cargo.toml`, `crates/sb/src/main.rs`,
