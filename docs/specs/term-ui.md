@@ -159,9 +159,11 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   stdout); the widest column wraps first; a maximum column width where the
   caller asks (sb-go's `docker ps` caps at 100). Not a terminal: natural
   width.
-- **Piped:** the same table without colour, as sb-go. Plain or JSON output
-  is decided per command (capability map, open items). Column spans
-  (`sb list`) come with that command.
+- **Piped:** the same table without colour, at its natural width (sb-go's
+  piped table wraps at 80 columns and keeps its bold and border codes;
+  docker spec, differences). Plain or JSON output is decided per command
+  (capability map, open items). Column spans (`sb list`) come with that
+  command.
 
 ### Prompts (specified now, built with their first user: decision 1)
 

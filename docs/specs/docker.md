@@ -23,7 +23,7 @@ so the boundaries are right, and are built later (see Scope).
    (cli-core decision 3). It is the first root-needing command, so
    cli-core's relaunch path first runs end to end here (carried from
    cli-core Task 5, whose two equivalent mutants become catchable).
-4. **No runner for `ps`** (Open question 1): sb-go prints only the table;
+4. **No runner for `ps`** (decision 1): sb-go prints only the table;
    listing and inspecting take milliseconds (proto-inline: 9 ms).
 5. **The rest of the module is not bollard alone.** sb-go's `start`,
    `stop` and `restart` check that the controller's unit file exists, then
@@ -47,8 +47,11 @@ logging levels end to end.
 
 ### `sb docker ps` behaviour
 
-- **Arguments:** none (sb-go: `cobra.NoArgs`). `sb docker`'s and `sb
-  docker ps`'s short and long help texts are sb-go's ("Manage Docker
+- **Arguments:** none (sb-go: `cobra.NoArgs`); one flag, `--json`
+  (decision 2), a third deliberate extension of sb-go's command tree:
+  added to the contract test's `EXTENSIONS` and to cli-core's spec
+  ("Command tree"). `sb docker`'s and `sb docker ps`'s short and long help
+  texts are sb-go's ("Manage Docker
   containers managed by Saltbox"; "List Docker containers with port
   mappings" and its long text); the contract test against sb-go's command
   tree checks the short texts (it compares `about` only), a snapshot test
@@ -116,13 +119,35 @@ logging levels end to end.
   terminal, natural width and plain when piped (`auto`); `--color`,
   `NO_COLOR` and `SB_COLOR_PROFILE` as everywhere. No containers: the
   headings alone, as sb-go.
+- **`--json`** (decision 2), written with serde_json as `sb version
+  --json` is: compact, keys in the order below, one trailing newline. An
+  array of the same containers in the same order, each:
+
+  | Key | Value |
+  |---|---|
+  | `name` | the Container column (the short ID when unnamed) |
+  | `id` | the full ID |
+  | `state` | Docker's state word as given (a state bollard doesn't know passes through) |
+  | `health` | Docker's health word; `null` without a health check (none, empty or absent) |
+  | `exit_code` | a number, always (Docker reports 0 for a running container) |
+  | `oom_killed` | `true` or `false`, always |
+  | `status` | the Status column's text |
+  | `role` | the status rule's role: `ok`, `warn`, `problem` or `idle` |
+  | `traefik_ports` | the column's values, as strings on purpose (label values are text) |
+  | `bindings` | the column's bindings, same ones and same order, each `{"host_ip", "host_port", "container_port", "protocol"}`: the address as Docker gives it (unset as `0.0.0.0`, no brackets), ports as numbers (`null` for one that isn't a number) |
+
+  No containers: `[]`. Never coloured. Fields are only ever added, never
+  renamed or removed (scripts depend on them). With failed inspects the
+  JSON of the rest goes to stdout, the error block to stderr, exit 1;
+  whenever there would be no table (the errors below, Ctrl-C), nothing is
+  written to stdout.
 - **Errors:**
   - Daemon unreachable, an unsupported `DOCKER_HOST` scheme or TLS
     setting, the version check or the list call failing: no table;
     cli-core's error block naming the address or setting and the cause;
     exit 1.
   - A container removed between list and inspect (404): left out, logged
-    at DEBUG (Open question 3).
+    at DEBUG (decision 3).
   - Any other inspect failure: the table of the rest, then one error,
     `failed to inspect N container(s)`, with a cause line per container
     naming its short ID (sb-go's `error inspecting container <id>: …`);
@@ -150,8 +175,8 @@ logging levels end to end.
   iterates Go maps, so its order varies between runs).
 - **IPv6:** every IPv6 address bracketed (sb-go brackets only `::`, so
   `::1:80->80/tcp` is ambiguous there).
-- **A vanished container** is skipped (sb-go: an inspect failure, exit 1),
-  if Open question 3 agrees.
+- **A vanished container** is skipped (sb-go: an inspect failure, exit 1).
+- **`--json`** exists (sb-go has no machine-readable `ps`).
 - **`DOCKER_HOST`:** no TLS or ssh; such a setting is an error (sb-go's
   client supports TLS).
 - **Requests:** inspected at most 16 at a time (sb-go: one after another);
@@ -184,8 +209,7 @@ logging levels end to end.
     status function is the module's one container classification; the
     picker extends it rather than adding a second.
   - Container log streams the `tui` viewer consumes.
-- **Not here:** a JSON or plain output mode (Open question 2); a name
-  filter (proto-inline had one; sb-go has none).
+- **Not here:** a name filter (proto-inline had one; sb-go has none).
 
 ### Capability map correction (term-ui decision 6)
 
@@ -253,7 +277,8 @@ pub fn status(state: &ContainerState) -> (String, Role) {
   binding format and order (IPv6, missing host port, padding), display
   name and short ID (sb-go's `TestShortContainerID` cases), row building
   from bollard's model types filled from synthetic JSON fixtures (no host
-  data), the table's look (snapshot), no containers.
+  data), the table's look (snapshot), no containers, the `--json` output
+  (exact string, with and without bindings and health).
 - **Fake Engine API:** a test server on a Unix socket in a temporary
   directory answering `/version`, the list and the inspect endpoints from
   fixtures, reached through `DOCKER_HOST`; it drives the built `sb docker
@@ -305,6 +330,11 @@ pub fn status(state: &ContainerState) -> (String, Role) {
 3. The table is term-ui's reviewed look (snapshot), fits 120, 70 and 50
    columns, and is plain at natural width when piped; `--color=never` and
    `NO_COLOR` write no colour. No containers: headings only.
+3a. `--json` prints the documented shape (exact-string tests: key order,
+   `null` health, an unnamed container, bindings), `[]` with no
+   containers, never colour codes (even with `--color=always`); with a
+   failed inspect the rest on stdout, the error on stderr, exit 1; with an
+   unreachable daemon nothing on stdout, exit 1.
 4. Unreachable daemon: one error block, exit 1, no table. A failing
    inspect: the table, then one error naming each container's short ID
    and cause, exit 1. A vanished container: left out, exit 0. An old
@@ -315,7 +345,8 @@ pub fn status(state: &ContainerState) -> (String, Role) {
    arguments and marker (fake-sudo test); cli-core Task 5's two
    equivalent mutants are caught.
 6. SIGINT or SIGTERM while an inspect is held open: 130 or 143, quiet, no
-   table, terminal restored (fake Engine API on a PTY).
+   table (with `--json`, nothing on stdout), terminal restored (fake
+   Engine API on a PTY).
 7. The run log records the daemon address, the negotiated version, the
    counts and each failure; a dependency's WARN record reaches the log
    and its DEBUG record does not (positive and negative control).
@@ -329,20 +360,14 @@ pub fn status(state: &ContainerState) -> (String, Role) {
     cross the 5% tolerance, so an ADR records the new size (step by step)
     for the maintainer.
 
-## Open Questions
+## Decisions (maintainer, 2026-11-03)
 
-1. **Runner for `ps`?** Recommended: no; the table alone, as sb-go. Then
-   term-ui's carried runner criteria (the failure block and Ctrl-C endings
-   in sb's own commands) move to `sb validate-config`. The alternative is
-   a step line ("✓ containers read") above the table.
-2. **JSON or plain output for scripts?** Recommended: not now (sb-go has
-   none); add `--json` when a script needs it. The capability map says to
-   decide per command.
-3. **Vanished containers:** skip them (recommended) or report them as sb-go
-   does?
-4. **`DOCKER_HOST` through the sudo relaunch:** cli-core's relaunch keeps
-   only `VISUAL`, `EDITOR`, `SB_COLOR_PROFILE`, `NO_COLOR` and the marker,
-   so a non-root user's `DOCKER_HOST` and `DOCKER_API_VERSION` are dropped
-   and the root run uses the default socket, as in sb-go. Recommended:
-   keep sb-go's behaviour (Saltbox's Docker is local); the alternative adds
-   both to the preserve list, with the carried sudoers `env_keep` check.
+1. **No runner for `ps`:** the table alone, as sb-go. term-ui's carried
+   runner criteria (the failure block and Ctrl-C endings in sb's own
+   commands) move to `sb validate-config`.
+2. **`--json` now,** in the shape above.
+3. **Vanished containers are skipped,** logged at DEBUG, exit 0.
+4. **`DOCKER_HOST` through the sudo relaunch:** sb-go's behaviour; cli-core's
+   preserve list is unchanged, so a non-root user's `DOCKER_HOST` and
+   `DOCKER_API_VERSION` don't reach the root run (Saltbox's Docker is
+   local).

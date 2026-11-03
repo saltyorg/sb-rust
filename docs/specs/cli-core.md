@@ -88,10 +88,11 @@ both files they read are readable without root.
 
 **Command tree:** sb-go's names, subcommands and flags (decision 1). There
 is no generated `completion` subcommand (completion has its own module)
-and no `--version` flag (`version` is a command). Two deliberate
-extensions: `--color`, the one new global flag, and clap's `help`
-subcommand, listed in help (sb-go removes its help command; maintainer,
-2026-10-30, Checkpoint C). A test compares the tree with sb-go's command
+and no `--version` flag (`version` is a command). Deliberate extensions:
+`--color`, the one new global flag; clap's `help` subcommand, listed in
+help (sb-go removes its help command; maintainer, 2026-10-30, Checkpoint
+C); and `sb docker ps --json` (maintainer, 2026-11-03, docker spec
+decision 2). A test compares the tree with sb-go's command
 list (walked before clap adds `help`).
 
 **Cancellation:** the first SIGINT or SIGTERM cancels a token shared by
