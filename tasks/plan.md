@@ -72,7 +72,7 @@ and log streams are later plans.
 - [x] Task 5: Fake Engine API, connection and requests
 - [x] Task 6a: `sb docker ps` in sb (command, runtime, contract, basic
       end-to-end, size ADR)
-- [ ] Task 6b: The relaunch end to end (fake sudo, cli-core's mutants)
+- [x] Task 6b: The relaunch end to end (fake sudo, cli-core's mutants)
 
 ### Checkpoint B: The command works
 

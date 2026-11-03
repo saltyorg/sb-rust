@@ -25,7 +25,7 @@ fn version_and_help_never_call_sudo() {
     let log_dir = parent.path().join("logs");
     for args in [&["version"][..], &["--help"][..]] {
         let sudo_dir = tempfile::tempdir().expect("temp dir");
-        let out = nobody::sb_as_nobody(args, &log_dir, sudo_dir.path(), SUDO);
+        let (_, out) = nobody::sb_as_nobody(args, &log_dir, sudo_dir.path(), SUDO);
         assert_eq!(
             out.status.code(),
             Some(0),

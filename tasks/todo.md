@@ -19,7 +19,8 @@ Carried forward (open items owned by later work):
   - term-ui: the first command needing a runtime builds it after parsing
     and keeps the startup budget (Task 6).
   - cli-core Task 5: the root relaunch path runs end to end with `sb
-    docker ps`; its two equivalent mutants become catchable (Task 6b).
+    docker ps`; its two equivalent mutants become catchable (Task 6b:
+    done, both caught).
   - term-ui criterion 9: the size of term-ui's tables comes with their
     first user (Task 6's ADR).
 - Moved by docker decision 1 to `sb validate-config` (the first runner
@@ -271,29 +272,30 @@ checks the sudo exec).
 
 ## Task 6b: The relaunch end to end
 
-**Description:** `unprivileged.rs`'s `sb_as_nobody` moved into `common`,
+**Description:** `unprivileged.rs`'s `sb_as_nobody` moved into its own
+`tests/nobody` module (so binaries that don't switch users don't carry it),
 with the same `DOCKER_*` isolation as `common::sb()` (it builds its own
 `setpriv … env` command today and would inherit them), and used with a
 recording fake sudo (as cli-core's tests/relaunch.rs): `sb docker ps` as
 `nobody` execs sudo with cli-core's arguments and marker. Then a one-off
 `cargo mutants` run on `crates/cli-core/src/root.rs` and
-`Command::needs_root` with the whole workspace's tests, set up as
-check.sh's mutation step: `SB_TEST_ROOT=1`, the refusing sudo first on
-`PATH` (`target/no-sudo`; a relaunch mutant run as root with passwordless
-sudo once looped into thousands of processes), `SB_LOG_DIR` in
-`target/`, a timeout.
+`Command::needs_root` with the whole workspace's tests, set up as check.sh's
+mutation step: `SB_TEST_ROOT=1`, the refusing sudo first on `PATH`
+(`target/no-sudo`; a relaunch mutant run as root with passwordless sudo once
+looped into thousands of processes), `SB_LOG_DIR` in `target/`, a timeout.
 
 **Acceptance criteria:**
-- [ ] The fake-sudo test (root-gated) asserts cli-core's arguments and
+- [x] The fake-sudo test (root-gated) asserts cli-core's arguments and
       marker.
-- [ ] The one-off run catches the two mutants cli-core Task 5 left
-      equivalent; the result is recorded in the commit body.
+- [x] The one-off run catches the two mutants cli-core Task 5 left
+      equivalent; the result is recorded in the commit body (2026-11-03:
+      4 of 4 caught: needs_root true/false, effective_uid 0/1).
 
 **Verification:**
-- [ ] `scripts/check.sh full`; the one-off mutation run as described.
+- [x] `scripts/check.sh full`; the one-off mutation run as described.
 
 **Dependencies:** Task 6a
-**Files:** `crates/sb/tests/common/mod.rs`, `crates/sb/tests/unprivileged.rs`,
+**Files:** `crates/sb/tests/nobody/mod.rs`, `crates/sb/tests/unprivileged.rs`,
 `crates/sb/tests/docker.rs`
 **Scope:** S
 

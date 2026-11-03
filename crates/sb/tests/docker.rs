@@ -4,7 +4,10 @@
 //! runs: `SB_TEST_ROOT=1`, logging under the test's directory).
 
 mod common;
+mod nobody;
 mod root_gate;
+
+use std::os::unix::fs::PermissionsExt;
 
 use sb_docker::testing::{FakeEngine, Options, fixture_rows, inspects};
 
@@ -184,4 +187,46 @@ fn a_failing_inspect_shows_the_rest_then_the_error() {
             "{err}"
         );
     }
+}
+
+/// Not root: `sb docker ps` relaunches through sudo with cli-core's
+/// arguments and marker (cli-core's relaunch path end to end, docker
+/// success criterion 5). The stand-in sudo records what it was given and
+/// its process ID, and exits 7; sb exec'd it, so the ID is sb's own and 7
+/// is sb's exit code.
+#[test]
+fn ps_relaunches_through_sudo_when_not_root() {
+    if !root_gate::requested() {
+        return;
+    }
+    let sudo_dir = tempfile::tempdir().expect("temp dir");
+    let record = sudo_dir.path().join("args");
+    std::fs::write(&record, "").expect("record file");
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o666)).expect("chmod");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$$\" \"$@\" \"SB_RELAUNCHED=$SB_RELAUNCHED\" > '{}'\nexit 7\n",
+        record.display()
+    );
+    let logs = tempfile::tempdir().expect("temp dir");
+    let (pid, out) = nobody::sb_as_nobody(
+        &["docker", "ps", "--json"],
+        logs.path(),
+        sudo_dir.path(),
+        &script,
+    );
+    assert_eq!(out.status.code(), Some(7), "{out:?}");
+    let recorded = std::fs::read_to_string(&record).expect("recorded");
+    let lines: Vec<_> = recorded.lines().collect();
+    assert_eq!(lines[0], pid.to_string(), "exec'd, not spawned: {recorded}");
+    assert_eq!(
+        lines[1], "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED",
+        "{recorded}"
+    );
+    let sb = std::fs::canonicalize(common::sb().get_program()).expect("sb's path");
+    assert_eq!(lines[2], sb.display().to_string(), "{recorded}");
+    assert_eq!(
+        lines[3..],
+        ["docker", "ps", "--json", "SB_RELAUNCHED=1"],
+        "{recorded}"
+    );
 }
