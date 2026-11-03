@@ -1,4 +1,4 @@
-# Spec: `config` — `sb validate-config` (draft)
+# Spec: `config` — `sb validate-config` (approved 2026-11-03)
 
 Module of the approved capability map (`config`). The first vertical slice
 is `sb version` → `sb docker ps` (done) → `sb validate-config`, built as
