@@ -42,8 +42,7 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 ### Behaviour
 
 - **Arguments:** none (sb-go: `cobra.NoArgs`); help texts sb-go's
-  ("Validate Saltbox configuration files"). `--verbose/-v`: Open
-  question 1.
+  ("Validate Saltbox configuration files"). No `--verbose/-v` (decision 1).
 - **The Saltbox root** is `/srv/git/saltbox`, or `SB_SALTBOX_DIR` when set
   (tests and debugging, as `SB_CONFIG`; sudo's relaunch drops it). It
   moves cli-core's inventory path too (read at startup for the theme), so
@@ -67,22 +66,21 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   issue.
 - **Steps** (term-ui's runner, titled "sb validate-config"): one parent
   step, "Validating Saltbox configuration" → "Saltbox configuration
-  validated" (a failed file makes it read term-ui's "sub-step failed"),
-  and under it one step per file, "Validating <file>" → "Validated
-  <file>", failing as "Validation of <file>" with that file's issues in
-  its failure block (localhost.yml as "… (no duplicates)"). Every file is
-  validated (Open question 2), each failed one with its own block; a
-  failed credential check shows its own block too, besides any block of
-  accounts.yml's own issues. Under accounts.yml, the two credential
-  checks run as concurrent sibling steps, "Validating Cloudflare API
-  credentials" → "Cloudflare API credentials validated" (failure
-  "Cloudflare API credentials validation"), the same for "Docker Hub
-  credentials"; both always run to their end and report, which needs a
-  term-ui group that doesn't stop siblings on a failure (Open question
-  3). A check with no credentials set isn't started: an info notice under
-  accounts.yml's step says it was skipped ("no Cloudflare credentials
-  set; skipped"). Warnings (sb-go's short-password text) are notices
-  under their file's step.
+  validated" (a failed file makes it read term-ui's "sub-step failed"), and
+  under it one step per file, "Validating <file>" → "Validated <file>",
+  failing as "Validation of <file>" with that file's issues in its failure
+  block (localhost.yml as "… (no duplicates)"). Every file is validated
+  (decision 2), each failed one with its own block; a failed credential
+  check shows its own block too, besides any block of accounts.yml's own
+  issues. Under accounts.yml, the two credential checks run as concurrent
+  sibling steps, "Validating Cloudflare API credentials" → "Cloudflare API
+  credentials validated" (failure "Cloudflare API credentials validation"),
+  the same for "Docker Hub credentials"; both always run to their end and
+  report, through term-ui's new group mode that lets every sibling finish
+  (decision 3). A check with no credentials set isn't started: an info
+  notice under accounts.yml's step says it was skipped ("no Cloudflare
+  credentials set; skipped"). Warnings (sb-go's short-password text) are
+  notices under their file's step.
 - **When the checks run:** after accounts.yml's own validation, and only for
   a section with no issues of its own (an unknown key or a format error
   inside `cloudflare:` or `dockerhub:` skips that check too). Structure
@@ -146,8 +144,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   schema loading, naming the schema file and key. The plan's first task
   checks the pinned schemas' patterns: that they compile under Rust's
   syntax, mean the same as their ECMA-262 reading (`\d` is Unicode in Rust)
-  and anchor themselves. Error or warning when it doesn't match: Open
-  question 4.
+  and anchor themselves. A string that doesn't match is an issue, exit 1,
+  from the start (decision 4).
 - **`additionalProperties`:** with `properties` and no
   `additionalProperties`, other keys are errors (sb-go's unknown field);
   with neither, any keys are accepted (as sb-go). A rule (as motd's schema
@@ -157,7 +155,7 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   mapping skips them (type flexibility), pinned by a test.
 - **Strict loading:** an unknown schema key, rule type, format, validator
   name, or a malformed value is an error naming the schema file and key.
-  How this meets Saltbox's schemas changing on master: Open question 5.
+  Everywhere, also in a user's run (decision 5).
 - **Validators.** Type validators (usable as `type`): `ansible_bool`
   (sb-go trims for `required_when_true` but not here: kept),
   `subdomain`, `hostname`, `directory_path`, `url`, `timezone` (`auto`,
@@ -173,7 +171,7 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   `validate_ssh_key_or_url`, `validate_password_strength`,
   `validate_whole_number`, `validate_positive_number`,
   `validate_cloudflare_config`, `validate_dockerhub_config`;
-  `validate_rclone_remote`: Open question 6.
+  not `validate_rclone_remote` (decision 6).
 - **Cloudflare** (`validate_cloudflare_config`): with a global key,
   `GET /user` first; then `GET /zones?name=<zone>` (the zone is
   `user.domain`'s registrable domain under the public suffix list,
@@ -229,7 +227,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - Docker Hub's login body properly encoded; `CLOUDFLARE_CUSTOM_HEADERS`
   and cloudflare-go's other environment variables not read.
 - `required_with`'s list printed as `a, b`.
-- Whatever the open questions decide.
+- No `--verbose/-v` (decision 1): `-v` is a parse error, exit 2.
+- No `validate_rclone_remote` (decision 6): a schema naming it fails
+  loading, naming it.
 
 ### Other specs
 
@@ -315,7 +315,7 @@ docs/specs/config.md      this spec
   marked where they're read.
 - **Ask first:** writing to any Saltbox file (the facts half); calling the
   real Cloudflare or Docker Hub APIs from a test; a term-ui API change
-  beyond Open question 3's answer; a difference from sb-go not listed.
+  beyond decision 3's group mode; a difference from sb-go not listed.
 - **Never:** read or change a real Saltbox checkout in tests or reviews;
   commit config, domains, tokens or results from a real host.
 
@@ -348,36 +348,21 @@ docs/specs/config.md      this spec
     tolerance (reqwest and rustls will be).
 11. The maintainer runs it on a real host's config (the slice's goal).
 
-## Open Questions
+## Decisions (maintainer, 2026-11-03)
 
-1. **`--verbose/-v`.** sb-go has it as a global flag on validate-config;
-   capability-map decision 1 keeps sb-go's names and flags, while
-   term-ui decision 9 dropped verbose output (the run log is verbose by
-   default). In sb-go, `-v` also switches to plain output, prints
-   `DEBUG:` lines and the optional-file skip messages. Keep it accepted
-   with sb-go's help text and no effect (scripts passing `-v` keep
-   working; recommended), or drop it (a listed difference). The same
-   answer then holds for docker start/stop/restart.
-2. **One run, every file.** Validate every file and show all their issues
-   (recommended), or stop at the first failing file as sb-go does.
-3. **Checks that don't stop each other.** term-ui's groups stop siblings
-   when one fails (decision 7). For both credential checks to report,
-   term-ui gains a group mode that lets every sibling finish and collects
-   their results (recommended; a small addition to term-ui's API), or the
-   checks stay a stopping group and a fast failure stops the other (a
-   listed difference).
-4. **`pattern` misses.** sb-go never enforced them, so configs that pass
-   today could fail. An error from the start (the map's decision), or a
-   warning notice for a first release, then an error.
-5. **Strict loading and Saltbox master.** Saltbox's schemas change on
-   master independently of sb's releases; with strict loading, a new
-   schema key or validator makes validate-config fail for every user until
-   sb ships support. Strict everywhere (the map's decision: drift fails
-   loudly), or strict in sb's tests against the pinned schemas while a run
-   reports an unknown schema key as a warning and skips that rule
-   (recommended: users keep validating, drift still shows).
-6. **`validate_rclone_remote`.** sb-go registers it; whether any Saltbox
-   schema uses it is checked against the pinned schemas in the plan's
-   first task. If none does: leave it out (strict loading names it if one
-   starts to; recommended), or implement it now (it runs `sudo -u <user>
-   rclone listremotes`, so it needs `exec`'s child handling).
+1. **No `--verbose/-v`:** dropped, as term-ui decision 9 already decided
+   (no verbose mode; the run log carries the debug detail by default).
+   The same holds for docker start/stop/restart.
+2. **Every file in one run:** every file is validated and every issue
+   shown, each failed file with its own block.
+3. **Checks that don't stop each other:** term-ui gains a group mode
+   that lets every sibling finish and collects their results (a term-ui
+   spec amendment with this module's plan); both credential checks always
+   report.
+4. **`pattern` misses are errors** from the start.
+5. **Strict loading everywhere:** sb updates itself, so a user's sb keeps
+   up with Saltbox's schemas; schema drift stays with development builds,
+   where it fails loudly.
+6. **`validate_rclone_remote` left out** while no Saltbox schema uses it
+   (the plan's first task checks the pinned schemas); a schema that
+   starts to fails loading, naming it.

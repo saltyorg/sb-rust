@@ -51,7 +51,8 @@ Carried forward (open items owned by later work):
   controls the labels, so the risk is low. Strip or escape control
   characters in term-ui's `Cell` when a command shows less trusted text.
 - From the docker spec, for later docker plans: start/stop/restart's
-  `--verbose/-v` against term-ui decision 9; their unit-file check,
+  `--verbose/-v` dropped (config spec decision 1, after term-ui
+  decision 9); their unit-file check,
   timeouts and response cap; the picker's container list with the event
   stream, extending `ps`'s status rule.
 - From the prototypes: the install script (tasks/prototypes/todo.md,
