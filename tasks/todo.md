@@ -366,9 +366,28 @@ the one-off comparison with sb-go on the fake Engine API (differences
 must be the spec's list). `sb docker ps`'s median beside sb-go's, for
 information.
 
+**Evidence (2026-11-03):**
+
+| Criterion | Evidence |
+|---|---|
+| 1. Rows follow sb-go's rules; only the listed differences | sb-docker's rule tests (status, Traefik, bindings, names). A one-off run (not yet the maintainer's comparison) of sb and sb-go against the same fake Engine API, on the fixtures that have a `State`: same names, Traefik ports, bindings and layout, the Status column differing exactly as listed (failed start, `running` without a health check, exit codes); one run, and plex's two bindings (sb-go's order for them varies between runs) matched by chance in it. With the fixture that has no `State` (an artificial case), sb-go fails while sb shows `unknown`: a difference not in the spec's list, for the maintainer (Checkpoint C). |
+| 2. Every status row tested | sb-docker `ps.rs` status tests, each shown failing against a stub |
+| 3. Reviewed look, fits 120/70/50, plain piped | `ps.rs` snapshot and fit test; sb `docker_engine.rs`: exact piped table at natural width, a 50-column terminal, NO_COLOR and `--color=never` |
+| 3a. `--json` shape | `json.rs` exact-string tests; sb `docker.rs` and `docker_engine.rs` through the binary (`[]`, failed inspects, never coloured, on a terminal too) |
+| 4. Errors | sb `docker.rs` (unreachable, failing inspect), `docker_engine.rs` (vanished, old daemon, TLS/https/ssh refused before any request) |
+| 5. Relaunch | sb `docker.rs` stand-in sudo as nobody (arguments, marker, exec'd); cli-core Task 5's two equivalent mutants caught in a one-off run (Task 6b) |
+| 6. Signals | sb `docker_signals.rs`: SIGINT/SIGTERM within 5 s, 130/143, nothing on stdout, logged as interrupted |
+| 7. Run log | cli-core `log_levels.rs` (WARN/DEBUG controls); sb `docker_engine.rs` run-log test (daemon line, counts, a warning per failure, outcome) |
+| 8. `DOCKER_HOST` | every end-to-end run reaches the fake through it; an empty one is the `address` unit tests' (it would be the host's socket) |
+| 9. Startup | check.sh: `sb --help` 0.73 to 1.4 ms across this plan's checks (sb's help path unchanged; the spread unmeasured), within the 1 ms tolerance of 0.76 ms; `sb version` about 1 ms. `sb docker ps` against the fake Engine API (the fixtures with a `State`), production musl build, hyperfine (30 runs): median 2.5 ms and 3.3 MiB peak, against sb-go's 19.2 ms and 33.3 MiB, for information. |
+| 10. musl | `SB_TEST_ROOT=1 SB_TEST_BINARY=<absolute path to target/x86_64-unknown-linux-musl/production/sb> cargo test -p sb --test docker --test docker_engine --test docker_signals`, as root: 16 tests ran and passed against the production musl build; the maintainer ran it on a real host at Checkpoint B; the opt-in live test (`SB_LIVE_DOCKER=1`, capped) passed against a local daemon (API 1.55) |
+| 11. Size | 3595968 bytes, ADR-007 accepted (Checkpoint B) |
+
 **Acceptance criteria:**
-- [ ] Each success criterion has a test or a recorded manual check.
-- [ ] Size and startup recorded; the size ADR complete for acceptance.
+- [ ] Each success criterion has a test or a recorded manual check
+      (criterion 1 waits on the maintainer: the no-`State` difference and
+      the manual comparison).
+- [x] Size and startup recorded; the size ADR complete for acceptance.
 
 **Verification:**
 - [ ] `scripts/check.sh full`; the maintainer's manual checks.

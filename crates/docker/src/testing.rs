@@ -245,6 +245,8 @@ type Fake = State<Arc<Shared>>;
 
 fn router(shared: Arc<Shared>) -> Router {
     Router::new()
+        .route("/_ping", get(ping))
+        .route("/{version}/_ping", get(ping_at))
         .route("/version", get(version))
         .route("/{version}/version", get(version_at))
         .route("/containers/json", get(list))
@@ -319,6 +321,34 @@ async fn not_found(State(shared): Fake, uri: Uri) -> Response {
         StatusCode::NOT_FOUND,
         json!({ "message": "page not found" }),
     )
+}
+
+/// dockerd's ping: `OK` and its `Api-Version` header, which clients such as
+/// sb-go's negotiate their version from (dockerd's other ping headers,
+/// such as `Swarm` and `Builder-Version`, are left out; clients tolerate
+/// that).
+async fn ping(State(shared): Fake, uri: Uri) -> Response {
+    ping_answer(&shared, &uri, None)
+}
+
+async fn ping_at(State(shared): Fake, uri: Uri, Path(v): Path<String>) -> Response {
+    ping_answer(&shared, &uri, Some(&v))
+}
+
+fn ping_answer(shared: &Shared, uri: &Uri, version: Option<&str>) -> Response {
+    record(shared, uri);
+    // An unversioned ping stays served even with `refuse_unversioned`:
+    // clients negotiate through it before they know a version (an
+    // assumption about Docker's planned removal, not checked against it).
+    if let Some(refusal) = version.and_then(|v| refused(shared, Some(v))) {
+        return refusal;
+    }
+    (
+        StatusCode::OK,
+        [("Api-Version", shared.max_version())],
+        "OK",
+    )
+        .into_response()
 }
 
 async fn version(State(shared): Fake, uri: Uri) -> Response {
@@ -540,12 +570,12 @@ mod tests {
         let (status, _, body) = get(&shared, "/containers/json").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("API without a version prefix"), "{body}");
-        let (status, _, body) = get(&shared, "/_ping").await;
+        let (status, _, body) = get(&shared, "/no-such-path").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body.contains("page not found"), "{body}");
         assert_eq!(
             lock(&shared.paths).last().map(String::as_str),
-            Some("/_ping")
+            Some("/no-such-path")
         );
     }
 
@@ -664,5 +694,31 @@ mod tests {
         assert!(stateless.get("State").is_none());
         assert_eq!(fixture_models().len(), all.len());
         assert_eq!(fixture_rows().len(), all.len());
+    }
+
+    /// The ping answers `OK` with the `Api-Version` header, versioned too
+    /// within the daemon's range.
+    #[tokio::test]
+    async fn the_ping_answers_with_the_api_version() {
+        let shared = Shared::new(Options::default());
+        let (status, header, body) = get(&shared, "/_ping").await;
+        assert_eq!(
+            (status, header.as_str(), body.as_str()),
+            (StatusCode::OK, "1.53", "OK")
+        );
+        let (status, header, body) = get(&shared, "/v1.44/_ping").await;
+        assert_eq!(
+            (status, header.as_str(), body.as_str()),
+            (StatusCode::OK, "1.53", "OK")
+        );
+        let refusing = Shared::new(Options {
+            refuse_unversioned: true,
+            ..Options::default()
+        });
+        assert_eq!(get(&refusing, "/_ping").await.0, StatusCode::OK);
+        assert_eq!(
+            get(&shared, "/v1.99/_ping").await.0,
+            StatusCode::BAD_REQUEST
+        );
     }
 }

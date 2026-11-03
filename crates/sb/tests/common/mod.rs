@@ -12,9 +12,23 @@ pub fn test_log_dir() -> PathBuf {
 }
 
 /// The built `sb`, logging to [`test_log_dir`]. assert_cmd's prelude adds
-/// `.assert()` to it.
+/// `.assert()` to it. `SB_TEST_BINARY`, an absolute path to an existing
+/// file, runs another build of sb in every test that uses this (the
+/// production musl binary, docker plan Task 9); a bare name would go
+/// through `PATH` and could find an installed sb, so it is refused.
+/// scripts/check.sh unsets it.
 pub fn sb() -> std::process::Command {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("sb"));
+    let program = std::env::var_os("SB_TEST_BINARY")
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .inspect(|path| {
+            assert!(
+                path.is_absolute() && path.is_file(),
+                "SB_TEST_BINARY must be an absolute path to sb, got {path:?}"
+            );
+        })
+        .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("sb"));
+    let mut cmd = std::process::Command::new(program);
     cmd.env("SB_LOG_DIR", test_log_dir());
     // No test reads a real /opt/sb/config.toml; tests that want one set it.
     cmd.env("SB_CONFIG", test_log_dir().join("no-such-config.toml"));

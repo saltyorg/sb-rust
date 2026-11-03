@@ -24,6 +24,10 @@ export SB_LOG_DIR="$root/target/test-logs"
 if [[ "$(id -u)" == 0 ]]; then
   export SB_TEST_ROOT=1
 fi
+# Test the build under test, and never the host's Docker daemon: a
+# leftover override of the sb binary or the live opt-in would change what
+# every stage checks (docker plan Task 9).
+unset SB_TEST_BINARY SB_LIVE_DOCKER
 
 stage="${1:-}"
 base="${2:-HEAD}"
