@@ -315,11 +315,15 @@ containers; piped (plain, natural width), `NO_COLOR`, `--color=never`,
 `--color=always` with `--json` (no codes); `--json` for each case.
 
 **Acceptance criteria:**
-- [ ] Every case above is a test; success criteria 3, 3a, 4 and 8 are
+- [x] Every case above is a test; success criteria 3, 3a, 4 and 8 are
       covered through the binary. No host data in fixtures.
+      (An empty `DOCKER_HOST` means the host's default socket, so it stays
+      with sb-docker's `address` unit tests rather than a run. The old
+      daemon's answers keep today's shape: no field sb reads postdates API
+      1.41, and the newer-shape case is sb-docker's test.)
 
 **Verification:**
-- [ ] `scripts/check.sh full` (or `SB_TEST_ROOT=1 cargo test -p sb --test
+- [x] `scripts/check.sh full` (or `SB_TEST_ROOT=1 cargo test -p sb --test
       docker_engine` as root).
 
 **Dependencies:** Checkpoint B

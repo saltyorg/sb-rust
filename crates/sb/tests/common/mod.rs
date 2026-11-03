@@ -25,6 +25,9 @@ pub fn sb() -> std::process::Command {
         "DOCKER_HOST",
         format!("unix://{}", test_log_dir().join("no-docker.sock").display()),
     );
+    // Nor the developer's colour profile (an `ascii` one would turn colour
+    // off on a terminal); tests that want one set it.
+    cmd.env_remove("SB_COLOR_PROFILE");
     for name in [
         "DOCKER_API_VERSION",
         "DOCKER_TLS_VERIFY",

@@ -25,6 +25,7 @@ tracing.workspace = true
 sb-docker = { workspace = true, features = ["testing"] }
 insta.workspace = true
 serde_json.workspace = true
+console.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true

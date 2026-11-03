@@ -81,7 +81,7 @@ and log streams are later plans.
 
 ### Phase 3: Proof
 
-- [ ] Task 7: End-to-end: errors, settings and output modes
+- [x] Task 7: End-to-end: errors, settings and output modes
 - [ ] Task 8: End-to-end: signals and the run log
 - [ ] Task 9: Success criteria and measurements
 
