@@ -370,7 +370,7 @@ information.
 
 | Criterion | Evidence |
 |---|---|
-| 1. Rows follow sb-go's rules; only the listed differences | sb-docker's rule tests (status, Traefik, bindings, names). A one-off run (not yet the maintainer's comparison) of sb and sb-go against the same fake Engine API, on the fixtures that have a `State`: same names, Traefik ports, bindings and layout, the Status column differing exactly as listed (failed start, `running` without a health check, exit codes); one run, and plex's two bindings (sb-go's order for them varies between runs) matched by chance in it. With the fixture that has no `State` (an artificial case), sb-go fails while sb shows `unknown`: a difference not in the spec's list, for the maintainer (Checkpoint C). |
+| 1. Rows follow sb-go's rules; only the listed differences | sb-docker's rule tests (status, Traefik, bindings, names). A one-off run (not yet the maintainer's comparison) of sb and sb-go against the same fake Engine API, on the fixtures that have a `State`: same names, Traefik ports, bindings and layout, the Status column differing exactly as listed (failed start, `running` without a health check, exit codes); one run, and plex's two bindings (sb-go's order for them varies between runs) matched by chance in it. With the fixture that has no `State` (an artificial case), sb-go fails while sb shows `unknown`: added to the spec's list by the maintainer (Checkpoint C). |
 | 2. Every status row tested | sb-docker `ps.rs` status tests, each shown failing against a stub |
 | 3. Reviewed look, fits 120/70/50, plain piped | `ps.rs` snapshot and fit test; sb `docker_engine.rs`: exact piped table at natural width, a 50-column terminal, NO_COLOR and `--color=never` |
 | 3a. `--json` shape | `json.rs` exact-string tests; sb `docker.rs` and `docker_engine.rs` through the binary (`[]`, failed inspects, never coloured, on a terminal too) |
@@ -384,19 +384,27 @@ information.
 | 11. Size | 3595968 bytes, ADR-007 accepted (Checkpoint B) |
 
 **Acceptance criteria:**
-- [ ] Each success criterion has a test or a recorded manual check
-      (criterion 1 waits on the maintainer: the no-`State` difference and
-      the manual comparison).
+- [x] Each success criterion has a test or a recorded manual check
+      (criterion 1: the maintainer added the no-`State` difference to the
+      spec's list and accepted the comparison, Checkpoint C).
 - [x] Size and startup recorded; the size ADR complete for acceptance.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; the maintainer's manual checks.
+- [x] `scripts/check.sh full`; the manual checks (2026-11-03): the
+      maintainer ran the production build on a real host (Checkpoint B);
+      the real-sudo relaunch ran as an unprivileged user with passwordless
+      sudo (the maintainer's offer), through a wrapper that execs the real
+      sudo with SB_LOG_DIR added to the preserved variables, so the root
+      run logged to a temporary directory and the host's /var/log/sb stayed
+      untouched: exit 0, the run log names `docker ps` and outcome done;
+      the sb-go comparison as recorded above.
 
 **Dependencies:** Task 8
 **Files:** `tasks/todo.md`, `docs/decisions/`, `crates/docker/tests/live.rs`
 **Scope:** S
 
 ## Checkpoint C: Complete
-- [ ] All tasks done; `scripts/check.sh full` passes.
-- [ ] Spec success criteria met or carried by name; the maintainer has
-      tried `sb docker ps` and `--json`.
+- [x] All tasks done; `scripts/check.sh full` passes.
+- [x] Spec success criteria met or carried by name; the maintainer has
+      tried `sb docker ps` and `--json` (Checkpoint C approved,
+      2026-11-03).

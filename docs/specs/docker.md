@@ -205,6 +205,9 @@ logging levels end to end.
   (none)`, yellow); `created (failed to start)` if confirmed; created and
   paused are idle (sb-go: yellow). Colours come from the theme's roles,
   not sb-go's fixed 256-colour codes.
+- **A container without a state** in its inspect (an artificial case;
+  Docker sends one) reads `unknown` (warn); sb-go fails on it
+  (maintainer, docker Checkpoint C).
 - **Order inside cells:** Traefik ports and bindings sorted (sb-go
   iterates Go maps, so its order varies between runs).
 - **IPv6:** every IPv6 address bracketed (sb-go brackets only `::`, so
