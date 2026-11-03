@@ -340,10 +340,13 @@ records (daemon address, API version, counts, each failure, the time
 taken).
 
 **Acceptance criteria:**
-- [ ] Success criteria 6 and 7 covered through the binary.
+- [x] Success criteria 6 and 7 covered through the binary.
+      (Piped: `ps` changes no terminal state, so there is nothing to
+      restore and no PTY is needed; criterion 6 amended to say so. sb must
+      end within 5 s of the signal, which a removed cancellation fails.)
 
 **Verification:**
-- [ ] `scripts/check.sh full`.
+- [x] `scripts/check.sh full`.
 
 **Dependencies:** Task 7
 **Files:** `crates/sb/tests/docker_signals.rs`,

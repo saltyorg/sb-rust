@@ -389,10 +389,11 @@ pub fn status(state: &ContainerState) -> (String, Role) {
 5. Not root: `sb docker ps` execs the stand-in sudo with cli-core's
    arguments and marker (fake-sudo test); cli-core Task 5's two
    equivalent mutants are caught.
-6. SIGINT or SIGTERM while an inspect is held open: cli-core's
-   "interrupted" block, 130 or 143, no
-   table (with `--json`, nothing on stdout), terminal restored (fake
-   Engine API on a PTY).
+6. SIGINT or SIGTERM while an inspect is held open: within seconds,
+   cli-core's "interrupted" block, 130 or 143, no table (with `--json`,
+   nothing on stdout). `ps` changes no terminal state (no runner), so
+   there is nothing to restore: the runs are piped, which also checks
+   stdout apart from stderr (amended in docker Task 8).
 7. The run log records the daemon address, the daemon's version and API
    version (a fake daemon above bollard's 1.53, so logging bollard's capped
    1.53 instead fails the test), the

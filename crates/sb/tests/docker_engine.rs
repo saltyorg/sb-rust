@@ -1,8 +1,8 @@
 //! `sb docker ps` end to end against sb-docker's fake Engine API: errors,
-//! settings and output modes (docker spec, success criteria 3, 3a, 4 and
-//! 8). Root runs (`SB_TEST_ROOT=1`), logging under Cargo's test temporary
-//! directory (`common::sb()`); every run reaches the fake through
-//! `DOCKER_HOST` (criterion 8), never the host's daemon. An empty
+//! settings, output modes and the run log (docker spec, success criteria 3,
+//! 3a, 4, 7 and 8). Root runs (`SB_TEST_ROOT=1`), logging under Cargo's
+//! test temporary directory (`common::sb()`); every run reaches the fake
+//! through `DOCKER_HOST` (criterion 8), never the host's daemon. An empty
 //! `DOCKER_HOST` would mean the host's default socket, so that case stays
 //! with sb-docker's `address` unit tests. Fitting 120 and 70 columns is
 //! checked on the rendered table (sb-docker and term-ui); here, 50 on a
@@ -251,4 +251,61 @@ fn on_a_terminal_colour_and_width_follow_the_terminal() {
         let line = line.trim_end_matches('\r');
         assert!(console::measure_text_width(line) <= 50, "{line:?}\n{text}");
     }
+}
+
+/// A run's log records the daemon, its versions, the counts, each failed
+/// inspect and how the run ended (criterion 7). The fake reports API
+/// 1.55, above bollard's 1.53, so logging bollard's version instead would
+/// show.
+#[test]
+fn the_run_log_records_the_daemon_and_the_counts() {
+    if !root_gate::requested() {
+        return;
+    }
+    let failing = [fixture_id("sonarr"), fixture_id("plex")];
+    let engine = fake(Options {
+        api_versions: ((1, 40), (1, 55)),
+        failing: failing.iter().cloned().collect(),
+        ..Options::default()
+    });
+    let logs = tempfile::tempdir().expect("temp dir");
+    let out = ps(
+        &engine.host(),
+        &[],
+        &[("SB_LOG_DIR", logs.path().to_str().expect("utf-8 path"))],
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let log = std::fs::read_to_string(logs.path().join("sb.log")).expect("run log");
+    let line = |marker: &str| {
+        log.lines()
+            .find(|l| l.contains(marker))
+            .unwrap_or_else(|| panic!("no line with {marker:?}:\n{log}"))
+    };
+    let host = engine.host();
+    assert!(
+        line("docker daemon").contains(&format!(
+            r#"sb_docker::connect: docker daemon address="{host}" version="0.0.0-fake" api_version="1.55""#
+        )),
+        "{log}"
+    );
+    let listed = line("containers listed");
+    assert!(listed.contains("listed=6 inspected=4 failed=2"), "{log}");
+    assert!(listed.contains("elapsed_ms="), "{log}");
+    // Each failed inspect has its own warning, with its cause.
+    for id in &failing {
+        let warning = line(&format!("container=\"{}\"", &id[..12]));
+        assert!(
+            warning.contains(" WARN ") && warning.contains("inspect failed"),
+            "{log}"
+        );
+        assert!(warning.contains("fake inspect failure"), "{log}");
+    }
+    assert!(
+        line("run started").contains(r#"command="docker ps""#),
+        "{log}"
+    );
+    assert!(
+        line("run finished").contains(r#"outcome="failed""#),
+        "{log}"
+    );
 }

@@ -3253,6 +3253,7 @@ dependencies = [
  "console",
  "insta",
  "predicates",
+ "rustix",
  "sb-cli-core",
  "sb-docker",
  "sb-host",
