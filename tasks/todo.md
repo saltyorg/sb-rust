@@ -53,11 +53,11 @@ Carried forward (open items owned by later work):
 
 **Description:** Evidence, no production code, in a scratch project in a
 temporary directory (removed after, build output included).
-- **Schemas:** copy Saltbox's `schema/*.schema.yml` from the public
-  upstream repository at a pinned commit (never the live checkout) into
-  `crates/config/tests/fixtures/saltbox-schemas/` with a provenance note
-  (repository URL, commit, GPL-3.0); run gitleaks
-  over them (their `example:` values). Inventory every rule
+- **Schemas:** pin Saltbox's `schema/*.schema.yml` from the public
+  upstream repository at a commit (never the live checkout), with a
+  provenance note (repository URL, commit, GPL-3.0); the copy enters
+  sb-config's fixtures with the crate (moved to Task 4); run
+  gitleaks over them (their `example:` values). Inventory every rule
   key and form, every `type`, `custom_validator` (is
   `validate_rclone_remote` used? decision 6) and `format`, every
   `additionalProperties` form, and every `pattern`: compiles under Rust's
@@ -84,24 +84,24 @@ Findings in `docs/platform-notes/saltbox-schemas.md` and
 details) and a spec amendment if anything contradicts the spec.
 
 **Acceptance criteria:**
-- [ ] The pinned schemas in the fixtures with provenance and clean docs and
-      secret scans; their inventory recorded, each pattern's Rust behaviour
-      recorded.
-- [ ] saphyr confirmed; the two crates chosen with a reason; the new trees
+- [x] The pinned commit recorded and scanned (gitleaks clean; one
+      docs-check hit, the placeholder address, handled in Task 4; the copy
+      with its provenance note moved to Task 4); the inventory recorded,
+      each pattern's Rust behaviour recorded.
+- [x] saphyr confirmed; the two crates chosen with a reason; the new trees
       pass deny.toml (or the problem is named).
-- [ ] The musl build's outcome, the routes and each dependency's size
+- [x] The musl build's outcome, the routes and each dependency's size
       recorded for the maintainer.
 
 **Verification:**
-- [ ] The scratch project removed.
+- [x] The scratch project removed.
 - [ ] The maintainer reviews the findings and picks the musl route
       (Checkpoint A).
 
 **Dependencies:** None
-**Files:** `crates/config/tests/fixtures/saltbox-schemas/`,
-`docs/platform-notes/saltbox-schemas.md`,
+**Files:** `docs/platform-notes/saltbox-schemas.md`,
 `docs/platform-notes/musl-c-dependencies.md`, `docs/specs/config.md` (if
-amended)
+amended), `tasks/todo.md`
 **Scope:** M
 
 ## Task 2: term-ui: a group that lets every sibling finish
@@ -162,7 +162,14 @@ and custom-validator names without `validate_rclone_remote`, formats,
 `additionalProperties` as a rule or a bool, `pattern` compiled at load;
 any unknown key, name or format, a malformed value or a pattern that
 doesn't compile is an error naming the schema file and key; files up to
-1 MiB. cargo-deny's gate reads sb's graph only, which includes sb-config
+1 MiB. The pinned schemas (Task 1: Saltbox commit 6830b26bf, with
+PROVENANCE.md) enter `crates/config/tests/fixtures/saltbox-schemas/` here,
+with the crate: the workspace's `crates/*` glob can't load a directory
+without a manifest. The placeholder address in accounts.schema.yml's
+`user.email` `not_equals` is Saltbox's placeholder, not a real address.
+serde-saphyr 2.1 with `default-features = false, features =
+["deserialize"]` (Task 1's findings); the capability map's stack table
+row follows. cargo-deny's gate reads sb's graph only, which includes sb-config
 from Task 11; until then `cargo deny --manifest-path
 crates/config/Cargo.toml --all-features check` runs here, recorded.
 
@@ -176,7 +183,9 @@ crates/config/Cargo.toml --all-features check` runs here, recorded.
 
 **Dependencies:** Checkpoint A
 **Files:** `Cargo.toml`, `deny.toml`, `crates/config/Cargo.toml`,
-`crates/config/src/lib.rs`, `crates/config/src/schema.rs`
+`crates/config/src/lib.rs`, `crates/config/src/schema.rs`,
+`crates/config/tests/fixtures/saltbox-schemas/` (with `PROVENANCE.md`),
+`docs/specs/capability-map.md`
 **Scope:** M
 
 ## Task 5: Config parsing: positions, duplicate keys, scalars

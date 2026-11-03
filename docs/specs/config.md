@@ -136,8 +136,10 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   in sb-go. Where yaml.v3 and saphyr resolve scalars differently (octal
   and hex forms, `1_000`, large integers), sb follows yaml.v3's result:
   it resolves plain scalars itself from their source text, which
-  saphyr's loader keeps, following yaml.v3's rules (domain code, a test
-  at each edge).
+  saphyr's loader keeps with `early_parse(false)` (quoted scalars
+  arrive unescaped, with their style), following yaml.v3's rules
+  (domain code, a test at each edge). *Wording amended from Task 1's
+  findings, pending Checkpoint A.*
 - **`pattern`:** a Rust `regex` (no lookaround or backreferences), an
   unanchored search as JSON Schema's, on string values only (a non-string
   with a pattern: `must be a string`). A pattern that doesn't compile fails
@@ -249,11 +251,14 @@ on `sb-config`).
 
 - saphyr 0.3.3 `MarkedYaml` for the config files (positions on every
   node; already in sb for the inventory) and saphyr-parser's events for
-  the duplicate-key pass; serde-saphyr 2.0.0 for the schema files
-  (typed, `deny_unknown_fields`); `regex` for `pattern`.
-- reqwest (rustls, aws-lc-rs; the stack table) for the two checks; a
-  maintained public-suffix crate covering both sections, and a tz
-  database crate (both chosen in the plan, library first).
+  the duplicate-key pass; serde-saphyr 2.1 (`deserialize` only) for the
+  schema files (typed, `deny_unknown_fields`); `regex` for `pattern`.
+- reqwest (rustls, aws-lc-rs; the stack table) for the two checks; `psl`
+  for the public suffix list (both sections, compiled in) and `jiff`
+  (system zoneinfo only, `TZDIR` honoured) for `timezone`. Evidence:
+  [saltbox-schemas.md](../platform-notes/saltbox-schemas.md),
+  [musl-c-dependencies.md](../platform-notes/musl-c-dependencies.md).
+  *Amended from Task 1's findings, pending Checkpoint A.*
 - term-ui's runner; cli-core's exit codes, `Shutdown`, run log, secrets.
 
 ## Commands
