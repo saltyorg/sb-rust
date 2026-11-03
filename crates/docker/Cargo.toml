@@ -9,7 +9,14 @@ publish.workspace = true
 
 [dependencies]
 sb-cli-core.workspace = true
+sb-term-ui.workspace = true
 bollard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+console.workspace = true
 
 [lints]
 workspace = true

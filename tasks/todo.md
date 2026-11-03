@@ -44,6 +44,11 @@ Carried forward (open items owned by later work):
     likely not, and it stays carried).
 - From term-ui's spec: prompts (criterion 10) are built with their first
   user, self-update or git's confirm (decision 1).
+- From docker Task 4's review: table cells pass control characters
+  through (term-ui's `Cell` doesn't sanitise), so a container label with
+  an escape code would reach the terminal even with colour off; root
+  controls the labels, so the risk is low. Strip or escape control
+  characters in term-ui's `Cell` when a command shows less trusted text.
 - From the docker spec, for later docker plans: start/stop/restart's
   `--verbose/-v` against term-ui decision 9; their unit-file check,
   timeouts and response cap; the picker's container list with the event
@@ -152,14 +157,14 @@ width 100, roles) and as the spec's JSON (serde_json, compact, key order,
 empty).
 
 **Acceptance criteria:**
-- [ ] Table snapshot in the reviewed look; fits 120, 70 and 50 columns;
+- [x] Table snapshot in the reviewed look; fits 120, 70 and 50 columns;
       natural width when no width is given; no colour codes with colour
       off; no containers: headings only (success criterion 3).
-- [ ] Exact-string JSON tests: key order, `null` health, an unnamed
+- [x] Exact-string JSON tests: key order, `null` health, an unnamed
       container, bindings, `[]`; never colour codes (criterion 3a).
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`; `scripts/check.sh full`.
+- [x] `cargo test -p sb-docker`; `scripts/check.sh full`.
 
 **Dependencies:** Task 3
 **Files:** `crates/docker/src/ps.rs`, `crates/docker/src/json.rs`,
@@ -188,6 +193,13 @@ and inspect by ID at most 16 at a time (`futures-util`
 `buffer_unordered`), a 404 on inspect skipped (DEBUG), other failures
 collected with the short ID, cancellation through cli-core's token.
 sb-docker's test helpers never inherit `DOCKER_*` from the environment.
+From Task 4's review: the fixtures (`src/fixtures/containers.json`) and
+the step from an inspect to a list summary move into the `testing`
+module, shared by the fake and the unit tests (today's `fixture_rows`
+lives in a test module); the unnamed fixture means the fake's list
+leaves `Names` out; the rows are sorted where they are collected (after
+`buffer_unordered`, whose order isn't fixed), not by a step the caller
+must remember.
 
 **Acceptance criteria:**
 - [ ] The `DOCKER_HOST` decision (scheme, empty, TLS settings) is a pure

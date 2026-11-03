@@ -7,9 +7,11 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 
 use bollard::models::{
-    ContainerState, ContainerStateStatusEnum as Status, HealthStatusEnum as Health, PortMap,
+    ContainerInspectResponse, ContainerState, ContainerStateStatusEnum as Status, ContainerSummary,
+    HealthStatusEnum as Health, PortMap,
 };
 use sb_cli_core::theme::Role;
+use sb_term_ui::{Cell, Table};
 
 /// A container's status text and the role it is drawn in: sb-go's wording,
 /// but an exit code decides whether a stopped container is a problem
@@ -199,8 +201,84 @@ pub fn short_id(id: &str) -> String {
     }
 }
 
+/// One container's row: what the table and the JSON show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub name: String,
+    pub id: String,
+    pub state: String,
+    pub health: Option<String>,
+    pub exit_code: i64,
+    pub oom_killed: bool,
+    pub status: String,
+    pub role: Role,
+    pub traefik: Vec<String>,
+    pub bindings: Vec<Binding>,
+}
+
+impl Row {
+    /// The row for a container from the list (`summary`: its ID and names,
+    /// as sb-go) and its inspect (state, labels, bindings).
+    pub fn new(summary: &ContainerSummary, inspect: &ContainerInspectResponse) -> Self {
+        let id = summary.id.clone().unwrap_or_default();
+        let names = summary.names.as_deref().unwrap_or_default();
+        let state = inspect.state.clone().unwrap_or_default();
+        let (status, role) = status(&state);
+        let labels = inspect
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref());
+        let ports = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|settings| settings.ports.as_ref());
+        Row {
+            name: display_name(&id, names),
+            state: state.status.map(|s| s.to_string()).unwrap_or_default(),
+            // `none` and empty mean no health check (docker spec).
+            health: state
+                .health
+                .and_then(|h| h.status)
+                .filter(|h| !matches!(h, Health::NONE | Health::EMPTY))
+                .map(|h| h.to_string()),
+            exit_code: state.exit_code.unwrap_or_default(),
+            oom_killed: state.oom_killed.unwrap_or_default(),
+            status,
+            role,
+            traefik: labels.map(traefik_ports).unwrap_or_default(),
+            bindings: ports.map(bindings).unwrap_or_default(),
+            id,
+        }
+    }
+}
+
+/// `rows` sorted by name, as sb-go.
+pub fn sorted(mut rows: Vec<Row>) -> Vec<Row> {
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
+/// The table in sb-go's columns: headings centred and bold (term-ui), the
+/// port columns right-aligned, each status in its role, the bindings one
+/// per line, columns capped at 100 as sb-go.
+pub fn table(rows: &[Row]) -> Table {
+    let mut table = Table::new(["Container", "Status", "Traefik Port", "Port Bindings"])
+        .right_align(2)
+        .right_align(3)
+        .max_column_width(100);
+    for row in rows {
+        table.row([
+            Cell::new(row.name.clone()),
+            Cell::new(row.status.clone()).role(row.role),
+            Cell::new(row.traefik.join(", ")),
+            Cell::new(binding_lines(&row.bindings).join("\n")),
+        ]);
+    }
+    table
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use bollard::models::{
         ContainerStateStatusEnum as S, Health, HealthStatusEnum as H, PortBinding,
@@ -465,5 +543,150 @@ mod tests {
         assert_eq!(short_id(""), "unknown");
         assert_eq!(short_id("123456789012345"), "123456789012");
         assert_eq!(short_id("123456789012"), "123456789012");
+    }
+
+    /// The synthetic fixture set (documentation addresses only), shared
+    /// with the fake Engine API: inspect answers, the list built from them.
+    pub(crate) fn fixture_rows() -> Vec<Row> {
+        let inspected: Vec<ContainerInspectResponse> =
+            serde_json::from_str(include_str!("fixtures/containers.json")).expect("fixture");
+        let rows = inspected
+            .iter()
+            .map(|inspect| {
+                let summary = ContainerSummary {
+                    id: inspect.id.clone(),
+                    names: inspect.name.clone().map(|name| vec![name]),
+                    ..ContainerSummary::default()
+                };
+                Row::new(&summary, inspect)
+            })
+            .collect();
+        sorted(rows)
+    }
+
+    #[test]
+    fn rows_come_from_the_list_and_the_inspect_sorted_by_name() {
+        let rows = fixture_rows();
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "0123456789ab",
+                "authelia",
+                "lidarr",
+                "plex",
+                "radarr",
+                "sonarr"
+            ]
+        );
+        let plex = &rows[3];
+        assert_eq!(plex.id.len(), 64);
+        assert_eq!(plex.state, "running");
+        assert_eq!(plex.health.as_deref(), Some("healthy"));
+        assert_eq!(
+            (plex.status.as_str(), plex.role),
+            ("running (healthy)", Role::Ok)
+        );
+        assert_eq!(plex.traefik, ["32400"]);
+        assert_eq!(plex.bindings.len(), 2);
+        // A health of `none`, or an empty one, is no health check.
+        assert_eq!(rows[1].health, None);
+        let radarr = &rows[4];
+        assert_eq!(radarr.health, None);
+        assert_eq!((radarr.status.as_str(), radarr.role), ("running", Role::Ok));
+        // No state from Docker: an empty word, read as unknown.
+        let lidarr = &rows[2];
+        assert_eq!(lidarr.state, "");
+        assert_eq!(
+            (lidarr.status.as_str(), lidarr.role),
+            ("unknown", Role::Warn)
+        );
+        let unnamed = &rows[0];
+        assert_eq!(unnamed.status, "created (failed to start)");
+        assert_eq!((unnamed.exit_code, unnamed.oom_killed), (128, false));
+    }
+
+    fn ascii() -> sb_cli_core::theme::Theme {
+        sb_cli_core::theme::Theme::resolve(
+            &sb_cli_core::theme::Palette::default(),
+            sb_cli_core::theme::Profile::Ascii,
+        )
+    }
+
+    /// The reviewed look: sb-go's columns, port columns right-aligned.
+    #[test]
+    fn the_table_draws_sb_go_columns() {
+        insta::assert_snapshot!(table(&fixture_rows()).render(&ascii(), false, None), @r"
+        ╭──────────────┬───────────────────────────┬──────────────┬─────────────────────────────╮
+        │  Container   │          Status           │ Traefik Port │        Port Bindings        │
+        ├──────────────┼───────────────────────────┼──────────────┼─────────────────────────────┤
+        │ 0123456789ab │ created (failed to start) │              │                             │
+        ├──────────────┼───────────────────────────┼──────────────┼─────────────────────────────┤
+        │ authelia     │ running                   │         9091 │ 198.51.100.7:9091->9091/tcp │
+        ├──────────────┼───────────────────────────┼──────────────┼─────────────────────────────┤
+        │ lidarr       │ unknown                   │              │                             │
+        ├──────────────┼───────────────────────────┼──────────────┼─────────────────────────────┤
+        │ plex         │ running (healthy)         │        32400 │    0.0.0.0:32400->32400/tcp │
+        │              │                           │              │       [::]:32400->32400/tcp │
+        ├──────────────┼───────────────────────────┼──────────────┼─────────────────────────────┤
+        │ radarr       │ running                   │              │      0.0.0.0:7878->7878/tcp │
+        ├──────────────┼───────────────────────────┼──────────────┼─────────────────────────────┤
+        │ sonarr       │ exited (code 1)           │         8989 │                             │
+        ╰──────────────┴───────────────────────────┴──────────────┴─────────────────────────────╯
+        ");
+    }
+
+    /// No containers: the headings alone, as sb-go.
+    #[test]
+    fn no_containers_draws_the_headings_alone() {
+        insta::assert_snapshot!(table(&[]).render(&ascii(), false, None), @r"
+        ╭───────────┬────────┬──────────────┬───────────────╮
+        │ Container │ Status │ Traefik Port │ Port Bindings │
+        ╰───────────┴────────┴──────────────┴───────────────╯
+        ");
+    }
+
+    /// Fitted to 120, 70 and 50 columns; natural width without one.
+    #[test]
+    fn the_table_fits_the_terminal() {
+        let rows = fixture_rows();
+        let natural = table(&rows).render(&ascii(), false, None);
+        let widest = natural
+            .lines()
+            .map(console::measure_text_width)
+            .max()
+            .unwrap_or(0);
+        for width in [120, 70, 50] {
+            let text = table(&rows).render(&ascii(), false, Some(width));
+            assert!(
+                text.lines()
+                    .all(|l| console::measure_text_width(l) <= width),
+                "{width}: {text}"
+            );
+        }
+        assert!(widest > 50, "the sample is wider than 50: {natural}");
+        // Wider than needed: the natural width, not stretched.
+        let wide = table(&rows).render(&ascii(), false, Some(widest + 40));
+        assert_eq!(wide, natural);
+    }
+
+    /// Colour off writes no escape codes; colour on paints each status in
+    /// its role.
+    #[test]
+    fn colour_follows_the_choice() {
+        let theme = sb_cli_core::theme::Theme::resolve(
+            &sb_cli_core::theme::Palette::default(),
+            sb_cli_core::theme::Profile::TrueColor,
+        );
+        let rows = fixture_rows();
+        assert!(!table(&rows).render(&theme, false, None).contains('\x1b'));
+        let coloured = table(&rows).render(&theme, true, None);
+        for (status, role) in [
+            ("running (healthy)", Role::Ok),
+            ("exited (code 1)", Role::Problem),
+        ] {
+            let painted = sb_term_ui::style::paint(&theme, role, true, status);
+            assert!(coloured.contains(&painted), "{status}: {coloured:?}");
+        }
     }
 }

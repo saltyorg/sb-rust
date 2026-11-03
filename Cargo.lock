@@ -3236,7 +3236,12 @@ name = "sb-docker"
 version = "0.1.0"
 dependencies = [
  "bollard",
+ "console",
+ "insta",
  "sb-cli-core",
+ "sb-term-ui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -68,7 +68,7 @@ and log streams are later plans.
 ### Phase 2: The command
 
 - [x] Task 3: Crate and the pure rules (status, Traefik, bindings, name)
-- [ ] Task 4: Rows, table and JSON from bollard's models
+- [x] Task 4: Rows, table and JSON from bollard's models
 - [ ] Task 5: Fake Engine API, connection and requests
 - [ ] Task 6a: `sb docker ps` in sb (command, runtime, contract, basic
       end-to-end, size ADR)
