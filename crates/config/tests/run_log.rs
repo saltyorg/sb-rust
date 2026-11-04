@@ -140,7 +140,7 @@ async fn files_issues_and_checks_are_logged_without_secrets() {
         "config file checked file=\"accounts.yml\" issues=1",
         "config file checked file=\"settings.yml\" issues=0",
         "step=\"Validating motd.yml\" text=\"motd.yml not found; skipped\"",
-        "step=\"Validating inventories/host_vars/localhost.yml (no duplicates)\"",
+        "step=\"Validating localhost.yml (no duplicates)\"",
         // The issue, in its step's record.
         "step=\"Validating accounts.yml\" outcome=\"failed\"",
         "user.email: must be a valid email address",

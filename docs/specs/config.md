@@ -66,21 +66,23 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   issue.
 - **Steps** (term-ui's runner, titled "sb validate-config"): one parent
   step, "Validating Saltbox configuration" → "Saltbox configuration
-  validated" (a failed file makes it read term-ui's "sub-step failed"), and
-  under it one step per file, "Validating <file>" → "Validated <file>",
-  failing as "Validation of <file>" with that file's issues in its failure
-  block (localhost.yml as "… (no duplicates)"). Every file is validated
-  (decision 2), each failed one with its own block; a failed credential
-  check shows its own block too, besides any block of accounts.yml's own
-  issues. Under accounts.yml, the two credential checks run as concurrent
-  sibling steps, "Validating Cloudflare API credentials" → "Cloudflare API
-  credentials validated" (failure "Cloudflare API credentials validation"),
-  the same for "Docker Hub credentials"; both always run to their end and
-  report, through term-ui's new group mode that lets every sibling finish
-  (decision 3). A check with no credentials set isn't started: an info
-  notice under accounts.yml's step says it was skipped ("no Cloudflare
-  credentials set; skipped"). Warnings (sb-go's short-password text) are
-  notices under their file's step.
+  validated" (a failed file makes it read term-ui's "sub-step failed"),
+  and under it one step per file, "Validating <file>" → "Validated
+  <file>", failing as "Validation of <file>" with that file's issues in
+  its failure block (localhost.yml's step as sb-go names it, "Validating
+  localhost.yml (no duplicates)": the whole path would be cut off in
+  term-ui's label column; its issues and notice keep the path). Every file
+  is validated (decision 2), each failed one with its own block; a failed
+  credential check shows its own block too, besides any block of
+  accounts.yml's own issues. Under accounts.yml, the two credential checks
+  run as concurrent sibling steps, "Validating Cloudflare API credentials"
+  → "Cloudflare API credentials validated" (failure "Cloudflare API
+  credentials validation"), the same for "Docker Hub credentials"; both
+  always run to their end and report, through term-ui's new group mode
+  that lets every sibling finish (decision 3). A check with no credentials
+  set isn't started: an info notice under accounts.yml's step says it was
+  skipped ("no Cloudflare credentials set; skipped"). Warnings (sb-go's
+  short-password text) are notices under their file's step.
 - **When the checks run:** after accounts.yml's own validation, and only for
   a section with no issues of its own (an unknown key or a format error
   inside `cloudflare:` or `dockerhub:` skips that check too). Structure

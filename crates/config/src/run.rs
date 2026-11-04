@@ -113,7 +113,12 @@ pub async fn run(runner: &mut Runner, settings: &Settings) -> Result<(), Exit> {
 fn shown(file: File) -> String {
     match file.schema {
         Some(_) => file.path.to_string(),
-        None => format!("{} (no duplicates)", file.path),
+        // sb-go's name, the file alone: the whole path doesn't fit
+        // term-ui's label column. Issues and notices keep the path.
+        None => {
+            let name = file.path.rsplit('/').next().unwrap_or(file.path);
+            format!("{name} (no duplicates)")
+        }
     }
 }
 
@@ -461,7 +466,8 @@ mod tests {
         assert!(screen.contains("is bigger than"), "{screen}");
     }
 
-    /// localhost.yml: duplicate keys only, labelled so.
+    /// localhost.yml: duplicate keys only, labelled so, whole (sb-go's
+    /// name, which fits the label column).
     #[tokio::test]
     async fn localhost_is_checked_for_duplicates_only() {
         let root = saltbox_root("valid").expect("root");
@@ -473,7 +479,7 @@ mod tests {
         let (result, screen) = run_on(root.path(), &healthy()).await;
         assert!(result.is_ok(), "{screen}");
         assert!(
-            screen.contains("✓ Validated inventories/host_vars/localhost.yml"),
+            screen.contains("✓ Validated localhost.yml (no duplicates)"),
             "{screen}"
         );
         write(
@@ -484,7 +490,7 @@ mod tests {
         let (result, screen) = run_on(root.path(), &healthy()).await;
         assert!(matches!(result, Err(Exit(1))), "{screen}");
         assert!(
-            screen.contains("✗ Validation of inventories/host_vars/localhost.yml"),
+            screen.contains("✗ Validation of localhost.yml (no duplicates)"),
             "{screen}"
         );
         assert!(
@@ -659,7 +665,7 @@ mod tests {
                 .find(text)
                 .unwrap_or_else(|| panic!("{text}\n{screen}"))
         };
-        let order = FILES.map(|file| at(&format!("Validated {}", file.path)));
+        let order = FILES.map(|file| at(&format!("Validated {}", shown(file))));
         assert!(order.is_sorted(), "{screen}");
     }
 
