@@ -15,7 +15,8 @@ Carried forward (open items owned by later work):
 - Taken by this plan:
   - From cli-core: children don't inherit `SB_RELAUNCHED`, or an
     unprivileged sb started by one would refuse to relaunch (root.rs
-    module docs) (Task 2, checked with real children per way).
+    module docs). Moot: Task 1b relaunches with `sudo -u root` and drops
+    the variable (decision 6).
   - From cli-core: `COLORTERM` for children, decided (exec decision 3;
     Tasks 7, 8b).
   - From cli-core: sudoers' `--preserve-env` names beyond `env_keep`,
@@ -80,19 +81,54 @@ docs/platform-notes/ with versions and the method, no host details:
 The scratch project and its `target/` are removed afterwards.
 
 **Acceptance criteria:**
-- [ ] Each fact recorded with its source, version and method; the two
+- [x] Each fact recorded with its source, version and method; the two
       kernel facts confirmed by a test.
-- [ ] `cargo deny` on the scratch tree with the new crates passes, or the
+- [x] `cargo deny` on the scratch tree with the new crates passes, or the
       exception is proposed; signal-hook's feature builds through cross,
       or the alternative goes to the maintainer before Task 8a.
-- [ ] Any finding that contradicts the spec raised with the maintainer
+- [x] Any finding that contradicts the spec raised with the maintainer
       before Task 2.
 
 **Verification:**
-- [ ] code-reviewer on the notes.
+- [x] code-reviewer on the notes.
+
+Done (docs/platform-notes/exec-processes.md). Two findings went to the
+maintainer and changed the spec: C sudo relays signals to sb's whole
+process group, and a piped run's Ctrl-C arrives relayed (decision 2
+revised: SIGINT never forwarded, so `WithOrigin` and its C feature
+aren't needed); and `SB_RELAUNCHED` made every relaunch fail under a
+rule naming commands without SETENV (decision 6: relaunch with `sudo -u
+root`, no marker; Task 1b).
 
 **Dependencies:** None
 **Files:** `docs/platform-notes/`
+**Scope:** S
+
+## Task 1b: cli-core: relaunch with `sudo -u root`, no marker
+
+**Description:** Decision 6 (maintainer, 2026-11-04, from Task 1): sb
+relaunches with `sudo -u root --preserve-env=VISUAL,EDITOR,
+SB_COLOR_PROFILE,NO_COLOR <sb> <args>`; sudo runs it as root or refuses,
+so the relaunched run always passes the root check (effective uid 0).
+`SB_RELAUNCHED`, its check and its "still not root" error are removed.
+The cli-core spec's relaunch paragraph and root.rs's module docs amended;
+sb's relaunch tests (the stand-in sudo in crates/sb/tests/nobody) check
+that `-u root` is passed.
+
+**Acceptance criteria:**
+- [ ] sudo's arguments tested (`-u root`, the four names, sb's path and
+      arguments unchanged), failing first; the relaunch tests pass
+      through the binary with the stand-in sudo; `SB_RELAUNCHED` appears
+      nowhere in code or tests.
+
+**Verification:**
+- [ ] `cargo test -p sb-cli-core`; `SB_TEST_ROOT=1 cargo test -p sb`;
+      library-reviewer; `scripts/check.sh full`.
+
+**Dependencies:** Task 1
+**Files:** `crates/cli-core/src/root.rs`, `crates/sb/src/main.rs`,
+`crates/sb/tests/nobody/mod.rs`, `crates/sb/tests/` (relaunch tests),
+`docs/specs/cli-core.md`
 **Scope:** S
 
 ## Task 2: The crate, `Cmd`, masking and the start record
@@ -100,8 +136,8 @@ The scratch project and its `target/` are removed afterwards.
 **Description:** `crates/exec` (`sb-exec`) with `Cmd`: `arg(&'static
 str)`, `value(String)`, `secret(String)`, `env`, `secret_env`,
 `env_remove`, `env_clear`, `cwd`, `stdin(bytes)`; the environment rules
-(`SB_RELAUNCHED` removed, `GIT_TERMINAL_PROMPT=0` for children not
-attached, applied to the environment each way hands its spawner); the
+(`GIT_TERMINAL_PROMPT=0` for children not attached, applied to the
+environment each way hands its spawner); the
 masking of secrets out of text (empty values ignored); the start
 record. The capability map's `exec` row (depends on cli-core and term-ui;
 ANSI stripping moved to term-ui's row) and build-order line, and
@@ -147,7 +183,7 @@ here and acts from Task 4.
       the 2 s drain (done within it, its group killed afterwards), a
       child echoing a `secret` and a `secret_env` value (masked in stdout,
       stderr and the error).
-- [ ] The environment with real children (`env`): no `SB_RELAUNCHED`,
+- [ ] The environment with real children (`env`):
       `GIT_TERMINAL_PROMPT=0`, changed variables present, an inherited
       `COLORTERM` left as it is (decision 3).
 - [ ] The end record (outcome, elapsed) logged with nothing masked
@@ -286,10 +322,10 @@ registration. exec-demo gains a `pty` mode.
       progress at the next line, a last line without `\n`, a line past
       4 KiB, the 2 s drain with a backgrounded short sleep holding the
       PTY, a child echoing a `secret` and a `secret_env` value (masked).
-- [ ] The environment with real children: no `SB_RELAUNCHED`,
-      `GIT_TERMINAL_PROMPT=0`, `COLORTERM` truecolor or 256color, and
-      removed for ansi and ascii; colours kept for a coloured target and
-      stripped otherwise (term-ui's).
+- [ ] The environment with real children: `GIT_TERMINAL_PROMPT=0`,
+      `COLORTERM` truecolor or 256color, and removed for ansi and ascii;
+      colours kept for a coloured target and stripped otherwise
+      (term-ui's).
 - [ ] Cancellation and a timeout reach the session's group; through
       exec-demo's `pty` mode on a PTY: SIGINT and SIGTERM give 130 and 143
       with the session's group gone, a second signal makes the hook SIGKILL
@@ -309,7 +345,7 @@ registration. exec-demo gains a `pty` mode.
 - [ ] The maintainer approves the signal behaviour (decision 2 as Task 8a
       will build it) before cli-core changes, and decides the cases the
       spec leaves open while an attached child runs: whether a second
-      SIGTERM, or a SIGTERM then a SIGINT from `kill`, forces sb's exit;
+      SIGTERM, or a SIGTERM then a SIGINT, forces sb's exit;
       if so, whether the forced-exit hook SIGKILLs the attached child's
       pid or sb exits and leaves it; what a terminal SIGINT does while a
       forwarded SIGTERM's grace runs. The decided table goes into the
@@ -320,11 +356,11 @@ registration. exec-demo gains a `pty` mode.
 **Description:** cli-core's amendment (decision 2): a hold that exec turns
 on while an attached child runs; while it's on, a terminal SIGINT
 doesn't cancel the token and held SIGINTs don't count toward the forced
-exit; a SIGTERM, or a SIGINT from another process (signal-hook's
-`WithOrigin`, Task 1), is handed to the holder to forward; the holder
+exit; SIGINT is never forwarded, whatever its source (decision 2
+revised after Task 1); a SIGTERM is handed to the holder to forward; the holder
 reports a child that died of SIGINT, which records the interruption on
-`Shutdown` and cancels the token. The decision logic (origin and hold
-state) is a pure function, tested in-process so the coverage and
+`Shutdown` and cancels the token. The decision logic (hold state and
+signal) is a pure function, tested in-process so the coverage and
 mutation gates reach it. The cli-core spec amended. The carried run
 record (`error=exit code 1` beside an interrupted run's code) checked
 and fixed or re-carried with a reason.
@@ -364,15 +400,15 @@ Task 7; it doesn't use portable-pty.)
 **Acceptance criteria:**
 - [ ] Through exec-demo on a PTY: one and two Ctrl-Cs with a child that
       survives SIGINT (sb waits), a child that dies of it (130), a SIGINT
-      from `kill` forwarded, a SIGTERM forwarded (143); a timeout reads
+      sent to sb alone not forwarded, a SIGTERM forwarded (143); a timeout reads
       timed out; a child ignoring the forwarded SIGTERM is SIGKILLed after
       the grace; signals go to the child's pid, never a group.
-- [ ] An exit code, a spawn failure, `stdin(bytes)` refused, refusal
-      while a runner is live; the environment with real children
-      (`COLORTERM` per the profile, no `GIT_TERMINAL_PROMPT`, no
-      `SB_RELAUNCHED`); the records written and no output logged; the
-      pass-through: exec-demo exits with the child's code after its one
-      line; Checkpoint B's decided cases through exec-demo.
+- [ ] An exit code, a spawn failure, `stdin(bytes)` refused, refusal while
+      a runner is live; the environment with real children (`COLORTERM`
+      per the profile, no `GIT_TERMINAL_PROMPT`); the records written and
+      no output logged; the pass-through: exec-demo exits with the child's
+      code after its one line; Checkpoint B's decided cases through
+      exec-demo.
 
 **Verification:**
 - [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.

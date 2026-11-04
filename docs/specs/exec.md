@@ -39,13 +39,14 @@ command first uses it is decision 4.
    cmd/docker.go, 2 min per apt attempt in host/apt.go); a replaced
    environment (completion/detection.go); stderr matched for retries
    (host/apt.go). sb-go's five output modes map onto four ways to run.
-5. **Carried items addressed to exec** (tasks/config/todo.md): children
-   don't inherit `SB_RELAUNCHED` (an unprivileged sb started by one would
-   refuse to relaunch); `COLORTERM` for children (decision 3); the
-   sudoers question on `--preserve-env` names beyond `env_keep`, with
-   sudo's `use_pty` default and how it relays signals, recorded in
-   docs/platform-notes/ (cli-core's relaunch owns the question; exec's
-   plan answers it because attached children and signals depend on it).
+5. **Carried items addressed to exec** (tasks/config/todo.md):
+   `SB_RELAUNCHED` in children (moot: cli-core relaunches with `sudo -u
+   root` and drops the variable, decision 6); `COLORTERM` for children
+   (decision 3); the sudoers question on `--preserve-env` names beyond
+   `env_keep`, with sudo's `use_pty` default and how it relays signals,
+   recorded in docs/platform-notes/ (cli-core's relaunch owns the
+   question; exec's plan answers it because attached children and signals
+   depend on it).
 
 ## Objective
 
@@ -67,7 +68,7 @@ group, within the grace period plus one second.
   the program, the literals in place and the count of masked arguments.
   argv is readable in `/proc/<pid>/cmdline` by other users, so a caller
   passes a secret through the environment or stdin where the tool allows.
-- **Environment:** inherited, minus `SB_RELAUNCHED`; `env(name, value)`,
+- **Environment:** inherited; `env(name, value)`,
   `secret_env(name, value)` (taken out of output too), `env_remove(name)`,
   or `env_clear()` (sb-go's `WithEnv`). The log names changed variables,
   never values.
@@ -159,10 +160,16 @@ even if the child then exits 0 within the grace period.
   `Shutdown` and cancels the token, so later steps don't run and sb exits
   130; otherwise it goes on (Ctrl-C in an editor, ansible's `pause`
   prompts). Held SIGINTs don't count toward cli-core's forced exit, so
-  two Ctrl-Cs in an editor leave sb waiting. A SIGINT sent by another
-  process (`kill`, not the terminal; signal-hook's `WithOrigin` tells
-  them apart) is sent on to the child's pid, as is a SIGTERM to sb; then
-  the grace period applies, and `timeout` works the same way, by pid.
+  two Ctrl-Cs in an editor leave sb waiting. sb never forwards a SIGINT:
+  the terminal delivers it to the child, as POSIX `system()` and git's
+  editor launch rely on. Attached children assume sb's stdin and stdout
+  are the user's terminal: piped runs of such commands aren't supported
+  (the install script runs `sb setup` attached, capability map; users
+  have no need to pipe them), so sudo's relays in a piped run aren't
+  designed for (docs/platform-notes/exec-processes.md). A SIGTERM to sb is
+  sent on to the child's pid (sudo-rs relays to sb's pid only; under C
+  sudo the child may get it twice); then the grace period applies, and
+  `timeout` works the same way, by pid.
   No attached child runs while a term-ui `Runner` is live: term-ui
   exposes whether one is, and `attached` refuses to start then. This
   changes how cli-core handles signals while an attached child runs (an
@@ -186,7 +193,6 @@ even if the child then exits 0 within the grace period.
 
 ### Environment rules
 
-- `SB_RELAUNCHED` never reaches a child.
 - `GIT_TERMINAL_PROMPT=0` for every child that isn't attached, git or not
   (sb-go sets it only for git; uv, ansible-galaxy or a script can run git
   too, and the variable means nothing to other programs).
@@ -298,10 +304,10 @@ let outcome = Cmd::new("systemctl")
   run on a terminal through `script`, or with an injected size), colours
   kept for a coloured target and stripped otherwise; a missing working
   directory is an error, not `$HOME`.
-- **Environment and logging:** `SB_RELAUNCHED` absent,
-  `GIT_TERMINAL_PROMPT=0`, changed variables present, no value logged;
-  the known-secret test on a `secret` argument, a `secret_env` value, a
-  child echoing them, and a pass-through `value` (the carried `-e` item).
+- **Environment and logging:** `GIT_TERMINAL_PROMPT=0`, changed variables
+  present, no value logged; the known-secret test on a `secret` argument,
+  a `secret_env` value, a child echoing them, and a pass-through `value`
+  (the carried `-e` item).
 - **Rules that keep the harness safe:** in-process tests cancel through
   the token and never send real signals to the test process; real
   SIGINT and SIGTERM only through a test binary; before any group signal,
@@ -334,9 +340,9 @@ let outcome = Cmd::new("systemctl")
    plus one second, SIGKILL only when SIGTERM didn't end them, also after
    the leader exited; a stopped child too; no zombie of sb's own left.
 3. Attached: Ctrl-C reaches the child, and sb ends interrupted (130) only
-   if the child died of it, two included; a SIGINT from another process
-   and a SIGTERM to sb reach the child; `attached` refuses while a runner
-   is live.
+   if the child died of it, two included; a SIGINT to sb alone isn't
+   passed on; a SIGTERM to sb reaches the child; `attached` refuses while
+   a runner is live.
 4. A PTY child sees a TTY of sb's size; its colours follow sb's colour
    decision; a byte-split character arrives whole; `\r` progress shows at
    the next line; a reading child gets EOF; a missing directory is an
@@ -346,8 +352,7 @@ let outcome = Cmd::new("systemctl")
    error, nor in output exec shows (`capture`, `stream`, `pty`; `attached`
    output is the child's own on the terminal), the known-secret test with
    a pass-through value included.
-7. `SB_RELAUNCHED` never reaches a child; `GIT_TERMINAL_PROMPT=0` for
-   every child not attached.
+7. `GIT_TERMINAL_PROMPT=0` for every child not attached.
 8. The sudoers and `use_pty` question answered in docs/platform-notes/;
    the capability map's row, deny.toml and the cli-core spec amended.
 9. The first command that uses exec (decision 4) works through the
@@ -362,9 +367,12 @@ let outcome = Cmd::new("systemctl")
 2. **Attached children keep sb's terminal and process group:** the
    terminal's Ctrl-C goes to the child; sb holds its own reaction, waits,
    and ends interrupted (130) only if the child died of SIGINT; held
-   SIGINTs don't count toward the forced exit; a SIGTERM to sb or a
-   SIGINT from another process is forwarded to the child's pid. The
-   cli-core spec is amended with this one.
+   SIGINTs don't count toward the forced exit. Revised after plan Task 1
+   (maintainer, 2026-11-04): sb never forwards SIGINT, as POSIX
+   `system()` and git do; only a SIGTERM to sb is forwarded to the
+   child's pid. Attached children assume sb is on the user's terminal:
+   piped runs of such commands aren't supported. The cli-core spec is
+   amended with this one.
 3. **`COLORTERM`:** set from the colour profile only for `pty` and
    `attached` children (truecolor, 256color; an inherited one removed for
    ansi and ascii); `capture` and `stream` children's environment is left
@@ -379,3 +387,13 @@ let outcome = Cmd::new("systemctl")
    signal's name in the times column. sb exits 1; only an `attached`
    ansible run passes its own code through, with one line naming the
    program and its outcome (as sb-go's "playbook … failed, scroll up …").
+6. **sb relaunches with `sudo -u root` and needs no loop marker**
+   (maintainer, 2026-11-04, from plan Task 1): sudo then runs sb as root
+   or refuses, so the relaunched run always passes sb's root check
+   (effective uid 0) and can't loop, given a real sudo or sudo-rs on
+   `PATH` (a program there that ignores `-u` would make sb relaunch
+   again and again; each relaunch is an exec, so it spins rather than
+   piling up). `SB_RELAUNCHED`, which a sudo rule
+   naming commands without SETENV refused on every relaunch, and its
+   check are removed (a cli-core change, exec plan Task 1b;
+   docs/platform-notes/exec-processes.md).
