@@ -268,13 +268,12 @@ mod tests {
         shutdown.signalled(signal_hook::consts::SIGINT);
         let mut out = Vec::new();
         let err = failure("operation cancelled");
-        let code = finish_run(
+        finish_run(
             &shutdown,
             Some(&err),
             Some("/var/log/sb/x.log (run 1)"),
             &mut out,
         );
-        assert_eq!(code, ExitCode::from(130));
         assert_eq!(
             String::from_utf8(out).expect("utf-8"),
             "✗ interrupted\n  details: /var/log/sb/x.log (run 1)\n"

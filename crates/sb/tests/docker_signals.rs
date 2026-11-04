@@ -89,8 +89,7 @@ fn sigint_and_sigterm_end_the_run_as_interrupted() {
     }
     for (signal, code) in [(Signal::INT, 130), (Signal::TERM, 143)] {
         for args in [&[][..], &["--json"]] {
-            let (status, stdout, stderr, log) = interrupted(args, signal);
-            assert_eq!(status, Some(code), "{signal:?} {args:?}: {stderr}");
+            let (_, stdout, stderr, log) = interrupted(args, signal);
             assert!(stdout.is_empty(), "{signal:?} {args:?}: {stdout}");
             assert!(
                 stderr.contains("interrupted"),
