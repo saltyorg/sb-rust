@@ -673,7 +673,12 @@ Choices behind it:
     plan's Checkpoint B):** a label is never cut while the screen has
     room. The time column starts at 64 (proto-runner's reviewed layout)
     and moves right as far as the longest line not yet printed needs, an
-    ending's reason (`interrupted · 12s`) included. It never moves left,
+    ending's reason (`interrupted · 12s`) included, with at least three
+    spaces before the time so a reason never reads as part of the label
+    (the maintainer, 2026-11-04, trying the first version; fewer on a
+    screen too narrow for three, and a screen too narrow even for a
+    step's branch and time cuts the whole line, so no line wraps). It
+    never moves left,
     so the live area never sits left of printed lines and a shorter done
     label doesn't make it jump (lines printed before a longer one keep
     their column); a screen narrower than the tree still cuts labels with

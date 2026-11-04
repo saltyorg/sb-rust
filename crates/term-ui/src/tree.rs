@@ -16,6 +16,11 @@ use crate::style::paint;
 /// The column times end in at least (proto-runner's reviewed layout);
 /// further right when a line needs it, never past the screen.
 const COLUMN: usize = 64;
+/// The least space between a label and its time, so an ending's reason
+/// (`interrupted · 12s`) never reads as part of the label (the
+/// maintainer, 2026-11-04, trying decision 11's first version); fewer
+/// on a screen too narrow for three.
+const GAP: usize = 3;
 /// Output lines shown under a running or interrupted step: sb-go's 8
 /// (`liveTaskOutputLines`).
 pub(crate) const TAIL: usize = 8;
@@ -300,7 +305,7 @@ impl Tree {
     }
 
     /// Step `id`'s line, its time ending in `column`; a label too long
-    /// for it is cut with `…`.
+    /// for it is cut with `…` to leave `GAP` spaces before the time.
     fn line(&self, id: usize, d: &Draw, column: usize) -> String {
         let Parts {
             lead,
@@ -309,15 +314,27 @@ impl Tree {
             right,
             right_role,
         } = self.parts(id, d);
-        let room = column.saturating_sub(width(&lead) + width(&right) + 1);
+        // A screen too narrow for the whole gap gets fewer spaces.
+        let spare = column.saturating_sub(width(&lead) + width(&right));
+        let gap = GAP.min(spare).max(1);
+        let room = spare.saturating_sub(gap);
         let left = cut(&left, room);
         let painted = d.paint(role, &left);
         let left = console::pad_str(&painted, room, console::Alignment::Left, None);
-        format!(
-            "{}{left} {}",
+        let line = format!(
+            "{}{left}{}{}",
             d.paint(Role::Faint, &lead),
+            " ".repeat(gap),
             d.paint(right_role, &right)
-        )
+        );
+        // A screen too narrow even for the branch and the time: the whole
+        // line is cut to it, so a live line never wraps (console keeps
+        // escape codes whole; see `cut`).
+        if width(&line) > column {
+            console::truncate_str(&line, column, "…").into_owned()
+        } else {
+            line
+        }
     }
 
     /// Where the times of the steps not yet printed end: one column, past
@@ -333,7 +350,7 @@ impl Tree {
             .iter()
             .map(|&id| {
                 let p = self.parts(id, d);
-                width(&p.lead) + width(&p.left) + 1 + width(&p.right)
+                width(&p.lead) + width(&p.left) + GAP + width(&p.right)
             })
             .max()
             .unwrap_or(0);
@@ -566,10 +583,10 @@ mod tests {
         let d = draw(&theme, secs(t0, 13));
         let printed = tree.take_printable(&d).join("\n");
         insta::assert_snapshot!(printed, @r"
-        ╰── ✗ Validating Saltbox configuration              interrupted · 12s
-            ╰── ✗ Validating accounts.yml                   interrupted · 12s
-                ├── ✗ Validating Cloudflare API credentials interrupted · 12s
-                ╰── ✓ Docker Hub credentials validated                     0s
+        ╰── ✗ Validating Saltbox configuration                interrupted · 12s
+            ╰── ✗ Validating accounts.yml                     interrupted · 12s
+                ├── ✗ Validating Cloudflare API credentials   interrupted · 12s
+                ╰── ✓ Docker Hub credentials validated                       0s
         ");
         assert!(!printed.contains('…'), "{printed}");
         let ends: Vec<usize> = printed.lines().map(width).collect();
@@ -931,6 +948,89 @@ mod tests {
         assert_eq!(printed[0], format!("╰── ✓ a{}1s", " ".repeat(55)));
     }
 
+    /// A label that exactly fills the room before the time isn't cut.
+    #[test]
+    fn a_label_that_just_fits_is_whole() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        // 64 columns: the branch (4), the label, the gap (3) and "1s" (2).
+        let label = format!("✓ {}", "x".repeat(53));
+        let id = tree.add(None, Labels::new("x", &label[4..]), t0);
+        tree.finish(id, Status::Done, secs(t0, 1));
+        tree.end();
+        let printed = tree.take_printable(&draw(&theme, secs(t0, 1)));
+        assert_eq!(printed[0], format!("╰── {label}   1s"));
+        assert_eq!(width(&printed[0]), COLUMN);
+    }
+
+    /// A screen too narrow even for a step's branch and time cuts the
+    /// whole line to the screen, at any depth: no line wraps.
+    #[test]
+    fn no_line_is_wider_than_the_screen() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let interrupted = || {
+            let mut tree = Tree::default();
+            let top = tree.add(None, Labels::new("Pulling images", "images pulled"), t0);
+            let deep = tree.add(Some(top), Labels::new("Pulling plex", "plex pulled"), t0);
+            tree.finish(deep, Status::Interrupted, secs(t0, 12));
+            tree.finish(top, Status::Interrupted, secs(t0, 12));
+            tree.end();
+            tree
+        };
+        for screen in [10, 18, 21, 22, 23, 24] {
+            let d = Draw {
+                width: screen,
+                ..draw(&theme, secs(t0, 12))
+            };
+            let printed = interrupted().take_printable(&d);
+            assert_eq!(printed.len(), 2, "{screen}");
+            for line in printed {
+                assert!(width(&line) <= screen, "{screen}: {line:?}");
+            }
+        }
+    }
+
+    /// One column more than the room cuts the label, and the gap stays.
+    #[test]
+    fn a_label_one_column_too_long_is_cut_before_the_gap() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(None, Labels::new("x", "x".repeat(54)), t0);
+        tree.finish(id, Status::Done, secs(t0, 1));
+        tree.end();
+        let d = Draw {
+            width: COLUMN,
+            ..draw(&theme, secs(t0, 1))
+        };
+        let printed = tree.take_printable(&d);
+        assert_eq!(printed[0], format!("╰── ✓ {}…   1s", "x".repeat(52)));
+        assert_eq!(width(&printed[0]), COLUMN);
+    }
+
+    /// A screen too narrow for the whole gap shrinks it, here to the one
+    /// column left, so the line still fits.
+    #[test]
+    fn a_narrow_screen_shrinks_the_gap() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(None, Labels::new("Pulling images", "images pulled"), t0);
+        tree.finish(id, Status::Interrupted, secs(t0, 12));
+        tree.end();
+        // The branch (4) and "interrupted · 12s" (17) leave one column:
+        // a one-space gap, no label.
+        let d = Draw {
+            width: 22,
+            ..draw(&theme, secs(t0, 12))
+        };
+        let printed = tree.take_printable(&d);
+        assert_eq!(printed[0], "╰──  interrupted · 12s");
+        assert_eq!(width(&printed[0]), 22);
+    }
+
     /// A step that ended while a sub-step still runs stays live, even once
     /// a later sibling shows where it sits.
     #[test]
@@ -964,6 +1064,7 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 1));
         d.width = 40;
         let printed = tree.take_printable(&d);
+        assert_eq!(printed[0], "╰── ✓ a very long done label a ver…   1s");
         assert_eq!(width(&printed[0]), 40);
     }
 
