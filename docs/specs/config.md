@@ -238,6 +238,15 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - term-ui's runner and failure blocks (sb-go: its Bubble Tea tree and
   fang's error badge); no `DEBUG:` lines on stdout (the run log has them).
 - Merge keys (`<<`) aren't followed.
+- A syntax error has saphyr's position and wording: where its scanner
+  stops, at the end of the file for an unclosed flow sequence (yaml.v3
+  counts the line differently and words it its own way).
+- A duplicate key reads `<path>: duplicate key (also at line L, column
+  C)` (sb-go: yaml.v3's `mapping key "k" already defined at line L` for
+  the schema-backed files, its walker's `<path> (appears N times)` for
+  localhost.yml).
+- A missing motd.yml or localhost.yml is a step with a "not found;
+  skipped" notice (sb-go: no step; a line only with `--verbose`).
 - Files, schemas and HTTP response bodies read up to 1 MiB each; control
   characters in echoed values and remote text escaped.
 - Cloudflare failures show the HTTP status and Cloudflare's own messages

@@ -12,6 +12,16 @@ fixtures through `SB_SALTBOX_DIR`; say so in every reviewer's brief. Root-gated
 tests run only as root with `SB_TEST_ROOT=1` (check.sh sets it).
 
 Carried forward (open items owned by later work):
+- Revisit with the maintainer once the binary is otherwise done: who owns
+  the config schemas. Today Saltbox ships them in `schema/` and sb reads
+  them at run time, strictly. The alternative is a schema version file in
+  Saltbox with the rules owned by the binary. A design review (config
+  Task 13) favoured today's setup: Saltbox edits its schemas on its own,
+  and a version file would make every edit an sb release too. It noted
+  two cheaper fixes for the one failure it found (a new rule key breaking
+  an older sb's strict load): a `schema_version` key inside the schema
+  files, or a scheduled sb-side check that loads upstream's schemas
+  strictly.
 - Taken by this plan:
   - term-ui criteria 4 and 6 with sb's own commands (moved here by docker
     decision 1): the failure block and the Ctrl-C endings and restore
@@ -502,16 +512,83 @@ credentials in that set; differences only the spec's list. The maintainer
 runs it on a real host's config (success criterion 11).
 
 **Acceptance criteria:**
-- [ ] Each success criterion has a test or a recorded check; the parity
+- [x] Each success criterion has a test or a recorded check; the parity
       procedure and result recorded.
-- [ ] Size and startup recorded; the size ADR complete for acceptance.
+- [x] Size and startup recorded; the size ADR complete for acceptance.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; the maintainer's run.
+- [x] `scripts/check.sh full`; the maintainer's run (Checkpoint B).
 
 **Dependencies:** Task 12
 **Files:** `tasks/todo.md`, `docs/decisions/`
 **Scope:** S
+
+### Task 13 evidence: the spec's success criteria
+
+| # | Evidence |
+|---|---|
+| 1 | Rules, validators and messages: unit tests in crates/config/src/{rules,validators,scalar,parse,schema}.rs (sb-go's cases ported); strict loading names an unknown key, type, format, validator and a pattern that doesn't compile (schema.rs tests); every pinned schema loads (tests/saltbox_schemas.rs). |
+| 2 | tests/rules.rs: many_errors_yields_every_issue_in_order, the_valid_set_passes_the_pinned_schemas; across files, sb's a_broken_set_fails_with_its_issues. |
+| 3 | parse.rs duplicate tests; run.rs localhost_is_checked_for_duplicates_only, duplicates_stop_a_schema_backed_file. |
+| 4 | run.rs a_missing_required_file_is_its_issue, a_missing_schema_is_the_files_issue, a_missing_optional_file_is_skipped, the_valid_set_passes_with_both_checks (localhost.yml missing), a_file_over_a_mebibyte_is_its_issue, an_invalid_schema_fails_its_file; logged: sb-config's tests/run_log.rs. |
+| 5 | cloudflare.rs and dockerhub.rs against the fake (success, each refusal's guidance, retries and their limits, a timeout); run.rs no_credentials_are_skipped_with_a_notice, an_issue_in_a_section_skips_its_check, an_issue_in_dockerhub_skips_its_check, a_mixed_cloudflare_login_is_an_issue; sb's both_checks_finish_when_one_fails. |
+| 6 | sb's no_known_secret_reaches_any_output_or_the_log and a_broken_set_fails_with_its_issues; sb-config's tests/run_log.rs; tests/rules.rs secrets_are_never_shown, a_secret_tag_error_is_redacted, values_under_a_secret_field_are_redacted; secret.rs unit tests. |
+| 7 | sb's a_valid_set_passes, a_broken_set_fails_with_its_issues, warnings_and_skipped_checks_are_notices, both_checks_finish_when_one_fails. |
+| 8 | sb's validate_config_signals.rs (SIGINT 130, SIGTERM 143, PTY, restore). |
+| 9 | sb's a_valid_set_passes (piped, no escape codes), colour_follows_the_flag_and_no_color_on_a_terminal. |
+| 10 | ADR-009 (accepted): the production binary and startup, re-measured below. |
+| 11 | The maintainer ran the production musl build (built through cross) on a real host's config at Checkpoint B, and again after its fixes. |
+
+All 72 of sb's integration tests (root tests included) pass with
+`SB_TEST_BINARY` set to the production musl binary (built through
+cross).
+That binary measures 11645408 bytes, within 5% of ADR-009's recorded
+11641312, and starts in 0.88 ms (`sb --help`) and 1.03 ms (`sb version`)
+(hyperfine, 50 runs, medians).
+
+### Task 13: the parity run
+
+Procedure (to repeat it), taken against sb-go at commit 35a7acc (after
+its 0.1.3 release): build sb-go from its repository with `go build -o
+<scratch dir>` (the repository stays untouched) and sb's debug binary.
+Before running sb-go as root, re-check on that revision that
+validate-config writes no log file, checks for no update and relaunches
+through sudo only when not root (main.go, cmd/root.go,
+cmd/validateConfig.go). Start a loopback stand-in for Cloudflare
+answering a scoped token's two requests: the zone lookup with zone `z1`
+for example.com and the SSL setting `full`, or, for case 2, 403 on the
+lookup with Cloudflare's error 9109 "Unauthorized to access requested
+resource". For each case, build
+a Saltbox root in a scratch directory from
+`crates/config/tests/fixtures/valid` and the pinned schemas, with the
+Docker Hub section removed (sb-go's Docker Hub URL can't be redirected)
+and a marker file. Run sb as root with `SB_SALTBOX_DIR` at the root,
+`SB_LOG_DIR` and `SB_CONFIG` in the scratch directory,
+`CLOUDFLARE_BASE_URL` at the stand-in and `NO_COLOR=1`. Run sb-go as
+root with `SB_COLOR_PROFILE=ascii` and the same `CLOUDFLARE_BASE_URL`
+inside `unshare -m --propagation private`, through a script that stops
+at the first failed command (the run chained them with `&&` and an
+abort): `mount -t tmpfs` over `/srv`, a check that `/srv` now is tmpfs
+(`findmnt -no FSTYPE /srv`), `mkdir -p /srv/git/saltbox`, `mount --bind
+<root> /srv/git/saltbox`, and a check of the marker there before sb-go
+starts. The host's `/srv` is never read or written, and the mounts end
+with the namespace. sb-go logs to no file and checks for no update on this path,
+and runs as root, so it doesn't relaunch through sudo.
+
+Cases and result: (1) the valid set; (2) the Cloudflare zone lookup
+refused; (3) settings.yml missing; (4) a duplicate top-level key in
+accounts.yml; (5) an unclosed flow sequence in adv_settings.yml; (6) an
+empty user name, a bad email and an unknown key; (7) a short password;
+(8) a scoped token beside a global key (`api` added under `cloudflare`). Both give the same exit code in
+every case (0 for 1 and 7, else 1), the same steps passing or failing,
+sb-go's wording for every message they share (guidance, rule messages,
+the password warning, the structure error), and only listed differences:
+every issue and file (sb-go stops at the first), Cloudflare's status and
+messages in place of cloudflare-go's raw error, structure errors as
+issues, skip notices. Three weren't in the spec's list and are added
+there, in three entries: the syntax error's position and wording (saphyr's, at the end of
+the file; yaml.v3 counts differently), the duplicate key's wording, and
+the step and notice for a missing optional file.
 
 ## Checkpoint C: Complete
 - [ ] All tasks done; `scripts/check.sh full` passes.
