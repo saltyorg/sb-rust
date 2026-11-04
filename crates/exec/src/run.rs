@@ -1,5 +1,5 @@
 //! Piped children through `tokio::process` (spec, "Ways to run"):
-//! `capture` so far.
+//! `capture` and `stream`.
 
 use std::collections::VecDeque;
 use std::os::unix::process::ExitStatusExt;
@@ -7,13 +7,15 @@ use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use sb_cli_core::config::MAX_FILE_BYTES;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use sb_term_ui::Step;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::group::Group;
 use crate::mask::Mask;
-use crate::{Captured, Cmd, Ending, Outcome, SpawnCause, SpawnError, Way};
+use crate::{Captured, Cmd, Ending, Outcome, SpawnCause, SpawnError, Streamed, Way};
 
 /// How long output is still read after the child exits: a background
 /// grandchild can hold the pipe open (spec, "After the child exits"; sb-go
@@ -22,6 +24,16 @@ const DRAIN: Duration = Duration::from_secs(2);
 
 /// Bytes read from a pipe at a time.
 const CHUNK: usize = 8 * 1024;
+
+/// The longest streamed line; the rest of a longer one is dropped up to
+/// its end (spec, "Lines").
+const LINE: usize = 4 * 1024;
+
+/// How much of stderr `stream` keeps for its caller.
+const STDERR_TAIL: usize = 64 * 1024;
+
+/// Lines read but not yet handed to the step.
+const QUEUED: usize = 64;
 
 /// A stop under way: why (the outcome it gives), and when the group gets
 /// SIGKILL.
@@ -107,6 +119,64 @@ impl Cmd {
         })
     }
 
+    /// Run the child to its end with each line of its output handed to
+    /// `step` as it arrives (spec, `stream`), secrets taken out, and
+    /// stderr's last 64 KiB kept for the caller. The step's token stops it
+    /// as `capture`'s does. Lines are split from bytes at `\n` with tokio's
+    /// `read_until` through `take`, so each read is bounded
+    /// (https://docs.rs/tokio/1.54.1/tokio/io/trait.AsyncBufReadExt.html#method.read_until);
+    /// one reader per pipe, each in its own loop (a `read_until` dropped
+    /// by a `select!` keeps its partial line only with the same buffer),
+    /// handing lines through tokio's bounded channel
+    /// (https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/fn.channel.html) to the
+    /// one future holding the step. A slow step (its log write) holds the
+    /// readers back once the channel is full, and the child then waits on a
+    /// full pipe: bounded, by design. Why not tokio-util's `LinesCodec` or
+    /// `AnyDelimiterCodec` with a maximum length (0.7.20): on a longer line
+    /// they drop it whole, its first 4 KiB too, and report an error, after
+    /// which `FramedRead` ends (src/codec/lines_codec.rs, the
+    /// `is_discarding` arms; src/codec/framed_impl.rs, `has_errored`); the
+    /// spec keeps the first 4 KiB and masks across the cut.
+    /// Secrets are taken out with exec's mask before the step sees the
+    /// line, so the screen and the log get the same text; why not
+    /// `Line::secret`: it needs the secret's place in the line, which the
+    /// mask already finds, and gives the same result.
+    pub async fn stream(&self, step: &mut Step) -> Result<Streamed, SpawnError> {
+        let (command, _) = self.shown();
+        let token = step.token();
+        let (mut child, group) = self.spawn(Way::Stream)?;
+        let start = Instant::now();
+        let mask = self.mask();
+        let mut tail = Kept::default();
+        let stdin = (child.stdin.take(), self.stdin.as_deref());
+        let pipes = (child.stdout.take(), child.stderr.take());
+        let (lines, mut queued) = mpsc::channel::<Vec<u8>>(QUEUED);
+        let io = async {
+            let shown = async {
+                while let Some(line) = queued.recv().await {
+                    step.output(String::from_utf8_lossy(&line).into_owned());
+                }
+            };
+            tokio::join!(
+                write_stdin(stdin.0, stdin.1),
+                read_lines(pipes.0, &mask, lines.clone(), None),
+                read_lines(pipes.1, &mask, lines, Some(&mut tail)),
+                shown,
+            );
+        };
+        let ending = self.supervise(&mut child, group, &token, io).await?;
+        let outcome = Outcome {
+            ending,
+            elapsed: start.elapsed(),
+        };
+        log_end(&command, &outcome);
+        Ok(Streamed {
+            outcome,
+            stderr_tail: String::from_utf8_lossy(tail.bytes.make_contiguous()).into_owned(),
+            command,
+        })
+    }
+
     /// The error for a child that couldn't run, naming the program.
     fn failed(&self, cause: SpawnCause) -> SpawnError {
         SpawnError {
@@ -186,10 +256,10 @@ impl Cmd {
         match (&stop, &group) {
             (Some(stop), Some(group)) => {
                 // Whatever is left of the group, within the grace plus a
-                // second; the output its members still write is read until
-                // then. Nothing is lost when `finish` sees the group empty
-                // first: a dying process closes its pipe ends before it
-                // becomes a zombie, so the reads have reached their end.
+                // second, its output read meanwhile; then what is still
+                // coming, for up to the drain, as after any exit: `stream`
+                // hands lines over through a channel, so its reads can be
+                // well behind when the group is gone.
                 let finishing = group.finish(stop.kill_at, stop.killed);
                 tokio::pin!(finishing);
                 loop {
@@ -197,6 +267,9 @@ impl Cmd {
                         () = &mut finishing => break,
                         () = &mut io, if !drained => drained = true,
                     }
+                }
+                if !drained {
+                    let _ = tokio::time::timeout(DRAIN, &mut io).await;
                 }
             }
             _ if !drained => {
@@ -260,6 +333,90 @@ impl Cmd {
             .process_group(0)
             .kill_on_drop(true);
         Ok(command)
+    }
+}
+
+/// Read `pipe` line by line to its end, each line (without its `\n`, cut at
+/// [`LINE`] with the rest dropped up to its end) masked and sent to
+/// `lines`; with `tail`, the masked lines are also kept, the last
+/// [`STDERR_TAIL`] bytes of them. A final line without `\n` is sent too.
+async fn read_lines(
+    pipe: Option<impl AsyncRead + Unpin>,
+    mask: &Mask,
+    lines: mpsc::Sender<Vec<u8>>,
+    mut tail: Option<&mut Kept>,
+) {
+    let Some(pipe) = pipe else { return };
+    let mut reader = BufReader::new(pipe);
+    // The window reaches the longest secret past the cut, so a secret
+    // across it is still found whole (as capture's caps).
+    let window = LINE + mask.longest();
+    let limit = u64::try_from(window + 1).unwrap_or(u64::MAX);
+    loop {
+        let mut line = Vec::new();
+        match (&mut reader).take(limit).read_until(b'\n', &mut line).await {
+            Ok(1..) => {}
+            Ok(0) | Err(_) => return,
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        } else if line.len() > window && !skip_line(&mut reader).await {
+            // The pipe ended inside the dropped rest: this line is the last.
+            send_line(&line, mask, &lines, tail.as_deref_mut()).await;
+            return;
+        }
+        if !send_line(&line, mask, &lines, tail.as_deref_mut()).await {
+            return;
+        }
+    }
+}
+
+/// Mask `line`, keep it in `tail` if given, and send it; false once no one
+/// takes lines any more.
+async fn send_line(
+    line: &[u8],
+    mask: &Mask,
+    lines: &mpsc::Sender<Vec<u8>>,
+    tail: Option<&mut Kept>,
+) -> bool {
+    // Cut at a character's start, so a character split by the 4 KiB cut is
+    // dropped rather than shown as U+FFFD.
+    let mut cut = line.len().min(LINE);
+    while cut > 0 && cut < line.len() && line[cut] & 0b1100_0000 == 0b1000_0000 {
+        cut -= 1;
+    }
+    let shown = mask.bytes(line, 0..cut);
+    if let Some(tail) = tail {
+        tail.bytes.extend(&shown);
+        tail.bytes.push_back(b'\n');
+        let over = tail.bytes.len().saturating_sub(STDERR_TAIL);
+        // Whole lines only, so the caller's match never sees half of one:
+        // a cut inside a line drops that line's rest too.
+        let inside_a_line = over > 0 && tail.bytes[over - 1] != b'\n';
+        tail.bytes.drain(..over);
+        if inside_a_line && let Some(end) = tail.bytes.iter().position(|&b| b == b'\n') {
+            tail.bytes.drain(..=end);
+        }
+    }
+    lines.send(shown).await.is_ok()
+}
+
+/// Drop the rest of a line past its cut, up to and with its `\n`; false if
+/// the pipe ended first.
+async fn skip_line(reader: &mut BufReader<impl AsyncRead + Unpin>) -> bool {
+    let mut rest = Vec::new();
+    let limit = u64::try_from(CHUNK).unwrap_or(u64::MAX);
+    loop {
+        rest.clear();
+        match (&mut *reader)
+            .take(limit)
+            .read_until(b'\n', &mut rest)
+            .await
+        {
+            Ok(1..) if rest.last() == Some(&b'\n') => return true,
+            Ok(1..) => {}
+            Ok(0) | Err(_) => return false,
+        }
     }
 }
 

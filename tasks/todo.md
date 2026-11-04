@@ -347,8 +347,15 @@ dropped), secrets masked through `Line::secret`, handed to
 `Step::output`; stderr's last 64 KiB kept for the caller; the step's
 token through Task 4's group path; failures as Task 5's ending.
 
+**As built (2026-11-04):** secrets are taken out with exec's `Mask`
+(over a window reaching the longest secret past the 4 KiB cut, as
+capture's caps) before the step gets the line, not through
+`Line::secret`: the mask already finds where they sit, and the screen and
+the log get the same `[REDACTED]` text. Lines reach the step through a
+tokio channel from one reader per pipe.
+
 **Acceptance criteria:**
-- [ ] Real children through term-ui's in-memory target: exit codes, a
+- [x] Real children through term-ui's in-memory target: exit codes, a
       signal, a spawn failure, stdin bytes and null stdin; lines from
       both streams, a multi-byte character split across reads, `\r`
       progress shown at the next line, a last line without `\n`, a line
@@ -357,10 +364,10 @@ token through Task 4's group path; failures as Task 5's ending.
       (masked in the step's lines and the log); `check()` gives `Failed`
       without stderr lines, shown with Task 5's ending; cancellation
       through the step's token.
-- [ ] The environment with real children as Task 3's.
+- [x] The environment with real children as Task 3's.
 
 **Verification:**
-- [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+- [x] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
 
 **Dependencies:** Checkpoint A
 **Files:** `crates/exec/src/run.rs`, `crates/exec/tests/`
@@ -470,6 +477,9 @@ output not logged; decision 5's pass-through mechanism (an `attached`
 child's own code, with one line naming the program and its outcome).
 exec-demo runs an attached child for the signal tests. (Ordered after
 Task 7; it doesn't use portable-pty.)
+
+**Noted at Checkpoint A:** the `stdin(bytes)` refusal is checked to come
+before any spawn (no start record written).
 
 **Acceptance criteria:**
 - [ ] Through exec-demo on a PTY: one and two Ctrl-Cs with a child that

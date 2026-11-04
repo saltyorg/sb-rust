@@ -12,6 +12,9 @@
 use aho_corasick::AhoCorasick;
 use sb_cli_core::log::WITHHELD;
 
+/// The shortest line of a multi-line secret masked on its own.
+const MIN_PIECE: usize = 4;
+
 /// The secrets of one command, ready to take out of its text.
 #[derive(Debug)]
 pub(crate) struct Mask {
@@ -31,9 +34,34 @@ enum Search {
 
 impl Mask {
     /// A mask for `secrets`; empty ones are ignored (they would match
-    /// everywhere).
+    /// everywhere). A secret with a newline (a credential read from a file,
+    /// a multi-line key) is masked whole and also line by line, or it would
+    /// never match output split at newlines (stream's lines) or printed
+    /// without its trailing newline. A line of it shorter than
+    /// [`MIN_PIECE`] once trimmed (a JSON value's `{` and `}`) isn't masked
+    /// on its own: it would turn every such character in the output into
+    /// the placeholder, corrupting what callers read, and a fragment that
+    /// short gives nothing of the secret away.
     pub(crate) fn new<'a>(secrets: impl IntoIterator<Item = &'a str>) -> Self {
-        let secrets: Vec<&str> = secrets.into_iter().filter(|s| !s.is_empty()).collect();
+        let secrets: Vec<&str> = secrets
+            .into_iter()
+            .flat_map(|secret| {
+                let lines = secret
+                    .contains('\n')
+                    .then(|| {
+                        secret
+                            .lines()
+                            .map(str::trim)
+                            .filter(|l| l.len() >= MIN_PIECE)
+                    })
+                    .into_iter()
+                    .flatten();
+                // Whole, without trailing newlines, so the output's own
+                // line ends stay.
+                std::iter::once(secret.trim_end_matches(['\n', '\r'])).chain(lines)
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect();
         let longest = secrets.iter().map(|s| s.len()).max().unwrap_or(0);
         let search = if secrets.is_empty() {
             Search::Nothing
@@ -177,6 +205,30 @@ mod tests {
     #[test]
     fn without_secrets_a_window_is_cut_as_kept() {
         assert_eq!(Mask::new([]).bytes(b"abcdef", 2..4), b"cd");
+    }
+
+    /// A secret with a newline in it (a credential read from a file, a
+    /// multi-line key) is masked line by line: output split at newlines,
+    /// or printed without the trailing one, still hides every piece.
+    #[test]
+    fn a_secret_with_newlines_is_masked_piece_by_piece() {
+        let mask = Mask::new(["tok-secret\n"]);
+        assert_eq!(mask.text("tok-secret"), "[REDACTED]");
+        assert_eq!(mask.text("a tok-secret\n"), "a [REDACTED]\n");
+        let mask = Mask::new(["first-part\r\nsecond-part"]);
+        assert_eq!(mask.text("first-part"), "[REDACTED]");
+        assert_eq!(mask.text("second-part"), "[REDACTED]");
+        // A secret of newlines only is empty once split: ignored.
+        assert_eq!(Mask::new(["\n\n"]).text("text"), "text");
+        // Short lines of a multi-line secret (JSON's braces) aren't masked
+        // on their own, or they would corrupt every brace in the output;
+        // the whole secret, and its longer lines, still are.
+        let json = Mask::new(["{\n  \"key\": \"s3cr3t-not-real\"\n}\n"]);
+        assert_eq!(json.text("{\"a\": 1}"), "{\"a\": 1}");
+        assert_eq!(json.text("\"key\": \"s3cr3t-not-real\""), "[REDACTED]");
+        // A secret without newlines is masked whatever its length.
+        assert_eq!(Mask::new(["ab"]).text("xaby"), "x[REDACTED]y");
+        assert_eq!(Mask::new(["tok-secret\n"]).longest(), "tok-secret".len());
     }
 
     #[test]

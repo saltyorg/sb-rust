@@ -81,12 +81,14 @@ impl fmt::Debug for Cmd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Way {
     Capture,
+    Stream,
 }
 
 impl Way {
     fn name(self) -> &'static str {
         match self {
             Self::Capture => "capture",
+            Self::Stream => "stream",
         }
     }
 }
@@ -198,7 +200,7 @@ impl Cmd {
     /// `GIT_TERMINAL_PROMPT=0` for every child not attached (spec,
     /// "Environment rules"), whatever the caller set for it.
     pub(crate) fn environment(&self, way: Way) -> Environment<'_> {
-        let Way::Capture = way;
+        let (Way::Capture | Way::Stream) = way;
         let (rule, ruled) = NO_GIT_PROMPT;
         let mut vars: Vec<(&str, Option<&str>)> = self
             .env
@@ -365,12 +367,33 @@ impl Captured {
             .iter()
             .map(|line| line[..line.floor_char_boundary(LINE_BYTES)].to_owned())
             .collect();
-        let ending = self.outcome.ending;
-        Err(Failed::new(
-            format!("{} {ending}", self.command),
-            ending.reason(),
-            last,
-        ))
+        Err(failure(&self.command, self.outcome.ending, last))
+    }
+}
+
+/// The failure of a child that didn't exit 0.
+fn failure(command: &str, ending: Ending, last_lines: Vec<String>) -> Failed {
+    Failed::new(format!("{command} {ending}"), ending.reason(), last_lines)
+}
+
+/// What [`Cmd::stream`] returns: the outcome, and stderr's last 64 KiB
+/// (secrets taken out) for a caller matching on it (apt's retry). The
+/// lines themselves went to the step.
+#[derive(Debug)]
+pub struct Streamed {
+    pub outcome: Outcome,
+    pub stderr_tail: String,
+    command: String,
+}
+
+impl Streamed {
+    /// The result if the child exited 0, else [`Failed`] with no lines of
+    /// its own: the step's failure block shows its last 10 lines.
+    pub fn check(self) -> Result<Self, Failed> {
+        if self.outcome.ending == Ending::Exited(0) {
+            return Ok(self);
+        }
+        Err(failure(&self.command, self.outcome.ending, Vec::new()))
     }
 }
 
@@ -573,5 +596,14 @@ mod tests {
     #[test]
     fn the_way_is_named_in_the_log() {
         assert_eq!(Way::Capture.name(), "capture");
+        assert_eq!(Way::Stream.name(), "stream");
+    }
+
+    #[test]
+    fn a_streamed_child_gets_no_terminal_prompt_from_git() {
+        assert_eq!(
+            Cmd::new("git").environment(Way::Stream).vars,
+            [("GIT_TERMINAL_PROMPT", Some("0"))]
+        );
     }
 }

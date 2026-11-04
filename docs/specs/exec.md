@@ -97,10 +97,11 @@ child of cli-core's shared token); `capture` and `attached` take one.
 
 - **Lines:** split at `\n` from bytes, each read bounded so memory is:
   tokio's `AsyncBufReadExt::read_until` through `AsyncReadExt::take(4 KiB
-  + 1)` for pipes, std's `BufRead::read_until` through `Read::take` on the
-  PTY's reader thread; a line longer than 4 KiB is cut there and the rest
-  up to its `\n` dropped; then each line is handed to the step, which keeps what follows the
-  last `\r`. term-ui has no "replace the last line" call, so `\r` progress
+  + the longest secret + 1)` for pipes (the extra so a secret across the
+  cut is found whole), std's `BufRead::read_until` through `Read::take` on
+  the PTY's reader thread; a line longer than 4 KiB is cut there, at a
+  character's start, and the rest up to its `\n` dropped; then each line
+  is handed to the step, which keeps what follows the last `\r`. term-ui has no "replace the last line" call, so `\r` progress
   shows at the next `\n`; a final line without `\n` is still delivered.
 - **Past a cap:** reading goes on (a full pipe would block the child);
   `capture` keeps the first 1 MiB of stdout and the last 1 MiB of stderr
@@ -109,8 +110,14 @@ child of cli-core's shared token); `capture` and `attached` take one.
   (a background grandchild can hold the pipe or the PTY open, as sb-go's
   `WaitDelay` handles), then reading stops; on the PTY, EIO is the end.
 - **Secrets in output:** every `secret` argument and `secret_env` value
-  (empty ones ignored) is taken out of captured text, streamed lines
-  (`Line::secret`) and errors before anything is shown or logged.
+  (empty ones ignored; one with newlines masked whole and line by line,
+  lines under 4 bytes not on their own, so a credential read from a file
+  is found without its newline and a JSON value's braces don't mask every
+  brace) is taken out
+  of captured text, streamed lines (with exec's mask before the step gets
+  them, so the screen and the log read the same) and errors before
+  anything is shown or logged. After a stop, output is still read for up
+  to the 2 s, as after any exit.
   `attached` output goes straight to the terminal and can't be masked.
 
 ### Outcome and errors
@@ -193,6 +200,10 @@ even if the child then exits 0 within the grace period.
   to its group at once (tokio's `kill_on_drop` reaches only the pid, so
   exec keeps its own guard) and leaves the reaping to tokio's orphan
   handling or the PTY's wait thread.
+- **Reading after a stop:** the grace plus one second bounds the group;
+  the output still coming after it is read for up to the 2 s drain, as
+  after any exit (a process that left the group but holds the pipe adds
+  those 2 s).
 - **Known limits:** descendants that leave the group (`setsid`,
   daemonizing helpers, ssh's ControlPersist master) aren't reached; if sb
   itself is killed with SIGKILL (OOM, `kill -9`), its piped children keep

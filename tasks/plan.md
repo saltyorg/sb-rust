@@ -67,7 +67,7 @@ links sb-exec, each task runs cargo-deny on sb-exec's own graph.
       (2026-11-04: approved; refused, decision 11).
 
 ### Phase 3: Stream and the PTY
-- [ ] Task 6: `stream`
+- [x] Task 6: `stream`
 - [ ] Task 7: `pty`
 
 ### Checkpoint B: Before the shared signal change

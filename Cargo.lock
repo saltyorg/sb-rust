@@ -3360,6 +3360,8 @@ name = "sb-exec"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "anyhow",
+ "indicatif",
  "rustix",
  "sb-cli-core",
  "sb-term-ui",

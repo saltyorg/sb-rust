@@ -108,7 +108,34 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
         .nth(1)
         .unwrap_or_else(|| panic!("no record of the second failure: {text}"));
     assert!(unreachable.contains("Not a directory"), "{unreachable}");
+    // A streamed child's lines reach the log through term-ui's step, the
+    // secrets already out of them.
+    let term = indicatif::InMemoryTerm::new(20, 100);
+    let options = sb_term_ui::Options {
+        target: sb_term_ui::Target::InMemory {
+            term,
+            colour: false,
+        },
+    };
+    let shutdown = sb_cli_core::cancel::Shutdown::new();
+    let mut run = sb_term_ui::Runner::start("sb test", &shutdown, None, options).await;
+    let _ = run
+        .step(sb_term_ui::Labels::new("Running", "ran"), async |step| {
+            Cmd::new("sh")
+                .arg("-c")
+                .arg("echo \"streamed $TOKEN\"")
+                .secret_env("TOKEN", "stream-secret-not-real-6")
+                .stream(step)
+                .await?;
+            Ok(())
+        })
+        .await;
+    run.finish();
+    let text = log.text();
+    assert!(text.contains("streamed [REDACTED]"), "{text}");
+    assert!(text.contains(r#"way="stream""#), "{text}");
     for hidden in [
+        "stream-secret-not-real-6",
         "missing-secret-5",
         "arg-secret-not-real-1",
         "pass-through-2",
