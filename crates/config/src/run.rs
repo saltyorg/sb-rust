@@ -778,7 +778,7 @@ mod tests {
         .expect("the run ends");
         fake.release();
         // term-ui's interrupted ending; cli-core's finish_run turns it
-        // into SIGINT's 130 from the shutdown.
+        // into ending by SIGINT from the shutdown.
         assert!(matches!(result, Err(Exit(1))), "{screen}");
         for label in [
             "✗ Validating Cloudflare API credentials",

@@ -12,7 +12,7 @@ use sb_cli_core::build_info::BuildInfo;
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::colour;
 use sb_cli_core::config;
-use sb_cli_core::exit::{self, ExitCode};
+use sb_cli_core::exit::{self, RunEnd};
 use sb_cli_core::help;
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
@@ -102,7 +102,7 @@ impl Command {
     }
 }
 
-fn main() -> ExitCode {
+fn main() -> RunEnd {
     // Colour and theme first (from the arguments, the environment and the
     // theme file), so every message below follows `--color` and the
     // profile. The colour
@@ -137,7 +137,7 @@ fn main() -> ExitCode {
         }
     }
     if let Err(unsupported) = support {
-        return exit::report(&unsupported, None, &mut anstream::stderr());
+        return exit::report(&unsupported, None, &mut anstream::stderr()).into();
     }
     let cli = parsed.unwrap_or_else(|err| parse_failed(err));
     // The real parse's choice is the one that counts for the run, for
@@ -154,7 +154,7 @@ fn main() -> ExitCode {
         for warning in &warnings {
             warn(warning);
         }
-        return exit::report(&err, None, &mut anstream::stderr());
+        return exit::report(&err, None, &mut anstream::stderr()).into();
     }
     // Root runs log on the host (spec: startup step 4); the log directory
     // is root-only, so unprivileged runs (help, version) don't.
@@ -330,8 +330,8 @@ fn run(cli: Cli, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()
 /// current-thread, with I/O and time (bollard's sockets and its request
 /// timeout). A signal drops the requests
 /// (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled);
-/// cli-core's `finish_run` then shows "interrupted" with the signal's code
-/// and nothing reaches stdout.
+/// cli-core's `finish_run` then shows "interrupted" and ends sb by the
+/// signal, and nothing reaches stdout.
 fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
     use sb_docker::connect;
     let env = |name| std::env::var(name).ok();

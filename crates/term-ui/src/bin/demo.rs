@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use rustix::process::{Signal, getpid, kill_process, setpgid};
 use sb_cli_core::cancel::Shutdown;
-use sb_cli_core::exit::{ExitCode, finish_run};
+use sb_cli_core::exit::{ExitCode, RunEnd, finish_run};
 use sb_cli_core::log::{RunLog, Secret, outcome};
 use sb_cli_core::theme::{self, Palette, Profile, Role, Theme};
 use sb_term_ui::{Cell, Labels, Line, Options, Runner, Step, Table};
@@ -200,7 +200,7 @@ fn table() -> ExitCode {
     }
 }
 
-fn main() -> ExitCode {
+fn main() -> RunEnd {
     theme::install(Theme::resolve(&Palette::default(), Profile::TrueColor));
     // `--colour` / `--no-colour`: sb's `--color=always|never`, as anstream's
     // global choice (the real binary sets it from its flag).
@@ -211,7 +211,7 @@ fn main() -> ExitCode {
     }
     sb_term_ui::follow_colour_choice(Profile::TrueColor);
     if arg("--table") {
-        return table();
+        return table().into();
     }
     let fail = std::env::args().any(|a| a == "--fail");
     let sensitive = std::env::args().any(|a| a == "--sensitive");

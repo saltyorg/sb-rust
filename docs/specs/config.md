@@ -221,8 +221,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   `HTTPS_PROXY` honoured (as Go's default transport); response bodies
   read up to 1 MiB.
 - **Ending:** all valid: exit 0. Any issue: the failed files' blocks,
-  exit 1. Ctrl-C / SIGTERM: the runner's interrupted ending, 130 / 143,
-  terminal restored.
+  exit 1. Ctrl-C / SIGTERM: the runner's interrupted ending, death by the
+  signal (`$?` 130 / 143; exec decision 7), terminal restored.
 - **Logging** (verbose by default): each file, its issues, each check's
   outcome and timing; never a secret's value.
 
@@ -402,8 +402,8 @@ docs/specs/config.md      this spec
 7. Through the binary: the runner's steps with the checks concurrent and
    warnings as notices; any issue: each failed file's block, exit 1; all
    valid: exit 0.
-8. Ctrl-C / SIGTERM during a held credential check: interrupted, 130 /
-   143, terminal restored (PTY).
+8. Ctrl-C / SIGTERM during a held credential check: interrupted, `$?` 130
+   / 143, terminal restored (PTY).
 9. Piped: plain lines, no escape codes; `--color` and NO_COLOR as
    everywhere.
 10. Startup budget kept; binary size measured, with an ADR if past the

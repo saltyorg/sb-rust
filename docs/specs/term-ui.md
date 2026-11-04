@@ -577,7 +577,8 @@ Choices behind it:
    terminal with `auto`, no escape codes.
 6. Ctrl-C marks every running step and its parents interrupted in the
    tree, cli-core shows "interrupted" and the pointer once, the cursor and
-   `ECHOCTL` are restored, and sb exits 130 (SIGTERM 143).
+   `ECHOCTL` are restored, and sb ends by the signal (`$?` 130, SIGTERM
+   143; exec decision 7).
 7. A table matches the reviewed `docker ps` look (snapshot) and fits 120,
    70 and 50 columns; not on a terminal it keeps its natural width.
 8. Every runner step's start, outcome, elapsed time, notices and output
@@ -624,7 +625,9 @@ Choices behind it:
    unsafe registration, which the workspace forbids), runs restore hooks
    that term-ui registers (show the cursor, restore `ECHOCTL`), then exits
    130 or 143. Ctrl-\ and `kill -9` stay as hard escapes. Recorded in the
-   cli-core spec too.
+   cli-core spec too. Amended by exec decision 7 (maintainer, 2026-11-04):
+   the exit is a re-raise of the first signal, so sb dies of it (`$?`
+   still 130 or 143).
 6. **The capability map's `docker` row** (start/stop/restart "via
    bollard"; sb-go uses `systemctl` and the Saltbox Docker controller's HTTP
    API) is corrected in the `docker` spec, with its dependencies.

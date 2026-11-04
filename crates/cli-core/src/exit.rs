@@ -8,8 +8,9 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::io::Write;
 pub use std::process::ExitCode;
+use std::process::Termination;
 
-use crate::cancel::Shutdown;
+use crate::cancel::{self, Shutdown};
 use crate::theme::{self, Role, Theme};
 
 /// End the run with this exit code and print nothing more: a wrapped
@@ -18,10 +19,48 @@ use crate::theme::{self, Role, Theme};
 #[error("exit code {0}")]
 pub struct Exit(pub u8);
 
+/// How a run ends: with an exit code, or by the signal that interrupted
+/// it, its default action re-raised so a parent sees sb was killed by it
+/// (exec decision 7, "wait and cooperative exit"). sb's `main` returns
+/// it, std's documented way for `main` to choose how the process ends
+/// (https://doc.rust-lang.org/std/process/trait.Termination.html). std
+/// calls [`Termination::report`] after `main`'s locals are dropped, so the
+/// run log and the terminal are already put back when the signal ends the
+/// process, and flushes stdout only after it returns (UNVERIFIED: no
+/// documented guarantee; checked against std's `rt::lang_start_internal`
+/// and `rt::cleanup` in Rust 1.99.1, and pinned by cli-core's
+/// `a_finished_interrupted_run_ends_by_its_signal`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[must_use = "the run ends as this says only when main returns it"]
+pub enum RunEnd {
+    Code(ExitCode),
+    Signal(i32),
+}
+
+impl From<ExitCode> for RunEnd {
+    fn from(code: ExitCode) -> Self {
+        Self::Code(code)
+    }
+}
+
+impl Termination for RunEnd {
+    fn report(self) -> ExitCode {
+        match self {
+            Self::Code(code) => code,
+            Self::Signal(signal) => {
+                // std flushes stdout only after `report` returns, which a
+                // signal's default action never lets happen.
+                let _ = std::io::stdout().flush();
+                cancel::end_by(signal)
+            }
+        }
+    }
+}
+
 /// End a run: a signal shows "interrupted" (spec: a cancellation shows
-/// that rather than an error chain) and exits with its code; a command's
-/// own shutdown request exits quietly with its code; otherwise the result
-/// decides, through [`report`] for an error.
+/// that rather than an error chain) and ends sb by that signal; a
+/// command's own shutdown request exits quietly with its code; otherwise
+/// the result decides, through [`report`] for an error.
 ///
 /// Write to an anstream stream, so `--color` and NO_COLOR are honoured:
 /// the block carries the theme's colour codes.
@@ -30,17 +69,18 @@ pub fn finish_run(
     error: Option<&(dyn Error + 'static)>,
     log_pointer: Option<&str>,
     out: &mut impl Write,
-) -> ExitCode {
+) -> RunEnd {
+    if let Some(signal) = shutdown.signal() {
+        let block = block("interrupted", [], log_pointer, theme::current());
+        let _ = out.write_all(block.as_bytes());
+        return RunEnd::Signal(signal);
+    }
     if let Some(code) = shutdown.requested() {
-        if shutdown.interrupted() {
-            let block = block("interrupted", [], log_pointer, theme::current());
-            let _ = out.write_all(block.as_bytes());
-        }
-        return ExitCode::from(code);
+        return RunEnd::Code(ExitCode::from(code));
     }
     match error {
-        None => ExitCode::SUCCESS,
-        Some(err) => report(err, log_pointer, out),
+        None => RunEnd::Code(ExitCode::SUCCESS),
+        Some(err) => report(err, log_pointer, out).into(),
     }
 }
 
@@ -261,19 +301,20 @@ mod tests {
     }
 
     /// A signal ended the run: "interrupted" (and the log pointer), never
-    /// the command's own error chain, with the signal's code.
+    /// the command's own error chain, then the signal itself ends sb.
     #[test]
-    fn an_interrupted_run_says_so_with_the_signal_code() {
+    fn an_interrupted_run_says_so_and_ends_by_the_signal() {
         let shutdown = Shutdown::new();
         shutdown.signalled(signal_hook::consts::SIGINT);
         let mut out = Vec::new();
         let err = failure("operation cancelled");
-        finish_run(
+        let ending = finish_run(
             &shutdown,
             Some(&err),
             Some("/var/log/sb/x.log (run 1)"),
             &mut out,
         );
+        assert_eq!(ending, RunEnd::Signal(signal_hook::consts::SIGINT));
         assert_eq!(
             String::from_utf8(out).expect("utf-8"),
             "✗ interrupted\n  details: /var/log/sb/x.log (run 1)\n"
@@ -289,7 +330,7 @@ mod tests {
         let err = failure("cancelled");
         assert_eq!(
             finish_run(&shutdown, Some(&err), None, &mut out),
-            ExitCode::from(0)
+            RunEnd::Code(ExitCode::from(0))
         );
         assert!(out.is_empty());
     }
@@ -302,7 +343,7 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(
             finish_run(&shutdown, None, None, &mut out),
-            ExitCode::from(3)
+            RunEnd::Code(ExitCode::from(3))
         );
         assert!(out.is_empty());
     }
@@ -313,12 +354,12 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(
             finish_run(&shutdown, None, None, &mut out),
-            ExitCode::SUCCESS
+            RunEnd::Code(ExitCode::SUCCESS)
         );
         let err = failure("boom");
         assert_eq!(
             finish_run(&shutdown, Some(&err), None, &mut out),
-            ExitCode::from(1)
+            RunEnd::Code(ExitCode::from(1))
         );
         assert_eq!(String::from_utf8(out).expect("utf-8"), "✗ boom\n");
     }

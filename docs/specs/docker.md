@@ -187,7 +187,8 @@ logging levels end to end.
     naming its short ID (sb-go's `error inspecting container <id>: …`);
     exit 1.
 - **Ctrl-C / SIGTERM:** cancels the requests; cli-core's "interrupted" block
-  with 130 / 143, no table, terminal as it was.
+  and death by the signal (`$?` 130 / 143; exec decision 7), no table,
+  terminal as it was.
 - **Logging** (run log, capability-map decision 11; term-ui decision 9,
   verbose by default): the daemon address, the daemon's API version,
   how many containers were listed and inspected, each failure with its
@@ -393,7 +394,8 @@ pub fn status(state: &ContainerState) -> (String, Role) {
    arguments and marker (fake-sudo test); cli-core Task 5's two
    equivalent mutants are caught.
 6. SIGINT or SIGTERM while an inspect is held open: within seconds,
-   cli-core's "interrupted" block, 130 or 143, no table (with `--json`,
+   cli-core's "interrupted" block, death by the signal (`$?` 130 or 143),
+   no table (with `--json`,
    nothing on stdout). `ps` changes no terminal state (no runner), so
    there is nothing to restore: the runs are piped, which also checks
    stdout apart from stderr (amended in docker Task 8).

@@ -1,7 +1,8 @@
 //! `sb docker ps` interrupted (docker spec, success criterion 6): with an
 //! inspect held open by sb-docker's fake Engine API, a SIGINT or SIGTERM
-//! ends the run within seconds with cli-core's "interrupted" block and 130
-//! or 143, nothing on stdout (table or JSON), and the run log saying so.
+//! ends the run within seconds with cli-core's "interrupted" block, sb
+//! dying of that signal (exec decision 7), nothing on stdout (table or
+//! JSON), and the run log saying so.
 //! `ps` has no runner and changes no terminal state (no raw mode, no
 //! hidden cursor), so the runs are piped: there is nothing to restore, and
 //! stdout is checked apart from stderr. Root runs (`SB_TEST_ROOT=1`).
@@ -9,6 +10,7 @@
 mod common;
 mod root_gate;
 
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
@@ -32,8 +34,8 @@ impl Drop for KillOnDrop {
 const ENDS_WITHIN: Duration = Duration::from_secs(5);
 
 /// Run `sb docker ps args` against a fake that holds every inspect, send
-/// `signal` once an inspect is open, and return its exit code, stdout,
-/// stderr and run log.
+/// `signal` once an inspect is open, and return the signal that ended it,
+/// stdout, stderr and run log.
 fn interrupted(args: &[&str], signal: Signal) -> (Option<i32>, String, String, String) {
     let engine = FakeEngine::start(Options {
         hold: true,
@@ -79,7 +81,7 @@ fn interrupted(args: &[&str], signal: Signal) -> (Option<i32>, String, String, S
     let stdout = read(child.0.stdout.as_mut().map(|p| p as &mut dyn std::io::Read));
     let stderr = read(child.0.stderr.as_mut().map(|p| p as &mut dyn std::io::Read));
     let log = std::fs::read_to_string(logs.path().join("sb.log")).unwrap_or_default();
-    (status.code(), stdout, stderr, log)
+    (status.signal(), stdout, stderr, log)
 }
 
 #[test]
@@ -89,7 +91,12 @@ fn sigint_and_sigterm_end_the_run_as_interrupted() {
     }
     for (signal, code) in [(Signal::INT, 130), (Signal::TERM, 143)] {
         for args in [&[][..], &["--json"]] {
-            let (_, stdout, stderr, log) = interrupted(args, signal);
+            let (status, stdout, stderr, log) = interrupted(args, signal);
+            assert_eq!(
+                status,
+                Some(signal.as_raw()),
+                "{signal:?} {args:?}: {stderr}"
+            );
             assert!(stdout.is_empty(), "{signal:?} {args:?}: {stdout}");
             assert!(
                 stderr.contains("interrupted"),

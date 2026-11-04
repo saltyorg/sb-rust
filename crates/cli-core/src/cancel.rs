@@ -2,9 +2,9 @@
 //!
 //! The first signal cancels a token every command holds and records the
 //! exit code; a second runs the registered restore hooks (term-ui's
-//! cursor and `ECHOCTL`; term-ui spec, decision 5), then exits at once
-//! with that code. Signals are read on a thread with signal-hook's
-//! iterator, its documented high-level API
+//! cursor and `ECHOCTL`; term-ui spec, decision 5), then ends sb at once
+//! by the first signal (exec decision 7). Signals are read on a thread
+//! with signal-hook's iterator, its documented high-level API
 //! (https://docs.rs/signal-hook/0.4.5/signal_hook/iterator/index.html), so
 //! no async runtime is needed until a command wants one. The token is
 //! tokio-util's, which works without a runtime and lets async commands
@@ -25,12 +25,25 @@ pub fn signal_exit_code(signal: i32) -> u8 {
     u8::try_from(128 + signal).unwrap_or(u8::MAX)
 }
 
-/// How the run is to end: the first request's code, and whether a signal
-/// sent it. One record, so nothing can see the code without its origin.
+/// End the process by `signal`'s default action, as if it had never been
+/// caught: signal-hook's `emulate_default_handler` resets the handler,
+/// unblocks the signal and raises it
+/// (https://docs.rs/signal-hook/0.4.5/signal_hook/low_level/fn.emulate_default_handler.html).
+/// For SIGINT and SIGTERM it never returns (should the raise fail, it
+/// aborts, so sb dies of SIGABRT); a signal it doesn't know, or one whose
+/// default isn't to end a process, exits with 128 + the signal instead.
+pub(crate) fn end_by(signal: i32) -> ! {
+    let _ = signal_hook::low_level::emulate_default_handler(signal);
+    std::process::exit(i32::from(signal_exit_code(signal)))
+}
+
+/// How the run is to end: the first request's code, and the signal that
+/// sent it, if one did. One record, so nothing can see the code without
+/// its origin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Ending {
     code: u8,
-    by_signal: bool,
+    signal: Option<i32>,
 }
 
 type Hook = Box<dyn Fn() + Send>;
@@ -74,9 +87,16 @@ impl Hooks {
         }
     }
 
-    /// Run the hooks on their own thread, wait for them up to
-    /// [`RESTORE_DEADLINE`], then exit with `code` either way.
-    fn run_then_exit(self: Arc<Self>, code: u8) -> ! {
+    /// Run the hooks, then end by `signal` either way (the ending kills
+    /// the process, so only the part before it can be tested in-process).
+    fn run_then_end_by(self: Arc<Self>, signal: i32) -> ! {
+        self.run_within(RESTORE_DEADLINE);
+        end_by(signal)
+    }
+
+    /// Run the hooks on their own thread and wait for them up to
+    /// `deadline`; a hook still running then is abandoned.
+    fn run_within(self: Arc<Self>, deadline: Duration) {
         let (done, finished) = mpsc::channel();
         let restore = std::thread::Builder::new()
             .name("restore".into())
@@ -87,9 +107,8 @@ impl Hooks {
         // No thread (out of resources): exit without the hooks rather than
         // risk running a blocking one here.
         if restore.is_ok() {
-            let _ = finished.recv_timeout(RESTORE_DEADLINE);
+            let _ = finished.recv_timeout(deadline);
         }
-        std::process::exit(i32::from(code))
     }
 }
 
@@ -141,11 +160,11 @@ impl Shutdown {
     /// successfully). Returns whether this was the first request; only the
     /// first sets the code.
     pub fn request(&self, code: u8) -> bool {
-        self.record(code, false)
+        self.record(code, None)
     }
 
-    fn record(&self, code: u8, by_signal: bool) -> bool {
-        let first = self.first.set(Ending { code, by_signal }).is_ok();
+    fn record(&self, code: u8, signal: Option<i32>) -> bool {
+        let first = self.first.set(Ending { code, signal }).is_ok();
         self.token.cancel();
         first
     }
@@ -157,7 +176,12 @@ impl Shutdown {
 
     /// Whether a signal (not a command) ended the run.
     pub fn interrupted(&self) -> bool {
-        self.first.get().is_some_and(|ending| ending.by_signal)
+        self.signal().is_some()
+    }
+
+    /// The signal that ended the run, if one (not a command) did.
+    pub fn signal(&self) -> Option<i32> {
+        self.first.get().and_then(|ending| ending.signal)
     }
 
     /// A signal arrived: record it with its code and cancel. Only the first
@@ -165,7 +189,7 @@ impl Shutdown {
     ///
     /// [`listen_for_signals`]: Shutdown::listen_for_signals
     pub fn signalled(&self, signal: i32) {
-        self.record(signal_exit_code(signal), true);
+        self.record(signal_exit_code(signal), Some(signal));
     }
 
     /// Run `hook` before a second signal's exit, until the returned guard
@@ -188,9 +212,9 @@ impl Shutdown {
     }
 
     /// Turn SIGINT and SIGTERM into [`signalled`] on a thread; a second
-    /// signal runs the restore hooks, then exits at once with the first
-    /// signal's code (a command's own earlier request doesn't change it),
-    /// skipping remaining cleanup.
+    /// signal runs the restore hooks, then ends sb at once by the first
+    /// signal (a command's own earlier request doesn't change it; exec
+    /// decision 7), skipping remaining cleanup.
     ///
     /// The structure of signal-hook's background-thread example, an
     /// iterator thread that restores the terminal (there for SIGTSTP)
@@ -220,9 +244,7 @@ impl Shutdown {
                             first = Some(signal);
                             shutdown.signalled(signal);
                         }
-                        Some(first) => {
-                            Arc::clone(&shutdown.hooks).run_then_exit(signal_exit_code(first))
-                        }
+                        Some(first) => Arc::clone(&shutdown.hooks).run_then_end_by(first),
                     }
                 }
             })?;
@@ -333,6 +355,37 @@ mod tests {
             "running the hooks deadlocked"
         );
         assert!(slot.lock().expect("lock").is_none());
+    }
+
+    /// The hooks run on their own thread before the ending: working ones
+    /// finish, and one that blocks is abandoned at the deadline.
+    #[test]
+    fn hooks_run_within_the_deadline_and_a_blocking_one_is_left() {
+        let shutdown = Shutdown::new();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&ran);
+        let _first = shutdown.on_forced_exit(move || seen.lock().expect("lock").push("first"));
+        let (release, blocked) = mpsc::channel::<()>();
+        let _stuck = shutdown.on_forced_exit(move || {
+            let _ = blocked.recv();
+        });
+        let start = std::time::Instant::now();
+        Arc::clone(&shutdown.hooks).run_within(Duration::from_millis(100));
+        let waited = start.elapsed();
+        assert_eq!(*ran.lock().expect("lock"), ["first"]);
+        assert!(
+            waited >= Duration::from_millis(100) && waited < Duration::from_secs(5),
+            "{waited:?}"
+        );
+        drop(release);
+        let quick = Shutdown::new();
+        let start = std::time::Instant::now();
+        Arc::clone(&quick.hooks).run_within(Duration::from_secs(5));
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     /// A command's own request isn't an interruption; a signal is.

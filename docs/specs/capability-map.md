@@ -209,7 +209,7 @@ GitHub API (last push, archived flag).
 
 | Module id | Responsibility | Depends on | sb-go source |
 |---|---|---|---|
-| `cli-core` | clap tree, global flags, root relaunch, build info, signals/cancellation (exit 130 on interrupt), error and exit-code policy | — | main.go, cmd/root.go, buildinfo, signals, layout |
+| `cli-core` | clap tree, global flags, root relaunch, build info, signals/cancellation (an interrupted run dies of its signal, `$?` 130), error and exit-code policy | — | main.go, cmd/root.go, buildinfo, signals, layout |
 | `exec` | Child processes: streamed and captured output; PTY execution with process-group kill on cancel; ANSI stripping when not a terminal | cli-core | executor |
 | `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif | cli-core | terminal |
 | `host` | Ubuntu/arch/LXC/desktop checks, disk space, apt, systemd (including a `journalctl -f` log stream), file ownership | exec, term-ui | host |

@@ -116,13 +116,13 @@ sb's relaunch tests (the stand-in sudo in crates/sb/tests/nobody) check
 that `-u root` is passed.
 
 **Acceptance criteria:**
-- [ ] sudo's arguments tested (`-u root`, the four names, sb's path and
+- [x] sudo's arguments tested (`-u root`, the four names, sb's path and
       arguments unchanged), failing first; the relaunch tests pass
       through the binary with the stand-in sudo; `SB_RELAUNCHED` appears
       nowhere in code or tests.
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core`; `SB_TEST_ROOT=1 cargo test -p sb`;
+- [x] `cargo test -p sb-cli-core`; `SB_TEST_ROOT=1 cargo test -p sb`;
       library-reviewer; `scripts/check.sh full`.
 
 **Dependencies:** Task 1
@@ -149,17 +149,17 @@ handles SIGQUIT, and is checked by Task 8b's "sb dies of SIGQUIT, no core
 dump" cases.
 
 **Acceptance criteria:**
-- [ ] The re-raise tested through the binary: SIGINT and SIGTERM to sb
+- [x] The re-raise tested through the binary: SIGINT and SIGTERM to sb
       end it by that signal (`signal()` is 2 or 15, the run record still
       written and flushed, the terminal restored); two signals: sb dies of
       the signal, the terminal restored; `$?` in a shell reads 130 and
       143; a run that isn't interrupted still exits with its code.
-- [ ] Every existing signal test passes in its new form (cli-core's,
+- [x] Every existing signal test passes in its new form (cli-core's,
       term-ui's demo, sb's docker_signals.rs and
       validate_config_signals.rs).
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core -p sb-term-ui`; `SB_TEST_ROOT=1 cargo
+- [x] `cargo test -p sb-cli-core -p sb-term-ui`; `SB_TEST_ROOT=1 cargo
       test -p sb`; library-reviewer; `scripts/check.sh full`.
 
 **Dependencies:** Task 1b

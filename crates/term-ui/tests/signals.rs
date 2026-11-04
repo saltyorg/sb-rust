@@ -160,3 +160,43 @@ fn a_dumb_terminal_is_left_alone() {
     );
     assert!(echoctl_restored(&text), "{text:?}");
 }
+
+/// Piped, so std sees how the demo ended: one signal ends it by that
+/// signal after the run record is written, and so does the forced exit
+/// on a second (exec decision 7); `$?` above still reads 130 and 143.
+#[test]
+fn an_interrupted_run_dies_of_its_signal() {
+    use rustix::process::Signal;
+    use std::os::unix::process::ExitStatusExt;
+    for (flag, signal, record) in [
+        ("--interrupt", Signal::INT, Some("interrupted (exit 130)")),
+        ("--terminate", Signal::TERM, Some("interrupted (exit 143)")),
+        ("--interrupt-twice", Signal::INT, None),
+    ] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out = Command::new(demo())
+            .arg(flag)
+            .env("SB_LOG_DIR", dir.path())
+            .output()
+            .expect("run demo");
+        assert_eq!(
+            out.status.signal(),
+            Some(signal.as_raw()),
+            "{flag}: {out:?}"
+        );
+        let log = std::fs::read_dir(dir.path())
+            .expect("log dir")
+            .map(|e| std::fs::read_to_string(e.expect("entry").path()).expect("log"))
+            .collect::<String>();
+        match record {
+            Some(outcome) => assert!(
+                log.contains(&format!("outcome=\"{outcome}\"")),
+                "{flag}: {log}"
+            ),
+            None => assert!(
+                !log.contains("run finished"),
+                "{flag}: the forced exit skips the record: {log}"
+            ),
+        }
+    }
+}

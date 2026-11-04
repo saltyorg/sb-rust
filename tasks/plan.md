@@ -52,8 +52,8 @@ links sb-exec, each task runs cargo-deny on sb-exec's own graph.
 
 ### Phase 1: Evidence and the builder
 - [x] Task 1: Platform facts and dependency trees (spike)
-- [ ] Task 1b: cli-core: relaunch with `sudo -u root`, no marker
-- [ ] Task 1c: cli-core: end an interrupted run by the signal itself
+- [x] Task 1b: cli-core: relaunch with `sudo -u root`, no marker
+- [x] Task 1c: cli-core: end an interrupted run by the signal itself
 - [ ] Task 2: The crate, `Cmd`, masking and the log record
 
 ### Phase 2: Capture and cancellation

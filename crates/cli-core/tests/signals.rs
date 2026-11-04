@@ -5,11 +5,14 @@
 //! never the test harness.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::os::unix::process::ExitStatusExt;
+use std::process::{Child, ChildStdout, Command, Stdio, Termination};
 use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process};
 use sb_cli_core::cancel::Shutdown;
+use sb_cli_core::exit::{RunEnd, finish_run};
+use signal_hook::consts::{SIGCHLD, SIGINT, SIGTERM};
 
 const CHILD: &str = "SB_SIGNAL_CHILD";
 /// Restore hooks the child registers: `run`, `removed`, `panic` (a
@@ -17,6 +20,11 @@ const CHILD: &str = "SB_SIGNAL_CHILD";
 /// one that never returns). Empty (the default) registers none, which is
 /// what keeps the first four tests checking that nothing else changed.
 const HOOKS: &str = "SB_SIGNAL_HOOKS";
+/// `finish`: after the first signal the child ends as sb's `main` does,
+/// through `finish_run` (to stderr) and its ending's `report`, instead of
+/// staying busy, leaving a line on stdout unfinished: std's own flush
+/// comes after `report`, too late for a signal's default action.
+const END: &str = "SB_SIGNAL_END";
 
 type Lines = std::io::Lines<BufReader<ChildStdout>>;
 
@@ -83,15 +91,23 @@ fn child_main() {
         shutdown.interrupted()
     );
     std::io::stdout().flush().expect("flush");
+    if std::env::var(END).as_deref() == Ok("finish") {
+        let ending = shutdown.snapshot();
+        print!("ending");
+        let _ = finish_run(&ending, None, None, &mut std::io::stderr()).report();
+        println!("still running");
+        return;
+    }
     std::thread::sleep(Duration::from_secs(20));
 }
 
 fn spawn(test: &str) -> (KillOnDrop, Lines) {
-    spawn_with(test, "")
+    spawn_with(test, "", "")
 }
 
-/// The child for `test`, registering `hooks` (see [`HOOKS`]).
-fn spawn_with(test: &str, hooks: &str) -> (KillOnDrop, Lines) {
+/// The child for `test`, registering `hooks` (see [`HOOKS`]) and ending
+/// as `end` says (see [`END`]).
+fn spawn_with(test: &str, hooks: &str, end: &str) -> (KillOnDrop, Lines) {
     // Guarded from the start, so a failure while waiting for "ready" kills
     // it too.
     let mut child = KillOnDrop(
@@ -99,7 +115,14 @@ fn spawn_with(test: &str, hooks: &str) -> (KillOnDrop, Lines) {
             .args([test, "--exact", "--nocapture", "--test-threads=1"])
             .env(CHILD, "1")
             .env(HOOKS, hooks)
+            .env(END, end)
             .stdout(Stdio::piped())
+            // The ending's block, for the `finish` test to read.
+            .stderr(if end == "finish" {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
             .spawn()
             .expect("spawn child"),
     );
@@ -124,13 +147,13 @@ fn next_line(lines: &mut Lines) -> String {
 }
 
 /// The first SIGINT cancels with code 130 and the run goes on (cleanup);
-/// a second SIGINT ends it at once with the same code.
+/// a second SIGINT ends it at once, by SIGINT itself (exec decision 7).
 #[test]
-fn sigint_cancels_then_a_second_exits_130() {
+fn sigint_cancels_then_a_second_ends_by_sigint() {
     if std::env::var_os(CHILD).is_some() {
         return child_main();
     }
-    let (mut child, mut lines) = spawn("sigint_cancels_then_a_second_exits_130");
+    let (mut child, mut lines) = spawn("sigint_cancels_then_a_second_ends_by_sigint");
     send(&child, Signal::INT);
     assert_eq!(
         next_line(&mut lines),
@@ -138,7 +161,8 @@ fn sigint_cancels_then_a_second_exits_130() {
     );
     let start = Instant::now();
     send(&child, Signal::INT);
-    child.wait().expect("wait");
+    let status = child.wait().expect("wait");
+    assert_eq!(status.signal(), Some(SIGINT));
     assert!(
         start.elapsed() < Duration::from_secs(5),
         "second signal took {:?}",
@@ -146,79 +170,80 @@ fn sigint_cancels_then_a_second_exits_130() {
     );
 }
 
-/// SIGTERM works the same way with 143, also for the second signal.
+/// SIGTERM works the same way with 143, and ends by SIGTERM.
 #[test]
-fn sigterm_cancels_then_a_second_exits_143() {
+fn sigterm_cancels_then_a_second_ends_by_sigterm() {
     if std::env::var_os(CHILD).is_some() {
         return child_main();
     }
-    let (mut child, mut lines) = spawn("sigterm_cancels_then_a_second_exits_143");
+    let (mut child, mut lines) = spawn("sigterm_cancels_then_a_second_ends_by_sigterm");
     send(&child, Signal::TERM);
     assert_eq!(
         next_line(&mut lines),
         "cancelled Some(143) interrupted true"
     );
     send(&child, Signal::TERM);
-    child.wait().expect("wait");
+    assert_eq!(child.wait().expect("wait").signal(), Some(SIGTERM));
 }
 
-/// The first signal decides the code: SIGINT then SIGTERM exits 130.
+/// The first signal decides the ending: SIGINT then SIGTERM ends by SIGINT.
 #[test]
-fn the_first_signal_decides_the_code() {
+fn the_first_signal_decides_the_ending() {
     if std::env::var_os(CHILD).is_some() {
         return child_main();
     }
-    let (mut child, mut lines) = spawn("the_first_signal_decides_the_code");
+    let (mut child, mut lines) = spawn("the_first_signal_decides_the_ending");
     send(&child, Signal::INT);
     assert_eq!(
         next_line(&mut lines),
         "cancelled Some(130) interrupted true"
     );
     send(&child, Signal::TERM);
-    child.wait().expect("wait");
+    assert_eq!(child.wait().expect("wait").signal(), Some(SIGINT));
 }
 
-/// The reverse order: SIGTERM then SIGINT exits 143.
+/// The reverse order: SIGTERM then SIGINT ends by SIGTERM.
 #[test]
-fn a_first_sigterm_decides_143() {
+fn a_first_sigterm_decides_the_ending() {
     if std::env::var_os(CHILD).is_some() {
         return child_main();
     }
-    let (mut child, mut lines) = spawn("a_first_sigterm_decides_143");
+    let (mut child, mut lines) = spawn("a_first_sigterm_decides_the_ending");
     send(&child, Signal::TERM);
     assert_eq!(
         next_line(&mut lines),
         "cancelled Some(143) interrupted true"
     );
     send(&child, Signal::INT);
-    child.wait().expect("wait");
+    assert_eq!(child.wait().expect("wait").signal(), Some(SIGTERM));
 }
 
-/// Interrupt the child twice; returns its exit code and the lines it
-/// printed after the first signal was reported.
+/// Interrupt the child twice; returns the signal that ended it and the
+/// lines it printed after the first signal was reported.
 fn interrupt_twice(test: &str, hooks: &str) -> (Option<i32>, Vec<String>) {
-    let (mut child, mut lines) = spawn_with(test, hooks);
+    let (mut child, mut lines) = spawn_with(test, hooks, "");
     send(&child, Signal::INT);
     assert_eq!(
         next_line(&mut lines),
         "cancelled Some(130) interrupted true"
     );
     send(&child, Signal::INT);
-    let code = child.wait().expect("wait").code();
-    (code, lines.map(|l| l.expect("utf-8")).collect())
+    let signal = child.wait().expect("wait").signal();
+    (signal, lines.map(|l| l.expect("utf-8")).collect())
 }
 
 /// A registered restore hook runs once before the second-signal exit,
-/// whose code is unchanged (term-ui spec, decision 5).
+/// which still ends by the first signal (term-ui spec, decision 5).
 #[test]
 fn a_restore_hook_runs_once_before_the_second_signal_exit() {
     if std::env::var_os(CHILD).is_some() {
         return child_main();
     }
-    let (_, after) = interrupt_twice(
+    let (signal, after) = interrupt_twice(
         "a_restore_hook_runs_once_before_the_second_signal_exit",
         "run",
     );
+    assert_eq!(signal, Some(SIGINT));
     assert_eq!(after, ["restored"]);
 }
 
@@ -229,7 +254,8 @@ fn a_removed_restore_hook_does_not_run() {
     if std::env::var_os(CHILD).is_some() {
         return child_main();
     }
-    let (_, after) = interrupt_twice("a_removed_restore_hook_does_not_run", "removed");
+    let (signal, after) = interrupt_twice("a_removed_restore_hook_does_not_run", "removed");
+    assert_eq!(signal, Some(SIGINT));
     assert!(after.is_empty(), "{after:?}");
 }
 
@@ -240,7 +266,9 @@ fn a_panicking_restore_hook_does_not_stop_the_exit() {
     if std::env::var_os(CHILD).is_some() {
         return child_main();
     }
-    let (_, after) = interrupt_twice("a_panicking_restore_hook_does_not_stop_the_exit", "panic");
+    let (signal, after) =
+        interrupt_twice("a_panicking_restore_hook_does_not_stop_the_exit", "panic");
+    assert_eq!(signal, Some(SIGINT));
     assert_eq!(after, ["restored"]);
 }
 
@@ -252,11 +280,68 @@ fn a_blocking_restore_hook_does_not_stop_the_exit() {
         return child_main();
     }
     let start = Instant::now();
-    let (_, after) = interrupt_twice("a_blocking_restore_hook_does_not_stop_the_exit", "block");
+    let (signal, after) =
+        interrupt_twice("a_blocking_restore_hook_does_not_stop_the_exit", "block");
+    assert_eq!(signal, Some(SIGINT));
     assert_eq!(after, ["restored"]);
     assert!(
         start.elapsed() < Duration::from_secs(5),
         "{:?}",
         start.elapsed()
     );
+}
+
+/// One signal, then the run's own end (as sb's `main`): stdout is
+/// flushed, then the process dies by the signal rather than exiting 130
+/// or 143 (exec decision 7), so a parent sees it was interrupted.
+#[test]
+fn a_finished_interrupted_run_ends_by_its_signal() {
+    if std::env::var_os(CHILD).is_some() {
+        return child_main();
+    }
+    for (signal, number, code) in [(Signal::INT, SIGINT, 130), (Signal::TERM, SIGTERM, 143)] {
+        let (mut child, mut lines) = spawn_with(
+            "a_finished_interrupted_run_ends_by_its_signal",
+            "",
+            "finish",
+        );
+        send(&child, signal);
+        assert_eq!(
+            next_line(&mut lines),
+            format!("cancelled Some({code}) interrupted true")
+        );
+        assert_eq!(next_line(&mut lines), "ending", "stdout flushed first");
+        let status = child.wait().expect("wait");
+        assert_eq!(status.signal(), Some(number), "{signal:?}: {status:?}");
+        let rest: Vec<String> = lines.map(|l| l.expect("utf-8")).collect();
+        assert!(rest.is_empty(), "{signal:?}: {rest:?}");
+        let mut stderr = String::new();
+        let pipe = child.stderr.as_mut().expect("stderr");
+        std::io::Read::read_to_string(pipe, &mut stderr).expect("stderr");
+        assert!(stderr.contains("✗ interrupted\n"), "{signal:?}: {stderr}");
+    }
+}
+
+/// A signal whose default action doesn't end a process (SIGCHLD's is to
+/// ignore it) still ends the run, with 128 + the signal, the fallback.
+#[test]
+fn a_signal_that_would_not_end_sb_still_ends_the_run() {
+    if std::env::var_os(CHILD).is_some() {
+        let _ = RunEnd::Signal(SIGCHLD).report();
+        println!("still running");
+        return;
+    }
+    let out = Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "a_signal_that_would_not_end_sb_still_ends_the_run",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .expect("run child");
+    assert_eq!(out.status.code(), Some(128 + SIGCHLD), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("still running"), "{stdout}");
 }

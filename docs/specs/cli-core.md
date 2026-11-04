@@ -106,11 +106,16 @@ list (walked before clap adds `help`).
 
 **Cancellation:** the first SIGINT or SIGTERM cancels a token shared by
 every command; work stops at its next await or check, child processes are
-killed through `exec`. A second signal exits at once with the same code,
-skipping remaining cleanup. A command can also
+killed through `exec`. A second signal ends sb at once, skipping
+remaining cleanup. Either way an interrupted run ends by the signal
+itself, re-raised with its default action after cleanup (or after the
+restore hooks), not by an exit code: a calling shell then sees the death
+by signal and stops its script, as "wait and cooperative exit" requires
+(exec spec, decision 7). A command can also
 request shutdown with its own exit code (sb-go's `Shutdown(code)`).
 
-**Exit codes:** 0 success; 1 error; 2 for a parse error; 130 after SIGINT, 143 after SIGTERM; a
+**Exit codes:** 0 success; 1 error; 2 for a parse error; death by
+SIGINT or SIGTERM when interrupted (`$?` reads 130 or 143); a
 code a command requested; a wrapped child's own code when sb only passes it
 through (`sudo` relaunch, plain pass-through commands); 141, quietly, when
 the reader of sb's output goes away (`sb ... | head`), as sb-go gets when
@@ -214,7 +219,7 @@ boundaries that callers match on.
 - **CLI tests** (`assert_cmd`): help, version and `--json`, parse errors,
   exit codes, `--color` with and without a terminal.
 - **Contract test:** the command tree against sb-go's command and flag list.
-- **PTY smoke test:** SIGINT and SIGTERM give 130 and 143 and restore the
+- **PTY smoke test:** SIGINT and SIGTERM give `$?` 130 and 143 and restore the
   terminal. Done through util-linux `script` on the built binary with
   `sb validate-config` (config plan Task 12), as term-ui's own PTY tests
   are; rexpect isn't added (one PTY tool for every test).
@@ -249,7 +254,8 @@ boundaries that callers match on.
    and `EDITOR` kept, and its exit code is the command's own. If sudo
    wants a password, its own prompt appears and the run continues once
    answered.
-4. SIGINT exits 130 and SIGTERM 143, with the terminal restored.
+4. SIGINT and SIGTERM end sb by that signal (`$?` 130 and 143), with the
+   terminal restored.
 5. An error shows one `✗` block with its causes and the log pointer, and
    exits 1.
 6. Every root run writes its run record and outcome to
