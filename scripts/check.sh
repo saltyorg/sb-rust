@@ -111,15 +111,30 @@ task() {
     # Every crate's tests judge every mutant: end-to-end tests in `sb`
     # cover code in the library crates (cargo-mutants otherwise runs only
     # the mutated package's tests).
-    PATH="$root/target/no-sudo:$PATH" cargo mutants --in-diff target/changes.diff -o target \
-      --timeout 300 "${pkg_args[@]}" "${test_pkg_args[@]}" || true
-    node -e '
-      const d = require("./target/mutants.out/outcomes.json");
-      const tested = d.caught + d.missed + d.timeout;
-      const score = tested ? (100 * d.caught) / tested : 100;
-      console.log("caught " + d.caught + " of " + tested + " viable mutants: " + score.toFixed(1) + "%");
-      process.exit(score >= Number(process.argv[1]) ? 0 : 1);
-    ' "$MUTATION_MIN"
+    mutants=(cargo mutants --in-diff target/changes.diff "${pkg_args[@]}" "${test_pkg_args[@]}")
+    # Old outcomes go first, so a run that writes none can't pass on them.
+    rm -rf target/mutants.out
+    # A plain assignment, so a failing list stops the check (errexit is
+    # off inside an `if` condition, command substitutions included; and
+    # `local list=$(...)` would take local's status: declare it apart).
+    list=$("${mutants[@]}" --list)
+    if [[ -z $list ]]; then
+      # Changed tests or comments only: cargo-mutants writes no outcomes.
+      skip "no mutants in the changed code"
+    else
+      PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o target --timeout 300 || true
+      if [[ ! -f target/mutants.out/outcomes.json ]]; then
+        echo "check: cargo-mutants wrote no outcomes" >&2
+        exit 2
+      fi
+      node -e '
+        const d = require("./target/mutants.out/outcomes.json");
+        const tested = d.caught + d.missed + d.timeout;
+        const score = tested ? (100 * d.caught) / tested : 100;
+        console.log("caught " + d.caught + " of " + tested + " viable mutants: " + score.toFixed(1) + "%");
+        process.exit(score >= Number(process.argv[1]) ? 0 : 1);
+      ' "$MUTATION_MIN"
+    fi
   fi
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine
