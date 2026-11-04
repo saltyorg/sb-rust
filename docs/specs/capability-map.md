@@ -247,6 +247,26 @@ proto-yaml found that `motd.schema.yml` uses `pattern` (regex) and
 `additionalProperties` rules that sb-go's schema struct doesn't define, so
 sb-go has never enforced them. sb-rust will.
 
+## When the binary is complete (maintainer's request, 2026-11-04)
+
+To discuss with the maintainer once every module is done, not before:
+
+- **Who owns the config schemas.** Today Saltbox ships them in `schema/`
+  and sb reads them at run time, strictly (config spec, assumption 2 and
+  decision 5, whose answer to drift is that sb updates itself). The
+  alternative is a schema version file in Saltbox, with the rules owned
+  by the binary. A design review during the config module (plan Task 13)
+  favoured today's setup: Saltbox edits its schemas on its own, mostly
+  data-only and together with the matching role change, and a version
+  file would make each edit an sb release too. sb would also have to
+  embed every past schema version, and sb-go reads `schema/` until it is
+  retired. It found one failure today's setup has, a rule key added
+  after a user's sb was built breaking that sb's strict load (as
+  `validate_when_true` would have when Saltbox added it in February 2026;
+  sb-go supported it the same day), and two cheaper fixes for it: a
+  `schema_version` key inside the schema files, or a scheduled sb-side
+  check that loads upstream's schemas strictly.
+
 ## Open items carried into module specs
 
 - **Manual real-terminal check** (two emulators): mouse use and Shift-drag

@@ -12,16 +12,6 @@ fixtures through `SB_SALTBOX_DIR`; say so in every reviewer's brief. Root-gated
 tests run only as root with `SB_TEST_ROOT=1` (check.sh sets it).
 
 Carried forward (open items owned by later work):
-- Revisit with the maintainer once the binary is otherwise done: who owns
-  the config schemas. Today Saltbox ships them in `schema/` and sb reads
-  them at run time, strictly. The alternative is a schema version file in
-  Saltbox with the rules owned by the binary. A design review (config
-  Task 13) favoured today's setup: Saltbox edits its schemas on its own,
-  and a version file would make every edit an sb release too. It noted
-  two cheaper fixes for the one failure it found (a new rule key breaking
-  an older sb's strict load): a `schema_version` key inside the schema
-  files, or a scheduled sb-side check that loads upstream's schemas
-  strictly.
 - Taken by this plan:
   - term-ui criteria 4 and 6 with sb's own commands (moved here by docker
     decision 1): the failure block and the Ctrl-C endings and restore
