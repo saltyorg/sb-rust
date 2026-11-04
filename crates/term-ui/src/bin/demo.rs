@@ -1,6 +1,7 @@
 //! The runner on stderr, for trying it and for the PTY tests: `cargo run
 //! -p sb-term-ui --bin demo [-- FLAGS]`, the flags being test hooks:
-//! `--fail`, `--sensitive` (wins over `--fail`), `--new-token`, `--panic`,
+//! `--fail`, `--sensitive` (wins over `--fail`), `--new-token`,
+//! `--child-fail`, `--panic`,
 //! `--interrupt`, `--interrupt-twice`, `--terminate`,
 //! `--leave-foreground`, `--table` (a table instead of the run, which
 //! returns early: any output error is exit 1 there) and `--colour` /
@@ -100,6 +101,16 @@ async fn demo(
             // terminal only, its value never logged (decision 8).
             if arg("--new-token") {
                 step.info(Line::new("new token: ").secret(DEMO_TOKEN).shown());
+            }
+            // `--child-fail`: the step fails as a failed child does (exec's
+            // `Failed`), its reason in the times column.
+            if arg("--child-fail") {
+                let child = sb_term_ui::ChildFailure::new(
+                    "systemctl is-active [ARG] exited with code 3",
+                    "exit 3",
+                    vec!["inactive".into()],
+                );
+                return Err(child.into());
             }
             Ok(())
         },

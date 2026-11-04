@@ -59,7 +59,7 @@ links sb-exec, each task runs cargo-deny on sb-exec's own graph.
 ### Phase 2: Capture and cancellation
 - [x] Task 3: `capture`
 - [x] Task 4: Process groups: cancellation, timeouts, escalation
-- [ ] Task 5: term-ui: a failed child's ending and the "runner live" check
+- [x] Task 5: term-ui: a failed child's ending and the "runner live" check
 
 ### Checkpoint A: Capture is done
 - [ ] `scripts/check.sh full` passes; the maintainer reviews the evidence,

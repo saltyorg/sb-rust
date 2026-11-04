@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,7 @@ use sb_cli_core::theme::{self, Role};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
+use crate::child::ChildFailure;
 use crate::style::paint;
 use crate::tree::{Draw, Status, Tree};
 use crate::tty::Saved;
@@ -248,6 +249,36 @@ pub struct Runner {
     saved: Saved,
     /// Puts the terminal back on a second Ctrl-C; removed at the end.
     restore: Option<RestoreHook>,
+    /// Counts this runner as live until it is dropped.
+    _live: Live,
+}
+
+/// How many runners are live in the process, from start to drop: an
+/// attached child takes sb's terminal, so exec refuses to start one while
+/// a runner is live (exec spec, "Attached children"). std's atomic: no
+/// dependency has an "a progress UI holds the terminal" flag.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a [`Runner`] is live in this process (started, not yet
+/// finished or dropped).
+pub fn runner_live() -> bool {
+    LIVE.load(Ordering::SeqCst) > 0
+}
+
+/// One live runner, counted from start to drop.
+struct Live;
+
+impl Live {
+    fn new() -> Self {
+        LIVE.fetch_add(1, Ordering::SeqCst);
+        Live
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        LIVE.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Runner {
@@ -347,6 +378,7 @@ impl Runner {
             frames,
             saved,
             restore,
+            _live: Live::new(),
         }
     }
 
@@ -449,15 +481,27 @@ fn conclude<T>(
             // table); only a failure shows it (a sensitive part withheld,
             // decision 8).
             let chain = shown_chain(err.as_ref());
+            // A failed child (exec's `Failed`) anywhere in the chain gives
+            // the times column its reason and adds its last lines.
+            let child = err.chain().find_map(|e| e.downcast_ref::<ChildFailure>());
             let screen = if status == Status::Failed {
                 let colour = lock(&context.shared).colour;
-                chain.iter().flat_map(|line| lines(line, colour)).collect()
+                let child_lines = child.map(ChildFailure::last_lines).unwrap_or_default();
+                chain
+                    .iter()
+                    .chain(child_lines)
+                    .flat_map(|line| lines(line, colour))
+                    .collect()
             } else {
                 Vec::new()
             };
             let failure = Failure {
                 screen,
                 record: chain.join(": "),
+                // Cleaned as every drawn line is (it is public text).
+                reason: child
+                    .filter(|_| status == Status::Failed)
+                    .map(|child| clean(child.reason(), false)),
             };
             (status, outcome, Some(failure))
         }
@@ -502,6 +546,8 @@ async fn run_step<T>(
 struct Failure {
     screen: Vec<String>,
     record: String,
+    /// A failed child's reason for the times column (`exit 3`).
+    reason: Option<String>,
 }
 
 /// A started step's ending, written once: by [`Ending::close`] when the
@@ -547,14 +593,23 @@ impl Ending {
                 .as_ref()
                 .map(|f| f.screen.clone())
                 .unwrap_or_default();
+            let reason = failure.as_ref().and_then(|f| f.reason.clone());
             state.tree.set_error(self.id, screen);
+            state.tree.set_reason(self.id, reason.clone());
             state.tree.finish(self.id, status, Instant::now());
             // Plain lines go through anstream, so they still print while a
             // panic unwinds; the live area doesn't (see `State::end`).
             if matches!(state.mode, Mode::Plain) && !state.ended {
                 let colour = state.colour;
                 let elapsed = self.started.elapsed();
-                let line = end_line(theme::current(), &self.labels, status, elapsed, colour);
+                let line = end_line(
+                    theme::current(),
+                    &self.labels,
+                    status,
+                    reason.as_deref(),
+                    elapsed,
+                    colour,
+                );
                 plain_line(&prefixed(self.prefix.as_deref(), &line));
                 // The failure block, plainly: the error, then the pointer.
                 if let (Status::Failed, Some(failure)) = (status, &failure) {
@@ -1197,6 +1252,7 @@ fn end_line(
     theme: &theme::Theme,
     labels: &Labels,
     status: Status,
+    reason: Option<&str>,
     elapsed: Duration,
     colour: bool,
 ) -> String {
@@ -1208,8 +1264,9 @@ fn end_line(
         Status::Failed => (
             Role::Problem,
             format!(
-                "✗ {}{gap}{secs}s",
-                labels.failure.as_deref().unwrap_or(&labels.running)
+                "✗ {}{gap}{}",
+                labels.failure.as_deref().unwrap_or(&labels.running),
+                crate::tree::failed_time(reason, secs)
             ),
         ),
         Status::Interrupted => (
@@ -1337,6 +1394,121 @@ mod tests {
             "{}",
             term.contents()
         );
+    }
+
+    /// A failed child (exec's `Failed`), even behind context, fails the
+    /// step with how it ended in the time column and its last lines in the
+    /// block; the command then exits 1 (exec decision 5).
+    #[tokio::test]
+    async fn a_failed_child_shows_how_it_ended() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let result: Result<(), Exit> = run
+            .step(Labels::new("Checking", "checked"), async |_| {
+                let child = ChildFailure::new(
+                    "systemctl is-active [ARG] exited with code 3",
+                    "exit 3",
+                    vec!["inactive".into()],
+                );
+                Err(anyhow::Error::new(child).context("checking the controller"))
+            })
+            .await;
+        assert!(matches!(result, Err(Exit(1))));
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb demo
+        ╰── ✗ Checking                                       exit 3 · 0s
+            checking the controller
+            systemctl is-active [ARG] exited with code 3
+            inactive
+        ");
+    }
+
+    /// Only a failure shows a child's reason: a child failing because the
+    /// run was interrupted or stopped ends as those rows say, with no
+    /// reason and no block.
+    #[tokio::test]
+    async fn other_endings_win_over_a_failed_child() {
+        for (how, why) in [("signal", "interrupted · 0s"), ("request", "stopped · 0s")] {
+            let (term, options) = screen();
+            let shutdown = Shutdown::new();
+            let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+            let _ = run
+                .step(
+                    Labels::new("Checking", "checked"),
+                    async |_| -> anyhow::Result<()> {
+                        let child = ChildFailure::new(
+                            "x exited with code 3",
+                            "exit 3",
+                            vec!["last".into()],
+                        );
+                        if how == "signal" {
+                            shutdown.signalled(2);
+                        } else {
+                            shutdown.request(0);
+                        }
+                        Err(child.into())
+                    },
+                )
+                .await;
+            run.finish();
+            let screen = term.contents();
+            assert!(screen.contains(why), "{how}: {screen}");
+            for hidden in ["exit 3", "x exited", "last"] {
+                assert!(!screen.contains(hidden), "{how}: {hidden}: {screen}");
+            }
+        }
+    }
+
+    /// The failed child is found anywhere in the chain: behind a command's
+    /// own error type holding it as its source, not only behind context.
+    #[tokio::test]
+    async fn a_failed_child_is_found_below_another_error() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("the controller service isn't running")]
+        struct NotRunning(#[source] ChildFailure);
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let _ = run
+            .step(
+                Labels::new("Checking", "checked"),
+                async |_| -> anyhow::Result<()> {
+                    let child = ChildFailure::new(
+                        "x exited with code 3",
+                        "exit 3",
+                        vec!["inactive".into()],
+                    );
+                    Err(NotRunning(child).into())
+                },
+            )
+            .await;
+        run.finish();
+        let screen = term.contents();
+        assert!(screen.contains("exit 3 · 0s"), "{screen}");
+        assert!(screen.contains("    inactive"), "{screen}");
+    }
+
+    /// A reason is cleaned like every line drawn: no control character
+    /// reaches the screen through it.
+    #[tokio::test]
+    async fn a_reason_is_cleaned_before_it_is_drawn() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let _ = run
+            .step(
+                Labels::new("Checking", "checked"),
+                async |_| -> anyhow::Result<()> {
+                    Err(ChildFailure::new("x failed", "exit\n\x1b[2J3", vec![]).into())
+                },
+            )
+            .await;
+        run.finish();
+        let screen = term.contents();
+        assert!(!screen.contains("\x1b[2J"), "{screen:?}");
+        assert!(screen.contains("exit"), "{screen}");
     }
 
     /// An error that is already a quiet exit passes up unchanged, and the
@@ -1526,7 +1698,7 @@ mod tests {
             let theme = Theme::resolve(&Palette::default(), profile);
             let text: String = [Status::Done, Status::Failed, Status::Stopped]
                 .into_iter()
-                .map(|s| end_line(&theme, &labels, s, Duration::ZERO, true))
+                .map(|s| end_line(&theme, &labels, s, None, Duration::ZERO, true))
                 .collect();
             let codes = colour_codes(&text);
             match profile {
@@ -2348,24 +2520,50 @@ mod tests {
         let labels = Labels::new("Pulling", "pulled").failure("pull failed");
         let two = Duration::from_secs(2);
         assert_eq!(
-            end_line(&plain_theme(), &labels, Status::Done, two, false),
+            end_line(&plain_theme(), &labels, Status::Done, None, two, false),
             "✓ pulled   2s"
         );
         assert_eq!(
-            end_line(&plain_theme(), &labels, Status::Failed, two, false),
+            end_line(&plain_theme(), &labels, Status::Failed, None, two, false),
             "✗ pull failed   2s"
         );
         assert_eq!(
-            end_line(&plain_theme(), &labels, Status::Interrupted, two, false),
+            end_line(
+                &plain_theme(),
+                &labels,
+                Status::Interrupted,
+                None,
+                two,
+                false
+            ),
             "✗ Pulling   interrupted · 2s"
         );
         assert_eq!(
-            end_line(&plain_theme(), &labels, Status::Stopped, two, false),
+            end_line(&plain_theme(), &labels, Status::Stopped, None, two, false),
             "✗ Pulling   stopped · 2s"
         );
         assert_eq!(
-            end_line(&plain_theme(), &labels, Status::SubStepFailed, two, false),
+            end_line(
+                &plain_theme(),
+                &labels,
+                Status::SubStepFailed,
+                None,
+                two,
+                false
+            ),
             "✗ Pulling   sub-step failed · 2s"
+        );
+        // A failed child's reason, as in the live tree.
+        assert_eq!(
+            end_line(
+                &plain_theme(),
+                &labels,
+                Status::Failed,
+                Some("SIGTERM"),
+                two,
+                false
+            ),
+            "✗ pull failed   SIGTERM · 2s"
         );
     }
 }

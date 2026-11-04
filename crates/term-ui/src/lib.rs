@@ -1,13 +1,15 @@
 //! sb's inline terminal output (term-ui spec): colour on every inline
 //! path, theme adapters, and later the task runner and tables.
 
+mod child;
 mod runner;
 pub mod style;
 mod table;
 mod tree;
 mod tty;
 
-pub use runner::{Group, GroupAll, Labels, Line, Options, Runner, Step, Target};
+pub use child::ChildFailure;
+pub use runner::{Group, GroupAll, Labels, Line, Options, Runner, Step, Target, runner_live};
 pub use table::{Cell, Table};
 
 use anstream::{AutoStream, ColorChoice};

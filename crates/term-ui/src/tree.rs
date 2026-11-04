@@ -66,6 +66,9 @@ struct Node {
     notices: Vec<Notice>,
     /// A failed step's error, line by line, as it may be shown.
     error: Vec<String>,
+    /// Why a failed step failed, short, before its time (a failed
+    /// child's `exit 3`).
+    reason: Option<String>,
 }
 
 /// What drawing needs besides the tree: the theme, whether colour is on,
@@ -116,6 +119,15 @@ struct Parts {
     right_role: Role,
 }
 
+/// A failed step's time column: its reason first, if it has one (`exit 3
+/// · 2s`), for the live tree and plain end lines alike.
+pub(crate) fn failed_time(reason: Option<&str>, secs: u64) -> String {
+    match reason {
+        Some(reason) => format!("{reason} · {secs}s"),
+        None => format!("{secs}s"),
+    }
+}
+
 impl Tree {
     /// Start a step under `parent` (none: at the top).
     pub fn add(&mut self, parent: Option<usize>, labels: Labels, now: Instant) -> usize {
@@ -138,6 +150,7 @@ impl Tree {
             tail: VecDeque::new(),
             notices: Vec::new(),
             error: Vec::new(),
+            reason: None,
         });
         id
     }
@@ -183,6 +196,11 @@ impl Tree {
     /// A failed step's error, line by line, shown under it.
     pub fn set_error(&mut self, id: usize, lines: Vec<String>) {
         self.nodes[id].error = lines;
+    }
+
+    /// A failed step's short reason, shown before its time.
+    pub fn set_reason(&mut self, id: usize, reason: Option<String>) {
+        self.nodes[id].reason = reason;
     }
 
     /// Every step's status, in start order (for tests).
@@ -274,7 +292,7 @@ impl Tree {
             Status::Failed => (
                 Role::Problem,
                 format!("✗ {}", node.labels.failure.as_deref().unwrap_or(running)),
-                format!("{secs}s"),
+                failed_time(node.reason.as_deref(), secs),
             ),
             Status::Interrupted => (
                 Role::Warn,
@@ -849,6 +867,28 @@ mod tests {
         d.width = 40;
         let live = tree.live(&d);
         assert_eq!(live[1], format!("│   {}…", "x".repeat(35)));
+    }
+
+    /// A failed child's reason comes before the step's time (`exit 3 ·
+    /// 3s`), in the time column like "interrupted".
+    #[test]
+    fn a_failed_childs_reason_comes_before_its_time() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(None, Labels::new("Checking", "checked"), t0);
+        tree.set_error(
+            id,
+            vec!["systemctl is-active [ARG] exited with code 3".into()],
+        );
+        tree.set_reason(id, Some("exit 3".into()));
+        tree.finish(id, Status::Failed, secs(t0, 3));
+        tree.end();
+        let printed = tree.take_printable(&draw(&theme, secs(t0, 3))).join("\n");
+        insta::assert_snapshot!(printed, @r"
+        ╰── ✗ Checking                                       exit 3 · 3s
+            systemctl is-active [ARG] exited with code 3
+        ");
     }
 
     /// A failed step shows its error, every line, its last 10 output lines

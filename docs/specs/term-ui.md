@@ -282,6 +282,23 @@ impl Runner {
     pub fn finish(self);
 }
 
+/// Whether a `Runner` is live in this process (started, not yet finished
+/// or dropped), for exec's `attached`.
+pub fn runner_live() -> bool;
+
+/// A failed child (exec's `Failed`): a step failing with it anywhere in
+/// its error chain shows `reason` before its time and `last_lines` after
+/// the error.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct ChildFailure { /* message, reason, last_lines */ }
+
+impl ChildFailure {
+    pub fn new(message: impl Into<String>, reason: impl Into<String>, last_lines: Vec<String>) -> Self;
+    pub fn reason(&self) -> &str;
+    pub fn last_lines(&self) -> &[String];
+}
+
 /// How and where the runner draws.
 #[derive(Default)]
 pub struct Options {
@@ -470,6 +487,7 @@ logged with the outcome, never shown.
 | returns `Err` after the command's own `Shutdown::request` | "stopped" | nothing (cli-core exits quietly with the requested code) | `Exit(1)` |
 | returns `Err` after a sibling failed | "stopped" | nothing | `Exit(1)` |
 | returns `Err` carrying a quiet exit (`quiet_exit` is `Some`: a sub-step's `Exit`, exec's child code later, a broken pipe) | "sub-step failed" (✗ for a broken pipe) | nothing more | the same `Exit(code)` |
+| returns `Err` carrying a failed child (`ChildFailure`, exec's `Failed`, anywhere in the chain) | ✗ failure label, how the child ended before the time (`exit 3 · 2s`, `SIGTERM · 2s`) | as the next row, the child's last lines (capture's stderr) after the error | `Exit(1)` |
 | returns `Err` | ✗ failure label | the error's every line, the last 10 output lines, the log pointer; logged with its causes | `Exit(1)` |
 
 In use, `validate-config` (illustration):
@@ -518,8 +536,12 @@ Choices behind it:
   and docker reads are async or short. The runner starts no runtime and no processes.
 - **Sensitive text is marked where it is made** (`Line::secret`, `Secret`,
   `Sensitive` in an error chain), so logging can't forget a case.
-- **Not here yet:** a child process's output and exit code in the times
-  column (exec), prompts inside a step (decision 1), progress counts.
+- **A failed child** is term-ui's `ChildFailure` (exec re-exports it as
+  `Failed`; the maintainer, exec Checkpoint A, 2026-11-04), so term-ui
+  shows how it ended without depending on exec (a `#[error(transparent)]`
+  wrapper hides it, as it hides a quiet exit). `runner_live()` says
+  whether a `Runner` is live, for exec's `attached`.
+- **Not here yet:** prompts inside a step (decision 1), progress counts.
   Each can be added without changing these signatures.
 
 ## Testing strategy

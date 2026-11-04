@@ -17,6 +17,7 @@ anyhow.workspace = true
 anstream.workspace = true
 indicatif.workspace = true
 rustix.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anstyle.workspace = true

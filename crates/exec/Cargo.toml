@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 sb-cli-core.workspace = true
+sb-term-ui.workspace = true
 aho-corasick.workspace = true
 rustix.workspace = true
 signal-hook.workspace = true

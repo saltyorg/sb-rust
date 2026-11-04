@@ -220,3 +220,30 @@ fn a_shown_secret_shows_only_on_a_terminal() {
     assert!(!log.contains(TOKEN), "{log}");
     assert!(log.contains("text=\"new token: [REDACTED]\""), "{log}");
 }
+
+/// A failed child, piped (plain lines): how it ended before the step's
+/// time, its message and last lines in the block; exit 1.
+#[test]
+fn a_failed_childs_plain_line_says_how_it_ended() {
+    let out = Command::new(demo())
+        .arg("--child-fail")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("SB_LOG_DIR")
+        .output()
+        .expect("run demo");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stderr);
+    let block = text
+        .split_once("✗ Reading accounts.yml   exit 3 · ")
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| panic!("the failed step's line: {text}"));
+    let lines: Vec<&str> = block.lines().skip(1).take(2).collect();
+    assert_eq!(
+        lines,
+        [
+            "  systemctl is-active [ARG] exited with code 3",
+            "  inactive"
+        ],
+        "{text}"
+    );
+}

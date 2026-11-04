@@ -315,12 +315,12 @@ constants, not a hand-written table); the command then exits 1
 note amended.
 
 **Acceptance criteria:**
-- [ ] The ending and the times column in term-ui's tree and plain tests
+- [x] The ending and the times column in term-ui's tree and plain tests
       (snapshots), failing first; exit 1 for a failed child; the live
       check tested.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; library-reviewer; `scripts/check.sh
+- [x] `cargo test -p sb-term-ui`; library-reviewer; `scripts/check.sh
       full`.
 
 **Dependencies:** Task 4

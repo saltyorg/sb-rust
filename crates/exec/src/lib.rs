@@ -303,6 +303,20 @@ pub enum Ending {
     TimedOut,
 }
 
+impl Ending {
+    /// How it ended, short, for a failed step's times column: `exit 3`,
+    /// the signal's name (signal-hook's), `interrupted` or `timed out`.
+    pub fn reason(self) -> String {
+        match self {
+            Self::Exited(code) => format!("exit {code}"),
+            Self::Signalled(signal) => signal_hook::low_level::signal_name(signal)
+                .map_or_else(|| format!("signal {signal}"), str::to_owned),
+            Self::Interrupted => "interrupted".to_owned(),
+            Self::TimedOut => "timed out".to_owned(),
+        }
+    }
+}
+
 impl fmt::Display for Ending {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -351,35 +365,21 @@ impl Captured {
             .iter()
             .map(|line| line[..line.floor_char_boundary(LINE_BYTES)].to_owned())
             .collect();
-        Err(Failed {
-            command: self.command,
-            ending: self.outcome.ending,
-            last_lines: last,
-        })
+        let ending = self.outcome.ending;
+        Err(Failed::new(
+            format!("{} {ending}", self.command),
+            ending.reason(),
+            last,
+        ))
     }
 }
 
-/// A child that didn't exit 0, named with its arguments masked as in the
-/// log.
-#[derive(Debug, thiserror::Error)]
-#[error("{command} {ending}")]
-pub struct Failed {
-    command: String,
-    ending: Ending,
-    last_lines: Vec<String>,
-}
-
-impl Failed {
-    /// How the child ended.
-    pub fn ending(&self) -> Ending {
-        self.ending
-    }
-
-    /// The last lines of its stderr (from `capture`), secrets taken out.
-    pub fn last_lines(&self) -> &[String] {
-        &self.last_lines
-    }
-}
+/// A child that didn't exit 0: its command (arguments masked as in the
+/// log) and how it ended, the short reason (`exit 3`, `SIGTERM`) and, from
+/// `capture`, stderr's last lines. term-ui's type (the maintainer,
+/// Checkpoint A), so a step failing with it shows the reason in its times
+/// column.
+pub use sb_term_ui::ChildFailure as Failed;
 
 /// A child that couldn't be started (or waited for), naming the program.
 #[derive(Debug, thiserror::Error)]
@@ -443,6 +443,15 @@ mod tests {
         let cmd = Cmd::new("x").grace(Duration::from_millis(50));
         assert_eq!(cmd.grace, Duration::from_millis(50));
         assert_eq!(Cmd::new("x").timeout, None);
+    }
+
+    #[test]
+    fn a_reason_is_how_it_ended_short() {
+        assert_eq!(Ending::Exited(3).reason(), "exit 3");
+        assert_eq!(Ending::Signalled(15).reason(), "SIGTERM");
+        assert_eq!(Ending::Signalled(200).reason(), "signal 200");
+        assert_eq!(Ending::Interrupted.reason(), "interrupted");
+        assert_eq!(Ending::TimedOut.reason(), "timed out");
     }
 
     #[test]

@@ -133,7 +133,7 @@ even if the child then exits 0 within the grace period.
   piped or PTY child did; for an attached child, as the attached rules
   below say. A step that fails with `exec::Failed`
   ends ✗ with its error and the step's last lines, and the times column
-  shows `exit N` or the signal's name (term-ui spec, "not here yet");
+  shows `exit N` or the signal's name (term-ui spec, "Step endings");
   term-ui recognises the error for this, an amendment to its endings
   (decision 5). The command then exits 1, or with the child's own code
   where it asks to pass it through (decision 5). A quiet exit
@@ -435,3 +435,21 @@ let outcome = Cmd::new("systemctl")
    exit 128 plus the signal, as its failure, not sb's interruption. A
    cli-core change, exec plan Task 1c; the cli-core and term-ui specs'
    forced-exit text amended with it.
+8. **The failed-child error is term-ui's** (maintainer, 2026-11-04, ahead
+   of Checkpoint A): `exec::Failed` is term-ui's `ChildFailure`
+   re-exported, carrying the command (masked) and how it ended, the short
+   reason for the times column and stderr's last lines, so term-ui shows
+   the reason without depending on exec. Its block reads as any error's,
+   with no cause line repeating the ending.
+9. **A failure keeps stderr's last lines only** (maintainer, 2026-11-04):
+   a caller that needs a failed child's stdout, or its exit code to branch
+   on (systemctl's 3 for inactive), reads `Captured` before `check()`; the
+   failure itself carries the ending as text. A child cancelled through a
+   caller's own token (not sb's shutdown) fails its step with the reason
+   `interrupted`, a failure like any other, not the run's interruption.
+10. **Output past the 2 s read after exit isn't marked**: none of
+    capture's planned users (systemctl, git rev-parse, uv --version,
+    dpkg-query, docker start/stop/restart) leaves a process holding its
+    pipe, and sb-go's one `WaitDelay` (completion's shell probes) is a
+    bound, not an observed case; the maintainer asked whether it was more
+    than theoretical (2026-11-04). Added if a real command needs it.
