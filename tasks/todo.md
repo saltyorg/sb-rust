@@ -131,6 +131,44 @@ that `-u root` is passed.
 `docs/specs/cli-core.md`
 **Scope:** S
 
+## Task 1c: cli-core: end an interrupted run by the signal itself
+
+**Description:** Decision 7 (maintainer, 2026-11-04): after cleanup and
+the run record, cli-core ends an interrupted run by re-raising the signal
+that ended it (signal-hook's `low_level::emulate_default_handler`), on the
+forced exit after a second signal too (after term-ui's restore hooks),
+instead of exiting with 130 or 143. A run that isn't interrupted exits
+with its code as before. The cli-core spec's exit-code rules and the
+term-ui spec's decision 5 amended. Tests that check 130 or 143 through
+std's `ExitStatus` check the signal instead (`ExitStatusExt::signal`);
+where a shell reads `$?` (the PTY tests), 130 and 143 stay. Assertions
+that change form go through a test-only commit first (the floor guard's
+precedent). SIGQUIT's re-raise, with core dumps off first (rustix's
+`setrlimit`, `RLIMIT_CORE` 0), comes with Task 8a, where cli-core first
+handles SIGQUIT, and is checked by Task 8b's "sb dies of SIGQUIT, no core
+dump" cases.
+
+**Acceptance criteria:**
+- [ ] The re-raise tested through the binary: SIGINT and SIGTERM to sb
+      end it by that signal (`signal()` is 2 or 15, the run record still
+      written and flushed, the terminal restored); two signals: sb dies of
+      the signal, the terminal restored; `$?` in a shell reads 130 and
+      143; a run that isn't interrupted still exits with its code.
+- [ ] Every existing signal test passes in its new form (cli-core's,
+      term-ui's demo, sb's docker_signals.rs and
+      validate_config_signals.rs).
+
+**Verification:**
+- [ ] `cargo test -p sb-cli-core -p sb-term-ui`; `SB_TEST_ROOT=1 cargo
+      test -p sb`; library-reviewer; `scripts/check.sh full`.
+
+**Dependencies:** Task 1b
+**Files:** `crates/cli-core/src/exit.rs`, `crates/cli-core/src/cancel.rs`,
+`crates/cli-core/tests/`, `crates/term-ui/tests/signals.rs`,
+`crates/sb/tests/` (signal tests), `docs/specs/cli-core.md`,
+`docs/specs/term-ui.md`
+**Scope:** M
+
 ## Task 2: The crate, `Cmd`, masking and the start record
 
 **Description:** `crates/exec` (`sb-exec`) with `Cmd`: `arg(&'static
@@ -345,25 +383,33 @@ registration. exec-demo gains a `pty` mode.
 - [ ] The maintainer approves the signal behaviour (decision 2 as Task 8a
       will build it) before cli-core changes, and decides the cases the
       spec leaves open while an attached child runs: whether a second
-      SIGTERM, or a SIGTERM then a SIGINT, forces sb's exit;
+      SIGTERM, or a SIGTERM then a SIGINT or SIGQUIT, forces sb's exit;
       if so, whether the forced-exit hook SIGKILLs the attached child's
       pid or sb exits and leaves it; what a terminal SIGINT does while a
-      forwarded SIGTERM's grace runs. The decided table goes into the
-      spec and Task 8a's acceptance criteria.
+      forwarded SIGTERM's grace runs. (SIGQUIT outside an attached child
+      is decided: term-ui decision 5 keeps Ctrl-\ a hard escape, its
+      default action; the hold changes that only while an attached child
+      runs.) The decided table goes into the spec and Task 8a's acceptance
+      criteria.
 
 ## Task 8a: cli-core's signals while an attached child runs
 
 **Description:** cli-core's amendment (decision 2): a hold that exec turns
-on while an attached child runs; while it's on, a terminal SIGINT
-doesn't cancel the token and held SIGINTs don't count toward the forced
-exit; SIGINT is never forwarded, whatever its source (decision 2
-revised after Task 1); a SIGTERM is handed to the holder to forward; the holder
-reports a child that died of SIGINT, which records the interruption on
-`Shutdown` and cancels the token. The decision logic (hold state and
-signal) is a pure function, tested in-process so the coverage and
-mutation gates reach it. The cli-core spec amended. The carried run
-record (`error=exit code 1` beside an interrupted run's code) checked
-and fixed or re-carried with a reason.
+on while an attached child runs; while it's on, a terminal SIGINT doesn't
+cancel the token and held SIGINTs and SIGQUITs don't count toward the
+forced exit; SIGINT and SIGQUIT are noted and ignored, never forwarded
+("wait and cooperative exit", decision 2 revised after Task 1; SIGQUIT's
+default action would otherwise end sb, and may dump core); a SIGTERM is
+handed to the holder to forward; the holder reports a child that died of
+SIGINT or SIGQUIT, which records the interruption on `Shutdown` (sb then
+ends by that signal, Task 1c) and cancels the token, only if sb itself
+received the signal; a run ended by SIGQUIT re-raises it with core dumps
+off first (rustix's `setrlimit`, `RLIMIT_CORE` 0; Task 1c's re-raise).
+The decision logic (hold state and signal) is a pure
+function, tested in-process so the coverage and mutation gates reach it.
+The cli-core spec amended. The carried run record (`error=exit code 1`
+beside an interrupted run's code) checked and fixed or re-carried with a
+reason.
 
 **Acceptance criteria:**
 - [ ] The decision logic's every case, as decided at Checkpoint B,
@@ -371,8 +417,8 @@ and fixed or re-carried with a reason.
       in Task 8b.
 - [ ] cli-core's and sb's existing signal tests pass
       (`SB_TEST_ROOT=1`: validate_config_signals.rs, docker_signals.rs).
-- [ ] sb's binary size and startup measured (signal-hook's feature), with
-      an ADR past the tolerance; cargo-deny through sb passes.
+- [ ] sb's binary size and startup measured, with an ADR past the
+      tolerance; cargo-deny through sb passes.
 - [ ] The run-record finding recorded: fixed with a test, or carried.
 
 **Verification:**
@@ -399,10 +445,15 @@ Task 7; it doesn't use portable-pty.)
 
 **Acceptance criteria:**
 - [ ] Through exec-demo on a PTY: one and two Ctrl-Cs with a child that
-      survives SIGINT (sb waits), a child that dies of it (130), a SIGINT
-      sent to sb alone not forwarded, a SIGTERM forwarded (143); a timeout reads
-      timed out; a child ignoring the forwarded SIGTERM is SIGKILLed after
-      the grace; signals go to the child's pid, never a group.
+      survives SIGINT (sb waits), a child that dies of it (sb dies of
+      SIGINT), Ctrl-\ with a child that dies of SIGQUIT (sb dies of
+      SIGQUIT, no core dump) and with one that ignores SIGINT (it ends on
+      Ctrl-\; sb dies of SIGQUIT, no core dump), a child signalled on its
+      own (not an interruption: the step fails as the child's failure,
+      exit 1), a SIGINT sent to sb alone not forwarded, a SIGTERM
+      forwarded (sb dies of SIGTERM); a timeout reads timed out; a child
+      ignoring the forwarded SIGTERM is SIGKILLed after the grace; signals
+      go to the child's pid, never a group.
 - [ ] An exit code, a spawn failure, `stdin(bytes)` refused, refusal while
       a runner is live; the environment with real children (`COLORTERM`
       per the profile, no `GIT_TERMINAL_PROMPT`); the records written and

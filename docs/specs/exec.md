@@ -128,8 +128,10 @@ even if the child then exits 0 within the grace period.
   doesn't, since term-ui's failure block shows the step's last 10 lines.
 - A spawn failure (program not found, not executable, no such directory)
   is its own error, naming the program, before any outcome.
-- Exit codes for sb: an interrupted run ends as cli-core decides (130 or
-  143, whatever the child did). A step that fails with `exec::Failed`
+- Exit codes for sb: an interrupted run ends as cli-core decides, by the
+  signal itself (decision 7; shells see 130, 131 or 143), whatever a
+  piped or PTY child did; for an attached child, as the attached rules
+  below say. A step that fails with `exec::Failed`
   ends ✗ with its error and the step's last lines, and the times column
   shows `exit N` or the signal's name (term-ui spec, "not here yet");
   term-ui recognises the error for this, an amendment to its endings
@@ -153,27 +155,37 @@ even if the child then exits 0 within the grace period.
   one it created. sb waits for the child, so it leaves no zombie of its
   own.
 - **Attached children** stay in sb's process group, so they can use the
-  terminal (decision 2): the terminal's Ctrl-C reaches them directly;
-  sb never signals sb's own group. While one runs, sb holds its own
-  reaction to SIGINT as a shell does: it waits for the child; if the
-  child died of SIGINT, sb records the interruption on cli-core's
-  `Shutdown` and cancels the token, so later steps don't run and sb exits
-  130; otherwise it goes on (Ctrl-C in an editor, ansible's `pause`
-  prompts). Held SIGINTs don't count toward cli-core's forced exit, so
-  two Ctrl-Cs in an editor leave sb waiting. sb never forwards a SIGINT:
-  the terminal delivers it to the child, as POSIX `system()` and git's
-  editor launch rely on. Attached children assume sb's stdin and stdout
-  are the user's terminal: piped runs of such commands aren't supported
-  (the install script runs `sb setup` attached, capability map; users
-  have no need to pipe them), so sudo's relays in a piped run aren't
-  designed for (docs/platform-notes/exec-processes.md). A SIGTERM to sb is
-  sent on to the child's pid (sudo-rs relays to sb's pid only; under C
-  sudo the child may get it twice); then the grace period applies, and
-  `timeout` works the same way, by pid.
-  No attached child runs while a term-ui `Runner` is live: term-ui
-  exposes whether one is, and `attached` refuses to start then. This
-  changes how cli-core handles signals while an attached child runs (an
-  amendment to the cli-core spec with this one).
+  terminal (decision 2): the terminal's Ctrl-C reaches them directly; sb
+  never signals sb's own group. While one runs, sb follows the shell
+  convention "wait and cooperative exit" (M. Cracauer, "Proper handling of
+  SIGINT/SIGQUIT"; bash; POSIX `system()`; git's editor launch): it takes
+  no action on SIGINT or SIGQUIT, noting that one came, and waits for the
+  child. If sb received SIGINT or SIGQUIT and the child died of that
+  signal, sb records the interruption on cli-core's `Shutdown` and cancels
+  the token, so later steps don't run and sb ends by the same signal
+  (decision 7); if the child exited normally (it caught the signal for its
+  own use, as ansible's `pause` prompt does), or sb received none (the
+  child was signalled on its own), the run isn't interrupted: sb goes on,
+  and a child that failed fails its step. Held signals don't count toward
+  cli-core's forced exit. As under any shell, a child that ignores Ctrl-C
+  keeps the terminal: Ctrl-\ (SIGQUIT, which the terminal sends to the
+  child) or a SIGTERM to sb ends it. While an attached child runs, Ctrl-\
+  is therefore no hard escape for sb itself (term-ui decision 5 keeps it
+  one otherwise): sb ignores it until the child dies of it. (Editors take
+  the terminal in raw mode, where Ctrl-C is a key, not a signal.) sb never
+  forwards a SIGINT or SIGQUIT: the terminal delivers it to the child, as
+  POSIX `system()` and git's editor launch rely on. Attached children
+  assume sb's stdin and stdout are the user's terminal: piped runs of such
+  commands aren't supported (the install script runs `sb setup` attached,
+  capability map; users have no need to pipe them), so sudo's relays in a
+  piped run aren't designed for (docs/platform-notes/exec-processes.md). A
+  SIGTERM to sb is sent on to the child's pid (sudo-rs relays to sb's pid
+  only; under C sudo the child may get it twice); then the grace period
+  applies, and `timeout` works the same way, by pid. No attached child
+  runs while a term-ui `Runner` is live: term-ui exposes whether one is,
+  and `attached` refuses to start then. This changes how cli-core handles
+  signals while an attached child runs (an amendment to the cli-core spec
+  with this one).
 - **sb's forced exit** (a second signal, outside an attached child):
   before exiting, cli-core's hook sends SIGKILL to every group exec
   created that still has members.
@@ -297,9 +309,14 @@ let outcome = Cmd::new("systemctl")
   timed out, same path; a stopped child (SIGSTOP) still ends.
 - **Groups after the leader:** a leader that exits on SIGTERM with a
   grandchild that ignores it: the grandchild gets SIGKILL after the grace.
-- **Attached:** Ctrl-C (one and two), a SIGINT from `kill`, and SIGTERM
-  forwarding, through a test binary (`crates/exec/src/bin/exec-demo.rs`,
-  as term-ui's demo) on a PTY (`script`), as validate_config_signals.rs.
+- **Attached:** through a test binary (`crates/exec/src/bin/exec-demo.rs`,
+  as term-ui's demo) on a PTY (`script`), as validate_config_signals.rs:
+  Ctrl-C once and twice with a child that survives SIGINT (sb waits) and
+  one that dies of it (sb dies of SIGINT); Ctrl-\ with a child that dies
+  of SIGQUIT (no core dump) and with one that ignores SIGINT; a child
+  signalled on its own (not an interruption: the step fails as the
+  child's failure, exit 1); a SIGINT sent to sb alone (not passed on);
+  SIGTERM forwarding.
 - **PTY:** the child sees a TTY (`test -t 1`), its size (`stty size`,
   run on a terminal through `script`, or with an injected size), colours
   kept for a coloured target and stripped otherwise; a missing working
@@ -339,10 +356,11 @@ let outcome = Cmd::new("systemctl")
    or PTY child and the descendants in its group within the grace period
    plus one second, SIGKILL only when SIGTERM didn't end them, also after
    the leader exited; a stopped child too; no zombie of sb's own left.
-3. Attached: Ctrl-C reaches the child, and sb ends interrupted (130) only
-   if the child died of it, two included; a SIGINT to sb alone isn't
-   passed on; a SIGTERM to sb reaches the child; `attached` refuses while
-   a runner is live.
+3. Attached: Ctrl-C and Ctrl-\ reach the child, and sb ends by the same
+   signal only if it received one and the child died of it, repeated
+   signals included; a child that ignores Ctrl-C ends on Ctrl-\ or a
+   SIGTERM to sb; a SIGINT to sb alone isn't passed on; a SIGTERM to sb
+   reaches the child; `attached` refuses while a runner is live.
 4. A PTY child sees a TTY of sb's size; its colours follow sb's colour
    decision; a byte-split character arrives whole; `\r` progress shows at
    the next line; a reading child gets EOF; a missing directory is an
@@ -368,9 +386,13 @@ let outcome = Cmd::new("systemctl")
    terminal's Ctrl-C goes to the child; sb holds its own reaction, waits,
    and ends interrupted (130) only if the child died of SIGINT; held
    SIGINTs don't count toward the forced exit. Revised after plan Task 1
-   (maintainer, 2026-11-04): sb never forwards SIGINT, as POSIX
-   `system()` and git do; only a SIGTERM to sb is forwarded to the
-   child's pid. Attached children assume sb is on the user's terminal:
+   (maintainer, 2026-11-04): sb follows "wait and cooperative exit"
+   (Cracauer; bash, POSIX `system()`, git): SIGINT and SIGQUIT are noted
+   and ignored while the child runs, never forwarded; sb ends by the
+   signal (decision 7) only if it received one and the child died of it.
+   Only a SIGTERM to sb is forwarded to the child's pid. No escape key
+   beyond the convention's: a child that ignores Ctrl-C is ended by Ctrl-\
+   or a SIGTERM. Attached children assume sb is on the user's terminal:
    piped runs of such commands aren't supported. The cli-core spec is
    amended with this one.
 3. **`COLORTERM`:** set from the colour profile only for `pty` and
@@ -392,8 +414,24 @@ let outcome = Cmd::new("systemctl")
    or refuses, so the relaunched run always passes sb's root check
    (effective uid 0) and can't loop, given a real sudo or sudo-rs on
    `PATH` (a program there that ignores `-u` would make sb relaunch
-   again and again; each relaunch is an exec, so it spins rather than
-   piling up). `SB_RELAUNCHED`, which a sudo rule
+   again and again, piling up sudo processes, since sudo forks the
+   command and waits for it). `SB_RELAUNCHED`, which a sudo rule
    naming commands without SETENV refused on every relaunch, and its
    check are removed (a cli-core change, exec plan Task 1b;
    docs/platform-notes/exec-processes.md).
+7. **sb ends an interrupted run by the signal itself** (maintainer,
+   2026-11-04): after cleanup, cli-core resets the handler and re-raises
+   the signal that ended the run (signal-hook's safe
+   `low_level::emulate_default_handler`), with core dumps off for SIGQUIT
+   (rustix's `setrlimit`, `RLIMIT_CORE` 0), instead of exiting with 130,
+   131 or 143; so does the forced exit on a second signal, after term-ui's
+   restore hooks (term-ui decision 5). A calling shell then sees a death
+   by signal and stops its script, as the convention requires ("You cannot
+   'fake' the proper exit status by an exit(3) with a special numeric
+   value", Cracauer); `$?` still reads 128 plus the signal. Both sudos
+   pass it on (sudo(8), "EXIT VALUE": "sudo will send itself the same
+   signal"; sudo-rs `exit_with_signal`). A child whose code sb passes
+   through (decision 5) and that died of a signal sb didn't receive gives
+   exit 128 plus the signal, as its failure, not sb's interruption. A
+   cli-core change, exec plan Task 1c; the cli-core and term-ui specs'
+   forced-exit text amended with it.
