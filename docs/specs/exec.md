@@ -1,0 +1,381 @@
+# Spec: `exec` (approved 2026-11-04)
+
+Module of the approved capability map (`exec`): child processes for every
+later module (host's checks, apt and systemd, repo's git, python-env's uv,
+ansible's playbooks, docker's `systemctl` check). The first vertical slice
+(`cli-core` → `term-ui` → `docker` + `config`) is done; the build order
+puts `exec` next. This spec covers the module's shape and its tests; which
+command first uses it is decision 4.
+
+## Assumptions
+
+1. **Children are started by library calls only:** `tokio::process` for
+   piped and attached children (the runtime is tokio, capability map
+   decision 8; the workspace's tokio gains its `process` feature),
+   portable-pty 0.9.0 for children under a pseudo-terminal (stack table;
+   proto-runner and proto-musl used it), and rustix for process-group
+   signals (already in the tree with its `process` feature). No shell is
+   involved unless a caller runs one by name.
+2. **proto-runner's findings are the design** (prototypes/proto-runner/
+   FINDINGS.md): portable-pty starts the child in its own session
+   (`setsid`, so its process group id is its pid) and Ctrl-C reaches only
+   sb; cancelling sends SIGTERM to the child's process group and, after a
+   grace period, SIGKILL to the group, not portable-pty's `Child::kill`
+   (SIGHUP, then SIGKILL, to the one pid); a killed child is reported as
+   killed, not by an exit code; output is split on bytes before decoding.
+3. **term-ui shows the output.** `stream` and `pty` hand lines to a
+   term-ui `Step` (`Step::output`), which splits on `\r`, keeps colour only
+   on a coloured target, drops other control characters, masks marked
+   secrets and logs every line (term-ui spec, decision 9); its failure
+   block shows a failed step's last 10 lines. exec draws nothing itself.
+   exec therefore depends on sb-term-ui: an amendment to the capability
+   map's `exec` row (cli-core, term-ui), and to deny.toml's wrappers; the
+   row's "ANSI stripping when not a terminal" moves to term-ui, which does
+   it.
+4. **sb-go's executor is the behaviour to keep where it matters**
+   (executor/executor.go and its callers): `GIT_TERMINAL_PROMPT=0` for git
+   not attached to the terminal; custom stdin refused under a
+   pseudo-terminal; timeouts on most calls (the 5 s `systemctl` check in
+   cmd/docker.go, 2 min per apt attempt in host/apt.go); a replaced
+   environment (completion/detection.go); stderr matched for retries
+   (host/apt.go). sb-go's five output modes map onto four ways to run.
+5. **Carried items addressed to exec** (tasks/config/todo.md): children
+   don't inherit `SB_RELAUNCHED` (an unprivileged sb started by one would
+   refuse to relaunch); `COLORTERM` for children (decision 3); the
+   sudoers question on `--preserve-env` names beyond `env_keep`, with
+   sudo's `use_pty` default and how it relays signals, recorded in
+   docs/platform-notes/ (cli-core's relaunch owns the question; exec's
+   plan answers it because attached children and signals depend on it).
+
+## Objective
+
+One place where sb starts child processes, so every module gets the same
+cancellation, timeouts, logging, secret handling and errors, and none
+re-implements them. Ctrl-C, SIGTERM or the command's own request stops
+every child sb started, with the descendants that stay in its process
+group, within the grace period plus one second.
+
+### A command
+
+`Cmd::new(program)` (named apart from std's and tokio's `Command`) with:
+
+- **Arguments, fail closed for the log:** `arg(&'static str)` for
+  literals written in sb's code, which the log shows; `value(String)` for
+  anything else (paths, names, a user's pass-through `-e`), logged as
+  `[ARG]`; `secret(String)` for credentials, `[REDACTED]` in the log and
+  also taken out of the child's output and of errors. The run log shows
+  the program, the literals in place and the count of masked arguments.
+  argv is readable in `/proc/<pid>/cmdline` by other users, so a caller
+  passes a secret through the environment or stdin where the tool allows.
+- **Environment:** inherited, minus `SB_RELAUNCHED`; `env(name, value)`,
+  `secret_env(name, value)` (taken out of output too), `env_remove(name)`,
+  or `env_clear()` (sb-go's `WithEnv`). The log names changed variables,
+  never values.
+- **Working directory:** `cwd(path)`; sb's own when not given. It must be
+  an existing directory before spawning (portable-pty would silently fall
+  back to `$HOME`), else a spawn error.
+- **Stdin:** null unless `stdin(bytes)` gives bytes, written from their
+  own task and then closed (a child that exits early is fine). Never the
+  terminal for piped or PTY children: a child in its own group reading
+  the terminal would stop on SIGTTIN.
+- **Timeout:** `timeout(d)`, through the same SIGTERM, grace, SIGKILL path
+  as cancellation, ending as timed out; `grace(d)` to change the grace
+  period for one command.
+
+### Ways to run
+
+| Way | sb-go mode | Output | Typical use |
+|---|---|---|---|
+| `capture(&token)` | Capture, Combined, Discard | stdout and stderr collected separately, up to 1 MiB each (cli-core's cap for text sb reads), returned | `systemctl is-active`, `git rev-parse`, `uv --version`, `dpkg-query` |
+| `stream(&mut step)` | Stream, managed output | each line to the step as it arrives (stdout and stderr); stderr's last 64 KiB kept for the caller (apt's retry match) | `apt-get update`, `git pull` under the runner |
+| `pty(&mut step)` | `WithPseudoTerminal` | under a pseudo-terminal of sb's terminal size (24×120 when stderr isn't one, as sb-go), lines to the step; the child sees a TTY; stdin refused, the writer dropped at start so a reading child gets EOF | tools that colour or show progress only on a TTY |
+| `attached(&token)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged | an editor, an `ansible-playbook` run shown as it is |
+
+`stream` and `pty` take the step's token (term-ui's `Step::token`, a
+child of cli-core's shared token); `capture` and `attached` take one.
+
+- **Lines:** split at `\n` from bytes, each read bounded so memory is:
+  tokio's `AsyncBufReadExt::read_until` through `AsyncReadExt::take(4 KiB
+  + 1)` for pipes, std's `BufRead::read_until` through `Read::take` on the
+  PTY's reader thread; a line longer than 4 KiB is cut there and the rest
+  up to its `\n` dropped; then each line is handed to the step, which keeps what follows the
+  last `\r`. term-ui has no "replace the last line" call, so `\r` progress
+  shows at the next `\n`; a final line without `\n` is still delivered.
+- **Past a cap:** reading goes on (a full pipe would block the child);
+  `capture` keeps the first 1 MiB of stdout and the last 1 MiB of stderr
+  (its tail holds the error) and marks the result truncated.
+- **After the child exits:** output is read to its end for at most 2 s
+  (a background grandchild can hold the pipe or the PTY open, as sb-go's
+  `WaitDelay` handles), then reading stops; on the PTY, EIO is the end.
+- **Secrets in output:** every `secret` argument and `secret_env` value
+  (empty ones ignored) is taken out of captured text, streamed lines
+  (`Line::secret`) and errors before anything is shown or logged.
+  `attached` output goes straight to the terminal and can't be masked.
+
+### Outcome and errors
+
+Every way returns an `Outcome`: exited with a code, killed by a signal
+(the number for piped children; for `pty`, portable-pty gives only the
+signal's name and a code of 1, kept as the name), interrupted (the token
+was cancelled), or timed out; and the time it took. Once the token is
+cancelled or the timeout passes, the outcome is interrupted or timed out
+even if the child then exits 0 within the grace period.
+
+- `check()` turns anything but exit 0 into an `exec::Failed` error naming
+  the program (arguments masked as in the log) and the outcome. For
+  `capture` it carries stderr's last lines; for `stream` and `pty` it
+  doesn't, since term-ui's failure block shows the step's last 10 lines.
+- A spawn failure (program not found, not executable, no such directory)
+  is its own error, naming the program, before any outcome.
+- Exit codes for sb: an interrupted run ends as cli-core decides (130 or
+  143, whatever the child did). A step that fails with `exec::Failed`
+  ends ✗ with its error and the step's last lines, and the times column
+  shows `exit N` or the signal's name (term-ui spec, "not here yet");
+  term-ui recognises the error for this, an amendment to its endings
+  (decision 5). The command then exits 1, or with the child's own code
+  where it asks to pass it through (decision 5). A quiet exit
+  (`Exit`) isn't used for a failed child: term-ui shows no block for one.
+
+### Cancellation, timeouts and process groups
+
+- **Piped and PTY children:** each in its own process group, whose id is
+  the child's pid (`process_group(0)`; portable-pty's `setsid`). On
+  cancellation or timeout: SIGTERM and SIGCONT (a stopped process acts on
+  SIGTERM only once continued) to that group, then SIGKILL to the group
+  after the grace period while any member is left. A leader that exits on
+  SIGTERM is reaped at once, and its group can still hold a grandchild
+  that ignores SIGTERM (`sh` around a tool that traps it), so after the
+  reap sb keeps checking the group (`test_kill_process_group`) and
+  signals it while members remain. Linux keeps a process-group id from
+  reuse while any member uses it (to be confirmed and recorded in
+  docs/platform-notes/ with a test), so the id sb signals is always the
+  one it created. sb waits for the child, so it leaves no zombie of its
+  own.
+- **Attached children** stay in sb's process group, so they can use the
+  terminal (decision 2): the terminal's Ctrl-C reaches them directly;
+  sb never signals sb's own group. While one runs, sb holds its own
+  reaction to SIGINT as a shell does: it waits for the child; if the
+  child died of SIGINT, sb records the interruption on cli-core's
+  `Shutdown` and cancels the token, so later steps don't run and sb exits
+  130; otherwise it goes on (Ctrl-C in an editor, ansible's `pause`
+  prompts). Held SIGINTs don't count toward cli-core's forced exit, so
+  two Ctrl-Cs in an editor leave sb waiting. A SIGINT sent by another
+  process (`kill`, not the terminal; signal-hook's `WithOrigin` tells
+  them apart) is sent on to the child's pid, as is a SIGTERM to sb; then
+  the grace period applies, and `timeout` works the same way, by pid.
+  No attached child runs while a term-ui `Runner` is live: term-ui
+  exposes whether one is, and `attached` refuses to start then. This
+  changes how cli-core handles signals while an attached child runs (an
+  amendment to the cli-core spec with this one).
+- **sb's forced exit** (a second signal, outside an attached child):
+  before exiting, cli-core's hook sends SIGKILL to every group exec
+  created that still has members.
+- **Dropped futures:** dropping a running piped or PTY child sends SIGKILL
+  to its group at once (tokio's `kill_on_drop` reaches only the pid, so
+  exec keeps its own guard) and leaves the reaping to tokio's orphan
+  handling or the PTY's wait thread.
+- **Known limits:** descendants that leave the group (`setsid`,
+  daemonizing helpers, ssh's ControlPersist master) aren't reached; if sb
+  itself is killed with SIGKILL (OOM, `kill -9`), its piped children keep
+  running (stopping them needs `PR_SET_PDEATHSIG` from an unsafe
+  `pre_exec`, which the workspace forbids). Why not make sb a child
+  subreaper (rustix's safe `set_child_subreaper`) to adopt the helpers
+  that leave the group: it would also adopt daemons a tool starts on
+  purpose (ssh's ControlPersist master, a service), and killing those is
+  wrong; tests use it, sb doesn't.
+
+### Environment rules
+
+- `SB_RELAUNCHED` never reaches a child.
+- `GIT_TERMINAL_PROMPT=0` for every child that isn't attached, git or not
+  (sb-go sets it only for git; uv, ansible-galaxy or a script can run git
+  too, and the variable means nothing to other programs).
+- `COLORTERM` from the colour profile for `pty` and `attached` children
+  only (truecolor, 256color; an inherited one removed for ansi and
+  ascii), decision 3.
+
+### Logging
+
+A run-log record when a child starts (program, literal arguments, the
+count of masked ones, changed variable names, working directory, the way
+it runs) and when it ends (outcome, elapsed). `stream` and `pty` lines are
+logged by term-ui as the step's output, secrets taken out; `capture`
+output is logged only if the caller shows it; `attached` output never
+reaches the log.
+
+### Differences from sb-go (the complete list)
+
+- Cancellation and timeouts reach a piped or PTY child's process group,
+  with SIGTERM first and SIGKILL after a grace period (sb-go: Go kills the pid at
+  once, so grandchildren can outlive it).
+- Ctrl-C during an attached child leaves it to the child (sb-go cancels
+  its context, which kills the child).
+- A PTY child gets sb's terminal size (sb-go: always 24×120).
+- Arguments are masked in logs and errors unless they are literals in
+  sb's code; secrets are taken out of output too (sb-go: callers mask by
+  hand, where they do).
+- Combined and Discard aren't separate ways: `capture` returns both
+  streams.
+- Output is capped in memory (sb-go: unbounded); `stream` keeps stderr's
+  last 64 KiB for the caller, everything streamed is in the run log.
+- `GIT_TERMINAL_PROMPT=0` for every child not attached (sb-go: git only).
+- `COLORTERM` for `pty` and `attached` children only (sb-go sets it
+  process-wide from the colour profile, so every child gets it).
+- After a child exits, output is read for at most 2 s (sb-go: until the
+  pipe closes, except where a caller sets `WaitDelay`).
+
+### Scope
+
+- **Here:** the `Cmd` builder, the four ways, timeouts, cancellation with
+  process groups, the environment rules, logging, errors, the cli-core
+  amendment for attached children, the capability map's row, the sudoers
+  platform note, tests with real children.
+- **Not here:** forwarding a terminal resize to a running PTY child and a
+  terminal-emulator crate for cursor-moving child output (capability map
+  open items, for when a command needs them); each module's own use.
+
+## Tech Stack
+
+Rust 1.99.1 (edition 2024, the workspace pin); tokio with `process`
+(added), portable-pty 0.9.0 (new; it brings nix 0.28 among others, so the
+binary size and cargo-deny are measured when sb first links it, per the
+ratchet), rustix (process groups and signals), tokio-util's
+`CancellationToken` (cli-core's), sb-term-ui for `Step`. New crate
+`sb-exec` (crates/exec), depending on sb-cli-core and sb-term-ui.
+
+## Commands
+
+```
+cargo test -p sb-exec                 # unit and integration tests
+scripts/check.sh fast | task | full   # the quality bar (CONSTRAINTS.md)
+```
+
+## Project Structure
+
+```
+crates/exec/
+  src/lib.rs        → Cmd, Outcome, errors
+  src/run.rs        → capture, stream, attached (tokio::process)
+  src/pty.rs        → pty (portable-pty): size, reader thread, writer
+  src/group.rs      → process groups: SIGTERM, SIGCONT, escalation, guard
+  src/mask.rs       → secrets out of output and errors
+  tests/            → real children (sh scripts, sleep, a grandchild);
+                      signal tests through a test binary on a PTY
+```
+
+## Code Style
+
+As the other crates: library calls cited with full URLs, `thiserror` for
+the crate's errors, no `#[allow]`, no `unsafe`.
+
+```rust
+let outcome = Cmd::new("systemctl")
+    .arg("is-active")
+    .arg("saltbox_managed_docker_controller.service")
+    .timeout(Duration::from_secs(5))
+    .capture(&token)
+    .await?;
+```
+
+## Testing Strategy
+
+- **Real children, no mocks:** `sh -c` scripts and `sleep` stand in for
+  tools. Exit codes, signals, spawn failures; stdin bytes, null stdin, a
+  child that reads stdin under `pty` (EOF, not a hang); output split
+  across reads (a multi-byte character at a read boundary, `\r` progress,
+  a last line without `\n`, a line past 4 KiB), the caps and truncation;
+  a backgrounded `sleep 30` holding stdout (done within the 2 s drain).
+- **Cancellation and timeouts:** a child that starts a grandchild and
+  ignores SIGTERM: cancel, both gone within the grace plus a margin,
+  SIGKILL sent; a child that exits on SIGTERM: no SIGKILL; a timeout:
+  timed out, same path; a stopped child (SIGSTOP) still ends.
+- **Groups after the leader:** a leader that exits on SIGTERM with a
+  grandchild that ignores it: the grandchild gets SIGKILL after the grace.
+- **Attached:** Ctrl-C (one and two), a SIGINT from `kill`, and SIGTERM
+  forwarding, through a test binary (`crates/exec/src/bin/exec-demo.rs`,
+  as term-ui's demo) on a PTY (`script`), as validate_config_signals.rs.
+- **PTY:** the child sees a TTY (`test -t 1`), its size (`stty size`,
+  run on a terminal through `script`, or with an injected size), colours
+  kept for a coloured target and stripped otherwise; a missing working
+  directory is an error, not `$HOME`.
+- **Environment and logging:** `SB_RELAUNCHED` absent,
+  `GIT_TERMINAL_PROMPT=0`, changed variables present, no value logged;
+  the known-secret test on a `secret` argument, a `secret_env` value, a
+  child echoing them, and a pass-through `value` (the carried `-e` item).
+- **Rules that keep the harness safe:** in-process tests cancel through
+  the token and never send real signals to the test process; real
+  SIGINT and SIGTERM only through a test binary; before any group signal,
+  a test asserts the group id is the child's pid; nothing calls
+  `waitpid(-1)`; "gone" is checked with `test_kill_process_group`, with
+  the test binary a child subreaper (`set_child_subreaper`) so it reaps
+  orphaned grandchildren itself (a container without a reaping init would
+  keep them as zombies); the
+  grace period is short in tests, so a mutation run doesn't wait.
+- Coverage and mutation as CONSTRAINTS.md.
+
+## Boundaries
+
+- **Always:** library calls for processes, groups and the PTY; every
+  piped and PTY child killed with its group on cancel or timeout; secrets
+  marked where they enter; arguments masked unless literal.
+- **Ask first:** a dependency beyond those named; a fifth way to run;
+  further changes to cli-core's cancellation or term-ui's `Step` API.
+- **Never:** build a command line from strings for a shell; log a masked
+  argument or an environment value; signal sb's own process group; leave
+  a piped or PTY child running after sb exits on a signal it handles.
+
+## Success Criteria
+
+1. Each way to run works with real children: exit codes, signals, spawn
+   failures, stdin, stdout and stderr as the table says, the caps and
+   truncation, a failure's error as specified.
+2. Ctrl-C, SIGTERM, the command's own request and a timeout stop a piped
+   or PTY child and the descendants in its group within the grace period
+   plus one second, SIGKILL only when SIGTERM didn't end them, also after
+   the leader exited; a stopped child too; no zombie of sb's own left.
+3. Attached: Ctrl-C reaches the child, and sb ends interrupted (130) only
+   if the child died of it, two included; a SIGINT from another process
+   and a SIGTERM to sb reach the child; `attached` refuses while a runner
+   is live.
+4. A PTY child sees a TTY of sb's size; its colours follow sb's colour
+   decision; a byte-split character arrives whole; `\r` progress shows at
+   the next line; a reading child gets EOF; a missing directory is an
+   error.
+5. Output after exit is read for at most 2 s.
+6. No masked argument, secret or environment value in any log record or
+   error, nor in output exec shows (`capture`, `stream`, `pty`; `attached`
+   output is the child's own on the terminal), the known-secret test with
+   a pass-through value included.
+7. `SB_RELAUNCHED` never reaches a child; `GIT_TERMINAL_PROMPT=0` for
+   every child not attached.
+8. The sudoers and `use_pty` question answered in docs/platform-notes/;
+   the capability map's row, deny.toml and the cli-core spec amended.
+9. The first command that uses exec (decision 4) works through the
+   binary; binary size and startup measured, with an ADR past the
+   tolerance.
+
+## Decisions (maintainer, 2026-11-04)
+
+1. **Grace period:** 5 s by default before SIGKILL, with a per-command
+   `grace()` for longer critical sections (proto-runner used 3 s; sb-go
+   has none).
+2. **Attached children keep sb's terminal and process group:** the
+   terminal's Ctrl-C goes to the child; sb holds its own reaction, waits,
+   and ends interrupted (130) only if the child died of SIGINT; held
+   SIGINTs don't count toward the forced exit; a SIGTERM to sb or a
+   SIGINT from another process is forwarded to the child's pid. The
+   cli-core spec is amended with this one.
+3. **`COLORTERM`:** set from the colour profile only for `pty` and
+   `attached` children (truecolor, 256color; an inherited one removed for
+   ansi and ascii); `capture` and `stream` children's environment is left
+   as it is.
+4. **First user:** all four ways are built in this module with real-child
+   tests; `capture` is proven through the binary by docker
+   start/stop/restart (its `systemctl` check), next after this module;
+   `stream` by host's apt, `pty` and `attached` by their first commands
+   (apt progress, ansible) when those land.
+5. **A failed child:** term-ui learns `exec::Failed` (an amendment to its
+   endings): ✗ with the error and the step's last lines, `exit N` or the
+   signal's name in the times column. sb exits 1; only an `attached`
+   ansible run passes its own code through, with one line naming the
+   program and its outcome (as sb-go's "playbook … failed, scroll up …").
