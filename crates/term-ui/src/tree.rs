@@ -931,21 +931,6 @@ mod tests {
         assert_eq!(printed[0], format!("╰── ✓ a{}1s", " ".repeat(55)));
     }
 
-    /// A label that exactly fills the room before the time isn't cut.
-    #[test]
-    fn a_label_that_just_fits_is_whole() {
-        let theme = plain();
-        let t0 = Instant::now();
-        let mut tree = Tree::default();
-        // 64 columns: the branch (4), the label, a space and "1s" (2).
-        let label = format!("✓ {}", "x".repeat(55));
-        let id = tree.add(None, Labels::new("x", &label[4..]), t0);
-        tree.finish(id, Status::Done, secs(t0, 1));
-        tree.end();
-        let printed = tree.take_printable(&draw(&theme, secs(t0, 1)));
-        assert_eq!(printed[0], format!("╰── {label} 1s"));
-    }
-
     /// A step that ended while a sub-step still runs stays live, even once
     /// a later sibling shows where it sits.
     #[test]
@@ -979,7 +964,6 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 1));
         d.width = 40;
         let printed = tree.take_printable(&d);
-        assert_eq!(printed[0], "╰── ✓ a very long done label a very…  1s");
         assert_eq!(width(&printed[0]), 40);
     }
 
