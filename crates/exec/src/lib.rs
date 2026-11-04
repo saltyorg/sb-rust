@@ -2,8 +2,11 @@
 //! [`Cmd`], so every module gets the same cancellation, timeouts,
 //! logging, secret handling and errors.
 
+mod group;
 mod mask;
 mod run;
+
+pub use group::on_forced_exit;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -31,7 +34,12 @@ pub struct Cmd {
     env: BTreeMap<String, Var>,
     cwd: Option<PathBuf>,
     stdin: Option<Vec<u8>>,
+    timeout: Option<Duration>,
+    grace: Duration,
 }
+
+/// How long a group gets between SIGTERM and SIGKILL (decision 1).
+const GRACE: Duration = Duration::from_secs(5);
 
 enum Arg {
     Literal(&'static str),
@@ -103,6 +111,8 @@ impl Cmd {
             env: BTreeMap::new(),
             cwd: None,
             stdin: None,
+            timeout: None,
+            grace: GRACE,
         }
     }
 
@@ -161,6 +171,20 @@ impl Cmd {
     /// existing directory when the child starts.
     pub fn cwd(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
+        self
+    }
+
+    /// End the child if it runs longer than `limit`, as a cancellation
+    /// does (SIGTERM, the grace, SIGKILL), its outcome timed out.
+    pub fn timeout(mut self, limit: Duration) -> Self {
+        self.timeout = Some(limit);
+        self
+    }
+
+    /// The time between SIGTERM and SIGKILL for this command (5 s
+    /// otherwise).
+    pub fn grace(mut self, grace: Duration) -> Self {
+        self.grace = grace;
         self
     }
 
@@ -239,6 +263,7 @@ impl Cmd {
             .cwd
             .as_ref()
             .map_or_else(|| ".".to_owned(), |dir| dir.display().to_string());
+        let timeout_ms = self.timeout.map(millis);
         tracing::info!(
             command,
             masked,
@@ -246,9 +271,16 @@ impl Cmd {
             env_cleared = environment.clear,
             cwd,
             way = way.name(),
+            timeout_ms,
+            grace_ms = millis(self.grace),
             "child started"
         );
     }
+}
+
+/// `duration` in whole milliseconds, for the log.
+pub(crate) fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// How a child ended and how long it ran (spec, "Outcome and errors").
@@ -265,6 +297,10 @@ pub enum Ending {
     Exited(i32),
     /// A signal killed it (the signal's number).
     Signalled(i32),
+    /// The token was cancelled while it ran, whatever it then did.
+    Interrupted,
+    /// It ran past its timeout, whatever it then did.
+    TimedOut,
 }
 
 impl fmt::Display for Ending {
@@ -275,6 +311,8 @@ impl fmt::Display for Ending {
                 Some(name) => write!(f, "was killed by {name}"),
                 None => write!(f, "was killed by signal {signal}"),
             },
+            Self::Interrupted => f.write_str("was interrupted"),
+            Self::TimedOut => f.write_str("timed out"),
         }
     }
 }
@@ -391,6 +429,20 @@ mod tests {
             .secret("hunter2-not-real");
         assert_eq!(cmd.shown(), ("git -C [ARG] fetch [REDACTED]".to_owned(), 2));
         assert_eq!(Cmd::new("true").shown(), ("true".to_owned(), 0));
+    }
+
+    #[test]
+    fn durations_are_logged_in_whole_milliseconds() {
+        assert_eq!(millis(Duration::from_micros(1_500_900)), 1500);
+        assert_eq!(millis(Duration::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn the_grace_is_5_s_unless_given() {
+        assert_eq!(Cmd::new("x").grace, Duration::from_secs(5));
+        let cmd = Cmd::new("x").grace(Duration::from_millis(50));
+        assert_eq!(cmd.grace, Duration::from_millis(50));
+        assert_eq!(Cmd::new("x").timeout, None);
     }
 
     #[test]

@@ -253,8 +253,8 @@ timed-out outcomes win over an exit 0 in the grace; the drop guard
 (SIGKILL to the group); registration with cli-core's existing forced-exit
 hook (`Shutdown::on_forced_exit`; any change to cli-core here is raised
 first). `crates/exec/src/bin/exec-demo.rs` runs a piped child for real
-signal tests; it prints its child's group id so a test can check the
-group. Tests run in a test binary that is a child subreaper with a
+signal tests; its child's group id reaches the test (as built: through
+a file, see below) so a test can check the group. Tests run in a test binary that is a child subreaper with a
 reaper running alongside: it peeks with `waitid(WaitId::Pgid(..),
 EXITED | NOHANG | NOWAIT)` and reaps by pid every member but the leader
 (left to tokio), recording each one's ending signal, so an exited
@@ -265,8 +265,20 @@ Tests assert pgid == pid before signalling and use a short grace.
 wrapper (watchexec; the Task 2-3 library review's lead, unverified there:
 does it kill the whole group on drop?) and use it or record why not.
 
+**As built (2026-11-04):** the test reaper reaps each adopted grandchild
+by the pid its script reports (`waitpid`), not from a `waitid` peek:
+rustix's `WaitIdStatus` carries no pid, and `waitpgid` would also reap
+the leader, which tokio reaps; `waitid(Pgid, NOWAIT)` still checks that
+no zombie is left. exec-demo's signals go to its pid with exec-demo run
+piped, not on a PTY: its child is piped and leaves the terminal alone,
+and std's `ExitStatus` shows the death by signal (decision 7) that a
+shell's `$?` reads as 130 or 143. The pids go to a file exec-demo is
+given rather than to its output. The forced-exit hook is exec's own
+(`sb_exec::on_forced_exit(&Shutdown)`, registered by the binary), so
+cli-core is unchanged.
+
 **Acceptance criteria:**
-- [ ] In-process, through the token: a child that exits on SIGTERM gets
+- [x] In-process, through the token: a child that exits on SIGTERM gets
       no SIGKILL; one that ignores it is SIGKILLed after the grace; a
       leader that exits on SIGTERM with a grandchild that ignores it: the
       grandchild SIGKILLed; a leader and a grandchild that both exit on
@@ -276,14 +288,15 @@ does it kill the whole group on drop?) and use it or record why not.
       dropped future leaves no member; no zombie of exec's own left (a
       `waitid` peek on the leader's group finds nothing); all within the
       grace plus one second.
-- [ ] The default grace is 5 s and `grace(d)` overrides it (the builder's
+- [x] The default grace is 5 s and `grace(d)` overrides it (the builder's
       value, so no test waits 5 s).
-- [ ] Through exec-demo on a PTY: SIGINT and SIGTERM to exec-demo with a
-      grandchild-holding child end with 130 and 143 and the group gone; a
+- [x] Through exec-demo (piped, see "As built"): SIGINT and SIGTERM to
+      exec-demo with a grandchild-holding child end it by that signal and
+      the group gone; a
       second signal makes the forced-exit hook SIGKILL the group.
 
 **Verification:**
-- [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+- [x] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
 
 **Dependencies:** Task 3
 **Files:** `crates/exec/src/group.rs`, `crates/exec/src/bin/exec-demo.rs`,

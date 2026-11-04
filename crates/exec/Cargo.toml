@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 sb-cli-core.workspace = true
 aho-corasick.workspace = true
+rustix.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
@@ -17,7 +18,6 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-rustix.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 

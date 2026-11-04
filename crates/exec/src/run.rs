@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+use crate::group::Group;
 use crate::mask::Mask;
 use crate::{Captured, Cmd, Ending, Outcome, SpawnCause, SpawnError, Way};
 
@@ -21,6 +22,37 @@ const DRAIN: Duration = Duration::from_secs(2);
 
 /// Bytes read from a pipe at a time.
 const CHUNK: usize = 8 * 1024;
+
+/// A stop under way: why (the outcome it gives), and when the group gets
+/// SIGKILL.
+struct Stop {
+    ending: Ending,
+    kill_at: tokio::time::Instant,
+    killed: bool,
+}
+
+impl Stop {
+    /// Begin stopping now: SIGTERM and SIGCONT to the group.
+    fn now(ending: Ending, grace: Duration, group: Option<&mut Group>) -> Self {
+        if let Some(group) = group {
+            group.terminate();
+        }
+        Self {
+            ending,
+            kill_at: tokio::time::Instant::now() + grace,
+            killed: false,
+        }
+    }
+}
+
+/// Sleep until `at`, or for ever without one (a branch its guard keeps
+/// off).
+async fn sleep_until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
 
 /// One stream's bytes as kept, and whether any were left out. A deque, so
 /// the tail drops its front in place, as its reads arrive.
@@ -37,9 +69,10 @@ impl Cmd {
     /// process group of its own, stdin null unless [`Cmd::stdin`] gave
     /// bytes. Why not tokio's `Child::wait_with_output`: it keeps all the
     /// output, with no cap, and waits for the pipes to close, which a
-    /// background grandchild can put off for good. The token acts with the
-    /// process-group handling (exec plan, Task 4).
-    pub async fn capture(&self, _token: &CancellationToken) -> Result<Captured, SpawnError> {
+    /// background grandchild can put off for good. Cancelling `token`, or
+    /// the timeout passing, ends the child's group (SIGTERM, the grace,
+    /// SIGKILL) and the outcome is interrupted or timed out.
+    pub async fn capture(&self, token: &CancellationToken) -> Result<Captured, SpawnError> {
         let (command, _) = self.shown();
         let failed = |cause: SpawnCause| SpawnError {
             program: self.program.to_string_lossy().into_owned(),
@@ -59,6 +92,7 @@ impl Cmd {
             }
         };
         let start = Instant::now();
+        let mut group = child.id().and_then(Group::of);
         self.log_start(Way::Capture);
         let mask = self.mask();
         let keep = MAX_FILE_BYTES + mask.longest();
@@ -75,20 +109,65 @@ impl Cmd {
             };
             tokio::pin!(io);
             let mut drained = false;
-            let status = tokio::select! {
-                status = child.wait() => status,
-                _ = &mut io => {
-                    drained = true;
-                    child.wait().await
+            let mut stop: Option<Stop> = None;
+            let time_out_at = self
+                .timeout
+                .map(|limit| tokio::time::Instant::now() + limit);
+            let status = loop {
+                let kill_at = stop.as_ref().map(|stop| stop.kill_at);
+                tokio::select! {
+                    status = child.wait() => break status,
+                    _ = &mut io, if !drained => drained = true,
+                    () = token.cancelled(), if stop.is_none() => {
+                        stop = Some(Stop::now(Ending::Interrupted, self.grace, group.as_mut()));
+                    }
+                    () = sleep_until(time_out_at), if stop.is_none() && time_out_at.is_some() => {
+                        stop = Some(Stop::now(Ending::TimedOut, self.grace, group.as_mut()));
+                    }
+                    () = sleep_until(kill_at), if stop.as_ref().is_some_and(|stop| !stop.killed) => {
+                        if let Some(group) = &group {
+                            group.kill();
+                        }
+                        // The leader's pid too: it may have left its group,
+                        // and it is unreaped, so the pid is still its own.
+                        let _ = child.start_kill();
+                        if let Some(stop) = &mut stop {
+                            stop.killed = true;
+                        }
+                    }
                 }
             };
-            if !drained {
-                let _ = tokio::time::timeout(DRAIN, &mut io).await;
+            if let Some(group) = &mut group {
+                group.reaped();
             }
-            status.map_err(|err| failed(err.into()))?
+            match (&stop, &group) {
+                (Some(stop), Some(group)) => {
+                    // Whatever is left of the group, within the grace plus
+                    // a second; the output its members still write is read
+                    // until then. Nothing is lost when `finish` sees the
+                    // group empty first: a dying process closes its pipe
+                    // ends before it becomes a zombie, so the reads have
+                    // reached their end by then.
+                    let finishing = group.finish(stop.kill_at, stop.killed);
+                    tokio::pin!(finishing);
+                    loop {
+                        tokio::select! {
+                            () = &mut finishing => break,
+                            _ = &mut io, if !drained => drained = true,
+                        }
+                    }
+                }
+                _ if !drained => {
+                    let _ = tokio::time::timeout(DRAIN, &mut io).await;
+                }
+                _ => {}
+            }
+            let status = status.map_err(|err| failed(err.into()))?;
+            stop.map_or_else(|| ending(status), |stop| stop.ending)
         };
+        drop(group);
         let outcome = Outcome {
-            ending: ending(status),
+            ending: status,
             elapsed: start.elapsed(),
         };
         log_end(&command, &outcome);
@@ -227,7 +306,7 @@ fn log_end(command: &str, outcome: &Outcome) {
     tracing::info!(
         command,
         outcome = %outcome.ending,
-        elapsed_ms = u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),
+        elapsed_ms = crate::millis(outcome.elapsed),
         "child ended"
     );
 }
