@@ -756,6 +756,47 @@ mod tests {
         assert_eq!(screen.matches("is bigger than").count(), 1, "{screen}");
     }
 
+    /// Ctrl-C during the checks: each check reads interrupted with its
+    /// whole label (term-ui decision 11), the times in one column.
+    #[tokio::test]
+    async fn an_interrupt_keeps_the_checks_labels_whole() {
+        let root = saltbox_root("valid").expect("root");
+        let fake = Fake::start().expect("fake");
+        fake.script("/client/v4/zones", Answer::json(200, ZONES).held());
+        fake.script("/v2/users/login/", Answer::json(200, "{}").held());
+        let shutdown = Shutdown::new();
+        let signal = async {
+            while fake.seen().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            shutdown.signalled(2);
+        };
+        let ((result, screen), ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(run_until(root.path(), &fake, &shutdown), signal)
+        })
+        .await
+        .expect("the run ends");
+        fake.release();
+        // term-ui's interrupted ending; cli-core's finish_run turns it
+        // into SIGINT's 130 from the shutdown.
+        assert!(matches!(result, Err(Exit(1))), "{screen}");
+        for label in [
+            "✗ Validating Cloudflare API credentials",
+            "✗ Validating Docker Hub credentials",
+        ] {
+            let line = screen.lines().find(|l| l.contains(label));
+            assert!(
+                line.is_some_and(|l| l.contains("interrupted")),
+                "{label}\n{screen}"
+            );
+        }
+        let steps = screen
+            .lines()
+            .filter(|l| l.contains('✗') || l.contains('✓'));
+        assert!(steps.clone().all(|l| !l.contains('…')), "{screen}");
+        assert!(steps.count() > 2, "{screen}");
+    }
+
     /// Ctrl-C or the command's own request stops checks still waiting on
     /// the services.
     #[tokio::test]

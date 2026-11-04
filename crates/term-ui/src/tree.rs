@@ -13,8 +13,8 @@ use sb_cli_core::theme::{Role, Theme};
 use crate::runner::Labels;
 use crate::style::paint;
 
-/// The column times end in (proto-runner's reviewed layout), or the
-/// screen's width when that is narrower.
+/// The column times end in at least (proto-runner's reviewed layout);
+/// further right when a line needs it, never past the screen.
 const COLUMN: usize = 64;
 /// Output lines shown under a running or interrupted step: sb-go's 8
 /// (`liveTaskOutputLines`).
@@ -96,6 +96,18 @@ pub(crate) struct Tree {
     ended: bool,
     /// Where the run's log is (`RunLog::pointer`), for a failure's block.
     pointer: Option<String>,
+    /// The furthest right the times have ended: later lines, printed or
+    /// live, never end left of it.
+    column: usize,
+}
+
+/// A step line's pieces before its time column is known.
+struct Parts {
+    lead: String,
+    role: Role,
+    left: String,
+    right: String,
+    right_role: Role,
 }
 
 impl Tree {
@@ -228,7 +240,9 @@ impl Tree {
         format!("{skip}{}", GLYPHS.skip_indent)
     }
 
-    fn line(&self, id: usize, d: &Draw) -> String {
+    /// Step `id`'s line before its time column is known: the branch, the
+    /// label for its status, and its time (with the ending's reason).
+    fn parts(&self, id: usize, d: &Draw) -> Parts {
         let node = &self.nodes[id];
         let item = match self.last(id) {
             Some(true) => GLYPHS.last_item,
@@ -276,8 +290,25 @@ impl Tree {
             Status::Running | Status::Done => Role::Muted,
             _ => role,
         };
-        // Times end in one column; a label too long for it is cut with `…`.
-        let column = COLUMN.min(d.width);
+        Parts {
+            lead,
+            role,
+            left,
+            right,
+            right_role,
+        }
+    }
+
+    /// Step `id`'s line, its time ending in `column`; a label too long
+    /// for it is cut with `…`.
+    fn line(&self, id: usize, d: &Draw, column: usize) -> String {
+        let Parts {
+            lead,
+            role,
+            left,
+            right,
+            right_role,
+        } = self.parts(id, d);
         let room = column.saturating_sub(width(&lead) + width(&right) + 1);
         let left = cut(&left, room);
         let painted = d.paint(role, &left);
@@ -287,6 +318,26 @@ impl Tree {
             d.paint(Role::Faint, &lead),
             d.paint(right_role, &right)
         )
+    }
+
+    /// Where the times of the steps not yet printed end: one column, past
+    /// every one's whole line, so no label is cut while the screen has
+    /// room (decision 11); at least `COLUMN`, never left of where times
+    /// have ended before (so the live area doesn't jump left when a label
+    /// shrinks), never past the screen. Why not tabled or indicatif:
+    /// tabled lays out a whole table at once and indicatif's template
+    /// widths are fixed, so neither keeps one column that only moves
+    /// right across printed and live lines.
+    fn column(&self, d: &Draw) -> usize {
+        let needed = self.order[self.printed..]
+            .iter()
+            .map(|&id| {
+                let p = self.parts(id, d);
+                width(&p.lead) + width(&p.left) + 1 + width(&p.right)
+            })
+            .max()
+            .unwrap_or(0);
+        needed.max(self.column).max(COLUMN).min(d.width)
     }
 
     /// Lines under `id`: its notices (bullets: `›` info, orange `!`
@@ -391,26 +442,31 @@ impl Tree {
     /// known (decision 3).
     pub fn take_printable(&mut self, d: &Draw) -> Vec<String> {
         let mut out = Vec::new();
+        let column = self.column(d);
         let mut printed = self.printed;
         // A bounded loop over the steps not yet printed.
         for &next in &self.order[self.printed..] {
             if !self.settled(next) || self.last(next).is_none() {
                 break;
             }
-            out.push(self.line(next, d));
+            out.push(self.line(next, d, column));
             out.extend(self.under(next, d, false));
             printed += 1;
         }
         self.printed = printed;
+        self.column = self.column.max(column);
         out
     }
 
     /// The live lines: every step not yet printed, in tree order, with what
     /// hangs under it.
     pub fn live(&self, d: &Draw) -> Vec<String> {
+        let column = self.column(d);
         self.order[self.printed..]
             .iter()
-            .flat_map(|&id| std::iter::once(self.line(id, d)).chain(self.under(id, d, true)))
+            .flat_map(|&id| {
+                std::iter::once(self.line(id, d, column)).chain(self.under(id, d, true))
+            })
             .collect()
     }
 }
@@ -457,6 +513,142 @@ mod tests {
 
     fn secs(start: Instant, s: u64) -> Instant {
         start + Duration::from_secs(s)
+    }
+
+    /// The tree validate-config draws when Ctrl-C stops its checks.
+    fn interrupted_checks(t0: Instant) -> Tree {
+        let mut tree = Tree::default();
+        let all = tree.add(
+            None,
+            Labels::new(
+                "Validating Saltbox configuration",
+                "Saltbox configuration validated",
+            ),
+            t0,
+        );
+        let accounts = tree.add(
+            Some(all),
+            Labels::new("Validating accounts.yml", "Validated accounts.yml"),
+            t0,
+        );
+        let cf = tree.add(
+            Some(accounts),
+            Labels::new(
+                "Validating Cloudflare API credentials",
+                "Cloudflare API credentials validated",
+            ),
+            t0,
+        );
+        let hub = tree.add(
+            Some(accounts),
+            Labels::new(
+                "Validating Docker Hub credentials",
+                "Docker Hub credentials validated",
+            ),
+            t0,
+        );
+        tree.finish(hub, Status::Done, t0);
+        for id in [cf, accounts, all] {
+            tree.finish(id, Status::Interrupted, secs(t0, 12));
+        }
+        tree.end();
+        tree
+    }
+
+    /// No label is cut while the screen has room: the time column moves
+    /// right as far as the tree's longest line needs (the maintainer's
+    /// choice at config Checkpoint B), still one column.
+    #[test]
+    fn the_time_column_fits_the_tree() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = interrupted_checks(t0);
+        let d = draw(&theme, secs(t0, 13));
+        let printed = tree.take_printable(&d).join("\n");
+        insta::assert_snapshot!(printed, @r"
+        ╰── ✗ Validating Saltbox configuration              interrupted · 12s
+            ╰── ✗ Validating accounts.yml                   interrupted · 12s
+                ├── ✗ Validating Cloudflare API credentials interrupted · 12s
+                ╰── ✓ Docker Hub credentials validated                     0s
+        ");
+        assert!(!printed.contains('…'), "{printed}");
+        let ends: Vec<usize> = printed.lines().map(width).collect();
+        assert!(ends.windows(2).all(|w| w[0] == w[1]), "{printed}");
+    }
+
+    /// Once a long line is printed, later lines keep its column, so the
+    /// times stay in one column down the screen.
+    #[test]
+    fn the_time_column_never_moves_left() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let long = tree.add(
+            None,
+            Labels::new(
+                "Validating a step whose label is far longer than the usual column",
+                "done",
+            ),
+            t0,
+        );
+        tree.finish(long, Status::Interrupted, secs(t0, 1));
+        let short = tree.add(None, Labels::new("Short", "short done"), t0);
+        let d = draw(&theme, secs(t0, 2));
+        let printed = tree.take_printable(&d);
+        let live = tree.live(&d);
+        assert_eq!(printed.len(), 1, "{printed:?}");
+        assert_eq!(width(&printed[0]), width(&live[0]), "{printed:?} {live:?}");
+        assert!(width(&live[0]) > COLUMN, "{live:?}");
+        // Printed in turn, the short line keeps the column too.
+        tree.finish(short, Status::Done, secs(t0, 2));
+        tree.end();
+        let printed = tree.take_printable(&d);
+        assert_eq!(printed.len(), 1, "{printed:?}");
+        assert_eq!(width(&printed[0]), width(&live[0]), "{printed:?}");
+    }
+
+    /// A live step's line pushes the column right as its time grows, and
+    /// the column stays when its label shrinks (a short done label), so
+    /// the live area never jumps left, even before anything is printed.
+    #[test]
+    fn the_live_column_grows_and_stays() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let label = "Downloading and verifying a large archive from the mirror";
+        let step = tree.add(None, Labels::new(label, "archive ready"), t0);
+        let at = |s: u64, frame: usize| Draw {
+            frame,
+            ..draw(&theme, secs(t0, s))
+        };
+        let width_at = |tree: &mut Tree, d: &Draw| {
+            assert!(tree.take_printable(d).is_empty());
+            width(&tree.live(d)[0])
+        };
+        let nine = width_at(&mut tree, &at(9, 0));
+        assert!(nine > COLUMN);
+        // Spinner frames are all one column wide.
+        assert_eq!(width_at(&mut tree, &at(9, 3)), nine);
+        let ten = width_at(&mut tree, &at(10, 0));
+        assert_eq!(ten, nine + 1);
+        tree.finish(step, Status::Done, secs(t0, 10));
+        assert_eq!(width_at(&mut tree, &at(11, 0)), ten);
+    }
+
+    /// A screen narrower than the tree still cuts labels with `…`, and
+    /// nothing is wider than the screen.
+    #[test]
+    fn a_narrow_screen_still_cuts_labels() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = interrupted_checks(t0);
+        let d = Draw {
+            width: 50,
+            ..draw(&theme, secs(t0, 13))
+        };
+        let printed = tree.take_printable(&d);
+        assert!(printed.iter().any(|l| l.contains('…')), "{printed:?}");
+        assert!(printed.iter().all(|l| width(l) <= 50), "{printed:?}");
     }
 
     /// The spike's tour, ended: the reviewed tree, line for line.

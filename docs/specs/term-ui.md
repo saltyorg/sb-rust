@@ -75,7 +75,9 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
 ### Task runner
 
 - **Look (proto-runner, reviewed):** a root line, then one branch per step
-  (`├──`, the last `╰──`), times and exit codes ending in one column. The
+  (`├──`, the last `╰──`), times and exit codes ending in one column
+  (at least column 64, further right as far as the longest line not yet
+  printed needs, never past the screen: decision 11). The
   running step is a branch with its running label, spinner and label in
   the `Accent` role, and a live tail of its newest output lines under it:
   each running step's tail at most sb-go's 8 lines, all running tails
@@ -667,3 +669,16 @@ Choices behind it:
     spawn order; a panic resumes once all have returned. Ctrl-C and the
     command's own request still end every running sibling (the endings
     table). `sb validate-config` checks every file this way.
+11. **The time column fits the tree (maintainer, 2026-11-04, the config
+    plan's Checkpoint B):** a label is never cut while the screen has
+    room. The time column starts at 64 (proto-runner's reviewed layout)
+    and moves right as far as the longest line not yet printed needs, an
+    ending's reason (`interrupted · 12s`) included. It never moves left,
+    so the live area never sits left of printed lines and a shorter done
+    label doesn't make it jump (lines printed before a longer one keep
+    their column); a screen narrower than the tree still cuts labels with
+    `…`. Custom layout, not a library's: tabled lays out a whole table at
+    once and indicatif's template widths are fixed, so neither keeps one
+    column that only moves right across printed and live lines. A fixed column cut long labels,
+    such as an interrupted credential check's ("Validating Cloudflare API
+    credent…").
