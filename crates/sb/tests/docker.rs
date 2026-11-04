@@ -190,7 +190,7 @@ fn a_failing_inspect_shows_the_rest_then_the_error() {
 }
 
 /// Not root: `sb docker ps` relaunches through sudo with cli-core's
-/// arguments and marker (cli-core's relaunch path end to end, docker
+/// arguments (cli-core's relaunch path end to end, docker
 /// success criterion 5). The stand-in sudo records what it was given and
 /// its process ID, and exits 7; sb exec'd it, so the ID is sb's own and 7
 /// is sb's exit code.
@@ -213,20 +213,69 @@ fn ps_relaunches_through_sudo_when_not_root() {
         logs.path(),
         sudo_dir.path(),
         &script,
+        &[],
     );
     assert_eq!(out.status.code(), Some(7), "{out:?}");
     let recorded = std::fs::read_to_string(&record).expect("recorded");
     let lines: Vec<_> = recorded.lines().collect();
     assert_eq!(lines[0], pid.to_string(), "exec'd, not spawned: {recorded}");
+    // sudo is asked for root explicitly, so it runs sb as root or refuses
+    // (exec decision 6); no relaunch marker is set.
+    assert_eq!(lines[1..3], ["-u", "root"], "{recorded}");
+    let lines = [&lines[..1], &lines[3..]].concat();
     assert_eq!(
-        lines[1], "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED",
+        lines[1], "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR",
         "{recorded}"
     );
     let sb = std::fs::canonicalize(common::sb().get_program()).expect("sb's path");
     assert_eq!(lines[2], sb.display().to_string(), "{recorded}");
     assert_eq!(
         lines[3..],
-        ["docker", "ps", "--json", "SB_RELAUNCHED=1"],
+        ["docker", "ps", "--json", "SB_RELAUNCHED="],
         "{recorded}"
     );
+}
+
+/// The run that relaunches prints no startup warning: the root run it
+/// hands over to does, once.
+#[test]
+fn a_relaunching_run_leaves_startup_warnings_to_the_root_run() {
+    if !root_gate::requested() {
+        return;
+    }
+    let sudo_dir = tempfile::tempdir().expect("temp dir");
+    let logs = tempfile::tempdir().expect("temp dir");
+    let (_, out) = nobody::sb_as_nobody(
+        &["--color=never", "docker", "ps"],
+        logs.path(),
+        sudo_dir.path(),
+        "#!/bin/sh\nexit 7\n",
+        &[("SB_COLOR_PROFILE", "16bit")],
+    );
+    assert_eq!(out.status.code(), Some(7), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("SB_COLOR_PROFILE"), "{stderr}");
+    // The control through the same harness: a command that doesn't
+    // relaunch warns, so the variable did reach sb.
+    let (_, version) = nobody::sb_as_nobody(
+        &["--color=never", "version"],
+        logs.path(),
+        sudo_dir.path(),
+        "#!/bin/sh\nexit 7\n",
+        &[("SB_COLOR_PROFILE", "16bit")],
+    );
+    let version = String::from_utf8_lossy(&version.stderr);
+    assert_eq!(version.matches("SB_COLOR_PROFILE").count(), 1, "{version}");
+    // The control: the root run (here, sb run as root) warns, once.
+    let root = common::sb()
+        .args(["--color=never", "docker", "ps"])
+        .env("SB_COLOR_PROFILE", "16bit")
+        .output()
+        .expect("run sb");
+    assert!(
+        String::from_utf8_lossy(&root.stderr).contains("SB_COLOR_PROFILE"),
+        "{root:?}"
+    );
+    let once = String::from_utf8_lossy(&root.stderr);
+    assert_eq!(once.matches("SB_COLOR_PROFILE").count(), 1, "{once}");
 }

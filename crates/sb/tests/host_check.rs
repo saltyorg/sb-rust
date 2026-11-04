@@ -81,3 +81,55 @@ fn a_supported_release_runs() {
     let out = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"26.04\"\n", &["version"]);
     assert_eq!(out.status.code(), Some(0));
 }
+
+/// A command that needs root, run as `nobody` on an unsupported host: it
+/// never relaunches, so it prints its startup warnings itself before the
+/// refusal.
+#[test]
+fn an_unsupported_host_still_shows_a_relaunching_runs_warnings() {
+    if !root_gate::requested() {
+        return;
+    }
+    let probe = Command::new("unshare")
+        .args(["--mount", "true"])
+        .output()
+        .expect("run unshare");
+    assert!(probe.status.success(), "no mount namespace: {probe:?}");
+    let mut fake = tempfile::NamedTempFile::new().expect("temp file");
+    fake.write_all(b"ID=ubuntu\nVERSION_ID=\"20.04\"\n")
+        .expect("write");
+    std::fs::set_permissions(
+        fake.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o644),
+    )
+    .expect("chmod");
+    let script = r#"mount --bind "$1" /etc/os-release && shift && exec "$@""#;
+    let mut cmd = Command::new("unshare");
+    common::apply_sb_env(&mut cmd);
+    let out = cmd
+        .args([
+            "--mount",
+            "--propagation",
+            "private",
+            "sh",
+            "-c",
+            script,
+            "sh",
+        ])
+        .arg(fake.path())
+        .args([
+            "setpriv",
+            "--reuid=65534",
+            "--regid=65534",
+            "--clear-groups",
+        ])
+        .arg(common::sb().get_program())
+        .args(["--color=never", "docker", "ps"])
+        .env("SB_COLOR_PROFILE", "16bit")
+        .output()
+        .expect("run unshare");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert_eq!(stderr.matches("SB_COLOR_PROFILE").count(), 1, "{stderr}");
+    assert!(stderr.contains("unsupported Ubuntu version"), "{stderr}");
+}

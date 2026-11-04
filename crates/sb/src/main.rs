@@ -116,21 +116,30 @@ fn main() -> ExitCode {
     );
     warnings.extend(warning);
     theme::install(theme::Theme::resolve(&choice.palette, profile));
+    // Every command, help and version included, refuses an unsupported
+    // host first, as sb-go does (cli-core spec, startup step 1); the real
+    // parse runs too, printing nothing yet. Together they say whether this
+    // run hands over to a root run through sudo, which then reads its own
+    // settings and warns about those: a run about to relaunch leaves the
+    // startup warnings to it.
+    let support = sb_host::check_support();
+    let parsed = parse(profile);
+    let relaunching = support.is_ok()
+        && parsed
+            .as_ref()
+            .is_ok_and(|cli| root::needs_relaunch(cli.command.needs_root(), root::effective_uid()));
     // sb's own messages go through anstream, so `--color` and NO_COLOR win.
     // Each write makes its stream then: anstream reads the colour choice
-    // when a stream is made, and the real parse can still change it.
-    // The relaunched run (through sudo) already warned in the first one.
-    if std::env::var_os(root::RELAUNCHED).is_none() {
+    // when a stream is made, and the parsed `--color` is applied below.
+    if !relaunching {
         for warning in &warnings {
             warn(warning);
         }
     }
-    // Every command, help and version included, refuses an unsupported
-    // host first, as sb-go does (cli-core spec, startup step 1).
-    if let Err(unsupported) = sb_host::check_support() {
+    if let Err(unsupported) = support {
         return exit::report(&unsupported, None, &mut anstream::stderr());
     }
-    let cli = parse(profile);
+    let cli = parsed.unwrap_or_else(|err| parse_failed(err));
     // The real parse's choice is the one that counts for the run, for
     // anstream and console alike (term-ui spec: colour on every path).
     cli.color.write_global();
@@ -138,10 +147,13 @@ fn main() -> ExitCode {
     let relaunch = root::ensure_root(
         cli.command.needs_root(),
         root::effective_uid(),
-        std::env::var_os(root::RELAUNCHED).is_some(),
         root::relaunch_as_root,
     );
     if let Err(err) = relaunch {
+        // No root run follows: the warnings held back for it show here.
+        for warning in &warnings {
+            warn(warning);
+        }
         return exit::report(&err, None, &mut anstream::stderr());
     }
     // Root runs log on the host (spec: startup step 4); the log directory
@@ -220,7 +232,9 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
 /// (`help::parse_error_block`). Under `ascii` what clap still draws itself
 /// (`sb help help`) gets clap's plain styles
 /// (https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain).
-fn parse(profile: theme::Profile) -> Cli {
+/// Nothing is printed here: help, version and errors come back as `Err`
+/// for [`parse_failed`].
+fn parse(profile: theme::Profile) -> Result<Cli, clap::Error> {
     let cmd = match profile {
         theme::Profile::Ascii => Cli::command().styles(clap::builder::Styles::plain()),
         _ => Cli::command(),
@@ -230,28 +244,25 @@ fn parse(profile: theme::Profile) -> Cli {
     let colour =
         profile != theme::Profile::Ascii && sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
     let cmd = help::apply(cmd, theme::current(), colour);
-    match cmd.try_get_matches() {
-        Ok(matches) => Cli::from_arg_matches(&matches).unwrap_or_else(|err| parse_error(err)),
+    cmd.try_get_matches()
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+}
+
+/// What the real parse didn't turn into a command: help or version
+/// (printed, exit 0), else a parse error (sb-go's layout, exit 2).
+fn parse_failed(err: clap::Error) -> ! {
+    match err.kind() {
         // Bare `sb`: sb-go prints the help on stdout and succeeds; clap would
         // print it as an error, on stderr with exit 2
         // (https://docs.rs/clap/4.6.7/clap/error/enum.ErrorKind.html#variant.DisplayHelpOnMissingArgumentOrSubcommand).
-        Err(err)
-            if err.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand =>
-        {
+        clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
             // Write errors are ignored, as clap ignores them for `--help`.
             let mut out = anstream::stdout();
             let _ = write!(out, "{}", err.render().ansi()).and_then(|()| out.flush());
             std::process::exit(0)
         }
-        Err(err)
-            if matches!(
-                err.kind(),
-                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-            ) =>
-        {
-            err.exit()
-        }
-        Err(err) => parse_error(err),
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => err.exit(),
+        _ => parse_error(err),
     }
 }
 

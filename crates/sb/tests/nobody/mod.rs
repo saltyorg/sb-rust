@@ -15,7 +15,7 @@ use std::process::{Command, Output};
 /// same through setpriv's and env's execs) and its output. The run gets
 /// `common::sb()`'s environment (setpriv and env pass it on), with its
 /// log, theme, Saltbox and Docker paths moved under `log_dir`, so it never
-/// reaches the host's; an inherited relaunch marker is dropped. Only
+/// reaches the host's; `env` adds variables for this run. Only
 /// called when the root tests were asked for, so a switch that fails is a
 /// failure.
 pub fn sb_as_nobody(
@@ -23,6 +23,7 @@ pub fn sb_as_nobody(
     log_dir: &Path,
     sudo_dir: &Path,
     sudo_script: &str,
+    env: &[(&str, &str)],
 ) -> (u32, Output) {
     std::fs::set_permissions(sudo_dir, std::fs::Permissions::from_mode(0o755)).expect("chmod dir");
     let sudo = sudo_dir.join("sudo");
@@ -45,6 +46,7 @@ pub fn sb_as_nobody(
     super::common::apply_sb_env(&mut setpriv);
     let child = setpriv
         .arg("env")
+        // Hermetic: sb sets no relaunch marker, so none may come in.
         .args(["-u", "SB_RELAUNCHED"])
         .arg(format!("PATH={}:/usr/bin:/bin", sudo_dir.display()))
         .arg(format!("SB_LOG_DIR={}", log_dir.display()))
@@ -63,6 +65,7 @@ pub fn sb_as_nobody(
             "DOCKER_HOST=unix://{}",
             log_dir.join("no-docker.sock").display()
         ))
+        .args(env.iter().map(|(name, value)| format!("{name}={value}")))
         .arg(super::common::sb().get_program())
         .args(args)
         .stdout(std::process::Stdio::piped())

@@ -2,20 +2,20 @@
 //!
 //! `--help`, `version` and completion run as the calling user. Every other
 //! command, when not root, replaces sb with
-//! `sudo --preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED
+//! `sudo -u root --preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR
 //! <exe> <args>`. sb-go
 //! spawns sudo as a child and forwards its exit code (host/system.go
 //! `RelaunchAsRoot`); sb-rust execs instead, so signals and the exit code
 //! belong to the real run and nothing of the first process is left. If
 //! sudo asks for a password, the user answers its own prompt.
 //!
-//! `SB_RELAUNCHED=1` marks the relaunched run. If sudo runs sb as someone
-//! other than root (a sudoers rule with another run-as user), the marked
-//! run stops with an error instead of relaunching again: each relaunch is
-//! a new sudo process, so the loop piles them up. sb-go has no such guard.
-//! The marker stays set for the whole root run; the exec module must remove
-//! it from child processes (`env_remove`), or an unprivileged sb started by
-//! one would refuse to relaunch.
+//! `-u root` asks sudo for root explicitly: sudo runs the command as
+//! `runas_default` "if the -u option is not specified" (sudoers(5)), which
+//! a sudoers rule can set to another user, and the relaunched sb would then
+//! relaunch again and again. With `-u root` sudo runs sb as root or
+//! refuses, so no loop marker is needed (exec spec, decision 6;
+//! docs/platform-notes/exec-processes.md). sb-go passes no `-u` and has no
+//! guard.
 //! Why not the `sudo` crate: it hardcodes /usr/bin/sudo, spawns rather than
 //! execs and can't pass `--preserve-env`.
 
@@ -35,18 +35,15 @@ pub fn effective_uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
-/// The environment variable marking a relaunched run.
-pub const RELAUNCHED: &str = "SB_RELAUNCHED";
-
-/// sudo's arguments: keep the user's editor choice, colour profile and
-/// NO_COLOR, and the relaunch marker (sudo's env_reset drops them, which
+/// sudo's arguments: root asked for explicitly, the user's editor choice,
+/// colour profile and NO_COLOR kept (sudo's env_reset drops them, which
 /// sb-go also loses; maintainer, 2026-10-30), then sb and its arguments
 /// unchanged.
 pub fn sudo_args(exe: &Path, args: &[OsString]) -> Vec<OsString> {
     let mut all = vec![
-        OsString::from(format!(
-            "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,{RELAUNCHED}"
-        )),
+        OsString::from("-u"),
+        OsString::from("root"),
+        OsString::from("--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR"),
         exe.into(),
     ];
     all.extend(args.iter().cloned());
@@ -58,26 +55,18 @@ pub fn sudo_args(exe: &Path, args: &[OsString]) -> Vec<OsString> {
 pub enum RelaunchError {
     #[error("could not relaunch as root through sudo")]
     Exec(#[source] std::io::Error),
-    #[error("relaunched through sudo but still not root (euid {0})")]
-    StillNotRoot(u32),
 }
 
 /// Startup step 3: when the command needs root and this isn't root, hand
 /// this executable and its arguments to `exec` ([`relaunch_as_root`] in
-/// sb), which only returns on failure. `relaunched` says this run already
-/// came through sudo (`SB_RELAUNCHED` is set). `Ok` means run the command
-/// here.
+/// sb), which only returns on failure. `Ok` means run the command here.
 pub fn ensure_root(
     needs_root: bool,
     euid: u32,
-    relaunched: bool,
     exec: impl FnOnce(&Path, &[OsString]) -> std::io::Error,
 ) -> Result<(), RelaunchError> {
     if !needs_relaunch(needs_root, euid) {
         return Ok(());
-    }
-    if relaunched {
-        return Err(RelaunchError::StillNotRoot(euid));
     }
     let exe = std::env::current_exe().map_err(RelaunchError::Exec)?;
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -90,7 +79,6 @@ pub fn ensure_root(
 pub fn relaunch_as_root(exe: &Path, args: &[OsString]) -> std::io::Error {
     Command::new(OsStr::new("sudo"))
         .args(sudo_args(exe, args))
-        .env(RELAUNCHED, "1")
         .exec()
 }
 
@@ -131,7 +119,7 @@ mod tests {
     #[test]
     fn ensure_root_execs_and_reports_a_failed_exec() {
         let mut seen = None;
-        let err = ensure_root(true, 1000, false, |exe, args| {
+        let err = ensure_root(true, 1000, |exe, args| {
             seen = Some((exe.to_path_buf(), args.to_vec()));
             std::io::Error::from(std::io::ErrorKind::NotFound)
         })
@@ -150,15 +138,14 @@ mod tests {
     #[test]
     fn ensure_root_runs_here_when_no_relaunch_is_needed() {
         for (needs_root, euid) in [(true, 0), (false, 1000)] {
-            let result = ensure_root(needs_root, euid, false, |_, _| {
-                panic!("exec must not be called")
-            });
+            let result = ensure_root(needs_root, euid, |_, _| panic!("exec must not be called"));
             assert!(result.is_ok(), "{needs_root} {euid}");
         }
     }
 
-    /// sb-go: `sudo --preserve-env=VISUAL,EDITOR <exe> <args...>`, the
-    /// arguments passed through unchanged (including ones that aren't UTF-8).
+    /// sb-go's `sudo --preserve-env=VISUAL,EDITOR <exe> <args...>`, asking
+    /// for root explicitly (`-u root`, exec decision 6), the arguments
+    /// passed through unchanged (including ones that aren't UTF-8).
     #[test]
     fn sudo_gets_sb_go_arguments() {
         let odd = OsString::from_vec(b"x\xffy".to_vec());
@@ -169,9 +156,9 @@ mod tests {
         assert_eq!(
             args,
             [
-                OsString::from(
-                    "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED"
-                ),
+                OsString::from("-u"),
+                OsString::from("root"),
+                OsString::from("--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR"),
                 OsString::from("/usr/local/bin/sb"),
                 OsString::from("install"),
                 OsString::from("-e"),

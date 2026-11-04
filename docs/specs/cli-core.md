@@ -40,16 +40,25 @@ both files they read are readable without root.
    2026-10-30; a factual improvement under decision 1). `--help`,
    `version` and Tab completion run as the calling user, with no sudo.
    Every other command, when not root, replaces itself with
-   `sudo --preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR,SB_RELAUNCHED
+   `sudo -u root --preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR
    <exe> <args>` (exec,
    not a child as in sb-go: signals and the exit code then belong to the
    real run); if sudo asks for a password, the user answers its own
    prompt. Each command declares whether it needs root, in an exhaustive
    match, so a new command can't skip the decision.
-   - **No relaunch loop:** the relaunched run carries `SB_RELAUNCHED=1`.
-     If sudo ran sb as someone other than root, it stops with
-     "relaunched through sudo but still not root" instead of relaunching
-     again (sb-go would loop, piling up sudo processes).
+   - **No relaunch loop:** `-u root` asks sudo for root explicitly, so
+     sudo runs sb as root or refuses; without it sudo runs the command as
+     `runas_default`, which a sudoers rule can set to another user, and
+     the relaunched sb would relaunch again (sb-go has no `-u` and no
+     guard). No marker is passed: an earlier `SB_RELAUNCHED` variable was
+     refused by sudo under rules naming commands without SETENV (exec
+     spec, decision 6; docs/platform-notes/exec-processes.md).
+   - **Startup warnings once:** the real parse runs before anything is
+     printed (silently; its help, version and errors print in their place
+     after the host check), so a run about to relaunch prints no startup
+     warnings: the root run it hands over to reads its own settings and
+     warns about those. A run that doesn't relaunch (an unsupported host,
+     a failed relaunch, a command that needs no root) prints them.
    - **Completion without root:** commands, subcommands and flags come
      from the binary. Dynamic values (Ansible tags) come from the tag cache
      (`/srv/git/saltbox/cache.json`, as sb-go), which must stay readable
