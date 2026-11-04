@@ -15,15 +15,22 @@ Carried forward (open items owned by later work):
 - Taken by this plan:
   - term-ui criteria 4 and 6 with sb's own commands (moved here by docker
     decision 1): the failure block and the Ctrl-C endings and restore
-    through the runner (Task 12).
+    through the runner. Closed by Task 12 (validate_config.rs,
+    validate_config_signals.rs).
   - From docker Task 4's review: control characters escaped in text sb
     echoes (the spec's issue text and remote messages: Tasks 6-9); term-ui's
     `Cell` itself stays carried (below).
+- From config Task 12's review: an interrupted root run logs
+  `run finished outcome="interrupted (exit 130)" error=exit code 1`; the
+  error field repeats the runner's quiet `Exit(1)` beside the signal's
+  code. Look at cli-core's run record when it next changes.
 - From cli-core:
-  - Task 3: the rexpect PTY smoke test on the built binary moves to the
-    first long-running command (validate-config's network checks can take
-    seconds; Task 12 records whether it takes it or keeps it carried, with
-    the reason).
+  - Task 3: the PTY smoke test on the built binary moved to the first
+    long-running command. Taken by Task 12 with `script`, not rexpect:
+    validate_config_signals.rs gives 130 and 143 and a restored terminal
+    on a PTY; term-ui's and sb's PTY tests already use `script`, so
+    rexpect would be a second tool for the same job (cli-core spec,
+    testing).
   - Criterion 1: tab completion comes with the completion module.
   - The exec module removes `SB_RELAUNCHED` from child processes
     (`env_remove`), or an unprivileged sb started by one would refuse to
@@ -468,11 +475,11 @@ output. Records whether this takes cli-core's rexpect smoke test or keeps
 it carried, with the reason.
 
 **Acceptance criteria:**
-- [ ] Success criteria 5-9 covered through the binary; term-ui's carried
+- [x] Success criteria 5-9 covered through the binary; term-ui's carried
       criteria 4 and 6 closed; the rexpect decision recorded.
 
 **Verification:**
-- [ ] `scripts/check.sh full`.
+- [x] `scripts/check.sh full`.
 
 **Dependencies:** Checkpoint B
 **Files:** `crates/sb/tests/validate_config.rs`,

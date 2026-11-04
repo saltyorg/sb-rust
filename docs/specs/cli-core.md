@@ -205,8 +205,10 @@ boundaries that callers match on.
 - **CLI tests** (`assert_cmd`): help, version and `--json`, parse errors,
   exit codes, `--color` with and without a terminal.
 - **Contract test:** the command tree against sb-go's command and flag list.
-- **PTY smoke test** (`rexpect`): SIGINT and SIGTERM give 130 and 143 and
-  restore the terminal.
+- **PTY smoke test:** SIGINT and SIGTERM give 130 and 143 and restore the
+  terminal. Done through util-linux `script` on the built binary with
+  `sb validate-config` (config plan Task 12), as term-ui's own PTY tests
+  are; rexpect isn't added (one PTY tool for every test).
 - Tests that need root or a real `/var/log/sb` run only when asked (an
   environment variable), never by default.
 - Each new test is confirmed by breaking the code it covers. Coverage and
