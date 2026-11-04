@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (config plan Task 11; for the maintainer at config Checkpoint B)
+Accepted (maintainer, 2026-11-04, config Checkpoint B)
 
 ## Date
 
@@ -55,7 +55,8 @@ ceiling.
 
 ## Decision
 
-Record 11641312 bytes as the production binary's limit.
+Record 11641312 bytes as the production binary's limit, and 1.07 ms as
+`sb --help`'s median.
 
 ## Alternatives considered
 

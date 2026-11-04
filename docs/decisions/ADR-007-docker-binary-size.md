@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-03, docker Checkpoint B)
+Accepted (maintainer, 2026-11-03, docker Checkpoint B); binary size value
+superseded by [ADR-009](ADR-009-validate-config-binary-size.md)
 
 ## Date
 

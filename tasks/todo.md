@@ -449,9 +449,11 @@ ADR-008)
 **Scope:** M
 
 ## Checkpoint B: The command works
-- [ ] `scripts/check.sh full` passes.
-- [ ] The maintainer runs a release build on a real host's config
-      (standalone binary, `SB_LOG_DIR` set).
+- [x] `scripts/check.sh full` passes.
+- [x] The maintainer runs a release build on a real host's config
+      (standalone binary, `SB_LOG_DIR` set). Follow-ups: the localhost.yml
+      label takes sb-go's name, term-ui's time column fits the tree (the
+      maintainer's choice), ADR-009 accepted.
 
 ## Task 12: End-to-end: the runner's look, failures, signals, the log
 
