@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use sb_cli_core::config::MAX_FILE_BYTES;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
 use crate::group::Group;
@@ -74,100 +74,23 @@ impl Cmd {
     /// SIGKILL) and the outcome is interrupted or timed out.
     pub async fn capture(&self, token: &CancellationToken) -> Result<Captured, SpawnError> {
         let (command, _) = self.shown();
-        let failed = |cause: SpawnCause| SpawnError {
-            program: self.program.to_string_lossy().into_owned(),
-            cause,
-        };
-        let spawned = self
-            .command(Way::Capture)
-            .and_then(|mut child| child.spawn().map_err(SpawnCause::from));
-        let mut child = match spawned {
-            Ok(child) => child,
-            Err(cause) => {
-                // As an error value, so its causes are logged too
-                // (`error.sources`, as cli-core's run record).
-                let error: &(dyn std::error::Error + 'static) = &cause;
-                tracing::warn!(command, error, "child not started");
-                return Err(failed(cause));
-            }
-        };
+        let (mut child, group) = self.spawn(Way::Capture)?;
         let start = Instant::now();
-        let mut group = child.id().and_then(Group::of);
-        self.log_start(Way::Capture);
         let mask = self.mask();
         let keep = MAX_FILE_BYTES + mask.longest();
         let (mut stdout, mut stderr) = (Kept::default(), Kept::default());
         let stdin = (child.stdin.take(), self.stdin.as_deref());
         let pipes = (child.stdout.take(), child.stderr.take());
-        let status = {
-            let io = async {
-                tokio::join!(
-                    write_stdin(stdin.0, stdin.1),
-                    read_head(pipes.0, keep, &mut stdout),
-                    read_tail(pipes.1, keep, &mut stderr),
-                )
-            };
-            tokio::pin!(io);
-            let mut drained = false;
-            let mut stop: Option<Stop> = None;
-            let time_out_at = self
-                .timeout
-                .map(|limit| tokio::time::Instant::now() + limit);
-            let status = loop {
-                let kill_at = stop.as_ref().map(|stop| stop.kill_at);
-                tokio::select! {
-                    status = child.wait() => break status,
-                    _ = &mut io, if !drained => drained = true,
-                    () = token.cancelled(), if stop.is_none() => {
-                        stop = Some(Stop::now(Ending::Interrupted, self.grace, group.as_mut()));
-                    }
-                    () = sleep_until(time_out_at), if stop.is_none() && time_out_at.is_some() => {
-                        stop = Some(Stop::now(Ending::TimedOut, self.grace, group.as_mut()));
-                    }
-                    () = sleep_until(kill_at), if stop.as_ref().is_some_and(|stop| !stop.killed) => {
-                        if let Some(group) = &group {
-                            group.kill();
-                        }
-                        // The leader's pid too: it may have left its group,
-                        // and it is unreaped, so the pid is still its own.
-                        let _ = child.start_kill();
-                        if let Some(stop) = &mut stop {
-                            stop.killed = true;
-                        }
-                    }
-                }
-            };
-            if let Some(group) = &mut group {
-                group.reaped();
-            }
-            match (&stop, &group) {
-                (Some(stop), Some(group)) => {
-                    // Whatever is left of the group, within the grace plus
-                    // a second; the output its members still write is read
-                    // until then. Nothing is lost when `finish` sees the
-                    // group empty first: a dying process closes its pipe
-                    // ends before it becomes a zombie, so the reads have
-                    // reached their end by then.
-                    let finishing = group.finish(stop.kill_at, stop.killed);
-                    tokio::pin!(finishing);
-                    loop {
-                        tokio::select! {
-                            () = &mut finishing => break,
-                            _ = &mut io, if !drained => drained = true,
-                        }
-                    }
-                }
-                _ if !drained => {
-                    let _ = tokio::time::timeout(DRAIN, &mut io).await;
-                }
-                _ => {}
-            }
-            let status = status.map_err(|err| failed(err.into()))?;
-            stop.map_or_else(|| ending(status), |stop| stop.ending)
+        let io = async {
+            tokio::join!(
+                write_stdin(stdin.0, stdin.1),
+                read_head(pipes.0, keep, &mut stdout),
+                read_tail(pipes.1, keep, &mut stderr),
+            );
         };
-        drop(group);
+        let ending = self.supervise(&mut child, group, token, io).await?;
         let outcome = Outcome {
-            ending: status,
+            ending,
             elapsed: start.elapsed(),
         };
         log_end(&command, &outcome);
@@ -182,6 +105,107 @@ impl Cmd {
             truncated,
             command,
         })
+    }
+
+    /// The error for a child that couldn't run, naming the program.
+    fn failed(&self, cause: SpawnCause) -> SpawnError {
+        SpawnError {
+            program: self.program.to_string_lossy().into_owned(),
+            cause,
+        }
+    }
+
+    /// Spawn the child for `way` in a group of its own and log its start,
+    /// or log why it didn't start.
+    fn spawn(&self, way: Way) -> Result<(Child, Option<Group>), SpawnError> {
+        let spawned = self
+            .command(way)
+            .and_then(|mut child| child.spawn().map_err(SpawnCause::from));
+        match spawned {
+            Ok(child) => {
+                let group = child.id().and_then(Group::of);
+                self.log_start(way);
+                Ok((child, group))
+            }
+            Err(cause) => {
+                // As an error value, so its causes are logged too
+                // (`error.sources`, as cli-core's run record).
+                let (command, _) = self.shown();
+                let error: &(dyn std::error::Error + 'static) = &cause;
+                tracing::warn!(command, error, "child not started");
+                Err(self.failed(cause))
+            }
+        }
+    }
+
+    /// Run `io` (the child's pipes) alongside the child to its end: on
+    /// cancellation or the timeout the group's stop (SIGTERM, the grace,
+    /// SIGKILL), what is left of it after the leader's reap, then the
+    /// output still coming for up to [`DRAIN`]. Interrupted and timed out
+    /// win over the child's own ending.
+    async fn supervise(
+        &self,
+        child: &mut Child,
+        mut group: Option<Group>,
+        token: &CancellationToken,
+        io: impl Future<Output = ()>,
+    ) -> Result<Ending, SpawnError> {
+        tokio::pin!(io);
+        let mut drained = false;
+        let mut stop: Option<Stop> = None;
+        let time_out_at = self
+            .timeout
+            .map(|limit| tokio::time::Instant::now() + limit);
+        let status = loop {
+            let kill_at = stop.as_ref().map(|stop| stop.kill_at);
+            tokio::select! {
+                status = child.wait() => break status,
+                () = &mut io, if !drained => drained = true,
+                () = token.cancelled(), if stop.is_none() => {
+                    stop = Some(Stop::now(Ending::Interrupted, self.grace, group.as_mut()));
+                }
+                () = sleep_until(time_out_at), if stop.is_none() && time_out_at.is_some() => {
+                    stop = Some(Stop::now(Ending::TimedOut, self.grace, group.as_mut()));
+                }
+                () = sleep_until(kill_at), if stop.as_ref().is_some_and(|stop| !stop.killed) => {
+                    if let Some(group) = &group {
+                        group.kill();
+                    }
+                    // The leader's pid too: it may have left its group,
+                    // and it is unreaped, so the pid is still its own.
+                    let _ = child.start_kill();
+                    if let Some(stop) = &mut stop {
+                        stop.killed = true;
+                    }
+                }
+            }
+        };
+        if let Some(group) = &mut group {
+            group.reaped();
+        }
+        match (&stop, &group) {
+            (Some(stop), Some(group)) => {
+                // Whatever is left of the group, within the grace plus a
+                // second; the output its members still write is read until
+                // then. Nothing is lost when `finish` sees the group empty
+                // first: a dying process closes its pipe ends before it
+                // becomes a zombie, so the reads have reached their end.
+                let finishing = group.finish(stop.kill_at, stop.killed);
+                tokio::pin!(finishing);
+                loop {
+                    tokio::select! {
+                        () = &mut finishing => break,
+                        () = &mut io, if !drained => drained = true,
+                    }
+                }
+            }
+            _ if !drained => {
+                let _ = tokio::time::timeout(DRAIN, &mut io).await;
+            }
+            _ => {}
+        }
+        let status = status.map_err(|err| self.failed(err.into()))?;
+        Ok(stop.map_or_else(|| ending(status), |stop| stop.ending))
     }
 
     /// tokio's `Command` for `way`: program, arguments, the environment
