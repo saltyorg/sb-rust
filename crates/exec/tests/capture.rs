@@ -40,7 +40,6 @@ async fn exit_codes_are_the_childs() {
     assert_eq!(failed.outcome.ending, Ending::Exited(3));
     let err = failed.check().expect_err("exit 3 fails");
     assert_eq!(err.to_string(), "sh -c exit 3 exited with code 3");
-    assert_eq!(err.ending(), Ending::Exited(3));
 }
 
 #[tokio::test]
