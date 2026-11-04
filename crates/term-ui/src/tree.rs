@@ -19,8 +19,9 @@ const COLUMN: usize = 64;
 /// The least space between a label and its time, so an ending's reason
 /// (`interrupted · 12s`) never reads as part of the label (the
 /// maintainer, 2026-11-04, trying decision 11's first version); fewer
-/// on a screen too narrow for three.
-const GAP: usize = 3;
+/// on a screen too narrow for three. Plain end lines use it too, always
+/// in full (`runner::end_line`).
+pub(crate) const GAP: usize = 3;
 /// Output lines shown under a running or interrupted step: sb-go's 8
 /// (`liveTaskOutputLines`).
 pub(crate) const TAIL: usize = 8;

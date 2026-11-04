@@ -1190,8 +1190,9 @@ fn plain_line(line: &str) {
     let _ = writeln!(anstream::stderr(), "{line}");
 }
 
-/// A plain-mode end line: `✓ <done label> 2s`, or ✗ with the label and
-/// why.
+/// A plain-mode end line: `✓ <done label>   2s`, or ✗ with the label and
+/// why (`interrupted · 2s`); the time three spaces after the label, as in
+/// the live tree (decision 11).
 fn end_line(
     theme: &theme::Theme,
     labels: &Labels,
@@ -1200,24 +1201,28 @@ fn end_line(
     colour: bool,
 ) -> String {
     let secs = elapsed.as_secs();
+    let gap = " ".repeat(crate::tree::GAP);
     let (role, text) = match status {
         // A step is never still running when its end line is written.
-        Status::Running | Status::Done => (Role::Ok, format!("✓ {} {secs}s", labels.done)),
+        Status::Running | Status::Done => (Role::Ok, format!("✓ {}{gap}{secs}s", labels.done)),
         Status::Failed => (
             Role::Problem,
             format!(
-                "✗ {} {secs}s",
+                "✗ {}{gap}{secs}s",
                 labels.failure.as_deref().unwrap_or(&labels.running)
             ),
         ),
         Status::Interrupted => (
             Role::Warn,
-            format!("✗ {} interrupted {secs}s", labels.running),
+            format!("✗ {}{gap}interrupted · {secs}s", labels.running),
         ),
-        Status::Stopped => (Role::Warn, format!("✗ {} stopped {secs}s", labels.running)),
+        Status::Stopped => (
+            Role::Warn,
+            format!("✗ {}{gap}stopped · {secs}s", labels.running),
+        ),
         Status::SubStepFailed => (
             Role::Warn,
-            format!("✗ {} sub-step failed {secs}s", labels.running),
+            format!("✗ {}{gap}sub-step failed · {secs}s", labels.running),
         ),
     };
     paint(theme, role, colour, &text)
@@ -2335,30 +2340,32 @@ mod tests {
         }
     }
 
-    /// Plain end lines: ✓ with the done label and time, ✗ with why.
+    /// Plain end lines: ✓ with the done label and time, ✗ with why; the
+    /// time, and an ending's reason, three spaces after the label, as the
+    /// live tree separates them (the maintainer, 2026-11-04).
     #[test]
     fn plain_end_lines_say_how_a_step_ended() {
         let labels = Labels::new("Pulling", "pulled").failure("pull failed");
         let two = Duration::from_secs(2);
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::Done, two, false),
-            "✓ pulled 2s"
+            "✓ pulled   2s"
         );
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::Failed, two, false),
-            "✗ pull failed 2s"
+            "✗ pull failed   2s"
         );
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::Interrupted, two, false),
-            "✗ Pulling interrupted 2s"
+            "✗ Pulling   interrupted · 2s"
         );
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::Stopped, two, false),
-            "✗ Pulling stopped 2s"
+            "✗ Pulling   stopped · 2s"
         );
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::SubStepFailed, two, false),
-            "✗ Pulling sub-step failed 2s"
+            "✗ Pulling   sub-step failed · 2s"
         );
     }
 }

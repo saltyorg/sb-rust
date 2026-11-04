@@ -114,8 +114,11 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   decides (indicatif's target; sb-go checks stdout, so `sb validate-config
   > file` stays live here and goes plain in sb-go). Each step prints a
   start line (`- <running label>`), its output lines (escape codes
-  stripped when colour is off), notices, and an end line (`✓ <done label>
-  2s`, or ✗ with the error and the pointer), flat as in sb-go's plain mode
+  stripped when colour is off), notices, and an end line
+  (`✓ <done label>   2s`, or ✗ with the reason,
+  `✗ <label>   interrupted · 2s`, and for a failure the error and the
+  pointer; three spaces before the time as in the live tree, decision
+  11), flat as in sb-go's plain mode
   when not interactive. Lines from concurrent steps are prefixed
   with their step's running label, so interleaved lines stay readable.
 - **Cancellation:** steps see cli-core's `Shutdown` (decision 4).
@@ -676,14 +679,15 @@ Choices behind it:
     ending's reason (`interrupted · 12s`) included, with at least three
     spaces before the time so a reason never reads as part of the label
     (the maintainer, 2026-11-04, trying the first version; fewer on a
-    screen too narrow for three, and a screen too narrow even for a
-    step's branch and time cuts the whole line, so no line wraps). It
-    never moves left,
-    so the live area never sits left of printed lines and a shorter done
-    label doesn't make it jump (lines printed before a longer one keep
-    their column); a screen narrower than the tree still cuts labels with
-    `…`. Custom layout, not a library's: tabled lays out a whole table at
-    once and indicatif's template widths are fixed, so neither keeps one
-    column that only moves right across printed and live lines. A fixed column cut long labels,
-    such as an interrupted credential check's ("Validating Cloudflare API
-    credent…").
+    screen too narrow for three, and a screen too narrow even for a step's
+    branch and time cuts the whole line, so no line wraps). It never moves
+    left, so the live area never sits left of printed lines and a shorter
+    done label doesn't make it jump (lines printed before a longer one
+    keep their column); a screen narrower than the tree still cuts labels
+    with `…`. Custom layout, not a library's: tabled lays out a whole
+    table at once and indicatif's template widths are fixed, so neither
+    keeps one column that only moves right across printed and live lines.
+    A fixed column cut long labels, such as an interrupted credential
+    check's ("Validating Cloudflare API credent…"). Plain end lines, which
+    have no column, put the same three spaces before the time and reason
+    (`✗ Pulling   interrupted · 2s`; the maintainer, 2026-11-04).

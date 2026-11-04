@@ -78,6 +78,9 @@ fn nothing_is_erased_while_running() {
         .map(|e| text[..last_line].matches(e).count())
         .sum();
     assert_eq!(erases_before, 0);
+    // Live, no plain-mode end line is written beside the tree (live
+    // lines start with their branch).
+    assert!(!text.contains("\n✓ accounts.yml read"), "{text:?}");
     assert!(
         text[last_line..].contains("\x1b[2K"),
         "the live area is cleared at the end"
@@ -113,7 +116,7 @@ fn piped_output_is_plain() {
         "{text:?}"
     );
     assert!(
-        text.contains("\nChecking Docker Hub login: ✓ logged in "),
+        text.contains("\nChecking Docker Hub login: ✓ logged in   "),
         "{text:?}"
     );
     // Without `--sensitive` the demo has no secrets to mask.
