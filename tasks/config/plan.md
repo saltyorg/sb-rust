@@ -1,11 +1,11 @@
 # Implementation Plan: `config` — `sb validate-config` (approved 2026-11-03)
 
-Spec: [docs/specs/config.md](../docs/specs/config.md) (approved
+Spec: [docs/specs/config.md](../../docs/specs/config.md) (approved
 2026-11-03, decisions 1-6; 7-8 at Checkpoint A). Quality bar:
-[CONSTRAINTS.md](../CONSTRAINTS.md).
-Earlier plans: [tasks/docker/](docker/plan.md), [tasks/term-ui/](term-ui/plan.md)
-and [tasks/cli-core/](cli-core/plan.md) (done; their open items are
-carried in [tasks/todo.md](todo.md)), [tasks/prototypes/](prototypes/plan.md).
+[CONSTRAINTS.md](../../CONSTRAINTS.md).
+Earlier plans: [tasks/docker/](../docker/plan.md), [tasks/term-ui/](../term-ui/plan.md)
+and [tasks/cli-core/](../cli-core/plan.md) (done; their open items are
+carried in [tasks/config/todo.md](todo.md)), [tasks/prototypes/](../prototypes/plan.md).
 
 ## Overview
 
@@ -90,7 +90,7 @@ every sibling finish (decision 3).
 - [ ] All tasks done; spec success criteria met or carried by name;
       `scripts/check.sh full`
 
-Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
+Details, acceptance criteria and verification: [tasks/config/todo.md](todo.md).
 
 ## Risks and mitigations
 

@@ -3,8 +3,9 @@
 //! `always` colours piped output; `auto` follows NO_COLOR and the terminal.
 //! Terminal runs go through util-linux `script` (a test dependency), which
 //! gives sb a pty and merges its output streams. Why not portable-pty: a
-//! reader thread and a dev-dependency for a few lines of test; the plan's
-//! PTY tests for the terminal UI (rexpect) come with term-ui.
+//! reader thread and a dev-dependency for a few lines of test. Every PTY
+//! test uses `script`, rexpect included in that decision (cli-core spec,
+//! testing).
 
 mod common;
 

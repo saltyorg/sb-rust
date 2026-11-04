@@ -1,6 +1,6 @@
 # config tasks
 
-Plan: [tasks/plan.md](plan.md). Spec: [docs/specs/config.md](../docs/specs/config.md).
+Plan: [tasks/config/plan.md](plan.md). Spec: [docs/specs/config.md](../../docs/specs/config.md).
 Every task: TDD where it changes behaviour, a code review (and the
 library-reviewer for I/O, terminal and process code) before committing,
 `scripts/check.sh full` before committing, Library-check and Review lines
@@ -581,6 +581,8 @@ the file; yaml.v3 counts differently), the duplicate key's wording, and
 the step and notice for a missing optional file.
 
 ## Checkpoint C: Complete
-- [ ] All tasks done; `scripts/check.sh full` passes.
-- [ ] Spec success criteria met or carried by name; the maintainer has run
-      `sb validate-config` on real config.
+- [x] All tasks done; `scripts/check.sh full` passes.
+- [x] Spec success criteria met or carried by name; the maintainer has run
+      `sb validate-config` on real config. Closed by the maintainer
+      (2026-11-04); the plan moves to tasks/config/, and its carried items
+      pass to the next plan (exec).

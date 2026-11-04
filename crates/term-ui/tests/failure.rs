@@ -2,8 +2,9 @@
 //! "Failure", success criterion 4): shown once by the runner, exit 1,
 //! cli-core adding nothing. The demo logs only under a temporary
 //! `SB_LOG_DIR`. Terminal runs go through util-linux `script`, for the
-//! reason in crates/sb/tests/colour.rs (why not portable-pty); rexpect
-//! comes with the first long-running command (tasks/todo.md).
+//! reason in crates/sb/tests/colour.rs (why not portable-pty); not
+//! rexpect either: every PTY test uses `script` (cli-core spec, testing;
+//! crates/sb/tests/validate_config_signals.rs).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
