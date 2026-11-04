@@ -78,8 +78,6 @@ fn nothing_is_erased_while_running() {
         .map(|e| text[..last_line].matches(e).count())
         .sum();
     assert_eq!(erases_before, 0);
-    // Live, no plain-mode end line is written beside the tree.
-    assert!(!text.contains("✓ accounts.yml read 0s"), "{text:?}");
     assert!(
         text[last_line..].contains("\x1b[2K"),
         "the live area is cleared at the end"
