@@ -1,0 +1,25 @@
+[package]
+name = "sb-exec"
+version = "0.1.0"
+description = "Child processes for sb's commands: one builder, cancellation, timeouts, logging and secrets (capability map, exec)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sb-cli-core.workspace = true
+aho-corasick.workspace = true
+signal-hook.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rustix.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

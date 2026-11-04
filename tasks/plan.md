@@ -54,10 +54,10 @@ links sb-exec, each task runs cargo-deny on sb-exec's own graph.
 - [x] Task 1: Platform facts and dependency trees (spike)
 - [x] Task 1b: cli-core: relaunch with `sudo -u root`, no marker
 - [x] Task 1c: cli-core: end an interrupted run by the signal itself
-- [ ] Task 2: The crate, `Cmd`, masking and the log record
+- [x] Task 2: The crate, `Cmd`, masking and the log record
 
 ### Phase 2: Capture and cancellation
-- [ ] Task 3: `capture`
+- [x] Task 3: `capture`
 - [ ] Task 4: Process groups: cancellation, timeouts, escalation
 - [ ] Task 5: term-ui: a failed child's ending and the "runner live" check
 

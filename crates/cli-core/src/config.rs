@@ -44,8 +44,9 @@ pub fn inventory_path(root: &Path) -> PathBuf {
 const CONFIG_FILE: &str = "sb/config.toml";
 
 /// Files larger than this are not sb's or Saltbox's: refused, not read whole
-/// (a huge inventory took over a second to fail in a debug build).
-const MAX_FILE_BYTES: usize = 1 << 20;
+/// (a huge inventory took over a second to fail in a debug build). The
+/// cap for any text sb reads (exec's captured output too).
+pub const MAX_FILE_BYTES: usize = 1 << 20;
 
 /// The open flags for both files: never block (a FIFO, or a lease the
 /// file's owner holds, must not hang every sb start, root's included;

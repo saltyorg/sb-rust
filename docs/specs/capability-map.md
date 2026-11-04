@@ -210,8 +210,8 @@ GitHub API (last push, archived flag).
 | Module id | Responsibility | Depends on | sb-go source |
 |---|---|---|---|
 | `cli-core` | clap tree, global flags, root relaunch, build info, signals/cancellation (an interrupted run dies of its signal, `$?` 130), error and exit-code policy | — | main.go, cmd/root.go, buildinfo, signals, layout |
-| `exec` | Child processes: streamed and captured output; PTY execution with process-group kill on cancel; ANSI stripping when not a terminal | cli-core | executor |
-| `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif | cli-core | terminal |
+| `exec` | Child processes: streamed and captured output; PTY execution with process-group kill on cancel; secrets out of logs, output and errors | cli-core, term-ui | executor |
+| `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif; ANSI stripping of child output when not a terminal | cli-core | terminal |
 | `host` | Ubuntu/arch/LXC/desktop checks, disk space, apt, systemd (including a `journalctl -f` log stream), file ownership | exec, term-ui | host |
 | `repo` | Git operations on Saltbox/Sandbox checkouts, branch switching | exec, host | git |
 | `release` | GitHub release lookup (with User-Agent), version compare, self-update with digest verification | cli-core | release, selfupdate |
@@ -229,7 +229,7 @@ logs, edit and facts can be built and tested without a terminal.
 
 **Build order:**
 
-1. `cli-core` → `exec` → `term-ui`
+1. `cli-core` → `term-ui` → `exec` (exec streams into term-ui's steps)
 2. `host` → `repo`, `release`
 3. `python-env`, `ansible`
 4. `config`, `docker`

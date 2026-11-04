@@ -183,18 +183,25 @@ deny.toml's wrappers. (`timeout` and `grace` come with Task 4, where they
 act.)
 
 **Acceptance criteria:**
-- [ ] The builder's rules and the masking tested as pure functions, each
+- [x] The builder's rules and the masking tested as pure functions, each
       failing against a stub first.
-- [ ] The start record carries the program, the literals in place, the
+- [x] The start record carries the program, the literals in place, the
       count of masked arguments, changed variable names, the working
       directory and the way it runs; tested with the known-secret test (a
       `secret`, a `secret_env` value, a pass-through `value`) in a test
       binary of its own.
-- [ ] `cargo deny --manifest-path crates/exec/Cargo.toml --all-features
+- [x] `cargo deny --manifest-path crates/exec/Cargo.toml --all-features
       check` passes.
 
 **Verification:**
-- [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+- [x] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+
+**As built (2026-11-04):** with Task 3 in one change: until `capture`
+reads them, the builder's fields and the record have no reader, which the
+dead-code lint rejects (and `#[expect]` needs an Exceptions row). The
+start record's own test binary is crates/exec/tests/capture_log.rs,
+through `capture`. The ways join `Way` with their tasks, so attached's
+exemption from `GIT_TERMINAL_PROMPT=0` comes with Task 8b.
 
 **Dependencies:** Task 1
 **Files:** `Cargo.toml`, `crates/exec/`, `deny.toml`,
@@ -215,20 +222,20 @@ the returned text and the error, the end record. The token is taken
 here and acts from Task 4.
 
 **Acceptance criteria:**
-- [ ] Real children: exit codes, a signal, spawn failures (not found, not
+- [x] Real children: exit codes, a signal, spawn failures (not found, not
       executable, no such directory), stdin bytes and null stdin, both
       caps and truncation, a backgrounded short sleep holding stdout past
       the 2 s drain (done within it, its group killed afterwards), a
       child echoing a `secret` and a `secret_env` value (masked in stdout,
       stderr and the error).
-- [ ] The environment with real children (`env`):
+- [x] The environment with real children (`env`):
       `GIT_TERMINAL_PROMPT=0`, changed variables present, an inherited
       `COLORTERM` left as it is (decision 3).
-- [ ] The end record (outcome, elapsed) logged with nothing masked
+- [x] The end record (outcome, elapsed) logged with nothing masked
       leaking; `cargo deny` on crates/exec passes.
 
 **Verification:**
-- [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+- [x] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
 
 **Dependencies:** Task 2
 **Files:** `Cargo.toml`, `crates/exec/src/run.rs`, `crates/exec/tests/`
@@ -253,6 +260,10 @@ EXITED | NOHANG | NOWAIT)` and reaps by pid every member but the leader
 (left to tokio), recording each one's ending signal, so an exited
 grandchild never sits as a zombie that makes the group look alive.
 Tests assert pgid == pid before signalling and use a short grace.
+
+**Before writing the guard:** check process-wrap's tokio `ProcessGroup`
+wrapper (watchexec; the Task 2-3 library review's lead, unverified there:
+does it kill the whole group on drop?) and use it or record why not.
 
 **Acceptance criteria:**
 - [ ] In-process, through the token: a child that exits on SIGTERM gets

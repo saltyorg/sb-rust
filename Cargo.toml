@@ -15,6 +15,7 @@ sb-host = { path = "crates/host" }
 sb-term-ui = { path = "crates/term-ui" }
 sb-docker = { path = "crates/docker" }
 sb-config = { path = "crates/config" }
+sb-exec = { path = "crates/exec" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"
@@ -64,6 +65,8 @@ toml = { version = "1.1.8", default-features = false, features = ["std", "serde"
 thiserror = "2.0.21"
 signal-hook = "0.4.5"
 tokio-util = "0.7.20"
+# Secrets out of child output, overlapping matches included (exec spec).
+aho-corasick = "1.1.5"
 rustix = { version = "1.1.6", features = ["fs", "process", "stdio", "termios"] }
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
 tracing = "0.1.44"

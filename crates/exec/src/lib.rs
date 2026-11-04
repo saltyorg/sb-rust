@@ -1,0 +1,516 @@
+//! Child processes for sb's commands (docs/specs/exec.md): one builder,
+//! [`Cmd`], so every module gets the same cancellation, timeouts,
+//! logging, secret handling and errors.
+
+mod mask;
+mod run;
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fmt;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use sb_cli_core::log::WITHHELD;
+
+/// Set for every child not attached, so git (run by the child or by a tool
+/// it starts) never waits on a prompt no one can answer.
+const NO_GIT_PROMPT: (&str, &str) = ("GIT_TERMINAL_PROMPT", "0");
+
+/// What a `value` argument shows as in the log and in errors: it may be a
+/// path, a name or a user's pass-through argument (spec, "fail closed").
+const VALUE: &str = "[ARG]";
+
+/// A child process to run (spec, "A command"). Named apart from std's and
+/// tokio's `Command`. Its `Debug` shows what the log shows (no secret, no
+/// value), so a `?cmd` field or a `dbg!` can't print one.
+pub struct Cmd {
+    program: OsString,
+    args: Vec<Arg>,
+    clear_env: bool,
+    env: BTreeMap<String, Var>,
+    cwd: Option<PathBuf>,
+    stdin: Option<Vec<u8>>,
+}
+
+enum Arg {
+    Literal(&'static str),
+    Value(String),
+    Secret(String),
+}
+
+impl Arg {
+    /// What the child gets.
+    fn text(&self) -> &str {
+        match self {
+            Self::Literal(literal) => literal,
+            Self::Value(text) | Self::Secret(text) => text,
+        }
+    }
+}
+
+enum Var {
+    Set(String),
+    Secret(String),
+    Removed,
+}
+
+impl fmt::Debug for Cmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cmd")
+            .field("command", &self.shown().0)
+            .field("env_cleared", &self.clear_env)
+            .field("env", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .field("stdin", &self.stdin.as_ref().map(Vec::len))
+            .finish()
+    }
+}
+
+/// The way a child runs (spec, "Ways to run"); the environment rules and
+/// the log depend on it. Each way joins with its task (stream, pty, and
+/// attached, which `GIT_TERMINAL_PROMPT` leaves alone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Way {
+    Capture,
+}
+
+impl Way {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+        }
+    }
+}
+
+/// The environment a way hands its spawner: whether to start from an
+/// empty one, then each variable set (`Some`) or removed (`None`), in name
+/// order.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Environment<'a> {
+    pub(crate) clear: bool,
+    pub(crate) vars: Vec<(&'a str, Option<&'a str>)>,
+}
+
+impl Cmd {
+    /// A command running `program` (a name looked up in `PATH`, or a path),
+    /// with sb's environment, working directory and no stdin.
+    pub fn new(program: impl Into<OsString>) -> Self {
+        Self {
+            program: program.into(),
+            args: Vec::new(),
+            clear_env: false,
+            env: BTreeMap::new(),
+            cwd: None,
+            stdin: None,
+        }
+    }
+
+    /// A literal argument written in sb's code; the log shows it.
+    pub fn arg(mut self, literal: &'static str) -> Self {
+        self.args.push(Arg::Literal(literal));
+        self
+    }
+
+    /// Any other argument (a path, a name, a user's pass-through argument):
+    /// the log and errors show `[ARG]`.
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.args.push(Arg::Value(value.into()));
+        self
+    }
+
+    /// A credential: `[REDACTED]` in the log and errors, and taken out of
+    /// the child's output. argv is readable by other users in
+    /// `/proc/<pid>/cmdline`, so pass a secret through the environment or
+    /// stdin where the tool allows.
+    pub fn secret(mut self, secret: impl Into<String>) -> Self {
+        self.args.push(Arg::Secret(secret.into()));
+        self
+    }
+
+    /// Set a variable; the log names it, never its value.
+    pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(name.into(), Var::Set(value.into()));
+        self
+    }
+
+    /// Set a variable holding a credential: its value is also taken out of
+    /// the child's output.
+    pub fn secret_env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(name.into(), Var::Secret(value.into()));
+        self
+    }
+
+    /// Remove an inherited variable.
+    pub fn env_remove(mut self, name: impl Into<String>) -> Self {
+        self.env.insert(name.into(), Var::Removed);
+        self
+    }
+
+    /// Start from an empty environment (sb-go's `WithEnv`): variables set
+    /// before are dropped, those set after are kept, as std's
+    /// `Command::env_clear`
+    /// (https://doc.rust-lang.org/std/process/struct.Command.html#method.env_clear).
+    pub fn env_clear(mut self) -> Self {
+        self.clear_env = true;
+        self.env.clear();
+        self
+    }
+
+    /// Run in `dir` (sb's own working directory otherwise). It must be an
+    /// existing directory when the child starts.
+    pub fn cwd(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.cwd = Some(dir.into());
+        self
+    }
+
+    /// Write `bytes` to the child's stdin, then close it (null otherwise).
+    pub fn stdin(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.stdin = Some(bytes.into());
+        self
+    }
+
+    /// The environment for `way`: the caller's changes, then
+    /// `GIT_TERMINAL_PROMPT=0` for every child not attached (spec,
+    /// "Environment rules"), whatever the caller set for it.
+    pub(crate) fn environment(&self, way: Way) -> Environment<'_> {
+        let Way::Capture = way;
+        let (rule, ruled) = NO_GIT_PROMPT;
+        let mut vars: Vec<(&str, Option<&str>)> = self
+            .env
+            .iter()
+            .filter(|(name, _)| name.as_str() != rule)
+            .map(|(name, var)| {
+                let value = match var {
+                    Var::Set(value) | Var::Secret(value) => Some(value.as_str()),
+                    Var::Removed => None,
+                };
+                (name.as_str(), value)
+            })
+            .collect();
+        vars.push((rule, Some(ruled)));
+        vars.sort_unstable_by_key(|(name, _)| *name);
+        Environment {
+            clear: self.clear_env,
+            vars,
+        }
+    }
+
+    /// The command as the log and errors show it: the program, literals in
+    /// place, `[ARG]` and `[REDACTED]` for the rest; and how many are
+    /// masked.
+    pub(crate) fn shown(&self) -> (String, usize) {
+        let mut shown = self.program.to_string_lossy().into_owned();
+        let mut masked = 0;
+        for arg in &self.args {
+            let word = match arg {
+                Arg::Literal(literal) => literal,
+                Arg::Value(_) => VALUE,
+                Arg::Secret(_) => WITHHELD,
+            };
+            masked += usize::from(!matches!(arg, Arg::Literal(_)));
+            shown.push(' ');
+            shown.push_str(word);
+        }
+        (shown, masked)
+    }
+
+    /// The secrets to take out of this command's output and errors.
+    pub(crate) fn mask(&self) -> mask::Mask {
+        let args = self.args.iter().filter_map(|arg| match arg {
+            Arg::Secret(secret) => Some(secret.as_str()),
+            Arg::Literal(_) | Arg::Value(_) => None,
+        });
+        let vars = self.env.values().filter_map(|var| match var {
+            Var::Secret(secret) => Some(secret.as_str()),
+            Var::Set(_) | Var::Removed => None,
+        });
+        mask::Mask::new(args.chain(vars))
+    }
+
+    /// The run-log record of a child starting (spec, "Logging"): the
+    /// command as shown, the count of masked arguments, the names of
+    /// changed variables, the working directory and the way.
+    pub(crate) fn log_start(&self, way: Way) {
+        let (command, masked) = self.shown();
+        let environment = self.environment(way);
+        let changed: Vec<&str> = environment.vars.iter().map(|(name, _)| *name).collect();
+        let cwd = self
+            .cwd
+            .as_ref()
+            .map_or_else(|| ".".to_owned(), |dir| dir.display().to_string());
+        tracing::info!(
+            command,
+            masked,
+            env = changed.join(","),
+            env_cleared = environment.clear,
+            cwd,
+            way = way.name(),
+            "child started"
+        );
+    }
+}
+
+/// How a child ended and how long it ran (spec, "Outcome and errors").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outcome {
+    pub ending: Ending,
+    pub elapsed: Duration,
+}
+
+/// How a child ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// It exited with this code.
+    Exited(i32),
+    /// A signal killed it (the signal's number).
+    Signalled(i32),
+}
+
+impl fmt::Display for Ending {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Exited(code) => write!(f, "exited with code {code}"),
+            Self::Signalled(signal) => match signal_hook::low_level::signal_name(signal) {
+                Some(name) => write!(f, "was killed by {name}"),
+                None => write!(f, "was killed by signal {signal}"),
+            },
+        }
+    }
+}
+
+/// What [`Cmd::capture`] returns: the outcome and the child's output,
+/// secrets taken out. stdout keeps its first 1 MiB, stderr its last (its
+/// tail holds the error); `truncated` says either was cut. A text can
+/// run a few bytes past 1 MiB: a character split by the cut becomes
+/// U+FFFD, and a secret across it the placeholder.
+#[derive(Debug)]
+pub struct Captured {
+    pub outcome: Outcome,
+    pub stdout: String,
+    pub stderr: String,
+    pub truncated: bool,
+    command: String,
+}
+
+/// How many of stderr's last lines a failure carries, each cut at
+/// [`LINE_BYTES`].
+const FAILED_LINES: usize = 10;
+
+/// The longest line a failure carries (term-ui's cut for streamed lines,
+/// exec spec "Lines").
+const LINE_BYTES: usize = 4096;
+
+impl Captured {
+    /// The output if the child exited 0, else [`Failed`] with stderr's last
+    /// lines.
+    pub fn check(self) -> Result<Self, Failed> {
+        if self.outcome.ending == Ending::Exited(0) {
+            return Ok(self);
+        }
+        let lines: Vec<&str> = self.stderr.lines().collect();
+        let last = lines[lines.len().saturating_sub(FAILED_LINES)..]
+            .iter()
+            .map(|line| line[..line.floor_char_boundary(LINE_BYTES)].to_owned())
+            .collect();
+        Err(Failed {
+            command: self.command,
+            ending: self.outcome.ending,
+            last_lines: last,
+        })
+    }
+}
+
+/// A child that didn't exit 0, named with its arguments masked as in the
+/// log.
+#[derive(Debug, thiserror::Error)]
+#[error("{command} {ending}")]
+pub struct Failed {
+    command: String,
+    ending: Ending,
+    last_lines: Vec<String>,
+}
+
+impl Failed {
+    /// How the child ended.
+    pub fn ending(&self) -> Ending {
+        self.ending
+    }
+
+    /// The last lines of its stderr (from `capture`), secrets taken out.
+    pub fn last_lines(&self) -> &[String] {
+        &self.last_lines
+    }
+}
+
+/// A child that couldn't be started (or waited for), naming the program.
+#[derive(Debug, thiserror::Error)]
+#[error("could not run {program}")]
+pub struct SpawnError {
+    program: String,
+    #[source]
+    cause: SpawnCause,
+}
+
+/// Why a child couldn't run.
+#[derive(Debug, thiserror::Error)]
+pub enum SpawnCause {
+    /// The working directory isn't an existing directory.
+    #[error("no such working directory: {}", .0.display())]
+    NoDirectory(PathBuf),
+    /// The working directory couldn't be looked at (a parent sb can't
+    /// search, say).
+    #[error("working directory {}", dir.display())]
+    Directory {
+        dir: PathBuf,
+        #[source]
+        cause: std::io::Error,
+    },
+    /// The operating system refused (not found, not executable, ...).
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+impl SpawnError {
+    /// Why it couldn't run.
+    pub fn cause(&self) -> &SpawnCause {
+        &self.cause
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literals_show_and_everything_else_is_masked() {
+        let cmd = Cmd::new("git")
+            .arg("-C")
+            .value("some/repo")
+            .arg("fetch")
+            .secret("hunter2-not-real");
+        assert_eq!(cmd.shown(), ("git -C [ARG] fetch [REDACTED]".to_owned(), 2));
+        assert_eq!(Cmd::new("true").shown(), ("true".to_owned(), 0));
+    }
+
+    #[test]
+    fn a_signal_without_a_name_shows_its_number() {
+        assert_eq!(Ending::Signalled(15).to_string(), "was killed by SIGTERM");
+        assert_eq!(
+            Ending::Signalled(200).to_string(),
+            "was killed by signal 200"
+        );
+    }
+
+    /// Debug shows what the log shows: a `?cmd` in a tracing field or a
+    /// `dbg!` must not print a secret, a value or a variable's value.
+    #[test]
+    fn debug_shows_no_value() {
+        let cmd = Cmd::new("x")
+            .arg("literal")
+            .secret("arg-secret-zz")
+            .value("pass-zz")
+            .env("PLAIN", "plain-zz")
+            .secret_env("T", "env-secret-zz")
+            .env_remove("GONE")
+            .stdin("stdin-secret-zz");
+        let shown = format!("{cmd:?}");
+        for hidden in [
+            "arg-secret-zz",
+            "pass-zz",
+            "plain-zz",
+            "env-secret-zz",
+            "stdin-secret-zz",
+        ] {
+            assert!(!shown.contains(hidden), "{hidden}: {shown}");
+        }
+        assert_eq!(
+            shown,
+            r#"Cmd { command: "x literal [REDACTED] [ARG]", env_cleared: false, env: ["GONE", "PLAIN", "T"], cwd: None, stdin: Some(15) }"#
+        );
+    }
+
+    #[test]
+    fn a_path_program_shows_in_full() {
+        let cmd = Cmd::new("/srv/ansible/venv/bin/python").arg("-V");
+        assert_eq!(cmd.shown().0, "/srv/ansible/venv/bin/python -V");
+    }
+
+    #[test]
+    fn children_not_attached_get_no_terminal_prompt_from_git() {
+        let cmd = Cmd::new("uv").env("A", "1");
+        assert_eq!(
+            cmd.environment(Way::Capture),
+            Environment {
+                clear: false,
+                vars: vec![("A", Some("1")), ("GIT_TERMINAL_PROMPT", Some("0"))],
+            }
+        );
+    }
+
+    /// The rule wins over the caller: a child without a terminal must not
+    /// wait on git's prompt.
+    #[test]
+    fn the_rule_wins_over_the_callers_own_value() {
+        for cmd in [
+            Cmd::new("git").env("GIT_TERMINAL_PROMPT", "1"),
+            Cmd::new("git").env_remove("GIT_TERMINAL_PROMPT"),
+        ] {
+            assert_eq!(
+                cmd.environment(Way::Capture).vars,
+                [("GIT_TERMINAL_PROMPT", Some("0"))]
+            );
+        }
+    }
+
+    #[test]
+    fn changes_are_kept_by_name_the_last_one_winning() {
+        let cmd = Cmd::new("x")
+            .env("B", "1")
+            .secret_env("A", "s")
+            .env_remove("C")
+            .env("B", "2");
+        assert_eq!(
+            cmd.environment(Way::Capture).vars,
+            [
+                ("A", Some("s")),
+                ("B", Some("2")),
+                ("C", None),
+                ("GIT_TERMINAL_PROMPT", Some("0"))
+            ]
+        );
+    }
+
+    /// As std's `Command::env_clear`: earlier changes go, later ones stay.
+    #[test]
+    fn clearing_drops_earlier_changes_only() {
+        let cmd = Cmd::new("x").env("A", "1").env_clear().env("B", "2");
+        assert_eq!(
+            cmd.environment(Way::Capture),
+            Environment {
+                clear: true,
+                vars: vec![("B", Some("2")), ("GIT_TERMINAL_PROMPT", Some("0"))],
+            }
+        );
+    }
+
+    #[test]
+    fn secrets_come_from_secret_arguments_and_variables_only() {
+        let cmd = Cmd::new("x")
+            .arg("literal")
+            .value("value")
+            .secret("arg-secret")
+            .env("PLAIN", "plain")
+            .secret_env("TOKEN", "env-secret");
+        let mask = cmd.mask();
+        assert_eq!(
+            mask.text("literal value arg-secret plain env-secret"),
+            "literal value [REDACTED] plain [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn the_way_is_named_in_the_log() {
+        assert_eq!(Way::Capture.name(), "capture");
+    }
+}
