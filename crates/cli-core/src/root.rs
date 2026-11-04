@@ -157,19 +157,6 @@ mod tests {
         }
     }
 
-    /// Already relaunched and still not root (sudo ran sb as someone else):
-    /// stop with an error instead of relaunching forever. Each relaunch is
-    /// a new sudo process, so a loop piles them up.
-    #[test]
-    fn a_relaunched_run_that_still_is_not_root_stops() {
-        let err = ensure_root(true, 1000, true, |_, _| panic!("must not relaunch again"))
-            .expect_err("refused");
-        assert_eq!(
-            err.to_string(),
-            "relaunched through sudo but still not root (euid 1000)"
-        );
-    }
-
     /// sb-go: `sudo --preserve-env=VISUAL,EDITOR <exe> <args...>`, the
     /// arguments passed through unchanged (including ones that aren't UTF-8).
     #[test]

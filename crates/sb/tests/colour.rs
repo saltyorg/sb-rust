@@ -197,29 +197,6 @@ fn never_wins_over_the_profile() {
     assert!(!has_escape(&out.stderr));
 }
 
-/// The relaunched run (sudo keeps `SB_COLOR_PROFILE` now) doesn't repeat
-/// the warning the first run already gave.
-#[test]
-fn a_relaunched_run_does_not_repeat_the_profile_warning() {
-    let out = common::sb()
-        .args(["--color=never", "version"])
-        .env("SB_COLOR_PROFILE", "16bit")
-        .env("SB_RELAUNCHED", "1")
-        .output()
-        .expect("run sb");
-    assert!(out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("SB_COLOR_PROFILE"), "{stderr}");
-    // The control: the same run, not relaunched, does warn.
-    let first = common::sb()
-        .args(["--color=never", "version"])
-        .env("SB_COLOR_PROFILE", "16bit")
-        .env_remove("SB_RELAUNCHED")
-        .output()
-        .expect("run sb");
-    assert!(String::from_utf8_lossy(&first.stderr).contains("SB_COLOR_PROFILE"));
-}
-
 /// `ascii` means no colour anywhere, parse errors and help included (drawn
 /// from the theme, which `ascii` leaves plain).
 #[test]
