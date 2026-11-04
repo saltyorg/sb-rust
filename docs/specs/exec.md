@@ -90,7 +90,7 @@ group, within the grace period plus one second.
 | `capture(&token)` | Capture, Combined, Discard | stdout and stderr collected separately, up to 1 MiB each (cli-core's cap for text sb reads), returned | `systemctl is-active`, `git rev-parse`, `uv --version`, `dpkg-query` |
 | `stream(&mut step)` | Stream, managed output | each line to the step as it arrives (stdout and stderr); stderr's last 64 KiB kept for the caller (apt's retry match) | `apt-get update`, `git pull` under the runner |
 | `pty(&mut step)` | `WithPseudoTerminal` | under a pseudo-terminal of sb's terminal size (24×120 when stderr isn't one, as sb-go), lines to the step; the child sees a TTY; stdin refused, the writer dropped at start so a reading child gets EOF | tools that colour or show progress only on a TTY |
-| `attached(&token)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged | an editor, an `ansible-playbook` run shown as it is |
+| `attached(&token)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged; `stdin(bytes)` refused before spawning (decision 11) | an editor, an `ansible-playbook` run shown as it is |
 
 `stream` and `pty` take the step's token (term-ui's `Step::token`, a
 child of cli-core's shared token); `capture` and `attached` take one.
@@ -453,3 +453,10 @@ let outcome = Cmd::new("systemctl")
     pipe, and sb-go's one `WaitDelay` (completion's shell probes) is a
     bound, not an observed case; the maintainer asked whether it was more
     than theoretical (2026-11-04). Added if a real command needs it.
+11. **`stdin(bytes)` with `attached` is refused** (maintainer, 2026-11-04,
+    Checkpoint A, which also approved the builder, `Outcome` and `Failed`
+    as built): refused before spawning, as a missing working directory
+    is, since an attached child's stdin is sb's own, for the user's
+    keyboard; sb-go's callers never feed one (its executor would accept
+    custom stdin for an interactive child, but only the MOTD banner sets
+    any, under capture). Exec plan Task 8b.

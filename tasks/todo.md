@@ -329,11 +329,15 @@ note amended.
 **Scope:** S
 
 ## Checkpoint A: Capture is done
-- [ ] `scripts/check.sh full` passes.
-- [ ] The maintainer reviews Task 1's facts, the builder's API and
-      `Failed`'s shape before the other ways build on them, and decides a
-      point the spec leaves open: `stdin(bytes)` with `attached`, refused
-      (proposal: sb's own stdin is the child's) or allowed.
+- [x] `scripts/check.sh full` passes (on 835ca3f's tree: changed-line
+      coverage 100%, 23 of 23 viable mutants caught).
+- [x] The maintainer reviews the builder's API and `Failed`'s shape
+      before the other ways build on them, and decides a point the spec
+      leaves open: `stdin(bytes)` with `attached`, refused (proposal: sb's
+      own stdin is the child's) or allowed. (2026-11-04: the builder,
+      `Outcome` and `Failed` approved as built; refused, decision 11.
+      Task 1's facts were recorded in docs/platform-notes/exec-processes.md
+      and led to decisions 2, 6 and 7 with the maintainer earlier.)
 
 ## Task 6: `stream`
 

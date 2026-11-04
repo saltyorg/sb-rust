@@ -62,9 +62,9 @@ links sb-exec, each task runs cargo-deny on sb-exec's own graph.
 - [x] Task 5: term-ui: a failed child's ending and the "runner live" check
 
 ### Checkpoint A: Capture is done
-- [ ] `scripts/check.sh full` passes; the maintainer reviews the evidence,
-      the builder's API and `Failed`'s shape, and decides `stdin(bytes)`
-      with `attached`.
+- [x] `scripts/check.sh full` passes; the maintainer reviews the builder's
+      API and `Failed`'s shape, and decides `stdin(bytes)` with `attached`
+      (2026-11-04: approved; refused, decision 11).
 
 ### Phase 3: Stream and the PTY
 - [ ] Task 6: `stream`
@@ -100,8 +100,6 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 
 ## Open questions
 
-- `stdin(bytes)` with `attached` (the spec is silent; proposal: refused),
-  for Checkpoint A.
 - The signal cases the spec leaves open while an attached child runs (a
   second SIGTERM, a SIGINT during a forwarded SIGTERM's grace, and
   whether the forced exit kills the child), for Checkpoint B, before
