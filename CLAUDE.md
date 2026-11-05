@@ -2,8 +2,9 @@
 
 ## How to work (mandatory)
 
-The `agent-skills@addy-agent-skills` plugin is enabled and enforced for this
-repository (see the hooks in `.claude/settings.json`).
+The `agent-skills@addy-agent-skills` and `rust-skills@rust-skills` plugins
+are enabled and enforced for this repository (see the hooks in
+`.claude/settings.json`; rust-skills has its own table below).
 
 1. **Start every session** by invoking `agent-skills:using-agent-skills` via the
    Skill tool, before any other work.
@@ -45,6 +46,39 @@ repository (see the hooks in `.claude/settings.json`).
 | Removing or migrating systems | `agent-skills:deprecation-and-migration` |
 | Preparing a release / launch | `agent-skills:shipping-and-launch` |
 | Context/rules setup, degraded output | `agent-skills:context-engineering` |
+
+### Rust task → rust-skills skill
+
+The `rust-skills@rust-skills` plugin is enforced too (same hooks). It adds
+Rust-specific guidance on top of the agent-skills workflow skill; it never
+replaces one. Use these alongside the table above whenever Rust is written,
+changed or reviewed:
+
+| Situation | Skill |
+|---|---|
+| Unsure which, or a compile error | `rust-skills:rust-router` |
+| Ownership, borrows, lifetimes | `rust-skills:m01-ownership` |
+| Smart pointers, RAII, Drop | `rust-skills:m02-resource`, `rust-skills:m12-lifecycle` |
+| Interior mutability, locks | `rust-skills:m03-mutability` |
+| Generics, traits, dispatch | `rust-skills:m04-zero-cost` |
+| Newtypes, builders, type state | `rust-skills:m05-type-driven` |
+| Error types and propagation | `rust-skills:m06-error-handling`, `rust-skills:m13-domain-error` |
+| Threads, async, tokio, signals | `rust-skills:m07-concurrency` |
+| Domain modelling (Saltbox rules) | `rust-skills:m09-domain` |
+| Performance | `rust-skills:m10-performance` |
+| Crates, features, workspace | `rust-skills:m11-ecosystem` |
+| Review for anti-patterns | `rust-skills:m15-anti-pattern` |
+| Naming and style | `rust-skills:coding-guidelines` |
+| CLI and terminal code | `rust-skills:domain-cli` |
+| Any `unsafe` or FFI | `rust-skills:unsafe-checker` |
+| Crate API docs | `rust-skills:docs` |
+
+`CONSTRAINTS.md` and this file win over a rust-skills suggestion that
+conflicts with them (for example `#[allow]` stays forbidden). The plugin's
+own prompt hook injects a "mandatory" routing and output format (a
+"Reasoning Chain" section, a banner); it doesn't apply here: the
+agent-skills workflow and the tables above decide which skills load and
+how answers are written.
 
 ## Library first (don't diverge from what dependencies already solve)
 
@@ -88,6 +122,13 @@ A second pair of eyes catches what the author missed.
   parallel with `scripts/check.sh full`. The subagent is the fresh-context
   reviewer; use `agent-skills:code-review-and-quality` when you review
   yourself or weigh its findings.
+- **Reviewers also check Microsoft's Pragmatic Rust Guidelines**
+  (https://microsoft.github.io/rust-guidelines/agents/all.txt). A
+  `SubagentStart` hook (`.claude/hooks/reviewer-guidelines.sh`) caches it
+  under `target/agent-guides/` and points `agent-skills:code-reviewer`,
+  `agent-skills:security-auditor` and `library-reviewer` at it; it is not
+  given to the authoring agent. Findings cite the guideline id (`M-...`);
+  this file, `CONSTRAINTS.md` and the specs win where they conflict.
 - **Brief it with the range and the goal, not your conclusions.** Tell it
   to edit nothing, to run sb only with `SB_LOG_DIR` in the scratchpad, and
   to report findings with file:line.

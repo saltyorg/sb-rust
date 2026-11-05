@@ -1,6 +1,7 @@
 {
   "enabledPlugins": {
-    "agent-skills@addy-agent-skills": true
+    "agent-skills@addy-agent-skills": true,
+    "rust-skills@rust-skills": true
   },
   "hooks": {
     "SessionStart": [
@@ -31,6 +32,18 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/library-check.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "^(library-reviewer|agent-skills:code-reviewer|agent-skills:security-auditor)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/reviewer-guidelines.sh",
+            "timeout": 30
           }
         ]
       }
