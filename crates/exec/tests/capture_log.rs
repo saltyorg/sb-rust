@@ -121,7 +121,8 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
     let mut run = sb_term_ui::Runner::start("sb test", &shutdown, None, options).await;
     let _ = run
         .step(sb_term_ui::Labels::new("Running", "ran"), async |step| {
-            Cmd::new("sh")
+            // Only the log matters here, not the outcome.
+            let _ = Cmd::new("sh")
                 .arg("-c")
                 .arg("echo \"streamed $TOKEN\"")
                 .secret_env("TOKEN", "stream-secret-not-real-6")

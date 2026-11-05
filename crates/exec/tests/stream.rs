@@ -78,7 +78,7 @@ async fn a_failed_childs_lines_show_as_the_steps_output() {
     let mut run = Runner::start("sb test", &shutdown, None, options).await;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
-            sh("echo one; echo two >&2; printf 'three'; exit 3")
+            let _ = sh("echo one; echo two >&2; printf 'three'; exit 3")
                 .stream(step)
                 .await?
                 .check()?;
@@ -128,7 +128,7 @@ async fn lines_are_split_from_bytes_and_bounded() {
     let mut run = Runner::start("sb test", &shutdown, None, options).await;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
-            sh(script).stream(step).await?.check()?;
+            let _ = sh(script).stream(step).await?.check()?;
             Ok(())
         })
         .await;
@@ -267,7 +267,7 @@ async fn secrets_are_taken_out_of_the_steps_lines() {
     let mut run = Runner::start("sb test", &shutdown, None, options).await;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
-            sh("echo \"$1 $TOKEN\"; exit 1")
+            let _ = sh("echo \"$1 $TOKEN\"; exit 1")
                 .arg("sh")
                 .secret("arg-secret-not-real-1")
                 .secret_env("TOKEN", "env-secret-not-real-2")

@@ -283,6 +283,27 @@ fn an_untouched_pty_run_ends_on_its_own() {
     assert_eq!(status.code(), Some(0), "{status:?}");
 }
 
+/// A child that fails fails exec-demo's run, captured or on a PTY (its
+/// step then ends ✗ with the reason): its outcome is checked, never
+/// dropped (Task 9).
+#[test]
+fn a_failing_pty_child_fails_the_run() {
+    for (way, reason) in [(Some("pty"), "exit 3"), (None, "exited with code 3")] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("pids");
+        let out = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
+            .arg(&file)
+            .args(["fails", "5000"])
+            .args(way)
+            .output()
+            .expect("exec-demo");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{way:?}: {stderr}");
+        assert!(stderr.contains(reason), "{way:?}: {stderr}");
+        assert!(!stderr.contains('✓'), "{way:?}: {stderr}");
+    }
+}
+
 /// A fourth argument other than `pty` is a usage error; `pty` runs the
 /// child in a step (its end line on stderr), captured runs draw nothing.
 #[test]

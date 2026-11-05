@@ -360,6 +360,7 @@ impl fmt::Display for Ending {
 /// run a few bytes past 1 MiB: a character split by the cut becomes
 /// U+FFFD, and a secret across it the placeholder.
 #[derive(Debug)]
+#[must_use = "exec returns Ok for a child that didn't exit 0: `check()` it, or read its outcome"]
 pub struct Captured {
     pub outcome: Outcome,
     pub stdout: String,
@@ -401,6 +402,7 @@ fn failure(command: &str, ending: Ending, last_lines: Vec<String>) -> Failed {
 /// stderr into the lines the step got, so there is no tail to keep
 /// (exec spec decision 12).
 #[derive(Debug)]
+#[must_use = "exec returns Ok for a child that didn't exit 0: `check()` it, or read its outcome"]
 pub struct Ran {
     pub outcome: Outcome,
     command: String,
@@ -421,6 +423,7 @@ impl Ran {
 /// (secrets taken out) for a caller matching on it (apt's retry). The
 /// lines themselves went to the step.
 #[derive(Debug)]
+#[must_use = "exec returns Ok for a child that didn't exit 0: `check()` it, or read its outcome"]
 pub struct Streamed {
     pub outcome: Outcome,
     pub stderr_tail: String,

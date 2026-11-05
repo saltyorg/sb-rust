@@ -131,7 +131,10 @@ cancelled or the timeout passes, the outcome is interrupted or timed out
 even if the child then exits 0 within the grace period.
 
 - `check()` turns anything but exit 0 into an `exec::Failed` error naming
-  the program (arguments masked as in the log) and the outcome. For
+  the program (arguments masked as in the log) and the outcome. The
+  results are `#[must_use]` (Task 9), so an outcome can't be dropped
+  unread; a caller that checks and needs nothing more discards it
+  explicitly: `let _ = cmd.stream(step).await?.check()?;`. For
   `capture` it carries stderr's last lines; for `stream` and `pty` it
   doesn't, since term-ui's failure block shows the step's last 10 lines.
 - A spawn failure (program not found, not executable, no such directory)

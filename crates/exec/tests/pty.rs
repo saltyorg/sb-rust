@@ -400,7 +400,7 @@ async fn long_lines_and_secrets_across_the_cut() {
     let mut run = Runner::start("sb test", &shutdown, None, options).await;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
-            cmd.pty(step).await?.check()?;
+            let _ = cmd.pty(step).await?.check()?;
             Ok(())
         })
         .await;

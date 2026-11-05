@@ -8,8 +8,9 @@
 //! `exec-demo FILE MODE GRACE_MS`: the child writes "leader grandchild"
 //! pids to FILE (the leader's pid is the group's id). MODE `stops` (both
 //! end on SIGTERM), `ignores` (both ignore it, so only a SIGKILL ends
-//! them) or `exits` (it ends on its own); a fourth argument `pty` runs it
-//! on a PTY in a term-ui step instead of captured.
+//! them), `exits` (it ends on its own) or `fails` (it exits 3); a fourth
+//! argument `pty` runs it on a PTY in a term-ui step instead of captured.
+//! Either way the outcome is checked, so a failed child fails the run.
 
 use std::error::Error;
 use std::time::Duration;
@@ -22,7 +23,7 @@ use sb_term_ui::{Labels, Options, Runner};
 fn main() -> RunEnd {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let usage = || {
-        eprintln!("usage: exec-demo FILE stops|ignores|exits GRACE_MS [pty]");
+        eprintln!("usage: exec-demo FILE stops|ignores|exits|fails GRACE_MS [pty]");
         RunEnd::Code(2.into())
     };
     let (file, mode, grace, pty) = match &args[..] {
@@ -36,6 +37,7 @@ fn main() -> RunEnd {
     let script = match mode.as_str() {
         "stops" => "sleep 30 & echo $$ $! > \"$1\"; wait",
         "ignores" => "trap '' TERM; (exec sleep 30) & echo $$ $! > \"$1\"; wait",
+        "fails" => "true & echo $$ $! > \"$1\"; wait; exit 3",
         _ => "true & echo $$ $! > \"$1\"; wait",
     };
     let grace = Duration::from_millis(grace);
@@ -56,8 +58,8 @@ fn main() -> RunEnd {
         (Ok(()), Ok(runtime)) if pty => runtime.block_on(on_a_pty(&cmd, &shutdown)),
         (Ok(()), Ok(runtime)) => runtime
             .block_on(cmd.capture(&shutdown.token()))
-            .map(|_| ())
-            .map_err(Box::from),
+            .map_err(Box::from)
+            .and_then(|captured| captured.check().map(drop).map_err(Box::from)),
         (Err(err), _) | (_, Err(err)) => Err(err.into()),
     };
     let error = result
@@ -73,7 +75,9 @@ async fn on_a_pty(cmd: &Cmd, shutdown: &Shutdown) -> Result<(), Box<dyn Error>> 
     let mut run = Runner::start("exec-demo", shutdown, None, Options::default()).await;
     let ended = run
         .step(Labels::new("Running", "ran"), async |step| {
-            cmd.pty(step).await?;
+            // A failed child fails the step: its outcome is checked, not
+            // dropped (the outcome types are `#[must_use]`).
+            let _ = cmd.pty(step).await?.check()?;
             Ok(())
         })
         .await;
