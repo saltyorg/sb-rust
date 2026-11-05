@@ -315,6 +315,10 @@ impl Leader for PtyLeader {
     fn kill(&mut self) {
         let _ = self.pid;
     }
+
+    /// Nothing: a PTY child always has its session's group, whose stop
+    /// reaches the leader (`supervise` stops by pid only without one).
+    fn terminate(&mut self) {}
 }
 
 /// Read the PTY line by line to its end (portable-pty's reader turns the

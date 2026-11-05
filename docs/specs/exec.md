@@ -90,10 +90,11 @@ group, within the grace period plus one second.
 | `capture(&token)` | Capture, Combined, Discard | stdout and stderr collected separately, up to 1 MiB each (cli-core's cap for text sb reads), returned | `systemctl is-active`, `git rev-parse`, `uv --version`, `dpkg-query` |
 | `stream(&mut step)` | Stream, managed output | each line to the step as it arrives (stdout and stderr); stderr's last 64 KiB kept for the caller (apt's retry match) | `apt-get update`, `git pull` under the runner |
 | `pty(&mut step)` | `WithPseudoTerminal` | under a pseudo-terminal of sb's terminal size (24×120 when stderr isn't one, as sb-go), lines to the step; the child sees a TTY; stdin refused; echo off, and the end-of-file character written at start so a reading child's first read is end of file (a child that flushes its input before prompting, as a password prompt does, still waits: a PTY child must not prompt, so it gets a non-interactive flag or a timeout) | tools that colour or show progress only on a TTY |
-| `attached(&token)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged; `stdin(bytes)` refused before spawning (decision 11) | an editor, an `ansible-playbook` run shown as it is |
+| `attached(&shutdown)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged; `stdin(bytes)` refused before spawning (decision 11); cli-core's hold on SIGINT and SIGQUIT while it runs (decision 2; the `Shutdown`, decision 13) | an editor, an `ansible-playbook` run shown as it is |
 
 `stream` and `pty` take the step's token (term-ui's `Step::token`, a
-child of cli-core's shared token); `capture` and `attached` take one.
+child of cli-core's shared token); `capture` takes one; `attached` takes
+cli-core's `Shutdown`, its token and its hold (decision 13).
 
 - **Lines:** split at `\n` from bytes, each read bounded so memory is:
   tokio's `AsyncBufReadExt::read_until` through `AsyncReadExt::take(4 KiB
@@ -200,11 +201,14 @@ even if the child then exits 0 within the grace period.
 - **sb's forced exit** (a second signal, outside an attached child; while
   one runs, a second SIGTERM, decision 12): before exiting, cli-core's
   hook sends SIGKILL to every group exec created that still has members,
-  and to a running attached child's pid (decision 12).
+  and to a running attached child (decision 12), through a pidfd opened
+  at its spawn, so a reaped child's pid, if reused, is never reached.
 - **Dropped futures:** dropping a running piped or PTY child sends SIGKILL
   to its group at once (tokio's `kill_on_drop` reaches only the pid, so
   exec keeps its own guard) and leaves the reaping to tokio's orphan
-  handling or the PTY's wait thread.
+  handling or the PTY's wait thread. Dropping a running attached child
+  sends SIGKILL to its pid (tokio's `kill_on_drop`; it has no group of
+  its own), which can leave an editor's terminal in raw mode.
 - **Reading after a stop:** the grace plus one second bounds the group;
   the output still coming after it is read for up to the 2 s drain, as
   after any exit (a process that left the group but holds the pipe adds
@@ -217,7 +221,18 @@ even if the child then exits 0 within the grace period.
   subreaper (rustix's safe `set_child_subreaper`) to adopt the helpers
   that leave the group: it would also adopt daemons a tool starts on
   purpose (ssh's ControlPersist master, a service), and killing those is
-  wrong; tests use it, sb doesn't.
+  wrong; tests use it, sb doesn't. An attached child is stopped by its
+  pid alone (it stays in sb's group, which sb never signals): its own
+  children can outlive a SIGKILL after the grace or the forced exit
+  (under sudo with `use_pty`, sudo's closing PTY usually hangs them up).
+  A Ctrl-C the child dies of while a timeout's stop is under way reads
+  as timed out, not interrupted. A child that catches a held signal and
+  exits normally before sb's own copy of it is delivered (extreme load:
+  the child's handling and exit and sb's reap all run first) leaves that
+  copy to be decided outside the hold: a Ctrl-C then cancels the run, a
+  Ctrl-\ is the hard escape. `attached` checks once, before the
+  spawn, that no term-ui runner is live; nothing stops a runner starting
+  while an attached child runs (commands don't).
 
 ### Environment rules
 
@@ -498,3 +513,8 @@ let outcome = Cmd::new("systemctl")
       its behaviour; `env_clear` stays exact for `capture` and `stream`.
     - `pty` returns its own result (`Ran`: the outcome and `check()`), not
       `Streamed`, whose stderr tail a PTY can't fill.
+13. **`attached` takes the `Shutdown`** (maintainer, 2026-11-06, Task
+    8b): `attached(&shutdown)`, not `attached(&token)`, as the hold on
+    SIGINT and SIGQUIT (decision 2, cli-core's `Shutdown::hold`) needs
+    the `Shutdown`, not only its token; explicit, with no process-wide
+    copy in exec.

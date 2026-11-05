@@ -78,13 +78,15 @@ impl fmt::Debug for Cmd {
 }
 
 /// The way a child runs (spec, "Ways to run"); the environment rules and
-/// the log depend on it. Each way joins with its task (stream, pty, and
-/// attached, which `GIT_TERMINAL_PROMPT` leaves alone).
+/// the log depend on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Way {
     Capture,
     Stream,
     Pty,
+    /// sb's own stdin, stdout and stderr, and sb's group; git may ask the
+    /// user, so `GIT_TERMINAL_PROMPT` is left alone.
+    Attached,
 }
 
 impl Way {
@@ -93,6 +95,7 @@ impl Way {
             Self::Capture => "capture",
             Self::Stream => "stream",
             Self::Pty => "pty",
+            Self::Attached => "attached",
         }
     }
 }
@@ -214,15 +217,16 @@ impl Cmd {
     pub(crate) fn environment_for(&self, way: Way, profile: Profile) -> Environment<'_> {
         let colorterm = match (way, profile) {
             (Way::Capture | Way::Stream, _) => None,
-            (Way::Pty, Profile::TrueColor) => Some(Some("truecolor")),
-            (Way::Pty, Profile::Ansi256) => Some(Some("256color")),
-            (Way::Pty, Profile::Ansi | Profile::Ascii) => Some(None),
+            (Way::Pty | Way::Attached, Profile::TrueColor) => Some(Some("truecolor")),
+            (Way::Pty | Way::Attached, Profile::Ansi256) => Some(Some("256color")),
+            (Way::Pty | Way::Attached, Profile::Ansi | Profile::Ascii) => Some(None),
         };
         let (rule, ruled) = NO_GIT_PROMPT;
+        let no_prompt = way != Way::Attached;
         let mut vars: Vec<(&str, Option<&str>)> = self
             .env
             .iter()
-            .filter(|(name, _)| name.as_str() != rule)
+            .filter(|(name, _)| !no_prompt || name.as_str() != rule)
             .map(|(name, var)| {
                 let value = match var {
                     Var::Set(value) | Var::Secret(value) => Some(value.as_str()),
@@ -231,7 +235,9 @@ impl Cmd {
                 (name.as_str(), value)
             })
             .collect();
-        vars.push((rule, Some(ruled)));
+        if no_prompt {
+            vars.push((rule, Some(ruled)));
+        }
         if let Some(value) = colorterm {
             vars.retain(|(name, _)| *name != "COLORTERM");
             vars.push(("COLORTERM", value));
@@ -467,6 +473,10 @@ pub enum SpawnCause {
     /// PTY, which sb closes at once).
     #[error("a {0} child takes no stdin bytes")]
     StdinRefused(&'static str),
+    /// An attached child can't start while a term-ui runner draws: they
+    /// would share the terminal.
+    #[error("a term-ui runner is drawing, so an attached child can't have the terminal")]
+    RunnerLive,
     /// The working directory couldn't be looked at (a parent sb can't
     /// search, say).
     #[error("working directory {}", dir.display())]
@@ -679,6 +689,25 @@ mod tests {
             Some(("COLORTERM", Some("given")))
         );
         assert_eq!(Way::Pty.name(), "pty");
+    }
+
+    /// An attached child gets COLORTERM as a PTY child does, and git may
+    /// ask on sb's terminal: no `GIT_TERMINAL_PROMPT=0`, a given one kept.
+    #[test]
+    fn an_attached_child_gets_colorterm_and_may_prompt() {
+        let cmd = Cmd::new("git").env("GIT_TERMINAL_PROMPT", "1");
+        assert_eq!(
+            cmd.environment_for(Way::Attached, Profile::TrueColor).vars,
+            [
+                ("COLORTERM", Some("truecolor")),
+                ("GIT_TERMINAL_PROMPT", Some("1"))
+            ]
+        );
+        assert_eq!(
+            cmd.environment_for(Way::Attached, Profile::Ascii).vars,
+            [("COLORTERM", None), ("GIT_TERMINAL_PROMPT", Some("1"))]
+        );
+        assert_eq!(Way::Attached.name(), "attached");
     }
 
     #[test]

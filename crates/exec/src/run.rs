@@ -6,6 +6,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config::MAX_FILE_BYTES;
 use sb_term_ui::Step;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -13,9 +14,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::group::Group;
+use crate::group::{AttachedPid, Group};
 use crate::mask::Mask;
-use crate::{Captured, Cmd, Ending, Outcome, SpawnCause, SpawnError, Streamed, Way};
+use crate::{Captured, Cmd, Ending, Outcome, Ran, SpawnCause, SpawnError, Streamed, Way};
 
 /// How long output is still read after the child exits: a background
 /// grandchild can hold the pipe open (spec, "After the child exits"; sb-go
@@ -177,6 +178,83 @@ impl Cmd {
         })
     }
 
+    /// Run the child on sb's own stdin, stdout and stderr, in sb's process
+    /// group, to its end (spec, `attached`): nothing is collected or
+    /// logged of its output; it can't start while a term-ui runner draws,
+    /// nor take stdin bytes. While it runs, cli-core holds SIGINT and
+    /// SIGQUIT ("wait and cooperative exit", decision 2): the terminal
+    /// delivers them to the child, and sb only notes them; if the child
+    /// then dies of one sb received, the run is interrupted (the outcome
+    /// interrupted, sb ending by that signal), else it is the child's own
+    /// ending. A SIGTERM to sb cancels the token, which sends SIGTERM to
+    /// the child's pid, then SIGKILL after the grace; the timeout does
+    /// the same. sb's forced exit SIGKILLs the pid (decision 12). Starting
+    /// and ending the hold, and a signalled child's question (up to
+    /// 100 ms), block this thread briefly (cli-core's `Shutdown::hold`):
+    /// accepted, as nothing else draws meanwhile. Stopped by its pid
+    /// alone, a child's own children can outlive it (spec, known limits).
+    pub async fn attached(&self, shutdown: &Shutdown) -> Result<Ran, SpawnError> {
+        let (command, _) = self.shown();
+        // Refused before the hold (whose start can wait) and the spawn.
+        if let Err(cause) = self.attached_refusal() {
+            return Err(self.not_started(cause));
+        }
+        // An interactive child started only to be stopped at once (an
+        // editor flashing up): not started, the outcome interrupted.
+        if shutdown.token().is_cancelled() {
+            tracing::info!(command, "child not started: the run was interrupted");
+            return Ok(Ran {
+                outcome: Outcome {
+                    ending: Ending::Interrupted,
+                    elapsed: Duration::ZERO,
+                },
+                command,
+            });
+        }
+        let hold = shutdown.hold();
+        let (mut child, _) = self.spawn(Way::Attached)?;
+        let registered = AttachedPid::new(child.id());
+        let start = Instant::now();
+        let token = shutdown.token();
+        let ending = self
+            .supervise(&mut child, None, &token, std::future::ready(()))
+            .await?;
+        drop(registered);
+        let ending = match ending {
+            Ending::Signalled(signal) if hold.child_ended_by(Some(signal)) => Ending::Interrupted,
+            ending => ending,
+        };
+        drop(hold);
+        let outcome = Outcome {
+            ending,
+            elapsed: start.elapsed(),
+        };
+        log_end(&command, &outcome);
+        Ok(Ran { outcome, command })
+    }
+
+    /// Log why the child didn't start, and its error. As an error value,
+    /// so its causes are logged too (`error.sources`, as cli-core's run
+    /// record).
+    fn not_started(&self, cause: SpawnCause) -> SpawnError {
+        let (command, _) = self.shown();
+        let error: &(dyn std::error::Error + 'static) = &cause;
+        tracing::warn!(command, error, "child not started");
+        self.failed(cause)
+    }
+
+    /// Why an attached child can't start (decision 11): its stdin is sb's
+    /// own, and it can't share the terminal with a runner.
+    fn attached_refusal(&self) -> Result<(), SpawnCause> {
+        if self.stdin.is_some() {
+            return Err(SpawnCause::StdinRefused("attached"));
+        }
+        if sb_term_ui::runner_live() {
+            return Err(SpawnCause::RunnerLive);
+        }
+        Ok(())
+    }
+
     /// The error for a child that couldn't run, naming the program.
     pub(crate) fn failed(&self, cause: SpawnCause) -> SpawnError {
         SpawnError {
@@ -193,26 +271,23 @@ impl Cmd {
             .and_then(|mut child| child.spawn().map_err(SpawnCause::from));
         match spawned {
             Ok(child) => {
-                let group = child.id().and_then(Group::of);
+                // An attached child stays in sb's group: none of its own.
+                let group = (way != Way::Attached)
+                    .then(|| child.id().and_then(Group::of))
+                    .flatten();
                 self.log_start(way);
                 Ok((child, group))
             }
-            Err(cause) => {
-                // As an error value, so its causes are logged too
-                // (`error.sources`, as cli-core's run record).
-                let (command, _) = self.shown();
-                let error: &(dyn std::error::Error + 'static) = &cause;
-                tracing::warn!(command, error, "child not started");
-                Err(self.failed(cause))
-            }
+            Err(cause) => Err(self.not_started(cause)),
         }
     }
 
     /// Run `io` (the child's pipes) alongside the child to its end: on
     /// cancellation or the timeout the group's stop (SIGTERM, the grace,
-    /// SIGKILL), what is left of it after the leader's reap, then the
-    /// output still coming for up to [`DRAIN`]. Interrupted and timed out
-    /// win over the child's own ending.
+    /// SIGKILL; by the leader's pid when there is no group), what is left
+    /// of it after the leader's reap, then the output still coming for up
+    /// to [`DRAIN`]. Interrupted and timed out win over the child's own
+    /// ending.
     pub(crate) async fn supervise(
         &self,
         child: &mut impl Leader,
@@ -233,9 +308,16 @@ impl Cmd {
                 () = &mut io, if !drained => drained = true,
                 () = token.cancelled(), if stop.is_none() => {
                     stop = Some(Stop::now(Ending::Interrupted, self.grace, group.as_mut()));
+                    // Without a group (an attached child), by pid.
+                    if group.is_none() {
+                        child.terminate();
+                    }
                 }
                 () = sleep_until(time_out_at), if stop.is_none() && time_out_at.is_some() => {
                     stop = Some(Stop::now(Ending::TimedOut, self.grace, group.as_mut()));
+                    if group.is_none() {
+                        child.terminate();
+                    }
                 }
                 () = sleep_until(kill_at), if stop.as_ref().is_some_and(|stop| !stop.killed) => {
                     if let Some(group) = &group {
@@ -287,6 +369,10 @@ impl Cmd {
 pub(crate) trait Leader {
     async fn wait(&mut self) -> std::io::Result<ExitStatus>;
     fn kill(&mut self);
+    /// SIGTERM (and SIGCONT, as a group's stop) to the leader's pid, for a
+    /// child without a group of its own: an attached one, or a piped one
+    /// whose group couldn't be found (intended there too).
+    fn terminate(&mut self);
 }
 
 impl Leader for Child {
@@ -299,11 +385,25 @@ impl Leader for Child {
     fn kill(&mut self) {
         let _ = self.start_kill();
     }
+
+    /// rustix's `kill_process`, as the groups' signals
+    /// (https://docs.rs/rustix/1.1.6/rustix/process/fn.kill_process.html);
+    /// the pid is unreaped while tokio's `Child` hasn't seen it exit
+    /// (`id` is `None` after). Why not tokio's `start_kill` or std's
+    /// `send_signal`: the first is SIGKILL only, the second unstable on
+    /// Rust 1.99.1.
+    fn terminate(&mut self) {
+        if let Some(pid) = self.id().and_then(crate::group::pid_of) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::CONT);
+        }
+    }
 }
 
 impl Cmd {
     /// tokio's `Command` for `way`: program, arguments, the environment
-    /// rules, working directory, piped output and its own process group
+    /// rules, working directory, and (but for an attached child, which
+    /// keeps sb's stdio and group) piped output and its own process group
     /// (`process_group(0)`,
     /// https://docs.rs/tokio/1.54.1/tokio/process/struct.Command.html#method.process_group),
     /// killed if the run is dropped before it ends (`kill_on_drop`). The
@@ -329,6 +429,15 @@ impl Cmd {
         }
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
+        }
+        if way == Way::Attached {
+            // sb's own stdio and group (the terminal's signals reach it).
+            command
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true);
+            return Ok(command);
         }
         let stdin = if self.stdin.is_some() {
             Stdio::piped()

@@ -21,11 +21,15 @@
 //! can't name a group, so no API closes this; it needs the whole pid space
 //! used within milliseconds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::os::fd::OwnedFd;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+use rustix::process::{
+    Pid, PidfdFlags, Signal, kill_process_group, pidfd_open, pidfd_send_signal,
+    test_kill_process_group,
+};
 use sb_cli_core::cancel::{RestoreHook, Shutdown};
 use tokio::time::Instant;
 
@@ -39,6 +43,24 @@ pub(crate) const LAST_CHECK: Duration = Duration::from_secs(1);
 /// The groups exec created whose run hasn't ended, for the forced exit.
 static LIVE: Mutex<BTreeSet<i32>> = Mutex::new(BTreeSet::new());
 
+/// The attached children running, for the forced exit (decision 12): a
+/// pidfd each (rustix's `pidfd_open`,
+/// https://docs.rs/rustix/1.1.6/rustix/process/fn.pidfd_open.html), as
+/// they stay in sb's group and have only their pid. A pidfd names that
+/// process alone: once it is reaped, a signal through it fails rather than
+/// reach a process that got the pid again. A process-wide static, as
+/// `LIVE`: the hook has no other handle.
+static ATTACHED: Mutex<BTreeMap<i32, OwnedFd>> = Mutex::new(BTreeMap::new());
+
+fn attached() -> MutexGuard<'static, BTreeMap<i32, OwnedFd>> {
+    ATTACHED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A child's pid as rustix takes it.
+pub(crate) fn pid_of(raw: u32) -> Option<Pid> {
+    i32::try_from(raw).ok().and_then(Pid::from_raw)
+}
+
 fn live() -> MutexGuard<'static, BTreeSet<i32>> {
     // Inserts and removes can't leave the set half-changed.
     LIVE.lock().unwrap_or_else(PoisonError::into_inner)
@@ -51,14 +73,61 @@ pub fn on_forced_exit(shutdown: &Shutdown) -> RestoreHook {
     shutdown.on_forced_exit(kill_live_groups)
 }
 
-/// The forced exit's hook: SIGKILL each live group that has members.
+/// The forced exit's hook: SIGKILL each running attached child (through
+/// its pidfd) and each live group that has members. Each signal goes
+/// before its log line: a stuck log writer can hold the hook past its
+/// deadline, and the kill mustn't wait on it.
 fn kill_live_groups() {
+    for (&raw, pidfd) in attached().iter() {
+        let _ = pidfd_send_signal(pidfd, Signal::KILL);
+        tracing::debug!(pid = raw, "forced exit: SIGKILL to the attached child");
+    }
     for &raw in live().iter() {
         if let Some(group) = Pid::from_raw(raw)
             && test_kill_process_group(group).is_ok()
         {
-            tracing::debug!(group = raw, "forced exit: SIGKILL to the child's group");
             let _ = kill_process_group(group, Signal::KILL);
+            tracing::debug!(group = raw, "forced exit: SIGKILL to the child's group");
+        }
+    }
+}
+
+/// A running attached child, registered for the forced exit (its pidfd,
+/// opened right after the spawn, while the pid is surely the child's)
+/// until this is dropped, which `attached` does after the reap.
+pub(crate) struct AttachedPid(Option<i32>);
+
+impl AttachedPid {
+    pub(crate) fn new(pid: Option<u32>) -> Self {
+        let Some(pid) = pid.and_then(pid_of) else {
+            return Self(None);
+        };
+        let raw = pid.as_raw_nonzero().get();
+        // The kernel opens a pidfd close-on-exec (pidfd_open(2)), so no
+        // child inherits it.
+        match pidfd_open(pid, PidfdFlags::empty()) {
+            Ok(pidfd) => {
+                attached().insert(raw, pidfd);
+                Self(Some(raw))
+            }
+            // Not by pid instead: that would bring back the reuse window.
+            // Seen in the log; only a file-descriptor limit does it here.
+            Err(err) => {
+                tracing::warn!(
+                    pid = raw,
+                    error = %err,
+                    "attached child not registered for the forced exit"
+                );
+                Self(None)
+            }
+        }
+    }
+}
+
+impl Drop for AttachedPid {
+    fn drop(&mut self) {
+        if let Some(raw) = self.0 {
+            attached().remove(&raw);
         }
     }
 }
@@ -160,8 +229,9 @@ mod tests {
 
     /// The forced exit's hook SIGKILLs a live group with members; only the
     /// group this test made, its id the child's pid. It kills every group
-    /// in the process-wide set: no other unit test here starts children,
-    /// and one that does belongs in tests/ (its own process).
+    /// in the process-wide sets, as does the attached test below: each
+    /// test's children are only ever these two `sleep`s, which both
+    /// expect SIGKILL; any other child belongs in tests/ (its own process).
     #[test]
     fn the_forced_exit_kills_live_groups() {
         let mut child = std::process::Command::new("sleep")
@@ -182,5 +252,25 @@ mod tests {
         assert_eq!(status.signal(), Some(9), "{status:?}");
         drop(group);
         assert!(!live().contains(&i32::try_from(child.id()).expect("pid")));
+    }
+
+    /// The forced exit SIGKILLs a registered attached child's pid, and the
+    /// registration ends with its guard.
+    #[test]
+    fn the_forced_exit_kills_attached_children() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep");
+        let registered = AttachedPid::new(Some(child.id()));
+        let pid = i32::try_from(child.id()).expect("pid");
+        assert!(attached().contains_key(&pid), "registered");
+        kill_live_groups();
+        // Deregistered before the reap here (`attached` does it after,
+        // which its pidfd makes safe).
+        drop(registered);
+        let status = child.wait().expect("wait");
+        assert_eq!(status.signal(), Some(9), "{status:?}");
+        assert!(!attached().contains_key(&pid));
     }
 }
