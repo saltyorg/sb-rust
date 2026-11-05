@@ -452,7 +452,9 @@ handed to the holder to forward; the holder reports a child that died of
 SIGINT or SIGQUIT, which records the interruption on `Shutdown` (sb then
 ends by that signal, Task 1c) and cancels the token, only if sb itself
 received the signal; a run ended by SIGQUIT re-raises it with core dumps
-off first (rustix's `setrlimit`, `RLIMIT_CORE` 0; Task 1c's re-raise).
+off first (rustix's `set_dumpable_behavior`, not dumpable, as built:
+`RLIMIT_CORE` 0 doesn't stop a `core_pattern` piping to apport; Task 1c's
+re-raise).
 The decision logic (hold state and signal) is a pure
 function, tested in-process so the coverage and mutation gates reach it.
 The cli-core spec amended. The carried run record (`error=exit code 1`
@@ -470,7 +472,17 @@ reason.
       - a terminal SIGINT (and, as the author's extension, SIGQUIT)
         during a forwarded SIGTERM's grace: not counted, sb waits;
       - the forced exit: SIGKILL to the attached child's pid as well as to
-        exec's groups.
+        exec's groups (exec's side: `attached` registers the pid with
+        `sb_exec::on_forced_exit`'s kill, Task 8b; cli-core runs the hooks).
+
+      As built: the hold is one `Mutex` + `Condvar` over the count and the
+      notes, with signal-hook `flag::register` flags set at delivery, so
+      the decision is about when a signal arrived, not when the signals
+      thread read it (the Task 8a code review's race); a hold's start and
+      end wait for undecided deliveries, and `child_ended_by` waits up to
+      100 ms for sb's own copy. A child's interruption counts as the first
+      signal. Ctrl-\ runs the restore hooks first (maintainer, 2026-11-05).
+      Root runs are not dumpable from startup (security review).
 - [ ] cli-core's and sb's existing signal tests pass
       (`SB_TEST_ROOT=1`: validate_config_signals.rs, docker_signals.rs).
 - [ ] sb's binary size and startup measured, with an ADR past the
@@ -524,6 +536,16 @@ before any spawn (no start record written).
 
 **Verification:**
 - [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+
+**Carried from Task 8a:** the forced exit's SIGKILL of the attached
+child's pid (exec registers it); the kernel makes an exec'd child
+dumpable again, so a root attached child's core is the host's setting
+(decide whether `RLIMIT_CORE` 0 is set for it, in its `pre_exec`-free
+way, or recorded as a known limit). `Hold`'s calls block briefly (up to
+100 ms in `child_ended_by`): call them where the stall is fine or through
+`spawn_blocking`. A hold that starts while Ctrl-\'s restore hooks run
+can spawn a child the forced-exit kill (already taken) won't reach:
+refuse the spawn once the token is cancelled, or record the limit.
 
 **Dependencies:** Task 8a
 **Files:** `crates/exec/src/run.rs`, `crates/exec/src/bin/exec-demo.rs`,

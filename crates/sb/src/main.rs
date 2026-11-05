@@ -156,6 +156,12 @@ fn main() -> RunEnd {
         }
         return exit::report(&err, None, &mut anstream::stderr()).into();
     }
+    // A root run holds secrets: no core dump of sb (cli-core spec, startup
+    // step 3); for help and version it costs nothing. Failing both ways
+    // leaves the host's default.
+    if let Err(err) = root::no_core_dumps() {
+        warn(format!("could not turn off core dumps: {err}"));
+    }
     // Root runs log on the host (spec: startup step 4); the log directory
     // is root-only, so unprivileged runs (help, version) don't.
     let log = (root::effective_uid() == 0)

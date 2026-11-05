@@ -35,6 +35,37 @@ pub fn effective_uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
+/// Keep a root run out of core dumps: a crash (a SIGABRT from a failed
+/// re-raise, a SIGSEGV) would otherwise write sb's memory, its secrets
+/// included, wherever `core_pattern` points. Not dumpable
+/// (`PR_SET_DUMPABLE` 0) stops every dump, a piped `core_pattern` (apport,
+/// systemd-coredump) too
+/// (https://docs.rs/rustix/1.1.6/rustix/process/fn.set_dumpable_behavior.html);
+/// should that fail, `RLIMIT_CORE` 0 still stops file dumps
+/// (https://docs.rs/rustix/1.1.6/rustix/process/fn.setrlimit.html). The
+/// kernel makes a process dumpable again at `execve`, so the children sb
+/// runs are unaffected (prctl(2), `PR_SET_DUMPABLE`).
+pub fn no_core_dumps() -> std::io::Result<()> {
+    use rustix::process::{DumpableBehavior, set_dumpable_behavior};
+    no_core_dumps_by(|| set_dumpable_behavior(DumpableBehavior::NotDumpable))
+}
+
+/// [`no_core_dumps`] with its first way given, so the fallback is tested.
+fn no_core_dumps_by(not_dumpable: impl FnOnce() -> rustix::io::Result<()>) -> std::io::Result<()> {
+    use rustix::process::{Resource, Rlimit, setrlimit};
+    not_dumpable()
+        .or_else(|_| {
+            setrlimit(
+                Resource::Core,
+                Rlimit {
+                    current: Some(0),
+                    maximum: Some(0),
+                },
+            )
+        })
+        .map_err(std::io::Error::from)
+}
+
 /// sudo's arguments: root asked for explicitly, the user's editor choice,
 /// colour profile and NO_COLOR kept (sudo's env_reset drops them, which
 /// sb-go also loses; maintainer, 2026-10-30), then sb and its arguments
@@ -88,6 +119,26 @@ mod tests {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
     use std::path::Path;
+
+    /// Leaves this test process not dumpable for the tests after it:
+    /// harmless to them, but a debugger can't attach to a later one.
+    #[test]
+    fn a_run_without_core_dumps_is_not_dumpable() {
+        use rustix::process::{DumpableBehavior, dumpable_behavior};
+        no_core_dumps().expect("prctl");
+        assert_eq!(
+            dumpable_behavior().ok(),
+            Some(DumpableBehavior::NotDumpable)
+        );
+    }
+
+    /// Should prctl fail, the core limit is 0 (this process keeps it).
+    #[test]
+    fn without_prctl_the_core_limit_is_0() {
+        use rustix::process::{Resource, getrlimit};
+        no_core_dumps_by(|| Err(rustix::io::Errno::INVAL)).expect("setrlimit");
+        assert_eq!(getrlimit(Resource::Core).current, Some(0));
+    }
 
     /// The kernel makes `/proc/self` belong to the process's effective
     /// user, an independent view of the same ID.

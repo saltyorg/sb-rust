@@ -437,9 +437,11 @@ let outcome = Cmd::new("systemctl")
    2026-11-04): after cleanup, cli-core resets the handler and re-raises
    the signal that ended the run (signal-hook's safe
    `low_level::emulate_default_handler`), with core dumps off for SIGQUIT
-   (rustix's `setrlimit`, `RLIMIT_CORE` 0), instead of exiting with 130,
-   131 or 143; so does the forced exit on a second signal, after term-ui's
-   restore hooks (term-ui decision 5). A calling shell then sees a death
+   (rustix's `set_dumpable_behavior`, not dumpable; as built in Task 8a:
+   `RLIMIT_CORE` 0 doesn't stop a `core_pattern` that pipes to a helper
+   such as apport), instead of exiting with 130, 131 or 143; so does the
+   forced exit on a second signal, after term-ui's restore hooks (term-ui
+   decision 5). A calling shell then sees a death
    by signal and stops its script, as the convention requires ("You cannot
    'fake' the proper exit status by an exit(3) with a special numeric
    value", Cracauer); `$?` still reads 128 plus the signal. Both sudos

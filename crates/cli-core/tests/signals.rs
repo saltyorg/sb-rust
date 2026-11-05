@@ -65,7 +65,21 @@ fn child_main() {
     };
     // Kept alive until the process exits; `removed` drops its guard.
     let mut hooks = Vec::new();
+    // `hold`: an attached child's hold on SIGINT and SIGQUIT (exec
+    // decision 2), kept until the process exits (as `hooks` are).
+    let mut holds = Vec::new();
     match std::env::var(HOOKS).as_deref() {
+        Ok("hold") => holds.push(shutdown.hold()),
+        // `credit`: a hold whose child dies of the SIGINT (exec asks once
+        // the child is reaped; here it asks until sb's copy is noted).
+        Ok("credit") => {
+            let hold = shutdown.hold();
+            std::thread::spawn(
+                move || {
+                    while !hold.child_ended_by(Some(signal_hook::consts::SIGINT)) {}
+                },
+            );
+        }
         Ok("run") => hooks.push(shutdown.on_forced_exit(restored)),
         Ok("removed") => drop(shutdown.on_forced_exit(restored)),
         Ok("block") => {
@@ -344,4 +358,91 @@ fn a_signal_that_would_not_end_sb_still_ends_the_run() {
     assert_eq!(out.status.code(), Some(128 + SIGCHLD), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("still running"), "{stdout}");
+}
+
+/// While an attached child holds the signals, a SIGINT is noted, not
+/// counted (exec decisions 2 and 12): the first SIGTERM is what cancels
+/// (code 143), and a second SIGTERM forces the exit by SIGTERM.
+#[test]
+fn a_held_sigint_is_not_counted() {
+    if std::env::var_os(CHILD).is_some() {
+        return child_main();
+    }
+    let (mut child, mut lines) = spawn_with("a_held_sigint_is_not_counted", "hold", "");
+    send(&child, Signal::INT);
+    std::thread::sleep(Duration::from_millis(200));
+    send(&child, Signal::TERM);
+    assert_eq!(
+        next_line(&mut lines),
+        "cancelled Some(143) interrupted true",
+        "the SIGINT didn't cancel"
+    );
+    send(&child, Signal::TERM);
+    assert_eq!(child.wait().expect("wait").signal(), Some(SIGTERM));
+}
+
+/// A real Ctrl-C while held, through signal-hook's handler and the signals
+/// thread: a child that died of it interrupts the run by SIGINT, and the
+/// next signal forces the exit, ending sb by that first signal.
+#[test]
+fn a_child_that_died_of_a_held_sigint_interrupts_the_run() {
+    if std::env::var_os(CHILD).is_some() {
+        return child_main();
+    }
+    let (mut child, mut lines) = spawn_with(
+        "a_child_that_died_of_a_held_sigint_interrupts_the_run",
+        "credit",
+        "",
+    );
+    send(&child, Signal::INT);
+    assert_eq!(
+        next_line(&mut lines),
+        "cancelled Some(130) interrupted true",
+        "the hold credited the SIGINT"
+    );
+    send(&child, Signal::TERM);
+    assert_eq!(
+        child.wait().expect("wait").signal(),
+        Some(signal_hook::consts::SIGINT),
+        "the second signal forced the exit by the first"
+    );
+}
+
+/// The hard escape puts the terminal back first: the restore hooks run
+/// (bounded by the deadline), then sb ends by SIGQUIT (maintainer,
+/// 2026-11-05, amending term-ui decision 5).
+#[test]
+fn the_hard_escape_runs_the_restore_hooks_first() {
+    if std::env::var_os(CHILD).is_some() {
+        return child_main();
+    }
+    let (mut child, mut lines) =
+        spawn_with("the_hard_escape_runs_the_restore_hooks_first", "run", "");
+    send(&child, Signal::QUIT);
+    assert_eq!(next_line(&mut lines), "restored");
+    assert_eq!(
+        child.wait().expect("wait").signal(),
+        Some(signal_hook::consts::SIGQUIT)
+    );
+}
+
+/// Outside a hold, Ctrl-\'s SIGQUIT stays the hard escape: sb ends by it at
+/// once, without a core dump. Limit: on a host whose core limit is 0 and
+/// whose `core_pattern` is a file, no core is written either way, so the
+/// check only bites where cores are on (an apport or systemd-coredump
+/// host, as here); `end_by` making sb not dumpable is the guarantee.
+#[test]
+fn sigquit_is_a_hard_escape_without_a_core() {
+    if std::env::var_os(CHILD).is_some() {
+        return child_main();
+    }
+    let (mut child, _lines) = spawn("sigquit_is_a_hard_escape_without_a_core");
+    send(&child, Signal::QUIT);
+    let status = child.wait().expect("wait");
+    assert_eq!(
+        status.signal(),
+        Some(signal_hook::consts::SIGQUIT),
+        "{status:?}"
+    );
+    assert!(!status.core_dumped(), "{status:?}");
 }

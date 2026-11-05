@@ -1,4 +1,5 @@
-//! Cancellation on SIGINT and SIGTERM (spec: "Cancellation").
+//! Cancellation on SIGINT and SIGTERM, Ctrl-\\ as the hard escape, and
+//! signals held for an attached child (spec: "Cancellation").
 //!
 //! The first signal cancels a token every command holds and records the
 //! exit code; a second runs the registered restore hooks (term-ui's
@@ -12,10 +13,11 @@
 //! (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM};
 use signal_hook::iterator::Signals;
 pub use tokio_util::sync::CancellationToken;
 
@@ -33,6 +35,16 @@ pub fn signal_exit_code(signal: i32) -> u8 {
 /// aborts, so sb dies of SIGABRT); a signal it doesn't know, or one whose
 /// default isn't to end a process, exits with 128 + the signal instead.
 pub(crate) fn end_by(signal: i32) -> ! {
+    if signal == SIGQUIT {
+        // SIGQUIT's default action dumps core; sb's run ends by it, not
+        // with a core (exec decision 7). Not dumpable, rather than
+        // RLIMIT_CORE 0: a `core_pattern` that pipes to a helper (apport,
+        // systemd-coredump) gets the core whatever the limit says, and
+        // `PR_SET_DUMPABLE` 0 stops every dump
+        // (https://docs.rs/rustix/1.1.6/rustix/process/fn.set_dumpable_behavior.html).
+        use rustix::process::{DumpableBehavior, set_dumpable_behavior};
+        let _ = set_dumpable_behavior(DumpableBehavior::NotDumpable);
+    }
     let _ = signal_hook::low_level::emulate_default_handler(signal);
     std::process::exit(i32::from(signal_exit_code(signal)))
 }
@@ -133,6 +145,186 @@ pub struct Shutdown {
     token: CancellationToken,
     first: Arc<OnceLock<Ending>>,
     hooks: Arc<Hooks>,
+    /// The signals held for an attached child (exec decision 2).
+    holds: Arc<Holds>,
+}
+
+/// How long a hold's start or end waits for the signals thread to decide
+/// on a delivery it hasn't read yet. The thread reads within microseconds;
+/// the bound only matters if it is stuck (a forced exit's restore hooks,
+/// up to [`RESTORE_DEADLINE`], after which sb ends).
+const SETTLE: Duration = Duration::from_secs(1);
+
+/// How long [`Hold::child_ended_by`] waits for sb's own copy of the signal
+/// that killed the child. The terminal sends Ctrl-C to sb and the child
+/// together, but nothing orders sb's handler (or the thread's reading)
+/// before the reap that tells exec the child died. A child killed by a
+/// signal sb never got costs this wait once.
+const DELIVERY: Duration = Duration::from_millis(100);
+
+/// The held signals: SIGINT and SIGQUIT, by slot.
+const HELD: [i32; 2] = [SIGINT, SIGQUIT];
+
+fn slot(signal: i32) -> Option<usize> {
+    HELD.iter().position(|held| *held == signal)
+}
+
+/// The hold count and what was noted, under one lock with a condvar, so
+/// the signals thread's decision and a hold's start, question and end see
+/// one state (a compound invariant: one `Mutex`, not loose atomics).
+/// Custom: no dependency holds signals for a child; signal-hook gives the
+/// delivery flags (`flag::register`, safe), std the lock.
+#[derive(Default)]
+struct Holds {
+    state: Mutex<HoldState>,
+    changed: Condvar,
+    /// Set by signal-hook's handler when the signal is delivered (before
+    /// the iterator's wake-up: actions run in registration order;
+    /// UNVERIFIED as API, checked in signal-hook-registry 1.4.8's
+    /// `src/lib.rs`, "Actions are stored and executed in the order they
+    /// were registered", and pinned by `Cargo.lock`), cleared by the signals
+    /// thread under the lock once it has decided: set means "delivered,
+    /// not yet decided". Decided while held, it is noted; so a hold that
+    /// starts or ends waits for it ([`Holds::settled`]) rather than let
+    /// the thread decide a delivery from inside the hold as outside it.
+    arrived: [Arc<AtomicBool>; 2],
+}
+
+#[derive(Default)]
+struct HoldState {
+    /// How many holds are on (they nest).
+    count: usize,
+    /// The held signals noted, by slot, since the outermost hold began.
+    noted: [bool; 2],
+}
+
+impl Holds {
+    fn lock(&self) -> MutexGuard<'_, HoldState> {
+        // Nothing under the lock can panic between its writes (field
+        // stores only), so a poisoned lock still holds a whole state.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn pending(&self) -> bool {
+        self.arrived.iter().any(|flag| flag.load(Ordering::SeqCst))
+    }
+
+    /// Wait (up to [`SETTLE`]) until the signals thread has decided every
+    /// delivery so far. The thread clears a flag and notifies under the
+    /// lock, so the wake-up can't be lost.
+    fn settled<'a>(&self, state: MutexGuard<'a, HoldState>) -> MutexGuard<'a, HoldState> {
+        self.changed
+            .wait_timeout_while(state, SETTLE, |_| self.pending())
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+    }
+
+    /// The signals thread's step for `signal`: decide under the lock, mark
+    /// the delivery decided and note a held signal; the caller acts.
+    fn take(&self, first: Option<i32>, signal: i32) -> Act {
+        let mut state = self.lock();
+        let act = decide(first, state.count > 0, signal);
+        if let Some(slot) = slot(signal) {
+            self.arrived[slot].store(false, Ordering::SeqCst);
+            if act == Act::Note {
+                state.noted[slot] = true;
+            }
+        }
+        self.changed.notify_all();
+        act
+    }
+}
+
+/// What the signals thread does with a signal (cli-core spec,
+/// "Cancellation"; exec decisions 2 and 12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Act {
+    /// The first: record it and cancel the token.
+    Cancel,
+    /// A second: run the restore hooks, then end by the first.
+    ForcedExit(i32),
+    /// Held: the terminal sent it to the attached child too; sb notes it,
+    /// takes no action and doesn't count it ("wait and cooperative exit").
+    Note,
+    /// SIGQUIT outside a hold: Ctrl-\ stays the hard escape (term-ui
+    /// decision 5): the restore hooks run (bounded by the deadline), then
+    /// sb ends by it, whatever the run was doing (maintainer, 2026-11-05).
+    HardEscape,
+}
+
+/// The signals thread's decision for `signal`, given the first signal
+/// counted so far and whether an attached child holds the signals.
+fn decide(first: Option<i32>, held: bool, signal: i32) -> Act {
+    match (signal, held, first) {
+        (SIGQUIT, false, _) => Act::HardEscape,
+        (SIGINT | SIGQUIT, true, _) => Act::Note,
+        (_, _, None) => Act::Cancel,
+        (_, _, Some(first)) => Act::ForcedExit(first),
+    }
+}
+
+/// While this lives, SIGINT and SIGQUIT are held (exec's `attached`): noted
+/// and not acted on, as the terminal delivers them to the attached child
+/// itself. A SIGTERM still cancels the token (exec passes it to the
+/// child's pid), and a second one still forces the exit. Noted, not
+/// blocked: a blocked SIGINT would stay pending and act once the hold
+/// ends, and the child must keep the default dispositions (exec decision
+/// 2), which blocking in sb would not change anyway.
+///
+/// Starting and ending a hold, and [`Hold::child_ended_by`], block the
+/// calling thread briefly (see [`SETTLE`] and [`DELIVERY`]): from async
+/// code, call them where a short stall is fine or through
+/// `spawn_blocking`.
+#[must_use = "the signals are held only while this lives"]
+pub struct Hold {
+    shutdown: Shutdown,
+}
+
+impl std::fmt::Debug for Hold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // No state: reading it would take the lock, and a `{:?}` must never
+        // wait on the signals thread.
+        f.debug_struct("Hold").finish_non_exhaustive()
+    }
+}
+
+impl Hold {
+    /// The attached child ended, by `signal` if one killed it. If sb itself
+    /// received that signal while held, the run is interrupted by it (sb
+    /// then ends by it); a child that exited, or died of a signal sb never
+    /// got, isn't sb's interruption. Returns whether it was.
+    ///
+    /// Waits up to [`DELIVERY`] for sb's own copy of the signal (see
+    /// there). The note is used up, so a later child under the same outer
+    /// hold isn't credited with it.
+    pub fn child_ended_by(&self, signal: Option<i32>) -> bool {
+        let Some((signal, slot)) = signal.and_then(|signal| Some((signal, slot(signal)?))) else {
+            return false;
+        };
+        let holds = &self.shutdown.holds;
+        let mut state = holds
+            .changed
+            .wait_timeout_while(holds.lock(), DELIVERY, |state| !state.noted[slot])
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+        let noted = std::mem::take(&mut state.noted[slot]);
+        drop(state);
+        if noted {
+            self.shutdown.signalled(signal);
+        }
+        noted
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let holds = &self.shutdown.holds;
+        let mut state = holds.settled(holds.lock());
+        state.count -= 1;
+        if state.count == 0 {
+            state.noted = [false; 2];
+        }
+    }
 }
 
 impl Shutdown {
@@ -184,12 +376,41 @@ impl Shutdown {
         self.first.get().and_then(|ending| ending.signal)
     }
 
-    /// A signal arrived: record it with its code and cancel. Only the first
-    /// counts; a second never gets here (see [`listen_for_signals`]).
-    ///
-    /// [`listen_for_signals`]: Shutdown::listen_for_signals
+    /// A signal ended the run: record it with its code and cancel. Only the
+    /// first request or signal sets the ending; a later call only cancels.
+    /// The signals thread and [`Hold::child_ended_by`] call it.
     pub fn signalled(&self, signal: i32) {
         self.record(signal_exit_code(signal), Some(signal));
+    }
+
+    /// Hold SIGINT and SIGQUIT while an attached child runs (exec decision
+    /// 2): see [`Hold`]. Holds nest; nothing noted before it counts.
+    ///
+    /// A signal delivered before the hold but not yet read by the signals
+    /// thread is decided first, as outside the hold: the child, spawned
+    /// after, never got it.
+    pub fn hold(&self) -> Hold {
+        let mut state = self.holds.settled(self.holds.lock());
+        if state.count == 0 {
+            state.noted = [false; 2];
+        }
+        state.count += 1;
+        drop(state);
+        Hold {
+            shutdown: self.clone(),
+        }
+    }
+
+    /// Whether an attached child holds the signals.
+    pub fn held(&self) -> bool {
+        self.holds.lock().count > 0
+    }
+
+    /// The signals thread's decision for `signal`, given the first signal
+    /// it counted itself; one a hold recorded (its child died of it)
+    /// counts too, so the next signal forces the exit.
+    fn step(&self, first: Option<i32>, signal: i32) -> Act {
+        self.holds.take(first.or(self.signal()), signal)
     }
 
     /// Run `hook` before a second signal's exit, until the returned guard
@@ -214,7 +435,17 @@ impl Shutdown {
     /// Turn SIGINT and SIGTERM into [`signalled`] on a thread; a second
     /// signal runs the restore hooks, then ends sb at once by the first
     /// signal (a command's own earlier request doesn't change it; exec
-    /// decision 7), skipping remaining cleanup.
+    /// decision 7), skipping remaining cleanup. SIGQUIT is the hard escape
+    /// (the hooks, then the end by it), and while a [`Hold`] is on, SIGINT
+    /// and SIGQUIT are only noted. Call it once per process: each call
+    /// starts its own thread.
+    ///
+    /// Signals are matched by number, so a `kill -INT` from another process
+    /// counts as a Ctrl-C. Why not signal-hook's `WithOrigin`, which tells
+    /// them apart: it needs the `extended-siginfo` feature, which compiles
+    /// C, and isn't needed since exec decision 2's revision
+    /// (docs/platform-notes/exec-processes.md). While held, the way to end sb from outside is a
+    /// SIGTERM (`kill -TERM`), which sudo passes on to sb as well.
     ///
     /// The structure of signal-hook's background-thread example, an
     /// iterator thread that restores the terminal (there for SIGTSTP)
@@ -228,23 +459,42 @@ impl Shutdown {
     /// within microseconds count as one (a third exits) and which of
     /// SIGINT and SIGTERM was first is then arbitrary; a person's two
     /// Ctrl-C presses are far apart. A third signal while the hooks run
-    /// waits for the deadline.
+    /// waits for the deadline. Likewise, a second SIGINT or SIGQUIT
+    /// delivered while the thread decides the first is queued but its
+    /// delivery flag is already cleared, so a hold starting or ending in
+    /// those microseconds doesn't wait for it. Should this fail after the
+    /// delivery flags are registered, they stay (SIGINT and SIGQUIT no
+    /// longer act by default, and holds wait their bound); sb ends the run
+    /// on that error.
     ///
     /// [`signalled`]: Shutdown::signalled
     pub fn listen_for_signals(&self) -> std::io::Result<()> {
-        let mut signals = Signals::new([SIGINT, SIGTERM])?;
+        // The delivery flags first, so each is set before the iterator
+        // wakes the thread (see `Holds::arrived`).
+        for (signal, flag) in HELD.iter().zip(&self.holds.arrived) {
+            signal_hook::flag::register(*signal, Arc::clone(flag))?;
+        }
+        let mut signals = Signals::new([SIGINT, SIGTERM, SIGQUIT])?;
         let shutdown = self.clone();
         std::thread::Builder::new()
             .name("signals".into())
             .spawn(move || {
+                // The first signal counted: this thread's, or the one a
+                // hold recorded when its child died of it (then the next
+                // signal forces the exit). A command's own request isn't
+                // one: a signal after it still cancels first.
                 let mut first = None;
                 for signal in signals.forever() {
-                    match first {
-                        None => {
+                    match shutdown.step(first, signal) {
+                        Act::Cancel => {
                             first = Some(signal);
                             shutdown.signalled(signal);
                         }
-                        Some(first) => Arc::clone(&shutdown.hooks).run_then_end_by(first),
+                        Act::ForcedExit(first) => {
+                            Arc::clone(&shutdown.hooks).run_then_end_by(first)
+                        }
+                        Act::Note => tracing::debug!(signal, "held signal noted"),
+                        Act::HardEscape => Arc::clone(&shutdown.hooks).run_then_end_by(SIGQUIT),
                     }
                 }
             })?;
@@ -255,6 +505,212 @@ impl Shutdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every case of the signals thread's decision (cli-core spec, and exec
+    /// decisions 2 and 12): outside a hold, the first SIGINT or SIGTERM
+    /// cancels, a second forces the exit, and SIGQUIT is the hard escape;
+    /// while an attached child holds the signals, SIGINT and SIGQUIT are
+    /// noted only (never counted), and SIGTERM cancels, then forces.
+    #[test]
+    fn the_signals_thread_decides_each_case() {
+        use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM};
+        for signal in [SIGINT, SIGTERM] {
+            assert_eq!(decide(None, false, signal), Act::Cancel, "{signal}");
+            assert_eq!(decide(Some(SIGINT), false, signal), Act::ForcedExit(SIGINT));
+            assert_eq!(
+                decide(Some(SIGTERM), false, signal),
+                Act::ForcedExit(SIGTERM)
+            );
+        }
+        assert_eq!(decide(None, false, SIGQUIT), Act::HardEscape);
+        assert_eq!(decide(Some(SIGINT), false, SIGQUIT), Act::HardEscape);
+        for signal in [SIGINT, SIGQUIT] {
+            assert_eq!(decide(None, true, signal), Act::Note, "{signal}");
+            // During a forwarded SIGTERM's grace: still not counted.
+            assert_eq!(decide(Some(SIGTERM), true, signal), Act::Note, "{signal}");
+        }
+        assert_eq!(decide(None, true, SIGTERM), Act::Cancel);
+        assert_eq!(
+            decide(Some(SIGTERM), true, SIGTERM),
+            Act::ForcedExit(SIGTERM)
+        );
+    }
+
+    /// A held signal interrupts the run only if the attached child died of
+    /// it; one the child survived (or never got from sb) doesn't.
+    #[test]
+    fn a_held_signal_counts_only_if_the_child_died_of_it() {
+        use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM};
+        let shutdown = Shutdown::new();
+        let hold = shutdown.hold();
+        assert!(shutdown.held());
+        assert_eq!(read(&shutdown, SIGINT), Act::Note);
+        assert!(
+            !shutdown.token().is_cancelled(),
+            "a held SIGINT doesn't cancel"
+        );
+        assert!(!hold.child_ended_by(None), "it exited");
+        assert!(!hold.child_ended_by(Some(SIGQUIT)), "sb got no SIGQUIT");
+        assert!(!shutdown.interrupted());
+        assert!(hold.child_ended_by(Some(SIGINT)));
+        assert!(shutdown.interrupted());
+        assert_eq!(shutdown.signal(), Some(SIGINT));
+        drop(hold);
+        assert!(!shutdown.held());
+        // A signal read before the hold was decided outside it.
+        let again = Shutdown::new();
+        assert_eq!(read(&again, SIGQUIT), Act::HardEscape);
+        let hold = again.hold();
+        assert!(!hold.child_ended_by(Some(SIGQUIT)), "read before the hold");
+        drop(hold);
+        // A SIGTERM isn't held: it went the usual way.
+        let held = Shutdown::new();
+        let hold = held.hold();
+        assert_eq!(read(&held, SIGTERM), Act::Cancel);
+        assert!(!hold.child_ended_by(Some(SIGTERM)));
+    }
+
+    /// Each held signal has its own slot; nothing else has one.
+    #[test]
+    fn only_sigint_and_sigquit_have_slots() {
+        use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM};
+        assert_eq!(slot(SIGINT), Some(0));
+        assert_eq!(slot(SIGQUIT), Some(1));
+        assert_eq!(slot(SIGTERM), None);
+    }
+
+    /// With nothing delivered, a hold starts and ends at once: the wait for
+    /// undecided deliveries is only for those.
+    #[test]
+    fn a_hold_with_nothing_pending_does_not_wait() {
+        let shutdown = Shutdown::new();
+        let start = std::time::Instant::now();
+        drop(shutdown.hold());
+        assert!(start.elapsed() < SETTLE / 2, "{:?}", start.elapsed());
+    }
+
+    /// A hold's `Debug` names it and shows no state (it never locks).
+    #[test]
+    fn a_hold_debugs_without_its_state() {
+        assert_eq!(format!("{:?}", Shutdown::new().hold()), "Hold { .. }");
+    }
+
+    /// Holds nest: the signals stay held until the last one ends.
+    #[test]
+    fn holds_nest() {
+        let shutdown = Shutdown::new();
+        let outer = shutdown.hold();
+        let inner = shutdown.hold();
+        drop(inner);
+        assert!(shutdown.held());
+        drop(outer);
+        assert!(!shutdown.held());
+    }
+
+    /// A note lasts until the last hold ends or a child is credited with
+    /// it, whichever is first; a later child isn't credited again.
+    #[test]
+    fn a_note_lasts_until_the_last_hold_ends_or_is_used() {
+        use signal_hook::consts::SIGINT;
+        let shutdown = Shutdown::new();
+        let outer = shutdown.hold();
+        assert_eq!(read(&shutdown, SIGINT), Act::Note);
+        // An inner hold starting keeps what the outer one noted.
+        let inner = shutdown.hold();
+        drop(inner);
+        assert!(outer.child_ended_by(Some(SIGINT)), "the outer hold sees it");
+        assert!(!outer.child_ended_by(Some(SIGINT)), "used up");
+        drop(outer);
+        let first = Shutdown::new();
+        let hold = first.hold();
+        assert_eq!(read(&first, SIGINT), Act::Note);
+        drop(hold);
+        let hold = first.hold();
+        assert!(
+            !hold.child_ended_by(Some(SIGINT)),
+            "cleared with the last hold"
+        );
+    }
+
+    /// The signals thread reads a delivery late: a hold that ends meanwhile
+    /// waits, so a Ctrl-C delivered during it is noted, not counted.
+    #[test]
+    fn a_hold_ends_only_after_its_deliveries_are_read() {
+        use signal_hook::consts::SIGINT;
+        let shutdown = Shutdown::new();
+        let hold = shutdown.hold();
+        deliver(&shutdown, SIGINT);
+        let late = read_later(&shutdown, SIGINT);
+        drop(hold);
+        assert_eq!(late.join().ok(), Some(Act::Note));
+        assert!(!shutdown.token().is_cancelled());
+    }
+
+    /// The child's death can reach exec before sb's own copy of the signal
+    /// is read: the question waits for it.
+    #[test]
+    fn a_child_s_death_waits_for_sb_s_copy_of_the_signal() {
+        use signal_hook::consts::SIGINT;
+        let shutdown = Shutdown::new();
+        let hold = shutdown.hold();
+        deliver(&shutdown, SIGINT);
+        let late = read_later(&shutdown, SIGINT);
+        assert!(hold.child_ended_by(Some(SIGINT)));
+        assert_eq!(late.join().ok(), Some(Act::Note));
+    }
+
+    /// A delivery before the hold, read after it began, is decided as
+    /// outside it: the child, spawned after, never got it.
+    #[test]
+    fn a_signal_before_the_hold_is_decided_outside_it() {
+        use signal_hook::consts::SIGINT;
+        let shutdown = Shutdown::new();
+        deliver(&shutdown, SIGINT);
+        let late = read_later(&shutdown, SIGINT);
+        let hold = shutdown.hold();
+        assert_eq!(late.join().ok(), Some(Act::Cancel));
+        drop(hold);
+    }
+
+    /// Once a child died of a held signal (the run is interrupted), the
+    /// next signal forces the exit, as a second signal does.
+    #[test]
+    fn the_signal_after_a_child_s_interruption_forces_the_exit() {
+        use signal_hook::consts::{SIGINT, SIGTERM};
+        let shutdown = Shutdown::new();
+        let hold = shutdown.hold();
+        assert_eq!(read(&shutdown, SIGINT), Act::Note);
+        assert!(hold.child_ended_by(Some(SIGINT)));
+        drop(hold);
+        assert_eq!(shutdown.step(None, SIGTERM), Act::ForcedExit(SIGINT));
+        // A command's own request isn't a signal: the next one cancels.
+        let requested = Shutdown::new();
+        requested.request(3);
+        assert_eq!(requested.step(None, SIGINT), Act::Cancel);
+    }
+
+    /// What signal-hook's handler does at delivery (`flag::register`).
+    fn deliver(shutdown: &Shutdown, signal: i32) {
+        if let Some(slot) = slot(signal) {
+            shutdown.holds.arrived[slot].store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Deliver and read `signal` at once, as the signals thread does.
+    fn read(shutdown: &Shutdown, signal: i32) -> Act {
+        deliver(shutdown, signal);
+        shutdown.step(None, signal)
+    }
+
+    /// The signals thread reading `signal` late.
+    fn read_later(shutdown: &Shutdown, signal: i32) -> std::thread::JoinHandle<Act> {
+        let shutdown = shutdown.clone();
+        std::thread::spawn(move || {
+            // Well inside DELIVERY, so a loaded machine still has slack.
+            std::thread::sleep(Duration::from_millis(20));
+            shutdown.step(None, signal)
+        })
+    }
 
     #[test]
     fn nothing_is_requested_at_first() {

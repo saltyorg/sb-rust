@@ -649,7 +649,10 @@ Choices behind it:
    130 or 143. Ctrl-\ and `kill -9` stay as hard escapes. Recorded in the
    cli-core spec too. Amended by exec decision 7 (maintainer, 2026-11-04):
    the exit is a re-raise of the first signal, so sb dies of it (`$?`
-   still 130 or 143).
+   still 130 or 143). Amended (maintainer, 2026-11-05): Ctrl-\ runs the
+   same restore hooks, within the same deadline, before sb ends by SIGQUIT
+   (no core), as cli-core now catches SIGQUIT anyway; only `kill -9` ends
+   sb without them.
 6. **The capability map's `docker` row** (start/stop/restart "via
    bollard"; sb-go uses `systemctl` and the Saltbox Docker controller's HTTP
    API) is corrected in the `docker` spec, with its dependencies.

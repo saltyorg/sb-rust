@@ -53,6 +53,11 @@ both files they read are readable without root.
      guard). No marker is passed: an earlier `SB_RELAUNCHED` variable was
      refused by sudo under rules naming commands without SETENV (exec
      spec, decision 6; docs/platform-notes/exec-processes.md).
+   - **No core dumps:** after the relaunch check, sb makes itself not
+     dumpable (every run; a root run holds secrets) (`PR_SET_DUMPABLE` 0, falling back to
+     `RLIMIT_CORE` 0), so a crash can't write its memory, secrets
+     included, wherever `core_pattern` points; the kernel resets this at
+     `execve`, so children are unaffected (Task 8a, security review).
    - **Startup warnings once:** the real parse runs before anything is
      printed (silently; its help, version and errors print in their place
      after the host check), so a run about to relaunch prints no startup
@@ -113,6 +118,16 @@ restore hooks), not by an exit code: a calling shell then sees the death
 by signal and stops its script, as "wait and cooperative exit" requires
 (exec spec, decision 7). A command can also
 request shutdown with its own exit code (sb-go's `Shutdown(code)`).
+Ctrl-\\ (SIGQUIT) is the hard escape (term-ui decision 5, amended by the
+maintainer, 2026-11-05): the restore hooks run within their deadline, then
+sb ends by it, made not dumpable first, so no core is written. While an attached
+child runs, exec holds the signals (`Shutdown::hold`; exec decisions 2
+and 12): SIGINT and SIGQUIT are noted, not acted on and not counted, as
+the terminal delivers them to the child; a SIGTERM still cancels (exec
+passes it to the child's pid) and a second one still forces the exit;
+when the child dies of a signal sb itself received, the run is
+interrupted by it. The decision is one pure function (`decide`),
+tested case by case.
 
 **Exit codes:** 0 success; 1 error; 2 for a parse error; death by
 SIGINT or SIGTERM when interrupted (`$?` reads 130 or 143); a

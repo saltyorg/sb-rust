@@ -249,6 +249,12 @@ impl RunLog {
     /// writes only the placeholder, as its Display is that and it has no
     /// cause.
     pub fn finished(&self, outcome: &str, error: Option<&(dyn Error + 'static)>) {
+        // A quiet exit is the outcome (`exit 7`, `interrupted (exit 130)`),
+        // not an error: logging it beside would read `error=exit code 1`.
+        // Accepted (Task 8a review): a context wrapped around the exit, or
+        // "broken pipe" for a quiet 141, isn't recorded either; what went
+        // wrong before a quiet exit is logged where it happened (a step).
+        let error = error.filter(|err| crate::exit::quiet_exit(*err).is_none());
         match error {
             Some(error) => tracing::info!(outcome, error, "run finished"),
             None => tracing::info!(outcome, "run finished"),
@@ -570,6 +576,31 @@ mod tests {
         let requested = Shutdown::new();
         requested.request(4);
         assert_eq!(outcome(&requested, None), "exit 4");
+    }
+
+    /// A quiet exit (a requested code, the runner's `Exit(1)` after an
+    /// interruption, a broken pipe) is the outcome, not an error: the run
+    /// record doesn't repeat it as `error=exit code 1` (config Task 12's
+    /// review, carried to exec Task 8a).
+    #[test]
+    fn a_quiet_exit_is_not_logged_as_an_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (log, subscriber) = RunLog::open(dir.path()).expect("open");
+        let quiet = crate::exit::Exit(1);
+        tracing::subscriber::with_default(subscriber, || {
+            let _run = log.enter();
+            log.finished("interrupted (exit 130)", Some(&quiet));
+        });
+        let text = log_text(dir.path());
+        let record = text
+            .lines()
+            .find(|l| l.contains("run finished"))
+            .expect("record");
+        assert!(
+            record.contains(r#"outcome="interrupted (exit 130)""#),
+            "{record}"
+        );
+        assert!(!record.contains("error"), "{record}");
     }
 
     /// A failure's error and causes reach the log through tracing's error
