@@ -571,10 +571,6 @@ fix now. Each is its own commit, test first, after Task 8a (done,
       runs with the login the rules accepted, the warn-and-continue arm
       is gone, and `format!("{:?}")` of the `Credentials::Ready` (derived
       `Debug`) shows no password or token.
-- [ ] docker: `DOCKER_HOST` userinfo (`tcp://user:secret@host`) is kept
-      out of the run log and every error (CONSTRAINTS.md: logs never
-      contain secret values). Test: with that `DOCKER_HOST`, the captured
-      log and the shown error contain neither the secret nor the user.
 - [ ] exec: `Captured`, `Streamed` and `Ran` are `#[must_use]` (the
       compiler then refuses a dropped outcome under check.sh). Test:
       exec-demo with a failing PTY child exits non-zero (it exits 0 today,
@@ -595,9 +591,18 @@ fix now. Each is its own commit, test first, after Task 8a (done,
 
 **Dependencies:** Task 8a
 **Files:** `crates/config/src/{rules,run,validators,cloudflare}.rs`,
-`crates/docker/src/connect.rs`, `crates/exec/src/{lib.rs,bin/exec-demo.rs}`,
+`crates/exec/src/{lib.rs,bin/exec-demo.rs}`,
 `crates/term-ui/src/runner.rs`
-**Scope:** M (five small commits)
+**Scope:** M (four small commits)
+
+**Declined (maintainer, 2026-11-05):** keeping `DOCKER_HOST` userinfo
+(`tcp://user:secret@host`) out of the log and errors: theoretical, as
+Saltbox talks to the local socket and sets up no remote daemon with
+credentials. sb follows `tcp://` and `http://` as given (docker spec,
+"Daemon"), so this rests on the deployment, not on sb refusing a scheme.
+Likewise a non-UTF-8 Docker variable (the review's backlog item).
+Backlog items are weighed the same way when taken up: how sb runs on a
+Saltbox host, not what could happen in theory.
 
 ## Task 10: `clippy::pedantic`
 
@@ -665,10 +670,9 @@ Headlines:
   futures; the forced-exit hook's registration checked; a missing signal
   read as signal 0 and the PTY wait thread's error → `expect`; tight
   wall-clock bounds in the group tests.
-- docker: a non-UTF-8 Docker variable refused, not read as unset; `json()`
-  and the fixtures fail loudly; bollard types `pub(crate)`; `Debug` on
-  `Daemon`; typed errors instead of `anyhow` in the public API (decide
-  before start/stop/restart).
+- docker: `json()` and the fixtures fail loudly; bollard types
+  `pub(crate)`; `Debug` on `Daemon`; typed errors instead of `anyhow` in
+  the public API (decide before start/stop/restart).
 - sb: `warn!("{warning}")` as a field; one runtime builder.
 
 ## Checkpoint C: Complete
