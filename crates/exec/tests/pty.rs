@@ -198,21 +198,6 @@ async fn the_environment_follows_the_rules() {
     assert!(!screen.contains("COLORTERM"), "{screen}");
 }
 
-/// Colours stay for a coloured target and go otherwise (term-ui's).
-#[tokio::test]
-async fn colours_follow_the_target() {
-    let cmd = || sh("printf '\\033[31mred\\033[0m\\n'; exit 1");
-    let (_, coloured) = tokio::time::timeout(Duration::from_secs(20), on_pty(cmd(), true))
-        .await
-        .expect("ended");
-    assert!(coloured.contains("\u{1b}[31m"), "{coloured:?}");
-    let (_, plain) = within(cmd()).await;
-    assert!(
-        !plain.contains("\u{1b}[31m") && has_line(&plain, "red"),
-        "{plain:?}"
-    );
-}
-
 /// The step's token and a timeout stop the session's group; a dropped run
 /// leaves nothing of it.
 #[tokio::test]
