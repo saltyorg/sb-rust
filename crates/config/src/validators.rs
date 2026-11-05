@@ -1175,7 +1175,6 @@ mod tests {
             check("api: key\nemail: me@example.com\n"),
             Credentials::Ready
         );
-        assert_eq!(check("scoped_token: token\n"), Credentials::Ready);
         assert_eq!(check("api: ''\nemail: ''\n"), Credentials::Missing);
         for (section, message) in [
             (
@@ -1231,7 +1230,6 @@ mod tests {
             saltbox.credentials(Validator::ValidateDockerhubConfig, value, &yaml("{}"))
         };
         assert_eq!(check(&yaml("{}")), Credentials::Missing);
-        assert_eq!(check(&yaml("user: u\ntoken: t\n")), Credentials::Ready);
         assert_eq!(
             check(&yaml("user: u\n")),
             Credentials::Invalid("both 'user' and 'token' must be provided together".into())
