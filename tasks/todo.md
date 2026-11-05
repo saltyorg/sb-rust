@@ -462,7 +462,7 @@ beside an interrupted run's code) checked and fixed or re-carried with a
 reason.
 
 **Acceptance criteria:**
-- [ ] The decision logic's every case, as decided at Checkpoint B (exec
+- [x] The decision logic's every case, as decided at Checkpoint B (exec
       decision 12), tested in-process, failing first, and the same table
       through exec-demo in Task 8b:
       - SIGINT or SIGQUIT while an attached child runs: held, not counted
@@ -474,6 +474,9 @@ reason.
       - the forced exit: SIGKILL to the attached child's pid as well as to
         exec's groups (exec's side: `attached` registers the pid with
         `sb_exec::on_forced_exit`'s kill, Task 8b; cli-core runs the hooks).
+      Done in 8e54fa8 (in-process and through real signals); the same
+      table through exec-demo is Task 8b's. Size 11649536 bytes (+4096),
+      startup 1.1/1.6 ms; cargo-deny passes.
 
       As built: the hold is one `Mutex` + `Condvar` over the count and the
       notes, with signal-hook `flag::register` flags set at delivery, so
@@ -483,14 +486,14 @@ reason.
       100 ms for sb's own copy. A child's interruption counts as the first
       signal. Ctrl-\ runs the restore hooks first (maintainer, 2026-11-05).
       Root runs are not dumpable from startup (security review).
-- [ ] cli-core's and sb's existing signal tests pass
+- [x] cli-core's and sb's existing signal tests pass
       (`SB_TEST_ROOT=1`: validate_config_signals.rs, docker_signals.rs).
-- [ ] sb's binary size and startup measured, with an ADR past the
+- [x] sb's binary size and startup measured, with an ADR past the
       tolerance; cargo-deny through sb passes.
-- [ ] The run-record finding recorded: fixed with a test, or carried.
+- [x] The run-record finding recorded: fixed with a test, or carried.
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core`; `SB_TEST_ROOT=1 cargo test -p sb`;
+- [x] `cargo test -p sb-cli-core`; `SB_TEST_ROOT=1 cargo test -p sb`;
       library-reviewer; a security-auditor pass on the signal change;
       `scripts/check.sh full`.
 
@@ -551,6 +554,122 @@ refuse the spawn once the token is cancelled, or record the limit.
 **Files:** `crates/exec/src/run.rs`, `crates/exec/src/bin/exec-demo.rs`,
 `crates/exec/tests/`
 **Scope:** M
+
+## Task 9: the whole-codebase review's Required findings
+
+**Description:** The rust-skills and Microsoft-guidelines review of every
+crate (2026-11-05; the findings are in the body of the commit that added
+this task: `git log -S'Review backlog' -- tasks/todo.md`) found these to
+fix now. Each is its own commit, test first, after Task 8a (done,
+8e54fa8).
+
+**Acceptance criteria:**
+- [ ] config: `Credentials::Ready` carries the parsed login (Cloudflare,
+      or a named `DockerhubLogin { user, token }` with a redacting
+      `Debug`), built once in the validator, so `run::checks` can't skip
+      a check while the file reads validated. Test: a Docker Hub check
+      runs with the login the rules accepted, the warn-and-continue arm
+      is gone, and `format!("{:?}")` of the `Credentials::Ready` (derived
+      `Debug`) shows no password or token.
+- [ ] docker: `DOCKER_HOST` userinfo (`tcp://user:secret@host`) is kept
+      out of the run log and every error (CONSTRAINTS.md: logs never
+      contain secret values). Test: with that `DOCKER_HOST`, the captured
+      log and the shown error contain neither the secret nor the user.
+- [ ] exec: `Captured`, `Streamed` and `Ran` are `#[must_use]` (the
+      compiler then refuses a dropped outcome under check.sh). Test:
+      exec-demo with a failing PTY child exits non-zero (it exits 0 today,
+      dropping `Ran`).
+- [ ] term-ui: under `SB_COLOR_PROFILE=ascii` with colour on, a child's
+      own SGR codes are stripped, live and plain, through the stripping
+      the colour-off path already uses (no ANSI handling of our own).
+      Test: the spec's guard test with `\x1b[31mred\x1b[0m` fed through
+      `Step::output`, no `\x1b[` on the in-memory screen or in plain output.
+- [ ] config: a Cloudflare `Retry-After` waits at most 60 s (maintainer,
+      2026-11-05; config spec, differences). Test: a fake server
+      answering 429 with `Retry-After: 3600` is retried after the cap,
+      on tokio's paused clock.
+
+**Verification:**
+- [ ] Each test fails first; `scripts/check.sh full`; code-reviewer, and
+      library-reviewer for the term-ui and exec items.
+
+**Dependencies:** Task 8a
+**Files:** `crates/config/src/{rules,run,validators,cloudflare}.rs`,
+`crates/docker/src/connect.rs`, `crates/exec/src/{lib.rs,bin/exec-demo.rs}`,
+`crates/term-ui/src/runner.rs`
+**Scope:** M (five small commits)
+
+## Task 10: `clippy::pedantic`
+
+**Description:** The maintainer decided to turn on all of
+`clippy::pedantic` (2026-11-05, from the review's M-STATIC-VERIFICATION
+finding): `pedantic = { level = "warn", priority = -1 }` in
+`[workspace.lints.clippy]` (errors under check.sh), so later per-lint
+settings don't trip `lint_groups_priority`. Every hit is fixed or given
+an `#[expect(…, reason)]` with an Exceptions row in CONSTRAINTS.md; a
+workspace-level opt-out of one pedantic lint needs an ADR. CONSTRAINTS.md's
+Lint row names the group. The review's rustc lints outside pedantic
+(`missing_debug_implementations`, `trivial_numeric_casts`) come with it.
+It absorbs the backlog's `# Errors`, `#[must_use]` and `Debug` items.
+
+**Acceptance criteria:**
+- [ ] The group on, every crate clean, the Exceptions table updated.
+
+**Verification:**
+- [ ] `scripts/check.sh full`; code-reviewer on each crate's commit.
+
+**Dependencies:** Task 9
+**Files:** `Cargo.toml`, `CONSTRAINTS.md`, every crate
+**Scope:** L (one commit per crate where large)
+
+## Review backlog (taken up when each crate is next touched)
+
+From the same review; Optional findings and nits, by crate (the full
+list, by reviewer finding, is in the commit body named in Task 9).
+Headlines:
+- cli-core: `listen_for_signals` once per process (guard it); restore
+  hooks `FnOnce`; `Shutdown` as one `Arc<Inner>`; `snapshot()` returns a
+  small ending value; `ConfigError` with its path (standalone messages);
+  `Debug` on `RunLog`, `Shutdown`, `RestoreHook`; the theme passed to
+  `finish_run`/`report`, `install` reporting a second call; `ensure_root`
+  given its exe and args (its test is tautological); `config.rs` `Read`
+  error's source shown twice; `build_info` `unwrap_or_default` →
+  `expect`; `signal_exit_code` overflow on a non-signal; `RelaunchError`
+  a struct; the re-exports' reasons; `Uid`/`Signal` types, `AsRef<Path>`,
+  named log events (only if the run log wants them).
+- host: the supported-releases test restates the constant.
+- config: secret redaction typed, not by searching the error text; secret
+  paths from the rule walk, not a re-parsed path string (a key with `.`
+  or `[`); `Validator` split into sync and credential kinds;
+  `max_length` `Option<NonZeroUsize>`; typed network-check errors; a
+  `CLOUDFLARE_BASE_URL` path that can't be used is an error, not
+  dropped; URLs parsed once; `Node` and `Value` with a redacting `Debug`
+  (no production path formats them today: only tests); `Debug` on
+  `Saltbox`, `Check`, `Settings`; internal modules `pub(crate)` (saphyr,
+  regex and reqwest types leak); the `Validators` trait `pub(crate)` or
+  concrete; the clock and `fs::metadata` injectable; silent fallbacks →
+  `expect`.
+- term-ui: the live area's total height capped for ended-but-live steps;
+  one lock per output line (`colour`/`terminal` out of the shared
+  state); `clean` per-character width; tree helpers' full scans;
+  `#[must_use]` on builders; `Target` `#[non_exhaustive]`; the runner's
+  clock through `tokio::time::Instant` (times testable); a plain
+  in-memory target (an API change: ask); rustdoc without design
+  history; `table_colour` `pub(crate)`; `Send + Sync` assertions;
+  `write_all` retrying `EINTR`; `Debug` on the public types (`Line` by
+  hand, masked).
+- exec: a failed wait marks the leader reaped (the drop guard is off)
+  and reads as a spawn failure; `pty_error` keeps `io::ErrorKind`; one
+  line splitter for both ways; `value()`/`secret()` take `OsString`;
+  `SpawnCause` `#[non_exhaustive]` or accessors; `Send` assertions on the
+  futures; the forced-exit hook's registration checked; a missing signal
+  read as signal 0 and the PTY wait thread's error → `expect`; tight
+  wall-clock bounds in the group tests.
+- docker: a non-UTF-8 Docker variable refused, not read as unset; `json()`
+  and the fixtures fail loudly; bollard types `pub(crate)`; `Debug` on
+  `Daemon`; typed errors instead of `anyhow` in the public API (decide
+  before start/stop/restart).
+- sb: `warn!("{warning}")` as a field; one runtime builder.
 
 ## Checkpoint C: Complete
 - [ ] All tasks done; `scripts/check.sh full` passes; coverage, size and

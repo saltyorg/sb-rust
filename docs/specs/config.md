@@ -203,8 +203,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   Cloudflare's own error messages (or the transport error), escaped and
   capped. Each request: 10 s, and cloudflare-go's retries (two more
   attempts with backoff on connection errors, 408, 409, 429 and 5xx,
-  honouring `Retry-After` and `x-should-retry`), so a check can take
-  longer than 10 s. The
+  honouring `Retry-After`, capped at 60 s, and `x-should-retry`), so a
+  check can take longer than 10 s. The
   base URL follows `CLOUDFLARE_BASE_URL` when set, as cloudflare-go
   does (tests and debugging; plain `http://` allowed; sudo's relaunch
   drops it); its other environment variables (credentials, custom
@@ -284,6 +284,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   only as a directory; nor is Go's last fallback, the build machine's
   `$GOROOT/lib/time/zoneinfo.zip`, which only a host with a Go
   installation at that path has (decision 7).
+- A Cloudflare `Retry-After` waits at most 60 s (maintainer, 2026-11-05;
+  cloudflare-go waits as long as the server says, so one answer could
+  hold the step for an hour).
 - No `--verbose/-v` (decision 1): `-v` is a parse error, exit 2.
 - No `validate_rclone_remote` (decision 6): a schema naming it fails
   loading, naming it.

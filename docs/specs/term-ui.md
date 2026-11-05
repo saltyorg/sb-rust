@@ -84,7 +84,10 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   together within half the terminal height (decision 7). Glyphs `Faint`;
   ✓ `Ok` with the done label, ✗ `Problem` with the failure label,
   interrupted `Warn`; elapsed `Muted`; output lines in `Muted`, a line's
-  own colours kept where it has them.
+  own colours kept where it has them, except under `SB_COLOR_PROFILE=ascii`,
+  which strips them too (maintainer, 2026-11-05: `ascii` means no SGR code
+  in anything term-ui draws; an `attached` child writes to the terminal
+  itself, exec decision 3).
 - **Labels:** each step has a running label and a done label
   ("Checking accounts.yml" → "accounts.yml checked"), and optionally a
   failure label, as proto-runner and sb-go's Running/Success/Failure.
@@ -114,7 +117,7 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   decides (indicatif's target; sb-go checks stdout, so `sb validate-config
   > file` stays live here and goes plain in sb-go). Each step prints a
   start line (`- <running label>`), its output lines (escape codes
-  stripped when colour is off), notices, and an end line
+  stripped when colour is off or under `ascii`), notices, and an end line
   (`✓ <done label>   2s`, or ✗ with the reason,
   `✗ <label>   interrupted · 2s`, and for a failure the error and the
   pointer; three spaces before the time as in the live tree, decision
@@ -353,8 +356,8 @@ impl Step {
     /// Output: shown in the live tail (or plainly) and logged (sensitive
     /// text: see `Line`). Text is
     /// split into lines at `\n`; a `\r` keeps what follows it (progress
-    /// output); escape codes are kept on a coloured target and stripped
-    /// otherwise; a line wider than the screen is cut with `…` on screen
+    /// output); escape codes are kept on a coloured target, except under
+    /// `ascii`, and stripped otherwise; a line wider than the screen is cut with `…` on screen
     /// and logged whole.
     pub fn output(&mut self, text: impl Into<Line>);
 
@@ -554,7 +557,8 @@ Choices behind it:
   PTY tests measure erases and endings.
 - Guard tests per profile: every SGR colour code term-ui writes is 24-bit
   under `truecolor`, 256-colour under `ansi256`, 16-colour under `ansi`,
-  none under `ascii` or with colour off.
+  none under `ascii` or with colour off; under `ascii` also with a
+  child's own SGR output fed through `Step::output`, live and plain.
 - PTY tests (`script`, as cli-core's colour tests): live frames, no line
   erases, clean endings for success, failure and SIGINT, `ECHOCTL`
   restored.
@@ -584,7 +588,8 @@ Choices behind it:
    all. `--color=always` when not a terminal: the theme's colours.
 2. Under each `SB_COLOR_PROFILE`, every SGR colour code term-ui writes is
    of that profile's kind; `ascii` writes no SGR codes (as cli-core's
-   plain styles).
+   plain styles), a child's own included; under the other profiles a
+   child's own codes pass through unchanged.
 3. The runner matches the reviewed tree (snapshot), with running and done
    labels, notices, and times in one column; each running step's tail at
    most 8 lines, all running tails together within half the terminal
