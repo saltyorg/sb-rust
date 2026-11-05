@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use sb_config::rules::{self, Validators};
+use sb_config::cloudflare::Credentials;
+use sb_config::dockerhub::DockerhubLogin;
+use sb_config::rules::{self, Login, Validators};
 use sb_config::schema::{self, Validator};
 use sb_config::validators::Saltbox;
 
@@ -98,13 +100,28 @@ fn the_valid_accounts_asks_for_both_checks() {
     let asked: Vec<(Validator, &str)> = found
         .requests
         .iter()
-        .map(|r| (r.validator, r.path.as_str()))
+        .map(|r| (r.validator(), r.path.as_str()))
         .collect();
     assert_eq!(
         asked,
         [
             (Validator::ValidateCloudflareConfig, "cloudflare"),
             (Validator::ValidateDockerhubConfig, "dockerhub"),
+        ]
+    );
+    // The logins are the fixture's values, parsed once by the rules.
+    let logins: Vec<&Login> = found.requests.iter().map(|r| &r.login).collect();
+    assert_eq!(
+        logins,
+        [
+            &Login::Cloudflare {
+                credentials: Credentials::Token("not-a-real-token".into()),
+                domain: "example.com".into(),
+            },
+            &Login::Dockerhub(DockerhubLogin {
+                user: "seed".into(),
+                token: "not-a-real-token".into(),
+            }),
         ]
     );
 }

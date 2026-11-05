@@ -40,8 +40,34 @@ pub enum Credentials {
     Missing,
     /// Set wrongly (a scoped token beside a global key, say): the issue.
     Invalid(String),
-    /// Set: the check runs, if the section has no issues of its own.
-    Ready,
+    /// Set: the check runs with this login, if the section has no issues
+    /// of its own. The login is what the structure check accepted, so the
+    /// run checks exactly that and can't find a ready section without one.
+    Ready(Login),
+}
+
+/// The login a ready credential section holds. Its debug output shows no
+/// secret (both credential types redact theirs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Login {
+    /// `validate_cloudflare_config`: the credentials and accounts.yml's
+    /// `user.domain`, the zone asked about.
+    Cloudflare {
+        credentials: crate::cloudflare::Credentials,
+        domain: String,
+    },
+    /// `validate_dockerhub_config`.
+    Dockerhub(crate::dockerhub::DockerhubLogin),
+}
+
+impl Login {
+    /// The validator whose check this is.
+    pub fn validator(&self) -> Validator {
+        match self {
+            Login::Cloudflare { .. } => Validator::ValidateCloudflareConfig,
+            Login::Dockerhub(_) => Validator::ValidateDockerhubConfig,
+        }
+    }
 }
 
 /// What a validator found.
@@ -57,16 +83,22 @@ pub enum Verdict {
 /// it carries (term-ui decision 8).
 #[derive(Clone, PartialEq)]
 pub struct Request {
-    pub validator: Validator,
+    /// The section's key path (`cloudflare`, `dockerhub`).
     pub path: String,
-    pub value: Node,
-    pub parent: Node,
+    pub login: Login,
+}
+
+impl Request {
+    /// The validator whose check this is.
+    pub fn validator(&self) -> Validator {
+        self.login.validator()
+    }
 }
 
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Request")
-            .field("validator", &self.validator)
+            .field("validator", &self.validator())
             .field("path", &self.path)
             .finish_non_exhaustive()
     }
@@ -243,12 +275,10 @@ impl Walk<'_> {
                 match self.validators.credentials(validator, value, parent) {
                     Credentials::Missing => self.report.skipped.push(validator),
                     Credentials::Invalid(message) => self.issue(key_at, path, message),
-                    Credentials::Ready => {
+                    Credentials::Ready(login) => {
                         request = Some(Request {
-                            validator,
                             path: path.to_string(),
-                            value: value.clone(),
-                            parent: parent.clone(),
+                            login,
                         });
                     }
                 }
@@ -585,6 +615,7 @@ pub(crate) fn go_float(f: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dockerhub::DockerhubLogin;
     use crate::schema;
     use std::cell::RefCell;
 
@@ -623,7 +654,9 @@ mod tests {
         }
 
         /// Missing when the section is empty, invalid with a `bad` key,
-        /// ready otherwise.
+        /// ready otherwise, with a login made of the section's own `user`
+        /// or `api` text and its line, so a test can tell which section a
+        /// request carries.
         fn credentials(&self, validator: Validator, value: &Node, _: &Node) -> Credentials {
             self.calls
                 .borrow_mut()
@@ -633,7 +666,18 @@ mod tests {
                 _ if value.get("bad").is_some() => {
                     Credentials::Invalid("structure is wrong".into())
                 }
-                _ => Credentials::Ready,
+                _ if validator == Validator::ValidateDockerhubConfig => {
+                    Credentials::Ready(Login::Dockerhub(DockerhubLogin {
+                        user: value.get("user").and_then(string).unwrap_or("").into(),
+                        token: format!("line {}", value.line),
+                    }))
+                }
+                _ => Credentials::Ready(Login::Cloudflare {
+                    credentials: crate::cloudflare::Credentials::Token(
+                        value.get("api").and_then(string).unwrap_or("").into(),
+                    ),
+                    domain: format!("line {}", value.line),
+                }),
             }
         }
     }
@@ -1097,16 +1141,31 @@ mod tests {
             &Fake::default(),
         );
         assert!(report.issues.is_empty(), "{:?}", report.issues);
-        let asked: Vec<(Validator, &str, usize)> = report
+        let asked: Vec<(Validator, &str, &Login)> = report
             .requests
             .iter()
-            .map(|r| (r.validator, r.path.as_str(), r.value.line))
+            .map(|r| (r.validator(), r.path.as_str(), &r.login))
             .collect();
+        // Each request carries the login its own section gave, at its line.
         assert_eq!(
             asked,
             [
-                (Validator::ValidateCloudflareConfig, "cloudflare", 2),
-                (Validator::ValidateDockerhubConfig, "dockerhub", 4),
+                (
+                    Validator::ValidateCloudflareConfig,
+                    "cloudflare",
+                    &Login::Cloudflare {
+                        credentials: crate::cloudflare::Credentials::Token("k".into()),
+                        domain: "line 2".into(),
+                    }
+                ),
+                (
+                    Validator::ValidateDockerhubConfig,
+                    "dockerhub",
+                    &Login::Dockerhub(DockerhubLogin {
+                        user: "u".into(),
+                        token: "line 4".into(),
+                    })
+                ),
             ]
         );
     }

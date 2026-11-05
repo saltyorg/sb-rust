@@ -8,12 +8,29 @@ use crate::secret::hide;
 /// Docker Hub's login endpoint (sb-go's).
 pub const LOGIN_URL: &str = "https://hub.docker.com/v2/users/login/";
 
-/// Log in at `url` as `user` with `token`: nothing, or why not, in
+/// The user and token of a `dockerhub:` section the rules accepted. Its
+/// debug output names the user only, never the token (term-ui decision 8).
+#[derive(Clone, PartialEq, Eq)]
+pub struct DockerhubLogin {
+    pub user: String,
+    pub token: String,
+}
+
+impl std::fmt::Debug for DockerhubLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerhubLogin")
+            .field("user", &self.user)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Log in at `url` with `login`: nothing, or why not, in
 /// sb-go's words. The body is JSON (reqwest's `json`, which sets the
 /// content type; sb-go formats it unescaped, a listed difference); Docker
 /// Hub's `message` (else its `details`) is shown escaped and cut, with
 /// the token taken out first should the service echo it.
-pub async fn login(http: &Http, url: &str, user: &str, token: &str) -> Result<(), String> {
+pub async fn login(http: &Http, url: &str, login: &DockerhubLogin) -> Result<(), String> {
+    let (user, token) = (login.user.as_str(), login.token.as_str());
     let response = http
         .client()
         .post(url)
@@ -66,8 +83,10 @@ mod tests {
         login(
             &http(Duration::from_secs(5)),
             &format!("{}{PATH}", fake.url()),
-            user,
-            token,
+            &DockerhubLogin {
+                user: user.into(),
+                token: token.into(),
+            },
         )
         .await
     }
@@ -144,8 +163,10 @@ mod tests {
         let result = login(
             &http(Duration::from_millis(200)),
             &format!("{}{PATH}", fake.url()),
-            "seed",
-            "t",
+            &DockerhubLogin {
+                user: "seed".into(),
+                token: "t".into(),
+            },
         )
         .await;
         let err = result.expect_err("times out");

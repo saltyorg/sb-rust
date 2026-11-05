@@ -15,10 +15,10 @@ use crate::dockerhub;
 use crate::http::Http;
 use crate::issue::{Issue, escape_controls};
 use crate::parse;
-use crate::rules::{self, Request};
+use crate::rules::{self, Login, Request};
 use crate::schema::{self, SchemaError, Validator};
 use crate::tree;
-use crate::validators::{Saltbox, cloudflare_login, dockerhub_login};
+use crate::validators::Saltbox;
 
 /// One config file: its path under the Saltbox root, its schema under
 /// `schema/` (none: duplicate keys only), and whether it must exist.
@@ -224,22 +224,13 @@ async fn checks(step: &mut Step, settings: &Settings, requests: &[Request]) -> b
     let mut group = step.group_all::<()>();
     for request in requests {
         let http = settings.http.clone();
-        // Ready requests always hold a login (the validators decide both);
-        // one that doesn't is a bug, logged rather than checked with
-        // nothing.
-        let mismatch = || {
-            tracing::warn!(
-                path = request.path.as_str(),
-                "ready section without a login"
-            )
-        };
-        match request.validator {
-            Validator::ValidateCloudflareConfig => {
-                let Some((credentials, domain)) = cloudflare_login(&request.value, &request.parent)
-                else {
-                    mismatch();
-                    continue;
-                };
+        // The login the rules accepted, carried by the request: nothing to
+        // parse again, so no ready section can go unchecked.
+        match request.login.clone() {
+            Login::Cloudflare {
+                credentials,
+                domain,
+            } => {
                 let (base_url, backoff) = (settings.cloudflare_url.clone(), settings.backoff);
                 let labels = Labels::new(
                     "Validating Cloudflare API credentials",
@@ -255,11 +246,7 @@ async fn checks(step: &mut Step, settings: &Settings, requests: &[Request]) -> b
                     stoppable(&step, cloudflare::check(&check, &credentials, &domain)).await
                 });
             }
-            Validator::ValidateDockerhubConfig => {
-                let Some((user, token)) = dockerhub_login(&request.value) else {
-                    mismatch();
-                    continue;
-                };
+            Login::Dockerhub(login) => {
                 let url = settings.dockerhub_url.clone();
                 let labels = Labels::new(
                     "Validating Docker Hub credentials",
@@ -267,10 +254,9 @@ async fn checks(step: &mut Step, settings: &Settings, requests: &[Request]) -> b
                 )
                 .failure("Docker Hub credentials validation");
                 group.spawn(labels, move |step| async move {
-                    stoppable(&step, dockerhub::login(&http, &url, &user, &token)).await
+                    stoppable(&step, dockerhub::login(&http, &url, &login)).await
                 });
             }
-            _ => {}
         }
     }
     group.join().await.iter().any(Result::is_err)

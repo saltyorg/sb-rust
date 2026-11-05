@@ -10,7 +10,8 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::cloudflare;
-use crate::rules::{Credentials, Validators, Verdict, go_float, go_type};
+use crate::dockerhub::DockerhubLogin;
+use crate::rules::{Credentials, Login, Validators, Verdict, go_float, go_type};
 use crate::scalar::Value;
 use crate::schema::Validator;
 use crate::secret::shown;
@@ -209,7 +210,10 @@ fn cloudflare(value: &Node, parent: &Node) -> Credentials {
         );
     }
     match cloudflare_login(value, parent) {
-        Some(_) => Credentials::Ready,
+        Some((credentials, domain)) => Credentials::Ready(Login::Cloudflare {
+            credentials,
+            domain,
+        }),
         None => {
             Credentials::Invalid("user domain is required for Cloudflare validation".to_string())
         }
@@ -220,8 +224,8 @@ fn dockerhub(value: &Node) -> Credentials {
     if !matches!(value.data, Data::Mapping(_)) {
         return Credentials::Invalid("dockerhub config must be an object".to_string());
     }
-    if dockerhub_login(value).is_some() {
-        return Credentials::Ready;
+    if let Some(login) = dockerhub_login(value) {
+        return Credentials::Ready(Login::Dockerhub(login));
     }
     match (non_empty(value, "user"), non_empty(value, "token")) {
         (false, false) => Credentials::Missing,
@@ -240,8 +244,8 @@ fn login_text(section: &Node, key: &str) -> Option<String> {
 
 /// The Cloudflare check's credentials and domain in a `cloudflare:`
 /// section `value` of `parent` (accounts.yml's root): what makes the
-/// section `Ready`, so the run checks exactly what the rules accepted.
-pub fn cloudflare_login(value: &Node, parent: &Node) -> Option<(cloudflare::Credentials, String)> {
+/// section `Ready`.
+fn cloudflare_login(value: &Node, parent: &Node) -> Option<(cloudflare::Credentials, String)> {
     let domain = parent
         .get("user")?
         .get("domain")
@@ -261,8 +265,11 @@ pub fn cloudflare_login(value: &Node, parent: &Node) -> Option<(cloudflare::Cred
 
 /// The Docker Hub user and token in a `dockerhub:` section `value`: what
 /// makes the section `Ready`.
-pub fn dockerhub_login(value: &Node) -> Option<(String, String)> {
-    Some((login_text(value, "user")?, login_text(value, "token")?))
+fn dockerhub_login(value: &Node) -> Option<DockerhubLogin> {
+    Some(DockerhubLogin {
+        user: login_text(value, "user")?,
+        token: login_text(value, "token")?,
+    })
 }
 
 /// sb-go's `validateAnsibleBoolValue`: a boolean, or the Ansible words in
@@ -1162,6 +1169,41 @@ mod tests {
         }
     }
 
+    /// A ready section's login is carried, and its debug output (derived
+    /// through `Credentials`) shows no secret.
+    #[test]
+    fn a_ready_section_debugs_without_its_secrets() {
+        let saltbox = saltbox();
+        let parent = yaml("user:\n  domain: example.com\n");
+        for (validator, section) in [
+            (
+                Validator::ValidateCloudflareConfig,
+                "scoped_token: hunter2\n",
+            ),
+            (
+                Validator::ValidateCloudflareConfig,
+                "api: hunter2\nemail: me@example.com\n",
+            ),
+            (
+                Validator::ValidateDockerhubConfig,
+                "user: me\ntoken: hunter2\n",
+            ),
+        ] {
+            let shown = format!(
+                "{:?}",
+                saltbox.credentials(validator, &yaml(section), &parent)
+            );
+            assert!(shown.starts_with("Ready("), "{shown}");
+            assert!(!shown.contains("hunter2"), "{shown}");
+            assert!(!shown.contains("me@example.com"), "{shown}");
+        }
+        let login = DockerhubLogin {
+            user: "me".into(),
+            token: "hunter2".into(),
+        };
+        assert_eq!(format!("{login:?}"), r#"DockerhubLogin { user: "me", .. }"#);
+    }
+
     // sb-go's TestParseCloudflareCredentials, and the structure checks.
     #[test]
     fn cloudflare_structure() {
@@ -1171,9 +1213,22 @@ mod tests {
             saltbox.credentials(Validator::ValidateCloudflareConfig, &yaml(section), &parent)
         };
         assert_eq!(check("{}"), Credentials::Missing);
+        let cloudflare = |credentials| {
+            Credentials::Ready(Login::Cloudflare {
+                credentials,
+                domain: "example.com".into(),
+            })
+        };
+        assert_eq!(
+            check("scoped_token: token\n"),
+            cloudflare(cloudflare::Credentials::Token("token".into()))
+        );
         assert_eq!(
             check("api: key\nemail: me@example.com\n"),
-            Credentials::Ready
+            cloudflare(cloudflare::Credentials::Global {
+                key: "key".into(),
+                email: "me@example.com".into()
+            })
         );
         assert_eq!(check("api: ''\nemail: ''\n"), Credentials::Missing);
         for (section, message) in [
@@ -1230,6 +1285,13 @@ mod tests {
             saltbox.credentials(Validator::ValidateDockerhubConfig, value, &yaml("{}"))
         };
         assert_eq!(check(&yaml("{}")), Credentials::Missing);
+        assert_eq!(
+            check(&yaml("user: u\ntoken: t\n")),
+            Credentials::Ready(Login::Dockerhub(DockerhubLogin {
+                user: "u".into(),
+                token: "t".into()
+            }))
+        );
         assert_eq!(
             check(&yaml("user: u\n")),
             Credentials::Invalid("both 'user' and 'token' must be provided together".into())
