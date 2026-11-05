@@ -60,9 +60,15 @@ async fn steps_are_logged_and_sensitive_text_is_withheld() {
 /// The steps, run inside the test's span.
 async fn run_steps() {
     let secret = SECRET;
-    // Colour on, so the screen keeps colour codes and the log must strip
-    // them itself (safe: this binary holds one test).
+    // Colour on under a colour profile, so the screen keeps a line's own
+    // colour codes and the log must strip them itself (the plain theme is
+    // `ascii`, which strips them before the log; safe: this binary holds
+    // one test).
     anstream::ColorChoice::Always.write_global();
+    sb_cli_core::theme::install(sb_cli_core::theme::Theme::resolve(
+        &sb_cli_core::theme::Palette::default(),
+        sb_cli_core::theme::Profile::TrueColor,
+    ));
     let shutdown = Shutdown::new();
     // Live or plain, as the test's stderr is (a run from a terminal draws
     // live): only the log is checked, which both modes write the same.

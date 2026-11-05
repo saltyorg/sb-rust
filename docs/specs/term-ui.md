@@ -357,8 +357,8 @@ impl Step {
     /// text: see `Line`). Text is
     /// split into lines at `\n`; a `\r` keeps what follows it (progress
     /// output); escape codes are kept on a coloured target, except under
-    /// `ascii`, and stripped otherwise; a line wider than the screen is cut with `…` on screen
-    /// and logged whole.
+    /// `ascii`, and stripped otherwise; a line wider than the screen is
+    /// cut with `…` on screen and logged whole.
     pub fn output(&mut self, text: impl Into<Line>);
 
     /// Run a sub-step (a deeper branch) to its end; this step's subtree

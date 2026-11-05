@@ -171,6 +171,35 @@ fn colour_off_keeps_the_cursor_movement_only() {
     }
 }
 
+/// A child's own colour codes in a step's output, plain with
+/// `--color=always`: kept under a colour profile, stripped under `ascii`
+/// (maintainer, 2026-11-05: `ascii` means no SGR code in anything term-ui
+/// draws).
+#[test]
+fn ascii_strips_a_childs_own_colours() {
+    for (profile, kept) in [(None, true), (Some("--ascii"), false)] {
+        let out = Command::new(demo())
+            .args(["--colour", "--child-colour"])
+            .args(profile)
+            .output()
+            .expect("run demo");
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            text.contains("child red") && text.contains("green note"),
+            "{text:?}"
+        );
+        assert_eq!(
+            text.contains("\x1b[31mchild red"),
+            kept,
+            "{profile:?}: {text:?}"
+        );
+        if !kept {
+            assert!(!text.contains('\x1b'), "{text:?}");
+        }
+    }
+}
+
 /// `--color=always` piped: the runner's plain lines in the theme's colours.
 #[test]
 fn always_colours_piped_runner_output() {

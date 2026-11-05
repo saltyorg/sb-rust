@@ -4,8 +4,9 @@
 //! `--child-fail`, `--panic`,
 //! `--interrupt`, `--interrupt-twice`, `--terminate`,
 //! `--leave-foreground`, `--table` (a table instead of the run, which
-//! returns early: any output error is exit 1 there) and `--colour` /
-//! `--no-colour`. A binary
+//! returns early: any output error is exit 1 there), `--child-colour` (a
+//! step's output line with its own colour codes), `--ascii` (the `ascii`
+//! profile's theme) and `--colour` / `--no-colour`. A binary
 //! rather than an example because `cargo test --tests` (the coverage run)
 //! builds bins for the integration tests but not examples; sb's build
 //! never includes it. It ends through cli-core's `finish_run`,
@@ -39,6 +40,11 @@ async fn work(step: &mut Step, lines: usize, pace: Duration) -> anyhow::Result<(
             anyhow::bail!("cancelled");
         }
         step.output(format!("checking item {n} of {lines}"));
+    }
+    // `--child-colour`: a line with its own colour codes, as a child's.
+    if arg("--child-colour") {
+        step.output("\x1b[31mchild red\x1b[0m");
+        step.info("\x1b[32mgreen note\x1b[0m");
     }
     Ok(())
 }
@@ -212,7 +218,13 @@ fn table() -> ExitCode {
 }
 
 fn main() -> RunEnd {
-    theme::install(Theme::resolve(&Palette::default(), Profile::TrueColor));
+    // `--ascii`: `SB_COLOR_PROFILE=ascii`'s theme; truecolor otherwise.
+    let profile = if arg("--ascii") {
+        Profile::Ascii
+    } else {
+        Profile::TrueColor
+    };
+    theme::install(Theme::resolve(&Palette::default(), profile));
     // `--colour` / `--no-colour`: sb's `--color=always|never`, as anstream's
     // global choice (the real binary sets it from its flag).
     if arg("--colour") {
@@ -220,7 +232,7 @@ fn main() -> RunEnd {
     } else if arg("--no-colour") {
         anstream::ColorChoice::Never.write_global();
     }
-    sb_term_ui::follow_colour_choice(Profile::TrueColor);
+    sb_term_ui::follow_colour_choice(profile);
     if arg("--table") {
         return table().into();
     }

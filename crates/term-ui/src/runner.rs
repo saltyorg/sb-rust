@@ -146,6 +146,9 @@ struct State {
     tree: Tree,
     mode: Mode,
     colour: bool,
+    /// Whether a line's own colour codes (a child's) are kept: colour on,
+    /// and the profile isn't `ascii` ([`keeps_codes`]).
+    codes: bool,
     /// Whether the target is a terminal: shown sensitive text shows only
     /// there (anywhere else stderr is a log; decision 8).
     terminal: bool,
@@ -348,6 +351,7 @@ impl Runner {
             },
             mode,
             colour,
+            codes: keeps_codes(colour, theme::current().profile()),
             terminal,
             size,
             frame: 0,
@@ -485,12 +489,12 @@ fn conclude<T>(
             // the times column its reason and adds its last lines.
             let child = err.chain().find_map(|e| e.downcast_ref::<ChildFailure>());
             let screen = if status == Status::Failed {
-                let colour = lock(&context.shared).colour;
+                let codes = lock(&context.shared).codes;
                 let child_lines = child.map(ChildFailure::last_lines).unwrap_or_default();
                 chain
                     .iter()
                     .chain(child_lines)
-                    .flat_map(|line| lines(line, colour))
+                    .flat_map(|line| lines(line, codes))
                     .collect()
             } else {
                 Vec::new()
@@ -773,14 +777,14 @@ impl Step {
     }
 
     fn notice(&mut self, warn: bool, line: Line) {
-        let (colour, terminal) = {
+        let (colour, codes, terminal) = {
             let state = lock(&self.context.shared);
-            (state.colour, state.terminal)
+            (state.colour, state.codes, state.terminal)
         };
         // Logged outside the lock: the log write blocks on the file.
         let step = self.name.as_str();
         // The log gets secret values replaced in place, always.
-        for text in &lines(&line.masked(), colour) {
+        for text in &lines(&line.masked(), codes) {
             let text = console::strip_ansi_codes(text);
             if warn {
                 tracing::warn!(step, text = ?text, "notice");
@@ -793,7 +797,7 @@ impl Step {
         if !state.tree.is_running(self.id) {
             return;
         }
-        for text in line.on_screen(colour, terminal) {
+        for text in line.on_screen(codes, terminal) {
             if matches!(state.mode, Mode::Plain) {
                 let (role, mark) = if warn {
                     (Role::Warn, "!")
@@ -812,22 +816,22 @@ impl Step {
     /// text: see [`Line`]). Text is
     /// split into lines (`\n` or `\r\n`); a `\r` keeps what follows it
     /// (progress output); only colour codes are kept, and only on a
-    /// coloured target; tabs become spaces and other control characters
-    /// are dropped; a line wider than the screen is cut with `…` on
+    /// coloured target under a colour profile (not `ascii`); tabs become
+    /// spaces and other control characters are dropped; a line wider than the screen is cut with `…` on
     /// screen. The log gets each line as plain text, whole. The live area
     /// shows new lines on the next frame, so streamed output doesn't
     /// redraw the tree per line.
     pub fn output(&mut self, text: impl Into<Line>) {
         let line = text.into();
-        let (colour, terminal) = {
+        let (codes, terminal) = {
             let state = lock(&self.context.shared);
-            (state.colour, state.terminal)
+            (state.codes, state.terminal)
         };
         // Logged outside the lock (the log write blocks on the file), as
         // plain text whatever the screen gets, and whole; secret values
         // replaced in place, always.
         let step = self.name.as_str();
-        for text in &lines(&line.masked(), colour) {
+        for text in &lines(&line.masked(), codes) {
             tracing::info!(step, text = ?console::strip_ansi_codes(text), "output");
         }
         let mut state = lock(&self.context.shared);
@@ -835,7 +839,7 @@ impl Step {
         if !state.tree.is_running(self.id) {
             return;
         }
-        for text in line.on_screen(colour, terminal) {
+        for text in line.on_screen(codes, terminal) {
             if matches!(state.mode, Mode::Plain) {
                 plain_line(&prefixed(self.prefix.as_deref(), &text));
             }
@@ -844,34 +848,41 @@ impl Step {
     }
 }
 
+/// Whether a line's own colour codes (a child's output) are kept: only
+/// with colour on and a colour profile; `ascii` means no SGR code in
+/// anything term-ui draws (maintainer, 2026-11-05).
+fn keeps_codes(colour: bool, profile: theme::Profile) -> bool {
+    colour && profile != theme::Profile::Ascii
+}
+
 /// Text as lines that draw predictably: std's `str::lines` (so `\r\n`
 /// ends a line, and a final newline adds none), then only what follows the
 /// last `\r` (progress output; a trailing one ignored). Empty text is one
 /// empty line.
-fn lines(text: &str, colour: bool) -> Vec<String> {
+fn lines(text: &str, codes: bool) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
     }
     text.lines()
         .map(|line| {
             let line = line.trim_end_matches('\r');
-            clean(line.rsplit('\r').next().unwrap_or(line), colour)
+            clean(line.rsplit('\r').next().unwrap_or(line), codes)
         })
         .collect()
 }
 
 /// One line with what would move the cursor or change widths behind the
-/// tree's back taken out: escape codes other than colours (all of them with
-/// colour off), and control characters; tabs become spaces to the next
+/// tree's back taken out: escape codes other than colours (all of them
+/// without `codes`, see [`keeps_codes`]), and control characters; tabs become spaces to the next
 /// 8-column stop. Escape codes found with console's `AnsiCodeIterator`
 /// (https://docs.rs/console/0.16.6/console/struct.AnsiCodeIterator.html).
-fn clean(line: &str, colour: bool) -> String {
+fn clean(line: &str, codes: bool) -> String {
     let mut out = String::new();
     let mut column = 0;
     for (piece, is_ansi) in console::AnsiCodeIterator::new(line) {
         if is_ansi {
             let sgr = piece.starts_with("\x1b[") && piece.ends_with('m');
-            if colour && sgr {
+            if codes && sgr {
                 out.push_str(piece);
             }
             continue;
@@ -1188,13 +1199,13 @@ impl Line {
     }
 
     /// The lines the screen gets.
-    fn on_screen(&self, colour: bool, terminal: bool) -> Vec<String> {
+    fn on_screen(&self, codes: bool, terminal: bool) -> Vec<String> {
         let text = if self.shown && terminal {
             self.revealed()
         } else {
             self.masked()
         };
-        lines(&text, colour)
+        lines(&text, codes)
     }
 }
 
@@ -1706,6 +1717,51 @@ mod tests {
                 _ => assert!(!codes.is_empty() && codes.iter().all(|c| of_kind(c, profile))),
             }
         }
+    }
+
+    /// Live, with colour on under the `ascii` theme (the tests' plain one):
+    /// a child's red reaches the screen as text, its code stripped.
+    #[tokio::test]
+    async fn ascii_strips_a_childs_codes_on_the_live_screen() {
+        assert_eq!(theme::current().profile(), theme::Profile::Ascii);
+        let term = InMemoryTerm::new(20, 100);
+        let options = Options {
+            target: Target::InMemory {
+                term: term.clone(),
+                colour: true,
+            },
+        };
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let _ = run
+            .step(Labels::new("Running", "ran"), async |step| {
+                step.info("\x1b[32mgreen note\x1b[0m");
+                step.output("\x1b[31mchild red\x1b[0m");
+                Err::<(), _>(anyhow::anyhow!("\x1b[31mred error\x1b[0m"))
+            })
+            .await;
+        run.finish();
+        let shown = String::from_utf8_lossy(&term.contents_formatted()).into_owned();
+        assert!(term.contents().contains("red error"), "{shown:?}");
+        assert!(term.contents().contains("child red"), "{shown:?}");
+        assert!(term.contents().contains("green note"), "{shown:?}");
+        assert!(
+            crate::style::sgr::colour_codes(&shown).is_empty(),
+            "{shown:?}"
+        );
+    }
+
+    /// A line's own colour codes are kept only with colour on and a colour
+    /// profile; `ascii` strips them as colour off does.
+    #[test]
+    fn a_lines_own_codes_follow_colour_and_profile() {
+        use theme::Profile;
+        for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi] {
+            assert!(keeps_codes(true, profile), "{profile:?}");
+            assert!(!keeps_codes(false, profile), "{profile:?}");
+        }
+        assert!(!keeps_codes(true, Profile::Ascii));
+        assert!(!keeps_codes(false, Profile::Ascii));
     }
 
     fn plain_theme() -> theme::Theme {
