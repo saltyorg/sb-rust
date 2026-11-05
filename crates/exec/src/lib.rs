@@ -397,6 +397,26 @@ fn failure(command: &str, ending: Ending, last_lines: Vec<String>) -> Failed {
     Failed::new(format!("{command} {ending}"), ending.reason(), last_lines)
 }
 
+/// What [`Cmd::pty`] returns: the outcome. A PTY merges stdout and
+/// stderr into the lines the step got, so there is no tail to keep
+/// (exec spec decision 12).
+#[derive(Debug)]
+pub struct Ran {
+    pub outcome: Outcome,
+    command: String,
+}
+
+impl Ran {
+    /// The result if the child exited 0, else [`Failed`] with no lines of
+    /// its own: the step's failure block shows its last 10 lines.
+    pub fn check(self) -> Result<Self, Failed> {
+        if self.outcome.ending == Ending::Exited(0) {
+            return Ok(self);
+        }
+        Err(failure(&self.command, self.outcome.ending, Vec::new()))
+    }
+}
+
 /// What [`Cmd::stream`] returns: the outcome, and stderr's last 64 KiB
 /// (secrets taken out) for a caller matching on it (apt's retry). The
 /// lines themselves went to the step.

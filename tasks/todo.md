@@ -418,9 +418,13 @@ pid as in Task 4.
 **Scope:** M
 
 ## Checkpoint B: Before the shared signal change
-- [ ] `scripts/check.sh full` passes; project coverage, size and startup
-      re-measured against CONSTRAINTS.md's values.
-- [ ] The maintainer approves the signal behaviour (decision 2 as Task 8a
+- [x] `scripts/check.sh full` passes; size and startup re-measured
+      against CONSTRAINTS.md's values (2026-11-05, on e7dcecc's tree and
+      again on the Checkpoint B commit's: full check green; sb 11645408
+      bytes; `--help` median 1.06 ms).
+- [ ] Project coverage re-measured against CONSTRAINTS.md's values: not
+      done here (changed-line coverage 94%); carried to Checkpoint C.
+- [x] The maintainer approves the signal behaviour (decision 2 as Task 8a
       will build it) before cli-core changes, and decides the cases the
       spec leaves open while an attached child runs: whether a second
       SIGTERM, or a SIGTERM then a SIGINT or SIGQUIT, forces sb's exit;
@@ -430,7 +434,11 @@ pid as in Task 4.
       is decided: term-ui decision 5 keeps Ctrl-\ a hard escape, its
       default action; the hold changes that only while an attached child
       runs.) The decided table goes into the spec and Task 8a's acceptance
-      criteria.
+      criteria. (2026-11-05: decided, exec decision 12. A second SIGTERM
+      forces the exit; a terminal SIGINT during a forwarded SIGTERM's
+      grace doesn't; the forced exit SIGKILLs the attached child's pid.
+      Extension by the author, not asked: a terminal SIGQUIT then is taken
+      as the SIGINT is, the terminal delivering both to the child.)
 
 ## Task 8a: cli-core's signals while an attached child runs
 
@@ -452,9 +460,17 @@ beside an interrupted run's code) checked and fixed or re-carried with a
 reason.
 
 **Acceptance criteria:**
-- [ ] The decision logic's every case, as decided at Checkpoint B,
-      tested in-process, failing first; the same table through exec-demo
-      in Task 8b.
+- [ ] The decision logic's every case, as decided at Checkpoint B (exec
+      decision 12), tested in-process, failing first, and the same table
+      through exec-demo in Task 8b:
+      - SIGINT or SIGQUIT while an attached child runs: held, not counted
+        toward the forced exit; sb ends by it only if the child died of it;
+      - SIGTERM: passed to the child's pid, the grace and SIGKILL follow;
+      - a second SIGTERM: the forced exit;
+      - a terminal SIGINT (and, as the author's extension, SIGQUIT)
+        during a forwarded SIGTERM's grace: not counted, sb waits;
+      - the forced exit: SIGKILL to the attached child's pid as well as to
+        exec's groups.
 - [ ] cli-core's and sb's existing signal tests pass
       (`SB_TEST_ROOT=1`: validate_config_signals.rs, docker_signals.rs).
 - [ ] sb's binary size and startup measured, with an ADR past the
@@ -502,7 +518,9 @@ before any spawn (no start record written).
       per the profile, no `GIT_TERMINAL_PROMPT`); the records written and
       no output logged; the pass-through: exec-demo exits with the child's
       code after its one line; Checkpoint B's decided cases through
-      exec-demo.
+      exec-demo (the table in Task 8a's criteria: a second SIGTERM forcing
+      the exit, the forced exit SIGKILLing the attached child's pid, a
+      terminal SIGINT or SIGQUIT during the grace not counted).
 
 **Verification:**
 - [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.

@@ -194,9 +194,10 @@ even if the child then exits 0 within the grace period.
   and `attached` refuses to start then. This changes how cli-core handles
   signals while an attached child runs (an amendment to the cli-core spec
   with this one).
-- **sb's forced exit** (a second signal, outside an attached child):
-  before exiting, cli-core's hook sends SIGKILL to every group exec
-  created that still has members.
+- **sb's forced exit** (a second signal, outside an attached child; while
+  one runs, a second SIGTERM, decision 12): before exiting, cli-core's
+  hook sends SIGKILL to every group exec created that still has members,
+  and to a running attached child's pid (decision 12).
 - **Dropped futures:** dropping a running piped or PTY child sends SIGKILL
   to its group at once (tokio's `kill_on_drop` reaches only the pid, so
   exec keeps its own guard) and leaves the reaping to tokio's orphan
@@ -473,3 +474,22 @@ let outcome = Cmd::new("systemctl")
     keyboard; sb-go's callers never feed one (its executor would accept
     custom stdin for an interactive child, but only the MOTD banner sets
     any, under capture). Exec plan Task 8b.
+12. **Checkpoint B** (maintainer, 2026-11-05), for attached children and
+    the PTY:
+    - A second SIGTERM while an attached child runs (after the first was
+      passed to its pid) is the forced exit: SIGKILL to the child's pid,
+      the terminal put back, sb dies of SIGTERM at once.
+    - A Ctrl-C during that grace doesn't count toward the forced exit:
+      the terminal gave the child the SIGINT, and sb keeps waiting ("wait
+      and cooperative exit"), bounded by the grace and SIGKILL under way.
+      (Extension by the author, not asked of the maintainer: a Ctrl-\
+      (SIGQUIT) then is taken the same way, as the terminal delivers it
+      to the child too.)
+    - sb's forced exit SIGKILLs a running attached child's pid too, as the
+      forced-exit hook does piped and PTY groups.
+    - A PTY child's `TERM` is inherited as is, as sb-go does: without one
+      sb is almost always off a terminal, and its output plain anyway.
+    - portable-pty's `SHELL` (set even after `env_clear`) is accepted, as
+      its behaviour; `env_clear` stays exact for `capture` and `stream`.
+    - `pty` returns its own result (`Ran`: the outcome and `check()`), not
+      `Streamed`, whose stderr tail a PTY can't fill.

@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use indicatif::InMemoryTerm;
 use sb_cli_core::cancel::Shutdown;
-use sb_exec::{Cmd, Ending, SpawnCause, Streamed};
+use sb_exec::{Cmd, Ending, Ran, SpawnCause};
 use sb_term_ui::{Labels, Options, Runner, Target};
 
 /// Run `cmd` on a PTY in one step, the step failing when the child does
 /// (so its lines stay on screen). Returns the result and the screen.
-async fn on_pty(cmd: Cmd, colour: bool) -> (Result<Streamed, sb_exec::SpawnError>, String) {
+async fn on_pty(cmd: Cmd, colour: bool) -> (Result<Ran, sb_exec::SpawnError>, String) {
     let term = InMemoryTerm::new(40, 140);
     let options = Options {
         target: Target::InMemory {
@@ -48,7 +48,7 @@ async fn on_pty(cmd: Cmd, colour: bool) -> (Result<Streamed, sb_exec::SpawnError
     (result.expect("the step ran"), screen)
 }
 
-async fn within(cmd: Cmd) -> (Result<Streamed, sb_exec::SpawnError>, String) {
+async fn within(cmd: Cmd) -> (Result<Ran, sb_exec::SpawnError>, String) {
     tokio::time::timeout(Duration::from_secs(20), on_pty(cmd, false))
         .await
         .expect("ended")
@@ -83,6 +83,9 @@ async fn codes_signals_and_spawn_failures() {
     );
     let (done, _) = within(sh("kill -TERM $$")).await;
     assert_eq!(done.expect("ran").outcome.ending, Ending::Signalled(15));
+    let (again, _) = within(sh("kill -TERM $$")).await;
+    let err = again.expect("ran").check().expect_err("signalled");
+    assert_eq!(err.reason(), "SIGTERM");
     let (missing, _) = within(Cmd::new("sb-exec-no-such-program")).await;
     let err = missing.expect_err("not found");
     assert!(
@@ -112,6 +115,8 @@ async fn stdin_bytes_are_refused_and_a_reader_gets_eof() {
     let start = Instant::now();
     let (done, _) = within(Cmd::new("cat")).await;
     assert_eq!(done.expect("ran").outcome.ending, Ending::Exited(0));
+    let (again, _) = within(Cmd::new("true")).await;
+    assert!(again.expect("ran").check().is_ok(), "exit 0 checks out");
     assert!(
         start.elapsed() < Duration::from_secs(5),
         "{:?}",

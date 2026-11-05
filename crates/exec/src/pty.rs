@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::group::Group;
 use crate::mask::Mask;
 use crate::run::{CHUNK, LINE, Leader, QUEUED, check_dir, log_end, shown_line};
-use crate::{Cmd, Outcome, SpawnCause, SpawnError, Streamed, Way};
+use crate::{Cmd, Outcome, Ran, SpawnCause, SpawnError, Way};
 
 /// The PTY's reader: portable-pty's, a blocking std `Read`.
 type PtyReader = Box<dyn Read + Send>;
@@ -46,9 +46,8 @@ impl Cmd {
     /// child must not prompt, so give it a non-interactive flag or a
     /// timeout. The working directory is always set, and checked first
     /// (portable-pty would fall back to `$HOME`). The step's token stops
-    /// the session's group as `capture`'s does. The result's
-    /// `stderr_tail` is empty: a PTY merges both streams into the lines.
-    pub async fn pty(&self, step: &mut Step) -> Result<Streamed, SpawnError> {
+    /// the session's group as `capture`'s does.
+    pub async fn pty(&self, step: &mut Step) -> Result<Ran, SpawnError> {
         let (command, _) = self.shown();
         let token = step.token();
         let (mut leader, group, reader) = self.spawn_pty()?;
@@ -82,11 +81,7 @@ impl Cmd {
             elapsed: start.elapsed(),
         };
         log_end(&command, &outcome);
-        Ok(Streamed {
-            outcome,
-            stderr_tail: String::new(),
-            command,
-        })
+        Ok(Ran { outcome, command })
     }
 
     /// Open the PTY and spawn the child on it, logging its start (or why it
