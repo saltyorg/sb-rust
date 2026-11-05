@@ -385,28 +385,33 @@ the signal's name in the outcome, `COLORTERM` from the colour profile
 reaping (its wait thread), the drop guard and the forced-exit hook's
 registration. exec-demo gains a `pty` mode.
 
+**As built (2026-11-05):** the PTY child is waited on with rustix's
+`waitpid` on its own thread (portable-pty's `wait` gives only
+`strsignal`'s description), and exec-demo's PTY runs are signalled by
+pid as in Task 4.
+
 **Acceptance criteria:**
-- [ ] The child sees a TTY and its size (on a terminal through `script`,
+- [x] The child sees a TTY and its size (on a terminal through `script`,
       or an injected size); an exit code; a signal's name in the
       outcome; a spawn failure; `stdin(bytes)` refused; a reading child
       gets EOF; a missing directory is an error, not `$HOME`; `Failed`
       without stderr lines.
-- [ ] The PTY reader: a multi-byte character split across reads, `\r`
+- [x] The PTY reader: a multi-byte character split across reads, `\r`
       progress at the next line, a last line without `\n`, a line past
       4 KiB, the 2 s drain with a backgrounded short sleep holding the
       PTY, a child echoing a `secret` and a `secret_env` value (masked).
-- [ ] The environment with real children: `GIT_TERMINAL_PROMPT=0`,
+- [x] The environment with real children: `GIT_TERMINAL_PROMPT=0`,
       `COLORTERM` truecolor or 256color, and removed for ansi and ascii;
       colours kept for a coloured target and stripped otherwise
       (term-ui's).
-- [ ] Cancellation and a timeout reach the session's group; through
+- [x] Cancellation and a timeout reach the session's group; through
       exec-demo's `pty` mode on a PTY: SIGINT and SIGTERM give 130 and 143
       with the session's group gone, a second signal makes the hook SIGKILL
       it; a dropped `pty` future leaves no member.
-- [ ] `cargo deny` on crates/exec passes with portable-pty.
+- [x] `cargo deny` on crates/exec passes with portable-pty.
 
 **Verification:**
-- [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+- [x] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
 
 **Dependencies:** Task 6
 **Files:** `Cargo.toml`, `crates/exec/src/pty.rs`, `crates/exec/tests/`

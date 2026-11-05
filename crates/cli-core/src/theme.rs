@@ -273,33 +273,48 @@ impl Profile {
     }
 }
 
-/// The palette resolved for one profile: what output uses.
+/// The palette resolved for one profile: what output uses, and the
+/// profile (a child given a terminal learns it through `COLORTERM`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Theme([Option<Color>; Role::ALL.len()]);
+pub struct Theme {
+    colours: [Option<Color>; Role::ALL.len()],
+    profile: Profile,
+}
 
 impl Theme {
     /// Every role in `profile`; under `ansi` a role still on its built-in
     /// colour takes [`SIXTEEN`]'s pick (ADR-006).
     pub fn resolve(palette: &Palette, profile: Profile) -> Self {
         let built_in = Palette::default();
-        Self(std::array::from_fn(|i| {
-            let colour = palette.0[i];
-            if profile == Profile::Ansi && colour == built_in.0[i] {
-                Some(Color::Ansi(SIXTEEN[i]))
-            } else {
-                profile.resolve(colour)
-            }
-        }))
+        Self {
+            colours: std::array::from_fn(|i| {
+                let colour = palette.0[i];
+                if profile == Profile::Ansi && colour == built_in.0[i] {
+                    Some(Color::Ansi(SIXTEEN[i]))
+                } else {
+                    profile.resolve(colour)
+                }
+            }),
+            profile,
+        }
+    }
+
+    /// The profile it was resolved for (`ascii` for the plain theme).
+    pub fn profile(&self) -> Profile {
+        self.profile
     }
 
     /// No colour at all (before startup installs the real theme).
     pub fn plain() -> Self {
-        Self([None; Role::ALL.len()])
+        Self {
+            colours: [None; Role::ALL.len()],
+            profile: Profile::Ascii,
+        }
     }
 
     /// The role's resolved colour, for any use (backgrounds included).
     pub fn color(&self, role: Role) -> Option<Color> {
-        self.0[role.index()]
+        self.colours[role.index()]
     }
 
     /// A foreground style in the role's colour.
@@ -326,6 +341,24 @@ pub fn current() -> &'static Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A theme knows the profile it was resolved for; the plain one is
+    /// `ascii`.
+    #[test]
+    fn a_theme_keeps_its_profile() {
+        for profile in [
+            Profile::TrueColor,
+            Profile::Ansi256,
+            Profile::Ansi,
+            Profile::Ascii,
+        ] {
+            assert_eq!(
+                Theme::resolve(&Palette::default(), profile).profile(),
+                profile
+            );
+        }
+        assert_eq!(Theme::plain().profile(), Profile::Ascii);
+    }
 
     #[test]
     fn profiles_follow_sb_go_names() {

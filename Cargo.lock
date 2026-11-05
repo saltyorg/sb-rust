@@ -3362,6 +3362,7 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "indicatif",
+ "portable-pty",
  "rustix",
  "sb-cli-core",
  "sb-term-ui",

@@ -75,13 +75,17 @@ pub(crate) struct Group {
 impl Group {
     /// The group of a child just spawned with `process_group(0)`.
     pub(crate) fn of(child: u32) -> Option<Self> {
-        let id = Pid::from_raw(i32::try_from(child).ok()?)?;
-        live().insert(id.as_raw_nonzero().get());
-        Some(Self {
-            id,
+        Some(Self::of_pid(Pid::from_raw(i32::try_from(child).ok()?)?))
+    }
+
+    /// The group whose id is `leader`'s pid (a session's, for a PTY child).
+    pub(crate) fn of_pid(leader: Pid) -> Self {
+        live().insert(leader.as_raw_nonzero().get());
+        Self {
+            id: leader,
             reaped: false,
             stopping: false,
-        })
+        }
     }
 
     /// Ask the group to end: SIGTERM, then SIGCONT, as a stopped process

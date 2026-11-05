@@ -89,7 +89,7 @@ group, within the grace period plus one second.
 |---|---|---|---|
 | `capture(&token)` | Capture, Combined, Discard | stdout and stderr collected separately, up to 1 MiB each (cli-core's cap for text sb reads), returned | `systemctl is-active`, `git rev-parse`, `uv --version`, `dpkg-query` |
 | `stream(&mut step)` | Stream, managed output | each line to the step as it arrives (stdout and stderr); stderr's last 64 KiB kept for the caller (apt's retry match) | `apt-get update`, `git pull` under the runner |
-| `pty(&mut step)` | `WithPseudoTerminal` | under a pseudo-terminal of sb's terminal size (24×120 when stderr isn't one, as sb-go), lines to the step; the child sees a TTY; stdin refused, the writer dropped at start so a reading child gets EOF | tools that colour or show progress only on a TTY |
+| `pty(&mut step)` | `WithPseudoTerminal` | under a pseudo-terminal of sb's terminal size (24×120 when stderr isn't one, as sb-go), lines to the step; the child sees a TTY; stdin refused; echo off, and the end-of-file character written at start so a reading child's first read is end of file (a child that flushes its input before prompting, as a password prompt does, still waits: a PTY child must not prompt, so it gets a non-interactive flag or a timeout) | tools that colour or show progress only on a TTY |
 | `attached(&token)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged; `stdin(bytes)` refused before spawning (decision 11) | an editor, an `ansible-playbook` run shown as it is |
 
 `stream` and `pty` take the step's token (term-ui's `Step::token`, a
@@ -123,8 +123,9 @@ child of cli-core's shared token); `capture` and `attached` take one.
 ### Outcome and errors
 
 Every way returns an `Outcome`: exited with a code, killed by a signal
-(the number for piped children; for `pty`, portable-pty gives only the
-signal's name and a code of 1, kept as the name), interrupted (the token
+(the number for piped children; for `pty`, portable-pty's own wait gives only the
+signal's name and a code of 1, so sb waits on the PTY child itself with
+rustix's `waitid` and keeps the number), interrupted (the token
 was cancelled), or timed out; and the time it took. Once the token is
 cancelled or the timeout passes, the outcome is interrupted or timed out
 even if the child then exits 0 within the grace period.
@@ -310,7 +311,8 @@ let outcome = Cmd::new("systemctl")
 
 - **Real children, no mocks:** `sh -c` scripts and `sleep` stand in for
   tools. Exit codes, signals, spawn failures; stdin bytes, null stdin, a
-  child that reads stdin under `pty` (EOF, not a hang); output split
+  child that reads stdin under `pty` (end of file at its first read);
+  output split
   across reads (a multi-byte character at a read boundary, `\r` progress,
   a last line without `\n`, a line past 4 KiB), the caps and truncation;
   a backgrounded `sleep 30` holding stdout (done within the 2 s drain).

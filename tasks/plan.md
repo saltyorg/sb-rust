@@ -68,7 +68,7 @@ links sb-exec, each task runs cargo-deny on sb-exec's own graph.
 
 ### Phase 3: Stream and the PTY
 - [x] Task 6: `stream`
-- [ ] Task 7: `pty`
+- [x] Task 7: `pty`
 
 ### Checkpoint B: Before the shared signal change
 - [ ] `scripts/check.sh full` passes; coverage, size and startup
@@ -100,6 +100,11 @@ Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
 
 ## Open questions
 
+- From Task 7, for Checkpoint B: `TERM` for a PTY child when sb runs
+  without one (cron, systemd: inherited as is today, so tools fall back
+  to dumb output); portable-pty always setting `SHELL`, even after
+  `env_clear` (recorded, not overridden); and `pty`'s result reusing
+  `Streamed` with an empty `stderr_tail` (a PTY merges both streams).
 - The signal cases the spec leaves open while an attached child runs (a
   second SIGTERM, a SIGINT during a forwarded SIGTERM's grace, and
   whether the forced exit kills the child), for Checkpoint B, before

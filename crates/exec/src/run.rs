@@ -23,17 +23,17 @@ use crate::{Captured, Cmd, Ending, Outcome, SpawnCause, SpawnError, Streamed, Wa
 const DRAIN: Duration = Duration::from_secs(2);
 
 /// Bytes read from a pipe at a time.
-const CHUNK: usize = 8 * 1024;
+pub(crate) const CHUNK: usize = 8 * 1024;
 
 /// The longest streamed line; the rest of a longer one is dropped up to
 /// its end (spec, "Lines").
-const LINE: usize = 4 * 1024;
+pub(crate) const LINE: usize = 4 * 1024;
 
 /// How much of stderr `stream` keeps for its caller.
 const STDERR_TAIL: usize = 64 * 1024;
 
 /// Lines read but not yet handed to the step.
-const QUEUED: usize = 64;
+pub(crate) const QUEUED: usize = 64;
 
 /// A stop under way: why (the outcome it gives), and when the group gets
 /// SIGKILL.
@@ -178,7 +178,7 @@ impl Cmd {
     }
 
     /// The error for a child that couldn't run, naming the program.
-    fn failed(&self, cause: SpawnCause) -> SpawnError {
+    pub(crate) fn failed(&self, cause: SpawnCause) -> SpawnError {
         SpawnError {
             program: self.program.to_string_lossy().into_owned(),
             cause,
@@ -213,9 +213,9 @@ impl Cmd {
     /// SIGKILL), what is left of it after the leader's reap, then the
     /// output still coming for up to [`DRAIN`]. Interrupted and timed out
     /// win over the child's own ending.
-    async fn supervise(
+    pub(crate) async fn supervise(
         &self,
-        child: &mut Child,
+        child: &mut impl Leader,
         mut group: Option<Group>,
         token: &CancellationToken,
         io: impl Future<Output = ()>,
@@ -243,7 +243,7 @@ impl Cmd {
                     }
                     // The leader's pid too: it may have left its group,
                     // and it is unreaped, so the pid is still its own.
-                    let _ = child.start_kill();
+                    child.kill();
                     if let Some(stop) = &mut stop {
                         stop.killed = true;
                     }
@@ -280,7 +280,28 @@ impl Cmd {
         let status = status.map_err(|err| self.failed(err.into()))?;
         Ok(stop.map_or_else(|| ending(status), |stop| stop.ending))
     }
+}
 
+/// A child's leader as `supervise` needs it: wait for its exit (cancel
+/// safe, as it sits in a `select!`), and SIGKILL its pid while unreaped.
+pub(crate) trait Leader {
+    async fn wait(&mut self) -> std::io::Result<ExitStatus>;
+    fn kill(&mut self);
+}
+
+impl Leader for Child {
+    /// tokio's own wait, documented cancel safe
+    /// (https://docs.rs/tokio/1.54.1/tokio/process/struct.Child.html#method.wait).
+    async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        Child::wait(self).await
+    }
+
+    fn kill(&mut self) {
+        let _ = self.start_kill();
+    }
+}
+
+impl Cmd {
     /// tokio's `Command` for `way`: program, arguments, the environment
     /// rules, working directory, piped output and its own process group
     /// (`process_group(0)`,
@@ -290,19 +311,7 @@ impl Cmd {
     /// read as the program not being found.
     fn command(&self, way: Way) -> Result<Command, SpawnCause> {
         if let Some(dir) = &self.cwd {
-            match std::fs::metadata(dir) {
-                Ok(meta) if meta.is_dir() => {}
-                Ok(_) => return Err(SpawnCause::NoDirectory(dir.clone())),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(SpawnCause::NoDirectory(dir.clone()));
-                }
-                Err(cause) => {
-                    return Err(SpawnCause::Directory {
-                        dir: dir.clone(),
-                        cause,
-                    });
-                }
-            }
+            check_dir(dir)?;
         }
         let mut command = Command::new(&self.program);
         for arg in &self.args {
@@ -379,13 +388,7 @@ async fn send_line(
     lines: &mpsc::Sender<Vec<u8>>,
     tail: Option<&mut Kept>,
 ) -> bool {
-    // Cut at a character's start, so a character split by the 4 KiB cut is
-    // dropped rather than shown as U+FFFD.
-    let mut cut = line.len().min(LINE);
-    while cut > 0 && cut < line.len() && line[cut] & 0b1100_0000 == 0b1000_0000 {
-        cut -= 1;
-    }
-    let shown = mask.bytes(line, 0..cut);
+    let shown = shown_line(line, mask);
     if let Some(tail) = tail {
         tail.bytes.extend(&shown);
         tail.bytes.push_back(b'\n');
@@ -399,6 +402,17 @@ async fn send_line(
         }
     }
     lines.send(shown).await.is_ok()
+}
+
+/// A line as the step gets it: cut at [`LINE`], at a character's start
+/// (a character split by the cut is dropped rather than shown as U+FFFD),
+/// secrets taken out over the whole window read.
+pub(crate) fn shown_line(line: &[u8], mask: &Mask) -> Vec<u8> {
+    let mut cut = line.len().min(LINE);
+    while cut > 0 && cut < line.len() && line[cut] & 0b1100_0000 == 0b1000_0000 {
+        cut -= 1;
+    }
+    mask.bytes(line, 0..cut)
 }
 
 /// Drop the rest of a line past its cut, up to and with its `\n`; false if
@@ -417,6 +431,21 @@ async fn skip_line(reader: &mut BufReader<impl AsyncRead + Unpin>) -> bool {
             Ok(1..) => {}
             Ok(0) | Err(_) => return false,
         }
+    }
+}
+
+/// `dir` is an existing directory, or why it can't be the child's.
+pub(crate) fn check_dir(dir: &std::path::Path) -> Result<(), SpawnCause> {
+    match std::fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(SpawnCause::NoDirectory(dir.to_path_buf())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(SpawnCause::NoDirectory(dir.to_path_buf()))
+        }
+        Err(cause) => Err(SpawnCause::Directory {
+            dir: dir.to_path_buf(),
+            cause,
+        }),
     }
 }
 
@@ -475,7 +504,7 @@ fn tail_text(mask: &Mask, window: &[u8]) -> String {
 /// A code when the child exited, else the signal that killed it (`wait`
 /// never reports a stopped or continued child, the only status with
 /// neither).
-fn ending(status: ExitStatus) -> Ending {
+pub(crate) fn ending(status: ExitStatus) -> Ending {
     status.code().map_or_else(
         || Ending::Signalled(status.signal().unwrap_or_default()),
         Ending::Exited,
@@ -483,7 +512,7 @@ fn ending(status: ExitStatus) -> Ending {
 }
 
 /// The run-log record of a child ending (spec, "Logging").
-fn log_end(command: &str, outcome: &Outcome) {
+pub(crate) fn log_end(command: &str, outcome: &Outcome) {
     tracing::info!(
         command,
         outcome = %outcome.ending,

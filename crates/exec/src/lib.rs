@@ -4,6 +4,7 @@
 
 mod group;
 mod mask;
+mod pty;
 mod run;
 
 pub use group::on_forced_exit;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use sb_cli_core::log::WITHHELD;
+use sb_cli_core::theme::Profile;
 
 /// Set for every child not attached, so git (run by the child or by a tool
 /// it starts) never waits on a prompt no one can answer.
@@ -82,6 +84,7 @@ impl fmt::Debug for Cmd {
 pub(crate) enum Way {
     Capture,
     Stream,
+    Pty,
 }
 
 impl Way {
@@ -89,6 +92,7 @@ impl Way {
         match self {
             Self::Capture => "capture",
             Self::Stream => "stream",
+            Self::Pty => "pty",
         }
     }
 }
@@ -200,7 +204,20 @@ impl Cmd {
     /// `GIT_TERMINAL_PROMPT=0` for every child not attached (spec,
     /// "Environment rules"), whatever the caller set for it.
     pub(crate) fn environment(&self, way: Way) -> Environment<'_> {
-        let (Way::Capture | Way::Stream) = way;
+        self.environment_for(way, sb_cli_core::theme::current().profile())
+    }
+
+    /// [`Cmd::environment`] for a colour `profile`: a PTY child also gets
+    /// `COLORTERM` from it (decision 3): `truecolor` or `256color`, and an
+    /// inherited one removed for `ansi` and `ascii`, so the child matches
+    /// what sb itself draws.
+    pub(crate) fn environment_for(&self, way: Way, profile: Profile) -> Environment<'_> {
+        let colorterm = match (way, profile) {
+            (Way::Capture | Way::Stream, _) => None,
+            (Way::Pty, Profile::TrueColor) => Some(Some("truecolor")),
+            (Way::Pty, Profile::Ansi256) => Some(Some("256color")),
+            (Way::Pty, Profile::Ansi | Profile::Ascii) => Some(None),
+        };
         let (rule, ruled) = NO_GIT_PROMPT;
         let mut vars: Vec<(&str, Option<&str>)> = self
             .env
@@ -215,6 +232,10 @@ impl Cmd {
             })
             .collect();
         vars.push((rule, Some(ruled)));
+        if let Some(value) = colorterm {
+            vars.retain(|(name, _)| *name != "COLORTERM");
+            vars.push(("COLORTERM", value));
+        }
         vars.sort_unstable_by_key(|(name, _)| *name);
         Environment {
             clear: self.clear_env,
@@ -419,6 +440,10 @@ pub enum SpawnCause {
     /// The working directory isn't an existing directory.
     #[error("no such working directory: {}", .0.display())]
     NoDirectory(PathBuf),
+    /// This way of running takes no stdin bytes (a PTY child reads the
+    /// PTY, which sb closes at once).
+    #[error("a {0} child takes no stdin bytes")]
+    StdinRefused(&'static str),
     /// The working directory couldn't be looked at (a parent sb can't
     /// search, say).
     #[error("working directory {}", dir.display())]
@@ -597,6 +622,40 @@ mod tests {
     fn the_way_is_named_in_the_log() {
         assert_eq!(Way::Capture.name(), "capture");
         assert_eq!(Way::Stream.name(), "stream");
+    }
+
+    /// A PTY child gets COLORTERM from the profile, over an inherited or
+    /// given one; the other ways leave it alone.
+    #[test]
+    fn colorterm_follows_the_profile_for_pty_children() {
+        let cmd = Cmd::new("x").env("COLORTERM", "given");
+        let colorterm = |way, profile| {
+            cmd.environment_for(way, profile)
+                .vars
+                .into_iter()
+                .find(|(name, _)| *name == "COLORTERM")
+        };
+        assert_eq!(
+            colorterm(Way::Pty, Profile::TrueColor),
+            Some(("COLORTERM", Some("truecolor")))
+        );
+        assert_eq!(
+            colorterm(Way::Pty, Profile::Ansi256),
+            Some(("COLORTERM", Some("256color")))
+        );
+        assert_eq!(
+            colorterm(Way::Pty, Profile::Ansi),
+            Some(("COLORTERM", None))
+        );
+        assert_eq!(
+            colorterm(Way::Pty, Profile::Ascii),
+            Some(("COLORTERM", None))
+        );
+        assert_eq!(
+            colorterm(Way::Stream, Profile::TrueColor),
+            Some(("COLORTERM", Some("given")))
+        );
+        assert_eq!(Way::Pty.name(), "pty");
     }
 
     #[test]
