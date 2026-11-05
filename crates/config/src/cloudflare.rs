@@ -84,14 +84,19 @@ pub fn backoff(count: u32) -> Duration {
     full - Duration::from_nanos(random % quarter)
 }
 
+/// The longest a delay the server names is waited (maintainer,
+/// 2026-11-05; a listed difference: cloudflare-go waits as long as it
+/// says, so one answer could hold the step for an hour).
+const MAX_NAMED_DELAY: Duration = Duration::from_secs(60);
+
 /// cloudflare-go's `retryDelay`: the answer's `Retry-After-Ms`
 /// (milliseconds), else its `Retry-After` (seconds, or an HTTP date read
 /// with jiff's RFC 2822 parser, a little looser than Go's RFC 1123:
 /// https://docs.rs/jiff/0.2.38/jiff/fmt/rfc2822/struct.DateTimeParser.html#method.parse_timestamp),
-/// never negative; else `backoff(count)`. As in Go, a value that doesn't
-/// parse as a float (`1e400` overflows) is skipped, and one past Go's
-/// Duration (`inf`, `1e300`) converts to a negative duration on amd64,
-/// hence 0.
+/// never negative and at most [`MAX_NAMED_DELAY`]; else
+/// `backoff(count)`. As in Go, a value that doesn't parse as a float
+/// (`1e400` overflows) is skipped, and one past Go's Duration (`inf`,
+/// `1e300`) converts to a negative duration on amd64, hence 0.
 pub(crate) fn retry_delay(
     headers: Option<&HeaderMap>,
     count: u32,
@@ -118,10 +123,11 @@ pub(crate) fn retry_delay(
     match named {
         // Go's Duration holds about 292 years of nanoseconds; past it (or
         // NaN) the conversion goes negative on amd64. (Go's `time.Until`
-        // saturates a far-future date instead, waiting ~292 years: here
-        // such a date doesn't wait, a small difference.)
+        // saturates a far-future date instead, waiting ~292 years, which
+        // the cap would make a minute: here a date ~292 years out doesn't
+        // wait. A listed difference that no real server sends.)
         Some(seconds) if seconds * 1e9 < 9.223_372_036_854_775e18 => {
-            Duration::from_secs_f64(seconds.max(0.0))
+            Duration::from_secs_f64(seconds.max(0.0)).min(MAX_NAMED_DELAY)
         }
         Some(_) => Duration::ZERO,
         None => backoff(count),
@@ -577,6 +583,33 @@ mod tests {
         }
     }
 
+    /// A 429's named delay reaches the retry: `Retry-After-Ms` is waited,
+    /// and the backoff isn't asked.
+    #[tokio::test]
+    async fn a_named_delay_is_taken_from_the_answer() {
+        let fake = Fake::start().expect("fake");
+        fake.script(
+            "/client/v4/zones",
+            Answer::json(429, "{}").header("retry-after-ms", "1"),
+        );
+        healthy(&fake);
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let backoff = |_: u32| {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Duration::ZERO
+        };
+        let http = Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client");
+        let base = format!("{}/client/v4/", fake.url());
+        let check = Check {
+            http: &http,
+            base_url: &base,
+            backoff: &backoff,
+        };
+        assert_eq!(super::check(&check, &token(), "example.com").await, Ok(()));
+        assert_eq!(fake.seen().len(), 3, "the retry, then the SSL setting");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
     /// cloudflare-go's retries: two more attempts on 408, 409, 429 and 5xx.
     #[tokio::test]
     async fn retries_take_two_more_attempts() {
@@ -946,6 +979,47 @@ mod tests {
         );
     }
 
+    /// A delay the server names waits at most a minute (maintainer,
+    /// 2026-11-05; config spec, differences): cloudflare-go waits as long
+    /// as it says, so one answer could hold the step for an hour.
+    #[test]
+    fn a_named_delay_waits_at_most_a_minute() {
+        let headers = |name: &str, value: &str| {
+            let mut map = HeaderMap::new();
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).expect("name"),
+                reqwest::header::HeaderValue::from_str(value).expect("value"),
+            );
+            map
+        };
+        let fixed = |_: u32| Duration::from_secs(7);
+        let minute = Duration::from_secs(60);
+        for (name, value) in [("retry-after", "3600"), ("retry-after-ms", "3600000")] {
+            assert_eq!(
+                retry_delay(Some(&headers(name, value)), 0, &fixed),
+                minute,
+                "{name}"
+            );
+        }
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(2);
+        let date = jiff::fmt::rfc2822::DateTimePrinter::new()
+            .timestamp_to_rfc9110_string(&later)
+            .expect("date");
+        assert_eq!(
+            retry_delay(Some(&headers("retry-after", &date)), 0, &fixed),
+            minute
+        );
+        // Under the cap, the named delay itself; at and just past it, the
+        // cap.
+        for (value, waited) in [("59", 59.0), ("60", 60.0), ("60.5", 60.0)] {
+            assert_eq!(
+                retry_delay(Some(&headers("retry-after", value)), 0, &fixed),
+                Duration::from_secs_f64(waited),
+                "{value}"
+            );
+        }
+    }
+
     /// A status with no reason phrase still reads cleanly.
     #[tokio::test]
     async fn an_unknown_status_reads_cleanly() {
@@ -984,7 +1058,8 @@ mod tests {
         assert_eq!(format!("{:?}", global()), "Credentials::Global");
     }
 
-    /// A value past Go's Duration (about 292 years) doesn't wait.
+    /// A value past Go's Duration (about 292 years) doesn't wait; one just
+    /// under it waits the cap (a minute).
     #[test]
     fn a_delay_past_go_s_duration_does_not_wait() {
         let mut map = HeaderMap::new();
@@ -1002,7 +1077,7 @@ mod tests {
         );
         assert_eq!(
             retry_delay(Some(&map), 0, &|_: u32| Duration::from_secs(7)),
-            Duration::from_secs(9_000_000_000)
+            MAX_NAMED_DELAY
         );
     }
 

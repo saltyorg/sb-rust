@@ -28,11 +28,6 @@ Carried forward (open items owned by later work):
   ansible run exiting with its own code after one line naming the
   program and its outcome (sb-go's "playbook … failed, scroll up …");
   exec builds the mechanism (Task 8b) and tests it with exec-demo.
-- From config Task 12's review: an interrupted root run logs
-  `run finished outcome="interrupted (exit 130)" error=exit code 1`; the
-  error field repeats the runner's quiet `Exit(1)` beside the signal's
-  code. Look at cli-core's run record when it next changes (Task 8a changes
-  cli-core's signals: check it there).
 - From cli-core:
   - Criterion 1: tab completion comes with the completion module.
   - The first command that takes argument values (`install -e`) adds an
@@ -564,29 +559,33 @@ fix now. Each is its own commit, test first, after Task 8a (done,
 8e54fa8).
 
 **Acceptance criteria:**
-- [ ] config: `Credentials::Ready` carries the parsed login (Cloudflare,
+- [x] config: `Credentials::Ready` carries the parsed login (Cloudflare,
       or a named `DockerhubLogin { user, token }` with a redacting
       `Debug`), built once in the validator, so `run::checks` can't skip
       a check while the file reads validated. Test: a Docker Hub check
       runs with the login the rules accepted, the warn-and-continue arm
       is gone, and `format!("{:?}")` of the `Credentials::Ready` (derived
       `Debug`) shows no password or token.
-- [ ] exec: `Captured`, `Streamed` and `Ran` are `#[must_use]` (the
+- [x] exec: `Captured`, `Streamed` and `Ran` are `#[must_use]` (the
       compiler then refuses a dropped outcome under check.sh). Test:
       exec-demo with a failing PTY child exits non-zero (it exits 0 today,
       dropping `Ran`).
-- [ ] term-ui: under `SB_COLOR_PROFILE=ascii` with colour on, a child's
+- [x] term-ui: under `SB_COLOR_PROFILE=ascii` with colour on, a child's
       own SGR codes are stripped, live and plain, through the stripping
       the colour-off path already uses (no ANSI handling of our own).
       Test: the spec's guard test with `\x1b[31mred\x1b[0m` fed through
       `Step::output`, no `\x1b[` on the in-memory screen or in plain output.
-- [ ] config: a Cloudflare `Retry-After` waits at most 60 s (maintainer,
-      2026-11-05; config spec, differences). Test: a fake server
-      answering 429 with `Retry-After: 3600` is retried after the cap,
-      on tokio's paused clock.
+- [x] config: a delay the server names (`Retry-After-Ms`, `Retry-After`)
+      waits at most 60 s (maintainer, 2026-11-05; config spec,
+      differences). Tested on `retry_delay` (3600 s, 3600000 ms, a date
+      two hours out, and 59/60/60.5 s), plus a fake-server 429 whose
+      `Retry-After-Ms` is taken over the backoff. Not on tokio's paused
+      clock as first planned: it auto-advances while the runtime waits on
+      the fake's real socket, which would fire reqwest's request timeout.
 
 **Verification:**
-- [ ] Each test fails first; `scripts/check.sh full`; code-reviewer, and
+- [x] Each criterion's test failed first (the fake-server
+      `Retry-After-Ms` test covers the existing wiring, not the cap); `scripts/check.sh full`; code-reviewer, and
       library-reviewer for the term-ui and exec items.
 
 **Dependencies:** Task 8a
@@ -594,6 +593,9 @@ fix now. Each is its own commit, test first, after Task 8a (done,
 `crates/exec/src/{lib.rs,bin/exec-demo.rs}`,
 `crates/term-ui/src/runner.rs`
 **Scope:** M (four small commits)
+
+Done: 6ee7947 (after 849db08), 77e2943, 3b83693 (after d9cd865), and
+the Retry-After cap (`git log -S MAX_NAMED_DELAY`).
 
 **Declined (maintainer, 2026-11-05):** keeping `DOCKER_HOST` userinfo
 (`tcp://user:secret@host`) out of the log and errors: theoretical, as
@@ -603,6 +605,20 @@ credentials. sb follows `tcp://` and `http://` as given (docker spec,
 Likewise a non-UTF-8 Docker variable (the review's backlog item).
 Backlog items are weighed the same way when taken up: how sb runs on a
 Saltbox host, not what could happen in theory.
+
+## Order from here
+
+Task 9 ran ahead of Task 8b by the maintainer's choice (Required
+findings right after Task 8a). Then: Task 8b, Checkpoint C (with the
+project coverage carried from Checkpoint B), then Task 10.
+
+## Checkpoint C: Complete
+- [ ] Tasks 1-9 done (Task 10, the lint change, follows); `scripts/check.sh
+      full` passes; project coverage (carried from Checkpoint B), size and
+      startup re-measured.
+- [ ] Spec success criteria 1-8 met with evidence; criterion 9 carried by
+      name to the docker start/stop/restart plan, decision 5's ansible
+      use to the ansible plan.
 
 ## Task 10: `clippy::pedantic`
 
@@ -623,7 +639,7 @@ It absorbs the backlog's `# Errors`, `#[must_use]` and `Debug` items.
 **Verification:**
 - [ ] `scripts/check.sh full`; code-reviewer on each crate's commit.
 
-**Dependencies:** Task 9
+**Dependencies:** Task 9, Checkpoint C
 **Files:** `Cargo.toml`, `CONSTRAINTS.md`, every crate
 **Scope:** L (one commit per crate where large)
 
@@ -674,10 +690,3 @@ Headlines:
   `pub(crate)`; `Debug` on `Daemon`; typed errors instead of `anyhow` in
   the public API (decide before start/stop/restart).
 - sb: `warn!("{warning}")` as a field; one runtime builder.
-
-## Checkpoint C: Complete
-- [ ] All tasks done; `scripts/check.sh full` passes; coverage, size and
-      startup re-measured.
-- [ ] Spec success criteria 1-8 met with evidence; criterion 9 carried by
-      name to the docker start/stop/restart plan, decision 5's ansible
-      use to the ansible plan.

@@ -24,9 +24,11 @@ script each case against a local fake.
   retry, at most 8 s, less a random amount up to a quarter. A value Go's
   `ParseFloat` refuses (`1e400`) is skipped; one past Go's `Duration`
   (`inf`) converts to a negative duration on amd64, hence no wait.
-  sb-config follows these rules but for two small differences: a
-  far-future date (Go's `time.Until` saturates to ~292 years) doesn't wait,
-  and a hex-float value (`0x1p3`, which Go reads) takes the backoff.
+  sb-config follows these rules but for three differences: a named
+  delay waits at most 60 s (a decision, 2026-11-05: one answer could
+  otherwise hold the check for an hour); a far-future date (Go's
+  `time.Until` saturates to ~292 years) doesn't wait; and a hex-float
+  value (`0x1p3`, which Go reads) takes the backoff.
 - **Base URL:** `WithBaseURL` adds a trailing `/` to a path that lacks one,
   so `http://host/client/v4` keeps its `v4`.
 - **Auth:** `authorization: Bearer <token>` for a scoped token,
