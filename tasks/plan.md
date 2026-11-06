@@ -1,104 +1,120 @@
-# Implementation Plan: `exec` — child processes (approved 2026-11-04)
+# Implementation Plan: `docker` — start, stop and restart (approved 2026-11-06)
 
-Spec: [docs/specs/exec.md](../docs/specs/exec.md) (approved 2026-11-04,
-decisions 1-5). Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md).
-Earlier plans: [tasks/config/](config/plan.md), [tasks/docker/](docker/plan.md),
-[tasks/term-ui/](term-ui/plan.md) and [tasks/cli-core/](cli-core/plan.md)
-(done; their open items are carried in [tasks/todo.md](todo.md)),
-[tasks/prototypes/](prototypes/plan.md).
+Spec: [docs/specs/docker.md](../docs/specs/docker.md), "Start, stop and
+restart" (approved 2026-11-06, decisions 5-8). Controller facts:
+[docs/platform-notes/docker-controller.md](../docs/platform-notes/docker-controller.md).
+Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md). Earlier plans:
+[tasks/exec/](exec/plan.md) (done; its review backlog is carried in
+[tasks/todo.md](todo.md)), [tasks/config/](config/plan.md),
+[tasks/docker/](docker/plan.md) (`ps`), [tasks/term-ui/](term-ui/plan.md),
+[tasks/cli-core/](cli-core/plan.md), [tasks/prototypes/](prototypes/plan.md).
 
 ## Overview
 
-Build `sb-exec`: the `Cmd` builder with fail-closed argument logging and
-secret masking, the four ways to run (`capture`, `stream`, `pty`,
-`attached`), timeouts, and process-group cancellation that also reaches
-grandchildren after their parent exits. term-ui learns a failed child's
-ending and a "runner live" check; cli-core learns the shell-like signal
-handling while an attached child runs (decision 2). No sb command uses
-exec in this plan: docker start/stop/restart is next and proves
-`capture` through the binary (decision 4). sb's binary still changes
-here, in cli-core: the relaunch (Task 1b, decision 6) and the
-signal hold (Task 8a), so Task 8a measures size and startup. Until sb
-links sb-exec, each task runs cargo-deny on sb-exec's own graph.
+`sb docker start`, `stop [--ignore]` and `restart [--ignore]`: a service
+check (the unit file, then `systemctl is-active` through exec), a job
+requested from the Saltbox Docker controller over loopback HTTP, and its
+status polled to the end, as term-ui steps with sb-go's labels and texts.
+exec enters sb's binary here (its first user) and reqwest enters
+sb-docker. Nothing in this plan ever talks to a real controller: every
+test uses a fake one.
 
 ## Architecture decisions
 
-- **Evidence first.** Task 1 settles the platform facts the design leans
-  on before code: sudoers' `--preserve-env` and `use_pty` with how sudo
-  relays signals (a carried item), whether Linux keeps a process-group id
-  from reuse while a member lives, portable-pty's and tokio `process`'s
-  dependency trees against deny.toml, and signal-hook's `WithOrigin` for
-  telling a terminal's SIGINT from a `kill`. (Done: it led to decision 2's
-  revision, SIGINT never forwarded, and decision 6, relaunching with
-  `sudo -u root` and no marker, built as Task 1b.)
-- **Thin slices, each through real children.** The builder and the start
-  record first (Task 2), then `capture` with outcomes and the end record
-  (Task 3), then the group kill every piped and PTY way shares, with
-  exec-demo for real signals (Task 4), term-ui's failed-child ending
-  (Task 5, so Checkpoint A sees `Failed`'s shape), then `stream` (Task 6),
-  `pty` (Task 7), and last cli-core's signal
-  amendment (Task 8a) and `attached` (Task 8b), the riskiest change to
-  shared code, behind its own checkpoint.
-- **One crate below sb's commands.** `crates/exec` (`sb-exec`) depends on
-  `sb-cli-core` and `sb-term-ui`; the capability map's row and deny.toml's
-  wrappers follow in Task 2. term-ui owns the failed-child type it draws,
-  so term-ui doesn't depend on exec.
-- **Tests that can't hurt the harness** (spec, testing strategy): tokens,
-  never real signals, in-process; real signals only through
-  `crates/exec/src/bin/exec-demo.rs` on a PTY; the group id checked to be
-  the child's pid before any group signal; a short grace in tests.
+- **Risk first: the HTTP client.** Task 1 builds the client and the job
+  request against a fake controller first, because the spec's HTTP rules
+  are where sb would silently differ from sb-go: reqwest proxies loopback
+  where Go doesn't, follows redirects unless told not to, and reads whole
+  bodies. Library-backed: reqwest's `no_proxy`, `redirect::Policy::none`
+  and `RequestBuilder::timeout`; `Url::path_segments_mut` (with
+  `pop_if_empty`, or a bare base gives `//start`) and `query_pairs_mut`
+  for the URL; serde_json's `StreamDeserializer` for the first JSON value
+  (`from_slice` refuses trailing data); clap's `value_delimiter(',')` for
+  `--ignore`; the 1 MiB cap read chunk by chunk as
+  config's `http::body` does (a few lines repeated: sb-docker can't
+  depend on sb-config, and a shared HTTP crate for two callers isn't
+  earning its keep yet; recorded in the code).
+- **`ControlError`, typed** (the review backlog's "typed errors instead
+  of anyhow in the public API (decide before start/stop/restart)"): one
+  variant per failure in the spec, sb-go's texts as `Display` (thiserror),
+  so tests match variants and the screen shows sb-go's words. A reqwest or
+  serde_json cause is in the `Display` text only, not also a `#[source]`
+  (term-ui's block shows the whole chain, so both would print it twice).
+  An interrupted request, wait or check is the step's own interrupted
+  ending (the body returns when the token is cancelled), not a variant.
+  `ps`'s `anyhow` API stays as it is (its own change, still in the
+  backlog). Fields stay private, set through `saltbox()` and builder
+  setters for tests, so reqwest's and url's types don't enter
+  sb-docker's API (M-DONT-LEAK-TYPES); `saltbox()` returns a `Result`
+  (a client that can't be built fails before the runner, as
+  validate-config's).
+- **The controller's values are fields** (`Controller::saltbox()` gives
+  sb-go's), so every timeout and the poll count is tested with short
+  values and pinned once. One addition to the spec's shape: a
+  `systemctl: PathBuf` field (`systemctl`, found on `PATH`, in
+  `saltbox()`), so the service-check unit tests point at a stand-in
+  without changing `PATH`, which is process-wide; the end-to-end tests
+  still put a stand-in first on `PATH`, as the spec says.
+- **Modules:** `control/{client,service,commands}.rs` from Task 1, and the
+  fake controller in `testing/controller.rs` (testing.rs is already 754
+  lines).
+- **exec's forced-exit hook** (exec's `on_forced_exit`, which the binary
+  must register once with its `Shutdown`) is registered here, the first
+  time sb uses exec: deny.toml lets only sb-docker wrap sb-exec, so
+  sb-docker re-exports the registration for sb's `main.rs` (Task 5).
+- **Test safety:** the two overrides go into sb's shared test environment
+  (`tests/common`'s `apply_sb_env`, enforced by `tests/isolation.rs`): a
+  refused loopback URL and a unit file that doesn't exist, so no sb test
+  can reach the real controller even if it sets nothing.
+- **The fake controller** joins sb-docker's `testing` feature beside the
+  fake Engine API: axum on a loopback TCP listener on a free port,
+  answering from a script of responses and recording what it was sent
+  (method, path, decoded query, headers).
+- **Commands as one library function per command** (`control::start`,
+  `stop`, `restart`) driving term-ui steps, tested on term-ui's
+  in-memory runner with the fake controller, so sb's `main.rs` only
+  parses, builds the controller and starts the runner (as
+  validate-config).
+- **Interrupts:** each step body runs its request or sleep under the
+  step's token (`run_until_cancelled`, as config's checks); an
+  interrupted request or wait adds decision 5's notice before ending.
+  exec's capture already stops `systemctl` on the token.
 
 ## Task list
 
-### Phase 1: Evidence and the builder
-- [x] Task 1: Platform facts and dependency trees (spike)
-- [x] Task 1b: cli-core: relaunch with `sudo -u root`, no marker
-- [x] Task 1c: cli-core: end an interrupted run by the signal itself
-- [x] Task 2: The crate, `Cmd`, masking and the log record
+See [tasks/todo.md](todo.md) for each task's acceptance criteria and
+verification.
 
-### Phase 2: Capture and cancellation
-- [x] Task 3: `capture`
-- [x] Task 4: Process groups: cancellation, timeouts, escalation
-- [x] Task 5: term-ui: a failed child's ending and the "runner live" check
+### Phase 1: The controller client
 
-### Checkpoint A: Capture is done
-- [x] `scripts/check.sh full` passes; the maintainer reviews the builder's
-      API and `Failed`'s shape, and decides `stdin(bytes)` with `attached`
-      (2026-11-04: approved; refused, decision 11).
+- [ ] Task 1: `control.rs`'s client and the job request, on a fake
+  controller
+- [ ] Task 2: the wait
+- [ ] Task 3: the service check
 
-### Phase 3: Stream and the PTY
-- [x] Task 6: `stream`
-- [x] Task 7: `pty`
+### Checkpoint A: the client is done
 
-### Checkpoint B: Before the shared signal change
-- [x] `scripts/check.sh full` passes; size and startup re-measured
-      (project coverage carried to Checkpoint C); the maintainer approves
-      the signal behaviour and decides the cases the spec leaves open
-      (signals during an attached child's grace, a second SIGTERM) before
-      cli-core changes (2026-11-05: decision 12).
+### Phase 2: The commands
 
-### Phase 4: Attached
-- [ ] Task 8a: cli-core's signals while an attached child runs
-- [ ] Task 8b: `attached`
+- [ ] Task 4: start, stop and restart as term-ui steps
+- [ ] Task 5: `sb docker start/stop/restart` in sb, end to end
+- [ ] Task 6: size, coverage and the spec's measurements (risk first:
+  before the signal tests)
+- [ ] Task 7: signals end to end
 
-### Checkpoint C: Complete
-- [ ] All tasks done; `scripts/check.sh full` passes; success criteria
-      1-8 met, criterion 9 carried by name to the docker start/stop/restart
-      plan (decision 4).
-
-Details, acceptance criteria and verification: [tasks/todo.md](todo.md).
+### Checkpoint B: complete
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| A group signal hits sb's or the test harness's own group | High | Only ids exec created (pid == pgid, asserted in tests); never `getpgid`; attached children are never group-signalled |
-| Signal tests interfere with parallel tests | Med | Tokens in-process; real signals only to exec-demo (a child of the test), never to the test process |
-| cli-core's signal amendment breaks existing endings | Med | Tasks 8a-8b last, behind cli-core's own tests and sb's signal tests (validate_config_signals.rs, docker_signals.rs) re-run |
-| portable-pty's tree fails cargo-deny or grows sb a lot | Med | Task 1 checks the tree; each task runs cargo-deny on sb-exec; sb links exec with the docker plan, which measures the size |
-| A group of only zombies looks alive, so escalation waits forever | Med | The escalation is bounded (a last check after SIGKILL, within the grace plus one second); tests reap their own grandchildren with `waitid` on the group |
-| Grace waits slow tests and mutation runs | Low | A test-only short grace; 5 s only where a test checks the default |
+| exec's dependencies (portable-pty, rustix's process features) grow sb past the 5% size tolerance | Med | Task 7 measures it step by step; an ADR records the new value for the maintainer, as ADR-009 did for bollard |
+| reqwest's defaults differ from Go's (proxy, redirects, body size) | High | Task 1 tests each with the environment and answers that would expose it (proxy variables set, a 307, a body over 1 MiB) |
+| Tests sleeping through sb-go's real timeouts (5 s check, 10 s request, 5 min wait) make the suite slow | Med | Every value a `Controller` field; unit tests use milliseconds; only `saltbox()`'s values are pinned |
+| A test reaching the real controller or unit file (they would start and stop the host's containers) | High | Unit tests never use `saltbox()`'s URL or unit file; `apply_sb_env` sets both overrides for every sb test; the fake sudo never runs sb; review briefs say so |
+| The run log or the screen printing a controller's unexpected text unescaped | Low | term-ui's drawing and the run log's subscriber clean shown text; a job ID or status shown in an error goes through cli-core's `escape_controls` |
+| sb-go's real timeouts in end-to-end runs (5 s check, 10 s request, 5 min wait) | Med | The timeouts and the poll limit are tested in unit tests only; end-to-end failures are answers that come at once |
 
 ## Open questions
 
-None (Checkpoint B decided the last ones: exec decision 12).
+None: the spec's were decided (decisions 5-9; 9: sb follows sb-go against today's controller, the controller's improvements are its Rust rewrite's).

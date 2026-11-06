@@ -685,3 +685,9 @@ overrides.
 7. **The section approved** with these answers.
 8. **No redirects:** the controller's source has none
    (docs/platform-notes/docker-controller.md), so sb follows none.
+9. **Today's controller, sb-go's behaviour:** sb follows sb-go against
+   the current (Go) controller. The richer feedback a review of the
+   controller found (live per-container progress, queue position, a
+   cancel endpoint, a version and features check) belongs to the
+   controller's Rust rewrite, the maintainer's own work; sb takes it up
+   then.
