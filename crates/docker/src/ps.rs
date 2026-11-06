@@ -20,6 +20,7 @@ use sb_term_ui::{Cell, Table};
 /// bollard's state enum has no catch-all, so an unknown state fails
 /// deserialisation (the list call or that inspect; docker spec); an empty
 /// or absent one reads `unknown`.
+#[must_use]
 pub fn status(state: &ContainerState) -> (String, Role) {
     let health = state.health.as_ref().and_then(|h| h.status);
     let exit_code = state.exit_code.unwrap_or_default();
@@ -56,7 +57,10 @@ pub fn status(state: &ContainerState) -> (String, Role) {
 /// `-http` redirect services, more than three dot-separated parts), with
 /// empty values dropped, deduplicated, numbers in numeric order and then
 /// any other text (Go's map order made sb-go's vary).
-pub fn traefik_ports(labels: &HashMap<String, String>) -> Vec<String> {
+#[must_use]
+pub fn traefik_ports<S: std::hash::BuildHasher>(
+    labels: &HashMap<String, String, S>,
+) -> Vec<String> {
     let mut ports: Vec<&String> = labels
         .iter()
         .filter(|(key, value)| {
@@ -110,6 +114,7 @@ fn number(port: &str) -> u64 {
 /// which `ps` makes for every container anyway): those with a host port, ordered by
 /// container port number, then protocol, then IPv4 before IPv6, then
 /// address, then host port (docker spec, Port Bindings).
+#[must_use]
 pub fn bindings(ports: &PortMap) -> Vec<Binding> {
     let mut found: Vec<Binding> = ports
         .iter()
@@ -154,6 +159,7 @@ pub fn bindings(ports: &PortMap) -> Vec<Binding> {
 /// container ports are padded to one width, so the part after the address
 /// is the same width on every line and the arrows line up in the table's
 /// right-aligned column (term-ui aligns each line of a cell on its own).
+#[must_use]
 pub fn binding_lines(bindings: &[Binding]) -> Vec<String> {
     let host_width = bindings
         .iter()
@@ -194,6 +200,7 @@ pub fn display_name(id: &str, names: &[String]) -> String {
 
 /// The first 12 characters of an ID, `unknown` when empty (sb-go's
 /// `shortContainerID`).
+#[must_use]
 pub fn short_id(id: &str) -> String {
     match id {
         "" => "unknown".into(),
@@ -253,6 +260,7 @@ impl Row {
 }
 
 /// `rows` sorted by name, as sb-go.
+#[must_use]
 pub fn sorted(mut rows: Vec<Row>) -> Vec<Row> {
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     rows
@@ -261,6 +269,7 @@ pub fn sorted(mut rows: Vec<Row>) -> Vec<Row> {
 /// The table in sb-go's columns: headings centred and bold (term-ui), the
 /// port columns right-aligned, each status in its role, the bindings one
 /// per line, columns capped at 100 as sb-go.
+#[must_use]
 pub fn table(rows: &[Row]) -> Table {
     let mut table = Table::new(["Container", "Status", "Traefik Port", "Port Bindings"])
         .right_align(2)

@@ -4,7 +4,7 @@
 //! sb runs as `nobody` (setpriv) with a fake `sudo` first on `PATH` that
 //! the unprivileged user can run and that exits 42; a wrong relaunch would
 //! show as that code. Switching users needs root, so this runs only with
-//! `SB_TEST_ROOT=1` (root_gate).
+//! `SB_TEST_ROOT=1` (`root_gate`).
 
 mod common;
 mod nobody;

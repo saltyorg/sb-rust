@@ -137,7 +137,7 @@ fn a_broken_set_fails_with_its_issues() {
 }
 
 /// Without a fake, both checks go to the harness's refused loopback port
-/// (common::apply_sb_env): no test reaches Cloudflare or Docker Hub.
+/// (`common::apply_sb_env`): no test reaches Cloudflare or Docker Hub.
 #[test]
 fn checks_are_refused_by_default() {
     if !root_gate::requested() {
@@ -310,14 +310,14 @@ fn warnings_and_skipped_checks_are_notices() {
 /// through the binary). A service only receives its own credential, so
 /// that is all it can echo; a password never leaves the host and is
 /// covered where it can show, an issue on it
-/// (a_broken_set_fails_with_its_issues; sb-config's run log test).
+/// (`a_broken_set_fails_with_its_issues`; sb-config's run log test).
 #[test]
 fn no_known_secret_reaches_any_output_or_the_log() {
+    const TOKEN: &str = "token-not-a-real-secret-2";
+    const HUB_TOKEN: &str = "hub-not-a-real-secret-3";
     if !root_gate::requested() {
         return;
     }
-    const TOKEN: &str = "token-not-a-real-secret-2";
-    const HUB_TOKEN: &str = "hub-not-a-real-secret-3";
     let root = saltbox_root("valid").expect("root");
     let accounts = format!(
         "user:\n  name: seed\n  email: seed@example.com\n  domain: example.com\n  \
@@ -428,8 +428,8 @@ fn has_colour(text: &str) -> bool {
 }
 
 /// On a terminal the run is live and coloured; `--color=never` and
-/// NO_COLOR take the colour away, as for every sb output (success
-/// criterion 9). Piped output is plain (a_valid_set_passes).
+/// `NO_COLOR` take the colour away, as for every sb output (success
+/// criterion 9). Piped output is plain (`a_valid_set_passes`).
 #[test]
 fn colour_follows_the_flag_and_no_color_on_a_terminal() {
     if !root_gate::requested() {

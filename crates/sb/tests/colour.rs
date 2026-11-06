@@ -1,6 +1,6 @@
 //! `--color` on every output path (spec success criterion 7; Task 7):
 //! `never` means no escape codes, help included, even on a terminal;
-//! `always` colours piped output; `auto` follows NO_COLOR and the terminal.
+//! `always` colours piped output; `auto` follows `NO_COLOR` and the terminal.
 //! Terminal runs go through util-linux `script` (a test dependency), which
 //! gives sb a pty and merges its output streams. Why not portable-pty: a
 //! reader thread and a dev-dependency for a few lines of test. Every PTY

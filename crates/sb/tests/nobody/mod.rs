@@ -2,7 +2,7 @@
 //! (cli-core decision 3): `setpriv` to uid and gid 65534, with a stand-in
 //! `sudo` first on `PATH` that the unprivileged user can run. Switching
 //! users needs root, so callers run only with `SB_TEST_ROOT=1`
-//! (root_gate). A module of its own, so test binaries that don't switch
+//! (`root_gate`). A module of its own, so test binaries that don't switch
 //! users don't carry it.
 
 use std::os::unix::fs::PermissionsExt;

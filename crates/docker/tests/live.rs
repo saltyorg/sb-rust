@@ -1,6 +1,6 @@
 //! The local Docker daemon, read-only (docker spec, Testing strategy):
 //! opt-in with `SB_LIVE_DOCKER=1`, capped with systemd-run, one host at a
-//! time. It connects as `sb docker ps` does (DOCKER_HOST or the default
+//! time. It connects as `sb docker ps` does (`DOCKER_HOST` or the default
 //! socket), asks the version, lists and inspects every container, and on
 //! success prints only counts: nothing from a real host is committed.
 

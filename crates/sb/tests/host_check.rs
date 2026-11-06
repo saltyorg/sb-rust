@@ -5,7 +5,7 @@
 //! private mount namespace (`unshare --mount`) where a temporary file is
 //! bind-mounted over it, seen only by that process and gone when it exits.
 //! Creating the namespace needs root, so these run only with
-//! `SB_TEST_ROOT=1` (root_gate).
+//! `SB_TEST_ROOT=1` (`root_gate`).
 
 mod common;
 mod root_gate;

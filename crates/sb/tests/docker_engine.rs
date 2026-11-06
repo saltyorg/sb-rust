@@ -205,7 +205,7 @@ fn piped_output_is_the_plain_table_at_natural_width() {
     assert!(out.stderr.is_empty(), "{out:?}");
 }
 
-/// On a terminal: coloured by default; no escape codes with NO_COLOR or
+/// On a terminal: coloured by default; no escape codes with `NO_COLOR` or
 /// `--color=never`, nor ever in the JSON; fitted to the terminal's width
 /// (criteria 3 and 3a).
 #[test]

@@ -19,7 +19,7 @@ fn an_unknown_command_keeps_clap_message_and_code() {
 
 /// A failing write (a full disk) ends in one error block on stderr and
 /// exit 1. A root run's block also ends with the log pointer, checked in
-/// run_log.rs.
+/// `run_log.rs`.
 #[test]
 fn a_failed_write_shows_the_error_block() {
     let full = std::fs::File::create("/dev/full").expect("/dev/full");
@@ -38,7 +38,7 @@ fn a_failed_write_shows_the_error_block() {
 
 /// The reader went away: no message, exit 141 like a SIGPIPE'd process.
 /// The read end is closed before sb starts, so the write always fails
-/// (https://doc.rust-lang.org/std/io/fn.pipe.html).
+/// (<https://doc.rust-lang.org/std/io/fn.pipe.html>).
 #[test]
 fn a_closed_pipe_is_quiet() {
     let (reader, writer) = std::io::pipe().expect("pipe");

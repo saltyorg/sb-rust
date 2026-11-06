@@ -6,7 +6,7 @@ use std::path::PathBuf;
 /// root run logs; it must never reach the host's `/var/log/sb`. It lives in
 /// Cargo's temporary directory for integration tests (under `target/`), so
 /// `cargo clean` removes it and no run leaves a folder in /tmp
-/// (https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates).
+/// (<https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates>).
 pub fn test_log_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sb-test-logs")
 }
@@ -24,7 +24,8 @@ pub fn sb() -> std::process::Command {
         .inspect(|path| {
             assert!(
                 path.is_absolute() && path.is_file(),
-                "SB_TEST_BINARY must be an absolute path to sb, got {path:?}"
+                "SB_TEST_BINARY must be an absolute path to sb, got {}",
+                path.display()
             );
         })
         .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("sb"));

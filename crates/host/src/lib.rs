@@ -27,8 +27,8 @@ pub enum Unsupported {
 /// startup step 1).
 ///
 /// `ID` and `VERSION_ID` come from `/etc/os-release` through sysinfo
-/// (https://docs.rs/sysinfo/0.40.0/sysinfo/struct.System.html#method.distribution_id),
-/// which reads the file directly. Why not os_info: it runs `lsb_release -a`
+/// (<https://docs.rs/sysinfo/0.40.0/sysinfo/struct.System.html#method.distribution_id>),
+/// which reads the file directly. Why not `os_info`: it runs `lsb_release -a`
 /// first, a Python process on Ubuntu, on every sb start. sb-go also checks
 /// the kernel is Linux; sb-rust ships only static Linux binaries, so that
 /// can't fail here.
@@ -37,6 +37,11 @@ pub enum Unsupported {
 /// host (both files are always there and agree): a missing os-release or
 /// `ID` reads as the OS name (`linux`), and a missing `VERSION_ID` falls
 /// back to `/etc/lsb-release`'s `DISTRIB_RELEASE`.
+///
+/// # Errors
+///
+/// [`Unsupported`] when the host isn't Ubuntu, names no version, or runs a
+/// release sb doesn't support.
 pub fn check_support() -> Result<(), Unsupported> {
     check(
         &System::distribution_id(),
@@ -47,6 +52,11 @@ pub fn check_support() -> Result<(), Unsupported> {
 
 /// The decision, from the os-release values (sb-go's
 /// `validateUbuntuSupport`).
+///
+/// # Errors
+///
+/// [`Unsupported`] when `id` isn't `ubuntu`, `version` is missing, or isn't
+/// in `supported`.
 pub fn check(id: &str, version: Option<&str>, supported: &[&str]) -> Result<(), Unsupported> {
     if id != "ubuntu" {
         return Err(Unsupported::NotUbuntu(id.to_string()));

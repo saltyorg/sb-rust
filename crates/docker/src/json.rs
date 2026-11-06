@@ -33,6 +33,7 @@ struct Binding<'a> {
 
 /// The rows as the spec's JSON: compact, one trailing newline, as `sb
 /// version --json`.
+#[must_use]
 pub fn json(rows: &[Row]) -> String {
     let containers: Vec<Container<'_>> = rows
         .iter()

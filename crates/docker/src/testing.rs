@@ -5,7 +5,7 @@
 //! on the paths bollard sends, behaves like dockerd about API versions and
 //! `all`, and can make chosen containers vanish or fail, hold inspects
 //! open, and record what it was sent. axum on a `UnixListener`
-//! (https://docs.rs/axum/0.8.9/axum/serve/trait.Listener.html), on a
+//! (<https://docs.rs/axum/0.8.9/axum/serve/trait.Listener.html>), on a
 //! runtime of its own thread, so a test can drive it from anywhere.
 
 use std::collections::HashSet;
@@ -27,12 +27,14 @@ use crate::ps::{Row, sorted};
 pub const FIXTURES: &str = include_str!("fixtures/containers.json");
 
 /// The fixtures as raw JSON, one value per container.
+#[must_use]
 pub fn inspects() -> Vec<Value> {
     serde_json::from_str(FIXTURES).unwrap_or_default()
 }
 
 /// A container's list entry as Docker would give it for its inspect: the
 /// ID, the name (left out when the inspect has none) and the state word.
+#[must_use]
 pub fn summary(inspect: &Value) -> Value {
     let mut entry = json!({ "Id": inspect["Id"] });
     if let Some(name) = inspect.get("Name") {
@@ -45,6 +47,7 @@ pub fn summary(inspect: &Value) -> Value {
 }
 
 /// The fixtures through bollard's models: (list entry, inspect) pairs.
+#[must_use]
 pub fn fixture_models() -> Vec<(ContainerSummary, ContainerInspectResponse)> {
     inspects()
         .iter()
@@ -57,6 +60,7 @@ pub fn fixture_models() -> Vec<(ContainerSummary, ContainerInspectResponse)> {
 }
 
 /// The fixtures' rows, sorted by name, as `ps` builds them.
+#[must_use]
 pub fn fixture_rows() -> Vec<Row> {
     sorted(
         fixture_models()
@@ -135,8 +139,21 @@ pub struct FakeEngine {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for FakeEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeEngine")
+            .field("socket", &self.socket)
+            .finish_non_exhaustive()
+    }
+}
+
 impl FakeEngine {
     /// Start a fake with `options` on a socket in a new temporary directory.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error when the temporary directory or the socket can't be
+    /// made.
     pub fn start(options: Options) -> std::io::Result<Self> {
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("docker.sock");
@@ -192,28 +209,32 @@ impl FakeEngine {
     }
 
     /// The `DOCKER_HOST` value that reaches this fake.
+    #[must_use]
     pub fn host(&self) -> String {
         format!("unix://{}", self.socket.display())
     }
 
     /// The paths it was sent, in order, with their query strings.
+    #[must_use]
     pub fn paths(&self) -> Vec<String> {
         lock(&self.shared.paths).clone()
     }
 
     /// How many inspects are open right now (held ones included).
+    #[must_use]
     pub fn open_inspects(&self) -> usize {
         self.shared.open.load(Ordering::SeqCst)
     }
 
     /// The most inspects that were open at once.
+    #[must_use]
     pub fn peak_inspects(&self) -> usize {
         self.shared.peak.load(Ordering::SeqCst)
     }
 
     /// Let held inspects answer, now and later ones too. `send_replace`
     /// stores the value even while no inspect is waiting (`send` would
-    /// drop it, https://docs.rs/tokio/1.54.1/tokio/sync/watch/struct.Sender.html#method.send).
+    /// drop it, <https://docs.rs/tokio/1.54.1/tokio/sync/watch/struct.Sender.html#method.send>).
     pub fn release(&self) {
         self.shared.release.send_replace(true);
     }
@@ -462,12 +483,21 @@ async fn inspect_answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Debug` shows the fake's socket only.
+    #[test]
+    fn debug_shows_the_socket() {
+        let engine = FakeEngine::start(Options::default()).expect("engine");
+        let shown = format!("{engine:?}");
+        assert!(shown.starts_with("FakeEngine { socket: \""), "{shown}");
+        assert!(shown.ends_with("\", .. }"), "{shown}");
+    }
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
 
     /// One request through the router, as axum's testing example does
-    /// (https://github.com/tokio-rs/axum/blob/axum-v0.8.9/examples/testing/src/main.rs):
+    /// (<https://github.com/tokio-rs/axum/blob/axum-v0.8.9/examples/testing/src/main.rs>):
     /// the status, the `Api-Version` header and the body. The socket itself
     /// is exercised by connect.rs's tests through bollard.
     async fn get(shared: &Arc<Shared>, path: &str) -> (StatusCode, String, String) {

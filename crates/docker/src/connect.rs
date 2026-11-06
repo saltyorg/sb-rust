@@ -27,6 +27,11 @@ const DEFAULT_SOCKET: &str = "unix:///var/run/docker.sock";
 /// so any TLS or ssh setting stops with an error naming it. Why not
 /// `Docker::connect_with_defaults()`: it reads `DOCKER_HOST` itself and
 /// fails on an empty one, which sb-go treats as unset.
+///
+/// # Errors
+///
+/// When `DOCKER_TLS_VERIFY` or `DOCKER_CERT_PATH` is set, or `DOCKER_HOST`
+/// names a scheme other than `unix://`, `tcp://` or `http://`.
 pub fn address(
     docker_host: Option<&str>,
     tls_verify: Option<&str>,
@@ -59,6 +64,7 @@ pub fn address(
 
 /// A connected daemon: the client, its address and what its one
 /// `version()` call said.
+#[derive(Debug)]
 pub struct Daemon {
     pub docker: Docker,
     pub address: String,
@@ -70,6 +76,10 @@ pub struct Daemon {
 /// "API version": bollard 0.21.1 sends unversioned paths, so no version is
 /// negotiated; the answer goes to the run log). A failed call ends the run
 /// as an unreachable daemon does.
+///
+/// # Errors
+///
+/// When the client can't be made for `address` or the version call fails.
 pub async fn connect(address: &str) -> anyhow::Result<Daemon> {
     let docker = Docker::connect_with_host(address)
         .with_context(|| format!("couldn't reach Docker at {address}"))?;
@@ -127,9 +137,14 @@ const INSPECTS_AT_ONCE: usize = 16;
 
 /// Every container (`all=true`), each inspected by ID, at most
 /// [`INSPECTS_AT_ONCE`] at a time
-/// (https://docs.rs/futures-util/0.3.34/futures_util/stream/trait.StreamExt.html#method.buffer_unordered);
+/// (<https://docs.rs/futures-util/0.3.34/futures_util/stream/trait.StreamExt.html#method.buffer_unordered>);
 /// one removed since the list (404) is left out, other failures are kept
 /// with the short ID. The rows come back sorted by name, as sb-go.
+///
+/// # Errors
+///
+/// When the container list call fails; a failed inspect is kept in the
+/// listing instead.
 pub async fn list(daemon: &Daemon) -> anyhow::Result<Listing> {
     let started = std::time::Instant::now();
     let docker = &daemon.docker;
@@ -185,7 +200,7 @@ pub async fn list(daemon: &Daemon) -> anyhow::Result<Listing> {
         listed,
         inspected = rows.len(),
         failed = failures.len(),
-        elapsed_ms = started.elapsed().as_millis() as u64,
+        elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "containers listed"
     );
     Ok(Listing {
@@ -344,7 +359,7 @@ mod tests {
     async fn an_unreachable_daemon_is_an_error_naming_the_address() {
         let dir = tempfile::tempdir().expect("temp dir");
         let address = format!("unix://{}", dir.path().join("none.sock").display());
-        let err = connect(&address).await.err().expect("an error").to_string();
+        let err = connect(&address).await.expect_err("an error").to_string();
         assert!(err.contains(&address), "{err}");
     }
 
@@ -355,7 +370,7 @@ mod tests {
         let path = dir.path().join("stale.sock");
         drop(std::os::unix::net::UnixListener::bind(&path).expect("bind"));
         let address = format!("unix://{}", path.display());
-        let err = format!("{:#}", connect(&address).await.err().expect("an error"));
+        let err = format!("{:#}", connect(&address).await.expect_err("an error"));
         assert!(
             err.contains(&format!("couldn't get Docker's version at {address}")),
             "{err}"

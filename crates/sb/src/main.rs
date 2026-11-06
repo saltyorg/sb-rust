@@ -30,7 +30,7 @@ struct Cli {
 }
 
 /// Why not clap's `#[command(version)]`: it adds a `--version` flag that
-/// prints `<name> <version>` (clap_builder 4.6.7 `Command::_render_version`);
+/// prints `<name> <version>` (`clap_builder` 4.6.7 `Command::_render_version`);
 /// sb-go has a `version` subcommand with its own line and `--json`.
 #[derive(Subcommand)]
 enum Command {
@@ -94,10 +94,9 @@ impl Command {
         match self {
             Command::Version { .. } => false,
             // The Docker socket, and sb's rule that only version and
-            // completion run unprivileged (cli-core decision 3).
-            Command::Docker { .. } => true,
-            // Saltbox's config is root's to read (config spec).
-            Command::ValidateConfig => true,
+            // completion run unprivileged (cli-core decision 3); Saltbox's
+            // config is root's to read (config spec).
+            Command::Docker { .. } | Command::ValidateConfig => true,
         }
     }
 }
@@ -183,7 +182,7 @@ fn main() -> RunEnd {
     let result = shutdown
         .listen_for_signals()
         .map_err(anyhow::Error::from)
-        .and_then(|()| run(cli, &shutdown, log.as_ref()));
+        .and_then(|()| run(&cli.command, &shutdown, log.as_ref()));
     let error = result.as_ref().err().map(|e| e.as_ref() as _);
     // One frozen view of how the run ended, so the log and the screen agree
     // even if a signal arrives between them.
@@ -200,19 +199,16 @@ fn main() -> RunEnd {
 /// `SB_SALTBOX_DIR`'s root), or the built-in theme and a
 /// warning saying why the file wasn't used.
 fn theme_choice() -> (config::ThemeChoice, Vec<String>) {
-    let (path, loaded) = match config_override(std::env::var_os("SB_CONFIG")) {
-        Some(path) => {
-            let loaded = config::load_theme(&path);
-            (path, loaded)
-        }
-        None => {
-            let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
-            let appdata = config::appdata_path(&config::inventory_path(&root));
-            (
-                config::config_path(&appdata),
-                config::load_theme_in(&appdata),
-            )
-        }
+    let (path, loaded) = if let Some(path) = config_override(std::env::var_os("SB_CONFIG")) {
+        let loaded = config::load_theme(&path);
+        (path, loaded)
+    } else {
+        let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
+        let appdata = config::appdata_path(&config::inventory_path(&root));
+        (
+            config::config_path(&appdata),
+            config::load_theme_in(&appdata),
+        )
     };
     match loaded {
         Ok(choice) => (choice, Vec::new()),
@@ -237,7 +233,7 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
 /// theme's colours (`help::apply`), and parse errors in sb-go's ERROR-badge layout
 /// (`help::parse_error_block`). Under `ascii` what clap still draws itself
 /// (`sb help help`) gets clap's plain styles
-/// (https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain).
+/// (<https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain>).
 /// Nothing is printed here: help, version and errors come back as `Err`
 /// for [`parse_failed`].
 fn parse(profile: theme::Profile) -> Result<Cli, clap::Error> {
@@ -299,14 +295,14 @@ fn open_log(dir: &std::path::Path) -> Option<RunLog> {
 }
 
 /// sb's `warning:` line, in the theme's warn colour, through anstream so
-/// `--color` and NO_COLOR are honoured.
+/// `--color` and `NO_COLOR` are honoured.
 fn warn(message: impl std::fmt::Display) {
     let style = theme::current().style(theme::Role::Warn);
     let _ = writeln!(anstream::stderr(), "{style}warning:{style:#} {message}");
 }
 
-fn run(cli: Cli, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
-    match cli.command {
+fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
+    match *command {
         Command::ValidateConfig => validate_config(shutdown, log)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
@@ -335,7 +331,7 @@ fn run(cli: Cli, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()
 /// here, after parsing, so help and version never pay for it (term-ui):
 /// current-thread, with I/O and time (bollard's sockets and its request
 /// timeout). A signal drops the requests
-/// (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled);
+/// (<https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled>);
 /// cli-core's `finish_run` then shows "interrupted" and ends sb by the
 /// signal, and nothing reaches stdout.
 fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
