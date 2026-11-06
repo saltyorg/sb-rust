@@ -513,7 +513,9 @@ Task 7; it doesn't use portable-pty.)
 before any spawn (no start record written).
 
 **Acceptance criteria:**
-- [ ] Through exec-demo on a PTY: one and two Ctrl-Cs with a child that
+- [x] Through exec-demo, its group sent the terminal's signals (changed
+      from "on a PTY": the kernel's delivery is the same; see "As built"):
+      one and two Ctrl-Cs with a child that
       survives SIGINT (sb waits), a child that dies of it (sb dies of
       SIGINT), Ctrl-\ with a child that dies of SIGQUIT (sb dies of
       SIGQUIT, no core dump) and with one that ignores SIGINT (it ends on
@@ -523,7 +525,7 @@ before any spawn (no start record written).
       forwarded (sb dies of SIGTERM); a timeout reads timed out; a child
       ignoring the forwarded SIGTERM is SIGKILLed after the grace; signals
       go to the child's pid, never a group.
-- [ ] An exit code, a spawn failure, `stdin(bytes)` refused, refusal while
+- [x] An exit code, a spawn failure, `stdin(bytes)` refused, refusal while
       a runner is live; the environment with real children (`COLORTERM`
       per the profile, no `GIT_TERMINAL_PROMPT`); the records written and
       no output logged; the pass-through: exec-demo exits with the child's
@@ -532,18 +534,23 @@ before any spawn (no start record written).
       the exit, the forced exit SIGKILLing the attached child's pid, a
       terminal SIGINT or SIGQUIT during the grace not counted).
 
-**Verification:**
-- [ ] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+As built (33859d2 and the next commit): exec-demo runs in a group of
+its own with its attached child in it, and the tests send Ctrl-C and
+Ctrl-\ as the terminal does, to that group (not through a PTY: the
+kernel's delivery is the same; tests/demo_attached.rs). The child is
+exec-demo's own `--child` mode, not dumpable, so a SIGQUIT death writes
+no core. The timeout is shown in-process only (tests/attached.rs), as
+is the SIGKILL after the grace for a timeout; the run records in
+tests/attached_log.rs.
 
-**Carried from Task 8a:** the forced exit's SIGKILL of the attached
-child's pid (exec registers it); the kernel makes an exec'd child
-dumpable again, so a root attached child's core is the host's setting
-(decide whether `RLIMIT_CORE` 0 is set for it, in its `pre_exec`-free
-way, or recorded as a known limit). `Hold`'s calls block briefly (up to
-100 ms in `child_ended_by`): call them where the stall is fine or through
-`spawn_blocking`. A hold that starts while Ctrl-\'s restore hooks run
-can spawn a child the forced-exit kill (already taken) won't reach:
-refuse the spawn once the token is cancelled, or record the limit.
+**Verification:**
+- [x] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
+
+**Carried from Task 8a (done):** the forced exit's SIGKILL of the
+attached child (33859d2, through a pidfd); a root attached child's core
+follows the host's setting, and a child started during Ctrl-\'s restore
+hooks isn't killed with sb, both recorded as known limits (exec spec);
+`Hold`'s brief blocking accepted and documented on `attached`.
 
 **Dependencies:** Task 8a
 **Files:** `crates/exec/src/run.rs`, `crates/exec/src/bin/exec-demo.rs`,

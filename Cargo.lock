@@ -3360,6 +3360,7 @@ name = "sb-exec"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "anstream",
  "anyhow",
  "indicatif",
  "portable-pty",

@@ -423,6 +423,33 @@ impl Ran {
         }
         Err(failure(&self.command, self.outcome.ending, Vec::new()))
     }
+
+    /// Decision 5's pass-through, for an attached run whose own code sb
+    /// passes on (an `ansible-playbook` run): exit 0 is `Ok`; otherwise
+    /// cli-core's quiet `Exit`, so the command stops: for an interrupted
+    /// run with no line (cli-core ends sb by the signal, its own block
+    /// shown), else after one line on `out` naming the program and its
+    /// outcome (cli-core's `report`, the arguments masked as in
+    /// [`Ran::check`]), with the child's own code, 128 plus a signal's
+    /// number, or 1 for a timeout.
+    pub fn pass_through(
+        self,
+        out: &mut impl std::io::Write,
+    ) -> Result<Self, sb_cli_core::exit::Exit> {
+        let code = match self.outcome.ending {
+            Ending::Exited(0) => return Ok(self),
+            Ending::Interrupted => return Err(sb_cli_core::exit::Exit(1)),
+            Ending::Exited(code) => u8::try_from(code).unwrap_or(1),
+            Ending::Signalled(signal) => sb_cli_core::cancel::signal_exit_code(signal),
+            Ending::TimedOut => 1,
+        };
+        if let Err(failed) = self.check() {
+            // cli-core's error block and write (its own code, 1, isn't the
+            // one passed through).
+            let _ = sb_cli_core::exit::report(&failed, None, out);
+        }
+        Err(sb_cli_core::exit::Exit(code))
+    }
 }
 
 /// What [`Cmd::stream`] returns: the outcome, and stderr's last 64 KiB
@@ -708,6 +735,34 @@ mod tests {
             [("COLORTERM", None), ("GIT_TERMINAL_PROMPT", Some("1"))]
         );
         assert_eq!(Way::Attached.name(), "attached");
+    }
+
+    /// The pass-through's code: the child's own, 128 plus a signal's
+    /// number, 1 for a timeout; exit 0 is `Ok`; an interrupted run is a
+    /// quiet 1 with no line.
+    #[test]
+    fn the_pass_through_code_follows_the_ending() {
+        let ran = |ending| Ran {
+            outcome: Outcome {
+                ending,
+                elapsed: std::time::Duration::ZERO,
+            },
+            command: "tool".into(),
+        };
+        let code = |ending| {
+            let mut out = Vec::new();
+            let code = ran(ending).pass_through(&mut out).err().map(|exit| exit.0);
+            (code, String::from_utf8_lossy(&out).into_owned())
+        };
+        assert_eq!(code(Ending::Exited(0)), (None, String::new()));
+        // Interrupted: an error (the caller stops), quietly, no line: sb
+        // ends by the signal.
+        assert_eq!(code(Ending::Interrupted), (Some(1), String::new()));
+        let (four, line) = code(Ending::Exited(4));
+        assert_eq!(four, Some(4));
+        assert_eq!(line, "✗ tool exited with code 4\n");
+        assert_eq!(code(Ending::Signalled(9)).0, Some(137));
+        assert_eq!(code(Ending::TimedOut).0, Some(1));
     }
 
     #[test]

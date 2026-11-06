@@ -232,7 +232,13 @@ even if the child then exits 0 within the grace period.
   copy to be decided outside the hold: a Ctrl-C then cancels the run, a
   Ctrl-\ is the hard escape. `attached` checks once, before the
   spawn, that no term-ui runner is live; nothing stops a runner starting
-  while an attached child runs (commands don't).
+  while an attached child runs (commands don't). A root attached child is
+  dumpable again after `execve` (the kernel resets sb's setting), so its
+  core follows the host's own (as from a shell). One started in the 500 ms
+  of Ctrl-\'s restore hooks, just before sb ends by it, isn't killed with
+  sb: the hard escape doesn't cancel the token, so a command whose step
+  ends in those 500 ms can still start one. Accepted: Ctrl-\ outside an
+  attached child is the user abandoning sb.
 
 ### Environment rules
 
@@ -440,7 +446,12 @@ let outcome = Cmd::new("systemctl")
    endings): ✗ with the error and the step's last lines, `exit N` or the
    signal's name in the times column. sb exits 1; only an `attached`
    ansible run passes its own code through, with one line naming the
-   program and its outcome (as sb-go's "playbook … failed, scroll up …").
+   program and its outcome (as sb-go's "playbook … failed, scroll up …"):
+   `Ran::pass_through` (Task 8b) writes cli-core's error block for it (the
+   arguments masked) and returns cli-core's quiet `Exit` with the child's
+   code, 128 plus a signal's number, or 1 for a timeout; an interrupted
+   run returns a quiet `Exit(1)` with no line, so the command stops and
+   cli-core ends sb by the signal.
 6. **sb relaunches with `sudo -u root` and needs no loop marker**
    (maintainer, 2026-11-04, from plan Task 1): sudo then runs sb as root
    or refuses, so the relaunched run always passes sb's root check
