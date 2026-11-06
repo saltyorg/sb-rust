@@ -83,32 +83,11 @@ impl Controller {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::control::SPAWNS;
-
-    /// A stand-in `systemctl` in `dir` running `script` (sh): it checks its
-    /// arguments are sb-go's, then leaves `ran` behind. Callers hold
-    /// `SPAWNS` from writing it until its run is over, so no other test's
-    /// fork holds its write descriptor when it runs (ETXTBSY).
-    fn systemctl(dir: &Path, script: &str) -> PathBuf {
-        let path = dir.join("systemctl");
-        let ran = dir.join("ran");
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\n[ \"$1 $2\" = 'is-active {}' ] || exit 9\n: > '{}'\n{script}\n",
-                super::super::UNIT,
-                ran.display(),
-            ),
-        )
-        .expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        path
-    }
+    use crate::control::{SPAWNS, systemctl};
 
     /// A controller whose unit file exists, with `script` as `systemctl`.
     fn controller(dir: &Path, script: &str) -> Controller {

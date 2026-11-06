@@ -5,7 +5,10 @@
 //! check and the commands as term-ui steps join it.
 
 mod client;
+mod commands;
 mod service;
+
+pub use commands::{restart, start, stop};
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -234,3 +237,25 @@ impl Controller {
 /// fails with ETXTBSY otherwise).
 #[cfg(test)]
 pub(crate) static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A stand-in `systemctl` in `dir` running `script` (sh): it checks its
+/// arguments are sb-go's, then leaves `ran` behind. Callers hold
+/// `SPAWNS` from writing it until its run is over, so no other test's
+/// fork holds its write descriptor when it runs (ETXTBSY).
+#[cfg(test)]
+pub(crate) fn systemctl(dir: &std::path::Path, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dir.join("systemctl");
+    let ran = dir.join("ran");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n[ \"$1 $2\" = 'is-active {}' ] || exit 9\n: > '{}'\n{script}\n",
+            UNIT,
+            ran.display(),
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}

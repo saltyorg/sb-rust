@@ -103,9 +103,9 @@ tests into their temporary directories
 **Scope:** M
 
 ## Checkpoint A: the client is done
-- [ ] Tasks 1-3 done; `scripts/check.sh full` passes.
-- [ ] Spec success criteria 2, 3 and 5 met by the tests named in them.
-- [ ] The maintainer reviews the client before the commands are built,
+- [x] Tasks 1-3 done; `scripts/check.sh full` passes.
+- [x] Spec success criteria 2, 3 and 5 met by the tests named in them.
+- [x] The maintainer reviews the client before the commands are built,
       and confirms the plan's one addition to the spec's shape (the
       `systemctl` path field).
 
@@ -116,25 +116,29 @@ on a `Runner`: the step tree and labels of the spec's table, decision
 5's notice on an interrupted request or wait, the run-log records.
 
 **Acceptance criteria:**
-- [ ] Each command's steps and labels (snapshot on term-ui's in-memory
-      runner) for success and for a failure at each step; restart's
+- [x] Each command's steps and labels for success and for a failure at
+      each step, the whole tree compared on term-ui's in-memory runner
+      (times taken off; insta would need its `filters` feature for that); restart's
       `--ignore` only on its stop, and a failed stop starts nothing (the
       fake asked no `/start`).
-- [ ] Interrupted during a request and during the wait: the interrupted
+- [x] Interrupted during a request and during the wait: the interrupted
       ending with the notice ("starting" for start and restart's start,
       "stopping" for stop and restart's stop); during the service check:
       no notice (no job was asked for).
 - [ ] The run log records the check's answer, each request and answer,
-      each poll's status and the outcome.
+      each poll's status and the outcome: written by the client (Tasks
+      1-3) and checked end to end in Task 5's run-log test, on the built
+      sb's real log (tracing caches a callsite's interest process-wide,
+      so an in-process subscriber test needs a binary of its own).
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`; `scripts/check.sh fast`; library-reviewer
+- [x] `cargo test -p sb-docker`; `scripts/check.sh fast`; library-reviewer
       (term-ui steps) and code-reviewer.
 
 **Dependencies:** Checkpoint A
 **Files:** `crates/docker/src/control/commands.rs`,
-`crates/docker/src/snapshots/`, `crates/docker/Cargo.toml` (term-ui's
-`testing` feature, indicatif and tracing-subscriber as dev-dependencies)
+`crates/docker/Cargo.toml` (term-ui's `testing` feature and indicatif as
+dev-dependencies)
 **Scope:** M
 
 ## Task 5: `sb docker start/stop/restart` in sb, end to end
@@ -161,7 +165,9 @@ tests of the built sb on the fake controller.
       limit are unit-tested only); a `PATH` without `systemctl` is "not
       running"; a malformed `SB_DOCKER_CONTROLLER_URL` is "parse Docker
       controller URL: <cause>" before the runner.
-- [ ] Piped and on a PTY; the run log records.
+- [ ] Piped and on a PTY; the run log records the check's answer, the
+      requests and answers, each poll's status and the outcome (Task 4's
+      run-log criterion).
 
 **Verification:**
 - [ ] `cargo test -p sb`; `scripts/check.sh full`; code-reviewer and
