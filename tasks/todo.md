@@ -214,17 +214,17 @@ ADR for the maintainer if either moves past its tolerance.
 wait.
 
 **Acceptance criteria:**
-- [ ] Mid-wait and during a delayed request answer: the interrupted
+- [x] Mid-wait and during a delayed request answer: the interrupted
       ending with decision 5's notice, death by the signal (`$?` 130 or
       143; exec decision 7) within a second, the terminal restored (on a
       PTY).
-- [ ] While a stand-in `systemctl` sleeps: the interrupted ending, no
+- [x] While a stand-in `systemctl` sleeps: the interrupted ending, no
       "not running" block, death by the signal.
-- [ ] A second signal while a stand-in `systemctl` ignores SIGTERM: exec's
+- [x] A second signal while a stand-in `systemctl` ignores SIGTERM: exec's
       forced-exit hook SIGKILLs its group, no stand-in left behind.
 
 **Verification:**
-- [ ] `cargo test -p sb --test docker_control_signals`;
+- [x] `cargo test -p sb --test docker_control_signals`;
       `scripts/check.sh full`; code-reviewer.
 
 **Dependencies:** Task 6
