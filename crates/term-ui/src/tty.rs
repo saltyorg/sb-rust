@@ -10,7 +10,7 @@
 //! foreground process group (sb-go's `tty.go` guard), so a background sb
 //! never stops on SIGTTOU. Why not crossterm's `enable_raw_mode`: raw mode
 //! clears ISIG, so Ctrl-C would stop sending SIGINT.
-//! https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcsetattr.html
+//! <https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcsetattr.html>
 
 use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcgetpgrp, tcsetattr};
 

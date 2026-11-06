@@ -10,11 +10,11 @@ use sb_term_ui::{Options, Runner, runner_live};
 async fn a_runner_is_live_from_start_to_finish() {
     assert!(!runner_live());
     let shutdown = Shutdown::new();
-    let run = Runner::start("sb demo", &shutdown, None, Options::default()).await;
+    let run = Runner::start("sb demo", &shutdown, None, Options::default());
     assert!(runner_live());
     run.finish();
     assert!(!runner_live());
-    let dropped = Runner::start("sb demo", &shutdown, None, Options::default()).await;
+    let dropped = Runner::start("sb demo", &shutdown, None, Options::default());
     assert!(runner_live());
     drop(dropped);
     assert!(!runner_live());

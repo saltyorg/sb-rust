@@ -4,7 +4,7 @@
 //! `SB_LOG_DIR`. Terminal runs go through util-linux `script`, for the
 //! reason in crates/sb/tests/colour.rs (why not portable-pty); not
 //! rexpect either: every PTY test uses `script` (cli-core spec, testing;
-//! crates/sb/tests/validate_config_signals.rs).
+//! `crates/sb/tests/validate_config_signals.rs`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -235,8 +235,10 @@ fn a_failed_childs_plain_line_says_how_it_ended() {
     let text = String::from_utf8_lossy(&out.stderr);
     let block = text
         .split_once("✗ Reading accounts.yml   exit 3 · ")
-        .map(|(_, rest)| rest)
-        .unwrap_or_else(|| panic!("the failed step's line: {text}"));
+        .map_or_else(
+            || panic!("the failed step's line: {text}"),
+            |(_, rest)| rest,
+        );
     let lines: Vec<&str> = block.lines().skip(1).take(2).collect();
     assert_eq!(
         lines,

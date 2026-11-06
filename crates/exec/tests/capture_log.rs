@@ -118,7 +118,7 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
         },
     };
     let shutdown = sb_cli_core::cancel::Shutdown::new();
-    let mut run = sb_term_ui::Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = sb_term_ui::Runner::start("sb test", &shutdown, None, options);
     let _ = run
         .step(sb_term_ui::Labels::new("Running", "ran"), async |step| {
             // Only the log matters here, not the outcome.

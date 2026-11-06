@@ -182,7 +182,7 @@ fn attached_child(mode: &str, file: &str) -> RunEnd {
 /// `pty`: the child on a PTY, in one step of a term-ui runner (piped here,
 /// so it draws plainly), as a command would run it.
 async fn on_a_pty(cmd: &Cmd, shutdown: &Shutdown) -> Result<(), Box<dyn Error>> {
-    let mut run = Runner::start("exec-demo", shutdown, None, Options::default()).await;
+    let mut run = Runner::start("exec-demo", shutdown, None, Options::default());
     let ended = run
         .step(Labels::new("Running", "ran"), async |step| {
             // A failed child fails the step: its outcome is checked, not

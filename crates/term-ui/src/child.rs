@@ -31,12 +31,14 @@ impl ChildFailure {
     }
 
     /// How the child ended, short: the times column's reason.
+    #[must_use]
     pub fn reason(&self) -> &str {
         &self.reason
     }
 
     /// The child's last lines shown with the failure, secrets taken out by
     /// whoever made it.
+    #[must_use]
     pub fn last_lines(&self) -> &[String] {
         &self.last_lines
     }

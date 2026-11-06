@@ -18,7 +18,7 @@ async fn a_live_runner_refuses_it() {
             colour: false,
         },
     };
-    let run = sb_term_ui::Runner::start("sb test", &shutdown, None, options).await;
+    let run = sb_term_ui::Runner::start("sb test", &shutdown, None, options);
     let err = Cmd::new("true")
         .attached(&shutdown)
         .await

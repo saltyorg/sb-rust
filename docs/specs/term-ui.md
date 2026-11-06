@@ -261,7 +261,7 @@ impl Runner {
     /// `log` gives the failure block's pointer; step records go through
     /// `tracing` in the current span, which the runner captures here and
     /// carries onto concurrent steps' tasks (`Instrument`).
-    pub async fn start(
+    pub fn start(
         title: &str,
         shutdown: &Shutdown,
         log: Option<&RunLog>,
@@ -497,7 +497,7 @@ In use, `validate-config` (illustration):
 
 ```rust
 let options = Options::default();
-let mut run = Runner::start("Validating Saltbox config", &shutdown, log.as_ref(), options).await;
+let mut run = Runner::start("Validating Saltbox config", &shutdown, log.as_ref(), options);
 let accounts_step = Labels::new("Checking accounts.yml", "accounts.yml checked");
 run.step(accounts_step, async |step| {
     for key in unknown_keys(&accounts) {

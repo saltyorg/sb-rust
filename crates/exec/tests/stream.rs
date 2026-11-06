@@ -21,7 +21,7 @@ async fn streamed(cmd: Cmd) -> (Result<Streamed, sb_exec::SpawnError>, String) {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let mut result = None;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
@@ -75,7 +75,7 @@ async fn a_failed_childs_lines_show_as_the_steps_output() {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
             let _ = sh("echo one; echo two >&2; printf 'three'; exit 3")
@@ -125,7 +125,7 @@ async fn lines_are_split_from_bytes_and_bounded() {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
             let _ = sh(script).stream(step).await?.check()?;
@@ -214,7 +214,7 @@ async fn the_steps_token_stops_the_child() {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let start = Instant::now();
     let mut ending = None;
     let _ = run
@@ -264,7 +264,7 @@ async fn secrets_are_taken_out_of_the_steps_lines() {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
             let _ = sh("echo \"$1 $TOKEN\"; exit 1")
@@ -354,7 +354,7 @@ async fn a_stopped_childs_last_lines_are_kept() {
             },
         };
         let shutdown = Shutdown::new();
-        let mut started = Runner::start("sb test", &shutdown, None, options).await;
+        let mut started = Runner::start("sb test", &shutdown, None, options);
         let mut tail = None;
         let _ = started
             .step(Labels::new("Running", "ran"), async |step| {

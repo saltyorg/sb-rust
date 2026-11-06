@@ -4,7 +4,7 @@
 //! right-aligned columns from the caller, an optional maximum column
 //! width, fitted to the terminal (the widest column wraps first) and of
 //! natural width when stdout isn't one.
-//! https://docs.rs/tabled/0.22.0/tabled/
+//! <https://docs.rs/tabled/0.22.0/tabled/>
 
 use std::io::Write;
 
@@ -36,6 +36,7 @@ impl Cell {
     }
 
     /// Draw this cell in `role`'s colour (when colour is on).
+    #[must_use]
     pub fn role(mut self, role: Role) -> Self {
         self.role = Some(role);
         self
@@ -78,12 +79,14 @@ impl Table {
     }
 
     /// Align column `index` (from 0) to the right.
+    #[must_use]
     pub fn right_align(mut self, index: usize) -> Self {
         self.right.push(index);
         self
     }
 
     /// Wrap any column wider than `width` (at word boundaries).
+    #[must_use]
     pub fn max_column_width(mut self, width: usize) -> Self {
         self.max_column_width = Some(width);
         self
@@ -101,6 +104,7 @@ impl Table {
 
     /// The table as text: in `theme`'s colours when `colour` is on (none
     /// under `ascii`, bold included), fitted to `width` when given.
+    #[must_use]
     pub fn render(&self, theme: &Theme, colour: bool, width: Option<usize>) -> String {
         let mut builder = Builder::default();
         builder.push_record(self.headings.clone());
@@ -152,6 +156,11 @@ impl Table {
     /// Print the table on stdout: fitted to the terminal there (console's
     /// `size_checked`, none when stdout isn't a terminal, so piped output
     /// keeps its natural width), in colour as stdout's choice says.
+    ///
+    /// # Errors
+    ///
+    /// The [`OutputError`](sb_cli_core::exit::OutputError) when stdout
+    /// can't be written (its reader went away, say).
     pub fn print(&self) -> Result<(), sb_cli_core::exit::OutputError> {
         let width = console::Term::stdout()
             .size_checked()

@@ -96,7 +96,7 @@ async fn demo(
 ) -> anyhow::Result<()> {
     let pace = Duration::from_millis(120);
     let options = Options::default();
-    let mut run = Runner::start("sb demo", shutdown, log, options).await;
+    let mut run = Runner::start("sb demo", shutdown, log, options);
     run.step(
         Labels::new("Reading accounts.yml", "accounts.yml read"),
         async |step| {
@@ -137,9 +137,7 @@ async fn demo(
         async |step| {
             // `--panic`: a body that panics, for the test that a panic shows
             // only its own message (no failure block, no pointer).
-            if arg("--panic") {
-                panic!("the demo was asked to panic");
-            }
+            assert!(!arg("--panic"), "the demo was asked to panic");
             let mut group = step.group();
             let cloudflare = Labels::new("Checking Cloudflare token", "Cloudflare token valid")
                 .failure("Cloudflare token invalid");

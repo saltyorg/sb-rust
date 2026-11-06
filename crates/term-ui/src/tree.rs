@@ -34,7 +34,7 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 /// termtree's glyphs with a rounded last branch, the reviewed tree.
 /// termtree draws only a finished tree in one go, so the runner borrows
 /// its glyph set and draws branches line by line
-/// (https://docs.rs/termtree/1.0.0/termtree/struct.GlyphPalette.html).
+/// (<https://docs.rs/termtree/1.0.0/termtree/struct.GlyphPalette.html>).
 const GLYPHS: termtree::GlyphPalette = termtree::GlyphPalette {
     last_item: "╰",
     ..termtree::GlyphPalette::new()
@@ -509,7 +509,7 @@ impl Tree {
 
 /// `text` cut to `room` columns with `…` (console's cut, which keeps
 /// escape codes whole, then no space left before the `…`;
-/// https://docs.rs/console/0.16.6/console/fn.truncate_str.html), or whole
+/// <https://docs.rs/console/0.16.6/console/fn.truncate_str.html>), or whole
 /// when it fits.
 fn cut(text: &str, room: usize) -> String {
     if room == 0 {

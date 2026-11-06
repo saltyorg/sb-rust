@@ -95,7 +95,7 @@ async fn validate(settings: &Settings) -> Result<(), sb_cli_core::exit::Exit> {
         },
     };
     let shutdown = Shutdown::new();
-    let mut runner = Runner::start("sb validate-config", &shutdown, None, options).await;
+    let mut runner = Runner::start("sb validate-config", &shutdown, None, options);
     let result = run(&mut runner, settings).await;
     runner.finish();
     result

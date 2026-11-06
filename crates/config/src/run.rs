@@ -307,7 +307,7 @@ mod tests {
                 colour: false,
             },
         };
-        let mut runner = Runner::start("sb validate-config", shutdown, None, options).await;
+        let mut runner = Runner::start("sb validate-config", shutdown, None, options);
         let settings = Settings {
             root: root.to_path_buf(),
             zoneinfo: Vec::new(),

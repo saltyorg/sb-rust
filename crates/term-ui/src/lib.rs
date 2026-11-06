@@ -24,8 +24,9 @@ pub enum Stream {
 }
 
 /// Whether `stream` gets colour: anstream's resolved choice for it
-/// (`--color`, NO_COLOR, CLICOLOR_FORCE, a terminal or not;
+/// (`--color`, `NO_COLOR`, `CLICOLOR_FORCE`, a terminal or not;
 /// <https://docs.rs/anstream/1.0.0/anstream/struct.AutoStream.html#method.choice>).
+#[must_use]
 pub fn colour_on(stream: Stream) -> bool {
     let choice = match stream {
         Stream::Stdout => AutoStream::choice(&std::io::stdout()),

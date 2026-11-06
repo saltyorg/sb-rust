@@ -1,7 +1,7 @@
 //! The runner's run-log records (term-ui spec, "Run log"; CONSTRAINTS.md,
 //! logging). A test binary of its own: tracing caches each callsite's
 //! interest process-wide
-//! (https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html),
+//! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>),
 //! so a log test sharing a process with tests that run without a
 //! subscriber missed events.
 
@@ -73,7 +73,7 @@ async fn run_steps() {
     // Live or plain, as the test's stderr is (a run from a terminal draws
     // live): only the log is checked, which both modes write the same.
     let options = Options::default();
-    let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+    let mut run = Runner::start("sb demo", &shutdown, None, options);
     let labels = Labels::new("Checking credentials", "credentials valid");
     run.step(labels, async |step| {
         step.info("3 accounts");

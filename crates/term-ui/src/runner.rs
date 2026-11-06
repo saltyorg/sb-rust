@@ -5,7 +5,7 @@
 //! indicatif bar holds the whole live area and is redrawn in place
 //! (`MultiProgress::set_move_cursor`), finished lines go above it with
 //! `MultiProgress::println`, and the area never shrinks while running
-//! (amended decision 2; https://docs.rs/indicatif/0.18.6/indicatif/struct.MultiProgress.html#method.set_move_cursor).
+//! (amended decision 2; <https://docs.rs/indicatif/0.18.6/indicatif/struct.MultiProgress.html#method.set_move_cursor>).
 //! A tokio task drives the spinner frames (amended decision 4). Why not
 //! indicatif's steady tick: its `{spinner}` is one per bar, and one bar
 //! here holds several spinners and per-step times inside `{msg}`, which a
@@ -56,6 +56,7 @@ impl Labels {
         }
     }
 
+    #[must_use]
     pub fn failure(self, failure: impl Into<String>) -> Self {
         Self {
             failure: Some(failure.into()),
@@ -65,14 +66,14 @@ impl Labels {
 }
 
 /// How and where the runner draws.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Options {
     /// Where to draw: stderr by default.
     pub target: Target,
 }
 
 /// Where the runner draws.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub enum Target {
     #[default]
     Stderr,
@@ -145,6 +146,16 @@ struct State {
     stop: Arc<AtomicBool>,
     tree: Tree,
     mode: Mode,
+    sink: Sink,
+    size: Size,
+    frame: usize,
+    ended: bool,
+}
+
+/// What the drawing target takes, read together wherever a line is
+/// written.
+#[derive(Clone, Copy)]
+struct Sink {
     colour: bool,
     /// Whether a line's own colour codes (a child's) are kept: colour on,
     /// and the profile isn't `ascii` ([`keeps_codes`]).
@@ -152,9 +163,6 @@ struct State {
     /// Whether the target is a terminal: shown sensitive text shows only
     /// there (anywhere else stderr is a log; decision 8).
     terminal: bool,
-    size: Size,
-    frame: usize,
-    ended: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -197,7 +205,7 @@ impl State {
         let (rows, width) = self.size.get();
         let d = Draw {
             theme: theme::current(),
-            colour: self.colour,
+            colour: self.sink.colour,
             width,
             rows,
             frame: self.frame,
@@ -244,6 +252,7 @@ fn lock(shared: &Shared) -> MutexGuard<'_, State> {
 /// Live on a terminal; plain when the target isn't one (piped, CI,
 /// `TERM=dumb`). No verbose option: the run log has the detail
 /// (decision 9).
+#[must_use = "dropping the runner ends the run's drawing"]
 pub struct Runner {
     shared: Shared,
     shutdown: Shutdown,
@@ -286,9 +295,14 @@ impl Drop for Live {
 
 impl Runner {
     /// Start drawing. Called inside the command's tokio runtime; the frame
-    /// task runs on it. Never fails. `log` gives the failure block's
-    /// pointer (Task 7).
-    pub async fn start(
+    /// task runs on it. Never returns an error. `log` gives the failure
+    /// block's pointer (Task 7).
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime when it draws live (`tokio::spawn` starts
+    /// the frame task); plain drawing spawns nothing.
+    pub fn start(
         title: &str,
         shutdown: &Shutdown,
         log: Option<&RunLog>,
@@ -298,8 +312,9 @@ impl Runner {
         // The title goes out before the live area exists: a
         // `MultiProgress::println` before its bar first drew was lost
         // (seen on indicatif's in-memory terminal).
-        let on_stderr = matches!(options.target, Target::Stderr);
-        let (mode, colour, size, terminal) = match options.target {
+        let Options { target } = options;
+        let on_stderr = matches!(target, Target::Stderr);
+        let (mode, colour, size, terminal) = match target {
             Target::Stderr => {
                 plain_line(title);
                 // indicatif hides its stderr target when stderr isn't a
@@ -350,9 +365,11 @@ impl Runner {
                 tree
             },
             mode,
-            colour,
-            codes: keeps_codes(colour, theme::current().profile()),
-            terminal,
+            sink: Sink {
+                colour,
+                codes: keeps_codes(colour, theme::current().profile()),
+                terminal,
+            },
             size,
             frame: 0,
             ended: false,
@@ -388,6 +405,12 @@ impl Runner {
 
     /// Run one top-level step to its end, after the previous one. The
     /// body's result decides the ending ("Step endings" in the spec).
+    ///
+    /// # Errors
+    ///
+    /// The [`Exit`] the run ends with when the step doesn't finish: 1 when
+    /// it failed, was interrupted or was stopped, or a quiet exit's own
+    /// code passed up from its body.
     pub async fn step<T>(
         &mut self,
         labels: Labels,
@@ -489,7 +512,7 @@ fn conclude<T>(
             // the times column its reason and adds its last lines.
             let child = err.chain().find_map(|e| e.downcast_ref::<ChildFailure>());
             let screen = if status == Status::Failed {
-                let codes = lock(&context.shared).codes;
+                let codes = lock(&context.shared).sink.codes;
                 let child_lines = child.map(ChildFailure::last_lines).unwrap_or_default();
                 chain
                     .iter()
@@ -604,7 +627,7 @@ impl Ending {
             // Plain lines go through anstream, so they still print while a
             // panic unwinds; the live area doesn't (see `State::end`).
             if matches!(state.mode, Mode::Plain) && !state.ended {
-                let colour = state.colour;
+                let colour = state.sink.colour;
                 let elapsed = self.started.elapsed();
                 let line = end_line(
                     theme::current(),
@@ -718,6 +741,12 @@ impl Step {
     /// Run a sub-step (a deeper branch) to its end; this step's subtree
     /// stays live until this step ends (decision 7). See the spec's "Step
     /// endings".
+    ///
+    /// # Errors
+    ///
+    /// The [`Exit`] the run ends with when the step doesn't finish: 1 when
+    /// it failed, was interrupted or was stopped, or a quiet exit's own
+    /// code passed up from its body.
     pub async fn step<T>(
         &mut self,
         labels: Labels,
@@ -762,25 +791,27 @@ impl Step {
     /// cancelled by Ctrl-C, by the command's own `Shutdown::request`, or by
     /// a failing concurrent sibling (decision 7). A body stops early when
     /// it is cancelled and returns its error.
+    #[must_use]
     pub fn token(&self) -> CancellationToken {
         self.token.clone()
     }
 
     /// An info notice (`›`, muted) under this step, kept in the tree.
     pub fn info(&mut self, text: impl Into<Line>) {
-        self.notice(false, text.into());
+        self.notice(false, &text.into());
     }
 
     /// A warning notice (orange `!`) under this step, kept in the tree.
     pub fn warn(&mut self, text: impl Into<Line>) {
-        self.notice(true, text.into());
+        self.notice(true, &text.into());
     }
 
-    fn notice(&mut self, warn: bool, line: Line) {
-        let (colour, codes, terminal) = {
-            let state = lock(&self.context.shared);
-            (state.colour, state.codes, state.terminal)
-        };
+    fn notice(&mut self, warn: bool, line: &Line) {
+        let Sink {
+            colour,
+            codes,
+            terminal,
+        } = lock(&self.context.shared).sink;
         // Logged outside the lock: the log write blocks on the file.
         let step = self.name.as_str();
         // The log gets secret values replaced in place, always.
@@ -823,10 +854,9 @@ impl Step {
     /// redraw the tree per line.
     pub fn output(&mut self, text: impl Into<Line>) {
         let line = text.into();
-        let (codes, terminal) = {
-            let state = lock(&self.context.shared);
-            (state.codes, state.terminal)
-        };
+        let Sink {
+            codes, terminal, ..
+        } = lock(&self.context.shared).sink;
         // Logged outside the lock (the log write blocks on the file), as
         // plain text whatever the screen gets, and whole; secret values
         // replaced in place, always.
@@ -875,7 +905,7 @@ fn lines(text: &str, codes: bool) -> Vec<String> {
 /// tree's back taken out: escape codes other than colours (all of them
 /// without `codes`, see [`keeps_codes`]), and control characters; tabs become spaces to the next
 /// 8-column stop. Escape codes found with console's `AnsiCodeIterator`
-/// (https://docs.rs/console/0.16.6/console/struct.AnsiCodeIterator.html).
+/// (<https://docs.rs/console/0.16.6/console/struct.AnsiCodeIterator.html>).
 fn clean(line: &str, codes: bool) -> String {
     let mut out = String::new();
     let mut column = 0;
@@ -903,11 +933,11 @@ fn clean(line: &str, codes: bool) -> String {
 
 /// Concurrent sibling steps under one parent, drawn in full in start
 /// order (decision 7). Each runs as a tokio task (`JoinSet`,
-/// https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinSet.html), so bodies
+/// <https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinSet.html>), so bodies
 /// own what they use and get their own `Step`; each runs in the run's span
-/// (https://docs.rs/tracing/0.1.44/tracing/trait.Instrument.html#method.in_current_span).
+/// (<https://docs.rs/tracing/0.1.44/tracing/trait.Instrument.html#method.in_current_span>).
 /// The errgroup-style stop is a child `CancellationToken`
-/// (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html),
+/// (<https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html>),
 /// cancelled as soon as a sibling fails or panics ([`GroupAll`]: never by
 /// its siblings). Borrows the parent, so it can't add lines or steps
 /// meanwhile. Dropped without [`Group::join`], its open steps read
@@ -1012,6 +1042,10 @@ impl<T: Send + 'static> Group<'_, T> {
     /// panicking sibling is marked failed and the others are waited for,
     /// then the panic resumes (tokio's `JoinError::into_panic` with
     /// `std::panic::resume_unwind`, as tokio's docs advise).
+    ///
+    /// # Errors
+    ///
+    /// The first failed sibling's [`Exit`] (see [`Step::step`]).
     pub async fn join(mut self) -> Result<Vec<T>, Exit> {
         let (results, first) = self.wait().await;
         match first {
@@ -1151,6 +1185,7 @@ impl Line {
     }
 
     /// Add a secret value at the end of the line.
+    #[must_use]
     pub fn secret(mut self, value: impl Into<String>) -> Self {
         self.parts.push(Part {
             text: value.into(),
@@ -1160,6 +1195,7 @@ impl Line {
     }
 
     /// Add plain text after a secret value.
+    #[must_use]
     pub fn text(mut self, text: impl Into<String>) -> Self {
         self.parts.push(Part {
             text: text.into(),
@@ -1172,6 +1208,7 @@ impl Line {
     /// to show them, such as creating a token): on a terminal only, since
     /// stderr anywhere else (a file, the journal, CI) is a log. Still never
     /// logged. No effect on a line without secrets.
+    #[must_use]
     pub fn shown(self) -> Self {
         Line {
             shown: true,
@@ -1228,7 +1265,7 @@ impl From<&String> for Line {
 }
 
 /// Move the spinner every [`FRAME`], skipping missed ticks
-/// (https://docs.rs/tokio/1.54.1/tokio/time/enum.MissedTickBehavior.html).
+/// (<https://docs.rs/tokio/1.54.1/tokio/time/enum.MissedTickBehavior.html>).
 /// `stop` is set by the restore hook on a second Ctrl-C, before it puts the
 /// terminal back; the frame task then ends (and `State::redraw` draws
 /// nothing more either).
@@ -1296,10 +1333,104 @@ fn end_line(
     paint(theme, role, colour, &text)
 }
 
+impl std::fmt::Debug for Runner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runner").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Step")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> std::fmt::Debug for Group<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Group")
+            .field("parent", &self.parent)
+            .field("running", &self.tasks.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> std::fmt::Debug for GroupAll<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("GroupAll").field(&self.0).finish()
+    }
+}
+
+/// The masked text (a secret as [`WITHHELD`]), as the log has it.
+impl std::fmt::Debug for Line {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Line")
+            .field("text", &self.masked())
+            .field("shown", &self.shown)
+            // The parts are in `text`, masked.
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use indicatif::InMemoryTerm;
+
+    /// The handles' `Debug`: a step's id and label, a group's parent step
+    /// and how many siblings run; the runner shows nothing of its state.
+    #[tokio::test]
+    async fn the_handles_debug_names_the_step() {
+        let shutdown = Shutdown::new();
+        let options = Options {
+            target: Target::InMemory {
+                term: InMemoryTerm::new(10, 80),
+                colour: false,
+            },
+        };
+        let mut run = Runner::start("sb test", &shutdown, None, options);
+        assert_eq!(format!("{run:?}"), "Runner { .. }");
+        let shown = run
+            .step(Labels::new("Checking", "checked"), async |step| {
+                let mut shown = vec![format!("{step:?}")];
+                let group = step.group::<()>();
+                shown.push(format!("{group:?}"));
+                group.join().await?;
+                let all = step.group_all::<()>();
+                shown.push(format!("{all:?}"));
+                assert!(all.join().await.is_empty());
+                Ok(shown)
+            })
+            .await
+            .expect("step");
+        run.finish();
+        assert!(shown[0].starts_with("Step { id: "), "{}", shown[0]);
+        assert!(
+            shown[0].ends_with(", name: \"Checking\", .. }"),
+            "{}",
+            shown[0]
+        );
+        for group in &shown[1..] {
+            assert!(group.contains("Group { parent: Step { id: "), "{group}");
+            assert!(group.contains("running: 0, .. }"), "{group}");
+        }
+        assert!(shown[2].starts_with("GroupAll(Group {"), "{}", shown[2]);
+    }
+
+    /// A line's `Debug` is its masked text: a `?line` field or a `dbg!`
+    /// can't print a secret.
+    #[test]
+    fn a_lines_debug_keeps_its_secret() {
+        let line = Line::new("token ").secret("debug-secret-zz").text(" end");
+        let shown = format!("{line:?}");
+        assert!(!shown.contains("debug-secret-zz"), "{shown}");
+        assert_eq!(
+            shown,
+            format!("Line {{ text: \"token {WITHHELD} end\", shown: false, .. }}")
+        );
+    }
 
     fn screen() -> (InMemoryTerm, Options) {
         let term = InMemoryTerm::new(20, 100);
@@ -1318,7 +1449,7 @@ mod tests {
     async fn a_run_ends_as_the_finished_tree() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let value = run
             .step(
                 Labels::new("Reading accounts.yml", "accounts.yml read"),
@@ -1361,7 +1492,7 @@ mod tests {
     async fn a_running_step_is_live() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let seen = run
             .step(
                 Labels::new("Pulling images", "images pulled"),
@@ -1391,7 +1522,7 @@ mod tests {
     async fn a_failing_body_fails_the_step_quietly() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let result: Result<(), Exit> = run
             .step(
                 Labels::new("Pulling", "pulled").failure("pull failed"),
@@ -1414,7 +1545,7 @@ mod tests {
     async fn a_failed_child_shows_how_it_ended() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let result: Result<(), Exit> = run
             .step(Labels::new("Checking", "checked"), async |_| {
                 let child = ChildFailure::new(
@@ -1444,7 +1575,7 @@ mod tests {
         for (how, why) in [("signal", "interrupted · 0s"), ("request", "stopped · 0s")] {
             let (term, options) = screen();
             let shutdown = Shutdown::new();
-            let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+            let mut run = Runner::start("sb demo", &shutdown, None, options);
             let _ = run
                 .step(
                     Labels::new("Checking", "checked"),
@@ -1481,7 +1612,7 @@ mod tests {
         struct NotRunning(#[source] ChildFailure);
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let _ = run
             .step(
                 Labels::new("Checking", "checked"),
@@ -1507,7 +1638,7 @@ mod tests {
     async fn a_reason_is_cleaned_before_it_is_drawn() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let _ = run
             .step(
                 Labels::new("Checking", "checked"),
@@ -1528,7 +1659,7 @@ mod tests {
     async fn a_quiet_exit_passes_up_unchanged() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let result: Result<(), Exit> = run
             .step(Labels::new("Checking", "checked"), async |_| {
                 Err(Exit(7).into())
@@ -1550,7 +1681,7 @@ mod tests {
         for (signal, why) in [(true, "interrupted · 0s"), (false, "stopped · 0s")] {
             let (term, options) = screen();
             let shutdown = Shutdown::new();
-            let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+            let mut run = Runner::start("sb demo", &shutdown, None, options);
             let result: Result<(), Exit> = run
                 .step(Labels::new("Waiting", "waited"), async |step| {
                     if signal {
@@ -1574,7 +1705,7 @@ mod tests {
     async fn no_step_starts_after_a_cancel() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let _ = shutdown.request(0);
         let mut ran = false;
         let result = run
@@ -1594,7 +1725,7 @@ mod tests {
     async fn a_dropped_step_reads_stopped() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let slow = run.step(Labels::new("Slow", "slow done"), async |_| {
             tokio::time::sleep(Duration::from_secs(5)).await;
             Ok(())
@@ -1626,7 +1757,7 @@ mod tests {
                 tokio::task::spawn_local(async move {
                     let shutdown = Shutdown::new();
                     // (A panic shows no failure block: see the plain test.)
-                    let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+                    let mut run = Runner::start("sb demo", &shutdown, None, options);
                     let _ = run
                         .step(
                             Labels::new("Boom", "boom"),
@@ -1645,7 +1776,7 @@ mod tests {
     async fn the_spinner_moves() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let (before, after) = run
             .step(Labels::new("Waiting", "waited"), async |_| {
                 let before = term.contents();
@@ -1666,7 +1797,7 @@ mod tests {
     async fn the_live_area_never_shrinks() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         run.step(Labels::new("Long", "long done"), async |step| {
             for n in 0..6 {
                 step.output(format!("tail line {n}"));
@@ -1732,7 +1863,7 @@ mod tests {
             },
         };
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let _ = run
             .step(Labels::new("Running", "ran"), async |step| {
                 step.info("\x1b[32mgreen note\x1b[0m");
@@ -1797,7 +1928,7 @@ mod tests {
     async fn output_waits_for_the_next_frame() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let (before, after) = run
             .step(Labels::new("Pulling", "pulled"), async |step| {
                 tokio::task::yield_now().await;
@@ -1824,7 +1955,7 @@ mod tests {
     async fn sensitive_text_is_withheld_on_screen_unless_shown() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let live = run
             .step(Labels::new("Checking", "checked"), async |step| {
                 step.warn(
@@ -1878,7 +2009,7 @@ mod tests {
     async fn a_sensitive_cause_is_withheld_in_the_failure_block() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let _ = run
             .step(
                 Labels::new("Checking", "checked"),
@@ -1903,7 +2034,7 @@ mod tests {
     async fn sub_steps_nest_under_their_parent() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         run.step(Labels::new("Checking", "checked"), async |step| {
             step.step(Labels::new("Reading", "read"), async |_| Ok(()))
                 .await?;
@@ -1928,7 +2059,7 @@ mod tests {
     async fn a_group_returns_results_in_spawn_order() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let results = run
             .step(Labels::new("Checking", "checked"), async |step| {
                 let mut group = step.group();
@@ -1957,7 +2088,7 @@ mod tests {
     async fn a_failing_sibling_stops_the_others() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let result: Result<(), Exit> = run
             .step(Labels::new("Checking", "checked"), async |step| {
                 let mut group = step.group();
@@ -1999,7 +2130,7 @@ mod tests {
     async fn ctrl_c_interrupts_every_running_step() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let signal = shutdown.clone();
         let _ = run
             .step(Labels::new("Checking", "checked"), async |step| {
@@ -2034,7 +2165,7 @@ mod tests {
     async fn a_dropped_group_stops_its_steps_at_once() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let _ = run
             .step(
                 Labels::new("Checking", "checked"),
@@ -2070,7 +2201,7 @@ mod tests {
     async fn a_failure_stops_its_siblings_at_once() {
         let (_term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let start = tokio::time::Instant::now();
         let stopped_after = Arc::new(Mutex::new(None));
         let seen = Arc::clone(&stopped_after);
@@ -2105,7 +2236,7 @@ mod tests {
     async fn a_detached_step_draws_nothing() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let observed = term.clone();
         run.step(Labels::new("Checking", "checked"), async |step| {
             let (kept_tx, kept_rx) = tokio::sync::oneshot::channel();
@@ -2159,7 +2290,7 @@ mod tests {
         let stopped_after = Arc::new(Mutex::new(None));
         let seen = Arc::clone(&stopped_after);
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let joined = tokio::spawn(async move {
             let _ = run
                 .step(Labels::new("Checking", "checked"), async |step| {
@@ -2192,7 +2323,7 @@ mod tests {
     async fn siblings_dropped_by_a_panic_read_failed() {
         let (_term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let shared = Arc::clone(&run.shared);
         let joined = tokio::spawn(async move {
             let _ = run
@@ -2223,7 +2354,7 @@ mod tests {
     async fn a_sub_step_of_a_stopped_sibling_reads_stopped() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let _ = run
             .step(Labels::new("Checking", "checked"), async |step| {
                 let mut group = step.group::<()>();
@@ -2259,7 +2390,7 @@ mod tests {
     async fn a_failed_siblings_kept_step_adds_no_lines() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let (kept_tx, kept_rx) = tokio::sync::oneshot::channel();
         let _ = run
             .step(Labels::new("Checking", "checked"), async |step| {
@@ -2292,7 +2423,7 @@ mod tests {
     async fn a_request_stops_a_group() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let request = shutdown.clone();
         let _ = run
             .step(Labels::new("Checking", "checked"), async |step| {
@@ -2320,7 +2451,7 @@ mod tests {
         let waited = Arc::new(Mutex::new(false));
         let ended = Arc::clone(&waited);
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         // Read the tree itself: the in-memory screen drops draws closer
         // than its refresh rate allows, and nothing forces one after a panic.
         let shared = Arc::clone(&run.shared);
@@ -2362,7 +2493,7 @@ mod tests {
     async fn a_group_all_lets_every_sibling_finish() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let mut seen = Vec::new();
         let result: Result<(), Exit> = run
             .step(Labels::new("Checking", "checked"), async |step| {
@@ -2410,7 +2541,7 @@ mod tests {
     async fn a_group_all_under_a_failed_sibling_reads_stopped() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let shared = Arc::clone(&run.shared);
         let _ = run
             .step(Labels::new("Checking", "checked"), async |step| {
@@ -2475,7 +2606,7 @@ mod tests {
         let finished = Arc::new(Mutex::new(false));
         let ended = Arc::clone(&finished);
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let shared = Arc::clone(&run.shared);
         let joined = tokio::spawn(async move {
             let _ = run
@@ -2522,7 +2653,7 @@ mod tests {
     async fn ctrl_c_interrupts_a_group_all() {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
-        let mut run = Runner::start("sb demo", &shutdown, None, options).await;
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
         let signal = shutdown.clone();
         let _ = run
             .step(Labels::new("Checking", "checked"), async |step| {

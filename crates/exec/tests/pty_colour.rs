@@ -24,7 +24,7 @@ async fn on_pty(cmd: Cmd, colour: bool) -> String {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
             let done = cmd.pty(step).await?;

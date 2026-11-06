@@ -21,7 +21,7 @@ async fn on_pty(cmd: Cmd, colour: bool) -> (Result<Ran, sb_exec::SpawnError>, St
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let mut result = None;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
@@ -225,7 +225,7 @@ async fn cancellation_and_timeouts_reach_the_group() {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let mut ending = None;
     let started = Instant::now();
     let _ = run
@@ -264,7 +264,7 @@ async fn a_dropped_pty_run_leaves_no_member() {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let mut leader = None;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
@@ -382,7 +382,7 @@ async fn long_lines_and_secrets_across_the_cut() {
         },
     };
     let shutdown = Shutdown::new();
-    let mut run = Runner::start("sb test", &shutdown, None, options).await;
+    let mut run = Runner::start("sb test", &shutdown, None, options);
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
             let _ = cmd.pty(step).await?.check()?;

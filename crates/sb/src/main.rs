@@ -416,8 +416,7 @@ fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<
         .build()?;
     runtime.block_on(async {
         let options = sb_term_ui::Options::default();
-        let mut runner =
-            sb_term_ui::Runner::start("sb validate-config", shutdown, log, options).await;
+        let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
         let result = run::run(&mut runner, &settings).await;
         runner.finish();
         result.map_err(anyhow::Error::from)

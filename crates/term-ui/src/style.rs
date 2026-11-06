@@ -16,6 +16,7 @@ use sb_cli_core::theme::{Role, Theme};
 /// `text` in `role`'s colour, or `text` unchanged with colour off (`on`
 /// is the destination stream's choice) or under `ascii`. anstyle's own
 /// pattern (<https://docs.rs/anstyle/1.0.14/anstyle/struct.Style.html>).
+#[must_use]
 pub fn paint(theme: &Theme, role: Role, on: bool, text: &str) -> String {
     // A role without a colour gives an empty style, which renders as
     // nothing (`Theme::style` sets only the colour), so this agrees with
@@ -32,6 +33,7 @@ pub fn paint(theme: &Theme, role: Role, on: bool, text: &str) -> String {
 /// under `ascii`. tabled writes whatever codes it is given
 /// (<https://docs.rs/tabled/0.22.0/tabled/settings/struct.Color.html#method.new>),
 /// so the same anstyle rendering keeps the profile's kind.
+#[must_use]
 pub fn table_colour(theme: &Theme, role: Role, on: bool) -> Option<tabled::settings::Color> {
     let style = theme.style(role);
     (on && theme.color(role).is_some()).then(|| {
@@ -61,8 +63,8 @@ pub(crate) mod sgr {
     pub(crate) fn of_kind(params: &str, profile: Profile) -> bool {
         let first: Vec<&str> = params.splitn(3, ';').collect();
         match (profile, first.as_slice()) {
-            (Profile::TrueColor, ["38" | "48", "2", _]) => true,
-            (Profile::Ansi256, ["38" | "48", "5", _]) => true,
+            (Profile::TrueColor, ["38" | "48", "2", _])
+            | (Profile::Ansi256, ["38" | "48", "5", _]) => true,
             (Profile::Ansi, [code]) => matches!(
                 code.parse::<u8>(),
                 Ok(30..=37 | 40..=47 | 90..=97 | 100..=107)
@@ -75,21 +77,21 @@ pub(crate) mod sgr {
 #[cfg(test)]
 mod tests {
     use super::sgr::{colour_codes, of_kind};
+    use std::fmt::Write as _;
+
     use super::*;
     use sb_cli_core::theme::{Palette, Profile, Role, Theme};
 
     /// Everything the adapters write for every role under `profile`.
     fn written(profile: Profile) -> String {
         let theme = Theme::resolve(&Palette::default(), profile);
-        Role::ALL
-            .into_iter()
-            .map(|role| {
-                let table = table_colour(&theme, role, true)
-                    .map(|c| format!("{}x{}", c.get_prefix(), c.get_suffix()))
-                    .unwrap_or_default();
-                format!("{}{table}", paint(&theme, role, true, "x"))
-            })
-            .collect()
+        Role::ALL.into_iter().fold(String::new(), |mut out, role| {
+            let table = table_colour(&theme, role, true)
+                .map(|c| format!("{}x{}", c.get_prefix(), c.get_suffix()))
+                .unwrap_or_default();
+            let _ = write!(out, "{}{table}", paint(&theme, role, true, "x"));
+            out
+        })
     }
 
     #[test]
