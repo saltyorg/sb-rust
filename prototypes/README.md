@@ -3,7 +3,10 @@
 Throwaway spikes that test the proposed stack in
 `docs/specs/capability-map.md`. Each prototype has a `FINDINGS.md` with its
 question, result and a **technical** verdict. The look-and-feel verdict is the
-maintainer's, after trying them.
+maintainer's, after trying them. A prototype is removed once its module is
+built (maintainer, 2026-11-06); its findings move to `docs/prototypes/`
+(runner, inline, help, yaml, musl so far). `proto-theme` stays while the
+others here build on it.
 
 ## How to try them
 
@@ -25,9 +28,6 @@ Saltbox files.
 | `logs` | Grouped source picker (Needs attention, Services, Containers) with live status, then a streaming log viewer with follow, search and switching | Your real containers and Saltbox services (read-only) | Docker, systemd, root |
 | `logs-demo` | The same on predictable output, including a crash-looping container | Two demo containers and a demo systemd unit, all removed on exit | Docker, systemd, root |
 | `markdown` | Announcement rendered by tui-markdown (full-screen, then inline), then by termimad for comparison | `proto-markdown/fixtures/announcements.yml` | — |
-| `runner` | Spinners with a live output tail, a failing step, a Ctrl-C run, then piped output | Simulated steps; uses `ansible-playbook --version` if the Saltbox venv exists | — |
-| `inline` | `docker ps` style table (with and without `NO_COLOR`), then restore-style prompts | Your containers (read-only); prompts restore nothing | Docker |
-| `help` | `sb --help` in six looks: clap defaults, clap with sb's palette, cargo's look, a clap template with sb-go's sections, clap-help, and sb-go's format copied; then the installed sb's own help | sb-go 0.1.3's command tree (static) | — |
 | `complete` | A bash subshell with dynamic tag completion loaded | Static tag list | bash |
 
 ### Every picker state

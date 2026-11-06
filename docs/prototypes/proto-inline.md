@@ -1,5 +1,9 @@
 # Prototype: proto-inline
 
+> The prototype's code was removed once its module was built
+> (maintainer, 2026-11-06); it is in git history
+> (`git log -- prototypes/proto-inline`). These findings stay as the record.
+
 **Question:** Do comfy-table, anstyle and dialoguer give the non-TUI look for
 `docker ps`-style tables and restore-style prompts, on a TTY and when piped?
 

@@ -1,5 +1,9 @@
 # Prototype: proto-yaml
 
+> The prototype's code was removed once its module was built
+> (maintainer, 2026-11-06); it is in git history
+> (`git log -- prototypes/proto-yaml`). These findings stay as the record.
+
 **Question:** Can the serde-saphyr / saphyr family cover `sb validate-config`:
 schema-driven validation, duplicate-key rejection, and line/column errors, on
 real Saltbox config?

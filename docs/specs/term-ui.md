@@ -626,7 +626,7 @@ Choices behind it:
    sized for the deepest nesting and widest concurrency used, shown to the
    maintainer with the look of notices, before the runner's API is fixed.
    **Amended at Checkpoint A (maintainer, 2026-11-01), from the spike
-   (prototypes/proto-runner/FINDINGS.md):** one indicatif bar holds the
+   (docs/prototypes/proto-runner.md):** one indicatif bar holds the
    whole live area (no pool to size; equally flicker-free), and the area's
    line count never shrinks while running (indicatif drops empty lines and
    its cursor-moving redraw can't clear lines that fall off the bottom).

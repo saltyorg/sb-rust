@@ -317,7 +317,7 @@ usage-error convention, a deliberate difference from sb-go's 1). Not
 through a clap `ErrorFormatter`: clap builds its messages in private code,
 so sb keeps clap's wording and re-lays out its plain rendering, with the
 usage paragraph removed through `Error::remove(ContextKind::Usage)`
-(recorded in prototypes/proto-help/FINDINGS.md).
+(recorded in docs/prototypes/proto-help.md).
 
 **Acceptance criteria:**
 - [x] An unknown command, an unknown flag and a bad value each show one

@@ -1,7 +1,7 @@
 # musl builds with C dependencies: aws-lc-sys
 
 Verified 2026-11-03 for the `config` module (config plan, Task 1).
-Extends [proto-musl's findings](../../prototypes/proto-musl/FINDINGS.md),
+Extends [proto-musl's findings](../prototypes/proto-musl.md),
 which found the same failure from reqwest's rustls, beside bollard and
 portable-pty.
 

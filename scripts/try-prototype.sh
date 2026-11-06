@@ -17,12 +17,6 @@ Usage: scripts/try-prototype.sh <prototype>
   logs         Log viewer on your real containers and Saltbox services (read-only)
   logs-demo    Log viewer on a demo container and demo systemd unit (removed on exit)
   markdown     Announcements renderer (full-screen view, then inline, then termimad)
-  runner       Task runner with spinners, live output and a failing step
-  runner-gallery  Task runner output in eight formats, to compare (static)
-  runner-spike    term-ui spike: nested and parallel async steps (Ctrl-C to try)
-  inline       docker ps table in sb-go's layout (plain, NO_COLOR, piped)
-  help         sb --help in six looks (Rust libraries, then sb-go's format copied)
-  help-errors  parse errors: the 32 sb-go-style variants (H1 chosen), then sb-go's
   complete     Shell with dynamic tag completion loaded (bash)
 
 Each run builds the prototype (release mode) first. Nothing touches real Saltbox files.
@@ -135,87 +129,6 @@ case "${1:-}" in
     printf '\n\033[1m--- termimad inline (rejected candidate, for comparison) ---\033[0m\n'
     "$b" --renderer termimad --mode inline --before "$before" "$f"
     printf '\nTo render the real Saltbox announcements: %s --mode view /srv/git/saltbox/announcements.yml\n' "$b"
-    ;;
-  runner)
-    b="$(bin runner)"
-    intro "Task runner as a rounded tree (a simulated install with apt-style output; nothing is installed)" \
-      "Run 1: steps with a live output tail under the running one, then a failing step that keeps" \
-      "       its last lines under it." \
-      "Run 2: a 30 s step - press Ctrl-C to see the interrupt handling." \
-      "Run 3: the same steps piped through cat (plain output, no spinners)." \
-      "Run 4: piped again with --color=always (colours kept, as the installer script would ask)."
-    "$b" --fail || true
-    printf '\n\033[1m--- Run 2: press Ctrl-C during the long task ---\033[0m\n'
-    "$b" --slow || true
-    printf '\n\033[1m--- Run 3: piped ---\033[0m\n'
-    "$b" --fail 2>&1 | cat || true
-    printf '\n\033[1m--- Run 4: piped with --color=always ---\033[0m\n'
-    "$b" --fail --color=always 2>&1 | cat || true
-    ;;
-  runner-spike)
-    b="$(bin runner)"
-    intro "term-ui spike: async steps on tokio, nested and in parallel (simulated)" \
-      "1. three steps in a row with notices  2. a step with nested sub-steps" \
-      "3. two sub-steps in parallel  4. the same with one failing (the other is stopped)." \
-      "Press Ctrl-C during any run to see the interrupted ending."
-    for args in "seq" "nested" "concurrent" "concurrent --fail" "tour"; do
-      # shellcheck disable=SC2086
-      "$b" --spike $args --strategy single || true
-      echo
-    done
-    ;;
-  runner-gallery)
-    b="$(bin runner)"
-    intro "Task runner formats (static snapshots, nothing runs)" \
-      "Eight formats for the same moments: two finished steps, a step running with its live" \
-      "tail, then (after the blank line) that step failing with its last output lines." \
-      "Pick what you like, or mix: e.g. dot leaders with the tree's failure output."
-    "$b" --gallery
-    ;;
-  help)
-    b="$(bin help)"
-    intro "sb --help in six looks, then the installed sb's own help" \
-      "1. clap's defaults (sb today)  2. clap Styles from sb's palette  3. cargo's look" \
-      "(clap-cargo + color-print)  4. clap template with sb-go's sections  5. clap-help" \
-      "(termimad tables, no subcommand support)  6. sb-go's format copied, in sb's palette." \
-      "5 and 6 also show 'install'. One look for one command, e.g.:" \
-      "  target/release/proto-help sb-go docker"
-    "$b"
-    if command -v sb >/dev/null; then
-      printf '\n\033[2m━━━━ the installed sb (%s) ━━━━\033[0m\n' "$(command -v sb)"
-      # SB_LOG_DIR keeps a root run out of /var/log/sb if this is ever sb-rust.
-      logdir="$(mktemp -d)"
-      trap 'rm -rf "$logdir"' EXIT
-      SB_LOG_DIR="$logdir" sb --help
-    fi
-    ;;
-  help-errors)
-    b="$(bin help)"
-    intro "Parse errors: the 32 sb-go-style variants on a typo (static), then the installed sb's" \
-      "H1 (hint-ask) is the chosen look. Other pages: errors tips, errors focus, or all 65" \
-      "layouts with plain errors. One layout on three errors, e.g.:" \
-      "  target/release/proto-help errors hint-ask"
-    "$b" errors sbgo
-    if command -v sb >/dev/null; then
-      printf '\n\033[2m━━━━ the installed sb (%s) ━━━━\033[0m\n' "$(command -v sb)"
-      logdir="$(mktemp -d)"
-      trap 'rm -rf "$logdir"' EXIT
-      SB_LOG_DIR="$logdir" sb verison || true
-      SB_LOG_DIR="$logdir" sb install --bogus || true
-    fi
-    ;;
-  inline)
-    b="$(bin inline)"
-    intro "Inline output (no full-screen UI)" \
-      "1. docker ps table of your containers, sb-go's layout (resize narrow to see wrapping)." \
-      "2. The same table with NO_COLOR=1." \
-      "3. Piped through cat with --color=always (the installer case)." \
-      "   (The restore prompts are deferred until the restore backend rewrite.)"
-    "$b" ps
-    printf '\n\033[1m--- NO_COLOR=1 ---\033[0m\n'
-    NO_COLOR=1 "$b" ps
-    printf '\n\033[1m--- piped, --color=always ---\033[0m\n'
-    "$b" --color=always ps | cat
     ;;
   complete)
     b="$(bin complete)"

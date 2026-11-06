@@ -16,8 +16,8 @@ command first uses it is decision 4.
    proto-runner and proto-musl used it), and rustix for process-group
    signals (already in the tree with its `process` feature). No shell is
    involved unless a caller runs one by name.
-2. **proto-runner's findings are the design** (prototypes/proto-runner/
-   FINDINGS.md): portable-pty starts the child in its own session
+2. **proto-runner's findings are the design**
+   (docs/prototypes/proto-runner.md): portable-pty starts the child in its own session
    (`setsid`, so its process group id is its pid) and Ctrl-C reaches only
    sb; cancelling sends SIGTERM to the child's process group and, after a
    grace period, SIGKILL to the group, not portable-pty's `Child::kill`

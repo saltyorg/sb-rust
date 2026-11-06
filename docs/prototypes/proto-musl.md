@@ -1,5 +1,9 @@
 # Prototype: proto-musl
 
+> The prototype's code was removed once its module was built
+> (maintainer, 2026-11-06); it is in git history
+> (`git log -- prototypes/proto-musl`). These findings stay as the record.
+
 **Question:** Do clap, tokio, reqwest (rustls), bollard and portable-pty build
 into one static musl binary for x86_64 and aarch64, at an acceptable size and
 build time?

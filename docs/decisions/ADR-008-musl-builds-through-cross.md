@@ -20,7 +20,7 @@ worked anywhere the Rust target was installed.
 so a plain musl build stops with `failed to find tool
 "x86_64-linux-musl-gcc"` on any machine without a musl C cross-compiler
 ([musl-c-dependencies.md](../platform-notes/musl-c-dependencies.md);
-[proto-musl](../../prototypes/proto-musl/FINDINGS.md) found the same).
+[proto-musl](../prototypes/proto-musl.md) found the same).
 `cross` 0.2.5 built the planned stack for both
 x86_64-unknown-linux-musl and aarch64-unknown-linux-musl.
 

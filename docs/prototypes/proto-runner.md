@@ -1,5 +1,9 @@
 # Prototype: proto-runner
 
+> The prototype's code was removed once its module was built
+> (maintainer, 2026-11-06); it is in git history
+> (`git log -- prototypes/proto-runner`). These findings stay as the record.
+
 **Question:** Can indicatif and portable-pty reproduce sb-go's task runner:
 spinner per step, live child output under a PTY, an output tail on failure,
 clean Ctrl-C, and plain output when piped?

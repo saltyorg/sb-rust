@@ -5,7 +5,8 @@ currently sb-go). It keeps the user-facing behaviour of `sb` and uses idiomatic
 Rust libraries in place of sb-go's internals.
 
 > **Status:** the stack and module boundaries below have been tested by eight
-> prototypes (`prototypes/*/FINDINGS.md`). Every row in the stack table names
+> prototypes (`prototypes/*/FINDINGS.md`; those whose module is built in
+> `docs/prototypes/`). Every row in the stack table names
 > the prototype that backs it, or says it is untested. The verdicts are
 > technical only until the maintainer reviews each prototype's look and
 > feel. Reviewed: proto-logs, proto-markdown, proto-facts, proto-runner and

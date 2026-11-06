@@ -1,5 +1,9 @@
 # Prototype: proto-help
 
+> The prototype's code was removed once its module was built
+> (maintainer, 2026-11-06); it is in git history
+> (`git log -- prototypes/proto-help`). These findings stay as the record.
+
 **Question:** What do Rust's options for `--help` look like on sb's
 command tree next to sb-go's (fang) help, and what does copying sb-go's
 format cost?

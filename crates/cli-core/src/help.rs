@@ -8,7 +8,7 @@
 //! styles when colour is off) and the exit code stay clap's. Why not clap's
 //! own renderer with styles or a template: its command list shows names
 //! only (no usage hints), its usage says `[OPTIONS]` and its lists are
-//! indented its own way (proto-help FINDINGS.md). The layout follows fang
+//! indented its own way (docs/prototypes/proto-help.md). The layout follows fang
 //! v2.0.1 `help.go`; widths are display widths (unicode-width), padded by
 //! hand since `{:<w$}` counts chars and clap's width helper is private.
 //!
