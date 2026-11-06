@@ -87,7 +87,7 @@ verification.
 
 ### Phase 1: The controller client
 
-- [ ] Task 1: `control.rs`'s client and the job request, on a fake
+- [x] Task 1: `control.rs`'s client and the job request, on a fake
   controller
 - [ ] Task 2: the wait
 - [ ] Task 3: the service check

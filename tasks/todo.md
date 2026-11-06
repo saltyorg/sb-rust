@@ -15,17 +15,17 @@ a temporary directory. No test talks to a real controller.
 fake controller in sb-docker's `testing` feature.
 
 **Acceptance criteria:**
-- [ ] `POST <base>/start` and `/stop`, `ignore` repeated and encoded
+- [x] `POST <base>/start` and `/stop`, `ignore` repeated and encoded
       (sb-go's space and ampersand cases), `Content-Type:
       application/json`, no body; the job ID from a 200 answer; a bare
       base, a base with a trailing slash and one with a path each give
       the right path (no `//start`).
-- [ ] Each request failure is its `ControlError` variant with sb-go's
+- [x] Each request failure is its `ControlError` variant with sb-go's
       text: transport (and the request timeout), non-200 (a 307 too, its
       target never asked), a body that doesn't decode (one cut at the
       body limit included), a missing or blank job ID; trailing data
       after the JSON ignored.
-- [ ] No proxy with `HTTP_PROXY`, `http_proxy` and `ALL_PROXY` set: a
+- [x] No proxy with `HTTP_PROXY`, `http_proxy` and `ALL_PROXY` set: a
       unit test that re-runs its own test binary as a child with the
       variables set (`set_var` is unsafe in edition 2024, and unsafe code
       is forbidden; exec's `tests/capture.rs` pattern), with a control
@@ -33,14 +33,15 @@ fake controller in sb-docker's `testing` feature.
       `saltbox()`'s values pinned.
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`; `scripts/check.sh fast`.
-- [ ] library-reviewer and code-reviewer on the commit.
+- [x] `cargo test -p sb-docker`; `scripts/check.sh fast`.
+- [x] library-reviewer and code-reviewer on the commit.
 
 **Dependencies:** None
 **Files:** `crates/docker/src/control/{mod,client}.rs`,
 `crates/docker/src/testing/controller.rs` (testing.rs split into
-`testing/`), `crates/docker/src/lib.rs` and `Cargo.toml` (reqwest, url,
-thiserror, tokio's `time` as a plain dependency; descriptions no longer
+`testing/`), `crates/docker/src/lib.rs` and `Cargo.toml` (reqwest, with
+its `Url` re-export instead of url itself; thiserror; tokio's `time` as
+a plain dependency; form_urlencoded for the fake; descriptions no longer
 `ps` only)
 **Scope:** M
 

@@ -1,7 +1,7 @@
 [package]
 name = "sb-docker"
 version = "0.1.0"
-description = "sb's Docker commands: sb docker ps through bollard (capability map, docker)"
+description = "sb's Docker commands: ps through bollard, start/stop/restart through the Saltbox Docker controller (capability map, docker)"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ publish.workspace = true
 # The fake Engine API (`testing` module) for sb's end-to-end tests: built
 # into the sb that `cargo test` runs (dev-dependency features unify), never
 # into a release or production build.
-testing = ["dep:axum", "dep:tempfile", "dep:tokio", "tokio/net", "tokio/rt", "tokio/sync", "tokio/time"]
+testing = ["dep:axum", "dep:tempfile", "dep:form_urlencoded", "tokio/net", "tokio/rt", "tokio/sync"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -22,11 +22,18 @@ serde_json.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, optional = true }
+# The wait's sleep between polls (start/stop/restart).
+tokio = { workspace = true, features = ["time"] }
+# The Saltbox Docker controller's HTTP client (docker spec, "Start, stop
+# and restart"): already in sb through sb-config.
+reqwest.workspace = true
+thiserror.workspace = true
 axum = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+form_urlencoded = { workspace = true, optional = true }
 
 [dev-dependencies]
+form_urlencoded.workspace = true
 axum.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }

@@ -8,6 +8,8 @@
 //! (<https://docs.rs/axum/0.8.9/axum/serve/trait.Listener.html>), on a
 //! runtime of its own thread, so a test can drive it from anywhere.
 
+pub mod controller;
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,7 +26,7 @@ use serde_json::{Value, json};
 use crate::ps::{Row, sorted};
 
 /// The fixtures: Docker's inspect answers for a few made-up containers.
-pub const FIXTURES: &str = include_str!("fixtures/containers.json");
+pub const FIXTURES: &str = include_str!("../fixtures/containers.json");
 
 /// The fixtures as raw JSON, one value per container.
 #[must_use]
