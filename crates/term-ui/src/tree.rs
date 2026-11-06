@@ -658,7 +658,7 @@ mod tests {
             ..draw(&theme, secs(t0, s))
         };
         let width_at = |tree: &mut Tree, d: &Draw| {
-            assert!(tree.take_printable(d).is_empty());
+            assert_eq!(tree.take_printable(d), [] as [String; 0]);
             width(&tree.live(d)[0])
         };
         let nine = width_at(&mut tree, &at(9, 0));
@@ -740,7 +740,7 @@ mod tests {
         │   ╰── ✓ Docker Hub login valid                              1s
         ╰── ✓ report written                                          0s
         ");
-        assert!(tree.live(&d).is_empty());
+        assert_eq!(tree.live(&d), [] as [String; 0]);
     }
 
     /// While a step runs, finished ones above it are printed, the newest
@@ -758,7 +758,7 @@ mod tests {
         );
         tree.finish(read, Status::Done, secs(t0, 1));
         let d = draw(&theme, secs(t0, 1));
-        assert!(tree.take_printable(&d).is_empty());
+        assert_eq!(tree.take_printable(&d), [] as [String; 0]);
         assert_eq!(tree.live(&d).len(), 1, "the finished step waits");
         let check = tree.add(
             None,
@@ -1084,7 +1084,7 @@ mod tests {
         tree.finish(parent, Status::Done, t0);
         let _next = tree.add(None, Labels::new("Next", "next done"), t0);
         let d = draw(&theme, t0);
-        assert!(tree.take_printable(&d).is_empty());
+        assert_eq!(tree.take_printable(&d), [] as [String; 0]);
         assert_eq!(tree.live(&d).len(), 3);
     }
 
@@ -1174,7 +1174,7 @@ mod tests {
             if profile == Profile::Ascii {
                 assert!(!text.contains('\x1b'), "{text:?}");
             } else {
-                assert!(!codes.is_empty());
+                assert_ne!(codes, [] as [String; 0]);
                 assert!(
                     codes.iter().all(|c| of_kind(c, profile)),
                     "{profile:?}: {codes:?}"

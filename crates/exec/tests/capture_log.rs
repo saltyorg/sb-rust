@@ -74,7 +74,7 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
         .lines()
         .find(|l| l.contains("child ended"))
         .unwrap_or_else(|| panic!("no end record: {text}"));
-    assert!(end.contains(r#"outcome=exited with code 4"#), "{end}");
+    assert!(end.contains(r"outcome=exited with code 4"), "{end}");
     assert!(end.contains("elapsed_ms="), "{end}");
     // A child that never starts says so, and claims no start.
     let missing = Cmd::new("sb-exec-no-such-program").secret("missing-secret-5");

@@ -332,7 +332,7 @@ mod tests {
             finish_run(&shutdown, Some(&err), None, &mut out),
             RunEnd::Code(ExitCode::from(0))
         );
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [u8; 0]);
     }
 
     /// A command asked to end with its own code: quiet, with that code.
@@ -345,7 +345,7 @@ mod tests {
             finish_run(&shutdown, None, None, &mut out),
             RunEnd::Code(ExitCode::from(3))
         );
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [u8; 0]);
     }
 
     #[test]

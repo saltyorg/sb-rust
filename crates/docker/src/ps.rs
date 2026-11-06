@@ -405,7 +405,7 @@ mod tests {
             ("com.example.loadbalancer.server.port", "1"),
         ]);
         assert_eq!(traefik_ports(&l), ["900", "8080", "32400", "web"]);
-        assert!(traefik_ports(&HashMap::new()).is_empty());
+        assert_eq!(traefik_ports(&HashMap::new()), [] as [String; 0]);
     }
 
     fn port_map(entries: &[(&str, &[(&str, &str)])]) -> PortMap {
@@ -527,7 +527,7 @@ mod tests {
                 "[::]:32400->32400/tcp",
             ]
         );
-        assert!(binding_lines(&[]).is_empty());
+        assert_eq!(binding_lines(&[]), [] as [String; 0]);
         // A port Docker gave without a protocol keeps no slash.
         let bare = port_map(&[("80", &[("", "80")])]);
         assert_eq!(binding_lines(&bindings(&bare)), ["0.0.0.0:80->80"]);

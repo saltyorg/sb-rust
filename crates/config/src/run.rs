@@ -556,7 +556,7 @@ mod tests {
             screen.contains("no Docker Hub credentials set; skipped"),
             "{screen}"
         );
-        assert!(fake.seen().is_empty());
+        assert_eq!(fake.seen(), [] as [crate::testing::Seen; 0]);
     }
 
     /// A failed check shows its own block, and accounts.yml fails with it.

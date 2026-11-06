@@ -283,7 +283,7 @@ mod tests {
                 "sonarr"
             ]
         );
-        assert!(listing.failures.is_empty());
+        assert_eq!(listing.failures, [] as [Failure; 0]);
         let paths = engine.paths();
         assert_eq!(paths[0], "/version");
         // Every container, running or not.
@@ -397,7 +397,7 @@ mod tests {
         let listing = ps(&engine).await.expect("ps");
         assert!(!names(&listing).contains(&"plex"));
         assert_eq!(listing.rows.len(), 5);
-        assert!(listing.failures.is_empty());
+        assert_eq!(listing.failures, [] as [Failure; 0]);
     }
 
     /// Any other failure: kept, with the short ID and the cause.

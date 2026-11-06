@@ -1070,7 +1070,7 @@ mod tests {
             "p: short\n",
             &Fake::default(),
         );
-        assert!(report.warnings.is_empty());
+        assert_eq!(report.warnings, [] as [String; 0]);
     }
 
     /// One issue per field (sb-go's first), every field reported, sorted.
@@ -1175,7 +1175,7 @@ mod tests {
     #[test]
     fn missing_credentials_are_skipped() {
         let report = run_with(CREDENTIALS, "cloudflare: {}\n", &Fake::default());
-        assert!(report.requests.is_empty());
+        assert_eq!(report.requests, [] as [Request; 0]);
         assert_eq!(
             report.skipped,
             [
@@ -1205,7 +1205,7 @@ mod tests {
                 "c.yml:4:3: cloudflare.bogus: unknown field",
             ]
         );
-        assert!(report.requests.is_empty());
+        assert_eq!(report.requests, [] as [Request; 0]);
     }
 
     /// No credentials, the section absent or null as well as empty: the
@@ -1242,7 +1242,7 @@ mod tests {
         );
         let shown: Vec<String> = report.issues.iter().map(ToString::to_string).collect();
         assert_eq!(shown, ["c.yml:3:3: cloudflare.extra: unknown field"]);
-        assert!(report.requests.is_empty());
+        assert_eq!(report.requests, [] as [Request; 0]);
     }
 
     /// A request's debug output never shows the credentials it carries.

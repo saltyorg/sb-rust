@@ -564,9 +564,9 @@ mod tests {
         assert!(!hold.child_ended_by(Some(SIGQUIT)), "read before the hold");
         drop(hold);
         // A SIGTERM isn't held: it went the usual way.
-        let held = Shutdown::new();
-        let hold = held.hold();
-        assert_eq!(read(&held, SIGTERM), Act::Cancel);
+        let terminated = Shutdown::new();
+        let hold = terminated.hold();
+        assert_eq!(read(&terminated, SIGTERM), Act::Cancel);
         assert!(!hold.child_ended_by(Some(SIGTERM)));
     }
 

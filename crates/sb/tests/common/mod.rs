@@ -11,7 +11,7 @@ pub fn test_log_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sb-test-logs")
 }
 
-/// The built `sb`, logging to [`test_log_dir`]. assert_cmd's prelude adds
+/// The built `sb`, logging to [`test_log_dir`]. `assert_cmd`'s prelude adds
 /// `.assert()` to it. `SB_TEST_BINARY`, an absolute path to an existing
 /// file, runs another build of sb in every test that uses this (the
 /// production musl binary, docker plan Task 9); a bare name would go

@@ -319,7 +319,10 @@ mod tests {
             .expect("name")
             .to_string_lossy()
             .into_owned();
-        assert!(name.starts_with("sb.") && name.ends_with(".log"), "{name}");
+        assert!(
+            name.starts_with("sb.") && Path::new(&name).extension().is_some_and(|e| e == "log"),
+            "{name}"
+        );
         std::fs::read_to_string(&files[0]).expect("read log")
     }
 

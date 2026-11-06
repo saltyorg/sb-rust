@@ -834,7 +834,7 @@ mod tests {
                 "{domain}"
             );
         }
-        assert!(fake.seen().is_empty());
+        assert_eq!(fake.seen(), [] as [crate::testing::Seen; 0]);
     }
 
     /// The domain and zone are echoed escaped (the file is group-writable).
@@ -1054,7 +1054,7 @@ mod tests {
             ),
             "{err}"
         );
-        assert!(fake.seen().is_empty());
+        assert_eq!(fake.seen(), [] as [crate::testing::Seen; 0]);
         assert_eq!(format!("{:?}", global()), "Credentials::Global");
     }
 
