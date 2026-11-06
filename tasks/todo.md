@@ -81,19 +81,19 @@ is-active` through exec's `capture` with `check_timeout`, the step's token
 cancelling it.
 
 **Acceptance criteria:**
-- [ ] Ready only for exit 0 and `active` after trimming (trailing
+- [x] Ready only for exit 0 and `active` after trimming (trailing
       whitespace too); `inactive`, exit 3, `active` with exit 1, a
       sleeper past the timeout and a missing program are "not running",
       a plain error with exec's outcome logged, not chained (term-ui's
       block shows sb-go's text alone).
-- [ ] The unit file missing ("does not exist") or behind a regular file
+- [x] The unit file missing ("does not exist") or behind a regular file
       (ENOTDIR: "error checking service status: stat <path>: <cause>");
       `systemctl` isn't run then.
-- [ ] Cancelled while `systemctl` runs: the interrupted outcome is
+- [x] Cancelled while `systemctl` runs: the interrupted outcome is
       passed on, not "not running".
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`; `scripts/check.sh fast`; library-reviewer
+- [x] `cargo test -p sb-docker`; `scripts/check.sh fast`; library-reviewer
       (process code) and code-reviewer.
 
 **Dependencies:** Task 1 (the error type and `Controller`)

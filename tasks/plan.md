@@ -40,8 +40,14 @@ test uses a fake one.
   so tests match variants and the screen shows sb-go's words. A reqwest or
   serde_json cause is in the `Display` text only, not also a `#[source]`
   (term-ui's block shows the whole chain, so both would print it twice).
-  An interrupted request, wait or check is the step's own interrupted
-  ending (the body returns when the token is cancelled), not a variant.
+  Interrupted is `ControlError::Interrupted` (amended in Task 3): the
+  service check takes the step's token, so exec stops `systemctl`
+  gracefully (dropping its future would SIGKILL the group), and returns it
+  when exec reports the run interrupted; the request and the wait run
+  under `run_until_cancelled`, and on `None` the step adds decision 5's
+  notice and returns it too. The runner decides the ending from the
+  shutdown, never from the variant; only a request's or wait's `None`
+  gives the notice, never a check's `Interrupted`.
   `ps`'s `anyhow` API stays as it is (its own change, still in the
   backlog). Fields stay private, set through `saltbox()` and builder
   setters for tests, so reqwest's and url's types don't enter
@@ -90,7 +96,7 @@ verification.
 - [x] Task 1: `control.rs`'s client and the job request, on a fake
   controller
 - [x] Task 2: the wait
-- [ ] Task 3: the service check
+- [x] Task 3: the service check
 
 ### Checkpoint A: the client is done
 

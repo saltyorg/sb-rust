@@ -685,6 +685,7 @@ mod tests {
         fake.script("/start", Answer::ok(JOB));
         let proxy = FakeController::start().expect("proxy");
         proxy.script("/start", Answer::ok(r#"{"job_id":"via-proxy"}"#));
+        let _spawns = crate::control::SPAWNS.blocking_lock();
         let out = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args([
                 "control::client::tests::the_proxy_variables_are_not_used",

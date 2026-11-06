@@ -5,6 +5,7 @@
 //! check and the commands as term-ui steps join it.
 
 mod client;
+mod service;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -52,7 +53,7 @@ impl Action {
     }
 }
 
-/// Why a request or a wait failed: sb-go's texts, a cause from
+/// Why the service check, a request or a wait failed: sb-go's texts, a cause from
 /// reqwest or `serde_json` in place of Go's. The cause is part of the text
 /// only, not a `source` as well: term-ui's failure block shows the whole
 /// chain, which would print it twice.
@@ -86,6 +87,20 @@ pub enum ControlError {
     UnknownStatus(String),
     #[error("timeout waiting for job completion")]
     Timeout,
+    #[error("the Docker controller service does not exist")]
+    NoService,
+    /// Another stat error: "stat <path>: <cause>" (Go's `PathError` names
+    /// the path; Rust's `io::Error` doesn't, so it is added).
+    #[error("error checking service status: {0}")]
+    Stat(String),
+    #[error("the Docker controller service is not running")]
+    NotRunning,
+    /// The step's token was cancelled (the service check, or a request or
+    /// wait the step's body ended). When sb's shutdown cancelled it, the
+    /// runner shows the step's interrupted (or stopped) ending instead of
+    /// this text; under a caller's own token it is the step's failure.
+    #[error("interrupted")]
+    Interrupted,
 }
 
 /// A job the controller accepted.
@@ -213,3 +228,9 @@ impl Controller {
         self
     }
 }
+
+/// Tests that write a stand-in program and run it hold this, so no other
+/// test's fork holds the program's write descriptor when it runs (exec
+/// fails with ETXTBSY otherwise).
+#[cfg(test)]
+pub(crate) static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

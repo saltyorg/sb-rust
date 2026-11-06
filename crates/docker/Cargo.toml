@@ -28,12 +28,15 @@ tokio = { workspace = true, features = ["time"] }
 # and restart"): already in sb through sb-config.
 reqwest.workspace = true
 thiserror.workspace = true
+# `systemctl is-active` for the controller's service check, and the step's
+# token that cancels it (exec spec; deny.toml lets sb-docker wrap sb-exec).
+sb-exec.workspace = true
+tokio-util.workspace = true
 axum = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 form_urlencoded = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio-util.workspace = true
 form_urlencoded.workspace = true
 axum.workspace = true
 tempfile.workspace = true
