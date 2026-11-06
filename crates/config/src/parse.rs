@@ -26,6 +26,10 @@ fn position(marker: &Marker) -> (usize, usize) {
 /// issues: a syntax error, nesting too deep, the duplicate keys, or a
 /// root that isn't a mapping. An empty file (or a null root) is an empty
 /// mapping.
+///
+/// # Errors
+///
+/// The issues above, sorted by position.
 pub fn parse(file: &str, text: &str) -> Result<MarkedYamlOwned, Vec<Issue>> {
     let issue = |(line, column): (usize, usize), message: String| Issue {
         file: file.to_string(),
@@ -186,41 +190,6 @@ fn duplicates(file: &str, text: &str) -> Result<Vec<Issue>, ScanError> {
             message: format!("nested deeper than {MAX_DEPTH} levels"),
         }])
     };
-    // A node (of `height`) has ended in the innermost collection: a key is
-    // noted and compared, a value moves its mapping back to expecting a
-    // key or its sequence to the next index.
-    let mut ended =
-        |frames: &mut Vec<Frame>, id: KeyId, label: String, here: (usize, usize), height: usize| {
-            let Some(frame) = frames.last_mut() else {
-                return;
-            };
-            frame.tallest = frame.tallest.max(height);
-            match &mut frame.kind {
-                FrameKind::Mapping {
-                    key: next @ Some(_),
-                    ..
-                } => *next = None,
-                FrameKind::Mapping { seen, key: next } => {
-                    let earlier = seen.entry(id).or_default();
-                    if !earlier.is_empty() {
-                        let list: Vec<String> = earlier
-                            .iter()
-                            .map(|(line, column)| format!("line {line}, column {column}"))
-                            .collect();
-                        issues.push(Issue {
-                            file: file.to_string(),
-                            line: here.0,
-                            column: here.1,
-                            path: join(&frame.path, &label),
-                            message: format!("duplicate key (also at {})", list.join(" and ")),
-                        });
-                    }
-                    earlier.push(here);
-                    *next = Some(label);
-                }
-                FrameKind::Sequence { index } => *index += 1,
-            }
-        };
     for event in Parser::new_from_str(text) {
         let (event, span) = event?;
         let here = position(&span.start);
@@ -257,30 +226,36 @@ fn duplicates(file: &str, text: &str) -> Result<Vec<Issue>, ScanError> {
                         FrameKind::Mapping { .. } => KeyId::Mapping,
                         FrameKind::Sequence { .. } => KeyId::Sequence,
                     };
-                    ended(&mut frames, id, "<key>".to_string(), frame.start, height);
+                    let node = Node {
+                        id,
+                        label: "<key>".to_string(),
+                        here: frame.start,
+                        height,
+                    };
+                    ended(&mut issues, file, &mut frames, node);
                 }
             }
             Event::Scalar(value, ..) => {
-                ended(
-                    &mut frames,
-                    KeyId::Text(value.to_string()),
-                    value.to_string(),
+                let node = Node {
+                    id: KeyId::Text(value.to_string()),
+                    label: value.to_string(),
                     here,
-                    0,
-                );
+                    height: 0,
+                };
+                ended(&mut issues, file, &mut frames, node);
             }
             Event::Alias(anchor) => {
                 let height = heights.get(&anchor).copied().unwrap_or(0);
                 if frames.len() + height > MAX_DEPTH {
                     return too_deep(child_path(&frames), here);
                 }
-                ended(
-                    &mut frames,
-                    KeyId::Alias(anchor),
-                    "<alias>".to_string(),
+                let node = Node {
+                    id: KeyId::Alias(anchor),
+                    label: "<alias>".to_string(),
                     here,
                     height,
-                );
+                };
+                ended(&mut issues, file, &mut frames, node);
             }
             _ => {}
         }
@@ -289,8 +264,54 @@ fn duplicates(file: &str, text: &str) -> Result<Vec<Issue>, ScanError> {
     Ok(issues)
 }
 
+/// A node that has ended: its key identity, its label in a path, where it
+/// started and its height.
+struct Node {
+    id: KeyId,
+    label: String,
+    here: (usize, usize),
+    height: usize,
+}
+
+/// A node has ended in the innermost collection: a key is noted and
+/// compared (a repeat is an issue), a value moves its mapping back to
+/// expecting a key or its sequence to the next index.
+fn ended(issues: &mut Vec<Issue>, file: &str, frames: &mut [Frame], node: Node) {
+    let Some(frame) = frames.last_mut() else {
+        return;
+    };
+    frame.tallest = frame.tallest.max(node.height);
+    match &mut frame.kind {
+        FrameKind::Mapping {
+            key: next @ Some(_),
+            ..
+        } => *next = None,
+        FrameKind::Mapping { seen, key: next } => {
+            let earlier = seen.entry(node.id).or_default();
+            if !earlier.is_empty() {
+                let list: Vec<String> = earlier
+                    .iter()
+                    .map(|(line, column)| format!("line {line}, column {column}"))
+                    .collect();
+                issues.push(Issue {
+                    file: file.to_string(),
+                    line: node.here.0,
+                    column: node.here.1,
+                    path: join(&frame.path, &node.label),
+                    message: format!("duplicate key (also at {})", list.join(" and ")),
+                });
+            }
+            earlier.push(node.here);
+            *next = Some(node.label);
+        }
+        FrameKind::Sequence { index } => *index += 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use saphyr::{ScalarStyle, YamlDataOwned};
 
@@ -445,10 +466,15 @@ mod tests {
         let mut text = String::from("a: &a [x, x, x, x, x, x, x, x, x, x]\n");
         for level in 1..8 {
             let prev = level - 1;
-            text.push_str(&format!(
-                "l{level}: &l{level} [*{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}]\n",
-                p = if prev == 0 { "a".to_string() } else { format!("l{prev}") }
-            ));
+            let _ = writeln!(
+                text,
+                "l{level}: &l{level} [*{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}, *{p}]",
+                p = if prev == 0 {
+                    "a".to_string()
+                } else {
+                    format!("l{prev}")
+                }
+            );
         }
         text.push_str("required: 1\n");
         let found = issues(&text);
@@ -487,7 +513,7 @@ mod tests {
             } else {
                 format!("*a{}", k - 1)
             };
-            text.push_str(&format!("a{k}: &a{k}\n  {}{inner}\n", "- ".repeat(100)));
+            let _ = writeln!(text, "a{k}: &a{k}\n  {}{inner}", "- ".repeat(100));
         }
         let found = issues(&text);
         assert_eq!(found.len(), 1, "{found:?}");
@@ -496,7 +522,7 @@ mod tests {
             "{found:?}"
         );
         // Two such anchors stay within the limit.
-        let two: String = text.lines().take(4).map(|l| format!("{l}\n")).collect();
+        let two: String = text.lines().take(4).flat_map(|l| [l, "\n"]).collect();
         assert_eq!(keys(&root(&two)), ["a0", "a1"]);
     }
 

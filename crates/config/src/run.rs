@@ -84,8 +84,33 @@ pub struct Settings {
     pub backoff: fn(u32) -> Duration,
 }
 
+/// The URLs as the log has them (`http::loggable_url`, any credentials
+/// out); the client is left out (reqwest's lists its proxies, which can
+/// carry credentials), as is the backoff.
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("root", &self.root)
+            .field("zoneinfo", &self.zoneinfo)
+            .field(
+                "cloudflare_url",
+                &crate::http::loggable_url(&self.cloudflare_url),
+            )
+            .field(
+                "dockerhub_url",
+                &crate::http::loggable_url(&self.dockerhub_url),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 /// Validate every file under `runner`: `Exit(1)` when any failed (each
 /// failed file and check has shown its block).
+///
+/// # Errors
+///
+/// `Exit(1)` when a file or credential check failed, or the run was
+/// interrupted or stopped.
 pub async fn run(runner: &mut Runner, settings: &Settings) -> Result<(), Exit> {
     let labels = Labels::new(
         "Validating Saltbox configuration",
@@ -111,14 +136,13 @@ pub async fn run(runner: &mut Runner, settings: &Settings) -> Result<(), Exit> {
 
 /// A file as its step names it.
 fn shown(file: File) -> String {
-    match file.schema {
-        Some(_) => file.path.to_string(),
+    if file.schema.is_some() {
+        file.path.to_string()
+    } else {
         // sb-go's name, the file alone: the whole path doesn't fit
         // term-ui's label column. Issues and notices keep the path.
-        None => {
-            let name = file.path.rsplit('/').next().unwrap_or(file.path);
-            format!("{name} (no duplicates)")
-        }
+        let name = file.path.rsplit('/').next().unwrap_or(file.path);
+        format!("{name} (no duplicates)")
     }
 }
 
@@ -154,12 +178,13 @@ async fn validate(step: &mut Step, settings: &Settings, file: File) -> anyhow::R
         }
         None => None,
     };
-    let root = parse::parse(file.path, &text).map_err(block)?;
+    let root = parse::parse(file.path, &text).map_err(|issues| block(&issues))?;
     let Some(rules) = rules else {
         tracing::info!(file = file.path, issues = 0, "config file checked");
         return Ok(());
     };
-    let tree = tree::build(file.path, &root, &rules::secret_paths(&rules)).map_err(block)?;
+    let tree = tree::build(file.path, &root, &rules::secret_paths(&rules))
+        .map_err(|issues| block(&issues))?;
     let validators = Saltbox::with_zoneinfo(settings.zoneinfo.clone());
     let report = rules::validate(file.path, &tree, &rules, &validators);
     tracing::info!(
@@ -179,7 +204,7 @@ async fn validate(step: &mut Step, settings: &Settings, file: File) -> anyhow::R
     }
     let checks_failed = checks(step, settings, &report.requests).await;
     if !report.issues.is_empty() {
-        return Err(block(report.issues));
+        return Err(block(&report.issues));
     }
     if checks_failed {
         return Err(Exit(1).into());
@@ -188,14 +213,14 @@ async fn validate(step: &mut Step, settings: &Settings, file: File) -> anyhow::R
 }
 
 /// Issues as a failure block, one per line.
-fn block(issues: Vec<Issue>) -> anyhow::Error {
+fn block(issues: &[Issue]) -> anyhow::Error {
     let lines: Vec<String> = issues.iter().map(ToString::to_string).collect();
     anyhow::anyhow!(lines.join("\n"))
 }
 
 /// A check under `step`, ended early when the step is cancelled (Ctrl-C,
 /// the command's request), as term-ui asks of a body
-/// (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled).
+/// (<https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled>).
 async fn stoppable(
     step: &Step,
     check: impl Future<Output = Result<(), String>>,
@@ -319,6 +344,25 @@ mod tests {
         let result = run(&mut runner, &settings).await;
         runner.finish();
         (result, term.contents())
+    }
+
+    /// `Settings`' `Debug` shows the service URLs as the log does, with
+    /// any credentials in them taken out (`http::loggable_url`).
+    #[test]
+    fn settings_debug_keeps_url_credentials_out() {
+        let settings = Settings {
+            root: "/srv/git/saltbox".into(),
+            zoneinfo: Vec::new(),
+            http: Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client"),
+            cloudflare_url: "https://u:cf-pass-zz@cf.example.com/client/v4/".to_string(),
+            dockerhub_url: "https://u:hub-pass-zz@hub.example.com/v2/users/login/".to_string(),
+            backoff: no_wait,
+        };
+        let shown = format!("{settings:?}");
+        for hidden in ["cf-pass-zz", "hub-pass-zz"] {
+            assert!(!shown.contains(hidden), "{hidden}: {shown}");
+        }
+        assert!(shown.contains("cf.example.com"), "{shown}");
     }
 
     fn write(root: &std::path::Path, file: &str, text: &str) {
@@ -609,7 +653,7 @@ mod tests {
         );
     }
 
-    /// A tag error on a secret doesn't show its value (secret_paths), and
+    /// A tag error on a secret doesn't show its value (`secret_paths`), and
     /// stops the file before its rules and checks.
     #[tokio::test]
     async fn a_secret_tag_error_is_redacted() {

@@ -20,7 +20,7 @@ pub enum Proxy {
     /// reqwest's own handling of the proxy variables (`HTTP_PROXY`,
     /// `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, lowercase names too, and
     /// none under CGI's `REQUEST_METHOD`;
-    /// https://docs.rs/reqwest/0.13.5/reqwest/#proxies): production.
+    /// <https://docs.rs/reqwest/0.13.5/reqwest/#proxies>: production.
     /// Unlike Go, it proxies loopback addresses too (a listed difference;
     /// sb's end-to-end tests remove the variables).
     System,
@@ -41,9 +41,14 @@ impl Http {
     /// no redirects (neither service redirects, and following one would
     /// send the credentials on): reqwest's own proxy handling for
     /// `System`, `no_proxy` for `Off`, and `Proxy::all` for `Via`
-    /// (https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.no_proxy,
-    /// https://docs.rs/reqwest/0.13.5/reqwest/struct.Proxy.html#method.all,
-    /// https://docs.rs/reqwest/0.13.5/reqwest/redirect/struct.Policy.html#method.none).
+    /// (<https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.no_proxy>,
+    /// <https://docs.rs/reqwest/0.13.5/reqwest/struct.Proxy.html#method.all>,
+    /// <https://docs.rs/reqwest/0.13.5/reqwest/redirect/struct.Policy.html#method.none>).
+    ///
+    /// # Errors
+    ///
+    /// The text shown when the proxy URL is invalid or the client can't be
+    /// built.
     pub fn new(proxy: &Proxy, timeout: Duration) -> Result<Self, String> {
         let builder = reqwest::Client::builder()
             .timeout(timeout)
@@ -62,6 +67,7 @@ impl Http {
     }
 
     /// The reqwest client.
+    #[must_use]
     pub fn client(&self) -> &reqwest::Client {
         &self.client
     }
@@ -69,9 +75,13 @@ impl Http {
 
 /// `response`'s body, up to `MAX_BODY` bytes (read chunk by chunk, so a
 /// larger body isn't read whole:
-/// https://docs.rs/reqwest/0.13.5/reqwest/struct.Response.html#method.chunk).
+/// <https://docs.rs/reqwest/0.13.5/reqwest/struct.Response.html#method.chunk>).
 /// Why not `http_body_util::Limited`: it fails past the limit, where the
 /// spec keeps the first MiB.
+///
+/// # Errors
+///
+/// The text shown when reading the body fails part way.
 pub async fn body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     while body.len() < MAX_BODY {
@@ -87,6 +97,7 @@ pub async fn body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
 
 /// Text from a remote service as an issue may show it: control
 /// characters escaped, cut at `MAX_TEXT` characters with `…`.
+#[must_use]
 pub fn remote_text(text: &str) -> String {
     let escaped = crate::issue::escape_controls(text);
     if escaped.chars().count() > MAX_TEXT {
@@ -108,15 +119,17 @@ pub fn error_chain(err: &reqwest::Error) -> String {
 }
 
 /// A transport error with its causes, one line, shown as remote text.
+#[must_use]
 pub fn transport_error(err: &reqwest::Error) -> String {
     remote_text(&error_chain(err))
 }
 
 /// `text`, a service URL, as a log record may show it: its user name
 /// and password taken out
-/// (https://docs.rs/url/2.5.8/url/struct.Url.html#method.set_password);
+/// (<https://docs.rs/url/2.5.8/url/struct.Url.html#method.set_password>);
 /// text that isn't a URL is withheld whole, since it could be anything.
 /// A query string stays: neither service takes credentials there.
+#[must_use]
 pub fn loggable_url(text: &str) -> String {
     match reqwest::Url::parse(text) {
         Ok(mut url) => {

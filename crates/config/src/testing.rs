@@ -5,7 +5,7 @@
 //! answers per path (status, headers, body, or held until released) and
 //! reads back what it was sent. axum on a `TcpListener`, on a runtime of
 //! its own thread, as sb-docker's fake Engine API
-//! (https://docs.rs/axum/0.8.9/axum/fn.serve.html). Why not wiremock or
+//! (<https://docs.rs/axum/0.8.9/axum/fn.serve.html>). Why not wiremock or
 //! httpmock: neither is in the tree, and neither holds an answer until
 //! released. It also lays out the fixture sets as a Saltbox root in a
 //! temporary directory.
@@ -79,6 +79,7 @@ pub struct Seen {
 
 impl Seen {
     /// The first value of header `name` (lowercase).
+    #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -107,6 +108,14 @@ pub struct Fake {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for Fake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Fake")
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -115,6 +124,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Fake {
     /// Start a fake on a free loopback port.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error when the loopback port can't be bound or set up.
     pub fn start() -> std::io::Result<Self> {
         // Bound here, so the port exists before `start` returns.
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -170,6 +183,7 @@ impl Fake {
     }
 
     /// The fake's base URL (`http://127.0.0.1:<port>`).
+    #[must_use]
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -185,13 +199,14 @@ impl Fake {
     }
 
     /// What the fake was sent, in order.
+    #[must_use]
     pub fn seen(&self) -> Vec<Seen> {
         lock(&self.shared.script).seen.clone()
     }
 
     /// Let held answers go, now and later ones too (`send_replace` keeps
     /// the value while nothing waits,
-    /// https://docs.rs/tokio/1.54.1/tokio/sync/watch/struct.Sender.html#method.send_replace).
+    /// <https://docs.rs/tokio/1.54.1/tokio/sync/watch/struct.Sender.html#method.send_replace>).
     pub fn release(&self) {
         self.shared.release.send_replace(true);
     }
@@ -269,6 +284,11 @@ async fn answer(
 /// (`valid`, say) as its config files, and the pinned schemas under
 /// `schema/`, as Saltbox lays them out. Copied per test, so a test can
 /// change its files freely.
+///
+/// # Errors
+///
+/// The I/O error when the temporary directory can't be made or a file can't
+/// be copied in.
 pub fn saltbox_root(set: &str) -> std::io::Result<tempfile::TempDir> {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let root = tempfile::tempdir()?;
@@ -294,6 +314,16 @@ pub fn saltbox_root(set: &str) -> std::io::Result<tempfile::TempDir> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Debug` shows the fake's URL only.
+    #[test]
+    fn debug_shows_the_url() {
+        let fake = Fake::start().expect("fake");
+        assert_eq!(
+            format!("{fake:?}"),
+            format!("Fake {{ url: {:?}, .. }}", fake.url())
+        );
+    }
 
     async fn get(url: &str) -> (u16, String) {
         let response = reqwest::Client::builder()

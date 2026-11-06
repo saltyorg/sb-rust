@@ -29,6 +29,11 @@ impl std::fmt::Debug for DockerhubLogin {
 /// content type; sb-go formats it unescaped, a listed difference); Docker
 /// Hub's `message` (else its `details`) is shown escaped and cut, with
 /// the token taken out first should the service echo it.
+///
+/// # Errors
+///
+/// The text shown when the login is refused or the service can't be reached
+/// or answers unexpectedly.
 pub async fn login(http: &Http, url: &str, login: &DockerhubLogin) -> Result<(), String> {
     let (user, token) = (login.user.as_str(), login.token.as_str());
     let response = http

@@ -34,6 +34,7 @@ impl fmt::Display for Issue {
 /// backslashes, which messages use as they are; so escaping twice changes
 /// nothing. (cli-core's `str::escape_debug` leaves combining marks after
 /// the first character alone; this escapes them too.)
+#[must_use]
 pub fn escape_controls(text: &str) -> String {
     text.chars()
         .map(|c| {

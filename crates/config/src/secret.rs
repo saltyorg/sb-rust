@@ -16,11 +16,13 @@ const SECRET_PATHS: [&str; 3] = [
 ];
 
 /// Whether the value at `path`, of type `kind`, is secret.
+#[must_use]
 pub fn is_secret(path: &str, kind: Option<Kind>) -> bool {
     kind == Some(Kind::Password) || SECRET_PATHS.contains(&path)
 }
 
 /// `text` as a message may show it: `[REDACTED]` for a secret.
+#[must_use]
 pub fn shown(text: &str, secret: bool) -> String {
     if secret {
         REDACTED.to_string()
@@ -35,6 +37,7 @@ pub fn shown(text: &str, secret: bool) -> String {
 /// it), so it doesn't eat the letters of other words. Run on raw text,
 /// before it is escaped or cut. Why not `regex`: it has no lookaround, so
 /// word edges would be consumed and adjacent matches missed.
+#[must_use]
 pub fn hide(text: &str, value: &str) -> String {
     if value.is_empty() {
         return text.to_string();

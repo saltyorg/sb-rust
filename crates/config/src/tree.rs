@@ -36,6 +36,7 @@ pub struct Key {
 
 impl Node {
     /// The key and value under `key`, when this is a mapping holding it.
+    #[must_use]
     pub fn entry(&self, key: &str) -> Option<(&Key, &Node)> {
         match &self.data {
             Data::Mapping(entries) => entries
@@ -47,11 +48,13 @@ impl Node {
     }
 
     /// The value under `key`, when this is a mapping holding it.
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<&Node> {
         self.entry(key).map(|(_, value)| value)
     }
 
     /// Null or an empty string: sb-go's `isEmptyValue`.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         matches!(&self.data, Data::Scalar(Value::Null))
             || matches!(&self.data, Data::Scalar(Value::Str(text)) if text.is_empty())
@@ -61,6 +64,10 @@ impl Node {
 /// `root`, a parsed file shown as `file`, resolved; or every scalar whose
 /// tag doesn't fit its text, each an issue, which never shows the value of
 /// a path `secret` names (`rules::secret_paths`).
+///
+/// # Errors
+///
+/// The issues above.
 pub fn build(
     file: &str,
     root: &MarkedYamlOwned,

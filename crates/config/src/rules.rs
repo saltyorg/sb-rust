@@ -62,6 +62,7 @@ pub enum Login {
 
 impl Login {
     /// The validator whose check this is.
+    #[must_use]
     pub fn validator(&self) -> Validator {
         match self {
             Login::Cloudflare { .. } => Validator::ValidateCloudflareConfig,
@@ -90,6 +91,7 @@ pub struct Request {
 
 impl Request {
     /// The validator whose check this is.
+    #[must_use]
     pub fn validator(&self) -> Validator {
         self.login.validator()
     }
@@ -403,10 +405,10 @@ impl Walk<'_> {
             }
         }
         match rule.custom_validator {
-            // The credential checks: `field`'s.
-            Some(Validator::ValidateCloudflareConfig | Validator::ValidateDockerhubConfig) => None,
+            // The credential checks are `field`'s.
+            Some(Validator::ValidateCloudflareConfig | Validator::ValidateDockerhubConfig)
+            | None => None,
             Some(validator) => self.run(validator, value, parent, secret),
-            None => None,
         }
     }
 
@@ -478,7 +480,11 @@ fn equals(value: &Node, forbidden: &crate::schema::Scalar) -> bool {
     match (&value.data, forbidden) {
         (Data::Scalar(Value::Bool(a)), Scalar::Bool(b)) => a == b,
         (Data::Scalar(Value::Int(a)), Scalar::Int(b)) => *a == i128::from(*b),
-        (Data::Scalar(Value::Float(a)), Scalar::Float(b)) => a == b,
+        // Exactly `==` (Go's), NaN unequal and -0 equal to 0; clippy's
+        // `float_cmp` wants the comparison spelled out.
+        (Data::Scalar(Value::Float(a)), Scalar::Float(b)) => {
+            a.partial_cmp(b) == Some(std::cmp::Ordering::Equal)
+        }
         (Data::Scalar(Value::Str(a)), Scalar::Str(b)) => a == b,
         _ => false,
     }
@@ -1103,7 +1109,7 @@ mod tests {
         assert!(got("n: -.inf\n").ends_with("got: -Inf"));
     }
 
-    /// Go's ParseFloat: a sign goes with inf only, not nan; underscores
+    /// Go's `ParseFloat`: a sign goes with inf only, not nan; underscores
     /// sit between digits.
     #[test]
     fn float_strings_parse_as_go_does() {

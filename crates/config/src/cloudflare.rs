@@ -49,8 +49,19 @@ pub struct Check<'a> {
     pub backoff: &'a Backoff<'a>,
 }
 
+/// The backoff, a closure, is left out.
+impl std::fmt::Debug for Check<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Check")
+            .field("http", self.http)
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A base URL as cloudflare-go's `WithBaseURL` takes it: a path without a
 /// trailing slash gets one, so its last segment survives resolution.
+#[must_use]
 pub fn base_url(text: &str) -> String {
     match reqwest::Url::parse(text) {
         Ok(url) if !url.path().is_empty() && !url.path().ends_with('/') => {
@@ -66,11 +77,12 @@ pub fn base_url(text: &str) -> String {
 /// cloudflare-go's backoff (`retryDelay`): 0.5 s doubling per retry, at
 /// most 8 s, less a random quarter at most. The randomness comes from
 /// std's `RandomState` (randomly keyed per thread, each `new` a fresh key:
-/// https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.html);
+/// <https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.html>);
 /// why not fastrand or rand: no random-number crate is in sb-config's
 /// tree, and jitter needs no more than this. UNVERIFIED as a randomness
 /// source (std documents it for hashing), checked against the jitter
 /// bounds test.
+#[must_use]
 pub fn backoff(count: u32) -> Duration {
     let full = Duration::from_millis(500)
         .saturating_mul(2u32.saturating_pow(count))
@@ -81,7 +93,8 @@ pub fn backoff(count: u32) -> Duration {
     let random = std::collections::hash_map::RandomState::new()
         .build_hasher()
         .finish();
-    full - Duration::from_nanos(random % quarter)
+    // At most a quarter of `full`, so nothing saturates.
+    full.saturating_sub(Duration::from_nanos(random % quarter))
 }
 
 /// The longest a delay the server names is waited (maintainer,
@@ -92,7 +105,7 @@ const MAX_NAMED_DELAY: Duration = Duration::from_secs(60);
 /// cloudflare-go's `retryDelay`: the answer's `Retry-After-Ms`
 /// (milliseconds), else its `Retry-After` (seconds, or an HTTP date read
 /// with jiff's RFC 2822 parser, a little looser than Go's RFC 1123:
-/// https://docs.rs/jiff/0.2.38/jiff/fmt/rfc2822/struct.DateTimeParser.html#method.parse_timestamp),
+/// <https://docs.rs/jiff/0.2.38/jiff/fmt/rfc2822/struct.DateTimeParser.html#method.parse_timestamp>),
 /// never negative and at most [`MAX_NAMED_DELAY`]; else
 /// `backoff(count)`. As in Go, a value that doesn't parse as a float
 /// (`1e400` overflows) is skipped, and one past Go's Duration (`inf`,
@@ -168,7 +181,7 @@ fn should_retry(response: Option<&reqwest::Response>) -> bool {
 /// reqwest's own retries have no backoff (its policy's future is
 /// `Ready<()>`) and their classifier sees no headers, so neither
 /// `x-should-retry` nor `Retry-After` could be honoured
-/// (https://docs.rs/reqwest/0.13.5/reqwest/retry/index.html); no retry
+/// (<https://docs.rs/reqwest/0.13.5/reqwest/retry/index.html>); no retry
 /// middleware crate is in the tree (docs/platform-notes/cloudflare-go-retries.md).
 const ATTEMPTS: u32 = 3;
 
@@ -201,7 +214,7 @@ fn auth_headers(credentials: &Credentials) -> Result<HeaderMap, String> {
 
 impl Check<'_> {
     /// `GET` the path `segments` (relative to the base, as Go's URL
-    /// resolution, https://docs.rs/url/2.5.8/url/struct.Url.html#method.join)
+    /// resolution, <https://docs.rs/url/2.5.8/url/struct.Url.html#method.join>)
     /// with `credentials`, retried as cloudflare-go retries: the JSON
     /// answer, or the cause (the status and Cloudflare's messages, or the
     /// transport error), with the credentials taken out, escaped and cut.
@@ -290,6 +303,11 @@ impl Check<'_> {
 
 /// The check: nothing, or why not (sb-go's text, guidance included; the
 /// domain and zone echoed escaped).
+///
+/// # Errors
+///
+/// The text shown when the check fails: the credentials or the zone
+/// refused, the service unreachable or answering unexpectedly.
 pub async fn check(
     check: &Check<'_>,
     credentials: &Credentials,
@@ -349,7 +367,7 @@ pub async fn check(
 /// sb-go's `getRootDomain` with x/net's `EffectiveTLDPlusOne`: empty
 /// labels and addresses refused in x/net's words, then the registrable
 /// domain from psl, both sections
-/// (https://docs.rs/psl/2.1.241/psl/fn.domain_str.html; why psl over
+/// (<https://docs.rs/psl/2.1.241/psl/fn.domain_str.html>; why psl over
 /// `publicsuffix`: the list is compiled in, with nothing to load).
 /// Errors echo the domain escaped.
 fn root_domain(domain: &str) -> Result<String, String> {
@@ -395,6 +413,25 @@ mod tests {
     use super::*;
     use crate::http::Proxy;
     use crate::testing::{Answer, Fake};
+
+    /// `Debug` shows the client and the base URL; the backoff, a closure,
+    /// is left out.
+    #[test]
+    fn a_checks_debug_leaves_the_backoff_out() {
+        let http = Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client");
+        let backoff = |_: u32| Duration::ZERO;
+        let check = Check {
+            http: &http,
+            base_url: "https://api.example.com/client/v4/",
+            backoff: &backoff,
+        };
+        let shown = format!("{check:?}");
+        assert!(shown.starts_with("Check { http: Http"), "{shown}");
+        assert!(
+            shown.ends_with(", base_url: \"https://api.example.com/client/v4/\", .. }"),
+            "{shown}"
+        );
+    }
 
     const ZONES: &str = r#"{"success":true,"errors":[],"result":[{"id":"z1","name":"example.com","status":"active"}]}"#;
     const NO_ZONES: &str = r#"{"success":true,"errors":[],"result":[]}"#;

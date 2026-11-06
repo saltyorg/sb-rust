@@ -18,6 +18,7 @@ use crate::secret::shown;
 use crate::tree::{Data, Node};
 
 /// sb-go's validators, with the zoneinfo directories `timezone` looks in.
+#[derive(Debug)]
 pub struct Saltbox {
     zoneinfo: Vec<PathBuf>,
 }
@@ -36,6 +37,7 @@ const MAX_ZONE_FILE: u64 = 10 << 20;
 impl Saltbox {
     /// The validators with these zoneinfo directories, in the order looked
     /// in (tests pass fixture directories).
+    #[must_use]
     pub fn with_zoneinfo(zoneinfo: Vec<PathBuf>) -> Self {
         Self { zoneinfo }
     }
@@ -59,10 +61,10 @@ impl Saltbox {
 
     /// Go's `LoadLocation(name)` succeeding: `""`, `UTC` and `Local`; a
     /// name with `..` or a leading `/` or `\` refused before any file is
-    /// opened; else the first place with a valid TZif file of exactly that
+    /// opened; else the first place with a valid `TZif` file of exactly that
     /// name (a missing file, a directory, a file over 10 MB or one that
-    /// isn't TZif moves on to the next), parsed with jiff's
-    /// `TimeZone::tzif` (https://docs.rs/jiff/0.2.38/jiff/tz/struct.TimeZone.html#method.tzif).
+    /// isn't `TZif` moves on to the next), parsed with jiff's
+    /// `TimeZone::tzif` (<https://docs.rs/jiff/0.2.38/jiff/tz/struct.TimeZone.html#method.tzif>).
     /// Why not jiff's `TimeZoneDatabase::from_dir`: it matches names in
     /// any case, skips `posix/` and `right/`, and reads one directory
     /// (decision 7).
@@ -79,7 +81,7 @@ impl Saltbox {
     }
 }
 
-/// Whether `path` is a TZif file of at most 10 MB.
+/// Whether `path` is a `TZif` file of at most 10 MB.
 fn zone_file(path: &Path, name: &str) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;
@@ -202,8 +204,7 @@ fn cloudflare(value: &Node, parent: &Node) -> Credentials {
     }
     if parent
         .get("user")
-        .filter(|user| matches!(user.data, Data::Mapping(_)))
-        .is_none()
+        .is_none_or(|user| !matches!(user.data, Data::Mapping(_)))
     {
         return Credentials::Invalid(
             "user config is required for Cloudflare validation".to_string(),
@@ -414,7 +415,7 @@ fn url(value: &Node, secret: bool) -> Result<(), String> {
 }
 
 /// sb-go's `IsValidAuthorizedKeyOrURL`: empty, an `http` or `file`
-/// source, or authorized_keys lines (comments and blank lines skipped)
+/// source, or `authorized_keys` lines (comments and blank lines skipped)
 /// each holding a known key type with data after it.
 fn ssh_key_or_url(value: &Node) -> Result<(), String> {
     let text = match &value.data {
@@ -528,10 +529,7 @@ fn whole_number(value: &Node, secret: bool) -> Result<(), String> {
             "must be a whole number (integer), got: {}",
             shown(text, secret)
         )),
-        // Go compares with the value through int64; Rust's cast
-        // saturates, which gives Go's verdicts except at exactly 2^63
-        // (accepted here, refused by Go on amd64).
-        Data::Scalar(Value::Float(f)) if *f == (*f as i64) as f64 => Ok(()),
+        Data::Scalar(Value::Float(f)) if survives_int64(*f) => Ok(()),
         Data::Scalar(Value::Float(f)) => Err(format!(
             "must be a whole number (integer), got: {} (has decimal part)",
             shown(&go_float(*f), secret)
@@ -542,6 +540,18 @@ fn whole_number(value: &Node, secret: bool) -> Result<(), String> {
             go_type(value)
         )),
     }
+}
+
+/// Whether `f` equals itself through int64, as Go compares it, with Rust's
+/// saturating cast: a whole number from -2^63 to 2^63, which gives Go's
+/// verdicts except at exactly 2^63 (accepted here, refused by Go on
+/// amd64). Spelled out without the casts (clippy's `cast_*` lints). Why
+/// not num-traits' `ToPrimitive::to_i64`: its range ends below 2^63, which
+/// would change that kept verdict.
+fn survives_int64(f: f64) -> bool {
+    /// 2^63, exact as an `f64`.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    f.fract() == 0.0 && (-LIMIT..=LIMIT).contains(&f)
 }
 
 /// sb-go's `validatePositiveNumber`: Go's `int` (an integer within i64; a
@@ -911,6 +921,24 @@ mod tests {
             invalid(Validator::ValidateWholeNumber, &float(42.5)),
             "must be a whole number (integer), got: 42.5 (has decimal part)"
         );
+        // Through int64 as Rust's saturating cast gives it: whole numbers
+        // from -2^63 to 2^63 pass; beyond, NaN and infinities don't.
+        for value in [
+            float(9_223_372_036_854_775_808.0),
+            float(-9_223_372_036_854_775_808.0),
+            float(-0.0),
+        ] {
+            valid(Validator::ValidateWholeNumber, &value);
+        }
+        for value in [
+            float(1e20),
+            float(-1e20),
+            float(f64::INFINITY),
+            float(f64::NEG_INFINITY),
+            float(f64::NAN),
+        ] {
+            let _ = invalid(Validator::ValidateWholeNumber, &value);
+        }
         assert_eq!(
             invalid(Validator::ValidateWholeNumber, &s("abc")),
             "must be a whole number (integer), got: abc"
@@ -1033,7 +1061,7 @@ mod tests {
         );
     }
 
-    /// A file that isn't TZif (or is too big) moves on to the next place.
+    /// A file that isn't `TZif` (or is too big) moves on to the next place.
     #[test]
     fn a_bad_zone_file_moves_on_to_the_next_place() {
         let first = tempfile::tempdir().expect("temp dir");

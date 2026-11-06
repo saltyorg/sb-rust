@@ -1,7 +1,7 @@
 //! The validation run's log records (config plan Task 10): each file, its
 //! issues, each check's outcome and timing, and no secret. A test binary
 //! of its own: tracing caches each callsite's interest process-wide
-//! (https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html),
+//! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>),
 //! so a log test sharing a process with tests that run without a
 //! subscriber misses events. Without the `testing` feature (an
 //! integration test doesn't get it), so the root is built here and the

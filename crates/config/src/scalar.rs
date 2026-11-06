@@ -68,6 +68,10 @@ fn short_tag(tag: &Tag) -> String {
 
 /// `text`, written in `style` with `tag`, as yaml.v3 resolves it, or
 /// yaml.v3's error for a tag the text doesn't fit.
+///
+/// # Errors
+///
+/// yaml.v3's "cannot decode" text when `tag` doesn't fit `text`.
 pub fn resolve(text: &str, style: ScalarStyle, tag: Option<&Tag>) -> Result<Value, String> {
     let mut tag = tag.map(short_tag).unwrap_or_default();
     // decode.go: an untagged (or `!`) quoted, literal or folded scalar is
@@ -95,9 +99,9 @@ pub fn resolve(text: &str, style: ScalarStyle, tag: Option<&Tag>) -> Result<Valu
     // A `!!float` takes yaml.v3's int and int64, as a float (not a
     // uint64, beyond i64).
     if let ("!!float", Value::Int(int)) = (tag.as_str(), &value)
-        && i64::try_from(*int).is_ok()
+        && let Ok(int) = i64::try_from(*int)
     {
-        return Ok(Value::Float(*int as f64));
+        return Ok(Value::Float(int as f64));
     }
     Err(format!(
         "cannot decode {} `{text}` as a {tag}",

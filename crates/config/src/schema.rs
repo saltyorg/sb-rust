@@ -143,7 +143,7 @@ pub enum SchemaError {
 /// `Scalar` by hand rather than serde's `untagged`, which reports any
 /// mismatch as "did not match any variant" at the mapping's start; a
 /// visitor keeps serde-saphyr's own error and position
-/// (https://serde.rs/impl-deserialize.html).
+/// (<https://serde.rs/impl-deserialize.html>).
 impl<'de> Deserialize<'de> for Scalar {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         struct ScalarVisitor;
@@ -270,6 +270,10 @@ fn message(err: &serde_saphyr::Error) -> String {
 
 /// `text`, the schema file shown as `file` (already escaped for the
 /// screen), as rules.
+///
+/// # Errors
+///
+/// [`SchemaError::Invalid`] when the text isn't a valid schema.
 pub fn parse(file: &str, text: &str) -> Result<Rules, SchemaError> {
     serde_saphyr::from_str(text).map_err(|err| SchemaError::Invalid {
         file: file.to_string(),
@@ -280,6 +284,11 @@ pub fn parse(file: &str, text: &str) -> Result<Rules, SchemaError> {
 /// The schema file at `path`, shown as `file` (already escaped), as rules:
 /// read as cli-core reads Saltbox's files (a regular file up to 1 MiB, in
 /// UTF-8).
+///
+/// # Errors
+///
+/// A [`SchemaError`] when the file is missing or can't be read, or isn't a
+/// valid schema.
 pub fn load(path: &Path, file: &str) -> Result<Rules, SchemaError> {
     let file = file.to_string();
     match sb_cli_core::config::read_small(path) {

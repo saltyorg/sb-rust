@@ -126,7 +126,7 @@ fn the_valid_accounts_asks_for_both_checks() {
     );
 }
 
-/// The pinned motd schema's colour pattern and display_names rule, end to
+/// The pinned motd schema's colour pattern and `display_names` rule, end to
 /// end (decision 4: a miss is an issue).
 #[test]
 fn the_pinned_motd_schema_checks_colours_and_names() {
@@ -152,7 +152,7 @@ fn the_pinned_motd_schema_checks_colours_and_names() {
 /// secret field given a rule that echoes what it checks.
 #[test]
 fn secrets_are_never_shown() {
-    let schema = r#"
+    let schema = r"
 cloudflare:
   type: object
   properties:
@@ -166,7 +166,7 @@ user:
   type: object
   properties:
     pass: {type: password, min_length: 30}
-"#;
+";
     let dir = tempfile::tempdir().expect("temp dir");
     let schema_path = dir.path().join("secrets.schema.yml");
     std::fs::write(&schema_path, schema).expect("write schema");
