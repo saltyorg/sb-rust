@@ -83,8 +83,15 @@ tempfile = "3.27.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# With clippy::pedantic (exec Task 10): every public type can be debugged,
+# and no cast to the type a value already has.
+missing_debug_implementations = "warn"
+trivial_numeric_casts = "warn"
 
 [workspace.lints.clippy]
+# The whole pedantic group (maintainer, 2026-11-05; exec Task 10), at a
+# lower priority so a single lint can still be set on its own.
+pedantic = { level = "warn", priority = -1 }
 # CLAUDE.md: #[allow] is forbidden; justified exceptions use #[expect(lint, reason = "...")].
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"

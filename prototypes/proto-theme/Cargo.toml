@@ -9,5 +9,15 @@ publish.workspace = true
 [dependencies]
 ratatui = "0.30.2"
 
-[lints]
-workspace = true
+# The workspace's lints before clippy::pedantic (exec Task 10): a
+# prototype keeps the lints it was written and reviewed under until it is
+# removed (maintainer, 2026-11-06).
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"

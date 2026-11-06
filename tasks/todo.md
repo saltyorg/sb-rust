@@ -644,10 +644,14 @@ Lint row names the group. The review's rustc lints outside pedantic
 It absorbs the backlog's `# Errors`, `#[must_use]` and `Debug` items.
 
 **Acceptance criteria:**
-- [ ] The group on, every crate clean, the Exceptions table updated.
+- [x] The group on, every crate clean, the Exceptions table updated
+      (E2, the `!!float` of an int; everything else fixed in the code).
+      The backlog's `Debug` and builder `#[must_use]` items are done.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; code-reviewer on each crate's commit.
+- [x] `scripts/check.sh full`; code-reviewer on each crate's commit
+      (three reviewers and library-reviewer on the whole change, split
+      by crate).
 
 **Dependencies:** Task 9, Checkpoint C
 **Files:** `Cargo.toml`, `CONSTRAINTS.md`, every crate
@@ -661,7 +665,7 @@ Headlines:
 - cli-core: `listen_for_signals` once per process (guard it); restore
   hooks `FnOnce`; `Shutdown` as one `Arc<Inner>`; `snapshot()` returns a
   small ending value; `ConfigError` with its path (standalone messages);
-  `Debug` on `RunLog`, `Shutdown`, `RestoreHook`; the theme passed to
+  the theme passed to
   `finish_run`/`report`, `install` reporting a second call; `ensure_root`
   given its exe and args (its test is tautological); `config.rs` `Read`
   error's source shown twice; `build_info` `unwrap_or_default` →
@@ -675,20 +679,19 @@ Headlines:
   `max_length` `Option<NonZeroUsize>`; typed network-check errors; a
   `CLOUDFLARE_BASE_URL` path that can't be used is an error, not
   dropped; URLs parsed once; `Node` and `Value` with a redacting `Debug`
-  (no production path formats them today: only tests); `Debug` on
-  `Saltbox`, `Check`, `Settings`; internal modules `pub(crate)` (saphyr,
+  (no production path formats them today: only tests); internal modules
+  `pub(crate)` (saphyr,
   regex and reqwest types leak); the `Validators` trait `pub(crate)` or
   concrete; the clock and `fs::metadata` injectable; silent fallbacks →
   `expect`.
 - term-ui: the live area's total height capped for ended-but-live steps;
   one lock per output line (`colour`/`terminal` out of the shared
   state); `clean` per-character width; tree helpers' full scans;
-  `#[must_use]` on builders; `Target` `#[non_exhaustive]`; the runner's
+  `Target` `#[non_exhaustive]`; the runner's
   clock through `tokio::time::Instant` (times testable); a plain
   in-memory target (an API change: ask); rustdoc without design
   history; `table_colour` `pub(crate)`; `Send + Sync` assertions;
-  `write_all` retrying `EINTR`; `Debug` on the public types (`Line` by
-  hand, masked).
+  `write_all` retrying `EINTR`.
 - exec: a failed wait marks the leader reaped (the drop guard is off)
   and reads as a spawn failure; `pty_error` keeps `io::ErrorKind`; one
   line splitter for both ways; `value()`/`secret()` take `OsString`;
@@ -697,6 +700,6 @@ Headlines:
   read as signal 0 and the PTY wait thread's error → `expect`; tight
   wall-clock bounds in the group tests.
 - docker: `json()` and the fixtures fail loudly; bollard types
-  `pub(crate)`; `Debug` on `Daemon`; typed errors instead of `anyhow` in
+  `pub(crate)`; typed errors instead of `anyhow` in
   the public API (decide before start/stop/restart).
 - sb: `warn!("{warning}")` as a field; one runtime builder.

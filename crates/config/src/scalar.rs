@@ -101,6 +101,10 @@ pub fn resolve(text: &str, style: ScalarStyle, tag: Option<&Tag>) -> Result<Valu
     if let ("!!float", Value::Int(int)) = (tag.as_str(), &value)
         && let Ok(int) = i64::try_from(*int)
     {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Go's float64(int64): rounded to the nearest f64, as yaml.v3 decodes it (CONSTRAINTS.md E2)"
+        )]
         return Ok(Value::Float(int as f64));
     }
     Err(format!(
