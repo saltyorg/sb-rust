@@ -73,7 +73,10 @@ impl fmt::Debug for Cmd {
             .field("env", &self.env.keys().collect::<Vec<_>>())
             .field("cwd", &self.cwd)
             .field("stdin", &self.stdin.as_ref().map(Vec::len))
-            .finish()
+            .field("timeout", &self.timeout)
+            .field("grace", &self.grace)
+            // The program and its arguments are in `command`, masked.
+            .finish_non_exhaustive()
     }
 }
 
@@ -126,6 +129,7 @@ impl Cmd {
     }
 
     /// A literal argument written in sb's code; the log shows it.
+    #[must_use]
     pub fn arg(mut self, literal: &'static str) -> Self {
         self.args.push(Arg::Literal(literal));
         self
@@ -133,6 +137,7 @@ impl Cmd {
 
     /// Any other argument (a path, a name, a user's pass-through argument):
     /// the log and errors show `[ARG]`.
+    #[must_use]
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.args.push(Arg::Value(value.into()));
         self
@@ -142,12 +147,14 @@ impl Cmd {
     /// the child's output. argv is readable by other users in
     /// `/proc/<pid>/cmdline`, so pass a secret through the environment or
     /// stdin where the tool allows.
+    #[must_use]
     pub fn secret(mut self, secret: impl Into<String>) -> Self {
         self.args.push(Arg::Secret(secret.into()));
         self
     }
 
     /// Set a variable; the log names it, never its value.
+    #[must_use]
     pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(name.into(), Var::Set(value.into()));
         self
@@ -155,12 +162,14 @@ impl Cmd {
 
     /// Set a variable holding a credential: its value is also taken out of
     /// the child's output.
+    #[must_use]
     pub fn secret_env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(name.into(), Var::Secret(value.into()));
         self
     }
 
     /// Remove an inherited variable.
+    #[must_use]
     pub fn env_remove(mut self, name: impl Into<String>) -> Self {
         self.env.insert(name.into(), Var::Removed);
         self
@@ -169,7 +178,8 @@ impl Cmd {
     /// Start from an empty environment (sb-go's `WithEnv`): variables set
     /// before are dropped, those set after are kept, as std's
     /// `Command::env_clear`
-    /// (https://doc.rust-lang.org/std/process/struct.Command.html#method.env_clear).
+    /// (<https://doc.rust-lang.org/std/process/struct.Command.html#method.env_clear>).
+    #[must_use]
     pub fn env_clear(mut self) -> Self {
         self.clear_env = true;
         self.env.clear();
@@ -178,6 +188,7 @@ impl Cmd {
 
     /// Run in `dir` (sb's own working directory otherwise). It must be an
     /// existing directory when the child starts.
+    #[must_use]
     pub fn cwd(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
         self
@@ -185,6 +196,7 @@ impl Cmd {
 
     /// End the child if it runs longer than `limit`, as a cancellation
     /// does (SIGTERM, the grace, SIGKILL), its outcome timed out.
+    #[must_use]
     pub fn timeout(mut self, limit: Duration) -> Self {
         self.timeout = Some(limit);
         self
@@ -192,12 +204,14 @@ impl Cmd {
 
     /// The time between SIGTERM and SIGKILL for this command (5 s
     /// otherwise).
+    #[must_use]
     pub fn grace(mut self, grace: Duration) -> Self {
         self.grace = grace;
         self
     }
 
     /// Write `bytes` to the child's stdin, then close it (null otherwise).
+    #[must_use]
     pub fn stdin(mut self, bytes: impl Into<Vec<u8>>) -> Self {
         self.stdin = Some(bytes.into());
         self
@@ -386,6 +400,10 @@ const LINE_BYTES: usize = 4096;
 impl Captured {
     /// The output if the child exited 0, else [`Failed`] with stderr's last
     /// lines.
+    ///
+    /// # Errors
+    ///
+    /// [`Failed`] when the child didn't exit 0.
     pub fn check(self) -> Result<Self, Failed> {
         if self.outcome.ending == Ending::Exited(0) {
             return Ok(self);
@@ -417,6 +435,10 @@ pub struct Ran {
 impl Ran {
     /// The result if the child exited 0, else [`Failed`] with no lines of
     /// its own: the step's failure block shows its last 10 lines.
+    ///
+    /// # Errors
+    ///
+    /// [`Failed`] when the child didn't exit 0.
     pub fn check(self) -> Result<Self, Failed> {
         if self.outcome.ending == Ending::Exited(0) {
             return Ok(self);
@@ -432,6 +454,11 @@ impl Ran {
     /// outcome (cli-core's `report`, the arguments masked as in
     /// [`Ran::check`]), with the child's own code, 128 plus a signal's
     /// number, or 1 for a timeout.
+    ///
+    /// # Errors
+    ///
+    /// The quiet [`Exit`](sb_cli_core::exit::Exit) above when the child
+    /// didn't exit 0.
     pub fn pass_through(
         self,
         out: &mut impl std::io::Write,
@@ -466,6 +493,10 @@ pub struct Streamed {
 impl Streamed {
     /// The result if the child exited 0, else [`Failed`] with no lines of
     /// its own: the step's failure block shows its last 10 lines.
+    ///
+    /// # Errors
+    ///
+    /// [`Failed`] when the child didn't exit 0.
     pub fn check(self) -> Result<Self, Failed> {
         if self.outcome.ending == Ending::Exited(0) {
             return Ok(self);
@@ -519,6 +550,7 @@ pub enum SpawnCause {
 
 impl SpawnError {
     /// Why it couldn't run.
+    #[must_use]
     pub fn cause(&self) -> &SpawnCause {
         &self.cause
     }
@@ -595,7 +627,7 @@ mod tests {
         }
         assert_eq!(
             shown,
-            r#"Cmd { command: "x literal [REDACTED] [ARG]", env_cleared: false, env: ["GONE", "PLAIN", "T"], cwd: None, stdin: Some(15) }"#
+            r#"Cmd { command: "x literal [REDACTED] [ARG]", env_cleared: false, env: ["GONE", "PLAIN", "T"], cwd: None, stdin: Some(15), timeout: None, grace: 5s, .. }"#
         );
     }
 

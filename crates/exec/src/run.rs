@@ -85,6 +85,12 @@ impl Cmd {
     /// background grandchild can put off for good. Cancelling `token`, or
     /// the timeout passing, ends the child's group (SIGTERM, the grace,
     /// SIGKILL) and the outcome is interrupted or timed out.
+    ///
+    /// # Errors
+    ///
+    /// [`SpawnError`] when the child can't start: the working directory
+    /// isn't one or can't be looked at, or the operating system refuses
+    /// (not found, not executable, ...).
     pub async fn capture(&self, token: &CancellationToken) -> Result<Captured, SpawnError> {
         let (command, _) = self.shown();
         let (mut child, group) = self.spawn(Way::Capture)?;
@@ -125,23 +131,29 @@ impl Cmd {
     /// stderr's last 64 KiB kept for the caller. The step's token stops it
     /// as `capture`'s does. Lines are split from bytes at `\n` with tokio's
     /// `read_until` through `take`, so each read is bounded
-    /// (https://docs.rs/tokio/1.54.1/tokio/io/trait.AsyncBufReadExt.html#method.read_until);
+    /// (<https://docs.rs/tokio/1.54.1/tokio/io/trait.AsyncBufReadExt.html#method.read_until>);
     /// one reader per pipe, each in its own loop (a `read_until` dropped
     /// by a `select!` keeps its partial line only with the same buffer),
     /// handing lines through tokio's bounded channel
-    /// (https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/fn.channel.html) to the
+    /// (<https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/fn.channel.html>) to the
     /// one future holding the step. A slow step (its log write) holds the
     /// readers back once the channel is full, and the child then waits on a
     /// full pipe: bounded, by design. Why not tokio-util's `LinesCodec` or
     /// `AnyDelimiterCodec` with a maximum length (0.7.20): on a longer line
     /// they drop it whole, its first 4 KiB too, and report an error, after
-    /// which `FramedRead` ends (src/codec/lines_codec.rs, the
-    /// `is_discarding` arms; src/codec/framed_impl.rs, `has_errored`); the
+    /// which `FramedRead` ends (`src/codec/lines_codec.rs`, the
+    /// `is_discarding` arms; `src/codec/framed_impl.rs`, `has_errored`); the
     /// spec keeps the first 4 KiB and masks across the cut.
     /// Secrets are taken out with exec's mask before the step sees the
     /// line, so the screen and the log get the same text; why not
     /// `Line::secret`: it needs the secret's place in the line, which the
     /// mask already finds, and gives the same result.
+    ///
+    /// # Errors
+    ///
+    /// [`SpawnError`] when the child can't start: the working directory
+    /// isn't one or can't be looked at, or the operating system refuses
+    /// (not found, not executable, ...).
     pub async fn stream(&self, step: &mut Step) -> Result<Streamed, SpawnError> {
         let (command, _) = self.shown();
         let token = step.token();
@@ -193,6 +205,13 @@ impl Cmd {
     /// 100 ms), block this thread briefly (cli-core's `Shutdown::hold`):
     /// accepted, as nothing else draws meanwhile. Stopped by its pid
     /// alone, a child's own children can outlive it (spec, known limits).
+    ///
+    /// # Errors
+    ///
+    /// [`SpawnError`] when the child can't start: the working directory
+    /// isn't one or can't be looked at, or the operating system refuses;
+    /// also when stdin bytes were given ([`SpawnCause::StdinRefused`]) or a
+    /// term-ui runner is drawing ([`SpawnCause::RunnerLive`]).
     pub async fn attached(&self, shutdown: &Shutdown) -> Result<Ran, SpawnError> {
         let (command, _) = self.shown();
         // Refused before the hold (whose start can wait) and the spawn.
@@ -377,7 +396,7 @@ pub(crate) trait Leader {
 
 impl Leader for Child {
     /// tokio's own wait, documented cancel safe
-    /// (https://docs.rs/tokio/1.54.1/tokio/process/struct.Child.html#method.wait).
+    /// (<https://docs.rs/tokio/1.54.1/tokio/process/struct.Child.html#method.wait>).
     async fn wait(&mut self) -> std::io::Result<ExitStatus> {
         Child::wait(self).await
     }
@@ -387,7 +406,7 @@ impl Leader for Child {
     }
 
     /// rustix's `kill_process`, as the groups' signals
-    /// (https://docs.rs/rustix/1.1.6/rustix/process/fn.kill_process.html);
+    /// (<https://docs.rs/rustix/1.1.6/rustix/process/fn.kill_process.html>);
     /// the pid is unreaped while tokio's `Child` hasn't seen it exit
     /// (`id` is `None` after). Why not tokio's `start_kill` or std's
     /// `send_signal`: the first is SIGKILL only, the second unstable on
@@ -405,7 +424,7 @@ impl Cmd {
     /// rules, working directory, and (but for an attached child, which
     /// keeps sb's stdio and group) piped output and its own process group
     /// (`process_group(0)`,
-    /// https://docs.rs/tokio/1.54.1/tokio/process/struct.Command.html#method.process_group),
+    /// <https://docs.rs/tokio/1.54.1/tokio/process/struct.Command.html#method.process_group>),
     /// killed if the run is dropped before it ends (`kill_on_drop`). The
     /// working directory is checked first: a missing one would otherwise
     /// read as the program not being found.
@@ -571,7 +590,7 @@ async fn write_stdin(pipe: Option<tokio::process::ChildStdin>, bytes: Option<&[u
 /// `read_to_end`, then `io::copy` to `io::sink()`: the drain's timeout
 /// drops this future part-way, and of tokio's reads only `read` is
 /// documented cancel safe
-/// (https://docs.rs/tokio/1.54.1/tokio/io/trait.AsyncReadExt.html#method.read),
+/// (<https://docs.rs/tokio/1.54.1/tokio/io/trait.AsyncReadExt.html#method.read>),
 /// so what a dropped `read_to_end` leaves in the buffer isn't promised.
 async fn read_head(pipe: Option<impl AsyncRead + Unpin>, keep: usize, kept: &mut Kept) {
     let Some(mut pipe) = pipe else { return };

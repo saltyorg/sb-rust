@@ -322,7 +322,7 @@ async fn the_block_holds_only_the_childs_lines() {
     assert_eq!(block, ["only"], "{screen}");
 }
 
-/// A child ignoring SIGTERM is SIGKILLed after the grace.
+/// A child ignoring SIGTERM is `SIGKILLed` after the grace.
 #[tokio::test]
 async fn a_child_ignoring_sigterm_is_killed() {
     let start = Instant::now();

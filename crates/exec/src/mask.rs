@@ -2,7 +2,7 @@
 //! argument and `secret_env` value, empty ones ignored, replaced by
 //! cli-core's placeholder before anything is shown or logged. Matching is
 //! aho-corasick's overlapping search
-//! (https://docs.rs/aho-corasick/1.1.5/aho_corasick/struct.AhoCorasick.html#method.find_overlapping_iter),
+//! (<https://docs.rs/aho-corasick/1.1.5/aho_corasick/struct.AhoCorasick.html#method.find_overlapping_iter>),
 //! so a secret inside another, or two overlapping in the text, leave no
 //! part of either. Why not `AhoCorasick::replace_all`: it replaces
 //! non-overlapping matches only, so the end of an overlapping secret

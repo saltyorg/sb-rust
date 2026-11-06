@@ -2,7 +2,7 @@
 //! sb's own stdin, stdout and stderr and sb's process group, cli-core's
 //! hold on SIGINT and SIGQUIT while it runs, cancellation and timeouts by
 //! pid. Real signals from a terminal are exec-demo's tests
-//! (tests/demo_signals.rs); here, what needs no terminal.
+//! (`tests/demo_signals.rs`); here, what needs no terminal.
 
 use std::time::{Duration, Instant};
 
@@ -131,7 +131,7 @@ async fn a_stopped_child_is_continued_to_take_the_sigterm() {
     );
 }
 
-/// A child ignoring SIGTERM is SIGKILLed after the grace; the timeout
+/// A child ignoring SIGTERM is `SIGKILLed` after the grace; the timeout
 /// works by pid the same way.
 #[tokio::test]
 async fn a_timeout_reaches_the_childs_pid() {

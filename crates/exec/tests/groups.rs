@@ -48,7 +48,8 @@ async fn pids(file: &Path) -> Vec<i32> {
         }
         assert!(
             start.elapsed() < Duration::from_secs(10),
-            "no pids in {file:?}"
+            "no pids in {}",
+            file.display()
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -159,7 +160,8 @@ async fn a_zombie_member_is_waited_for_a_second(body: &'static str) {
     assert_eq!(done.outcome.ending, Ending::Interrupted);
     let last = GRACE + Duration::from_secs(1);
     assert!(
-        took >= last - Duration::from_millis(100) && took < last + Duration::from_millis(700),
+        took >= last.checked_sub(Duration::from_millis(100)).unwrap()
+            && took < last + Duration::from_millis(700),
         "{took:?}"
     );
     assert_eq!(reap(pids[1]).join().expect("reaper"), Some(9), "SIGKILL");
@@ -183,7 +185,7 @@ async fn a_zombie_left_with_the_leader_ends_the_stop_a_second_after_sigkill() {
     .await;
 }
 
-/// A timed-out child that ignores SIGTERM is SIGKILLed after the grace,
+/// A timed-out child that ignores SIGTERM is `SIGKILLed` after the grace,
 /// once: the timeout doesn't start the stop again.
 #[tokio::test]
 async fn a_timeout_on_a_child_that_ignores_sigterm_kills_it_after_the_grace() {
@@ -304,9 +306,9 @@ async fn a_stopped_child_still_ends() {
     let control = async {
         let pids = pids(&file).await;
         // Stopped: its state in /proc is T.
-        let stat = format!("/proc/{}/stat", pids[0]);
+        let proc_stat = format!("/proc/{}/stat", pids[0]);
         let start = Instant::now();
-        while !std::fs::read_to_string(&stat).is_ok_and(|s| s.contains(") T ")) {
+        while !std::fs::read_to_string(&proc_stat).is_ok_and(|s| s.contains(") T ")) {
             assert!(start.elapsed() < Duration::from_secs(10), "never stopped");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

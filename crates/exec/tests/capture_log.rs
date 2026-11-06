@@ -4,9 +4,9 @@
 //! directory, the way) and the end record (outcome, elapsed), with no
 //! secret and no pass-through value in either. A test binary of its own:
 //! tracing caches each callsite's interest process-wide
-//! (https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html),
+//! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>),
 //! so a log test sharing a process with tests that run without a
-//! subscriber misses events (as sb-config's tests/run_log.rs).
+//! subscriber misses events (as sb-config's `tests/run_log.rs`).
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use sb_exec::Cmd;
 use tokio_util::sync::CancellationToken;
 
-/// A log writer the test can read back (sb-config's tests/run_log.rs).
+/// A log writer the test can read back (sb-config's `tests/run_log.rs`).
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<u8>>>);
 
@@ -32,6 +32,33 @@ impl Write for Captured {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Stream a child whose output carries a secret, in a step of an
+/// in-memory runner.
+async fn stream_a_secret() {
+    let term = indicatif::InMemoryTerm::new(20, 100);
+    let options = sb_term_ui::Options {
+        target: sb_term_ui::Target::InMemory {
+            term,
+            colour: false,
+        },
+    };
+    let shutdown = sb_cli_core::cancel::Shutdown::new();
+    let mut run = sb_term_ui::Runner::start("sb test", &shutdown, None, options);
+    let _ = run
+        .step(sb_term_ui::Labels::new("Running", "ran"), async |step| {
+            // Only the log matters here, not the outcome.
+            let _ = Cmd::new("sh")
+                .arg("-c")
+                .arg("echo \"streamed $TOKEN\"")
+                .secret_env("TOKEN", "stream-secret-not-real-6")
+                .stream(step)
+                .await?;
+            Ok(())
+        })
+        .await;
+    run.finish();
 }
 
 #[tokio::test]
@@ -110,28 +137,7 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
     assert!(unreachable.contains("Not a directory"), "{unreachable}");
     // A streamed child's lines reach the log through term-ui's step, the
     // secrets already out of them.
-    let term = indicatif::InMemoryTerm::new(20, 100);
-    let options = sb_term_ui::Options {
-        target: sb_term_ui::Target::InMemory {
-            term,
-            colour: false,
-        },
-    };
-    let shutdown = sb_cli_core::cancel::Shutdown::new();
-    let mut run = sb_term_ui::Runner::start("sb test", &shutdown, None, options);
-    let _ = run
-        .step(sb_term_ui::Labels::new("Running", "ran"), async |step| {
-            // Only the log matters here, not the outcome.
-            let _ = Cmd::new("sh")
-                .arg("-c")
-                .arg("echo \"streamed $TOKEN\"")
-                .secret_env("TOKEN", "stream-secret-not-real-6")
-                .stream(step)
-                .await?;
-            Ok(())
-        })
-        .await;
-    run.finish();
+    stream_a_secret().await;
     let text = log.text();
     assert!(text.contains("streamed [REDACTED]"), "{text}");
     assert!(text.contains(r#"way="stream""#), "{text}");

@@ -3,7 +3,7 @@
 //! of sb's terminal size as its stdin, stdout and stderr, in a session of
 //! its own (portable-pty's `setsid`, so the session's group id is the
 //! child's pid); its lines go to the step as `stream`'s do.
-//! (https://docs.rs/portable-pty/0.9.0/portable_pty/)
+//! (<https://docs.rs/portable-pty/0.9.0/portable_pty/>)
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::ExitStatusExt;
@@ -47,6 +47,13 @@ impl Cmd {
     /// timeout. The working directory is always set, and checked first
     /// (portable-pty would fall back to `$HOME`). The step's token stops
     /// the session's group as `capture`'s does.
+    ///
+    /// # Errors
+    ///
+    /// [`SpawnError`] when the child can't start: the working directory
+    /// isn't one or can't be looked at, or the operating system refuses, or
+    /// the PTY can't be opened; also when stdin bytes were given
+    /// ([`SpawnCause::StdinRefused`]).
     pub async fn pty(&self, step: &mut Step) -> Result<Ran, SpawnError> {
         let (command, _) = self.shown();
         let token = step.token();
@@ -114,7 +121,9 @@ impl Cmd {
             None => std::env::current_dir()?,
         };
         check_dir(&dir)?;
-        let pair = native_pty_system().openpty(size()).map_err(pty_error)?;
+        let pair = native_pty_system()
+            .openpty(size())
+            .map_err(|err| pty_error(&err))?;
         // Fail closed: without its name its echo can't be turned off, and
         // the end-of-file character would show in the output.
         let tty = pair
@@ -144,10 +153,16 @@ impl Cmd {
         // (portable-pty's `UnixMasterWriter` drop, src/unix.rs), which a
         // reading child would take as an empty answer. Taken before the
         // spawn too, so no error can leave a started child behind.
-        let mut writer = pair.master.take_writer().map_err(pty_error)?;
+        let mut writer = pair.master.take_writer().map_err(|err| pty_error(&err))?;
         writer.write_all(&[eof])?;
-        let reader = pair.master.try_clone_reader().map_err(pty_error)?;
-        let child = pair.slave.spawn_command(builder).map_err(pty_error)?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|err| pty_error(&err))?;
+        let child = pair
+            .slave
+            .spawn_command(builder)
+            .map_err(|err| pty_error(&err))?;
         drop(pair.slave);
         let pid = child
             .process_id()
@@ -200,7 +215,7 @@ impl Cmd {
 /// typed into, so nothing else is echoed. Opened by its name without
 /// becoming sb's controlling terminal (`O_NOCTTY`), through rustix's safe
 /// termios calls
-/// (https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcsetattr.html); why
+/// (<https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcsetattr.html>); why
 /// not portable-pty: it only reads the modes (`get_termios`), with no
 /// setter.
 fn prepare_tty(tty: &std::path::Path) -> std::io::Result<u8> {
@@ -263,7 +278,7 @@ fn size() -> PtySize {
 /// portable-pty reports through anyhow. A program it can't find is
 /// `NotFound`, as capture's (its message would carry the whole `PATH`);
 /// otherwise its message, on one line.
-fn pty_error(err: anyhow::Error) -> SpawnCause {
+fn pty_error(err: &anyhow::Error) -> SpawnCause {
     let message = format!("{err:#}");
     // portable-pty 0.9.0's wording (src/cmdbuilder.rs, `search_path`);
     // the tests catch a change.
@@ -297,7 +312,7 @@ struct PtyLeader {
 
 impl Leader for PtyLeader {
     /// The wait thread's result; awaiting the receiver is cancel safe
-    /// (https://docs.rs/tokio/1.54.1/tokio/sync/oneshot/struct.Receiver.html).
+    /// (<https://docs.rs/tokio/1.54.1/tokio/sync/oneshot/struct.Receiver.html>).
     async fn wait(&mut self) -> std::io::Result<ExitStatus> {
         let status = (&mut self.exit)
             .await
@@ -325,7 +340,7 @@ impl Leader for PtyLeader {
 /// EIO of a closed child side into end of file), each line cut, masked
 /// and sent as `stream`'s are. std's
 /// `read_until` through `take` keeps each read bounded
-/// (https://doc.rust-lang.org/std/io/trait.BufRead.html#method.read_until).
+/// (<https://doc.rust-lang.org/std/io/trait.BufRead.html#method.read_until>).
 fn read_pty_lines(reader: PtyReader, mask: &Mask, window: usize, lines: &mpsc::Sender<Vec<u8>>) {
     let mut reader = BufReader::new(reader);
     let limit = u64::try_from(window + 1).unwrap_or(u64::MAX);

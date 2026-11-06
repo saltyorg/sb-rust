@@ -3,8 +3,8 @@
 //! never logged; a refused one (stdin bytes) writes no start record. A
 //! test binary of its own: tracing caches each callsite's interest
 //! process-wide
-//! (https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html),
-//! as tests/capture_log.rs.
+//! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>),
+//! as `tests/capture_log.rs`.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use sb_cli_core::cancel::Shutdown;
 use sb_exec::{Cmd, Ending};
 
-/// A log writer the test can read back (as tests/capture_log.rs).
+/// A log writer the test can read back (as `tests/capture_log.rs`).
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<u8>>>);
 

@@ -4,7 +4,7 @@
 //! in that same group, as a shell's foreground job; the terminal's Ctrl-C
 //! and Ctrl-\ are SIGINT and SIGQUIT to that group, which is what these
 //! tests send (why not through a PTY: the kernel's delivery is the same,
-//! and the test then needs no terminal; as tests/demo_signals.rs). The
+//! and the test then needs no terminal; as `tests/demo_signals.rs`). The
 //! child is exec-demo's own `--child` mode, not dumpable, so one that dies
 //! of SIGQUIT writes no core.
 
@@ -217,7 +217,7 @@ fn sigint_to_sb_alone_stays_and_sigterm_is_forwarded() {
     assert!(!alive(child), "the child is gone");
 }
 
-/// A child ignoring the forwarded SIGTERM is SIGKILLed after the grace; a
+/// A child ignoring the forwarded SIGTERM is `SIGKILLed` after the grace; a
 /// Ctrl-C and a Ctrl-\ during that grace aren't counted (the child catches
 /// both), so sb waits it out rather than force its exit.
 #[test]
@@ -233,13 +233,13 @@ fn a_child_ignoring_sigterm_is_killed_after_the_grace() {
     std::thread::sleep(Duration::from_millis(100));
     press(&demo, Signal::QUIT);
     assert!(
-        sent.elapsed() < grace - Duration::from_secs(1),
+        sent.elapsed() < grace.checked_sub(Duration::from_secs(1)).unwrap(),
         "pressed within the grace"
     );
     let (status, stderr) = end(&mut demo);
     assert_eq!(status.signal(), Some(15), "{status:?} {stderr}");
     assert!(
-        sent.elapsed() >= grace - Duration::from_millis(100),
+        sent.elapsed() >= grace.checked_sub(Duration::from_millis(100)).unwrap(),
         "waited for the grace"
     );
     assert!(!alive(child), "SIGKILLed");

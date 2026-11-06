@@ -3,11 +3,11 @@
 //! grace while members remain, the group checked after its leader is
 //! reaped, a SIGKILL when the run is dropped, and one for every live group
 //! on cli-core's forced exit. Signals go through rustix
-//! (https://docs.rs/rustix/1.1.6/rustix/process/fn.kill_process_group.html,
+//! (<https://docs.rs/rustix/1.1.6/rustix/process/fn.kill_process_group.html>,
 //! `test_kill_process_group` for "any member left"). Why not
 //! process-wrap's tokio `ProcessGroup` and `KillOnDrop` (10.0.1): its
 //! kill on drop is tokio's `kill_on_drop`, which reaches the pid only
-//! (src/tokio/kill_on_drop.rs), it has no SIGTERM, grace and SIGKILL
+//! (`src/tokio/kill_on_drop.rs`), it has no SIGTERM, grace and SIGKILL
 //! escalation, and it can't wrap portable-pty's children; its group
 //! signal is the same `killpg`.
 //!
@@ -45,7 +45,7 @@ static LIVE: Mutex<BTreeSet<i32>> = Mutex::new(BTreeSet::new());
 
 /// The attached children running, for the forced exit (decision 12): a
 /// pidfd each (rustix's `pidfd_open`,
-/// https://docs.rs/rustix/1.1.6/rustix/process/fn.pidfd_open.html), as
+/// <https://docs.rs/rustix/1.1.6/rustix/process/fn.pidfd_open.html>), as
 /// they stay in sb's group and have only their pid. A pidfd names that
 /// process alone: once it is reaped, a signal through it fails rather than
 /// reach a process that got the pid again. A process-wide static, as
