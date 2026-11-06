@@ -190,16 +190,18 @@ the signal tests (risk first); record them, with an
 ADR for the maintainer if either moves past its tolerance.
 
 **Acceptance criteria:**
-- [ ] Size measured after Task 5, with the share of exec's and reqwest's
+- [x] Size measured after Task 5, with the share of exec's and reqwest's
       crates (`cargo bloat` on the production build), and the `sb --help`
       and `sb version` medians.
-- [ ] Project coverage (lines, functions) measured as ADR-011 did.
-- [ ] Within tolerance: the values and reason in the commit message
+- [x] Project coverage (lines, functions) measured as ADR-011 did.
+- [x] Within tolerance: the values and reason in the commit message
       (CONSTRAINTS.md); past it: an ADR proposed, its CONSTRAINTS.md
       change a separate commit after acceptance.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; code-reviewer on the ADR.
+- [x] `scripts/check.sh full` (eb6a910); no ADR needed (every value
+      within tolerance), so code-reviewer reviewed the recording commit
+      instead.
 
 **Dependencies:** Task 5
 **Files:** `docs/decisions/ADR-012-*.md` (if needed), `CONSTRAINTS.md`
