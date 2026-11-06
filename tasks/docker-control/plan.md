@@ -1,4 +1,4 @@
-# Implementation Plan: `docker` — start, stop and restart (approved 2026-11-06; done 2026-11-06)
+# Implementation Plan: `docker` — start, stop and restart (approved 2026-11-06)
 
 Spec: [docs/specs/docker.md](../../docs/specs/docker.md), "Start, stop and
 restart" (approved 2026-11-06, decisions 5-8). Controller facts:
