@@ -71,6 +71,14 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     let refused = refused_url();
     cmd.env("CLOUDFLARE_BASE_URL", &refused);
     cmd.env("SB_DOCKERHUB_URL", &refused);
+    // Nor the Saltbox Docker controller, which starts and stops the host's
+    // containers: a refused URL and a unit file that doesn't exist, unless
+    // a test points them at its fake and its own file.
+    cmd.env("SB_DOCKER_CONTROLLER_URL", &refused);
+    cmd.env(
+        "SB_DOCKER_CONTROLLER_UNIT",
+        test_log_dir().join("no-controller.service"),
+    );
     for name in [
         "HTTP_PROXY",
         "HTTPS_PROXY",

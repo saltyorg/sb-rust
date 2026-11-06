@@ -9,6 +9,10 @@ mod commands;
 mod service;
 
 pub use commands::{restart, start, stop};
+/// exec's forced-exit hook, for the binary to register once with its
+/// `Shutdown` before running these commands (deny.toml lets only sb-docker
+/// wrap sb-exec): a second signal SIGKILLs a `systemctl` still running.
+pub use sb_exec::on_forced_exit;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;

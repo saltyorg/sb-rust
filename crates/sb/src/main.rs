@@ -60,8 +60,7 @@ enum Command {
     ValidateConfig,
 }
 
-/// `sb docker`'s subcommands (docker spec); start, stop, restart and logs
-/// come with their own plans.
+/// `sb docker`'s subcommands (docker spec); logs comes with its own plan.
 #[derive(Subcommand)]
 enum DockerCommand {
     /// List Docker containers with port mappings
@@ -73,6 +72,26 @@ enum DockerCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Start Docker containers managed by Saltbox
+    // No `--verbose/-v` (docker decision 6).
+    #[command(long_about = "Start Docker containers managed by Saltbox in dependency order.")]
+    Start,
+    /// Stop Docker containers managed by Saltbox
+    #[command(long_about = "Stop Docker containers managed by Saltbox in dependency order.")]
+    Stop {
+        /// Containers to ignore during stop operation (can be specified multiple times)
+        // Repeatable and comma-separated, as cobra's `StringSlice` reads it
+        // for any name Docker allows (docker spec, "Commands and help").
+        #[arg(long, value_delimiter = ',', value_name = "ignore")]
+        ignore: Vec<String>,
+    },
+    /// Restart Docker containers managed by Saltbox
+    #[command(long_about = "Restart Docker containers managed by Saltbox in dependency order.")]
+    Restart {
+        /// Containers to ignore during restart operation (can be specified multiple times)
+        #[arg(long, value_delimiter = ',', value_name = "ignore")]
+        ignore: Vec<String>,
+    },
 }
 
 impl Command {
@@ -81,9 +100,12 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Version { .. } => "version",
-            Command::Docker {
-                command: DockerCommand::Ps { .. },
-            } => "docker ps",
+            Command::Docker { command } => match command {
+                DockerCommand::Ps { .. } => "docker ps",
+                DockerCommand::Start => "docker start",
+                DockerCommand::Stop { .. } => "docker stop",
+                DockerCommand::Restart { .. } => "docker restart",
+            },
             Command::ValidateConfig => "validate-config",
         }
     }
@@ -307,6 +329,15 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
+        Command::Docker {
+            command: DockerCommand::Start,
+        } => docker_control(command.name(), &Control::Start, shutdown, log)?,
+        Command::Docker {
+            command: DockerCommand::Stop { ref ignore },
+        } => docker_control(command.name(), &Control::Stop(ignore), shutdown, log)?,
+        Command::Docker {
+            command: DockerCommand::Restart { ref ignore },
+        } => docker_control(command.name(), &Control::Restart(ignore), shutdown, log)?,
         Command::Version { json } => {
             let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
             let mut out = std::io::stdout().lock();
@@ -324,6 +355,77 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         }
     }
     Ok(())
+}
+
+/// Which controller command runs, with its ignored names.
+enum Control<'a> {
+    Start,
+    Stop(&'a [String]),
+    Restart(&'a [String]),
+}
+
+/// An override variable's value; empty means unset, as for `SB_CONFIG`.
+fn set_override(value: Option<std::ffi::OsString>) -> Option<std::ffi::OsString> {
+    value.filter(|v| !v.is_empty())
+}
+
+/// `sb docker start`, `stop` and `restart` (docker spec, "Start, stop and
+/// restart"): the Saltbox Docker controller's steps under term-ui's
+/// runner, titled with the command's name. `SB_DOCKER_CONTROLLER_URL` and
+/// `SB_DOCKER_CONTROLLER_UNIT` replace the controller's address and unit
+/// file (tests and debugging; empty means unset; each is logged, the URL
+/// without any credentials in it, as validate-config's service URLs). A
+/// URL that doesn't parse, or isn't UTF-8, is sb-go's error before the
+/// runner starts: falling back to the real controller would start or stop
+/// the host's containers. Why not clap's `env`: it needs a flag sb-go
+/// doesn't have, and passes an empty value on. exec's forced-exit hook is
+/// registered here, the first command that runs children: a second signal
+/// SIGKILLs a `systemctl` still running. The runtime is built here, after
+/// parsing, as for the other commands.
+fn docker_control(
+    title: &str,
+    command: &Control<'_>,
+    shutdown: &Shutdown,
+    log: Option<&RunLog>,
+) -> anyhow::Result<()> {
+    use sb_docker::control::{self, ControlError, Controller};
+    let mut controller = Controller::saltbox()?;
+    if let Some(url) = set_override(std::env::var_os("SB_DOCKER_CONTROLLER_URL")) {
+        let url = url.into_string().map_err(|_| {
+            ControlError::ParseUrl("SB_DOCKER_CONTROLLER_URL isn't UTF-8".to_string())
+        })?;
+        tracing::info!(
+            variable = "SB_DOCKER_CONTROLLER_URL",
+            url = sb_config::http::loggable_url(&url),
+            "controller URL overridden"
+        );
+        controller = controller.with_base(&url)?;
+    }
+    if let Some(unit) = set_override(std::env::var_os("SB_DOCKER_CONTROLLER_UNIT")) {
+        let unit = std::path::PathBuf::from(unit);
+        tracing::info!(
+            variable = "SB_DOCKER_CONTROLLER_UNIT",
+            unit = %config::escape_controls(&unit.display().to_string()),
+            "controller unit file overridden"
+        );
+        controller = controller.with_unit_file(unit);
+    }
+    let title = format!("sb {title}");
+    let _children = control::on_forced_exit(shutdown);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let mut runner =
+            sb_term_ui::Runner::start(&title, shutdown, log, sb_term_ui::Options::default());
+        let result = match *command {
+            Control::Start => control::start(&mut runner, &controller).await,
+            Control::Stop(ignore) => control::stop(&mut runner, &controller, ignore).await,
+            Control::Restart(ignore) => control::restart(&mut runner, &controller, ignore).await,
+        };
+        runner.finish();
+        result.map_err(anyhow::Error::from)
+    })
 }
 
 /// `sb docker ps [--json]` (docker spec): the table or the JSON on stdout,
@@ -426,6 +528,31 @@ mod contract;
 mod tests {
     use super::*;
 
+    /// `--ignore` is repeatable and comma-separated (cobra's
+    /// `StringSlice` for any Docker name); names are kept as given, empty
+    /// ones too (the request drops them), and `start` has none.
+    #[test]
+    fn ignore_splits_on_commas_and_repeats() {
+        let ignored = |args: &[&str]| match Cli::try_parse_from(args).expect("parses").command {
+            Command::Docker {
+                command: DockerCommand::Stop { ignore } | DockerCommand::Restart { ignore },
+            } => ignore,
+            _ => panic!("not stop or restart: {args:?}"),
+        };
+        assert_eq!(
+            ignored(&["sb", "docker", "stop", "--ignore", "a,b", "--ignore", "c"]),
+            ["a", "b", "c"]
+        );
+        assert_eq!(
+            ignored(&[
+                "sb", "docker", "restart", "--ignore", "a,,b", "--ignore", " c"
+            ]),
+            ["a", "", "b", " c"]
+        );
+        assert_eq!(ignored(&["sb", "docker", "stop"]), Vec::<String>::new());
+        assert!(Cli::try_parse_from(["sb", "docker", "start", "--ignore", "a"]).is_err());
+    }
+
     /// An empty `SB_CONFIG` is unset, as an empty `SB_COLOR_PROFILE` is.
     #[test]
     fn an_empty_sb_config_means_the_real_file() {
@@ -444,6 +571,32 @@ mod tests {
             command: DockerCommand::Ps { json: true },
         };
         assert_eq!(ps.name(), "docker ps");
+        // The ignored names never reach the log's name.
+        let secret = || vec!["secret-name".to_string()];
+        let stop = Command::Docker {
+            command: DockerCommand::Stop { ignore: secret() },
+        };
+        assert_eq!(stop.name(), "docker stop");
+        let restart = Command::Docker {
+            command: DockerCommand::Restart { ignore: secret() },
+        };
+        assert_eq!(restart.name(), "docker restart");
+        let start = Command::Docker {
+            command: DockerCommand::Start,
+        };
+        assert_eq!(start.name(), "docker start");
+    }
+
+    /// An empty override is unset: an empty `SB_DOCKER_CONTROLLER_URL`
+    /// can't stand for a controller (nor turn into the real one unseen).
+    #[test]
+    fn an_empty_override_is_unset() {
+        assert_eq!(set_override(None), None);
+        assert_eq!(set_override(Some("".into())), None);
+        assert_eq!(
+            set_override(Some("http://127.0.0.1:9".into())),
+            Some("http://127.0.0.1:9".into())
+        );
     }
 
     /// `validate-config` reads root's config and logs under its name.

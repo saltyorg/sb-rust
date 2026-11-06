@@ -103,7 +103,7 @@ verification.
 ### Phase 2: The commands
 
 - [x] Task 4: start, stop and restart as term-ui steps
-- [ ] Task 5: `sb docker start/stop/restart` in sb, end to end
+- [x] Task 5: `sb docker start/stop/restart` in sb, end to end
 - [ ] Task 6: size, coverage and the spec's measurements (risk first:
   before the signal tests)
 - [ ] Task 7: signals end to end

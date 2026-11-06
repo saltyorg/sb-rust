@@ -1,0 +1,15 @@
+---
+source: crates/sb/tests/docker_control.rs
+expression: "help(&[\"docker\", \"stop\", \"--help\"])"
+---
+  Stop Docker containers managed by Saltbox in dependency order.
+
+  USAGE
+
+    sb docker stop [--flags]
+
+  FLAGS
+
+    --color    Controls when to use color (auto)
+    -h --help  Help for stop
+    --ignore   Containers to ignore during stop operation (can be specified multiple times)

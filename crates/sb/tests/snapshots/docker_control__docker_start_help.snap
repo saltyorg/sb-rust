@@ -1,0 +1,14 @@
+---
+source: crates/sb/tests/docker_control.rs
+expression: "help(&[\"docker\", \"start\", \"--help\"])"
+---
+  Start Docker containers managed by Saltbox in dependency order.
+
+  USAGE
+
+    sb docker start [--flags]
+
+  FLAGS
+
+    --color    Controls when to use color (auto)
+    -h --help  Help for start

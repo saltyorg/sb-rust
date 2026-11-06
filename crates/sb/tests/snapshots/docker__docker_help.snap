@@ -1,6 +1,5 @@
 ---
 source: crates/sb/tests/docker.rs
-assertion_line: 47
 expression: "help(&[\"docker\", \"--help\"])"
 ---
   Manage Docker containers managed by Saltbox
@@ -11,9 +10,12 @@ expression: "help(&[\"docker\", \"--help\"])"
 
   COMMANDS
 
-    ps [--flags]  List Docker containers with port mappings
+    ps [--flags]       List Docker containers with port mappings
+    restart [--flags]  Restart Docker containers managed by Saltbox
+    start              Start Docker containers managed by Saltbox
+    stop [--flags]     Stop Docker containers managed by Saltbox
 
   FLAGS
 
-    --color       Controls when to use color (auto)
-    -h --help     Help for docker
+    --color            Controls when to use color (auto)
+    -h --help          Help for docker

@@ -125,7 +125,7 @@ on a `Runner`: the step tree and labels of the spec's table, decision
       ending with the notice ("starting" for start and restart's start,
       "stopping" for stop and restart's stop); during the service check:
       no notice (no job was asked for).
-- [ ] The run log records the check's answer, each request and answer,
+- [x] The run log records the check's answer, each request and answer,
       each poll's status and the outcome: written by the client (Tasks
       1-3) and checked end to end in Task 5's run-log test, on the built
       sb's real log (tracing caches a callsite's interest process-wide,
@@ -148,29 +148,31 @@ dev-dependencies)
 tests of the built sb on the fake controller.
 
 **Acceptance criteria:**
-- [ ] Help texts as the spec's table (snapshot); `--ignore a,b --ignore
+- [x] Help texts as the spec's table (snapshot); `--ignore a,b --ignore
       c` sends `a`, `b`, `c`, `a,,b` and `--ignore ""` drop the empty
       names, `" a"` is kept as given (unit tests on the parsed command);
       `-v` is a parse error (exit 2); the contract test passes; root
       needed (the fake-sudo relaunch, which records its arguments and
       never runs sb).
-- [ ] exec's forced-exit hook registered once with sb's `Shutdown`,
+- [x] exec's forced-exit hook registered once with sb's `Shutdown`,
       through sb-docker; both overrides set in `apply_sb_env` (a refused
-      URL, a missing unit file) and checked by `tests/isolation.rs`; an
+      URL, a missing unit file), checked end to end (a run with the shared
+      environment alone stops at "does not exist"; `tests/isolation.rs`
+      checks only that tests call `apply_sb_env`); an
       overridden URL logged ("controller URL overridden"), an empty one
       unset.
-- [ ] As root with both overrides and a stand-in `systemctl` first on
+- [x] As root with both overrides and a stand-in `systemctl` first on
       `PATH`: start, stop and restart succeed; each failure that answers
       at once shows its block and exits 1 (the timeouts and the poll
       limit are unit-tested only); a `PATH` without `systemctl` is "not
       running"; a malformed `SB_DOCKER_CONTROLLER_URL` is "parse Docker
       controller URL: <cause>" before the runner.
-- [ ] Piped and on a PTY; the run log records the check's answer, the
+- [x] Piped and on a PTY; the run log records the check's answer, the
       requests and answers, each poll's status and the outcome (Task 4's
       run-log criterion).
 
 **Verification:**
-- [ ] `cargo test -p sb`; `scripts/check.sh full`; code-reviewer and
+- [x] `cargo test -p sb`; `scripts/check.sh full`; code-reviewer and
       library-reviewer.
 
 **Dependencies:** Task 4

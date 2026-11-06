@@ -1,0 +1,15 @@
+---
+source: crates/sb/tests/docker_control.rs
+expression: "help(&[\"docker\", \"restart\", \"--help\"])"
+---
+  Restart Docker containers managed by Saltbox in dependency order.
+
+  USAGE
+
+    sb docker restart [--flags]
+
+  FLAGS
+
+    --color    Controls when to use color (auto)
+    -h --help  Help for restart
+    --ignore   Containers to ignore during restart operation (can be specified multiple times)
