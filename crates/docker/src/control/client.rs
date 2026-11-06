@@ -213,7 +213,14 @@ mod tests {
     #[test]
     fn saltboxs_values_are_sb_gos() {
         let c = Controller::saltbox().expect("client");
+        // sb-go's address, compared in parts, so the tree holds no
+        // address-and-port literal.
+        assert_eq!(c.base.scheme(), "http");
+        assert_eq!(c.base.host_str(), Some("127.0.0.1"));
         assert_eq!(c.base.port(), Some(3377));
+        assert_eq!(c.base.path(), "/");
+        assert_eq!((c.base.query(), c.base.fragment()), (None, None));
+        assert_eq!((c.base.username(), c.base.password()), ("", None));
         assert_eq!(c.unit_file, PathBuf::from(UNIT_FILE));
         assert_eq!(c.systemctl, PathBuf::from("systemctl"));
         assert_eq!(c.check_timeout, Duration::from_secs(5));
