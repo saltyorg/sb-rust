@@ -1,4 +1,5 @@
-//! Asking the controller for a job (sb-go's `requestDockerJob`).
+//! Asking the controller for a job and waiting for it (sb-go's
+//! `requestDockerJob`, `waitForJobCompletion` and `getJobStatus`).
 
 use super::{Action, ControlError, Controller, Job};
 
@@ -49,6 +50,71 @@ impl Controller {
         }
     }
 
+    /// Wait for `job` to end (sb-go's `waitForJobCompletion`): its status
+    /// asked at once, then every `poll_interval`, at most `max_polls`
+    /// times, with no sleep after the last. Cancelled by dropping the
+    /// future (the step's token, `run_until_cancelled`:
+    /// <https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled>).
+    /// Why not `tokio::time::interval`: its period runs from the tick,
+    /// where sb-go's timer starts after each answer. Each status goes to
+    /// the run log.
+    ///
+    /// # Errors
+    ///
+    /// The [`ControlError`] that ended the wait: the job failed, an
+    /// unknown status, a poll that failed, or the last poll still pending
+    /// or running.
+    pub async fn wait(&self, job: &Job) -> Result<(), ControlError> {
+        let url = self.url(&["job_status", job.id()])?;
+        for poll in 1..=self.max_polls {
+            match self.status(url.clone(), job).await?.as_str() {
+                "completed" => return Ok(()),
+                "failed" => return Err(ControlError::JobFailed),
+                "pending" | "running" if poll < self.max_polls => {
+                    tokio::time::sleep(self.poll_interval).await;
+                }
+                "pending" | "running" => {}
+                other => return Err(ControlError::UnknownStatus(other.to_string())),
+            }
+        }
+        Err(ControlError::Timeout)
+    }
+
+    /// One poll (sb-go's `getJobStatus`): the job's status, escaped for
+    /// the log and the screen.
+    async fn status(&self, url: reqwest::Url, job: &Job) -> Result<String, ControlError> {
+        let response = self
+            .http
+            .get(url)
+            .timeout(self.request_timeout)
+            .send()
+            .await
+            .map_err(|err| ControlError::Poll(cause(&err)))?;
+        let code = response.status();
+        if code != reqwest::StatusCode::OK {
+            tracing::info!(status = code.as_u16(), "job status answer");
+            return Err(ControlError::StatusCheck(code.as_u16()));
+        }
+        let body = self
+            .body(response)
+            .await
+            .map_err(ControlError::DecodeStatus)?;
+        let answer: Option<StatusAnswer> =
+            first_value(&body).map_err(ControlError::DecodeStatus)?;
+        match answer.and_then(|a| a.status) {
+            Some(status) if !status.is_empty() => {
+                let status = sb_cli_core::config::escape_controls(&status);
+                tracing::info!(
+                    job = %sb_cli_core::config::escape_controls(job.id()),
+                    status = %status,
+                    "job status"
+                );
+                Ok(status)
+            }
+            _ => Err(ControlError::MissingStatus),
+        }
+    }
+
     /// `base` with `segments` added to its path, one segment each (escaped
     /// as path segments; `pop_if_empty` so a bare base gives `/start`, not
     /// `//start`:
@@ -87,6 +153,12 @@ impl Controller {
 #[derive(serde::Deserialize)]
 struct JobAnswer {
     job_id: Option<String>,
+}
+
+/// The status answer's one field sb reads.
+#[derive(serde::Deserialize)]
+struct StatusAnswer {
+    status: Option<String>,
 }
 
 /// The first JSON value in `body`, as Go's `Decoder` reads one: trailing
@@ -373,6 +445,206 @@ mod tests {
         assert!(matches!(err, ControlError::Send(_)), "{err:?}");
         assert!(err.to_string().contains("timed out"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    fn job(id: &str) -> Job {
+        Job { id: id.to_string() }
+    }
+
+    fn status(text: &str) -> Answer {
+        Answer::ok(format!(r#"{{"id":"job-1","status":"{text}"}}"#))
+    }
+
+    /// `pending` and `running` wait, `completed` ends it; the status is
+    /// asked at `<base>/job_status/<id>`, each time a GET.
+    #[tokio::test]
+    async fn the_wait_ends_when_the_job_completes() {
+        let fake = FakeController::start().expect("fake");
+        for answer in ["pending", "running", "running", "completed"] {
+            fake.script("/job_status/job-1", status(answer));
+        }
+        let c = controller(&fake).with_polls(Duration::from_millis(10), 60);
+        assert_eq!(c.wait(&job("job-1")).await, Ok(()));
+        let seen = fake.seen();
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen.iter()
+                .all(|s| s.method == "GET" && s.path == "/job_status/job-1")
+        );
+    }
+
+    /// Each answer that ends the wait at once, with sb-go's text; nothing
+    /// is asked after it.
+    #[tokio::test]
+    async fn these_end_the_wait_at_once() {
+        let cases: [(Answer, ControlError); 6] = [
+            (status("failed"), ControlError::JobFailed),
+            (
+                status("queued"),
+                ControlError::UnknownStatus("queued".to_string()),
+            ),
+            (
+                Answer::with_status(404, r#"{"status":"not_found"}"#),
+                ControlError::StatusCheck(404),
+            ),
+            (
+                Answer::ok("{"),
+                ControlError::DecodeStatus(
+                    "EOF while parsing an object at line 1 column 1".to_string(),
+                ),
+            ),
+            (Answer::ok("{}"), ControlError::MissingStatus),
+            (Answer::ok(r#"{"status":""}"#), ControlError::MissingStatus),
+        ];
+        for (answer, expected) in cases {
+            let fake = FakeController::start().expect("fake");
+            fake.script("/job_status/job-1", status("running"));
+            fake.script("/job_status/job-1", answer);
+            let c = controller(&fake).with_polls(Duration::from_millis(10), 60);
+            let shown = expected.to_string();
+            assert_eq!(c.wait(&job("job-1")).await, Err(expected), "{shown}");
+            assert_eq!(fake.seen().len(), 2, "{shown}");
+        }
+        assert_eq!(ControlError::JobFailed.to_string(), "job failed");
+        assert_eq!(
+            ControlError::UnknownStatus("queued".into()).to_string(),
+            "unknown job status: queued"
+        );
+        assert_eq!(
+            ControlError::StatusCheck(404).to_string(),
+            "job status check failed with status code: 404"
+        );
+        assert_eq!(
+            ControlError::MissingStatus.to_string(),
+            "job status response is missing status"
+        );
+        assert!(
+            ControlError::DecodeStatus("x".into())
+                .to_string()
+                .starts_with("decode job status response: ")
+        );
+    }
+
+    /// A poll that can't reach the controller, or times out: reqwest's
+    /// cause alone, as sb-go returns its client's error.
+    #[tokio::test]
+    async fn a_failed_poll_is_reqwests_cause() {
+        let fake = FakeController::start().expect("fake");
+        fake.script(
+            "/job_status/job-1",
+            status("running").after(Duration::from_secs(5)),
+        );
+        let err = controller(&fake)
+            .with_request_timeout(Duration::from_millis(100))
+            .wait(&job("job-1"))
+            .await
+            .expect_err("timeout");
+        assert!(matches!(err, ControlError::Poll(_)), "{err:?}");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert_eq!(fake.seen().len(), 1);
+        // Nothing listening (a port just freed): asked once, not retried.
+        let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .and_then(|l| l.local_addr())
+            .expect("free port")
+            .port();
+        let started = std::time::Instant::now();
+        let err = controller(&fake)
+            .with_base(&format!("http://127.0.0.1:{port}"))
+            .expect("base")
+            .with_polls(Duration::from_secs(5), 60)
+            .wait(&job("job-1"))
+            .await
+            .expect_err("refused");
+        assert!(matches!(err, ControlError::Poll(_)), "{err:?}");
+        assert!(
+            err.to_string().starts_with("error sending request"),
+            "{err}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// No polls at all (sb-go's `range 0`): the timeout, nothing asked.
+    #[tokio::test]
+    async fn no_polls_is_the_timeout_at_once() {
+        let fake = FakeController::start().expect("fake");
+        fake.script("/job_status/job-1", status("completed"));
+        let c = controller(&fake).with_polls(Duration::from_secs(5), 0);
+        assert_eq!(c.wait(&job("job-1")).await, Err(ControlError::Timeout));
+        assert_eq!(fake.seen().len(), 0);
+    }
+
+    /// A status with control characters is shown escaped.
+    #[tokio::test]
+    async fn an_unknown_status_is_shown_escaped() {
+        let fake = FakeController::start().expect("fake");
+        fake.script("/job_status/job-1", status("queued\\u001b[31m"));
+        let err = controller(&fake)
+            .wait(&job("job-1"))
+            .await
+            .expect_err("unknown");
+        let shown = err.to_string();
+        assert!(shown.starts_with("unknown job status: queued"), "{shown}");
+        assert!(!shown.contains('\u{1b}'), "{shown:?}");
+    }
+
+    /// After the last poll: sb-go's timeout, with exactly `max_polls`
+    /// asks; the first at once and no sleep after the last, so three polls
+    /// take two intervals and not three (real time: tokio's paused clock
+    /// runs ahead while a real socket waits).
+    #[tokio::test]
+    async fn the_wait_gives_up_after_its_polls() {
+        let fake = FakeController::start().expect("fake");
+        fake.script("/job_status/job-1", status("running"));
+        let interval = Duration::from_millis(300);
+        let c = controller(&fake).with_polls(interval, 3);
+        let started = std::time::Instant::now();
+        assert_eq!(c.wait(&job("job-1")).await, Err(ControlError::Timeout));
+        let elapsed = started.elapsed();
+        assert_eq!(fake.seen().len(), 3);
+        assert!(elapsed >= interval * 2, "{elapsed:?}");
+        assert!(elapsed < interval * 3, "{elapsed:?}");
+        assert_eq!(
+            ControlError::Timeout.to_string(),
+            "timeout waiting for job completion"
+        );
+    }
+
+    /// sb-go's `TestWaitForJobCompletionHonorsCancellation`: cancelled
+    /// mid-wait, it ends at once and asks nothing more.
+    #[tokio::test]
+    async fn a_cancelled_wait_ends_at_once() {
+        let fake = FakeController::start().expect("fake");
+        fake.script("/job_status/job-1", status("running"));
+        let c = controller(&fake).with_polls(Duration::from_secs(60), 2);
+        let token = tokio_util::sync::CancellationToken::new();
+        let cancel = token.clone();
+        let seen = std::sync::Arc::new(fake);
+        let watched = std::sync::Arc::clone(&seen);
+        // Cancelled once the first poll has arrived: the wait is asleep.
+        tokio::spawn(async move {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while watched.seen().is_empty() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel.cancel();
+        });
+        let started = std::time::Instant::now();
+        assert_eq!(token.run_until_cancelled(c.wait(&job("job-1"))).await, None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(seen.seen().len(), 1);
+    }
+
+    /// The ID is one path segment, escaped, under a base with a path.
+    #[tokio::test]
+    async fn the_job_id_is_one_path_segment() {
+        let fake = FakeController::start().expect("fake");
+        fake.script("/api/job_status/a%2Fb%3Fc", status("completed"));
+        let c = controller(&fake)
+            .with_base(&format!("{}/api", fake.url()))
+            .expect("base");
+        assert_eq!(c.wait(&job("a/b?c")).await, Ok(()));
+        assert_eq!(fake.seen()[0].raw_query, None);
     }
 
     /// The proxy test's child: one request through sb's client, one

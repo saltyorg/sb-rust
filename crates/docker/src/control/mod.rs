@@ -1,8 +1,8 @@
 //! `sb docker start`, `stop` and `restart` (docker spec, "Start, stop and
 //! restart"): the Saltbox Docker controller, sb-go's values and texts
 //! (`cmd/docker.go`), its API as docs/platform-notes/docker-controller.md
-//! records it. `client` asks for jobs; the service check and the commands
-//! as term-ui steps join it.
+//! records it. `client` asks for jobs and waits for them; the service
+//! check and the commands as term-ui steps join it.
 
 mod client;
 
@@ -52,7 +52,7 @@ impl Action {
     }
 }
 
-/// Why a request to the controller failed: sb-go's texts, a cause from
+/// Why a request or a wait failed: sb-go's texts, a cause from
 /// reqwest or `serde_json` in place of Go's. The cause is part of the text
 /// only, not a `source` as well: term-ui's failure block shows the whole
 /// chain, which would print it twice.
@@ -70,6 +70,22 @@ pub enum ControlError {
     DecodeJob(String),
     #[error("docker controller response is missing job ID")]
     MissingJobId,
+    /// A poll's transport failure or timeout: reqwest's cause alone, as
+    /// sb-go returns its client's error unwrapped.
+    #[error("{0}")]
+    Poll(String),
+    #[error("job status check failed with status code: {0}")]
+    StatusCheck(u16),
+    #[error("decode job status response: {0}")]
+    DecodeStatus(String),
+    #[error("job status response is missing status")]
+    MissingStatus,
+    #[error("job failed")]
+    JobFailed,
+    #[error("unknown job status: {0}")]
+    UnknownStatus(String),
+    #[error("timeout waiting for job completion")]
+    Timeout,
 }
 
 /// A job the controller accepted.

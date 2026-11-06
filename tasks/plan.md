@@ -89,7 +89,7 @@ verification.
 
 - [x] Task 1: `control.rs`'s client and the job request, on a fake
   controller
-- [ ] Task 2: the wait
+- [x] Task 2: the wait
 - [ ] Task 3: the service check
 
 ### Checkpoint A: the client is done

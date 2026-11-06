@@ -33,6 +33,7 @@ tempfile = { workspace = true, optional = true }
 form_urlencoded = { workspace = true, optional = true }
 
 [dev-dependencies]
+tokio-util.workspace = true
 form_urlencoded.workspace = true
 axum.workspace = true
 tempfile.workspace = true

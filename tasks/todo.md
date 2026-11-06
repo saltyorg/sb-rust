@@ -51,22 +51,22 @@ a plain dependency; form_urlencoded for the fake; descriptions no longer
 `poll_interval`, at most `max_polls`, each answer judged as the spec says.
 
 **Acceptance criteria:**
-- [ ] `completed` returns; `pending` and `running` wait; `failed`, an
+- [x] `completed` returns; `pending` and `running` wait; `failed`, an
       unknown status, non-200, a body that doesn't decode, a missing
       status and a transport failure end it at once, each its variant.
-- [ ] After the last poll, "timeout waiting for job completion": exactly
+- [x] After the last poll, "timeout waiting for job completion": exactly
       `max_polls` asks on the fake, and with a short interval and
       `max_polls = 3` the elapsed time is at least 2 intervals and under
       3 (the first poll at once, no sleep after the last; real time, not
       tokio's paused clock, which runs ahead while a real socket waits).
-- [ ] The job ID is one escaped path segment (an ID with `/` and `?`; a
+- [x] The job ID is one escaped path segment (an ID with `/` and `?`; a
       base with a path); a poll's request timeout is its variant.
-- [ ] Cancelled mid-wait (sb-go's
+- [x] Cancelled mid-wait (sb-go's
       `TestWaitForJobCompletionHonorsCancellation`): ends at once, the
       fake asked no further.
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`; `scripts/check.sh fast`; library-reviewer
+- [x] `cargo test -p sb-docker`; `scripts/check.sh fast`; library-reviewer
       and code-reviewer.
 
 **Dependencies:** Task 1
