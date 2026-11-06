@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-04, config Checkpoint B)
+Accepted (maintainer, 2026-11-04, config Checkpoint B); the binary size and
+`sb --help` median superseded by [ADR-011](ADR-011-exec-ratchet-update.md)
 
 ## Date
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (exec Checkpoint C, 2026-11-06)
+Accepted (maintainer, 2026-11-06, exec Checkpoint C)
 
 ## Date
 

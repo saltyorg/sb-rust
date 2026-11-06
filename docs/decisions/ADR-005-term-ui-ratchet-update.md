@@ -5,7 +5,8 @@
 Accepted (maintainer, 2026-11-03, term-ui Task 11); binary size value
 superseded by [ADR-007](ADR-007-docker-binary-size.md), then
 [ADR-009](ADR-009-validate-config-binary-size.md), which also supersedes
-the `sb --help` median
+the `sb --help` median; coverage values superseded by
+[ADR-011](ADR-011-exec-ratchet-update.md)
 
 ## Date
 

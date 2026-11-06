@@ -417,8 +417,8 @@ pid as in Task 4.
       against CONSTRAINTS.md's values (2026-11-05, on e7dcecc's tree and
       again on the Checkpoint B commit's: full check green; sb 11645408
       bytes; `--help` median 1.06 ms).
-- [ ] Project coverage re-measured against CONSTRAINTS.md's values: not
-      done here (changed-line coverage 94%); carried to Checkpoint C.
+- [x] Project coverage re-measured against CONSTRAINTS.md's values: done
+      at Checkpoint C (ADR-011).
 - [x] The maintainer approves the signal behaviour (decision 2 as Task 8a
       will build it) before cli-core changes, and decides the cases the
       spec leaves open while an attached child runs: whether a second
@@ -620,12 +620,15 @@ findings right after Task 8a). Then: Task 8b, Checkpoint C (with the
 project coverage carried from Checkpoint B), then Task 10.
 
 ## Checkpoint C: Complete
-- [ ] Tasks 1-9 done (Task 10, the lint change, follows); `scripts/check.sh
+- [x] Tasks 1-9 done (Task 10, the lint change, follows); `scripts/check.sh
       full` passes; project coverage (carried from Checkpoint B), size and
-      startup re-measured.
-- [ ] Spec success criteria 1-8 met with evidence; criterion 9 carried by
-      name to the docker start/stop/restart plan, decision 5's ansible
-      use to the ansible plan.
+      startup re-measured: ADR-011, accepted by the maintainer
+      (2026-11-06).
+- [x] Spec success criteria 1-8 met with evidence (1-7 by exec's tests,
+      8 by docs/platform-notes/exec-processes.md, deny.toml, the cli-core
+      spec and the capability map); criterion 9 carried by name to the
+      docker start/stop/restart plan, decision 5's ansible use to the
+      ansible plan.
 
 ## Task 10: `clippy::pedantic`
 
