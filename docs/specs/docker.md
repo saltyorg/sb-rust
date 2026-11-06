@@ -199,6 +199,9 @@ logging levels end to end.
 
 ### Differences from sb-go (the complete list)
 
+`ps`'s, below; `start`, `stop` and `restart`'s are their section's list
+("Start, stop and restart", Differences from sb-go).
+
 - **Status:** `exited` with code 0 is idle (sb-go: red); `exited` with a
   code names it, `(code N)` or `(out of memory)` (sb-go: bare `exited`);
   `running (unhealthy)` and `restarting` are problem (sb-go: yellow); a
@@ -242,8 +245,7 @@ logging levels end to end.
 - **Later in this module, own plans:**
   - `start`, `stop`, `restart`: need `exec` (for `systemctl`) and an HTTP
     client; sb-go's `--ignore`; the unit-file check and timeouts above.
-    sb-go gives them `--verbose/-v`, which the contract test will expect,
-    while term-ui decision 9 dropped verbose output: decided in their plan.
+    sb-go gives them `--verbose/-v`; dropped (decision 6).
   - The container list for the tui log picker (proto-logs: list plus a
     parallel inspect, kept live by bollard's event stream, with a richer
     status: restart count, restarted in the last 10 minutes). `ps`'s
@@ -414,6 +416,253 @@ pub fn status(state: &ContainerState) -> (String, Role) {
     cross the 5% tolerance, so an ADR records the new size (step by step)
     for the maintainer.
 
+## Start, stop and restart (approved 2026-11-06)
+
+The second plan of this module (Scope, "Later in this module"). It puts
+`exec` in sb's binary, and reqwest in sb-docker.
+
+### Objective
+
+`sb docker start`, `sb docker stop [--ignore NAME]...` and `sb docker
+restart [--ignore NAME]...` have the Saltbox Docker controller start or
+stop the containers Saltbox manages, in its dependency order, and wait
+for it to finish, under term-ui's runner: sb-go's behaviour, sb's look,
+and a run log of what was asked and answered.
+
+### Commands and help (the contract fixture, sb-go's texts)
+
+| Command | Short | Long |
+|---|---|---|
+| `start` | Start Docker containers managed by Saltbox | Start Docker containers managed by Saltbox in dependency order. |
+| `stop` | Stop Docker containers managed by Saltbox | Stop Docker containers managed by Saltbox in dependency order. |
+| `restart` | Restart Docker containers managed by Saltbox | Restart Docker containers managed by Saltbox in dependency order. |
+
+`--ignore` (a value flag, on `stop` and `restart` only): "Containers to
+ignore during stop operation (can be specified multiple times)" (`restart`:
+"... during restart operation ..."). Repeatable, and each value split on
+commas, not trimmed, empty names dropped. cobra's `StringSlice` reads each
+value as one CSV record (quotes stripped, a stray quote an error); Docker
+names can't hold a comma or a quote (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`), so for
+every real name the split is cobra's result. No positional arguments.
+Needs root, as every command but `version`, completion and help.
+`-v`/`--verbose` is a parse error (exit 2), as config's.
+
+### Steps and labels (term-ui's runner)
+
+A step with no labels of its own in sb-go uses its running label for both
+endings (sb-go's runner, `terminal/runner.go`), as here.
+
+| Step | Running | Done | Failed |
+|---|---|---|---|
+| start (top) | Starting Docker containers | Docker containers started | Docker container start |
+| stop (top) | Stopping Docker containers | Docker containers stopped | Docker container stop |
+| restart (top) | Restarting Docker containers | Docker containers restarted | Docker container restart |
+| service check | Checking Docker controller service | Docker controller service ready | Docker controller service check |
+| request | Requesting Docker start job (stop: Requesting Docker stop job) | the same | the same |
+| wait | Waiting for Docker start job (stop: Waiting for Docker stop job) | the same | the same |
+| restart's stop | Stopping Docker containers | Stopped Docker containers | Stop Docker containers |
+| restart's start | Starting Docker containers | Started Docker containers | Start Docker containers |
+
+`start` and `stop`: the service check, the request, the wait, under the
+top step. `restart`: the service check, then restart's stop (its request
+and wait, with `--ignore`), then restart's start (its request and wait,
+no `--ignore`); a failed stop starts nothing.
+
+### Behaviour (sb-go's `cmd/docker*.go`)
+
+- **Service check:**
+  - `stat` of the unit file
+    `/etc/systemd/system/saltbox_managed_docker_controller.service`:
+    missing is "the Docker controller service does not exist"; another
+    stat error (ENOTDIR, ELOOP) is "error checking service status: stat
+    <path>: <cause>" (Go's text names the path; Rust's error doesn't, so
+    sb adds it).
+  - Then `systemctl is-active saltbox_managed_docker_controller.service`
+    (found on `PATH`, as sb-go), captured through exec with a 5 s
+    timeout: exit 0 and stdout `active` after trimming whitespace is
+    ready. A non-zero exit, a spawn failure, a timeout or another answer
+    is "the Docker controller service is not running": a plain message,
+    exec's outcome logged but not chained into the error, so the failure
+    block shows sb-go's text alone and not term-ui's child ending.
+- **Request:** `POST <base>/start` or `<base>/stop` with `ignore=<name>`
+  per ignored name (query-encoded), `Content-Type: application/json`, no
+  body. `<base>` is the loopback URL sb-go's `layout.DockerControllerAPIURL`
+  names. The path is built segment by segment (a base with a path keeps
+  it; `Url::join` would replace its last segment).
+  - 200 with a JSON object whose `job_id` isn't blank (after trimming) is
+    the job, polled with the ID as sent (sb-go).
+  - Failures, each sb-go's text with the cause from reqwest or serde_json
+    in place of Go's: "send Docker controller request: <cause>" (a
+    transport error or the 10 s timeout); "docker controller request
+    failed with status code: N"; "decode Docker controller response:
+    <cause>"; "docker controller response is missing job ID".
+- **Wait:** `GET <base>/job_status/<id>` (the ID one path segment,
+  escaped) at once, then every 5 s, at most 60 times; no sleep follows
+  the 60th.
+  - `completed` ends the step; `pending` and `running` wait.
+  - These end the wait at once: `failed` is "job failed"; another status is "unknown job
+    status: X"; a transport error or timeout is reqwest's cause; "job
+    status check failed with status code: N"; "decode job status
+    response: <cause>"; "job status response is missing status".
+  - After the 60th: "timeout waiting for job completion".
+- **HTTP:** reqwest (already in sb through config), each request limited
+  to 10 s (`RequestBuilder::timeout`), at most 1 MiB of response read
+  (sb-go's `LimitReader`: a body cut by the limit fails as a decode
+  error; the first JSON value is read and trailing data ignored, as Go's
+  `Decoder`; Go's case-blind keys and `null`s aren't copied: the
+  controller writes neither), and
+  no proxy: Go's `ProxyFromEnvironment` never proxies a loopback address;
+  reqwest's system proxy (`HTTP_PROXY`, `http_proxy`, `ALL_PROXY`) has no
+  loopback exception.
+  - A small client in sb-docker, not config's `Http`: sb-docker can't
+    depend on sb-config (deny.toml allows only `sb` to), and config's
+    carries its proxy setting and credential masking, which the
+    controller doesn't need.
+  - No redirects: the controller never answers with one
+    (docs/platform-notes/docker-controller.md; decision 8).
+- **Ctrl-C or SIGTERM:** the current request or wait ends at once; the
+  runner shows its interrupted ending and sb dies by the signal (`$?` 130
+  or 143; exec decision 7). During the service check, exec stops
+  `systemctl` (SIGTERM, then SIGKILL after exec's 5 s grace) and the
+  interrupted outcome is passed on, not read as "not running". The
+  controller's job is not cancelled (it has no cancel endpoint), so an
+  interrupted request or wait adds an info notice under its step: "the
+  controller may still be starting containers; `sb docker ps` shows
+  where they are" ("stopping" for a stop; decision 5).
+- **Run log:** the check's answer, each request (method, path, ignored
+  names) and answer (status, job ID), each poll's status, the outcome.
+  Nothing secret is involved.
+
+### Differences from sb-go (start, stop and restart)
+
+- No `--verbose/-v` (config decision 1, term-ui decision 9; nothing
+  passes it, decision 6): the job ID and the ignored names it showed are
+  in the run log. The contract test allows a flag sb-go has and sb
+  leaves out.
+- An interrupted job gets the notice above (decision 5); sb-go says
+  nothing.
+- sb's runner look and failure block, not sb-go's spinner and its outer
+  `error: ...` wrapping; the texts above are the innermost cause.
+- `SB_DOCKER_CONTROLLER_URL` and `SB_DOCKER_CONTROLLER_UNIT` replace the
+  base URL and the unit file's path (tests and debugging; sb-go
+  hard-codes both), as config's `SB_DOCKERHUB_URL`; the unit name given
+  to `systemctl` stays fixed. Read as root only; sudo's relaunch drops
+  them. A URL that doesn't parse is sb-go's "parse Docker controller URL:
+  <cause>", before the runner starts, exit 1.
+- Ctrl-C during the service check is the interrupted ending (sb-go:
+  "not running"); a `systemctl` past its 5 s gets SIGTERM and exec's
+  grace before SIGKILL (sb-go: SIGKILL at 5 s).
+- No redirects followed (Go's client follows up to 10, re-sending the
+  POST on 307 and 308): the controller never redirects (decision 8), as
+  config's services.
+
+### Shape
+
+`sb-docker` gains `control.rs`:
+- `Action` (start, stop);
+- `Controller { base: Url, unit_file: PathBuf, check_timeout,
+  request_timeout, poll_interval: Duration, body_limit: usize, max_polls:
+  u32, http }` with `Controller::saltbox()` giving sb-go's values (a unit
+  test pins them: 5 s, 10 s, 5 s, 1 MiB, 60), so each behaviour is tested
+  with short values;
+- `check_service`, `request(action, ignore)` and `wait(job)` as term-ui
+  step bodies, failing with a `ControlError`, one variant per failure
+  above, sb-go's texts as its `Display` (tests match variants).
+
+sb-docker gains sb-exec (deny.toml already allows it) and reqwest; its
+tokio, today behind `testing` only, becomes a plain dependency (`time`
+for the poll's sleep). sb's `main.rs` builds the controller, with the two
+overrides.
+
+### Testing
+
+- **Unit, on a fake controller** (axum on loopback, `testing` feature, as
+  the fake Engine API; it records what it was sent and compares decoded
+  query values):
+  - a job requested and completed;
+  - `--ignore` encoding: sb-go's
+    `TestRequestDockerJobUsesContextAndEncodesIgnoredContainers` cases, a
+    space and an ampersand;
+  - a missing or blank job ID; non-200 on the request and on a poll; a
+    transport failure on each;
+  - `failed`, an unknown status, the 60-poll timeout (a short interval);
+  - cancellation mid-wait: sb-go's
+    `TestWaitForJobCompletionHonorsCancellation`;
+  - a body over 1 MiB (cut: a decode error), trailing data after the
+    JSON (ignored);
+  - `HTTP_PROXY`, `http_proxy` and `ALL_PROXY` set, and the request still
+    reaches the fake;
+  - a 307 answer: "docker controller request failed with status code:
+    307", its target never asked.
+- **Service check:**
+  - a stand-in `systemctl` that prints `active` (also with trailing
+    whitespace), prints `inactive`, exits 3, prints `active` but exits 1,
+    or sleeps past 5 s;
+  - no `systemctl` on `PATH`;
+  - the unit file present, missing, or behind a path through a regular
+    file (ENOTDIR).
+- **End to end:** the built sb as root, `SB_TEST_ROOT`, `SB_LOG_DIR` in
+  the test's directory, the two overrides and a stand-in `systemctl`.
+  - start; stop with `--ignore a,b --ignore c`; restart (stop then start;
+    a failed stop starts nothing); `-v` refused (exit 2);
+  - each failure's block, exit 1;
+  - SIGINT and SIGTERM mid-wait, during a delayed request answer (both
+    with decision 5's notice) and while a stand-in `systemctl` sleeps
+    (the interrupted ending, no "not running" block): death by the
+    signal, the terminal restored;
+  - piped and on a PTY; the run log records; the relaunch through the
+    fake sudo, which records its arguments and never runs sb (the
+    relaunch drops the overrides, so a relaunched run would reach the
+    real controller);
+  - `--help` texts (snapshot).
+- **Never against the real controller** from a test: it starts and stops
+  the host's containers. A by-hand run on a Saltbox host is the
+  maintainer's.
+- **Each failure first:** every case above is written failing against a
+  stub before its code.
+- **Size and coverage:** exec (portable-pty, rustix's process features),
+  the docker client's reqwest use and tokio's `time` measured against
+  ADR-011's 11645408 bytes, and project coverage against its line and
+  function values; an ADR if either moves past its tolerance.
+
+### Success criteria
+
+1. Each command's help, steps, labels, requests and texts are the ones
+   above (unit tests per rule; the fake controller recording what it was
+   sent).
+2. Every service-check outcome above has a test, the interrupted one
+   included.
+3. Every request and wait answer and failure above has a test.
+   `Controller::saltbox()`'s values are pinned (5 s check, 10 s request,
+   5 s interval, 1 MiB, 60 polls, the first at once).
+4. `--ignore` reaches only the stop, encoded; restart stops before it
+   starts and starts nothing after a failed stop.
+5. No proxy is used for the controller with `HTTP_PROXY`, `http_proxy`
+   and `ALL_PROXY` set.
+6. Ctrl-C and SIGTERM mid-wait: the interrupted ending with the
+   notice, and death by the signal within a second; the terminal
+   restored.
+7. The run log records the check, the job ID, each poll and the outcome.
+8. Not root: the fake-sudo relaunch with cli-core's arguments.
+9. `sb --help` and `sb version` within their ratchets; size and coverage
+   measured, an ADR past a tolerance.
+
+### Known limits
+
+- **A failed job's containers aren't named:** a job that reads `failed`
+  names the containers that didn't reach the requested state (its
+  `failed`, `outcomes` and `error`; docs/platform-notes/docker-controller.md).
+  sb, like sb-go, says only "job failed"; naming them is a later
+  difference.
+- **sb can give up before the controller does:** the wait ends after
+  about 5 minutes (59 sleeps of 5 s), while the controller's own job
+  timeouts are 600 s for start and 300 s for stop, and a job can wait
+  `pending` behind another. "timeout waiting for job completion" can
+  come while the job goes on (as sb-go).
+- **The command-tree contract:** these commands leave out sb-go's `-v`,
+  as validate-config does; a future full-equality contract test records
+  them as dropped flags.
+
 ## Decisions (maintainer, 2026-11-03)
 
 1. **No runner for `ps`:** the table alone, as sb-go. term-ui's carried
@@ -425,3 +674,14 @@ pub fn status(state: &ContainerState) -> (String, Role) {
    cli-core's preserve list is unchanged, so a non-root user's `DOCKER_HOST`
    and `DOCKER_API_VERSION` don't reach the root run (Saltbox's Docker is
    local).
+
+## Decisions (maintainer, 2026-11-06: start, stop and restart)
+
+5. **An interrupted job gets a notice:** the controller can't cancel a
+   job, so an interrupted request or wait says the controller may still
+   be starting (stopping) containers and points at `sb docker ps`.
+6. **No `--verbose/-v`:** nothing passes it to these commands; dropped,
+   as config decision 1.
+7. **The section approved** with these answers.
+8. **No redirects:** the controller's source has none
+   (docs/platform-notes/docker-controller.md), so sb follows none.
