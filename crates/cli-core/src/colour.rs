@@ -2,14 +2,14 @@
 //!
 //! The flag is colorchoice-clap's (the anstream project's clap mixin), and
 //! its choice becomes anstream's global choice, which every anstream output
-//! reads first, clap's own help and errors included (clap_builder 4.6.7
+//! reads first, clap's own help and errors included (`clap_builder` 4.6.7
 //! `output/fmt.rs` prints through `anstream::AutoStream`; anstream 1.0.0
 //! `auto.rs` reads `ColorChoice::global()` for `Auto`). clap prints help
 //! while it parses, so the choice has to be known before the real parse.
 //!
 //! [`early_choice`] runs the same command once as clap's `ignore_errors`
 //! partial parse (its doc example reads `--config` despite later errors:
-//! https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.ignore_errors),
+//! <https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.ignore_errors>),
 //! with the help flag as a plain flag and `help` as a plain subcommand, so
 //! nothing is printed and parsing carries on past them. A parse that
 //! succeeds is final. Only when it fails (the run will end in clap's exit-2
@@ -21,7 +21,7 @@
 //! (term-ui), `always`/`never` are passed on to them too.
 //!
 //! Why not a clap API: there is none. Built-in help "is acted on
-//! immediately" (open issue https://github.com/clap-rs/clap/issues/6013,
+//! immediately" (open issue <https://github.com/clap-rs/clap/issues/6013>,
 //! waiting on design); its suggested workaround, a help flag of our own
 //! with help rendered by hand, means re-implementing help and its error
 //! flow for every subcommand.
@@ -80,7 +80,7 @@ where
 }
 
 /// `--color=V` or `--color V` before `--`, found by clap's lexer (its crate
-/// example's loop: https://docs.rs/clap_lex/1.1.1/clap_lex/), for when a
+/// example's loop: <https://docs.rs/clap_lex/1.1.1/clap_lex/>), for when a
 /// parse error stopped the pre-pass first. The last valid value wins, as in
 /// the real parse.
 fn lexed_choice(args: Vec<OsString>) -> Option<ColorChoice> {

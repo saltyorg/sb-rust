@@ -23,7 +23,7 @@ pub struct Exit(pub u8);
 /// it, its default action re-raised so a parent sees sb was killed by it
 /// (exec decision 7, "wait and cooperative exit"). sb's `main` returns
 /// it, std's documented way for `main` to choose how the process ends
-/// (https://doc.rust-lang.org/std/process/trait.Termination.html). std
+/// (<https://doc.rust-lang.org/std/process/trait.Termination.html>). std
 /// calls [`Termination::report`] after `main`'s locals are dropped, so the
 /// run log and the terminal are already put back when the signal ends the
 /// process, and flushes stdout only after it returns (UNVERIFIED: no
@@ -62,7 +62,7 @@ impl Termination for RunEnd {
 /// command's own shutdown request exits quietly with its code; otherwise
 /// the result decides, through [`report`] for an error.
 ///
-/// Write to an anstream stream, so `--color` and NO_COLOR are honoured:
+/// Write to an anstream stream, so `--color` and `NO_COLOR` are honoured:
 /// the block carries the theme's colour codes.
 pub fn finish_run(
     shutdown: &Shutdown,
@@ -101,6 +101,7 @@ pub fn chain<'a>(
 pub struct OutputError(std::io::Error);
 
 /// Mark an error as one writing sb's own output.
+#[must_use]
 pub fn output_error(err: std::io::Error) -> OutputError {
     OutputError(err)
 }
@@ -113,7 +114,7 @@ pub fn output_error(err: std::io::Error) -> OutputError {
 /// pipe anywhere else (a child sb writes to died) is a real failure, as in
 /// sb-go, where only writes to fd 1 and 2 raise SIGPIPE. Why not `-Zon-broken-pipe=kill`:
 /// unstable, so it would need an ADR
-/// (https://doc.rust-lang.org/beta/unstable-book/compiler-flags/on-broken-pipe.html);
+/// (<https://doc.rust-lang.org/beta/unstable-book/compiler-flags/on-broken-pipe.html>);
 /// why not resetting SIGPIPE with libc: unsafe code, forbidden here. One
 /// classification serves the screen ([`report`]) and the run log.
 pub fn quiet_exit(err: &(dyn Error + 'static)) -> Option<u8> {
@@ -128,7 +129,7 @@ pub fn quiet_exit(err: &(dyn Error + 'static)) -> Option<u8> {
 
 /// Print one error block (`✗` and the message, each cause on its own line,
 /// then the log pointer; write to an anstream stream, so `--color` and
-/// NO_COLOR are honoured) and return 1, or return a requested [`Exit`] code
+/// `NO_COLOR` are honoured) and return 1, or return a requested [`Exit`] code
 /// quietly when one is anywhere in the chain.
 pub fn report(
     err: &(dyn Error + 'static),
@@ -325,7 +326,7 @@ mod tests {
     #[test]
     fn a_requested_shutdown_with_0_succeeds() {
         let shutdown = Shutdown::new();
-        shutdown.request(0);
+        let _ = shutdown.request(0);
         let mut out = Vec::new();
         let err = failure("cancelled");
         assert_eq!(
@@ -339,7 +340,7 @@ mod tests {
     #[test]
     fn a_requested_shutdown_is_quiet() {
         let shutdown = Shutdown::new();
-        shutdown.request(3);
+        let _ = shutdown.request(3);
         let mut out = Vec::new();
         assert_eq!(
             finish_run(&shutdown, None, None, &mut out),

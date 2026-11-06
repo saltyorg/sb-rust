@@ -4,7 +4,7 @@
 //! `SB_DISABLE_SELF_UPDATE` in the build environment, as sb-go's release
 //! sets them with `-ldflags -X`. `option_env!` reads them at compile time,
 //! and rustc records them in its dep-info, so Cargo rebuilds when they
-//! change (https://doc.rust-lang.org/std/macro.option_env.html). Any of
+//! change (<https://doc.rust-lang.org/std/macro.option_env.html>). Any of
 //! them exported in a developer's shell is baked in the same way. Why not
 //! vergen or built: they work the commit out in build.rs, while here the
 //! release injects the values, as sb-go's ldflags do.
@@ -37,6 +37,7 @@ impl BuildInfo {
     /// The binary's build information. `package_version` is the binary's
     /// own `env!("CARGO_PKG_VERSION")`: expanded here it would be this
     /// library's version.
+    #[must_use]
     pub fn current(package_version: &str) -> Self {
         Self::from_env(
             package_version,
@@ -48,6 +49,7 @@ impl BuildInfo {
 
     /// Build information from the release variables, falling back to the
     /// binary's package version and an empty commit, as sb-go's raw builds.
+    #[must_use]
     pub fn from_env(
         package_version: &str,
         version: Option<&str>,
@@ -63,6 +65,7 @@ impl BuildInfo {
     }
 
     /// `sb version`: sb-go's `Saltbox CLI version: %s (commit: %s)\n`.
+    #[must_use]
     pub fn version_line(&self) -> String {
         format!(
             "Saltbox CLI version: {} (commit: {})\n",
@@ -72,6 +75,7 @@ impl BuildInfo {
 
     /// `sb version --json`: compact, ending in a newline, as Go's
     /// `json.Encoder`.
+    #[must_use]
     pub fn version_json(&self) -> String {
         let json = VersionJson {
             version: &self.version,

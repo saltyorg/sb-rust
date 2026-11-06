@@ -3,7 +3,7 @@
 //! dependencies that log through the `log` crate (bollard) reach the run
 //! log at all. A test binary of its own: the `log` bridge and the global
 //! subscriber are process-wide, and tracing caches each callsite's
-//! interest (https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html).
+//! interest (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>).
 
 use sb_cli_core::log::RunLog;
 

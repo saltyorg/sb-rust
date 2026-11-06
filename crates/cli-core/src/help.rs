@@ -3,7 +3,7 @@
 //!
 //! clap still parses and still prints help: each command's text is set with
 //! clap's `Command::override_help`
-//! (https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.override_help),
+//! (<https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.override_help>),
 //! so `-h`, `--help`, `sb help <command>`, the colour choice (clap strips
 //! styles when colour is off) and the exit code stay clap's. Why not clap's
 //! own renderer with styles or a template: its command list shows names
@@ -19,6 +19,8 @@
 //! help texts, `hide_default_value`, `last` positionals, visible aliases)
 //! are not shown.
 
+use std::fmt::Write as _;
+
 use anstyle::Style;
 use clap::builder::StyledStr;
 use clap::{Arg, Command};
@@ -26,7 +28,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::theme::{Role, Theme};
 
-/// clap's own text for its `help` subcommand (clap_builder 4.6.7
+/// clap's own text for its `help` subcommand (`clap_builder` 4.6.7
 /// `_check_help_and_version`), which sb keeps listed (maintainer).
 const HELP_SUBCOMMAND_ABOUT: &str = "Print this message or the help of the given subcommand(s)";
 
@@ -40,6 +42,7 @@ const HELP_SUBCOMMAND_ABOUT: &str = "Print this message or the help of the given
 /// arguments, so fang's `[--flags]` rule (own flags only) couldn't tell them
 /// apart without comparing each command with its parent, which costs as
 /// much as passing the inherited flags down here.
+#[must_use]
 pub fn apply(cmd: Command, theme: &Theme, colour: bool) -> Command {
     let path = cmd.get_name().to_string();
     apply_at(cmd, &path, &[], theme, colour)
@@ -86,9 +89,9 @@ fn hint(cmd: &Command) -> String {
             .map_or_else(|| arg.get_id().to_string(), ToString::to_string)
             .to_lowercase();
         if arg.is_required_set() {
-            hint.push_str(&format!(" <{name}>"));
+            let _ = write!(hint, " <{name}>");
         } else {
-            hint.push_str(&format!(" [{name}]"));
+            let _ = write!(hint, " [{name}]");
         }
     }
     if cmd
@@ -117,7 +120,7 @@ fn flag_row(arg: &Arg) -> (String, String, String) {
         .collect::<Vec<_>>()
         .join(",");
     if !matches!(default.as_str(), "" | "false" | "0" | "[]") {
-        help.push_str(&format!(" ({default})"));
+        let _ = write!(help, " ({default})");
     }
     let key = if long.is_empty() { shown.clone() } else { long };
     (key, shown, help)
@@ -185,26 +188,25 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], theme: &Theme, colour: 
         if line.is_empty() {
             out.push('\n');
         } else {
-            out.push_str(&format!("  {text}{line}{text:#}\n"));
+            let _ = writeln!(out, "  {text}{line}{text:#}");
         }
     }
-    out.push_str(&format!("\n  {heading}USAGE{heading:#}\n\n"));
+    let _ = writeln!(out, "\n  {heading}USAGE{heading:#}\n");
     out.push_str(&usage_block(cmd, path, theme, colour));
     if !commands.is_empty() {
-        out.push_str(&format!("\n  {heading}COMMANDS{heading:#}\n\n"));
+        let _ = writeln!(out, "\n  {heading}COMMANDS{heading:#}\n");
         for (name, hint, about) in &commands {
             let pad = " ".repeat(width - name.width() - hint.width());
-            out.push_str(&format!(
-                "    {name_style}{name}{name_style:#}{muted}{hint}{muted:#}{pad}{text}{about}{text:#}\n"
-            ));
+            let _ = writeln!(
+                out,
+                "    {name_style}{name}{name_style:#}{muted}{hint}{muted:#}{pad}{text}{about}{text:#}"
+            );
         }
     }
-    out.push_str(&format!("\n  {heading}FLAGS{heading:#}\n\n"));
+    let _ = writeln!(out, "\n  {heading}FLAGS{heading:#}\n");
     for (_, shown, help) in &flags {
         let pad = " ".repeat(width - shown.width());
-        out.push_str(&format!(
-            "    {flag}{shown}{flag:#}{pad}{text}{help}{text:#}\n"
-        ));
+        let _ = writeln!(out, "    {flag}{shown}{flag:#}{pad}{text}{help}{text:#}");
     }
     out
 }
@@ -242,14 +244,14 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
 /// values in the OK colour).
 /// No pointer to help, as sb-go. clap's usage paragraph is left out:
 /// removed with clap's `Error::remove(ContextKind::Usage)`
-/// (https://docs.rs/clap/4.6.7/clap/error/struct.Error.html#method.remove),
+/// (<https://docs.rs/clap/4.6.7/clap/error/struct.Error.html#method.remove>),
 /// and skipped by line for errors whose usage is part of their message
 /// (`Error::format`ted ones, which sb doesn't produce today).
 ///
 /// Why not a clap `ErrorFormatter`
-/// (https://docs.rs/clap/4.6.7/clap/error/trait.ErrorFormatter.html): clap
+/// (<https://docs.rs/clap/4.6.7/clap/error/trait.ErrorFormatter.html>): clap
 /// builds its messages in crate-private code (`write_dynamic_context`,
-/// `did_you_mean`, `try_help` in clap_builder 4.6.7 `error/format.rs`), so a
+/// `did_you_mean`, `try_help` in `clap_builder` 4.6.7 `error/format.rs`), so a
 /// formatter of ours would have to rewrite every message, and clap skips it
 /// for errors that carry their own message. This keeps clap's wording and
 /// re-lays it out from its plain rendering (`StyledStr`'s Display drops
@@ -257,6 +259,7 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
 /// more information`, `[possible values: `, `a similar `, `some similar `,
 /// `, use '`); the tests pin each shape, so a clap update that changes one
 /// fails them.
+#[must_use]
 pub fn parse_error_block(mut err: clap::Error, theme: &Theme) -> String {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     let _ = err.remove(ContextKind::Usage);
@@ -300,7 +303,7 @@ pub fn parse_error_block(mut err: clap::Error, theme: &Theme) -> String {
         } else if trimmed.starts_with("Usage:") {
             in_usage = true;
         } else if in_usage || trimmed.starts_with("For more information, ") {
-            continue;
+            // Usage lines and clap's closing pointer are left out.
         } else if let Some(tip) = trimmed.strip_prefix("tip: ") {
             body.push(format!("{warn}hint:{warn:#} {}", tip_hint(tip, ok)));
         } else if let Some(list) = trimmed
@@ -328,7 +331,7 @@ pub fn parse_error_block(mut err: clap::Error, theme: &Theme) -> String {
         out.push('\n');
     }
     for line in body {
-        out.push_str(&format!("  {line}\n"));
+        let _ = writeln!(out, "  {line}");
     }
     out.push('\n');
     out
@@ -527,7 +530,7 @@ mod tests {
         );
     }
 
-    /// clap's derive names positionals in SCREAMING_SNAKE (`TAGS`); sb-go's
+    /// clap's derive names positionals in `SCREAMING_SNAKE` (`TAGS`); sb-go's
     /// hints are lower case (`[tags]`, `[branch_name]`).
     #[test]
     fn derived_value_names_read_as_sb_gos() {

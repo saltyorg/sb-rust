@@ -1457,7 +1457,7 @@ mod tests {
                         if how == "signal" {
                             shutdown.signalled(2);
                         } else {
-                            shutdown.request(0);
+                            let _ = shutdown.request(0);
                         }
                         Err(child.into())
                     },
@@ -1556,7 +1556,7 @@ mod tests {
                     if signal {
                         shutdown.signalled(2);
                     } else {
-                        shutdown.request(0);
+                        let _ = shutdown.request(0);
                     }
                     assert!(step.token().is_cancelled());
                     anyhow::bail!("cancelled")
@@ -1575,7 +1575,7 @@ mod tests {
         let (term, options) = screen();
         let shutdown = Shutdown::new();
         let mut run = Runner::start("sb demo", &shutdown, None, options).await;
-        shutdown.request(0);
+        let _ = shutdown.request(0);
         let mut ran = false;
         let result = run
             .step(Labels::new("Late", "late"), async |_| {
@@ -2302,7 +2302,7 @@ mod tests {
                     anyhow::bail!("stopped")
                 });
                 tokio::task::yield_now().await;
-                request.request(0);
+                let _ = request.request(0);
                 group.join().await?;
                 Ok(())
             })

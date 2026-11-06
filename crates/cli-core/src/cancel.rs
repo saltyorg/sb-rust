@@ -6,11 +6,11 @@
 //! cursor and `ECHOCTL`; term-ui spec, decision 5), then ends sb at once
 //! by the first signal (exec decision 7). Signals are read on a thread
 //! with signal-hook's iterator, its documented high-level API
-//! (https://docs.rs/signal-hook/0.4.5/signal_hook/iterator/index.html), so
+//! (<https://docs.rs/signal-hook/0.4.5/signal_hook/iterator/index.html>), so
 //! no async runtime is needed until a command wants one. The token is
 //! tokio-util's, which works without a runtime and lets async commands
 //! `.await` cancellation
-//! (https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html).
+//! (<https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html>).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +23,7 @@ pub use tokio_util::sync::CancellationToken;
 
 /// The exit code for a run ended by a signal: 128 + the signal number, the
 /// shell convention (130 for SIGINT, 143 for SIGTERM).
+#[must_use]
 pub fn signal_exit_code(signal: i32) -> u8 {
     u8::try_from(128 + signal).unwrap_or(u8::MAX)
 }
@@ -30,7 +31,7 @@ pub fn signal_exit_code(signal: i32) -> u8 {
 /// End the process by `signal`'s default action, as if it had never been
 /// caught: signal-hook's `emulate_default_handler` resets the handler,
 /// unblocks the signal and raises it
-/// (https://docs.rs/signal-hook/0.4.5/signal_hook/low_level/fn.emulate_default_handler.html).
+/// (<https://docs.rs/signal-hook/0.4.5/signal_hook/low_level/fn.emulate_default_handler.html>).
 /// For SIGINT and SIGTERM it never returns (should the raise fail, it
 /// aborts, so sb dies of SIGABRT); a signal it doesn't know, or one whose
 /// default isn't to end a process, exits with 128 + the signal instead.
@@ -131,6 +132,14 @@ pub struct RestoreHook {
     id: u64,
 }
 
+impl std::fmt::Debug for RestoreHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoreHook")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for RestoreHook {
     fn drop(&mut self) {
         self.hooks.lock().hooks.retain(|(id, _)| *id != self.id);
@@ -147,6 +156,17 @@ pub struct Shutdown {
     hooks: Arc<Hooks>,
     /// The signals held for an attached child (exec decision 2).
     holds: Arc<Holds>,
+}
+
+/// The ending and whether the token is cancelled; the hooks and holds are
+/// left out (reading the holds takes their lock).
+impl std::fmt::Debug for Shutdown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shutdown")
+            .field("ending", &self.first.get())
+            .field("cancelled", &self.token.is_cancelled())
+            .finish_non_exhaustive()
+    }
 }
 
 /// How long a hold's start or end waits for the signals thread to decide
@@ -328,12 +348,14 @@ impl Drop for Hold {
 }
 
 impl Shutdown {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// A frozen copy of the current state, for reading the ending more than
     /// once (the log and the screen) without a signal changing it between.
+    #[must_use]
     pub fn snapshot(&self) -> Self {
         let frozen = Self::new();
         if let Some(&ending) = self.first.get() {
@@ -344,6 +366,7 @@ impl Shutdown {
     }
 
     /// The token to watch; cancelled by the first request or signal.
+    #[must_use]
     pub fn token(&self) -> CancellationToken {
         self.token.clone()
     }
@@ -351,6 +374,7 @@ impl Shutdown {
     /// Ask the run to end with `code` (sb-go's `Shutdown(code)`; 0 ends it
     /// successfully). Returns whether this was the first request; only the
     /// first sets the code.
+    #[must_use]
     pub fn request(&self, code: u8) -> bool {
         self.record(code, None)
     }
@@ -362,16 +386,19 @@ impl Shutdown {
     }
 
     /// The requested exit code, if the run was asked to end.
+    #[must_use]
     pub fn requested(&self) -> Option<u8> {
         self.first.get().map(|ending| ending.code)
     }
 
     /// Whether a signal (not a command) ended the run.
+    #[must_use]
     pub fn interrupted(&self) -> bool {
         self.signal().is_some()
     }
 
     /// The signal that ended the run, if one (not a command) did.
+    #[must_use]
     pub fn signal(&self) -> Option<i32> {
         self.first.get().and_then(|ending| ending.signal)
     }
@@ -402,6 +429,7 @@ impl Shutdown {
     }
 
     /// Whether an attached child holds the signals.
+    #[must_use]
     pub fn held(&self) -> bool {
         self.holds.lock().count > 0
     }
@@ -449,7 +477,7 @@ impl Shutdown {
     ///
     /// The structure of signal-hook's background-thread example, an
     /// iterator thread that restores the terminal (there for SIGTSTP)
-    /// (https://docs.rs/signal-hook/0.4.5/signal_hook/#a-complex-signal-handling-with-a-background-thread).
+    /// (<https://docs.rs/signal-hook/0.4.5/signal_hook/#a-complex-signal-handling-with-a-background-thread>).
     /// Why not that example's double Ctrl-C (`flag::register_conditional_shutdown`,
     /// used here before): it exits inside the signal handler, where
     /// restoring the terminal isn't async-signal-safe (term-ui spec,
@@ -468,6 +496,11 @@ impl Shutdown {
     /// on that error.
     ///
     /// [`signalled`]: Shutdown::signalled
+    ///
+    /// # Errors
+    ///
+    /// The OS error when a delivery flag or the signal iterator can't be
+    /// registered, or the listening thread can't be started.
     pub fn listen_for_signals(&self) -> std::io::Result<()> {
         // The delivery flags first, so each is set before the iterator
         // wakes the thread (see `Holds::arrived`).
@@ -505,6 +538,28 @@ impl Shutdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Debug` shows the ending and the token, under a hold too (it never
+    /// takes the holds' lock); a restore hook shows its id.
+    #[test]
+    fn debug_shows_the_ending() {
+        let shutdown = Shutdown::new();
+        let hook = shutdown.on_forced_exit(|| {});
+        let hold = shutdown.hold();
+        assert_eq!(
+            format!("{shutdown:?}"),
+            "Shutdown { ending: None, cancelled: false, .. }"
+        );
+        drop(hold);
+        let _ = shutdown.request(3);
+        assert_eq!(
+            format!("{shutdown:?}"),
+            "Shutdown { ending: Some(Ending { code: 3, signal: None }), cancelled: true, .. }"
+        );
+        let shown = format!("{hook:?}");
+        assert!(shown.starts_with("RestoreHook { id: "), "{shown}");
+        assert!(shown.ends_with(", .. }"), "{shown}");
+    }
 
     /// Every case of the signals thread's decision (cli-core spec, and exec
     /// decisions 2 and 12): outside a hold, the first SIGINT or SIGTERM
@@ -685,7 +740,7 @@ mod tests {
         assert_eq!(shutdown.step(None, SIGTERM), Act::ForcedExit(SIGINT));
         // A command's own request isn't a signal: the next one cancels.
         let requested = Shutdown::new();
-        requested.request(3);
+        let _ = requested.request(3);
         assert_eq!(requested.step(None, SIGINT), Act::Cancel);
     }
 
@@ -733,7 +788,7 @@ mod tests {
     #[test]
     fn a_request_for_0_is_recorded() {
         let shutdown = Shutdown::new();
-        shutdown.request(0);
+        let _ = shutdown.request(0);
         assert_eq!(shutdown.requested(), Some(0));
     }
 
@@ -848,7 +903,7 @@ mod tests {
     #[test]
     fn only_signals_count_as_interrupted() {
         let by_command = Shutdown::new();
-        by_command.request(3);
+        let _ = by_command.request(3);
         assert!(!by_command.interrupted());
         let by_signal = Shutdown::new();
         by_signal.signalled(signal_hook::consts::SIGINT);

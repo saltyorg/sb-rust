@@ -26,11 +26,13 @@ use std::process::Command;
 
 /// Whether to relaunch through sudo: the command needs root and the
 /// effective user isn't root.
+#[must_use]
 pub fn needs_relaunch(needs_root: bool, euid: u32) -> bool {
     needs_root && euid != 0
 }
 
 /// This process's effective user ID (rustix, no unsafe libc call).
+#[must_use]
 pub fn effective_uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
@@ -40,11 +42,16 @@ pub fn effective_uid() -> u32 {
 /// included, wherever `core_pattern` points. Not dumpable
 /// (`PR_SET_DUMPABLE` 0) stops every dump, a piped `core_pattern` (apport,
 /// systemd-coredump) too
-/// (https://docs.rs/rustix/1.1.6/rustix/process/fn.set_dumpable_behavior.html);
+/// (<https://docs.rs/rustix/1.1.6/rustix/process/fn.set_dumpable_behavior.html>);
 /// should that fail, `RLIMIT_CORE` 0 still stops file dumps
-/// (https://docs.rs/rustix/1.1.6/rustix/process/fn.setrlimit.html). The
+/// (<https://docs.rs/rustix/1.1.6/rustix/process/fn.setrlimit.html>). The
 /// kernel makes a process dumpable again at `execve`, so the children sb
 /// runs are unaffected (prctl(2), `PR_SET_DUMPABLE`).
+///
+/// # Errors
+///
+/// The OS error when neither the dumpable flag nor `RLIMIT_CORE` could be
+/// set.
 pub fn no_core_dumps() -> std::io::Result<()> {
     use rustix::process::{DumpableBehavior, set_dumpable_behavior};
     no_core_dumps_by(|| set_dumpable_behavior(DumpableBehavior::NotDumpable))
@@ -67,9 +74,10 @@ fn no_core_dumps_by(not_dumpable: impl FnOnce() -> rustix::io::Result<()>) -> st
 }
 
 /// sudo's arguments: root asked for explicitly, the user's editor choice,
-/// colour profile and NO_COLOR kept (sudo's env_reset drops them, which
+/// colour profile and `NO_COLOR` kept (sudo's `env_reset` drops them, which
 /// sb-go also loses; maintainer, 2026-10-30), then sb and its arguments
 /// unchanged.
+#[must_use]
 pub fn sudo_args(exe: &Path, args: &[OsString]) -> Vec<OsString> {
     let mut all = vec![
         OsString::from("-u"),
@@ -91,6 +99,11 @@ pub enum RelaunchError {
 /// Startup step 3: when the command needs root and this isn't root, hand
 /// this executable and its arguments to `exec` ([`relaunch_as_root`] in
 /// sb), which only returns on failure. `Ok` means run the command here.
+///
+/// # Errors
+///
+/// [`RelaunchError::Exec`] when a relaunch is needed and this executable's
+/// path can't be found or `exec` returns.
 pub fn ensure_root(
     needs_root: bool,
     euid: u32,
@@ -106,7 +119,8 @@ pub fn ensure_root(
 
 /// Replace this process with sudo running sb again (found on `PATH`, as
 /// sb-go does). Returns only if the exec failed
-/// (https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.exec).
+/// (<https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.exec>).
+#[must_use]
 pub fn relaunch_as_root(exe: &Path, args: &[OsString]) -> std::io::Error {
     Command::new(OsStr::new("sudo"))
         .args(sudo_args(exe, args))

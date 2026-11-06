@@ -36,6 +36,7 @@ pub fn saltbox_dir(var: Option<OsString>) -> PathBuf {
 
 /// The Saltbox inventory holding `server_appdata_path` under `root`
 /// (sb-go's `SaltboxInventoryConfigPath`).
+#[must_use]
 pub fn inventory_path(root: &Path) -> PathBuf {
     root.join("inventories/host_vars/localhost.yml")
 }
@@ -52,7 +53,7 @@ pub const MAX_FILE_BYTES: usize = 1 << 20;
 /// file's owner holds, must not hang every sb start, root's included;
 /// `NONBLOCK` has no effect on reading a regular file), never become the
 /// controlling terminal, and close on exec
-/// (https://docs.rs/rustix/1.1.6/rustix/fs/fn.open.html).
+/// (<https://docs.rs/rustix/1.1.6/rustix/fs/fn.open.html>).
 fn read_flags() -> rustix::fs::OFlags {
     use rustix::fs::OFlags;
     OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC
@@ -93,6 +94,11 @@ fn read_opened(
 /// Saltbox's schema files (their writer already controls root through
 /// Ansible, and sb-go reads them the same way) and an `SB_CONFIG` path
 /// (the user's own run).
+///
+/// # Errors
+///
+/// A [`ConfigError`] when the file can't be opened or read, isn't a regular
+/// file, is over 1 MiB or isn't UTF-8.
 pub fn read_small(path: &Path) -> Result<Option<String>, ConfigError> {
     read_opened(rustix::fs::open(
         path,
@@ -108,7 +114,7 @@ pub fn read_small(path: &Path) -> Result<Option<String>, ConfigError> {
 /// FUSE mount there could hang root's run), and must stay beneath `dir`:
 /// `openat2` with `RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV | RESOLVE_BENEATH`
 /// (Linux 5.6, below every supported Ubuntu;
-/// https://docs.rs/rustix/1.1.6/rustix/fs/fn.openat2.html). `dir` itself,
+/// <https://docs.rs/rustix/1.1.6/rustix/fs/fn.openat2.html>). `dir` itself,
 /// the appdata path, comes from the inventory and may be a link or mount.
 fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigError> {
     use rustix::fs::{Mode, OFlags, ResolveFlags};
@@ -136,17 +142,18 @@ fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigErro
 /// document (a duplicate key included), or an empty or relative value all
 /// mean `/opt`, as in sb-go. Like sb-go's yaml.v3 it parses only the first
 /// document (`Parser::load` with `multi` off:
-/// https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load)
+/// <https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>)
 /// and reads a custom-tagged scalar as its string. Unlike yaml.v3, a merge
-/// key (`<<`) isn't followed (saphyr has none); Saltbox's host_vars don't
+/// key (`<<`) isn't followed (saphyr has none); Saltbox's `host_vars` don't
 /// use one. The inventory is Saltbox config, read with saphyr as the
 /// capability map has it for Saltbox YAML
-/// (https://docs.rs/saphyr/0.3.3/saphyr/); serde-saphyr would make sb
+/// (<https://docs.rs/saphyr/0.3.3/saphyr/>); serde-saphyr would make sb
 /// 741408 bytes bigger for this one key (ADR-004). Cleaning is std's
 /// `Path::components` (repeated separators and `.` parts go:
-/// https://doc.rust-lang.org/std/path/struct.Path.html#method.components);
+/// <https://doc.rust-lang.org/std/path/struct.Path.html#method.components>);
 /// unlike Go's `filepath.Clean` it keeps `..` (std's `normalize_lexically`
 /// is unstable).
+#[must_use]
 pub fn appdata_path(inventory: &Path) -> PathBuf {
     read_small(inventory)
         .ok()
@@ -161,8 +168,7 @@ pub fn appdata_path(inventory: &Path) -> PathBuf {
                 .map(PathBuf::from)
         })
         .filter(|path| path.is_absolute())
-        .map(|path| path.components().collect())
-        .unwrap_or_else(|| PathBuf::from("/opt"))
+        .map_or_else(|| PathBuf::from("/opt"), |path| path.components().collect())
 }
 
 /// The first YAML document in `text`, parsed no further, or `None` on an
@@ -179,6 +185,7 @@ fn first_document(text: &str) -> Option<saphyr::Yaml<'_>> {
 }
 
 /// sb's config file under the appdata path.
+#[must_use]
 pub fn config_path(appdata: &Path) -> PathBuf {
     appdata.join(CONFIG_FILE)
 }
@@ -221,8 +228,9 @@ pub enum ConfigError {
 /// `text` on one line with control characters, invisible and direction
 /// marks (which can reorder a line on screen) escaped: std's
 /// `str::escape_debug`, which escapes every non-printable character
-/// (https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug);
+/// (<https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>);
 /// it also escapes quotes and backslashes.
+#[must_use]
 pub fn escape_controls(text: &str) -> String {
     text.escape_debug().to_string()
 }
@@ -230,7 +238,7 @@ pub fn escape_controls(text: &str) -> String {
 /// A toml error as one line: toml's own message (`Error::message`) and
 /// the line and column of its span, not its Display, which quotes the
 /// offending line verbatim
-/// (https://docs.rs/toml/1.1.8/toml/de/struct.Error.html).
+/// (<https://docs.rs/toml/1.1.8/toml/de/struct.Error.html>).
 fn parse_error(text: &str, err: &toml::de::Error) -> ConfigError {
     let position = err.span().map_or_else(String::new, |span| {
         let before = &text[..text.floor_char_boundary(span.start.min(text.len()))];
@@ -262,12 +270,23 @@ struct ThemeSection {
 
 /// The theme the config at `config` chooses (an `SB_CONFIG` path); no
 /// file means the built-in theme.
+///
+/// # Errors
+///
+/// A [`ConfigError`] when the file can't be read (see [`read_small`]),
+/// isn't valid TOML, or names an unknown theme, colour role or profile, or
+/// a colour that isn't #RRGGBB.
 pub fn load_theme(config: &Path) -> Result<ThemeChoice, ConfigError> {
     parse_theme(read_small(config)?)
 }
 
 /// The theme `<appdata>/sb/config.toml` chooses, read beneath `appdata`
 /// (see [`read_beneath`]); no file means the built-in theme.
+///
+/// # Errors
+///
+/// As [`load_theme`], and [`ConfigError::Refused`] when the file is reached
+/// through a symbolic link or another mount.
 pub fn load_theme_in(appdata: &Path) -> Result<ThemeChoice, ConfigError> {
     parse_theme(read_beneath(appdata, CONFIG_FILE)?)
 }

@@ -796,7 +796,7 @@ mod tests {
             while fake.seen().len() < 2 {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            shutdown.request(1);
+            let _ = shutdown.request(1);
         };
         let ((result, screen), ()) = tokio::time::timeout(Duration::from_secs(3), async {
             tokio::join!(run_until(root.path(), &fake, &shutdown), stop)

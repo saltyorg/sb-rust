@@ -8,9 +8,9 @@
 //! plain text to one file, `sb.log`, through a tracing-appender
 //! `RollingFileAppender` that never rotates, built with `Builder` and
 //! `Rotation::NEVER`
-//! (https://docs.rs/tracing-appender/0.2.5/tracing_appender/rolling/struct.Builder.html).
+//! (<https://docs.rs/tracing-appender/0.2.5/tracing_appender/rolling/struct.Builder.html>).
 //! Why not `rolling::never`
-//! (https://docs.rs/tracing-appender/0.2.5/tracing_appender/rolling/fn.never.html):
+//! (<https://docs.rs/tracing-appender/0.2.5/tracing_appender/rolling/fn.never.html>):
 //! it panics when the file can't be opened; `Builder::build` returns the
 //! error, and an unopenable log is only a warning.
 //! Saltbox's logrotate rotates it (maintainer, 2026-10-30): one path to
@@ -47,7 +47,7 @@ pub fn log_dir(override_dir: Option<OsString>) -> PathBuf {
 
 /// What a secret shows as, in place, on screen and in the log (term-ui
 /// decision 8, amended: inline masking, in the form Rust's secrecy crate
-/// uses, https://docs.rs/secrecy/0.10.3/secrecy/).
+/// uses, <https://docs.rs/secrecy/0.10.3/secrecy/>).
 pub const WITHHELD: &str = "[REDACTED]";
 
 /// A secret value inside a message: its Display and Debug are
@@ -106,6 +106,7 @@ impl Sensitive {
     }
 
     /// The held error, for code that must act on it (never to show or log).
+    #[must_use]
     pub fn inner(&self) -> &(dyn Error + Send + Sync + 'static) {
         self.0.as_ref()
     }
@@ -126,6 +127,7 @@ impl std::fmt::Debug for Sensitive {
 impl Error for Sensitive {}
 
 /// One run's log: its id and where it is written.
+#[derive(Debug)]
 pub struct RunLog {
     id: String,
     /// The file the run writes to.
@@ -137,6 +139,13 @@ impl RunLog {
     /// subscriber that writes to it; the caller installs the subscriber.
     /// It also installs the process's `log` logger, tracing-log's bridge,
     /// so dependencies logging through `log` reach that subscriber.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error when the directory can't be created or read, belongs
+    /// to another user, holds files that aren't sb's logs while its
+    /// permissions are looser than root-only, can't be made root-only, or
+    /// the log file can't be opened.
     pub fn open(
         dir: &Path,
     ) -> std::io::Result<(Self, impl tracing::Subscriber + Send + Sync + use<>)> {
@@ -215,17 +224,23 @@ impl RunLog {
         // Why not uuid or fastrand: neither (nor getrandom) is in sb's
         // dependency tree, and the id only has to differ between runs on
         // one host.
+        // The nanoseconds' low 64 bits, which move fastest: the wrapping
+        // arithmetic keeps only them.
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        // The low 64 bits move fastest; keeping only them is the point.
-        let id = format!("{:016x}", (nanos as u64) ^ u64::from(std::process::id()));
+            .map_or(0, |d| {
+                d.as_secs()
+                    .wrapping_mul(1_000_000_000)
+                    .wrapping_add(u64::from(d.subsec_nanos()))
+            });
+        let id = format!("{:016x}", nanos ^ u64::from(std::process::id()));
         // Never rotating, the appender names the file by its prefix alone
         // (tracing-appender 0.2.5 rolling.rs `join_date`).
         let file = dir.join(LOG_FILE);
         Ok((Self { id, file }, subscriber))
     }
 
+    #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -255,13 +270,15 @@ impl RunLog {
         // "broken pipe" for a quiet 141, isn't recorded either; what went
         // wrong before a quiet exit is logged where it happened (a step).
         let error = error.filter(|err| crate::exit::quiet_exit(*err).is_none());
-        match error {
-            Some(error) => tracing::info!(outcome, error, "run finished"),
-            None => tracing::info!(outcome, "run finished"),
+        if let Some(error) = error {
+            tracing::info!(outcome, error, "run finished");
+        } else {
+            tracing::info!(outcome, "run finished");
         }
     }
 
     /// Where to look, for the error block's `details:` line.
+    #[must_use]
     pub fn pointer(&self) -> String {
         format!("{} (run {})", self.file.display(), self.id)
     }
@@ -291,6 +308,7 @@ fn holds_only_sb_logs(dir: &Path) -> std::io::Result<bool> {
 /// How a run ended, for its last log line: a signal, a requested or quiet
 /// exit code (classified as [`crate::exit::report`] does), a failure, or
 /// done.
+#[must_use]
 pub fn outcome(shutdown: &Shutdown, error: Option<&(dyn Error + 'static)>) -> String {
     match (shutdown.requested(), error) {
         (Some(code), _) if shutdown.interrupted() => format!("interrupted (exit {code})"),
@@ -577,7 +595,7 @@ mod tests {
         interrupted.signalled(signal_hook::consts::SIGTERM);
         assert_eq!(outcome(&interrupted, Some(&err)), "interrupted (exit 143)");
         let requested = Shutdown::new();
-        requested.request(4);
+        let _ = requested.request(4);
         assert_eq!(outcome(&requested, None), "exit 4");
     }
 

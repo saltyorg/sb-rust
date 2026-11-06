@@ -3,15 +3,15 @@
 //! One role-named RGB palette (the one the prototypes were reviewed with,
 //! proto-theme) is resolved once at startup for the colour profile:
 //! truecolor as is, or converted with anstyle-lossy, the anstream project's
-//! conversion crate (https://docs.rs/anstyle-lossy/1.1.5/anstyle_lossy/).
+//! conversion crate (<https://docs.rs/anstyle-lossy/1.1.5/anstyle_lossy/>).
 //! The 16-colour palette of a terminal can't be known, so `ansi` matches
 //! against anstyle-lossy's VGA palette, except that the built-in palette's
 //! colours take a reviewed pick per role there (ADR-006): nearest-colour
-//! matching put OK, idle, container and accent_2 on muted text's grey.
+//! matching put OK, idle, container and `accent_2` on muted text's grey.
 //! Output libraries take their colours from the resolved [`Theme`]; each
 //! one's adapter comes with the module that brings that library (term-ui,
 //! tui), not before.
-//! `--color=never` and NO_COLOR still win: output goes through anstream.
+//! `--color=never` and `NO_COLOR` still win: output goes through anstream.
 
 use std::sync::OnceLock;
 
@@ -78,6 +78,7 @@ impl Role {
     ];
 
     /// The role's name in the theme file.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Role::Text => "text",
@@ -109,6 +110,7 @@ impl Role {
     }
 
     /// The role with this theme-file name.
+    #[must_use]
     pub fn from_name(name: &str) -> Option<Role> {
         Role::ALL.into_iter().find(|role| role.name() == name)
     }
@@ -123,38 +125,39 @@ impl Role {
 pub struct Palette([RgbColor; Role::ALL.len()]);
 
 const fn rgb(hex: u32) -> RgbColor {
-    RgbColor((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+    let [_, r, g, b] = hex.to_be_bytes();
+    RgbColor(r, g, b)
 }
 
 impl Default for Palette {
     /// The built-in `default` theme, for dark backgrounds.
     fn default() -> Self {
         Self([
-            rgb(0xDCE3EC), // text
-            rgb(0x8B95A7), // muted
-            rgb(0x586174), // faint
-            rgb(0x3A4558), // border
-            rgb(0x5CCFE6), // accent
-            rgb(0x0B1A24), // on_accent
-            rgb(0x6FD39A), // ok
-            rgb(0xFF6E7A), // problem
-            rgb(0xF5B55B), // warn
-            rgb(0x84A9C0), // idle
-            rgb(0x7EA6FF), // service
-            rgb(0x34466E), // service_rule
-            rgb(0xC49BFF), // container
-            rgb(0x4F3D6E), // container_rule
-            rgb(0x6A2E36), // attention_rule
-            rgb(0xE8C77A), // highlight
-            rgb(0x7EA6FF), // link
-            rgb(0xE8C77A), // code
-            rgb(0x1C2430), // code_bg
-            rgb(0xC49BFF), // accent_2
-            rgb(0x2A3446), // button_bg
-            rgb(0x1A2029), // button_disabled_bg
-            rgb(0x4A3F12), // search_hit
-            rgb(0xFFFFFF), // selected_fg
-            rgb(0x24405E), // selected_bg
+            rgb(0x00DC_E3EC), // text
+            rgb(0x008B_95A7), // muted
+            rgb(0x0058_6174), // faint
+            rgb(0x003A_4558), // border
+            rgb(0x005C_CFE6), // accent
+            rgb(0x000B_1A24), // on_accent
+            rgb(0x006F_D39A), // ok
+            rgb(0x00FF_6E7A), // problem
+            rgb(0x00F5_B55B), // warn
+            rgb(0x0084_A9C0), // idle
+            rgb(0x007E_A6FF), // service
+            rgb(0x0034_466E), // service_rule
+            rgb(0x00C4_9BFF), // container
+            rgb(0x004F_3D6E), // container_rule
+            rgb(0x006A_2E36), // attention_rule
+            rgb(0x00E8_C77A), // highlight
+            rgb(0x007E_A6FF), // link
+            rgb(0x00E8_C77A), // code
+            rgb(0x001C_2430), // code_bg
+            rgb(0x00C4_9BFF), // accent_2
+            rgb(0x002A_3446), // button_bg
+            rgb(0x001A_2029), // button_disabled_bg
+            rgb(0x004A_3F12), // search_hit
+            rgb(0x00FF_FFFF), // selected_fg
+            rgb(0x0024_405E), // selected_bg
         ])
     }
 }
@@ -163,7 +166,10 @@ impl Default for Palette {
 /// [`Role::ALL`] order; a role a theme file sets to another colour is
 /// matched instead.
 const SIXTEEN: [AnsiColor; Role::ALL.len()] = {
-    use AnsiColor::*;
+    use AnsiColor::{
+        Black, Blue, BrightBlack, BrightBlue, BrightCyan, BrightGreen, BrightMagenta, BrightRed,
+        BrightWhite, BrightYellow, Cyan, Magenta, Red, White, Yellow,
+    };
     [
         BrightWhite,   // text
         White,         // muted
@@ -194,6 +200,7 @@ const SIXTEEN: [AnsiColor; Role::ALL.len()] = {
 };
 
 impl Palette {
+    #[must_use]
     pub fn get(&self, role: Role) -> RgbColor {
         self.0[role.index()]
     }
@@ -237,6 +244,7 @@ impl Profile {
     /// file's (`file`): the environment wins (ADR-002); unset or empty, the
     /// file's counts. An unknown value warns and the file's profile, else
     /// truecolor, is used.
+    #[must_use]
     pub fn choose(env: Option<&str>, file: Option<Self>) -> (Self, Option<String>) {
         match (env, file) {
             (None | Some(""), Some(file)) => (file, None),
@@ -249,6 +257,7 @@ impl Profile {
     }
 
     /// The profile with sb-go's name for it.
+    #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "truecolor" => Some(Profile::TrueColor),
@@ -260,6 +269,7 @@ impl Profile {
     }
 
     /// One palette colour in this profile; `ascii` has none.
+    #[must_use]
     pub fn resolve(self, colour: RgbColor) -> Option<Color> {
         match self {
             Profile::TrueColor => Some(Color::Rgb(colour)),
@@ -284,6 +294,7 @@ pub struct Theme {
 impl Theme {
     /// Every role in `profile`; under `ansi` a role still on its built-in
     /// colour takes [`SIXTEEN`]'s pick (ADR-006).
+    #[must_use]
     pub fn resolve(palette: &Palette, profile: Profile) -> Self {
         let built_in = Palette::default();
         Self {
@@ -300,11 +311,13 @@ impl Theme {
     }
 
     /// The profile it was resolved for (`ascii` for the plain theme).
+    #[must_use]
     pub fn profile(&self) -> Profile {
         self.profile
     }
 
     /// No colour at all (before startup installs the real theme).
+    #[must_use]
     pub fn plain() -> Self {
         Self {
             colours: [None; Role::ALL.len()],
@@ -313,11 +326,13 @@ impl Theme {
     }
 
     /// The role's resolved colour, for any use (backgrounds included).
+    #[must_use]
     pub fn color(&self, role: Role) -> Option<Color> {
         self.colours[role.index()]
     }
 
     /// A foreground style in the role's colour.
+    #[must_use]
     pub fn style(&self, role: Role) -> Style {
         Style::new().fg_color(self.color(role))
     }
@@ -456,31 +471,31 @@ mod tests {
     #[test]
     fn every_role_keeps_its_reviewed_value() {
         let reviewed: [(Role, u32); Role::ALL.len()] = [
-            (Role::Text, 0xDCE3EC),
-            (Role::Muted, 0x8B95A7),
-            (Role::Faint, 0x586174),
-            (Role::Border, 0x3A4558),
-            (Role::Accent, 0x5CCFE6),
-            (Role::OnAccent, 0x0B1A24),
-            (Role::Ok, 0x6FD39A),
-            (Role::Problem, 0xFF6E7A),
-            (Role::Warn, 0xF5B55B),
-            (Role::Idle, 0x84A9C0),
-            (Role::Service, 0x7EA6FF),
-            (Role::ServiceRule, 0x34466E),
-            (Role::Container, 0xC49BFF),
-            (Role::ContainerRule, 0x4F3D6E),
-            (Role::AttentionRule, 0x6A2E36),
-            (Role::Highlight, 0xE8C77A),
-            (Role::Link, 0x7EA6FF),
-            (Role::Code, 0xE8C77A),
-            (Role::CodeBg, 0x1C2430),
-            (Role::Accent2, 0xC49BFF),
-            (Role::ButtonBg, 0x2A3446),
-            (Role::ButtonDisabledBg, 0x1A2029),
-            (Role::SearchHit, 0x4A3F12),
-            (Role::SelectedFg, 0xFFFFFF),
-            (Role::SelectedBg, 0x24405E),
+            (Role::Text, 0x00DC_E3EC),
+            (Role::Muted, 0x008B_95A7),
+            (Role::Faint, 0x0058_6174),
+            (Role::Border, 0x003A_4558),
+            (Role::Accent, 0x005C_CFE6),
+            (Role::OnAccent, 0x000B_1A24),
+            (Role::Ok, 0x006F_D39A),
+            (Role::Problem, 0x00FF_6E7A),
+            (Role::Warn, 0x00F5_B55B),
+            (Role::Idle, 0x0084_A9C0),
+            (Role::Service, 0x007E_A6FF),
+            (Role::ServiceRule, 0x0034_466E),
+            (Role::Container, 0x00C4_9BFF),
+            (Role::ContainerRule, 0x004F_3D6E),
+            (Role::AttentionRule, 0x006A_2E36),
+            (Role::Highlight, 0x00E8_C77A),
+            (Role::Link, 0x007E_A6FF),
+            (Role::Code, 0x00E8_C77A),
+            (Role::CodeBg, 0x001C_2430),
+            (Role::Accent2, 0x00C4_9BFF),
+            (Role::ButtonBg, 0x002A_3446),
+            (Role::ButtonDisabledBg, 0x001A_2029),
+            (Role::SearchHit, 0x004A_3F12),
+            (Role::SelectedFg, 0x00FF_FFFF),
+            (Role::SelectedBg, 0x0024_405E),
         ];
         let palette = Palette::default();
         for (role, hex) in reviewed {
@@ -517,7 +532,7 @@ mod tests {
 
     /// Under 16 colours the built-in palette takes the reviewed pick for
     /// each role, by name (term-ui Task 12; ADR-006): nearest-colour
-    /// matching put OK, idle, container and accent_2 on muted text's grey.
+    /// matching put OK, idle, container and `accent_2` on muted text's grey.
     /// Each pick is tied to the nearest match of the colour it was chosen
     /// for, so changing a built-in colour fails here until its pick is
     /// reviewed too.

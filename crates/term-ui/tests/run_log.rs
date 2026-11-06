@@ -116,7 +116,7 @@ async fn run_steps() {
     // A body cancelled by the command's own request: "stopped", and its
     // error still in the record (never shown).
     let stopping = async |_: &mut sb_term_ui::Step| -> anyhow::Result<()> {
-        shutdown.request(0);
+        let _ = shutdown.request(0);
         anyhow::bail!("asked to stop")
     };
     let _ = run.step(Labels::new("Stopping", "stopped"), stopping).await;
