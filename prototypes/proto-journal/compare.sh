@@ -3,7 +3,7 @@
 # release, each with that release's own systemd (journald, journalctl,
 # systemd-journal-remote). Unprivileged containers: no systemd as PID 1.
 #
-#   prototypes/proto-journal/compare.sh [RELEASE | IMAGE=RELEASE]...
+#   [PJ_BIN=binary] prototypes/proto-journal/compare.sh [RELEASE | IMAGE=RELEASE]...
 #
 # Default: every row of query.rs RELEASES (`proto-journal releases`).
 # IMAGE=RELEASE runs another image under a row's rules, as a canary: for
@@ -20,13 +20,25 @@
 # Needs Docker and the musl target.
 set -euo pipefail
 
+# PJ_BIN names a binary built already (CI builds it once). It is resolved
+# before the cd below, so a relative path works too.
+if [ -n "${PJ_BIN:-}" ]; then
+  if ! PJ_BIN=$(realpath -e "$PJ_BIN") || [ ! -x "$PJ_BIN" ]; then
+    echo "PJ_BIN is not an executable file" >&2
+    exit 2
+  fi
+fi
 cd "$(dirname "$0")/../.."
 releases=("$@")
 
-# Capped, as every heavy build and run here is.
-systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
-  cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
-bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
+# Without PJ_BIN, build it here, capped, as every heavy build and run here is.
+if [ -n "${PJ_BIN:-}" ]; then
+  bin=$PJ_BIN
+else
+  systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
+    cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
+  bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
+fi
 [ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$bin" releases | cut -d' ' -f1)
 
 containers=()

@@ -1,0 +1,164 @@
+# The journal reader (prototypes/proto-journal) against each supported
+# Ubuntu release's own journalctl, in unprivileged containers of current
+# images. Scheduled because an Ubuntu stable update can change
+# journalctl's rules within an LTS (systemd 259.1 moved the `-u` "PID 1"
+# rule to init.scope): a failing run means a RELEASES row needs updating.
+# The release list comes from `proto-journal releases`, so a new row is
+# picked up without editing this file. Images and apt packages are never
+# cached: a fresh pull and the live archive are the point.
+#
+# GitHub disables scheduled workflows after 60 days without repository
+# activity. Builds aren't capped with systemd-run here (it needs root on a
+# runner); the runner is an ephemeral VM, and the containers keep their
+# --memory/--cpus caps.
+name: journal matrix
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      canaries:
+        description: "Canary images as IMAGE=RELEASE, space-separated"
+        required: false
+        default: "rolling=26.04 devel=26.04"
+  pull_request:
+    paths:
+      - "prototypes/proto-journal/**"
+      - ".github/workflows/journal-matrix.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+  push:
+    branches: [main]
+    paths:
+      - "prototypes/proto-journal/**"
+      - ".github/workflows/journal-matrix.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+
+permissions:
+  contents: read
+
+# An explicit bash shell runs with -eo pipefail, so a script piped into tee
+# still fails its step.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  # Only a newer push to the same pull request cancels a run; scheduled,
+  # pushed and dispatched runs on main never cancel each other.
+  group: journal-matrix-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      releases: ${{ steps.releases.outputs.list }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Installs what rust-toolchain.toml pins (1.99.1, the musl target).
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (static musl)
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p proto-journal
+      - name: Clippy
+        run: cargo clippy --locked -p proto-journal --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked -p proto-journal
+      - name: Release rows
+        id: releases
+        run: |
+          rows=$(target/x86_64-unknown-linux-musl/release/proto-journal releases)
+          {
+            echo "### Release rows"
+            echo '| release | systemd |'
+            echo '|---|---|'
+            while read -r release systemd; do echo "| $release | $systemd |"; done <<<"$rows"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "list=$(cut -d' ' -f1 <<<"$rows" | jq -Rcs 'split("\n") | map(select(. != ""))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: proto-journal
+          path: target/x86_64-unknown-linux-musl/release/proto-journal
+          retention-days: 7
+
+  matrix:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJSON(needs.build.outputs.releases) }}
+    name: journal / ${{ matrix.release }}
+    timeout-minutes: 45
+    env:
+      RELEASE: ${{ matrix.release }}
+      SBJ_PREFIX: ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: proto-journal
+          path: bin
+      - name: compare.sh
+        run: |
+          chmod +x bin/proto-journal
+          PJ_BIN=$PWD/bin/proto-journal prototypes/proto-journal/compare.sh "$RELEASE" 2>&1 | tee compare.log
+      - name: compat.sh (files from 20.04 and 18.04)
+        run: PJ_BIN=$PWD/bin/proto-journal prototypes/proto-journal/compat.sh 20.04 18.04 -- "$RELEASE" 2>&1 | tee compat.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### $RELEASE"
+            echo '```'
+            grep -hE '^\S.*systemd|FAIL|note' compare.log compat.log 2>/dev/null || true
+            for image in "$RELEASE" 20.04 18.04; do
+              docker image inspect "ubuntu:$image" --format "ubuntu:$image {{index .RepoDigests 0}}" 2>/dev/null || true
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Interim and development images under a supported row's rules: an early
+  # warning, never a failure of the run. `rolling` and `devel` follow the
+  # release cycle without edits here.
+  canary:
+    needs: build
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      CANARIES: ${{ inputs.canaries || 'rolling=26.04 devel=26.04' }}
+      SBJ_PREFIX: ci-canary
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: proto-journal
+          path: bin
+      - name: compare.sh canaries
+        run: |
+          chmod +x bin/proto-journal
+          read -ra canaries <<<"$CANARIES"
+          PJ_BIN=$PWD/bin/proto-journal prototypes/proto-journal/compare.sh "${canaries[@]}" 2>&1 | tee canary.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Canaries ($CANARIES)"
+            echo '```'
+            grep -E '^\S.*systemd|FAIL|note' canary.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
