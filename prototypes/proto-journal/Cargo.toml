@@ -28,6 +28,9 @@ rustix = { version = "1.1.6", features = ["fs"] }
 # The systemd-coredump uid for 26.04's unit match (host spec decision 2).
 nix = { version = "0.28.0", default-features = false, features = ["user"] }
 serde_json = "1.0.154"
+# kmerge_by for the newest-first union of entry lists; 0.14.0 is already in
+# sb's tree through ratatui.
+itertools = "0.14.0"
 
 
 [dev-dependencies]

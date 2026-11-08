@@ -1,10 +1,13 @@
 //! Matching, merging and following across a set of journal files.
 
-use crate::file::{Entry, JournalFile, hex_id};
+use crate::file::{DataRef, EntriesRev, Entry, JournalFile, hex_id};
 use anyhow::{Context, Result};
+use itertools::Itertools;
+use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{HashMap, hash_map};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// One term of a conjunction: the entry carries any of these
 /// `FIELD=value` payloads (sd-journal ORs matches on the same field).
@@ -226,7 +229,35 @@ fn parse_hex(v: &str) -> Option<u64> {
 #[derive(Debug, Clone)]
 pub struct Record {
     pub location: Location,
-    pub fields: Vec<(String, Vec<u8>)>,
+    pub fields: Vec<Field>,
+}
+
+/// One `FIELD=value` DATA payload. The entries shown that carry the same
+/// DATA object share its bytes: most fields of a unit's entries repeat.
+#[derive(Debug, Clone)]
+pub struct Field {
+    payload: Arc<[u8]>,
+    /// Where the first `=` is.
+    eq: usize,
+}
+
+impl Field {
+    /// A payload split at its first `=`; `None` for a payload without one.
+    fn new(payload: Vec<u8>) -> Option<Self> {
+        let eq = payload.iter().position(|&b| b == b'=')?;
+        Some(Self {
+            payload: payload.into(),
+            eq,
+        })
+    }
+
+    pub fn name(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.payload[..self.eq])
+    }
+
+    pub fn value(&self) -> &[u8] {
+        &self.payload[self.eq + 1..]
+    }
 }
 
 /// The files journalctl reads by default: the local machine's directories
@@ -303,9 +334,10 @@ impl Journal {
             Some(b) if !l.order(b).is_lt() => Step::Skip,
             _ => Step::Take,
         };
-        let mut found = self.per_file(filter, n, step);
-        let skip = found.len().saturating_sub(n);
-        found.split_off(skip)
+        let mut errors = Vec::new();
+        let picked = newest(self.walks(filter, step, &mut errors), n, &mut errors);
+        self.errors.append(&mut errors);
+        self.decode(&picked)
     }
 
     /// Every matching entry after `after`, oldest first.
@@ -317,38 +349,157 @@ impl Journal {
                 Step::Stop
             }
         };
-        self.per_file(filter, usize::MAX, step)
+        let mut errors = Vec::new();
+        let mut streams = Vec::new();
+        for walk in self.walks(filter, step, &mut errors) {
+            // Up to the first error, which is reported: what the walk gave
+            // before stands, as in `tail`.
+            let mut found = Vec::new();
+            for c in walk {
+                match c {
+                    Ok(c) => found.push(c),
+                    Err(err) => {
+                        errors.push(format!("{err:#}"));
+                        break;
+                    }
+                }
+            }
+            // Newest first from the walk: reverse into file order.
+            found.reverse();
+            streams.push(found);
+        }
+        self.errors.append(&mut errors);
+        self.decode(&merge(streams))
     }
 
-    /// Each file's matches, merged. A broken file or entry is reported in
-    /// `errors` and the rest is still shown, as sd-journal skips an entry
-    /// it can't read (output_json on -EBADMSG) and keeps the other files:
+    /// One lazy walk per file, newest first. A file whose matches can't be
+    /// looked up is reported in `errors` and left out, as sd-journal
+    /// leaves out a file it can't iterate and keeps the others:
     /// `.journal~` files are exactly the ones left dirty.
-    fn per_file(
-        &mut self,
-        filter: &[Group],
-        n: usize,
-        step: impl Fn(&Location) -> Step + Copy,
-    ) -> Vec<Record> {
-        let mut streams: Vec<Vec<Record>> = Vec::new();
-        for f in &self.files {
-            match last_matching(f, filter, n, step) {
-                Ok(entries) => {
-                    let mut stream = Vec::with_capacity(entries.len());
-                    // Newest first from the walk: reverse into file order.
-                    for e in entries.iter().rev() {
-                        match record(f, e) {
-                            Ok(r) => stream.push(r),
-                            Err(err) => self.errors.push(format!("{err:#}")),
-                        }
-                    }
-                    streams.push(stream);
-                }
+    fn walks<'a, S>(
+        &'a self,
+        filter: &'a [Group],
+        step: S,
+        errors: &mut Vec<String>,
+    ) -> Vec<impl Iterator<Item = Result<Candidate>> + 'a>
+    where
+        S: Fn(&Location) -> Step + Copy + 'a,
+    {
+        let mut out = Vec::new();
+        for (file, f) in self.files.iter().enumerate() {
+            match file_walk(f, filter, step) {
+                Ok(walk) => out.push(walk.map(move |r| {
+                    r.map(|(offset, location)| Candidate {
+                        location,
+                        file,
+                        offset,
+                    })
+                })),
+                Err(err) => errors.push(format!("{err:#}")),
+            }
+        }
+        out
+    }
+
+    /// Read the chosen entries for output. An entry that can't be read is
+    /// reported and skipped, as sd-journal skips an entry it can't read
+    /// (output_json on -EBADMSG).
+    fn decode(&mut self, picked: &[Candidate]) -> Vec<Record> {
+        let mut out = Vec::with_capacity(picked.len());
+        // Entries share most DATA objects (a unit's _PID, _COMM, _HOSTNAME
+        // and so on): each is read and decompressed once.
+        let mut payloads = HashMap::new();
+        for c in picked {
+            let f = &self.files[c.file];
+            match f
+                .entry(c.offset)
+                .and_then(|e| record(f, &e, &mut payloads, c.file))
+            {
+                Ok(r) => out.push(r),
                 Err(err) => self.errors.push(format!("{err:#}")),
             }
         }
-        merge(streams)
+        out
     }
+}
+
+/// An entry a file's walk chose: its location for the merge, and where to
+/// read it once it is among the entries shown.
+#[derive(Debug, Clone)]
+struct Candidate {
+    location: Location,
+    file: usize,
+    offset: u64,
+}
+
+/// The newest `n` entries across the files' walks (each newest first),
+/// returned oldest first. This is how `journalctl -n` finds them:
+/// sd_journal_seek_tail, then sd_journal_previous_skip, which is
+/// `real_journal_next` going up (v249 sd-journal.c). Every file first
+/// moves past heads that aren't strictly before the last entry taken,
+/// then the largest head by `journal_file_compare_locations` is taken, the
+/// earlier file on a tie. So a flushed copy (see `merge`) is shown once,
+/// from the earlier file in search order, and only the heads are read: a
+/// file's walk goes no further back than the entries it contributes.
+///
+/// A walk that fails is reported and dropped from then on, as
+/// sd-journal's `real_journal_next` drops a file it can't iterate; what it
+/// gave before stands.
+fn newest<I>(walks: Vec<I>, n: usize, errors: &mut Vec<String>) -> Vec<Candidate>
+where
+    I: Iterator<Item = Result<Candidate>>,
+{
+    let mut walks: Vec<Option<I>> = walks.into_iter().map(Some).collect();
+    let mut heads: Vec<Option<Candidate>> = walks.iter().map(|_| None).collect();
+    let mut out: Vec<Candidate> = Vec::new();
+    while out.len() < n {
+        for (walk, head) in walks.iter_mut().zip(heads.iter_mut()) {
+            loop {
+                if head.is_none() {
+                    match walk.as_mut().and_then(Iterator::next) {
+                        Some(Ok(c)) => *head = Some(c),
+                        Some(Err(err)) => {
+                            errors.push(format!("{err:#}"));
+                            *walk = None;
+                            break;
+                        }
+                        None => {
+                            *walk = None;
+                            break;
+                        }
+                    }
+                }
+                match (head.as_ref(), out.last()) {
+                    (Some(h), Some(last)) if !h.location.order(&last.location).is_lt() => {
+                        *head = None;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        // The largest head, compared in file order against the running
+        // best, which keeps the earlier file on a tie: real_journal_next's
+        // loop, spelled out because the order isn't transitive (std's
+        // `min_by`/`max_by` document results for a total order only). Why
+        // not itertools' `kmerge_by`: its heap needs a transitive order and
+        // has no tie rule.
+        let mut best: Option<usize> = None;
+        for (i, head) in heads.iter().enumerate() {
+            let Some(h) = head else { continue };
+            let better = best.is_none_or(|b| {
+                heads[b]
+                    .as_ref()
+                    .is_some_and(|bh| h.location.order(&bh.location).is_gt())
+            });
+            if better {
+                best = Some(i);
+            }
+        }
+        let Some(best) = best else { break };
+        out.extend(heads[best].take());
+    }
+    out.reverse();
+    out
 }
 
 /// Merge per-file streams, each already in file order, the way
@@ -367,12 +518,14 @@ impl Journal {
 /// realtime and XOR hash. Files are read in sd-journal's search order
 /// (/run before /var), so the copy kept is the one journalctl shows.
 ///
-/// journalctl's `-n` walks backwards (keeping the largest); in the
-/// non-transitive cases a forward merge can pick a different last N.
-fn merge(streams: Vec<Vec<Record>>) -> Vec<Record> {
+/// Following uses this forward merge, as `journalctl -f` goes on with
+/// sd_journal_next. The last N (`tail`) come from `newest`, which walks
+/// backwards as journalctl's `-n` does: in the non-transitive cases a
+/// forward merge could pick a different last N.
+fn merge(streams: Vec<Vec<Candidate>>) -> Vec<Candidate> {
     // One position per stream; the head of stream `i` is streams[i][pos[i]].
     let mut pos = vec![0usize; streams.len()];
-    let mut out: Vec<Record> = Vec::new();
+    let mut out: Vec<Candidate> = Vec::new();
     loop {
         if let Some(last) = out.last() {
             for (i, s) in streams.iter().enumerate() {
@@ -410,44 +563,102 @@ enum Step {
     Stop,
 }
 
-/// The last `n` entries of one file that match `filter` and `step`,
-/// newest first. Each group walks the entry list of its rarest term
-/// backwards and checks the other terms against the entry's DATA offsets
-/// ("Reading": multiple matches). Entry lists are in file order, which is
-/// sequence order, so `Stop` ends the walk.
-fn last_matching(
-    f: &JournalFile,
-    filter: &[Group],
-    n: usize,
-    step: impl Fn(&Location) -> Step,
-) -> Result<Vec<Entry>> {
-    let mut offsets: BTreeSet<u64> = BTreeSet::new();
-    let mut take = |list: &[u64], check: &dyn Fn(&Entry) -> bool| -> Result<()> {
-        let mut got = 0;
-        for &off in list.iter().rev() {
-            if got >= n {
-                break;
-            }
-            let e = f.entry(off)?;
-            match step(&Location::of(f, &e)) {
-                Step::Stop => break,
-                Step::Skip => continue,
-                Step::Take => {}
-            }
-            if check(&e) {
-                offsets.insert(off);
-                got += 1;
+/// A newest-first stream of entry offsets from one file, each with what
+/// the stream knows about it.
+type Stream<'a, T> = Box<dyn Iterator<Item = Result<(u64, T)>> + 'a>;
+
+/// Several newest-first streams of one file merged into one, newest
+/// first; an offset in several streams comes out once. Offsets are file
+/// order, so the largest is the newest. An error sorts first, so it is
+/// yielded as soon as a stream meets one; the callers stop there.
+/// https://docs.rs/itertools/0.14.0/itertools/trait.Itertools.html#method.kmerge_by
+fn union<'a, T: 'a>(streams: Vec<Stream<'a, T>>) -> Stream<'a, T> {
+    fn key<T>(r: &Result<(u64, T)>) -> u64 {
+        r.as_ref().map_or(u64::MAX, |x| x.0)
+    }
+    Box::new(
+        streams
+            .into_iter()
+            .kmerge_by(|a, b| key(a) > key(b))
+            .dedup_by(|a, b| matches!((a, b), (Ok(x), Ok(y)) if x.0 == y.0)),
+    )
+}
+
+/// One group's matches in one file, newest first: its driver term's entry
+/// list walked backwards, each entry read once and checked against the
+/// other terms' DATA offsets ("Reading": multiple matches). Entry lists
+/// are in file order, which is sequence order, so `Stop` ends the walk.
+struct Walk<'a, S> {
+    f: &'a JournalFile,
+    driver: Stream<'a, ()>,
+    /// Per other term, the DATA offsets of its values; the entry must
+    /// carry one of each.
+    others: Vec<Vec<u64>>,
+    step: S,
+    done: bool,
+}
+
+impl<S: Fn(&Location) -> Step> Iterator for Walk<'_, S> {
+    type Item = Result<(u64, Location)>;
+
+    /// The next older match. After an error it ends: one unreadable entry
+    /// ends this file's walk, and the error is reported.
+    fn next(&mut self) -> Option<Self::Item> {
+        while !self.done {
+            let found = self.driver.next()?.and_then(|(off, ())| {
+                let e = self.f.entry(off)?;
+                Ok((off, Location::of(self.f, &e), e))
+            });
+            let (off, location, e) = match found {
+                Ok(x) => x,
+                Err(err) => {
+                    self.done = true;
+                    return Some(Err(err));
+                }
+            };
+            match (self.step)(&location) {
+                Step::Stop => self.done = true,
+                Step::Skip => {}
+                Step::Take => {
+                    let matches = self
+                        .others
+                        .iter()
+                        .all(|alts| alts.iter().any(|o| e.items.contains(o)));
+                    if matches {
+                        return Some(Ok((off, location)));
+                    }
+                }
             }
         }
-        Ok(())
-    };
+        None
+    }
+}
+
+/// One file's matches for `filter` and `step`, newest first, read lazily:
+/// one walk per group, driven from the term with the fewest entries, the
+/// groups' matches merged. A term that ORs several values of one field
+/// drives through the union of their entry lists. Every term is looked up
+/// in the file's hash table first; a term with no DATA object here means
+/// its group can't match in this file.
+fn file_walk<'a, S>(f: &'a JournalFile, filter: &[Group], step: S) -> Result<Stream<'a, Location>>
+where
+    S: Fn(&Location) -> Step + Copy + 'a,
+{
+    fn offsets(it: EntriesRev<'_>) -> Stream<'_, ()> {
+        Box::new(it.map(|r| r.map(|off| (off, ()))))
+    }
+    let mut groups: Vec<Stream<'a, Location>> = Vec::new();
     if filter.is_empty() {
-        take(&f.all_entries()?, &|_| true)?;
+        groups.push(Box::new(Walk {
+            f,
+            driver: offsets(f.all_entries_rev()?),
+            others: Vec::new(),
+            step,
+            done: false,
+        }));
     }
     for group in filter {
-        // Resolve every term to this file's DATA objects; a term with none
-        // means the group can't match here.
-        let mut resolved: Vec<Vec<crate::file::DataRef>> = Vec::new();
+        let mut resolved: Vec<Vec<DataRef>> = Vec::new();
         for term in group {
             let mut refs = Vec::new();
             for payload in term {
@@ -460,9 +671,6 @@ fn last_matching(
         if resolved.iter().any(Vec::is_empty) {
             continue;
         }
-        // Drive from the term with the fewest entries. A term with several
-        // values (an OR on one field) drives through the union of its
-        // values' entry lists, in file order.
         let Some(driver) = resolved
             .iter()
             .enumerate()
@@ -471,40 +679,42 @@ fn last_matching(
         else {
             continue;
         };
-        let mut list: Vec<u64> = Vec::new();
+        let mut lists = Vec::new();
         for d in &resolved[driver] {
-            list.extend(f.entries_of(d)?);
+            lists.push(offsets(f.entries_of_rev(d)?));
         }
-        list.sort_unstable();
-        list.dedup();
-        let others: Vec<Vec<u64>> = resolved
+        let others = resolved
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != driver)
             .map(|(_, r)| r.iter().map(|d| d.offset).collect())
             .collect();
-        take(&list, &|e: &Entry| {
-            others
-                .iter()
-                .all(|alts| alts.iter().any(|o| e.items.contains(o)))
-        })?;
+        groups.push(Box::new(Walk {
+            f,
+            driver: union(lists),
+            others,
+            step,
+            done: false,
+        }));
     }
-    let mut out = Vec::new();
-    for off in offsets.iter().rev().take(n) {
-        out.push(f.entry(*off)?);
-    }
-    Ok(out)
+    Ok(union(groups))
 }
 
-fn record(f: &JournalFile, e: &Entry) -> Result<Record> {
+/// An entry's fields, each DATA object read once through `payloads`,
+/// keyed by (file index, offset). A payload without `=` is skipped.
+fn record(
+    f: &JournalFile,
+    e: &Entry,
+    payloads: &mut HashMap<(usize, u64), Option<Field>>,
+    file: usize,
+) -> Result<Record> {
     let mut fields = Vec::with_capacity(e.items.len());
     for &item in &e.items {
-        let payload = f.data_payload(item)?;
-        let Some(eq) = payload.iter().position(|&b| b == b'=') else {
-            continue;
+        let field = match payloads.entry((file, item)) {
+            hash_map::Entry::Occupied(o) => o.into_mut(),
+            hash_map::Entry::Vacant(v) => v.insert(Field::new(f.data_payload(item)?)),
         };
-        let name = String::from_utf8_lossy(&payload[..eq]).into_owned();
-        fields.push((name, payload[eq + 1..].to_vec()));
+        fields.extend(field.clone());
     }
     Ok(Record {
         location: Location::of(f, e),
@@ -557,13 +767,14 @@ pub fn to_json(r: &Record, release: Release) -> serde_json::Value {
             Value::Array(b.iter().map(|&x| Value::from(x)).collect())
         }
     };
-    for (name, v) in &r.fields {
+    for field in &r.fields {
+        let (name, v) = (field.name(), field.value());
         // The address field comes from the entry header; journalctl skips
         // the data field of the same name (logs-show.c output_json).
         if name == "_BOOT_ID" {
             continue;
         }
-        match m.get_mut(name) {
+        match m.get_mut(name.as_ref()) {
             Some(Value::Array(a)) if a.first().is_some_and(|x| !x.is_number()) => {
                 a.push(value(v));
             }
@@ -572,7 +783,7 @@ pub fn to_json(r: &Record, release: Release) -> serde_json::Value {
                 *existing = Value::Array(vec![first, value(v)]);
             }
             None => {
-                m.insert(name.clone(), value(v));
+                m.insert(name.into_owned(), value(v));
             }
         }
     }
@@ -616,8 +827,8 @@ mod tests {
         assert!(printable("\u{fdcf}\u{fff0}".as_bytes()));
     }
 
-    fn rec(seqnum_id: u8, seqnum: u64, boot: u8, mono: u64, real: u64) -> Record {
-        Record {
+    fn rec(seqnum_id: u8, seqnum: u64, boot: u8, mono: u64, real: u64) -> Candidate {
+        Candidate {
             location: Location {
                 seqnum_id: [seqnum_id; 16],
                 seqnum,
@@ -626,7 +837,8 @@ mod tests {
                 realtime: real,
                 xor_hash: 0,
             },
-            fields: Vec::new(),
+            file: 0,
+            offset: 0,
         }
     }
 
@@ -664,6 +876,76 @@ mod tests {
         let out = merge(vec![vec![y], vec![z], vec![x]]);
         let got: Vec<u64> = out.iter().map(|r| r.location.realtime).collect();
         assert_eq!(got, vec![300, 100]);
+    }
+
+    /// `newest` over walks given newest first, as realtimes oldest first.
+    fn newest_of(walks: Vec<Vec<Candidate>>, n: usize) -> Vec<u64> {
+        let mut errors = Vec::new();
+        let walks = walks.into_iter().map(|w| w.into_iter().map(Ok)).collect();
+        let out = newest(walks, n, &mut errors);
+        assert!(errors.is_empty());
+        out.iter().map(|c| c.location.realtime).collect()
+    }
+
+    /// Newest first across files, a flushed copy once (from the earlier
+    /// file), and no more than `n`.
+    #[test]
+    fn newest_takes_the_last_n_and_drops_flushed_copies() {
+        let run = vec![rec(1, 2, 9, 20, 200), rec(1, 1, 9, 10, 100)];
+        let var = vec![
+            rec(2, 3, 9, 30, 300),
+            rec(2, 2, 9, 20, 200),
+            rec(2, 1, 9, 10, 100),
+        ];
+        let other = vec![rec(3, 7, 8, 5, 150)];
+        let all = newest_of(vec![run.clone(), var.clone(), other.clone()], 10);
+        assert_eq!(all, vec![100, 150, 200, 300]);
+        assert_eq!(newest_of(vec![run, var, other], 2), vec![200, 300]);
+    }
+
+    /// The same non-transitive x, y, z as above: going backwards, as
+    /// journalctl's `-n` does (seek_tail, previous_skip), x is taken, then
+    /// y isn't strictly before it and is dropped, then z is. journalctl
+    /// then prints forward from z: z, then x (its forward seek from z finds
+    /// nothing in y's file by monotonic time, and x by realtime).
+    #[test]
+    fn newest_walks_backwards_like_journalctl() {
+        let x = rec(1, 1, 0xa, 5, 300);
+        let y = rec(1, 2, 0xb, 1, 100);
+        let z = rec(2, 1, 0xb, 9, 200);
+        assert_eq!(
+            newest_of(vec![vec![y], vec![z], vec![x]], 2),
+            vec![200, 300]
+        );
+    }
+
+    /// Equal heads (a flushed copy): the earlier file's is kept.
+    #[test]
+    fn newest_keeps_the_earlier_file_on_a_tie() {
+        let mut copies: Vec<Candidate> = (0..3).map(|_| rec(1, 1, 9, 10, 100)).collect();
+        for (i, c) in copies.iter_mut().enumerate() {
+            c.file = i;
+            c.location.seqnum_id = [u8::try_from(i).expect("small"); 16];
+        }
+        let walks = copies
+            .into_iter()
+            .map(|c| vec![Ok(c)].into_iter())
+            .collect();
+        let mut errors = Vec::new();
+        let out = newest(walks, 10, &mut errors);
+        assert_eq!(out.iter().map(|c| c.file).collect::<Vec<_>>(), vec![0]);
+    }
+
+    /// A walk that fails is reported and dropped; what it gave stands.
+    #[test]
+    fn newest_drops_a_failing_walk_and_keeps_the_rest() {
+        let good = vec![Ok(rec(1, 2, 9, 20, 200)), Ok(rec(1, 1, 9, 10, 100))];
+        let bad = vec![Ok(rec(2, 5, 8, 50, 250)), Err(anyhow::anyhow!("broken"))];
+        let mut errors = Vec::new();
+        let out = newest(vec![good.into_iter(), bad.into_iter()], 10, &mut errors);
+        let got: Vec<u64> = out.iter().map(|c| c.location.realtime).collect();
+        assert_eq!(got, vec![100, 200, 250]);
+        assert_eq!(errors, vec!["broken".to_string()]);
     }
 
     #[test]

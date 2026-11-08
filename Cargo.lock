@@ -2579,6 +2579,7 @@ dependencies = [
  "anyhow",
  "clap",
  "hex",
+ "itertools 0.14.0",
  "lz4_flex",
  "lzma-rust2",
  "nix 0.28.0",

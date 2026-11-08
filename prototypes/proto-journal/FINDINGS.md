@@ -52,13 +52,15 @@ Compared against:
 - **query.rs:**
   - journalctl's `-u` rule per release;
   - the local machine's files in sd-journal's search order;
-  - a k-way merge with sd-journal's comparison, tie rule and equal-entry
-    skip;
+  - the last N picked by walking backwards across files, as
+    journalctl's `-n` does, and new entries by a forward k-way merge, both
+    with sd-journal's comparison, tie rule and equal-entry skip;
   - errors per file and per entry: they are reported, and the rest is
     still shown;
   - output in `journalctl -o json --all`'s shape.
 
-  Each match group walks the entry list of its rarest term backwards. A
+  Each match group walks the entry list of its rarest term backwards,
+  reading the chain lazily from its end. A
   term that ORs several values of one field drives through the union of
   their lists.
 - **main.rs:** `tail` (with `--follow` and `--before`) and the test tools:
@@ -186,21 +188,42 @@ Compared against:
 - **The review hardened the harness.** The first harness could pass on two
   empty streams, and compared values as flattened bytes. The stricter one
   above still passes everywhere.
-- **Cost, relative** (the figures went to the maintainer):
-  - **Last 500 of a quiet unit:** faster than journalctl.
-  - **Last 500 of a busy unit:** slower than journalctl and sdjournal.
-  - **Memory:** less than journalctl, several times more than sdjournal.
+- **Cost, relative** (the figures went to the maintainer). Measured
+  wall time and peak RSS (wait4 `ru_maxrss`), the median of repeated runs,
+  and `pread` counts from perf's syscall tracepoints:
+  - **Last 500 of a quiet or a busy unit, and one page back:** faster
+    than journalctl and sdjournal.
+  - **Memory:** less than journalctl, about sdjournal's.
   - **Idle follow:** more CPU than either. It was measured before batch
-    draining.
+    draining and before the lazy walk below.
   - **Static binary (from the build, not the host):** about 240 KiB of
     code, this crate with its tools and decompressors. sdjournal added
     about 640 KB; a journalctl child adds nothing.
 
-  The busy-unit time and the memory have one cause: each group loads its
-  driver term's whole entry list, and follow reopens every file on each
-  wake. Walking the chain lazily from its end and keeping files open
-  should bring both into sdjournal's range: the arrays double in size, so
-  the last few hold the tail. UNVERIFIED until built.
+  The first version was slower than both on a busy unit, and used
+  several times sdjournal's memory. Profiling showed `pread` calls
+  dominating, and that each file decoded up to N whole records of which
+  most then lost the merge. What changed, in order of effect:
+  1. **Merge on locations, decode only the N shown.**
+  2. **Walk lazily, newest first, across files** (`newest`, as
+     journalctl's `-n` does): a chain's arrays are found from their 24-byte
+     heads, then items are read in chunks from the end. A file's walk goes
+     no further back than the entries it contributes.
+  3. **One `pread` per object:** an entry or DATA object is read with a
+     1 KiB guess, and only a larger one needs a second read.
+  4. **Each DATA object read once while decoding,** shared between the
+     records that carry it (most of a unit's fields repeat).
+
+  Tried and not kept: bisecting the chain for `--before`. For a unit, a
+  page back, and even its oldest page, stayed within a few milliseconds
+  of the tail, so it would add code for nothing measurable. Without a
+  unit filter a page far back is slow (every newer entry of every file is
+  read and skipped); `sb logs` always pages a unit, so that stays open. A
+  seqnum bisect, where the cursor's seqnum id is the file's, would fix it.
+  Also not kept: the compact format's
+  `tail_entry_array_offset` hint (finding the arrays from their heads costs
+  a few reads per term; that setup is a small part of the total).
+  Follow still reopens every file on each wake.
 - **Not covered yet:**
   - **26.04's local-journal coredump term:** `_UID` of systemd-coredump or
     root. The containers have no `systemd-coredump` user, and only
@@ -210,20 +233,33 @@ Compared against:
     such as `my.app` or the `.slice` disjunction, aren't handled.
   - **The `newer()` stop rule** assumes order within one file. Across a
     seqnum-id change inside a file, which is rare, it could stop early.
-  - **The merge walks forward.** journalctl's `-n` walks backwards,
-    keeping the largest. Where the comparator isn't transitive, a forward
-    merge can pick a different last N. The matrix never hit that case.
-  - **One unreadable entry in a walk** drops that file's matches for the
-    query. The error is reported and the other files are kept;
-    sd-journal would still show the entries before it.
+  - **The last N walk backwards, as journalctl's `-n` does**
+    (`sd_journal_previous_skip`), and follow merges forward
+    (`sd_journal_next`). journalctl then prints the last N by walking
+    forward again from the oldest of them, seeking each file by seqnum,
+    monotonic time or realtime. Where the comparator isn't transitive, that
+    second walk can differ from the first; the reader doesn't model it. A
+    unit test pins one such case, where the backward walk matches
+    journalctl's output as read from its source; the matrix never hit one.
+  - **One unreadable entry in a walk** ends that file's walk for the
+    query: the entries it gave before stay, as sd-journal drops a file it
+    can't iterate, and the error is reported. sd-journal would skip the
+    bad entry and go on with that file.
+  - **A zero entry-array item** (a slot never written, after an unclean
+    shutdown) is skipped. That is our choice: sd-journal's unfiltered walk
+    skips a bad item (`generic_array_get`), but its match path bisects
+    (`generic_array_bisect`) and cuts the array short there, or with v249's
+    chain cache drops the file. The first version ended the chain there.
+    UNVERIFIED against a real file with one.
   - **Repeated array items from a real 22.04 journald:** systemd 249's
     `journal_file_append_entry` keeps duplicate items when it links an
     entry (its source). journal-remote 249 didn't write any in the
     matrix, so no real file with them was read. The crafted-file tests
     cover the reader's handling: a repeat is skipped but counts as a link.
     UNVERIFIED against a real file.
-  - **Crafted-file tests so far** cover the entry-array chain, repeats, a
-    decreasing offset, the link count and an unknown format flag. Other
+  - **Crafted-file tests so far** cover the entry-array chain read back
+    across arrays and read chunks, repeats, a zero item, a decreasing
+    offset, the link count and an unknown format flag. Other
     corruptions (bad sizes, bad links, overflowing offsets) aren't tested
     yet, and there is no fuzzing yet.
 
@@ -237,7 +273,7 @@ crate, several agents in parallel look for performance, reliability and
 feature improvements for Saltbox's use; their results are added here._
 
 Before it becomes a crate:
-1. Lazy chain walking, and files kept open while following.
+1. Files kept open while following.
 2. The container matrix in CI on a schedule against current images, since
    a stable update can change the rules (259.1).
 3. Fuzzing and crafted-file tests for file.rs.
