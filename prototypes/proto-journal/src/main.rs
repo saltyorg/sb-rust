@@ -114,6 +114,9 @@ enum Command {
         #[command(flatten)]
         source: Source,
     },
+    /// The supported releases, one per line: VERSION_ID and the systemd
+    /// major version (the matrix's default list).
+    Releases,
     /// Write test entries in journal export format
     /// (https://systemd.io/JOURNAL_EXPORT_FORMATS/) for
     /// systemd-journal-remote: every `-u` branch for `demo.service` with
@@ -122,6 +125,11 @@ enum Command {
     GenExport {
         #[arg(long, default_value_t = 3000)]
         entries: u64,
+        /// Another set of the same entries, later and on other boots: 0 is
+        /// the matrix's fixtures; 1 and up are what a host writes after an
+        /// upgrade, to merge with files from before it (compat.sh).
+        #[arg(long, default_value_t = 0)]
+        generation: u8,
     },
 }
 
@@ -157,7 +165,16 @@ fn main() -> Result<()> {
         Command::Compare { expected, actual } => compare(&expected, &actual),
         Command::HashCheck { source } => hash_check(&source),
         Command::DecodeAll { source } => decode_all(&source),
-        Command::GenExport { entries } => gen_export(entries),
+        Command::Releases => {
+            for r in query::RELEASES {
+                println!("{} {}", r.version_id, r.systemd);
+            }
+            Ok(())
+        }
+        Command::GenExport {
+            entries,
+            generation,
+        } => gen_export(entries, generation),
     }
 }
 
@@ -389,9 +406,10 @@ fn hash_check(source: &Source) -> Result<()> {
         }
         bad += file_bad;
         println!(
-            "{}: flags {:#x}, keyed {}, {} bad hashes",
+            "{}: flags {:#x}, header {} bytes, keyed {}, {} bad hashes",
             f.path.file_name().unwrap_or_default().to_string_lossy(),
             f.header.incompatible,
+            f.header.header_size,
             f.header.keyed(),
             file_bad
         );
@@ -460,13 +478,17 @@ fn export_field(out: &mut impl Write, name: &str, value: &[u8]) -> std::io::Resu
     }
 }
 
-fn gen_export(entries: u64) -> Result<()> {
+fn gen_export(entries: u64, generation: u8) -> Result<()> {
     let mut out = BufWriter::new(std::io::stdout().lock());
-    // Synthetic boot ids; the coredump one is systemd's SD_MESSAGE_COREDUMP.
+    // Synthetic boot ids, their first byte XORed with the generation (so
+    // generation 0 keeps the matrix's ids); the coredump id is systemd's
+    // SD_MESSAGE_COREDUMP.
     let boots = [
-        "00112233445566778899aabbccddeeff",
-        "ffeeddccbbaa99887766554433221100",
+        format!("{:02x}112233445566778899aabbccddeeff", generation),
+        format!("{:02x}eeddccbbaa99887766554433221100", 0xff ^ generation),
     ];
+    // Each generation starts 10^6 s (about 11.6 days) after the last.
+    let base = 1_700_000_000_000_000 + u64::from(generation) * 1_000_000_000_000;
     let coredump = "fc2e22bc6ee647b6b90729ab34a250b1";
     // A fixed-seed xorshift: the same fixtures on every run and release.
     let mut rng: u64 = 0x2545_f491_4f6c_dd1d;
@@ -477,15 +499,13 @@ fn gen_export(entries: u64) -> Result<()> {
         rng
     };
     for i in 0..entries {
-        let boot = boots[usize::from(i >= entries / 2)];
+        let boot = &boots[usize::from(i >= entries / 2)];
         let mono = 1_000_000 + i * 1000;
         let f = &mut out;
         export_field(
             f,
             "__REALTIME_TIMESTAMP",
-            (1_700_000_000_000_000 + i * 1_000_000)
-                .to_string()
-                .as_bytes(),
+            (base + i * 1_000_000).to_string().as_bytes(),
         )?;
         export_field(f, "__MONOTONIC_TIMESTAMP", mono.to_string().as_bytes())?;
         export_field(f, "_BOOT_ID", boot.as_bytes())?;

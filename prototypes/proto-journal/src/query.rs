@@ -15,32 +15,71 @@ pub type Term = Vec<Vec<u8>>;
 /// A conjunction of terms; a filter is a disjunction of groups.
 pub type Group = Vec<Term>;
 
-/// The supported releases, each with its systemd's `journalctl -u` rule.
-/// sb refuses any other release (cli-core startup check), so this list is
-/// complete by construction; a new LTS adds its row.
+/// One supported Ubuntu release: what its journalctl does that the
+/// reader has to match. sb refuses any other release (cli-core startup
+/// check), so [`RELEASES`] lists them all. Get one through
+/// [`Release::parse`]; the fields are public for the table and the
+/// matrix, so a row built elsewhere is not a supported release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Release {
-    /// 22.04, systemd 249.
-    Jammy,
-    /// 24.04, systemd 255.
-    Noble,
-    /// 26.04, systemd 259.
-    Resolute,
+pub struct Release {
+    /// `VERSION_ID` in /etc/os-release, and the `ubuntu:` image tag the
+    /// matrix runs.
+    pub version_id: &'static str,
+    /// The systemd major version the release ships: documentation, and
+    /// the matrix's check that the image still ships it. A rule can change
+    /// within a major (259.1); the matrix's fixtures catch that, not this.
+    pub systemd: u32,
+    /// journalctl's `-u` rule.
+    pub unit_rule: UnitRule,
+    /// `-o json` prints `__SEQNUM` and `__SEQNUM_ID` (v255 and later).
+    pub prints_seqnum: bool,
+}
+
+/// The supported releases. A new LTS is one row here, checked by the
+/// matrix (compare.sh and compat.sh run every row by default); it needs
+/// code only if its systemd brings a new `-u` rule, `-o json` shape or
+/// incompatible file flag (file.rs `INCOMPAT_KNOWN`).
+pub const RELEASES: &[Release] = &[
+    Release {
+        version_id: "22.04",
+        systemd: 249,
+        unit_rule: UnitRule::Pid1,
+        prints_seqnum: false,
+    },
+    Release {
+        version_id: "24.04",
+        systemd: 255,
+        unit_rule: UnitRule::Pid1,
+        prints_seqnum: true,
+    },
+    Release {
+        version_id: "26.04",
+        systemd: 259,
+        unit_rule: UnitRule::InitScope,
+        prints_seqnum: true,
+    },
+];
+
+/// journalctl's `-u <unit>` rule, by the systemd versions that have it
+/// (src/shared/logs-show.c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitRule {
+    /// 249 to 259.0, `add_matches_for_unit`: messages from `_PID=1` about
+    /// the unit; coredumps only from root.
+    Pid1,
+    /// 259.1 to main (2026-11), `add_matches_for_unit_full`: messages from
+    /// `_SYSTEMD_CGROUP=/init.scope` about the unit, to include PID 1's
+    /// helpers; coredumps from root or the `systemd-coredump` user, the
+    /// user term dropped for `--file`/`-D` (src/journal/journalctl-filter.c).
+    InitScope,
 }
 
 impl Release {
     pub fn parse(version_id: &str) -> Option<Self> {
-        match version_id {
-            "22.04" => Some(Self::Jammy),
-            "24.04" => Some(Self::Noble),
-            "26.04" => Some(Self::Resolute),
-            _ => None,
-        }
-    }
-
-    /// v255+ prints `__SEQNUM` and `__SEQNUM_ID` in `-o json`.
-    pub fn prints_seqnum(self) -> bool {
-        !matches!(self, Self::Jammy)
+        RELEASES
+            .iter()
+            .find(|r| r.version_id == version_id)
+            .copied()
     }
 }
 
@@ -50,19 +89,12 @@ fn pair(field: &str, value: &str) -> Vec<u8> {
     format!("{field}={value}").into_bytes()
 }
 
-/// journalctl's `-u <unit>` match set, per release.
-///
-/// - 249 and 255: `add_matches_for_unit` in src/shared/logs-show.c.
-/// - 259.x: `add_matches_for_unit_full`, with init.scope for PID 1. The coredump group also accepts the
-///   `systemd-coredump` user's uid, but only for the local journal:
-///   journalctl drops the uid term with `--file`/`-D`
-///   (src/journal/journalctl-filter.c), so `external` mirrors that.
+/// journalctl's `-u <unit>` match set, by the release's [`UnitRule`].
+/// `external` is `--file`/`-D`, which drops the coredump uid term.
 pub fn unit_filter(release: Release, unit: &str, external: bool) -> Vec<Group> {
     let own = vec![vec![pair("_SYSTEMD_UNIT", unit)]];
     let pid1 = vec![vec![b"_PID=1".to_vec()], vec![pair("UNIT", unit)]];
-    // 259.1 and later match init.scope instead of _PID=1, to include PID
-    // 1's helper processes (logs-show.c at v259.1..v259.9; the v259 tag
-    // itself still has _PID=1). 26.04 ships 259.x.
+    // UnitRule::InitScope (the v259 tag itself still has _PID=1).
     let init = vec![
         vec![b"_SYSTEMD_CGROUP=/init.scope".to_vec()],
         vec![pair("UNIT", unit)],
@@ -71,8 +103,8 @@ pub fn unit_filter(release: Release, unit: &str, external: bool) -> Vec<Group> {
         vec![b"_UID=0".to_vec()],
         vec![pair("OBJECT_SYSTEMD_UNIT", unit)],
     ];
-    match release {
-        Release::Jammy | Release::Noble => vec![
+    match release.unit_rule {
+        UnitRule::Pid1 => vec![
             own,
             vec![
                 vec![COREDUMP_MESSAGE_ID.as_bytes().to_vec()],
@@ -82,7 +114,7 @@ pub fn unit_filter(release: Release, unit: &str, external: bool) -> Vec<Group> {
             pid1,
             daemons,
         ],
-        Release::Resolute => {
+        UnitRule::InitScope => {
             let mut coredump = vec![
                 vec![COREDUMP_MESSAGE_ID.as_bytes().to_vec()],
                 vec![pair("COREDUMP_UNIT", unit)],
@@ -756,7 +788,7 @@ pub fn to_json(r: &Record, release: Release) -> serde_json::Value {
         Value::String(l.monotonic.to_string()),
     );
     m.insert("_BOOT_ID".into(), Value::String(hex_id(&l.boot_id)));
-    if release.prints_seqnum() {
+    if release.prints_seqnum {
         m.insert("__SEQNUM".into(), Value::String(l.seqnum.to_string()));
         m.insert("__SEQNUM_ID".into(), Value::String(hex_id(&l.seqnum_id)));
     }
@@ -948,9 +980,49 @@ mod tests {
         assert_eq!(errors, vec!["broken".to_string()]);
     }
 
+    fn release(version_id: &str) -> Release {
+        Release::parse(version_id).expect("a supported release")
+    }
+
     #[test]
-    fn resolute_on_external_files_drops_the_coredump_uid() {
-        let g = unit_filter(Release::Resolute, "a.service", true);
+    fn init_scope_rule_on_external_files_drops_the_coredump_uid() {
+        let g = unit_filter(release("26.04"), "a.service", true);
         assert_eq!(g[3].len(), 2);
+    }
+
+    /// Each row is found by its own VERSION_ID, once; anything else is
+    /// refused.
+    #[test]
+    fn releases_parse_by_version_id() {
+        for r in RELEASES {
+            assert_eq!(Release::parse(r.version_id), Some(*r));
+            assert_eq!(
+                RELEASES
+                    .iter()
+                    .filter(|o| o.version_id == r.version_id)
+                    .count(),
+                1
+            );
+        }
+        for other in ["20.04", "26.10", "", "24.04.1"] {
+            assert!(Release::parse(other).is_none(), "{other}");
+        }
+    }
+
+    /// The rows keep the rules the matrix checked: `_PID=1` before
+    /// 259.1, init.scope after.
+    #[test]
+    fn unit_rule_per_release() {
+        let has = |v: &str, term: &[u8]| {
+            unit_filter(release(v), "a.service", true)
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|p| p.as_slice() == term)
+        };
+        for v in ["22.04", "24.04"] {
+            assert!(has(v, b"_PID=1") && !has(v, b"_SYSTEMD_CGROUP=/init.scope"));
+        }
+        assert!(has("26.04", b"_SYSTEMD_CGROUP=/init.scope") && !has("26.04", b"_PID=1"));
     }
 }

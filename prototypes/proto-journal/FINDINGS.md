@@ -50,7 +50,8 @@ Compared against:
     our own (journald's xz dictionary is 1 MiB).
   - An unknown incompatible flag is an error naming the file.
 - **query.rs:**
-  - journalctl's `-u` rule per release;
+  - `RELEASES`, one row per supported release: its VERSION_ID, systemd
+    version, journalctl's `-u` rule (`UnitRule`) and `-o json` shape;
   - the local machine's files in sd-journal's search order;
   - the last N picked by walking backwards across files, as
     journalctl's `-n` does, and new entries by a forward k-way merge, both
@@ -68,8 +69,10 @@ Compared against:
     choice and the order of a repeated field both count;
   - `hash-check`;
   - `decode-all`;
-  - `gen-export`.
-- **compare.sh:** the release matrix.
+  - `gen-export`, with `--generation` for later entries on other boots;
+  - `releases`: the table's rows, the scripts' default list.
+- **compare.sh, compat.sh and checks.sh:** the release matrix, files from
+  before an upgrade, and the checks both share.
 
 **Why not the alternatives:**
 - **sdjournal 0.1.22** (hands-on run):
@@ -147,6 +150,27 @@ Compared against:
   - any command fails;
   - the flush didn't produce a persistent journal;
   - the rotation didn't archive a file.
+- **Files from before an upgrade (compat.sh).** A host upgraded from
+  20.04 or 18.04 keeps its archived journal files, and journalctl reads
+  them. `ubuntu:20.04` (systemd 245.4) and `ubuntu:18.04` (237) write
+  them:
+  - their journal-remote writes gen-export's entries, compressed and with
+    `--compress=no` (these releases have no per-file compression or hash
+    choice);
+  - their journald, standalone, writes 300 entries across a rotation
+    into a persistent journal and is stopped cleanly.
+
+  Then each supported release's container reads them with its own
+  journalctl:
+  - each old fixture alone, with compare.sh's fixture checks;
+  - an old fixture merged with a later generation of entries from the
+    release's own journal-remote, as one `-D` directory, so `-u` last 500
+    and the page back reach into the old file;
+  - an upgraded host: the old journal directory and machine id in place,
+    the release's journald started on it and writing across a rotation,
+    and the local journal read whole, last 500, by identifier and by
+    `-u` (the fixtures copied into the machine directory, so no
+    `--file`).
 - **A real Saltbox install,** read-only (maintainer, 2026-11-08), with
   the same tools:
   - hash-check and decode-all over the local journal;
@@ -166,6 +190,31 @@ Compared against:
     the newer releases.
   - **24.04 and 26.04:** compact + keyed + zstd (0x1c), regular (0xc),
     unkeyed (0x18), xz (0x15), lz4 (0x16), and old style (0x2).
+- **Files from before an upgrade: 184 of 184 compat.sh checks pass with
+  0 mismatches**, for 20.04 and 18.04 files on 22.04, 24.04 and 26.04,
+  and on the 26.10 canary. No reader change was needed:
+  - 237's and 245's files have a 240-byte header (no
+    `data_hash_chain_depth` or tail-entry fields) and flags 0x2 (lz4) or
+    0x0, never keyed. The reader reads only fields up to offset 184 and
+    requires 208 bytes, the size journald itself accepts
+    (HEADER_SIZE_MIN).
+  - 237 and 245 link an entry carrying `SAME=again` twice into that
+    value's entry array (n_entries 856 for 428 entries), and journalctl
+    prints the value twice. Both readers agree, so the repeat handling is
+    now checked against real files too, though not yet a 249 journald's.
+  - On the upgraded host, 255 and 259 refuse to append to the old active
+    `system.journal` (a writable open needs the current header size,
+    journal-file.c) and rename it to an archived `.journal~` file; 249 appends
+    to it and archives it later, leaving one file written by both
+    releases. Both shapes read exactly.
+  - Harness findings, not reader ones: standalone, 237, 245 and 255 were
+    seen to keep writing to /run after `journalctl --flush` until the
+    next rotation, and 237's `journalctl --rotate` needs PID 1. compat.sh
+    sets the flushed flag and rotates with SIGUSR2. 249's journald split
+    some 3000-byte `systemd-cat` lines into several entries, a different
+    number each run; both readers showed the same entries.
+- **26.10 canary:** `ubuntu:26.10` (systemd 261.3) read under 26.04's
+  row passes all 45 compare.sh checks: same flags, `-u` rule and JSON.
 - **`.journal~` files:** unclean shutdowns leave them. journalctl reads
   them, and so does this reader.
 - **Mismatches found and fixed along the way**, each now pinned by the
@@ -254,14 +303,47 @@ Compared against:
   - **Repeated array items from a real 22.04 journald:** systemd 249's
     `journal_file_append_entry` keeps duplicate items when it links an
     entry (its source). journal-remote 249 didn't write any in the
-    matrix, so no real file with them was read. The crafted-file tests
-    cover the reader's handling: a repeat is skipped but counts as a link.
-    UNVERIFIED against a real file.
+    matrix. Files from 237 and 245 do have them, and read exactly
+    (compat.sh), as do the crafted-file tests: a repeat is skipped but
+    counts as a link. UNVERIFIED against a 249 journald's own file.
+  - **Sealed (FSS) files from old releases:** not written by the matrix.
+    Their TAG objects sit outside the entry arrays the reader walks.
+    UNVERIFIED.
   - **Crafted-file tests so far** cover the entry-array chain read back
     across arrays and read chunks, repeats, a zero item, a decreasing
     offset, the link count and an unknown format flag. Other
     corruptions (bad sizes, bad links, overflowing offsets) aren't tested
     yet, and there is no fuzzing yet.
+
+**Future releases** (systemd NEWS v259 to main, 263 in development, and
+logs-show.c, journalctl-filter.c and journal-def.h at v259.9, v260, v261,
+v262 and main, read 2026-11-08):
+
+| | systemd | New incompatible flags | Format or reader changes | `-u` rule | `-o json` | Needs |
+|---|---|---|---|---|---|---|
+| 26.04 | 259.9 | none | none | InitScope (259.1 on) | 259.1 shape | its row |
+| 26.10 | 261.3 | none | none | the same (identical to main) | the same (v260 moved it into `journal_entry_to_json`, unchanged) | no row: sb refuses interim releases. The canary passes. |
+| next LTS (28.04) | 262 or later | none on main | v262: readers salvage intact entries from active files with a truncated header or tail; main skips a wider set of corruption errors per entry | the same so far | the same so far | a row like 26.04's, plus crafted-file tests for the salvage case (dirty `.journal~` files) |
+
+- **Incompatible flags:** main still defines the same five (xz, lz4,
+  keyed hash, zstd, compact). Its new compatible flag
+  (`SEALED_CONTINUOUS`) doesn't change how entries are read.
+- **The varlink journal API:** v260's journalctl serves
+  `io.systemd.JournalAccess.GetEntries` on
+  /run/systemd/io.systemd.JournalAccess. Its parameters are units, user
+  units, uid, namespace, priority and limit (at most 10000), with
+  journalctl's own `-u` rule; v262 adds `follow`. It takes no cursor, so
+  it can't page back. 22.04 to 26.04 don't have it. It doesn't replace
+  the reader for the supported releases, but on 28.04 it would be an
+  exact source to cross-check against.
+- **Other changes:** v259 makes persistent storage the default, and v262
+  moves sealing to OpenSSL. Neither changes what the reader sees.
+- **Adding a release** is one `RELEASES` row: VERSION_ID, systemd major,
+  `UnitRule`, and whether `-o json` prints the seqnum. The scripts take
+  their default lists from `proto-journal releases`. A release needs
+  code only for a new rule (a `UnitRule` variant), a new JSON shape or a
+  new incompatible flag (file.rs). An image whose systemd major differs
+  from its row fails the matrix; a canary only notes it.
 
 **Verdict:** adopt with changes. The reader is small and exact on all
 three supported releases in the matrix, at about a third of sdjournal's
@@ -274,8 +356,9 @@ feature improvements for Saltbox's use; their results are added here._
 
 Before it becomes a crate:
 1. Files kept open while following.
-2. The container matrix in CI on a schedule against current images, since
-   a stable update can change the rules (259.1).
+2. The container matrix (compare.sh and compat.sh, with an interim-release
+   canary) in CI on a schedule against current images, since a stable
+   update can change the rules (259.1).
 3. Fuzzing and crafted-file tests for file.rs.
 4. The usual bar: coverage and mutation testing.
 
@@ -290,5 +373,5 @@ Before it becomes a crate:
   lives in its own crate, `sb-journal`, which host wraps (host spec,
   decision 6).
 - **ADR:** one records the divergence from the library-first rule, with
-  the evidence above and the upkeep it brings: a row per new LTS, checked
-  by the matrix.
+  the evidence above and the upkeep it brings: a `RELEASES` row per new
+  LTS, checked by the matrix.

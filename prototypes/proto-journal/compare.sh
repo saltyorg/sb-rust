@@ -3,22 +3,29 @@
 # release, each with that release's own systemd (journald, journalctl,
 # systemd-journal-remote). Unprivileged containers: no systemd as PID 1.
 #
-#   prototypes/proto-journal/compare.sh [22.04 24.04 26.04]
+#   prototypes/proto-journal/compare.sh [RELEASE | IMAGE=RELEASE]...
+#
+# Default: every row of query.rs RELEASES (`proto-journal releases`).
+# IMAGE=RELEASE runs another image under a row's rules, as a canary: for
+# example 26.10=26.04 reads 26.10's journalctl with 26.04's `-u` rule, so
+# a change there shows before the next LTS needs its row. Shared checks
+# are in checks.sh; files from older releases are compat.sh's.
 #
 # Fixtures: gen-export's entries written by systemd-journal-remote under
 # each writer variant the release supports (compact, keyed hash, xz, lz4,
 # zstd), compared whole, by `-u demo.service`, one page back, and by
 # field matches. Live: the release's systemd-journald run standalone,
 # compared by tail and by follow across a rotation.
-# Containers are removed on exit. Needs Docker and the musl target.
+# Containers (sbj-<image>, or $SBJ_PREFIX-<image>) are removed on exit.
+# Needs Docker and the musl target.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 releases=("$@")
-[ ${#releases[@]} -gt 0 ] || releases=(22.04 24.04 26.04)
 
 cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
 bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
+[ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$bin" releases | cut -d' ' -f1)
 
 containers=()
 # shellcheck disable=SC2317 # called by the EXIT trap
@@ -32,28 +39,16 @@ inner() {
   cat <<'EOS'
 set -u -o pipefail
 rel=$1
+image=$2
+want=$3
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
 apt-get install -y -qq systemd systemd-journal-remote >/dev/null 2>&1
 remote=$(ls /usr/lib/systemd/systemd-journal-remote /lib/systemd/systemd-journal-remote 2>/dev/null | head -1)
-echo "$rel: $(journalctl --version | head -1)"
-fail=0
-bad() { # what failed
-  fail=1
-  echo "  FAIL  $1"
-}
-check() { # name expected actual
-  # An empty expected side would pass against an empty actual one: every
-  # check here is built to have entries, so empty means the harness broke.
-  if [ ! -s "$2" ]; then
-    bad "$1: no expected entries"
-  elif out=$(/pj compare "$2" "$3"); then
-    echo "  ok    $1: $(echo "$out" | tail -1)"
-  else
-    fail=1
-    echo "  FAIL  $1:"; echo "$out" | sed 's/^/          /'
-  fi
-}
+echo "$image ($rel rules): $(journalctl --version | head -1)"
+# shellcheck source=checks.sh
+. /checks.sh
+systemd_check "$image" "$rel" "$want"
 mkdir -p /fx && cd /fx
 /pj gen-export --entries 3000 > in.export
 while read -r name env; do
@@ -61,40 +56,8 @@ while read -r name env; do
   # shellcheck disable=SC2086 # the variant's variables, word-split on purpose
   env $env "$remote" --output="/fx/$name.journal" - < in.export >/dev/null 2>&1 || { bad "$name: journal-remote failed"; continue; }
   f=/fx/$name.journal
-  hc=$(/pj hash-check --file "$f") || bad "$name: hash-check"
-  echo " $name ($env): $(echo "$hc" | head -1 | sed 's/^[^:]*: //')"
-  dc=$(/pj decode-all --file "$f") || bad "$name: decode-all"
-  echo "  $(echo "$dc" | sed 's/, [0-9.]*m\?s$//')"
-  echo "$dc" | grep -q ' 0 errors' || bad "$name: decode errors"
-  journalctl --file "$f" -o json --all -q > e.json || bad "$name: journalctl whole file"
-  /pj tail --release "$rel" --file "$f" -n 100000000 > a.json || bad "$name: pj whole file"
-  check "$name whole file" e.json a.json
-  journalctl --file "$f" -u demo.service -o json --all -q -n 500 > e.json || bad "$name: journalctl -u"
-  /pj tail --release "$rel" --file "$f" -u demo.service -n 500 > a.json || bad "$name: pj -u"
-  check "$name -u last 500" e.json a.json
-  cur=$(head -1 e.json | sed 's/.*"__CURSOR":"\([^"]*\)".*/\1/')
-  journalctl --file "$f" -u demo.service -o json --all -q -n 1000 | head -n -500 > e.json || bad "$name: journalctl page"
-  /pj tail --release "$rel" --file "$f" -u demo.service -n 500 --before "$cur" > a.json || bad "$name: pj page"
-  check "$name -u page back" e.json a.json
-  # AND across fields, OR within one: _UID=0 co-occurs with both priorities.
-  journalctl --file "$f" -o json --all -q -n 300 _UID=0 PRIORITY=3 PRIORITY=5 > e.json || bad "$name: journalctl and/or"
-  /pj tail --release "$rel" --file "$f" -n 300 --match _UID=0 --match PRIORITY=3 --match PRIORITY=5 > a.json || bad "$name: pj and/or"
-  check "$name field match, AND and OR" e.json a.json
-  # Only an OR on one field: no single-value term to drive the walk.
-  journalctl --file "$f" -o json --all -q -n 300 PRIORITY=3 PRIORITY=5 > e.json || bad "$name: journalctl or"
-  /pj tail --release "$rel" --file "$f" -n 300 --match PRIORITY=3 --match PRIORITY=5 > a.json || bad "$name: pj or"
-  check "$name field match, OR only" e.json a.json
-  # A value carried twice by its entries: walks its entry array, which
-  # systemd 249 writes with each such entry twice.
-  journalctl --file "$f" -o json --all -q -n 300 SAME=again > e.json || bad "$name: journalctl repeated value"
-  # Whether this writer kept the repeated item (journalctl then prints it
-  # twice). journal-remote 249 was found not to, so the matrix doesn't
-  # exercise repeated array links; file.rs's crafted-file tests do.
-  if grep -q '"SAME":\["again","again"\]' e.json; then
-    echo "  note  $name: the writer kept the repeated item"
-  fi
-  /pj tail --release "$rel" --file "$f" -n 300 --match SAME=again > a.json || bad "$name: pj repeated value"
-  check "$name field match, repeated value" e.json a.json
+  integrity "$name ($env)" --file "$f"
+  fixture_checks "$name" "$rel" "--file $f" "--file $f"
 done <<'VARIANTS'
 default SB_VARIANT=default
 regular SYSTEMD_JOURNAL_COMPACT=0
@@ -112,8 +75,10 @@ jd=$(ls /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald 2>/dev/n
 "$jd" >/dev/null 2>&1 &
 sleep 2
 journalctl --flush >/dev/null 2>&1 || bad "journalctl --flush"
-# The flush must have moved journald to persistent storage, or the
-# "local files" check below reads only the runtime journal.
+# The flush must at least have created the persistent journal. Run
+# standalone, journald may keep writing to /run until the rotation
+# below; both readers read both directories, so the "local files" check
+# still compares the same entries.
 mid=$(cat /etc/machine-id)
 [ -f "/var/log/journal/$mid/system.journal" ] || bad "flush: no persistent system.journal"
 for i in $(seq 1 300); do
@@ -168,11 +133,20 @@ EOS
 }
 
 status=0
-for rel in "${releases[@]}"; do
-  c=sbj-${rel/./}
+for arg in "${releases[@]}"; do
+  image=${arg%%=*}
+  rel=${arg#*=}
+  want=$("$bin" releases | awk -v r="$rel" '$1 == r { print $2 }')
+  if [ -z "$want" ]; then
+    echo "$arg: $rel is not a row of query.rs RELEASES"
+    status=1
+    continue
+  fi
+  c=${SBJ_PREFIX:-sbj}-${image/./}
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
-  docker run -d --name "$c" -v "$bin:/pj:ro" "ubuntu:$rel" sleep 3600 >/dev/null
-  docker exec -i "$c" bash -s -- "$rel" < <(inner) || status=1
+  docker run -d --name "$c" -v "$bin:/pj:ro" \
+    -v "$PWD/prototypes/proto-journal/checks.sh:/checks.sh:ro" "ubuntu:$image" sleep 3600 >/dev/null
+  docker exec -i "$c" bash -s -- "$rel" "$image" "$want" < <(inner) || status=1
 done
 exit $status
