@@ -18,7 +18,7 @@ use crate::hash;
 use anyhow::{Context, Result, bail, ensure};
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 pub const SIGNATURE: &[u8; 8] = b"LPKSHHRH";
@@ -35,6 +35,8 @@ pub const INCOMPAT_COMPACT: u32 = 1 << 4;
 /// here deliberately.
 pub const INCOMPAT_KNOWN: u32 =
     INCOMPAT_XZ | INCOMPAT_LZ4 | INCOMPAT_KEYED_HASH | INCOMPAT_ZSTD | INCOMPAT_COMPACT;
+
+const STATE_ARCHIVED: u8 = 2;
 
 const OBJECT_DATA: u8 = 1;
 const OBJECT_ENTRY: u8 = 3;
@@ -76,6 +78,8 @@ const ENTRY_ARRAY_HEADER: u64 = 24;
 #[derive(Debug, Clone)]
 pub struct Header {
     pub incompatible: u32,
+    /// STATE_OFFLINE, STATE_ONLINE or STATE_ARCHIVED ("Header").
+    pub state: u8,
     pub file_id: [u8; 16],
     pub seqnum_id: [u8; 16],
     pub header_size: u64,
@@ -92,6 +96,11 @@ impl Header {
     }
     pub fn keyed(&self) -> bool {
         self.incompatible & INCOMPAT_KEYED_HASH != 0
+    }
+    /// Archived files are never written again ("Header": a writer only
+    /// appends to a file in STATE_OFFLINE, after setting it online).
+    pub fn archived(&self) -> bool {
+        self.state == STATE_ARCHIVED
     }
 }
 
@@ -118,6 +127,9 @@ pub struct DataRef {
 
 pub struct JournalFile {
     pub path: PathBuf,
+    /// The open file's device and inode: a follow keeps the file by it
+    /// across a rename (rotation) and past its deletion (vacuum).
+    pub inode: (u64, u64),
     file: File,
     pub header: Header,
     /// Where objects may lie: header_size + arena_size, capped by the
@@ -128,8 +140,10 @@ pub struct JournalFile {
 impl JournalFile {
     pub fn open(path: &Path) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let meta = file.metadata()?;
         let mut jf = Self {
             path: path.to_path_buf(),
+            inode: (meta.dev(), meta.ino()),
             file,
             header: empty_header(),
             limit: 0,
@@ -141,9 +155,13 @@ impl JournalFile {
     /// Re-read the header: journald grows the file and links in new
     /// entries while we read.
     pub fn refresh(&mut self) -> Result<()> {
-        let len = self.file.metadata()?.len();
         let mut buf = [0u8; 272];
         let n = read_up_to(&self.file, &mut buf, 0)?;
+        // The length after the header: journald grows the file before it
+        // raises arena_size and links objects into the new space
+        // (journal_file_allocate), so a length read first could be older
+        // than the header and cut off entries it counts.
+        let len = self.file.metadata()?.len();
         ensure!(n >= 208, "{}: header too short", self.path.display());
         ensure!(
             &buf[0..8] == SIGNATURE,
@@ -159,6 +177,7 @@ impl JournalFile {
         }
         let h = Header {
             incompatible,
+            state: buf[16],
             file_id: id(&buf, 24),
             seqnum_id: id(&buf, 72),
             header_size: le64(&buf, 88),
@@ -176,6 +195,11 @@ impl JournalFile {
         self.limit = h.header_size.saturating_add(h.arena_size).min(len);
         self.header = h;
         Ok(())
+    }
+
+    /// The open file's metadata (its link count tells a deleted file).
+    pub fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.file.metadata()
     }
 
     /// Read `len` bytes at `offset`, inside the arena.
@@ -542,6 +566,96 @@ impl Iterator for EntriesRev<'_> {
     }
 }
 
+/// Where a forward read of the file's entry array chain stopped (for
+/// following): the array object at `at`, whose first item is the chain's
+/// item number `base`. Arrays are only appended and linked forward, so a
+/// later read resumes there instead of walking the chain from its head.
+#[derive(Debug, Clone, Copy)]
+pub struct ArrayCursor {
+    at: u64,
+    base: u64,
+}
+
+impl JournalFile {
+    /// The offsets of the entries numbered `from` up to the header's
+    /// `n_entries` in the file's entry array chain (the list of every
+    /// entry, in file order), reading only those items. `cursor` is where
+    /// the last call stopped, and is updated. The header must be fresh
+    /// (`refresh`): journald writes the item before it raises n_entries
+    /// (journal_file_link_entry), so every item below it is there.
+    ///
+    /// A zero item (a slot never written, as after an unclean shutdown) is
+    /// returned as 0 and the read stops after it: the caller decides
+    /// whether to wait for it or skip it (`EntriesRev` skips them).
+    ///
+    /// Why not `EntriesRev`: it learns the whole chain's shape and walks
+    /// back from the end, for the newest N; a follow reads forward from a
+    /// position it already holds, a few items per wake.
+    pub fn entries_since(&self, cursor: &mut Option<ArrayCursor>, from: u64) -> Result<Vec<u64>> {
+        let item = self.array_item_size();
+        let n = self
+            .header
+            .n_entries
+            .min((self.limit - self.header.header_size) / ENTRY_HEADER);
+        // A cursor at offset 0 is a read made before the file had an entry
+        // array: start from the head, which journald has linked since.
+        let mut c = match *cursor {
+            Some(c) if c.base <= from && c.at != 0 => c,
+            _ => ArrayCursor {
+                at: self.header.entry_array_offset,
+                base: 0,
+            },
+        };
+        let mut out: Vec<u64> = Vec::new();
+        let mut index = from;
+        while index < n && c.at != 0 {
+            let (size, next) = self.array_head(c.at)?;
+            let end = c.base.saturating_add((size - ENTRY_ARRAY_HEADER) / item);
+            if index < end {
+                let count = n.min(end) - index;
+                let b = self.read(
+                    c.at + ENTRY_ARRAY_HEADER + (index - c.base) * item,
+                    count * item,
+                )?;
+                for chunk in b.chunks_exact(usize::try_from(item)?) {
+                    let off = if item == 4 {
+                        u64::from(le32(chunk, 0))
+                    } else {
+                        le64(chunk, 0)
+                    };
+                    if off == 0 {
+                        out.push(0);
+                        *cursor = Some(c);
+                        return Ok(out);
+                    }
+                    ensure!(
+                        out.last().is_none_or(|&last| off > last),
+                        "{}: entry array {:#x} is out of order",
+                        self.path.display(),
+                        c.at
+                    );
+                    out.push(off);
+                    index += 1;
+                }
+                // Stopped at n inside this array: resume here next time.
+                if index < end {
+                    break;
+                }
+            }
+            let next = forward(&self.path, c.at, next)?;
+            if next == 0 {
+                break;
+            }
+            c = ArrayCursor {
+                at: next,
+                base: end,
+            };
+        }
+        *cursor = Some(c);
+        Ok(out)
+    }
+}
+
 /// A link to the next object in a chain, which journald only ever writes
 /// forward: a link backwards is corruption, and refusing it ends any cycle.
 fn forward(path: &Path, at: u64, next: u64) -> Result<u64> {
@@ -613,6 +727,7 @@ fn read_up_to(file: &File, buf: &mut [u8], offset: u64) -> Result<usize> {
 fn empty_header() -> Header {
     Header {
         incompatible: 0,
+        state: 0,
         file_id: [0; 16],
         seqnum_id: [0; 16],
         header_size: 0,
@@ -826,6 +941,74 @@ mod tests {
         let (_t, f) = file_with_object(&object_bytes(OBJECT_ENTRY_ARRAY, 20, 24));
         let err = f.array_head(272).expect_err("refused");
         assert!(err.to_string().contains("short entry array"));
+    }
+
+    /// Write the header's entry list (count and first array) to the file
+    /// and read it back, as a follow sees journald's updates.
+    fn set_list(t: &tempfile::NamedTempFile, f: &mut JournalFile, n: u64, array: u64) {
+        let mut b = std::fs::read(t.path()).expect("read");
+        b[152..160].copy_from_slice(&n.to_le_bytes());
+        b[176..184].copy_from_slice(&array.to_le_bytes());
+        std::fs::write(t.path(), &b).expect("write");
+        f.refresh().expect("refresh");
+    }
+
+    #[test]
+    fn entries_since_reads_across_arrays_up_to_n_entries() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1100], &[1200, 1300, 0, 0]]);
+        set_list(&t, &mut f, 3, 272);
+        let mut c = None;
+        assert_eq!(
+            f.entries_since(&mut c, 0).expect("reads"),
+            vec![1000, 1100, 1200]
+        );
+        let mut c = None;
+        assert_eq!(f.entries_since(&mut c, 1).expect("reads"), vec![1100, 1200]);
+    }
+
+    /// The cursor resumes where the last read stopped, also when that was
+    /// exactly the end of an array.
+    #[test]
+    fn entries_since_resumes_from_its_cursor() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1100], &[1200, 1300, 1400, 1500]]);
+        set_list(&t, &mut f, 2, 272);
+        let mut c = None;
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1100]);
+        set_list(&t, &mut f, 4, 272);
+        assert_eq!(f.entries_since(&mut c, 2).expect("reads"), vec![1200, 1300]);
+        assert!(f.entries_since(&mut c, 4).expect("reads").is_empty());
+        set_list(&t, &mut f, 6, 272);
+        assert_eq!(f.entries_since(&mut c, 4).expect("reads"), vec![1400, 1500]);
+        // The cursor is on the second array, not back at the head.
+        assert_eq!(c.map(|c| c.base), Some(2));
+    }
+
+    /// A slot not written below n_entries comes back as 0, last.
+    #[test]
+    fn entries_since_returns_a_zero_item_and_stops() {
+        let (t, mut f) = file_with_chain(&[&[1000, 0, 1200]]);
+        set_list(&t, &mut f, 3, 272);
+        assert_eq!(f.entries_since(&mut None, 0).expect("reads"), vec![1000, 0]);
+        assert_eq!(f.entries_since(&mut None, 2).expect("reads"), vec![1200]);
+    }
+
+    /// A file read while it had no entries (no entry array yet) is read
+    /// from its head once it has them: the empty read leaves no cursor.
+    #[test]
+    fn entries_since_after_an_empty_read() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1100]]);
+        set_list(&t, &mut f, 0, 0);
+        let mut c = None;
+        assert!(f.entries_since(&mut c, 0).expect("reads").is_empty());
+        set_list(&t, &mut f, 2, 272);
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1100]);
+    }
+
+    #[test]
+    fn entries_since_refuses_a_decreasing_offset() {
+        let (t, mut f) = file_with_chain(&[&[2000], &[1000]]);
+        set_list(&t, &mut f, 2, 272);
+        assert!(f.entries_since(&mut None, 0).is_err());
     }
 
     #[test]

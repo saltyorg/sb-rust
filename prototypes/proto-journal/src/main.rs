@@ -8,9 +8,11 @@ mod query;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use query::{Group, Journal, Location, Release};
+use query::{Follow, Group, Journal, Location, Release};
+use std::collections::HashMap;
 use std::io::{BufRead, BufWriter, Write};
 use std::mem::MaybeUninit;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -234,15 +236,20 @@ fn tail(
         .transpose()?;
     // Follow: one inotify fd on the journal directories; journald truncates
     // the file to its own size after writing, which raises IN_MODIFY
-    // (JOURNAL_FILE_FORMAT, "Concurrency"). Rotation renames the file and
-    // creates a new one: the file set is re-read on every wake. The
-    // watches go on before the first read, so nothing written in between
-    // waits for a later event.
+    // naming the file (JOURNAL_FILE_FORMAT, "Concurrency"). The watches go
+    // on before the first read, so nothing written in between waits for a
+    // later event.
     // https://docs.rs/rustix/1.1.6/rustix/fs/inotify/index.html
+    // Why not the `notify` crate (8.2), which keeps the same wd-to-path map
+    // and turns an overflow into a rescan flag: it runs its own thread and
+    // channel for a loop that blocks on one fd here, its path bookkeeping
+    // would duplicate `Source::watch_dirs`, and it isn't in sb's tree; the
+    // map and the event classification below are about 30 lines.
     use rustix::fs::inotify;
+    let mut dirs = HashMap::new();
     let fd = if follow {
         let fd = inotify::init(inotify::CreateFlags::CLOEXEC)?;
-        watch(&fd, source)?;
+        watch(&fd, source, &mut dirs)?;
         Some(fd)
     } else {
         None
@@ -265,45 +272,132 @@ fn tail(
     }
     let Some(fd) = fd else { return Ok(()) };
     // Follow from the newest match even when none was printed (`-n 0`).
-    let mut last = match records.last() {
+    let last = match records.last() {
         Some(r) => Some(r.location.clone()),
         None => journal.tail(filter, 1, None).pop().map(|r| r.location),
     };
+    let mut follow = Follow::new(journal, filter, last);
 
     let mut buf = [const { MaybeUninit::<u8>::uninit() }; 8192];
     let mut reader = inotify::Reader::new(&fd, &mut buf);
+    // Journal files modified that a rescan didn't take (another file in a
+    // watched directory with `--file`): they don't rescan again until the
+    // directory itself changes.
+    let mut ignored: Vec<PathBuf> = Vec::new();
     loop {
         // Block for one event, then drain what is already buffered, so a
-        // burst of writes costs one reread, not one per event
+        // burst of writes costs one read per file, not one per event
         // (Reader::is_buffer_empty, "useful to avoid further blocking reads").
-        reader.next()?;
-        while !reader.is_buffer_empty() {
-            reader.next()?;
+        // Every wake reads every open file (`Follow`); the events only
+        // decide whether to rescan the directories first.
+        let mut changed: Vec<PathBuf> = Vec::new();
+        let mut rescan = false;
+        loop {
+            let e = reader.next()?;
+            match classify(&dirs, e.wd(), e.events(), e.file_name()) {
+                Wake::Modified(p) => {
+                    if !changed.contains(&p) {
+                        changed.push(p);
+                    }
+                }
+                Wake::Rescan => rescan = true,
+                Wake::Ignore => {}
+            }
+            if reader.is_buffer_empty() {
+                break;
+            }
         }
-        // A directory may have appeared (journald creates the machine-id
-        // directory on its first write or flush): watch it from now on.
-        // Adding a watch twice returns the same one.
-        watch(&fd, source)?;
-        journal = Journal::open(&source.paths()?);
-        let fresh = match &last {
-            Some(l) => journal.newer(filter, l),
-            None => journal.tail(filter, usize::MAX, None),
-        };
-        report(&mut journal);
+        if rescan {
+            ignored.clear();
+        }
+        // A modified file that isn't open (created before its watch event
+        // was read, or not openable yet when it was) is found by a rescan.
+        let unknown = |p: &PathBuf| !follow.has(p) && (follow.unopened(p) || !ignored.contains(p));
+        if changed.iter().any(unknown) {
+            rescan = true;
+        }
+        if rescan {
+            // A directory may have appeared (journald creates the
+            // machine-id directory on its first write or flush): watch it
+            // from now on. Adding a watch twice returns the same one.
+            watch(&fd, source, &mut dirs)?;
+            follow.rescan(&source.paths()?, filter);
+            for p in changed {
+                if !follow.has(&p) && !follow.unopened(&p) && !ignored.contains(&p) {
+                    ignored.push(p);
+                }
+            }
+        }
+        let fresh = follow.poll(filter);
+        for e in follow.errors.drain(..) {
+            eprintln!("proto-journal: {e}");
+        }
         let mut out = std::io::stdout().lock();
         for r in &fresh {
             writeln!(out, "{}", query::to_json(r, release))?;
         }
         out.flush()?;
-        if let Some(r) = fresh.last() {
-            last = Some(r.location.clone());
-        }
     }
 }
 
+/// What one inotify event asks of the follow loop.
+#[derive(Debug, PartialEq, Eq)]
+enum Wake {
+    /// A journal file was written to.
+    Modified(PathBuf),
+    /// The file set may have changed: list the directories again.
+    Rescan,
+    /// Nothing journal related (another file in the directory).
+    Ignore,
+}
+
+/// Classify an event the way sd-journal's process_inotify_event does: a
+/// queue overflow rescans (process_q_overflow); an event on a journal
+/// file is a modification or, for a create, rename or delete, a rescan;
+/// a directory event, a watch dropped (IN_IGNORED) or an unknown watch
+/// rescans; other names are ignored. Positions live in the open files,
+/// not in the events, so an overflow loses nothing.
+fn classify(
+    dirs: &HashMap<i32, PathBuf>,
+    wd: i32,
+    flags: rustix::fs::inotify::ReadFlags,
+    name: Option<&std::ffi::CStr>,
+) -> Wake {
+    use rustix::fs::inotify::ReadFlags;
+    if flags.contains(ReadFlags::QUEUE_OVERFLOW) {
+        return Wake::Rescan;
+    }
+    let (Some(dir), Some(name)) = (dirs.get(&wd), name) else {
+        return Wake::Rescan;
+    };
+    if flags.contains(ReadFlags::ISDIR) {
+        return Wake::Rescan;
+    }
+    let p = dir.join(std::ffi::OsStr::from_bytes(name.to_bytes()));
+    if !journal_name(&p) {
+        return Wake::Ignore;
+    }
+    let modified = ReadFlags::MODIFY | ReadFlags::CLOSE_WRITE;
+    if !flags.is_empty() && modified.contains(flags) {
+        Wake::Modified(p)
+    } else {
+        Wake::Rescan
+    }
+}
+
+fn journal_name(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".journal") || n.ends_with(".journal~"))
+}
+
 /// Watch every directory the source reads from now (see
-/// `Source::watch_dirs`).
-fn watch(fd: &impl std::os::fd::AsFd, source: &Source) -> Result<()> {
+/// `Source::watch_dirs`), recording which directory each watch is.
+fn watch(
+    fd: &impl std::os::fd::AsFd,
+    source: &Source,
+    dirs: &mut HashMap<i32, PathBuf>,
+) -> Result<()> {
     use rustix::fs::inotify::{WatchFlags, add_watch};
     for d in source.watch_dirs()? {
         let watched = add_watch(
@@ -321,7 +415,8 @@ fn watch(fd: &impl std::os::fd::AsFd, source: &Source) -> Result<()> {
             // a flush): its parent's watch stays, so following goes on.
             Err(rustix::io::Errno::NOENT) => {}
             other => {
-                other.with_context(|| format!("watch {}", d.display()))?;
+                let wd = other.with_context(|| format!("watch {}", d.display()))?;
+                dirs.insert(wd, d);
             }
         }
     }
@@ -622,4 +717,65 @@ fn gen_export(entries: u64, generation: u8) -> Result<()> {
     }
     out.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustix::fs::inotify::ReadFlags;
+
+    fn dirs() -> HashMap<i32, PathBuf> {
+        HashMap::from([(1, PathBuf::from("/j"))])
+    }
+
+    #[test]
+    fn a_modified_journal_file_is_named() {
+        let name = c"system.journal";
+        assert_eq!(
+            classify(&dirs(), 1, ReadFlags::MODIFY, Some(name)),
+            Wake::Modified(PathBuf::from("/j/system.journal"))
+        );
+        assert_eq!(
+            classify(&dirs(), 1, ReadFlags::CLOSE_WRITE, Some(c"x.journal~")),
+            Wake::Modified(PathBuf::from("/j/x.journal~"))
+        );
+    }
+
+    #[test]
+    fn structural_events_rescan() {
+        let j = Some(c"system-old.journal");
+        for flags in [
+            ReadFlags::CREATE,
+            ReadFlags::MOVED_TO,
+            ReadFlags::MOVED_FROM,
+            ReadFlags::DELETE,
+            ReadFlags::MODIFY | ReadFlags::DELETE,
+        ] {
+            assert_eq!(classify(&dirs(), 1, flags, j), Wake::Rescan, "{flags:?}");
+        }
+        // A machine-id directory appearing in a root directory.
+        let dir = Some(c"0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            classify(&dirs(), 1, ReadFlags::CREATE | ReadFlags::ISDIR, dir),
+            Wake::Rescan
+        );
+        // The watch dropped (its directory removed), and an unknown watch.
+        assert_eq!(classify(&dirs(), 1, ReadFlags::IGNORED, None), Wake::Rescan);
+        assert_eq!(classify(&dirs(), 7, ReadFlags::MODIFY, j), Wake::Rescan);
+    }
+
+    #[test]
+    fn an_overflow_rescans() {
+        assert_eq!(
+            classify(&dirs(), -1, ReadFlags::QUEUE_OVERFLOW, None),
+            Wake::Rescan
+        );
+    }
+
+    #[test]
+    fn other_files_are_ignored() {
+        for flags in [ReadFlags::CREATE, ReadFlags::DELETE, ReadFlags::MODIFY] {
+            assert_eq!(classify(&dirs(), 1, flags, Some(c"junk.1")), Wake::Ignore);
+        }
+    }
 }

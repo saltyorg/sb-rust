@@ -1,6 +1,6 @@
 //! Matching, merging and following across a set of journal files.
 
-use crate::file::{DataRef, EntriesRev, Entry, JournalFile, hex_id};
+use crate::file::{ArrayCursor, DataRef, EntriesRev, Entry, JournalFile, hex_id};
 use anyhow::{Context, Result};
 use itertools::Itertools;
 use std::borrow::Cow;
@@ -372,38 +372,6 @@ impl Journal {
         self.decode(&picked)
     }
 
-    /// Every matching entry after `after`, oldest first.
-    pub fn newer(&mut self, filter: &[Group], after: &Location) -> Vec<Record> {
-        let step = |l: &Location| {
-            if l.order(after).is_gt() {
-                Step::Take
-            } else {
-                Step::Stop
-            }
-        };
-        let mut errors = Vec::new();
-        let mut streams = Vec::new();
-        for walk in self.walks(filter, step, &mut errors) {
-            // Up to the first error, which is reported: what the walk gave
-            // before stands, as in `tail`.
-            let mut found = Vec::new();
-            for c in walk {
-                match c {
-                    Ok(c) => found.push(c),
-                    Err(err) => {
-                        errors.push(format!("{err:#}"));
-                        break;
-                    }
-                }
-            }
-            // Newest first from the walk: reverse into file order.
-            found.reverse();
-            streams.push(found);
-        }
-        self.errors.append(&mut errors);
-        self.decode(&merge(streams))
-    }
-
     /// One lazy walk per file, newest first. A file whose matches can't be
     /// looked up is reported in `errors` and left out, as sd-journal
     /// leaves out a file it can't iterate and keeps the others:
@@ -452,6 +420,406 @@ impl Journal {
             }
         }
         out
+    }
+}
+
+/// Following: the files stay open, each with the number of entries of its
+/// entry list already read, so a wake reads only what was appended since.
+/// sd-journal keeps a position per file the same way
+/// (next_beyond_location); what differs is that a file is held by its
+/// inode, not its name, so a rotation's rename doesn't reopen it and a
+/// vacuumed file is still read to its end.
+///
+/// Every wake reads every open file that isn't archived and read to its
+/// end, not only the one an event named: journald raises each file's
+/// IN_MODIFY from its own coalesced timer (journal-file.c
+/// schedule_post_change, 250 ms in journald), so two files written at once
+/// notify in either order. A header read per file is the whole cost.
+pub struct Follow {
+    files: Vec<Followed>,
+    last: Option<Location>,
+    pub errors: Vec<String>,
+    /// Listed files that failed to open at the last rescan.
+    unopened: Vec<PathBuf>,
+}
+
+struct Followed {
+    file: JournalFile,
+    /// Entries of the file's entry list read so far.
+    pos: u64,
+    cursor: Option<ArrayCursor>,
+    /// Entries numbered below this may be ones already shown: copies a
+    /// flush wrote, or entries the tail printed. They are checked against
+    /// the last entry shown (`is_old`); from here on the position alone
+    /// decides, so an entry a slower file delivers late is still shown.
+    check_until: u64,
+    /// A file opened while following: its leading entries are checked
+    /// until the first one that is new (a flush writes all its copies
+    /// before any new entry).
+    leading: bool,
+    /// Per group, per term, per value: its DATA object here, once it
+    /// exists (a value seen for the first time gets one later).
+    resolved: Vec<Vec<Vec<Option<u64>>>>,
+    /// Still listed in the journal directories at the last rescan.
+    listed: bool,
+    /// Rescans in a row that didn't list this file.
+    unlisted: u8,
+    /// The position whose read failed on the last wake: it is retried
+    /// once, as the file may have been caught mid-write ("Concurrency"),
+    /// then reported.
+    failed: Option<u64>,
+    /// The file couldn't be read twice in a row and that was reported;
+    /// cleared by the next good read.
+    stuck: bool,
+    /// Archived or renamed to `.journal~`, seen by a header read: no
+    /// further writes come.
+    sealed: bool,
+}
+
+impl Follow {
+    /// Continue from `journal`'s files, read up to the entry counts of
+    /// their headers at open, and `last`, the newest entry shown. The tail
+    /// may have shown entries counted after the open: the headers are read
+    /// again now, and entries up to those counts are checked against
+    /// `last`.
+    pub fn new(journal: Journal, filter: &[Group], last: Option<Location>) -> Self {
+        let mut follow = Self {
+            files: Vec::new(),
+            last,
+            errors: journal.errors,
+            unopened: Vec::new(),
+        };
+        for mut file in journal.files {
+            let pos = file.header.n_entries;
+            let check_until = match file.refresh() {
+                Ok(()) => file.header.n_entries,
+                Err(_) => pos,
+            };
+            let mut f = Followed::new(file, filter, pos);
+            f.check_until = check_until;
+            follow.files.push(f);
+        }
+        follow
+    }
+
+    /// Match the open files to `paths` (the journal directories' listing,
+    /// in search order): a known inode keeps its position under its new
+    /// name, a new file is read from its start, and one no longer listed
+    /// is read to its end, then closed once deleted.
+    pub fn rescan(&mut self, paths: &[PathBuf], filter: &[Group]) {
+        use std::os::unix::fs::MetadataExt;
+        let mut old = std::mem::take(&mut self.files);
+        let unopened = std::mem::take(&mut self.unopened);
+        for p in paths {
+            let Ok(meta) = std::fs::metadata(p) else {
+                continue;
+            };
+            let inode = (meta.dev(), meta.ino());
+            if let Some(i) = old.iter().position(|f| f.file.inode == inode) {
+                let mut f = old.swap_remove(i);
+                f.file.path.clone_from(p);
+                f.listed = true;
+                f.unlisted = 0;
+                self.files.push(f);
+                continue;
+            }
+            match JournalFile::open(p) {
+                // The same file under a new inode: where journald can't
+                // clear FS_NOCOW_FL on an archived file (btrfs; overlayfs
+                // in follow.sh's containers) it rewrites it as a copy
+                // renamed over the name (journal-file-util.c,
+                // copy_file_atomic_at_full). The file id is in the copied
+                // header, and the offsets are the same, so its position
+                // carries over instead of the whole file being read again.
+                Ok(file) => match old
+                    .iter()
+                    .position(|f| f.file.header.file_id == file.header.file_id)
+                {
+                    Some(i) => {
+                        let mut f = old.swap_remove(i);
+                        f.file = file;
+                        f.listed = true;
+                        f.unlisted = 0;
+                        self.files.push(f);
+                    }
+                    None => {
+                        let mut f = Followed::new(file, filter, 0);
+                        f.check_until = u64::MAX;
+                        f.leading = true;
+                        self.files.push(f);
+                    }
+                },
+                // A file journald is creating may not have its header yet:
+                // it stays unopened, its next modification rescans, and
+                // only a second failure is reported.
+                Err(e) => {
+                    if unopened.contains(p) {
+                        self.errors.push(format!("{e:#}"));
+                    }
+                    self.unopened.push(p.clone());
+                }
+            }
+        }
+        for mut f in old {
+            f.listed = false;
+            f.unlisted = f.unlisted.saturating_add(1);
+            self.files.push(f);
+        }
+    }
+
+    /// Whether `path` is one of the open files, or a listed file that
+    /// failed to open (its next modification should rescan).
+    pub fn has(&self, path: &Path) -> bool {
+        self.files.iter().any(|f| f.file.path == path)
+    }
+
+    /// Whether `path` failed to open at the last rescan.
+    pub fn unopened(&self, path: &Path) -> bool {
+        self.unopened.iter().any(|p| p == path)
+    }
+
+    /// The matching entries appended since the last poll, oldest first.
+    /// Copies of entries already shown are dropped (`check_until`,
+    /// `is_old`).
+    ///
+    /// Each file's new matches are decoded as they are read, with each
+    /// DATA object read once per wake (`record`'s cache, as the tail
+    /// uses), so a DATA object that fails to read is retried with its
+    /// entry; copies of shown entries are dropped before decoding. The
+    /// files' `Candidate`s are then merged.
+    pub fn poll(&mut self, filter: &[Group]) -> Vec<Record> {
+        let mut streams: Vec<Vec<Candidate>> = Vec::new();
+        let mut decoded: HashMap<(usize, u64), Record> = HashMap::new();
+        let mut payloads = HashMap::new();
+        for (i, f) in self.files.iter_mut().enumerate() {
+            let last = self.last.as_ref();
+            let stream = f.read_new(i, filter, last, &mut payloads, &mut self.errors);
+            let mut candidates = Vec::with_capacity(stream.len());
+            for (c, r) in stream {
+                decoded.insert((c.file, c.offset), r);
+                candidates.push(c);
+            }
+            streams.push(candidates);
+        }
+        let picked = merge(streams);
+        let out: Vec<Record> = picked
+            .iter()
+            .filter_map(|c| decoded.remove(&(c.file, c.offset)))
+            .collect();
+        if let Some(c) = picked.last() {
+            self.last = Some(c.location.clone());
+        }
+        self.files.retain(Followed::keep);
+        out
+    }
+}
+
+impl Followed {
+    fn new(file: JournalFile, filter: &[Group], pos: u64) -> Self {
+        let resolved = filter
+            .iter()
+            .map(|g| g.iter().map(|t| vec![None; t.len()]).collect())
+            .collect();
+        let mut f = Self {
+            file,
+            pos,
+            cursor: None,
+            check_until: 0,
+            leading: false,
+            resolved,
+            listed: true,
+            unlisted: 0,
+            failed: None,
+            stuck: false,
+            sealed: false,
+        };
+        f.resolve(filter);
+        f
+    }
+
+    /// Whether to keep the file open after a poll. One no longer listed
+    /// is kept while it still has a name (renamed between a listing and
+    /// the stat of its old name, as a rotation can be; the next rescan
+    /// finds it), at most two rescans, and once deleted until read to its
+    /// end or reported unreadable.
+    fn keep(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        if self.listed {
+            return true;
+        }
+        let linked = self.file.metadata().is_ok_and(|m| m.nlink() > 0);
+        if linked && self.unlisted < 2 {
+            return true;
+        }
+        !self.stuck && self.pos < self.file.header.n_entries
+    }
+
+    /// Look up the values not found here yet: a few reads of the hash
+    /// table each.
+    fn resolve(&mut self, filter: &[Group]) {
+        for (g, group) in filter.iter().enumerate() {
+            for (t, term) in group.iter().enumerate() {
+                for (v, payload) in term.iter().enumerate() {
+                    if self.resolved[g][t][v].is_none()
+                        && let Ok(Some(d)) = self.file.find_data(payload)
+                    {
+                        self.resolved[g][t][v] = Some(d.offset);
+                    }
+                }
+            }
+        }
+    }
+
+    /// An empty filter matches all; otherwise some group whose every term
+    /// has a value among the entry's items.
+    fn matches(&self, filter: &[Group], e: &Entry) -> bool {
+        filter.is_empty()
+            || self.resolved.iter().any(|group| {
+                group.iter().all(|term| {
+                    term.iter()
+                        .any(|v| v.is_some_and(|off| e.items.contains(&off)))
+                })
+            })
+    }
+
+    /// A read of the file failed at `pos`: the first time it is retried on
+    /// the next wake; the second time it is reported (unless the file is
+    /// deleted and was already read to its end: vacuum deallocates a file
+    /// before it unlinks it, so it can read as zeros) and true is returned.
+    fn failure(&mut self, e: &anyhow::Error, errors: &mut Vec<String>) -> bool {
+        if self.failed != Some(self.pos) {
+            self.failed = Some(self.pos);
+            return false;
+        }
+        let drained = !self.listed && self.pos >= self.file.header.n_entries;
+        if !self.stuck && !drained {
+            errors.push(format!("{e:#}"));
+        }
+        true
+    }
+
+    /// The matching entries appended since the last read, with their
+    /// numbers in the file's entry list. `file` is this file's index, for
+    /// the candidates.
+    fn read_new(
+        &mut self,
+        file: usize,
+        filter: &[Group],
+        last: Option<&Location>,
+        payloads: &mut HashMap<(usize, u64), Option<Field>>,
+        errors: &mut Vec<String>,
+    ) -> Vec<(Candidate, Record)> {
+        let mut out = Vec::new();
+        // A file sealed (archived, or renamed to `.journal~` by a journald
+        // that found it dirty) and read to its end is never written again.
+        // Sealed is only set from a header read after the seal, so its
+        // count is final.
+        if self.sealed && self.pos >= self.file.header.n_entries {
+            return out;
+        }
+        if let Err(e) = self.file.refresh() {
+            self.stuck = self.failure(&e, errors);
+            return out;
+        }
+        self.sealed = self.file.header.archived()
+            || self.file.path.extension().is_some_and(|x| x == "journal~");
+        let mut resolved = false;
+        // Rounds: a zero item ends a read (`entries_since`); once it is
+        // skipped, the entries after it are read in the same wake.
+        loop {
+            let offsets = match self.file.entries_since(&mut self.cursor, self.pos) {
+                Ok(o) => o,
+                Err(e) => {
+                    self.stuck = self.failure(&e, errors);
+                    return out;
+                }
+            };
+            self.stuck = false;
+            if offsets.is_empty() {
+                // A failed header read on an earlier wake is behind us.
+                self.failed = None;
+                return out;
+            }
+            if !resolved && !filter.is_empty() {
+                self.resolve(filter);
+                resolved = true;
+            }
+            let mut skipped_zero = false;
+            for off in offsets {
+                // A slot not written below n_entries: waited for once (it
+                // may be mid-write), then skipped, as `EntriesRev` skips it.
+                if off == 0 {
+                    if self.failed == Some(self.pos) {
+                        self.failed = None;
+                        self.pos += 1;
+                        skipped_zero = true;
+                        continue;
+                    }
+                    self.failed = Some(self.pos);
+                    return out;
+                }
+                let read = self.file.entry(off).and_then(|e| {
+                    let location = Location::of(&self.file, &e);
+                    // The first entry newer than the last shown ends a new
+                    // file's leading copies, whether it matches or not.
+                    if self.leading && last.is_none_or(|l| !is_old(&location, l)) {
+                        self.check_until = self.pos;
+                        self.leading = false;
+                    }
+                    // Where an entry already shown can be (`check_until`),
+                    // one not newer than the last shown is a copy: dropped
+                    // before it is decoded.
+                    let copy =
+                        self.pos < self.check_until && last.is_some_and(|l| is_old(&location, l));
+                    if copy || !self.matches(filter, &e) {
+                        return Ok(None);
+                    }
+                    // Decoded here, so a DATA object that fails to read is
+                    // retried on the next wake like the entry itself. Unlike
+                    // the tail's decode of only what is shown, the merge
+                    // can still drop one of these (a same-wake flush copy);
+                    // that is around a flush only.
+                    let r = record(&self.file, &e, payloads, file)?;
+                    let c = Candidate {
+                        location,
+                        file,
+                        offset: off,
+                    };
+                    Ok(Some((c, r)))
+                });
+                match read {
+                    Ok(c) => out.extend(c),
+                    // Skipped once reported.
+                    Err(e) if self.failure(&e, errors) => {}
+                    Err(_) => return out,
+                }
+                self.failed = None;
+                self.pos += 1;
+            }
+            if !skipped_zero {
+                return out;
+            }
+        }
+    }
+}
+
+/// Whether a followed entry is one already shown, or older than it: by
+/// time within the boot of `last`, not by sequence number. Flushing to
+/// /var copies the runtime journal's entries with the same boot,
+/// monotonic and realtime timestamps and XOR hash; systemd 255 gives the
+/// copies the runtime file's sequence-number id and new, higher seqnums,
+/// so sd-journal's order calls them newer and `journalctl -f` 255 prints
+/// them twice (follow.sh, flush-var). Monotonic time within a boot only
+/// grows, so a copy is older than the last entry shown, or equal to it.
+/// Across boots this falls back to sd-journal's order.
+fn is_old(l: &Location, last: &Location) -> bool {
+    if l.boot_id == last.boot_id {
+        l.monotonic < last.monotonic
+            || (l.monotonic == last.monotonic
+                && l.realtime == last.realtime
+                && l.xor_hash == last.xor_hash)
+    } else {
+        !l.order(last).is_gt()
     }
 }
 
@@ -551,9 +919,13 @@ where
 /// (/run before /var), so the copy kept is the one journalctl shows.
 ///
 /// Following uses this forward merge, as `journalctl -f` goes on with
-/// sd_journal_next. The last N (`tail`) come from `newest`, which walks
-/// backwards as journalctl's `-n` does: in the non-transitive cases a
-/// forward merge could pick a different last N.
+/// sd_journal_next. Its skip is `is_old`, sd-journal's order except
+/// within one boot, where monotonic time decides: systemd 255's flushed
+/// copies have the originals' times but higher seqnums under the same
+/// seqnum id, so sd-journal's order would call them newer. The last N
+/// (`tail`) come from `newest`, which walks backwards as journalctl's
+/// `-n` does: in the non-transitive cases a forward merge could pick a
+/// different last N.
 fn merge(streams: Vec<Vec<Candidate>>) -> Vec<Candidate> {
     // One position per stream; the head of stream `i` is streams[i][pos[i]].
     let mut pos = vec![0usize; streams.len()];
@@ -563,7 +935,7 @@ fn merge(streams: Vec<Vec<Candidate>>) -> Vec<Candidate> {
             for (i, s) in streams.iter().enumerate() {
                 while s
                     .get(pos[i])
-                    .is_some_and(|h| !h.location.order(&last.location).is_gt())
+                    .is_some_and(|h| is_old(&h.location, &last.location))
                 {
                     pos[i] += 1;
                 }
@@ -591,8 +963,6 @@ enum Step {
     Take,
     /// Newer than the range wanted: keep walking.
     Skip,
-    /// Older than the range wanted: nothing further back qualifies.
-    Stop,
 }
 
 /// A newest-first stream of entry offsets from one file, each with what
@@ -618,8 +988,7 @@ fn union<'a, T: 'a>(streams: Vec<Stream<'a, T>>) -> Stream<'a, T> {
 
 /// One group's matches in one file, newest first: its driver term's entry
 /// list walked backwards, each entry read once and checked against the
-/// other terms' DATA offsets ("Reading": multiple matches). Entry lists
-/// are in file order, which is sequence order, so `Stop` ends the walk.
+/// other terms' DATA offsets ("Reading": multiple matches).
 struct Walk<'a, S> {
     f: &'a JournalFile,
     driver: Stream<'a, ()>,
@@ -649,7 +1018,6 @@ impl<S: Fn(&Location) -> Step> Iterator for Walk<'_, S> {
                 }
             };
             match (self.step)(&location) {
-                Step::Stop => self.done = true,
                 Step::Skip => {}
                 Step::Take => {
                     let matches = self
@@ -1024,5 +1392,317 @@ mod tests {
             assert!(has(v, b"_PID=1") && !has(v, b"_SYSTEMD_CGROUP=/init.scope"));
         }
         assert!(has("26.04", b"_SYSTEMD_CGROUP=/init.scope") && !has("26.04", b"_PID=1"));
+    }
+
+    fn loc(seqnum_id: u8, seqnum: u64, boot: u8, mono: u64, xor: u64) -> Location {
+        Location {
+            seqnum_id: [seqnum_id; 16],
+            seqnum,
+            boot_id: [boot; 16],
+            monotonic: mono,
+            realtime: 1000 + mono,
+            xor_hash: xor,
+        }
+    }
+
+    /// systemd 255's flushed copies: same seqnum id, higher seqnums, the
+    /// originals' times and hash. sd-journal's order calls them newer;
+    /// follow drops them. A different entry at the same microsecond stays.
+    #[test]
+    fn is_old_drops_flushed_copies_by_time() {
+        let last = loc(1, 5, 9, 50, 7);
+        let copy_of_earlier = loc(1, 8, 9, 30, 3);
+        let copy_of_last = loc(1, 10, 9, 50, 7);
+        assert!(copy_of_earlier.order(&last).is_gt());
+        assert!(is_old(&copy_of_earlier, &last));
+        assert!(is_old(&copy_of_last, &last));
+        assert!(!is_old(&loc(1, 11, 9, 50, 8), &last));
+        assert!(!is_old(&loc(2, 1, 9, 51, 0), &last));
+        // Another boot: sd-journal's order (realtime here).
+        assert!(is_old(&loc(3, 1, 4, 10, 0), &last));
+        assert!(!is_old(&loc(3, 1, 4, 90, 0), &last));
+    }
+
+    /// A journal file (regular, not compact) holding `entries` as
+    /// (seqnum, monotonic) ENTRY objects without items, one boot, all in
+    /// one entry array, the header counting `n` of them.
+    fn journal(path: &Path, seqnum_id: u8, entries: &[(u64, u64)], n: u64) {
+        let mut b = vec![0u8; 272];
+        b[0..8].copy_from_slice(crate::file::SIGNATURE);
+        b[72..88].copy_from_slice(&[seqnum_id; 16]);
+        b[88..96].copy_from_slice(&272u64.to_le_bytes());
+        b[152..160].copy_from_slice(&n.to_le_bytes());
+        let array_size = 24 + 8 * entries.len() as u64;
+        let mut at = 272 + array_size;
+        let mut array = vec![0u8; 24];
+        array[0] = 6;
+        array[8..16].copy_from_slice(&array_size.to_le_bytes());
+        let mut objects = Vec::new();
+        for &(seqnum, mono) in entries {
+            array.extend_from_slice(&at.to_le_bytes());
+            let mut e = vec![0u8; 64];
+            e[0] = 3;
+            e[8..16].copy_from_slice(&64u64.to_le_bytes());
+            e[16..24].copy_from_slice(&seqnum.to_le_bytes());
+            e[24..32].copy_from_slice(&(1000 + mono).to_le_bytes());
+            e[32..40].copy_from_slice(&mono.to_le_bytes());
+            e[40..56].copy_from_slice(&[9; 16]);
+            objects.extend_from_slice(&e);
+            at += 64;
+        }
+        b[176..184].copy_from_slice(&272u64.to_le_bytes());
+        b.extend_from_slice(&array);
+        b.extend_from_slice(&objects);
+        let arena = b.len() as u64 - 272;
+        b[96..104].copy_from_slice(&arena.to_le_bytes());
+        std::fs::write(path, &b).expect("write");
+    }
+
+    /// Rewrite the header's entry count in place, as journald does.
+    fn set_n(path: &Path, n: u64) {
+        let mut b = std::fs::read(path).expect("read");
+        b[152..160].copy_from_slice(&n.to_le_bytes());
+        std::fs::write(path, &b).expect("write");
+    }
+
+    fn seqnums(r: &[Record]) -> Vec<u64> {
+        r.iter().map(|r| r.location.seqnum).collect()
+    }
+
+    const FOUR: [(u64, u64); 4] = [(1, 10), (2, 20), (3, 30), (4, 40)];
+
+    #[test]
+    fn follow_reads_only_what_was_appended() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR, 2);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        assert!(f.poll(&[]).is_empty());
+        set_n(&a, 3);
+        assert_eq!(seqnums(&f.poll(&[])), vec![3]);
+        set_n(&a, 4);
+        assert_eq!(seqnums(&f.poll(&[])), vec![4]);
+        assert!(f.poll(&[]).is_empty());
+    }
+
+    /// Rotation renames the file: it keeps its position under the new
+    /// name. Vacuum deletes it: what it still had is read, then it closes.
+    #[test]
+    fn follow_keeps_a_renamed_file_and_reads_a_deleted_one_to_its_end() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("system.journal");
+        let b = dir.path().join("system-old.journal");
+        journal(&a, 1, &FOUR, 2);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        set_n(&a, 3);
+        std::fs::rename(&a, &b).expect("rename");
+        f.rescan(std::slice::from_ref(&b), &[]);
+        assert_eq!(seqnums(&f.poll(&[])), vec![3]);
+        set_n(&b, 4);
+        std::fs::remove_file(&b).expect("remove");
+        f.rescan(&[], &[]);
+        assert_eq!(seqnums(&f.poll(&[])), vec![4]);
+        assert!(!f.has(&b));
+        assert!(f.files.is_empty());
+    }
+
+    /// Two files written at once (system and user journal): journald raises
+    /// each file's IN_MODIFY from its own coalesced timer, so the newer
+    /// entry in one file can be shown before the older entry in the other
+    /// is read. The older one is still shown, not dropped as old.
+    #[test]
+    fn follow_keeps_an_older_entry_of_a_file_read_later() {
+        let dir = tempfile::tempdir().expect("dir");
+        let sys = dir.path().join("system.journal");
+        let user = dir.path().join("user-1000.journal");
+        journal(&sys, 1, &[(1, 10), (3, 30), (4, 40)], 1);
+        journal(&user, 1, &[(2, 20), (5, 50)], 0);
+        let paths = [sys.clone(), user.clone()];
+        let mut f = Follow::new(Journal::open(&paths), &[], None);
+        set_n(&sys, 2);
+        assert_eq!(seqnums(&f.poll(&[])), vec![3]);
+        // The user file's entry 2 (monotonic 20) was linked before 3 but
+        // counted only now.
+        set_n(&user, 1);
+        set_n(&sys, 3);
+        assert_eq!(seqnums(&f.poll(&[])), vec![2, 4]);
+        set_n(&user, 2);
+        assert_eq!(seqnums(&f.poll(&[])), vec![5]);
+    }
+
+    /// A deleted file whose read failed keeps being read: it closes only
+    /// once read to its end, or after its error was reported.
+    #[test]
+    fn follow_keeps_a_deleted_file_until_it_was_read() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR, 2);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        let mut bytes = std::fs::read(&a).expect("read");
+        let third = 272 + 24 + 8 * 4 + 2 * 64;
+        bytes[third] = 1;
+        std::fs::write(&a, &bytes).expect("write");
+        set_n(&a, 4);
+        std::fs::remove_file(&a).expect("remove");
+        f.rescan(&[], &[]);
+        assert!(f.poll(&[]).is_empty());
+        assert_eq!(f.files.len(), 1);
+        assert_eq!(seqnums(&f.poll(&[])), vec![4]);
+        assert_eq!(f.errors.len(), 1);
+        assert!(f.files.is_empty());
+    }
+
+    /// A file renamed between the listing and the stat of its old name
+    /// (rotation racing a rescan) isn't closed: it still has a name.
+    #[test]
+    fn follow_keeps_a_renamed_file_missing_from_one_listing() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("system.journal");
+        let b = dir.path().join("system-old.journal");
+        journal(&a, 1, &FOUR, 2);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        std::fs::rename(&a, &b).expect("rename");
+        f.rescan(&[], &[]);
+        assert!(f.poll(&[]).is_empty());
+        assert_eq!(f.files.len(), 1);
+        set_n(&b, 3);
+        f.rescan(std::slice::from_ref(&b), &[]);
+        assert_eq!(seqnums(&f.poll(&[])), vec![3]);
+    }
+
+    /// A file created mid-follow (rotation, restart) is first read before
+    /// journald linked its entry array; its entries are still shown.
+    #[test]
+    fn follow_reads_a_new_file_first_seen_empty() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("system-old.journal");
+        let b = dir.path().join("system.journal");
+        journal(&a, 1, &FOUR[..1], 1);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        journal(&b, 1, &FOUR[1..], 0);
+        let mut bytes = std::fs::read(&b).expect("read");
+        bytes[176..184].copy_from_slice(&0u64.to_le_bytes());
+        std::fs::write(&b, &bytes).expect("write");
+        f.rescan(&[a.clone(), b.clone()], &[]);
+        assert!(f.poll(&[]).is_empty());
+        bytes[176..184].copy_from_slice(&272u64.to_le_bytes());
+        bytes[152..160].copy_from_slice(&3u64.to_le_bytes());
+        std::fs::write(&b, &bytes).expect("write");
+        assert_eq!(seqnums(&f.poll(&[])), vec![2, 3, 4]);
+    }
+
+    /// An archived file rewritten as a copy (new inode, same file id) keeps
+    /// its position: nothing is read twice, nothing skipped. A deleted
+    /// file that reads as zeros (vacuum deallocates) after it was read to
+    /// its end is no error.
+    #[test]
+    fn follow_keeps_the_position_of_a_rewritten_copy() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("system-old.journal");
+        journal(&a, 1, &FOUR, 2);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        set_n(&a, 3);
+        let tmp = dir.path().join("copy.tmp");
+        std::fs::copy(&a, &tmp).expect("copy");
+        std::fs::rename(&tmp, &a).expect("rename");
+        f.rescan(std::slice::from_ref(&a), &[]);
+        assert_eq!(seqnums(&f.poll(&[])), vec![3]);
+        assert_eq!(f.files.len(), 1);
+        std::fs::write(&a, vec![0u8; 4096]).expect("zero");
+        std::fs::remove_file(&a).expect("remove");
+        f.rescan(&[], &[]);
+        assert!(f.poll(&[]).is_empty());
+        assert!(f.errors.is_empty(), "{:?}", f.errors);
+    }
+
+    /// A file appearing mid-follow is read from its start; the copies a
+    /// flush put there (the shown entries' times) are dropped, the new
+    /// entries after them kept.
+    #[test]
+    fn follow_drops_flushed_copies_in_a_new_file() {
+        let dir = tempfile::tempdir().expect("dir");
+        let run = dir.path().join("run.journal");
+        let var = dir.path().join("var.journal");
+        journal(&run, 1, &FOUR[..2], 1);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&run)), &[], None);
+        set_n(&run, 2);
+        assert_eq!(seqnums(&f.poll(&[])), vec![2]);
+        // Copies of 1 and 2 under higher seqnums of the same id, then 5.
+        journal(&var, 1, &[(7, 10), (8, 20), (9, 50)], 3);
+        f.rescan(&[run.clone(), var.clone()], &[]);
+        assert_eq!(seqnums(&f.poll(&[])), vec![9]);
+    }
+
+    /// An entry whose DATA can't be read (here an item pointing nowhere)
+    /// is retried on the next wake like an unreadable entry, then reported
+    /// and skipped; the entries after it still come.
+    #[test]
+    fn follow_retries_an_entry_whose_data_fails_once() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR, 2);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        // Entries 3 and 4 again at the end, in order (the array must not
+        // decrease); 3 with one item, an unaligned offset.
+        let mut bytes = std::fs::read(&a).expect("read");
+        let third = 272 + 24 + 8 * 4 + 2 * 64;
+        let at3 = bytes.len() as u64;
+        let mut e = bytes[third..third + 64].to_vec();
+        e[8..16].copy_from_slice(&80u64.to_le_bytes());
+        e.extend_from_slice(&9u64.to_le_bytes());
+        e.extend_from_slice(&0u64.to_le_bytes());
+        let fourth = bytes[third + 64..third + 128].to_vec();
+        bytes.extend_from_slice(&e);
+        let at4 = bytes.len() as u64;
+        bytes.extend_from_slice(&fourth);
+        bytes[272 + 24 + 16..272 + 24 + 24].copy_from_slice(&at3.to_le_bytes());
+        bytes[272 + 24 + 24..272 + 24 + 32].copy_from_slice(&at4.to_le_bytes());
+        let arena = bytes.len() as u64 - 272;
+        bytes[96..104].copy_from_slice(&arena.to_le_bytes());
+        bytes[152..160].copy_from_slice(&4u64.to_le_bytes());
+        std::fs::write(&a, &bytes).expect("write");
+        assert!(f.poll(&[]).is_empty());
+        assert!(f.errors.is_empty(), "{:?}", f.errors);
+        assert_eq!(seqnums(&f.poll(&[])), vec![4]);
+        assert_eq!(f.errors.len(), 1);
+    }
+
+    /// A slot never written below n_entries (an unclean shutdown) is
+    /// waited for once, then skipped without an error: the entries after
+    /// it still come, and a dirty file can't stall the follow.
+    #[test]
+    fn follow_skips_a_zero_item_after_one_wait() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR, 1);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        // Zero the array's second item (entry 2).
+        let mut bytes = std::fs::read(&a).expect("read");
+        bytes[272 + 24 + 8..272 + 24 + 16].copy_from_slice(&0u64.to_le_bytes());
+        std::fs::write(&a, &bytes).expect("write");
+        set_n(&a, 4);
+        assert!(f.poll(&[]).is_empty());
+        assert_eq!(seqnums(&f.poll(&[])), vec![3, 4]);
+        assert!(f.errors.is_empty(), "{:?}", f.errors);
+    }
+
+    /// An entry that can't be read is retried on the next wake (journald
+    /// may be mid-write), then reported and skipped.
+    #[test]
+    fn follow_retries_an_unreadable_entry_once() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR, 2);
+        let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
+        // Break entry 3's object type; the header counts all four.
+        let mut bytes = std::fs::read(&a).expect("read");
+        let third = 272 + 24 + 8 * 4 + 2 * 64;
+        bytes[third] = 1;
+        std::fs::write(&a, &bytes).expect("write");
+        set_n(&a, 4);
+        assert!(f.poll(&[]).is_empty());
+        assert!(f.errors.is_empty());
+        assert_eq!(seqnums(&f.poll(&[])), vec![4]);
+        assert_eq!(f.errors.len(), 1);
     }
 }

@@ -16,7 +16,10 @@ Task 11).
   - ruzstd@0.9.1, which carries the RUSTSEC-2026-0344 fix;
   - lzma-rust2@0.25.0 (`std`, `xz`, without `optimization`), which builds
     as `forbid(unsafe_code)` and has a memory-limited reader.
-- **rustix@1.1.6 `fs::inotify`:** following.
+- **rustix@1.1.6 `fs::inotify`:** following. Why not `notify` 8.2, which
+  keeps the same watch-to-path map and flags an overflow for a rescan: it
+  runs a thread and a channel for a loop that blocks on one fd here, and
+  it isn't in sb's tree, for about 30 lines.
 - **nix@0.28 `user`:** the systemd-coredump uid. This is the nix version sb
   already links through portable-pty.
 - **hex:** ids.
@@ -243,8 +246,8 @@ Compared against:
   - **Last 500 of a quiet or a busy unit, and one page back:** faster
     than journalctl and sdjournal.
   - **Memory:** less than journalctl, about sdjournal's.
-  - **Idle follow:** more CPU than either. It was measured before batch
-    draining and before the lazy walk below.
+  - **Idle follow:** more CPU than either before the follow rework
+    below; after it, in journalctl's range.
   - **Static binary (from the build, not the host):** about 240 KiB of
     code, this crate with its tools and decompressors. sdjournal added
     about 640 KB; a journalctl child adds nothing.
@@ -272,7 +275,131 @@ Compared against:
   Also not kept: the compact format's
   `tail_entry_array_offset` hint (finding the arrays from their heads costs
   a few reads per term; that setup is a small part of the total).
-  Follow still reopens every file on each wake.
+  Follow reopened every file on each wake until the rework below.
+
+**Follow rework** (`tail -f`):
+- **Before:** every inotify wake reopened every journal file and walked
+  each group's match list backwards (`Journal::newer`), stopping at the
+  first entry not newer than the last shown.
+- **Now** (query.rs `Follow`, file.rs `entries_since`):
+  - files stay open, keyed by inode, each with the number of entries of
+    its main entry list already read and where in the array chain that
+    read stopped. A wake reads the header (one pread), then only the new
+    array items and their entries, and checks each entry's items against
+    the filter's DATA offsets (looked up again only for values not in the
+    file yet). The matches are merged as locations (`Candidate`s), as
+    the tail merges them. Unlike the tail, they are decoded as they are
+    read, each DATA object once per wake, with copies of shown entries
+    dropped before decoding: a DATA object that fails to read then gets
+    the entry's one-wake retry, where decoding after the merge would
+    have lost the entry (the port review found it);
+  - every wake reads every open file that isn't archived and read to its
+    end: one header pread each, then only what is new. Reading only the
+    file an IN_MODIFY names was tried and rejected (the review found it):
+    journald raises each file's IN_MODIFY from its own coalesced 250 ms
+    timer (`schedule_post_change`), so with two files written at once
+    (a `User=` unit's user-1000.journal next to system.journal) the newer
+    entry could be shown first and the older one, read later, dropped as
+    old. The extra cost is a pread per active file, usually two to four;
+  - events only decide whether to rescan the directories first: a create,
+    rename or delete of a journal file, a directory appearing, a watch
+    dropped, an unknown watch or IN_Q_OVERFLOW rescan, as sd-journal's
+    `process_inotify_event` does; other names are ignored. Positions live
+    in the open files, so an overflow loses nothing;
+  - rotation renames the file: same inode, same position. A file missing
+    from one listing but still linked (renamed between the listing and
+    the stat) stays open for the next rescan. Vacuum deletes it: the open
+    fd is read to its end (or until its error is reported), then closed. Where journald can't
+    clear FS_NOCOW_FL on an archived file (btrfs, and overlayfs in the
+    containers) it rewrites it as a copy renamed over the name: the copy
+    is recognised by its header's file id and keeps the position. A
+    deleted file that reads as zeros (vacuum deallocates before it
+    unlinks) is no error once it was read to its end;
+  - an archived or `.journal~` file read to its end isn't refreshed
+    again, once a header read after the seal gave its final count;
+  - a file read while it had no entry array yet is read from its head
+    later (the matrix caught a cursor kept at offset 0, which lost every
+    entry of files created mid-follow);
+  - an entry that fails to read is retried on the next wake, then
+    reported and skipped;
+  - copies from a flush are dropped by time, not by sequence number (see
+    below).
+- **The old Stop rule and seqnum ids.** A file has one seqnum id: it is
+  in the header, and journald rotates rather than append an entry from
+  another sequence-number space to a non-empty file. So no seqnum-id
+  change happens inside a file. What the rule missed was across files:
+  - **systemd 255's flush** copies the runtime journal's entries into
+    /var under the runtime file's seqnum id with new, higher seqnums, and
+    the originals' boot, times and XOR hash. sd-journal's order calls them
+    newer, so the old follow printed every flushed entry twice. So does
+    `journalctl -f` 255 when /var/log/journal exists when it starts.
+    249's copies get another seqnum id, so neither duplicates there.
+  - The follow drops an entry as old when, in the last shown entry's
+    boot, its monotonic time is lower (or boot, times and hash equal it);
+    across boots it keeps sd-journal's order. That check applies only
+    where an already shown entry can be: in files open from the start,
+    to entries below the count read right after the tail; in files
+    opened while following, to the leading run of old entries (a flush
+    writes all its copies before any new entry). After that, the
+    position alone decides, so a late file's older entry is still shown.
+- **Residual:** an entry linked into a file opened mid-follow, before
+  that file's first new entry and in the microseconds between two files'
+  header reads in one wake, would be taken for a copy. sd-journal has
+  the same window for every file.
+- **Declined (recorded):** flush copies appended to a /var file already
+  being followed would be shown again. That happens when the flush
+  service is restarted (relinquish, then flush) while following. It is
+  rare on Saltbox; dropping exact copies of recently shown entries
+  would cover it.
+- **follow.sh** checks it: one container per release with its own
+  standalone journald, as compare.sh does. Each scenario starts both
+  followers with `-n 0`, writes markers until both have printed one, then
+  numbered entries, and counts lost and duplicated numbers per follower:
+  - flush, with /var/log/journal created mid-stream, and flush-var, with
+    it there (empty) before the followers start;
+  - paced writes 20 ms apart, for latency (receipt time minus
+    `__REALTIME_TIMESTAMP`);
+  - a burst of 3,000 from one process;
+  - two rotations mid-stream;
+  - a rotation and `--vacuum-files=1` mid-stream;
+  - journald killed (SIGKILL, leaving a `.journal~`), restarted, stopped
+    cleanly (SIGTERM) and restarted;
+  - both followers stopped (SIGSTOP) while entries, a rotation and more
+    create/delete events than `max_queued_events` happen, then resumed:
+    an inotify queue overflow;
+  - root and uid 1000 writing at the same time, so system.journal and
+    user-1000.journal are written together (split).
+- **Result (lost / duplicated, of 200 per flush scenario):**
+
+  | Release | Follower | flush | flush-var | others |
+  |---|---|---|---|---|
+  | 22.04 | journalctl -f | 0 / 0 | 0 / 0 | 0 / 0 |
+  | 22.04 | old follow | 0 / 0 | 0 / 0 | 0 / 0 |
+  | 22.04 | new follow | 0 / 0 | 0 / 0 | 0 / 0 |
+  | 24.04 | journalctl -f | 0 / 0 | 0 / 100 | 0 / 0 |
+  | 24.04 | old follow | 0 / 100 | 0 / 100 | 0 / 0 |
+  | 24.04 | new follow | 0 / 0 | 0 / 0 | 0 / 0 |
+  | 26.04 | journalctl -f | 100 / 0 | 0 / 0 | 0 / 0 |
+  | 26.04 | old follow | 0 / 0 | 0 / 0 | 0 / 0 |
+  | 26.04 | new follow | 0 / 0 | 0 / 0 | 0 / 0 |
+
+  "Others" covers paced, burst, rotate, vacuum, restart, overflow and
+  split. journalctl 259 loses the entries written after the flush when
+  /var/log/journal didn't exist when it started: it doesn't watch a root
+  directory that is missing. The split scenario hits the two-file race
+  only by chance; the unit test
+  `follow_keeps_an_older_entry_of_a_file_read_later` pins it.
+- **Latency** is journald's, not the reader's: journald raises the
+  wake-up (its post-change truncate) on a timer, so both followers saw
+  the same p50 of about 140 to 150 ms and p95 of about 260 ms, within a
+  millisecond of each other, on all three releases.
+- **Cost:** on a real host, idle follow of one unit now costs about the
+  same CPU as `journalctl -f`, and a fraction of the old follow's. The
+  figures went to the maintainer. In the 3,000-entry burst the follow on
+  the first reader used about twice journalctl's CPU (8 to 12 against 3
+  to 6 clock ticks), in reading and decoding entries for output. On the
+  newest-first reader (one pread per object, each DATA object decoded
+  once per wake) it uses the same as journalctl, 4 ticks against 4 to 5.
 - **Not covered yet:**
   - **26.04's local-journal coredump term:** `_UID` of systemd-coredump or
     root. The containers have no `systemd-coredump` user, and only
@@ -280,8 +407,6 @@ Compared against:
   - **Unit-name mangling:** names without a dot get `.service`, as
     journalctl's `unit_name_mangle` does for Saltbox's names. Other cases,
     such as `my.app` or the `.slice` disjunction, aren't handled.
-  - **The `newer()` stop rule** assumes order within one file. Across a
-    seqnum-id change inside a file, which is rare, it could stop early.
   - **The last N walk backwards, as journalctl's `-n` does**
     (`sd_journal_previous_skip`), and follow merges forward
     (`sd_journal_next`). journalctl then prints the last N by walking
@@ -299,7 +424,8 @@ Compared against:
     skips a bad item (`generic_array_get`), but its match path bisects
     (`generic_array_bisect`) and cuts the array short there, or with v249's
     chain cache drops the file. The first version ended the chain there.
-    UNVERIFIED against a real file with one.
+    Following waits one wake for such a slot (it may be mid-write), then
+    skips it the same way. UNVERIFIED against a real file with one.
   - **Repeated array items from a real 22.04 journald:** systemd 249's
     `journal_file_append_entry` keeps duplicate items when it links an
     entry (its source). journal-remote 249 didn't write any in the
@@ -355,7 +481,7 @@ crate, several agents in parallel look for performance, reliability and
 feature improvements for Saltbox's use; their results are added here._
 
 Before it becomes a crate:
-1. Files kept open while following.
+1. Files kept open while following: done (Follow rework above).
 2. The container matrix (compare.sh and compat.sh, with an interim-release
    canary) in CI on a schedule against current images, since a stable
    update can change the rules (259.1).
