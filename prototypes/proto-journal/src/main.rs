@@ -3,6 +3,7 @@
 //! Ubuntu release? (tasks/prototypes Task 11; host spec decision 4)
 
 mod file;
+mod fuzz;
 mod hash;
 mod query;
 
@@ -133,6 +134,33 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         generation: u8,
     },
+    /// Mutate seed journal files and read each case as hash-check,
+    /// decode-all and tail do, reporting any panic or hang (fuzz.rs).
+    Fuzz {
+        /// Seed journal files, such as journal-remote's output of
+        /// gen-export.
+        #[arg(required = true)]
+        seeds: Vec<PathBuf>,
+        /// The run's seed: the same seed and case number give the same file.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long, default_value_t = 0)]
+        start: u64,
+        #[arg(long, default_value_t = 10_000)]
+        cases: u64,
+        /// Seconds a case may take before it counts as a hang.
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+        /// The run's address-space limit, in MiB.
+        #[arg(long, default_value_t = 3072)]
+        memory_mib: u64,
+        /// Where the current case, and any case that panicked, is written.
+        #[arg(long)]
+        work: PathBuf,
+        /// Also keep every case here (with --cases 1, to reproduce one).
+        #[arg(long)]
+        keep: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -177,6 +205,27 @@ fn main() -> Result<()> {
             entries,
             generation,
         } => gen_export(entries, generation),
+        Command::Fuzz {
+            seeds,
+            seed,
+            start,
+            cases,
+            timeout,
+            memory_mib,
+            work,
+            keep,
+        } => fuzz::run(&fuzz::Options {
+            seeds,
+            seed,
+            start,
+            cases,
+            timeout: std::time::Duration::from_secs(timeout),
+            memory_limit: memory_mib
+                .checked_mul(1 << 20)
+                .context("--memory-mib too large")?,
+            work,
+            keep,
+        }),
     }
 }
 
@@ -255,7 +304,7 @@ fn tail(
         None
     };
 
-    let mut journal = Journal::open(&source.paths()?);
+    let mut journal = Journal::open_listed(|| source.paths())?;
     let records = journal.tail(filter, n, before.as_ref());
     report(&mut journal);
     let mut out = BufWriter::new(std::io::stdout().lock());
@@ -484,19 +533,30 @@ fn compare(expected: &Path, actual: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A file or object that can't be read is an error, reported, and the
+/// other files are still checked.
 fn hash_check(source: &Source) -> Result<()> {
     let journal = Journal::open(&source.paths()?);
+    let mut errors = journal.errors.len();
     for e in &journal.errors {
         println!("error: {e}");
     }
     let (mut ok, mut bad) = (0u64, 0u64);
     for f in &journal.files {
         let mut file_bad = 0u64;
-        for (off, stored) in f.all_data()? {
-            if f.hash(&f.data_payload(off)?) == stored {
-                ok += 1;
-            } else {
-                file_bad += 1;
+        let all = f.all_data().unwrap_or_else(|e| {
+            errors += 1;
+            println!("error: {e:#}");
+            Vec::new()
+        });
+        for (off, stored) in all {
+            match f.data_payload(off) {
+                Ok(p) if f.hash(&p) == stored => ok += 1,
+                Ok(_) => file_bad += 1,
+                Err(e) => {
+                    errors += 1;
+                    println!("error: {e:#}");
+                }
             }
         }
         bad += file_bad;
@@ -509,8 +569,8 @@ fn hash_check(source: &Source) -> Result<()> {
             file_bad
         );
     }
-    println!("hash-check: {ok} match, {bad} differ");
-    if bad > 0 {
+    println!("hash-check: {ok} match, {bad} differ, {errors} errors");
+    if bad > 0 || errors > 0 {
         std::process::exit(1);
     }
     Ok(())
@@ -525,8 +585,26 @@ fn decode_all(source: &Source) -> Result<()> {
     }
     let mut entries = 0u64;
     for f in &journal.files {
-        for off in f.all_entries()? {
-            match f.entry(off) {
+        // Newest first, every readable offset: an error in the chain is
+        // reported and the walk goes on with the older arrays.
+        let mut offsets = Vec::new();
+        for r in f.all_entries_rev() {
+            match r {
+                Ok(off) => offsets.push(off),
+                Err(err) => {
+                    errors += 1;
+                    if errors <= 10 {
+                        println!("entry array error: {err:#}");
+                    }
+                }
+            }
+        }
+        offsets.reverse();
+        // Each entry must end before the next (objects never overlap),
+        // so a corrupt size can't make each read the rest of the file.
+        for (k, &off) in offsets.iter().enumerate() {
+            let end = offsets.get(k + 1).copied().unwrap_or(u64::MAX);
+            match f.entry_before(off, end) {
                 Ok(e) => {
                     entries += 1;
                     for item in e.items {

@@ -30,7 +30,7 @@ Compared against:
 - `journalctl`;
 - sdjournal@0.1.22, in a separate hands-on run.
 
-**What was built:** the reader is about 930 non-comment lines (hash.rs, file.rs, query.rs; about 1,080 with their tests), plus about 515 in main.rs for the CLI and test tools:
+**What was built:** the reader is about 1,890 non-comment lines (hash.rs, file.rs, query.rs; about 3,490 with their tests), plus about 660 in main.rs for the CLI and test tools and about 320 in fuzz.rs:
 - **hash.rs:** siphash through siphasher, plus a port of lookup3's
   `hashlittle2`. Why not `hashers`' `Lookup3Hasher`:
   - no release since 2018;
@@ -40,8 +40,42 @@ Compared against:
   `unsafe`, so a file truncated under the reader is an error, not SIGBUS.
   - Every offset taken from the file is checked: alignment, arena bounds,
     type, size and overflow.
-  - Chain links must point forward, which ends any cycle, and entry-array
-    items must never decrease.
+  - A read past the arena as it was at open re-reads the arena size and
+    the file's length once before it fails, as sd-journal re-stats in
+    `journal_file_move_to`: links read live can name objects journald
+    appended since.
+  - A chain link must point past the end of the object holding it:
+    journald appends objects and links a new one from an older one. That
+    ends any cycle, and a walk reads each byte of the file at most once
+    (a link into the object's own body was accepted before, and made a
+    walk quadratic). Entry-array items must never decrease.
+  - A chain walk never ends early on corruption: a chain whose next link
+    can't be followed ends there and the arrays before it are still
+    read; an array whose items go out of order, or can't be read, is
+    left at that point and the walk goes on with the older arrays (going
+    up, sd-journal's `generic_array_get` "moves back to the previous
+    entry array"). Each error is yielded where it was met: a chain cut
+    short first (the entries past the break are the newest), an array
+    left at its gap, so a tail that stops after N entries still reports
+    it. An item that can't be an entry offset (unaligned, outside the
+    arena) is refused before it can make the older items look out of
+    order.
+  - The data hash table is checked as sd-journal checks it on open
+    (`hash_table_is_valid`): whole items, inside the arena. sd-journal
+    then refuses the whole file; this reader refuses lookups only, so
+    the entries are still read in file order. Before, a size that wasn't
+    whole items silently found nothing.
+  - hash-check's walk of every bucket requires each object to sit in its
+    own hash's bucket, as journald links it, so buckets can't share a
+    chain and make the walk quadratic.
+  - A lookup decodes a candidate with the right hash only as far as the
+    value it looks for. A payload over the caller's limit is a distinct
+    error (`OverLimit`), refused before reading the rest when its stored
+    size already exceeds the limit (journald stores a payload compressed
+    only when that makes it shorter).
+  - An entry needs at least one whole item and a sequence number, as
+    sd-journal's `check_object` requires, and must end before the next
+    entry (objects never overlap), checked before its body is read.
   - Entry arrays may repeat an offset: systemd 249 links an entry once
     per item, so an entry carrying the same value twice appears twice.
     The repeat is skipped, as sd-journal skips it, but still counts as a
@@ -49,8 +83,19 @@ Compared against:
   - Data and entry objects are capped at systemd's own limits from
     journal-def.h (DATA_SIZE_MAX 768 MiB, ENTRY_SIZE_MAX 770 MiB).
   - xz, lz4 and zstd payloads are decoded with their output capped at
-    DATA_SIZE_MAX. xz also runs under a 64 MiB decoder-memory bound of
-    our own (journald's xz dictionary is 1 MiB).
+    DATA_SIZE_MAX, or less where the caller asks. xz also runs under a
+    64 MiB decoder-memory bound of our own (journald's xz dictionary is
+    1 MiB). An LZ4 size claim is refused past 255 times the compressed
+    size, the format's most: lz4_flex allocates the claimed size before
+    decoding. A zstd frame must declare its content size and decode to
+    exactly that, as sd-journal's `decompress_blob_zstd` (libzstd)
+    requires; ruzstd 0.9 checks neither and has no checksum without its
+    `hash` feature, so a corrupt frame decoded to the wrong length was
+    returned as good data. Its window is capped at twice the content
+    (at least 1 KiB): ruzstd holds back a window of output, so that also
+    bounds the work a failing frame does unseen. It is decoded only to
+    its declared size, and a declared size past what the stored bytes can
+    hold (128 KiB per 4-byte block) is corruption.
   - An unknown incompatible flag is an error naming the file.
 - **query.rs:**
   - `RELEASES`, one row per supported release: its VERSION_ID, systemd
@@ -60,7 +105,28 @@ Compared against:
     journalctl's `-n` does, and new entries by a forward k-way merge, both
     with sd-journal's comparison, tie rule and equal-entry skip;
   - errors per file and per entry: they are reported, and the rest is
-    still shown;
+    still shown. An entry that can't be read is skipped and the walk goes
+    on, as sd-journal's `generic_array_get` skips it; an entry with an
+    unreadable field is left out whole, as journalctl's `output_json`
+    leaves it; a group whose lookup fails is left out, the others still
+    match. The first ten distinct errors of a query (or of a follow's
+    wake) are reported in full, then a count of the rest;
+  - the file list is read again after the tail's opening, and the files
+    opened again if it changed (up to three times): a rotation between
+    listing and opening would otherwise drop the archived file's entries
+    without an error. journalctl lists once and has the same race;
+  - one output limit per query, and per followed file and wake:
+    256 MiB, our own bound, below journald's ENTRY_SIZE_MAX so it bounds one entry too. A
+    corrupt file could otherwise give each entry a bomb, or an entry
+    listing one object millions of times. Every read spends the whole
+    object plus what it decoded, failed reads too, and every field held
+    its size; the DATA cache reads a shared object once, and one that
+    failed isn't decoded again for the next entry listing it. The first
+    entry that doesn't fit ends the output, reported, so it has no gap:
+    a tail keeps the newest; a follow stops that file at the entry,
+    unmoved, and the next wake goes on from it (an entry larger than the
+    whole limit is skipped, reported). The candidates a tail holds before
+    decoding have the same bound;
   - output in `journalctl -o json --all`'s shape.
 
   Each match group walks the entry list of its rarest term backwards,
@@ -74,8 +140,10 @@ Compared against:
   - `decode-all`;
   - `gen-export`, with `--generation` for later entries on other boots;
   - `releases`: the table's rows, the scripts' default list.
+  - `fuzz`: the corruption harness below.
 - **compare.sh, compat.sh and checks.sh:** the release matrix, files from
   before an upgrade, and the checks both share.
+- **stress.sh:** reading while journald writes and rotates, below.
 
 **Why not the alternatives:**
 - **sdjournal 0.1.22** (hands-on run):
@@ -174,6 +242,49 @@ Compared against:
     and the local journal read whole, last 500, by identifier and by
     `-u` (the fixtures copied into the machine directory, so no
     `--file`).
+- **Corruption, crafted** (file.rs's `crafted` builder lays out a
+  regular, unkeyed file object by object; 60 new tests in file.rs and
+  query.rs): object sizes of zero, below the header, past the arena and
+  overflowing; links backwards, to themselves, into their own object and
+  outside the arena, in entry-array and hash chains; offsets near
+  `u64::MAX`; a file cut inside its header and inside its arena; hash
+  tables with no size, a size of part items, past the arena, inside the
+  header, with an overflowing offset, and with an object in the wrong
+  bucket; LZ4 claims past the format's ratio, a zstd window of 2^41, an
+  xz dictionary past the memory limit, zstd frames without a content
+  size, decoding to another length or claiming more than their bytes
+  hold; every single-byte corruption and every truncation of an LZ4,
+  zstd and xz payload; entries without items, without a seqnum, with a
+  part item or overlapping the next; an object appended after open. At
+  the query level: a bad entry in the middle (unfiltered, matched, and
+  following), a bad field, a truncated file, a failed lookup in one
+  group, the error cap, entry counts that overflow when added, the
+  output and held limits (newest kept by a tail across files, oldest by
+  a follow), empty payloads repeated, a failing object shared by many
+  entries, and a file list that changes while opening.
+- **Corruption, fuzzed:** `proto-journal fuzz` (fuzz.rs) on the stable
+  toolchain. Seeds: the 21 matrix fixtures (300 gen-export entries
+  through each release's journal-remote, each writer variant), cut to
+  their last object. Each case applies one to four mutations: an object
+  field or item (8 or 4 bytes) set to a value a corrupt file holds (zero,
+  one off, near overflow, another object's offset, the file's length), a
+  type or flags byte, a header field, a cut, a splice from any seed, or
+  random bytes. Then it reads as hash-check, decode-all and `tail` do
+  (unfiltered, `-u demo.service` under a random release, an AND/OR match,
+  a page back, and a follow reading the file from its start). Bounds: a 10 s watchdog per case, RLIMIT_AS
+  of 3 GiB for the run, peak resident memory per case (VmHWM, reset per
+  case), all in a `systemd-run` scope; built with overflow checks and
+  debug assertions. A case reproduces from `--seed` and `--start`.
+- **Reading while journald writes:** `stress.sh` runs the release's own
+  journald standalone in a capped container (1 MiB files, a rotation
+  every half second, nothing vacuumed, no rate limit). Four writers log
+  20,000 numbered lines each (short, 3 KB compressible, random, ANSI)
+  while the reader takes `tail -n 300` snapshots, filtered and not, runs
+  decode-all and hash-check, and follows. With journald idle, a check
+  fails if a read crashed or hung, if any snapshot entry differs from
+  journalctl's final view (all fields, cursor included), if a snapshot
+  that reported no error skips a writer's number, if the follower
+  doesn't equal journalctl, or if the idle tail differs.
 - **A real Saltbox install,** read-only (maintainer, 2026-11-08), with
   the same tools:
   - hash-check and decode-all over the local journal;
@@ -240,6 +351,73 @@ Compared against:
 - **The review hardened the harness.** The first harness could pass on two
   empty streams, and compared values as flattened bytes. The stricter one
   above still passes everywhere.
+- **Corruption and concurrency (2026-11-08),** first on the reader
+  before the newest-first rework, then ported onto it (below): the
+  matrix still passes 135 of 135 with every change below. Found and
+  fixed, each pinned by a crafted-file test:
+  1. **A panic:** an OR term's entry counts, read from the file, were
+     summed with `+`; counts near `u64::MAX` overflowed (a panic with
+     overflow checks, a wrong driver choice without). Found by the fuzz
+     harness in its second round (seed 4, case 1064); the counts now
+     saturate.
+  2. **Memory without bound:** one DATA object shared by every entry
+     (`_TRANSPORT=journal`), its size grown to the arena's end: each
+     record held a copy, and the merge cloned them. `tail -n 300` of an
+     8 MiB fixture took 2.7 GB and aborted under a 1 GiB address-space
+     limit; now 57 entries, the limit reported, 0.4 GB.
+  3. **An allocation abort:** an LZ4 payload claiming 700 MiB from 80
+     bytes was allocated before decoding; under a 600 MiB address-space
+     limit the read aborted. Now refused by the 255x rule.
+  4. **Silently nothing:** a hash table whose size isn't whole items sent
+     lookups to the wrong bucket: `--match` printed nothing, with no
+     error. Now an error.
+  5. **One bad entry hid a file:** a single unreadable entry dropped the
+     file's matches (`-u demo.service` printed 0 of 150). Now it is
+     skipped and reported.
+  6. **Wrong data from zstd:** a frame decoding to another length than
+     it declares was shown as good data (ruzstd checks neither the size
+     nor, without `hash`, a checksum).
+  7. **Work without bound** (from code review, crafted): links into an
+     object's own body and buckets sharing a chain made walks quadratic;
+     a chain of objects with one hash decoded each in full on a lookup;
+     overlapping entries each read the rest of the file; an entry
+     listing an empty object millions of times read without end; a
+     failing zstd frame decoded a window unseen. All now bounded, as
+     above.
+  8. **Live files:** an object appended after open, named by a link read
+     later, was reported as corrupt; the file list could change between
+     listing and opening (a rotation), dropping the archived file's
+     entries without an error. Both fixed (re-stat, list again).
+- **Fuzzing:** about 118,000 cases over seven seeds in about 85 minutes
+  (each run one CPU, 4 GiB, 3 GiB address space), the later rounds
+  after each fix. One panic (1 above), no hang (slowest case 0.24 s), no
+  case past 9 MiB of resident memory over the loaded seeds. About three
+  quarters of the cases reported an error, so the mutations reach the
+  checks.
+- **Reading while journald writes,** final run, every release: 80,000
+  lines, 108 to 211 files, 30 to 60 snapshot pairs; every snapshot entry
+  equal to journalctl's final view, no gap in any snapshot, the follower
+  equal to journalctl, the idle tail equal, nothing reported. Runs before
+  the last two fixes reported transient errors (a file renamed away
+  between listing and opening; a file still being created: a short
+  header, a hash table past the arena as first read), never wrong data.
+  journald 249 wrote up to 24 lines twice across rotations, 255 up to two;
+  journalctl shows both copies, and so does the reader.
+- **Ported onto the newest-first reader and the follow rework** (the
+  same day, on eeb5845): the tests (103), the matrix (compare.sh, 135 of
+  135), compat.sh (138 of 138, the default releases), follow.sh (every
+  scenario on the three releases, 0 lost and 0 duplicated) and a
+  9,000-case fuzz run over three seeds (no panic or hang, slowest case
+  0.11 s, no case past 9 MiB) all pass. The tail and page back were
+  checked read-only on a real Saltbox install (the outcome went to the
+  maintainer). stress.sh passes every check on 24.04 and 26.04, and on
+  22.04 every check but one: the follower printed 80,000 lines, and
+  journalctl 80,011. journald 249 wrote 11 lines twice across a
+  rotation, and the follow rework's flush-copy rule (`is_old`: the same
+  boot, monotonic time, realtime and XOR hash as an entry shown) most
+  likely drops the second copy, where journalctl prints both; the first
+  stress round, before that rework, printed both. Not yet confirmed
+  entry by entry.
 - **Cost, relative** (the figures went to the maintainer). Measured
   wall time and peak RSS (wait4 `ru_maxrss`), the median of repeated runs,
   and `pread` counts from perf's syscall tracepoints:
@@ -351,6 +529,19 @@ Compared against:
   service is restarted (relinquish, then flush) while following. It is
   rare on Saltbox; dropping exact copies of recently shown entries
   would cover it.
+- **Corruption and the output limit while following** (reliability
+  round): each file reads within the same 256 MiB output limit per poll
+  as a tail. A file stops at the entry that doesn't fit, without moving
+  past it, so the next wake goes on from there and nothing is lost or
+  doubled; an entry larger than the whole limit is skipped, reported.
+  The limit is per file, not one for the poll: with one in all, a burst
+  in one file deferred the files after it, whose entries could then fall
+  before the last one shown and be taken for copies, and an oversized
+  entry stayed deferred behind a busy file. An entry must
+  end before the next one read, checked before its body is read. The
+  errors one wake reports are capped as a query's are. The retry rules
+  above (an unreadable entry or a DATA object waited for once, then
+  skipped and reported) are unchanged.
 - **follow.sh** checks it: one container per release with its own
   standalone journald, as compare.sh does. Each scenario starts both
   followers with `-n 0`, writes markers until both have printed one, then
@@ -415,10 +606,6 @@ Compared against:
     second walk can differ from the first; the reader doesn't model it. A
     unit test pins one such case, where the backward walk matches
     journalctl's output as read from its source; the matrix never hit one.
-  - **One unreadable entry in a walk** ends that file's walk for the
-    query: the entries it gave before stay, as sd-journal drops a file it
-    can't iterate, and the error is reported. sd-journal would skip the
-    bad entry and go on with that file.
   - **A zero entry-array item** (a slot never written, after an unclean
     shutdown) is skipped. That is our choice: sd-journal's unfiltered walk
     skips a bad item (`generic_array_get`), but its match path bisects
@@ -435,11 +622,45 @@ Compared against:
   - **Sealed (FSS) files from old releases:** not written by the matrix.
     Their TAG objects sit outside the entry arrays the reader walks.
     UNVERIFIED.
-  - **Crafted-file tests so far** cover the entry-array chain read back
-    across arrays and read chunks, repeats, a zero item, a decreasing
-    offset, the link count and an unknown format flag. Other
-    corruptions (bad sizes, bad links, overflowing offsets) aren't tested
-    yet, and there is no fuzzing yet.
+  - **The fuzz harness isn't coverage-guided.** afl.rs (cargo-afl) would
+    mutate the same seeds with coverage feedback; it needs the AFL++
+    toolchain on the host. Not tried.
+  - **The output limit is 256 MiB per query.** An entry larger than that,
+    which only a coredump stored in the journal could be, isn't shown;
+    journalctl prints it. A zstd frame needing a window over 128 MiB
+    (ruzstd's default) isn't decoded either.
+  - **A follow's output limit is per file:** a wake holds at most the
+    limit for each file with new entries (in practice the active system
+    and user files), not one limit in all.
+  - **A lookup that fails while following** (`Followed::resolve`, from
+    the follow rework) is still passed over without a report: the value
+    is looked up again on the next wake.
+  - **A bogus item that names a real older entry** (a stale slot) passes
+    the plausibility check; leaving its array then reports the valid
+    entries above it as overlapping, and the rest of that array is lost
+    (reported, never shown wrong). A one-item lookahead in `EntriesRev`
+    would refuse just the lone bad item. Not built.
+  - **An array overwritten with garbage** costs a re-stat and an error
+    per implausible item, bounded by the entry count but slow on a large
+    file; re-stating once per chunk, or leaving the array after a few in
+    a row, would cut it.
+  - **`entries_since`** (following) still stops a file at an
+    out-of-order array, retried once, then reported; it doesn't go on
+    past it as the tail's walk does.
+  - **The open-and-list-again rule** applies to the tail, not to the
+    follow's rescans, which match files by inode already.
+  - **Field names aren't validated.** journalctl's `output_json` refuses
+    an entry whose field name isn't valid; this shows it, made valid
+    UTF-8.
+  - **Entries the merge drops** (not beyond the last one taken, as
+    sd-journal drops them) aren't counted in the errors.
+  - **The JSON output** turns a binary value into one `serde_json::Value`
+    per byte, about 32 bytes each, for the one record being printed. The
+    TUI won't use this path.
+  - **hash-check and decode-all** decode each object up to DATA_SIZE_MAX
+    with no query limit: test tools, not `sb logs`'s path.
+  - **The live stress** covers rotation and appends, not journald killed
+    mid-write or a full disk.
 
 **Future releases** (systemd NEWS v259 to main, 263 in development, and
 logs-show.c, journalctl-filter.c and journal-def.h at v259.9, v260, v261,
@@ -485,7 +706,8 @@ Before it becomes a crate:
 2. The container matrix (compare.sh and compat.sh, with an interim-release
    canary) in CI on a schedule against current images, since a stable
    update can change the rules (259.1).
-3. Fuzzing and crafted-file tests for file.rs.
+3. Coverage-guided fuzzing (afl.rs) on top of the stable harness, run
+   on a schedule.
 4. The usual bar: coverage and mutation testing.
 
 **Map impact:**

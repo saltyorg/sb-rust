@@ -2578,6 +2578,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "crc32fast",
+ "fastrand",
  "hex",
  "itertools 0.14.0",
  "lz4_flex",

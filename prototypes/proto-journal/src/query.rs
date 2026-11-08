@@ -1,11 +1,11 @@
 //! Matching, merging and following across a set of journal files.
 
-use crate::file::{ArrayCursor, DataRef, EntriesRev, Entry, JournalFile, hex_id};
-use anyhow::{Context, Result};
+use crate::file::{ArrayCursor, DataRef, EntriesRev, Entry, JournalFile, OverLimit, hex_id};
+use anyhow::{Context, Result, bail};
 use itertools::Itertools;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{HashMap, hash_map};
+use std::collections::{HashMap, HashSet, hash_map};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -342,6 +342,57 @@ fn journal_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
 pub struct Journal {
     pub files: Vec<JournalFile>,
     pub errors: Vec<String>,
+    /// The payload bytes one query may read (QUERY_PAYLOAD_MAX).
+    payload_limit: usize,
+    /// The bytes of candidates one query may hold before decoding (the
+    /// same bound).
+    held_limit: usize,
+}
+
+/// Our own bound on the payload bytes one query reads and decodes, not a
+/// journald value: a corrupt file can give each entry a decompression
+/// bomb, or an entry listing one object millions of times, and the
+/// records are held for output. Failed reads spend it too, so it bounds
+/// work as well as memory. 256 MiB is far above an `sb logs` page (500
+/// entries are typically well under a MiB). It is below journald's
+/// ENTRY_SIZE_MAX (770 MiB), so it also bounds one entry: only an entry
+/// carrying a coredump stored in the journal comes near it, and it is
+/// left out with the limit reported, where journalctl would print it.
+const QUERY_PAYLOAD_MAX: usize = 256 << 20;
+
+/// The errors met by one query: the first ten distinct ones in full, then
+/// a count of the further errors, so a badly broken file can't flood the
+/// output or grow the list without bound.
+#[derive(Default)]
+struct QueryErrors {
+    shown: Vec<String>,
+    more: usize,
+}
+
+impl QueryErrors {
+    const SHOWN: usize = 10;
+
+    fn add(&mut self, err: &anyhow::Error) {
+        self.add_text(format!("{err:#}"));
+    }
+
+    fn add_text(&mut self, text: String) {
+        if self.shown.contains(&text) {
+            return;
+        }
+        if self.shown.len() < Self::SHOWN {
+            self.shown.push(text);
+        } else {
+            self.more += 1;
+        }
+    }
+
+    fn drain_into(self, out: &mut Vec<String>) {
+        out.extend(self.shown);
+        if self.more > 0 {
+            out.push(format!("{} more errors", self.more));
+        }
+    }
 }
 
 impl Journal {
@@ -356,7 +407,37 @@ impl Journal {
                 Err(e) => errors.push(format!("{e:#}")),
             }
         }
-        Self { files, errors }
+        Self {
+            files,
+            errors,
+            payload_limit: QUERY_PAYLOAD_MAX,
+            held_limit: QUERY_PAYLOAD_MAX,
+        }
+    }
+
+    /// Open the files `list` names, then list again. A rotation between
+    /// listing and opening renames the active file away and a new file
+    /// takes its name, so the archived file's entries would be missing
+    /// without an error; when the list changed, open again, up to three
+    /// times. (journalctl lists once and has the same race.) A rotation
+    /// after the second listing is harmless: an open file is read
+    /// through its descriptor under its new name.
+    pub fn open_listed(mut list: impl FnMut() -> Result<Vec<PathBuf>>) -> Result<Self> {
+        let mut paths = list()?;
+        for _ in 0..3 {
+            let journal = Self::open(&paths);
+            let again = list()?;
+            if again == paths {
+                return Ok(journal);
+            }
+            paths = again;
+        }
+        let mut journal = Self::open(&paths);
+        journal.errors.push(
+            "the journal's file list kept changing while it was opened; entries may be missing"
+                .to_string(),
+        );
+        Ok(journal)
     }
 
     /// The last `n` matching entries before `before` (all when `None`),
@@ -366,59 +447,75 @@ impl Journal {
             Some(b) if !l.order(b).is_lt() => Step::Skip,
             _ => Step::Take,
         };
-        let mut errors = Vec::new();
-        let picked = newest(self.walks(filter, step, &mut errors), n, &mut errors);
-        self.errors.append(&mut errors);
-        self.decode(&picked)
+        let mut errors = QueryErrors::default();
+        let walks = self.walks(filter, step, &mut errors);
+        let held = self.held_limit / std::mem::size_of::<Candidate>().max(1);
+        let picked = newest(walks, n, held, &mut errors);
+        let out = self.decode(&picked, &mut errors);
+        errors.drain_into(&mut self.errors);
+        out
     }
 
-    /// One lazy walk per file, newest first. A file whose matches can't be
-    /// looked up is reported in `errors` and left out, as sd-journal
-    /// leaves out a file it can't iterate and keeps the others:
-    /// `.journal~` files are exactly the ones left dirty.
+    /// One lazy walk per file, newest first. A group whose terms can't be
+    /// looked up is reported in `errors` and left out, the other groups
+    /// still match, as sd-journal leaves out what it can't iterate and
+    /// keeps the rest: `.journal~` files are exactly the ones left dirty.
     fn walks<'a, S>(
         &'a self,
         filter: &'a [Group],
         step: S,
-        errors: &mut Vec<String>,
+        errors: &mut QueryErrors,
     ) -> Vec<impl Iterator<Item = Result<Candidate>> + 'a>
     where
         S: Fn(&Location) -> Step + Copy + 'a,
     {
         let mut out = Vec::new();
         for (file, f) in self.files.iter().enumerate() {
-            match file_walk(f, filter, step) {
-                Ok(walk) => out.push(walk.map(move |r| {
-                    r.map(|(offset, location)| Candidate {
-                        location,
-                        file,
-                        offset,
-                    })
-                })),
-                Err(err) => errors.push(format!("{err:#}")),
-            }
+            let walk = file_walk(f, filter, step, errors);
+            out.push(walk.map(move |r| {
+                r.map(|(offset, location)| Candidate {
+                    location,
+                    file,
+                    offset,
+                })
+            }));
         }
         out
     }
 
-    /// Read the chosen entries for output. An entry that can't be read is
-    /// reported and skipped, as sd-journal skips an entry it can't read
-    /// (output_json on -EBADMSG).
-    fn decode(&mut self, picked: &[Candidate]) -> Vec<Record> {
+    /// Read the chosen entries for output, newest first, within one output
+    /// limit for the query (QUERY_PAYLOAD_MAX), which every read spends,
+    /// failed ones too. Entries share most DATA objects (a unit's _PID,
+    /// _COMM, _HOSTNAME and so on): each is read and decompressed once, and
+    /// one that failed isn't decoded again for the next entry listing it.
+    /// An entry that can't be read is reported and skipped, as sd-journal
+    /// skips an entry it can't read (output_json on -EBADMSG). The first
+    /// entry that doesn't fit ends the output, so it has no gap: a page
+    /// back from the first entry shown goes on from there. The entries left
+    /// out are reported.
+    fn decode(&self, picked: &[Candidate], errors: &mut QueryErrors) -> Vec<Record> {
         let mut out = Vec::with_capacity(picked.len());
-        // Entries share most DATA objects (a unit's _PID, _COMM, _HOSTNAME
-        // and so on): each is read and decompressed once.
-        let mut payloads = HashMap::new();
-        for c in picked {
+        let mut payloads = Payloads::default();
+        let mut left = self.payload_limit;
+        for (i, c) in picked.iter().rev().enumerate() {
             let f = &self.files[c.file];
-            match f
+            let read = f
                 .entry(c.offset)
-                .and_then(|e| record(f, &e, &mut payloads, c.file))
-            {
+                .and_then(|e| record(f, &e, &mut payloads, c.file, &mut left));
+            match read {
                 Ok(r) => out.push(r),
-                Err(err) => self.errors.push(format!("{err:#}")),
+                Err(err) if err.is::<OverLimit>() => {
+                    errors.add_text(format!(
+                        "output limit of {} bytes reached; {} older entries left out",
+                        self.payload_limit,
+                        picked.len() - i
+                    ));
+                    break;
+                }
+                Err(err) => errors.add(&err),
             }
         }
+        out.reverse();
         out
     }
 }
@@ -441,6 +538,9 @@ pub struct Follow {
     pub errors: Vec<String>,
     /// Listed files that failed to open at the last rescan.
     unopened: Vec<PathBuf>,
+    /// The payload bytes each followed file may read per poll
+    /// (QUERY_PAYLOAD_MAX).
+    payload_limit: usize,
 }
 
 struct Followed {
@@ -488,6 +588,7 @@ impl Follow {
             last,
             errors: journal.errors,
             unopened: Vec::new(),
+            payload_limit: journal.payload_limit,
         };
         for mut file in journal.files {
             let pos = file.header.n_entries;
@@ -587,13 +688,34 @@ impl Follow {
     /// uses), so a DATA object that fails to read is retried with its
     /// entry; copies of shown entries are dropped before decoding. The
     /// files' `Candidate`s are then merged.
+    ///
+    /// Each file reads within the output limit (QUERY_PAYLOAD_MAX) per poll, as a
+    /// tail does: a file stops at the entry that doesn't fit, without
+    /// moving past it, so the next poll goes on from there and nothing is
+    /// lost. An entry larger than the whole limit is skipped, reported.
+    /// The errors one poll reports are capped as a query's are.
     pub fn poll(&mut self, filter: &[Group]) -> Vec<Record> {
         let mut streams: Vec<Vec<Candidate>> = Vec::new();
         let mut decoded: HashMap<(usize, u64), Record> = HashMap::new();
-        let mut payloads = HashMap::new();
+        let mut payloads = Payloads::default();
+        let mut errors = Vec::new();
+        let mut reached = false;
         for (i, f) in self.files.iter_mut().enumerate() {
+            // Each file its own limit: one file's burst can't defer
+            // another's entries past a `last` they are older than (where
+            // `check_until` would take them for copies), and an entry
+            // larger than the limit is first in its file's next poll, so
+            // it is skipped rather than deferred again behind a busy file.
+            // The poll holds at most the open files' limits together; only
+            // the files still written have new entries.
+            let mut budget = Budget {
+                limit: self.payload_limit,
+                left: self.payload_limit,
+                reached: false,
+            };
             let last = self.last.as_ref();
-            let stream = f.read_new(i, filter, last, &mut payloads, &mut self.errors);
+            let stream = f.read_new(i, filter, last, &mut payloads, &mut budget, &mut errors);
+            reached |= budget.reached;
             let mut candidates = Vec::with_capacity(stream.len());
             for (c, r) in stream {
                 decoded.insert((c.file, c.offset), r);
@@ -610,8 +732,26 @@ impl Follow {
             self.last = Some(c.location.clone());
         }
         self.files.retain(Followed::keep);
+        let mut capped = QueryErrors::default();
+        for e in errors {
+            capped.add_text(e);
+        }
+        if reached {
+            capped.add_text(format!(
+                "output limit of {} bytes reached; the rest follows on the next wake",
+                self.payload_limit
+            ));
+        }
+        capped.drain_into(&mut self.errors);
         out
     }
+}
+
+/// One poll's output limit: what is left, and whether a file stopped at it.
+struct Budget {
+    limit: usize,
+    left: usize,
+    reached: bool,
 }
 
 impl Followed {
@@ -706,7 +846,8 @@ impl Followed {
         file: usize,
         filter: &[Group],
         last: Option<&Location>,
-        payloads: &mut HashMap<(usize, u64), Option<Field>>,
+        payloads: &mut Payloads,
+        budget: &mut Budget,
         errors: &mut Vec<String>,
     ) -> Vec<(Candidate, Record)> {
         let mut out = Vec::new();
@@ -745,7 +886,14 @@ impl Followed {
                 resolved = true;
             }
             let mut skipped_zero = false;
-            for off in offsets {
+            for (k, &off) in offsets.iter().enumerate() {
+                // Entries never overlap (journald appends): one must end
+                // before the next, checked before its body is read.
+                let end = offsets
+                    .get(k + 1)
+                    .copied()
+                    .filter(|&o| o != 0)
+                    .unwrap_or(u64::MAX);
                 // A slot not written below n_entries: waited for once (it
                 // may be mid-write), then skipped, as `EntriesRev` skips it.
                 if off == 0 {
@@ -758,7 +906,8 @@ impl Followed {
                     self.failed = Some(self.pos);
                     return out;
                 }
-                let read = self.file.entry(off).and_then(|e| {
+                let left_before = budget.left;
+                let read = self.file.entry_before(off, end).and_then(|e| {
                     let location = Location::of(&self.file, &e);
                     // The first entry newer than the last shown ends a new
                     // file's leading copies, whether it matches or not.
@@ -779,7 +928,7 @@ impl Followed {
                     // the tail's decode of only what is shown, the merge
                     // can still drop one of these (a same-wake flush copy);
                     // that is around a flush only.
-                    let r = record(&self.file, &e, payloads, file)?;
+                    let r = record(&self.file, &e, payloads, file, &mut budget.left)?;
                     let c = Candidate {
                         location,
                         file,
@@ -789,6 +938,19 @@ impl Followed {
                 });
                 match read {
                     Ok(c) => out.extend(c),
+                    // At the limit: stop here, unmoved, for the next poll.
+                    // An entry larger than the whole limit is skipped,
+                    // reported.
+                    Err(e) if e.is::<OverLimit>() => {
+                        if left_before < budget.limit {
+                            budget.reached = true;
+                            return out;
+                        }
+                        errors.push(format!(
+                            "{e:#}: an entry larger than the output limit, left out"
+                        ));
+                        budget.left = budget.limit;
+                    }
                     // Skipped once reported.
                     Err(e) if self.failure(&e, errors) => {}
                     Err(_) => return out,
@@ -842,10 +1004,13 @@ struct Candidate {
 /// from the earlier file in search order, and only the heads are read: a
 /// file's walk goes no further back than the entries it contributes.
 ///
-/// A walk that fails is reported and dropped from then on, as
-/// sd-journal's `real_journal_next` drops a file it can't iterate; what it
-/// gave before stands.
-fn newest<I>(walks: Vec<I>, n: usize, errors: &mut Vec<String>) -> Vec<Candidate>
+/// An error a walk yields is reported and the walk goes on: the walks
+/// pass over what they can't read (an entry, an array) and yield the
+/// error in its place, so only what it hides is lost.
+///
+/// At most `held` candidates are kept (the query's held limit): past it
+/// the older entries are left out, reported.
+fn newest<I>(walks: Vec<I>, n: usize, held: usize, errors: &mut QueryErrors) -> Vec<Candidate>
 where
     I: Iterator<Item = Result<Candidate>>,
 {
@@ -853,15 +1018,18 @@ where
     let mut heads: Vec<Option<Candidate>> = walks.iter().map(|_| None).collect();
     let mut out: Vec<Candidate> = Vec::new();
     while out.len() < n {
+        if out.len() >= held {
+            errors.add_text("limit of held entries reached; older entries left out".to_string());
+            break;
+        }
         for (walk, head) in walks.iter_mut().zip(heads.iter_mut()) {
             loop {
                 if head.is_none() {
                     match walk.as_mut().and_then(Iterator::next) {
                         Some(Ok(c)) => *head = Some(c),
                         Some(Err(err)) => {
-                            errors.push(format!("{err:#}"));
-                            *walk = None;
-                            break;
+                            errors.add(&err);
+                            continue;
                         }
                         None => {
                             *walk = None;
@@ -972,7 +1140,8 @@ type Stream<'a, T> = Box<dyn Iterator<Item = Result<(u64, T)>> + 'a>;
 /// Several newest-first streams of one file merged into one, newest
 /// first; an offset in several streams comes out once. Offsets are file
 /// order, so the largest is the newest. An error sorts first, so it is
-/// yielded as soon as a stream meets one; the callers stop there.
+/// yielded as soon as a stream meets one; the callers report it and go
+/// on.
 /// https://docs.rs/itertools/0.14.0/itertools/trait.Itertools.html#method.kmerge_by
 fn union<'a, T: 'a>(streams: Vec<Stream<'a, T>>) -> Stream<'a, T> {
     fn key<T>(r: &Result<(u64, T)>) -> u64 {
@@ -997,26 +1166,32 @@ struct Walk<'a, S> {
     others: Vec<Vec<u64>>,
     step: S,
     done: bool,
+    /// The last entry read: an older one must end before it.
+    end: u64,
 }
 
 impl<S: Fn(&Location) -> Step> Iterator for Walk<'_, S> {
     type Item = Result<(u64, Location)>;
 
-    /// The next older match. After an error it ends: one unreadable entry
-    /// ends this file's walk, and the error is reported.
+    /// The next older match. An entry that can't be read is yielded as
+    /// its error and the walk goes on, as sd-journal's generic_array_get
+    /// skips a bad entry ("Entry item is bad, skipping over it"). Skipping
+    /// is sound for `step`: the next readable entry is checked on its own.
     fn next(&mut self) -> Option<Self::Item> {
         while !self.done {
-            let found = self.driver.next()?.and_then(|(off, ())| {
-                let e = self.f.entry(off)?;
-                Ok((off, Location::of(self.f, &e), e))
-            });
-            let (off, location, e) = match found {
+            let (off, ()) = match self.driver.next()? {
                 Ok(x) => x,
-                Err(err) => {
-                    self.done = true;
-                    return Some(Err(err));
-                }
+                Err(err) => return Some(Err(err)),
             };
+            // Entries never overlap (journald appends): checked before the
+            // body is read, so a corrupt size can't make each entry read
+            // the rest of the file.
+            let e = match self.f.entry_before(off, self.end) {
+                Ok(e) => e,
+                Err(err) => return Some(Err(err)),
+            };
+            self.end = off;
+            let location = Location::of(self.f, &e);
             match (self.step)(&location) {
                 Step::Skip => {}
                 Step::Take => {
@@ -1039,31 +1214,47 @@ impl<S: Fn(&Location) -> Step> Iterator for Walk<'_, S> {
 /// groups' matches merged. A term that ORs several values of one field
 /// drives through the union of their entry lists. Every term is looked up
 /// in the file's hash table first; a term with no DATA object here means
-/// its group can't match in this file.
-fn file_walk<'a, S>(f: &'a JournalFile, filter: &[Group], step: S) -> Result<Stream<'a, Location>>
+/// its group can't match in this file, and one that can't be looked up
+/// leaves its group out, reported in `errors`: the other groups still
+/// match.
+fn file_walk<'a, S>(
+    f: &'a JournalFile,
+    filter: &[Group],
+    step: S,
+    errors: &mut QueryErrors,
+) -> Stream<'a, Location>
 where
     S: Fn(&Location) -> Step + Copy + 'a,
 {
     fn offsets(it: EntriesRev<'_>) -> Stream<'_, ()> {
         Box::new(it.map(|r| r.map(|off| (off, ()))))
     }
-    let mut groups: Vec<Stream<'a, Location>> = Vec::new();
-    if filter.is_empty() {
-        groups.push(Box::new(Walk {
+    let walk = |driver, others| -> Stream<'a, Location> {
+        Box::new(Walk {
             f,
-            driver: offsets(f.all_entries_rev()?),
-            others: Vec::new(),
+            driver,
+            others,
             step,
             done: false,
-        }));
+            end: u64::MAX,
+        })
+    };
+    let mut groups: Vec<Stream<'a, Location>> = Vec::new();
+    if filter.is_empty() {
+        groups.push(walk(offsets(f.all_entries_rev()), Vec::new()));
     }
-    for group in filter {
+    'groups: for group in filter {
         let mut resolved: Vec<Vec<DataRef>> = Vec::new();
         for term in group {
             let mut refs = Vec::new();
             for payload in term {
-                if let Some(d) = f.find_data(payload)? {
-                    refs.push(d);
+                match f.find_data(payload) {
+                    Ok(Some(d)) => refs.push(d),
+                    Ok(None) => {}
+                    Err(err) => {
+                        errors.add(&err);
+                        continue 'groups;
+                    }
                 }
             }
             resolved.push(refs);
@@ -1074,46 +1265,74 @@ where
         let Some(driver) = resolved
             .iter()
             .enumerate()
-            .min_by_key(|(_, r)| r.iter().map(|d| d.n_entries).sum::<u64>())
+            // The counts come from the file: saturate, don't overflow.
+            .min_by_key(|(_, r)| r.iter().fold(0u64, |a, d| a.saturating_add(d.n_entries)))
             .map(|(i, _)| i)
         else {
             continue;
         };
-        let mut lists = Vec::new();
-        for d in &resolved[driver] {
-            lists.push(offsets(f.entries_of_rev(d)?));
-        }
+        let lists = resolved[driver]
+            .iter()
+            .map(|d| offsets(f.entries_of_rev(d)))
+            .collect();
         let others = resolved
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != driver)
             .map(|(_, r)| r.iter().map(|d| d.offset).collect())
             .collect();
-        groups.push(Box::new(Walk {
-            f,
-            driver: union(lists),
-            others,
-            step,
-            done: false,
-        }));
+        groups.push(walk(union(lists), others));
     }
-    Ok(union(groups))
+    union(groups)
 }
 
-/// An entry's fields, each DATA object read once through `payloads`,
-/// keyed by (file index, offset). A payload without `=` is skipped.
+/// The DATA payloads one query has read, keyed by (file index, offset):
+/// a field, `None` for a payload without `=` (skipped), and the objects
+/// that failed, so another entry listing one isn't decoded again.
+#[derive(Default)]
+struct Payloads {
+    fields: HashMap<(usize, u64), Option<Field>>,
+    failed: HashSet<(usize, u64)>,
+}
+
+/// An entry's fields, each DATA object read once through `payloads`
+/// within the query's `left` bytes, which every read spends
+/// (`OverLimit` when they run out). Each field held spends its own size
+/// too, so an entry listing one cached object millions of times is
+/// bounded as well.
 fn record(
     f: &JournalFile,
     e: &Entry,
-    payloads: &mut HashMap<(usize, u64), Option<Field>>,
+    payloads: &mut Payloads,
     file: usize,
+    left: &mut usize,
 ) -> Result<Record> {
     let mut fields = Vec::with_capacity(e.items.len());
     for &item in &e.items {
-        let field = match payloads.entry((file, item)) {
+        if payloads.failed.contains(&(file, item)) {
+            bail!(
+                "{}: more entries list data {item:#x}, which can't be read; left out too",
+                f.path.display()
+            );
+        }
+        let field = match payloads.fields.entry((file, item)) {
             hash_map::Entry::Occupied(o) => o.into_mut(),
-            hash_map::Entry::Vacant(v) => v.insert(Field::new(f.data_payload(item)?)),
+            hash_map::Entry::Vacant(v) => match f.data_payload_spending(item, left) {
+                Ok(p) => v.insert(Field::new(p)),
+                Err(err) => {
+                    if !err.is::<OverLimit>() {
+                        payloads.failed.insert((file, item));
+                    }
+                    return Err(err).with_context(|| format!("entry {}'s fields", e.seqnum));
+                }
+            },
         };
+        let Some(rest) = left.checked_sub(std::mem::size_of::<Field>()) else {
+            *left = 0;
+            return Err(OverLimit { limit: 0 })
+                .with_context(|| format!("entry {}'s fields", e.seqnum));
+        };
+        *left = rest;
         fields.extend(field.clone());
     }
     Ok(Record {
@@ -1280,10 +1499,10 @@ mod tests {
 
     /// `newest` over walks given newest first, as realtimes oldest first.
     fn newest_of(walks: Vec<Vec<Candidate>>, n: usize) -> Vec<u64> {
-        let mut errors = Vec::new();
+        let mut errors = QueryErrors::default();
         let walks = walks.into_iter().map(|w| w.into_iter().map(Ok)).collect();
-        let out = newest(walks, n, &mut errors);
-        assert!(errors.is_empty());
+        let out = newest(walks, n, usize::MAX, &mut errors);
+        assert!(errors.shown.is_empty());
         out.iter().map(|c| c.location.realtime).collect()
     }
 
@@ -1331,21 +1550,427 @@ mod tests {
             .into_iter()
             .map(|c| vec![Ok(c)].into_iter())
             .collect();
-        let mut errors = Vec::new();
-        let out = newest(walks, 10, &mut errors);
+        let mut errors = QueryErrors::default();
+        let out = newest(walks, 10, usize::MAX, &mut errors);
         assert_eq!(out.iter().map(|c| c.file).collect::<Vec<_>>(), vec![0]);
     }
 
-    /// A walk that fails is reported and dropped; what it gave stands.
+    /// A walk's error is reported and the walk goes on: what it gives
+    /// before and after stands.
     #[test]
-    fn newest_drops_a_failing_walk_and_keeps_the_rest() {
+    fn newest_reports_a_walk_error_and_goes_on() {
         let good = vec![Ok(rec(1, 2, 9, 20, 200)), Ok(rec(1, 1, 9, 10, 100))];
-        let bad = vec![Ok(rec(2, 5, 8, 50, 250)), Err(anyhow::anyhow!("broken"))];
-        let mut errors = Vec::new();
-        let out = newest(vec![good.into_iter(), bad.into_iter()], 10, &mut errors);
+        let bad = vec![
+            Ok(rec(2, 5, 8, 50, 250)),
+            Err(anyhow::anyhow!("broken")),
+            Ok(rec(2, 4, 8, 40, 150)),
+        ];
+        let mut errors = QueryErrors::default();
+        let out = newest(
+            vec![good.into_iter(), bad.into_iter()],
+            10,
+            usize::MAX,
+            &mut errors,
+        );
         let got: Vec<u64> = out.iter().map(|c| c.location.realtime).collect();
-        assert_eq!(got, vec![100, 200, 250]);
-        assert_eq!(errors, vec!["broken".to_string()]);
+        assert_eq!(got, vec![100, 150, 200, 250]);
+        assert_eq!(errors.shown, vec!["broken".to_string()]);
+    }
+
+    /// The output limit `k` entries of `journal` take, read newest or
+    /// oldest first: the shared `U=x` object once (16 + 48 + 3 bytes),
+    /// then per entry its MESSAGE object (16 + 48 + 10) and two fields.
+    fn per_record(k: usize) -> usize {
+        67 + k * (74 + 2 * std::mem::size_of::<Field>())
+    }
+
+    /// An entry listing one DATA object over and over reads it once (the
+    /// query's cache), and spends a field's size on every listing: it is
+    /// refused once the limit runs out.
+    #[test]
+    fn an_entry_over_the_output_limit_is_refused() {
+        let (mut c, l) = crafted::journal(1);
+        let items = vec![l.messages[0]; 50];
+        let big = c.entry(9, &items);
+        let (_t, f) = c.write();
+        let e = f.entry(big).expect("entry");
+        let field = std::mem::size_of::<Field>();
+        let mut left = 74 + 49 * field;
+        let err = record(&f, &e, &mut Payloads::default(), 0, &mut left).expect_err("over");
+        assert!(err.is::<OverLimit>(), "{err:#}");
+        let mut left = 74 + 50 * field;
+        let r = record(&f, &e, &mut Payloads::default(), 0, &mut left).expect("fits exactly");
+        assert_eq!((r.fields.len(), left), (50, 0));
+    }
+
+    /// Empty payloads cost their object and their fields too, so an entry
+    /// listing one over and over can't read without end under the limit.
+    #[test]
+    fn empty_payloads_spend_the_output_limit() {
+        let (mut c, _l) = crafted::journal(1);
+        let empty = c.data(b"");
+        let big = c.entry(9, &vec![empty; 1000]);
+        let (_t, f) = c.write();
+        let e = f.entry(big).expect("entry");
+        let mut left = 64 + 999 * std::mem::size_of::<Field>();
+        let err = record(&f, &e, &mut Payloads::default(), 0, &mut left).expect_err("over");
+        assert!(err.is::<OverLimit>(), "{err:#}");
+    }
+    use crate::file::crafted::{self, *};
+
+    fn messages(records: &[Record]) -> Vec<String> {
+        records
+            .iter()
+            .flat_map(|r| &r.fields)
+            .filter(|f| f.name() == "MESSAGE")
+            .map(|f| String::from_utf8_lossy(f.value()).into_owned())
+            .collect()
+    }
+
+    fn u_is_x() -> Vec<Group> {
+        vec![vec![vec![b"U=x".to_vec()]]]
+    }
+
+    /// One unreadable entry is skipped and reported; the entries on both
+    /// sides of it are still shown, unfiltered and through a match.
+    #[test]
+    fn an_unreadable_entry_is_skipped_not_the_file() {
+        let (mut c, l) = crafted::journal(5);
+        c.set(l.entries[2] + O_SIZE, 0);
+        let (t, _f) = c.write();
+        for filter in [Vec::new(), u_is_x()] {
+            let mut j = Journal::open(&[t.path().to_path_buf()]);
+            let got = j.tail(&filter, 10, None);
+            assert_eq!(messages(&got), ["m0", "m1", "m3", "m4"], "{filter:?}");
+            assert_eq!(j.errors.len(), 1, "{:?}", j.errors);
+        }
+    }
+
+    /// The last N are still N when one in the way can't be read.
+    #[test]
+    fn an_unreadable_entry_does_not_count_against_n() {
+        let (mut c, l) = crafted::journal(5);
+        c.set(l.entries[3] + O_SIZE, 0);
+        let (t, _f) = c.write();
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        assert_eq!(messages(&j.tail(&u_is_x(), 2, None)), ["m2", "m4"]);
+    }
+
+    /// An entry whose fields can't be read is dropped whole, as
+    /// journalctl drops it (output_json on -EBADMSG), and reported.
+    #[test]
+    fn an_entry_with_an_unreadable_field_is_dropped_and_reported() {
+        let (mut c, l) = crafted::journal(4);
+        c.set(l.messages[1] + O_SIZE, 8);
+        let (t, _f) = c.write();
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        let got = j.tail(&[], 10, None);
+        assert_eq!(messages(&got), ["m0", "m2", "m3"]);
+        assert_eq!(j.errors.len(), 1, "{:?}", j.errors);
+    }
+
+    /// A crafted journal of `n` entries whose header counts only `shown`,
+    /// followed from there: `grow` then counts them all, as journald
+    /// appending would.
+    fn followed(c: &mut crafted::Crafted, shown: u64) -> (tempfile::NamedTempFile, Journal) {
+        let n = c.get(H_N_ENTRIES);
+        c.set(H_N_ENTRIES, shown);
+        let (t, _f) = c.write();
+        let j = Journal::open(&[t.path().to_path_buf()]);
+        c.set(H_N_ENTRIES, n);
+        (t, j)
+    }
+
+    fn grow(c: &crafted::Crafted, t: &tempfile::NamedTempFile) {
+        std::fs::write(t.path(), &c.b).expect("grow");
+    }
+
+    /// Following past an unreadable entry: it is waited for once (it may be
+    /// mid-write), then reported and skipped; the entries around it are
+    /// shown.
+    #[test]
+    fn follow_skips_an_unreadable_entry_after_one_wait() {
+        let (mut c, l) = crafted::journal(6);
+        c.set(l.entries[4] + O_SIZE, 0);
+        let (t, j) = followed(&mut c, 2);
+        let mut f = Follow::new(j, &u_is_x(), None);
+        grow(&c, &t);
+        assert_eq!(messages(&f.poll(&u_is_x())), ["m2", "m3"]);
+        assert_eq!(messages(&f.poll(&u_is_x())), ["m5"]);
+        assert_eq!(f.errors.len(), 1, "{:?}", f.errors);
+    }
+    /// A cut-off file shows what lies before the cut.
+    #[test]
+    fn a_truncated_file_shows_the_entries_before_the_cut() {
+        let (mut c, l) = crafted::journal(6);
+        let (t, _f) = c.write();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open")
+            .set_len(l.entries[4] + 8)
+            .expect("truncate");
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        let got = j.tail(&u_is_x(), 10, None);
+        assert_eq!(messages(&got), ["m0", "m1", "m2", "m3"]);
+        assert_eq!(j.errors.len(), 2, "{:?}", j.errors);
+    }
+
+    /// A broken lookup leaves out its group only: the other group of the
+    /// filter still matches.
+    #[test]
+    fn a_failed_lookup_leaves_the_other_groups() {
+        let (mut c, l) = crafted::journal(3);
+        // The bucket chain U=x sits in now loops back on itself.
+        c.set(l.shared + D_NEXT_HASH, l.shared);
+        let (t, _f) = c.write();
+        let filter = vec![
+            vec![vec![b"U=x".to_vec()]],
+            vec![vec![b"MESSAGE=m1".to_vec()]],
+        ];
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        let got = j.tail(&filter, 10, None);
+        assert!(messages(&got).contains(&"m1".to_string()));
+        assert!(!j.errors.is_empty());
+    }
+
+    /// A file list that changed while the files were opened (a
+    /// rotation) is listed and opened again.
+    #[test]
+    fn a_list_that_changed_while_opening_is_opened_again() {
+        let (mut c, _l) = crafted::journal(2);
+        let (a, _f) = c.write();
+        let (b, _g) = c.write();
+        let mut lists = vec![
+            vec![a.path().to_path_buf(), b.path().to_path_buf()],
+            vec![a.path().to_path_buf(), b.path().to_path_buf()],
+            vec![a.path().to_path_buf()],
+        ];
+        let j = Journal::open_listed(|| Ok(lists.pop().expect("listed at most 3 times")))
+            .expect("opens");
+        assert_eq!(j.files.len(), 2);
+    }
+
+    /// Entry counts come from the file: an OR term whose values claim
+    /// counts that overflow when added still matches (found by the fuzz
+    /// harness: the sum overflowed, a panic with overflow checks on).
+    #[test]
+    fn entry_counts_that_overflow_when_added_still_match() {
+        let (mut c, l) = crafted::journal(3);
+        c.set(l.messages[0] + D_N_ENTRIES, u64::MAX);
+        c.set(l.messages[1] + D_N_ENTRIES, u64::MAX);
+        let (t, _f) = c.write();
+        let filter = vec![vec![
+            vec![b"MESSAGE=m0".to_vec(), b"MESSAGE=m1".to_vec()],
+            vec![b"U=x".to_vec()],
+        ]];
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        assert_eq!(messages(&j.tail(&filter, 10, None)), ["m0", "m1"]);
+    }
+
+    /// Many bad entries: each distinct error once, ten in full, then a
+    /// count, so a ruined file can't flood the output.
+    #[test]
+    fn errors_per_file_are_capped() {
+        let (mut c, l) = crafted::journal(30);
+        for (i, &e) in l.entries.iter().enumerate() {
+            if i % 2 == 1 {
+                c.set(e + O_SIZE, 0);
+            }
+        }
+        let (t, _f) = c.write();
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        assert_eq!(j.tail(&[], 100, None).len(), 15);
+        assert_eq!(j.errors.len(), QueryErrors::SHOWN + 1, "{:?}", j.errors);
+        assert!(j.errors.last().expect("count").ends_with("5 more errors"));
+    }
+
+    /// A shared DATA object that decodes a long way and then fails is
+    /// decoded once, not once per entry listing it: the failure spends
+    /// the limit and is remembered. The entries that don't list it are
+    /// still shown.
+    #[test]
+    fn a_failing_shared_object_is_decoded_once() {
+        let text = b"MESSAGE="
+            .iter()
+            .chain(&[b'z'; 99_992])
+            .copied()
+            .collect::<Vec<u8>>();
+        // A zstd frame (a 128 KiB window, a 4-byte content size): a raw block
+        // of the 100,000 bytes, then a block of the reserved type, so the
+        // decoder gives part of the text and then fails.
+        let mut zstd = vec![0x28, 0xb5, 0x2f, 0xfd, 0x80, 0x38];
+        zstd.extend_from_slice(&100_000u32.to_le_bytes());
+        zstd.extend_from_slice(&(100_000u32 << 3).to_le_bytes()[..3]);
+        zstd.extend_from_slice(&text);
+        zstd.extend_from_slice(&[0x07, 0x00, 0x00]);
+        let (mut c, l) = crafted::journal(1);
+        let bomb = c.data_raw(4, &zstd, crate::hash::jenkins64(&text));
+        let mut odd = Vec::new();
+        for i in 0..20u64 {
+            let items = if i % 2 == 0 {
+                vec![l.messages[0]]
+            } else {
+                vec![l.messages[0], bomb]
+            };
+            odd.push(c.entry(10 + i, &items));
+        }
+        c.set(H_N_ENTRIES, 21);
+        let main = c.array(&[&l.entries[..], &odd[..]].concat(), 21, 0);
+        c.set(H_ENTRY_ARRAY_OFFSET, main);
+        let (t, f) = c.write();
+        let mut left = usize::MAX;
+        assert!(f.data_payload_spending(bomb, &mut left).is_err());
+        // The raw bytes read, and what was decoded before the failure.
+        assert!(
+            usize::MAX - left > zstd.len() + 32 * 1024,
+            "spent {}",
+            usize::MAX - left
+        );
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        assert_eq!(j.tail(&[], 100, None).len(), 11);
+        let decoded = j.errors.iter().filter(|e| e.contains("zstd")).count();
+        let remembered = j
+            .errors
+            .iter()
+            .filter(|e| e.contains("can't be read"))
+            .count();
+        assert_eq!((decoded, remembered), (1, 1), "{:?}", j.errors);
+    }
+
+    /// One query holds at most its payload limit: the newest entries that
+    /// fit are shown, the limit is reported, and the older ones are left
+    /// out. (A corrupt file can grow one DATA object shared by every
+    /// entry; without the limit, each record would hold a copy.)
+    #[test]
+    fn a_query_over_its_payload_limit_keeps_the_newest() {
+        let (mut c, _l) = crafted::journal(10);
+        let (t, _f) = c.write();
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        // U=x is read once, each MESSAGE once (see per_record).
+        j.payload_limit = per_record(3) + 5;
+        let got = j.tail(&[], 10, None);
+        assert_eq!(messages(&got), ["m7", "m8", "m9"]);
+        assert_eq!(j.errors.len(), 1, "{:?}", j.errors);
+        assert!(j.errors[0].contains("output limit"), "{:?}", j.errors);
+    }
+
+    /// Fields are read after the merge, newest first across files, so the
+    /// limit leaves out the oldest entries of the whole journal, not the
+    /// files listed last.
+    #[test]
+    fn the_output_limit_keeps_the_newest_across_files() {
+        let (mut c, _l) = crafted::journal(4);
+        let (older, _f) = c.write();
+        let (mut c, l) = crafted::journal(4);
+        for (i, &e) in l.entries.iter().enumerate() {
+            c.set(e + 16, 100 + i as u64); // seqnum
+            c.set(e + 32, 100 + i as u64); // monotonic, same boot
+        }
+        let (newer, _g) = c.write();
+        let mut j = Journal::open(&[newer.path().to_path_buf(), older.path().to_path_buf()]);
+        j.payload_limit = per_record(3);
+        let got = j.tail(&[], 10, None);
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|r| r.location.seqnum >= 100), "{got:?}");
+    }
+
+    /// Following within the output limit: a poll stops at the entry that
+    /// doesn't fit, unmoved, and the next poll goes on from it: nothing is
+    /// lost or doubled.
+    #[test]
+    fn follow_over_the_output_limit_goes_on_at_the_next_poll() {
+        let (mut c, _l) = crafted::journal(10);
+        let (t, mut j) = followed(&mut c, 2);
+        j.payload_limit = per_record(3) + 5;
+        let mut f = Follow::new(j, &[], None);
+        grow(&c, &t);
+        assert_eq!(messages(&f.poll(&[])), ["m2", "m3", "m4"]);
+        assert!(
+            f.errors.iter().any(|e| e.contains("output limit")),
+            "{:?}",
+            f.errors
+        );
+        assert_eq!(messages(&f.poll(&[])), ["m5", "m6", "m7"]);
+        assert_eq!(messages(&f.poll(&[])), ["m8", "m9"]);
+    }
+
+    /// An entry larger than the whole limit is skipped, reported, and the
+    /// follow goes on past it.
+    #[test]
+    fn follow_skips_an_entry_larger_than_the_limit() {
+        let (mut c, l) = crafted::journal(4);
+        let big = c.data(&[b'B'; 4000]);
+        c.set(l.entries[2] + E_ITEMS, big);
+        let (t, mut j) = followed(&mut c, 1);
+        j.payload_limit = 1000;
+        let mut f = Follow::new(j, &[], None);
+        grow(&c, &t);
+        assert_eq!(messages(&f.poll(&[])), ["m1"]);
+        assert_eq!(messages(&f.poll(&[])), ["m3"]);
+        assert!(
+            f.errors
+                .iter()
+                .any(|e| e.contains("larger than the output limit")),
+            "{:?}",
+            f.errors
+        );
+    }
+
+    /// Each followed file has its own limit per poll: a busy file can't
+    /// defer another's entries (where they could be taken for copies of
+    /// ones shown), and an entry larger than the limit in the second file
+    /// is skipped at once, not deferred behind the first file again.
+    #[test]
+    fn a_follow_limit_is_per_file() {
+        let (mut a, _la) = crafted::journal(6);
+        let (mut b, lb) = crafted::journal(6);
+        // Another file: its own seqnum id, its entries later in the boot.
+        b.b[72..88].copy_from_slice(&[2; 16]);
+        for (i, &e) in lb.entries.iter().enumerate() {
+            b.set(e + 16, 100 + i as u64);
+            b.set(e + 32, 100 + i as u64);
+        }
+        let big = b.data(&[b'B'; 4000]);
+        b.set(lb.entries[2] + E_ITEMS, big);
+        a.set(H_N_ENTRIES, 2);
+        b.set(H_N_ENTRIES, 2);
+        let (ta, _fa) = a.write();
+        let (tb, _fb) = b.write();
+        let mut j = Journal::open(&[ta.path().to_path_buf(), tb.path().to_path_buf()]);
+        j.payload_limit = per_record(3) + 5;
+        let mut f = Follow::new(j, &[], None);
+        a.set(H_N_ENTRIES, 6);
+        b.set(H_N_ENTRIES, 6);
+        grow(&a, &ta);
+        grow(&b, &tb);
+        let got = f.poll(&[]);
+        assert_eq!(messages(&got), ["m2", "m3", "m4", "m3", "m4", "m5"]);
+        assert!(
+            f.errors
+                .iter()
+                .any(|e| e.contains("larger than the output limit")),
+            "{:?}",
+            f.errors
+        );
+        // The first file's last entry, older than the second file's shown,
+        // still comes: not taken for a copy.
+        assert_eq!(messages(&f.poll(&[])), ["m5"]);
+    }
+
+    /// The entries held before the merge are bounded too.
+    #[test]
+    fn held_entries_are_bounded() {
+        let (mut c, _l) = crafted::journal(10);
+        let (t, _f) = c.write();
+        let mut j = Journal::open(&[t.path().to_path_buf()]);
+        j.held_limit = std::mem::size_of::<Candidate>() * 4;
+        assert_eq!(messages(&j.tail(&[], 10, None)), ["m6", "m7", "m8", "m9"]);
+        assert!(
+            j.errors.iter().any(|e| e.contains("held entries")),
+            "{:?}",
+            j.errors
+        );
     }
 
     fn release(version_id: &str) -> Release {
@@ -1424,8 +2049,9 @@ mod tests {
     }
 
     /// A journal file (regular, not compact) holding `entries` as
-    /// (seqnum, monotonic) ENTRY objects without items, one boot, all in
-    /// one entry array, the header counting `n` of them.
+    /// (seqnum, monotonic) ENTRY objects, one boot, all in one entry array,
+    /// the header counting `n` of them. Each entry lists one DATA object,
+    /// `M=1`, the item an entry needs (sd-journal's check_object).
     fn journal(path: &Path, seqnum_id: u8, entries: &[(u64, u64)], n: u64) {
         let mut b = vec![0u8; 272];
         b[0..8].copy_from_slice(crate::file::SIGNATURE);
@@ -1433,25 +2059,33 @@ mod tests {
         b[88..96].copy_from_slice(&272u64.to_le_bytes());
         b[152..160].copy_from_slice(&n.to_le_bytes());
         let array_size = 24 + 8 * entries.len() as u64;
-        let mut at = 272 + array_size;
+        let data_at = 272 + array_size;
+        let mut data = vec![0u8; 64];
+        data[0] = 1;
+        data[8..16].copy_from_slice(&67u64.to_le_bytes());
+        data.extend_from_slice(b"M=1");
+        data.resize(72, 0);
+        let mut at = data_at + 72;
         let mut array = vec![0u8; 24];
         array[0] = 6;
         array[8..16].copy_from_slice(&array_size.to_le_bytes());
         let mut objects = Vec::new();
         for &(seqnum, mono) in entries {
             array.extend_from_slice(&at.to_le_bytes());
-            let mut e = vec![0u8; 64];
+            let mut e = vec![0u8; 80];
             e[0] = 3;
-            e[8..16].copy_from_slice(&64u64.to_le_bytes());
+            e[8..16].copy_from_slice(&80u64.to_le_bytes());
             e[16..24].copy_from_slice(&seqnum.to_le_bytes());
             e[24..32].copy_from_slice(&(1000 + mono).to_le_bytes());
             e[32..40].copy_from_slice(&mono.to_le_bytes());
             e[40..56].copy_from_slice(&[9; 16]);
+            e[64..72].copy_from_slice(&data_at.to_le_bytes());
             objects.extend_from_slice(&e);
-            at += 64;
+            at += 80;
         }
         b[176..184].copy_from_slice(&272u64.to_le_bytes());
         b.extend_from_slice(&array);
+        b.extend_from_slice(&data);
         b.extend_from_slice(&objects);
         let arena = b.len() as u64 - 272;
         b[96..104].copy_from_slice(&arena.to_le_bytes());
@@ -1539,7 +2173,7 @@ mod tests {
         journal(&a, 1, &FOUR, 2);
         let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
         let mut bytes = std::fs::read(&a).expect("read");
-        let third = 272 + 24 + 8 * 4 + 2 * 64;
+        let third = 272 + 24 + 8 * 4 + 72 + 2 * 80;
         bytes[third] = 1;
         std::fs::write(&a, &bytes).expect("write");
         set_n(&a, 4);
@@ -1645,13 +2279,13 @@ mod tests {
         // Entries 3 and 4 again at the end, in order (the array must not
         // decrease); 3 with one item, an unaligned offset.
         let mut bytes = std::fs::read(&a).expect("read");
-        let third = 272 + 24 + 8 * 4 + 2 * 64;
+        let third = 272 + 24 + 8 * 4 + 72 + 2 * 80;
         let at3 = bytes.len() as u64;
         let mut e = bytes[third..third + 64].to_vec();
         e[8..16].copy_from_slice(&80u64.to_le_bytes());
         e.extend_from_slice(&9u64.to_le_bytes());
         e.extend_from_slice(&0u64.to_le_bytes());
-        let fourth = bytes[third + 64..third + 128].to_vec();
+        let fourth = bytes[third + 80..third + 160].to_vec();
         bytes.extend_from_slice(&e);
         let at4 = bytes.len() as u64;
         bytes.extend_from_slice(&fourth);
@@ -1696,7 +2330,7 @@ mod tests {
         let mut f = Follow::new(Journal::open(std::slice::from_ref(&a)), &[], None);
         // Break entry 3's object type; the header counts all four.
         let mut bytes = std::fs::read(&a).expect("read");
-        let third = 272 + 24 + 8 * 4 + 2 * 64;
+        let third = 272 + 24 + 8 * 4 + 72 + 2 * 80;
         bytes[third] = 1;
         std::fs::write(&a, &bytes).expect("write");
         set_n(&a, 4);

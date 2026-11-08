@@ -23,8 +23,11 @@ lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", 
 hex = "0.4.3"
 # VERSION_ID, as sb-host reads it.
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
-# inotify for following; pread comes from std's FileExt.
-rustix = { version = "1.1.6", features = ["fs"] }
+# inotify for following; pread comes from std's FileExt. `process`: the
+# fuzz harness's address-space limit.
+rustix = { version = "1.1.6", features = ["fs", "process"] }
+# The fuzz harness's seeded randomness; already in the tree through tempfile.
+fastrand = "2.5.0"
 # The systemd-coredump uid for 26.04's unit match (host spec decision 2).
 nix = { version = "0.28.0", default-features = false, features = ["user"] }
 serde_json = "1.0.154"
@@ -36,6 +39,8 @@ itertools = "0.14.0"
 [dev-dependencies]
 # Crafted journal files for the parser tests.
 tempfile = "3.27.0"
+# Re-seals an xz block header in a corruption test; already in the tree.
+crc32fast = "1.5.3"
 
 [lints.rust]
 unsafe_code = "forbid"

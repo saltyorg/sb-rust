@@ -25,8 +25,9 @@
 #   NEW's journald started on it and writing across a rotation, and the
 #   local journal read by tail, `-u` and identifier.
 #
-# Containers (sbj-compat-...) are removed on exit; their files stay in
-# target/journal-compat. Two runs must not overlap: they share both.
+# Containers (sbj-compat-..., or $SBJ_PREFIX-compat-...) are removed on
+# exit; their files stay in target/journal-compat. Two runs in one tree
+# must not overlap: they share both.
 # Needs Docker and the musl target.
 set -euo pipefail
 
@@ -252,7 +253,7 @@ for o in "${old[@]}"; do
   rm -rf "${work:?}/$o"
   mkdir -p "$work/$o"
   mounts=(-v "$work/$o:/out")
-  run "sbj-compat-${o/./}" "$o" produce "$o" || status=1
+  run "${SBJ_PREFIX:-sbj}-compat-${o/./}" "$o" produce "$o" || status=1
 done
 for o in "${old[@]}"; do
   [ -f "$work/$o/machine-id" ] || continue
@@ -266,7 +267,7 @@ for o in "${old[@]}"; do
       continue
     fi
     mounts=(-v "$work/$o:/old:ro")
-    run "sbj-compat-${o/./}-on-${image/./}" "$image" upgrade "$o" "$rel" "$image" "$want" || status=1
+    run "${SBJ_PREFIX:-sbj}-compat-${o/./}-on-${image/./}" "$image" upgrade "$o" "$rel" "$image" "$want" || status=1
   done
 done
 exit $status
