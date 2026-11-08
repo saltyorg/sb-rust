@@ -246,6 +246,47 @@ dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
 - [x] User approves the updated map (2026-10-29), with proto-complete's
       review carried as an open item. Module specs start with `cli-core`.
 
+## Task 11: Own journal reader (`proto-journal`)
+
+**Question:** Can a small pure-Rust reader of systemd's journal files serve
+`sb logs` (the last 500 entries of a unit, live follow, paging back) as
+exactly as `journalctl -u`, on every supported Ubuntu release? Releases sb
+doesn't support are refused anyway, so each new LTS adds its format flags
+and `-u` rules deliberately.
+
+**Why (maintainer, 2026-11-08):** pure Rust is preferred over host CLIs.
+No maintained crate fits: sdjournal (bus factor 1, a RustSec advisory
+through ruzstd, a looser unit match, mmap without a SIGBUS handler,
+unsupported files skipped silently); the libsystemd crate can't link into
+the static musl binary.
+
+**Acceptance criteria:**
+- [ ] Reads the format from https://systemd.io/JOURNAL_FILE_FORMAT/ with
+      pread only (no mmap, no `unsafe`): header, entry arrays, data hash
+      table lookups, regular and compact items, keyed (siphash24) and
+      Jenkins hashes, xz/lz4/zstd data, rejecting an unknown incompatible
+      flag loudly.
+- [ ] journalctl's `-u` match set per supported systemd version, files of
+      the local machine only, entries of several files merged in order.
+- [ ] Tail 500, follow (inotify, across rotation), page back from a cursor.
+- [ ] Compared entry by entry (cursor, realtime, every field byte-exact)
+      with that release's `journalctl -o json --all` in ubuntu 22.04, 24.04
+      and 26.04 containers, each running its own systemd-journald, with
+      ANSI, binary, large (compressed) and duplicate fields; the follow
+      and rotation checks also run there.
+- [ ] FINDINGS records line count, speed against journalctl, RSS, idle
+      CPU and the size added to the static binary.
+
+**Verification:**
+- [ ] `cargo build -p proto-journal`, `cargo clippy -p proto-journal`
+      clean; its tests pass.
+- [ ] The container comparison script runs all three releases with zero
+      mismatches, or each mismatch is explained in FINDINGS.
+
+**Dependencies:** none
+**Files:** `prototypes/proto-journal/`, a comparison script beside it
+**Scope:** M
+
 ## Later: Install script lives in this repository
 
 Not part of the prototype plan; recorded so it isn't lost. To be specified
