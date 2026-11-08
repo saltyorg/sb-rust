@@ -231,6 +231,11 @@ Compared against:
 three supported releases in the matrix, at about a third of sdjournal's
 binary size.
 
+_Reviewed by the maintainer (2026-11-08): adopted, as its own crate,
+`sb-journal`, which sb-host wraps (host spec, decision 6). Before the
+crate, several agents in parallel look for performance, reliability and
+feature improvements for Saltbox's use; their results are added here._
+
 Before it becomes a crate:
 1. Lazy chain walking, and files kept open while following.
 2. The container matrix in CI on a schedule against current images, since
@@ -245,9 +250,9 @@ Before it becomes a crate:
   with rustix's inotify. It replaces sb-go's `journalctl --cursor` polling
   and proto-logs' `journalctl -f` child.
 - **Modules:** `host` keeps the systemd journal, as a reader rather than a
-  `journalctl -f` stream, and the `tui` log viewer consumes it. Where the
-  reader lives is open in the host spec: in host, or in its own crate that
-  host wraps.
+  `journalctl -f` stream, and the `tui` log viewer consumes it. The reader
+  lives in its own crate, `sb-journal`, which host wraps (host spec,
+  decision 6).
 - **ADR:** one records the divergence from the library-first rule, with
   the evidence above and the upkeep it brings: a row per new LTS, checked
   by the matrix.

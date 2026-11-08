@@ -67,7 +67,7 @@ See `tasks/prototypes/todo.md` for acceptance criteria and verification for each
 ### Checkpoint C: map ready for approval
 
 ### Phase 4: Follow-ups from module specs
-- [ ] Task 11: Own journal reader (`proto-journal`), from the host spec's
+- [x] Task 11: Own journal reader (`proto-journal`), from the host spec's
       decision 4
 
 ## Parallelization

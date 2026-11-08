@@ -441,7 +441,9 @@ let outcome = Cmd::new("systemctl")
    tests; `capture` is proven through the binary by docker
    start/stop/restart (its `systemctl` check), next after this module;
    `stream` by host's apt, `pty` and `attached` by their first commands
-   (apt progress, ansible) when those land.
+   (apt progress, ansible) when those land. *Amended 2026-11-08 (maintainer;
+   host spec, decision 7):* apt runs without a terminal, so `pty`'s first user
+   is the first module whose child needs one.
 5. **A failed child:** term-ui learns `exec::Failed` (an amendment to its
    endings): ✗ with the error and the step's last lines, `exit N` or the
    signal's name in the times column. sb exits 1; only an `attached`

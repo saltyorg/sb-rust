@@ -1,4 +1,4 @@
-# Spec: `host` (draft, 2026-11-08)
+# Spec: `host` (approved 2026-11-08)
 
 Module of the approved capability map (`host`): what sb needs to know about,
 and change on, the machine it runs on. That covers the setup checks, disk
@@ -23,9 +23,8 @@ left out: benchmark.go and the journal log stream (Scope).
    and never prints. exec's decision 4 (maintainer, 2026-11-04) named
    "apt progress" as `pty`'s first user. No apt call here needs a
    terminal: with `DEBIAN_FRONTEND=noninteractive` and a non-tty stdout,
-   apt prints plain lines. So this spec proposes an amendment to that
-   decision (Capability map correction): `pty`'s first user moves to a
-   later module. It needs the maintainer's confirmation.
+   apt prints plain lines. So exec's decision 4 is amended (decision 7):
+   `pty`'s first user moves to a later module.
 2. **No `-v` and no verbose flag.** The maintainer chose no `-v` for docker
    (2026-11-06), and the runner's step already shows the output tail and
    logs every line. sb-go's `verbose` parameters become step output and
@@ -347,13 +346,14 @@ what both do.
 - **`GetSaltboxUser`:** `config`. It reads `accounts.yml`, and Saltbox
   YAML is config's. host takes the user name as an argument.
 - **`RelaunchAsRoot`:** `cli-core`. Already built.
-- **The journal log stream:** decision 4.
+- **The journal log stream:** decisions 4 and 6 (the `sb-journal` crate,
+  with its own spec).
 
 ### Capability map correction
 
 - **`host` row:** "Ubuntu/arch/LXC/desktop checks, disk space, apt,
-  systemd service list, file ownership". The log stream moves per
-  decision 4.
+  systemd service list, file ownership". The journal moves to the
+  `sb-journal` crate, which host wraps (decision 6).
 - **`ansible` row:** gains `host`, for install's checks.
 - **`config` row:** reads the Saltbox user for `ops` and `python-env`.
 - **`ops` row:** gains the benchmark.
@@ -369,7 +369,14 @@ what both do.
   host. Decision 4 overrides that.
 - **exec spec, decision 4:** "apt progress" is no longer `pty`'s first
   user (assumption 1); the first module that runs a child needing a
-  terminal takes that role. Pending the maintainer's confirmation.
+  terminal takes that role. Confirmed (decision 7); exec.md decision 4
+  carries the amendment.
+- **`sb-journal` (decision 6), with the crate's spec:**
+  - a module row or a note under `host`;
+  - a stack-table row for the reader;
+  - the rejected list's "replaced by `journalctl -f`" corrected;
+  - a deny.toml entry allowing only `sb-host`;
+  - the ADR for the library-first divergence.
 
 ## Tech Stack
 
@@ -526,15 +533,20 @@ fn installed(status: &str) -> bool {
    ones, extended with each new LTS. It is proven first in
    `prototypes/proto-journal` (tasks/prototypes Task 11) on 22.04, 24.04
    and 26.04 containers; its spec section follows the prototype's review.
-
+   *Amended by decision 6:* the reader's spec comes with the
+   `sb-journal` crate.
 5. **The lists lock:** `DPkg::Lock::Timeout` doesn't reach `apt-get
    update`, which takes `/var/lib/apt/lists/lock` with no wait
    (apt-pkg/update.cc, apt-pkg/acquire.cc at apt 2.4.13). `update_lists`
    retries on apt's own lock error, every 5 s up to 240 s; no lock code of
    sb's own. sb-go had the same gap (difference 12).
-
-## Open questions
-
-- Where the reader lives (host or a crate of its own), after proto-journal.
-- The exec spec amendment: "apt progress" stops being `pty`'s first user
-  (assumption 1, Capability map correction).
+6. **The journal reader's verdict and home:** proto-journal is adopted
+   (FINDINGS.md, "adopt with changes"). The reader becomes its own crate,
+   `sb-journal`, which sb-host wraps for the service logs; its spec comes
+   with that crate. Before the crate, several agents in parallel look for
+   performance, reliability and feature improvements relevant to Saltbox,
+   and their results go back into the prototype's findings.
+7. **The exec amendment is confirmed:** "apt progress" is no longer
+   `pty`'s first user (assumption 1). The first module that runs a child
+   needing a terminal takes that role.
+8. **The spec is approved** as written above.
