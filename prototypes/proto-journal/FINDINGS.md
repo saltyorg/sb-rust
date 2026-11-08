@@ -30,7 +30,9 @@ Compared against:
 - `journalctl`;
 - sdjournal@0.1.22, in a separate hands-on run.
 
-**What was built:** the reader is about 1,890 non-comment lines (hash.rs, file.rs, query.rs; about 3,490 with their tests), plus about 660 in main.rs for the CLI and test tools and about 320 in fuzz.rs:
+**What was built:** the reader is about 2,000 non-comment lines
+(hash.rs, file.rs, query.rs; about 3,780 with their tests), plus about
+670 in main.rs for the CLI and test tools and about 330 in fuzz.rs:
 - **hash.rs:** siphash through siphasher, plus a port of lookup3's
   `hashlittle2`. Why not `hashers`' `Lookup3Hasher`:
   - no release since 2018;
@@ -116,17 +118,18 @@ Compared against:
     listing and opening would otherwise drop the archived file's entries
     without an error. journalctl lists once and has the same race;
   - one output limit per query, and per followed file and wake:
-    256 MiB, our own bound, below journald's ENTRY_SIZE_MAX so it bounds one entry too. A
-    corrupt file could otherwise give each entry a bomb, or an entry
-    listing one object millions of times. Every read spends the whole
-    object plus what it decoded, failed reads too, and every field held
-    its size; the DATA cache reads a shared object once, and one that
-    failed isn't decoded again for the next entry listing it. The first
-    entry that doesn't fit ends the output, reported, so it has no gap:
-    a tail keeps the newest; a follow stops that file at the entry,
-    unmoved, and the next wake goes on from it (an entry larger than the
-    whole limit is skipped, reported). The candidates a tail holds before
-    decoding have the same bound;
+    256 MiB, our own bound, below journald's ENTRY_SIZE_MAX so it bounds
+    one entry too. A corrupt file could otherwise give each entry a bomb,
+    or an entry listing one object millions of times. Every read spends
+    the whole object plus what it decoded, failed reads too, and every
+    field held its size; the DATA cache reads a shared object once, and
+    one that failed isn't decoded again for the next entry listing it.
+    The first entry that doesn't fit ends the output, reported, so it has
+    no gap: a tail keeps the newest; a follow stops that file at the
+    entry, unmoved, and the next wake goes on from it. An entry larger
+    than the whole limit, read first (a tail's newest, a follow's next),
+    is skipped and reported instead, and what it read leaves the cache.
+    The candidates a tail holds before decoding have the same bound;
   - output in `journalctl -o json --all`'s shape.
 
   Each match group walks the entry list of its rarest term backwards,
@@ -144,6 +147,14 @@ Compared against:
 - **compare.sh, compat.sh and checks.sh:** the release matrix, files from
   before an upgrade, and the checks both share.
 - **stress.sh:** reading while journald writes and rotates, below.
+- **follow.sh:** the follow against `journalctl -f` across flushes,
+  rotations, vacuums, restarts and inotify overflows (Follow rework,
+  below).
+
+All four scripts take their default releases from `proto-journal
+releases`, name their containers from `$SBJ_PREFIX` (default `sbj`), and
+build under a `systemd-run` scope capped at 4 GiB and two CPUs; their
+containers are capped likewise.
 
 **Why not the alternatives:**
 - **sdjournal 0.1.22** (hands-on run):
@@ -158,8 +169,8 @@ Compared against:
   - its bus factor is 1;
   - it adds about 640 KB to the binary.
 
-  In its favour: it was exact once worked around, and it used much less
-  memory than journalctl or this reader.
+  In its favour: it was exact once worked around. Its cost was measured
+  with the others (see Cost below).
 - **netdata's systemd-journal-sdk:** it reads files through a 32 MiB
   mmap window with a SIGBUS handler, and links the C `zstd` crate. Both go
   against this reader's pread / no-SIGBUS / pure-Rust constraint. It
@@ -261,7 +272,12 @@ Compared against:
   group, the error cap, entry counts that overflow when added, the
   output and held limits (newest kept by a tail across files, oldest by
   a follow), empty payloads repeated, a failing object shared by many
-  entries, and a file list that changes while opening.
+  entries, and a file list that changes while opening. From the review
+  of the follow rework: oversized entries skipped in one poll (the bytes
+  the cache holds counted), a tail's newest entry alone over the limit,
+  entries sharing an unreadable DATA object while following, a bogus
+  high item in the entry list, a failed lookup while following, and
+  journald 249's rotation double-writes and equal-time entries.
 - **Corruption, fuzzed:** `proto-journal fuzz` (fuzz.rs) on the stable
   toolchain. Seeds: the 21 matrix fixtures (300 gen-export entries
   through each release's journal-remote, each writer variant), cut to
@@ -271,7 +287,9 @@ Compared against:
   type or flags byte, a header field, a cut, a splice from any seed, or
   random bytes. Then it reads as hash-check, decode-all and `tail` do
   (unfiltered, `-u demo.service` under a random release, an AND/OR match,
-  a page back, and a follow reading the file from its start). Bounds: a 10 s watchdog per case, RLIMIT_AS
+  a page back, and two follows, one reading the file from its start and
+  one from half its entry count, each polled three times so the waits
+  and skips run). Bounds: a 10 s watchdog per case, RLIMIT_AS
   of 3 GiB for the run, peak resident memory per case (VmHWM, reset per
   case), all in a `systemd-run` scope; built with overflow checks and
   debug assertions. A case reproduces from `--seed` and `--start`.
@@ -394,46 +412,45 @@ Compared against:
   case past 9 MiB of resident memory over the loaded seeds. About three
   quarters of the cases reported an error, so the mutations reach the
   checks.
-- **Reading while journald writes,** final run, every release: 80,000
-  lines, 108 to 211 files, 30 to 60 snapshot pairs; every snapshot entry
-  equal to journalctl's final view, no gap in any snapshot, the follower
-  equal to journalctl, the idle tail equal, nothing reported. Runs before
-  the last two fixes reported transient errors (a file renamed away
+- **Before the follow rework,** stress.sh's runs reported transient
+  errors until the last two fixes of that round (a file renamed away
   between listing and opening; a file still being created: a short
   header, a hash table past the arena as first read), never wrong data.
-  journald 249 wrote up to 24 lines twice across rotations, 255 up to two;
-  journalctl shows both copies, and so does the reader.
-- **Ported onto the newest-first reader and the follow rework** (the
-  same day, on eeb5845): the tests (103), the matrix (compare.sh, 135 of
-  135), compat.sh (138 of 138, the default releases), follow.sh (every
-  scenario on the three releases, 0 lost and 0 duplicated) and a
-  9,000-case fuzz run over three seeds (no panic or hang, slowest case
-  0.11 s, no case past 9 MiB) all pass. The tail and page back were
-  checked read-only on a real Saltbox install (the outcome went to the
-  maintainer). stress.sh passes every check on 24.04 and 26.04, and on
-  22.04 every check but one: the follower printed 80,000 lines, and
-  journalctl 80,011. journald 249 wrote 11 lines twice across a
-  rotation, and the follow rework's flush-copy rule (`is_old`: the same
-  boot, monotonic time, realtime and XOR hash as an entry shown) most
-  likely drops the second copy, where journalctl prints both; the first
-  stress round, before that rework, printed both. Not yet confirmed
-  entry by entry.
-- **Cost, relative** (the figures went to the maintainer). Measured
-  wall time and peak RSS (wait4 `ru_maxrss`), the median of repeated runs,
-  and `pread` counts from perf's syscall tracepoints:
-  - **Last 500 of a quiet or a busy unit, and one page back:** faster
-    than journalctl and sdjournal.
-  - **Memory:** less than journalctl, about sdjournal's.
-  - **Idle follow:** more CPU than either before the follow rework
-    below; after it, in journalctl's range.
+- **Final run,** on the newest-first reader, the follow rework and the
+  review fixes after it, every release:
+  - the tests (112);
+  - the matrix (compare.sh, 135 of 135);
+  - compat.sh (138 of 138, the default releases);
+  - follow.sh: every scenario, 0 lost and 0 duplicated;
+  - stress.sh, every check: 80,000 lines; 107 to 198 files; 35 to 65
+    snapshot pairs; every snapshot entry equal to journalctl's final
+    view; no gap in any snapshot; the follower equal to journalctl; the
+    idle tail equal. One 24.04 snapshot reported a file still being
+    created (a short header), a transient error, never wrong data.
+    journald 249 wrote 19 lines twice across rotations, and journalctl
+    and the follower show both copies. One of those 19 was the declined
+    case above: its first copy is missing from journalctl's match, and
+    the follower printed it;
+  - a 9,000-case fuzz run (three runs of 3,000 over eight seeds:
+    journal-remote 249's and 255's output, four writer variants each):
+    no panic or hang, slowest case 0.11 s, no case past 9 MiB over the
+    loaded seeds.
+
+  The tail and page back were also checked read-only on a real Saltbox
+  install, along with a follow of test lines; the outcomes went to the
+  maintainer.
+- **Cost** against journalctl and sdjournal: checked read-only on a real
+  Saltbox install; the outcomes went to the maintainer. The method: wall
+  time and peak RSS (wait4 `ru_maxrss`), the median of repeated runs, and
+  `pread` counts from perf's syscall tracepoints, for the last 500 of a
+  quiet and a busy unit, one page back, and an idle follow.
   - **Static binary (from the build, not the host):** about 240 KiB of
     code, this crate with its tools and decompressors. sdjournal added
     about 640 KB; a journalctl child adds nothing.
 
-  The first version was slower than both on a busy unit, and used
-  several times sdjournal's memory. Profiling showed `pread` calls
-  dominating, and that each file decoded up to N whole records of which
-  most then lost the merge. What changed, in order of effect:
+  Profiling the first version showed where its reads went: `pread`
+  calls, and each file decoding up to N whole records of which most then
+  lost the merge. What changed, in order of effect:
   1. **Merge on locations, decode only the N shown.**
   2. **Walk lazily, newest first, across files** (`newest`, as
      journalctl's `-n` does): a chain's arrays are found from their 24-byte
@@ -445,10 +462,10 @@ Compared against:
      records that carry it (most of a unit's fields repeat).
 
   Tried and not kept: bisecting the chain for `--before`. For a unit, a
-  page back, and even its oldest page, stayed within a few milliseconds
-  of the tail, so it would add code for nothing measurable. Without a
-  unit filter a page far back is slow (every newer entry of every file is
-  read and skipped); `sb logs` always pages a unit, so that stays open. A
+  page back reads only that unit's newer entries, so a bisect would add
+  code for a part of the cost that the measurements didn't single out.
+  Without a unit filter a page far back reads and skips every newer
+  entry of every file; `sb logs` always pages a unit, so that stays open. A
   seqnum bisect, where the cursor's seqnum id is the file's, would fix it.
   Also not kept: the compact format's
   `tail_entry_array_offset` hint (finding the arrays from their heads costs
@@ -512,18 +529,44 @@ Compared against:
     newer, so the old follow printed every flushed entry twice. So does
     `journalctl -f` 255 when /var/log/journal exists when it starts.
     249's copies get another seqnum id, so neither duplicates there.
-  - The follow drops an entry as old when, in the last shown entry's
+  - A flush always crosses journal roots (/run to /var). So for an entry
+    of a file in another directory than the last shown entry's, the
+    follow drops it as old (`is_old`) when, in the last shown entry's
     boot, its monotonic time is lower (or boot, times and hash equal it);
-    across boots it keeps sd-journal's order. That check applies only
+    across boots it keeps sd-journal's order. In the same directory it
+    keeps sd-journal's order, as `journalctl -f` does (`seen`). The
+    merge of one wake's files skips the same way. That check applies only
     where an already shown entry can be: in files open from the start,
     to entries below the count read right after the tail; in files
     opened while following, to the leading run of old entries (a flush
     writes all its copies before any new entry). After that, the
     position alone decides, so a late file's older entry is still shown.
-- **Residual:** an entry linked into a file opened mid-follow, before
-  that file's first new entry and in the microseconds between two files'
-  header reads in one wake, would be taken for a copy. sd-journal has
-  the same window for every file.
+  - **Why the directory:** journald 249 writes entries again in the same
+    directory. When a rotation by size cuts it off while it appends an
+    entry, it writes the entry again as the next file's first: the same
+    seqnum id, the next seqnum, the same boot, times and XOR hash. And it
+    splits a 3,000-byte `systemd-cat` line into several entries with the
+    same times; pieces with the same text (stress.sh's runs of `x`) have
+    the same hash too. journalctl shows them all. Before this rule the
+    follow took them for flush copies: stress.sh on 22.04 found the
+    follower 15 entries short of journalctl, each one of these, checked
+    entry by entry (cursors, and the files holding each copy).
+- **Residual:** an entry linked into a file of the other root opened
+  mid-follow, before that file's first new entry and in the microseconds
+  between two files' header reads in one wake, would be taken for a
+  copy. sd-journal has the same window for every file.
+- **Declined (recorded): the first copy of an entry written again across
+  a rotation, when journalctl's match doesn't list it.** When the
+  rotation cuts journald off while it links the entry, the entry is in
+  its file's entry list but not yet in every field's entry list
+  (journalctl --file on the old file lists it unfiltered, not by
+  `SYSLOG_IDENTIFIER`). journalctl's match, and the tail, read the
+  fields' lists, so they show only the second copy; the follow matches
+  an entry by its items and shows both. Unfiltered, both show both.
+  Matching like journalctl would mean walking each field's entry list
+  forward instead of the file's, for an entry journald itself wrote
+  twice; stress.sh allows exactly these extras (it checks each one's
+  twin) and fails on anything else.
 - **Declined (recorded):** flush copies appended to a /var file already
   being followed would be shown again. That happens when the flush
   service is restarted (relinquish, then flush) while following. It is
@@ -533,15 +576,21 @@ Compared against:
   round): each file reads within the same 256 MiB output limit per poll
   as a tail. A file stops at the entry that doesn't fit, without moving
   past it, so the next wake goes on from there and nothing is lost or
-  doubled; an entry larger than the whole limit is skipped, reported.
-  The limit is per file, not one for the poll: with one in all, a burst
-  in one file deferred the files after it, whose entries could then fall
-  before the last one shown and be taken for copies, and an oversized
-  entry stayed deferred behind a busy file. An entry must
-  end before the next one read, checked before its body is read. The
-  errors one wake reports are capped as a query's are. The retry rules
-  above (an unreadable entry or a DATA object waited for once, then
-  skipped and reported) are unchanged.
+  doubled. An entry larger than the whole limit is skipped, reported,
+  and the fields it read leave the poll's DATA cache with it, so a file
+  holds at most the limit however many such entries it skips (before,
+  each one skipped left up to a limit more in the cache; a crafted test
+  now counts the bytes held). The limit is per file, not one for the
+  poll: with one in all, a burst in one file deferred the files after
+  it, whose entries could then fall before the last one shown and be
+  taken for copies, and an oversized entry stayed deferred behind a busy
+  file. An entry must end before the next one read, checked before its
+  body is read. The errors one wake reports are capped as a query's are.
+  The retry rules above are unchanged: an unreadable entry, a DATA object
+  or an entry-list item that can't be an entry offset waits once, then
+  is skipped and reported; each kind has its own wait. A DATA object
+  that failed after its wait is a definitive error (`KnownBad`), so the
+  further entries listing it are skipped at once, not one per wake.
 - **follow.sh** checks it: one container per release with its own
   standalone journald, as compare.sh does. Each scenario starts both
   followers with `-n 0`, writes markers until both have printed one, then
@@ -584,14 +633,15 @@ Compared against:
   wake-up (its post-change truncate) on a timer, so both followers saw
   the same p50 of about 140 to 150 ms and p95 of about 260 ms, within a
   millisecond of each other, on all three releases.
-- **Cost:** on a real host, idle follow of one unit now costs about the
-  same CPU as `journalctl -f`, and a fraction of the old follow's. The
-  figures went to the maintainer. In the 3,000-entry burst the follow on
+- **Cost:** idle follow of one unit against `journalctl -f` and the old
+  follow was checked read-only on a real Saltbox install; the outcomes
+  went to the maintainer. In follow.sh's 3,000-entry burst the follow on
   the first reader used about twice journalctl's CPU (8 to 12 against 3
   to 6 clock ticks), in reading and decoding entries for output. On the
   newest-first reader (one pread per object, each DATA object decoded
   once per wake) it uses the same as journalctl, 4 ticks against 4 to 5.
-- **Not covered yet:**
+- **Open points and known limits** (unverified cases, limits by design,
+  and divergences not modelled):
   - **26.04's local-journal coredump term:** `_UID` of systemd-coredump or
     root. The containers have no `systemd-coredump` user, and only
     `--file`/`-D` (which drop the term) were compared. UNVERIFIED.
@@ -612,7 +662,9 @@ Compared against:
     (`generic_array_bisect`) and cuts the array short there, or with v249's
     chain cache drops the file. The first version ended the chain there.
     Following waits one wake for such a slot (it may be mid-write), then
-    skips it the same way. UNVERIFIED against a real file with one.
+    skips it the same way; an item that can't be an entry offset at all
+    (unaligned, outside the arena) likewise, reported. UNVERIFIED against
+    a real file with one.
   - **Repeated array items from a real 22.04 journald:** systemd 249's
     `journal_file_append_entry` keeps duplicate items when it links an
     entry (its source). journal-remote 249 didn't write any in the
@@ -627,14 +679,18 @@ Compared against:
     toolchain on the host. Not tried.
   - **The output limit is 256 MiB per query.** An entry larger than that,
     which only a coredump stored in the journal could be, isn't shown;
-    journalctl prints it. A zstd frame needing a window over 128 MiB
-    (ruzstd's default) isn't decoded either.
+    journalctl prints it. A tail and a follow both report it and skip it
+    when it is the first entry read (the tail's newest), so the entries
+    around it are still shown; one met after others were read ends the
+    output there, reported, with no gap. A zstd frame needing a window
+    over 128 MiB (ruzstd's default) isn't decoded either.
   - **A follow's output limit is per file:** a wake holds at most the
     limit for each file with new entries (in practice the active system
-    and user files), not one limit in all.
-  - **A lookup that fails while following** (`Followed::resolve`, from
-    the follow rework) is still passed over without a report: the value
-    is looked up again on the next wake.
+    and user files), not one limit in all. Oversized entries skipped
+    don't add to it: what they read leaves the cache with them.
+  - **A lookup that fails while following** (`Followed::resolve`) is
+    reported once per file; entries carrying that value don't match
+    until a later wake's lookup reads.
   - **A bogus item that names a real older entry** (a stale slot) passes
     the plausibility check; leaving its array then reports the valid
     entries above it as overlapping, and the rest of that array is lost
@@ -644,9 +700,14 @@ Compared against:
     per implausible item, bounded by the entry count but slow on a large
     file; re-stating once per chunk, or leaving the array after a few in
     a row, would cut it.
-  - **`entries_since`** (following) still stops a file at an
-    out-of-order array, retried once, then reported; it doesn't go on
-    past it as the tail's walk does.
+  - **`entries_since`** (following) applies the tail walk's plausibility
+    check: an item that can't be an entry offset ends the read where it
+    is, waits one wake and is then skipped and reported, so a bogus high
+    item no longer makes the good items after it look out of order. A
+    plausible item out of order (a stale slot naming an older entry)
+    still stops the file, retried once, then reported once, and the
+    follow reads nothing more from that file while it stays so; it
+    doesn't go on past it as the tail's walk does.
   - **The open-and-list-again rule** applies to the tail, not to the
     follow's rescans, which match files by inode already.
   - **Field names aren't validated.** journalctl's `output_json` refuses

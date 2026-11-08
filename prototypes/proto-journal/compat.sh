@@ -42,7 +42,9 @@ done
 new=("$@")
 [ ${#old[@]} -gt 0 ] || old=(20.04 18.04)
 
-cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
+# Capped, as every heavy build and run here is.
+systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
+  cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
 bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
 [ ${#new[@]} -gt 0 ] || mapfile -t new < <("$bin" releases | cut -d' ' -f1)
 checks=$PWD/prototypes/proto-journal/checks.sh
@@ -238,7 +240,7 @@ run() { # container image script args...
   shift 3
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
-  docker run -d --name "$c" -v "$bin:/pj:ro" -v "$checks:/checks.sh:ro" "${mounts[@]}" \
+  docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/pj:ro" -v "$checks:/checks.sh:ro" "${mounts[@]}" \
     "ubuntu:$image" sleep 3600 >/dev/null
   docker exec -i "$c" bash -s -- "$@" < <("$script")
 }

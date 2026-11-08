@@ -321,11 +321,20 @@ fn tail(
     }
     let Some(fd) = fd else { return Ok(()) };
     // Follow from the newest match even when none was printed (`-n 0`).
+    // That second read's errors are dropped: its lookups repeat the first
+    // read's (already reported), and what else it meets lies before the
+    // point the follow starts from, which journalctl `-n 0 -f` doesn't
+    // report either.
     let last = match records.last() {
-        Some(r) => Some(r.location.clone()),
-        None => journal.tail(filter, 1, None).pop().map(|r| r.location),
+        Some(r) => Some(journal.last_of(r)),
+        None => {
+            let reported = journal.errors.len();
+            let newest = journal.tail(filter, 1, None).pop();
+            journal.errors.truncate(reported);
+            newest.map(|r| journal.last_of(&r))
+        }
     };
-    let mut follow = Follow::new(journal, filter, last);
+    let mut follow = Follow::new(journal, last);
 
     let mut buf = [const { MaybeUninit::<u8>::uninit() }; 8192];
     let mut reader = inotify::Reader::new(&fd, &mut buf);
@@ -370,7 +379,7 @@ fn tail(
             // machine-id directory on its first write or flush): watch it
             // from now on. Adding a watch twice returns the same one.
             watch(&fd, source, &mut dirs)?;
-            follow.rescan(&source.paths()?, filter);
+            follow.rescan(&source.paths()?);
             for p in changed {
                 if !follow.has(&p) && !follow.unopened(&p) && !ignored.contains(&p) {
                     ignored.push(p);

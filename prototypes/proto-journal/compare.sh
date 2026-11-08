@@ -23,7 +23,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 releases=("$@")
 
-cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
+# Capped, as every heavy build and run here is.
+systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
+  cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
 bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
 [ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$bin" releases | cut -d' ' -f1)
 
@@ -145,7 +147,7 @@ for arg in "${releases[@]}"; do
   c=${SBJ_PREFIX:-sbj}-${image/./}
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
-  docker run -d --name "$c" -v "$bin:/pj:ro" \
+  docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/pj:ro" \
     -v "$PWD/prototypes/proto-journal/checks.sh:/checks.sh:ro" "ubuntu:$image" sleep 3600 >/dev/null
   docker exec -i "$c" bash -s -- "$rel" "$image" "$want" < <(inner) || status=1
 done

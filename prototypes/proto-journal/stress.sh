@@ -3,7 +3,7 @@
 # writes them heavily and rotates them, in an unprivileged container per
 # supported Ubuntu release (journald standalone, as in compare.sh).
 #
-#   prototypes/proto-journal/stress.sh [22.04 24.04 26.04]
+#   prototypes/proto-journal/stress.sh [RELEASE]...
 #
 # While four writers log as fast as they can and the files rotate by size
 # and every half second, the reader takes snapshots (`tail`, filtered and
@@ -14,19 +14,24 @@
 #   same fields, cursor included: never wrong data;
 # - a snapshot that reported no error has no gap in any writer's numbers;
 #   one that did names what it skipped on stderr (a transient error);
-# - the follower printed every entry, in journalctl's order;
+# - the follower printed every entry, in journalctl's order, and nothing
+#   else but the declined divergence below (an entry journald wrote again
+#   across a rotation, whose first copy journalctl's match doesn't list);
 # - a last snapshot of the idle journal equals journalctl's.
-# Containers are named sbj-rel-stress-<release> and removed on exit.
+# Default: every row of query.rs RELEASES (`proto-journal releases`).
+# Containers (sbj-stress-<release>, or $SBJ_PREFIX-stress-<release>) are
+# removed on exit.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 releases=("$@")
-[ ${#releases[@]} -gt 0 ] || releases=(22.04 24.04 26.04)
 lines=${SBJ_STRESS_LINES:-20000}
 
 systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
   cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
 bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
+# Default: every row of query.rs RELEASES, as compare.sh.
+[ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$bin" releases | cut -d' ' -f1)
 
 containers=()
 # shellcheck disable=SC2317 # called by the EXIT trap
@@ -154,7 +159,27 @@ n=$(wc -l < fe.json)
 distinct=$(jq -rs "$numbers"' | unique | length' fe.json)
 [ "$distinct" = $((4 * lines)) ] || bad "journalctl has $distinct of $((4 * lines)) lines"
 [ "$n" = "$distinct" ] || echo "  note  journald wrote $((n - distinct)) lines twice; journalctl shows both"
-if out=$(/pj compare fe.json fa.json); then ok "follow: $(echo "$out" | tail -1)"; else bad "follow:"; echo "$out" | head -5; fi
+# The one divergence allowed (FINDINGS, declined): when a rotation cuts
+# journald off while it links an entry, the entry is in its file's entry
+# list but not in every field's, and journald writes it again as the next
+# file's first. journalctl's match reads the field's list and shows only
+# the second copy; the follow matches by the entry's items and shows both.
+# Such an extra must be in journalctl's unfiltered view, and its twin
+# (same seqnum id, boot, times and hash) in the matched one.
+jq -c -n --slurpfile fe fe.json --slurpfile all final.json '
+  def twin: .__CURSOR | sub(";i=[0-9a-f]+"; "");
+  ($fe | map({key: .__CURSOR, value: true}) | from_entries) as $shown
+  | ($fe | map({key: twin, value: true}) | from_entries) as $twins
+  | ($all | map({key: .__CURSOR, value: true}) | from_entries) as $real
+  | inputs
+  | if $shown[.__CURSOR] or ($real[.__CURSOR] | not) or ($twins[twin] | not) then . else empty end' \
+  fa.json > fa.kept.json
+extra=$(($(wc -l < fa.json) - $(wc -l < fa.kept.json)))
+# The filter above would hide a first copy printed twice: no cursor twice.
+twice=$(jq -r .__CURSOR fa.json | sort | uniq -d | wc -l)
+[ "$twice" = 0 ] || bad "follow printed $twice entries twice"
+[ "$extra" = 0 ] || echo "  note  the follow showed $extra first copies of entries written again across a rotation that journalctl's match doesn't list"
+if out=$(/pj compare fe.json fa.kept.json); then ok "follow: $(echo "$out" | tail -1)"; else bad "follow:"; echo "$out" | head -5; fi
 [ -s follow.err ] && sort follow.err | uniq -c | sort -rn | head -3 | sed 's/^/  follow stderr: /'
 
 journalctl -o json --all -q -n 300 > e.json
@@ -167,7 +192,7 @@ EOS
 
 status=0
 for rel in "${releases[@]}"; do
-  c=sbj-rel-stress-${rel/./}
+  c=${SBJ_PREFIX:-sbj}-stress-${rel/./}
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
   # Capped: the writers run flat out.

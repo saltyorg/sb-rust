@@ -131,6 +131,7 @@ pub struct DataRef {
 /// `decode`).
 #[derive(Debug)]
 pub struct OverLimit {
+    /// The bytes the read was allowed.
     pub limit: usize,
 }
 
@@ -380,15 +381,16 @@ impl JournalFile {
     /// `decode` bounds its work this way.
     pub fn data_payload_spending(&self, offset: u64, left: &mut usize) -> Result<Vec<u8>> {
         let mut cost = 0;
-        let out = self.payload(offset, *left, &mut cost);
-        let over = cost > *left;
-        *left = left.saturating_sub(cost);
+        let allowed = *left;
+        let out = self.payload(offset, allowed, &mut cost);
+        let over = cost > allowed;
+        *left = allowed.saturating_sub(cost);
         match out {
             // A failed read is reported as what it is, corruption, even
             // when it also spent what was left.
             Err(e) => Err(e),
             // Read, but its header made it spend more than was left: over.
-            Ok(_) if over => Err(OverLimit { limit: cost })
+            Ok(_) if over => Err(OverLimit { limit: allowed })
                 .with_context(|| format!("{}: data {offset:#x}", self.path.display())),
             ok => ok,
         }
@@ -582,6 +584,14 @@ impl JournalFile {
         if self.header.compact() { 4 } else { 8 }
     }
 
+    /// Whether an entry-array item `off` can be an entry's offset:
+    /// aligned, past the header, inside the arena (so never 0).
+    pub fn plausible_entry(&self, off: u64) -> bool {
+        // `within` re-stats: an entry appended since the open is in the
+        // arena.
+        off.is_multiple_of(8) && self.within(off, ENTRY_HEADER)
+    }
+
     /// An entry array's size and next link, from one read of its first 24
     /// bytes.
     fn array_head(&self, at: u64) -> Result<(u64, u64)> {
@@ -684,14 +694,11 @@ impl<'a> EntriesRev<'a> {
         }
     }
 
-    /// Whether `off` can be an entry's offset: aligned, past the header,
-    /// inside the arena. One that can't is refused before it becomes the
-    /// order check's reference, so a bogus low item can't make every
-    /// older item look out of order.
+    /// See `JournalFile::plausible_entry`. One that can't be an entry is
+    /// refused before it becomes the order check's reference, so a bogus
+    /// low item can't make every older item look out of order.
     fn plausible(&self, off: u64) -> bool {
-        // `within` re-stats: an entry appended since the open is in the
-        // arena.
-        off.is_multiple_of(8) && self.f.within(off, ENTRY_HEADER)
+        self.f.plausible_entry(off)
     }
 
     /// The next older offset, an error where one was met, or `None` at
@@ -808,9 +815,12 @@ impl JournalFile {
     /// (`refresh`): journald writes the item before it raises n_entries
     /// (journal_file_link_entry), so every item below it is there.
     ///
-    /// A zero item (a slot never written, as after an unclean shutdown) is
-    /// returned as 0 and the read stops after it: the caller decides
-    /// whether to wait for it or skip it (`EntriesRev` skips them).
+    /// An item that can't be an entry offset (`plausible_entry`: a zero
+    /// slot never written, as after an unclean shutdown, or a bogus value)
+    /// is returned as it is and the read stops after it: the caller
+    /// decides whether to wait for it or skip it (`EntriesRev` skips a
+    /// zero and reports a bogus one). Stopping there also keeps a bogus
+    /// high item from making the good items after it look out of order.
     ///
     /// Why not `EntriesRev`: it learns the whole chain's shape and walks
     /// back from the end, for the newest N; a follow reads forward from a
@@ -847,8 +857,8 @@ impl JournalFile {
                     } else {
                         le64(chunk, 0)
                     };
-                    if off == 0 {
-                        out.push(0);
+                    if !self.plausible_entry(off) {
+                        out.push(off);
                         *cursor = Some(c);
                         return Ok(out);
                     }
@@ -1481,32 +1491,49 @@ mod tests {
 
     #[test]
     fn entries_since_reads_across_arrays_up_to_n_entries() {
-        let (t, mut f) = file_with_chain(&[&[1000, 1100], &[1200, 1300, 0, 0]]);
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &[1200, 1304, 0, 0]]);
         set_list(&t, &mut f, 3, 272);
         let mut c = None;
         assert_eq!(
             f.entries_since(&mut c, 0).expect("reads"),
-            vec![1000, 1100, 1200]
+            vec![1000, 1104, 1200]
         );
         let mut c = None;
-        assert_eq!(f.entries_since(&mut c, 1).expect("reads"), vec![1100, 1200]);
+        assert_eq!(f.entries_since(&mut c, 1).expect("reads"), vec![1104, 1200]);
     }
 
     /// The cursor resumes where the last read stopped, also when that was
     /// exactly the end of an array.
     #[test]
     fn entries_since_resumes_from_its_cursor() {
-        let (t, mut f) = file_with_chain(&[&[1000, 1100], &[1200, 1300, 1400, 1500]]);
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &[1200, 1304, 1400, 1504]]);
         set_list(&t, &mut f, 2, 272);
         let mut c = None;
-        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1100]);
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1104]);
         set_list(&t, &mut f, 4, 272);
-        assert_eq!(f.entries_since(&mut c, 2).expect("reads"), vec![1200, 1300]);
+        assert_eq!(f.entries_since(&mut c, 2).expect("reads"), vec![1200, 1304]);
         assert!(f.entries_since(&mut c, 4).expect("reads").is_empty());
         set_list(&t, &mut f, 6, 272);
-        assert_eq!(f.entries_since(&mut c, 4).expect("reads"), vec![1400, 1500]);
+        assert_eq!(f.entries_since(&mut c, 4).expect("reads"), vec![1400, 1504]);
         // The cursor is on the second array, not back at the head.
         assert_eq!(c.map(|c| c.base), Some(2));
+    }
+
+    /// An item that can't be an entry offset comes back as it is, last,
+    /// so a bogus high one doesn't make the good items after it look out
+    /// of order.
+    #[test]
+    fn entries_since_returns_a_bogus_item_and_stops() {
+        let (t, mut f) = file_with_chain(&[&[1000, 0xFFFF_FFF8, 1200, 1304]]);
+        set_list(&t, &mut f, 4, 272);
+        assert_eq!(
+            f.entries_since(&mut None, 0).expect("reads"),
+            vec![1000, 0xFFFF_FFF8]
+        );
+        assert_eq!(
+            f.entries_since(&mut None, 2).expect("reads"),
+            vec![1200, 1304]
+        );
     }
 
     /// A slot not written below n_entries comes back as 0, last.
@@ -1522,12 +1549,12 @@ mod tests {
     /// from its head once it has them: the empty read leaves no cursor.
     #[test]
     fn entries_since_after_an_empty_read() {
-        let (t, mut f) = file_with_chain(&[&[1000, 1100]]);
+        let (t, mut f) = file_with_chain(&[&[1000, 1104]]);
         set_list(&t, &mut f, 0, 0);
         let mut c = None;
         assert!(f.entries_since(&mut c, 0).expect("reads").is_empty());
         set_list(&t, &mut f, 2, 272);
-        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1100]);
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1104]);
     }
 
     #[test]
@@ -1616,11 +1643,11 @@ mod tests {
     /// so a caller taking only the newest few still sees it.
     #[test]
     fn a_chain_cut_short_reports_before_its_older_entries() {
-        let (_t, f) = file_with_chain(&[&[1000, 2000], &[3000, 4000]]);
-        let mut b = std::fs::read(_t.path()).expect("read");
+        let (t, f) = file_with_chain(&[&[1000, 2000], &[3000, 4000]]);
+        let mut b = std::fs::read(t.path()).expect("read");
         // The second array's type byte.
         b[272 + 24 + 16] = 0;
-        std::fs::write(_t.path(), &b).expect("write");
+        std::fs::write(t.path(), &b).expect("write");
         let mut walk = EntriesRev::new(&f, 272, 4, None);
         assert!(walk.next().expect("an item").is_err());
         assert_eq!(walk.next().expect("an item").expect("readable"), 2000);

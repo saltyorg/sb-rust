@@ -244,14 +244,31 @@ fn exercise(path: &Path, release: Release) -> usize {
         if let Some(first) = got.first() {
             j.tail(filter, 20, Some(&first.location));
             // Following the file from its start (as a file that appears
-            // while following is read), after the first entry shown.
-            let mut follow = Follow::new(Journal::open(&[]), filter, Some(first.location.clone()));
-            follow.rescan(&[path.to_path_buf()], filter);
-            follow.poll(filter);
-            followed += follow.errors.len();
+            // while following is read), after the first entry shown; the
+            // follow moves `last` on with each poll.
+            let mut follow = Follow::new(Journal::open(&[]), Some(j.last_of(first)));
+            follow.rescan(&[path.to_path_buf()]);
+            followed += polls(&mut follow, filter);
         }
+        // Following from inside the file, as after a tail whose open
+        // counted fewer entries than the file has now.
+        let mut from = Journal::open(&[path.to_path_buf()]);
+        for f in &mut from.files {
+            f.header.n_entries /= 2;
+        }
+        let last = got.first().map(|r| j.last_of(r));
+        followed += polls(&mut Follow::new(from, last), filter);
     }
     errors + j.errors.len() + followed
+}
+
+/// Three polls of a follow (a failed read waits one wake, then is skipped
+/// or reported), and the errors they reported.
+fn polls(follow: &mut Follow, filter: &[Group]) -> usize {
+    for _ in 0..3 {
+        follow.poll(filter);
+    }
+    follow.errors.len()
 }
 
 /// The process's peak resident memory in KiB (VmHWM), since the last

@@ -3,7 +3,7 @@
 # supported Ubuntu release with that release's own systemd-journald run
 # standalone (as compare.sh does; no systemd as PID 1).
 #
-#   prototypes/proto-journal/follow.sh [22.04 24.04 26.04]
+#   prototypes/proto-journal/follow.sh [RELEASE]...
 #   PJ_BIN=/path/to/proto-journal prototypes/proto-journal/follow.sh ...
 #
 # Scenarios, each with fresh followers started with `-n 0` and a marker
@@ -21,17 +21,22 @@
 #   split     root and uid 1000 at once: system and user-1000 journals
 # Each follower's numbered entries are counted: lost (a number missing)
 # and duplicated (a number printed twice), plus its CPU time.
-# Containers (sbj-follow-<release>) are removed on exit.
+# Default: every row of query.rs RELEASES (`proto-journal releases`).
+# Containers (sbj-follow-<release>, or $SBJ_PREFIX-follow-<release>) are
+# removed on exit.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 releases=("$@")
-[ ${#releases[@]} -gt 0 ] || releases=(22.04 24.04 26.04)
 
 if [ -z "${PJ_BIN:-}" ]; then
-  cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
+  # Capped, as every heavy build and run here is.
+  systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
+    cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
   PJ_BIN=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
 fi
+# Default: every row of query.rs RELEASES, as compare.sh.
+[ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$PJ_BIN" releases | cut -d' ' -f1)
 
 containers=()
 # shellcheck disable=SC2317 # called by the EXIT trap
@@ -256,7 +261,7 @@ EOS
 
 status=0
 for rel in "${releases[@]}"; do
-  c=sbj-follow-${rel/./}
+  c=${SBJ_PREFIX:-sbj}-follow-${rel/./}
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
   docker run -d --name "$c" --memory 4g --cpus 2 -v "$PJ_BIN:/pj:ro" "ubuntu:$rel" sleep 3600 >/dev/null
