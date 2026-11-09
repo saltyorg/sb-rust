@@ -723,6 +723,92 @@ containers are capped likewise.
   - **The live stress** covers rotation and appends, not journald killed
     mid-write or a full disk.
 
+**Security audit** (agent-skills:security-auditor, read-only, at the
+reader's first version, 2026-11-08). Ids are cited by the sb-journal
+spec.
+- **H1, decoded memory unbounded:** every item was decoded and every
+  record kept, then cloned. A crafted 11 KB file exhausted a 1 GiB
+  limit. *Fixed* by the reliability round: decoding on output under the
+  query limit, every read charged, and a per-query DATA cache.
+- **M1, a forgeable coredump match on 26.04:** *decided:* the sb-journal
+  spec's decisions 1 and 4 require `_UID=0` (stricter than journalctl).
+  It is fixed in the crate, not here.
+- **M2, a lookup fully decoded each same-hash candidate:** *fixed*, with
+  bounded chains and decode limits.
+- **M3, follow wakes rereading everything:** *fixed* by the follow
+  rework.
+- **M4, no terminal-safety contract:**
+  - escape sequences, C0/C1, bidi and zero-width characters in log
+    text;
+  - term-ui's `clean` keeps `ESC[?…m` as colour;
+  - ansi-to-tui honours SGR 8 (conceal);
+  - proto-logs' inline mode prints raw lines, and its `\u{1}` notice
+    prefix can be spoofed.
+
+  *Decided:* the sb-journal spec's decisions 2 and 5 (the sanitizer in
+  sb-term-ui, keeping SGR colour only). Built with the crate.
+- **L1:** `/etc/machine-id` joined into a path unvalidated. *Open here;
+  in the crate's first slice.*
+- **L2:** `is_file()` then `open()` follows symlinks and races, and a
+  FIFO blocks the open. *Open here; in the crate's first slice:*
+  `O_NONBLOCK|O_NOCTTY`, then an `fstat`
+  check.
+- **L3:** lz4 allocated from its size claim. *Fixed* (255× bound).
+- **L4:** `all_data` is quadratic. It is a test tool, kept out of the
+  crate API.
+- **L5:** raw paths and field names in error text. *Open here; in the
+  crate's first slice:* typed errors
+  that escape them.
+- **L6:** driver lists held whole. *Fixed* by the lazy walk.
+- **I1:** root in a container can match the `_UID=0` groups, as with
+  journalctl. A documentation note.
+- **I2:** field names are arbitrary bytes. Sanitize them too.
+- **I3:** dependencies. `cargo deny` advisories are clean, but the deny
+  gate only covers `crates/sb`'s graph, so the crate must join it.
+
+**Features for Saltbox's use** (agent research, read-only: sb-go's
+cmd/logs.go, the Saltbox docs, systemd sources; 2026-11-08):
+- **sb-go's `sb logs`:**
+  - a picker of `saltbox_managed_*` units and docker;
+  - journalctl JSON in pages of 500, with "more" guessed when 499 or more
+    arrive;
+  - a 500 ms cursor poll to follow;
+  - no search, priority, boot, since/until, several units, or plain
+    output.
+- **Saltbox's support page** asks for complete `sb logs` output, with
+  domains, IPs and credentials removed. sb-go can't give any.
+- **Priority is unreliable** for stdout services (`SyslogLevel=info`).
+  PID 1's exit and failure messages are NOTICE or WARNING, so a plain
+  "errors only" hides them:
+  - process exited `98e32220…`;
+  - failed `d9b373ed…`;
+  - restart scheduled `5eb03494…`;
+  - out of memory `fe6faa94…`;
+  - journal dropped `a596d6fe…`.
+- **Must:**
+  - bounded paging both ways with exact "more" flags;
+  - a follow exposing its descriptor;
+  - typed records;
+  - limits;
+  - typed errors;
+  - plain, pasteable output.
+- **Should:**
+  - a `problems()` query (priority ≤ 3 or those MESSAGE_IDs);
+  - priority ranges;
+  - decoded unit events;
+  - invocations (the last run, the last failed run: journalctl has `-I`
+    only from v257);
+  - this boot;
+  - since/until with a realtime bisect;
+  - a budgeted, resumable search;
+  - a boot list (FIELD objects).
+- **Could:**
+  - several units;
+  - a coredump view;
+  - a dropped-messages notice;
+  - resource summaries;
+  - redacted export (its own decision).
+
 **Future releases** (systemd NEWS v259 to main, 263 in development, and
 logs-show.c, journalctl-filter.c and journal-def.h at v259.9, v260, v261,
 v262 and main, read 2026-11-08):
@@ -762,7 +848,9 @@ _Reviewed by the maintainer (2026-11-08): adopted, as its own crate,
 crate, several agents in parallel look for performance, reliability and
 feature improvements for Saltbox's use; their results are added here._
 
-Before it becomes a crate:
+Before it becomes a crate (items 2 and 3 relaxed by the sb-journal
+spec's decision 7, 2026-11-08: the crate is built now. The scheduled
+matrix and afl.rs come once the maintainer pushes and authorizes them):
 1. Files kept open while following: done (Follow rework above).
 2. The container matrix (compare.sh and compat.sh, with an interim-release
    canary) in CI on a schedule against current images, since a stable

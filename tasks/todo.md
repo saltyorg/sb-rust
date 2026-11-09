@@ -25,6 +25,15 @@ No plan is in progress. Finished plans: [tasks/docker-control/](docker-control/p
   position, cancel, a version and features check) is for the
   controller's Rust rewrite, the maintainer's (docker decision 9).
 
+## Follow-ups from the journal reader (proto-journal, sb-journal spec)
+
+- CI: a workflow running `scripts/check.sh` (CONSTRAINTS.md asks for
+  `full` in CI once CI exists; the runner needs cargo-deny, cargo-mutants,
+  cargo-llvm-cov and cross). `.github/workflows/journal-matrix.yml` runs
+  only the journal matrix (sb-journal spec, decision 7).
+- CI: pushing and running the journal matrix, then afl.rs fuzzing, each
+  on the maintainer's go-ahead.
+
 ## Review backlog (taken up when each crate is next touched)
 
 From the whole-codebase review (2026-11-05), moved here from
