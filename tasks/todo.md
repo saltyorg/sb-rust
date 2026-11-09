@@ -1,11 +1,470 @@
 # sb tasks
 
-No plan is in progress. Finished plans: [tasks/docker-control/](docker-control/plan.md)
-(docker start, stop and restart), [tasks/exec/](exec/plan.md),
-[tasks/config/](config/plan.md), [tasks/docker/](docker/plan.md) (`ps`),
-[tasks/term-ui/](term-ui/plan.md), [tasks/cli-core/](cli-core/plan.md),
-[tasks/prototypes/](prototypes/plan.md). The next plan starts its own
-`tasks/plan.md` and task list here.
+In progress: the `sb-journal` crate. Plan: [tasks/plan.md](plan.md)
+(its API names, traceability table and risks). Spec:
+[docs/specs/journal.md](../docs/specs/journal.md). Finished plans:
+- [tasks/docker-control/](docker-control/plan.md) (docker start, stop
+  and restart);
+- [tasks/exec/](exec/plan.md);
+- [tasks/config/](config/plan.md);
+- [tasks/docker/](docker/plan.md) (`ps`);
+- [tasks/term-ui/](term-ui/plan.md);
+- [tasks/cli-core/](cli-core/plan.md);
+- [tasks/prototypes/](prototypes/plan.md).
+
+Every task follows CLAUDE.md:
+- the skills;
+- TDD: each ported test passes on moved code before adapting, and each
+  new case fails first;
+- `scripts/check.sh fast` after edits, `task` before handing back,
+  `full` before committing;
+- the code-reviewer on each commit, plus the library-reviewer where I/O,
+  process or terminal code changes;
+- `Library-check:` and `Review:` lines.
+
+sb runs as root only with `SB_LOG_DIR` in `target/` or a temporary directory.
+Container scripts run with a unique `SBJ_PREFIX`. A matrix mismatch that
+isn't a listed Difference stops for the maintainer. Nothing is pushed.
+
+## Task 0 (before Task 1): time the mutation run
+
+**Description:** Time one cargo-mutants mutant on the workspace, with
+every crate's tests, as `check.sh task` runs it. Use a scratch crate in
+a git worktree that depends on sb-host, removed afterwards. Record count
+× time in plan.md's mutation risk row. If Task 1 or Task 2 comes out
+over about an hour, split it further before starting.
+
+**Acceptance criteria:**
+- [ ] The figure and the resulting slice sizes are in tasks/plan.md.
+
+**Verification:** the worktree and its `target/` removed; `df -h`.
+**Dependencies:** None
+**Files:** `tasks/plan.md`
+**Scope:** XS
+
+## Task 1: crate skeleton, ADR-012, `hash.rs`, file objects and codecs
+
+**Description:**
+- Create `crates/journal` (sb-journal), with:
+  - the `testing` feature and the self dev-dependency;
+  - module-level `cfg_attr(..., expect(dead_code))` for code with no
+    user yet, each with a temporary CONSTRAINTS Exceptions row (plan,
+    "Code with no user yet").
+- Port `hash.rs`, and from `file.rs` the following, all pread only with
+  every offset and size checked:
+  - the header and objects;
+  - the data hash table and lookups;
+  - the codecs and `Limits`;
+  - `OverLimit` and `KnownBad`.
+- Wire it in:
+  - sb-host depends on sb-journal;
+  - deny.toml gets `{ crate = "sb-journal", wrappers = ["sb-host"] }`;
+  - the capability map gets the `sb-journal` row under `host`, and
+    host's corrected dependencies.
+- Write ADR-012 (owning the reader, the divergences of decisions 1 and
+  2, the upkeep per release).
+
+**Acceptance criteria:**
+- [ ] hash.rs's test and file.rs's header, object, hash-table, codec and
+      limit tests (about 35) pass in the crate. Each crafted case is
+      built with `testing`'s builder.
+- [ ] `Limits::default()` is 256 MiB; `with_output` caps at
+      `DATA_SIZE_MAX`. xz refuses a decoder needing over 64 MiB, and
+      zstd a window over 128 MiB (Differences 5, 6). A bad hash table
+      fails lookups and not the file (Difference 9).
+- [ ] `check.sh fast` gains `cargo clippy --workspace --lib --bins --
+      -D warnings`, which lints the plain build. floor-guard.mjs flags
+      `cfg_attr(..., expect(` too.
+- [ ] `cargo clippy -p sb-journal --lib -- -D warnings` and
+      `cargo clippy -p sb-journal --all-targets -- -D warnings` both
+      pass. `cargo tree -e features -p sb-journal` confirms that the self
+      dev-dependency unifies `testing`, and the plan's UNVERIFIED mark
+      is dropped. There is no `#[allow]`.
+- [ ] cargo-deny accepts sb-journal's dependencies through sb → sb-host:
+      siphasher, lz4_flex, ruzstd 0.9.1, lzma-rust2 without
+      `optimization`, hex and rustix.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal`; `cargo deny --manifest-path
+      crates/sb/Cargo.toml check`; `scripts/check.sh task`.
+- [ ] library-reviewer and code-reviewer on the commit.
+
+**Dependencies:** Task 0
+**Files:** `crates/journal/{Cargo.toml,src/lib.rs,src/hash.rs,src/file.rs,src/testing.rs}`,
+`crates/host/Cargo.toml`, `Cargo.toml`, `deny.toml`,
+`docs/specs/capability-map.md`, `docs/decisions/ADR-012-*.md`,
+`CONSTRAINTS.md`, `scripts/check.sh`, `scripts/floor-guard.mjs`
+**Scope:** M (a large port, but one subsystem)
+
+## Task 2: entry arrays, chains and `EntriesRev`
+
+**Description:** Port the rest of file.rs: entry arrays and chains, the
+inline entry, repeats, `all_entries`, `entries_since` and `EntriesRev`.
+
+**Acceptance criteria:**
+- [ ] file.rs's remaining tests (about 22) pass. The commit records that
+      the 57 are all ported.
+- [ ] A zero item is skipped (Difference 8). A stale item naming an
+      older entry ends its array, and that is reported (Difference 10).
+
+**Verification:**
+- [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
+- [ ] library-reviewer and code-reviewer on the commit.
+
+**Dependencies:** Task 1
+**Files:** `crates/journal/src/{file.rs,testing.rs}`, `CONSTRAINTS.md` (an exception row if still needed)
+**Scope:** S
+
+## Task 3: walks, rules and `page` (Tail, Before)
+
+**Description:**
+- Port the newest-first walk (`Walk`, `newest`, the merge).
+- Port `RELEASES` with `UnitRule`.
+- Add the API names of the plan for queries and records:
+  - `Query`: the unit rule with decisions 1 and 4's coredump table,
+    `field`, and fallible `and`/`or`;
+  - `Uid`, `Release`, `UnitName`, `FieldName`, `Cursor`, `BootId`,
+    `Record`.
+- Add `Journal::open` and `page` for `Tail` and `Before`, with
+  `ReadError`/`ReadErrors`. `Limits` gets its first user, so file.rs's
+  dead-code expectations and their Exceptions rows go.
+
+**Acceptance criteria:**
+- [ ] query.rs's tail, merge and rule tests (about 29) pass. They cover:
+      newest, ties, non-transitive cases, flushed copies, 249 double
+      writes, limits, skipping an oversized first entry, and walking
+      past an out-of-order item (Differences 5, 15, 17). An entry cut off
+      while linking shows once in the tail (Difference 12).
+- [ ] The coredump table holds for every release, source and uid,
+      `Some(0)` included: on 249 and 255 always `_UID=0` (Difference 1).
+      `UnitName` mangles "no dot", refuses globs and `.slice`
+      (Difference 7). `Query::and` refuses past 64 groups.
+      The cursor tests round-trip sd-journal's cursor text, and a
+      journalctl `__CURSOR` parses.
+- [ ] `ReadError`'s `Display` escapes paths and field names (L5).
+      `ReadErrors` shows ten distinct errors, then `omitted`.
+- [ ] `Record`:
+      - a 5 KiB field comes back whole as bytes (Difference 3);
+      - `fields()` yields an invalid field name raw (Difference 14);
+      - `realtime()` is `None` out of jiff's range;
+      - `message()` is `None` without `MESSAGE`.
+- [ ] Static assertions: `Journal` is `Send + Sync`; `Page`, `Record`,
+      `Query`, `Position` and `Limits` are `Send + 'static`.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
+- [ ] library-reviewer (directory listing and file opening) and
+      code-reviewer on the commit.
+
+**Dependencies:** Task 2
+**Files:** `crates/journal/src/{walk.rs,rules.rs,lib.rs,file.rs}`, `crates/journal/Cargo.toml` (itertools, jiff), `CONSTRAINTS.md`
+**Scope:** M
+
+## Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound
+
+**Description:** New behaviour, test-first:
+- `Position::After`: a forward match walk;
+- exact `more_older`/`more_newer` for Tail, Before and After;
+- `PageEnd`;
+- opening with `O_NONBLOCK|O_NOCTTY|O_CLOEXEC`, an `fstat` regular-file
+  check, and `O_NOFOLLOW` on the file (ELOOP reported) (L2);
+- `MachineId` (L1);
+- the injectable roots and opener, and a per-`Journal` pread counter (no static), under `testing`.
+
+Opening goes in `open.rs`, a module the spec's Project Structure now
+lists.
+
+**Acceptance criteria:**
+- [ ] Crafted tests:
+      - a forward page;
+      - `more_older` and `more_newer` for every `Position`, at both
+        ends, meaning a *matching* entry beyond the page (also when the
+        next raw entry doesn't match);
+      - an empty page's `PageEnd`.
+- [ ] Opening:
+      - a FIFO doesn't block;
+      - a symlinked file is an open error and a symlinked directory is
+        read (Difference 4);
+      - an invalid machine id is refused;
+      - open errors get one entry per file, outside the ten cap.
+- [ ] Each `page` call reads the file list again: a file replaced or
+      deleted between two calls is seen by the second one, and the
+      opener's counts show every open closed (Difference 11).
+- [ ] The pread counter bounds a crafted fixture's tail, page back and
+      forward page. The figure is stated in the test and in the plan.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
+- [ ] library-reviewer and code-reviewer on the commit.
+
+**Dependencies:** Task 3
+**Files:** `crates/journal/src/{walk.rs,lib.rs,open.rs,testing.rs}`, `docs/specs/journal.md` (Project Structure)
+**Scope:** M
+
+## Task 5: the comparison tools and container scripts on the crate
+
+**Description:**
+- Move the prototype's CLI into `examples/journal.rs` on `testing`, as a
+  thin wrapper with clap. Its commands: tail, pages both ways, compare,
+  gen-export, hash-check, decode-all, releases.
+  - The compare, hash-check and decode-all verdicts become pure
+    functions in testing.rs, with unit tests.
+  - The example takes `--release` and `--coredump-uid`, since sb-journal
+    has no sysinfo or nix.
+- Move compare.sh, compat.sh and checks.sh to `crates/journal/tests/`.
+  - The scripts fill those flags:
+    - `--release` is the row the image runs under, so a canary passes
+      its mapped row, not its own `VERSION_ID`;
+    - `--coredump-uid` comes from `id -u systemd-coredump`, and the
+      flag is left out when the user doesn't exist.
+  - They gain checks for the forward page, the `more_*` flags against
+    whether journalctl has entries beyond the page, decision 4's
+    coredump row, and the pread bound on a matrix fixture.
+- Rename `PJ_BIN` to `SBJ_BIN`, and point the CI workflow at the crate's
+  example.
+
+**Acceptance criteria:**
+- [ ] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04 against
+      the example, with the listed differences pinned.
+- [ ] The coredump row runs with `systemd-coredump` installed and checks
+      the local rule. If it can't run, Checkpoint A doesn't pass:
+      success criterion 3 goes unmet and the maintainer decides.
+- [ ] The workflow builds the example; actionlint and shellcheck are
+      clean.
+
+**Verification:**
+- [ ] The scripts' runs (logs outside the repo, never committed);
+      `scripts/check.sh task`.
+- [ ] library-reviewer (a CLI doing file I/O) and code-reviewer on the
+      commit.
+
+**Dependencies:** Task 4
+**Files:** `crates/journal/examples/journal.rs`, `crates/journal/src/testing.rs`,
+`crates/journal/Cargo.toml` (clap and serde_json optional; `[[example]]`
+entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
+`.github/workflows/journal-matrix.yml`
+**Scope:** M
+
+## Checkpoint A: the reader against journalctl
+- [ ] Tasks 1-5 pass `scripts/check.sh full`; the matrix is green on
+      three releases.
+- [ ] Ratchet re-measured: size, startup, project coverage.
+- [ ] Review with the maintainer, including plan.md's API names, before
+      following.
+
+## Task 6: the follow ported, with the prototype's start
+
+**Description:**
+- Port `Follow`, `ArrayCursor` and the follow side of query.rs.
+- Move `watch`, `watch_dirs`, `classify` and the rescans from main.rs
+  into `follow.rs`, behind `Journal::follow` and `Follower::drain`.
+- Keep the prototype's start for now.
+
+**Acceptance criteria:**
+- [ ] query.rs's follow tests (about 21) and main.rs's four `classify`
+      tests pass in the library. The commit records that all 112 are
+      ported.
+- [ ] Differences 2, 12, 13, 16 and 17 (the follow side) each have a
+      crafted test.
+- [ ] follow.sh and stress.sh (moved) pass on the three releases.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`.
+- [ ] library-reviewer and code-reviewer on the commit.
+
+**Dependencies:** Task 5
+**Files:** `crates/journal/src/{follow.rs,lib.rs}`, `crates/journal/examples/journal.rs`,
+`crates/journal/tests/{follow.sh,stress.sh}`
+**Scope:** M
+
+## Task 7: the page-anchor start, the wake fd and `Batch::more`
+
+**Description:**
+- `Journal::follow(from: &PageEnd)`: the watches first, positions from
+  the anchor, and the first `Batch` through the merge under the limit.
+- A non-blocking inotify fd and `wake_fd()`.
+- `drain` to EAGAIN, and `Batch::more`.
+- `Send` assertions for `Follower` and the fd.
+
+**Acceptance criteria:**
+- [ ] Writes between a page and its follow lose and double nothing,
+      after a full page and after an empty one. `more` is set when the
+      limit stops a batch.
+- [ ] Wake protocol, tested with rustix `poll`:
+      - a write makes the duplicated fd readable;
+      - `drain` clears it;
+      - the duplicate is CLOEXEC and non-blocking.
+      The parent-directory watch is tested through the injectable roots.
+- [ ] follow.sh gains the between-page-and-follow scenario. It and
+      stress.sh pass on the three releases.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`.
+- [ ] library-reviewer and code-reviewer on the commit.
+
+**Dependencies:** Task 6
+**Files:** `crates/journal/src/{follow.rs,lib.rs}`, `crates/journal/examples/journal.rs`, `crates/journal/tests/follow.sh`
+**Scope:** M
+
+## Task 8: the fuzz harness enforcing its bounds
+
+**Description:** Port fuzz.rs as `examples/fuzz.rs`, a thin wrapper.
+Its failure rules become pure functions in testing.rs, with unit tests.
+A run fails on:
+- a panic or a hang;
+- a case over 16 MiB above the seeds' base memory;
+- an unreadable peak or a failed `clear_refs`;
+- fewer than 9,000 cases or 8 seeds.
+
+Seeds come from the matrix's journal-remote output, regenerated each
+time and never committed.
+
+**Acceptance criteria:**
+- [ ] Each failure rule has a unit test that makes it fire.
+- [ ] A run of at least 9,000 cases over eight seeds passes inside a
+      `systemd-run` scope.
+
+**Verification:**
+- [ ] The harness run (log outside the repo); `scripts/check.sh task`.
+- [ ] library-reviewer (rlimit, /proc reads, the `clear_refs` write) and
+      code-reviewer on the commit.
+
+**Dependencies:** Task 7
+**Files:** `crates/journal/examples/fuzz.rs`, `crates/journal/src/testing.rs`, `crates/journal/Cargo.toml`
+**Scope:** S
+
+## Checkpoint B: follow and robustness
+- [ ] Tasks 6-8 pass `scripts/check.sh full`. follow.sh, stress.sh and
+      the fuzz harness are green.
+- [ ] Ratchet re-measured.
+
+## Task 9: term-ui's shared sanitizer (`DisplayText`)
+
+**Description:**
+- Make term-ui's `clean` public as `DisplayText::from_bytes(bytes,
+  colour: bool)`, with callers passing `keeps_codes(..)` (plan, API
+  names), on anstyle-parse 1.0.0 (a workspace
+  dependency), with the 8-bit C1 pre-pass (decisions 2 and 5).
+  - A kept SGR is emitted from its captured raw bytes, never rebuilt
+    from `Params`.
+- The runner's screen output uses it.
+- So does its log, with colour off, in place of
+  `console::strip_ansi_codes`.
+- term-ui's spec is amended.
+
+**Acceptance criteria:**
+- [ ] Tests for every class, 7-bit and 8-bit:
+      - SGR kept or dropped by `colour`, byte-exact (`38:2::r:g:b`);
+      - OSC, DCS, APC, PM and SOS dropped with their payloads;
+      - cursor and mode CSIs dropped, and a CSI past the parameter limit
+        dropped;
+      - `ESC[?1m` isn't SGR;
+      - C0 other than tab and newline, DEL and C1 dropped;
+      - CR's rule;
+      - lossy UTF-8.
+- [ ] The runner's existing tests pass. Colour is off under ascii,
+      `--color=never` and NO_COLOR. The log drops APC/PM/SOS payloads.
+- [ ] The term-ui spec is amended (escape handling, the public type, the
+      log).
+
+**Verification:**
+- [ ] `cargo test -p sb-term-ui -p sb`; `scripts/check.sh task`.
+- [ ] library-reviewer and code-reviewer on the commit.
+
+**Dependencies:** None (it can run beside Tasks 1-8)
+**Files:** `crates/term-ui/src/{text.rs,runner.rs,lib.rs}`,
+`crates/term-ui/Cargo.toml`, `Cargo.toml`, `docs/specs/term-ui.md`
+**Scope:** M
+
+## Task 10: sb-host's release, uid lookup, re-export and glue
+
+**Description:**
+- Implement `ubuntu_release()` to host.md (sysinfo, with tests), and
+  build the `Release` from it.
+- Add the systemd-coredump uid lookup. It uses nix `user` through a
+  workspace entry `nix = { version = "0.28.0", default-features = false,
+  features = ["user"] }`. nix 0.28 already reaches sb through
+  portable-pty, so this adds no second copy. Its error reads
+  `look up user <u>: <cause>`, as host.md gives it.
+- Re-export sb-journal's items by name (`#[doc(inline)] pub use`, no
+  globs).
+- Add tokio `spawn_blocking` helpers. Their signatures are
+  `page(Arc<Journal>, Query, Position, usize, Limits) -> Page`, with
+  owned `'static` values, and
+  `drain(Follower, Limits) -> (Follower, Batch)`: the `Follower` moves
+  in and comes back out.
+- Add tokio to host.md's dependency list.
+
+**Acceptance criteria:**
+- [ ] sb-host's tests run `page` (Tail, Before, After) and a follow on
+      crafted files through the re-export, the helpers on a
+      current-thread runtime (success criterion 1).
+- [ ] A test asserts that `RELEASES` and `SUPPORTED_RUNTIME_RELEASES`
+      name the same releases.
+- [ ] `ubuntu_release()` handles a missing or unparsable `VERSION_ID`
+      with a typed error.
+
+**Verification:**
+- [ ] `cargo test -p sb-host`; `scripts/check.sh task`.
+- [ ] library-reviewer (spawn_blocking, the getpwnam lookup) and
+      code-reviewer on the commit.
+
+**Dependencies:** Task 7
+**Files:** `crates/host/{Cargo.toml,src/lib.rs,src/journal.rs}`, `Cargo.toml`, `docs/specs/host.md`
+**Scope:** M
+
+## Task 11: the security audit and its fixes
+
+**Description:** The security-auditor reviews the crate and the
+sanitizer: L1, L2, L5, I3, opening with `O_NOFOLLOW`/`fstat`, and the C1
+pre-pass. Each finding is fixed test-first, or declined with its reason
+in the commit body. The matrix runs again where a fix touches reading.
+
+**Acceptance criteria:**
+- [ ] No open high finding (success criterion 8).
+
+**Verification:**
+- [ ] `scripts/check.sh full`; the affected container scripts;
+      code-reviewer on the fixes.
+
+**Dependencies:** Tasks 8, 9 and 10
+**Files:** as the findings require
+**Scope:** S-M
+
+## Task 12: docs, the map's stack rows, the prototype removed
+
+**Description:**
+- The capability map:
+  - tokio for sb-host;
+  - the reader's stack row, rejecting sdjournal, systemd-journal-sdk
+    and the libsystemd crate;
+  - capability-map.md's "Journal cursor polling … replaced by
+    `journalctl -f`" corrected (journal.md, "Capability map
+    correction").
+- The platform note brought up to date.
+- proto-journal removed, its FINDINGS moved to
+  `docs/prototypes/proto-journal.md`, and the links to it in the spec
+  and the plan updated.
+- The ratchet measured.
+
+**Acceptance criteria:**
+- [ ] Spec success criteria 6 and 7.
+- [ ] `scripts/check.sh full` passes within the ratchet, or with an ADR
+      for a figure that moved.
+
+**Verification:**
+- [ ] `scripts/check.sh full`; code-reviewer on the commit.
+
+**Dependencies:** Task 11
+**Files:** `docs/specs/capability-map.md`, `docs/platform-notes/systemd-journal.md`,
+`docs/prototypes/proto-journal.md`, `docs/specs/journal.md`, `tasks/plan.md`,
+`prototypes/proto-journal/` (removed)
+**Scope:** M
+
+## Checkpoint C: complete
+- [ ] The spec's success criteria 1-8, with the test count from plan.md's
+      traceability table; Checkpoints A and B held.
+- [ ] Review with the maintainer; the plan archived to `tasks/journal/`.
 
 ## Follow-ups from docker start, stop and restart
 

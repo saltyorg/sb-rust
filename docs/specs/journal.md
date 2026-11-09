@@ -1,4 +1,4 @@
-# Spec: `sb-journal` (draft, 2026-11-08)
+# Spec: `sb-journal` (approved 2026-11-09)
 
 `sb-journal` is a crate of its own, wrapped by sb-host (the host spec's
 decision 6). It reads systemd's journal files in pure Rust for
