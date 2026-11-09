@@ -60,29 +60,30 @@ isn't a listed Difference stops for the maintainer. Nothing is pushed.
   2, the upkeep per release).
 
 **Acceptance criteria:**
-- [ ] hash.rs's test and file.rs's header, object, hash-table, codec and
-      limit tests (about 35) pass in the crate. Each crafted case is
+- [x] hash.rs's test and file.rs's header, object, hash-table, codec and
+      limit tests pass in the crate: 31 of file.rs's 57 ported
+      unchanged, plus 2 walk-free stand-ins (see Task 2). Each crafted case is
       built with `testing`'s builder.
-- [ ] `Limits::default()` is 256 MiB; `with_output` caps at
+- [x] `Limits::default()` is 256 MiB; `with_output` caps at
       `DATA_SIZE_MAX`. xz refuses a decoder needing over 64 MiB, and
       zstd a window over 128 MiB (Differences 5, 6). A bad hash table
       fails lookups and not the file (Difference 9).
-- [ ] `check.sh fast` gains `cargo clippy --workspace --lib --bins --
+- [x] `check.sh fast` gains `cargo clippy --workspace --lib --bins --
       -D warnings`, which lints the plain build. floor-guard.mjs flags
       `cfg_attr(..., expect(` too.
-- [ ] `cargo clippy -p sb-journal --lib -- -D warnings` and
+- [x] `cargo clippy -p sb-journal --lib -- -D warnings` and
       `cargo clippy -p sb-journal --all-targets -- -D warnings` both
       pass. `cargo tree -e features -p sb-journal` confirms that the self
       dev-dependency unifies `testing`, and the plan's UNVERIFIED mark
       is dropped. There is no `#[allow]`.
-- [ ] cargo-deny accepts sb-journal's dependencies through sb → sb-host:
+- [x] cargo-deny accepts sb-journal's dependencies through sb → sb-host:
       siphasher, lz4_flex, ruzstd 0.9.1, lzma-rust2 without
       `optimization`, hex and rustix.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `cargo deny --manifest-path
+- [x] `cargo test -p sb-journal`; `cargo deny --manifest-path
       crates/sb/Cargo.toml check`; `scripts/check.sh task`.
-- [ ] library-reviewer and code-reviewer on the commit.
+- [x] library-reviewer and code-reviewer on the commit.
 
 **Dependencies:** Task 0
 **Files:** `crates/journal/{Cargo.toml,src/lib.rs,src/hash.rs,src/file.rs,src/testing.rs}`,
@@ -97,10 +98,19 @@ isn't a listed Difference stops for the maintainer. Nothing is pushed.
 inline entry, repeats, `all_entries`, `entries_since` and `EntriesRev`.
 
 **Acceptance criteria:**
-- [ ] file.rs's remaining tests (about 22) pass. The commit records that
-      the 57 are all ported.
+- [ ] file.rs's remaining tests (24, plus the 2 originals the stand-ins
+      replace: 26) pass. The commit records that the 57 (31 + 26) are
+      all ported.
 - [ ] A zero item is skipped (Difference 8). A stale item naming an
       older entry ends its array, and that is reported (Difference 10).
+- [ ] Task 1 ported 31 of file.rs's 57 tests unchanged and deferred 26
+      that need the entry-array side: 24, plus
+      `the_crafted_journal_reads_back` and
+      `a_bad_hash_table_size_fails_lookups_not_the_file`, which Task 2
+      ports whole, walks included. Their walk-free stand-ins from Task 1,
+      `the_crafted_journal_reads_back_without_the_walks` and
+      `a_bad_hash_table_size_fails_lookups_and_entries_still_read`, then go.
+      `file_with_chain` and `ENTRY_ARRAY_HEADER` come with them.
 
 **Verification:**
 - [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
@@ -246,6 +256,9 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 - [ ] Ratchet re-measured: size, startup, project coverage.
 - [ ] Review with the maintainer, including plan.md's API names, before
       following.
+- [ ] Decide on `is_*` helpers on `ReadError` (`is_over_limit`,
+      `is_known_bad`) in place of matching the public `ReadErrorKind`
+      (M-ERRORS-CANONICAL-STRUCTS), with the API names.
 
 ## Task 6: the follow ported, with the prototype's start
 
@@ -481,6 +494,18 @@ in the commit body. The matrix runs again where a fix touches reading.
   controller's Rust rewrite, the maintainer's (docker decision 9).
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
+
+- Task 3 or 6: a guessed `object_head` read that runs past a file cut
+  fails an intact object before the cut with `Io` until the header is
+  read again (prototype behaviour). Decide how a page or follow handles
+  `Io`: retry with the exact header read, or `refresh()` and retry; or
+  document "Io after a truncation means refresh first".
+
+- check.sh's mutation pass lists each sb-journal mutant twice (782
+  listed, 326 lines duplicated) because of the self dev-dependency. The
+  score's ratio is unaffected, but the run takes about twice as long.
+  Find the cause (cargo-mutants seeing the package twice) and dedupe or
+  scope it, before Task 2's run.
 
 - CI: a workflow running `scripts/check.sh` (CONSTRAINTS.md asks for
   `full` in CI once CI exists; the runner needs cargo-deny, cargo-mutants,

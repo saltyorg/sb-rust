@@ -467,9 +467,11 @@ As listed in the host spec's decision 6:
 - **Stack table:** a row for the reader, rejecting sdjournal,
   systemd-journal-sdk and the libsystemd crate.
 - **The rejected list's "replaced by `journalctl -f`"** is corrected.
-- **deny.toml:** `sb-journal` gets `wrappers = ["sb-host"]`. The deny
-  gate runs on crates/sb's graph, so sb-host depends on sb-journal in
-  the first slice, which brings it under the gate.
+- **deny.toml:** `sb-journal` gets `wrappers = ["sb-host", "sb-journal"]`:
+  its own name because its self dev-dependency (the `testing` feature
+  for its tests) is a parent in cargo-deny's graph. The deny gate runs on
+  crates/sb's graph, so sb-host depends on sb-journal in the first slice,
+  which brings it under the gate.
 - **ADR-013:** owning the reader, against the library-first rule, with
   proto-journal's evidence, the upkeep (a `RELEASES` row per LTS,
   checked by the scheduled matrix) and decisions 1 and 2's divergences.

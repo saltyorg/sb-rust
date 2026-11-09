@@ -16,6 +16,7 @@ sb-term-ui = { path = "crates/term-ui" }
 sb-docker = { path = "crates/docker" }
 sb-config = { path = "crates/config" }
 sb-exec = { path = "crates/exec" }
+sb-journal = { path = "crates/journal" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"
@@ -79,6 +80,23 @@ tracing-appender = "0.2.5"
 tracing-log = { version = "0.2.0", default-features = false, features = ["std", "log-tracer"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "tracing-log"] }
 unicode-width = "0.2.3"
+# sb-journal's reader (journal spec, Tech Stack; versions and notes from
+# proto-journal). siphash24 keyed by the file id, for keyed-hash files
+# (JOURNAL_FILE_FORMAT, Data Objects).
+siphasher = "1.0.4"
+# Data payload decompression: one crate per algorithm, all pure Rust.
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-decode"] }
+# 0.9.1 fixes RUSTSEC-2026-0344 (decompression bomb).
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
+# Without `optimization` it is forbid(unsafe_code); its reader takes a
+# memory limit (lzma-rs 0.3.0 had none for xz, and no release since 2023).
+# Never enable `optimization`.
+lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", "xz"] }
+# 128-bit ids; already in sb's tree through bollard.
+hex = "0.4.3"
+# Re-seals an xz block header in a corruption test (sb-journal's tests
+# only); already in the tree.
+crc32fast = "1.5.3"
 assert_cmd = "2.2.1"
 predicates = "3.1.4"
 insta = "1.49.0"

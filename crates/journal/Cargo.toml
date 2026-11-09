@@ -1,0 +1,36 @@
+[package]
+name = "sb-journal"
+version = "0.1.0"
+description = "sb's own read-only systemd journal reader, pread only and pure Rust (journal spec; wrapped by sb-host)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Test support (the repository's convention, as in sb-docker): the
+# crafted-file builder now, the tools' file-level access, the JSON form and
+# the injectable roots later (journal spec, Project Structure). Turned on
+# for every test build by the self dev-dependency below (dev-dependency
+# features unify), never in a release or production build.
+testing = ["dep:tempfile"]
+
+[dependencies]
+siphasher.workspace = true
+lz4_flex.workspace = true
+ruzstd.workspace = true
+lzma-rust2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+# The crafted-file builder writes its files to temporary files.
+tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Turns `testing` on for the unit tests and every other test target
+# (plan, "Code with no user yet").
+sb-journal = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+crc32fast.workspace = true
+
+[lints]
+workspace = true

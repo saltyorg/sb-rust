@@ -63,9 +63,12 @@ what prove it.
   - Task 1 also extends floor-guard.mjs's suppression pattern to the
     `cfg_attr(..., expect(` form, so a missing Exceptions row is
     flagged.
-  - UNVERIFIED until Task 1 confirms the unification with `cargo tree -e
-    features -p sb-journal` (reasoned from the resolver docs, not
-    built).
+  - Confirmed in Task 1: `cargo tree -e features -p sb-journal` lists
+    `sb-journal feature "testing"` under its own `[dev-dependencies]`,
+    and `cargo build -p sb-journal --all-targets -v` passes
+    `feature="testing"` to both the library and its test build.
+    cargo-deny sees the self dev-dependency as a parent, so deny.toml
+    lists sb-journal among its own wrappers.
 - **Lints from day one.** The workspace lints include pedantic,
   `missing_debug_implementations` and `trivial_numeric_casts`, which the
   prototype didn't run. Each slice meets them as it lands, with no
@@ -190,7 +193,7 @@ sanitizer, so it waits for T9 too.
 
 ### Phase 1: The reader
 - [x] Task 0: time one mutant (85 s all-crate, 2 s own-crate); ADR-012
-- [ ] Task 1: crate skeleton, ADR-013, `hash.rs`, file objects and codecs
+- [x] Task 1: crate skeleton, ADR-013, `hash.rs`, file objects and codecs
 - [ ] Task 2: entry arrays, chains and `EntriesRev`
 - [ ] Task 3: walks, rules and `page` (Tail, Before)
 - [ ] Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound

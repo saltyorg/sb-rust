@@ -1,0 +1,358 @@
+//! Test support, under the `testing` feature (journal spec, Project
+//! Structure): the crafted-file builder now; the tools' helpers, the JSON
+//! form and the injectable roots come with the plan's later tasks.
+
+/// Crafted journal files for the corruption tests: a regular (not
+/// compact), unkeyed file laid out object by object, as journald appends
+/// them (journal-def.h layouts).
+pub mod crafted {
+    use crate::file::{
+        JournalFile, OBJECT_DATA, OBJECT_ENTRY, OBJECT_ENTRY_ARRAY, OBJECT_HEADER, SIGNATURE, le64,
+    };
+    use crate::hash;
+    use std::io::Write;
+
+    const OBJECT_DATA_HASH_TABLE: u8 = 4;
+
+    // Header fields' offsets (journal-def.h `struct Header`).
+
+    /// `arena_size`.
+    pub const H_ARENA_SIZE: u64 = 96;
+    /// `data_hash_table_offset`.
+    pub const H_HASH_TABLE_OFFSET: u64 = 104;
+    /// `data_hash_table_size`.
+    pub const H_HASH_TABLE_SIZE: u64 = 112;
+    /// `n_entries`.
+    pub const H_N_ENTRIES: u64 = 152;
+    /// `entry_array_offset`.
+    pub const H_ENTRY_ARRAY_OFFSET: u64 = 176;
+
+    // Object fields' offsets, from the object's start: `O_` any object,
+    // `D_` a DATA object, `E_` an ENTRY, `A_` an ENTRY_ARRAY.
+
+    /// The object's `size`.
+    pub const O_SIZE: u64 = 8;
+    /// `hash`.
+    pub const D_HASH: u64 = 16;
+    /// `next_hash_offset`.
+    pub const D_NEXT_HASH: u64 = 24;
+    /// `entry_offset`: the in-line first entry.
+    pub const D_ENTRY_OFFSET: u64 = 40;
+    /// `entry_array_offset`.
+    pub const D_ENTRY_ARRAY: u64 = 48;
+    /// `n_entries`.
+    pub const D_N_ENTRIES: u64 = 56;
+    /// The first item.
+    pub const E_ITEMS: u64 = 64;
+    /// `next_entry_array_offset`.
+    pub const A_NEXT: u64 = 16;
+    /// The first item.
+    pub const A_ITEMS: u64 = 24;
+
+    /// A journal file's bytes, built up object by object.
+    #[derive(Debug, Clone)]
+    pub struct Crafted {
+        pub b: Vec<u8>,
+    }
+
+    fn at(v: u64) -> usize {
+        usize::try_from(v).expect("small")
+    }
+
+    impl Default for Crafted {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Crafted {
+        /// A 272-byte header with the signature and its size, no objects.
+        #[must_use]
+        pub fn new() -> Self {
+            let mut b = vec![0u8; 272];
+            b[0..8].copy_from_slice(SIGNATURE);
+            let mut c = Self { b };
+            c.set(88, 272); // header_size
+            c
+        }
+
+        /// Write `v` little-endian at `offset`.
+        ///
+        /// # Panics
+        ///
+        /// `offset + 8` lies past the bytes built so far.
+        pub fn set(&mut self, offset: u64, v: u64) {
+            self.b[at(offset)..at(offset) + 8].copy_from_slice(&v.to_le_bytes());
+        }
+
+        /// The little-endian `u64` at `offset`.
+        ///
+        /// # Panics
+        ///
+        /// `offset + 8` lies past the bytes built so far.
+        #[must_use]
+        pub fn get(&self, offset: u64) -> u64 {
+            le64(&self.b, at(offset))
+        }
+
+        /// Append an object, 8-byte aligned as journald places them; returns
+        /// its offset.
+        pub fn object(&mut self, kind: u8, flags: u8, body: &[u8]) -> u64 {
+            let offset = self.b.len() as u64;
+            let size = OBJECT_HEADER + body.len() as u64;
+            self.b.extend_from_slice(&[kind, flags, 0, 0, 0, 0, 0, 0]);
+            self.b.extend_from_slice(&size.to_le_bytes());
+            self.b.extend_from_slice(body);
+            self.b.resize(self.b.len().next_multiple_of(8), 0);
+            offset
+        }
+
+        /// The data hash table, with `buckets` empty buckets.
+        pub fn hash_table(&mut self, buckets: u64) {
+            let o = self.object(OBJECT_DATA_HASH_TABLE, 0, &vec![0; at(buckets * 16)]);
+            self.set(H_HASH_TABLE_OFFSET, o + OBJECT_HEADER);
+            self.set(H_HASH_TABLE_SIZE, buckets * 16);
+        }
+
+        /// A DATA object storing `stored` (compressed per `flags`) under
+        /// `hash`, linked into its bucket's chain.
+        ///
+        /// # Panics
+        ///
+        /// There is no hash table (`hash_table`) yet.
+        pub fn data_raw(&mut self, flags: u8, stored: &[u8], hash: u64) -> u64 {
+            let mut body = vec![0u8; 48];
+            body[0..8].copy_from_slice(&hash.to_le_bytes());
+            body.extend_from_slice(stored);
+            let d = self.object(OBJECT_DATA, flags, &body);
+            let buckets = self.get(H_HASH_TABLE_SIZE) / 16;
+            let bucket = self.get(H_HASH_TABLE_OFFSET) + hash % buckets * 16;
+            match self.get(bucket + 8) {
+                0 => self.set(bucket, d),
+                tail => self.set(tail + D_NEXT_HASH, d),
+            }
+            self.set(bucket + 8, d);
+            d
+        }
+
+        /// A DATA object storing `payload` uncompressed, under its Jenkins
+        /// hash.
+        pub fn data(&mut self, payload: &[u8]) -> u64 {
+            self.data_raw(0, payload, hash::jenkins64(payload))
+        }
+
+        /// An ENTRY object; items are DATA offsets, their hashes zero.
+        pub fn entry(&mut self, seqnum: u64, items: &[u64]) -> u64 {
+            let mut body = vec![0u8; 48];
+            body[0..8].copy_from_slice(&seqnum.to_le_bytes());
+            body[8..16].copy_from_slice(&(1_000_000 + seqnum).to_le_bytes()); // realtime
+            body[16..24].copy_from_slice(&seqnum.to_le_bytes()); // monotonic
+            body[24..40].copy_from_slice(&[7; 16]); // boot id
+            for i in items {
+                body.extend_from_slice(&i.to_le_bytes());
+                body.extend_from_slice(&[0; 8]);
+            }
+            self.object(OBJECT_ENTRY, 0, &body)
+        }
+
+        /// An `ENTRY_ARRAY` object with room for `capacity` items, filled
+        /// with `items`.
+        pub fn array(&mut self, items: &[u64], capacity: usize, next: u64) -> u64 {
+            let mut body = next.to_le_bytes().to_vec();
+            for i in items {
+                body.extend_from_slice(&i.to_le_bytes());
+            }
+            body.resize(8 + 8 * capacity.max(items.len()), 0);
+            self.object(OBJECT_ENTRY_ARRAY, 0, &body)
+        }
+
+        /// Write the file with `arena_size` covering every object, and open it.
+        ///
+        /// # Panics
+        ///
+        /// The temporary file can't be written, or the file doesn't open.
+        pub fn write(&mut self) -> (tempfile::NamedTempFile, JournalFile) {
+            let tmp = self.file();
+            let jf = JournalFile::open(tmp.path()).expect("opens");
+            (tmp, jf)
+        }
+
+        /// Write the file with `arena_size` covering every object, without
+        /// opening it (for a file meant to be refused).
+        ///
+        /// # Panics
+        ///
+        /// The temporary file can't be written, or the bytes are shorter
+        /// than the header.
+        pub fn file(&mut self) -> tempfile::NamedTempFile {
+            self.set(H_ARENA_SIZE, self.b.len() as u64 - 272);
+            let mut tmp = tempfile::NamedTempFile::new().expect("temp file");
+            tmp.write_all(&self.b).expect("write");
+            tmp
+        }
+    }
+
+    /// The offsets of `journal`'s objects.
+    #[derive(Debug, Clone)]
+    pub struct Layout {
+        pub main_array: u64,
+        pub shared: u64,
+        pub entries: Vec<u64>,
+        pub messages: Vec<u64>,
+    }
+
+    /// A valid journal of `n` entries, each carrying `MESSAGE=m<i>` and the
+    /// shared `U=x`. The arrays are allocated before the entries, with room
+    /// for all of them, so a file cut short keeps its arrays.
+    #[must_use]
+    pub fn journal(n: u64) -> (Crafted, Layout) {
+        let mut c = Crafted::new();
+        c.hash_table(7);
+        let cap = at(n);
+        let main_array = c.array(&[], cap, 0);
+        let shared = c.data(b"U=x");
+        let shared_array = c.array(&[], cap, 0);
+        let (mut entries, mut messages) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let m = c.data(format!("MESSAGE=m{i}").as_bytes());
+            c.set(m + D_ENTRY_OFFSET, c.b.len() as u64);
+            c.set(m + D_N_ENTRIES, 1);
+            let e = c.entry(i + 1, &[shared, m]);
+            c.set(main_array + A_ITEMS + 8 * i, e);
+            if i == 0 {
+                c.set(shared + D_ENTRY_OFFSET, e);
+            } else {
+                c.set(shared_array + A_ITEMS + 8 * (i - 1), e);
+            }
+            entries.push(e);
+            messages.push(m);
+        }
+        c.set(shared + D_ENTRY_ARRAY, shared_array);
+        c.set(shared + D_N_ENTRIES, n);
+        c.set(H_N_ENTRIES, n);
+        c.set(H_ENTRY_ARRAY_OFFSET, main_array);
+        let layout = Layout {
+            main_array,
+            shared,
+            entries,
+            messages,
+        };
+        (c, layout)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn default_is_new() {
+            assert_eq!(Crafted::default().b, Crafted::new().b);
+        }
+
+        /// A bare header: the signature, a 272-byte header size, nothing
+        /// else; written, its arena is empty and it opens.
+        #[test]
+        fn new_is_an_empty_journal() {
+            let mut c = Crafted::new();
+            assert_eq!(c.b.len(), 272);
+            assert_eq!(&c.b[0..8], SIGNATURE);
+            assert_eq!(c.get(88), 272);
+            assert!(c.b[8..88].iter().chain(&c.b[96..]).all(|&x| x == 0));
+            let (_t, f) = c.write();
+            assert_eq!((f.header.size, f.header.arena_size), (272, 0));
+        }
+
+        /// Objects are appended 8-byte aligned, with their type, flags and
+        /// size.
+        #[test]
+        fn objects_are_appended_aligned() {
+            let mut c = Crafted::new();
+            let a = c.object(9, 2, b"abc");
+            let b = c.object(1, 0, &[0; 8]);
+            assert_eq!((a, b), (272, 296));
+            assert_eq!((c.b[272], c.b[273], c.get(a + O_SIZE)), (9, 2, 19));
+            assert_eq!(&c.b[288..291], b"abc");
+            assert_eq!(c.get(b + O_SIZE), 24);
+            assert_eq!(c.b.len(), 320);
+        }
+
+        /// DATA objects of one bucket are chained in order, the bucket
+        /// holding the head and the tail.
+        #[test]
+        fn data_objects_chain_in_their_bucket() {
+            let mut crafted = Crafted::new();
+            crafted.hash_table(2);
+            let table = crafted.get(H_HASH_TABLE_OFFSET);
+            assert_eq!((table, crafted.get(H_HASH_TABLE_SIZE)), (288, 32));
+            let first = crafted.data_raw(0, b"X=1", 4);
+            let second = crafted.data_raw(0, b"Y=1", 6);
+            let other = crafted.data_raw(0, b"Z=1", 1);
+            assert_eq!(
+                (crafted.get(table), crafted.get(table + 8)),
+                (first, second)
+            );
+            assert_eq!(crafted.get(first + D_NEXT_HASH), second);
+            assert_eq!(
+                (crafted.get(table + 16), crafted.get(table + 24)),
+                (other, other)
+            );
+            assert_eq!(crafted.get(first + D_HASH), 4);
+            let hashed = crafted.data(b"A=1");
+            assert_eq!(crafted.get(hashed + D_HASH), hash::jenkins64(b"A=1"));
+        }
+
+        #[test]
+        fn entries_and_arrays_are_laid_out() {
+            let mut c = Crafted::new();
+            let e = c.entry(5, &[0x400, 0x500]);
+            assert_eq!(c.get(e + O_SIZE), 64 + 2 * 16);
+            assert_eq!(c.get(e + 16), 5); // seqnum
+            assert_eq!(c.get(e + 24), 1_000_005); // realtime
+            assert_eq!(c.get(e + E_ITEMS), 0x400);
+            assert_eq!(c.get(e + E_ITEMS + 16), 0x500);
+            let a = c.array(&[e], 3, 0x1234);
+            assert_eq!(c.get(a + O_SIZE), 24 + 3 * 8);
+            assert_eq!(c.get(a + A_NEXT), 0x1234);
+            assert_eq!(c.get(a + A_ITEMS), e);
+        }
+
+        /// `file` sets the arena to cover every object.
+        #[test]
+        fn file_covers_every_object() {
+            let mut c = Crafted::new();
+            c.object(1, 0, &[0; 40]);
+            let t = c.file();
+            assert_eq!(c.get(H_ARENA_SIZE), 56);
+            assert_eq!(std::fs::read(t.path()).expect("read"), c.b);
+        }
+
+        /// The crafted journal's links, as `Layout` names them.
+        #[test]
+        fn the_journal_links_its_objects() {
+            let (c, layout) = journal(3);
+            assert_eq!(
+                (c.get(H_N_ENTRIES), c.get(H_ENTRY_ARRAY_OFFSET)),
+                (3, layout.main_array)
+            );
+            for (i, (&entry, &message)) in layout.entries.iter().zip(&layout.messages).enumerate() {
+                let i = i as u64;
+                assert_eq!(c.get(layout.main_array + A_ITEMS + 8 * i), entry);
+                assert_eq!(c.get(entry + 16), i + 1); // seqnum
+                assert_eq!(c.get(entry + E_ITEMS), layout.shared);
+                assert_eq!(c.get(entry + E_ITEMS + 16), message);
+                assert_eq!(
+                    (
+                        c.get(message + D_ENTRY_OFFSET),
+                        c.get(message + D_N_ENTRIES)
+                    ),
+                    (entry, 1)
+                );
+            }
+            let shared_array = c.get(layout.shared + D_ENTRY_ARRAY);
+            assert_eq!(c.get(layout.shared + D_ENTRY_OFFSET), layout.entries[0]);
+            assert_eq!(c.get(layout.shared + D_N_ENTRIES), 3);
+            assert_eq!(c.get(shared_array + A_ITEMS), layout.entries[1]);
+            assert_eq!(c.get(shared_array + A_ITEMS + 8), layout.entries[2]);
+        }
+    }
+}

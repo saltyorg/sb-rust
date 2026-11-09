@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 sysinfo.workspace = true
 thiserror.workspace = true
+# The journal reader, which sb-host wraps (host spec, decision 6).
+sb-journal.workspace = true
 
 [lints]
 workspace = true

@@ -3289,7 +3289,23 @@ dependencies = [
 name = "sb-host"
 version = "0.1.0"
 dependencies = [
+ "sb-journal",
  "sysinfo",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sb-journal"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "hex",
+ "lz4_flex",
+ "lzma-rust2",
+ "ruzstd",
+ "sb-journal",
+ "siphasher",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

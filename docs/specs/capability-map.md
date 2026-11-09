@@ -213,7 +213,8 @@ GitHub API (last push, archived flag).
 | `cli-core` | clap tree, global flags, root relaunch, build info, signals/cancellation (an interrupted run dies of its signal, `$?` 130), error and exit-code policy | — | main.go, cmd/root.go, buildinfo, signals, layout |
 | `exec` | Child processes: streamed and captured output; PTY execution with process-group kill on cancel; secrets out of logs, output and errors | cli-core, term-ui | executor |
 | `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif; ANSI stripping of child output when not a terminal | cli-core | terminal |
-| `host` | Ubuntu/arch/LXC/desktop checks, disk space, apt, systemd (including a `journalctl -f` log stream), file ownership | exec, term-ui | host |
+| `host` | Ubuntu/arch/LXC/desktop checks, disk space, apt, systemd service list, file ownership; wraps `sb-journal` for the service logs (host spec, decision 6) | exec, term-ui, journal | host |
+| `journal` (`sb-journal`) | sb's own read-only systemd journal reader, pread only and pure Rust: a unit's newest entries, pages back and forward, following ([journal spec](journal.md); [ADR-013](../decisions/ADR-013-own-journal-reader.md)) | — (wrapped by host) | cmd/logs.go's `journalctl` polling |
 | `repo` | Git operations on Saltbox/Sandbox checkouts, branch switching | exec, host | git |
 | `release` | GitHub release lookup (with User-Agent), version compare, self-update with digest verification | cli-core | release, selfupdate |
 | `python-env` | uv-managed Python, Ansible venv build/update, deadsnakes cleanup | exec, host, release | python |

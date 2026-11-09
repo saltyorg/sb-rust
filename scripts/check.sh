@@ -62,6 +62,14 @@ fast() {
   if ((${#crates[@]})); then cargo fmt --check "${pkg_args[@]}"; else skip "no crates/ yet"; fi
   step "clippy (warnings are errors)"
   cargo clippy --workspace --all-targets --quiet -- -D warnings
+  # The plain build too: building any test target turns dev-dependency
+  # features on (a `testing` self dev-dependency), so the step above never
+  # lints a crate without them. This one builds no dev-dependencies, and a
+  # dead-code expectation that is no longer needed fails it
+  # (`unfulfilled_lint_expectations`; sb-journal plan, "Code with no user
+  # yet").
+  step "clippy, library and binary targets only (warnings are errors)"
+  cargo clippy --workspace --lib --bins --quiet -- -D warnings
   step "floor guard"
   node scripts/floor-guard.mjs --base "$base"
   step "secrets (gitleaks, redacted)"
@@ -79,6 +87,9 @@ fast() {
 # lower the score, apart from a timeout or a broken build outside its tests
 # (ADR-012). Add a crate here when its tests start reaching a listed one.
 declare -A MUTATION_TESTERS=()
+# sb-journal: no workspace crate's tests reach it until sb-host's glue
+# (sb-journal plan, Task 10), when sb-host joins its testers.
+MUTATION_TESTERS[sb-journal]=""
 
 # mutation_pass N ARGS...: one cargo-mutants pass over the changed code with
 # the given package arguments; appends its outcomes file to `outcomes`.

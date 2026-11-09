@@ -74,7 +74,10 @@ const guarded = (f) => !f.startsWith('prototypes/');
 
 // 1. Silenced checker. #[allow] is also denied by the workspace lints; a new
 // #[expect] needs a CONSTRAINTS.md Exceptions row, so it is reported here.
-const SUPPRESSIONS = /#!?\[\s*(allow|expect)\s*\(|#\[\s*coverage\s*\(\s*off|#\[\s*mutants::skip|gitleaks:allow|deny\.toml.*ignore|clippy::all\s*=\s*"allow"/;
+// So does the conditional form, `#![cfg_attr(cond, expect(...))]`: on one
+// line, or as rustfmt splits it, with `expect(` opening a line of its own
+// (no method call starts a line without its dot).
+const SUPPRESSIONS = /#!?\[\s*(allow|expect)\s*\(|#!?\[\s*cfg_attr\s*\(.*[(,]\s*(allow|expect)\s*\(|^\s*(allow|expect)\s*\(|#\[\s*coverage\s*\(\s*off|#\[\s*mutants::skip|gitleaks:allow|deny\.toml.*ignore|clippy::all\s*=\s*"allow"/;
 // 4. Unfinished work.
 const STUBS = /\btodo!\s*\(|\bunimplemented!\s*\(|\bTODO\b|\bFIXME\b|\bXXX\b/;
 // 2. A test made easier.

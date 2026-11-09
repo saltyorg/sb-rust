@@ -48,6 +48,11 @@ multiple-versions = "warn"
 wildcards = "deny"
 # Workspace path dependencies have no version requirement.
 allow-wildcard-paths = true
+# lzma-rust2 is `forbid(unsafe_code)` only without `optimization`
+# (sb-journal's xz payloads; ADR-013).
+features = [
+    { crate = "lzma-rust2", deny = ["optimization"] },
+]
 # Architecture: one entry per crates/ crate, listing the crates allowed to
 # depend on it directly (`wrappers`), from the capability map's
 # "Depends on" column. Added with each crate.
@@ -65,6 +70,11 @@ deny = [
     { crate = "sb-docker", wrappers = ["sb"] },
     # host: only the supported-release check so far, used by the binary.
     { crate = "sb-host", wrappers = ["sb"] },
+    # journal: sb's own journal reader, depending on nothing of sb's and
+    # wrapped by host (journal spec, "Capability map correction"). Its own
+    # name is its self dev-dependency, which turns `testing` on for its
+    # tests (sb-journal plan, "Code with no user yet").
+    { crate = "sb-journal", wrappers = ["sb-host", "sb-journal"] },
     # config: sb validate-config's schemas and checks, used by the binary.
     { crate = "sb-config", wrappers = ["sb"] },
 ]
