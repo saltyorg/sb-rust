@@ -470,7 +470,7 @@ As listed in the host spec's decision 6:
 - **deny.toml:** `sb-journal` gets `wrappers = ["sb-host"]`. The deny
   gate runs on crates/sb's graph, so sb-host depends on sb-journal in
   the first slice, which brings it under the gate.
-- **ADR-012:** owning the reader, against the library-first rule, with
+- **ADR-013:** owning the reader, against the library-first rule, with
   proto-journal's evidence, the upkeep (a `RELEASES` row per LTS,
   checked by the scheduled matrix) and decisions 1 and 2's divergences.
 
@@ -519,7 +519,7 @@ crates/journal/src/rules.rs    RELEASES and the unit rules
 crates/journal/src/testing.rs  crafted-file builder, JSON output, file-level access (`testing` feature)
 crates/journal/tests/          the container scripts and checks.sh
 crates/journal/examples/       the comparison CLI and the fuzz harness (on `testing`)
-docs/decisions/ADR-012-*.md    the ADR
+docs/decisions/ADR-013-*.md    the ADR
 ```
 
 The tools need file-level internals (`entry_before`, `all_entries`,
@@ -615,7 +615,7 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
    seqnum bisect is needed.
 6. **`scripts/check.sh full` passes,** within the ratchet.
 7. **Documents updated:**
-   - ADR-012;
+   - ADR-013;
    - the capability map (the `host` row and its dependencies, tokio for
      sb-host), the stack table and deny.toml;
    - term-ui's spec amendment (decision 5);

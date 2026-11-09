@@ -42,7 +42,7 @@ pass clippy and their tests.
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
 | Tests | All pass | `cargo test --workspace` | task | — |
 | Coverage | Changed lines ≥ 90% covered | `cargo llvm-cov --lcov` + `diff-cover --fail-under=90` | task | Maintainer chose stricter than the 80% default |
-| Mutation | ≥ 80% of viable mutants in changed code caught | `cargo mutants --in-diff` + score from `outcomes.json` | task | Maintainer chose stricter than the 60% default; mutation checks were already part of the work |
+| Mutation | ≥ 80% of viable mutants in changed code caught, totalled over the passes; a crate in check.sh's `MUTATION_TESTERS` is judged by its own and its listed crates' tests, every other crate by every crate's tests | `cargo mutants --in-diff` per pass + score from each `outcomes.json` | task | Maintainer chose stricter than the 60% default; mutation checks were already part of the work; the per-crate scope is ADR-012 |
 | Startup | `sb --help` and `sb version` median ≤ 10 ms | `hyperfine --warmup 5 --runs 50`, release build | task | sb-go takes about 18 ms; the prototypes about 2 ms |
 | Dependencies | No RustSec vulnerability, no unmaintained or yanked crate, only GPL-3.0-compatible licences, crates.io only | `cargo deny --manifest-path crates/sb/Cargo.toml check` (`deny.toml`) | full | External opinion: the RustSec database |
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`) | full | The compiler can't see the map; cargo-deny can |

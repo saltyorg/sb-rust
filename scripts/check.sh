@@ -70,6 +70,119 @@ fast() {
     gitleaks stdin --redact --no-banner --log-level error
 }
 
+# Mutation scope (ADR-012). A crate listed here has its mutants judged by
+# its own tests plus those of the crates named: the workspace crates whose
+# tests reach it. Every other crate's mutants are judged by every crate's
+# tests, since the end-to-end tests in `sb` cover the library crates
+# (cargo-mutants otherwise runs only the mutated package's tests). A
+# narrower scope can't turn a missed mutant into a caught one; it can only
+# lower the score, apart from a timeout or a broken build outside its tests
+# (ADR-012). Add a crate here when its tests start reaching a listed one.
+declare -A MUTATION_TESTERS=()
+
+# mutation_pass N ARGS...: one cargo-mutants pass over the changed code with
+# the given package arguments; appends its outcomes file to `outcomes`.
+mutation_pass() {
+  local n=$1 list rc=0
+  shift
+  local mutants=(cargo mutants --in-diff target/changes.diff "$@")
+  # A plain assignment, so a failing list stops the check (errexit is off
+  # inside an `if` condition, command substitutions included; and `local
+  # list=$(...)` would take local's status: declared apart above).
+  list=$("${mutants[@]}" --list)
+  # Changed tests or comments only: cargo-mutants writes no outcomes.
+  [[ -n $list ]] || return 0
+  echo "mutants: $*"
+  PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o "target/mutants-run-$n" \
+    --timeout 300 || rc=$?
+  # 0 all caught, 2 some missed, 3 some timed out: the score decides. Any
+  # other status (4: the unmutated baseline failed, so nothing was tested)
+  # means no verdict (https://mutants.rs/exit-codes.html).
+  case $rc in
+  0 | 2 | 3) ;;
+  *)
+    echo "check: cargo-mutants exited $rc for: $*" >&2
+    exit 2
+    ;;
+  esac
+  if [[ ! -f target/mutants-run-$n/mutants.out/outcomes.json ]]; then
+    echo "check: cargo-mutants wrote no outcomes" >&2
+    exit 2
+  fi
+  outcomes+=("target/mutants-run-$n/mutants.out/outcomes.json")
+}
+
+mutation_check() {
+  step "mutation score on changed code >= ${MUTATION_MIN}%"
+  need cargo-mutants
+  local c t key testers=() outcomes=()
+  # A key or tester that names no crate would silently change the scope.
+  for key in "${!MUTATION_TESTERS[@]}"; do
+    read -ra testers <<<"${MUTATION_TESTERS[$key]}"
+    for t in "$key" "${testers[@]}"; do
+      if [[ " ${crates[*]} " != *" $t "* ]]; then
+        echo "check: MUTATION_TESTERS names $t, which is not a crate" >&2
+        exit 2
+      fi
+    done
+  done
+  # Tracked changes plus untracked crate files (git diff alone misses new
+  # files; `--no-index` exits 1 when the files differ, which they do).
+  {
+    git diff "$base" -- crates
+    git ls-files -z --others --exclude-standard -- crates | while IFS= read -r -d '' f; do
+      git diff --no-index -- /dev/null "$f" || true
+    done
+  } >target/changes.diff
+  if [[ ! -s target/changes.diff ]]; then
+    skip "no changed crate code"
+    return
+  fi
+  # A mutant can make sb relaunch itself through sudo; as root with
+  # passwordless sudo that once looped into thousands of processes. A
+  # refusing sudo first on PATH keeps every mutant away from the real one.
+  mkdir -p target/no-sudo
+  printf '#!/bin/sh\necho "sudo blocked during mutation testing" >&2\nexit 97\n' \
+    >target/no-sudo/sudo
+  chmod 755 target/no-sudo/sudo
+  # Old outcomes go first, so a run that writes none can't pass on them.
+  rm -rf target/mutants.out target/mutants-run-*
+  local wide=()
+  for c in "${crates[@]}"; do
+    if [[ -z ${MUTATION_TESTERS[$c]+x} ]]; then wide+=(-p "$c"); fi
+  done
+  if ((${#wide[@]})); then mutation_pass 0 "${wide[@]}" "${test_pkg_args[@]}"; fi
+  local n=0
+  for c in "${crates[@]}"; do
+    [[ -n ${MUTATION_TESTERS[$c]+x} ]] || continue
+    n=$((n + 1))
+    local tests=(--test-package "$c")
+    read -ra testers <<<"${MUTATION_TESTERS[$c]}"
+    for t in "${testers[@]}"; do tests+=(--test-package "$t"); done
+    mutation_pass "$n" -p "$c" "${tests[@]}"
+  done
+  if ((${#outcomes[@]} == 0)); then
+    skip "no mutants in the changed code"
+    return
+  fi
+  node -e '
+    const [min, ...files] = process.argv.slice(1);
+    let caught = 0, missed = 0, timeout = 0;
+    for (const f of files) {
+      const d = require(require("path").resolve(f));
+      if (![d.caught, d.missed, d.timeout].every(Number.isInteger)) {
+        console.error("check: " + f + " has no caught, missed and timeout counts");
+        process.exit(2);
+      }
+      caught += d.caught; missed += d.missed; timeout += d.timeout;
+    }
+    const tested = caught + missed + timeout;
+    const score = tested ? (100 * caught) / tested : 100;
+    console.log("caught " + caught + " of " + tested + " viable mutants: " + score.toFixed(1) + "%");
+    process.exit(score >= Number(min) ? 0 : 1);
+  ' "$MUTATION_MIN" "${outcomes[@]}"
+}
+
 task() {
   fast
   step "tests"
@@ -88,54 +201,7 @@ task() {
   # they would not count as changed lines.
   diff-cover target/lcov.info --compare-branch="$base" --include-untracked \
     --fail-under="$COVERAGE_MIN"
-  step "mutation score on changed code >= ${MUTATION_MIN}%"
-  need cargo-mutants
-  # Tracked changes plus untracked crate files (git diff alone misses new
-  # files; `--no-index` exits 1 when the files differ, which they do).
-  {
-    git diff "$base" -- crates
-    git ls-files -z --others --exclude-standard -- crates | while IFS= read -r -d '' f; do
-      git diff --no-index -- /dev/null "$f" || true
-    done
-  } >target/changes.diff
-  if [[ ! -s target/changes.diff ]]; then
-    skip "no changed crate code"
-  else
-    # A mutant can make sb relaunch itself through sudo; as root with
-    # passwordless sudo that once looped into thousands of processes. A
-    # refusing sudo first on PATH keeps every mutant away from the real one.
-    mkdir -p target/no-sudo
-    printf '#!/bin/sh\necho "sudo blocked during mutation testing" >&2\nexit 97\n' \
-      >target/no-sudo/sudo
-    chmod 755 target/no-sudo/sudo
-    # Every crate's tests judge every mutant: end-to-end tests in `sb`
-    # cover code in the library crates (cargo-mutants otherwise runs only
-    # the mutated package's tests).
-    mutants=(cargo mutants --in-diff target/changes.diff "${pkg_args[@]}" "${test_pkg_args[@]}")
-    # Old outcomes go first, so a run that writes none can't pass on them.
-    rm -rf target/mutants.out
-    # A plain assignment, so a failing list stops the check (errexit is
-    # off inside an `if` condition, command substitutions included; and
-    # `local list=$(...)` would take local's status: declare it apart).
-    list=$("${mutants[@]}" --list)
-    if [[ -z $list ]]; then
-      # Changed tests or comments only: cargo-mutants writes no outcomes.
-      skip "no mutants in the changed code"
-    else
-      PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o target --timeout 300 || true
-      if [[ ! -f target/mutants.out/outcomes.json ]]; then
-        echo "check: cargo-mutants wrote no outcomes" >&2
-        exit 2
-      fi
-      node -e '
-        const d = require("./target/mutants.out/outcomes.json");
-        const tested = d.caught + d.missed + d.timeout;
-        const score = tested ? (100 * d.caught) / tested : 100;
-        console.log("caught " + d.caught + " of " + tested + " viable mutants: " + score.toFixed(1) + "%");
-        process.exit(score >= Number(process.argv[1]) ? 0 : 1);
-      ' "$MUTATION_MIN"
-    fi
-  fi
+  mutation_check
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine
   cargo build --quiet --release -p sb

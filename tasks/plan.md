@@ -1,4 +1,4 @@
-# Implementation Plan: `sb-journal` (draft, 2026-11-09)
+# Implementation Plan: `sb-journal` (approved 2026-11-09)
 
 Spec: [docs/specs/journal.md](../docs/specs/journal.md) (approved
 2026-11-09, decisions 1-9). Evidence:
@@ -34,7 +34,7 @@ what prove it.
     - sb-host's dependency on sb-journal;
     - the deny.toml entry;
     - the capability-map row;
-    - ADR-012, so every `Library-check:` line can cite the decision to
+    - ADR-013, so every `Library-check:` line can cite the decision to
       own the reader.
   - Binary size is unaffected until a consumer calls the crate, because
     the linker drops unused code. Startup is likewise unaffected.
@@ -171,7 +171,7 @@ records its exact count.
 | Success criterion 4: the fuzz harness | 8 |
 | Success criterion 5: the pread bound | 4 (crafted), 5 (matrix fixture) |
 | Success criterion 6: `check.sh full` | every checkpoint |
-| Success criterion 7: documents | 1 (ADR-012, map row, deny.toml), 9 (term-ui spec), 12 (the rest) |
+| Success criterion 7: documents | 1 (ADR-013, map row, deny.toml), 9 (term-ui spec), 12 (the rest) |
 | Success criterion 8: the security audit | 11 |
 
 ## Dependency graph
@@ -189,8 +189,8 @@ sanitizer, so it waits for T9 too.
 ## Task list
 
 ### Phase 1: The reader
-- [ ] Task 0: time one mutant; record count × time; split slices if needed
-- [ ] Task 1: crate skeleton, ADR-012, `hash.rs`, file objects and codecs
+- [x] Task 0: time one mutant (85 s all-crate, 2 s own-crate); ADR-012
+- [ ] Task 1: crate skeleton, ADR-013, `hash.rs`, file objects and codecs
 - [ ] Task 2: entry arrays, chains and `EntriesRev`
 - [ ] Task 3: walks, rules and `page` (Tail, Before)
 - [ ] Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound
@@ -226,7 +226,7 @@ sanitizer, so it waits for T9 too.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Mutation testing runs over a whole new crate. `cargo mutants --list` on the prototype gives 349 mutants in file.rs, 43 in hash.rs and 249 in query.rs, and every crate's tests judge each one. | High: a `task` run lasting hours | Before Task 1, time one mutant on the workspace and record count × time here. file.rs is already split across Tasks 1 and 2. If a slice still exceeds about an hour, split it further. Don't lower the bar. |
+| Mutation testing runs over a whole new crate (about 640 mutants in the prototype). Task 0 measured 85 s per mutant judged by every crate's tests, and 2 s by the crate's own. | High: a `task` run lasting hours | ADR-012: sb-journal is listed in check.sh's `MUTATION_TESTERS` from Task 1, so its mutants are judged by its own tests (sb-host's from Task 10). The bar is unchanged: a narrower scope can't turn a missed mutant into a caught one (ADR-012 has the two edge cases). |
 | Pedantic lints and coverage/mutation bars on about 3,800 ported lines | High: slow slices | Each slice adds at most two source modules, plus lib.rs and testing.rs. Run `check.sh task` per slice. If project figures move, a ratchet ADR, as ADR-011 did. |
 | The ported tests lose meaning in adaptation | High | In each slice, port the tests first and see them pass on the moved code before adapting it. Floor guard on assertions; per-slice test counts against the traceability table. |
 | `PageEnd` start or forward paging diverges from journalctl | Med | Crafted tests first. Before Tasks 6-7 build on them, matrix checks for the forward page, the flags, and writes between page and follow. |

@@ -26,27 +26,22 @@ sb runs as root only with `SB_LOG_DIR` in `target/` or a temporary directory.
 Container scripts run with a unique `SBJ_PREFIX`. A matrix mismatch that
 isn't a listed Difference stops for the maintainer. Nothing is pushed.
 
-## Task 0 (before Task 1): time the mutation run
+## Task 0 (before Task 1): time the mutation run (done)
 
-**Description:** Time one cargo-mutants mutant on the workspace, with
-every crate's tests, as `check.sh task` runs it. Use a scratch crate in
-a git worktree that depends on sb-host, removed afterwards. Record count
-× time in plan.md's mutation risk row. If Task 1 or Task 2 comes out
-over about an hour, split it further before starting.
+- [x] One mutant took 85 s judged by every crate's tests (59 s build,
+      25 s tests) and 2 s judged by its own crate's.
+- [x] ADR-012: per-crate mutation scope in `check.sh task`
+      (`MUTATION_TESTERS`), with the bar unchanged.
+- [x] Measured in place with cargo-mutants' own copy of the tree; no
+      worktree was needed. Its outputs were removed,
+      and `df -h` showed /opt at 62%.
 
-**Acceptance criteria:**
-- [ ] The figure and the resulting slice sizes are in tasks/plan.md.
-
-**Verification:** the worktree and its `target/` removed; `df -h`.
-**Dependencies:** None
-**Files:** `tasks/plan.md`
-**Scope:** XS
-
-## Task 1: crate skeleton, ADR-012, `hash.rs`, file objects and codecs
+## Task 1: crate skeleton, ADR-013, `hash.rs`, file objects and codecs
 
 **Description:**
 - Create `crates/journal` (sb-journal), with:
   - the `testing` feature and the self dev-dependency;
+  - a `MUTATION_TESTERS[sb-journal]=""` entry in check.sh (ADR-012);
   - module-level `cfg_attr(..., expect(dead_code))` for code with no
     user yet, each with a temporary CONSTRAINTS Exceptions row (plan,
     "Code with no user yet").
@@ -61,7 +56,7 @@ over about an hour, split it further before starting.
   - deny.toml gets `{ crate = "sb-journal", wrappers = ["sb-host"] }`;
   - the capability map gets the `sb-journal` row under `host`, and
     host's corrected dependencies.
-- Write ADR-012 (owning the reader, the divergences of decisions 1 and
+- Write ADR-013 (owning the reader, the divergences of decisions 1 and
   2, the upkeep per release).
 
 **Acceptance criteria:**
@@ -92,7 +87,7 @@ over about an hour, split it further before starting.
 **Dependencies:** Task 0
 **Files:** `crates/journal/{Cargo.toml,src/lib.rs,src/hash.rs,src/file.rs,src/testing.rs}`,
 `crates/host/Cargo.toml`, `Cargo.toml`, `deny.toml`,
-`docs/specs/capability-map.md`, `docs/decisions/ADR-012-*.md`,
+`docs/specs/capability-map.md`, `docs/decisions/ADR-013-*.md`,
 `CONSTRAINTS.md`, `scripts/check.sh`, `scripts/floor-guard.mjs`
 **Scope:** M (a large port, but one subsystem)
 
@@ -394,6 +389,7 @@ time and never committed.
   `drain(Follower, Limits) -> (Follower, Batch)`: the `Follower` moves
   in and comes back out.
 - Add tokio to host.md's dependency list.
+- Name sb-host in check.sh's `MUTATION_TESTERS[sb-journal]` (ADR-012).
 
 **Acceptance criteria:**
 - [ ] sb-host's tests run `page` (Tail, Before, After) and a follow on
@@ -410,7 +406,7 @@ time and never committed.
       code-reviewer on the commit.
 
 **Dependencies:** Task 7
-**Files:** `crates/host/{Cargo.toml,src/lib.rs,src/journal.rs}`, `Cargo.toml`, `docs/specs/host.md`
+**Files:** `crates/host/{Cargo.toml,src/lib.rs,src/journal.rs}`, `Cargo.toml`, `docs/specs/host.md`, `scripts/check.sh`
 **Scope:** M
 
 ## Task 11: the security audit and its fixes
