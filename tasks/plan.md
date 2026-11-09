@@ -197,7 +197,7 @@ sanitizer, so it waits for T9 too.
 ### Phase 1: The reader
 - [x] Task 0: time one mutant (85 s all-crate, 2 s own-crate); ADR-012
 - [x] Task 1: crate skeleton, ADR-013, `hash.rs`, file objects and codecs
-- [ ] Task 2: entry arrays, chains and `EntriesRev`
+- [x] Task 2: entry arrays, chains and `EntriesRev`
 - [ ] Task 3: walks, rules and `page` (Tail, Before)
 - [ ] Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound
 - [ ] Task 5: the comparison tools and container scripts on the crate

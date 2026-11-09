@@ -17,8 +17,8 @@
 //! Re-exported by `testing` (the feature), for the tools (journal spec,
 //! Project Structure); the library's own API is the crate root's.
 
-// The plain build has no user of this module yet: the walk (Task 2) and
-// `Journal::page` (Task 3) are its first. Under `testing` its items are
+// The plain build has no user of this module yet: the walk and
+// `Journal::page` (both Task 3) are its first. Under `testing` its items are
 // re-exported, for the tools and the tests (plan, "Code with no user yet"; CONSTRAINTS.md,
 // Exceptions E3).
 #![cfg_attr(
@@ -95,6 +95,8 @@ pub(crate) const OBJECT_HEADER: u64 = 16;
 pub(crate) const ENTRY_HEADER: u64 = 64;
 pub(crate) const DATA_HEADER: u64 = 64;
 const DATA_HEADER_COMPACT: u64 = 72;
+/// An entry array's head: its object header and next link.
+const ENTRY_ARRAY_HEADER: u64 = 24;
 
 /// The header fields this reader uses (journal-def.h `struct Header`).
 #[derive(Debug, Clone)]
@@ -612,6 +614,375 @@ impl JournalFile {
     }
 }
 
+// The entry lists: the file's own (every entry, in file order) and each
+// DATA object's ("Entry Array Objects").
+impl JournalFile {
+    /// Entry offsets of the whole file, in file order; an error if any
+    /// part of the chain can't be read. For the tools and tests only
+    /// (`testing`): the library walks newest first.
+    ///
+    /// # Errors
+    ///
+    /// The first error the walk met (see `EntriesRev`).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn all_entries(&self) -> Result<Vec<u64>> {
+        let mut out = self.all_entries_rev().collect::<Result<Vec<u64>>>()?;
+        out.reverse();
+        Ok(out)
+    }
+
+    /// Entry offsets of the whole file, newest first, read lazily.
+    #[must_use]
+    pub fn all_entries_rev(&self) -> EntriesRev<'_> {
+        EntriesRev::new(
+            self,
+            self.header.entry_array_offset,
+            self.header.n_entries,
+            None,
+        )
+    }
+
+    /// Entry offsets referencing a DATA object, newest first, read lazily:
+    /// the chain of entry arrays, then the in-line first entry.
+    #[must_use]
+    pub fn entries_of_rev(&self, d: &DataRef) -> EntriesRev<'_> {
+        // journald sets the in-line entry before it counts it
+        // (link_entry_into_array_plus_one): an offset with no count yet is
+        // a live file caught mid-link, nothing to read; a count with no
+        // offset is corruption (sd-journal's check_object).
+        if d.n_entries == 0 {
+            return EntriesRev::new(self, 0, 0, None);
+        }
+        if d.entry_offset == 0 {
+            let mut empty = EntriesRev::new(self, 0, 0, None);
+            empty.first.push(self.error(ReadErrorKind::Corrupt(format!(
+                "data {:#x} has a bad entry count",
+                d.offset
+            ))));
+            return empty;
+        }
+        EntriesRev::new(
+            self,
+            d.entry_array_offset,
+            d.n_entries - 1,
+            Some(d.entry_offset),
+        )
+    }
+
+    fn array_item_size(&self) -> u64 {
+        if self.header.compact() { 4 } else { 8 }
+    }
+
+    /// Whether an entry-array item `off` can be an entry's offset:
+    /// aligned, past the header, inside the arena (so never 0).
+    #[must_use]
+    pub fn plausible_entry(&self, off: u64) -> bool {
+        // `within` re-stats: an entry appended since the open is in the
+        // arena.
+        off.is_multiple_of(8) && self.within(off, ENTRY_HEADER)
+    }
+
+    /// An entry array's size and next link, from one read of its first 24
+    /// bytes.
+    fn array_head(&self, at: u64) -> Result<(u64, u64)> {
+        let (_, size, b) = self.object_head(at, OBJECT_ENTRY_ARRAY, ENTRY_ARRAY_HEADER)?;
+        self.check(size >= ENTRY_ARRAY_HEADER, || "short entry array".into())?;
+        Ok((size, le64(&b, 16)))
+    }
+}
+
+/// An entry array's items, as read: 4 bytes each in a compact file, 8
+/// otherwise (journal-def.h `EntryArrayObject`).
+fn array_items(b: &[u8], compact: bool) -> impl Iterator<Item = u64> + '_ {
+    let (width, read): (usize, fn(&[u8]) -> u64) = if compact {
+        (4, |c| u64::from(le32(c, 0)))
+    } else {
+        (8, |c| le64(c, 0))
+    };
+    b.chunks_exact(width).map(read)
+}
+
+/// Items read per `pread` when walking a chain backwards: 4 KiB of regular
+/// items. The arrays double in size, so the newest few hundred entries sit
+/// in the last one or two arrays and one read usually covers a page.
+const CHUNK_ITEMS: u64 = 512;
+
+/// An entry-array chain ("Entry Array Objects") walked from its end,
+/// newest first, reading only what is asked for.
+///
+/// Building it reads each array's 24-byte head to learn the chain's
+/// shape: an array's capacity, and the `n` links (from the file; capped by
+/// the most entries the arena could hold) spread over them. Items are then
+/// read in chunks from the last array backwards. journald only appends, so
+/// arrays link forward, past their own end (`forward`, which rules out a
+/// cycle), and their items never decrease; a decrease is corruption.
+///
+/// Corruption costs only what it hides, as sd-journal's `generic_array_get`
+/// has it: a chain that can't be followed ends there, and the arrays
+/// before the break are still walked; an array whose items go out of
+/// order, or can't be read, is left at that point and the walk goes on
+/// with the older arrays (going up, sd-journal "moves back to the previous
+/// entry array"). Each error is yielded where it was met: a chain cut
+/// short first (the entries past the break are the newest), an array left
+/// at its gap, so a caller that stops after N entries still sees it. An
+/// item that can't be an entry's offset is refused and skipped.
+///
+/// - A repeat is skipped, as sd-journal skips it: systemd 249 (22.04)
+///   links an entry once per item, and an entry carrying the same
+///   FIELD=value twice lists its offset twice in a row
+///   (`journal_file_append_entry` sorts items but keeps duplicates). It
+///   still counts against `n`, as systemd's `n_entries` rose once per link;
+///   reading past `n` would reach slots written after it was read.
+/// - A zero item (a slot never written, as after an unclean shutdown) is
+///   skipped (journal spec, Difference 8): our choice, not parity.
+///   sd-journal depends on the path: its unfiltered walk skips a bad item
+///   (`generic_array_get`), while its match path bisects
+///   (`generic_array_bisect`) and cuts the array short at a zero, or with
+///   v249's chain cache drops the file. UNVERIFIED against a real file
+///   with one.
+/// - A stale item naming a real older entry looks out of order: its array
+///   is left there, reported (Difference 10). The stale item itself comes
+///   out before the break is seen (it is lower than the item after it), so
+///   the walk's own check of each entry (`entry_before`, Task 3) is what
+///   keeps it from being shown wrong.
+#[derive(Debug)]
+pub struct EntriesRev<'a> {
+    f: &'a JournalFile,
+    /// (array offset, items not yet read) per array, oldest first; the
+    /// last one is being read.
+    arrays: Vec<(u64, u64)>,
+    /// Items read but not yet returned, in file order (popped from the end).
+    buf: Vec<u64>,
+    /// A DATA object's in-line first entry, returned last.
+    inline: Option<u64>,
+    last: Option<u64>,
+    /// Errors met building the chain: they stand for the arrays past a
+    /// break, newer than every entry reachable, so they come first.
+    first: Vec<ReadError>,
+}
+
+impl<'a> EntriesRev<'a> {
+    fn new(f: &'a JournalFile, mut at: u64, n: u64, inline: Option<u64>) -> Self {
+        let item = f.array_item_size();
+        let n = n.min((f.limit.get() - f.header.size) / ENTRY_HEADER);
+        let mut arrays = Vec::new();
+        let mut first = Vec::new();
+        let mut links = 0u64;
+        while at != 0 && links < n {
+            let (size, next) = match f.array_head(at) {
+                Ok(head) => head,
+                Err(e) => {
+                    first.push(e);
+                    break;
+                }
+            };
+            let count = ((size - ENTRY_ARRAY_HEADER) / item).min(n - links);
+            arrays.push((at, count));
+            links += count;
+            // A bad link ends the chain here; this array is still read.
+            match forward(&f.path, at, size, next) {
+                Ok(next) => at = next,
+                Err(e) => {
+                    first.push(e);
+                    break;
+                }
+            }
+        }
+        Self {
+            f,
+            arrays,
+            buf: Vec::new(),
+            inline,
+            last: None,
+            first,
+        }
+    }
+
+    fn corrupt(&self, what: String) -> ReadError {
+        self.f.error(ReadErrorKind::Corrupt(what))
+    }
+
+    /// The next older offset, an error where one was met, or `None` at
+    /// the end.
+    fn advance(&mut self) -> Option<Result<u64>> {
+        if !self.first.is_empty() {
+            return Some(Err(self.first.remove(0)));
+        }
+        let item = self.f.array_item_size();
+        loop {
+            if let Some(off) = self.buf.pop() {
+                if off == 0 {
+                    continue;
+                }
+                // `plausible_entry`: one that can't be an entry is refused
+                // before it becomes the order check's reference, so a
+                // bogus low item can't make every older item look out of
+                // order.
+                if !self.f.plausible_entry(off) {
+                    let at = self.arrays.last().map_or(0, |a| a.0);
+                    return Some(Err(self.corrupt(format!(
+                        "entry array {at:#x} lists {off:#x}, not an entry offset"
+                    ))));
+                }
+                match self.last {
+                    Some(last) if off == last => continue,
+                    Some(last) if off > last => {
+                        // Out of order: leave this array here, and start
+                        // the older one afresh (the walk's own checks,
+                        // `entry_before`, catch an entry out of place).
+                        let at = self.arrays.last().map_or(0, |a| a.0);
+                        self.buf.clear();
+                        self.arrays.pop();
+                        self.last = None;
+                        return Some(Err(
+                            self.corrupt(format!("entry array {at:#x} is out of order"))
+                        ));
+                    }
+                    _ => {}
+                }
+                self.last = Some(off);
+                return Some(Ok(off));
+            }
+            let Some((at, left)) = self.arrays.last_mut() else {
+                // The in-line entry may repeat as the chain's first item on
+                // systemd 249 (see above).
+                // It is the oldest: one newer than the chain is corruption.
+                let inline = self.inline.take()?;
+                if let Some(last) = self.last
+                    && inline > last
+                {
+                    return Some(Err(self.corrupt(format!(
+                        "in-line entry {inline:#x} is newer than its entry array chain"
+                    ))));
+                }
+                if Some(inline) == self.last {
+                    return None;
+                }
+                return Some(Ok(inline));
+            };
+            if *left == 0 {
+                self.arrays.pop();
+                continue;
+            }
+            let k = (*left).min(CHUNK_ITEMS);
+            let lo = *left - k;
+            let at = *at;
+            *left = lo;
+            match self.f.read(at + ENTRY_ARRAY_HEADER + lo * item, k * item) {
+                Ok(b) => {
+                    self.buf.clear();
+                    self.buf.extend(array_items(&b, self.f.header.compact()));
+                }
+                Err(e) => {
+                    self.arrays.pop();
+                    return Some(Err(e));
+                }
+            }
+        }
+    }
+}
+
+impl Iterator for EntriesRev<'_> {
+    type Item = Result<u64>;
+
+    /// The next older entry offset, or an error in the place it was met:
+    /// first for a chain cut short (its newest arrays are missing), at the
+    /// gap for an array left. The walk goes on after an error.
+    fn next(&mut self) -> Option<Result<u64>> {
+        self.advance()
+    }
+}
+
+/// Where a forward read of the file's entry array chain stopped (for
+/// following): the array object at `at`, whose first item is the chain's
+/// item number `base`. Arrays are only appended and linked forward, so a
+/// later read resumes there instead of walking the chain from its head.
+#[derive(Debug, Clone, Copy)]
+pub struct ArrayCursor {
+    at: u64,
+    base: u64,
+}
+
+impl JournalFile {
+    /// The offsets of the entries numbered `from` up to the header's
+    /// `n_entries` in the file's entry array chain (the list of every
+    /// entry, in file order), reading only those items. `cursor` is where
+    /// the last call stopped, and is updated. The header must be fresh
+    /// (`refresh`): journald writes the item before it raises `n_entries`
+    /// (`journal_file_link_entry`), so every item below it is there.
+    ///
+    /// An item that can't be an entry offset (`plausible_entry`: a zero
+    /// slot never written, as after an unclean shutdown, or a bogus value)
+    /// is returned as it is and the read stops after it: the caller
+    /// decides whether to wait for it or skip it (`EntriesRev` skips a
+    /// zero and reports a bogus one). Stopping there also keeps a bogus
+    /// high item from making the good items after it look out of order.
+    ///
+    /// Why not `EntriesRev`: it learns the whole chain's shape and walks
+    /// back from the end, for the newest N; a follow reads forward from a
+    /// position it already holds, a few items per wake.
+    ///
+    /// # Errors
+    ///
+    /// An entry array that can't be read, a link that doesn't point
+    /// forward, or items out of order.
+    pub fn entries_since(&self, cursor: &mut Option<ArrayCursor>, from: u64) -> Result<Vec<u64>> {
+        let item = self.array_item_size();
+        let n = self
+            .header
+            .n_entries
+            .min((self.limit.get() - self.header.size) / ENTRY_HEADER);
+        // A cursor at offset 0 is a read made before the file had an entry
+        // array: start from the head, which journald has linked since.
+        let mut c = match *cursor {
+            Some(c) if c.base <= from && c.at != 0 => c,
+            _ => ArrayCursor {
+                at: self.header.entry_array_offset,
+                base: 0,
+            },
+        };
+        let mut out: Vec<u64> = Vec::new();
+        let mut index = from;
+        while index < n && c.at != 0 {
+            let (size, next) = self.array_head(c.at)?;
+            let end = c.base.saturating_add((size - ENTRY_ARRAY_HEADER) / item);
+            if index < end {
+                let count = n.min(end) - index;
+                let b = self.read(
+                    c.at + ENTRY_ARRAY_HEADER + (index - c.base) * item,
+                    count * item,
+                )?;
+                for off in array_items(&b, self.header.compact()) {
+                    if !self.plausible_entry(off) {
+                        out.push(off);
+                        *cursor = Some(c);
+                        return Ok(out);
+                    }
+                    self.check(out.last().is_none_or(|&last| off > last), || {
+                        format!("entry array {:#x} is out of order", c.at)
+                    })?;
+                    out.push(off);
+                    index += 1;
+                }
+                // Stopped at n inside this array: resume here next time.
+                if index < end {
+                    break;
+                }
+            }
+            let next = forward(&self.path, c.at, size, next)?;
+            if next == 0 {
+                break;
+            }
+            c = ArrayCursor {
+                at: next,
+                base: end,
+            };
+        }
+        *cursor = Some(c);
+        Ok(out)
+    }
+}
+
 /// A link from the object at `at` (`size` bytes) to the next in its
 /// chain. journald appends objects and links a new one from an older one,
 /// so the next object starts past this one's end: a link backwards or into
@@ -915,6 +1286,30 @@ mod tests {
         matches!(kind, ReadErrorKind::OverLimit { .. })
     }
 
+    /// A regular (not compact) file: a 272-byte header, then one entry
+    /// array per element of `arrays`, each linked to the next. The items
+    /// are bare offsets: the chain walk doesn't read the entries they
+    /// point to. Built with the crafted-file builder; the prototype wrote
+    /// the same bytes by hand.
+    fn file_with_chain(arrays: &[&[u64]]) -> (tempfile::NamedTempFile, JournalFile) {
+        let mut c = Crafted::new();
+        let mut at = 272u64;
+        for (k, items) in arrays.iter().enumerate() {
+            let size = ENTRY_ARRAY_HEADER + 8 * items.len() as u64;
+            let next = if k + 1 < arrays.len() { at + size } else { 0 };
+            assert_eq!(c.array(items, items.len(), next), at);
+            at += size;
+        }
+        // Room in the arena for the entries the offsets name, so the cap on
+        // `n` (entries that fit the arena) doesn't bite.
+        c.b.resize(c.b.len() + 128 * 1024, 0);
+        c.write()
+    }
+
+    fn file_with_array(items: &[u64]) -> (tempfile::NamedTempFile, JournalFile) {
+        file_with_chain(&[items])
+    }
+
     /// A regular file whose arena is exactly `object`, at 272.
     fn file_with_object(object: &[u8]) -> (tempfile::NamedTempFile, JournalFile) {
         let mut c = Crafted::new();
@@ -958,7 +1353,7 @@ mod tests {
 
     #[test]
     fn an_unknown_incompatible_flag_names_the_file() {
-        let (t, _f) = Crafted::new().write();
+        let (t, _f) = file_with_array(&[]);
         let mut b = std::fs::read(t.path()).expect("read");
         b[12..16].copy_from_slice(&(1u32 << 5).to_le_bytes());
         std::fs::write(t.path(), &b).expect("write");
@@ -970,26 +1365,6 @@ mod tests {
             err.to_string()
                 .starts_with(&format!("{}: ", t.path().display()))
         );
-    }
-
-    /// The crafted journal itself is valid, so each corruption test below
-    /// changes one thing: the prototype's `the_crafted_journal_reads_back`
-    /// without its two walks, which Task 2 adds back under that name.
-    #[test]
-    fn the_crafted_journal_reads_back_without_the_walks() {
-        let (mut c, l) = journal(5);
-        let (_t, f) = c.write();
-        let shared = f.find_data(b"U=x").expect("lookup").expect("found");
-        assert_eq!(shared.offset, l.shared);
-        let entry = f.entry(l.entries[3]).expect("entry");
-        assert_eq!(entry.items, vec![l.shared, l.messages[3]]);
-        let payload = f.data_payload(l.messages[3]).expect("payload");
-        assert_eq!(payload, b"MESSAGE=m3");
-        let all = f.all_data().expect("hash table");
-        assert_eq!(all.len(), 6);
-        for (off, stored) in all {
-            assert_eq!(f.hash(&f.data_payload(off).expect("payload")), stored);
-        }
     }
 
     // Bad object sizes.
@@ -1146,25 +1521,6 @@ mod tests {
     }
 
     // Bad hash-table sizes.
-
-    /// Difference 9 before the walk exists: a bad table size fails
-    /// lookups, and the file still opens and its entries read. Task 2
-    /// ports the prototype's test, which walks the entry list as well.
-    #[test]
-    fn a_bad_hash_table_size_fails_lookups_and_entries_still_read() {
-        for size in [0, 8, 7 * 16 + 8, 1 << 40] {
-            let (mut c, l) = journal(3);
-            c.set(H_HASH_TABLE_SIZE, size);
-            let (_t, f) = c.write();
-            let err = f.find_data(b"U=x").expect_err("lookup refused");
-            assert!(err.to_string().contains("bad data hash table"), "{err}");
-            assert!(f.all_data().is_err(), "size {size}");
-            for (&e, &m) in l.entries.iter().zip(&l.messages) {
-                assert_eq!(f.entry(e).expect("entry").items, vec![l.shared, m]);
-                assert!(f.data_payload(m).is_ok());
-            }
-        }
-    }
 
     #[test]
     fn a_hash_table_inside_the_header_is_refused() {
@@ -1505,6 +1861,38 @@ mod tests {
 
     fn set_incompatible(c: &mut Crafted, flags: u32) {
         c.b[12..16].copy_from_slice(&flags.to_le_bytes());
+    }
+
+    /// New in the crate: a compact file's entry arrays hold 4-byte items,
+    /// walked back and read forward alike.
+    #[test]
+    fn a_compact_files_entry_arrays_hold_four_byte_items() {
+        let mut c = Crafted::new();
+        set_incompatible(&mut c, INCOMPAT_COMPACT);
+        let items = [0x1000u32, 0x1008, 0x1010];
+        let second_body: Vec<u8> =
+            [0u64.to_le_bytes().as_slice(), &0x1018u32.to_le_bytes()].concat();
+        // The first array: its object header, next link and three 4-byte
+        // items, padded to 8.
+        let second_at: u64 = 272 + (OBJECT_HEADER + 8 + 3 * 4).next_multiple_of(8);
+        let mut body = second_at.to_le_bytes().to_vec();
+        for i in items {
+            body.extend_from_slice(&i.to_le_bytes());
+        }
+        let first = c.object(OBJECT_ENTRY_ARRAY, 0, &body);
+        let second = c.object(OBJECT_ENTRY_ARRAY, 0, &second_body);
+        assert_eq!((first, second), (272, second_at));
+        c.b.resize(0x2000, 0);
+        c.set(H_N_ENTRIES, 4);
+        c.set(H_ENTRY_ARRAY_OFFSET, first);
+        let (_t, f) = c.write();
+        let walked: Vec<u64> = f.all_entries_rev().collect::<Result<_>>().expect("walk");
+        assert_eq!(walked, vec![0x1018, 0x1010, 0x1008, 0x1000]);
+        let mut cursor = None;
+        assert_eq!(
+            f.entries_since(&mut cursor, 1).expect("forward"),
+            vec![0x1008, 0x1010, 0x1018]
+        );
     }
 
     /// A compact file's entries list 4-byte items, and its DATA payloads
@@ -1961,5 +2349,538 @@ mod tests {
         let err = decompress_within(COMPRESSED_ZSTD, raw, 4096, &mut cost).expect_err("bad block");
         assert!(err.to_string().starts_with("zstd: "), "{err}");
         assert_eq!(cost, 1024);
+    }
+
+    // Entry arrays and chains (ported in Task 2).
+
+    /// The chain at 272 with `n` links, newest first.
+    fn walk(f: &JournalFile, n: u64) -> Result<Vec<u64>> {
+        EntriesRev::new(f, 272, n, None).collect()
+    }
+
+    /// Write the header's entry list (count and first array) to the file
+    /// and read it back, as a follow sees journald's updates.
+    fn set_list(t: &tempfile::NamedTempFile, f: &mut JournalFile, n: u64, array: u64) {
+        let mut b = std::fs::read(t.path()).expect("read");
+        b[152..160].copy_from_slice(&n.to_le_bytes());
+        b[176..184].copy_from_slice(&array.to_le_bytes());
+        std::fs::write(t.path(), &b).expect("write");
+        f.refresh().expect("refresh");
+    }
+
+    fn split(walk: EntriesRev<'_>) -> Split {
+        let mut s = Split {
+            offsets: Vec::new(),
+            error: None,
+        };
+        for r in walk {
+            match r {
+                Ok(off) => s.offsets.push(off),
+                Err(e) => {
+                    s.error.get_or_insert(e);
+                }
+            }
+        }
+        s.offsets.reverse();
+        s
+    }
+
+    /// A walk's readable offsets, in file order, and its first error.
+    struct Split {
+        offsets: Vec<u64>,
+        error: Option<ReadError>,
+    }
+
+    impl Split {
+        /// The offsets of a walk that met no error.
+        fn ok(self) -> Vec<u64> {
+            if let Some(e) = self.error {
+                panic!("walk failed: {e}");
+            }
+            self.offsets
+        }
+    }
+
+    #[test]
+    fn a_repeated_offset_is_skipped() {
+        let (_t, f) = file_with_array(&[1000, 1000, 2000]);
+        assert_eq!(walk(&f, 3).expect("reads"), vec![2000, 1000]);
+    }
+
+    #[test]
+    fn a_decreasing_offset_is_corruption() {
+        let (_t, f) = file_with_array(&[2000, 1000]);
+        assert!(walk(&f, 2).is_err());
+    }
+
+    /// `n` counts links, repeats included (systemd 249 raises `n_entries`
+    /// once per item): an item past the n-th link was written after the
+    /// header was read and isn't returned.
+    #[test]
+    fn n_counts_raw_links_including_repeats() {
+        let (_t, f) = file_with_array(&[1000, 1000, 2000, 3000]);
+        assert_eq!(walk(&f, 3).expect("reads"), vec![2000, 1000]);
+    }
+
+    #[test]
+    fn the_inline_entry_repeated_by_the_chain_appears_once() {
+        let (_t, f) = file_with_array(&[1000, 2000]);
+        let d = DataRef {
+            offset: 0,
+            n_entries: 3,
+            entry_offset: 1000,
+            entry_array_offset: 272,
+        };
+        let got: Vec<u64> = f.entries_of_rev(&d).collect::<Result<_>>().expect("reads");
+        assert_eq!(got, vec![2000, 1000]);
+    }
+
+    /// New in the crate: a DATA object's count covers the in-line entry
+    /// plus its array's links, so array items written after the count
+    /// was read aren't returned.
+    #[test]
+    fn a_data_objects_count_bounds_its_array() {
+        let (_t, f) = file_with_array(&[2000, 3000, 4000]);
+        let d = DataRef {
+            offset: 0,
+            n_entries: 3,
+            entry_offset: 1000,
+            entry_array_offset: 272,
+        };
+        let got: Vec<u64> = f.entries_of_rev(&d).collect::<Result<_>>().expect("reads");
+        assert_eq!(got, vec![3000, 2000, 1000]);
+    }
+
+    /// A slot never written (an unclean shutdown) is skipped, as
+    /// sd-journal skips a bad item, and the walk goes on past it.
+    #[test]
+    fn a_zero_item_is_skipped() {
+        let (_t, f) = file_with_array(&[1000, 0, 3000]);
+        assert_eq!(walk(&f, 3).expect("reads"), vec![3000, 1000]);
+    }
+
+    /// Several arrays, one larger than a read chunk, with `n` ending inside
+    /// the last array: every item once, newest first, and none past `n`.
+    #[test]
+    fn a_chain_reads_back_across_arrays_and_chunks() {
+        let first: Vec<u64> = (1..=4).map(|i| 4096 + i * 8).collect();
+        let second: Vec<u64> = (5..=1204).map(|i| 4096 + i * 8).collect();
+        let third: Vec<u64> = (1205..=1300).map(|i| 4096 + i * 8).collect();
+        let (_t, f) = file_with_chain(&[&first, &second, &third]);
+        let n = 1250;
+        let want: Vec<u64> = (1..=n).rev().map(|i| 4096 + i * 8).collect();
+        assert_eq!(walk(&f, n).expect("reads"), want);
+        // Only what is asked for is read: the first few come from the end,
+        // from one chunk of the last array, and the others aren't touched.
+        let mut w = EntriesRev::new(&f, 272, n, None);
+        let head: Vec<u64> = w.by_ref().take(3).collect::<Result<_>>().expect("reads");
+        assert_eq!(
+            head,
+            vec![4096 + n * 8, 4096 + (n - 1) * 8, 4096 + (n - 2) * 8]
+        );
+        let left: Vec<u64> = w.arrays.iter().map(|a| a.1).collect();
+        assert_eq!(left, vec![4, 1200, 0]);
+        assert_eq!(w.buf.len(), 46 - 3);
+    }
+
+    /// The in-line entry is the oldest: one newer than the chain is
+    /// corruption, not a match out of order.
+    #[test]
+    fn an_inline_entry_newer_than_the_chain_is_corruption() {
+        let (_t, f) = file_with_array(&[1000, 2000]);
+        let d = DataRef {
+            offset: 0,
+            n_entries: 3,
+            entry_offset: 3000,
+            entry_array_offset: 272,
+        };
+        let got: Result<Vec<u64>> = f.entries_of_rev(&d).collect();
+        assert!(got.is_err());
+    }
+
+    /// An entry array too short for its next link is refused, not read
+    /// past.
+    #[test]
+    fn a_short_entry_array_is_refused() {
+        let (_t, f) = file_with_object(&object_bytes(OBJECT_ENTRY_ARRAY, 20, 24));
+        let err = f.array_head(272).expect_err("refused");
+        assert!(err.to_string().contains("short entry array"));
+    }
+
+    #[test]
+    fn entries_since_reads_across_arrays_up_to_n_entries() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &[1200, 1304, 0, 0]]);
+        set_list(&t, &mut f, 3, 272);
+        let mut c = None;
+        assert_eq!(
+            f.entries_since(&mut c, 0).expect("reads"),
+            vec![1000, 1104, 1200]
+        );
+        let mut c = None;
+        assert_eq!(f.entries_since(&mut c, 1).expect("reads"), vec![1104, 1200]);
+    }
+
+    /// The cursor resumes where the last read stopped, also when that was
+    /// exactly the end of an array.
+    #[test]
+    fn entries_since_resumes_from_its_cursor() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &[1200, 1304, 1400, 1504]]);
+        set_list(&t, &mut f, 2, 272);
+        let mut c = None;
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1104]);
+        set_list(&t, &mut f, 4, 272);
+        assert_eq!(f.entries_since(&mut c, 2).expect("reads"), vec![1200, 1304]);
+        assert_eq!(f.entries_since(&mut c, 4).expect("reads"), [] as [u64; 0]);
+        set_list(&t, &mut f, 6, 272);
+        assert_eq!(f.entries_since(&mut c, 4).expect("reads"), vec![1400, 1504]);
+        // The cursor is on the second array, not back at the head.
+        assert_eq!(c.map(|c| c.base), Some(2));
+    }
+
+    /// An item that can't be an entry offset comes back as it is, last,
+    /// so a bogus high one doesn't make the good items after it look out
+    /// of order.
+    #[test]
+    fn entries_since_returns_a_bogus_item_and_stops() {
+        let (t, mut f) = file_with_chain(&[&[1000, 0xFFFF_FFF8, 1200, 1304]]);
+        set_list(&t, &mut f, 4, 272);
+        assert_eq!(
+            f.entries_since(&mut None, 0).expect("reads"),
+            vec![1000, 0xFFFF_FFF8]
+        );
+        assert_eq!(
+            f.entries_since(&mut None, 2).expect("reads"),
+            vec![1200, 1304]
+        );
+    }
+
+    /// A slot not written below `n_entries` comes back as 0, last.
+    #[test]
+    fn entries_since_returns_a_zero_item_and_stops() {
+        let (t, mut f) = file_with_chain(&[&[1000, 0, 1200]]);
+        set_list(&t, &mut f, 3, 272);
+        assert_eq!(f.entries_since(&mut None, 0).expect("reads"), vec![1000, 0]);
+        assert_eq!(f.entries_since(&mut None, 2).expect("reads"), vec![1200]);
+    }
+
+    /// A file read while it had no entries (no entry array yet) is read
+    /// from its head once it has them: the empty read leaves no cursor.
+    #[test]
+    fn entries_since_after_an_empty_read() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1104]]);
+        set_list(&t, &mut f, 0, 0);
+        let mut c = None;
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), [] as [u64; 0]);
+        set_list(&t, &mut f, 2, 272);
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1104]);
+    }
+
+    #[test]
+    fn entries_since_refuses_a_decreasing_offset() {
+        let (t, mut f) = file_with_chain(&[&[2000], &[1000]]);
+        set_list(&t, &mut f, 2, 272);
+        assert!(f.entries_since(&mut None, 0).is_err());
+    }
+
+    // New in the crate: `entries_since`'s edges (found by cargo-mutants).
+
+    /// The file's own list names each entry once, so a repeat there is
+    /// out of order too (only DATA objects' lists repeat, on 249).
+    #[test]
+    fn entries_since_refuses_a_repeated_offset() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1000]]);
+        set_list(&t, &mut f, 2, 272);
+        let err = f.entries_since(&mut None, 0).expect_err("repeat");
+        assert!(err.to_string().contains("is out of order"), "{err}");
+    }
+
+    /// A read that stops at `n_entries` inside an array keeps its cursor
+    /// on that array, to resume there.
+    #[test]
+    fn entries_since_stopping_inside_an_array_stays_on_it() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &[1200, 1304]]);
+        set_list(&t, &mut f, 1, 272);
+        let mut c = None;
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000]);
+        assert_eq!(c.map(|c| (c.at, c.base)), Some((272, 0)));
+    }
+
+    /// A header counting entries with no entry array is corrupt, and is
+    /// read as empty without a report. This pins the prototype's
+    /// behaviour (the whole-file walk does the same); the follow task
+    /// decides whether to report it, as `entries_of_rev` reports the same
+    /// shape in a DATA object.
+    #[test]
+    fn entries_since_with_a_count_and_no_array_reads_nothing_unreported() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1104]]);
+        set_list(&t, &mut f, 2, 0);
+        assert_eq!(
+            f.entries_since(&mut None, 0).expect("reads"),
+            [] as [u64; 0]
+        );
+    }
+
+    /// A read from before the cursor's array (a rewind) starts again from
+    /// the chain's head rather than reading back from the cursor.
+    #[test]
+    fn entries_since_from_before_its_cursor_starts_from_the_head() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &[1200, 1304, 1400, 1504]]);
+        set_list(&t, &mut f, 4, 272);
+        let mut c = None;
+        assert_eq!(
+            f.entries_since(&mut c, 0).expect("reads"),
+            vec![1000, 1104, 1200, 1304]
+        );
+        assert_eq!(c.map(|c| c.base), Some(2));
+        assert_eq!(
+            f.entries_since(&mut c, 1).expect("reads"),
+            vec![1104, 1200, 1304]
+        );
+    }
+
+    /// An idle wake (nothing past `n_entries`) reads no entry array: one
+    /// past `n`, here a broken one, isn't touched.
+    #[test]
+    fn entries_since_at_n_reads_no_array() {
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &[1200, 1304]]);
+        set_list(&t, &mut f, 2, 272);
+        let mut c = None;
+        assert_eq!(f.entries_since(&mut c, 0).expect("reads"), vec![1000, 1104]);
+        assert_eq!(c.map(|c| (c.at, c.base)), Some((312, 2)));
+        let mut b = std::fs::read(t.path()).expect("read");
+        b[312] = 0; // the second array's type byte
+        std::fs::write(t.path(), &b).expect("write");
+        assert_eq!(f.entries_since(&mut c, 2).expect("idle"), [] as [u64; 0]);
+    }
+
+    /// No more entries are read than the arena could hold, whatever the
+    /// header counts: 64 bytes each past the header. The items name
+    /// offsets inside the array itself, which is fine here because
+    /// `entries_since` never reads the entries.
+    #[test]
+    fn entries_since_reads_no_more_than_the_arena_holds() {
+        let mut c = Crafted::new();
+        let items: Vec<u64> = (0..70).map(|k| 272 + 8 * k).collect();
+        let array = c.array(&items, items.len(), 0);
+        c.set(H_N_ENTRIES, 70);
+        c.set(H_ENTRY_ARRAY_OFFSET, array);
+        let (_t, f) = c.write();
+        let room = (c.b.len() as u64 - 272) / ENTRY_HEADER;
+        assert_eq!(room, 9);
+        let got = f.entries_since(&mut None, 0).expect("reads");
+        assert_eq!(got, items[..9]);
+    }
+
+    #[test]
+    fn all_entries_is_in_file_order() {
+        let (_t, mut f) = file_with_array(&[1000, 2000, 3000]);
+        f.header.entry_array_offset = 272;
+        f.header.n_entries = 3;
+        assert_eq!(f.all_entries().expect("reads"), vec![1000, 2000, 3000]);
+    }
+
+    /// An array whose items go out of order is left at that point, and
+    /// the older arrays are still walked, as sd-journal moves back to the
+    /// previous array going up; the error comes at the gap.
+    #[test]
+    fn an_out_of_order_array_is_left_and_the_older_ones_walked() {
+        let (_t, f) = file_with_chain(&[&[1000, 2000], &[3000, 9000, 4000, 5000]]);
+        let got: Vec<std::result::Result<u64, ()>> = EntriesRev::new(&f, 272, 6, None)
+            .map(|r| r.map_err(|_| ()))
+            .collect();
+        // The error at the gap, where the array was left.
+        assert_eq!(got, vec![Ok(5000), Ok(4000), Err(()), Ok(2000), Ok(1000)]);
+    }
+
+    /// An item that can't be an entry offset (a bogus low value) is
+    /// refused before it becomes the order check's reference: it doesn't
+    /// make every older item look out of order.
+    #[test]
+    fn a_bogus_low_item_hides_nothing_else() {
+        let (_t, f) = file_with_chain(&[&[1000, 2000], &[3000, 0x10, 5000]]);
+        let s = split(EntriesRev::new(&f, 272, 5, None));
+        assert!(s.error.is_some());
+        assert_eq!(s.offsets, vec![1000, 2000, 3000, 5000]);
+    }
+
+    /// New in the crate: an array whose items can't be read any more (the
+    /// file cut short after the walk learnt the chain's shape) is left
+    /// with an error, and the older arrays are still walked.
+    #[test]
+    fn an_array_cut_off_after_the_walk_starts_is_left() {
+        let (t, f) = file_with_chain(&[&[1000, 2000], &[3000, 4000]]);
+        let mut walk = EntriesRev::new(&f, 272, 4, None);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open")
+            .set_len(272 + 40 + 24)
+            .expect("truncate");
+        let got: Vec<std::result::Result<u64, ReadErrorKind>> =
+            walk.by_ref().map(|r| r.map_err(|e| e.kind)).collect();
+        assert!(
+            matches!(got.first(), Some(Err(ReadErrorKind::Io { .. }))),
+            "{got:?}"
+        );
+        assert_eq!(
+            got[1..]
+                .iter()
+                .map(|r| r.as_ref().ok().copied())
+                .collect::<Vec<_>>(),
+            vec![Some(2000), Some(1000)]
+        );
+    }
+
+    /// A chain cut short hides its newest entries: the error comes first,
+    /// so a caller taking only the newest few still sees it.
+    #[test]
+    fn a_chain_cut_short_reports_before_its_older_entries() {
+        let (t, f) = file_with_chain(&[&[1000, 2000], &[3000, 4000]]);
+        let mut b = std::fs::read(t.path()).expect("read");
+        // The second array's type byte.
+        b[272 + 24 + 16] = 0;
+        std::fs::write(t.path(), &b).expect("write");
+        let mut walk = EntriesRev::new(&f, 272, 4, None);
+        assert!(walk.next().expect("an item").is_err());
+        assert_eq!(walk.next().expect("an item").expect("readable"), 2000);
+    }
+
+    /// The crafted journal itself is valid, so each corruption test below
+    /// changes one thing.
+    #[test]
+    fn the_crafted_journal_reads_back() {
+        let (mut c, l) = journal(5);
+        let (_t, f) = c.write();
+        assert_eq!(split(f.all_entries_rev()).ok(), l.entries);
+        let shared = f.find_data(b"U=x").expect("lookup").expect("found");
+        assert_eq!(split(f.entries_of_rev(&shared)).ok(), l.entries);
+        let entry = f.entry(l.entries[3]).expect("entry");
+        assert_eq!(entry.items, vec![l.shared, l.messages[3]]);
+        let payload = f.data_payload(l.messages[3]).expect("payload");
+        assert_eq!(payload, b"MESSAGE=m3");
+        let all = f.all_data().expect("hash table");
+        assert_eq!(all.len(), 6);
+        for (off, stored) in all {
+            assert_eq!(f.hash(&f.data_payload(off).expect("payload")), stored);
+        }
+    }
+
+    #[test]
+    fn an_entry_array_running_past_the_arena_ends_the_walk() {
+        let (mut c, l) = journal(3);
+        c.set(l.main_array + O_SIZE, 1 << 40);
+        let (_t, f) = c.write();
+        let walk = split(f.all_entries_rev());
+        assert!(walk.error.is_some());
+        assert_eq!(walk.offsets, [] as [u64; 0]);
+    }
+
+    #[test]
+    fn an_array_linking_to_itself_or_backwards_ends_the_walk() {
+        for back in [0, 8, 64] {
+            let (mut c, l) = journal(3);
+            c.set(l.main_array + A_NEXT, l.main_array - back);
+            c.set(H_N_ENTRIES, 10);
+            let (_t, f) = c.write();
+            let walk = split(f.all_entries_rev());
+            assert!(walk.error.is_some(), "back {back}");
+            assert_eq!(walk.offsets, l.entries);
+        }
+    }
+
+    /// Objects never overlap: journald appends each after the last. A link
+    /// into the current object's own bytes, which a crafted file can make
+    /// look like an array, is corruption; refusing it also keeps a walk
+    /// linear in the file's size.
+    #[test]
+    fn an_array_linking_into_its_own_body_ends_the_walk() {
+        let (mut c, l) = journal(3);
+        c.set(l.main_array + A_NEXT, l.main_array + A_ITEMS);
+        c.set(H_N_ENTRIES, 10);
+        let (_t, f) = c.write();
+        let walk = split(f.all_entries_rev());
+        let err = walk.error.expect("refused");
+        assert!(err.to_string().contains("doesn't point past"), "{err}");
+        assert_eq!(walk.offsets, l.entries);
+    }
+
+    #[test]
+    fn links_outside_the_arena_are_refused() {
+        let (mut c, l) = journal(3);
+        let end = c.b.len() as u64;
+        c.set(l.main_array + A_NEXT, end + 4096);
+        c.set(H_N_ENTRIES, 10);
+        c.set(l.messages[2] + D_ENTRY_ARRAY, end + 8);
+        c.set(l.messages[2] + D_N_ENTRIES, 3);
+        c.set(l.entries[1] + E_ITEMS, end + 16);
+        let (_t, f) = c.write();
+        let walk = split(f.all_entries_rev());
+        assert!(walk.error.is_some());
+        assert_eq!(walk.offsets, l.entries);
+        let entry = f.entry(l.entries[1]).expect("the entry itself is fine");
+        assert!(f.data_payload(entry.items[0]).is_err());
+        let message = f.find_data(b"MESSAGE=m2").expect("lookup").expect("found");
+        let walk = split(f.entries_of_rev(&message));
+        assert!(walk.error.is_some());
+        assert_eq!(walk.offsets, vec![l.entries[2]]);
+    }
+
+    /// A file cut short (a copy cut off, or a full disk): what lies before
+    /// the cut is still read, the rest is an error.
+    #[test]
+    fn a_truncated_file_still_reads_what_lies_before_the_cut() {
+        let (mut c, l) = journal(6);
+        let (t, _f) = c.write();
+        let cut = l.entries[4] + 8;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open")
+            .set_len(cut)
+            .expect("truncate");
+        let f = JournalFile::open(t.path()).expect("opens");
+        let walk = split(f.all_entries_rev());
+        assert!(walk.error.is_some());
+        assert_eq!(walk.offsets, l.entries[..4]);
+        for &offset in &l.entries[..4] {
+            let entry = f.entry(offset).expect("before the cut");
+            assert!(f.data_payload(entry.items[1]).is_ok());
+        }
+        assert!(f.entry(l.entries[4]).is_err());
+        assert!(f.entry(l.entries[5]).is_err());
+    }
+
+    /// sd-journal refuses the whole file over these (journal-file.c,
+    /// `hash_table_is_valid`). This reader still reads its entries, but no
+    /// lookup goes through the table, so a bad size can't silently find
+    /// nothing.
+    #[test]
+    fn a_bad_hash_table_size_fails_lookups_not_the_file() {
+        for size in [0, 8, 7 * 16 + 8, 1 << 40] {
+            let (mut c, l) = journal(3);
+            c.set(H_HASH_TABLE_SIZE, size);
+            let (_t, f) = c.write();
+            assert!(f.find_data(b"U=x").is_err(), "size {size}");
+            assert!(f.all_data().is_err(), "size {size}");
+            let walk = split(f.all_entries_rev()).ok();
+            assert_eq!(walk, l.entries);
+        }
+    }
+
+    #[test]
+    fn a_data_object_with_one_of_entry_offset_and_count_is_corruption() {
+        let (_t, f) = file_with_array(&[]);
+        let d = |n_entries, entry_offset| DataRef {
+            offset: 0,
+            n_entries,
+            entry_offset,
+            entry_array_offset: 0,
+        };
+        // A count with no in-line entry: corruption.
+        assert!(split(f.entries_of_rev(&d(2, 0))).error.is_some());
+        // An in-line entry not counted yet: journald mid-link, nothing to
+        // read and nothing wrong.
+        let s = split(f.entries_of_rev(&d(0, 1000)));
+        assert!(s.error.is_none() && s.offsets.is_empty());
     }
 }

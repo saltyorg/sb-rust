@@ -6,8 +6,8 @@
 // One file's reading, for the tools (the journal spec, Project
 // Structure: the tools need file-level access).
 pub use crate::file::{
-    DataRef, Entry, Header, INCOMPAT_COMPACT, INCOMPAT_KEYED_HASH, INCOMPAT_KNOWN, INCOMPAT_LZ4,
-    INCOMPAT_XZ, INCOMPAT_ZSTD, JournalFile, SIGNATURE, hex_id,
+    ArrayCursor, DataRef, EntriesRev, Entry, Header, INCOMPAT_COMPACT, INCOMPAT_KEYED_HASH,
+    INCOMPAT_KNOWN, INCOMPAT_LZ4, INCOMPAT_XZ, INCOMPAT_ZSTD, JournalFile, SIGNATURE, hex_id,
 };
 
 /// Crafted journal files for the corruption tests: a regular (not

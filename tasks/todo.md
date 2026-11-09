@@ -98,12 +98,12 @@ isn't a listed Difference stops for the maintainer. Nothing is pushed.
 inline entry, repeats, `all_entries`, `entries_since` and `EntriesRev`.
 
 **Acceptance criteria:**
-- [ ] file.rs's remaining tests (24, plus the 2 originals the stand-ins
+- [x] file.rs's remaining tests (24, plus the 2 originals the stand-ins
       replace: 26) pass. The commit records that the 57 (31 + 26) are
       all ported.
-- [ ] A zero item is skipped (Difference 8). A stale item naming an
+- [x] A zero item is skipped (Difference 8). A stale item naming an
       older entry ends its array, and that is reported (Difference 10).
-- [ ] Task 1 ported 31 of file.rs's 57 tests unchanged and deferred 26
+- [x] Task 1 ported 31 of file.rs's 57 tests unchanged and deferred 26
       that need the entry-array side: 24, plus
       `the_crafted_journal_reads_back` and
       `a_bad_hash_table_size_fails_lookups_not_the_file`, which Task 2
@@ -113,8 +113,8 @@ inline entry, repeats, `all_entries`, `entries_since` and `EntriesRev`.
       `file_with_chain` and `ENTRY_ARRAY_HEADER` come with them.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
-- [ ] library-reviewer and code-reviewer on the commit.
+- [x] `cargo test -p sb-journal`; `scripts/check.sh task`.
+- [x] library-reviewer and code-reviewer on the commit.
 
 **Dependencies:** Task 1
 **Files:** `crates/journal/src/{file.rs,testing.rs}`, `CONSTRAINTS.md` (an exception row if still needed)
@@ -494,6 +494,14 @@ in the commit body. The matrix runs again where a fix touches reading.
   controller's Rust rewrite, the maintainer's (docker decision 9).
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
+
+- A mutant can make a walk allocate without bound (`advance ->
+  Some(Ok(0))`). Under a `systemd-run` MemoryMax scope, systemd's default
+  OOMPolicy then stops the whole scope, cargo-mutants included. Run
+  `check.sh task` with `-p OOMPolicy=continue` added, so only the test
+  process dies and the mutant counts as caught. Consider a per-test
+  memory cap inside check.sh's mutation pass, so an uncapped run can't
+  exhaust the host.
 
 - Task 3 or 6: a guessed `object_head` read that runs past a file cut
   fails an intact object before the cut with `Io` until the header is
