@@ -14,18 +14,18 @@
 //! offsets rather than zerocopy or binrw: neither is in the tree, and
 //! their derived casts sit badly with `forbid(unsafe_code)`.
 //!
-//! Public under the `testing` feature, for the tools (journal spec,
+//! Re-exported by `testing` (the feature), for the tools (journal spec,
 //! Project Structure); the library's own API is the crate root's.
 
 // The plain build has no user of this module yet: the walk (Task 2) and
-// `Journal::page` (Task 3) are its first. Under `testing` it is public, for
-// the tools and the tests (plan, "Code with no user yet"; CONSTRAINTS.md,
+// `Journal::page` (Task 3) are its first. Under `testing` its items are
+// re-exported, for the tools and the tests (plan, "Code with no user yet"; CONSTRAINTS.md,
 // Exceptions E3).
 #![cfg_attr(
     not(any(test, feature = "testing")),
     expect(
         dead_code,
-        reason = "no library user until sb-journal Task 3; public under `testing`"
+        reason = "no library user until sb-journal Task 3; re-exported by `testing`"
     )
 )]
 

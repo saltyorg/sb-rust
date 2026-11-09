@@ -1,6 +1,14 @@
 //! Test support, under the `testing` feature (journal spec, Project
-//! Structure): the crafted-file builder now; the tools' helpers, the JSON
+//! Structure): one file's reading, re-exported for the tools, and the
+//! crafted-file builder now; the tools' helpers, the JSON
 //! form and the injectable roots come with the plan's later tasks.
+
+// One file's reading, for the tools (the journal spec, Project
+// Structure: the tools need file-level access).
+pub use crate::file::{
+    DataRef, Entry, Header, INCOMPAT_COMPACT, INCOMPAT_KEYED_HASH, INCOMPAT_KNOWN, INCOMPAT_LZ4,
+    INCOMPAT_XZ, INCOMPAT_ZSTD, JournalFile, SIGNATURE, hex_id,
+};
 
 /// Crafted journal files for the corruption tests: a regular (not
 /// compact), unkeyed file laid out object by object, as journald appends

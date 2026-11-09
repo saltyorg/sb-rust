@@ -501,12 +501,6 @@ in the commit body. The matrix runs again where a fix touches reading.
   `Io`: retry with the exact header read, or `refresh()` and retry; or
   document "Io after a truncation means refresh first".
 
-- check.sh's mutation pass lists each sb-journal mutant twice (782
-  listed, 326 lines duplicated) because of the self dev-dependency. The
-  score's ratio is unaffected, but the run takes about twice as long.
-  Find the cause (cargo-mutants seeing the package twice) and dedupe or
-  scope it, before Task 2's run.
-
 - CI: a workflow running `scripts/check.sh` (CONSTRAINTS.md asks for
   `full` in CI once CI exists; the runner needs cargo-deny, cargo-mutants,
   cargo-llvm-cov and cross). `.github/workflows/journal-matrix.yml` runs

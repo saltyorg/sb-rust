@@ -41,16 +41,19 @@ what prove it.
 - **Code with no user yet.** Some ported items only get a library user
   in a later slice; file.rs's walk helpers, for example, are first used
   by Task 3.
-  - Under `testing` those items are `pub`, as the spec intends for the
-    tools.
-  - A self dev-dependency (`sb-journal = { path = ".", features =
+  - Under `testing` those items are re-exported by the `testing` module,
+    as the spec intends for the tools. Each module is declared once:
+    cargo-mutants walks every `mod` without evaluating `cfg`, so a `pub`
+    and a private declaration under opposite `cfg`s doubles its mutants.
+  - A self dev-dependency (`sb-journal = { workspace = true, features =
     ["testing"] }`) turns `testing` on for `--all-targets` builds.
   - For the plain build, the module carries
     `#![cfg_attr(not(any(test, feature = "testing")), expect(dead_code, reason = "..."))]`.
     It has a temporary row in the CONSTRAINTS Exceptions table, which is
     deleted in the slice that adds the user.
-  - Every no-user-yet item is reachable from an item that is `pub`
-    under `testing`, since a `pub(crate)` helper with no caller would
+  - Every no-user-yet item is re-exported by, or reachable from,
+    `testing`; a new `pub` item in a private module joins the re-export
+    list, since a `pub(crate)` helper with no caller would
     warn in the `testing` build, where no expectation applies.
   - Dev-dependency features are on whenever a test or example target
     is built. So `--all-targets` builds never lint the plain

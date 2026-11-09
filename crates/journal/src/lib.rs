@@ -4,16 +4,16 @@
 //! the reader rather than using a crate or a `journalctl` child:
 //! docs/decisions/ADR-013-own-journal-reader.md.
 
-// So far: one file's reading (`file`, public under `testing` for the
+// So far: one file's reading (`file`, re-exported by `testing` for the
 // tools), the hashes, the output limit and the read errors. The walks,
 // queries and the follow come in the plan's later tasks (tasks/plan.md).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-#[cfg(any(test, feature = "testing"))]
-pub mod file;
-#[cfg(not(any(test, feature = "testing")))]
+// One declaration, not a `pub` and a private one under opposite `cfg`s:
+// cargo-mutants walks every `mod` without evaluating `cfg`, so two
+// declarations made it test each of file.rs's mutants twice.
 mod file;
 mod hash;
 #[cfg(feature = "testing")]
