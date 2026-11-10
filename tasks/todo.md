@@ -135,30 +135,30 @@ inline entry, repeats, `all_entries`, `entries_since` and `EntriesRev`.
   dead-code expectations and their Exceptions rows go.
 
 **Acceptance criteria:**
-- [ ] query.rs's tail, merge and rule tests (about 29) pass. They cover:
+- [x] query.rs's tail, merge and rule tests (25; plan, Traceability) pass. They cover:
       newest, ties, non-transitive cases, flushed copies, 249 double
       writes, limits, skipping an oversized first entry, and walking
       past an out-of-order item (Differences 5, 15, 17). An entry cut off
       while linking shows once in the tail (Difference 12).
-- [ ] The coredump table holds for every release, source and uid,
+- [x] The coredump table holds for every release, source and uid,
       `Some(0)` included: on 249 and 255 always `_UID=0` (Difference 1).
       `UnitName` mangles "no dot", refuses globs and `.slice`
       (Difference 7). `Query::and` refuses past 64 groups.
       The cursor tests round-trip sd-journal's cursor text, and a
       journalctl `__CURSOR` parses.
-- [ ] `ReadError`'s `Display` escapes paths and field names (L5).
+- [x] `ReadError`'s `Display` escapes paths and field names (L5).
       `ReadErrors` shows ten distinct errors, then `omitted`.
-- [ ] `Record`:
+- [x] `Record`:
       - a 5 KiB field comes back whole as bytes (Difference 3);
       - `fields()` yields an invalid field name raw (Difference 14);
       - `realtime()` is `None` out of jiff's range;
       - `message()` is `None` without `MESSAGE`.
-- [ ] Static assertions: `Journal` is `Send + Sync`; `Page`, `Record`,
+- [x] Static assertions: `Journal` is `Send + Sync`; `Page`, `Record`,
       `Query`, `Position` and `Limits` are `Send + 'static`.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
-- [ ] library-reviewer (directory listing and file opening) and
+- [x] `cargo test -p sb-journal`; `scripts/check.sh task`.
+- [x] library-reviewer (directory listing and file opening) and
       code-reviewer on the commit.
 
 **Dependencies:** Task 2
@@ -269,7 +269,7 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 - Keep the prototype's start for now.
 
 **Acceptance criteria:**
-- [ ] query.rs's follow tests (about 21) and main.rs's four `classify`
+- [ ] query.rs's follow tests (21, plus `merge` and `is_old`'s 3) and main.rs's four `classify`
       tests pass in the library. The commit records that all 112 are
       ported.
 - [ ] Differences 2, 12, 13, 16 and 17 (the follow side) each have a
@@ -503,11 +503,12 @@ in the commit body. The matrix runs again where a fix touches reading.
   memory cap inside check.sh's mutation pass, so an uncapped run can't
   exhaust the host.
 
-- Task 3 or 6: a guessed `object_head` read that runs past a file cut
+- Task 6: a guessed `object_head` read that runs past a file cut
   fails an intact object before the cut with `Io` until the header is
-  read again (prototype behaviour). Decide how a page or follow handles
-  `Io`: retry with the exact header read, or `refresh()` and retry; or
-  document "Io after a truncation means refresh first".
+  read again (prototype behaviour). Decide how the follow handles `Io`:
+  retry with the exact header read, or `refresh()` and retry. (A page
+  reopens its files, so its `Io` is reported and gone from the next
+  page: `Journal::page`'s docs, Task 3.)
 
 - CI: a workflow running `scripts/check.sh` (CONSTRAINTS.md asks for
   `full` in CI once CI exists; the runner needs cargo-deny, cargo-mutants,

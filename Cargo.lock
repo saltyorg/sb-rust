@@ -3300,6 +3300,8 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "hex",
+ "itertools 0.14.0",
+ "jiff",
  "lz4_flex",
  "lzma-rust2",
  "ruzstd",

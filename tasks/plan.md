@@ -126,9 +126,9 @@ tools in Task 5 depend on them.
 | `Query` | `Query::unit(&Release, &UnitName, Option<Uid>, &Source)`, `Query::field(&FieldName, &[u8])`, `and(self, other) -> Result<Self, QueryError>` (at most 64 groups), `or(self, other) -> Self` | As the spec. |
 | `Position` | `enum { Tail, Before(Cursor), After(Cursor) }` | |
 | `Limits` | `Limits::default()`, `Limits::with_output(bytes) -> Limits` | The output limit is capped at `DATA_SIZE_MAX`, and the cap is stated in its docs. Private fields. The constructor can't fail because it caps, so it returns `Self` and not a `Result` (M-BUILD-RESULT applies only to fallible builds). |
-| `Page`, `Batch` | public fields, as the spec | |
+| `Page`, `Batch` | public fields, as the spec; `#[non_exhaustive]` | `Page` has `records` and `errors` from Task 3; Task 4 adds `more_older`, `more_newer` and `end`. |
 | `PageEnd` | opaque | Used only to start a follow. |
-| `ReadError` | private `path` and `kind: ReadErrorKind`, with accessors, plus `ReadErrors { shown: Vec<ReadError>, omitted: usize }` | `Display` escapes the path and field names (L5). Ten are shown and the rest counted. Open errors take one entry per file, outside the cap. |
+| `ReadError` | private `path` and `kind: ReadErrorKind`, with accessors; `path()` is `Option<&Path>`, `None` for page-level notices (the output, held and list-changing limits) (Task 3), plus `ReadErrors { shown: Vec<ReadError>, omitted: usize }` | `Display` escapes the path and field names (L5). Ten are shown and the rest counted. Open errors take one entry per file, outside the cap. |
 | `OpenError`, `QueryError`, `ReleaseError` | thiserror enums | |
 | `Journal`, `Follower` | structs; `Journal: Send + Sync`, `Follower: Send` | `Follower::drain(&mut self, &Limits) -> Batch`, `wake_fd(&self) -> io::Result<OwnedFd>` (CLOEXEC, non-blocking). |
 | `DisplayText` (sb-term-ui) | `DisplayText::from_bytes(&[u8], colour: bool) -> DisplayText`; `lines()`, `as_str()` | As the spec. Callers pass term-ui's `keeps_codes(..)`. Sanitized text, held as one `String` plus line ranges. |
@@ -142,8 +142,9 @@ records its exact count.
 |---|---|---|
 | hash.rs; file.rs header, objects, hash table, codecs and limits | 1 + about 35 | 1 |
 | file.rs entry arrays, chains, repeats, `all_entries`, `entries_since` | about 22 | 2 |
-| query.rs tail, merge and rules | about 29 | 3 |
-| query.rs follow | about 21 | 6 |
+| query.rs tail, the merge across files (`newest`) and rules | 25 | 3 |
+| query.rs follow, plus `merge` and `is_old`, whose only caller is the follow | 21 + 3 | 6 |
+| query.rs `printable`, used only by the JSON form | 1 | 5 |
 | main.rs `classify` | 4 | 6 |
 
 | Spec item (journal.md) | Task |
@@ -198,7 +199,7 @@ sanitizer, so it waits for T9 too.
 - [x] Task 0: time one mutant (85 s all-crate, 2 s own-crate); ADR-012
 - [x] Task 1: crate skeleton, ADR-013, `hash.rs`, file objects and codecs
 - [x] Task 2: entry arrays, chains and `EntriesRev`
-- [ ] Task 3: walks, rules and `page` (Tail, Before)
+- [x] Task 3: walks, rules and `page` (Tail, Before)
 - [ ] Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound
 - [ ] Task 5: the comparison tools and container scripts on the crate
 

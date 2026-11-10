@@ -3,17 +3,6 @@
 //! keyed by the file id when `HEADER_INCOMPATIBLE_KEYED_HASH` is set,
 //! Jenkins lookup3 otherwise.
 
-// The plain build has no user of these yet: `file`, their only caller, is
-// used from the plan's Task 3 on (`Journal::page`). Under `testing` the
-// file reader is public, which uses them (CONSTRAINTS.md, Exceptions E4).
-#![cfg_attr(
-    not(any(test, feature = "testing")),
-    expect(
-        dead_code,
-        reason = "no library user until sb-journal Task 3; used under `testing`"
-    )
-)]
-
 use siphasher::sip::SipHasher24;
 
 /// siphash24 of `data`, keyed by the 16-byte file id, as systemd's

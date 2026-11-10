@@ -94,6 +94,9 @@ ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", "xz"] }
 # 128-bit ids; already in sb's tree through bollard.
 hex = "0.4.3"
+# The per-file union of a page's entry lists (`kmerge_by`); already in the
+# tree through ratatui.
+itertools = "0.14.0"
 # Re-seals an xz block header in a corruption test (sb-journal's tests
 # only); already in the tree.
 crc32fast = "1.5.3"

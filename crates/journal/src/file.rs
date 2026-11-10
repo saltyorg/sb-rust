@@ -17,23 +17,13 @@
 //! Re-exported by `testing` (the feature), for the tools (journal spec,
 //! Project Structure); the library's own API is the crate root's.
 
-// The plain build has no user of this module yet: the walk and
-// `Journal::page` (both Task 3) are its first. Under `testing` its items are
-// re-exported, for the tools and the tests (plan, "Code with no user yet"; CONSTRAINTS.md,
-// Exceptions E3).
-#![cfg_attr(
-    not(any(test, feature = "testing")),
-    expect(
-        dead_code,
-        reason = "no library user until sb-journal Task 3; re-exported by `testing`"
-    )
-)]
-
 use crate::{OverLimit, ReadError, ReadErrorKind, hash};
 use std::cell::Cell;
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::os::unix::fs::FileExt;
+#[cfg(any(test, feature = "testing"))]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 type Result<T, E = ReadError> = std::result::Result<T, E>;
@@ -53,6 +43,8 @@ pub const INCOMPAT_COMPACT: u32 = 1 << 4;
 pub const INCOMPAT_KNOWN: u32 =
     INCOMPAT_XZ | INCOMPAT_LZ4 | INCOMPAT_KEYED_HASH | INCOMPAT_ZSTD | INCOMPAT_COMPACT;
 
+/// Follow-only, as `Header::archived` is.
+#[cfg(any(test, feature = "testing"))]
 const STATE_ARCHIVED: u8 = 2;
 
 pub(crate) const OBJECT_DATA: u8 = 1;
@@ -103,6 +95,8 @@ const ENTRY_ARRAY_HEADER: u64 = 24;
 pub struct Header {
     pub incompatible: u32,
     /// `STATE_OFFLINE`, `STATE_ONLINE` or `STATE_ARCHIVED` ("Header").
+    /// Read by the follow only (`archived`).
+    #[cfg(any(test, feature = "testing"))]
     pub state: u8,
     pub file_id: [u8; 16],
     pub seqnum_id: [u8; 16],
@@ -126,6 +120,8 @@ impl Header {
     }
     /// Archived files are never written again ("Header": a writer only
     /// appends to a file in `STATE_OFFLINE`, after setting it online).
+    /// The follow's (plan Task 6): until it lands, the tools' and tests'.
+    #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn archived(&self) -> bool {
         self.state == STATE_ARCHIVED
@@ -157,7 +153,9 @@ pub struct DataRef {
 pub struct JournalFile {
     pub path: PathBuf,
     /// The open file's device and inode: a follow keeps the file by it
-    /// across a rename (rotation) and past its deletion (vacuum).
+    /// across a rename (rotation) and past its deletion (vacuum). The
+    /// follow's (plan Task 6): until it lands, the tools' and tests'.
+    #[cfg(any(test, feature = "testing"))]
     pub inode: (u64, u64),
     file: File,
     pub header: Header,
@@ -177,14 +175,16 @@ impl JournalFile {
         let io = |context: &str| {
             let context = context.to_owned();
             move |source| ReadError {
-                path: path.to_path_buf(),
+                path: Some(path.to_path_buf()),
                 kind: ReadErrorKind::Io { context, source },
             }
         };
         let file = File::open(path).map_err(io("open"))?;
+        #[cfg(any(test, feature = "testing"))]
         let meta = file.metadata().map_err(io("metadata"))?;
         let mut jf = Self {
             path: path.to_path_buf(),
+            #[cfg(any(test, feature = "testing"))]
             inode: (meta.dev(), meta.ino()),
             file,
             header: empty_header(),
@@ -222,6 +222,7 @@ impl JournalFile {
         })?;
         let h = Header {
             incompatible,
+            #[cfg(any(test, feature = "testing"))]
             state: buf[16],
             file_id: id(&buf, 24),
             seqnum_id: id(&buf, 72),
@@ -239,18 +240,20 @@ impl JournalFile {
     }
 
     /// The open file's metadata (its link count tells a deleted file).
+    /// The follow's (plan Task 6): until it lands, the tools' and tests'.
     ///
     /// # Errors
     ///
     /// The system's, from `fstat`.
+    #[cfg(any(test, feature = "testing"))]
     pub fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
         self.file.metadata()
     }
 
     /// This file's error of `kind`.
-    fn error(&self, kind: ReadErrorKind) -> ReadError {
+    pub(crate) fn error(&self, kind: ReadErrorKind) -> ReadError {
         ReadError {
-            path: self.path.clone(),
+            path: Some(self.path.clone()),
             kind,
         }
     }
@@ -897,12 +900,16 @@ impl Iterator for EntriesRev<'_> {
 /// following): the array object at `at`, whose first item is the chain's
 /// item number `base`. Arrays are only appended and linked forward, so a
 /// later read resumes there instead of walking the chain from its head.
+/// The follow's (plan Task 6), as `entries_since` is.
+#[cfg(any(test, feature = "testing"))]
 #[derive(Debug, Clone, Copy)]
 pub struct ArrayCursor {
     at: u64,
     base: u64,
 }
 
+/// The follow's reads (plan Task 6): until it lands, the tools' and tests'.
+#[cfg(any(test, feature = "testing"))]
 impl JournalFile {
     /// The offsets of the entries numbered `from` up to the header's
     /// `n_entries` in the file's entry array chain (the list of every
@@ -993,7 +1000,7 @@ fn forward(path: &Path, at: u64, size: u64, next: u64) -> Result<u64> {
         Ok(next)
     } else {
         Err(ReadError {
-            path: path.to_path_buf(),
+            path: Some(path.to_path_buf()),
             kind: ReadErrorKind::Corrupt(format!(
                 "chain link {at:#x} -> {next:#x} doesn't point past the object"
             )),
@@ -1003,7 +1010,7 @@ fn forward(path: &Path, at: u64, size: u64, next: u64) -> Result<u64> {
 
 /// `kind` met at `context` (`data 0x1f8`): the message's prefix, as the
 /// prototype's anyhow context gave it.
-fn in_context(context: &str, kind: ReadErrorKind) -> ReadErrorKind {
+pub(crate) fn in_context(context: &str, kind: ReadErrorKind) -> ReadErrorKind {
     match kind {
         ReadErrorKind::Corrupt(m) => ReadErrorKind::Corrupt(format!("{context}: {m}")),
         ReadErrorKind::OverLimit { context: c, over } if c.is_empty() => ReadErrorKind::OverLimit {
@@ -1013,6 +1020,10 @@ fn in_context(context: &str, kind: ReadErrorKind) -> ReadErrorKind {
         ReadErrorKind::OverLimit { context: c, over } => ReadErrorKind::OverLimit {
             context: format!("{context}: {c}"),
             over,
+        },
+        ReadErrorKind::Io { context: c, source } => ReadErrorKind::Io {
+            context: format!("{context}: {c}"),
+            source,
         },
         other => other,
     }
@@ -1247,6 +1258,7 @@ fn read_up_to(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize
 fn empty_header() -> Header {
     Header {
         incompatible: 0,
+        #[cfg(any(test, feature = "testing"))]
         state: 0,
         file_id: [0; 16],
         seqnum_id: [0; 16],
@@ -1360,7 +1372,7 @@ mod tests {
         let err = JournalFile::open(t.path()).expect_err("refused");
         assert!(err.to_string().contains("unsupported journal format"));
         // Named by the typed error, and first in its message.
-        assert_eq!(err.path(), t.path());
+        assert_eq!(err.path(), Some(t.path()));
         assert!(
             err.to_string()
                 .starts_with(&format!("{}: ", t.path().display()))
@@ -2000,7 +2012,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("system.journal");
         let err = JournalFile::open(&path).expect_err("missing");
-        assert_eq!(err.path(), path);
+        assert_eq!(err.path(), Some(path.as_path()));
         let ReadErrorKind::Io { context, source } = err.kind() else {
             panic!("not an I/O error: {err}");
         };
@@ -2236,6 +2248,19 @@ mod tests {
         let (_t, f) = c.write();
         let err = f.find_data(want).expect_err("corrupt candidate");
         assert!(err.to_string().contains(": xz: "), "{err}");
+    }
+
+    /// An I/O error's context is prefixed too; its source stays its own.
+    #[test]
+    fn a_context_prefixes_an_io_error() {
+        let io = ReadErrorKind::Io {
+            context: "read at 0x20".into(),
+            source: std::io::Error::other("gone"),
+        };
+        let kind = in_context("entry 3's fields", io);
+        assert_eq!(kind.to_string(), "entry 3's fields: read at 0x20");
+        let source = std::error::Error::source(&kind).expect("a source");
+        assert_eq!(source.to_string(), "gone");
     }
 
     #[test]

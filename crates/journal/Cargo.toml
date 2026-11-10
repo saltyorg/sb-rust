@@ -22,6 +22,9 @@ ruzstd.workspace = true
 lzma-rust2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
+itertools.workspace = true
+# A record's time (`Record::realtime`).
+jiff.workspace = true
 # The crafted-file builder writes its files to temporary files.
 tempfile = { workspace = true, optional = true }
 
