@@ -531,9 +531,7 @@ impl<'a> FileQuery<'a> {
             match f.bisect_list(&list, probe, &mut ChainCache::default(), &mut met) {
                 Ok(Some(found)) => Box::new(f.entries_from(&list, found.index)),
                 Ok(None) if !met.cut => Box::new(std::iter::empty()),
-                Err(e) if matches!(e.kind(), ReadErrorKind::Io { .. }) => {
-                    Box::new(std::iter::once(Err(e)))
-                }
+                Err(e) if e.is_io() => Box::new(std::iter::once(Err(e))),
                 Ok(None) | Err(_) => Box::new(
                     f.entries_from(&list, 0)
                         .filter(move |r| r.as_ref().map_or(true, |&off| off >= from)),

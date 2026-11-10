@@ -118,13 +118,25 @@ Behaviour verified while building `prototypes/proto-journal`, on
   - 259.9 differs from the v259 tag there: systemd-stable v259.6 to
     v259.9 added "sd-journal: prefer exact cursor match after seek"
     (issue #31516), which takes the file whose landing is the cursor's
-    exact entry (seqnum id and seqnum) as the first step. The same
-    releases added "sd-journal: prefer machine ID from the tail entry"
-    (issue #34169): `compare_boot_ids` takes the machine id from the
-    tail entry's `_MACHINE_ID=` where it has one, not from the file
-    header, so journal-remote imports of other machines interleave by
-    realtime. Checked by source only; the matrix's fixtures carry no
-    `_MACHINE_ID=`.
+    exact entry (seqnum id and seqnum) as the first step. v259.9 also
+    added "sd-journal: prefer machine ID from the tail entry" (issue
+    #34169; systemd's v259-stable branch, commit 2d8b0b6a0aaf, cherry-picked
+    from upstream ae940730c6f2; v259.8 doesn't have it, and neither does
+    255.4). `journal_file_read_tail_timestamp` then sets the file's
+    `newest_machine_id`, which `compare_boot_ids` compares, from the tail
+    entry's `_MACHINE_ID=` (`journal_file_entry_get_machine_id`): it reads
+    the entry's items in order and takes the first `_MACHINE_ID=` DATA
+    object, passing over items it can't read as DATA objects (`-EBADMSG`,
+    `-EADDRNOTAVAIL`). It keeps the header's id when the entry has none,
+    the first one isn't 32 characters of a non-null id, another read
+    error ends the walk, or the times came from an archived file's header
+    rather than an entry. journal-remote writes the receiving machine
+    into each file's header and keeps each entry's own `_MACHINE_ID=`, so
+    on 259.9 imports of several machines interleave by realtime where
+    255.4 orders them by boot. Checked by source only (the v259.9 tag's
+    src/libsystemd/sd-journal/sd-journal.c, and the commit's own test,
+    `merge_interleaving` in test-journal-interleaving.c); the matrix's
+    fixtures carry no `_MACHINE_ID=`.
 - **The coredump term of `-u` on the local journal** (same runs): with
   the `systemd-coredump` package installed, 259.9 takes coredump
   entries of that user's uid or root's; 249 and 255 take root's only.

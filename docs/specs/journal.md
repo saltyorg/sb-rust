@@ -784,14 +784,38 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
       realtime puts the file in no boot. Per boot, the file with the
       highest tail monotonic time counts, the first added on a tie
       (prioq.c `shuffle_up`). Two boots order by those files' tail
-      realtime when both are in the table and the files' header machine
-      ids are equal; otherwise they compare equal and realtime decides.
+      realtime when both are in the table and the files' machine ids are
+      equal; otherwise they compare equal and realtime decides. The
+      machine id is the file header's on 24.04 (255.4); on 26.04
+      (259.9) it is the tail entry's `_MACHINE_ID=` where that entry
+      (the one that gave the times, not an archived header's) has a valid
+      one, else the header's (v259-stable commit 2d8b0b6a0aaf, "sd-journal:
+      prefer machine ID from the tail entry", issue #34169, first tagged
+      in v259.9; `journal_file_entry_get_machine_id`). journal-remote's
+      files carry the receiving machine in their header and the
+      source's in each entry, so on 26.04 imports of several machines
+      interleave by realtime. Its items are read in order up to the
+      first `_MACHINE_ID=` (one pread each; all of them without one);
+      an invalid first one keeps the header's, an unreadable item is
+      passed over and a refused read ends the search, as in systemd
+      (`BootRule::NewestTailEntryMachine`). file.rs `entry_machine_id`
+      lists two departures, neither on files as journald writes them: a
+      malformed compressed `_MACHINE_ID=` before another, and a file cut
+      short after it was opened.
+      UNVERIFIED against a running 259.9 until a matrix fixture with
+      `_MACHINE_ID=` runs (tasks/todo.md).
     - The release is the `Journal`'s (`Journal::open(source, &release)`),
       the caller's for every source, as for `Query::unit`.
     - The table reuses the newest entry each page reads for its end, and
       reads one more entry only for a file whose header names another
       tail (journald before 254, or a corrupt file): asserted in
-      `the_boot_table_reads_at_most_one_entry_per_file`.
+      `the_boot_table_reads_at_most_one_entry_per_file`. On 26.04, with two
+      boots or more in the table, it also reads each boot's newest file's
+      tail entry's items up to its `_MACHINE_ID=`, one pread each
+      (`the_tail_entrys_machine_id_costs_a_pread_per_item_read`): only
+      those files' ids are compared, and the newest is chosen by
+      monotonic time alone, so the order is the same as reading every
+      file's.
     - **sb's order wins on 24.04 and 26.04** (maintainer, 2026-11-10):
       a forward page is the entries after the cursor in the release's
       order (the boot table, then realtime), each shown once. The

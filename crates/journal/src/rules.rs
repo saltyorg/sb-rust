@@ -300,7 +300,7 @@ pub const RELEASES: &[Release] = &[
         version_id: "26.04",
         systemd: 259,
         unit_rule: UnitRule::InitScope,
-        boot_rule: BootRule::NewestTail,
+        boot_rule: BootRule::NewestTailEntryMachine,
         #[cfg(feature = "testing")]
         prints_seqnum: true,
     },
@@ -331,11 +331,22 @@ pub enum BootRule {
     /// 249, `journal_file_compare_locations` (journal-file.c): by
     /// realtime, then the XOR hash.
     Realtime,
-    /// 255 to 259, `compare_boot_ids` in `compare_locations` and
+    /// 255 to 259.8, `compare_boot_ids` in `compare_locations` and
     /// `compare_with_location`: first by each boot's newest file's tail
-    /// realtime, for boots of one machine that are in that table; then as
-    /// `Realtime`.
+    /// realtime, for boots of one machine (the files' header machine ids)
+    /// that are in that table; then as `Realtime`.
     NewestTail,
+    /// 259.9, as `NewestTail` but with each file's machine named by its
+    /// tail entry's `_MACHINE_ID=`, else its header's (v259-stable commit
+    /// 2d8b0b6a0aaf, "sd-journal: prefer machine ID from the tail entry",
+    /// issue #34169): journal-remote's files, which carry the receiving
+    /// machine in the header, then order by realtime across their sources.
+    /// A variant, not a column of its own: it changes `NewestTail` only,
+    /// and a separate machine-id column would also allow it with
+    /// `Realtime`, where 249 has no table to apply it to. Keyed by the
+    /// release, as `UnitRule` is: a 26.04 host still at 259.0 to 259.8
+    /// takes the header's machine.
+    NewestTailEntryMachine,
 }
 
 /// A release that isn't one of [`RELEASES`].
@@ -557,13 +568,16 @@ mod tests {
     }
 
     /// The boot step per row: systemd 249 has none; 255 and 259 order
-    /// boots by their newest file's tail (decision 11).
+    /// boots by their newest file's tail (decision 11), 259.9 with the
+    /// machine its tail entry names.
     #[test]
     fn boot_rule_per_release() {
         assert_eq!(release("22.04").boot_rule(), BootRule::Realtime);
-        for v in ["24.04", "26.04"] {
-            assert_eq!(release(v).boot_rule(), BootRule::NewestTail);
-        }
+        assert_eq!(release("24.04").boot_rule(), BootRule::NewestTail);
+        assert_eq!(
+            release("26.04").boot_rule(),
+            BootRule::NewestTailEntryMachine
+        );
     }
 
     /// The rows' other columns, as the matrix and the tools read them.

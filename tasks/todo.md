@@ -283,12 +283,24 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 ## Checkpoint A: the reader against journalctl
 - [ ] Tasks 1-5 pass `scripts/check.sh full`; the matrix is green on
       three releases.
-- [ ] Ratchet re-measured: size, startup, project coverage.
-- [ ] Review with the maintainer, including plan.md's API names, before
-      following.
-- [ ] Decide on `is_*` helpers on `ReadError` (`is_over_limit`,
+- [x] Ratchet re-measured: size, startup, project coverage. `crates/`
+      coverage 98.47% of lines and 98.02% of functions, startup 1.17 /
+      1.32 ms, binary 11924448 bytes: all within the ratchet (CONSTRAINTS.md
+      tolerances; ADR-011's limits stand).
+- [x] Review with the maintainer, including plan.md's API names, before
+      following (approved 2026-11-11).
+- [x] Decide on `is_*` helpers on `ReadError` (`is_over_limit`,
       `is_known_bad`) in place of matching the public `ReadErrorKind`
-      (M-ERRORS-CANONICAL-STRUCTS), with the API names.
+      (M-ERRORS-CANONICAL-STRUCTS), with the API names. Done
+      (maintainer, 2026-11-11): those two, `is_io`, `is_too_large` and
+      `is_symlink`, used at every call site in the crate; `kind()` stays
+      public for the fields and `ReadErrorKind` `#[non_exhaustive]`.
+- [x] Decision 11's machine id on 26.04 (systemd 259.9, v259-stable commit
+      2d8b0b6a0aaf, issue #34169): the boot table takes each file's
+      machine from its tail entry's `_MACHINE_ID=`, else the header's
+      (`BootRule::NewestTailEntryMachine`); 24.04 and 22.04 keep the
+      header. Crafted tests only: UNVERIFIED against a running 259.9 until
+      the Task 6 matrix item below runs.
 
 ## Task 6: the follow ported, with the prototype's start
 
@@ -309,6 +321,15 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
       tail again before each step (v255 `next_beyond_location`, a
       changed mtime; v259, a new tail offset) and reorders the table.
 - [ ] follow.sh and stress.sh (moved) pass on the three releases.
+- [ ] A matrix fixture with `_MACHINE_ID=` (UNVERIFIED until it runs):
+      journal-remote's import of two source machines' entries (each
+      carrying its `_MACHINE_ID=`, one receiving header machine), with
+      overlapping clocks, paged both ways against journalctl on 24.04
+      and 26.04: 26.04 interleaves the machines by realtime, 24.04
+      orders them by boot; a tail entry without `_MACHINE_ID=` keeps the
+      header's on 26.04. The default variant's pread bounds
+      (compare.sh `PREADS_*_MAX`) re-measured on 26.04, which now reads
+      each file's tail entry's items (tasks/plan.md, "The pread bound").
 
 **Verification:**
 - [ ] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`.
@@ -529,22 +550,18 @@ in the commit body. The matrix runs again where a fix touches reading.
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
 
+- Two mutation survivors from before the error helpers: no test tells
+  an `Io` error from an invalid one at the `e.is_io()` guards in
+  file.rs's `test_object` and forward.rs's `all_matches_from`. Add a
+  test for each when those paths are next touched (Task 6 at the
+  latest).
+
 - The tui spec's viewer (the first consumer): the release's entry order
   can form a cycle when a boot is in no file's tail (Difference 20,
   `forward_paging_cycles_where_the_order_does`), so paging forward one
   entry at a time can loop. A page knows only its cursor, so the
   viewer (or sb-host) must stop at a cursor it has already shown.
   Decide where the guard lives with the tui spec; raise at Checkpoint A.
-
-- Decision 11's machine-id test (raise at Checkpoint A): 26.04's
-  systemd 259.9 (stable backport, issue #34169) takes the machine id
-  for `compare_boot_ids` from the tail entry's `_MACHINE_ID=` where it
-  has one, not the file header, which sb compares. They agree on files
-  journald writes; on journal-remote imports of another machine
-  (`Source::Directory` or `Files`) 259.9 interleaves by realtime where
-  sb orders by boot. Found by source in Task 5, not run by the matrix
-  (its fixtures have no `_MACHINE_ID=`); the maintainer decides whether
-  sb follows it or it is a Difference.
 
 - A mutant can make a walk allocate without bound (`advance ->
   Some(Ok(0))`). Under a `systemd-run` MemoryMax scope, systemd's default

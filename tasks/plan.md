@@ -117,7 +117,7 @@ tools in Task 5 depend on them.
 |---|---|---|
 | `Uid` | `struct Uid(u32)`, `Copy` | A user id. A crate newtype, so no dependency's type appears in the API. `Uid::new(u32)`, `get()`. |
 | `Release` | struct, from `Release::parse("24.04")` | A release in `RELEASES`. Parsing any other release fails with `ReleaseError::Unsupported`. Its rules: `unit_rule()` (`UnitRule`) and `boot_rule()` (`BootRule`). |
-| `BootRule` | `#[non_exhaustive] enum { Realtime, NewestTail }`, as `UnitRule` | The order between boots: 249's realtime (22.04), or 255 and 259's `compare_boot_ids` table (24.04, 26.04; spec decision 11). |
+| `BootRule` | `#[non_exhaustive] enum { Realtime, NewestTail, NewestTailEntryMachine }`, as `UnitRule` | The order between boots: 249's realtime (22.04), or 255 and 259's `compare_boot_ids` table (24.04, 26.04; spec decision 11), on 26.04 (259.9) with each file's machine from its tail entry's `_MACHINE_ID=` (issue #34169). A variant rather than a column: it refines `NewestTail` only (Checkpoint A). |
 | `UnitName` | `UnitName::new(&str) -> Result<_, QueryError>` | A name with no dot gets `.service`; a `.service` name passes unchanged; anything else (other suffixes, dotted names, globs) is refused (Difference 7). |
 | `FieldName` | `FieldName::new(&[u8]) -> Result<_, QueryError>` | journald's field-name rule, for queries and `Record::field`. `Record::fields()` yields raw byte pairs, unvalidated (Difference 14). |
 | `MachineId` | `MachineId::parse(&str) -> Result<_, OpenError>`, `Display` | 32 hex digits in either case, not all zero; lowercased, as journald names the directory (L1; systemd v255 `id128_read_fd` and `sd_id128_from_string`'s `unhexchar` take either case; maintainer, Task 4). An invalid id is `OpenError::InvalidMachineId { path: Option<PathBuf> }`: `None` from `parse`, the file from `Journal::open(Source::Local)`, which refuses the source rather than join other text into a path; the file may hold one trailing newline (machine-id(5)) (Task 4). |
@@ -132,7 +132,7 @@ tools in Task 5 depend on them.
 | `ReadErrorKind::OutputLimitNewer`, `HeldLimitNewer` | variants | A forward page's limits, which leave out its newer end: it reads oldest first, so the next `After` from its last record has no gap (Task 4). |
 | `ReadErrorKind::Symlink`, `NotRegular` | variants | A journal file that is a symlink (ELOOP under `O_NOFOLLOW`, confirmed by `lstat`), or not a regular file (`fstat`): open errors, one per file (L2, Difference 4; Task 4). |
 | `testing::Host`, `open_on`, `Counts`, `counts` | under `testing` | `Source::Local`'s machine-id file and roots injected; a per-`Journal` count of opens, closes and preads, kept on its opener (Task 4). |
-| `ReadError` | private `path` and `kind: ReadErrorKind`, with accessors; `path()` is `Option<&Path>`, `None` for page-level notices (the output, held and list-changing limits) (Task 3), plus `ReadErrors { shown: Vec<ReadError>, omitted: usize }` | `Display` escapes the path and field names (L5). Ten are shown and the rest counted. Open errors take one entry per file, outside the cap. |
+| `ReadError` | private `path` and `kind: ReadErrorKind`, with accessors; `path()` is `Option<&Path>`, `None` for page-level notices (the output, held and list-changing limits) (Task 3); `is_over_limit()`, `is_known_bad()`, `is_io()`, `is_too_large()`, `is_symlink()` to branch on (M-ERRORS-CANONICAL-STRUCTS; `kind()` stays public for the fields, and `ReadErrorKind` `#[non_exhaustive]`; maintainer, 2026-11-11, Checkpoint A); plus `ReadErrors { shown: Vec<ReadError>, omitted: usize }` | `Display` escapes the path and field names (L5). Ten are shown and the rest counted. Open errors take one entry per file, outside the cap. |
 | `OpenError`, `QueryError`, `ReleaseError` | thiserror enums | |
 | `Journal`, `Follower` | structs; `Journal: Send + Sync`, `Follower: Send` | `Journal::open(Source, &Release) -> Result<_, OpenError>`: the release whose journalctl the pages match, for every source (its boot order, decision 11). `Follower::drain(&mut self, &Limits) -> Batch`, `wake_fd(&self) -> io::Result<OwnedFd>` (CLOEXEC, non-blocking). |
 | `DisplayText` (sb-term-ui) | `DisplayText::from_bytes(&[u8], colour: bool) -> DisplayText`; `lines()`, `as_str()` | As the spec. Callers pass term-ui's `keeps_codes(..)`. Sanitized text, held as one `String` plus line ranges. |
@@ -206,12 +206,21 @@ on its journal's opener (`testing::counts`).
     on 24.04 and 26.04 when it names another (an archived file journald
     before 254 wrote, as an upgraded host keeps): 43, 53 and 89
     (`the_boot_table_reads_at_most_one_entry_per_file`).
+  - On 26.04, when the table holds two boots or more, it also reads
+    each boot's newest file's tail entry's items up to its
+    `_MACHINE_ID=`, one pread each, all of them without one (Checkpoint
+    A, issue #34169; `BootOrder::name_machines`). One boot costs
+    nothing, so the figures above hold on 26.04. The decision-11
+    fixture's tail costs ten preads more with `_MACHINE_ID=` last of
+    five items, eight without it
+    (`the_tail_entrys_machine_id_costs_a_pread_per_item_read`).
   - sb's per-boot forward seek (decision 11, Difference 20), for a file
     whose boots the table orders against the cursor's: the `_BOOT_ID`
     field lookup (3 preads for one boot: the bucket, the FIELD object,
     the value) and a bisect per boot started by time. On the
-    decision-11 fixture a page after a2 costs 50 on 26.04 against 46 on
-    22.04, showing one entry more (`the_boot_seek_reads_the_files_boots`).
+    decision-11 fixture a page after a2 costs 50 on 24.04 against 46 on
+    22.04, showing one entry more, and 58 on 26.04 with the tail entries'
+    items (`the_boot_seek_reads_the_files_boots`).
 - The matrix fixture's figures (Task 5): gen-export's 3000 entries
   written by each release's systemd-journal-remote (the `default`
   variant), `-u demo.service`, pages of 500:
@@ -221,6 +230,12 @@ on its journal's opener (`testing::counts`).
   - The figures were the same in every run (four per release).
     compare.sh's bounds (`PREADS_*_MAX`) are 26.04's figures plus 1%:
     1728, 2417 and 1765, between three and five preads per entry shown.
+  - Measured before 26.04 read the tail entry's `_MACHINE_ID=`
+    (Checkpoint A). That costs nothing where the files' tails are of one
+    boot; where they name two or more, each boot's newest file adds a
+    read per item of its tail entry (eight for entry 2999, which has no
+    `_MACHINE_ID=`), close to the 1%. Re-measured at the next matrix run
+    (tasks/todo.md).
 
 `Before` walks back from the newest entry to the cursor, so its cost
 grows with the depth paged (accepted by success criterion 5). `After` is
@@ -256,8 +271,8 @@ sanitizer, so it waits for T9 too.
 ### Checkpoint A: the reader against journalctl
 - [ ] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04, pinning
       the forward page, the `more_*` flags and the coredump row
-- [ ] The API names are reviewed; the ratchet is re-measured
-- [ ] Review with the maintainer
+- [x] The API names are reviewed; the ratchet is re-measured
+- [x] Review with the maintainer (2026-11-11)
 
 ### Phase 2: Following
 - [ ] Task 6: the follow ported, with the prototype's start

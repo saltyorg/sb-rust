@@ -405,7 +405,7 @@ fn decode(
                 shown = Some(shown.map_or((at, at), |(lo, hi)| (lo.min(at), hi.max(at))));
                 out.push(r);
             }
-            Err(err) if is_over(&err) && whole => {
+            Err(err) if err.is_over_limit() && whole => {
                 errors.add(ReadError {
                     kind: ReadErrorKind::TooLarge {
                         context: err.kind.to_string(),
@@ -418,7 +418,7 @@ fn decode(
                 payloads.fields.clear();
                 left = payload_limit;
             }
-            Err(err) if is_over(&err) => {
+            Err(err) if err.is_over_limit() => {
                 let (limit, left_out) = (payload_limit, picked.len() - i);
                 let kind = match from {
                     End::Newest => ReadErrorKind::OutputLimit { limit, left_out },
@@ -460,10 +460,6 @@ enum End {
 struct Left {
     older: bool,
     newer: bool,
-}
-
-fn is_over(e: &ReadError) -> bool {
-    matches!(e.kind(), ReadErrorKind::OverLimit { .. })
 }
 
 /// An entry a file's walk chose: its location for the merge, and where to
@@ -816,7 +812,7 @@ fn record(
             hash_map::Entry::Vacant(v) => match f.data_payload_spending(item, left) {
                 Ok(p) => v.insert(Field::new(p)),
                 Err(err) => {
-                    if !is_over(&err) {
+                    if !err.is_over_limit() {
                         payloads.failed.insert((file, item));
                     } else if allowed == payloads.whole {
                         payloads.too_large.insert((file, item));
@@ -1062,7 +1058,7 @@ mod tests {
         let field = std::mem::size_of::<Field>();
         let mut left = 74 + 49 * field;
         let err = record(&f, &e, &mut Payloads::default(), 0, &mut left).expect_err("over");
-        assert!(is_over(&err), "{err}");
+        assert!(err.is_over_limit(), "{err}");
         let mut left = 74 + 50 * field;
         let r = record(&f, &e, &mut Payloads::default(), 0, &mut left).expect("fits exactly");
         assert_eq!((r.fields.len(), left), (50, 0));
@@ -1079,7 +1075,7 @@ mod tests {
         let e = f.entry(big).expect("entry");
         let mut left = 64 + 999 * std::mem::size_of::<Field>();
         let err = record(&f, &e, &mut Payloads::default(), 0, &mut left).expect_err("over");
-        assert!(is_over(&err), "{err}");
+        assert!(err.is_over_limit(), "{err}");
     }
 
     fn messages(records: &[Record]) -> Vec<String> {
@@ -1529,7 +1525,7 @@ mod tests {
         let over = f
             .data_payload_spending(bomb.get(), &mut 1000)
             .expect_err("over");
-        assert!(is_over(&over), "{over}");
+        assert!(over.is_over_limit(), "{over}");
         let mut j = one(t.path());
         j.payload_limit = 1000;
         assert_eq!(messages(&j.tail(&[], 10, None)), ["m0", "m1"]);
@@ -1546,12 +1542,7 @@ mod tests {
             );
             assert!(!later.contains("xz"), "{shown:?}");
         }
-        assert!(
-            j.errors
-                .shown
-                .iter()
-                .all(|e| matches!(e.kind(), ReadErrorKind::TooLarge { .. }))
-        );
+        assert!(j.errors.shown.iter().all(ReadError::is_too_large));
     }
 
     /// An object over only what an entry had left (its first field spent
@@ -1866,10 +1857,7 @@ mod tests {
         );
         assert!(files.is_empty());
         assert!(
-            errors
-                .shown
-                .iter()
-                .all(|e| matches!(e.kind(), ReadErrorKind::Symlink)),
+            errors.shown.iter().all(ReadError::is_symlink),
             "{:?}",
             texts(&errors)
         );

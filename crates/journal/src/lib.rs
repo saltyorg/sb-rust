@@ -225,11 +225,56 @@ impl ReadError {
         self.path.as_deref()
     }
 
-    /// What went wrong, for matching (`ReadErrorKind::OverLimit`,
-    /// `ReadErrorKind::KnownBad`).
+    /// What went wrong, for the details a kind carries (an `Io` error's
+    /// context, an `OverLimit`'s limit). To branch on the kind, use the
+    /// `is_*` helpers: `ReadErrorKind` is `#[non_exhaustive]` and may gain
+    /// kinds a caller can't handle.
     #[must_use]
     pub fn kind(&self) -> &ReadErrorKind {
         &self.kind
+    }
+
+    // The `is_*` helpers follow M-ERRORS-CANONICAL-STRUCTS
+    // (https://microsoft.github.io/rust-guidelines/guidelines/libs/ux/#M-ERRORS-CANONICAL-STRUCTS):
+    // callers branch on what they can handle without matching every kind
+    // (maintainer, 2026-11-11, journal Checkpoint A). `kind()` stays public
+    // for the fields.
+
+    /// A payload over the read's limit (`ReadErrorKind::OverLimit`): the
+    /// object may be fine, only larger than this read allows. Not the
+    /// limits that end a page (`OutputLimit`, `HeldLimit` and their
+    /// `Newer` forms) nor `TooLarge`.
+    #[must_use]
+    pub fn is_over_limit(&self) -> bool {
+        matches!(self.kind, ReadErrorKind::OverLimit { .. })
+    }
+
+    /// An entry listing a DATA object this query already failed to read
+    /// (`ReadErrorKind::KnownBad`): definitive, not one to wait for.
+    #[must_use]
+    pub fn is_known_bad(&self) -> bool {
+        matches!(self.kind, ReadErrorKind::KnownBad(_))
+    }
+
+    /// The system refused a read (`ReadErrorKind::Io`); the system's error
+    /// is the `source()`.
+    #[must_use]
+    pub fn is_io(&self) -> bool {
+        matches!(self.kind, ReadErrorKind::Io { .. })
+    }
+
+    /// An entry larger than the whole output limit, left out
+    /// (`ReadErrorKind::TooLarge`, Difference 5).
+    #[must_use]
+    pub fn is_too_large(&self) -> bool {
+        matches!(self.kind, ReadErrorKind::TooLarge { .. })
+    }
+
+    /// A journal file that is a symlink, not followed
+    /// (`ReadErrorKind::Symlink`, Difference 4).
+    #[must_use]
+    pub fn is_symlink(&self) -> bool {
+        matches!(self.kind, ReadErrorKind::Symlink)
     }
 }
 
@@ -458,15 +503,20 @@ impl MachineId {
     ///
     /// `OpenError::InvalidMachineId`, with no path.
     pub fn parse(text: &str) -> Result<Self, OpenError> {
+        Self::from_hex(text.as_bytes())
+            .map(Self)
+            .ok_or(OpenError::InvalidMachineId { path: None })
+    }
+
+    /// The id `digits` spell: exactly 32 hex digits in either case, not
+    /// all zero, as `parse` and as sd-journal's `id128_from_string_nonzero`
+    /// read them (a tail entry's `_MACHINE_ID=` value, file.rs).
+    fn from_hex(digits: &[u8]) -> Option<[u8; 16]> {
         let mut id = [0u8; 16];
         // <https://docs.rs/hex/0.4.3/hex/fn.decode_to_slice.html>: exactly
         // 32 digits, of either case as `unhexchar` takes them, fill the 16
         // bytes.
-        if hex::decode_to_slice(text, &mut id).is_ok() && id != [0; 16] {
-            Ok(Self(id))
-        } else {
-            Err(OpenError::InvalidMachineId { path: None })
-        }
+        (hex::decode_to_slice(digits, &mut id).is_ok() && id != [0; 16]).then_some(id)
     }
 }
 
@@ -582,7 +632,10 @@ impl Journal {
     /// page also reads each file's newest entry, for its `end`; on 24.04
     /// and 26.04 the boot table reuses it, and reads one more entry only
     /// for a file whose header names another tail (journald before 254, a
-    /// corrupt file, or one written to between the page's reads).
+    /// corrupt file, or one written to between the page's reads). On 26.04,
+    /// with two boots or more in the table, it also reads each boot's
+    /// newest file's tail entry's items, one pread each, up to its
+    /// `_MACHINE_ID=` (all of them without one).
     #[must_use]
     pub fn page(&self, q: &Query, at: &Position, n: usize, limits: &Limits) -> Page {
         let mut errors = ReadErrors::default();
@@ -592,14 +645,22 @@ impl Journal {
             held: limits.output(),
         };
         let lasts = walk::lasts(&files, &mut errors);
-        let boots = match self.release.boot_rule() {
-            BootRule::Realtime => BootOrder::none(),
-            BootRule::NewestTail => BootOrder::of(
+        let table = || {
+            BootOrder::of(
                 files
                     .iter()
                     .zip(&lasts)
                     .map(|(f, last)| f.tail(last.as_ref())),
-            ),
+            )
+        };
+        let boots = match self.release.boot_rule() {
+            BootRule::Realtime => BootOrder::none(),
+            BootRule::NewestTail => table(),
+            BootRule::NewestTailEntryMachine => {
+                let mut boots = table();
+                boots.name_machines(|i| files[i].tail_machine_id(lasts[i].as_ref()));
+                boots
+            }
         };
         let end = walk::end(&files, &lasts, &boots);
         let paged = walk::page(&files, q.groups(), n, at, bounds, &boots, &mut errors);
@@ -1057,6 +1118,133 @@ mod tests {
         assert_eq!(source.to_string(), "gone");
         let corrupt = error("/f", ReadErrorKind::Corrupt("x".into()));
         assert!(std::error::Error::source(&corrupt).is_none());
+    }
+
+    /// One error of every kind, named by its variant.
+    fn every_kind() -> Vec<(&'static str, ReadError)> {
+        vec![
+            (
+                "OverLimit",
+                error(
+                    "/f",
+                    ReadErrorKind::OverLimit {
+                        context: String::new(),
+                        over: OverLimit { limit: 5 },
+                    },
+                ),
+            ),
+            ("KnownBad", error("/f", KnownBad { item: 0x2a0 }.into())),
+            ("Corrupt", error("/f", ReadErrorKind::Corrupt("x".into()))),
+            (
+                "Io",
+                error(
+                    "/f",
+                    ReadErrorKind::Io {
+                        context: "read".into(),
+                        source: io::Error::other("gone"),
+                    },
+                ),
+            ),
+            (
+                "TooLarge",
+                error(
+                    "/f",
+                    ReadErrorKind::TooLarge {
+                        context: String::new(),
+                        limit: 5,
+                    },
+                ),
+            ),
+            (
+                "OutputLimit",
+                ReadError::of_page(ReadErrorKind::OutputLimit {
+                    limit: 5,
+                    left_out: 1,
+                }),
+            ),
+            ("HeldLimit", ReadError::of_page(ReadErrorKind::HeldLimit)),
+            (
+                "OutputLimitNewer",
+                ReadError::of_page(ReadErrorKind::OutputLimitNewer {
+                    limit: 5,
+                    left_out: 1,
+                }),
+            ),
+            (
+                "HeldLimitNewer",
+                ReadError::of_page(ReadErrorKind::HeldLimitNewer),
+            ),
+            ("Symlink", error("/f", ReadErrorKind::Symlink)),
+            ("NotRegular", error("/f", ReadErrorKind::NotRegular)),
+            (
+                "ListChanging",
+                ReadError::of_page(ReadErrorKind::ListChanging),
+            ),
+        ]
+    }
+
+    /// `every_kind` holds one error of each kind: a match with no
+    /// wildcard (`#[non_exhaustive]` binds only other crates), so a new
+    /// kind fails to build until it is listed there and its helpers are
+    /// decided.
+    #[test]
+    fn every_kind_lists_each_kind_once() {
+        let name = |k: &ReadErrorKind| match k {
+            ReadErrorKind::OverLimit { .. } => "OverLimit",
+            ReadErrorKind::KnownBad(_) => "KnownBad",
+            ReadErrorKind::Corrupt(_) => "Corrupt",
+            ReadErrorKind::Io { .. } => "Io",
+            ReadErrorKind::TooLarge { .. } => "TooLarge",
+            ReadErrorKind::OutputLimit { .. } => "OutputLimit",
+            ReadErrorKind::HeldLimit => "HeldLimit",
+            ReadErrorKind::OutputLimitNewer { .. } => "OutputLimitNewer",
+            ReadErrorKind::HeldLimitNewer => "HeldLimitNewer",
+            ReadErrorKind::Symlink => "Symlink",
+            ReadErrorKind::NotRegular => "NotRegular",
+            ReadErrorKind::ListChanging => "ListChanging",
+        };
+        let kinds = every_kind();
+        for (listed, e) in &kinds {
+            assert_eq!(*listed, name(e.kind()));
+        }
+        let distinct: std::collections::BTreeSet<&str> = kinds.iter().map(|(n, _)| *n).collect();
+        assert_eq!((kinds.len(), distinct.len()), (12, 12));
+    }
+
+    /// The kinds of `every_kind` for which `is` holds.
+    fn kinds_where(is: impl Fn(&ReadError) -> bool) -> Vec<&'static str> {
+        every_kind()
+            .into_iter()
+            .filter(|(_, e)| is(e))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// `is_over_limit` holds for `OverLimit` only, not for the limits
+    /// that end a page.
+    #[test]
+    fn is_over_limit_is_an_over_limit_payload_only() {
+        assert_eq!(kinds_where(ReadError::is_over_limit), ["OverLimit"]);
+    }
+
+    #[test]
+    fn is_known_bad_is_a_known_bad_object_only() {
+        assert_eq!(kinds_where(ReadError::is_known_bad), ["KnownBad"]);
+    }
+
+    #[test]
+    fn is_io_is_a_refused_read_only() {
+        assert_eq!(kinds_where(ReadError::is_io), ["Io"]);
+    }
+
+    #[test]
+    fn is_too_large_is_an_entry_over_the_whole_limit_only() {
+        assert_eq!(kinds_where(ReadError::is_too_large), ["TooLarge"]);
+    }
+
+    #[test]
+    fn is_symlink_is_a_symlinked_file_only() {
+        assert_eq!(kinds_where(ReadError::is_symlink), ["Symlink"]);
     }
 
     /// Synthetic ids: a cursor built here, not copied from a journal.
@@ -1685,12 +1873,7 @@ mod tests {
             &Limits::default(),
         );
         assert_eq!(page.records.len(), 15);
-        let symlinks = page
-            .errors
-            .shown
-            .iter()
-            .filter(|e| matches!(e.kind(), ReadErrorKind::Symlink))
-            .count();
+        let symlinks = page.errors.shown.iter().filter(|e| e.is_symlink()).count();
         assert_eq!(symlinks, 12);
         assert_eq!(page.errors.shown.len(), 12 + ReadErrors::SHOWN);
         assert_eq!(page.errors.omitted, 5);
@@ -1930,12 +2113,28 @@ mod tests {
         rows: Rows<'_>,
         matching: bool,
     ) -> tempfile::NamedTempFile {
+        boot_file_naming(seqnum_id, machine, rows, matching, &[])
+    }
+
+    /// `boot_file`, row `i`'s entry carrying `named[i]` last when it is
+    /// given (a `_MACHINE_ID=` field, as journal-remote keeps the source's).
+    fn boot_file_naming(
+        seqnum_id: u8,
+        machine: u8,
+        rows: Rows<'_>,
+        matching: bool,
+        named: &[Option<&[u8]>],
+    ) -> tempfile::NamedTempFile {
         let payloads: Vec<Vec<Vec<u8>>> = rows
             .iter()
-            .map(|&(who, boot, ..)| {
+            .enumerate()
+            .map(|(i, &(who, boot, ..))| {
                 let mut p = vec![format!("WHO={who}").into_bytes(), boot_field(boot)];
                 if matching {
                     p.push(b"U=x".to_vec());
+                }
+                if let Some(Some(field)) = named.get(i) {
+                    p.push(field.to_vec());
                 }
                 p
             })
@@ -2082,6 +2281,95 @@ mod tests {
         assert_eq!(pages(&j), BY_REALTIME);
     }
 
+    /// `_MACHINE_ID=` of machine `m` (its 16 bytes all `m`).
+    fn machine_field(m: u8) -> Vec<u8> {
+        format!("_MACHINE_ID={}", file::hex_id(&[m; 16])).into_bytes()
+    }
+
+    /// 26.04's journalctl (systemd 259.9; v259-stable commit 2d8b0b6a0aaf,
+    /// issue #34169) takes each boot's machine from its newest file's tail
+    /// entry's `_MACHINE_ID=`, where 24.04's (255.4) takes the file
+    /// header's. Files journal-remote writes carry the receiving machine
+    /// in their header and the source's in each entry: with one header
+    /// machine and two sources 26.04 orders by realtime and 24.04 by boot,
+    /// and with two header machines and one source the other way round.
+    /// 22.04 has no boot step.
+    #[test]
+    fn on_26_04_the_tail_entries_name_the_machines() {
+        let (m1, m2) = (machine_field(1), machine_field(2));
+        let a = boot_file_naming(1, 9, BOOT_A, true, &[Some(&m1), Some(&m1)]);
+        let b = boot_file_naming(2, 9, BOOT_B, true, &[Some(&m2), Some(&m2)]);
+        let paths = [a.path(), b.path()];
+        let by = |v: &str| pages(&files_on(&release(v), &paths));
+        assert_eq!(by("22.04"), BY_REALTIME);
+        assert_eq!(by("24.04"), BY_BOOT);
+        assert_eq!(by("26.04"), BY_REALTIME);
+        let b = boot_file_naming(2, 8, BOOT_B, true, &[Some(&m1), Some(&m1)]);
+        let paths = [a.path(), b.path()];
+        let by = |v: &str| pages(&files_on(&release(v), &paths));
+        assert_eq!(by("22.04"), BY_REALTIME);
+        assert_eq!(by("24.04"), BY_REALTIME);
+        assert_eq!(by("26.04"), BY_BOOT);
+    }
+
+    /// Only the tail entry counts: where it has no `_MACHINE_ID=`, the
+    /// header's machine stays, though older entries name others.
+    #[test]
+    fn a_tail_entry_without_a_machine_id_keeps_the_headers_machine() {
+        let (m1, m2) = (machine_field(1), machine_field(2));
+        let a = boot_file_naming(1, 9, BOOT_A, true, &[Some(&m1), None]);
+        let b = boot_file_naming(2, 9, BOOT_B, true, &[Some(&m2), None]);
+        let j = files_on(&release("26.04"), &[a.path(), b.path()]);
+        assert_eq!(pages(&j), BY_BOOT);
+    }
+
+    /// A tail entry whose `_MACHINE_ID=` item can't be read keeps the
+    /// header's machine. Boot 0xb's newest tail is in a third file that
+    /// doesn't match (so its entries aren't shown), at realtime 450; it
+    /// names machine 2 where boot 0xa's names the headers' 9, so realtime
+    /// decides, until its item points at no DATA object.
+    #[test]
+    fn an_unreadable_machine_id_keeps_the_headers_machine() {
+        let (m9, m2) = (machine_field(9), machine_field(2));
+        let a = boot_file_naming(1, 9, BOOT_A, true, &[Some(&m9), Some(&m9)]);
+        let b = boot_file(2, 9, BOOT_B, true);
+        let other = boot_file_naming(3, 9, &[("b3", 0xb, 30, 450)], false, &[Some(&m2)]);
+        let paths = [a.path(), b.path(), other.path()];
+        assert_eq!(pages(&files_on(&release("26.04"), &paths)), BY_REALTIME);
+        assert_eq!(pages(&files_on(&release("24.04"), &paths)), BY_BOOT);
+        // MESSAGE, WHO, _BOOT_ID, then _MACHINE_ID: point the fourth item
+        // at the entry itself.
+        let mut bytes = std::fs::read(other.path()).expect("read");
+        let e = file::le64(&bytes, 264);
+        let item = usize::try_from(e + 64 + 3 * 16).expect("small");
+        bytes[item..item + 8].copy_from_slice(&e.to_le_bytes());
+        std::fs::write(other.path(), &bytes).expect("write");
+        assert_eq!(pages(&files_on(&release("26.04"), &paths)), BY_BOOT);
+    }
+
+    /// The cost on 26.04: one pread per page and file for each item of
+    /// the file's tail entry read, up to its `_MACHINE_ID=`, or all of
+    /// them without one. Here each tail entry lists MESSAGE, WHO,
+    /// `_BOOT_ID`, `U` and, when named, `_MACHINE_ID`, last: five reads
+    /// in each of two files, or four without it. The rest of the page
+    /// costs what it does on 24.04.
+    #[test]
+    fn the_tail_entrys_machine_id_costs_a_pread_per_item_read() {
+        let m1 = machine_field(1);
+        let cost = |v: &str, named: &[Option<&[u8]>]| {
+            let a = boot_file_naming(1, 9, BOOT_A, true, named);
+            let b = boot_file_naming(2, 9, BOOT_B, true, named);
+            let j = files_on(&release(v), &[a.path(), b.path()]);
+            let q = Query::field(&name("U"), b"x");
+            assert_eq!(tail(&j, &q, 4).records.len(), 4);
+            crate::testing::counts(&j).preads
+        };
+        let named: &[Option<&[u8]>] = &[Some(&m1), Some(&m1)];
+        assert_eq!(cost("26.04", named), cost("24.04", named) + 2 * 5);
+        assert_eq!(cost("26.04", &[]), cost("24.04", &[]) + 2 * 4);
+        assert_eq!(cost("22.04", named), cost("24.04", named));
+    }
+
     /// The table holds every file the page opened, matching or not
     /// (sd-journal reads each added file's tail): a third file of boot
     /// 0xb, with no `U=x`, has its newest tail (the highest monotonic time,
@@ -2213,13 +2501,15 @@ mod tests {
 
     /// The cost of sb's forward seek against journalctl 259's, both stated
     /// exactly: on the decision-11 fixture, a page after a2 costs 46 preads
-    /// on 22.04 (259's seek, showing b2) and 50 on 26.04, which reads boot
+    /// on 22.04 (259's seek, showing b2) and 50 on 24.04, which reads boot
     /// 0xb's file's `_BOOT_ID` list (the field table's bucket, the FIELD
     /// object and its one value: 3 preads, as
     /// `a_fields_values_are_its_data_objects_newest_first` counts them),
     /// needs no bisect there (0xb starts at its first entry), and shows b1
     /// as well. Boot 0xa's file shares the cursor's seqnum id, so it reads
-    /// no `_BOOT_ID` list.
+    /// no `_BOOT_ID` list. 26.04 costs 8 more: the boot table reads each
+    /// file's tail entry's four items for a `_MACHINE_ID=` it doesn't have
+    /// (`the_tail_entrys_machine_id_costs_a_pread_per_item_read`).
     #[test]
     fn the_boot_seek_reads_the_files_boots() {
         let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
@@ -2238,7 +2528,8 @@ mod tests {
             (who(&page), crate::testing::counts(&j).preads - before)
         };
         let (old, old_cost) = cost("22.04");
-        let (new, new_cost) = cost("26.04");
+        let (new, new_cost) = cost("24.04");
+        let (named, named_cost) = cost("26.04");
         assert_eq!(
             (old, new),
             (
@@ -2246,7 +2537,8 @@ mod tests {
                 vec!["b1".to_owned(), "b2".to_owned()]
             )
         );
-        assert_eq!((old_cost, new_cost), (46, 50));
+        assert_eq!(named, ["b1", "b2"]);
+        assert_eq!((old_cost, new_cost, named_cost), (46, 50, 58));
     }
 
     /// On every row, a page of one after an entry of the tail is the next

@@ -19,6 +19,7 @@
 
 use crate::open::{Handle, Opener};
 use crate::{OverLimit, ReadError, ReadErrorKind, hash};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -143,13 +144,37 @@ impl Header {
 }
 
 /// A file's newest entry for sd-journal's boot table (`JournalFile::tail`):
-/// its boot, times and the file's machine id.
+/// its boot, times and machine id (the header's, or the entry's own).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Tail {
     pub(crate) boot_id: [u8; 16],
     pub(crate) monotonic: u64,
     pub(crate) realtime: u64,
     pub(crate) machine_id: [u8; 16],
+}
+
+/// Where a tail's times come from (`JournalFile::tail`).
+#[derive(Debug)]
+enum TailSource<'a> {
+    /// An entry, which on 259.9 also names the machine.
+    Entry(Cow<'a, Entry>),
+    /// An archived file's header.
+    Header,
+}
+
+/// The field a tail entry names its machine by, and its payload's
+/// length: the name, `=` and 32 hex digits.
+const MACHINE_ID_FIELD: &[u8] = b"_MACHINE_ID=";
+const MACHINE_ID_PAYLOAD: usize = MACHINE_ID_FIELD.len() + 32;
+
+/// What one item of a tail entry says of the machine
+/// (`JournalFile::entry_machine_id`).
+#[derive(Debug)]
+enum MachineItem {
+    /// Another field.
+    Other,
+    /// A `_MACHINE_ID=` field: its id, `None` when it isn't a valid one.
+    Named(Option<[u8; 16]>),
 }
 
 /// One entry's fixed fields and the offsets of its DATA objects.
@@ -413,7 +438,8 @@ impl JournalFile {
     /// as the page read it (`walk::lasts`; `None` when the file has none
     /// or it couldn't be read, where systemd's read fails too). A tail
     /// offset of zero, or a monotonic time ahead of the realtime, is no
-    /// tail (`-ENODATA`). The machine id is the header's.
+    /// tail (`-ENODATA`). The machine id is the header's; on 259.9 the
+    /// table takes `tail_machine_id`'s where it names one.
     ///
     /// The cost: nothing when the tail is `last`, as journald 254 and
     /// later make it (`journal_file_link_entry` sets `tail_entry_offset`
@@ -423,25 +449,13 @@ impl JournalFile {
     /// same objects (as Difference 19), the result is systemd's.
     pub(crate) fn tail(&self, last: Option<&(u64, Entry)>) -> Option<Tail> {
         let h = &self.header;
-        let offset = h.tail_entry_offset.unwrap_or(h.tail_object_offset);
-        if offset == 0 {
-            return None;
-        }
-        let of = |e: &Entry| (e.boot_id, e.monotonic, e.realtime);
-        let read = match last {
-            Some((o, e)) if *o == offset => Some(of(e)),
-            // A tail object that isn't an entry is refused here, as
-            // systemd checks `o->object.type == OBJECT_ENTRY`.
-            _ => self.entry(offset).ok().map(|e| of(&e)),
-        };
-        let (boot_id, monotonic, realtime) = match read {
-            Some(t) => t,
-            None if h.compatible & COMPATIBLE_TAIL_ENTRY_BOOT_ID != 0 && h.archived() => (
+        let (boot_id, monotonic, realtime) = match self.tail_source(last)? {
+            TailSource::Entry(e) => (e.boot_id, e.monotonic, e.realtime),
+            TailSource::Header => (
                 h.tail_entry_boot_id,
                 h.tail_entry_monotonic,
                 h.tail_entry_realtime,
             ),
-            None => of(&last?.1),
         };
         (monotonic <= realtime).then_some(Tail {
             boot_id,
@@ -449,6 +463,137 @@ impl JournalFile {
             realtime,
             machine_id: h.machine_id,
         })
+    }
+
+    /// Where `tail` takes its times from; `None` for no tail offset.
+    fn tail_source<'a>(&self, last: Option<&'a (u64, Entry)>) -> Option<TailSource<'a>> {
+        let h = &self.header;
+        let offset = h.tail_entry_offset.unwrap_or(h.tail_object_offset);
+        if offset == 0 {
+            return None;
+        }
+        let read = match last {
+            Some((o, e)) if *o == offset => Some(Cow::Borrowed(e)),
+            // A tail object that isn't an entry is refused here, as
+            // systemd checks `o->object.type == OBJECT_ENTRY`.
+            _ => self.entry(offset).ok().map(Cow::Owned),
+        };
+        Some(match read {
+            Some(e) => TailSource::Entry(e),
+            None if h.compatible & COMPATIBLE_TAIL_ENTRY_BOOT_ID != 0 && h.archived() => {
+                TailSource::Header
+            }
+            None => TailSource::Entry(Cow::Borrowed(&last?.1)),
+        })
+    }
+
+    /// The machine id the entry that gave `tail` its times names, as
+    /// systemd v259.9 reads it for the boot table: systemd's v259-stable
+    /// commit 2d8b0b6a0aaf ("sd-journal: prefer machine ID from the tail
+    /// entry", from upstream ae940730c6f2, issue #34169; first tagged in
+    /// v259.9, not in v255), src/libsystemd/sd-journal/sd-journal.c
+    /// `journal_file_entry_get_machine_id`, called by
+    /// `journal_file_read_tail_timestamp` once the times are taken. `None`,
+    /// so the header's id stays, when the times came from an archived
+    /// file's header ("header-only fallback"), or the entry names no valid
+    /// machine (`entry_machine_id`). For a file `tail` gave a tail; the
+    /// boot table asks only for each boot's newest file
+    /// (`BootOrder::name_machines`).
+    ///
+    /// The cost: `entry_machine_id`'s, plus the entry read again when it
+    /// isn't `last` (a file whose header names another tail).
+    pub(crate) fn tail_machine_id(&self, last: Option<&(u64, Entry)>) -> Option<[u8; 16]> {
+        match self.tail_source(last)? {
+            TailSource::Entry(e) => self.entry_machine_id(&e),
+            TailSource::Header => None,
+        }
+    }
+
+    /// The machine id entry `e` names, as `journal_file_entry_get_machine_id`
+    /// reads it: it walks the entry's items in order and takes the first
+    /// DATA object whose payload is `_MACHINE_ID=…`
+    /// (`journal_file_data_payload` with the field, decompressed as far as
+    /// the name); its value must be 32 characters (else `-EBADMSG`) of an
+    /// id that isn't null (`id128_from_string_nonzero`). An item it can't
+    /// read as a DATA object (`-EBADMSG`, `-EADDRNOTAVAIL`) is passed over;
+    /// any other error ends the walk. `None` when no item names a machine,
+    /// the first that does is invalid, or a read failed otherwise: here a
+    /// read the system refused (`Io`), and every other error is
+    /// corruption, passed over.
+    ///
+    /// One pread per item read, up to the `_MACHINE_ID=` one (every item
+    /// when there is none). journald adds `_MACHINE_ID=` to every entry,
+    /// and its DATA object comes early in each file, so on journald's
+    /// files that is the first few items (they are in offset order).
+    /// journal-remote keeps a source's fields as sent.
+    ///
+    /// Why not the `_MACHINE_ID` FIELD object's list of values
+    /// (`field_values`): a constant three preads where this is usually
+    /// fewer, but a list cut by corruption elsewhere in it would lose the
+    /// tail's value, and systemd reads the entry's items.
+    ///
+    /// Two departures, neither on files as journald writes them:
+    /// - A compressed object that would decode past the field's 44 bytes
+    ///   is passed over undecoded, where systemd stops at it with the
+    ///   header's id if its name is `_MACHINE_ID`: it differs only for an
+    ///   entry with a malformed compressed `_MACHINE_ID=` before another.
+    ///   journald stores a payload compressed only when that makes it
+    ///   shorter (`maybe_compress_payload`), so a 44-byte `_MACHINE_ID=`
+    ///   is never stored compressed longer, and no valid one is missed.
+    /// - A file cut short after it was opened: the read past its new end
+    ///   is `Io` here and ends the walk, where systemd's fstat in
+    ///   `journal_file_move_to` sees the cut, returns `-EADDRNOTAVAIL` and
+    ///   passes the item over. The next page opens the file again.
+    fn entry_machine_id(&self, e: &Entry) -> Option<[u8; 16]> {
+        for &item in &e.items {
+            match self.machine_id_item(item) {
+                Ok(MachineItem::Named(id)) => return id,
+                Err(err) if err.is_io() => return None,
+                // Another field, or corruption: passed over.
+                Ok(MachineItem::Other) | Err(_) => {}
+            }
+        }
+        None
+    }
+
+    /// What the DATA object at `offset` says of the machine, read from
+    /// its first bytes in one pread.
+    fn machine_id_item(&self, offset: u64) -> Result<MachineItem> {
+        let start = self.data_header();
+        let field = MACHINE_ID_FIELD.len();
+        let (flags, size, mut b) =
+            self.object_head(offset, OBJECT_DATA, start + MACHINE_ID_PAYLOAD as u64)?;
+        self.check(size >= start, || {
+            format!("data object {offset:#x} has a bad size")
+        })?;
+        // The payload's first bytes, all of it when it is no longer than a
+        // machine id's field. `object_head` reads them in its one pread,
+        // except for an object past the arena as last read (the file grew
+        // since): only its header then, and the rest is read here.
+        self.object_rest(offset, size.min(start + MACHINE_ID_PAYLOAD as u64), &mut b)?;
+        let stored = b.split_off(self.to_usize(start)?);
+        let stored_len = size - start;
+        let (payload, len) = if flags & (COMPRESSED_XZ | COMPRESSED_LZ4 | COMPRESSED_ZSTD) == 0 {
+            (stored, stored_len)
+        } else if stored_len > MACHINE_ID_PAYLOAD as u64 {
+            return Ok(MachineItem::Other);
+        } else {
+            match decompress_within(flags, stored, MACHINE_ID_PAYLOAD, &mut 0) {
+                Ok(p) => {
+                    let len = p.len() as u64;
+                    (p, len)
+                }
+                Err(ReadErrorKind::OverLimit { .. }) => return Ok(MachineItem::Other),
+                Err(k) => return Err(self.error(in_context(&format!("data {offset:#x}"), k))),
+            }
+        };
+        if !payload.starts_with(MACHINE_ID_FIELD) {
+            return Ok(MachineItem::Other);
+        }
+        let value = (len == MACHINE_ID_PAYLOAD as u64).then_some(&payload[field..]);
+        Ok(MachineItem::Named(
+            value.and_then(crate::MachineId::from_hex),
+        ))
     }
 
     /// An entry that must end by `end`: the next newer entry's offset,
@@ -671,7 +816,7 @@ impl JournalFile {
                 // decompression.
                 match self.data_payload_within(at, payload.len()) {
                     Ok(p) if p == payload => return Ok(Some(d)),
-                    Err(e) if !matches!(e.kind(), ReadErrorKind::OverLimit { .. }) => {
+                    Err(e) if !e.is_over_limit() => {
                         return Err(e);
                     }
                     _ => {}
@@ -740,7 +885,7 @@ impl JournalFile {
             } else {
                 match self.data_payload_within(head, max) {
                     Ok(p) => Some(p),
-                    Err(e) if matches!(e.kind(), ReadErrorKind::OverLimit { .. }) => None,
+                    Err(e) if e.is_over_limit() => None,
                     Err(e) => return Err(e),
                 }
             };
@@ -1248,7 +1393,7 @@ impl JournalFile {
                     Key::Monotonic => e.monotonic,
                     _ => e.realtime,
                 },
-                Err(e) if matches!(e.kind(), ReadErrorKind::Io { .. }) => return Err(e),
+                Err(e) if e.is_io() => return Err(e),
                 Err(e) => return Ok(Test::Invalid(e)),
             }
         };
@@ -2089,6 +2234,7 @@ mod tests {
     use crate::testing::crafted::*;
     use std::os::unix::fs::FileExt;
 
+    /// For `decompress_within`, which returns a bare kind.
     fn is_over(kind: &ReadErrorKind) -> bool {
         matches!(kind, ReadErrorKind::OverLimit { .. })
     }
@@ -2324,7 +2470,7 @@ mod tests {
             &mut met,
         );
         let err = got.expect_err("stopped");
-        assert!(matches!(err.kind(), ReadErrorKind::Io { .. }), "{err:?}");
+        assert!(err.is_io(), "{err:?}");
     }
 
     /// The cache holds at most 20 chains, the oldest given up first; an
@@ -2917,7 +3063,7 @@ mod tests {
         let (_t, f) = c.write();
         for d in [plain, lz4_data, zstd_data, xz_data] {
             let err = f.data_payload_within(d, 5).expect_err("over");
-            assert!(is_over(err.kind()), "{err}");
+            assert!(err.is_over_limit(), "{err}");
             assert!(f.data_payload_within(d, 1000).is_ok());
         }
         let mut bad = lz4.clone();
@@ -3359,6 +3505,308 @@ mod tests {
         assert_eq!(f.tail(last_of(&f).as_ref()), Some(tail(0xb, 200, 200)));
     }
 
+    /// `_MACHINE_ID=` and `id`, as journald writes the field.
+    fn machine_field(id: &str) -> Vec<u8> {
+        format!("_MACHINE_ID={id}").into_bytes()
+    }
+
+    /// `tail_file` whose header names as its tail an entry outside the
+    /// main list (seqnum 3), listing the DATA objects `items` appends.
+    fn named_tail(items: impl FnOnce(&mut Crafted) -> Vec<u64>) -> Crafted {
+        let (mut c, _e) = tail_file();
+        let items = items(&mut c);
+        let e = c.entry(3, &items);
+        c.set(264, e);
+        c
+    }
+
+    /// The machine id `c`'s tail names, read as 26.04 reads it; `None`
+    /// keeps the header's.
+    fn entry_machine(c: &mut Crafted) -> Option<[u8; 16]> {
+        let (_t, f) = c.write();
+        f.tail_machine_id(last_of(&f).as_ref())
+    }
+
+    /// systemd v259.9 (v259-stable commit 2d8b0b6a0aaf, from upstream
+    /// ae940730c6f2, issue #34169): the tail entry's `_MACHINE_ID=` names
+    /// the machine, its digits in either case, read item by item, one
+    /// pread each, up to it; the entry is read again when it isn't `last`.
+    /// `tail` keeps the header's (24.04's 255.4).
+    #[test]
+    fn the_tail_entrys_machine_id_names_the_machine() {
+        // A long payload is read only as far as a machine id's field: one
+        // pread, as for a short one.
+        let long = [&b"MESSAGE="[..], &[b'm'; 500]].concat();
+        let mut c = named_tail(|c| {
+            vec![
+                c.data(&long),
+                c.data(b"X=1"),
+                c.data(&machine_field(&"aB".repeat(16))),
+                c.data(b"Y=1"),
+            ]
+        });
+        let t = c.file();
+        let opener = Opener::default();
+        let f = JournalFile::open_with(t.path(), &opener).expect("opens");
+        let last = last_of(&f);
+        let before = opener.counts().preads;
+        assert_eq!(
+            f.tail(last.as_ref()).map(|t| t.machine_id),
+            Some([0x4d; 16])
+        );
+        assert_eq!(opener.counts().preads, before + 1, "the entry");
+        assert_eq!(f.tail_machine_id(last.as_ref()), Some([0xab; 16]));
+        assert_eq!(
+            opener.counts().preads,
+            before + 2 + 3,
+            "the entry again and three items"
+        );
+        // The tail as the page read it: no entry read.
+        let named = c.get(264);
+        let tail = (named, f.entry(named).expect("entry"));
+        let before = opener.counts().preads;
+        assert_eq!(f.tail_machine_id(Some(&tail)), Some([0xab; 16]));
+        assert_eq!(opener.counts().preads, before + 3, "three items");
+    }
+
+    /// With no `_MACHINE_ID=` item the header's machine id stays ("the
+    /// entry lacks the `_MACHINE_ID=` field (older journals), fall back to
+    /// the header's `machine_id`"), after a read of every item.
+    #[test]
+    fn a_tail_entry_without_a_machine_id_keeps_the_headers() {
+        let mut c = named_tail(|c| vec![c.data(b"MESSAGE=m"), c.data(b"X=1")]);
+        let t = c.file();
+        let opener = Opener::default();
+        let f = JournalFile::open_with(t.path(), &opener).expect("opens");
+        let last = last_of(&f);
+        let before = opener.counts().preads;
+        assert_eq!(f.tail_machine_id(last.as_ref()), None);
+        assert_eq!(opener.counts().preads, before + 3, "the entry, two items");
+        let mut none = named_tail(|_| vec![]);
+        assert_eq!(entry_machine(&mut none), None);
+    }
+
+    /// The first `_MACHINE_ID=` item decides: one whose value isn't 32
+    /// characters (`-EBADMSG`), isn't hex or is all zero
+    /// (`id128_from_string_nonzero`) leaves the header's machine id, and a
+    /// later valid one isn't read. A field whose name only starts so isn't
+    /// one.
+    #[test]
+    fn the_first_machine_id_item_decides() {
+        let valid = machine_field(&"11".repeat(16));
+        for (first, want) in [
+            (machine_field(&"22".repeat(15)), None),
+            (machine_field(&"22".repeat(17)), None),
+            (machine_field(""), None),
+            (machine_field(&"2g".repeat(16)), None),
+            (machine_field(&"00".repeat(16)), None),
+            (b"_MACHINE_IDX=1".to_vec(), Some([0x11; 16])),
+            (b"_MACHINE_I=1".to_vec(), Some([0x11; 16])),
+            (machine_field(&"22".repeat(16)), Some([0x22; 16])),
+        ] {
+            let mut c = named_tail(|c| vec![c.data(&first), c.data(&valid)]);
+            assert_eq!(
+                entry_machine(&mut c),
+                want,
+                "{}",
+                String::from_utf8_lossy(&first)
+            );
+        }
+    }
+
+    /// An item systemd can't read as a DATA object (`-EBADMSG`,
+    /// `-EADDRNOTAVAIL`: another object's type, an unaligned or a zero
+    /// offset, a bad size, a corrupt payload) is passed over
+    /// ("data object is bad, skipping over it").
+    #[test]
+    fn an_unreadable_item_is_passed_over() {
+        let valid = machine_field(&"11".repeat(16));
+        let mut c = named_tail(|c| {
+            let bad_size = c.data(&machine_field(&"22".repeat(16)));
+            c.set(bad_size + O_SIZE, 8);
+            // An object, but shorter than a DATA object's header.
+            let short = c.data(&machine_field(&"22".repeat(16)));
+            c.set(short + O_SIZE, 40);
+            let mut lz4 = 1000u64.to_le_bytes().to_vec();
+            lz4.extend_from_slice(&[0xff; 8]);
+            let bad_lz4 = c.data_raw(COMPRESSED_LZ4, &lz4, 1);
+            // Too short for lz4's size prefix: corrupt, not over a limit.
+            let cut_lz4 = c.data_raw(COMPRESSED_LZ4, &[1, 2, 3, 4], 2);
+            let array = c.get(H_ENTRY_ARRAY_OFFSET);
+            vec![
+                array,
+                0,
+                0x111,
+                bad_size,
+                short,
+                bad_lz4,
+                cut_lz4,
+                c.data(&valid),
+            ]
+        });
+        assert_eq!(entry_machine(&mut c), Some([0x11; 16]));
+        // The tail's only `_MACHINE_ID=` unreadable: the header's.
+        let mut c = named_tail(|c| {
+            let bad = c.data(&machine_field(&"22".repeat(16)));
+            c.b[at(bad)] = OBJECT_ENTRY;
+            vec![bad]
+        });
+        assert_eq!(entry_machine(&mut c), None);
+    }
+
+    /// A read the system refuses (`Io`) ends the search: the header's
+    /// machine id, though a later item names another. A file cut short
+    /// after it was opened stands in for a system error here; systemd
+    /// itself sees that cut (`-EADDRNOTAVAIL`) and passes the item over,
+    /// a departure `entry_machine_id` lists.
+    #[test]
+    fn a_refused_read_ends_the_search() {
+        let mut c = named_tail(|c| {
+            let valid = c.data(&machine_field(&"11".repeat(16)));
+            vec![valid, valid]
+        });
+        // The first item, after the entry: cut off below.
+        let cut = c.data(&machine_field(&"22".repeat(16)));
+        c.set(c.get(264) + E_ITEMS, cut);
+        let (t, f) = c.write();
+        // Read before the cut, as the page reads its newest entry first.
+        let named = c.get(264);
+        let last = Some((named, f.entry(named).expect("entry")));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open")
+            .set_len(cut + 8)
+            .expect("truncate");
+        assert_eq!(f.tail_machine_id(last.as_ref()), None);
+    }
+
+    /// An item past the arena as the file was opened, whose DATA object
+    /// was appended since (a corrupt forward item in a growing file): the
+    /// first read gets only the object's header, and the rest of what the
+    /// field needs is read before the payload is looked at, not sliced
+    /// out of bytes that were never read.
+    #[test]
+    fn an_item_appended_after_open_is_read_whole() {
+        let mut c = named_tail(|_| vec![0]);
+        let later = c.b.len() as u64;
+        c.set(c.get(264) + E_ITEMS, later);
+        let t = c.file();
+        let f = JournalFile::open(t.path()).expect("opens");
+        let last = last_of(&f);
+        c.data(&machine_field(&"11".repeat(16)));
+        c.set(H_ARENA_SIZE, c.b.len() as u64 - 272);
+        std::fs::write(t.path(), &c.b).expect("grow");
+        assert_eq!(f.tail_machine_id(last.as_ref()), Some([0x11; 16]));
+    }
+
+    /// A compressed `_MACHINE_ID=` is decoded (systemd's
+    /// `decompress_startswith`). One that would decode past the field's
+    /// 44 bytes is passed over: stored longer than that, unread (journald
+    /// stores a payload compressed only when that makes it shorter);
+    /// stored shorter, by the bounded decode. systemd would stop at such
+    /// a malformed `_MACHINE_ID=` with the header's id, a departure
+    /// `entry_machine_id` lists.
+    #[test]
+    fn a_compressed_machine_id_is_decoded() {
+        let lz4_of = |payload: &[u8]| {
+            let mut stored = (payload.len() as u64).to_le_bytes().to_vec();
+            stored.extend_from_slice(&lz4_flex::block::compress(payload));
+            stored
+        };
+        let lz4 = lz4_of(&machine_field(&"ab".repeat(16)));
+        assert!(lz4.len() <= 44, "{}", lz4.len());
+        let mut c = named_tail(|c| vec![c.data_raw(COMPRESSED_LZ4, &lz4, 1)]);
+        assert_eq!(entry_machine(&mut c), Some([0xab; 16]));
+        // Decoded but short: the first `_MACHINE_ID=`, invalid.
+        let short = lz4_of(&machine_field(&"ab".repeat(15)));
+        let mut c = named_tail(|c| {
+            vec![
+                c.data_raw(COMPRESSED_LZ4, &short, 1),
+                c.data_raw(COMPRESSED_LZ4, &lz4, 2),
+            ]
+        });
+        assert_eq!(entry_machine(&mut c), None);
+        // Stored in exactly 44 bytes: decoded. An id whose first `k` digits
+        // vary compresses less the larger `k`; one of them stores in 44.
+        let exact = (0..=32)
+            .map(|k: usize| {
+                let id: String = "3f8c1e9a5b07d264e1c3a9f05b7d82e6"[..k]
+                    .chars()
+                    .chain(std::iter::repeat_n('a', 32 - k))
+                    .collect();
+                (id.clone(), lz4_of(&machine_field(&id)))
+            })
+            .find(|(_, stored)| stored.len() == 44);
+        let (id, stored) = exact.expect("an id stored in 44 bytes");
+        let mut c = named_tail(|c| vec![c.data_raw(COMPRESSED_LZ4, &stored, 4)]);
+        let mut want = [0u8; 16];
+        hex::decode_to_slice(&id, &mut want).expect("hex");
+        assert_eq!(entry_machine(&mut c), Some(want));
+        // Stored longer than 44 bytes: not read further.
+        let noise: Vec<u8> = (0u8..60).map(|i| b'0' + i.wrapping_mul(37) % 75).collect();
+        let big = lz4_of(&[&machine_field(&"22".repeat(16))[..], &noise].concat());
+        assert!(big.len() > 44, "{}", big.len());
+        // Stored in 44 bytes or fewer, decoding to more.
+        let long = lz4_of(&[&machine_field(&"22".repeat(16))[..], &[b'2'; 100]].concat());
+        assert!(long.len() <= 44, "{}", long.len());
+        let mut c = named_tail(|c| {
+            vec![
+                c.data_raw(COMPRESSED_LZ4, &big, 1),
+                c.data_raw(COMPRESSED_LZ4, &long, 2),
+                c.data_raw(COMPRESSED_LZ4, &lz4, 3),
+            ]
+        });
+        assert_eq!(entry_machine(&mut c), Some([0xab; 16]));
+    }
+
+    /// The machine id comes from whichever entry gave the tail's times:
+    /// the main list's newest when the header's tail isn't an entry; none
+    /// (the header's) when an archived file's header gave them ("header-only
+    /// fallback for archived files"), or there is no tail.
+    #[test]
+    fn the_machine_id_comes_from_the_entry_that_gave_the_times() {
+        let named = machine_field(&"11".repeat(16));
+        let (mut c, _e) = journal_of(&[&[], &[&named]]);
+        c.b[40..56].copy_from_slice(&[0x4d; 16]);
+        c.b[56..72].copy_from_slice(&[0xc; 16]);
+        c.set(192, 3_000_000);
+        c.set(200, 30);
+        assert_eq!(entry_machine(&mut c), None, "no tail");
+        let main = c.get(H_ENTRY_ARRAY_OFFSET);
+        c.set(264, main);
+        assert_eq!(entry_machine(&mut c), Some([0x11; 16]), "the newest");
+        c.b[8..12].copy_from_slice(&COMPATIBLE_TAIL_ENTRY_BOOT_ID.to_le_bytes());
+        c.b[16] = STATE_ARCHIVED;
+        assert_eq!(entry_machine(&mut c), None, "the header's");
+    }
+
+    /// In a compact file (journald 252 and later: 4-byte items, 72-byte
+    /// DATA headers) the field is found the same way.
+    #[test]
+    fn a_compact_files_tail_names_its_machine() {
+        let mut c = Crafted::new();
+        set_incompatible(&mut c, INCOMPAT_COMPACT);
+        let data = |c: &mut Crafted, payload: &[u8]| {
+            let mut body =
+                vec![0u8; usize::try_from(DATA_HEADER_COMPACT - OBJECT_HEADER).expect("small")];
+            body.extend_from_slice(payload);
+            c.object(OBJECT_DATA, 0, &body)
+        };
+        let other = data(&mut c, b"X=1");
+        let named = data(&mut c, &machine_field(&"11".repeat(16)));
+        let mut entry = vec![0u8; 48];
+        entry[0..8].copy_from_slice(&9u64.to_le_bytes()); // seqnum
+        for item in [other, named] {
+            entry.extend_from_slice(&u32::try_from(item).expect("small").to_le_bytes());
+        }
+        let e = c.object(OBJECT_ENTRY, 0, &entry);
+        c.set(264, e);
+        let (_t, f) = c.write();
+        assert!(f.header.compact());
+        assert_eq!(f.tail_machine_id(None), Some([0x11; 16]));
+    }
+
     /// A journal of three entries, the first of boot 0xa, the others of
     /// boot 0xb, with `_BOOT_ID=` fields; a field table of `buckets` and
     /// the `_BOOT_ID` FIELD object listing both values. Returns the bytes,
@@ -3595,7 +4043,7 @@ mod tests {
         let (_t, f) = bad.write();
         let mut left = 1000;
         let err = f.data_payload_spending(d, &mut left).expect_err("bad");
-        assert!(!is_over(err.kind()), "{err}");
+        assert!(!err.is_over_limit(), "{err}");
         assert_eq!(left, 1000 - size);
     }
 
@@ -3703,7 +4151,7 @@ mod tests {
             .expect("arena size");
         let jf = JournalFile::open(tmp.path()).expect("opens");
         let err = jf.data_payload(d).expect_err("refused");
-        assert!(!is_over(err.kind()), "{err}");
+        assert!(!err.is_over_limit(), "{err}");
         assert!(err.to_string().ends_with("has a bad size"), "{err}");
     }
 
@@ -3717,7 +4165,7 @@ mod tests {
         let (_t, f) = c.write();
         let mut left = 12;
         let err = f.data_payload_spending(d, &mut left).expect_err("over");
-        assert!(is_over(err.kind()), "{err}");
+        assert!(err.is_over_limit(), "{err}");
         assert_eq!(left, 12);
     }
 

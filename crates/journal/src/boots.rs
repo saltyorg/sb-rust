@@ -12,8 +12,11 @@
 //! (`journal_file_newest_monotonic_compare`). `compare_boot_ids` takes
 //! each boot's first file (`journal_file_find_newest_for_boot_id`) and
 //! orders the boots by those files' tail realtime, but only when both
-//! files' header machine ids are equal; a boot not in the table, or two
-//! machines, compare equal, and the realtime step decides, as in 249.
+//! files' machine ids (`newest_machine_id`) are equal: the header's in 255
+//! to 259.8, the tail entry's `_MACHINE_ID=` where it has one in 259.9
+//! (`BootRule::NewestTailEntryMachine`, `name_machines`); a boot not in
+//! the table, or two machines, compare equal, and the realtime step
+//! decides, as in 249.
 //! On equal tail monotonic times the file added first stays first: the
 //! queue's `shuffle_up` (src/basic/prioq.c, v255 and v259) moves an item up
 //! only past a parent that compares greater, and nothing is re-shuffled
@@ -37,7 +40,9 @@ use std::collections::HashMap;
 /// boots. Built once per page from the files it opened.
 #[derive(Debug)]
 pub(crate) struct BootOrder {
-    newest: HashMap<[u8; 16], Tail>,
+    /// Per boot, its newest file's tail and that file's index in the
+    /// table's input.
+    newest: HashMap<[u8; 16], (usize, Tail)>,
     /// The release has the boot step (255 and later), even when the
     /// table is empty.
     active: bool,
@@ -68,12 +73,32 @@ impl BootOrder {
         // file on a tie. Not `max_by_key`, which picks the last.
         let newest = tails
             .into_iter()
-            .flatten()
-            .into_grouping_map_by(|t| t.boot_id)
-            .min_by_key(|_, t| Reverse(t.monotonic));
+            .enumerate()
+            .filter_map(|(i, t)| Some((i, t?)))
+            .into_grouping_map_by(|(_, t)| t.boot_id)
+            .min_by_key(|_, (_, t)| Reverse(t.monotonic));
         Self {
             newest,
             active: true,
+        }
+    }
+
+    /// 259.9's machine ids (v259-stable commit 2d8b0b6a0aaf): each boot's
+    /// newest file's id becomes the one `machine` names for that file (by
+    /// its index in `of`'s input; `None` keeps the header's). Only those
+    /// files are asked, since the queue picks the newest by monotonic time
+    /// alone (`journal_file_newest_monotonic_compare`) and
+    /// `compare_boot_ids` compares only theirs; and none at all with fewer
+    /// than two boots in the table, where no two machine ids are compared.
+    /// The same order as reading every file's, for fewer reads.
+    pub(crate) fn name_machines(&mut self, machine: impl Fn(usize) -> Option<[u8; 16]>) {
+        if self.newest.len() < 2 {
+            return;
+        }
+        for (i, t) in self.newest.values_mut() {
+            if let Some(id) = machine(*i) {
+                t.machine_id = id;
+            }
         }
     }
 
@@ -81,7 +106,9 @@ impl BootOrder {
     /// when both are in the table and of one machine; else equal.
     pub(crate) fn compare(&self, a: &[u8; 16], b: &[u8; 16]) -> Ordering {
         match (self.newest.get(a), self.newest.get(b)) {
-            (Some(x), Some(y)) if x.machine_id == y.machine_id => x.realtime.cmp(&y.realtime),
+            (Some((_, x)), Some((_, y))) if x.machine_id == y.machine_id => {
+                x.realtime.cmp(&y.realtime)
+            }
             _ => Ordering::Equal,
         }
     }
@@ -153,6 +180,43 @@ mod tests {
             BootOrder::none().compare(&[1; 16], &[2; 16]),
             Ordering::Equal
         );
+    }
+
+    /// 259.9's machine ids (`name_machines`): each boot's newest file is
+    /// asked for the machine its tail entry names, by its index in the
+    /// table's input, and that id replaces the header's; no other file is
+    /// asked, since the queue picks the newest by monotonic time alone.
+    /// A file naming none keeps its header's.
+    #[test]
+    fn named_machines_replace_the_newest_files_headers() {
+        let tails = [
+            Some(tail(1, 50, 300, 9)),
+            Some(tail(2, 5, 400, 9)),
+            Some(tail(2, 6, 450, 9)),
+        ];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let mut t = BootOrder::of(tails);
+        t.name_machines(|i| {
+            asked.borrow_mut().push(i);
+            (i == 2).then_some([8; 16])
+        });
+        asked.borrow_mut().sort_unstable();
+        assert_eq!(*asked.borrow(), [0, 2]);
+        assert_eq!(t.compare(&[1; 16], &[2; 16]), Ordering::Equal);
+        let mut t = BootOrder::of(tails);
+        t.name_machines(|i| (i == 0).then_some([9; 16]));
+        assert_eq!(t.compare(&[1; 16], &[2; 16]), Ordering::Less);
+    }
+
+    /// With fewer than two boots in the table no machine id is compared,
+    /// so none is asked for.
+    #[test]
+    fn one_boot_asks_for_no_machine() {
+        let mut t = BootOrder::of([Some(tail(1, 50, 300, 9)), None, Some(tail(1, 5, 30, 9))]);
+        t.name_machines(|i| panic!("asked for file {i}"));
+        assert_eq!(t.compare(&[1; 16], &[1; 16]), Ordering::Equal);
+        let mut empty = BootOrder::none();
+        empty.name_machines(|i| panic!("asked for file {i}"));
     }
 
     /// The machine id that counts is the boot's newest file's.
