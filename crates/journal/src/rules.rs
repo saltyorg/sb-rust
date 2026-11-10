@@ -416,10 +416,13 @@ pub(crate) fn unit_groups(
                     vec![pair("UNIT", unit)],
                 ],
                 daemons,
+                // In journalctl's order of adding (v259 logs-show.c,
+                // `add_matches_for_unit_full`): the forward page's seek
+                // walks terms in that order, reversed (forward.rs).
                 vec![
                     vec![COREDUMP_MESSAGE_ID.to_vec()],
-                    vec![pair("COREDUMP_UNIT", unit)],
                     coredump_user,
+                    vec![pair("COREDUMP_UNIT", unit)],
                 ],
             ]
         }
@@ -575,8 +578,9 @@ mod tests {
         }
     }
 
-    /// The whole match set of each rule, term by term, as journalctl
-    /// builds it (platform note, "Matching").
+    /// The whole match set of each rule, term by term, in the order
+    /// journalctl adds them (v249 and v259 logs-show.c; platform note,
+    /// "Matching"), which the forward page's seek depends on.
     #[test]
     fn the_unit_groups_are_journalctls() {
         let text = |groups: Vec<Group>| -> Vec<Vec<Vec<String>>> {
@@ -618,8 +622,8 @@ mod tests {
                 vec![vec!["_UID=0"], vec!["OBJECT_SYSTEMD_UNIT=a.service"]],
                 vec![
                     vec![id],
-                    vec!["COREDUMP_UNIT=a.service"],
-                    vec!["_UID=998", "_UID=0"]
+                    vec!["_UID=998", "_UID=0"],
+                    vec!["COREDUMP_UNIT=a.service"]
                 ],
             ]
         );

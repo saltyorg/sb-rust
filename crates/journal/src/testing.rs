@@ -1,7 +1,9 @@
 //! Test support, under the `testing` feature (journal spec, Project
-//! Structure): one file's reading, re-exported for the tools, and the
-//! crafted-file builder now; the tools' helpers, the JSON
-//! form and the injectable roots come with the plan's later tasks.
+//! Structure): one file's reading, re-exported for the tools, the
+//! crafted-file builder, and the injectable roots and opener counts; the
+//! tools' helpers and the JSON form come with the plan's later tasks.
+
+use crate::{Journal, OpenError, Source};
 
 // One file's reading, for the tools (the journal spec, Project
 // Structure: the tools need file-level access).
@@ -9,6 +11,26 @@ pub use crate::file::{
     ArrayCursor, DataRef, EntriesRev, Entry, Header, INCOMPAT_COMPACT, INCOMPAT_KEYED_HASH,
     INCOMPAT_KNOWN, INCOMPAT_LZ4, INCOMPAT_XZ, INCOMPAT_ZSTD, JournalFile, SIGNATURE, hex_id,
 };
+// Where `Source::Local` looks, and what a journal's opener counted.
+pub use crate::open::{Counts, Host};
+
+/// `Journal::open`, with `Source::Local`'s machine-id file and roots taken
+/// from `host` instead of the system's (journal spec, Testing Strategy:
+/// "Roots"; M-MOCKABLE-SYSCALLS).
+///
+/// # Errors
+///
+/// As `Journal::open`.
+pub fn open_on(source: Source, host: &Host) -> Result<Journal, OpenError> {
+    Journal::open_on(source, host)
+}
+
+/// The files `journal`'s pages have opened and closed, and the preads they
+/// made, since it was opened. Each journal counts its own.
+#[must_use]
+pub fn counts(journal: &Journal) -> Counts {
+    journal.opener.counts()
+}
 
 /// Crafted journal files for the corruption tests: a regular (not
 /// compact), unkeyed file laid out object by object, as journald appends
@@ -248,9 +270,91 @@ pub mod crafted {
         (c, layout)
     }
 
+    /// A valid journal of one entry per element of `entries`, entry `i`
+    /// carrying `MESSAGE=m<i>` and then the payloads given, in that order.
+    /// Each distinct payload is one DATA object listing its entries (the
+    /// first in-line, the rest in one array, empty for one entry). Returns
+    /// the entries' offsets.
+    #[must_use]
+    pub fn journal_of(entries: &[&[&[u8]]]) -> (Crafted, Vec<u64>) {
+        let mut c = Crafted::new();
+        c.hash_table(7);
+        let main = c.array(&[], entries.len(), 0);
+        // Each payload's DATA object, in the order first met.
+        let mut objects: Vec<(Vec<u8>, u64)> = Vec::new();
+        let mut items_of = Vec::new();
+        for (i, extra) in entries.iter().enumerate() {
+            let message = format!("MESSAGE=m{i}").into_bytes();
+            let mut items = Vec::new();
+            for payload in std::iter::once(&message[..]).chain(extra.iter().copied()) {
+                let d = if let Some(&(_, d)) = objects.iter().find(|(p, _)| p == payload) {
+                    d
+                } else {
+                    let d = c.data(payload);
+                    objects.push((payload.to_vec(), d));
+                    d
+                };
+                items.push(d);
+            }
+            items_of.push(items);
+        }
+        let offsets: Vec<u64> = items_of
+            .iter()
+            .enumerate()
+            .map(|(i, items)| c.entry(i as u64 + 1, items))
+            .collect();
+        for (k, &e) in offsets.iter().enumerate() {
+            c.set(main + A_ITEMS + 8 * k as u64, e);
+        }
+        for &(_, d) in &objects {
+            let listing: Vec<u64> = offsets
+                .iter()
+                .zip(&items_of)
+                .filter(|(_, items)| items.contains(&d))
+                .map(|(&e, _)| e)
+                .collect();
+            c.set(d + D_ENTRY_OFFSET, listing[0]);
+            c.set(d + D_N_ENTRIES, listing.len() as u64);
+            // The rest, possibly none (an array a lone entry never reads).
+            let rest = c.array(&listing[1..], 0, 0);
+            c.set(d + D_ENTRY_ARRAY, rest);
+        }
+        c.set(H_N_ENTRIES, offsets.len() as u64);
+        c.set(H_ENTRY_ARRAY_OFFSET, main);
+        (c, offsets)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// `journal_of`'s entries carry their fields in order, and each
+        /// payload's object lists exactly the entries carrying it.
+        #[test]
+        fn journal_of_links_each_payload_to_its_entries() {
+            let (mut c, offsets) = journal_of(&[&[b"A=1"], &[b"B=1", b"A=1"], &[b"A=1"]]);
+            let (_t, file) = c.write();
+            assert_eq!(file.header.n_entries, 3);
+            assert_eq!(file.all_entries().expect("entries"), offsets);
+            let a = file.find_data(b"A=1").expect("lookup").expect("found");
+            let b = file.find_data(b"B=1").expect("lookup").expect("found");
+            assert_eq!((a.n_entries, b.n_entries), (3, 1));
+            let rev = |d| {
+                file.entries_of_rev(d)
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("walks")
+            };
+            assert_eq!(rev(&a), [offsets[2], offsets[1], offsets[0]]);
+            assert_eq!(rev(&b), [offsets[1]]);
+            let second = file.entry(offsets[1]).expect("entry");
+            let payloads: Vec<Vec<u8>> = second
+                .items
+                .iter()
+                .map(|&d| file.data_payload(d).expect("payload"))
+                .collect();
+            assert_eq!(payloads, [&b"MESSAGE=m1"[..], b"B=1", b"A=1"]);
+            assert_eq!(second.seqnum, 2);
+        }
 
         #[test]
         fn default_is_new() {

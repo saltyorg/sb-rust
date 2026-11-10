@@ -180,27 +180,27 @@ Opening goes in `open.rs`, a module the spec's Project Structure now
 lists.
 
 **Acceptance criteria:**
-- [ ] Crafted tests:
+- [x] Crafted tests:
       - a forward page;
       - `more_older` and `more_newer` for every `Position`, at both
         ends, meaning a *matching* entry beyond the page (also when the
         next raw entry doesn't match);
       - an empty page's `PageEnd`.
-- [ ] Opening:
+- [x] Opening:
       - a FIFO doesn't block;
       - a symlinked file is an open error and a symlinked directory is
         read (Difference 4);
       - an invalid machine id is refused;
       - open errors get one entry per file, outside the ten cap.
-- [ ] Each `page` call reads the file list again: a file replaced or
+- [x] Each `page` call reads the file list again: a file replaced or
       deleted between two calls is seen by the second one, and the
       opener's counts show every open closed (Difference 11).
-- [ ] The pread counter bounds a crafted fixture's tail, page back and
+- [x] The pread counter bounds a crafted fixture's tail, page back and
       forward page. The figure is stated in the test and in the plan.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
-- [ ] library-reviewer and code-reviewer on the commit.
+- [x] `cargo test -p sb-journal`; `scripts/check.sh task`.
+- [x] library-reviewer and code-reviewer on the commit.
 
 **Dependencies:** Task 3
 **Files:** `crates/journal/src/{walk.rs,lib.rs,open.rs,testing.rs}`, `docs/specs/journal.md` (Project Structure)
@@ -234,6 +234,15 @@ lists.
 - [ ] The coredump row runs with `systemd-coredump` installed and checks
       the local rule. If it can't run, Checkpoint A doesn't pass:
       success criterion 3 goes unmet and the maintainer decides.
+- [ ] Forward pages (`After`, journal spec decision 10, UNVERIFIED
+      until these run):
+      - on 26.04, against `journalctl --after-cursor`, page by page;
+      - on 22.04 and 24.04, the same, except for Difference 18 (a
+        vanished or non-matching cursor entry: journalctl there drops
+        the first entry after it; on a file whose clock steps back, its
+        older bisect lands elsewhere);
+      - in a 249-written file whose clock steps back, against 26.04's
+        journalctl reading it (the emulated bisect's landing).
 - [ ] The workflow builds the example; actionlint and shellcheck are
       clean.
 
@@ -509,6 +518,14 @@ in the commit body. The matrix runs again where a fix touches reading.
   retry with the exact header read, or `refresh()` and retry. (A page
   reopens its files, so its `Io` is reported and gone from the next
   page: `Journal::page`'s docs, Task 3.)
+
+- A page holds a descriptor for every listed file at once (Task 3's
+  design, kept in Task 4). Past the soft `RLIMIT_NOFILE` (1024 by default)
+  the extra opens fail with EMFILE, reported one per file. journald's
+  defaults keep a journal far below that; decide whether sb raises the
+  soft limit to the hard one at startup (rustix `setrlimit`, beside
+  cli-core's `RLIMIT_CORE`) or caps the files per page (security audit of
+  Task 4, Low).
 
 - CI: a workflow running `scripts/check.sh` (CONSTRAINTS.md asks for
   `full` in CI once CI exists; the runner needs cargo-deny, cargo-mutants,

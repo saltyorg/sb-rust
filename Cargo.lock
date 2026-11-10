@@ -3304,6 +3304,7 @@ dependencies = [
  "jiff",
  "lz4_flex",
  "lzma-rust2",
+ "rustix",
  "ruzstd",
  "sb-journal",
  "siphasher",

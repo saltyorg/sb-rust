@@ -119,15 +119,18 @@ tools in Task 5 depend on them.
 | `Release` | struct, from `Release::parse("24.04")` | A release in `RELEASES`. Parsing any other release fails with `ReleaseError::Unsupported`. |
 | `UnitName` | `UnitName::new(&str) -> Result<_, QueryError>` | A name with no dot gets `.service`; a `.service` name passes unchanged; anything else (other suffixes, dotted names, globs) is refused (Difference 7). |
 | `FieldName` | `FieldName::new(&[u8]) -> Result<_, QueryError>` | journald's field-name rule, for queries and `Record::field`. `Record::fields()` yields raw byte pairs, unvalidated (Difference 14). |
-| `MachineId` | `MachineId::parse(&str) -> Result<_, OpenError>` | 32 lowercase hex digits, not all zero (L1). |
+| `MachineId` | `MachineId::parse(&str) -> Result<_, OpenError>`, `Display` | 32 hex digits in either case, not all zero; lowercased, as journald names the directory (L1; systemd v255 `id128_read_fd` and `sd_id128_from_string`'s `unhexchar` take either case; maintainer, Task 4). An invalid id is `OpenError::InvalidMachineId { path: Option<PathBuf> }`: `None` from `parse`, the file from `Journal::open(Source::Local)`, which refuses the source rather than join other text into a path; the file may hold one trailing newline (machine-id(5)) (Task 4). |
 | `BootId` | `struct BootId([u8; 16])`, `Display` as hex | A boot id from the entry header. |
 | `Cursor` | private fields; `Display` and `FromStr` (`QueryError::BadCursor`) | sd-journal's cursor text (`s=…;i=…;b=…;m=…;t=…;x=…`), documented and round-trip tested. It parses journalctl's `__CURSOR`, which the matrix pages from. |
 | `Source` | `enum { Local, Directory(PathBuf), Files(Vec<PathBuf>) }` | |
 | `Query` | `Query::unit(&Release, &UnitName, Option<Uid>, &Source)`, `Query::field(&FieldName, &[u8])`, `and(self, other) -> Result<Self, QueryError>` (at most 64 groups), `or(self, other) -> Self` | As the spec. |
 | `Position` | `enum { Tail, Before(Cursor), After(Cursor) }` | |
 | `Limits` | `Limits::default()`, `Limits::with_output(bytes) -> Limits` | The output limit is capped at `DATA_SIZE_MAX`, and the cap is stated in its docs. Private fields. The constructor can't fail because it caps, so it returns `Self` and not a `Result` (M-BUILD-RESULT applies only to fallible builds). |
-| `Page`, `Batch` | public fields, as the spec; `#[non_exhaustive]` | `Page` has `records` and `errors` from Task 3; Task 4 adds `more_older`, `more_newer` and `end`. |
-| `PageEnd` | opaque | Used only to start a follow. |
+| `Page`, `Batch` | public fields, as the spec; `#[non_exhaustive]` | `Page` has `records` and `errors` from Task 3; Task 4 adds `more_older`, `more_newer` and `end`. The flags count an entry the page chose but couldn't show (unreadable, or left out by a limit); with no record shown they are relative to the position (Task 4). |
+| `PageEnd` | opaque; `Clone`, `PartialEq`, `Eq`, `Default` | Used only to start a follow: each file's (device, inode) and header entry count, and the newest entry, unfiltered, with its directory. Equality tells two pages of an unchanged journal (Task 4). |
+| `ReadErrorKind::OutputLimitNewer`, `HeldLimitNewer` | variants | A forward page's limits, which leave out its newer end: it reads oldest first, so the next `After` from its last record has no gap (Task 4). |
+| `ReadErrorKind::Symlink`, `NotRegular` | variants | A journal file that is a symlink (ELOOP under `O_NOFOLLOW`, confirmed by `lstat`), or not a regular file (`fstat`): open errors, one per file (L2, Difference 4; Task 4). |
+| `testing::Host`, `open_on`, `Counts`, `counts` | under `testing` | `Source::Local`'s machine-id file and roots injected; a per-`Journal` count of opens, closes and preads, kept on its opener (Task 4). |
 | `ReadError` | private `path` and `kind: ReadErrorKind`, with accessors; `path()` is `Option<&Path>`, `None` for page-level notices (the output, held and list-changing limits) (Task 3), plus `ReadErrors { shown: Vec<ReadError>, omitted: usize }` | `Display` escapes the path and field names (L5). Ten are shown and the rest counted. Open errors take one entry per file, outside the cap. |
 | `OpenError`, `QueryError`, `ReleaseError` | thiserror enums | |
 | `Journal`, `Follower` | structs; `Journal: Send + Sync`, `Follower: Send` | `Follower::drain(&mut self, &Limits) -> Batch`, `wake_fd(&self) -> io::Result<OwnedFd>` (CLOEXEC, non-blocking). |
@@ -164,7 +167,9 @@ records its exact count.
 | Difference 14: record field names aren't refused (raw bytes, sanitized for display) | 3 |
 | Difference 15: no second forward walk | 3 |
 | Difference 17: an out-of-order item stops a followed file; the tail walks past it | 3 (tail), 6 (follow) |
-| New: `After` and exact `more_*` | 4 |
+| Difference 18: nothing after a vanished or non-matching cursor dropped (26.04's `--after-cursor`) | 4 (crafted), 5 (matrix) |
+| Difference 19: a forward page on a corrupt file goes on where journalctl stops | 4 |
+| New: `After` and exact `more_*` (journalctl 259's seek emulated, decision 10) | 4 |
 | New: safe opening (L2), `MachineId` (L1) | 4 |
 | New: typed `ReadError` (L5), `ReadErrors` | 3 (read errors), 4 (open errors) |
 | New: `DisplayText` | 9 |
@@ -176,10 +181,33 @@ records its exact count.
 | Success criterion 2: `RELEASES` matches `SUPPORTED_RUNTIME_RELEASES` | 10 |
 | Success criterion 3: the matrix | 5 (pages, flags, coredump row), 7 (follow.sh, stress.sh) |
 | Success criterion 4: the fuzz harness | 8 |
-| Success criterion 5: the pread bound | 4 (crafted), 5 (matrix fixture) |
+| Success criterion 5: the pread bound (figures below) | 4 (crafted), 5 (matrix fixture) |
 | Success criterion 6: `check.sh full` | every checkpoint |
 | Success criterion 7: documents | 1 (ADR-013, map row, deny.toml), 9 (term-ui spec), 12 (the rest) |
 | Success criterion 8: the security audit | 11 |
+
+**The pread bound (success criterion 5).** Each page counts its preads
+on its journal's opener (`testing::counts`).
+- Crafted fixture (Task 4): `crafted::journal(200)` matched on `U=x`
+  (every entry), pages of ten, in
+  `the_preads_of_a_tail_a_page_back_and_a_page_forward_are_bounded`:
+  - the tail: 42 preads;
+  - the page before it: 52;
+  - the page after that page's first entry: 88 (a bisect; 101 for a page
+    after the 10th or the 1981st entry of `crafted::journal(2000)`, so the
+    same at any depth, and 104 after a vanished cursor, which also reads
+    each file's first match: `a_deep_forward_page_costs_a_bisect`).
+  - The tests assert these figures exactly.
+- The matrix fixture's figures: Task 5.
+
+`Before` walks back from the newest entry to the cursor, so its cost
+grows with the depth paged (accepted by success criterion 5). `After` is
+journalctl 259's `--after-cursor`, its seek's bisects emulated (spec,
+decision 10), so it costs O(log n) preads per value of the query at any
+depth, plus a read of each file's first match when the landing isn't the
+cursor's own entry (for `more_older`), and one read per entry shown. On a
+damaged list (a zero slot where the walk's start falls) the walk reads
+that list from its head instead: a pread per 512 items.
 
 ## Dependency graph
 
@@ -200,7 +228,7 @@ sanitizer, so it waits for T9 too.
 - [x] Task 1: crate skeleton, ADR-013, `hash.rs`, file objects and codecs
 - [x] Task 2: entry arrays, chains and `EntriesRev`
 - [x] Task 3: walks, rules and `page` (Tail, Before)
-- [ ] Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound
+- [x] Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound
 - [ ] Task 5: the comparison tools and container scripts on the crate
 
 ### Checkpoint A: the reader against journalctl

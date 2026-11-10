@@ -10,9 +10,13 @@
 //! decides its own handling).
 
 use crate::file::{DataRef, EntriesRev, Entry, JournalFile};
+use crate::open::Opener;
 use crate::rules::Group;
-use crate::{Cursor, Field, ReadError, ReadErrorKind, ReadErrors, Record};
-use itertools::Itertools;
+use crate::{
+    Cursor, Field, FileEnd, PageEnd, Position, ReadError, ReadErrorKind, ReadErrors, Record,
+};
+use itertools::{Either, Itertools};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, hash_map};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -20,7 +24,7 @@ use std::path::{Path, PathBuf};
 type Result<T, E = ReadError> = std::result::Result<T, E>;
 
 /// Where `e`, an entry of `f`, is.
-fn location(f: &JournalFile, e: &Entry) -> Cursor {
+pub(crate) fn location(f: &JournalFile, e: &Entry) -> Cursor {
     Cursor {
         seqnum_id: f.header.seqnum_id,
         seqnum: e.seqnum,
@@ -66,12 +70,18 @@ pub(crate) fn directory_files(dir: &Path, out: &mut Listing) {
 /// tree): its depth-first, name-ordered walk puts a subdirectory's files
 /// among the directory's own, where `journalctl -D` reads the directory's
 /// own first, and it has no rule for a local root that doesn't exist.
-/// Files and directories are told apart through symlinks, as sd-journal
-/// follows both (journal spec, Difference 4 is the plan's Task 4). A
-/// journal file's name that can't be stat'ed (a dangling symlink, a file
-/// gone since the listing) is listed anyway, for its open to report.
-/// A 32-byte name that can't be stat'ed isn't taken as a subdirectory:
-/// it is only a candidate, never a journal file.
+/// A journal file's name is taken when it is a regular file or a symlink
+/// (to anything, dangling too), as sd-journal's `dirent_is_journal_file`
+/// takes `DT_REG` and `DT_LNK`; the open then refuses a symlink (journal
+/// spec, Difference 4), so it is reported, never dropped silently. Its
+/// type is the directory entry's own (`DirEntry::file_type`, which doesn't
+/// follow symlinks:
+/// <https://doc.rust-lang.org/std/fs/struct.DirEntry.html#method.file_type>);
+/// a name whose type can't be read is listed too, for its open to report.
+/// Other types (a FIFO, a socket, a device, a directory) aren't journal
+/// files, as for sd-journal. Subdirectories are found through symlinks, as
+/// sd-journal follows them: a 32-byte name that can't be stat'ed isn't
+/// taken as one; it is only a candidate, never a journal file.
 fn scan(
     dir: &Path,
     missing_ok: bool,
@@ -95,15 +105,16 @@ fn scan(
         }
     };
     for entry in rd {
-        let p = match entry {
-            Ok(entry) => entry.path(),
+        let entry = match entry {
+            Ok(entry) => entry,
             Err(e) => {
                 out.errors.push(failed(e));
                 continue;
             }
         };
+        let p = entry.path();
         // Names as bytes, as sd-journal compares them: a name that isn't
-        // UTF-8 is still a journal file's. One stat, following symlinks.
+        // UTF-8 is still a journal file's.
         let name = p
             .file_name()
             .map(OsStr::as_encoded_bytes)
@@ -112,25 +123,29 @@ fn scan(
         if !journal && name.len() != 32 {
             continue;
         }
-        let meta = std::fs::metadata(&p);
         if journal {
-            if meta.as_ref().map_or(true, std::fs::Metadata::is_file) {
+            let kind = entry.file_type();
+            if kind
+                .as_ref()
+                .map_or(true, |t| t.is_file() || t.is_symlink())
+            {
                 files.push(p);
             }
-        } else if meta.is_ok_and(|m| m.is_dir()) {
+        } else if std::fs::metadata(&p).is_ok_and(|m| m.is_dir()) {
             subdirs.push(p);
         }
     }
     files.sort();
 }
 
-/// Open each file. A file that can't be opened is returned as its error,
-/// never dropped silently (an unsupported format names the file).
-fn open(paths: &[PathBuf]) -> (Vec<JournalFile>, Vec<ReadError>) {
+/// Open each file through `opener`. A file that can't be opened is
+/// returned as its error, never dropped silently (an unsupported format
+/// names the file).
+fn open(paths: &[PathBuf], opener: &Opener) -> (Vec<JournalFile>, Vec<ReadError>) {
     let mut files = Vec::new();
     let mut errors = Vec::new();
     for p in paths {
-        match JournalFile::open(p) {
+        match JournalFile::open_with(p, opener) {
             Ok(f) => files.push(f),
             Err(e) => errors.push(e),
         }
@@ -148,11 +163,12 @@ fn open(paths: &[PathBuf]) -> (Vec<JournalFile>, Vec<ReadError>) {
 /// most, so they are shown outside the read errors' cap.
 pub(crate) fn open_listed(
     mut list: impl FnMut() -> Listing,
+    opener: &Opener,
     errors: &mut ReadErrors,
 ) -> Vec<JournalFile> {
     let mut listing = list();
     for _ in 0..3 {
-        let (files, failed) = open(&listing.paths);
+        let (files, failed) = open(&listing.paths, opener);
         let again = list();
         if again.paths == listing.paths {
             again
@@ -164,7 +180,7 @@ pub(crate) fn open_listed(
         }
         listing = again;
     }
-    let (files, failed) = open(&listing.paths);
+    let (files, failed) = open(&listing.paths, opener);
     listing
         .errors
         .into_iter()
@@ -182,24 +198,106 @@ pub(crate) struct Bounds {
     pub(crate) held: usize,
 }
 
-/// The last `n` matching entries before `before` (the newest when
-/// `None`), oldest first. `groups` empty means every entry.
-pub(crate) fn tail(
+/// A page's records and whether matching entries lie beyond them.
+#[derive(Debug)]
+pub(crate) struct Paged {
+    pub(crate) records: Vec<Record>,
+    pub(crate) more_older: bool,
+    pub(crate) more_newer: bool,
+}
+
+/// The `n` matching entries at `at`, oldest first. `groups` empty means
+/// every entry.
+///
+/// - `Tail` and `Before(c)`: the newest `n`, before `c` for `Before`
+///   (`newest`). `more_older` is whether the merge had one more to give;
+///   `more_newer`, for `Before`, whether the walk passed a matching entry
+///   at or after `c` (it reads all of them on its way back).
+/// - `After(c)`: journalctl 259's `--after-cursor`, its seek's bisects
+///   emulated, then forward (forward.rs, journal spec decision 10).
+///   `more_newer` is whether more than `n` lay after the landing;
+///   `more_older`, whether a matching entry lies before where the page
+///   started.
+///
+/// Either flag is also set when the page chose an entry it couldn't show
+/// on that side of the records shown (`decode`).
+pub(crate) fn page(
     files: &[JournalFile],
     groups: &[Group],
     n: usize,
-    before: Option<&Cursor>,
+    at: &Position,
     bounds: Bounds,
     errors: &mut ReadErrors,
-) -> Vec<Record> {
-    let step = |l: &Cursor| match before {
-        Some(b) if !l.order(b).is_lt() => Step::Skip,
-        _ => Step::Take,
-    };
-    let walks = walks(files, groups, step, errors);
+) -> Paged {
     let held = bounds.held / std::mem::size_of::<Candidate>();
-    let picked = newest(walks, n, held, errors);
-    decode(files, &picked, bounds.payload, errors)
+    let beyond = Cell::new(false);
+    let (picked, more_older, more_newer, from) = match at {
+        Position::Tail => {
+            let walks = walks(files, groups, |_: &Cursor| Step::Take, errors);
+            let (picked, more) = newest(&mut Merge::new(walks), n, held, errors);
+            (picked, more, false, End::Newest)
+        }
+        Position::Before(c) => {
+            let step = |l: &Cursor| {
+                if l.order(c).is_lt() {
+                    Step::Take
+                } else {
+                    beyond.set(true);
+                    Step::Skip
+                }
+            };
+            let walks = walks(files, groups, step, errors);
+            let (picked, more) = newest(&mut Merge::new(walks), n, held, errors);
+            (picked, more, beyond.get(), End::Newest)
+        }
+        Position::After(c) => {
+            let fwd = crate::forward::after(files, groups, n, c, held, errors);
+            (fwd.picked, fwd.more_older, fwd.more_newer, End::Oldest)
+        }
+    };
+    let (records, left) = decode(files, &picked, from, bounds.payload, errors);
+    Paged {
+        records,
+        more_older: more_older || left.older,
+        more_newer: more_newer || left.newer,
+    }
+}
+
+/// Where the page ends (`PageEnd`): each opened file's inode and entry
+/// count, and the newest entry across them, unfiltered, by sd-journal's
+/// order (the earlier file on a tie, as `newest` keeps it), with its
+/// file's directory. A file whose newest entry can't be read adds its
+/// error and no entry: its count still stands.
+pub(crate) fn end(files: &[JournalFile], errors: &mut ReadErrors) -> PageEnd {
+    let mut newest: Option<(Cursor, &JournalFile)> = None;
+    for f in files {
+        let last = match f.all_entries_rev().next() {
+            None => continue,
+            Some(r) => r.and_then(|off| f.entry(off)),
+        };
+        match last {
+            Ok(e) => {
+                let l = location(f, &e);
+                if newest.as_ref().is_none_or(|(b, _)| l.order(b).is_gt()) {
+                    newest = Some((l, f));
+                }
+            }
+            Err(err) => errors.add(err),
+        }
+    }
+    PageEnd {
+        files: files
+            .iter()
+            .map(|f| FileEnd {
+                inode: f.inode,
+                n_entries: f.header.n_entries,
+            })
+            .collect(),
+        newest: newest.map(|(l, f)| {
+            let dir = f.path.parent().map(Path::to_path_buf).unwrap_or_default();
+            (l, dir)
+        }),
+    }
 }
 
 /// One lazy walk per file, newest first. A group whose terms can't be
@@ -229,38 +327,57 @@ where
     out
 }
 
-/// Read the chosen entries for output, newest first, within one output
-/// limit for the page (`payload_limit`), which every read spends, failed
-/// ones too. Entries share most DATA objects (a unit's _PID, _COMM,
-/// _HOSTNAME and so on): each is read and decompressed once, and one that
-/// failed isn't decoded again for the next entry listing it. An entry that
-/// can't be read is reported and skipped, as sd-journal skips an entry it
-/// can't read (`output_json` on -EBADMSG). The first entry that doesn't fit
-/// ends the output, so it has no gap: a page back from the first entry
-/// shown goes on from there. The entries left out are reported. An entry
-/// that doesn't fit the whole limit, read before anything else, is
-/// reported and skipped instead (Difference 5): stopping there would show
-/// nothing at all.
+/// Read the chosen entries for output, from the end the page pages from
+/// (`from`: newest first for `Tail` and `Before`, oldest first for
+/// `After`), within one output limit for the page (`payload_limit`), which
+/// every read spends, failed ones too. Entries share most DATA objects (a
+/// unit's _PID, _COMM, _HOSTNAME and so on): each is read and decompressed
+/// once, and one that failed isn't decoded again for the next entry
+/// listing it. An entry that can't be read is reported and skipped, as
+/// sd-journal skips an entry it can't read (`output_json` on -EBADMSG). The
+/// first entry that doesn't fit ends the output, so it has no gap: a page
+/// back from the first entry shown (a page forward from the last) goes on
+/// from there. The entries left out, at the far end, are reported. An entry
+/// that doesn't fit the whole limit, read before anything else, is reported
+/// and skipped instead (Difference 5): stopping there would show nothing at
+/// all.
+///
+/// Also returns which sides of the records shown hold a chosen entry that
+/// isn't shown (`Left`): all of them, both sides, when none is shown.
 fn decode(
     files: &[JournalFile],
     picked: &[Candidate],
+    from: End,
     payload_limit: usize,
     errors: &mut ReadErrors,
-) -> Vec<Record> {
+) -> (Vec<Record>, Left) {
     let mut out = Vec::with_capacity(picked.len());
+    // The oldest and newest chosen entries shown, as indexes into `picked`.
+    let mut shown: Option<(usize, usize)> = None;
+    // Indexes into `picked` (oldest first), in reading order.
+    // <https://docs.rs/itertools/0.14.0/itertools/enum.Either.html>: an
+    // iterator of either range, unboxed.
+    let order = match from {
+        End::Newest => Either::Left((0..picked.len()).rev()),
+        End::Oldest => Either::Right(0..picked.len()),
+    };
     let mut payloads = Payloads {
         whole: payload_limit,
         ..Payloads::default()
     };
     let mut left = payload_limit;
-    for (i, c) in picked.iter().rev().enumerate() {
+    for (i, at) in order.enumerate() {
+        let c = &picked[at];
         let f = &files[c.file];
         let whole = left == payload_limit;
         let read = f
             .entry(c.offset)
             .and_then(|e| record(f, &e, &mut payloads, c.file, &mut left));
         match read {
-            Ok(r) => out.push(r),
+            Ok(r) => {
+                shown = Some(shown.map_or((at, at), |(lo, hi)| (lo.min(at), hi.max(at))));
+                out.push(r);
+            }
             Err(err) if is_over(&err) && whole => {
                 errors.add(ReadError {
                     kind: ReadErrorKind::TooLarge {
@@ -275,17 +392,47 @@ fn decode(
                 left = payload_limit;
             }
             Err(err) if is_over(&err) => {
-                errors.add(ReadError::of_page(ReadErrorKind::OutputLimit {
-                    limit: payload_limit,
-                    left_out: picked.len() - i,
-                }));
+                let (limit, left_out) = (payload_limit, picked.len() - i);
+                let kind = match from {
+                    End::Newest => ReadErrorKind::OutputLimit { limit, left_out },
+                    End::Oldest => ReadErrorKind::OutputLimitNewer { limit, left_out },
+                };
+                errors.add(ReadError::of_page(kind));
                 break;
             }
             Err(err) => errors.add(err),
         }
     }
-    out.reverse();
-    out
+    if from == End::Newest {
+        out.reverse();
+    }
+    let left = match shown {
+        Some((oldest, newest)) => Left {
+            older: oldest > 0,
+            newer: newest + 1 < picked.len(),
+        },
+        None => Left {
+            older: !picked.is_empty(),
+            newer: !picked.is_empty(),
+        },
+    };
+    (out, left)
+}
+
+/// The end of its chosen entries a page reads first: the one it pages
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum End {
+    Newest,
+    Oldest,
+}
+
+/// Whether chosen entries were left unshown older and newer than the
+/// records shown.
+#[derive(Debug, Clone, Copy)]
+struct Left {
+    older: bool,
+    newer: bool,
 }
 
 fn is_over(e: &ReadError) -> bool {
@@ -295,43 +442,47 @@ fn is_over(e: &ReadError) -> bool {
 /// An entry a file's walk chose: its location for the merge, and where to
 /// read it once it is among the entries shown.
 #[derive(Debug, Clone)]
-struct Candidate {
-    location: Cursor,
-    file: usize,
-    offset: u64,
+pub(crate) struct Candidate {
+    pub(crate) location: Cursor,
+    pub(crate) file: usize,
+    pub(crate) offset: u64,
 }
 
-/// The newest `n` entries across the files' walks (each newest first),
-/// returned oldest first. This is how `journalctl -n` finds them:
-/// `sd_journal_seek_tail`, then `sd_journal_previous_skip`, which is
-/// `real_journal_next` going up (v249 sd-journal.c). Every file first moves
-/// past heads that aren't strictly before the last entry taken, then the
-/// largest head by `journal_file_compare_locations` is taken, the earlier
-/// file on a tie. So a flushed copy is shown once, from the earlier file in
-/// search order, and only the heads are read: a file's walk goes no
-/// further back than the entries it contributes. journalctl then walks
-/// forward again from the oldest entry taken; that second walk isn't
-/// modelled (Difference 15).
+/// The files' walks (each newest first) merged into one stream, newest
+/// first. This is how `journalctl -n` finds the newest: `sd_journal_seek_tail`,
+/// then `sd_journal_previous_skip`, which is `real_journal_next` going up
+/// (v249 sd-journal.c). Every file first moves past heads that aren't
+/// strictly before the last entry taken, then the largest head by
+/// `journal_file_compare_locations` is taken, the earlier file on a tie.
+/// So a flushed copy is shown once, from the earlier file in search order,
+/// and only the heads are read: a file's walk goes no further back than
+/// the entries it contributes, plus one head. journalctl then walks forward
+/// again from the oldest entry taken; that second walk isn't modelled
+/// (Difference 15).
 ///
 /// An error a walk yields is reported and the walk goes on: the walks
 /// pass over what they can't read (an entry, an array) and yield the
 /// error in its place, so only what it hides is lost.
-///
-/// At most `held` candidates are kept (the page's held limit): past it
-/// the older entries are left out, reported.
-fn newest<I>(walks: Vec<I>, n: usize, held: usize, errors: &mut ReadErrors) -> Vec<Candidate>
-where
-    I: Iterator<Item = Result<Candidate>>,
-{
-    let mut walks: Vec<Option<I>> = walks.into_iter().map(Some).collect();
-    let mut heads: Vec<Option<Candidate>> = walks.iter().map(|_| None).collect();
-    let mut out: Vec<Candidate> = Vec::new();
-    while out.len() < n {
-        if out.len() >= held {
-            errors.add(ReadError::of_page(ReadErrorKind::HeldLimit));
-            break;
+struct Merge<I> {
+    walks: Vec<Option<I>>,
+    heads: Vec<Option<Candidate>>,
+    last: Option<Cursor>,
+}
+
+impl<I: Iterator<Item = Result<Candidate>>> Merge<I> {
+    fn new(walks: Vec<I>) -> Self {
+        let heads = walks.iter().map(|_| None).collect();
+        Self {
+            walks: walks.into_iter().map(Some).collect(),
+            heads,
+            last: None,
         }
-        for (walk, head) in walks.iter_mut().zip(heads.iter_mut()) {
+    }
+
+    /// The head the merge would take next, without taking it; `None` once
+    /// every walk is done.
+    fn best(&mut self, errors: &mut ReadErrors) -> Option<usize> {
+        for (walk, head) in self.walks.iter_mut().zip(self.heads.iter_mut()) {
             loop {
                 if head.is_none() {
                     match walk.as_mut().and_then(Iterator::next) {
@@ -346,8 +497,8 @@ where
                         }
                     }
                 }
-                match (head.as_ref(), out.last()) {
-                    (Some(h), Some(last)) if !h.location.order(&last.location).is_lt() => {
+                match (head.as_ref(), self.last.as_ref()) {
+                    (Some(h), Some(last)) if !h.location.order(last).is_lt() => {
                         *head = None;
                     }
                     _ => break,
@@ -361,10 +512,10 @@ where
         // not itertools' `kmerge_by`: its heap needs a transitive order and
         // has no tie rule.
         let mut best: Option<usize> = None;
-        for (i, head) in heads.iter().enumerate() {
+        for (i, head) in self.heads.iter().enumerate() {
             let Some(h) = head else { continue };
             let better = best.is_none_or(|b| {
-                heads[b]
+                self.heads[b]
                     .as_ref()
                     .is_some_and(|bh| h.location.order(&bh.location).is_gt())
             });
@@ -372,18 +523,54 @@ where
                 best = Some(i);
             }
         }
-        let Some(best) = best else { break };
-        out.extend(heads[best].take());
+        best
     }
-    out.reverse();
-    out
+
+    /// Take the head `best` gave.
+    fn take(&mut self, best: usize) -> Candidate {
+        let c = self.heads[best].take().expect("`best` names a head");
+        self.last = Some(c.location);
+        c
+    }
 }
 
-/// What to do with an entry met while walking backwards.
+/// The newest `n` entries of the merge, oldest first, and whether the
+/// merge had another to give (a matching entry older than them).
+///
+/// At most `held` candidates are kept (the page's held limit): past it the
+/// older entries are left out, reported.
+fn newest<I>(
+    merge: &mut Merge<I>,
+    n: usize,
+    held: usize,
+    errors: &mut ReadErrors,
+) -> (Vec<Candidate>, bool)
+where
+    I: Iterator<Item = Result<Candidate>>,
+{
+    let mut out: Vec<Candidate> = Vec::new();
+    let more = loop {
+        let Some(best) = merge.best(errors) else {
+            break false;
+        };
+        if out.len() >= n {
+            break true;
+        }
+        if out.len() >= held {
+            errors.add(ReadError::of_page(ReadErrorKind::HeldLimit));
+            break true;
+        }
+        out.push(merge.take(best));
+    };
+    out.reverse();
+    (out, more)
+}
+
+/// What to do with a matching entry met while walking backwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Take,
-    /// Newer than the range wanted: keep walking.
+    /// Outside the range wanted: keep walking.
     Skip,
 }
 
@@ -438,7 +625,8 @@ impl<S: Fn(&Cursor) -> Step> Iterator for Walk<'_, S> {
     /// is sound for `step`: the next readable entry is checked on its own.
     /// So is an array left out of order (`EntriesRev`): the walk goes on
     /// past it to the older arrays, where a follow stops the file
-    /// (Difference 17).
+    /// (Difference 17). `step` is asked about matching entries only, so it
+    /// can tell what lies beyond the page's range.
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let (off, ()) = match self.driver.next()? {
@@ -453,18 +641,17 @@ impl<S: Fn(&Cursor) -> Step> Iterator for Walk<'_, S> {
                 Err(err) => return Some(Err(err)),
             };
             self.end = off;
+            let matches = self
+                .others
+                .iter()
+                .all(|alts| alts.iter().any(|o| e.items.contains(o)));
+            if !matches {
+                continue;
+            }
             let location = location(self.f, &e);
             match (self.step)(&location) {
+                Step::Take => return Some(Ok((off, location))),
                 Step::Skip => {}
-                Step::Take => {
-                    let matches = self
-                        .others
-                        .iter()
-                        .all(|alts| alts.iter().any(|o| e.items.contains(o)));
-                    if matches {
-                        return Some(Ok((off, location)));
-                    }
-                }
             }
         }
     }
@@ -644,7 +831,7 @@ mod tests {
     impl Opened {
         fn new(paths: &[PathBuf]) -> Self {
             let mut errors = ReadErrors::default();
-            let (files, failed) = open(paths);
+            let (files, failed) = open(paths, &Opener::default());
             for e in failed {
                 errors.add_open(e);
             }
@@ -657,11 +844,16 @@ mod tests {
         }
 
         fn tail(&mut self, groups: &[Group], n: usize, before: Option<&Cursor>) -> Vec<Record> {
+            let at = before.map_or(Position::Tail, |c| Position::Before(*c));
+            self.page(groups, n, &at).records
+        }
+
+        fn page(&mut self, groups: &[Group], n: usize, at: &Position) -> Paged {
             let bounds = Bounds {
                 payload: self.payload_limit,
                 held: self.held_limit,
             };
-            tail(&self.files, groups, n, before, bounds, &mut self.errors)
+            page(&self.files, groups, n, at, bounds, &mut self.errors)
         }
     }
 
@@ -696,7 +888,7 @@ mod tests {
     fn newest_of(walks: Vec<Vec<Candidate>>, n: usize) -> Vec<u64> {
         let mut errors = ReadErrors::default();
         let walks = walks.into_iter().map(|w| w.into_iter().map(Ok)).collect();
-        let out = newest(walks, n, usize::MAX, &mut errors);
+        let (out, _more) = newest(&mut Merge::new(walks), n, usize::MAX, &mut errors);
         assert!(errors.is_empty(), "{:?}", texts(&errors));
         out.iter().map(|c| c.location.realtime).collect()
     }
@@ -750,7 +942,7 @@ mod tests {
             .map(|c| vec![Ok(c)].into_iter())
             .collect();
         let mut errors = ReadErrors::default();
-        let out = newest(walks, 10, usize::MAX, &mut errors);
+        let (out, _more) = newest(&mut Merge::new(walks), 10, usize::MAX, &mut errors);
         assert_eq!(out.iter().map(|c| c.file).collect::<Vec<_>>(), vec![0]);
     }
 
@@ -765,8 +957,8 @@ mod tests {
             Ok(rec(2, 4, 8, 40, 150)),
         ];
         let mut errors = ReadErrors::default();
-        let out = newest(
-            vec![good.into_iter(), bad.into_iter()],
+        let (out, _more) = newest(
+            &mut Merge::new(vec![good.into_iter(), bad.into_iter()]),
             10,
             usize::MAX,
             &mut errors,
@@ -786,7 +978,7 @@ mod tests {
         let new = vec![rec(1, 4, 9, 30, 300), rec(1, 3, 9, 20, 200)];
         let mut errors = ReadErrors::default();
         let walks = vec![old.into_iter().map(Ok), new.into_iter().map(Ok)];
-        let out = newest(walks, 10, usize::MAX, &mut errors);
+        let (out, _more) = newest(&mut Merge::new(walks), 10, usize::MAX, &mut errors);
         let got: Vec<u64> = out.iter().map(|c| c.location.seqnum).collect();
         assert_eq!(got, vec![1, 2, 3, 4]);
     }
@@ -939,7 +1131,11 @@ mod tests {
             listing(&[a.path()]),
         ];
         let mut errors = ReadErrors::default();
-        let files = open_listed(|| lists.pop().expect("listed at most 3 times"), &mut errors);
+        let files = open_listed(
+            || lists.pop().expect("listed at most 3 times"),
+            &Opener::default(),
+            &mut errors,
+        );
         assert_eq!(files.len(), 2);
         assert!(errors.is_empty(), "{:?}", texts(&errors));
     }
@@ -960,6 +1156,7 @@ mod tests {
                     errors: Vec::new(),
                 }
             },
+            &Opener::default(),
             &mut errors,
         );
         assert_eq!((calls, files.len()), (4, 4));
@@ -985,6 +1182,7 @@ mod tests {
                 paths: vec![missing.clone()],
                 errors: vec![ReadError::of_page(ReadErrorKind::Corrupt("listed".into()))],
             },
+            &Opener::default(),
             &mut errors,
         );
         assert!(files.is_empty());
@@ -1538,9 +1736,9 @@ mod tests {
     }
 
     /// A journal file's name that can't be stat'ed (here a dangling
-    /// symlink) is listed, so its open reports it; another name that can't
-    /// be stat'ed adds nothing, and neither does a directory named like a
-    /// journal file.
+    /// symlink) is listed, so its open reports it (a symlink, not followed:
+    /// Difference 4); another name that can't be stat'ed adds nothing, and
+    /// neither does a directory named like a journal file.
     #[test]
     fn a_dangling_journal_file_is_listed_for_its_open_to_report() {
         let dir = tempfile::tempdir().expect("dir");
@@ -1560,13 +1758,63 @@ mod tests {
                 directory_files(d, &mut out);
                 out
             },
+            &Opener::default(),
             &mut errors,
         );
         assert!(files.is_empty());
         assert_eq!(
             texts(&errors),
-            [format!("{}: open", d.join("dangling.journal").display())]
+            [format!(
+                "{}: a symlink, not followed (only directories are)",
+                d.join("dangling.journal").display()
+            )]
         );
+    }
+
+    /// A journal file's name that is a symlink is listed whatever it points
+    /// at (a FIFO, a directory), so its open reports it (Difference 4),
+    /// never dropped silently; a FIFO itself isn't listed, as sd-journal's
+    /// `dirent_is_journal_file` takes only regular files and symlinks.
+    #[test]
+    fn a_symlinked_journal_name_is_listed_whatever_it_names() {
+        let dir = tempfile::tempdir().expect("dir");
+        let d = dir.path();
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            d.join("fifo.journal"),
+            rustix::fs::Mode::RUSR,
+        )
+        .expect("mkfifo");
+        std::fs::create_dir(d.join("sub")).expect("dir");
+        std::os::unix::fs::symlink(d.join("fifo.journal"), d.join("to-fifo.journal"))
+            .expect("link");
+        std::os::unix::fs::symlink(d.join("sub"), d.join("to-dir.journal")).expect("link");
+        let mut out = Listing::default();
+        journal_files_in(d, false, &mut out);
+        assert_eq!(
+            out.paths,
+            [d.join("to-dir.journal"), d.join("to-fifo.journal")]
+        );
+        let mut errors = ReadErrors::default();
+        let files = open_listed(
+            || {
+                let mut out = Listing::default();
+                journal_files_in(d, false, &mut out);
+                out
+            },
+            &Opener::default(),
+            &mut errors,
+        );
+        assert!(files.is_empty());
+        assert!(
+            errors
+                .shown
+                .iter()
+                .all(|e| matches!(e.kind(), ReadErrorKind::Symlink)),
+            "{:?}",
+            texts(&errors)
+        );
+        assert_eq!(errors.shown.len(), 2);
     }
 
     /// A journal file whose name isn't UTF-8 is still listed (names are
@@ -1593,6 +1841,628 @@ mod tests {
         assert_eq!(j.files.len(), 1);
         assert_eq!(j.errors.shown.len(), 1);
         assert_eq!(j.errors.shown[0].path(), Some(bad.path()));
+    }
+
+    /// A page's messages and its two flags.
+    fn paged(pg: &Paged) -> (Vec<String>, bool, bool) {
+        (messages(&pg.records), pg.more_older, pg.more_newer)
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    /// A forward page: the `n` entries just after the cursor, oldest
+    /// first, the cursor's own entry not shown; both flags exact at either
+    /// end.
+    #[test]
+    fn after_a_cursor_gives_the_page_after_it() {
+        let (mut c, _l) = crafted::journal(6);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&u_is_x(), 10, None);
+        let after =
+            |j: &mut Opened, i: usize, n| j.page(&u_is_x(), n, &Position::After(all[i].cursor()));
+        assert_eq!(
+            paged(&after(&mut j, 1, 2)),
+            (strs(&["m2", "m3"]), true, true)
+        );
+        assert_eq!(
+            paged(&after(&mut j, 3, 10)),
+            (strs(&["m4", "m5"]), true, false)
+        );
+        assert_eq!(
+            paged(&after(&mut j, 3, 2)),
+            (strs(&["m4", "m5"]), true, false)
+        );
+        // At the newest: nothing after, the cursor's entry before.
+        assert_eq!(paged(&after(&mut j, 5, 10)), (Vec::new(), true, false));
+        // Unfiltered too.
+        let pg = j.page(&[], 3, &Position::After(all[0].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m1", "m2", "m3"]), true, true));
+        // From before the first entry: nothing older.
+        let mut first = all[0].cursor();
+        first.seqnum = 0;
+        let pg = j.page(&u_is_x(), 2, &Position::After(first));
+        assert_eq!(paged(&pg), (strs(&["m0", "m1"]), false, true));
+        // None asked for: still whether entries lie on each side.
+        assert_eq!(paged(&after(&mut j, 2, 0)), (Vec::new(), true, true));
+        assert_eq!(paged(&after(&mut j, 5, 0)), (Vec::new(), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// The tail's and a page back's flags at both ends; `n` of 0 says
+    /// whether anything lies on each side.
+    #[test]
+    fn tail_and_before_flags_are_exact() {
+        let (mut c, _l) = crafted::journal(5);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let tail = |j: &mut Opened, n| paged(&j.page(&u_is_x(), n, &Position::Tail));
+        assert_eq!(tail(&mut j, 2), (strs(&["m3", "m4"]), true, false));
+        assert!(!tail(&mut j, 5).1);
+        assert!(!tail(&mut j, 10).1);
+        assert_eq!(tail(&mut j, 0), (Vec::new(), true, false));
+        let all = j.tail(&u_is_x(), 10, None);
+        let before = |j: &mut Opened, i: usize, n| {
+            paged(&j.page(&u_is_x(), n, &Position::Before(all[i].cursor())))
+        };
+        assert_eq!(before(&mut j, 2, 2), (strs(&["m0", "m1"]), false, true));
+        assert_eq!(before(&mut j, 2, 1), (strs(&["m1"]), true, true));
+        assert_eq!(before(&mut j, 0, 10), (Vec::new(), false, true));
+        assert_eq!(before(&mut j, 3, 0), (Vec::new(), true, true));
+        // Nothing matches: nothing on either side.
+        let none = vec![vec![vec![b"U=nothing".to_vec()]]];
+        for at in [
+            Position::Tail,
+            Position::Before(all[2].cursor()),
+            Position::After(all[2].cursor()),
+        ] {
+            assert_eq!(
+                paged(&j.page(&none, 10, &at)),
+                (Vec::new(), false, false),
+                "{at:?}"
+            );
+        }
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// The flags are about *matching* entries: the raw entry next to the
+    /// page doesn't match, one beyond it does (and, when none does, the
+    /// flag is off). `A=1` is on m0, m2, m4 and m6.
+    #[test]
+    fn the_flags_look_past_entries_that_do_not_match() {
+        let with_a: &[&[u8]] = &[b"A=1"];
+        let (mut c, _e) = crafted::journal_of(&[with_a, &[], with_a, &[], with_a, &[], with_a]);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let q = vec![vec![vec![b"A=1".to_vec()]]];
+        let all = j.tail(&q, 10, None);
+        assert_eq!(messages(&all), ["m0", "m2", "m4", "m6"]);
+        let page = |j: &mut Opened, n, at: Position| paged(&j.page(&q, n, &at));
+        assert_eq!(
+            page(&mut j, 2, Position::Tail),
+            (strs(&["m4", "m6"]), true, false)
+        );
+        let at = |i: usize| all[i].cursor();
+        assert_eq!(
+            page(&mut j, 1, Position::Before(at(2))),
+            (strs(&["m2"]), true, true)
+        );
+        assert_eq!(
+            page(&mut j, 1, Position::After(at(1))),
+            (strs(&["m4"]), true, true)
+        );
+        assert_eq!(
+            page(&mut j, 1, Position::After(at(2))),
+            (strs(&["m6"]), true, false)
+        );
+        assert_eq!(
+            page(&mut j, 1, Position::Before(at(1))),
+            (strs(&["m0"]), false, true)
+        );
+        // Two terms: the walk is driven by `B=1`'s entries, of which m3
+        // lacks `C=1`; m1 has both.
+        let both: &[&[u8]] = &[b"B=1", b"C=1"];
+        let (mut c, _e) = crafted::journal_of(&[&[b"C=1"], both, &[b"C=1"], &[b"B=1"], both]);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let q = vec![vec![vec![b"B=1".to_vec()], vec![b"C=1".to_vec()]]];
+        let pg = j.page(&q, 1, &Position::Tail);
+        assert_eq!(paged(&pg), (strs(&["m4"]), true, false));
+        let pg = j.page(&q, 1, &Position::Before(pg.records[0].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m1"]), false, true));
+        let pg = j.page(&q, 1, &Position::After(pg.records[0].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m4"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// Entries the page chose but couldn't show count as beyond it: the
+    /// output limit's left-out older entries, a newest entry too large to
+    /// show, and an unreadable one on a page that shows nothing.
+    #[test]
+    fn entries_chosen_but_not_shown_set_the_flags() {
+        let (mut c, _l) = crafted::journal(10);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        j.payload_limit = per_record(3) + 5;
+        let pg = j.page(&[], 10, &Position::Tail);
+        assert_eq!(paged(&pg), (strs(&["m7", "m8", "m9"]), true, false));
+
+        let mut c = with_entries(3, |c| vec![oversized(c, 0)]);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        j.payload_limit = 1000;
+        let pg = j.page(&[], 10, &Position::Tail);
+        assert_eq!(paged(&pg), (strs(&["m0", "m1", "m2"]), false, true));
+
+        let (mut c, l) = crafted::journal(1);
+        c.set(l.messages[0] + O_SIZE, 8);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        assert_eq!(
+            paged(&j.page(&[], 10, &Position::Tail)),
+            (Vec::new(), true, true)
+        );
+        assert_eq!(j.errors.shown.len(), 1, "{:?}", texts(&j.errors));
+    }
+
+    /// A forward page under the output limit keeps the entries next to the
+    /// cursor and leaves out the newer ones, reported and flagged, so the
+    /// next forward page goes on from the last one shown with no gap.
+    #[test]
+    fn a_forward_page_over_the_output_limit_leaves_out_the_newer_end() {
+        let (mut c, _l) = crafted::journal(10);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&u_is_x(), 10, None);
+        j.payload_limit = per_record(3) + 5;
+        let pg = j.page(&u_is_x(), 10, &Position::After(all[1].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m2", "m3", "m4"]), true, true));
+        assert!(
+            matches!(
+                j.errors.shown[..],
+                [ReadError {
+                    kind: ReadErrorKind::OutputLimitNewer { left_out: 5, .. },
+                    ..
+                }]
+            ),
+            "{:?}",
+            texts(&j.errors)
+        );
+        assert_eq!(
+            texts(&j.errors),
+            [format!(
+                "output limit of {} bytes reached; 5 newer entries left out",
+                per_record(3) + 5
+            )]
+        );
+        let next = j.page(&u_is_x(), 10, &Position::After(pg.records[2].cursor()));
+        assert_eq!(messages(&next.records), ["m5", "m6", "m7"]);
+        // An oldest entry alone over the whole limit is skipped, as the
+        // tail's newest is.
+        let mut c = with_entries(0, |c| {
+            let m = c.data(b"MESSAGE=newer");
+            vec![oversized(c, 0), vec![m]]
+        });
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let mut before_all = j.tail(&[], 10, None)[0].cursor();
+        before_all.seqnum = 0;
+        j.payload_limit = 1000;
+        let pg = j.page(&[], 10, &Position::After(before_all));
+        assert_eq!(paged(&pg), (strs(&["newer"]), true, false));
+        assert!(matches!(
+            j.errors.shown[0].kind(),
+            ReadErrorKind::TooLarge { limit: 1000, .. }
+        ));
+    }
+
+    /// The held limit leaves out older entries of a tail, reported and
+    /// flagged; a forward page holds as many, the newer ones reported and
+    /// flagged. A forward page of fewer than the limit reports nothing.
+    #[test]
+    fn the_held_limit_sets_the_flags() {
+        let (mut c, _l) = crafted::journal(10);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        j.held_limit = std::mem::size_of::<Candidate>() * 4;
+        let pg = j.page(&[], 10, &Position::Tail);
+        assert_eq!(paged(&pg), (strs(&["m6", "m7", "m8", "m9"]), true, false));
+        assert_eq!(
+            texts(&j.errors),
+            ["limit of held entries reached; older entries left out"]
+        );
+        let mut j = one(t.path());
+        j.held_limit = std::mem::size_of::<Candidate>() * 4;
+        let pg = j.page(&[], 10, &Position::After(all[2].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m3", "m4", "m5", "m6"]), true, true));
+        assert_eq!(
+            texts(&j.errors),
+            ["limit of held entries reached; newer entries left out"]
+        );
+        let mut j = one(t.path());
+        j.held_limit = std::mem::size_of::<Candidate>() * 4;
+        let pg = j.page(&[], 3, &Position::After(all[2].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m3", "m4", "m5"]), true, true));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A forward page reads only what its seek and its entries need: with
+    /// one seqnum id the bisect lands on the cursor's own entry (m3, not
+    /// shown), and an unreadable entry the bisect never tests (m0's chain
+    /// neighbour m1, chain index 0) isn't read, so not reported. A page back
+    /// goes past it, reported.
+    #[test]
+    fn a_forward_page_reads_only_what_its_seek_needs() {
+        let (mut c, l) = crafted::journal(6);
+        c.set(l.entries[1] + O_SIZE, 0);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&u_is_x(), 3, None);
+        let mut j = one(t.path());
+        let pg = j.page(&u_is_x(), 10, &Position::After(all[0].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m4", "m5"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+        let pg = j.page(&u_is_x(), 10, &Position::Before(all[0].cursor()));
+        assert_eq!(messages(&pg.records), ["m0", "m2"]);
+        assert_eq!(j.errors.shown.len(), 1, "{:?}", texts(&j.errors));
+    }
+
+    /// A value list whose in-line entry can't be read: systemd's bisect
+    /// returns that error (`generic_array_bisect_for_data` tests it first)
+    /// and journalctl leaves the file out. sb reports it, and the group
+    /// finds nothing in the file.
+    #[test]
+    fn an_unreadable_in_line_entry_is_reported_going_forward() {
+        let (mut c, l) = crafted::journal(6);
+        c.set(l.entries[0] + O_SIZE, 0);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&u_is_x(), 3, None);
+        let mut j = one(t.path());
+        let pg = j.page(&u_is_x(), 10, &Position::After(all[0].cursor()));
+        assert!(pg.records.is_empty());
+        assert!(!j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A cursor of another seqnum id and boot is placed by realtime, by
+    /// systemd 259's bisect (decision 10). Realtimes 10, 50, 20, 30, 45 and a
+    /// cursor at 40: the bisect tests 45 (right of the needle), 20 (left), 30
+    /// (left) and lands on 45 (journal-file.c `generic_array_bisect`), so
+    /// only m4 is shown, though m1 (50) is after the cursor by realtime: an
+    /// entry before the landing isn't shown going forward, and a page back
+    /// shows it (`more_older`).
+    #[test]
+    fn a_forward_page_ordered_by_realtime_starts_at_the_landing() {
+        let (mut c, l) = crafted::journal(5);
+        // Seqnums 1 to 5, boot 7.
+        for (&e, real) in l.entries.iter().zip([10u64, 50, 20, 30, 45]) {
+            c.set(e + 24, real);
+        }
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let elsewhere = Cursor {
+            seqnum_id: [9; 16],
+            seqnum: 1,
+            boot_id: [9; 16],
+            monotonic: 1,
+            realtime: 40,
+            xor_hash: 0,
+        };
+        let pg = j.page(&[], 10, &Position::After(elsewhere));
+        assert_eq!(paged(&pg), (strs(&["m4"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// The same boot and another seqnum id: by monotonic time, bisecting
+    /// the `_BOOT_ID=` object's list (`journal_file_move_to_entry_by_monotonic`).
+    /// The cursor's monotonic time is m1's (2), so the bisect lands on m1,
+    /// which isn't the cursor's entry (another seqnum id): it is shown.
+    /// Without a `_BOOT_ID=` object the seek falls back to realtime.
+    #[test]
+    fn a_forward_page_of_the_same_boot_bisects_by_monotonic_time() {
+        let boot = format!("_BOOT_ID={}", "07".repeat(16));
+        let in_boot: &[&[u8]] = &[boot.as_bytes()];
+        let with_a: &[&[u8]] = &[boot.as_bytes(), b"A=1"];
+        let (mut c, _e) = crafted::journal_of(&[with_a, in_boot, with_a, in_boot, with_a]);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        // Monotonic time 2 is m1's; the realtime (before every entry) would
+        // land on m0, so m1 first shows the boot's list was bisected.
+        let same_boot = Cursor {
+            seqnum_id: [9; 16],
+            seqnum: 1,
+            boot_id: [7; 16],
+            monotonic: 2,
+            realtime: 1,
+            xor_hash: 1,
+        };
+        let pg = j.page(&[], 10, &Position::After(same_boot));
+        assert_eq!(paged(&pg), (strs(&["m1", "m2", "m3", "m4"]), true, false));
+        // With a query: the boot's list lands on m1, which lacks `A=1`, so
+        // the seek steps to `A=1`'s next entry (m2), which is in the boot's
+        // list too.
+        let q = vec![vec![vec![b"A=1".to_vec()]]];
+        let pg = j.page(&q, 10, &Position::After(same_boot));
+        assert_eq!(paged(&pg), (strs(&["m2", "m4"]), true, false));
+        // No `_BOOT_ID=`: by realtime, which lands on m1, whose realtime is
+        // the cursor's (found counts as at or after, going down).
+        let (mut c, _l) = crafted::journal(5);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let by_realtime = Cursor {
+            realtime: 1_000_002,
+            ..same_boot
+        };
+        let pg = j.page(&[], 10, &Position::After(by_realtime));
+        assert_eq!(paged(&pg), (strs(&["m1", "m2", "m3", "m4"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// systemd 259's forward page lands where its realtime bisect lands, in
+    /// a file whose clock stepped back (decision 10). Realtimes 10, 50, 5,
+    /// 45 and a cursor at 40 of another seqnum id and boot: the bisect
+    /// tests 45 (right of the needle), 50 (right), 10 (left) and lands on
+    /// 50, which isn't the cursor's entry, so it is shown, then the file's
+    /// entries after it: 50, 5, 45 (journal-file.c `generic_array_bisect`,
+    /// journalctl-show.c's `sd_journal_test_cursor`).
+    #[test]
+    fn a_forward_page_lands_where_the_realtime_bisect_does() {
+        let (mut c, l) = crafted::journal(4);
+        for (&e, real) in l.entries.iter().zip([10u64, 50, 5, 45]) {
+            c.set(e + 24, real);
+        }
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let elsewhere = Cursor {
+            seqnum_id: [9; 16],
+            seqnum: 1,
+            boot_id: [9; 16],
+            monotonic: 1,
+            realtime: 40,
+            xor_hash: 0,
+        };
+        let pg = j.page(&[], 10, &Position::After(elsewhere));
+        assert_eq!(paged(&pg), (strs(&["m1", "m2", "m3"]), true, false));
+        let real: Vec<u64> = pg.records.iter().map(|r| r.cursor().realtime).collect();
+        assert_eq!(real, [50, 5, 45]);
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// Difference 18: journalctl 259 steps past its landing only when it is
+    /// the cursor's own entry, and so does sb; 249 and 255 always step past
+    /// it. A cursor whose entry has vanished (here: one whose XOR hash no
+    /// entry has) lands on the next entry, which is shown; so is the next
+    /// match after a cursor whose entry doesn't match the query.
+    #[test]
+    fn difference_18_nothing_after_a_vanished_cursor_is_dropped() {
+        let (mut c, _l) = crafted::journal(5);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        let mut vanished = all[2].cursor();
+        vanished.xor_hash ^= 1;
+        let pg = j.page(&[], 10, &Position::After(vanished));
+        assert_eq!(paged(&pg), (strs(&["m2", "m3", "m4"]), true, false));
+        // The cursor's own entry is stepped past.
+        let pg = j.page(&[], 10, &Position::After(all[2].cursor()));
+        assert_eq!(messages(&pg.records), ["m3", "m4"]);
+        // A cursor whose entry doesn't match: the next match is shown.
+        let with_a: &[&[u8]] = &[b"A=1"];
+        let (mut c, _e) = crafted::journal_of(&[with_a, &[], with_a, &[], with_a]);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let unfiltered = j.tail(&[], 10, None);
+        let q = vec![vec![vec![b"A=1".to_vec()]]];
+        let pg = j.page(&q, 10, &Position::After(unfiltered[1].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m2", "m4"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A file the first step finds nothing in seeks again from the entry
+    /// the first step took (`next_beyond_location` keeps no direction after
+    /// an empty seek). Two files of one seqnum id, the second's clock behind
+    /// (as a 249 rotation can leave it), and a cursor of another seqnum id
+    /// and boot at realtime 150: the first file lands on its 200, the
+    /// second's realtimes (50, 60) are all before the cursor, so it finds
+    /// nothing; seeking again from the 200 entry, by seqnum, it lands on its
+    /// first entry, and the page goes on by seqnum.
+    #[test]
+    fn a_file_with_no_landing_seeks_again_from_the_first_entry() {
+        let file = |seqnums: [u64; 2], reals: [u64; 2]| {
+            let (mut c, l) = crafted::journal(2);
+            for i in 72..88 {
+                c.b[i] = 0x5a; // the header's seqnum id
+            }
+            for ((&e, seq), real) in l.entries.iter().zip(seqnums).zip(reals) {
+                c.set(e + 16, seq);
+                c.set(e + 24, real);
+            }
+            c.write()
+        };
+        let (a, _f) = file([1, 2], [100, 200]);
+        let (b, _g) = file([3, 4], [50, 60]);
+        let mut j = Opened::new(&[a.path().to_path_buf(), b.path().to_path_buf()]);
+        let elsewhere = Cursor {
+            seqnum_id: [9; 16],
+            seqnum: 1,
+            boot_id: [9; 16],
+            monotonic: 1,
+            realtime: 150,
+            xor_hash: 0,
+        };
+        let pg = j.page(&[], 10, &Position::After(elsewhere));
+        let got: Vec<(usize, u64)> = pg
+            .records
+            .iter()
+            .map(|r| (usize::from(r.cursor().realtime > 99), r.cursor().seqnum))
+            .collect();
+        assert_eq!(got, [(1, 2), (0, 3), (0, 4)]);
+        assert!(pg.more_older && !pg.more_newer);
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A group's landing: the highest of its terms' landings, then the next
+    /// entry in every term (`next_for_match`). `B=1` is on m1, m2 and m4,
+    /// `C=1` on m0, m3 and m4; at m1's cursor B lands on m1 (a match at
+    /// the cursor counts) and C on m3, and the first entry with both is m4.
+    #[test]
+    fn a_groups_landing_is_the_next_entry_in_every_term() {
+        let with_b: &[&[u8]] = &[b"B=1"];
+        let with_c: &[&[u8]] = &[b"C=1"];
+        let both: &[&[u8]] = &[b"B=1", b"C=1"];
+        let (mut c, _e) = crafted::journal_of(&[with_c, with_b, with_b, with_c, both]);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        let q = vec![vec![vec![b"B=1".to_vec()], vec![b"C=1".to_vec()]]];
+        let pg = j.page(&q, 10, &Position::After(all[1].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m4"]), false, false));
+        // Two groups: the lower landing of the two.
+        let q = vec![vec![vec![b"B=1".to_vec()]], vec![vec![b"C=1".to_vec()]]];
+        let pg = j.page(&q, 10, &Position::After(all[1].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m2", "m3", "m4"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A zero slot in a value's list (a crash before journald wrote it)
+    /// doesn't hide the list's other entries going forward: the walk's
+    /// start is found around it, and the zero is skipped (Difference 8).
+    /// `U=x`'s chain is m1 to m5; m5's slot is zeroed.
+    #[test]
+    fn a_zero_slot_hides_nothing_going_forward() {
+        let (mut c, l) = crafted::journal(6);
+        let shared_array = c.get(l.shared + D_ENTRY_ARRAY);
+        c.set(shared_array + A_ITEMS + 8 * 4, 0);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        let pg = j.page(&u_is_x(), 10, &Position::After(all[2].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m3", "m4"]), true, false));
+        let pg = j.page(&u_is_x(), 1, &Position::After(all[0].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m1"]), true, true));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A zero slot in the middle of a value's list: the bisect for the
+    /// walk's start is cut short there and finds nothing, so the list is
+    /// read from its head, and the entries after the zero are shown. `U=x`'s
+    /// chain is m1, m2, 0, m4, m5 (m3's slot zeroed).
+    #[test]
+    fn a_zero_slot_mid_list_hides_nothing_going_forward() {
+        let (mut c, l) = crafted::journal(6);
+        let shared_array = c.get(l.shared + D_ENTRY_ARRAY);
+        c.set(shared_array + A_ITEMS + 8 * 2, 0);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        let pg = j.page(&u_is_x(), 10, &Position::After(all[2].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m4", "m5"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+        // An array whose first slot is zero can't be landed in: systemd's
+        // bisect takes the array's first item when it finds an entry
+        // (`found:` in `generic_array_bisect`) and fails with -EBADMSG on a
+        // 0, so journalctl leaves the file out. sb reports it.
+        let (mut c, l) = crafted::journal(6);
+        c.set(l.main_array + A_ITEMS, 0);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        let pg = j.page(&[], 10, &Position::After(all[2].cursor()));
+        assert!(pg.records.is_empty());
+        assert!(
+            texts(&j.errors).iter().any(|e| e.ends_with("lists 0")),
+            "{:?}",
+            texts(&j.errors)
+        );
+    }
+
+    /// The walk's start can't fail on a zero either: with `U=x`'s chain
+    /// [0, m2, m3, m4] (m1's slot zeroed) and the landing from `B=1` (m2),
+    /// the walk's bisect for `U=x` lands in the array whose first item is
+    /// the zero, which systemd's `found:` refuses; the walk reads the list
+    /// from its head instead, and m3 and m4 are shown.
+    #[test]
+    fn a_zero_first_slot_hides_nothing_from_the_walk() {
+        let with_u: &[&[u8]] = &[b"U=x"];
+        let both: &[&[u8]] = &[b"U=x", b"B=1"];
+        let (mut c, entries) = crafted::journal_of(&[with_u, with_u, both, with_u, with_u]);
+        let shared = c.b.windows(3).position(|w| w == b"U=x").expect("U=x") as u64 - 64;
+        let chain = c.get(shared + D_ENTRY_ARRAY);
+        assert_eq!(c.get(chain + A_ITEMS), entries[1]);
+        c.set(chain + A_ITEMS, 0);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        let q = vec![vec![vec![b"U=x".to_vec()]], vec![vec![b"B=1".to_vec()]]];
+        let pg = j.page(&q, 10, &Position::After(all[1].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m2", "m3", "m4"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A flushed copy in a second file is shown once going forward too,
+    /// from the earlier file.
+    #[test]
+    fn a_forward_page_shows_a_flushed_copy_once() {
+        let (mut c, _l) = crafted::journal(4);
+        let (run, _f) = c.write();
+        let (var, _g) = c.write();
+        let mut j = Opened::new(&[run.path().to_path_buf(), var.path().to_path_buf()]);
+        let all = j.tail(&u_is_x(), 10, None);
+        assert_eq!(messages(&all), ["m0", "m1", "m2", "m3"]);
+        let pg = j.page(&u_is_x(), 10, &Position::After(all[0].cursor()));
+        assert_eq!(paged(&pg), (strs(&["m1", "m2", "m3"]), true, false));
+        assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
+    }
+
+    /// A page's end: each file's inode and count, and the newest entry
+    /// across them, unfiltered, the earlier file's on a tie, with its
+    /// directory; a file with no entries adds no newest entry, one whose
+    /// newest can't be read adds its error.
+    #[test]
+    fn the_end_names_the_files_and_the_newest_entry() {
+        // Two copies of one journal in two directories, as a flush leaves
+        // /run's entries in /var: the tie goes to the earlier file's.
+        let (mut c, _l) = crafted::journal(3);
+        let (run, var) = (
+            tempfile::tempdir().expect("dir"),
+            tempfile::tempdir().expect("dir"),
+        );
+        let first = run.path().join("system.journal");
+        let second = var.path().join("system.journal");
+        std::fs::copy(c.file().path(), &first).expect("write");
+        std::fs::copy(c.file().path(), &second).expect("write");
+        let (empty, _h) = Crafted::new().write();
+        let j = Opened::new(&[empty.path().to_path_buf(), first.clone(), second.clone()]);
+        let mut errors = ReadErrors::default();
+        let e = end(&j.files, &mut errors);
+        assert!(errors.is_empty(), "{:?}", texts(&errors));
+        let counts: Vec<u64> = e.files.iter().map(|f| f.n_entries).collect();
+        assert_eq!(counts, [0, 3, 3]);
+        assert_eq!(e.files[1].inode, j.files[1].inode);
+        let (newest, dir) = e.newest.expect("an entry");
+        assert_eq!(newest.seqnum, 3);
+        assert_eq!(dir, run.path());
+        let swapped = Opened::new(&[second.clone(), first.clone()]);
+        let e2 = end(&swapped.files, &mut errors);
+        assert_eq!(e2.newest.expect("an entry").1, var.path());
+        // The newer of two files, whichever is first; seqnum 3 against 4.
+        let (mut c, l) = crafted::journal(4);
+        c.set(l.entries[3] + 16, 4);
+        let (newer, _n) = c.write();
+        let j = Opened::new(&[first.clone(), newer.path().to_path_buf()]);
+        let e = end(&j.files, &mut errors);
+        assert_eq!(e.newest.expect("an entry").0.seqnum, 4);
+        // An unreadable newest entry: reported, and no entry.
+        let (mut c, l) = crafted::journal(2);
+        c.set(l.entries[1] + O_SIZE, 0);
+        let (bad, _b) = c.write();
+        let j = Opened::new(&[bad.path().to_path_buf()]);
+        let e = end(&j.files, &mut errors);
+        assert_eq!((e.files.len(), e.newest), (1, None));
+        assert_eq!(errors.shown.len(), 1, "{:?}", texts(&errors));
     }
 
     /// The position a page is read at goes through to the walk.

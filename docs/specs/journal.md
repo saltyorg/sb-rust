@@ -291,7 +291,8 @@ The `Follower` and its wake fd are `Send`.
     and opens them with a plain `open`. That makes Difference 4.
   - directories are followed as they are, so a `/var/log` on another
     disk through a symlink still reads.
-- **`/etc/machine-id` validated** as 32 hex characters, a `MachineId`
+- **`/etc/machine-id` validated** as 32 hex digits in either case, not
+  all zero; lowercased, as journald names the directory. A `MachineId`
   newtype (audit L1).
 - **Typed `ReadError { path, kind }`** whose `Display` escapes paths and
   field names (audit L5).
@@ -406,6 +407,27 @@ Only on corrupt, live or foreign files:
 17. **A plausible item out of order** (a stale slot) stops a followed
     file, retried once, then reported, and nothing more is read from
     that file while it stays so. The tail's walk goes past it.
+18. **Nothing after a forward page's cursor is dropped.** On 22.04 and
+    24.04, `journalctl --after-cursor` seeks and then always steps once
+    past where it landed (v249 and v255 journalctl.c,
+    `sd_journal_next_skip(j, 1 + after_cursor)`), so when the cursor's
+    entry has vanished (vacuumed, rotated away) or doesn't match the
+    query, the first real entry after it is lost. sb steps past the
+    landing only when it is the cursor's own entry, as 26.04's
+    journalctl does (v259 journalctl-show.c, `sd_journal_test_cursor`).
+    On a 249-written file whose realtime steps back, the landing itself
+    can differ too: sb lands where 259's bisect does, and 249's and
+    255's bisect is built differently (v249 journal-file.c
+    `generic_array_bisect`).
+19. **A forward page on a corrupt file goes on where journalctl stops**
+    (crates/journal/src/forward.rs lists the departures):
+    - an error in the seek or the walk is reported and the page goes on,
+      where journalctl drops the file;
+    - that includes a zero first item in the array a walk resumes in
+      (as Difference 8);
+    - systemd's `check_object` and sb's object checks don't refuse
+      quite the same corrupt objects, so a bisect can be cut short in
+      one and not the other.
 
 The rules are keyed by Ubuntu release (`VERSION_ID`), not by systemd
 version. journalctl on a 26.04 host still at systemd 259.0 matches
@@ -513,8 +535,10 @@ CI:      .github/workflows/journal-matrix.yml (daily; local until pushed)
 
 ```
 crates/journal/src/lib.rs      the public API
-crates/journal/src/file.rs     one file, pread only
+crates/journal/src/file.rs     one file, pread only (and systemd's bisect over its entry lists)
+crates/journal/src/forward.rs  the forward page: journalctl 259's seek emulated, then forward
 crates/journal/src/hash.rs     siphash, lookup3
+crates/journal/src/open.rs     safe opening (L2), Source::Local's machine-id file and roots, the opener's counts
 crates/journal/src/walk.rs     newest-first walks and the merge
 crates/journal/src/follow.rs   Follower: positions, watches, classify, rescans
 crates/journal/src/rules.rs    RELEASES and the unit rules
@@ -653,6 +677,38 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
    behind one log-source interface (Objective).
 9. **Paging forward (`After`) and exact `more_*` flags** are in the
    first slice.
+10. **A forward page is journalctl's `--after-cursor` of 26.04
+    (systemd 259), its seek emulated** (maintainer, 2026-11-10, two
+    decisions: first to match journalctl's seek, then to emulate its
+    bisect).
+    - The seek, per file (v259 sd-journal.c `find_location_with_matches`
+      and `find_location_for_match`): a seqnum bisect if the file's
+      seqnum id is the cursor's; else a monotonic bisect in the
+      `_BOOT_ID=` DATA object's list, used only if it finds an entry;
+      else a realtime bisect. A value bisects its DATA object's list
+      (journal-file.c `generic_array_bisect_for_data`, which tests the
+      in-line entry first); a term takes the lowest landing, a group
+      the highest and then the next entry in every term
+      (`next_for_match`), the query the lowest. The bisect is
+      `generic_array_bisect` step for step: the chain cache, the last
+      index, each array's last item first, cutting an array short at a
+      bad item. On a file out of order (only journald 249 writes one
+      whose realtime steps back: 255 and later rotate instead) the
+      result is where its probes land: realtimes 10, 50, 5, 45 and a
+      cursor at 40 land on 50, and 26.04 shows 50, 5, 45. A zero item
+      cuts a bisect short there, as systemd's does; the walks themselves
+      skip it (Difference 8).
+    - The landings are taken without comparing them to the cursor; the
+      lowest across files is the first step, shown unless it is the
+      cursor's own entry (`sd_journal_test_cursor`, journalctl-show.c);
+      a file that found nothing seeks again from it; then forward, the
+      lowest head strictly after the last entry taken.
+    - 22.04's and 24.04's journalctl always step past the landing:
+      Difference 18.
+    - UNVERIFIED against a running journalctl until Task 5's matrix
+      checks forward pages (tasks/todo.md).
+    - Boot order (v255 and later's `compare_boot_ids`) is a separate
+      step after Task 4; sb's order stays systemd 249's until then.
 
 ## Open questions
 

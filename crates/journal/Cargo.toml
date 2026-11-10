@@ -9,10 +9,11 @@ publish.workspace = true
 
 [features]
 # Test support (the repository's convention, as in sb-docker): the
-# crafted-file builder now, the tools' file-level access, the JSON form and
-# the injectable roots later (journal spec, Project Structure). Turned on
-# for every test build by the self dev-dependency below (dev-dependency
-# features unify), never in a release or production build.
+# crafted-file builder, the tools' file-level access, the injectable roots
+# and the opener's counts; the JSON form later (journal spec, Project
+# Structure). Turned on for every test build by the self dev-dependency
+# below (dev-dependency features unify), never in a release or production
+# build.
 testing = ["dep:tempfile"]
 
 [dependencies]
@@ -25,6 +26,9 @@ thiserror.workspace = true
 itertools.workspace = true
 # A record's time (`Record::realtime`).
 jiff.workspace = true
+# Opening files safely: the `O_*` flag values for std's `custom_flags`
+# (security audit L2; open.rs).
+rustix.workspace = true
 # The crafted-file builder writes its files to temporary files.
 tempfile = { workspace = true, optional = true }
 

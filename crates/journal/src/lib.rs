@@ -5,9 +5,10 @@
 //! docs/decisions/ADR-013-own-journal-reader.md.
 //!
 //! A [`Journal`] names a [`Source`]; [`Journal::page`] reads the newest
-//! entries matching a [`Query`], or the page before a [`Cursor`], as
-//! [`Record`]s holding raw bytes.
+//! entries matching a [`Query`], or the page before or after a [`Cursor`],
+//! as [`Record`]s holding raw bytes.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,9 @@ use std::sync::Arc;
 // `cfg`s: cargo-mutants walks every `mod` without evaluating `cfg`, so two
 // declarations made it test each of file.rs's mutants twice.
 mod file;
+mod forward;
 mod hash;
+mod open;
 mod rules;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -151,6 +154,29 @@ pub enum ReadErrorKind {
     /// older ones are left out. No file: the limit is the page's.
     #[error("limit of held entries reached; older entries left out")]
     HeldLimit,
+    /// `OutputLimit` for a forward page (`Position::After`), which reads
+    /// its entries oldest first: the newer entries are left out, with no gap
+    /// after the cursor.
+    #[error("output limit of {limit} bytes reached; {left_out} newer entries left out")]
+    OutputLimitNewer {
+        /// The output limit.
+        limit: usize,
+        /// The entries chosen but not read.
+        left_out: usize,
+    },
+    /// `HeldLimit` for a forward page: it held fewer entries than asked
+    /// for, the oldest after the cursor, and the newer ones are left out.
+    #[error("limit of held entries reached; newer entries left out")]
+    HeldLimitNewer,
+    /// A journal file that is a symlink, which isn't followed (security
+    /// audit L2; sd-journal follows it: Difference 4). Its directory may be
+    /// one: directories are followed.
+    #[error("a symlink, not followed (only directories are)")]
+    Symlink,
+    /// A journal file's name on something other than a regular file (a
+    /// FIFO, a device), refused so no read can block.
+    #[error("not a regular file")]
+    NotRegular,
     /// The journal's file list changed every time it was read again after
     /// opening (rotations in a row). No file: the list is the source's.
     #[error("the journal's file list kept changing while it was opened; entries may be missing")]
@@ -237,7 +263,7 @@ pub struct ReadErrors {
     /// The read errors past the first ten distinct ones.
     pub omitted: usize,
     /// The shown errors' text with their sources: what "distinct" compares.
-    keys: Vec<String>,
+    keys: HashSet<String>,
     /// The shown errors under the cap (not open or listing errors).
     capped: usize,
 }
@@ -255,7 +281,7 @@ impl ReadErrors {
         }
         if self.capped < Self::SHOWN {
             self.capped += 1;
-            self.keys.push(key);
+            self.keys.insert(key);
             self.shown.push(e);
         } else {
             self.omitted += 1;
@@ -264,9 +290,9 @@ impl ReadErrors {
 
     /// An error opening or listing a file: shown, outside the cap.
     fn add_open(&mut self, e: ReadError) {
-        let key = key(&e);
-        if !self.keys.contains(&key) {
-            self.keys.push(key);
+        // A set, so many files failing to open (one each) cost a lookup
+        // apiece, not a scan of every error before them.
+        if self.keys.insert(key(&e)) {
             self.shown.push(e);
         }
     }
@@ -316,17 +342,54 @@ pub enum Position {
     Tail,
     /// The entries before this one, which isn't shown.
     Before(Cursor),
+    /// The entries after this one, which isn't shown.
+    After(Cursor),
 }
 
 /// A page of entries, oldest first, and what went wrong reading it.
 /// Built by `Journal::page` only: more fields can come.
+///
+/// `more_older` and `more_newer` are exact for the files as the page read
+/// them: whether a *matching* entry lies beyond the records shown, older or
+/// newer, even when the next entry in the file doesn't match. One the page
+/// chose but couldn't show (unreadable, or left out by a limit, with its
+/// error in `errors`) counts: a page from there meets it again. With no
+/// record shown, they say whether a matching entry lies older or newer than
+/// the position (for `Tail`, older is whether anything matched at all).
+/// Entries written after the page are not known to it: a follow from `end`
+/// reads them.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Page {
     /// The entries, oldest first.
     pub records: Vec<Record>,
+    /// A matching entry is older than the records shown.
+    pub more_older: bool,
+    /// A matching entry is newer than the records shown.
+    pub more_newer: bool,
+    /// Where the page ended, for a follow to start from (journal spec,
+    /// "Starting a follow"); it exists even when the page matched nothing.
+    pub end: PageEnd,
     /// What couldn't be read, and what the limits left out.
     pub errors: ReadErrors,
+}
+
+/// Where a page ended: each file it read, by device and inode, with the
+/// entry count its header gave, and the newest entry in those files,
+/// matching or not, with that entry's directory. Opaque: a follow starts
+/// from it. Two ends are equal when the page read the same files at the
+/// same counts and the same newest entry.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PageEnd {
+    files: Vec<FileEnd>,
+    newest: Option<(Cursor, PathBuf)>,
+}
+
+/// One file of a `PageEnd`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileEnd {
+    inode: (u64, u64),
+    n_entries: u64,
 }
 
 /// A journal that can't be read at all. Files that fail to open on a later
@@ -343,6 +406,14 @@ pub enum OpenError {
         #[source]
         source: io::Error,
     },
+    /// The machine id isn't one: not 32 hex digits, or all zeros (security
+    /// audit L1). A journal isn't looked for under it.
+    #[error("{}not a machine id (32 hex digits, not all zero)", file_prefix(.path.as_deref()))]
+    InvalidMachineId {
+        /// The machine-id file it was read from; `None` from
+        /// `MachineId::parse`.
+        path: Option<PathBuf>,
+    },
     /// The directory couldn't be read (`Source::Directory`).
     #[error("read the journal directory {}", .path.to_string_lossy().escape_debug())]
     Directory {
@@ -352,6 +423,60 @@ pub enum OpenError {
         #[source]
         source: io::Error,
     },
+}
+
+/// A machine's id, as `/etc/machine-id` holds it: 32 hex digits, not all
+/// zero. sd-journal looks for the local journal under it (security audit
+/// L1: an id read from the file is checked before it is joined into a
+/// path). `Display` writes the digits in lower case, the name journald gives
+/// the journal's directory.
+///
+/// systemd v255 reads the file with `id128_read_fd`
+/// (src/libsystemd/sd-id128/id128-util.c, `ID128_FORMAT_PLAIN |
+/// ID128_REFUSE_NULL` from `sd_id128_get_machine` in sd-id128.c): 32
+/// characters, optionally one newline, parsed by `sd_id128_from_string`,
+/// whose `unhexchar` (src/basic/hexdecoct.c) takes `a-f` and `A-F`; a null
+/// id is `-ENOMEDIUM`. journald names the directory `SERVER_MACHINE_ID`
+/// (src/journal/journald-server.h), the id `server_cache_machine_id`
+/// (journald-server.c) wrote with `sd_id128_to_string`, whose `hexchar`
+/// writes lower case. machine-id(5) asks for lower case, but systemd reads
+/// either, and so does sb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MachineId([u8; 16]);
+
+impl MachineId {
+    /// The id in `text`: exactly 32 hex digits in either case, not all zero
+    /// (systemd refuses a null machine id). No newline: the file's one is
+    /// taken off by the reader. A GUID's dashes, which
+    /// `sd_id128_from_string` also takes, are refused, as `id128_read_fd`
+    /// refuses them in a plain-format file (36 characters).
+    ///
+    /// # Errors
+    ///
+    /// `OpenError::InvalidMachineId`, with no path.
+    pub fn parse(text: &str) -> Result<Self, OpenError> {
+        let mut id = [0u8; 16];
+        // <https://docs.rs/hex/0.4.3/hex/fn.decode_to_slice.html>: exactly
+        // 32 digits, of either case as `unhexchar` takes them, fill the 16
+        // bytes.
+        if hex::decode_to_slice(text, &mut id).is_ok() && id != [0; 16] {
+            Ok(Self(id))
+        } else {
+            Err(OpenError::InvalidMachineId { path: None })
+        }
+    }
+}
+
+impl fmt::Display for MachineId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&file::hex_id(&self.0))
+    }
+}
+
+/// `PATH: `, escaped, or nothing without a path.
+fn file_prefix(path: Option<&Path>) -> String {
+    path.map(|p| format!("{}: ", p.to_string_lossy().escape_debug()))
+        .unwrap_or_default()
 }
 
 /// The files a journal's pages read, found again on every page.
@@ -372,52 +497,76 @@ enum Roots {
 #[derive(Debug)]
 pub struct Journal {
     roots: Roots,
+    opener: open::Opener,
 }
-
-/// The local journal's roots, in sd-journal's search order.
-const LOCAL_ROOTS: [&str; 2] = ["/run/log/journal", "/var/log/journal"];
 
 impl Journal {
     /// Checks the source: the machine id for `Source::Local`, the directory
-    /// for `Source::Directory`.
+    /// for `Source::Directory`. A machine id that isn't 32 hex digits, or is
+    /// all zeros, is refused (`OpenError::InvalidMachineId`): no journal is
+    /// looked for under it.
     ///
     /// # Errors
     ///
     /// `OpenError` for a source that can't be read at all.
     pub fn open(source: Source) -> Result<Self, OpenError> {
+        Self::open_on(source, &open::Host::default())
+    }
+
+    /// `open`, with `Source::Local`'s machine-id file and roots from `host`
+    /// (`testing::open_on` injects them).
+    fn open_on(source: Source, host: &open::Host) -> Result<Self, OpenError> {
         let roots = match source {
-            Source::Local => Roots::Local(local_dirs(
-                Path::new("/etc/machine-id"),
-                LOCAL_ROOTS.map(Path::new),
-            )?),
+            Source::Local => Roots::Local(local_dirs(host)?),
             Source::Directory(path) => match std::fs::read_dir(&path) {
                 Ok(_) => Roots::Directory(path),
                 Err(source) => return Err(OpenError::Directory { path, source }),
             },
             Source::Files(paths) => Roots::Files(paths),
         };
-        Ok(Self { roots })
+        Ok(Self {
+            roots,
+            opener: open::Opener::default(),
+        })
     }
 
     /// The `n` matching entries at `at`, oldest first: the newest ones
-    /// (`Position::Tail`), as `journalctl -n` finds them, or those before a
-    /// cursor. Every call lists and reopens the files, so an `Io` error in
-    /// `errors` from a file cut short while the page read it is gone from
-    /// the next page, which reads the file's header again.
+    /// (`Position::Tail`), as `journalctl -n` finds them, or those just
+    /// before or just after a cursor.
+    ///
+    /// Every call lists the files, opens them (safely: a symlinked journal
+    /// file or one that isn't a regular file is an error of the page, one
+    /// per file) and lists them again, and closes them before it returns.
+    /// So a rotation or vacuum between pages is seen by the next one, and
+    /// an `Io` error in `errors` from a file cut short while the page read
+    /// it is gone from the next page, which reads the file's header again.
+    ///
+    /// The cost: `Tail` reads the newest entries; `Before` also reads every
+    /// entry newer than the cursor that the query's rarest term lists
+    /// (journal spec, success criterion 5). `After` reads forward from where
+    /// journalctl 259's seek lands (decision 10): a bisect per value of the
+    /// query, O(log n) preads, at any depth. It reads its entries oldest
+    /// first, so its limits leave out the newer end (`OutputLimitNewer`,
+    /// `HeldLimitNewer`) and the next `After` from the last record shown
+    /// leaves no gap. Nothing after the cursor is dropped when its entry
+    /// has vanished or doesn't match (Difference 18).
     #[must_use]
     pub fn page(&self, q: &Query, at: &Position, n: usize, limits: &Limits) -> Page {
         let mut errors = ReadErrors::default();
-        let files = walk::open_listed(|| self.list(), &mut errors);
-        let before = match at {
-            Position::Tail => None,
-            Position::Before(c) => Some(c),
-        };
+        let files = walk::open_listed(|| self.list(), &self.opener, &mut errors);
         let bounds = walk::Bounds {
             payload: limits.output(),
             held: limits.output(),
         };
-        let records = walk::tail(&files, q.groups(), n, before, bounds, &mut errors);
-        Page { records, errors }
+        let end = walk::end(&files, &mut errors);
+        let paged = walk::page(&files, q.groups(), n, at, bounds, &mut errors);
+        Page {
+            records: paged.records,
+            more_older: paged.more_older,
+            more_newer: paged.more_newer,
+            end,
+            errors,
+        }
     }
 
     fn list(&self) -> walk::Listing {
@@ -435,16 +584,27 @@ impl Journal {
     }
 }
 
-/// The local journal's directories: each root joined with the machine id
-/// read from `machine_id`. The id isn't validated here: `MachineId`
-/// (security audit L1) is the plan's Task 4.
-fn local_dirs(machine_id: &Path, roots: [&Path; 2]) -> Result<[PathBuf; 2], OpenError> {
-    let id = std::fs::read_to_string(machine_id).map_err(|source| OpenError::MachineId {
-        path: machine_id.to_path_buf(),
+/// The local journal's directories: each of `host`'s roots joined with the
+/// machine id read from its machine-id file, in lower case as journald
+/// names the directories. The file holds the id and at most one newline,
+/// as systemd reads it (`MachineId`); anything else is refused, and the
+/// path is built from the parsed id, not the file's text (security audit
+/// L1).
+fn local_dirs(host: &open::Host) -> Result<[PathBuf; 2], OpenError> {
+    let path = &host.machine_id;
+    let bytes = open::read_machine_id(path).map_err(|source| OpenError::MachineId {
+        path: path.clone(),
         source,
     })?;
-    let id = id.trim();
-    Ok(roots.map(|r| r.join(id)))
+    let text = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+    let id = std::str::from_utf8(text)
+        .ok()
+        .and_then(|t| MachineId::parse(t).ok())
+        .ok_or_else(|| OpenError::InvalidMachineId {
+            path: Some(path.clone()),
+        })?;
+    let id = id.to_string();
+    Ok(host.roots.clone().map(|r| r.join(&id)))
 }
 
 /// A position in the merged stream, and what a cursor names: sd-journal's
@@ -463,11 +623,16 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    /// sd-journal's order between two entries
-    /// (`journal_file_compare_locations`): the same sequence-number space
+    /// sd-journal's order between two entries as systemd 249 has it
+    /// (src/libsystemd/sd-journal/journal-file.c v249,
+    /// `journal_file_compare_locations`): the same sequence-number space
     /// orders by seqnum; the same boot by monotonic time; otherwise
     /// realtime; the XOR hash breaks ties. It isn't transitive across
-    /// seqnum ids and boots, so it is never handed to a sort.
+    /// seqnum ids and boots, so it is never handed to a sort. systemd 255
+    /// and later order different boots of one machine by a table of each
+    /// boot's newest file first (sd-journal.c `compare_boot_ids`, in
+    /// `compare_locations` and `compare_with_location`): the plan's next
+    /// step, per release, after Task 4.
     fn order(&self, other: &Self) -> std::cmp::Ordering {
         if self.seqnum_id == other.seqnum_id {
             let o = self.seqnum.cmp(&other.seqnum);
@@ -737,6 +902,8 @@ const _: () = {
     const fn send_static<T: Send + 'static>() {}
     send_sync::<Journal>();
     send_static::<Page>();
+    send_static::<PageEnd>();
+    send_static::<MachineId>();
     send_static::<Record>();
     send_static::<Query>();
     send_static::<Position>();
@@ -1162,34 +1329,151 @@ mod tests {
         assert!(err.to_string().starts_with("read the journal directory "));
     }
 
+    /// A host whose files live under `dir`: its machine-id file holding
+    /// `id`, and two roots.
+    fn host_in(dir: &Path, id: &[u8]) -> crate::testing::Host {
+        let machine_id = dir.join("machine-id");
+        std::fs::write(&machine_id, id).expect("write");
+        crate::testing::Host {
+            machine_id,
+            roots: [dir.join("run"), dir.join("var")],
+        }
+    }
+
+    const MID: &str = "0123456789abcdef0123456789abcdef";
+
     /// The local journal's directories are the roots joined with the
     /// machine id, in search order; an unreadable machine id is an
     /// `OpenError`.
     #[test]
     fn the_local_journal_is_found_by_machine_id() {
         let dir = tempfile::tempdir().expect("dir");
-        let id = dir.path().join("machine-id");
-        std::fs::write(&id, "0123456789abcdef0123456789abcdef\n").expect("write");
-        let (run, var) = (dir.path().join("run"), dir.path().join("var"));
-        let dirs = local_dirs(&id, [&run, &var]).expect("reads");
-        let mid = "0123456789abcdef0123456789abcdef";
+        let mid = MID;
+        let host = host_in(dir.path(), format!("{mid}\n").as_bytes());
+        let [run, var] = host.roots.clone();
+        let dirs = local_dirs(&host).expect("reads");
         assert_eq!(dirs, [run.join(mid), var.join(mid)]);
 
         // Both roots are read, either may be missing.
         std::fs::create_dir_all(&dirs[1]).expect("var");
         let (mut c, _l) = crafted::journal(3);
         std::fs::copy(c.file().path(), dirs[1].join("system.journal")).expect("write");
-        let j = Journal {
-            roots: Roots::Local(dirs),
-        };
+        let j = crate::testing::open_on(Source::Local, &host).expect("opens");
         let page = tail(&j, &Query::field(&name("U"), b"x"), 10);
         assert_eq!(page.records.len(), 3);
         assert!(page.errors.is_empty(), "{:?}", page.errors);
 
         let gone = dir.path().join("nothing");
-        let err = local_dirs(&gone, [&run, &var]).expect_err("missing");
+        let missing = crate::testing::Host {
+            machine_id: gone.clone(),
+            ..host
+        };
+        let err = crate::testing::open_on(Source::Local, &missing).expect_err("missing");
         assert!(matches!(&err, OpenError::MachineId { path, .. } if *path == gone));
         assert_eq!(err.to_string(), format!("read {}", gone.display()));
+    }
+
+    /// The machine id in the file is the id and one newline at most:
+    /// anything else is refused, so nothing else is joined into a path
+    /// (L1). The error names the file, escaped.
+    #[test]
+    fn an_invalid_machine_id_is_refused() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert!(local_dirs(&host_in(dir.path(), MID.as_bytes())).is_ok());
+        for bad in [
+            format!("{MID}\n\n"),
+            format!(" {MID}\n"),
+            format!("{MID}\r\n"),
+            "0".repeat(32),
+            "../../../../etc/ssh/whatever".to_owned(),
+            String::new(),
+        ] {
+            let host = host_in(dir.path(), bad.as_bytes());
+            let err = local_dirs(&host).expect_err("refused");
+            assert!(
+                matches!(&err, OpenError::InvalidMachineId { path: Some(p) } if *p == host.machine_id),
+                "{bad:?}: {err:?}"
+            );
+        }
+        let host = host_in(dir.path(), b"\xff0123456789abcdef0123456789abcde");
+        assert!(matches!(
+            local_dirs(&host),
+            Err(OpenError::InvalidMachineId { path: Some(_) })
+        ));
+        let odd = dir.path().join("m\u{1b}]0;x\u{7}");
+        std::fs::write(&odd, b"").expect("write");
+        let err = crate::testing::open_on(
+            Source::Local,
+            &crate::testing::Host {
+                machine_id: odd,
+                ..host
+            },
+        )
+        .expect_err("refused");
+        assert!(
+            err.to_string()
+                .ends_with("m\\u{1b}]0;x\\u{7}: not a machine id (32 hex digits, not all zero)"),
+            "{err}"
+        );
+    }
+
+    /// An upper-case machine id, which systemd reads, finds the journal in
+    /// the lower-case directory journald names after it.
+    #[test]
+    fn an_upper_case_machine_id_finds_the_lower_case_directory() {
+        let dir = tempfile::tempdir().expect("dir");
+        let host = host_in(dir.path(), format!("{}\n", MID.to_uppercase()).as_bytes());
+        let [run, var] = host.roots.clone();
+        assert_eq!(
+            local_dirs(&host).expect("reads"),
+            [run.join(MID), var.join(MID)]
+        );
+        std::fs::create_dir_all(var.join(MID)).expect("var");
+        let (mut c, _l) = crafted::journal(2);
+        std::fs::copy(c.file().path(), var.join(MID).join("system.journal")).expect("write");
+        let j = crate::testing::open_on(Source::Local, &host).expect("opens");
+        let page = tail(&j, &Query::field(&name("U"), b"x"), 10);
+        assert_eq!(page.records.len(), 2);
+        assert!(page.errors.is_empty(), "{:?}", page.errors);
+        let mixed = MachineId::parse("0123456789ABCDEF0123456789abcdef").expect("parses");
+        assert_eq!(mixed.to_string(), MID);
+        assert_eq!(mixed, MachineId::parse(MID).expect("parses"));
+    }
+
+    /// `MachineId::parse`: exactly 32 hex digits, either case, not all
+    /// zero; `Display` writes them back in lower case.
+    #[test]
+    fn machine_id_parses_32_hex_digits() {
+        let id = MachineId::parse(MID).expect("parses");
+        assert_eq!(id.to_string(), MID);
+        let one = format!("{}1", "0".repeat(31));
+        assert_eq!(
+            MachineId::parse(&one).expect("not all zero").to_string(),
+            one
+        );
+        for bad in [
+            "",
+            &MID[..31],
+            &format!("{MID}0"),
+            &format!("{MID}\n"),
+            "0123456789abcdeg0123456789abcdef",
+            &"0".repeat(32),
+            "+123456789abcdef0123456789abcdef",
+            // A GUID, which a plain-format file can't hold.
+            "01234567-89ab-cdef-0123-456789abcdef",
+        ] {
+            assert!(
+                matches!(
+                    MachineId::parse(bad),
+                    Err(OpenError::InvalidMachineId { path: None })
+                ),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            OpenError::InvalidMachineId { path: None }.to_string(),
+            "not a machine id (32 hex digits, not all zero)"
+        );
     }
 
     /// Every page lists and opens the files again: a file replaced between
@@ -1211,6 +1495,313 @@ mod tests {
         let page = tail(&j, &q, 10);
         assert!(page.records.is_empty());
         assert_eq!(page.errors.shown.len(), 1);
+    }
+
+    /// Difference 11, through a directory's listing: a file replaced, then
+    /// one deleted, between two pages is seen by the second, and every file
+    /// a page opened is closed when it returns (the opener's counts).
+    #[test]
+    fn each_page_lists_again_and_closes_what_it_opened() {
+        let dir = tempfile::tempdir().expect("dir");
+        let put = |n: u64, as_name: &str| {
+            let (mut c, _l) = crafted::journal(n);
+            std::fs::copy(c.file().path(), dir.path().join("new")).expect("write");
+            std::fs::rename(dir.path().join("new"), dir.path().join(as_name)).expect("rename");
+        };
+        put(2, "a.journal");
+        put(3, "b.journal");
+        let host = crate::testing::Host::default();
+        let j = crate::testing::open_on(Source::Directory(dir.path().to_path_buf()), &host)
+            .expect("opens");
+        let q = Query::field(&name("U"), b"x");
+        let closed = |want_opens: u64| {
+            let c = crate::testing::counts(&j);
+            assert_eq!((c.opens, c.closes), (want_opens, want_opens), "{c:?}");
+        };
+        // Two copies of each other's entries: the flushed-copy rule shows
+        // three (crafted journals share their locations).
+        assert_eq!(tail(&j, &q, 10).records.len(), 3);
+        closed(2);
+        put(5, "a.journal");
+        assert_eq!(tail(&j, &q, 10).records.len(), 5);
+        closed(4);
+        std::fs::remove_file(dir.path().join("a.journal")).expect("remove");
+        let page = tail(&j, &q, 10);
+        assert_eq!(page.records.len(), 3);
+        assert!(page.errors.is_empty(), "{:?}", page.errors);
+        closed(5);
+        // A forward and a backward page close theirs too.
+        let at = page.records[1].cursor();
+        let _ = j.page(&q, &Position::After(at), 10, &Limits::default());
+        let _ = j.page(&q, &Position::Before(at), 10, &Limits::default());
+        closed(7);
+    }
+
+    /// Opening through a page (L2): a FIFO is refused without blocking, a
+    /// symlinked journal file is refused (Difference 4), each an error of
+    /// its own naming the file, and the other files still read. The FIFO
+    /// is named by `Source::Files`: a directory's listing doesn't take one,
+    /// as sd-journal's doesn't (walk.rs, `scan`).
+    #[test]
+    fn a_page_refuses_fifos_and_symlinked_files() {
+        let dir = tempfile::tempdir().expect("dir");
+        let fifo = dir.path().join("fifo.journal");
+        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR).expect("mkfifo");
+        let (mut c, _l) = crafted::journal(2);
+        let real = dir.path().join("real.journal");
+        std::fs::copy(c.file().path(), &real).expect("write");
+        let link = dir.path().join("link.journal");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+        let j = files(&[&fifo, &link, &real]);
+        let page = tail(&j, &Query::field(&name("U"), b"x"), 10);
+        assert_eq!(page.records.len(), 2);
+        let got: Vec<(Option<&Path>, String)> = page
+            .errors
+            .shown
+            .iter()
+            .map(|e| (e.path(), e.kind().to_string()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Some(fifo.as_path()), "not a regular file".to_owned()),
+                (
+                    Some(link.as_path()),
+                    "a symlink, not followed (only directories are)".to_owned()
+                ),
+            ]
+        );
+    }
+
+    /// A symlinked journal directory is read, as sd-journal reads it
+    /// (Difference 4: only files aren't followed), as a `Directory` source
+    /// and as a local root.
+    #[test]
+    fn a_symlinked_directory_is_read() {
+        let dir = tempfile::tempdir().expect("dir");
+        let real = dir.path().join("elsewhere");
+        std::fs::create_dir_all(real.join(MID)).expect("dirs");
+        let (mut c, _l) = crafted::journal(2);
+        std::fs::copy(c.file().path(), real.join(MID).join("system.journal")).expect("write");
+        let linked = dir.path().join("var");
+        std::os::unix::fs::symlink(&real, &linked).expect("link");
+        let q = Query::field(&name("U"), b"x");
+        let j = Journal::open(Source::Directory(linked)).expect("opens");
+        assert_eq!(tail(&j, &q, 10).records.len(), 2);
+        let host = host_in(dir.path(), format!("{MID}\n").as_bytes());
+        let j = crate::testing::open_on(Source::Local, &host).expect("opens");
+        let page = tail(&j, &q, 10);
+        assert_eq!(page.records.len(), 2);
+        assert!(page.errors.is_empty(), "{:?}", page.errors);
+    }
+
+    /// Open errors are one per file and outside the ten read errors' cap,
+    /// on a page whose read errors went past it.
+    #[test]
+    fn a_pages_open_errors_are_outside_the_cap() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut c, l) = crafted::journal(30);
+        for (i, &e) in l.entries.iter().enumerate() {
+            if i % 2 == 1 {
+                c.set(e + crafted::O_SIZE, 0);
+            }
+        }
+        let broken = c.file();
+        let mut paths = vec![broken.path().to_path_buf()];
+        for i in 0..12 {
+            let link = dir.path().join(format!("{i}.journal"));
+            std::os::unix::fs::symlink(broken.path(), &link).expect("link");
+            paths.push(link.clone());
+            paths.push(link);
+        }
+        let j = Journal::open(Source::Files(paths)).expect("opens");
+        let page = j.page(
+            &Query::field(&name("U"), b"x"),
+            &Position::Tail,
+            100,
+            &Limits::default(),
+        );
+        assert_eq!(page.records.len(), 15);
+        let symlinks = page
+            .errors
+            .shown
+            .iter()
+            .filter(|e| matches!(e.kind(), ReadErrorKind::Symlink))
+            .count();
+        assert_eq!(symlinks, 12);
+        assert_eq!(page.errors.shown.len(), 12 + ReadErrors::SHOWN);
+        assert_eq!(page.errors.omitted, 5);
+    }
+
+    /// An empty page has its end too: the files read, at their counts,
+    /// and the newest entry, though none matched. Two pages of an unchanged
+    /// journal end the same; an entry appended changes the end.
+    #[test]
+    fn an_empty_page_has_an_end() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("system.journal");
+        let (mut c, _l) = crafted::journal(3);
+        std::fs::copy(c.file().path(), &path).expect("write");
+        let j = files(&[&path]);
+        let none = Query::field(&name("U"), b"nothing");
+        let page = tail(&j, &none, 10);
+        assert!(page.records.is_empty() && !page.more_older && !page.more_newer);
+        let meta = std::fs::metadata(&path).expect("stat");
+        assert_eq!(
+            page.end.files,
+            [FileEnd {
+                inode: (
+                    std::os::unix::fs::MetadataExt::dev(&meta),
+                    std::os::unix::fs::MetadataExt::ino(&meta)
+                ),
+                n_entries: 3
+            }]
+        );
+        let (newest, in_dir) = page.end.newest.clone().expect("the newest entry");
+        assert_eq!((newest.seqnum, in_dir.as_path()), (3, dir.path()));
+        assert_eq!(tail(&j, &none, 10).end, page.end);
+        let (mut c, _l) = crafted::journal(4);
+        std::fs::write(&path, &c.b).expect("rewrite in place");
+        let _ = c.file();
+        let later = tail(&j, &none, 10).end;
+        assert_ne!(later, page.end);
+        assert_eq!(later.files[0].n_entries, 4);
+        // No files: an empty end.
+        let nothing = files(&[]);
+        assert_eq!(tail(&nothing, &none, 10).end, PageEnd::default());
+    }
+
+    /// Success criterion 5 on a crafted fixture: a tail of ten, the page
+    /// before it and the page after that page's first entry take the
+    /// preads stated here, the bound tasks/plan.md records. The fixture is
+    /// `crafted::journal(200)`, matched on `U=x` (every entry), pages of
+    /// ten. Each page reads the header and the end's newest entry, then
+    /// one pread per entry walked (the in-line arrays are read in chunks)
+    /// and one per DATA object shown; `Before` also walks the newer entries
+    /// again. `After` bisects instead (an item and an entry per probe), so
+    /// near the end it costs more than the walk it replaced (50) and stays
+    /// the same at any depth (`a_deep_forward_page_costs_a_bisect`).
+    #[test]
+    fn the_preads_of_a_tail_a_page_back_and_a_page_forward_are_bounded() {
+        const TAIL: u64 = 42;
+        const BACK: u64 = 52;
+        const FORWARD: u64 = 88;
+        let (mut c, _l) = crafted::journal(200);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let limits = Limits::default();
+        let preads = || crate::testing::counts(&j).preads;
+        let tail = j.page(&q, &Position::Tail, 10, &limits);
+        let after_tail = preads();
+        let back = j.page(&q, &Position::Before(tail.records[0].cursor()), 10, &limits);
+        let after_back = preads();
+        let forward = j.page(&q, &Position::After(back.records[0].cursor()), 10, &limits);
+        let after_forward = preads();
+        assert_eq!(
+            messages_of(&tail),
+            (190..200).map(|i| format!("m{i}")).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            messages_of(&back),
+            (180..190).map(|i| format!("m{i}")).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            messages_of(&forward),
+            (181..191).map(|i| format!("m{i}")).collect::<Vec<_>>()
+        );
+        let costs = (
+            after_tail,
+            after_back - after_tail,
+            after_forward - after_back,
+        );
+        // Exactly the figures stated: a counter that counted nothing, or a
+        // page that read more, fails.
+        assert_eq!(costs, (TAIL, BACK, FORWARD));
+        // Each page opened the file once and closed it.
+        let counts = crate::testing::counts(&j);
+        assert_eq!((counts.opens, counts.closes), (3, 3));
+    }
+
+    /// A forward page costs a bisect, not a walk back to its cursor: from
+    /// near the start of `crafted::journal(2000)`, a page of ten after the
+    /// tenth entry takes the preads stated here, what one near the end
+    /// takes (O(log n) per bisect). A cursor whose entry has vanished costs
+    /// a little more: the landing is shown, and each file's first match is
+    /// read to tell whether older entries lie before it.
+    #[test]
+    fn a_deep_forward_page_costs_a_bisect() {
+        const DEEP: u64 = 101;
+        const NEAR_END: u64 = 101;
+        const VANISHED: u64 = 104;
+        let (mut c, _l) = crafted::journal(2000);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let limits = Limits::default();
+        let all = j.page(&q, &Position::Tail, 2000, &limits);
+        let preads = || crate::testing::counts(&j).preads;
+        let before = preads();
+        let deep = j.page(&q, &Position::After(all.records[9].cursor()), 10, &limits);
+        let deep_cost = preads() - before;
+        let before = preads();
+        let near = j.page(
+            &q,
+            &Position::After(all.records[1980].cursor()),
+            10,
+            &limits,
+        );
+        let near_cost = preads() - before;
+        assert_eq!(
+            messages_of(&deep),
+            (10..20).map(|i| format!("m{i}")).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            messages_of(&near),
+            (1981..1991).map(|i| format!("m{i}")).collect::<Vec<_>>()
+        );
+        let mut vanished = all.records[9].cursor();
+        vanished.xor_hash ^= 1;
+        let before = preads();
+        let gone = j.page(&q, &Position::After(vanished), 10, &limits);
+        let gone_cost = preads() - before;
+        assert_eq!(
+            messages_of(&gone),
+            (9..19).map(|i| format!("m{i}")).collect::<Vec<_>>()
+        );
+        assert!(gone.more_older && gone.more_newer);
+        assert_eq!(
+            (deep_cost, near_cost, gone_cost),
+            (DEEP, NEAR_END, VANISHED)
+        );
+    }
+
+    fn messages_of(page: &Page) -> Vec<String> {
+        page.records
+            .iter()
+            .map(|r| String::from_utf8_lossy(r.message().expect("a message")).into_owned())
+            .collect()
+    }
+
+    /// The flags and the end come through `Journal::page` (the walk's
+    /// tests cover each position).
+    #[test]
+    fn a_pages_flags_and_end_are_the_walks() {
+        let (mut c, _l) = crafted::journal(4);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let page = tail(&j, &q, 2);
+        assert_eq!((page.more_older, page.more_newer), (true, false));
+        assert_eq!(page.end.files.len(), 1);
+        let fwd = j.page(
+            &q,
+            &Position::After(page.records[0].cursor()),
+            1,
+            &Limits::default(),
+        );
+        assert_eq!(messages_of(&fwd), ["m3"]);
+        assert_eq!((fwd.more_older, fwd.more_newer), (true, false));
     }
 
     /// A page's errors name the file escaped (L5), whatever the file's

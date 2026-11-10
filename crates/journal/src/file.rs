@@ -17,13 +17,10 @@
 //! Re-exported by `testing` (the feature), for the tools (journal spec,
 //! Project Structure); the library's own API is the crate root's.
 
+use crate::open::{Handle, Opener};
 use crate::{OverLimit, ReadError, ReadErrorKind, hash};
 use std::cell::Cell;
-use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::FileExt;
-#[cfg(any(test, feature = "testing"))]
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 type Result<T, E = ReadError> = std::result::Result<T, E>;
@@ -152,12 +149,11 @@ pub struct DataRef {
 #[derive(Debug)]
 pub struct JournalFile {
     pub path: PathBuf,
-    /// The open file's device and inode: a follow keeps the file by it
-    /// across a rename (rotation) and past its deletion (vacuum). The
-    /// follow's (plan Task 6): until it lands, the tools' and tests'.
-    #[cfg(any(test, feature = "testing"))]
+    /// The open file's device and inode: a page's end names the files it
+    /// read by it, and a follow keeps the file by it across a rename
+    /// (rotation) and past its deletion (vacuum).
     pub inode: (u64, u64),
-    file: File,
+    file: Handle,
     pub header: Header,
     /// Where objects may lie: size + `arena_size`, capped by the
     /// file's length. It grows when a read reaches past it (`within`).
@@ -165,27 +161,33 @@ pub struct JournalFile {
 }
 
 impl JournalFile {
-    /// Open the file at `path` and read its header.
+    /// Open the file at `path` and read its header, with an opener of its
+    /// own (the tools and tests; a page opens through its journal's).
     ///
     /// # Errors
     ///
-    /// The file can't be opened or read, isn't a journal file, has an
-    /// incompatible flag this reader doesn't know, or a bad header size.
+    /// As `open_with`.
+    #[cfg(any(test, feature = "testing"))]
     pub fn open(path: &Path) -> Result<Self> {
-        let io = |context: &str| {
-            let context = context.to_owned();
-            move |source| ReadError {
-                path: Some(path.to_path_buf()),
-                kind: ReadErrorKind::Io { context, source },
-            }
-        };
-        let file = File::open(path).map_err(io("open"))?;
-        #[cfg(any(test, feature = "testing"))]
-        let meta = file.metadata().map_err(io("metadata"))?;
+        Self::open_with(path, &Opener::default())
+    }
+
+    /// Open the file at `path` through `opener` (safely: `crate::open`) and
+    /// read its header.
+    ///
+    /// # Errors
+    ///
+    /// The file can't be opened (a symlink, not a regular file, or the
+    /// system's error) or read, isn't a journal file, has an incompatible
+    /// flag this reader doesn't know, or a bad header size.
+    pub(crate) fn open_with(path: &Path, opener: &Opener) -> Result<Self> {
+        let file = opener.open(path).map_err(|kind| ReadError {
+            path: Some(path.to_path_buf()),
+            kind,
+        })?;
         let mut jf = Self {
             path: path.to_path_buf(),
-            #[cfg(any(test, feature = "testing"))]
-            inode: (meta.dev(), meta.ino()),
+            inode: file.inode(),
             file,
             header: empty_header(),
             limit: Cell::new(0),
@@ -896,6 +898,624 @@ impl Iterator for EntriesRev<'_> {
     }
 }
 
+/// One entry list as sd-journal bisects it: a DATA object's (its in-line
+/// first entry, the "extra", then its chain of entry arrays) or the file's
+/// main entry array chain (no extra). Indexes count the extra as 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EntryList {
+    extra: Option<u64>,
+    /// The chain's first entry array; 0 for none.
+    first: u64,
+    /// The items in the chain (the extra not counted).
+    n: u64,
+}
+
+impl EntryList {
+    /// A DATA object's entry list. Its `n_entries` counts the extra
+    /// (`generic_array_bisect_for_data`).
+    pub(crate) fn of_data(d: &DataRef) -> Self {
+        if d.n_entries == 0 {
+            return Self {
+                extra: None,
+                first: 0,
+                n: 0,
+            };
+        }
+        Self {
+            extra: Some(d.entry_offset),
+            first: d.entry_array_offset,
+            n: d.n_entries - 1,
+        }
+    }
+}
+
+/// What a bisect compares an entry by: journal-file.c's `test_object_offset`,
+/// `_seqnum`, `_monotonic` and `_realtime` (systemd v259).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Key {
+    Offset,
+    Seqnum,
+    Monotonic,
+    Realtime,
+}
+
+/// journal-file.c's chain cache (v259 `ChainCacheItem`, `chain_cache_put`):
+/// per chain, where its last bisect ended, so the next bisect of that chain
+/// can start there. A page starts with none, as journalctl's run does for
+/// a file whose header names its tail entry (systemd 254 and later write
+/// `tail_entry_offset`); for an older file, journalctl's first read of the
+/// tail (`journal_file_read_tail_timestamp`) can fill the main chain's
+/// entry, which only a query matching every entry bisects (none of sb's
+/// does). At most `CHAIN_CACHE_MAX` (20) chains, the first put given up
+/// first, and a lookup doesn't reorder (an `OrderedHashmap` and
+/// `ordered_hashmap_steal_first`). Why not the `lru` crate, in the tree: it
+/// promotes an entry on use, which would give up other chains than
+/// systemd does.
+#[derive(Debug, Default)]
+pub(crate) struct ChainCache {
+    items: Vec<ChainItem>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ChainItem {
+    /// The chain's first array: the key.
+    first: u64,
+    /// The array the bisect ended in.
+    array: u64,
+    /// That array's first item.
+    begin: u64,
+    /// The items in the arrays before it.
+    total: u64,
+    /// The index the bisect ended at, in that array.
+    last_index: u64,
+}
+
+/// `CHAIN_CACHE_MAX` (journal-file.c).
+const CHAIN_CACHE_MAX: usize = 20;
+
+impl ChainCache {
+    fn get(&self, first: u64) -> Option<ChainItem> {
+        self.items.iter().find(|c| c.first == first).copied()
+    }
+
+    /// `chain_cache_put`: a chain whose bisect ended in its first array
+    /// isn't worth caching, unless it already is.
+    fn put(&mut self, item: ChainItem) {
+        if let Some(c) = self.items.iter_mut().find(|c| c.first == item.first) {
+            *c = item;
+            return;
+        }
+        if item.array == item.first {
+            return;
+        }
+        if self.items.len() >= CHAIN_CACHE_MAX {
+            self.items.remove(0);
+        }
+        self.items.push(item);
+    }
+}
+
+/// What a bisect met on its way: the entries it couldn't read (systemd
+/// only logs them), and whether it cut an array short at a bad item, a zero
+/// slot included (then "nothing found" may only mean "nothing before it").
+#[derive(Debug, Default)]
+pub(crate) struct Met {
+    pub(crate) errors: Vec<ReadError>,
+    pub(crate) cut: bool,
+}
+
+/// A bisect's result: the entry's offset, and its index in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Found {
+    pub(crate) offset: u64,
+    pub(crate) index: u64,
+}
+
+/// A bisect step's test of one item (`TEST_LEFT`, `TEST_RIGHT`, `TEST_FOUND`),
+/// or an item that isn't a readable entry (`-EBADMSG`, `-EADDRNOTAVAIL`).
+enum Test {
+    Left,
+    Right,
+    Found,
+    Invalid(ReadError),
+}
+
+/// `generic_array_bisect_step`'s outcome going down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stepped {
+    Left,
+    Right,
+    /// `TEST_GOTO_PREVIOUS`: going down, nothing is found.
+    Previous,
+    /// `TEST_GOTO_NEXT`: on to the next array.
+    Next,
+}
+
+/// What a bisect looks for: the first entry whose `key` is at or after
+/// `needle` (`DIRECTION_DOWN`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Probe {
+    pub(crate) key: Key,
+    pub(crate) needle: u64,
+}
+
+/// The state of one array's bisect: the array, and `m`, `left` and `right`
+/// in `generic_array_bisect`.
+struct Bounds {
+    array: u64,
+    m: u64,
+    left: u64,
+    right: u64,
+}
+
+impl JournalFile {
+    /// The file's main entry array chain, as a bisect reads it.
+    pub(crate) fn main_list(&self) -> EntryList {
+        EntryList {
+            extra: None,
+            first: self.header.entry_array_offset,
+            n: self.header.n_entries,
+        }
+    }
+
+    /// The item `i` of the entry array at `array`.
+    fn array_item(&self, array: u64, i: u64) -> Result<u64> {
+        let width = self.array_item_size();
+        let b = self.read(array + ENTRY_ARRAY_HEADER + i * width, width)?;
+        Ok(if self.header.compact() {
+            u64::from(le32(&b, 0))
+        } else {
+            le64(&b, 0)
+        })
+    }
+
+    /// `test_object_*`: the entry at `p` against the probe. An offset is
+    /// compared without reading the entry. The system's error stops the
+    /// bisect; an entry that can't be read is `Invalid`.
+    fn test_object(&self, p: u64, probe: Probe) -> Result<Test> {
+        let value = if probe.key == Key::Offset {
+            p
+        } else {
+            match self.entry(p) {
+                Ok(e) => match probe.key {
+                    Key::Seqnum => e.seqnum,
+                    Key::Monotonic => e.monotonic,
+                    _ => e.realtime,
+                },
+                Err(e) if matches!(e.kind(), ReadErrorKind::Io { .. }) => return Err(e),
+                Err(e) => return Ok(Test::Invalid(e)),
+            }
+        };
+        Ok(match value.cmp(&probe.needle) {
+            std::cmp::Ordering::Less => Test::Left,
+            std::cmp::Ordering::Equal => Test::Found,
+            std::cmp::Ordering::Greater => Test::Right,
+        })
+    }
+
+    /// `generic_array_bisect_step`, going down: tests item `i` and moves
+    /// the bounds. An item that isn't a readable entry cuts the array short
+    /// there (its error goes to `met`), or, at the left bound, ends the
+    /// bisect with nothing found. A zero item does the same, unreported: it
+    /// is a slot never written, which the walks skip without a word
+    /// (Difference 8).
+    fn bisect_step(&self, i: u64, probe: Probe, b: &mut Bounds, met: &mut Met) -> Result<Stepped> {
+        let p = self.array_item(b.array, i)?;
+        let test = if p == 0 {
+            None
+        } else {
+            Some(self.test_object(p, probe)?)
+        };
+        Ok(match test {
+            None | Some(Test::Invalid(_)) => {
+                met.cut = true;
+                if let Some(Test::Invalid(e)) = test {
+                    met.errors.push(e);
+                }
+                if i == b.left {
+                    return Ok(Stepped::Previous);
+                }
+                b.m = i;
+                b.right = i - 1;
+                Stepped::Right
+            }
+            Some(Test::Found | Test::Right) => {
+                b.right = i;
+                Stepped::Right
+            }
+            Some(Test::Left) => {
+                if i == b.m - 1 {
+                    return Ok(Stepped::Next);
+                }
+                b.left = i + 1;
+                Stepped::Left
+            }
+        })
+    }
+}
+impl JournalFile {
+    /// systemd v259's `generic_array_bisect` (journal-file.c) going down
+    /// (`DIRECTION_DOWN`): the first item of the chain at `first` (`n`
+    /// items) that the probe finds at or after its needle, as its offset
+    /// and its index in the chain. Followed step for step, because on a
+    /// chain that isn't in order (a 249 file whose clock stepped back) the
+    /// result is wherever systemd's probes land, and journalctl's forward
+    /// page starts there:
+    /// - a cached chain (`cache`) starts at the cached array when that
+    ///   array's first item tests left of the needle;
+    /// - each array's last item is tested first: left of the needle moves
+    ///   on to the next array;
+    /// - in a cached array, the items beside the last index are tested
+    ///   next;
+    /// - then halving, `(left + right) / 2`;
+    /// - an item that isn't a readable entry cuts the array short there,
+    ///   or, at the left bound, ends with nothing found (going down, systemd
+    ///   doesn't return to the previous array). Its error goes to `met`;
+    ///   systemd only logs it.
+    ///
+    /// Why not std's `partition_point` or `binary_search_by`: their probe
+    /// order is unspecified, and on input out of order the probe order is
+    /// the result; they also know nothing of chained arrays, the cached
+    /// array and its last index, or cutting an array short.
+    ///
+    /// # Errors
+    ///
+    /// An entry array or item that can't be read, or a first item of 0
+    /// where the result is taken (systemd's `-EBADMSG`).
+    pub(crate) fn bisect(
+        &self,
+        first: u64,
+        items: u64,
+        probe: Probe,
+        cache: &mut ChainCache,
+        met: &mut Met,
+    ) -> Result<Option<Found>> {
+        if items == 0 {
+            return Ok(None);
+        }
+        // systemd's `a`, `n` and `t`: the array, the items from it on, and
+        // the items before it.
+        let (mut array, mut left_items, mut before) = (first, items, 0u64);
+        let mut last_index = u64::MAX;
+        let cached = cache.get(first);
+        if let Some(ci) = cached
+            && left_items > ci.total
+            && ci.begin != 0
+        {
+            match self.test_object(ci.begin, probe)? {
+                Test::Left => {
+                    array = ci.array;
+                    left_items -= ci.total;
+                    before = ci.total;
+                    last_index = ci.last_index;
+                }
+                Test::Invalid(e) => met.errors.push(e),
+                Test::Right | Test::Found => {}
+            }
+        }
+        let width = self.array_item_size();
+        while array != 0 {
+            let (size, next) = self.array_head(array)?;
+            let capacity = (size - ENTRY_ARRAY_HEADER) / width;
+            let count = capacity.min(left_items);
+            if count == 0 {
+                return Ok(None);
+            }
+            let mut b = Bounds {
+                array,
+                m: count,
+                left: 0,
+                right: count - 1,
+            };
+            let r = self.bisect_step(b.right, probe, &mut b, met)?;
+            if r == Stepped::Previous {
+                return Ok(None);
+            }
+            if r == Stepped::Right {
+                // The neighbours of the cached last index first.
+                if last_index > 0 && b.left < last_index - 1 && last_index - 1 < b.right {
+                    let r = self.bisect_step(last_index - 1, probe, &mut b, met)?;
+                    if r == Stepped::Previous {
+                        return Ok(None);
+                    }
+                }
+                if last_index < u64::MAX && b.left < last_index + 1 && last_index + 1 < b.right {
+                    let r = self.bisect_step(last_index + 1, probe, &mut b, met)?;
+                    if r == Stepped::Previous {
+                        return Ok(None);
+                    }
+                }
+                loop {
+                    if b.left == b.right {
+                        // An array cut short: its last item left hasn't
+                        // been tested yet.
+                        if b.m != count {
+                            let r = self.bisect_step(b.left, probe, &mut b, met)?;
+                            if matches!(r, Stepped::Previous | Stepped::Next) {
+                                return Ok(None);
+                            }
+                        }
+                        return self
+                            .bisect_found(first, array, before, b.left, cache)
+                            .map(Some);
+                    }
+                    let mid = u64::midpoint(b.left, b.right);
+                    let r = self.bisect_step(mid, probe, &mut b, met)?;
+                    if matches!(r, Stepped::Previous | Stepped::Next) {
+                        return Ok(None);
+                    }
+                }
+            }
+            // `Next`: every item of this array is left of the needle.
+            if capacity >= left_items {
+                return Ok(None);
+            }
+            left_items -= capacity;
+            before += capacity;
+            last_index = u64::MAX;
+            array = forward(&self.path, array, size, next)?;
+        }
+        Ok(None)
+    }
+
+    /// `generic_array_bisect`'s `found:` label: caches where the bisect
+    /// ended and returns the item.
+    fn bisect_found(
+        &self,
+        first: u64,
+        array: u64,
+        total: u64,
+        i: u64,
+        cache: &mut ChainCache,
+    ) -> Result<Found> {
+        let zero = || {
+            self.error(ReadErrorKind::Corrupt(format!(
+                "entry array {array:#x} lists 0"
+            )))
+        };
+        let begin = self.array_item(array, 0)?;
+        if begin == 0 {
+            return Err(zero());
+        }
+        cache.put(ChainItem {
+            first,
+            array,
+            begin,
+            total,
+            last_index: i,
+        });
+        let p = self.array_item(array, i)?;
+        if p == 0 {
+            return Err(zero());
+        }
+        Ok(Found {
+            offset: p,
+            index: total + i,
+        })
+    }
+
+    /// systemd v259's `generic_array_bisect_for_data` going down, or
+    /// `generic_array_bisect` for the main list: the first entry of `list`
+    /// at or after the probe's needle, as its offset and its index in the
+    /// list (the extra is 0). A DATA object's extra is tested first: at or
+    /// after the needle it is the result, and the chain isn't read.
+    ///
+    /// # Errors
+    ///
+    /// As `bisect`, and an extra that isn't a readable entry (systemd
+    /// returns its error).
+    pub(crate) fn bisect_list(
+        &self,
+        list: &EntryList,
+        probe: Probe,
+        cache: &mut ChainCache,
+        met: &mut Met,
+    ) -> Result<Option<Found>> {
+        let Some(extra) = list.extra else {
+            return self.bisect(list.first, list.n, probe, cache, met);
+        };
+        match self.test_object(extra, probe)? {
+            Test::Found | Test::Right => {
+                return Ok(Some(Found {
+                    offset: extra,
+                    index: 0,
+                }));
+            }
+            Test::Invalid(e) => return Err(e),
+            Test::Left => {}
+        }
+        Ok(self
+            .bisect(list.first, list.n, probe, cache, met)?
+            .map(|f| Found {
+                index: f.index + 1,
+                ..f
+            }))
+    }
+
+    /// The entries of `list` from its index `from` on, in file order.
+    pub(crate) fn entries_from(&self, list: &EntryList, from: u64) -> EntriesFwd<'_> {
+        EntriesFwd::new(self, list, from)
+    }
+}
+
+/// An entry list read forward from an index, oldest first: the extra (a
+/// DATA object's in-line entry), then the chain's arrays in link order,
+/// read in chunks. The rules are `EntriesRev`'s, the other way: a zero item
+/// is skipped (Difference 8), an item that can't be an entry offset is
+/// refused, a repeat is skipped, and an item lower than the one before
+/// leaves the rest of its array (reported), the walk going on with the next
+/// array. Why not `entries_since`: that reads the main array only, and
+/// stops at the first item it can't use, for the follow to wait on.
+#[derive(Debug)]
+pub(crate) struct EntriesFwd<'a> {
+    f: &'a JournalFile,
+    extra: Option<u64>,
+    /// The array being read, its size and link; 0 when the chain is done.
+    at: u64,
+    size: u64,
+    link: u64,
+    /// The chain index of the array's first item, and of the next to read.
+    base: u64,
+    next: u64,
+    /// The chain's items (capped by what the arena could hold).
+    n: u64,
+    buf: std::collections::VecDeque<u64>,
+    last: Option<u64>,
+    /// An error met finding the start, yielded first.
+    failed: Option<ReadError>,
+}
+
+impl<'a> EntriesFwd<'a> {
+    fn new(f: &'a JournalFile, list: &EntryList, from: u64) -> Self {
+        let n = list.n.min((f.limit.get() - f.header.size) / ENTRY_HEADER);
+        let mut it = Self {
+            f,
+            extra: None,
+            at: 0,
+            size: 0,
+            link: 0,
+            base: 0,
+            next: 0,
+            n,
+            buf: std::collections::VecDeque::new(),
+            last: None,
+            failed: None,
+        };
+        // The chain index to start at: the extra is index 0 of a DATA list.
+        let chain_from = match list.extra {
+            Some(extra) if from == 0 => {
+                it.extra = Some(extra);
+                0
+            }
+            Some(_) => from - 1,
+            None => from,
+        };
+        it.next = chain_from;
+        let (mut a, mut base) = (list.first, 0u64);
+        let item = f.array_item_size();
+        while a != 0 && base < n {
+            let (size, link) = match f.array_head(a) {
+                Ok(head) => head,
+                Err(e) => {
+                    it.failed = Some(e);
+                    return it;
+                }
+            };
+            let cap = (size - ENTRY_ARRAY_HEADER) / item;
+            if chain_from < base + cap {
+                (it.at, it.size, it.link, it.base) = (a, size, link, base);
+                return it;
+            }
+            base += cap;
+            match forward(&f.path, a, size, link) {
+                Ok(next) => a = next,
+                Err(e) => {
+                    it.failed = Some(e);
+                    return it;
+                }
+            }
+        }
+        it
+    }
+
+    /// The next array of the chain, or done.
+    fn next_array(&mut self) -> Option<Result<()>> {
+        let end = self.base + (self.size - ENTRY_ARRAY_HEADER) / self.f.array_item_size();
+        let a = match forward(&self.f.path, self.at, self.size, self.link) {
+            Ok(a) => a,
+            Err(e) => {
+                self.at = 0;
+                return Some(Err(e));
+            }
+        };
+        self.at = 0;
+        if a == 0 || end >= self.n {
+            return None;
+        }
+        match self.f.array_head(a) {
+            Ok((size, link)) => {
+                (self.at, self.size, self.link, self.base) = (a, size, link, end);
+                self.next = self.next.max(end);
+                Some(Ok(()))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+impl Iterator for EntriesFwd<'_> {
+    type Item = Result<u64>;
+
+    fn next(&mut self) -> Option<Result<u64>> {
+        if let Some(e) = self.failed.take() {
+            return Some(Err(e));
+        }
+        if let Some(extra) = self.extra.take() {
+            if !self.f.plausible_entry(extra) {
+                return Some(Err(self.f.error(ReadErrorKind::Corrupt(format!(
+                    "in-line entry {extra:#x} is not an entry offset"
+                )))));
+            }
+            self.last = Some(extra);
+            return Some(Ok(extra));
+        }
+        let item = self.f.array_item_size();
+        loop {
+            if let Some(off) = self.buf.pop_front() {
+                if off == 0 {
+                    continue;
+                }
+                if !self.f.plausible_entry(off) {
+                    return Some(Err(self.f.error(ReadErrorKind::Corrupt(format!(
+                        "entry array {:#x} lists {off:#x}, not an entry offset",
+                        self.at
+                    )))));
+                }
+                match self.last {
+                    Some(last) if off == last => continue,
+                    Some(last) if off < last => {
+                        // Out of order: leave the rest of this array.
+                        self.buf.clear();
+                        self.next = self.base + (self.size - ENTRY_ARRAY_HEADER) / item;
+                        return Some(Err(self.f.error(ReadErrorKind::Corrupt(format!(
+                            "entry array {:#x} is out of order",
+                            self.at
+                        )))));
+                    }
+                    _ => {}
+                }
+                self.last = Some(off);
+                return Some(Ok(off));
+            }
+            if self.at == 0 || self.next >= self.n {
+                return None;
+            }
+            let end = self.base + (self.size - ENTRY_ARRAY_HEADER) / item;
+            if self.next >= end {
+                match self.next_array()? {
+                    Ok(()) => continue,
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+            let k = (end.min(self.n) - self.next).min(CHUNK_ITEMS);
+            match self.f.read(
+                self.at + ENTRY_ARRAY_HEADER + (self.next - self.base) * item,
+                k * item,
+            ) {
+                Ok(b) => {
+                    self.buf.extend(array_items(&b, self.f.header.compact()));
+                    self.next += k;
+                }
+                Err(e) => {
+                    // This array can't be read: on with the next.
+                    self.next = end;
+                    return Some(Err(e));
+                }
+            }
+        }
+    }
+}
+
 /// Where a forward read of the file's entry array chain stopped (for
 /// following): the array object at `at`, whose first item is the chain's
 /// item number `base`. Arrays are only appended and linked forward, so a
@@ -1244,7 +1864,7 @@ fn read_counted(dec: &mut impl Read, max: usize, cost: &mut usize) -> std::io::R
 /// `pread` into `buf` until it is full or the file ends; the bytes read.
 /// Why not `FileExt::read_exact_at`: it fails on a short read, and a
 /// header read asks for 272 bytes where 208 are a valid header.
-fn read_up_to(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+fn read_up_to(file: &Handle, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
     let mut n = 0;
     while n < buf.len() {
         match file.read_at(&mut buf[n..], offset + n as u64)? {
@@ -1293,6 +1913,7 @@ pub fn hex_id(id: &[u8; 16]) -> String {
 mod tests {
     use super::*;
     use crate::testing::crafted::*;
+    use std::os::unix::fs::FileExt;
 
     fn is_over(kind: &ReadErrorKind) -> bool {
         matches!(kind, ReadErrorKind::OverLimit { .. })
@@ -1316,6 +1937,401 @@ mod tests {
         // `n` (entries that fit the arena) doesn't bite.
         c.b.resize(c.b.len() + 128 * 1024, 0);
         c.write()
+    }
+
+    /// A file of entries with these realtimes (seqnums 1 on), linked in a
+    /// main chain of arrays with these capacities; and the entries.
+    fn bisect_file(
+        reals: &[u64],
+        caps: &[usize],
+    ) -> (tempfile::NamedTempFile, JournalFile, Vec<u64>) {
+        let mut c = Crafted::new();
+        let entries: Vec<u64> = reals
+            .iter()
+            .enumerate()
+            .map(|(i, &real)| {
+                // One item: an entry lists at least one DATA object.
+                let e = c.entry(i as u64 + 1, &[8]);
+                c.set(e + 24, real);
+                e
+            })
+            .collect();
+        let head = c.b.len() as u64;
+        let mut at = head;
+        let mut rest = &entries[..];
+        for (k, &cap) in caps.iter().enumerate() {
+            let size = ENTRY_ARRAY_HEADER + 8 * cap as u64;
+            let next = if k + 1 < caps.len() { at + size } else { 0 };
+            let (items, more) = rest.split_at(cap.min(rest.len()));
+            assert_eq!(c.array(items, cap, next), at);
+            rest = more;
+            at += size;
+        }
+        c.set(H_N_ENTRIES, entries.len() as u64);
+        c.set(H_ENTRY_ARRAY_OFFSET, head);
+        let (t, f) = c.write();
+        (t, f, entries)
+    }
+
+    fn realtime(needle: u64) -> Probe {
+        Probe {
+            key: Key::Realtime,
+            needle,
+        }
+    }
+
+    /// The first index at or after the needle, by systemd's bisect, with a
+    /// fresh cache.
+    fn landing(f: &JournalFile, needle: u64) -> Option<u64> {
+        let mut met = Met::default();
+        let got = f
+            .bisect_list(
+                &f.main_list(),
+                realtime(needle),
+                &mut ChainCache::default(),
+                &mut met,
+            )
+            .expect("bisects");
+        assert!(met.errors.is_empty(), "{met:?}");
+        got.map(|f| f.index)
+    }
+
+    /// In order: the first entry at or after the needle, the first of
+    /// equal ones, none past the end; across chained arrays too.
+    #[test]
+    fn the_bisect_finds_the_first_entry_at_or_after() {
+        let (_t, f, e) = bisect_file(&[10, 30, 30, 30, 50], &[5]);
+        assert_eq!(f.main_list().first, f.header.entry_array_offset);
+        for (needle, want) in [
+            (5, Some(0)),
+            (10, Some(0)),
+            (30, Some(1)),
+            (35, Some(4)),
+            (50, Some(4)),
+            (51, None),
+        ] {
+            assert_eq!(landing(&f, needle), want, "{needle}");
+        }
+        let mut met = Met::default();
+        let got = f.bisect_list(
+            &f.main_list(),
+            realtime(35),
+            &mut ChainCache::default(),
+            &mut met,
+        );
+        assert_eq!(
+            got.expect("bisects"),
+            Some(Found {
+                offset: e[4],
+                index: 4
+            })
+        );
+        let (_t, f, _e) = bisect_file(&[10, 20, 30, 40, 50, 60], &[2, 4]);
+        for (needle, want) in [
+            (15, Some(1)),
+            (20, Some(1)),
+            (25, Some(2)),
+            (45, Some(4)),
+            (60, Some(5)),
+            (61, None),
+        ] {
+            assert_eq!(landing(&f, needle), want, "{needle}");
+        }
+        let (_t, f, _e) = bisect_file(&[], &[1]);
+        assert_eq!(landing(&f, 1), None);
+    }
+
+    /// Out of order, the result is where systemd's probes land: realtimes
+    /// 10, 50, 5, 45 and the needle 40 test 45, then 50, then 10, and land
+    /// on 50; 10, 50, 20, 30, 45 land on 45.
+    #[test]
+    fn out_of_order_the_bisect_lands_where_systemds_does() {
+        let (_t, f, _e) = bisect_file(&[10, 50, 5, 45], &[4]);
+        assert_eq!(landing(&f, 40), Some(1));
+        let (_t, f, _e) = bisect_file(&[10, 50, 20, 30, 45], &[5]);
+        assert_eq!(landing(&f, 40), Some(4));
+    }
+
+    /// The chain cache: a bisect that ended in a later array starts the
+    /// next bisect of that chain there when that array's first item is
+    /// left of the needle, which out of order changes the result. Arrays
+    /// [10, 60] and [20, 30, 70, 80]: 75 lands on 80 and caches the second
+    /// array; then 25 starts there and lands on 30 (index 3), where a fresh
+    /// bisect lands on 60 (index 1). A bisect ending in the first array
+    /// isn't cached.
+    #[test]
+    fn the_chain_cache_starts_at_the_last_array() {
+        let (_t, f, _e) = bisect_file(&[10, 60, 20, 30, 70, 80], &[2, 4]);
+        let mut cache = ChainCache::default();
+        let mut met = Met::default();
+        let mut at = |needle, cache: &mut ChainCache| {
+            f.bisect_list(&f.main_list(), realtime(needle), cache, &mut met)
+                .expect("bisects")
+                .map(|f| f.index)
+        };
+        assert_eq!(at(75, &mut cache), Some(5));
+        assert_eq!(cache.items.len(), 1);
+        assert_eq!(at(25, &mut cache), Some(3));
+        assert_eq!(at(25, &mut ChainCache::default()), Some(1));
+        // The cached array's first item right of the needle: from the head.
+        assert_eq!(at(15, &mut cache), Some(1));
+        let mut first = ChainCache::default();
+        assert_eq!(at(5, &mut first), Some(0));
+        assert!(first.items.is_empty());
+    }
+
+    /// The cached array's last index: its neighbours are tested before
+    /// halving, which out of order changes the result (traced against v259
+    /// and a model of it). Arrays [10, 15] and [20, 40, 30, 50, 70, 60]: 55
+    /// lands on index 6 and caches index 4; then 35 tests index 3 (the one
+    /// before it, 50) and lands on 3, where without that test, or with a
+    /// fresh cache, it lands on 5. Arrays [94, 32] and [36, 76, 35, 88]: 71
+    /// lands on 3 and caches index 1; then 75 tests index 2 (the one after
+    /// it) and lands on 5, where without that test it lands on 3.
+    #[test]
+    fn the_cached_last_index_is_tested_first() {
+        let at = |f: &JournalFile, needle, cache: &mut ChainCache| {
+            let mut met = Met::default();
+            f.bisect_list(&f.main_list(), realtime(needle), cache, &mut met)
+                .expect("bisects")
+                .map(|found| found.index)
+        };
+        let (_t, f, _e) = bisect_file(&[10, 15, 20, 40, 30, 50, 70, 60], &[2, 6]);
+        let mut cache = ChainCache::default();
+        assert_eq!(at(&f, 55, &mut cache), Some(6));
+        assert_eq!(cache.items[0].last_index, 4);
+        assert_eq!(at(&f, 35, &mut cache), Some(3));
+        assert_eq!(at(&f, 35, &mut ChainCache::default()), Some(5));
+        let (_t, f, _e) = bisect_file(&[94, 32, 36, 76, 35, 88], &[2, 4]);
+        let mut cache = ChainCache::default();
+        assert_eq!(at(&f, 71, &mut cache), Some(3));
+        assert_eq!(cache.items[0].last_index, 1);
+        assert_eq!(at(&f, 75, &mut cache), Some(5));
+    }
+
+    /// A cached array whose first entry can't be read isn't jumped to: the
+    /// bisect starts from the chain's head, and the entry is reported
+    /// (systemd logs "Cached entry is corrupted, ignoring").
+    #[test]
+    fn an_unreadable_cached_start_is_not_jumped_to() {
+        let (t, f, e) = bisect_file(&[10, 60, 20, 30, 70, 80], &[2, 4]);
+        let mut cache = ChainCache::default();
+        let mut met = Met::default();
+        let got = f.bisect_list(&f.main_list(), realtime(75), &mut cache, &mut met);
+        assert_eq!(got.expect("bisects").map(|found| found.index), Some(5));
+        let w = std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open");
+        FileExt::write_all_at(&w, &0u64.to_le_bytes(), e[2] + O_SIZE).expect("corrupt");
+        let f = JournalFile::open(t.path()).expect("opens");
+        let got = f.bisect_list(&f.main_list(), realtime(25), &mut cache, &mut met);
+        assert_eq!(got.expect("bisects").map(|found| found.index), Some(1));
+        assert_eq!(met.errors.len(), 1, "{met:?}");
+    }
+
+    /// The system's error reading a probed entry (here the file cut short
+    /// after it was opened) stops the bisect, where an entry that isn't
+    /// well-formed only cuts its array short.
+    #[test]
+    fn the_systems_error_stops_the_bisect() {
+        let (t, f, e) = bisect_file(&[10, 20, 30, 40], &[4]);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open")
+            .set_len(e[2])
+            .expect("truncate");
+        let mut met = Met::default();
+        let got = f.bisect_list(
+            &f.main_list(),
+            realtime(35),
+            &mut ChainCache::default(),
+            &mut met,
+        );
+        let err = got.expect_err("stopped");
+        assert!(matches!(err.kind(), ReadErrorKind::Io { .. }), "{err:?}");
+    }
+
+    /// The cache holds at most 20 chains, the oldest given up first; an
+    /// entry for a chain is updated in place.
+    #[test]
+    fn the_chain_cache_is_bounded() {
+        let item = |first| ChainItem {
+            first,
+            array: first + 8,
+            begin: 1,
+            total: 1,
+            last_index: 0,
+        };
+        let mut cache = ChainCache::default();
+        for first in 1..=21 {
+            cache.put(item(first));
+        }
+        assert_eq!(cache.items.len(), CHAIN_CACHE_MAX);
+        assert!(cache.get(1).is_none() && cache.get(21).is_some());
+        cache.put(ChainItem {
+            total: 9,
+            ..item(21)
+        });
+        assert_eq!(cache.get(21).map(|c| c.total), Some(9));
+        assert_eq!(cache.items.len(), CHAIN_CACHE_MAX);
+    }
+
+    /// An item of 0 cuts its array short there, unreported: a needle left
+    /// of everything before it lands on the first; one right of it finds
+    /// nothing. A zero at the left bound ends the bisect.
+    #[test]
+    fn a_zero_item_cuts_the_array_short() {
+        let (t, _f, e) = bisect_file(&[10, 20, 30, 40], &[4]);
+        let at = JournalFile::open(t.path())
+            .expect("opens")
+            .header
+            .entry_array_offset
+            + ENTRY_ARRAY_HEADER;
+        let zero = |items: &[usize]| {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(t.path())
+                .expect("open");
+            for &i in items {
+                FileExt::write_all_at(&f, &[0; 8], at + 8 * i as u64).expect("zero");
+            }
+            JournalFile::open(t.path()).expect("opens")
+        };
+        let f = zero(&[1]);
+        let mut met = Met::default();
+        let mut cache = ChainCache::default();
+        assert_eq!(
+            f.bisect_list(&f.main_list(), realtime(5), &mut cache, &mut met)
+                .expect("ok"),
+            Some(Found {
+                offset: e[0],
+                index: 0
+            })
+        );
+        assert_eq!(
+            f.bisect_list(&f.main_list(), realtime(15), &mut cache, &mut met)
+                .expect("ok"),
+            None
+        );
+        // A zero slot is cut at without a word (Difference 8).
+        assert!(met.errors.is_empty(), "{met:?}");
+        let f = zero(&[0]);
+        assert_eq!(
+            f.bisect_list(&f.main_list(), realtime(5), &mut cache, &mut met)
+                .expect("ok"),
+            None
+        );
+    }
+
+    /// A DATA object's list: its in-line entry tested first, the result
+    /// when at or after the needle (index 0); else the chain, indexes after
+    /// it. One that can't be read is the bisect's error. An empty list
+    /// finds nothing.
+    #[test]
+    fn a_data_lists_in_line_entry_comes_first() {
+        let (_t, f, e) = bisect_file(&[10, 20, 30, 40], &[4]);
+        let chain = f.header.entry_array_offset;
+        let d = DataRef {
+            offset: 0,
+            n_entries: 4,
+            entry_offset: e[0],
+            entry_array_offset: chain,
+        };
+        let list = EntryList::of_data(&d);
+        let mut met = Met::default();
+        let mut at = |needle| {
+            f.bisect_list(
+                &list,
+                realtime(needle),
+                &mut ChainCache::default(),
+                &mut met,
+            )
+            .map(|r| r.map(|f| f.index))
+        };
+        assert_eq!(at(10).expect("ok"), Some(0));
+        assert_eq!(at(5).expect("ok"), Some(0));
+        // The chain holds n - 1 items: 10, 20, 30.
+        assert_eq!(at(25).expect("ok"), Some(3));
+        assert_eq!(at(35).expect("ok"), None);
+        let bad = EntryList::of_data(&DataRef {
+            entry_offset: 8,
+            ..d
+        });
+        assert!(
+            f.bisect_list(&bad, realtime(5), &mut ChainCache::default(), &mut met)
+                .is_err()
+        );
+        let empty = EntryList::of_data(&DataRef { n_entries: 0, ..d });
+        assert_eq!(
+            f.bisect_list(&empty, realtime(5), &mut ChainCache::default(), &mut met)
+                .expect("ok"),
+            None
+        );
+    }
+
+    /// The forward reader: from an index, the extra first, then the chain
+    /// across arrays; a zero and a repeat are skipped; an item lower than
+    /// the one before leaves the rest of its array, reported, and the next
+    /// array is read.
+    #[test]
+    fn entries_are_read_forward_from_an_index() {
+        let (_t, f, e) = bisect_file(&[10, 20, 30, 40, 50, 60], &[2, 4]);
+        let fwd = |list: &EntryList, from| -> Vec<std::result::Result<u64, String>> {
+            f.entries_from(list, from)
+                .map(|r| r.map_err(|e| e.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            fwd(&f.main_list(), 1),
+            (1..6).map(|i| Ok(e[i])).collect::<Vec<_>>()
+        );
+        assert_eq!(fwd(&f.main_list(), 6), []);
+        let chain = f.header.entry_array_offset;
+        let d = DataRef {
+            offset: 0,
+            n_entries: 4,
+            entry_offset: e[0],
+            entry_array_offset: chain,
+        };
+        let list = EntryList::of_data(&d);
+        // The test reuses the main chain, whose first item is the extra:
+        // a repeat, read once.
+        assert_eq!(fwd(&list, 0), [Ok(e[0]), Ok(e[1]), Ok(e[2])]);
+        assert_eq!(fwd(&list, 2), [Ok(e[1]), Ok(e[2])]);
+        // An in-line entry that can't be an entry's offset is refused.
+        let bad = EntryList::of_data(&DataRef {
+            entry_offset: 8,
+            ..d
+        });
+        let got = fwd(&bad, 0);
+        assert!(
+            got[0]
+                .as_ref()
+                .is_err_and(|m| m.contains("not an entry offset")),
+            "{got:?}"
+        );
+        // A zero, a repeat and an item out of order.
+        let (_t, g) = file_with_chain(&[&[e[0], 0], &[e[1], e[1], e[0], e[3]], &[e[4]]]);
+        let chain = EntryList {
+            extra: None,
+            first: 272,
+            n: 7,
+        };
+        let got = g
+            .entries_from(&chain, 0)
+            .map(|r| r.map_err(|e| e.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert_eq!(got[..2], [Ok(e[0]), Ok(e[1])]);
+        assert!(
+            got[2]
+                .as_ref()
+                .is_err_and(|m| m.contains("is out of order")),
+            "{got:?}"
+        );
+        assert_eq!(got[3], Ok(e[4]));
     }
 
     fn file_with_array(items: &[u64]) -> (tempfile::NamedTempFile, JournalFile) {
