@@ -10,11 +10,11 @@ publish.workspace = true
 [features]
 # Test support (the repository's convention, as in sb-docker): the
 # crafted-file builder, the tools' file-level access, the injectable roots
-# and the opener's counts; the JSON form later (journal spec, Project
-# Structure). Turned on for every test build by the self dev-dependency
-# below (dev-dependency features unify), never in a release or production
-# build.
-testing = ["dep:tempfile"]
+# and the opener's counts, the JSON form and the tools' verdicts (journal
+# spec, Project Structure), and the comparison CLI's argument parsing.
+# Turned on for every test build by the self dev-dependency below
+# (dev-dependency features unify), never in a release or production build.
+testing = ["dep:tempfile", "dep:serde_json", "dep:clap"]
 
 [dependencies]
 siphasher.workspace = true
@@ -31,6 +31,10 @@ jiff.workspace = true
 rustix.workspace = true
 # The crafted-file builder writes its files to temporary files.
 tempfile = { workspace = true, optional = true }
+# The tools' JSON form, journalctl's `-o json` (`testing::tools::json`).
+serde_json = { workspace = true, optional = true }
+# The comparison CLI's arguments (examples/journal.rs).
+clap = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Turns `testing` on for the unit tests and every other test target
@@ -38,6 +42,17 @@ tempfile = { workspace = true, optional = true }
 sb-journal = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 crc32fast.workspace = true
+# The comparison CLI's errors (examples/journal.rs; plan, "Typed errors":
+# anyhow only in the examples).
+anyhow.workspace = true
+
+# The comparison CLI the container scripts run (crates/journal/tests/):
+# a thin wrapper over `testing::tools`. `test = true` runs its argument
+# check under `cargo test`.
+[[example]]
+name = "journal"
+required-features = ["testing"]
+test = true
 
 [lints]
 workspace = true

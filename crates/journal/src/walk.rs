@@ -2290,11 +2290,12 @@ mod tests {
         assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
     }
 
-    /// Difference 18: journalctl 259 steps past its landing only when it is
-    /// the cursor's own entry, and so does sb; 249 and 255 always step past
-    /// it. A cursor whose entry has vanished (here: one whose XOR hash no
-    /// entry has) lands on the next entry, which is shown; so is the next
-    /// match after a cursor whose entry doesn't match the query.
+    /// Difference 18: journalctl 255.1 and later (24.04, 26.04) step past
+    /// their landing only when it is the cursor's own entry, and so does
+    /// sb; 249 (22.04) always steps past it. A cursor whose entry has
+    /// vanished (here: one whose XOR hash no entry has) lands on the next
+    /// entry, which is shown; so is the next match after a cursor whose
+    /// entry doesn't match the query.
     #[test]
     fn difference_18_nothing_after_a_vanished_cursor_is_dropped() {
         let (mut c, _l) = crafted::journal(5);

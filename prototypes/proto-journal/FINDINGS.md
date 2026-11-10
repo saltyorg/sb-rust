@@ -145,7 +145,10 @@ Compared against:
   - `releases`: the table's rows, the scripts' default list.
   - `fuzz`: the corruption harness below.
 - **compare.sh, compat.sh and checks.sh:** the release matrix, files from
-  before an upgrade, and the checks both share.
+  before an upgrade, and the checks both share. They moved to
+  crates/journal/tests/ in sb-journal's Task 5, run against the crate's
+  `journal` example; their live follow check is follow.sh's `rotate`
+  scenario.
 - **stress.sh:** reading while journald writes and rotates, below.
 - **follow.sh:** the follow against `journalctl -f` across flushes,
   rotations, vacuums, restarts and inotify overflows (Follow rework,

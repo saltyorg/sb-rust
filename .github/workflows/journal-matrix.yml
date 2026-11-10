@@ -1,9 +1,10 @@
-# The journal reader (prototypes/proto-journal) against each supported
+# The journal reader (crates/journal, sb-journal, through its `journal`
+# example) against each supported
 # Ubuntu release's own journalctl, in unprivileged containers of current
 # images. Scheduled because an Ubuntu stable update can change
 # journalctl's rules within an LTS (systemd 259.1 moved the `-u` "PID 1"
 # rule to init.scope): a failing run means a RELEASES row needs updating.
-# The release list comes from `proto-journal releases`, so a new row is
+# The release list comes from `journal releases`, so a new row is
 # picked up without editing this file. Images and apt packages are never
 # cached: a fresh pull and the live archive are the point.
 #
@@ -24,7 +25,7 @@ on:
         default: "rolling=26.04 devel=26.04"
   pull_request:
     paths:
-      - "prototypes/proto-journal/**"
+      - "crates/journal/**"
       - ".github/workflows/journal-matrix.yml"
       - "Cargo.lock"
       - "Cargo.toml"
@@ -32,7 +33,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "prototypes/proto-journal/**"
+      - "crates/journal/**"
       - ".github/workflows/journal-matrix.yml"
       - "Cargo.lock"
       - "Cargo.toml"
@@ -68,15 +69,15 @@ jobs:
         run: rustup toolchain install && rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
       - name: Build (static musl)
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p proto-journal
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p sb-journal --features testing --example journal
       - name: Clippy
-        run: cargo clippy --locked -p proto-journal --all-targets -- -D warnings
+        run: cargo clippy --locked -p sb-journal --all-targets -- -D warnings
       - name: Tests
-        run: cargo test --locked -p proto-journal
+        run: cargo test --locked -p sb-journal
       - name: Release rows
         id: releases
         run: |
-          rows=$(target/x86_64-unknown-linux-musl/release/proto-journal releases)
+          rows=$(target/x86_64-unknown-linux-musl/release/examples/journal releases)
           {
             echo "### Release rows"
             echo '| release | systemd |'
@@ -86,8 +87,8 @@ jobs:
           echo "list=$(cut -d' ' -f1 <<<"$rows" | jq -Rcs 'split("\n") | map(select(. != ""))')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
-          name: proto-journal
-          path: target/x86_64-unknown-linux-musl/release/proto-journal
+          name: sb-journal-example
+          path: target/x86_64-unknown-linux-musl/release/examples/journal
           retention-days: 7
 
   matrix:
@@ -108,22 +109,22 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          name: proto-journal
+          name: sb-journal-example
           path: bin
       - name: compare.sh
         run: |
-          chmod +x bin/proto-journal
-          PJ_BIN=$PWD/bin/proto-journal prototypes/proto-journal/compare.sh "$RELEASE" 2>&1 | tee compare.log
-      - name: compat.sh (files from 20.04 and 18.04)
-        run: PJ_BIN=$PWD/bin/proto-journal prototypes/proto-journal/compat.sh 20.04 18.04 -- "$RELEASE" 2>&1 | tee compat.log
+          chmod +x bin/journal
+          SBJ_BIN=$PWD/bin/journal crates/journal/tests/compare.sh "$RELEASE" 2>&1 | tee compare.log
+      - name: compat.sh (files from 22.04, 20.04 and 18.04)
+        run: SBJ_BIN=$PWD/bin/journal crates/journal/tests/compat.sh 22.04 20.04 18.04 -- "$RELEASE" 2>&1 | tee compat.log
       - name: Summary
         if: always()
         run: |
           {
             echo "### $RELEASE"
             echo '```'
-            grep -hE '^\S.*systemd|FAIL|note' compare.log compat.log 2>/dev/null || true
-            for image in "$RELEASE" 20.04 18.04; do
+            grep -hE '^\S.*systemd|FAIL|diff|note' compare.log compat.log 2>/dev/null || true
+            for image in "$RELEASE" 22.04 20.04 18.04; do
               docker image inspect "ubuntu:$image" --format "ubuntu:$image {{index .RepoDigests 0}}" 2>/dev/null || true
             done
             echo '```'
@@ -146,19 +147,19 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          name: proto-journal
+          name: sb-journal-example
           path: bin
       - name: compare.sh canaries
         run: |
-          chmod +x bin/proto-journal
+          chmod +x bin/journal
           read -ra canaries <<<"$CANARIES"
-          PJ_BIN=$PWD/bin/proto-journal prototypes/proto-journal/compare.sh "${canaries[@]}" 2>&1 | tee canary.log
+          SBJ_BIN=$PWD/bin/journal crates/journal/tests/compare.sh "${canaries[@]}" 2>&1 | tee canary.log
       - name: Summary
         if: always()
         run: |
           {
             echo "### Canaries ($CANARIES)"
             echo '```'
-            grep -E '^\S.*systemd|FAIL|note' canary.log 2>/dev/null || true
+            grep -E '^\S.*systemd|FAIL|diff|note' canary.log 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

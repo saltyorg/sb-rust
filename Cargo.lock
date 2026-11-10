@@ -3298,6 +3298,8 @@ dependencies = [
 name = "sb-journal"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "crc32fast",
  "hex",
  "itertools 0.14.0",
@@ -3307,6 +3309,7 @@ dependencies = [
  "rustix",
  "ruzstd",
  "sb-journal",
+ "serde_json",
  "siphasher",
  "tempfile",
  "thiserror 2.0.21",

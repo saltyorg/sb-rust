@@ -3,19 +3,22 @@
 # Ubuntu keeps its archived journal files, and journalctl reads them. Each
 # OLD release's own systemd writes the files; each NEW (supported)
 # release's journalctl then reads them, alone and merged with files its
-# own systemd writes, next to proto-journal. Unprivileged containers: no
-# systemd as PID 1.
+# own systemd writes, next to sb-journal (the `journal` example).
+# Unprivileged containers: no systemd as PID 1.
 #
-#   [PJ_BIN=binary] prototypes/proto-journal/compat.sh [OLD... [-- NEW...]]
+#   [SBJ_BIN=binary] crates/journal/tests/compat.sh [OLD... [-- NEW...]]
 #
-# Defaults: OLD 20.04 18.04 (systemd 245 and 237); NEW every row of
-# query.rs RELEASES. A NEW of IMAGE=RELEASE is a canary, as in compare.sh.
+# Defaults: OLD 22.04 20.04 18.04 (systemd 249, 245 and 237); NEW every
+# row of rules.rs RELEASES. A NEW of IMAGE=RELEASE is a canary, as in
+# compare.sh: the example gets its mapped row as `--release`.
 #
 # Stage 1, per OLD release: systemd-journal-remote writes gen-export's
 # entries (compressed, and with --compress=no: the older journal-remote
 # has no per-file compression or hash choice), and the release's
 # systemd-journald, run standalone, writes a persistent journal across a
 # rotation and is stopped cleanly, leaving archived and active files.
+# 22.04's journal-remote also writes a file whose realtime steps back
+# (10, 50, 5 and 45 s), which only journald 249 and older write.
 #
 # Stage 2, per OLD and NEW pair:
 # - each old fixture read alone (compare.sh's fixture checks);
@@ -23,7 +26,9 @@
 #   NEW's journal-remote, read as one directory (`-D`);
 # - an upgraded host: the old journal directory and machine id in place,
 #   NEW's journald started on it and writing across a rotation, and the
-#   local journal read by tail, `-u` and identifier.
+#   local journal read by tail, `-u` and identifier;
+# - the stepped-back file paged forward after a cursor at 40 s, against
+#   NEW's journalctl (decision 10's bisect, Difference 18).
 #
 # Containers (sbj-compat-..., or $SBJ_PREFIX-compat-...) are removed on
 # exit; their files stay in target/journal-compat. Two runs in one tree
@@ -31,15 +36,15 @@
 # Needs Docker and the musl target.
 set -euo pipefail
 
-# PJ_BIN names a binary built already (CI builds it once). It is resolved
+# SBJ_BIN names a binary built already (CI builds it once). It is resolved
 # before the cd below, so a relative path works too.
-if [ -n "${PJ_BIN:-}" ]; then
-  if ! PJ_BIN=$(realpath -e "$PJ_BIN") || [ ! -x "$PJ_BIN" ]; then
-    echo "PJ_BIN is not an executable file" >&2
+if [ -n "${SBJ_BIN:-}" ]; then
+  if ! SBJ_BIN=$(realpath -e "$SBJ_BIN") || [ ! -x "$SBJ_BIN" ]; then
+    echo "SBJ_BIN is not an executable file" >&2
     exit 2
   fi
 fi
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 old=()
 new=()
 while [ $# -gt 0 ] && [ "$1" != -- ]; do
@@ -48,18 +53,18 @@ while [ $# -gt 0 ] && [ "$1" != -- ]; do
 done
 [ $# -gt 0 ] && shift
 new=("$@")
-[ ${#old[@]} -gt 0 ] || old=(20.04 18.04)
+[ ${#old[@]} -gt 0 ] || old=(22.04 20.04 18.04)
 
-# Without PJ_BIN, build it here, capped, as every heavy build and run here is.
-if [ -n "${PJ_BIN:-}" ]; then
-  bin=$PJ_BIN
+# Without SBJ_BIN, build it here, capped, as every heavy build and run here is.
+if [ -n "${SBJ_BIN:-}" ]; then
+  bin=$SBJ_BIN
 else
   systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
-    cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
-  bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
+    cargo build -q --release --target x86_64-unknown-linux-musl -p sb-journal --features testing --example journal
+  bin=$PWD/target/x86_64-unknown-linux-musl/release/examples/journal
 fi
 [ ${#new[@]} -gt 0 ] || mapfile -t new < <("$bin" releases | cut -d' ' -f1)
-checks=$PWD/prototypes/proto-journal/checks.sh
+checks=$PWD/crates/journal/tests/checks.sh
 work=$PWD/target/journal-compat
 
 containers=()
@@ -77,10 +82,11 @@ set -u -o pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
 apt-get install -y -qq systemd systemd-journal-remote >/dev/null 2>&1
-remote=$(ls /usr/lib/systemd/systemd-journal-remote /lib/systemd/systemd-journal-remote 2>/dev/null | head -1)
-jd=$(ls /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald 2>/dev/null | head -1)
 # shellcheck source=checks.sh
 . /checks.sh
+remote=$(first_of /usr/lib/systemd/systemd-journal-remote /lib/systemd/systemd-journal-remote)
+jd=$(first_of /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald)
+coredump_uid
 # The release's journald, standalone, until its persistent journal is up.
 # Standalone, journald 237, 245 and 255 were seen to keep writing to /run
 # after `journalctl --flush` until the next rotation. The flag a booted
@@ -131,9 +137,6 @@ rotate() {
 count_lines() { # identifier
   journalctl -D /var/log/journal -q -t "$1" -o cat --all | grep -c -E '^(plain|long|.\[32mgreen) [0-9]+'
 }
-files() { # dir: each journal file, as journalctl would meet it
-  find "$1" -name '*.journal*' -type f | sort | sed 's|.*/|  file: |'
-}
 EOS
 }
 
@@ -145,13 +148,19 @@ produce() {
 rel=$1
 echo "$rel (writer): $(journalctl --version | head -1)"
 mkdir -p /out/fx
-/pj gen-export --entries 3000 > /tmp/in.export
+/sbj gen-export --entries 3000 > /tmp/in.export
 for variant in compressed:--compress=yes plain:--compress=no; do
   name=${variant%%:*}
   "$remote" "${variant#*:}" --output="/out/fx/$name.journal" - < /tmp/in.export >/dev/null 2>&1 ||
     bad "$name: journal-remote failed"
   integrity "$rel $name" --file "/out/fx/$name.journal"
 done
+if [ "$rel" = 22.04 ]; then
+  mkdir -p /out/stepback
+  /sbj gen-boot --boot cccccccccccccccccccccccccccccccc --prefix s --realtime-s 10,50,5,45 > /tmp/s.export
+  "$remote" --output=/out/stepback/stepback.journal - < /tmp/s.export >/dev/null 2>&1 ||
+    bad "stepback: journal-remote failed"
+fi
 systemd-machine-id-setup >/dev/null 2>&1
 mid=$(cat /etc/machine-id)
 mkdir -p /var/log/journal
@@ -185,19 +194,22 @@ image=$3
 want=$4
 echo "$was files on $image ($rel rules): $(journalctl --version | head -1)"
 systemd_check "$image" "$rel" "$want"
-mkdir -p /fx /mix && cd /fx
+mkdir -p /fx /mix && cd /fx || exit 2
 for f in /old/fx/*.journal; do
   name="$was $(basename "$f" .journal)"
   integrity "$name" --file "$f"
-  fixture_checks "$name" "$rel" "--file $f" "--file $f"
+  fixture_checks "$name" "$rel" "--file $f" "--file $f" 1
 done
+if [ -f /old/stepback/stepback.journal ]; then
+  stepback_checks "$was stepback" "$rel" /old/stepback/stepback.journal
+fi
 # Merged: a later generation of entries from this release's writer, and
 # few enough that `-u` last 500 and the page back reach into the old file.
-/pj gen-export --entries 300 --generation 1 > new.export
+/sbj gen-export --entries 300 --generation 1 > new.export
 "$remote" --output=/mix/new.journal - < new.export >/dev/null 2>&1 || bad "merge: journal-remote failed"
 cp /old/fx/compressed.journal /mix/old.journal || bad "merge: copy the old file"
 integrity "$was+$rel merged" --directory /mix
-fixture_checks "$was+$rel merged" "$rel" "-D /mix" "--directory /mix"
+fixture_checks "$was+$rel merged" "$rel" "-D /mix" "--directory /mix" 1
 # Both files were read: the whole check had both generations.
 n=$(journalctl -D /mix -q -o export | grep -c '^__CURSOR=')
 [ "$n" = 3300 ] || bad "merge: journalctl read $n of 3300 entries"
@@ -222,26 +234,34 @@ n=$(count_lines sb-new)
 integrity "$was->$rel host" --directory /var/log/journal
 files /var/log/journal
 journalctl -o json --all -q > e.json || bad "journalctl host whole"
-/pj tail --release "$rel" -n 100000000 > a.json || bad "pj host whole"
+sbj_tail "$rel" -n 100000000 > a.json || bad "sbj host whole"
 check "$was->$rel host whole (local files)" e.json a.json
 # 200 new entries and journald's own: the last 500 reach the old files.
 journalctl -o json --all -q -n 500 > e.json || bad "journalctl host last 500"
-/pj tail --release "$rel" -n 500 > a.json || bad "pj host last 500"
+sbj_tail "$rel" -n 500 > a.json || bad "sbj host last 500"
 check "$was->$rel host last 500" e.json a.json
 journalctl -o json --all -q -n 200 SYSLOG_IDENTIFIER=sb-old > e.json || bad "journalctl host old identifier"
-/pj tail --release "$rel" -n 200 --match SYSLOG_IDENTIFIER=sb-old > a.json || bad "pj host old identifier"
+sbj_tail "$rel" -n 200 --match SYSLOG_IDENTIFIER=sb-old > a.json || bad "sbj host old identifier"
 check "$was->$rel host, old identifier" e.json a.json
 journalctl -o json --all -q -n 400 SYSLOG_IDENTIFIER=sb-old SYSLOG_IDENTIFIER=sb-new > e.json || bad "journalctl host both identifiers"
-/pj tail --release "$rel" -n 400 --match SYSLOG_IDENTIFIER=sb-old --match SYSLOG_IDENTIFIER=sb-new > a.json ||
-  bad "pj host both identifiers"
+sbj_tail "$rel" -n 400 --match SYSLOG_IDENTIFIER=sb-old --match SYSLOG_IDENTIFIER=sb-new > a.json ||
+  bad "sbj host both identifiers"
 check "$was->$rel host, both identifiers" e.json a.json
 # `-u` on the local journal (not --file, so 26.04's coredump term applies
 # as on a host): the old fixture in the machine's directory, with the
 # merged generation beside it.
 cp /old/fx/compressed.journal "/var/log/journal/$mid/remote-old.journal" || bad "host: copy the old fixture"
 cp /mix/new.journal "/var/log/journal/$mid/remote-new.journal" || bad "host: copy the new fixture"
-journalctl -u demo.service -o json --all -q -n 500 > e.json || bad "journalctl host -u"
-/pj tail --release "$rel" -u demo.service -n 500 > a.json || bad "pj host -u"
+# Difference 1 where this row hits it: 26.04's journalctl takes the old
+# fixture's uid-1000 coredumps when the systemd-coredump user doesn't
+# resolve.
+unit_whole "$was->$rel host" "" 0 1 hu.whole
+if d1_applies 0; then
+  tail -n 500 hu.whole > e.json
+else
+  journalctl -u demo.service -o json --all -q -n 500 > e.json || bad "journalctl host -u"
+fi
+sbj_tail "$rel" -u demo.service -n 500 > a.json || bad "sbj host -u"
 check "$was->$rel host -u last 500 (local files)" e.json a.json
 exit $fail
 EOS
@@ -252,7 +272,7 @@ run() { # container image script args...
   shift 3
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
-  docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/pj:ro" -v "$checks:/checks.sh:ro" "${mounts[@]}" \
+  docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/sbj:ro" -v "$checks:/checks.sh:ro" "${mounts[@]}" \
     "ubuntu:$image" sleep 3600 >/dev/null
   docker exec -i "$c" bash -s -- "$@" < <("$script")
 }
@@ -276,7 +296,7 @@ for o in "${old[@]}"; do
     rel=${n#*=}
     want=$("$bin" releases | awk -v r="$rel" '$1 == r { print $2 }')
     if [ -z "$want" ]; then
-      echo "$n: $rel is not a row of query.rs RELEASES"
+      echo "$n: $rel is not a row of rules.rs RELEASES"
       status=1
       continue
     fi

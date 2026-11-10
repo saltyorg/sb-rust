@@ -2030,8 +2030,9 @@ mod tests {
         &["b2"],
     ];
     /// A forward page is the entries after the cursor in this order
-    /// (decision 11): after b1 only b2, after a2 b1 and b2, where
-    /// journalctl 259's seek gives [a2, b1] and [b2] (Difference 20).
+    /// (decision 11): after b1 only b2, after a2 b1 and b2. On the
+    /// matrix's same fixture journalctl 259.9 gives [b2] after b1 and
+    /// [b2] after a2, 255.4 [a2, b1, b2] and [b2] (Difference 20).
     const BY_BOOT: [&[&str]; 7] = [
         &["a1", "a2", "b1", "b2"],
         &["b1", "b2"],
@@ -2106,10 +2107,10 @@ mod tests {
 
     /// Paging forward one entry at a time shows every entry once, in the
     /// release's order. On 24.04 and 26.04 journalctl's own seek (a
-    /// realtime bisect in boot 0xb's file, landing on b2 from a2) would
-    /// pass b1 (Difference 20); sb lands each boot the table orders after
-    /// the cursor's at its first entry, so b1 is shown. On 22.04 the pages
-    /// are journalctl's. (UNVERIFIED until Task 5's matrix row.)
+    /// realtime bisect in boot 0xb's file, landing on b2 from a2) passes
+    /// b1 (Difference 20; the matrix's `boots overlap` row shows a2, b2);
+    /// sb lands each boot the table orders after the cursor's at its first
+    /// entry, so b1 is shown. On 22.04 the pages are journalctl's.
     #[test]
     fn forward_pages_show_every_entry_of_another_boot() {
         let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));

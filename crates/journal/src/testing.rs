@@ -1,9 +1,11 @@
 //! Test support, under the `testing` feature (journal spec, Project
 //! Structure): one file's reading, re-exported for the tools, the
-//! crafted-file builder, and the injectable roots and opener counts; the
-//! tools' helpers and the JSON form come with the plan's later tasks.
+//! crafted-file builder, the injectable roots and opener counts, and the
+//! tools' logic and JSON form (`tools`).
 
 use crate::{Journal, OpenError, Release, Source};
+
+pub mod tools;
 
 // One file's reading, for the tools (the journal spec, Project
 // Structure: the tools need file-level access).

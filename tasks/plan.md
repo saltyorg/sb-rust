@@ -212,7 +212,15 @@ on its journal's opener (`testing::counts`).
     the value) and a bisect per boot started by time. On the
     decision-11 fixture a page after a2 costs 50 on 26.04 against 46 on
     22.04, showing one entry more (`the_boot_seek_reads_the_files_boots`).
-- The matrix fixture's figures: Task 5.
+- The matrix fixture's figures (Task 5): gen-export's 3000 entries
+  written by each release's systemd-journal-remote (the `default`
+  variant), `-u demo.service`, pages of 500:
+  - the tail: 1694 preads on 22.04 and 24.04, 1711 on 26.04;
+  - the page before it: 2361, and 2393;
+  - the first page forward: 1726, and 1747.
+  - The figures were the same in every run (four per release).
+    compare.sh's bounds (`PREADS_*_MAX`) are 26.04's figures plus 1%:
+    1728, 2417 and 1765, between three and five preads per entry shown.
 
 `Before` walks back from the newest entry to the cursor, so its cost
 grows with the depth paged (accepted by success criterion 5). `After` is
@@ -243,7 +251,7 @@ sanitizer, so it waits for T9 too.
 - [x] Task 2: entry arrays, chains and `EntriesRev`
 - [x] Task 3: walks, rules and `page` (Tail, Before)
 - [x] Task 4: `After`, exact `more_*`, `PageEnd`, safe opening, `MachineId`, the pread bound
-- [ ] Task 5: the comparison tools and container scripts on the crate
+- [x] Task 5: the comparison tools and container scripts on the crate
 
 ### Checkpoint A: the reader against journalctl
 - [ ] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04, pinning

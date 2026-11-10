@@ -23,8 +23,13 @@
 //!   takes the lowest across files (`real_journal_next`). journalctl shows
 //!   it unless it *is* the cursor's entry (`sd_journal_test_cursor`,
 //!   src/journal/journalctl-show.c), so nothing after the cursor is lost
-//!   when its entry has vanished or doesn't match. 22.04's and 24.04's
-//!   journalctl always step past it: Difference 18;
+//!   when its entry has vanished or doesn't match. 24.04's journalctl
+//!   does the same (systemd-stable v255.1's backport); 22.04's always
+//!   steps past it: Difference 18. 26.04's (259.9) first prefers a file
+//!   whose landing is the cursor's exact entry (issue #31516), which sb
+//!   doesn't emulate: it differs only where another file's landing orders
+//!   before the cursor's entry, across two boots the table orders against
+//!   their clocks, and such a file is sought per boot here (below);
 //! - a file the first step found nothing in seeks again from the entry it
 //!   took (`next_beyond_location` keeps no direction after an empty seek);
 //! - then forward: each file's matching entries after its landing, in file
@@ -60,9 +65,10 @@
 //!   would differ, which a file that found an entry never bisects by key
 //!   again.
 //!
-//! UNVERIFIED against a running journalctl: Task 5's matrix checks forward
-//! pages on 26.04, on 22.04 and 24.04 (Difference 18 aside), and on a
-//! 249-written file whose clock steps back.
+//! Verified against running journalctl by Task 5's matrix: forward pages
+//! page by page on 22.04, 24.04 and 26.04 (Difference 18 aside, on
+//! 22.04), and the landing on a 249-written file whose clock steps back
+//! (docs/platform-notes/systemd-journal.md).
 //!
 //! The order between entries, for the first step's lowest landing and for
 //! every head against the entry just taken, is `Cursor::order` with the
@@ -810,8 +816,9 @@ pub(crate) fn after(
     let keep = n.min(held);
     let mut out = Vec::new();
     let mut more = false;
-    // journalctl 259 steps past the landing only when it is the cursor's
-    // own entry (`sd_journal_test_cursor`: every field the cursor names).
+    // journalctl 255.1 and later step past the landing only when it is the
+    // cursor's own entry (`sd_journal_test_cursor`: every field the cursor
+    // names).
     let skipped = taken.location == *c;
     let mut last = taken.location;
     if !skipped {

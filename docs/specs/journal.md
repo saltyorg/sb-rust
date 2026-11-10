@@ -409,18 +409,24 @@ Only on corrupt, live or foreign files:
 17. **A plausible item out of order** (a stale slot) stops a followed
     file, retried once, then reported, and nothing more is read from
     that file while it stays so. The tail's walk goes past it.
-18. **The entry after a vanished or non-matching cursor isn't lost.**
-    On 22.04 and 24.04, `journalctl --after-cursor` seeks and then always steps once
-    past where it landed (v249 and v255 journalctl.c,
+18. **The entry after a vanished or non-matching cursor isn't lost**
+    (22.04 only). 22.04's `journalctl --after-cursor` seeks and then
+    always steps once past where it landed (v249 journalctl.c,
     `sd_journal_next_skip(j, 1 + after_cursor)`), so when the cursor's
     entry has vanished (vacuumed, rotated away) or doesn't match the
     query, the first real entry after it is lost. sb steps past the
-    landing only when it is the cursor's own entry, as 26.04's
-    journalctl does (v259 journalctl-show.c, `sd_journal_test_cursor`).
-    On a 249-written file whose realtime steps back, the landing itself
-    can differ too: sb lands where 259's bisect does, and 249's and
-    255's bisect is built differently (v249 journal-file.c
-    `generic_array_bisect`).
+    landing only when it is the cursor's own entry, as 24.04's and
+    26.04's journalctl do (`sd_journal_test_cursor`). 24.04 has it
+    although the v255 tag doesn't: systemd-stable v255.1 cherry-picked
+    "journalctl: don't skip over messages not matching the cursor"
+    (systemd-stable d68d9019c483, from upstream 4207a5577a37, issue
+    #30288), and Ubuntu's 255.4 is built on that stable release; it is
+    in the upstream tarball, not a Debian patch, so the package changelog
+    doesn't mention it. On a 249-written file whose realtime steps back,
+    22.04's landing can differ too: sb lands where 259's bisect does
+    (24.04 and 26.04 land there as well), and 249's bisect is built
+    differently (v249 journal-file.c `generic_array_bisect`). The
+    matrix's runs: docs/platform-notes/systemd-journal.md.
 19. **A forward page on a corrupt file goes on where journalctl stops**
     (crates/journal/src/forward.rs lists the departures):
     - an error in the seek or the walk is reported and the page goes on,
@@ -435,14 +441,25 @@ Only on corrupt, live or foreign files:
     each file by one key but merge by the boot table, so where a boot's
     realtime range overlaps another's (a clock set back across a
     reboot) `--after-cursor` passes entries the table puts after the
-    cursor, and on 26.04 a page after an entry can show that entry
+    cursor, and on 24.04 a page after an entry can show that entry
     again, later in the page; a viewer paging forward from the last
     record shown can then lose entries or get the same page again. sb
     shows the entries after the cursor in the release's order, each
-    once: with boot 0xa's newest tail older than 0xb's, a1 and a2 at
-    realtimes 100 and 300, b1 and b2 at 200 and 400, 26.04's journalctl
-    shows b2 after a2 and [a2, b1] after b1 (24.04's, stepping past its
-    landing, [b1, b2]), and sb b1 and b2 after a2 and b2 after b1
+    once. With boot 0xa's newest tail older than 0xb's, a1 and a2 at
+    realtimes 100 and 300, b1 and b2 at 200 and 400 (the matrix's
+    `boots overlap` fixture, run on 255.4 and 259.9):
+    - after a2, both releases' journalctl show b2 (b1 is passed), and
+      sb shows b1 and b2; paging one entry at a time from a1, journalctl
+      shows a2 and b2, sb a2, b1 and b2;
+    - after b1, 24.04's journalctl shows a2, b1 and b2: its first step
+      is the lowest landing, a2 (file a sought by realtime 200), which
+      isn't the cursor's entry, so it is shown, and b1 follows it in
+      the table's order. 26.04's shows b2, as sb does: 259.9 prefers
+      the file whose landing is the cursor's exact entry for the first
+      step (systemd-stable v259.6 to v259.9, "sd-journal: prefer exact
+      cursor match after seek", issue #31516; not in the v259 tag), so
+      b1 is the first step and skipped.
+
     (`boots_order_as_each_releases_journalctl`,
     `forward_pages_show_every_entry_of_another_boot`). Boots whose
     clocks don't overlap give journalctl's pages. Where the order itself
@@ -457,8 +474,12 @@ doesn't match its row.
 UNVERIFIED and carried from FINDINGS:
 - sealed (FSS) files;
 - systemd 249 journald's own repeated items;
-- a zero item in a real file;
-- the local-journal coredump term, until the coredump row runs.
+- a zero item in a real file.
+
+The local-journal coredump term was verified by the coredump row
+(compare.sh, Task 5): with systemd-coredump installed, 26.04's
+journalctl and sb take that user's coredumps, and 22.04's and 24.04's
+neither.
 
 Not a difference but a documentation note (audit I1): root inside a
 container that can reach journald's sockets matches the `_UID=0` groups,
@@ -561,7 +582,8 @@ crates/journal/src/open.rs     safe opening (L2), Source::Local's machine-id fil
 crates/journal/src/walk.rs     newest-first walks and the merge
 crates/journal/src/follow.rs   Follower: positions, watches, classify, rescans
 crates/journal/src/rules.rs    RELEASES and the unit rules
-crates/journal/src/testing.rs  crafted-file builder, JSON output, file-level access (`testing` feature)
+crates/journal/src/testing.rs  crafted-file builder, file-level access (`testing` feature)
+crates/journal/src/testing/tools.rs  the tools' JSON output, verdicts and export fixtures
 crates/journal/tests/          the container scripts and checks.sh
 crates/journal/examples/       the comparison CLI and the fuzz harness (on `testing`)
 docs/decisions/ADR-013-*.md    the ADR
@@ -588,8 +610,7 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
 
   All value-exact against that release's journalctl, the listed
   differences excepted. A row with systemd-coredump installed checks
-  decision 1's local rule. The local-journal coredump term is
-  UNVERIFIED until then.
+  decision 1's local rule (verified in Task 5).
 - **Fuzzing on stable:**
   - at least 9,000 cases over the eight journal-remote seeds (249 and
     255 output, four writer variants each), regenerated from the
@@ -722,10 +743,21 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
       cursor's own entry (`sd_journal_test_cursor`, journalctl-show.c);
       a file that found nothing seeks again from it; then forward, the
       lowest head strictly after the last entry taken.
-    - 22.04's and 24.04's journalctl always step past the landing:
-      Difference 18.
-    - UNVERIFIED against a running journalctl until Task 5's matrix
-      checks forward pages (tasks/todo.md).
+    - 22.04's journalctl always steps past the landing: Difference 18.
+      24.04's tests the cursor as 26.04's does (systemd-stable v255.1).
+    - 26.04's journalctl (259.9) also takes the file whose landing is
+      the cursor's exact entry as the first step, before the lowest
+      landing (stable backport, issue #31516). sb doesn't emulate that
+      step: it changes the first step only where another file's landing
+      orders before the cursor's own entry, which takes two boots the
+      boot table orders against their clocks, and there sb seeks such a
+      file per boot (decision 11), so its pages are what they would be
+      if it emulated that step (they still differ from 259.9's where
+      Difference 20 says).
+    - Verified against running journalctl by Task 5's matrix: every
+      forward page of the fixtures, page by page, on 22.04, 24.04 and
+      26.04 (Difference 18 aside, on 22.04), and the stepped-back
+      landing of a 249-written file (docs/platform-notes/systemd-journal.md).
     - The order between entries of different boots is the release's
       (decision 11), for the forward page as for the others.
 11. **Boot order per release** (maintainer, 2026-11-10): the merge
@@ -794,9 +826,11 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
       (`forward_paging_cycles_where_the_order_does`); a cursor alone
       can't break it, so a caller paging on stops at a cursor it has
       shown. journalctl's order cycles the same way.
-    - UNVERIFIED against a running journalctl until Task 5's matrix runs
-      two boots with overlapping clocks on 24.04 and 26.04
-      (tasks/todo.md). The follow (Task 6) isn't ported yet: it is to
+    - Verified by Task 5's matrix: two boots in two files, clocks
+      overlapping or apart, paged both ways on 22.04, 24.04 and 26.04
+      against each release's journalctl (Difference 20 for what 24.04's
+      and 26.04's forward pages do instead).
+    - The follow (Task 6) isn't ported yet: it is to
       keep the table current as its files grow, as sd-journal reads a
       changed file's tail again before each step.
 

@@ -248,6 +248,13 @@ impl Query {
         self
     }
 
+    /// Every entry: no group, as journalctl with no match (the tools'
+    /// whole-journal pages, `testing::tools::every_entry`).
+    #[cfg(feature = "testing")]
+    pub(crate) fn every() -> Self {
+        Self { groups: Vec::new() }
+    }
+
     pub(crate) fn groups(&self) -> &[Group] {
         &self.groups
     }

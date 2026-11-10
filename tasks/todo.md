@@ -229,41 +229,48 @@ lists.
   example.
 
 **Acceptance criteria:**
-- [ ] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04 against
+- [x] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04 against
       the example, with the listed differences pinned.
-- [ ] The coredump row runs with `systemd-coredump` installed and checks
+- [x] The coredump row runs with `systemd-coredump` installed and checks
       the local rule. If it can't run, Checkpoint A doesn't pass:
       success criterion 3 goes unmet and the maintainer decides.
-- [ ] Forward pages (`After`, journal spec decision 10, UNVERIFIED
+- [x] Forward pages (`After`, journal spec decision 10, UNVERIFIED
       until these run):
       - on 26.04, against `journalctl --after-cursor`, page by page;
       - on 22.04 and 24.04, the same, except for Difference 18 (a
         vanished or non-matching cursor entry: journalctl there drops
         the first entry after it; on a file whose clock steps back, its
-        older bisect lands elsewhere);
+        older bisect lands elsewhere). The runs showed this on 22.04
+        only: 24.04's 255.4 carries systemd-stable v255.1's
+        `sd_journal_test_cursor` backport, and matches sb (spec,
+        Difference 18, amended);
       - in a 249-written file whose clock steps back, against 26.04's
         journalctl reading it (the emulated bisect's landing).
-- [ ] Boot order (journal spec decision 11, UNVERIFIED until this runs):
+- [x] Boot order (journal spec decision 11, UNVERIFIED until this runs):
       on 24.04 and 26.04, two boots of one machine whose realtime ranges
       overlap (a clock set back across a reboot), checked against
       journalctl page by page: the tail, pages back and pages forward
       show all of the boot with the older newest tail first; on 22.04,
       the same files interleave by realtime.
-- [ ] Difference 20 (UNVERIFIED until this runs): a matrix fixture of
+- [x] Difference 20 (UNVERIFIED until this runs): a matrix fixture of
       two boots in two files, the second boot's clock behind the
       first's, on 24.04 and 26.04, asserting the listed difference
       against the real journalctl: sb's pages forward show every entry
       once in the boot order, where journalctl's pass the entries the
       emulation predicts (paging one at a time from a1, b1 is lost) and
       a page after b1 is [a2, b1] on 26.04 and [b1, b2] on 24.04; with
-      clocks that don't overlap, sb's pages are journalctl's.
-- [ ] The workflow builds the example; actionlint and shellcheck are
+      clocks that don't overlap, sb's pages are journalctl's. The runs
+      corrected the page after b1: [b2] on 26.04 (259.9's stable
+      backport prefers the cursor's exact entry, issue #31516), as sb,
+      and [a2, b1, b2] on 24.04 (255.1's cursor test, no skip); b1 is
+      lost paging from a1 on both (spec, Difference 20, amended).
+- [x] The workflow builds the example; actionlint and shellcheck are
       clean.
 
 **Verification:**
-- [ ] The scripts' runs (logs outside the repo, never committed);
+- [x] The scripts' runs (logs outside the repo, never committed);
       `scripts/check.sh task`.
-- [ ] library-reviewer (a CLI doing file I/O) and code-reviewer on the
+- [x] library-reviewer (a CLI doing file I/O) and code-reviewer on the
       commit.
 
 **Dependencies:** Task 4
@@ -528,6 +535,16 @@ in the commit body. The matrix runs again where a fix touches reading.
   entry at a time can loop. A page knows only its cursor, so the
   viewer (or sb-host) must stop at a cursor it has already shown.
   Decide where the guard lives with the tui spec; raise at Checkpoint A.
+
+- Decision 11's machine-id test (raise at Checkpoint A): 26.04's
+  systemd 259.9 (stable backport, issue #34169) takes the machine id
+  for `compare_boot_ids` from the tail entry's `_MACHINE_ID=` where it
+  has one, not the file header, which sb compares. They agree on files
+  journald writes; on journal-remote imports of another machine
+  (`Source::Directory` or `Files`) 259.9 interleaves by realtime where
+  sb orders by boot. Found by source in Task 5, not run by the matrix
+  (its fixtures have no `_MACHINE_ID=`); the maintainer decides whether
+  sb follows it or it is a Difference.
 
 - A mutant can make a walk allocate without bound (`advance ->
   Some(Ok(0))`). Under a `systemd-run` MemoryMax scope, systemd's default
