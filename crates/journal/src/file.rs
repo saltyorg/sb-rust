@@ -40,11 +40,15 @@ pub const INCOMPAT_COMPACT: u32 = 1 << 4;
 pub const INCOMPAT_KNOWN: u32 =
     INCOMPAT_XZ | INCOMPAT_LZ4 | INCOMPAT_KEYED_HASH | INCOMPAT_ZSTD | INCOMPAT_COMPACT;
 
-/// Follow-only, as `Header::archived` is.
-#[cfg(any(test, feature = "testing"))]
+/// `STATE_ARCHIVED` (journal-def.h): `Header::archived`.
 const STATE_ARCHIVED: u8 = 2;
+/// `HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID` (journal-def.h): the header's
+/// `tail_entry_boot_id` is written only when an entry is appended, so it
+/// goes with `tail_entry_monotonic`.
+pub(crate) const COMPATIBLE_TAIL_ENTRY_BOOT_ID: u32 = 1 << 1;
 
 pub(crate) const OBJECT_DATA: u8 = 1;
+const OBJECT_FIELD: u8 = 2;
 pub(crate) const OBJECT_ENTRY: u8 = 3;
 pub(crate) const OBJECT_ENTRY_ARRAY: u8 = 6;
 
@@ -90,20 +94,35 @@ const ENTRY_ARRAY_HEADER: u64 = 24;
 /// The header fields this reader uses (journal-def.h `struct Header`).
 #[derive(Debug, Clone)]
 pub struct Header {
+    /// `compatible_flags`: only `COMPATIBLE_TAIL_ENTRY_BOOT_ID` is read.
+    pub compatible: u32,
     pub incompatible: u32,
     /// `STATE_OFFLINE`, `STATE_ONLINE` or `STATE_ARCHIVED` ("Header").
-    /// Read by the follow only (`archived`).
-    #[cfg(any(test, feature = "testing"))]
     pub state: u8,
     pub file_id: [u8; 16],
+    /// The machine that wrote the file: the boot table compares boots of
+    /// one machine only (`JournalFile::tail`).
+    pub machine_id: [u8; 16],
+    /// The boot id of the newest entry, kept with `tail_entry_monotonic`
+    /// only under `COMPATIBLE_TAIL_ENTRY_BOOT_ID`.
+    pub tail_entry_boot_id: [u8; 16],
     pub seqnum_id: [u8; 16],
     /// `header_size`: where the arena starts.
     pub size: u64,
     pub arena_size: u64,
     pub data_hash_table_offset: u64,
     pub data_hash_table_size: u64,
+    pub field_hash_table_offset: u64,
+    pub field_hash_table_size: u64,
+    /// The last object appended.
+    pub tail_object_offset: u64,
     pub n_entries: u64,
     pub entry_array_offset: u64,
+    pub tail_entry_realtime: u64,
+    pub tail_entry_monotonic: u64,
+    /// The newest entry, `None` in a header too short to hold the field
+    /// (journald before 254: `JOURNAL_HEADER_CONTAINS`, journal-file.h).
+    pub tail_entry_offset: Option<u64>,
 }
 
 impl Header {
@@ -117,12 +136,20 @@ impl Header {
     }
     /// Archived files are never written again ("Header": a writer only
     /// appends to a file in `STATE_OFFLINE`, after setting it online).
-    /// The follow's (plan Task 6): until it lands, the tools' and tests'.
-    #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn archived(&self) -> bool {
         self.state == STATE_ARCHIVED
     }
+}
+
+/// A file's newest entry for sd-journal's boot table (`JournalFile::tail`):
+/// its boot, times and the file's machine id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Tail {
+    pub(crate) boot_id: [u8; 16],
+    pub(crate) monotonic: u64,
+    pub(crate) realtime: u64,
+    pub(crate) machine_id: [u8; 16],
 }
 
 /// One entry's fixed fields and the offsets of its DATA objects.
@@ -222,18 +249,29 @@ impl JournalFile {
                 "unsupported journal format (incompatible flags {incompatible:#x}); this sb release doesn't read it"
             )
         })?;
+        let size = le64(&buf, 88);
         let h = Header {
+            compatible: le32(&buf, 8),
             incompatible,
-            #[cfg(any(test, feature = "testing"))]
             state: buf[16],
             file_id: id(&buf, 24),
+            machine_id: id(&buf, 40),
+            tail_entry_boot_id: id(&buf, 56),
             seqnum_id: id(&buf, 72),
-            size: le64(&buf, 88),
+            size,
             arena_size: le64(&buf, 96),
             data_hash_table_offset: le64(&buf, 104),
             data_hash_table_size: le64(&buf, 112),
+            field_hash_table_offset: le64(&buf, 120),
+            field_hash_table_size: le64(&buf, 128),
+            tail_object_offset: le64(&buf, 136),
             n_entries: le64(&buf, 152),
             entry_array_offset: le64(&buf, 176),
+            tail_entry_realtime: le64(&buf, 192),
+            tail_entry_monotonic: le64(&buf, 200),
+            // `JOURNAL_HEADER_CONTAINS(h, tail_entry_offset)`: the field
+            // ends at 272, the header's whole size.
+            tail_entry_offset: (size >= 272).then(|| le64(&buf, 264)),
         };
         self.check(h.size >= 208 && h.size <= len, || "bad header size".into())?;
         self.limit.set(h.size.saturating_add(h.arena_size).min(len));
@@ -363,6 +401,54 @@ impl JournalFile {
     /// be read.
     pub fn entry(&self, offset: u64) -> Result<Entry> {
         self.entry_before(offset, u64::MAX)
+    }
+
+    /// The file's newest entry as sd-journal's boot table reads it (v255
+    /// and v259 sd-journal.c `journal_file_read_tail_timestamp`, the same
+    /// steps in both): the entry `tail_entry_offset` names, or in a header
+    /// without that field the tail object if it is an entry; failing that,
+    /// in an archived file with `COMPATIBLE_TAIL_ENTRY_BOOT_ID`, the
+    /// header's `tail_entry_*`; else the main list's newest entry
+    /// (`journal_file_next_entry(f, 0, DIRECTION_UP)`), which `last` is,
+    /// as the page read it (`walk::lasts`; `None` when the file has none
+    /// or it couldn't be read, where systemd's read fails too). A tail
+    /// offset of zero, or a monotonic time ahead of the realtime, is no
+    /// tail (`-ENODATA`). The machine id is the header's.
+    ///
+    /// The cost: nothing when the tail is `last`, as journald 254 and
+    /// later make it (`journal_file_link_entry` sets `tail_entry_offset`
+    /// after linking the entry into the main list); otherwise one entry
+    /// read, usually one pread. Corrupt files aside, where this reader's
+    /// object checks and systemd's `check_object` don't refuse quite the
+    /// same objects (as Difference 19), the result is systemd's.
+    pub(crate) fn tail(&self, last: Option<&(u64, Entry)>) -> Option<Tail> {
+        let h = &self.header;
+        let offset = h.tail_entry_offset.unwrap_or(h.tail_object_offset);
+        if offset == 0 {
+            return None;
+        }
+        let of = |e: &Entry| (e.boot_id, e.monotonic, e.realtime);
+        let read = match last {
+            Some((o, e)) if *o == offset => Some(of(e)),
+            // A tail object that isn't an entry is refused here, as
+            // systemd checks `o->object.type == OBJECT_ENTRY`.
+            _ => self.entry(offset).ok().map(|e| of(&e)),
+        };
+        let (boot_id, monotonic, realtime) = match read {
+            Some(t) => t,
+            None if h.compatible & COMPATIBLE_TAIL_ENTRY_BOOT_ID != 0 && h.archived() => (
+                h.tail_entry_boot_id,
+                h.tail_entry_monotonic,
+                h.tail_entry_realtime,
+            ),
+            None => of(&last?.1),
+        };
+        (monotonic <= realtime).then_some(Tail {
+            boot_id,
+            monotonic,
+            realtime,
+            machine_id: h.machine_id,
+        })
     }
 
     /// An entry that must end by `end`: the next newer entry's offset,
@@ -523,10 +609,16 @@ impl JournalFile {
     /// only, so the entries are still read in file order (journal spec,
     /// Difference 9).
     fn buckets(&self) -> Result<u64> {
-        let (offset, size) = (
+        self.table_buckets(
+            "data",
             self.header.data_hash_table_offset,
             self.header.data_hash_table_size,
-        );
+        )
+    }
+
+    /// The buckets of the `what` hash table at `offset`, `size` bytes,
+    /// checked as `buckets` describes; 0 for no table.
+    fn table_buckets(&self, what: &str, offset: u64, size: u64) -> Result<u64> {
         if offset == 0 && size == 0 {
             return Ok(0);
         }
@@ -535,7 +627,7 @@ impl JournalFile {
                 && size.is_multiple_of(16)
                 && offset >= self.header.size + OBJECT_HEADER
                 && self.within(offset, size),
-            || format!("bad data hash table ({size} bytes at {offset:#x})"),
+            || format!("bad {what} hash table ({size} bytes at {offset:#x})"),
         )?;
         Ok(size / 16)
     }
@@ -588,6 +680,80 @@ impl JournalFile {
             at = next;
         }
         Ok(None)
+    }
+
+    /// The DATA objects of `field`'s values (`FIELD=value`, each with its
+    /// payload), newest first, as sd-journal enumerates them
+    /// (src/libsystemd/sd-journal/sd-journal.c v259,
+    /// `sd_journal_enumerate_unique`): the FIELD object found through the
+    /// field hash table (journal-file.c
+    /// `journal_file_find_field_object_with_hash`: the bucket's chain,
+    /// comparing hash, size and name), then its `head_data_offset` and each
+    /// DATA object's `next_field_offset`. journald prepends a new value
+    /// (`journal_file_link_data`), so each link must point to a lower
+    /// offset; one that doesn't would loop, and is corrupt. Empty when the
+    /// file has no field table or no such field. A value whose payload is
+    /// over `max` bytes is left out: the caller looks for none so long.
+    /// One pread for the bucket, one per FIELD object in its chain, one per
+    /// value (its payload read with it unless compressed or larger than
+    /// the read).
+    ///
+    /// # Errors
+    ///
+    /// A bad field table, a link that can't be followed, or an object that
+    /// can't be read.
+    pub(crate) fn field_values(&self, field: &[u8], max: usize) -> Result<Vec<(DataRef, Vec<u8>)>> {
+        let offset = self.header.field_hash_table_offset;
+        let buckets = self.table_buckets("field", offset, self.header.field_hash_table_size)?;
+        if buckets == 0 {
+            return Ok(Vec::new());
+        }
+        let h = self.hash(field);
+        let bucket = self.read(offset + h % buckets * 16, 16)?;
+        let mut link = le64(&bucket, 0);
+        let mut head = 0;
+        while link != 0 {
+            let (_, osize, mut b) = self.object_head(link, OBJECT_FIELD, READ_GUESS)?;
+            self.check(osize >= 40, || format!("field object {link:#x} is short"))?;
+            if le64(&b, 16) == h && osize == 40 + field.len() as u64 {
+                self.object_rest(link, osize, &mut b)?;
+                if &b[40..] == field {
+                    head = le64(&b, 32);
+                    break;
+                }
+            }
+            link = forward(&self.path, link, osize, le64(&b, 24))?;
+        }
+        let mut out = Vec::new();
+        let start = self.data_header();
+        while head != 0 {
+            let (flags, osize, b) = self.object_head(head, OBJECT_DATA, READ_GUESS)?;
+            self.check(osize >= start, || "short data object".into())?;
+            let d = DataRef {
+                offset: head,
+                entry_offset: le64(&b, 40),
+                entry_array_offset: le64(&b, 48),
+                n_entries: le64(&b, 56),
+            };
+            let payload = if flags == 0 && b.len() as u64 == osize {
+                Some(b[self.to_usize(start)?..].to_vec()).filter(|p| p.len() <= max)
+            } else {
+                match self.data_payload_within(head, max) {
+                    Ok(p) => Some(p),
+                    Err(e) if matches!(e.kind(), ReadErrorKind::OverLimit { .. }) => None,
+                    Err(e) => return Err(e),
+                }
+            };
+            if let Some(p) = payload {
+                out.push((d, p));
+            }
+            let next = le64(&b, 32);
+            self.check(next < head, || {
+                format!("field list link {head:#x} -> {next:#x} doesn't point back")
+            })?;
+            head = next;
+        }
+        Ok(out)
     }
 
     /// Every DATA object reachable from the hash table, with its stored
@@ -1877,17 +2043,25 @@ fn read_up_to(file: &Handle, buf: &mut [u8], offset: u64) -> std::io::Result<usi
 
 fn empty_header() -> Header {
     Header {
+        compatible: 0,
         incompatible: 0,
-        #[cfg(any(test, feature = "testing"))]
         state: 0,
         file_id: [0; 16],
+        machine_id: [0; 16],
+        tail_entry_boot_id: [0; 16],
         seqnum_id: [0; 16],
         size: 0,
         arena_size: 0,
         data_hash_table_offset: 0,
         data_hash_table_size: 0,
+        field_hash_table_offset: 0,
+        field_hash_table_size: 0,
+        tail_object_offset: 0,
         n_entries: 0,
         entry_array_offset: 0,
+        tail_entry_realtime: 0,
+        tail_entry_monotonic: 0,
+        tail_entry_offset: None,
     }
 }
 
@@ -3006,6 +3180,325 @@ mod tests {
         assert_eq!(f.metadata().expect("fstat").len(), c.b.len() as u64);
         let (_t, f) = journal(1).0.write();
         assert!(!f.header.archived());
+    }
+
+    /// The header fields the boot table reads (journal-def.h `struct
+    /// Header`): `tail_entry_offset` only from a header that holds it
+    /// (`JOURNAL_HEADER_CONTAINS`, journal-file.h v255: `header_size` at
+    /// least its end, 272).
+    #[test]
+    fn the_tail_header_fields_are_read() {
+        let (mut c, _l) = journal(1);
+        c.b[8..12].copy_from_slice(&COMPATIBLE_TAIL_ENTRY_BOOT_ID.to_le_bytes());
+        c.b[40..56].copy_from_slice(&[0x4d; 16]);
+        c.b[56..72].copy_from_slice(&[0xb0; 16]);
+        c.set(136, 0x1111);
+        c.set(192, 0x2222);
+        c.set(200, 0x3333);
+        c.set(264, 0x4444);
+        let (_t, f) = c.write();
+        let h = &f.header;
+        assert_eq!(h.compatible, COMPATIBLE_TAIL_ENTRY_BOOT_ID);
+        assert_eq!(
+            (h.machine_id, h.tail_entry_boot_id),
+            ([0x4d; 16], [0xb0; 16])
+        );
+        assert_eq!(
+            (
+                h.tail_object_offset,
+                h.tail_entry_realtime,
+                h.tail_entry_monotonic
+            ),
+            (0x1111, 0x2222, 0x3333)
+        );
+        assert_eq!(h.tail_entry_offset, Some(0x4444));
+        c.set(88, 271);
+        let (_t, f) = c.write();
+        assert_eq!(f.header.tail_entry_offset, None);
+    }
+
+    /// One crafted file for the tail rule: entries of boots 0xa then 0xb
+    /// (monotonic 10 and 20, realtime 100 and 200), the header's
+    /// `tail_entry_*` fields naming a third, made-up tail (boot 0xc,
+    /// monotonic 30, realtime 300), machine 0x4d. Returns the file's bytes
+    /// and its entries.
+    fn tail_file() -> (Crafted, Vec<u64>) {
+        let (mut c, entries) = journal_of(&[&[], &[]]);
+        for (&e, (boot, mono, real)) in entries.iter().zip([(0xa, 10, 100), (0xb, 20, 200)]) {
+            c.set(e + 24, real);
+            c.set(e + 32, mono);
+            c.b[at(e + 40)..at(e + 56)].copy_from_slice(&[boot; 16]);
+        }
+        c.b[40..56].copy_from_slice(&[0x4d; 16]);
+        c.b[56..72].copy_from_slice(&[0xc; 16]);
+        c.set(192, 300);
+        c.set(200, 30);
+        (c, entries)
+    }
+
+    fn at(v: u64) -> usize {
+        usize::try_from(v).expect("small")
+    }
+
+    /// The main list's newest entry, as the page reads it (`walk::lasts`).
+    fn last_of(f: &JournalFile) -> Option<(u64, Entry)> {
+        let off = f.all_entries_rev().next()?.expect("reads");
+        Some((off, f.entry(off).expect("entry")))
+    }
+
+    fn tail(boot: u8, monotonic: u64, realtime: u64) -> Tail {
+        Tail {
+            boot_id: [boot; 16],
+            monotonic,
+            realtime,
+            machine_id: [0x4d; 16],
+        }
+    }
+
+    /// sd-journal.c v255/v259 `journal_file_read_tail_timestamp`: the
+    /// entry `tail_entry_offset` names, with the header's machine id.
+    /// Read again when it isn't the main list's newest; reused, with no
+    /// pread, when it is.
+    #[test]
+    fn the_tail_is_the_entry_the_header_names() {
+        let (mut c, e) = tail_file();
+        c.set(264, e[1]);
+        let t = c.file();
+        let opener = Opener::default();
+        let f = JournalFile::open_with(t.path(), &opener).expect("opens");
+        let last = last_of(&f);
+        let before = opener.counts().preads;
+        assert_eq!(f.tail(last.as_ref()), Some(tail(0xb, 20, 200)));
+        assert_eq!(opener.counts().preads, before, "reused, not read again");
+        c.set(264, e[0]);
+        let t = c.file();
+        let f = JournalFile::open_with(t.path(), &opener).expect("opens");
+        let last = last_of(&f);
+        let before = opener.counts().preads;
+        assert_eq!(f.tail(last.as_ref()), Some(tail(0xa, 10, 100)));
+        assert_eq!(opener.counts().preads, before + 1, "one entry read");
+    }
+
+    /// No tail entry (a header field of zero, as an empty file has, or
+    /// as every crafted file has unless set): the file isn't in the table
+    /// (`-ENODATA`).
+    #[test]
+    fn a_zero_tail_offset_has_no_tail() {
+        let (c, _e) = tail_file();
+        let (_t, f) = c.clone().write();
+        assert_eq!(f.tail(last_of(&f).as_ref()), None);
+        let mut old = c;
+        old.set(88, 256);
+        let (_t, f) = old.write();
+        assert_eq!(f.tail(last_of(&f).as_ref()), None);
+    }
+
+    /// A header without `tail_entry_offset` (journald before 254) names
+    /// the tail object instead (`tail_object_offset`), used when it is an
+    /// entry.
+    #[test]
+    fn an_old_header_reads_the_tail_object() {
+        let (mut c, e) = tail_file();
+        c.set(88, 256);
+        c.set(264, e[1]); // not in a 256-byte header: ignored
+        c.set(136, e[0]);
+        let (_t, f) = c.write();
+        assert_eq!(f.tail(last_of(&f).as_ref()), Some(tail(0xa, 10, 100)));
+    }
+
+    /// A tail that isn't an entry: an archived file whose header has
+    /// `HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID` gives the header's
+    /// `tail_entry_*`; any other file, the main list's newest entry
+    /// (`journal_file_next_entry(f, 0, DIRECTION_UP)`).
+    #[test]
+    fn a_tail_that_is_not_an_entry_falls_back() {
+        let (mut c, e) = tail_file();
+        let main = c.get(H_ENTRY_ARRAY_OFFSET);
+        c.set(264, main);
+        let (_t, f) = c.clone().write();
+        assert_eq!(f.tail(last_of(&f).as_ref()), Some(tail(0xb, 20, 200)));
+        c.b[8..12].copy_from_slice(&COMPATIBLE_TAIL_ENTRY_BOOT_ID.to_le_bytes());
+        let (_t, f) = c.clone().write();
+        assert_eq!(
+            f.tail(last_of(&f).as_ref()),
+            Some(tail(0xb, 20, 200)),
+            "online"
+        );
+        c.b[16] = STATE_ARCHIVED;
+        let (_t, f) = c.clone().write();
+        assert_eq!(f.tail(last_of(&f).as_ref()), Some(tail(0xc, 30, 300)));
+        c.b[8..12].copy_from_slice(&0u32.to_le_bytes());
+        let (_t, f) = c.clone().write();
+        assert_eq!(
+            f.tail(last_of(&f).as_ref()),
+            Some(tail(0xb, 20, 200)),
+            "no flag"
+        );
+        // The main list's newest unreadable: no tail (the walk's error).
+        assert_eq!(f.tail(None), None);
+        c.set(264, e[1] + 8);
+        let (_t, f) = c.write();
+        assert_eq!(
+            f.tail(last_of(&f).as_ref()),
+            Some(tail(0xb, 20, 200)),
+            "not an object"
+        );
+    }
+
+    /// A tail whose monotonic time is ahead of its realtime is refused
+    /// (`mo > rt`, "that's weird"); equal ones are used.
+    #[test]
+    fn a_tail_ahead_of_its_realtime_is_refused() {
+        let (mut c, e) = tail_file();
+        c.set(264, e[1]);
+        c.set(e[1] + 32, 201);
+        let (_t, f) = c.clone().write();
+        assert_eq!(f.tail(last_of(&f).as_ref()), None);
+        c.set(e[1] + 32, 200);
+        let (_t, f) = c.write();
+        assert_eq!(f.tail(last_of(&f).as_ref()), Some(tail(0xb, 200, 200)));
+    }
+
+    /// A journal of three entries, the first of boot 0xa, the others of
+    /// boot 0xb, with `_BOOT_ID=` fields; a field table of `buckets` and
+    /// the `_BOOT_ID` FIELD object listing both values. Returns the bytes,
+    /// the two DATA objects (oldest first) and the FIELD object.
+    fn boot_field_file(buckets: u64) -> (Crafted, [u64; 2], u64) {
+        let boot_a = format!("_BOOT_ID={}", "0a".repeat(16));
+        let boot_b = format!("_BOOT_ID={}", "0b".repeat(16));
+        let (a, b) = (boot_a.as_bytes(), boot_b.as_bytes());
+        let (mut crafted, _e) = journal_of(&[&[a], &[b], &[b]]);
+        let written = crafted.file();
+        let file = JournalFile::open(written.path()).expect("opens");
+        let find = |p: &[u8]| file.find_data(p).expect("lookup").expect("found");
+        let data = [find(a).offset, find(b).offset];
+        crafted.field_table(buckets);
+        let field = crafted.field(b"_BOOT_ID", &data);
+        (crafted, data, field)
+    }
+
+    /// `_BOOT_ID`'s values as sd-journal enumerates them
+    /// (`sd_journal_enumerate_unique`): the field table's bucket, the
+    /// FIELD object, then its DATA objects by `next_field_offset`, newest
+    /// first. One pread each for the bucket, the FIELD object and each
+    /// DATA object (its payload in the same read).
+    #[test]
+    fn a_fields_values_are_its_data_objects_newest_first() {
+        let (mut c, data, _field) = boot_field_file(3);
+        let t = c.file();
+        let opener = Opener::default();
+        let f = JournalFile::open_with(t.path(), &opener).expect("opens");
+        let before = opener.counts().preads;
+        let values = f.field_values(b"_BOOT_ID", 64).expect("reads");
+        assert_eq!(opener.counts().preads - before, 4);
+        let got: Vec<(u64, String)> = values
+            .iter()
+            .map(|(d, p)| (d.offset, String::from_utf8_lossy(p).into_owned()))
+            .collect();
+        let want = |d: u64, b: &str| (d, format!("_BOOT_ID={}", b.repeat(16)));
+        assert_eq!(got, [want(data[1], "0b"), want(data[0], "0a")]);
+        assert_eq!(values[0].0.n_entries, 2);
+        // Values over the bound are left out.
+        assert!(f.field_values(b"_BOOT_ID", 40).expect("reads").is_empty());
+        assert!(f.field_values(b"_PID", 64).expect("reads").is_empty());
+        let (_t, plain) = journal(1).0.write();
+        assert!(
+            plain
+                .field_values(b"_BOOT_ID", 64)
+                .expect("reads")
+                .is_empty()
+        );
+    }
+
+    /// Another FIELD object in the same bucket is passed over by its hash
+    /// and name (`journal_file_find_field_object_with_hash`).
+    #[test]
+    fn a_field_is_found_past_another_in_its_bucket() {
+        let (mut c, data, _field) = boot_field_file(1);
+        c.field(b"_COMM", &[]);
+        let (_t, f) = c.write();
+        assert_eq!(f.field_values(b"_BOOT_ID", 64).expect("reads").len(), 2);
+        assert!(f.field_values(b"_COMM", 64).expect("reads").is_empty());
+        let (mut c, _d, _f) = boot_field_file(1);
+        let other = c.field(b"_BOOT_IX", &[data[0]]);
+        let (_t, f) = c.write();
+        assert_eq!(f.field_values(b"_BOOT_IX", 64).expect("reads").len(), 1);
+        c.set(other + 16, 1); // its stored hash
+        let (_t, f) = c.write();
+        assert!(f.field_values(b"_BOOT_IX", 64).expect("reads").is_empty());
+    }
+
+    /// The field is found through its own bucket whatever the table's
+    /// size (`hash % buckets`, each bucket 16 bytes).
+    #[test]
+    fn a_field_is_found_in_its_bucket_at_any_table_size() {
+        for buckets in 1..=8 {
+            let (mut c, _data, _field) = boot_field_file(buckets);
+            let (_t, f) = c.write();
+            let values = f.field_values(b"_BOOT_ID", 64).expect("reads");
+            assert_eq!(values.len(), 2, "{buckets} buckets");
+        }
+    }
+
+    /// A value longer than one read (`READ_GUESS`) is read whole after its
+    /// head; one over `max` is left out.
+    #[test]
+    fn a_long_value_is_read_whole_or_left_out() {
+        let mut long = b"BIG=".to_vec();
+        long.extend_from_slice(&[b'v'; 2000]);
+        let (mut c, _e) = journal_of(&[&[&long]]);
+        let t = c.file();
+        let d = JournalFile::open(t.path())
+            .expect("opens")
+            .find_data(&long)
+            .expect("lookup")
+            .expect("found")
+            .offset;
+        c.field_table(3);
+        c.field(b"BIG", &[d]);
+        let (_t, f) = c.write();
+        let values = f.field_values(b"BIG", 4096).expect("reads");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].1, long);
+        assert!(f.field_values(b"BIG", 100).expect("reads").is_empty());
+        // A value that fails to decode for another reason than its length
+        // is an error, not left out: marked xz, its bytes aren't xz.
+        c.b[usize::try_from(d).expect("small") + 1] = COMPRESSED_XZ;
+        let (_t, f) = c.write();
+        assert!(f.field_values(b"BIG", 4096).is_err());
+    }
+
+    /// A list whose next DATA object isn't older (lower) than the last, as
+    /// journald's prepending makes it, is corrupt: it would loop.
+    #[test]
+    fn a_field_list_that_does_not_go_back_is_corrupt() {
+        let (mut c, data, _field) = boot_field_file(3);
+        c.set(data[0] + D_NEXT_FIELD, data[0]);
+        let (_t, f) = c.clone().write();
+        let err = f.field_values(b"_BOOT_ID", 64).expect_err("a loop");
+        assert!(err.to_string().contains("field list"), "{err}");
+        c.set(data[0] + D_NEXT_FIELD, data[1]);
+        let (_t, f) = c.write();
+        let err = f.field_values(b"_BOOT_ID", 64).expect_err("a loop");
+        assert!(err.to_string().contains("field list"), "{err}");
+        let (mut c, _data, field) = boot_field_file(3);
+        c.set(field + F_HEAD_DATA, field);
+        let (_t, f) = c.write();
+        assert!(
+            f.field_values(b"_BOOT_ID", 64).is_err(),
+            "not a DATA object"
+        );
+    }
+
+    /// A field table sd-journal would refuse (not whole items, outside the
+    /// arena) refuses the lookup.
+    #[test]
+    fn a_bad_field_table_refuses_the_lookup() {
+        let (mut c, _data, _field) = boot_field_file(3);
+        c.set(H_FIELD_TABLE_SIZE, 47);
+        let (_t, f) = c.write();
+        let err = f.field_values(b"_BOOT_ID", 64).expect_err("refused");
+        assert!(err.to_string().contains("bad field hash table"), "{err}");
     }
 
     /// The header is read again on `refresh`: journald links entries in

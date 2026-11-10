@@ -17,6 +17,7 @@ use std::sync::Arc;
 // One declaration each, not a `pub` and a private one under opposite
 // `cfg`s: cargo-mutants walks every `mod` without evaluating `cfg`, so two
 // declarations made it test each of file.rs's mutants twice.
+mod boots;
 mod file;
 mod forward;
 mod hash;
@@ -26,9 +27,11 @@ mod rules;
 pub mod testing;
 mod walk;
 
+use boots::BootOrder;
+
 pub use rules::{
-    FieldName, QUERY_GROUPS_MAX, Query, QueryError, RELEASES, Release, ReleaseError, Uid, UnitName,
-    UnitRule,
+    BootRule, FieldName, QUERY_GROUPS_MAX, Query, QueryError, RELEASES, Release, ReleaseError, Uid,
+    UnitName, UnitRule,
 };
 
 /// The output limit's default, our own bound on the payload bytes one
@@ -498,6 +501,9 @@ enum Roots {
 pub struct Journal {
     roots: Roots,
     opener: open::Opener,
+    /// The release whose journalctl the pages match: its order between
+    /// boots (`Release::boot_rule`).
+    release: Release,
 }
 
 impl Journal {
@@ -506,16 +512,23 @@ impl Journal {
     /// all zeros, is refused (`OpenError::InvalidMachineId`): no journal is
     /// looked for under it.
     ///
+    /// The pages match `release`'s journalctl where releases differ in
+    /// reading, not matching: its order between entries of different boots
+    /// (`Release::boot_rule`, journal spec decision 11). For every source,
+    /// `Directory` and `Files` too, it is the release the caller passes:
+    /// sb-host's, the host's own. Pass the same release to `Query::unit`:
+    /// nothing checks that the two agree.
+    ///
     /// # Errors
     ///
     /// `OpenError` for a source that can't be read at all.
-    pub fn open(source: Source) -> Result<Self, OpenError> {
-        Self::open_on(source, &open::Host::default())
+    pub fn open(source: Source, release: &Release) -> Result<Self, OpenError> {
+        Self::open_on(source, release, &open::Host::default())
     }
 
     /// `open`, with `Source::Local`'s machine-id file and roots from `host`
     /// (`testing::open_on` injects them).
-    fn open_on(source: Source, host: &open::Host) -> Result<Self, OpenError> {
+    fn open_on(source: Source, release: &Release, host: &open::Host) -> Result<Self, OpenError> {
         let roots = match source {
             Source::Local => Roots::Local(local_dirs(host)?),
             Source::Directory(path) => match std::fs::read_dir(&path) {
@@ -527,6 +540,7 @@ impl Journal {
         Ok(Self {
             roots,
             opener: open::Opener::default(),
+            release: *release,
         })
     }
 
@@ -541,15 +555,34 @@ impl Journal {
     /// an `Io` error in `errors` from a file cut short while the page read
     /// it is gone from the next page, which reads the file's header again.
     ///
+    /// Entries of different boots that no sequence number orders are
+    /// ordered as the release's journalctl orders them (decision 11): on
+    /// 22.04 by realtime; on 24.04 and 26.04 first by each boot's newest
+    /// file's tail realtime (sd-journal's `compare_boot_ids`), a table built
+    /// from every file the page opened.
+    ///
     /// The cost: `Tail` reads the newest entries; `Before` also reads every
     /// entry newer than the cursor that the query's rarest term lists
     /// (journal spec, success criterion 5). `After` reads forward from where
     /// journalctl 259's seek lands (decision 10): a bisect per value of the
     /// query, O(log n) preads, at any depth. It reads its entries oldest
     /// first, so its limits leave out the newer end (`OutputLimitNewer`,
-    /// `HeldLimitNewer`) and the next `After` from the last record shown
-    /// leaves no gap. Nothing after the cursor is dropped when its entry
-    /// has vanished or doesn't match (Difference 18).
+    /// `HeldLimitNewer`), and the next `After` from the last record shown
+    /// goes on from there. On 24.04 and 26.04 a file of more than one boot,
+    /// or of one the boot table orders against the cursor's, is sought per
+    /// boot, so a forward page is the entries after the cursor in the
+    /// release's order, each once, even where two boots' clocks overlap;
+    /// journalctl's seek, by one key per file, can pass an entry or show
+    /// the cursor's own one there (decision 11, Difference 20). The order
+    /// isn't transitive, though: where it cycles (a boot in no file's tail
+    /// whose realtime falls between two boots the table orders), paging
+    /// forward one page after another cycles too, and a caller paging on
+    /// should stop at a cursor it has shown. The entry after a vanished or
+    /// non-matching cursor isn't dropped (Difference 18). Every
+    /// page also reads each file's newest entry, for its `end`; on 24.04
+    /// and 26.04 the boot table reuses it, and reads one more entry only
+    /// for a file whose header names another tail (journald before 254, a
+    /// corrupt file, or one written to between the page's reads).
     #[must_use]
     pub fn page(&self, q: &Query, at: &Position, n: usize, limits: &Limits) -> Page {
         let mut errors = ReadErrors::default();
@@ -558,8 +591,18 @@ impl Journal {
             payload: limits.output(),
             held: limits.output(),
         };
-        let end = walk::end(&files, &mut errors);
-        let paged = walk::page(&files, q.groups(), n, at, bounds, &mut errors);
+        let lasts = walk::lasts(&files, &mut errors);
+        let boots = match self.release.boot_rule() {
+            BootRule::Realtime => BootOrder::none(),
+            BootRule::NewestTail => BootOrder::of(
+                files
+                    .iter()
+                    .zip(&lasts)
+                    .map(|(f, last)| f.tail(last.as_ref())),
+            ),
+        };
+        let end = walk::end(&files, &lasts, &boots);
+        let paged = walk::page(&files, q.groups(), n, at, bounds, &boots, &mut errors);
         Page {
             records: paged.records,
             more_older: paged.more_older,
@@ -623,28 +666,40 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    /// sd-journal's order between two entries as systemd 249 has it
-    /// (src/libsystemd/sd-journal/journal-file.c v249,
-    /// `journal_file_compare_locations`): the same sequence-number space
-    /// orders by seqnum; the same boot by monotonic time; otherwise
-    /// realtime; the XOR hash breaks ties. It isn't transitive across
-    /// seqnum ids and boots, so it is never handed to a sort. systemd 255
-    /// and later order different boots of one machine by a table of each
-    /// boot's newest file first (sd-journal.c `compare_boot_ids`, in
-    /// `compare_locations` and `compare_with_location`): the plan's next
-    /// step, per release, after Task 4.
-    fn order(&self, other: &Self) -> std::cmp::Ordering {
+    /// sd-journal's order between two entries, the same between two heads
+    /// (`compare_locations`) and between a head and a location
+    /// (`compare_with_location`): the same sequence-number space orders by
+    /// seqnum; the same boot by monotonic time; different boots by `boots`;
+    /// otherwise realtime; the XOR hash breaks ties.
+    ///
+    /// `boots` is the release's (decision 11): systemd 249 has no boot step
+    /// (journal-file.c v249, `journal_file_compare_locations`),
+    /// `BootOrder::none`; 255 and 259 put `compare_boot_ids` between the
+    /// monotonic and the realtime step (sd-journal.c v255 and v259
+    /// `compare_locations` and `compare_with_location`), which orders boots
+    /// of one machine by their newest file's tail realtime and leaves
+    /// others equal (`BootOrder`). The order isn't transitive across
+    /// seqnum ids and boots, and the boot step adds cycles of its own: a
+    /// boot missing from the table compares equal to every other, so
+    /// realtime orders its pairs while the table orders the rest. It is
+    /// never handed to a sort: the merges keep journalctl's arg-min and
+    /// arg-max in file order (`real_journal_next`), so the result is
+    /// decided by the files' order and the comparisons alone, as
+    /// journalctl's is.
+    fn order(&self, other: &Self, boots: &BootOrder) -> std::cmp::Ordering {
         if self.seqnum_id == other.seqnum_id {
             let o = self.seqnum.cmp(&other.seqnum);
             if o.is_ne() {
                 return o;
             }
         }
-        if self.boot_id == other.boot_id {
-            let o = self.monotonic.cmp(&other.monotonic);
-            if o.is_ne() {
-                return o;
-            }
+        let o = if self.boot_id == other.boot_id {
+            self.monotonic.cmp(&other.monotonic)
+        } else {
+            boots.compare(&self.boot_id, &other.boot_id)
+        };
+        if o.is_ne() {
+            return o;
         }
         self.realtime
             .cmp(&other.realtime)
@@ -1194,10 +1249,7 @@ mod tests {
     }
 
     fn files(paths: &[&Path]) -> Journal {
-        Journal::open(Source::Files(
-            paths.iter().map(|p| p.to_path_buf()).collect(),
-        ))
-        .expect("opens")
+        files_on(&release("26.04"), paths)
     }
 
     fn name(n: &str) -> FieldName {
@@ -1315,12 +1367,17 @@ mod tests {
         std::fs::create_dir(&sub).expect("subdir");
         let (mut c, _l) = crafted::journal(2);
         std::fs::copy(c.file().path(), sub.join("system.journal")).expect("write");
-        let j = Journal::open(Source::Directory(dir.path().to_path_buf())).expect("opens");
+        let j = Journal::open(
+            Source::Directory(dir.path().to_path_buf()),
+            &release("26.04"),
+        )
+        .expect("opens");
         let page = tail(&j, &Query::field(&name("U"), b"x"), 10);
         assert_eq!(page.records.len(), 2);
 
         let missing = dir.path().join("gone\u{1b}[2J");
-        let err = Journal::open(Source::Directory(missing.clone())).expect_err("missing");
+        let err = Journal::open(Source::Directory(missing.clone()), &release("26.04"))
+            .expect_err("missing");
         let OpenError::Directory { path, source } = &err else {
             panic!("{err:?}");
         };
@@ -1358,7 +1415,7 @@ mod tests {
         std::fs::create_dir_all(&dirs[1]).expect("var");
         let (mut c, _l) = crafted::journal(3);
         std::fs::copy(c.file().path(), dirs[1].join("system.journal")).expect("write");
-        let j = crate::testing::open_on(Source::Local, &host).expect("opens");
+        let j = crate::testing::open_on(Source::Local, &release("26.04"), &host).expect("opens");
         let page = tail(&j, &Query::field(&name("U"), b"x"), 10);
         assert_eq!(page.records.len(), 3);
         assert!(page.errors.is_empty(), "{:?}", page.errors);
@@ -1368,7 +1425,8 @@ mod tests {
             machine_id: gone.clone(),
             ..host
         };
-        let err = crate::testing::open_on(Source::Local, &missing).expect_err("missing");
+        let err = crate::testing::open_on(Source::Local, &release("26.04"), &missing)
+            .expect_err("missing");
         assert!(matches!(&err, OpenError::MachineId { path, .. } if *path == gone));
         assert_eq!(err.to_string(), format!("read {}", gone.display()));
     }
@@ -1404,6 +1462,7 @@ mod tests {
         std::fs::write(&odd, b"").expect("write");
         let err = crate::testing::open_on(
             Source::Local,
+            &release("26.04"),
             &crate::testing::Host {
                 machine_id: odd,
                 ..host
@@ -1431,7 +1490,7 @@ mod tests {
         std::fs::create_dir_all(var.join(MID)).expect("var");
         let (mut c, _l) = crafted::journal(2);
         std::fs::copy(c.file().path(), var.join(MID).join("system.journal")).expect("write");
-        let j = crate::testing::open_on(Source::Local, &host).expect("opens");
+        let j = crate::testing::open_on(Source::Local, &release("26.04"), &host).expect("opens");
         let page = tail(&j, &Query::field(&name("U"), b"x"), 10);
         assert_eq!(page.records.len(), 2);
         assert!(page.errors.is_empty(), "{:?}", page.errors);
@@ -1511,8 +1570,12 @@ mod tests {
         put(2, "a.journal");
         put(3, "b.journal");
         let host = crate::testing::Host::default();
-        let j = crate::testing::open_on(Source::Directory(dir.path().to_path_buf()), &host)
-            .expect("opens");
+        let j = crate::testing::open_on(
+            Source::Directory(dir.path().to_path_buf()),
+            &release("26.04"),
+            &host,
+        )
+        .expect("opens");
         let q = Query::field(&name("U"), b"x");
         let closed = |want_opens: u64| {
             let c = crate::testing::counts(&j);
@@ -1586,10 +1649,10 @@ mod tests {
         let linked = dir.path().join("var");
         std::os::unix::fs::symlink(&real, &linked).expect("link");
         let q = Query::field(&name("U"), b"x");
-        let j = Journal::open(Source::Directory(linked)).expect("opens");
+        let j = Journal::open(Source::Directory(linked), &release("26.04")).expect("opens");
         assert_eq!(tail(&j, &q, 10).records.len(), 2);
         let host = host_in(dir.path(), format!("{MID}\n").as_bytes());
-        let j = crate::testing::open_on(Source::Local, &host).expect("opens");
+        let j = crate::testing::open_on(Source::Local, &release("26.04"), &host).expect("opens");
         let page = tail(&j, &q, 10);
         assert_eq!(page.records.len(), 2);
         assert!(page.errors.is_empty(), "{:?}", page.errors);
@@ -1614,7 +1677,7 @@ mod tests {
             paths.push(link.clone());
             paths.push(link);
         }
-        let j = Journal::open(Source::Files(paths)).expect("opens");
+        let j = Journal::open(Source::Files(paths), &release("26.04")).expect("opens");
         let page = j.page(
             &Query::field(&name("U"), b"x"),
             &Position::Tail,
@@ -1844,5 +1907,506 @@ mod tests {
             ReadErrorKind::TooLarge { limit: 1000, .. }
         ));
         assert_eq!(tail(&j, &q, 10).records.len(), 1);
+    }
+
+    /// The decision-11 fixture's rows: per entry its name, boot,
+    /// monotonic and realtime.
+    type Rows<'a> = &'a [(&'a str, u8, u64, u64)];
+
+    /// `_BOOT_ID=` and the boot's id, as journald writes the field.
+    fn boot_field(boot: u8) -> Vec<u8> {
+        format!("_BOOT_ID={}", file::hex_id(&[boot; 16])).into_bytes()
+    }
+
+    /// A file of `rows`, each entry carrying `WHO=<name>`, its
+    /// `_BOOT_ID=` and, when `matching`, `U=x`; its seqnum id and machine
+    /// id all `seqnum_id` and `machine` bytes; its header's
+    /// `tail_entry_offset` naming its last entry, as journald 254 and
+    /// later write it; and a field table with the `_BOOT_ID` FIELD object
+    /// listing the boots' DATA objects.
+    fn boot_file(
+        seqnum_id: u8,
+        machine: u8,
+        rows: Rows<'_>,
+        matching: bool,
+    ) -> tempfile::NamedTempFile {
+        let payloads: Vec<Vec<Vec<u8>>> = rows
+            .iter()
+            .map(|&(who, boot, ..)| {
+                let mut p = vec![format!("WHO={who}").into_bytes(), boot_field(boot)];
+                if matching {
+                    p.push(b"U=x".to_vec());
+                }
+                p
+            })
+            .collect();
+        let refs: Vec<Vec<&[u8]>> = payloads
+            .iter()
+            .map(|p| p.iter().map(Vec::as_slice).collect())
+            .collect();
+        let entries: Vec<&[&[u8]]> = refs.iter().map(Vec::as_slice).collect();
+        let (mut c, offsets) = crafted::journal_of(&entries);
+        for (&e, &(_, boot, mono, real)) in offsets.iter().zip(rows) {
+            c.set(e + 24, real);
+            c.set(e + 32, mono);
+            let e = usize::try_from(e).expect("small");
+            c.b[e + 40..e + 56].copy_from_slice(&[boot; 16]);
+        }
+        c.b[40..56].copy_from_slice(&[machine; 16]);
+        c.b[72..88].copy_from_slice(&[seqnum_id; 16]);
+        c.set(264, *offsets.last().expect("an entry"));
+        // The boots' DATA objects, oldest first, found in the file so far.
+        let t = c.file();
+        let f = file::JournalFile::open(t.path()).expect("opens");
+        let mut boots: Vec<u64> = Vec::new();
+        for &(_, boot, ..) in rows {
+            let d = f.find_data(&boot_field(boot)).expect("lookup");
+            let d = d.expect("found").offset;
+            if !boots.contains(&d) {
+                boots.push(d);
+            }
+        }
+        c.field_table(3);
+        c.field(b"_BOOT_ID", &boots);
+        c.file()
+    }
+
+    /// Two boots of one machine whose realtimes overlap, in two files
+    /// (seqnum ids 1 and 2, so no sequence number orders them): boot 0xa's
+    /// a1 and a2 at realtimes 100 and 300, boot 0xb's b1 and b2 at 200 and
+    /// 400. Boot 0xa's newest tail is at 300, 0xb's at 400.
+    const BOOT_A: Rows<'static> = &[("a1", 0xa, 10, 100), ("a2", 0xa, 20, 300)];
+    const BOOT_B: Rows<'static> = &[("b1", 0xb, 5, 200), ("b2", 0xb, 15, 400)];
+
+    fn release(v: &str) -> Release {
+        Release::parse(v).expect("a supported release")
+    }
+
+    fn files_on(release: &Release, paths: &[&Path]) -> Journal {
+        let paths = paths.iter().map(|p| p.to_path_buf()).collect();
+        Journal::open(Source::Files(paths), release).expect("opens")
+    }
+
+    fn who(page: &Page) -> Vec<String> {
+        page.records
+            .iter()
+            .map(|r| String::from_utf8_lossy(r.field(&name("WHO")).expect("WHO")).into_owned())
+            .collect()
+    }
+
+    /// The pages decision 11 changes, by `who`: the tail of four and of
+    /// two, the pages of two before b2 and a2, and after a1, b1 and a2.
+    /// Each comparison site differs between the orders in one of them:
+    /// the tail's merge, `Before`'s cursor test (before a2), the forward
+    /// page's first step (after b1, whose landings are a2 and b1) and its
+    /// later steps (after a1).
+    fn pages(j: &Journal) -> [Vec<String>; 7] {
+        let q = Query::field(&name("U"), b"x");
+        let limits = Limits::default();
+        let all = tail(j, &q, 4);
+        let page = |at: Position| who(&j.page(&q, &at, 2, &limits));
+        let at = |name: &str| {
+            let i = who(&all).iter().position(|w| w == name).expect("shown");
+            all.records[i].cursor()
+        };
+        [
+            who(&all),
+            who(&tail(j, &q, 2)),
+            page(Position::Before(at("b2"))),
+            page(Position::Before(at("a2"))),
+            page(Position::After(at("a1"))),
+            page(Position::After(at("b1"))),
+            page(Position::After(at("a2"))),
+        ]
+    }
+
+    const BY_REALTIME: [&[&str]; 7] = [
+        &["a1", "b1", "a2", "b2"],
+        &["a2", "b2"],
+        &["b1", "a2"],
+        &["a1", "b1"],
+        &["b1", "a2"],
+        &["a2", "b2"],
+        &["b2"],
+    ];
+    /// A forward page is the entries after the cursor in this order
+    /// (decision 11): after b1 only b2, after a2 b1 and b2, where
+    /// journalctl 259's seek gives [a2, b1] and [b2] (Difference 20).
+    const BY_BOOT: [&[&str]; 7] = [
+        &["a1", "a2", "b1", "b2"],
+        &["b1", "b2"],
+        &["a2", "b1"],
+        &["a1"],
+        &["a2", "b1"],
+        &["b2"],
+        &["b1", "b2"],
+    ];
+
+    /// Decision 11: entries of two boots of one machine order as each
+    /// release's journalctl orders them. On 22.04 (systemd 249,
+    /// `journal_file_compare_locations`) by realtime; on 24.04 and 26.04
+    /// (255 and 259, `compare_boot_ids`) the boot whose newest tail is
+    /// older comes first, whole: the tail, a page back and a page forward
+    /// all differ.
+    #[test]
+    fn boots_order_as_each_releases_journalctl() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let paths = [a.path(), b.path()];
+        assert_eq!(pages(&files_on(&release("22.04"), &paths)), BY_REALTIME);
+        for v in ["24.04", "26.04"] {
+            assert_eq!(pages(&files_on(&release(v), &paths)), BY_BOOT, "{v}");
+        }
+    }
+
+    /// A boot not in the table compares equal to any other, so realtime
+    /// decides, as on 22.04: here boot 0xa's file has no tail
+    /// (`tail_entry_offset` zero).
+    #[test]
+    fn a_boot_missing_from_the_table_orders_by_realtime() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let mut bytes = std::fs::read(a.path()).expect("read");
+        bytes[264..272].fill(0);
+        std::fs::write(a.path(), &bytes).expect("write");
+        let j = files_on(&release("26.04"), &[a.path(), b.path()]);
+        assert_eq!(pages(&j), BY_REALTIME);
+    }
+
+    /// Boots whose newest files name two machines aren't ordered by the
+    /// table ("timestamps of the boot ids might be as off as the
+    /// timestamps on the entries"): realtime decides.
+    #[test]
+    fn boots_of_two_machines_order_by_realtime() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 8, BOOT_B, true));
+        let j = files_on(&release("24.04"), &[a.path(), b.path()]);
+        assert_eq!(pages(&j), BY_REALTIME);
+    }
+
+    /// The table holds every file the page opened, matching or not
+    /// (sd-journal reads each added file's tail): a third file of boot
+    /// 0xb, with no `U=x`, has its newest tail (the highest monotonic time,
+    /// 30) at realtime 250, now older than boot 0xa's 300, so all of 0xb
+    /// comes first. The page's end, the newest entry across the files in
+    /// file order, follows the same order: a2 on 26.04; on 22.04, b2 over
+    /// a2 by realtime, then b3 over b2 by monotonic time (the order isn't
+    /// transitive).
+    #[test]
+    fn every_file_counts_in_the_table_matching_or_not() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let other = boot_file(3, 9, &[("b3", 0xb, 30, 250)], false);
+        let paths = [a.path(), b.path(), other.path()];
+        let q = Query::field(&name("U"), b"x");
+        let newest = |page: &Page| page.end.newest.as_ref().map(|(c, _)| c.realtime);
+        let page = tail(&files_on(&release("26.04"), &paths), &q, 4);
+        assert_eq!(who(&page), ["b1", "b2", "a1", "a2"]);
+        assert_eq!(newest(&page), Some(300));
+        let page = tail(&files_on(&release("22.04"), &paths), &q, 4);
+        assert_eq!(who(&page), ["a1", "b1", "a2", "b2"]);
+        assert_eq!(newest(&page), Some(250));
+    }
+
+    /// Paging forward one entry at a time shows every entry once, in the
+    /// release's order. On 24.04 and 26.04 journalctl's own seek (a
+    /// realtime bisect in boot 0xb's file, landing on b2 from a2) would
+    /// pass b1 (Difference 20); sb lands each boot the table orders after
+    /// the cursor's at its first entry, so b1 is shown. On 22.04 the pages
+    /// are journalctl's. (UNVERIFIED until Task 5's matrix row.)
+    #[test]
+    fn forward_pages_show_every_entry_of_another_boot() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let paths = [a.path(), b.path()];
+        let q = Query::field(&name("U"), b"x");
+        let forward = |j: &Journal| {
+            let step = |c: Cursor| j.page(&q, &Position::After(c), 1, &Limits::default());
+            let mut shown = Vec::new();
+            let mut page = step(tail(j, &q, 4).records[0].cursor());
+            // At most one page per entry and one more: a regression that
+            // pages for ever fails here instead of hanging.
+            for _ in 0..5 {
+                let Some(r) = page.records.first() else { break };
+                shown.extend(who(&page));
+                page = step(r.cursor());
+            }
+            shown
+        };
+        let j = files_on(&release("22.04"), &paths);
+        assert_eq!(forward(&j), ["b1", "a2", "b2"]);
+        for v in ["24.04", "26.04"] {
+            let j = files_on(&release(v), &paths);
+            assert_eq!(forward(&j), ["a2", "b1", "b2"], "{v}");
+        }
+    }
+
+    /// One file holding three boots against a cursor in boot 0xa (whose
+    /// newest tail is at 300): b1 and b2 of boot 0xb, ordered after it;
+    /// c1 and c2 of boot 0xc, in no file's tail, so left equal and ordered
+    /// by realtime; and d0 of boot 0xd, whose tail (in a file of its own,
+    /// at 50) orders it before. Laid out b1, c1, d0, c2, b2 (tail b2).
+    fn mixed_boots() -> [tempfile::NamedTempFile; 3] {
+        let mixed: Rows<'static> = &[
+            ("b1", 0xb, 5, 200),
+            ("c1", 0xc, 1, 150),
+            ("d0", 0xd, 2, 60),
+            ("c2", 0xc, 2, 350),
+            ("b2", 0xb, 15, 400),
+        ];
+        [
+            boot_file(1, 9, BOOT_A, true),
+            boot_file(2, 9, mixed, true),
+            boot_file(3, 9, &[("d1", 0xd, 3, 50)], false),
+        ]
+    }
+
+    /// After a2 (realtime 300), the mixed file's boots start on their own:
+    /// 0xb at its first entry, 0xc where its realtime reaches 300 (c2), 0xd
+    /// nowhere. Walking from b1, c1 (before 0xc's start) and d0 are passed
+    /// over. (`more_older` is set by the cursor's own entry, skipped, and
+    /// a1 before it in its file.)
+    #[test]
+    fn each_boot_of_a_file_starts_on_its_own() {
+        let files = mixed_boots();
+        let paths: Vec<&Path> = files.iter().map(tempfile::NamedTempFile::path).collect();
+        let j = files_on(&release("26.04"), &paths);
+        let q = Query::field(&name("U"), b"x");
+        let all = tail(&j, &q, 10);
+        let a2 = all
+            .records
+            .iter()
+            .find(|r| r.field(&name("WHO")) == Some(b"a2"));
+        let fwd = j.page(
+            &q,
+            &Position::After(a2.expect("a2").cursor()),
+            10,
+            &Limits::default(),
+        );
+        assert_eq!(who(&fwd), ["b1", "c2", "b2"]);
+        assert!(fwd.more_older && !fwd.more_newer);
+        assert!(fwd.errors.is_empty(), "{:?}", fwd.errors);
+    }
+
+    /// A file whose `_BOOT_ID` list can't be read is sought as journalctl
+    /// 259 seeks it, and the error is reported.
+    #[test]
+    fn an_unreadable_boot_list_falls_back_to_journalctls_seek() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let mut bytes = std::fs::read(b.path()).expect("read");
+        let table = usize::try_from(u64::from_le_bytes(bytes[120..128].try_into().expect("8")))
+            .expect("small");
+        bytes[table..table + 48].fill(0xff);
+        std::fs::write(b.path(), &bytes).expect("write");
+        let j = files_on(&release("26.04"), &[a.path(), b.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let all = tail(&j, &q, 4);
+        let a2 = all
+            .records
+            .iter()
+            .find(|r| r.field(&name("WHO")) == Some(b"a2"));
+        let fwd = j.page(
+            &q,
+            &Position::After(a2.expect("a2").cursor()),
+            2,
+            &Limits::default(),
+        );
+        assert_eq!(who(&fwd), ["b2"], "259's realtime landing");
+        assert_eq!(fwd.errors.shown.len(), 1, "{:?}", fwd.errors);
+    }
+
+    /// The cost of sb's forward seek against journalctl 259's, both stated
+    /// exactly: on the decision-11 fixture, a page after a2 costs 46 preads
+    /// on 22.04 (259's seek, showing b2) and 50 on 26.04, which reads boot
+    /// 0xb's file's `_BOOT_ID` list (the field table's bucket, the FIELD
+    /// object and its one value: 3 preads, as
+    /// `a_fields_values_are_its_data_objects_newest_first` counts them),
+    /// needs no bisect there (0xb starts at its first entry), and shows b1
+    /// as well. Boot 0xa's file shares the cursor's seqnum id, so it reads
+    /// no `_BOOT_ID` list.
+    #[test]
+    fn the_boot_seek_reads_the_files_boots() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let paths = [a.path(), b.path()];
+        let q = Query::field(&name("U"), b"x");
+        let cost = |v: &str| {
+            let j = files_on(&release(v), &paths);
+            let all = tail(&j, &q, 4);
+            let a2 = all
+                .records
+                .iter()
+                .find(|r| r.field(&name("WHO")) == Some(b"a2"));
+            let at = Position::After(a2.expect("a2").cursor());
+            let before = crate::testing::counts(&j).preads;
+            let page = j.page(&q, &at, 2, &Limits::default());
+            (who(&page), crate::testing::counts(&j).preads - before)
+        };
+        let (old, old_cost) = cost("22.04");
+        let (new, new_cost) = cost("26.04");
+        assert_eq!(
+            (old, new),
+            (
+                vec!["b2".to_owned()],
+                vec!["b1".to_owned(), "b2".to_owned()]
+            )
+        );
+        assert_eq!((old_cost, new_cost), (46, 50));
+    }
+
+    /// On every row, a page of one after an entry of the tail is the next
+    /// entry of the tail and a page of one before it the previous one: the
+    /// tail, forward and back pages agree, and paging either way from any
+    /// record always moves on.
+    ///
+    /// Two layouts: the decision-11 fixture, and boot 0xa's file with a
+    /// second file holding c1 (boot 0xc, in no file's tail, at realtime
+    /// 400) then a3 (boot 0xa, monotonic 30, realtime 350). There, after
+    /// a2, journalctl 259's monotonic seek in the cursor's boot would land
+    /// on a3 and pass c1; sb seeks that file per boot on 24.04 and 26.04
+    /// because it holds two. 22.04 keeps journalctl's seek, unchanged, and
+    /// does land on a3 there.
+    #[test]
+    fn forward_back_and_tail_pages_agree() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let mixed = boot_file(2, 9, &[("c1", 0xc, 1, 400), ("a3", 0xa, 30, 350)], true);
+        let q = Query::field(&name("U"), b"x");
+        let all = ["22.04", "24.04", "26.04"];
+        let layouts = [
+            ([a.path(), b.path()], &all[..]),
+            ([a.path(), mixed.path()], &all[1..]),
+        ];
+        let on_22 = files_on(&release("22.04"), &[a.path(), mixed.path()]);
+        let tail_22 = tail(&on_22, &q, 4);
+        let a2 = tail_22
+            .records
+            .iter()
+            .find(|r| r.field(&name("WHO")) == Some(b"a2"));
+        let at_a2 = a2.expect("a2").cursor();
+        let landed = on_22.page(&q, &Position::After(at_a2), 1, &Limits::default());
+        assert_eq!(who(&landed), ["a3"], "22.04: journalctl's landing");
+        for (paths, v) in layouts
+            .iter()
+            .flat_map(|(p, rows)| rows.iter().map(move |v| (p, *v)))
+        {
+            let j = files_on(&release(v), paths);
+            let all = tail(&j, &q, 4);
+            let order = who(&all);
+            for (i, r) in all.records.iter().enumerate() {
+                let one = |at: Position| who(&j.page(&q, &at, 1, &Limits::default()));
+                let next: Vec<String> = order.get(i + 1).cloned().into_iter().collect();
+                let prev: Vec<String> = i
+                    .checked_sub(1)
+                    .map(|p| order[p].clone())
+                    .into_iter()
+                    .collect();
+                assert_eq!(
+                    one(Position::After(r.cursor())),
+                    next,
+                    "{v} after {}",
+                    order[i]
+                );
+                assert_eq!(
+                    one(Position::Before(r.cursor())),
+                    prev,
+                    "{v} before {}",
+                    order[i]
+                );
+            }
+        }
+    }
+
+    /// The release's order can cycle, and a forward page then does too:
+    /// a (boot 0xa, realtime 300) comes before b (boot 0xb, 100) by the
+    /// table (0xa's newest tail, a non-matching entry with the higher
+    /// monotonic time, is at 50; 0xb's at 100); b before c (boot 0xc, in no
+    /// table, 200) by realtime; and c before a by realtime. Paging forward
+    /// one entry at a time from b goes c, a, b, c, ... for ever: a cursor
+    /// alone can't break it. (journalctl's own order cycles the same way.)
+    #[test]
+    fn forward_paging_cycles_where_the_order_does() {
+        let file_a = boot_file(1, 9, &[("a", 0xa, 10, 300)], true);
+        let a_tail = boot_file(2, 9, &[("a0", 0xa, 20, 50)], false);
+        let file_b = boot_file(3, 9, &[("b", 0xb, 1, 100)], true);
+        let file_c = boot_file(4, 9, &[("c", 0xc, 1, 200)], true);
+        let mut bytes = std::fs::read(file_c.path()).expect("read");
+        bytes[264..272].fill(0);
+        std::fs::write(file_c.path(), &bytes).expect("write");
+        let j = files_on(
+            &release("26.04"),
+            &[file_a.path(), a_tail.path(), file_b.path(), file_c.path()],
+        );
+        let q = Query::field(&name("U"), b"x");
+        let all = tail(&j, &q, 4);
+        let at_b = all
+            .records
+            .iter()
+            .find(|r| r.field(&name("WHO")) == Some(b"b"));
+        let mut page = j.page(
+            &q,
+            &Position::After(at_b.expect("b").cursor()),
+            1,
+            &Limits::default(),
+        );
+        let mut shown = Vec::new();
+        for _ in 0..6 {
+            let Some(r) = page.records.first() else { break };
+            shown.extend(who(&page));
+            page = j.page(&q, &Position::After(r.cursor()), 1, &Limits::default());
+        }
+        assert_eq!(shown, ["c", "a", "b", "c", "a", "b"]);
+    }
+
+    /// A per-boot page with nothing older: from a cursor of another seqnum
+    /// space at the very start of boot 0xa (monotonic and realtime 0), the
+    /// page is every entry, and `more_older` is false.
+    #[test]
+    fn a_per_boot_page_from_before_everything_has_nothing_older() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let j = files_on(&release("26.04"), &[a.path(), b.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let start = Cursor {
+            seqnum_id: [9; 16],
+            seqnum: 1,
+            boot_id: [0xa; 16],
+            monotonic: 0,
+            realtime: 0,
+            xor_hash: 0,
+        };
+        let page = j.page(&q, &Position::After(start), 10, &Limits::default());
+        assert_eq!(who(&page), ["a1", "a2", "b1", "b2"]);
+        assert_eq!((page.more_older, page.more_newer), (false, false));
+    }
+
+    /// The boot table's cost, on `crafted::journal(200)` as
+    /// `the_preads_of_a_tail_a_page_back_and_a_page_forward_are_bounded`
+    /// pages it: nothing on any row while the header's tail is the newest
+    /// entry, which the page reads anyway for its end (`walk::lasts`); one
+    /// pread per page and file on 24.04 and 26.04 when it names another
+    /// entry; none on 22.04, which has no table.
+    #[test]
+    fn the_boot_table_reads_at_most_one_entry_per_file() {
+        let costs = |release: &Release, tail_entry: usize| {
+            let (mut crafted, layout) = crafted::journal(200);
+            crafted.set(264, layout.entries[tail_entry]);
+            let file = crafted.file();
+            let j = files_on(release, &[file.path()]);
+            let q = Query::field(&name("U"), b"x");
+            let limits = Limits::default();
+            let preads = || crate::testing::counts(&j).preads;
+            let first = tail(&j, &q, 10);
+            let after_tail = preads();
+            let back = j.page(
+                &q,
+                &Position::Before(first.records[0].cursor()),
+                10,
+                &limits,
+            );
+            let after_back = preads();
+            let fwd = j.page(&q, &Position::After(back.records[0].cursor()), 10, &limits);
+            assert_eq!(fwd.records.len(), 10);
+            (after_tail, after_back - after_tail, preads() - after_back)
+        };
+        for v in ["22.04", "24.04", "26.04"] {
+            assert_eq!(costs(&release(v), 199), (42, 52, 88), "{v}");
+        }
+        assert_eq!(costs(&release("22.04"), 5), (42, 52, 88));
+        for v in ["24.04", "26.04"] {
+            assert_eq!(costs(&release(v), 5), (43, 53, 89), "{v}");
+        }
     }
 }

@@ -116,7 +116,8 @@ tools in Task 5 depend on them.
 | Name | Kind | Invariant or role |
 |---|---|---|
 | `Uid` | `struct Uid(u32)`, `Copy` | A user id. A crate newtype, so no dependency's type appears in the API. `Uid::new(u32)`, `get()`. |
-| `Release` | struct, from `Release::parse("24.04")` | A release in `RELEASES`. Parsing any other release fails with `ReleaseError::Unsupported`. |
+| `Release` | struct, from `Release::parse("24.04")` | A release in `RELEASES`. Parsing any other release fails with `ReleaseError::Unsupported`. Its rules: `unit_rule()` (`UnitRule`) and `boot_rule()` (`BootRule`). |
+| `BootRule` | `#[non_exhaustive] enum { Realtime, NewestTail }`, as `UnitRule` | The order between boots: 249's realtime (22.04), or 255 and 259's `compare_boot_ids` table (24.04, 26.04; spec decision 11). |
 | `UnitName` | `UnitName::new(&str) -> Result<_, QueryError>` | A name with no dot gets `.service`; a `.service` name passes unchanged; anything else (other suffixes, dotted names, globs) is refused (Difference 7). |
 | `FieldName` | `FieldName::new(&[u8]) -> Result<_, QueryError>` | journald's field-name rule, for queries and `Record::field`. `Record::fields()` yields raw byte pairs, unvalidated (Difference 14). |
 | `MachineId` | `MachineId::parse(&str) -> Result<_, OpenError>`, `Display` | 32 hex digits in either case, not all zero; lowercased, as journald names the directory (L1; systemd v255 `id128_read_fd` and `sd_id128_from_string`'s `unhexchar` take either case; maintainer, Task 4). An invalid id is `OpenError::InvalidMachineId { path: Option<PathBuf> }`: `None` from `parse`, the file from `Journal::open(Source::Local)`, which refuses the source rather than join other text into a path; the file may hold one trailing newline (machine-id(5)) (Task 4). |
@@ -133,7 +134,7 @@ tools in Task 5 depend on them.
 | `testing::Host`, `open_on`, `Counts`, `counts` | under `testing` | `Source::Local`'s machine-id file and roots injected; a per-`Journal` count of opens, closes and preads, kept on its opener (Task 4). |
 | `ReadError` | private `path` and `kind: ReadErrorKind`, with accessors; `path()` is `Option<&Path>`, `None` for page-level notices (the output, held and list-changing limits) (Task 3), plus `ReadErrors { shown: Vec<ReadError>, omitted: usize }` | `Display` escapes the path and field names (L5). Ten are shown and the rest counted. Open errors take one entry per file, outside the cap. |
 | `OpenError`, `QueryError`, `ReleaseError` | thiserror enums | |
-| `Journal`, `Follower` | structs; `Journal: Send + Sync`, `Follower: Send` | `Follower::drain(&mut self, &Limits) -> Batch`, `wake_fd(&self) -> io::Result<OwnedFd>` (CLOEXEC, non-blocking). |
+| `Journal`, `Follower` | structs; `Journal: Send + Sync`, `Follower: Send` | `Journal::open(Source, &Release) -> Result<_, OpenError>`: the release whose journalctl the pages match, for every source (its boot order, decision 11). `Follower::drain(&mut self, &Limits) -> Batch`, `wake_fd(&self) -> io::Result<OwnedFd>` (CLOEXEC, non-blocking). |
 | `DisplayText` (sb-term-ui) | `DisplayText::from_bytes(&[u8], colour: bool) -> DisplayText`; `lines()`, `as_str()` | As the spec. Callers pass term-ui's `keeps_codes(..)`. Sanitized text, held as one `String` plus line ranges. |
 
 ## Traceability
@@ -169,7 +170,9 @@ records its exact count.
 | Difference 17: an out-of-order item stops a followed file; the tail walks past it | 3 (tail), 6 (follow) |
 | Difference 18: nothing after a vanished or non-matching cursor dropped (26.04's `--after-cursor`) | 4 (crafted), 5 (matrix) |
 | Difference 19: a forward page on a corrupt file goes on where journalctl stops | 4 |
+| Difference 20: forward pages over overlapping boots follow sb's order (24.04, 26.04) | after 4 (crafted: `boots_order_as_each_releases_journalctl`, `forward_pages_show_every_entry_of_another_boot`, `forward_back_and_tail_pages_agree`, `each_boot_of_a_file_starts_on_its_own`), 5 (matrix) |
 | New: `After` and exact `more_*` (journalctl 259's seek emulated, decision 10) | 4 |
+| New: boot order per release (`compare_boot_ids` on 24.04 and 26.04, decision 11) | after 4 (crafted: tail, `Before` and `After` on each row, a boot missing from the table, two machines, every file in the table, the newest readable entry for the table and the end, the per-boot seek and its fallback, the pread costs), 5 (matrix), 6 (the follow keeps the table current) |
 | New: safe opening (L2), `MachineId` (L1) | 4 |
 | New: typed `ReadError` (L5), `ReadErrors` | 3 (read errors), 4 (open errors) |
 | New: `DisplayText` | 9 |
@@ -198,6 +201,17 @@ on its journal's opener (`testing::counts`).
     same at any depth, and 104 after a vanished cursor, which also reads
     each file's first match: `a_deep_forward_page_costs_a_bisect`).
   - The tests assert these figures exactly.
+  - The boot table (decision 11) adds nothing on any row while the
+    header's tail is the newest entry, and one pread per file and page
+    on 24.04 and 26.04 when it names another (an archived file journald
+    before 254 wrote, as an upgraded host keeps): 43, 53 and 89
+    (`the_boot_table_reads_at_most_one_entry_per_file`).
+  - sb's per-boot forward seek (decision 11, Difference 20), for a file
+    whose boots the table orders against the cursor's: the `_BOOT_ID`
+    field lookup (3 preads for one boot: the bucket, the FIELD object,
+    the value) and a bisect per boot started by time. On the
+    decision-11 fixture a page after a2 costs 50 on 26.04 against 46 on
+    22.04, showing one entry more (`the_boot_seek_reads_the_files_boots`).
 - The matrix fixture's figures: Task 5.
 
 `Before` walks back from the newest entry to the cursor, so its cost

@@ -243,6 +243,20 @@ lists.
         older bisect lands elsewhere);
       - in a 249-written file whose clock steps back, against 26.04's
         journalctl reading it (the emulated bisect's landing).
+- [ ] Boot order (journal spec decision 11, UNVERIFIED until this runs):
+      on 24.04 and 26.04, two boots of one machine whose realtime ranges
+      overlap (a clock set back across a reboot), checked against
+      journalctl page by page: the tail, pages back and pages forward
+      show all of the boot with the older newest tail first; on 22.04,
+      the same files interleave by realtime.
+- [ ] Difference 20 (UNVERIFIED until this runs): a matrix fixture of
+      two boots in two files, the second boot's clock behind the
+      first's, on 24.04 and 26.04, asserting the listed difference
+      against the real journalctl: sb's pages forward show every entry
+      once in the boot order, where journalctl's pass the entries the
+      emulation predicts (paging one at a time from a1, b1 is lost) and
+      a page after b1 is [a2, b1] on 26.04 and [b1, b2] on 24.04; with
+      clocks that don't overlap, sb's pages are journalctl's.
 - [ ] The workflow builds the example; actionlint and shellcheck are
       clean.
 
@@ -283,6 +297,10 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
       ported.
 - [ ] Differences 2, 12, 13, 16 and 17 (the follow side) each have a
       crafted test.
+- [ ] The follow orders boots as the page does (decision 11), with its
+      boot table kept current as files grow: sd-journal reads a file's
+      tail again before each step (v255 `next_beyond_location`, a
+      changed mtime; v259, a new tail offset) and reorders the table.
 - [ ] follow.sh and stress.sh (moved) pass on the three releases.
 
 **Verification:**
@@ -503,6 +521,13 @@ in the commit body. The matrix runs again where a fix touches reading.
   controller's Rust rewrite, the maintainer's (docker decision 9).
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
+
+- The tui spec's viewer (the first consumer): the release's entry order
+  can form a cycle when a boot is in no file's tail (Difference 20,
+  `forward_paging_cycles_where_the_order_does`), so paging forward one
+  entry at a time can loop. A page knows only its cursor, so the
+  viewer (or sb-host) must stop at a cursor it has already shown.
+  Decide where the guard lives with the tui spec; raise at Checkpoint A.
 
 - A mutant can make a walk allocate without bound (`advance ->
   Some(Ok(0))`). Under a `systemd-run` MemoryMax scope, systemd's default

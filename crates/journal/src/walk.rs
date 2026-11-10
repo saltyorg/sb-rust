@@ -9,6 +9,7 @@
 //! next page reads the new header (the follow, which keeps files open,
 //! decides its own handling).
 
+use crate::boots::BootOrder;
 use crate::file::{DataRef, EntriesRev, Entry, JournalFile};
 use crate::open::Opener;
 use crate::rules::Group;
@@ -220,13 +221,16 @@ pub(crate) struct Paged {
 ///   started.
 ///
 /// Either flag is also set when the page chose an entry it couldn't show
-/// on that side of the records shown (`decode`).
+/// on that side of the records shown (`decode`). Every comparison, the
+/// merges' and `Before`'s against its cursor, orders boots by `boots`
+/// (`Cursor::order`).
 pub(crate) fn page(
     files: &[JournalFile],
     groups: &[Group],
     n: usize,
     at: &Position,
     bounds: Bounds,
+    boots: &BootOrder,
     errors: &mut ReadErrors,
 ) -> Paged {
     let held = bounds.held / std::mem::size_of::<Candidate>();
@@ -234,12 +238,12 @@ pub(crate) fn page(
     let (picked, more_older, more_newer, from) = match at {
         Position::Tail => {
             let walks = walks(files, groups, |_: &Cursor| Step::Take, errors);
-            let (picked, more) = newest(&mut Merge::new(walks), n, held, errors);
+            let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
             (picked, more, false, End::Newest)
         }
         Position::Before(c) => {
             let step = |l: &Cursor| {
-                if l.order(c).is_lt() {
+                if l.order(c, boots).is_lt() {
                     Step::Take
                 } else {
                     beyond.set(true);
@@ -247,11 +251,11 @@ pub(crate) fn page(
                 }
             };
             let walks = walks(files, groups, step, errors);
-            let (picked, more) = newest(&mut Merge::new(walks), n, held, errors);
+            let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
             (picked, more, beyond.get(), End::Newest)
         }
         Position::After(c) => {
-            let fwd = crate::forward::after(files, groups, n, c, held, errors);
+            let fwd = crate::forward::after(files, groups, n, c, held, boots, errors);
             (fwd.picked, fwd.more_older, fwd.more_newer, End::Oldest)
         }
     };
@@ -263,26 +267,49 @@ pub(crate) fn page(
     }
 }
 
-/// Where the page ends (`PageEnd`): each opened file's inode and entry
-/// count, and the newest entry across them, unfiltered, by sd-journal's
-/// order (the earlier file on a tie, as `newest` keeps it), with its
-/// file's directory. A file whose newest entry can't be read adds its
-/// error and no entry: its count still stands.
-pub(crate) fn end(files: &[JournalFile], errors: &mut ReadErrors) -> PageEnd {
-    let mut newest: Option<(Cursor, &JournalFile)> = None;
-    for f in files {
-        let last = match f.all_entries_rev().next() {
-            None => continue,
-            Some(r) => r.and_then(|off| f.entry(off)),
-        };
-        match last {
-            Ok(e) => {
-                let l = location(f, &e);
-                if newest.as_ref().is_none_or(|(b, _)| l.order(b).is_gt()) {
-                    newest = Some((l, f));
+/// Each file's newest readable entry in its main list, with its offset,
+/// read once per page for its end and for the boot table
+/// (`JournalFile::tail`). As systemd 255's and 259's `generic_array_get`
+/// going up (journal-file.c, which `journal_file_next_entry(f, 0,
+/// DIRECTION_UP)` calls; 249's returns the error instead), an entry or
+/// array that can't be read is passed over for the next older one; here
+/// each is reported too. `None` for a file with no readable entry. On a
+/// file none of whose entries can be read, that is a read of each.
+pub(crate) fn lasts(files: &[JournalFile], errors: &mut ReadErrors) -> Vec<Option<(u64, Entry)>> {
+    files
+        .iter()
+        .map(|f| {
+            for r in f.all_entries_rev() {
+                match r.and_then(|off| Ok((off, f.entry(off)?))) {
+                    Ok(l) => return Some(l),
+                    Err(err) => errors.add(err),
                 }
             }
-            Err(err) => errors.add(err),
+            None
+        })
+        .collect()
+}
+
+/// Where the page ends (`PageEnd`): each opened file's inode and entry
+/// count, and the newest entry across them (`lasts`, one per file),
+/// unfiltered, by sd-journal's order with the page's `boots` (the earlier
+/// file on a tie, as `newest` keeps it; spelled out for the reason
+/// `Merge::best` gives), with its file's directory. A file with no newest
+/// entry still has its count.
+pub(crate) fn end(
+    files: &[JournalFile],
+    lasts: &[Option<(u64, Entry)>],
+    boots: &BootOrder,
+) -> PageEnd {
+    let mut newest: Option<(Cursor, &JournalFile)> = None;
+    for (f, last) in files.iter().zip(lasts) {
+        let Some((_, e)) = last else { continue };
+        let l = location(f, e);
+        if newest
+            .as_ref()
+            .is_none_or(|(b, _)| l.order(b, boots).is_gt())
+        {
+            newest = Some((l, f));
         }
     }
     PageEnd {
@@ -463,19 +490,22 @@ pub(crate) struct Candidate {
 /// An error a walk yields is reported and the walk goes on: the walks
 /// pass over what they can't read (an entry, an array) and yield the
 /// error in its place, so only what it hides is lost.
-struct Merge<I> {
+struct Merge<'b, I> {
     walks: Vec<Option<I>>,
     heads: Vec<Option<Candidate>>,
     last: Option<Cursor>,
+    /// The page's order between boots (`Cursor::order`).
+    boots: &'b BootOrder,
 }
 
-impl<I: Iterator<Item = Result<Candidate>>> Merge<I> {
-    fn new(walks: Vec<I>) -> Self {
+impl<'b, I: Iterator<Item = Result<Candidate>>> Merge<'b, I> {
+    fn new(walks: Vec<I>, boots: &'b BootOrder) -> Self {
         let heads = walks.iter().map(|_| None).collect();
         Self {
             walks: walks.into_iter().map(Some).collect(),
             heads,
             last: None,
+            boots,
         }
     }
 
@@ -498,7 +528,7 @@ impl<I: Iterator<Item = Result<Candidate>>> Merge<I> {
                     }
                 }
                 match (head.as_ref(), self.last.as_ref()) {
-                    (Some(h), Some(last)) if !h.location.order(last).is_lt() => {
+                    (Some(h), Some(last)) if !h.location.order(last, self.boots).is_lt() => {
                         *head = None;
                     }
                     _ => break,
@@ -517,7 +547,7 @@ impl<I: Iterator<Item = Result<Candidate>>> Merge<I> {
             let better = best.is_none_or(|b| {
                 self.heads[b]
                     .as_ref()
-                    .is_some_and(|bh| h.location.order(&bh.location).is_gt())
+                    .is_some_and(|bh| h.location.order(&bh.location, self.boots).is_gt())
             });
             if better {
                 best = Some(i);
@@ -540,7 +570,7 @@ impl<I: Iterator<Item = Result<Candidate>>> Merge<I> {
 /// At most `held` candidates are kept (the page's held limit): past it the
 /// older entries are left out, reported.
 fn newest<I>(
-    merge: &mut Merge<I>,
+    merge: &mut Merge<'_, I>,
     n: usize,
     held: usize,
     errors: &mut ReadErrors,
@@ -853,8 +883,22 @@ mod tests {
                 payload: self.payload_limit,
                 held: self.held_limit,
             };
-            page(&self.files, groups, n, at, bounds, &mut self.errors)
+            page(
+                &self.files,
+                groups,
+                n,
+                at,
+                bounds,
+                &BootOrder::none(),
+                &mut self.errors,
+            )
         }
+    }
+
+    /// `end`, from the files' `lasts`, with no boot step.
+    fn end_of(files: &[JournalFile], errors: &mut ReadErrors) -> PageEnd {
+        let lasts = lasts(files, errors);
+        end(files, &lasts, &BootOrder::none())
     }
 
     fn one(path: &Path) -> Opened {
@@ -888,7 +932,12 @@ mod tests {
     fn newest_of(walks: Vec<Vec<Candidate>>, n: usize) -> Vec<u64> {
         let mut errors = ReadErrors::default();
         let walks = walks.into_iter().map(|w| w.into_iter().map(Ok)).collect();
-        let (out, _more) = newest(&mut Merge::new(walks), n, usize::MAX, &mut errors);
+        let (out, _more) = newest(
+            &mut Merge::new(walks, &BootOrder::none()),
+            n,
+            usize::MAX,
+            &mut errors,
+        );
         assert!(errors.is_empty(), "{:?}", texts(&errors));
         out.iter().map(|c| c.location.realtime).collect()
     }
@@ -920,9 +969,9 @@ mod tests {
         let x = rec(1, 1, 0xa, 5, 300);
         let y = rec(1, 2, 0xb, 1, 100);
         let z = rec(2, 1, 0xb, 9, 200);
-        assert!(x.location.order(&y.location).is_lt());
-        assert!(y.location.order(&z.location).is_lt());
-        assert!(z.location.order(&x.location).is_lt());
+        assert!(x.location.order(&y.location, &BootOrder::none()).is_lt());
+        assert!(y.location.order(&z.location, &BootOrder::none()).is_lt());
+        assert!(z.location.order(&x.location, &BootOrder::none()).is_lt());
         assert_eq!(
             newest_of(vec![vec![y], vec![z], vec![x]], 2),
             vec![200, 300]
@@ -942,7 +991,12 @@ mod tests {
             .map(|c| vec![Ok(c)].into_iter())
             .collect();
         let mut errors = ReadErrors::default();
-        let (out, _more) = newest(&mut Merge::new(walks), 10, usize::MAX, &mut errors);
+        let (out, _more) = newest(
+            &mut Merge::new(walks, &BootOrder::none()),
+            10,
+            usize::MAX,
+            &mut errors,
+        );
         assert_eq!(out.iter().map(|c| c.file).collect::<Vec<_>>(), vec![0]);
     }
 
@@ -958,7 +1012,7 @@ mod tests {
         ];
         let mut errors = ReadErrors::default();
         let (out, _more) = newest(
-            &mut Merge::new(vec![good.into_iter(), bad.into_iter()]),
+            &mut Merge::new(vec![good.into_iter(), bad.into_iter()], &BootOrder::none()),
             10,
             usize::MAX,
             &mut errors,
@@ -978,7 +1032,12 @@ mod tests {
         let new = vec![rec(1, 4, 9, 30, 300), rec(1, 3, 9, 20, 200)];
         let mut errors = ReadErrors::default();
         let walks = vec![old.into_iter().map(Ok), new.into_iter().map(Ok)];
-        let (out, _more) = newest(&mut Merge::new(walks), 10, usize::MAX, &mut errors);
+        let (out, _more) = newest(
+            &mut Merge::new(walks, &BootOrder::none()),
+            10,
+            usize::MAX,
+            &mut errors,
+        );
         let got: Vec<u64> = out.iter().map(|c| c.location.seqnum).collect();
         assert_eq!(got, vec![1, 2, 3, 4]);
     }
@@ -2419,8 +2478,8 @@ mod tests {
 
     /// A page's end: each file's inode and count, and the newest entry
     /// across them, unfiltered, the earlier file's on a tie, with its
-    /// directory; a file with no entries adds no newest entry, one whose
-    /// newest can't be read adds its error.
+    /// directory; a file with no entries adds no newest entry; one whose
+    /// newest can't be read adds its error and gives the next readable one.
     #[test]
     fn the_end_names_the_files_and_the_newest_entry() {
         // Two copies of one journal in two directories, as a flush leaves
@@ -2437,7 +2496,7 @@ mod tests {
         let (empty, _h) = Crafted::new().write();
         let j = Opened::new(&[empty.path().to_path_buf(), first.clone(), second.clone()]);
         let mut errors = ReadErrors::default();
-        let e = end(&j.files, &mut errors);
+        let e = end_of(&j.files, &mut errors);
         assert!(errors.is_empty(), "{:?}", texts(&errors));
         let counts: Vec<u64> = e.files.iter().map(|f| f.n_entries).collect();
         assert_eq!(counts, [0, 3, 3]);
@@ -2446,23 +2505,33 @@ mod tests {
         assert_eq!(newest.seqnum, 3);
         assert_eq!(dir, run.path());
         let swapped = Opened::new(&[second.clone(), first.clone()]);
-        let e2 = end(&swapped.files, &mut errors);
+        let e2 = end_of(&swapped.files, &mut errors);
         assert_eq!(e2.newest.expect("an entry").1, var.path());
         // The newer of two files, whichever is first; seqnum 3 against 4.
         let (mut c, l) = crafted::journal(4);
         c.set(l.entries[3] + 16, 4);
         let (newer, _n) = c.write();
         let j = Opened::new(&[first.clone(), newer.path().to_path_buf()]);
-        let e = end(&j.files, &mut errors);
+        let e = end_of(&j.files, &mut errors);
         assert_eq!(e.newest.expect("an entry").0.seqnum, 4);
-        // An unreadable newest entry: reported, and no entry.
+        // An unreadable newest entry: reported, and the next readable one
+        // is the newest, as systemd's `generic_array_get` going up skips a
+        // bad entry (v259 journal-file.c); none readable, no entry.
         let (mut c, l) = crafted::journal(2);
         c.set(l.entries[1] + O_SIZE, 0);
-        let (bad, _b) = c.write();
+        let (bad, _b) = c.clone().write();
         let j = Opened::new(&[bad.path().to_path_buf()]);
-        let e = end(&j.files, &mut errors);
-        assert_eq!((e.files.len(), e.newest), (1, None));
+        let e = end_of(&j.files, &mut errors);
+        assert_eq!(e.files.len(), 1);
+        assert_eq!(e.newest.map(|(c, _)| c.seqnum), Some(1));
         assert_eq!(errors.shown.len(), 1, "{:?}", texts(&errors));
+        c.set(l.entries[0] + O_SIZE, 0);
+        let (none, _n) = c.write();
+        let j = Opened::new(&[none.path().to_path_buf()]);
+        let mut errors = ReadErrors::default();
+        let e = end_of(&j.files, &mut errors);
+        assert_eq!((e.files.len(), e.newest), (1, None));
+        assert_eq!(errors.shown.len(), 2, "{:?}", texts(&errors));
     }
 
     /// The position a page is read at goes through to the walk.
@@ -2470,8 +2539,11 @@ mod tests {
     fn a_page_reads_at_its_position() {
         let (mut c, _l) = crafted::journal(5);
         let (t, _f) = c.write();
-        let journal = crate::Journal::open(crate::Source::Files(vec![t.path().to_path_buf()]))
-            .expect("opens");
+        let journal = crate::Journal::open(
+            crate::Source::Files(vec![t.path().to_path_buf()]),
+            &crate::Release::parse("26.04").expect("a release"),
+        )
+        .expect("opens");
         let q = crate::Query::field(&crate::FieldName::new(b"U").expect("name"), b"x");
         let limits = crate::Limits::default();
         let tail = journal.page(&q, &Position::Tail, 2, &limits);

@@ -3,7 +3,7 @@
 //! crafted-file builder, and the injectable roots and opener counts; the
 //! tools' helpers and the JSON form come with the plan's later tasks.
 
-use crate::{Journal, OpenError, Source};
+use crate::{Journal, OpenError, Release, Source};
 
 // One file's reading, for the tools (the journal spec, Project
 // Structure: the tools need file-level access).
@@ -21,8 +21,8 @@ pub use crate::open::{Counts, Host};
 /// # Errors
 ///
 /// As `Journal::open`.
-pub fn open_on(source: Source, host: &Host) -> Result<Journal, OpenError> {
-    Journal::open_on(source, host)
+pub fn open_on(source: Source, release: &Release, host: &Host) -> Result<Journal, OpenError> {
+    Journal::open_on(source, release, host)
 }
 
 /// The files `journal`'s pages have opened and closed, and the preads they
@@ -42,7 +42,9 @@ pub mod crafted {
     use crate::hash;
     use std::io::Write;
 
+    const OBJECT_FIELD: u8 = 2;
     const OBJECT_DATA_HASH_TABLE: u8 = 4;
+    const OBJECT_FIELD_HASH_TABLE: u8 = 5;
 
     // Header fields' offsets (journal-def.h `struct Header`).
 
@@ -52,6 +54,10 @@ pub mod crafted {
     pub const H_HASH_TABLE_OFFSET: u64 = 104;
     /// `data_hash_table_size`.
     pub const H_HASH_TABLE_SIZE: u64 = 112;
+    /// `field_hash_table_offset`.
+    pub const H_FIELD_TABLE_OFFSET: u64 = 120;
+    /// `field_hash_table_size`.
+    pub const H_FIELD_TABLE_SIZE: u64 = 128;
     /// `n_entries`.
     pub const H_N_ENTRIES: u64 = 152;
     /// `entry_array_offset`.
@@ -66,6 +72,10 @@ pub mod crafted {
     pub const D_HASH: u64 = 16;
     /// `next_hash_offset`.
     pub const D_NEXT_HASH: u64 = 24;
+    /// `next_field_offset`: the next (older) DATA object of the field.
+    pub const D_NEXT_FIELD: u64 = 32;
+    /// A FIELD object's `head_data_offset`: its newest DATA object.
+    pub const F_HEAD_DATA: u64 = 32;
     /// `entry_offset`: the in-line first entry.
     pub const D_ENTRY_OFFSET: u64 = 40;
     /// `entry_array_offset`.
@@ -142,6 +152,44 @@ pub mod crafted {
             let o = self.object(OBJECT_DATA_HASH_TABLE, 0, &vec![0; at(buckets * 16)]);
             self.set(H_HASH_TABLE_OFFSET, o + OBJECT_HEADER);
             self.set(H_HASH_TABLE_SIZE, buckets * 16);
+        }
+
+        /// The field hash table, with `buckets` empty buckets.
+        pub fn field_table(&mut self, buckets: u64) {
+            let o = self.object(OBJECT_FIELD_HASH_TABLE, 0, &vec![0; at(buckets * 16)]);
+            self.set(H_FIELD_TABLE_OFFSET, o + OBJECT_HEADER);
+            self.set(H_FIELD_TABLE_SIZE, buckets * 16);
+        }
+
+        /// A FIELD object named `name` under its Jenkins hash, linked into
+        /// its bucket's chain, listing the DATA objects `data` (given
+        /// oldest first) as journald links them (`journal_file_link_data`
+        /// prepends): the head is the newest, each pointing to the one
+        /// before.
+        ///
+        /// # Panics
+        ///
+        /// There is no field hash table (`field_table`) yet.
+        pub fn field(&mut self, name: &[u8], data: &[u64]) -> u64 {
+            let hash = hash::jenkins64(name);
+            let mut body = vec![0u8; 24];
+            body[0..8].copy_from_slice(&hash.to_le_bytes());
+            body.extend_from_slice(name);
+            let f = self.object(OBJECT_FIELD, 0, &body);
+            let buckets = self.get(H_FIELD_TABLE_SIZE) / 16;
+            let bucket = self.get(H_FIELD_TABLE_OFFSET) + hash % buckets * 16;
+            match self.get(bucket + 8) {
+                0 => self.set(bucket, f),
+                tail => self.set(tail + D_NEXT_HASH, f),
+            }
+            self.set(bucket + 8, f);
+            let mut next = 0;
+            for &d in data {
+                self.set(d + D_NEXT_FIELD, next);
+                next = d;
+            }
+            self.set(f + F_HEAD_DATA, next);
+            f
         }
 
         /// A DATA object storing `stored` (compressed per `flags`) under

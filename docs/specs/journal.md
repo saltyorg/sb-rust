@@ -122,8 +122,9 @@ pub struct Journal { /* the source; no descriptors held between calls */ }
 impl Journal {
     /// Checks the source (machine id, directories); an `OpenError` is a
     /// source that can't be read at all. Files that fail to open on a
-    /// later call are errors of that call, not an `OpenError`.
-    pub fn open(source: Source) -> Result<Self, OpenError>;
+    /// later call are errors of that call, not an `OpenError`. Pages
+    /// order boots as `release`'s journalctl does (decision 11).
+    pub fn open(source: Source, release: &Release) -> Result<Self, OpenError>;
     /// The `n` entries at `at`. Every call lists and reopens the files.
     pub fn page(&self, q: &Query, at: &Position, n: usize, limits: &Limits) -> Page;
     /// A follow continuing from where `from` ended, with what was written
@@ -173,7 +174,8 @@ glue: the release, the coredump uid, and `spawn_blocking` helpers.
 `UnitName` mangles as journalctl does for Saltbox's names: a name
 without a dot gets `.service`, and a `.service` name passes unchanged.
 Other mangling (globs, `.slice`) is refused, not guessed. `Release`
-carries the per-release rule and its `-o json` shape (`prints_seqnum`);
+carries the per-release `-u` rule, its order between boots (`BootRule`,
+decision 11) and its `-o json` shape (`prints_seqnum`);
 the latter is used only by the test tools, behind the `testing` feature.
 sb-host adds tokio for its `spawn_blocking` helpers: a host spec
 correction.
@@ -407,8 +409,8 @@ Only on corrupt, live or foreign files:
 17. **A plausible item out of order** (a stale slot) stops a followed
     file, retried once, then reported, and nothing more is read from
     that file while it stays so. The tail's walk goes past it.
-18. **Nothing after a forward page's cursor is dropped.** On 22.04 and
-    24.04, `journalctl --after-cursor` seeks and then always steps once
+18. **The entry after a vanished or non-matching cursor isn't lost.**
+    On 22.04 and 24.04, `journalctl --after-cursor` seeks and then always steps once
     past where it landed (v249 and v255 journalctl.c,
     `sd_journal_next_skip(j, 1 + after_cursor)`), so when the cursor's
     entry has vanished (vacuumed, rotated away) or doesn't match the
@@ -428,6 +430,23 @@ Only on corrupt, live or foreign files:
     - systemd's `check_object` and sb's object checks don't refuse
       quite the same corrupt objects, so a bisect can be cut short in
       one and not the other.
+20. **Forward pages over two boots whose clocks overlap follow sb's
+    order** (24.04 and 26.04, decision 11). journalctl 255 and 259 seek
+    each file by one key but merge by the boot table, so where a boot's
+    realtime range overlaps another's (a clock set back across a
+    reboot) `--after-cursor` passes entries the table puts after the
+    cursor, and on 26.04 a page after an entry can show that entry
+    again, later in the page; a viewer paging forward from the last
+    record shown can then lose entries or get the same page again. sb
+    shows the entries after the cursor in the release's order, each
+    once: with boot 0xa's newest tail older than 0xb's, a1 and a2 at
+    realtimes 100 and 300, b1 and b2 at 200 and 400, 26.04's journalctl
+    shows b2 after a2 and [a2, b1] after b1 (24.04's, stepping past its
+    landing, [b1, b2]), and sb b1 and b2 after a2 and b2 after b1
+    (`boots_order_as_each_releases_journalctl`,
+    `forward_pages_show_every_entry_of_another_boot`). Boots whose
+    clocks don't overlap give journalctl's pages. Where the order itself
+    cycles, so do sb's pages, as journalctl's (decision 11).
 
 The rules are keyed by Ubuntu release (`VERSION_ID`), not by systemd
 version. journalctl on a 26.04 host still at systemd 259.0 matches
@@ -707,8 +726,79 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
       Difference 18.
     - UNVERIFIED against a running journalctl until Task 5's matrix
       checks forward pages (tasks/todo.md).
-    - Boot order (v255 and later's `compare_boot_ids`) is a separate
-      step after Task 4; sb's order stays systemd 249's until then.
+    - The order between entries of different boots is the release's
+      (decision 11), for the forward page as for the others.
+11. **Boot order per release** (maintainer, 2026-11-10): the merge
+    across files orders entries of different boots as each release's
+    journalctl does, in every comparison: the tail's and `Before`'s
+    merge and its cursor test, the forward page's first step and its
+    "after the entry just taken" test, and the page's end.
+    - 22.04 (systemd 249) keeps `journal_file_compare_locations`
+      (v249 journal-file.c): seqnum in one seqnum space, monotonic time
+      in one boot, then realtime and the XOR hash.
+    - 24.04 and 26.04 (255 and 259, the same code in both) put
+      `compare_boot_ids` between the monotonic and the realtime step
+      (v255 and v259 sd-journal.c, `compare_locations` and
+      `compare_with_location`). Its table, `newest_by_boot_id`, holds
+      every file sd-journal added, matching or not, under its tail
+      entry's boot (`journal_file_read_tail_timestamp`): the entry
+      `tail_entry_offset` names, or in an older header the tail object
+      if it is an entry; else an archived file's header `tail_entry_*`
+      (with `HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID`); else the main
+      list's newest readable entry (255's and 259's `generic_array_get`
+      going up passes over an entry it can't read; so does the page's
+      end, on every release). A zero
+      offset or a monotonic time ahead of the
+      realtime puts the file in no boot. Per boot, the file with the
+      highest tail monotonic time counts, the first added on a tie
+      (prioq.c `shuffle_up`). Two boots order by those files' tail
+      realtime when both are in the table and the files' header machine
+      ids are equal; otherwise they compare equal and realtime decides.
+    - The release is the `Journal`'s (`Journal::open(source, &release)`),
+      the caller's for every source, as for `Query::unit`.
+    - The table reuses the newest entry each page reads for its end, and
+      reads one more entry only for a file whose header names another
+      tail (journald before 254, or a corrupt file): asserted in
+      `the_boot_table_reads_at_most_one_entry_per_file`.
+    - **sb's order wins on 24.04 and 26.04** (maintainer, 2026-11-10):
+      a forward page is the entries after the cursor in the release's
+      order (the boot table, then realtime), each shown once. The
+      mechanism behind the difference: journalctl seeks each file by one
+      key (seqnum, the cursor's boot's monotonic time, or realtime) but
+      merges by the boot table, so where two boots' clocks overlap it
+      passes entries and can show the cursor's own one (Difference 20).
+      sb seeks such a file per boot instead: it enumerates the file's
+      boots through the `_BOOT_ID` field's DATA objects (the field hash
+      table and `next_field_offset`, as `sd_journal_enumerate_unique`
+      reads them); the cursor's boot starts by monotonic time, a boot
+      the table orders after it at its first entry, one it leaves equal
+      by realtime, one it orders before nowhere; and only entries at or
+      after their boot's start are walked (within a file every entry has
+      one seqnum id, so file order is the release's order there). 259's
+      seek is kept where per-boot seeking gives its landing anyway: a
+      file of the cursor's seqnum space, one with no `_BOOT_ID` values
+      sb can read, or one of a single boot, the cursor's or one the
+      table leaves equal to it; so is every file on 22.04, which is
+      unchanged. The cost is the field lookup (a pread for the bucket,
+      one per FIELD object in its chain, one per boot) and a bisect per
+      boot started by time, per such file and page (asserted in
+      `the_boot_seek_reads_the_files_boots`), plus the matching entries
+      of other boots the walk passes over. Every file outside the
+      cursor's seqnum space pays the field lookup on each forward page,
+      even when the cursor's boot is in no file's tail: the price of
+      knowing its boots.
+    - The order isn't transitive, and the boot step adds cycles: a boot
+      in no file's tail compares equal to every boot, so realtime orders
+      its pairs while the table orders the rest. Where three boots
+      cycle, paging forward one page after another cycles as well
+      (`forward_paging_cycles_where_the_order_does`); a cursor alone
+      can't break it, so a caller paging on stops at a cursor it has
+      shown. journalctl's order cycles the same way.
+    - UNVERIFIED against a running journalctl until Task 5's matrix runs
+      two boots with overlapping clocks on 24.04 and 26.04
+      (tasks/todo.md). The follow (Task 6) isn't ported yet: it is to
+      keep the table current as its files grow, as sd-journal reads a
+      changed file's tail again before each step.
 
 ## Open questions
 

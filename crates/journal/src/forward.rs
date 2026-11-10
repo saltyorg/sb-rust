@@ -64,16 +64,48 @@
 //! pages on 26.04, on 22.04 and 24.04 (Difference 18 aside), and on a
 //! 249-written file whose clock steps back.
 //!
-//! The order between entries is sb's (`Cursor::order`, systemd 249's); the
-//! boot table 255 and later put between boots is the plan's next step.
+//! The order between entries, for the first step's lowest landing and for
+//! every head against the entry just taken, is `Cursor::order` with the
+//! page's boot table: the release's (journal spec decision 11; 249's has no
+//! boot step). journalctl's seek lands in each file by one key (seqnum,
+//! monotonic time in the cursor's boot, or realtime), while its merge
+//! orders boots by the table, so where two boots' clocks overlap 255's and
+//! 259's journalctl pass entries the table puts after the cursor, and can
+//! show the cursor's own entry (Difference 20). sb's order wins there
+//! (maintainer, 2026-11-10): on a release with the table, a file whose
+//! seqnum id isn't the cursor's is sought per boot
+//! (`FileQuery::boot_starts`), and only its entries after the cursor are
+//! walked, unless that gives 259's landing anyway (no `_BOOT_ID` values
+//! read, or one boot, the cursor's or one the table leaves equal to it).
+//! Those files, files of the cursor's seqnum space, and every file on
+//! 22.04 are sought as 259 seeks them. The order can still cycle (a boot
+//! not in the table between two it orders), and so can paging forward:
+//! `forward_paging_cycles_where_the_order_does`.
 
+use crate::boots::BootOrder;
 use crate::file::{ChainCache, DataRef, EntryList, JournalFile, Key, Met, Probe};
 use crate::rules::Group;
 use crate::walk::{Candidate, location};
 use crate::{Cursor, ReadError, ReadErrorKind, ReadErrors};
 use itertools::Itertools;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 type Result<T, E = ReadError> = std::result::Result<T, E>;
+
+/// The length of a `_BOOT_ID=` payload: the name, `=` and 32 hex digits.
+const BOOT_FIELD_LEN: usize = 9 + 32;
+
+/// The boot id a `_BOOT_ID=` payload names: 32 hex digits, as journald
+/// writes it (`sd_id128_to_string`); `None` for anything else.
+fn boot_id_of(payload: &[u8]) -> Option<[u8; 16]> {
+    let hex = payload.strip_prefix(b"_BOOT_ID=")?;
+    let mut id = [0u8; 16];
+    // <https://docs.rs/hex/0.4.3/hex/fn.decode_to_slice.html>: exactly 32
+    // digits fill the 16 bytes.
+    hex::decode_to_slice(hex, &mut id).ok()?;
+    Some(id)
+}
 
 /// An oldest-first stream of one file's entry offsets, each with what the
 /// stream knows about it.
@@ -95,7 +127,16 @@ struct FileQuery<'a> {
     groups: Option<Vec<Vec<Vec<DataRef>>>>,
     /// The chain cache of the file's seeks (one journalctl run's).
     cache: ChainCache,
+    /// Where the last seek started each of the file's boots
+    /// (`boot_starts`); `None` for journalctl 259's seek. An entry of a
+    /// boot with no start, or before its boot's start, isn't after the
+    /// cursor.
+    starts: Option<Rc<Starts>>,
 }
+
+/// Per boot id, the first offset of the boot's entries after the cursor,
+/// if any.
+type Starts = HashMap<[u8; 16], Option<u64>>;
 
 impl<'a> FileQuery<'a> {
     /// Look the query's values up in `f`. A group whose lookup fails is
@@ -132,7 +173,109 @@ impl<'a> FileQuery<'a> {
             f,
             groups: resolved,
             cache: ChainCache::default(),
+            starts: None,
         }
+    }
+
+    /// Where `c` falls in the file, in the release's order (decision 11,
+    /// Difference 20). On a release with the boot table, a file whose
+    /// seqnum id isn't the cursor's is sought per boot (`boot_starts`),
+    /// and the landing is the first matching entry, from the lowest start,
+    /// at or after its boot's start; journalctl 259's seek (`seek_259`)
+    /// otherwise, and where per-boot seeking gives the same: a file with
+    /// no `_BOOT_ID` values sb can read, or with one boot, the cursor's or
+    /// one the table leaves equal to it.
+    fn seek(&mut self, c: &Cursor, boots: &BootOrder, errors: &mut ReadErrors) -> Option<u64> {
+        self.starts = None;
+        if c.seqnum_id != self.f.header.seqnum_id && boots.is_active() {
+            let mut met = Met::default();
+            let starts = self.boot_starts(c, boots, &mut met);
+            for e in met.errors {
+                errors.add(e);
+            }
+            match starts {
+                Ok(Some(starts)) => {
+                    let from = starts.values().flatten().min().copied();
+                    self.starts = Some(Rc::new(starts));
+                    let from = from?;
+                    for r in self.matches_from(from) {
+                        match r {
+                            Ok((off, _)) => return Some(off),
+                            Err(e) => errors.add(e),
+                        }
+                    }
+                    return None;
+                }
+                Ok(None) => {}
+                // The file's boots unknown: journalctl's seek.
+                Err(e) => errors.add(e),
+            }
+        }
+        self.seek_259(c, errors)
+    }
+
+    /// Each of the file's boots (its `_BOOT_ID` values, `field_values`)
+    /// and where its entries after `c` start, by the release's order
+    /// (`Cursor::order`; the file's seqnum id isn't the cursor's):
+    /// - the cursor's boot by monotonic time: its list bisected as 259
+    ///   bisects it (`Key::Monotonic`);
+    /// - a boot the table orders after the cursor's at its first entry
+    ///   (the DATA object's in-line entry: no read);
+    /// - a boot it orders before nowhere;
+    /// - a boot it leaves equal (not in the table, another machine) by
+    ///   realtime: its list bisected (`Key::Realtime`).
+    ///
+    /// Within the file every entry has its seqnum id, so file order is
+    /// the release's order there, and a boot's entries after `c` are those
+    /// from its start on (the boot's own clocks in order, as journald
+    /// writes them). A boot whose list is empty is left out: its entries,
+    /// if any, are kept (`matches_from`), never dropped.
+    ///
+    /// `None` when per-boot seeking would give journalctl 259's landing
+    /// anyway: no boot read, or one boot that is the cursor's or that the
+    /// table leaves equal to it. The cost: the field lookup
+    /// (`field_values`) and a bisect per boot started by time; then the
+    /// walk from the lowest start reads the matching entries of the other
+    /// boots it passes over before its landing and among the entries shown
+    /// (as their boots lie in the file).
+    fn boot_starts(
+        &mut self,
+        c: &Cursor,
+        boots: &BootOrder,
+        met: &mut Met,
+    ) -> Result<Option<Starts>> {
+        let mut starts = Starts::new();
+        let mut ordered = false;
+        for (d, payload) in self.f.field_values(b"_BOOT_ID", BOOT_FIELD_LEN)? {
+            // A value that isn't a boot id names no entry's boot: its
+            // entries, if any, are kept (`matches_from`).
+            let Some(boot) = boot_id_of(&payload) else {
+                continue;
+            };
+            if d.n_entries == 0 {
+                continue;
+            }
+            let list = EntryList::of_data(&d);
+            let start = if boot == c.boot_id {
+                self.bisect(&list, Key::Monotonic, c.monotonic, met)?
+            } else {
+                match boots.compare(&boot, &c.boot_id) {
+                    std::cmp::Ordering::Greater => {
+                        ordered = true;
+                        Some(d.entry_offset)
+                    }
+                    std::cmp::Ordering::Less => {
+                        ordered = true;
+                        None
+                    }
+                    std::cmp::Ordering::Equal => {
+                        self.bisect(&list, Key::Realtime, c.realtime, met)?
+                    }
+                }
+            };
+            starts.insert(boot, start);
+        }
+        Ok((ordered || starts.len() > 1).then_some(starts))
     }
 
     fn bisect(
@@ -149,8 +292,9 @@ impl<'a> FileQuery<'a> {
             .map(|found| found.offset))
     }
 
-    /// Where `c` falls in the file: its landing entry's offset, or `None`.
-    fn seek(&mut self, c: &Cursor, errors: &mut ReadErrors) -> Option<u64> {
+    /// Where `c` falls in the file by journalctl 259's seek: its landing
+    /// entry's offset, or `None`.
+    fn seek_259(&mut self, c: &Cursor, errors: &mut ReadErrors) -> Option<u64> {
         let mut met = Met::default();
         let landing = match self.groups.take() {
             None => self.seek_all(c, &mut met).unwrap_or_else(|e| {
@@ -338,8 +482,30 @@ impl<'a> FileQuery<'a> {
         }
     }
 
-    /// The file's matching entries at or after `from`, in file order.
+    /// The file's matching entries at or after `from`, in file order, that
+    /// are after the last seek's cursor by its `starts`, if it set any:
+    /// an entry of a boot without a start, or before its boot's start, is
+    /// passed over. Those after the landing aren't older than the page
+    /// either (a page back from its first record, in the same seqnum space,
+    /// doesn't reach them), so `more_older` stays the landings' business
+    /// (`older_than_starts`). An entry of a boot the file's `_BOOT_ID`
+    /// values don't name is kept, never dropped.
     fn matches_from(&self, from: u64) -> Stream<'a> {
+        let all = self.all_matches_from(from);
+        let Some(starts) = &self.starts else {
+            return all;
+        };
+        let starts = Rc::clone(starts);
+        Box::new(all.filter(move |r| {
+            let Ok((off, c)) = r else { return true };
+            starts
+                .get(&c.boot_id)
+                .is_none_or(|s| s.is_some_and(|s| *off >= s))
+        }))
+    }
+
+    /// The file's matching entries at or after `from`, in file order.
+    fn all_matches_from(&self, from: u64) -> Stream<'a> {
         let f = self.f;
         // Where each list's entries at or after `from` start: an offset
         // bisect, with a scratch cache (this isn't journalctl's seek, which
@@ -486,7 +652,7 @@ struct Head<'a> {
 /// the order isn't transitive, and std's `min_by` documents its result for
 /// a total order only (and compares the other way round); itertools'
 /// `kmerge_by` needs a transitive order and has no tie rule.
-fn lowest(heads: &[Head<'_>]) -> Option<usize> {
+fn lowest(heads: &[Head<'_>], boots: &BootOrder) -> Option<usize> {
     let mut best: Option<usize> = None;
     for (i, h) in heads.iter().enumerate() {
         let Some(c) = &h.head else { continue };
@@ -494,7 +660,7 @@ fn lowest(heads: &[Head<'_>]) -> Option<usize> {
             heads[b]
                 .head
                 .as_ref()
-                .is_some_and(|bc| c.location.order(&bc.location).is_lt())
+                .is_some_and(|bc| c.location.order(&bc.location, boots).is_lt())
         });
         if better {
             best = Some(i);
@@ -512,6 +678,7 @@ fn second_step<'a>(
     landings: &[Option<Candidate>],
     taken: &Candidate,
     starts: &mut [Option<u64>],
+    boots: &BootOrder,
     errors: &mut ReadErrors,
 ) -> Vec<Head<'a>> {
     let mut heads = Vec::new();
@@ -526,7 +693,7 @@ fn second_step<'a>(
         let landing = match &landings[i] {
             Some(l) => Some(l.clone()),
             None => q
-                .seek(&taken.location, errors)
+                .seek(&taken.location, boots, errors)
                 .and_then(|l| q.candidate(i, l, errors)),
         };
         if starts[i].is_none() {
@@ -543,7 +710,7 @@ fn second_step<'a>(
 
 /// Fill each file's head with its next entry strictly after `last`
 /// (`next_beyond_location`'s `found = k > 0`).
-fn advance(heads: &mut [Head<'_>], last: &Cursor, errors: &mut ReadErrors) {
+fn advance(heads: &mut [Head<'_>], last: &Cursor, boots: &BootOrder, errors: &mut ReadErrors) {
     for (i, h) in heads.iter_mut().enumerate() {
         loop {
             if h.head.is_none() {
@@ -566,7 +733,7 @@ fn advance(heads: &mut [Head<'_>], last: &Cursor, errors: &mut ReadErrors) {
                 }
             }
             match &h.head {
-                Some(c) if !c.location.order(last).is_gt() => h.head = None,
+                Some(c) if !c.location.order(last, boots).is_gt() => h.head = None,
                 _ => break,
             }
         }
@@ -584,8 +751,9 @@ fn older_than_starts(
 ) -> bool {
     let mut older = false;
     for (q, start) in queries.iter().zip(starts) {
-        // The first readable match; an error before it is reported.
-        for r in q.matches_from(0) {
+        // The first readable match, after the cursor or not; an error
+        // before it is reported.
+        for r in q.all_matches_from(0) {
             match r {
                 Ok((off, _)) => {
                     older |= start.is_none_or(|s| off < s);
@@ -599,13 +767,14 @@ fn older_than_starts(
 }
 
 /// The forward page after `c`: at most `n` matching entries (or `held`,
-/// when that is less), oldest first.
+/// when that is less), oldest first, ordered with `boots`.
 pub(crate) fn after(
     files: &[JournalFile],
     groups: &[Group],
     n: usize,
     c: &Cursor,
     held: usize,
+    boots: &BootOrder,
     errors: &mut ReadErrors,
 ) -> Forward {
     let mut queries: Vec<FileQuery<'_>> = files
@@ -615,7 +784,7 @@ pub(crate) fn after(
     // The first step: each file's landing, not compared with the cursor.
     let mut landings: Vec<Option<Candidate>> = Vec::new();
     for (i, q) in queries.iter_mut().enumerate() {
-        let l = q.seek(c, errors);
+        let l = q.seek(c, boots, errors);
         landings.push(l.and_then(|l| q.candidate(i, l, errors)));
     }
     let starts: Vec<Option<u64>> = landings
@@ -629,7 +798,7 @@ pub(crate) fn after(
             rest: None,
         })
         .collect();
-    let Some(first) = lowest(&heads_first) else {
+    let Some(first) = lowest(&heads_first, boots) else {
         let older = older_than_starts(&queries, &starts, errors);
         return Forward {
             picked: Vec::new(),
@@ -653,10 +822,12 @@ pub(crate) fn after(
         }
     }
     let mut starts = starts;
-    let mut heads = second_step(&mut queries, &landings, &taken, &mut starts, errors);
+    let mut heads = second_step(&mut queries, &landings, &taken, &mut starts, boots, errors);
     while !more {
-        advance(&mut heads, &last, errors);
-        let Some(best) = lowest(&heads) else { break };
+        advance(&mut heads, &last, boots, errors);
+        let Some(best) = lowest(&heads, boots) else {
+            break;
+        };
         if out.len() >= keep {
             more = true;
             break;

@@ -261,6 +261,7 @@ pub struct Release {
     version_id: &'static str,
     systemd: u32,
     unit_rule: UnitRule,
+    boot_rule: BootRule,
     /// `-o json` prints `__SEQNUM` and `__SEQNUM_ID` (v255 and later): for
     /// the tools only (journal spec, API).
     #[cfg(feature = "testing")]
@@ -270,12 +271,13 @@ pub struct Release {
 /// The supported releases. A new LTS is one row here, checked by the
 /// matrix (compare.sh and compat.sh run every row); it needs code only if
 /// its systemd brings a new `-u` rule, `-o json` shape or incompatible file
-/// flag (file.rs `INCOMPAT_KNOWN`).
+/// flag (file.rs `INCOMPAT_KNOWN`), or a new order between boots.
 pub const RELEASES: &[Release] = &[
     Release {
         version_id: "22.04",
         systemd: 249,
         unit_rule: UnitRule::Pid1,
+        boot_rule: BootRule::Realtime,
         #[cfg(feature = "testing")]
         prints_seqnum: false,
     },
@@ -283,6 +285,7 @@ pub const RELEASES: &[Release] = &[
         version_id: "24.04",
         systemd: 255,
         unit_rule: UnitRule::Pid1,
+        boot_rule: BootRule::NewestTail,
         #[cfg(feature = "testing")]
         prints_seqnum: true,
     },
@@ -290,6 +293,7 @@ pub const RELEASES: &[Release] = &[
         version_id: "26.04",
         systemd: 259,
         unit_rule: UnitRule::InitScope,
+        boot_rule: BootRule::NewestTail,
         #[cfg(feature = "testing")]
         prints_seqnum: true,
     },
@@ -309,6 +313,22 @@ pub enum UnitRule {
     /// (src/journal/journalctl-filter.c), with sb's stricter rule for the
     /// uid term (journal spec, decisions 1 and 4).
     InitScope,
+}
+
+/// How journalctl orders entries of two different boots that no sequence
+/// number orders (src/libsystemd/sd-journal/sd-journal.c), by the systemd
+/// versions that have it (journal spec, decision 11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BootRule {
+    /// 249, `journal_file_compare_locations` (journal-file.c): by
+    /// realtime, then the XOR hash.
+    Realtime,
+    /// 255 to 259, `compare_boot_ids` in `compare_locations` and
+    /// `compare_with_location`: first by each boot's newest file's tail
+    /// realtime, for boots of one machine that are in that table; then as
+    /// `Realtime`.
+    NewestTail,
 }
 
 /// A release that isn't one of [`RELEASES`].
@@ -355,6 +375,12 @@ impl Release {
     #[must_use]
     pub fn unit_rule(&self) -> UnitRule {
         self.unit_rule
+    }
+
+    /// journalctl's order between boots on this release.
+    #[must_use]
+    pub fn boot_rule(&self) -> BootRule {
+        self.boot_rule
     }
 
     /// Whether `-o json` prints `__SEQNUM` and `__SEQNUM_ID` (the tools'
@@ -521,6 +547,16 @@ mod tests {
         }
         assert!(has("26.04", b"_SYSTEMD_CGROUP=/init.scope") && !has("26.04", b"_PID=1"));
         assert_eq!(release("26.04").unit_rule(), UnitRule::InitScope);
+    }
+
+    /// The boot step per row: systemd 249 has none; 255 and 259 order
+    /// boots by their newest file's tail (decision 11).
+    #[test]
+    fn boot_rule_per_release() {
+        assert_eq!(release("22.04").boot_rule(), BootRule::Realtime);
+        for v in ["24.04", "26.04"] {
+            assert_eq!(release(v).boot_rule(), BootRule::NewestTail);
+        }
     }
 
     /// The rows' other columns, as the matrix and the tools read them.
