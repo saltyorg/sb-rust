@@ -41,15 +41,34 @@ Standing rules:
   the script holds entries. The task that fixes a finding removes that
   finding's entries wherever they are.
 - Probe logs and screenshots stay outside the repository. A platform
-  note holds versions and the method, never host details.
+  note holds versions and the method, never host details. A checkpoint
+  report describes a screenshot, or holds a text capture of sb's own
+  output from a fixture-driven run, with no host details (decision 13;
+  a real `sb docker` run would carry container names). The images are
+  kept outside the repository and named in the handover message to the
+  maintainer.
 - Nothing is pushed.
+- A research task's recommendation (Tasks 7, 32, 34's flush question
+  and 42) is followed once a fresh-context review on Fable agrees with
+  it, and is recorded as reversible in the task and in its checkpoint
+  report (decision 14). If the review disagrees, or no option meets the
+  decisions, the task and the tasks that depend on it wait for the
+  maintainer, and other work goes on.
+- If research at a task contradicts the premise of a decision 17
+  answer, that task goes back to the maintainer (decision 17).
+- Checkpoints T, D, B, Y and C each end with a report committed as
+  `tasks/checkpoints/<checkpoint>.md` (decision 13): what landed, the
+  gate results, the reviews, the recommendations followed and the open
+  risks, summarised, with no raw output and no host details. Work goes
+  on after it; the maintainer reviews the commits afterwards.
 
 A Low sweep lists its ids from tasks/findings.md, each marked **fix** or
-**proposed-decline** with a reason. The proposed declines go to the
-maintainer as a list before the sweep is committed; an overruled decline
-is fixed in the same sweep. A fix that needs files beyond the sweep's
-own, or that changes a design (a protocol, a public API), becomes a new
-task.
+**proposed-decline** with a reason. The sweep commits its fixes without
+waiting, and adds its proposed declines to the running list "Proposed
+declines for the maintainer" below the last checkpoint (decision 15),
+to be confirmed or overruled in one sitting. An overruled decline
+becomes a fix task. A fix that needs files beyond the sweep's own, or
+that changes a design (a protocol, a public API), becomes a new task.
 
 ## Task 1: the floor guard sees every gate file
 
@@ -156,7 +175,7 @@ commit, one entry per line.
 
 **Verification:**
 - [x] `node --test scripts/floor-guard.test.mjs`; `scripts/check.sh fast`.
-- [ ] code-reviewer on the commit.
+- [x] code-reviewer on the commit.
 
 **Dependencies:** Task 2
 **Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/floor-acknowledged.txt`
@@ -175,8 +194,11 @@ commit, one entry per line.
 - [ ] `check.sh full <base>` runs `scripts/check-commit-messages.sh
       <base> HEAD` when the base isn't HEAD.
 - [ ] The commit-message script skips only true merge commits (by
-      parent count), not any subject starting "Merge ", and checks the
-      whole description for lowercase, not only its first character.
+      parent count), not any subject starting "Merge ". The
+      description's first letter, after any leading non-letters (a
+      backtick, a quote, a digit, punctuation), is lowercase; proper
+      nouns and identifiers later in the description stay allowed.
+      (Decided unattended, reversible: the plan, after decision 17.)
 - [ ] `fast` fails when a crate under `crates/` has no `deny.toml`
       `bans.deny` entry, or doesn't inherit the workspace lints.
 - [ ] `check.sh` compares each tool's version with the CONSTRAINTS Tools
@@ -184,6 +206,13 @@ commit, one entry per line.
       and pinned tools exactly; the system packages (node, `script`,
       Docker) by major version or minimum, so a host package update
       doesn't fail every run. The table says which rule each tool has.
+      No cargo-installed tool is run for its version (cross would sync
+      a toolchain):
+      the cargo-installed tools' versions come from
+      `cargo install --list`, and gitleaks' from `go version -m` on its
+      binary, since its `go install` build can't report one. Go joins
+      the Tools table as a minimum-version row. (Decided unattended,
+      reversible: the plan, after decision 17.)
 - [ ] `git diff` calls use `--no-ext-diff --no-color` and fixed
       prefixes; cargo calls use `--locked`; an inherited
       `CARGO_TARGET_DIR` can't redirect a stage; a run on an
@@ -241,7 +270,8 @@ the journal lane starts from a corrected spec.
 **Acceptance criteria:**
 - [ ] docs-M6: the capability map's stack table has the nix row host.md
       requires, and the rustix row names sb-host's `event`.
-- [ ] Each id below is fixed, or its decline is confirmed:
+- [ ] Each id below is fixed, or it is on the collected declines list
+      (docs-L12's E1 half is confirmed already, decision 16):
       - docs-L1 **fix**: journal.md's Project Structure lists boots.rs.
       - docs-L2 **fix**: the Tech Stack describes rustix as used.
       - docs-L3 **fix**: the scenario count.
@@ -254,9 +284,10 @@ the journal lane starts from a corrected spec.
       - docs-L10 **fix**: host.md agrees with deny.toml.
       - docs-L11 **fix**: the deny.toml comment.
       - docs-L12 **fix** for the 0BSD allowance that never applies (a
-        tightening); **proposed-decline** for exception E1's ignores:
-        the recorded decision keeps them until E1's expiry (this file,
-        "Follow-ups from the journal reader").
+        tightening); **declined, confirmed** (decision 16) for exception
+        E1's ignores: the recorded decision keeps them until E1's expiry
+        (this file, "Follow-ups from the journal reader"). It isn't on
+        the collected list.
       - docs-L15 **maintainer's**: CLAUDE.md's two stale lines (the
         plan's open questions).
       - docs-L16 **fix at Checkpoint C**: CONSTRAINTS "Last reviewed"
@@ -279,8 +310,11 @@ the journal lane starts from a corrected spec.
       in Task 12, the window in Task 13, the API names, the forward
       loop, and the page against journalctl. Publication and docs-L15
       were deferred; no task waits on either.
-- [ ] Task 6's proposed decline (the exception E1 half of docs-L12) is
-      confirmed or overruled.
+- [x] Task 6's proposed decline (the exception E1 half of docs-L12) is
+      confirmed (decision 16, 2026-11-11).
+- [x] Decisions 13 to 17 (2026-11-11) set how the plan runs unattended
+      and answered the questions of Tasks 18, 19, 20, 25, 45, 47, 48,
+      50 and 52 ahead of their tasks.
 - [ ] `scripts/check-plan-ids.mjs` passes.
 
 ## Task 7: a child that prompts on the terminal: research and decision
@@ -288,12 +322,12 @@ the journal lane starts from a corrected spec.
 **Description:** A piped child that touches the controlling terminal
 (an ssh passphrase or host-key prompt under git) is stopped by the
 kernel, and sb waits silently for ever (exec-M1; confirmed). This task
-finds what can be done without `unsafe` and ends at the maintainer's
-choice. It opens lane 1 and is done when the options are with the
-maintainer, so the lane goes on while the answer is waited for; Task 14
-records the decision. It commits no test: a failing test can't pass
-`check.sh full`, so the reproduction is a probe described in the
-write-up, and the test lands with the fix in Task 14.
+finds what can be done without `unsafe` and ends at a recommendation,
+which is followed once a review agrees (decision 14). It opens lane 1,
+and the lane goes on to Task 8 while the review runs; Task 14 records
+the followed recommendation. It commits no test: a failing test
+can't pass `check.sh full`, so the reproduction is a probe described
+in the write-up, and the test lands with the fix in Task 14.
 
 **Acceptance criteria:**
 - [ ] A probe reproduces the hang with a child that opens the terminal,
@@ -310,10 +344,15 @@ write-up, and the test lands with the fix in Task 14.
         `SSH_ASKPASS_REQUIRE=never`): what it covers and what it
         doesn't;
       - what each option does to an ssh prompt under git.
-- [ ] The options and a recommendation go to the maintainer (the plan's
-      open question): fail fast by detection, by batch mode, by a new
+- [ ] The options and a recommendation are written up (the plan's
+      question): fail fast by detection, by batch mode, by a new
       session, or keep the terminal reachable as sb-go did, with that
       option's cost to the process-group design stated.
+- [ ] The recommendation is checked by a fresh-context review on Fable.
+      If it agrees, it is recorded as reversible here and in Checkpoint
+      T's report, and Task 14 follows it. If it doesn't, or no option
+      meets the decisions, this task and Task 14 wait for the
+      maintainer; Tasks 8 to 13 go on, and lane 1 waits at Task 14.
 
 **Verification:**
 - [ ] The probe hangs for the stated reason and ends at its timeout;
@@ -348,7 +387,8 @@ confirmed with OSC 52, a title change and a screen clear). Sanitize in
 - [ ] `cargo test -p sb-term-ui -p sb-docker`; `scripts/check.sh task`.
 - [ ] security-auditor, library-reviewer and code-reviewer on the commit.
 
-**Dependencies:** Task 7 (its write-up; not the maintainer's answer)
+**Dependencies:** Task 7 (its write-up; not the review of its
+recommendation)
 **Files:** `crates/term-ui/src/table.rs`, `crates/term-ui/tests/table.rs`, `crates/docker/src/ps.rs` (tests), `docs/specs/term-ui.md`
 **Scope:** S
 
@@ -503,12 +543,14 @@ leave no log record (cli-L3).
 
 ## Task 14: a child that prompts on the terminal: the fix
 
-**Description:** Implement the decision Task 7 brought to the
-maintainer (exec-M1). The reproduction becomes the failing test here.
+**Description:** Implement the recommendation Task 7 made and its
+review agreed with (decision 14; exec-M1). The reproduction becomes the
+failing test here.
 
 **Acceptance criteria:**
-- [ ] The maintainer's decision is recorded in the exec spec, with a
-      Differences entry if it differs from sb-go.
+- [ ] The followed recommendation is recorded in the exec spec, marked
+      reversible (decision 14), with a Differences entry if it differs
+      from sb-go.
 - [ ] Task 7's probe is a test: a piped child that opens the terminal,
       under a timeout. It fails before the fix.
 - [ ] A piped child that prompts on the terminal never leaves sb
@@ -526,7 +568,8 @@ maintainer (exec-M1). The reproduction becomes the failing test here.
 - [ ] `cargo test -p sb-exec`; `scripts/check.sh task`.
 - [ ] library-reviewer and code-reviewer on the commit.
 
-**Dependencies:** Task 13, and the maintainer's answer to Task 7
+**Dependencies:** Task 13, and Task 7's recommendation with its
+review's agreement
 **Files:** `crates/exec/src/{run.rs,group.rs,lib.rs}`, `crates/exec/tests/` (the test), `docs/specs/exec.md`
 **Scope:** M
 
@@ -599,28 +642,31 @@ tree (ui-M3; confirmed).
 
 ## Checkpoint T: text and processes
 - [ ] `check.sh full`; the signal probes pass under sudo.
-- [ ] The plan's questions marked [checkpoint T] are answered (Tasks
-      18, 19 and 25).
-- [ ] Review with the maintainer.
+- [ ] A checkpoint report is committed as `tasks/checkpoints/T.md`
+      (decision 13): results summarised, Task 7's followed
+      recommendation marked reversible, no raw output and no host
+      details.
 
 ## Task 18: `docker restart` never ends silently short of a start
 
 **Description:** A wait that ends without a final job status (the 295 s
 wait against the controller's 300 s stop, one failed poll, a timed-out
 request) prints no notice, and `restart` then never starts the
-containers (docker-M2). How far to differ from sb-go is the
-maintainer's (the plan's open question); the floor below isn't.
+containers (docker-M2). How far it differs from sb-go is decision 17;
+the floor below holds in any case.
 
 **Acceptance criteria:**
 - [ ] The floor: `restart` never ends without either the start
       requested or a line saying the start wasn't requested and why.
       A test covers each non-final ending: sb's timeout, a failed poll,
       a timed-out request.
-- [ ] The notice "the controller may still be working" and the
-      tolerated poll failures are as the maintainer chose, each with a
+- [ ] The notice "the controller may still be working" is shown on
+      every ending without a final job status, and a few failed polls
+      in a row are tolerated before it (decision 17), each with a
       test.
-- [ ] The docker spec records the decision, its Differences and the
-      amended Known limit "sb can give up before the controller does".
+- [ ] The docker spec records decision 17, its Differences from sb-go
+      and the amended Known limit "sb can give up before the controller
+      does".
       Closes that half of the follow-up "sb's wait can give up before
       the controller's own job timeout".
 
@@ -628,8 +674,7 @@ maintainer's (the plan's open question); the floor below isn't.
 - [ ] `cargo test -p sb-docker -p sb`; `scripts/check.sh task`.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Checkpoint T, and the maintainer's answer to this
-task's question
+**Dependencies:** Checkpoint T
 **Files:** `crates/docker/src/control/{commands.rs,client.rs}`, `crates/docker/src/testing/`, `crates/sb/tests/docker_control.rs`, `docs/specs/docker.md`
 **Scope:** M
 
@@ -646,11 +691,13 @@ confirmed in tmux).
 - [ ] A PTY test types and presses Enter during a run and finds no
       stale line.
 - [ ] term-ui.md's `ECHOCTL` wording (the terminal restore, the
-      `Runner` rustdoc, success criterion 6, decision 5) is amended,
-      as the maintainer accepted.
+      `Runner` rustdoc, success criterion 6, decision 5) is amended
+      (decision 17).
 
 **Verification:**
 - [ ] `cargo test -p sb-term-ui -p sb`; `scripts/check.sh task`.
+- [ ] A before and after capture of a fixture-driven live run while
+      typing, for Checkpoint D's report (decision 13).
 - [ ] library-reviewer and code-reviewer on the commit.
 
 **Dependencies:** Task 11, Task 17 (`runner.rs`, `tty.rs`)
@@ -667,17 +714,18 @@ steps".
 
 **Acceptance criteria:**
 - [ ] With more live lines than rows, the running step and its output
-      lines stay visible, by the way the maintainer chose (collapsed
-      settled lines, or settled children printed for good).
+      lines stay visible: settled lines collapse to "… N finished"
+      (decision 17).
 - [ ] An in-memory test has fewer rows than the tree; a second covers
       a terminal resized while live.
-- [ ] The finished tree is complete either way: nothing collapsed is
-      lost from the final output or the log.
+- [ ] The finished tree is complete: nothing collapsed is lost from
+      the final output or the log.
 - [ ] term-ui.md records the decision.
 
 **Verification:**
 - [ ] `cargo test -p sb-term-ui`; a tmux probe at 80x12, with
-      screenshots of before and after for the maintainer;
+      screenshots of before and after for Checkpoint D's report
+      (decision 13);
       `scripts/check.sh task`.
 - [ ] library-reviewer and code-reviewer on the commit.
 
@@ -689,7 +737,9 @@ steps".
 
 **Description:** The display Lows that change a reviewed look, brought
 to the maintainer with snapshots (ui-L1 and san-I1, ui-L3, ui-L4,
-ui-L5).
+ui-L5). The looks still wait for the maintainer (decision 13): lane 1
+pauses here until the maintainer has seen the screenshots, and the
+other lanes go on.
 
 **Acceptance criteria:**
 - [ ] ui-L3: a wrapped table has no blank line at exact multiples of
@@ -749,7 +799,7 @@ server, so all are fixes.
 **Description:** exec's remaining Lows.
 
 **Acceptance criteria:**
-- [ ] Each id is fixed, or its decline is confirmed:
+- [ ] Each id is fixed, or it is on the collected declines list:
       - exec-L3 **fix**: a group id isn't tested again once it was
         seen empty.
       - exec-L4 **fix** (document): the spec says a PTY child that
@@ -773,6 +823,8 @@ server, so all are fixes.
         - **proposed-decline**: encoded forms aren't matched. Matching
           is literal by spec, and a caller registers each form it
           passes.
+- [ ] Its proposed declines are on "Proposed declines for the
+      maintainer", each with its id, this task, the reason and the date.
 
 **Verification:**
 - [ ] `cargo test -p sb-exec`; `scripts/check.sh task`.
@@ -787,7 +839,7 @@ server, so all are fixes.
 **Description:** docker's remaining Lows.
 
 **Acceptance criteria:**
-- [ ] Each id is fixed, or its decline is confirmed:
+- [ ] Each id is fixed, or it is on the collected declines list:
       - docker-L3 **fix**: `tcp://host` with no port and a bare
         `unix://` are refused before any request, with an error that
         names the missing port or path, instead of reaching bollard as
@@ -810,6 +862,8 @@ server, so all are fixes.
       - docker-L9 **proposed-decline**: two guideline notes with no
         bug (`ControlError`'s shape; `Daemon`'s public bollard field),
         in an internal crate whose tests match the variants.
+- [ ] Its proposed declines are on "Proposed declines for the
+      maintainer", each with its id, this task, the reason and the date.
 
 **Verification:**
 - [ ] `cargo test -p sb-docker -p sb`; `scripts/check.sh task`.
@@ -824,16 +878,15 @@ server, so all are fixes.
 **Description:** The sanitizer's remaining Lows and unrated items.
 
 **Acceptance criteria:**
-- [ ] Each id is fixed, or its decline is confirmed:
+- [ ] Each id is fixed, or it is on the collected declines list:
       - san-L1 **fix**: the live tree's `cut` and its width agree with
         the sanitizer on what an SGR is (colon forms, long parameters),
         with a test that runs sanitized colon-form lines through `cut`.
-      - san-L2, as the maintainer chose (the plan's open question): a
-        reset appended to any drawn line that kept an SGR, and
-        font-select parameters dropped; or the reset only; or a
-        confirmed decline. The term-ui spec's "Escape handling" and
-        success criterion 2, and the journal spec's display decision 2,
-        are amended to match.
+      - san-L2 **fix** (decision 17): a reset is appended to any drawn
+        line that kept an SGR, and font-select parameters 10 to 20 are
+        dropped; other kept codes stay byte-exact. The term-ui spec's
+        "Escape handling" and success criterion 2, and the journal
+        spec's display decision 2, are amended to match.
       - san-I2 (log text) **proposed-decline**: bidi and zero-width
         characters pass in a step's output and in log text, as the
         journal spec's display decision 2 accepts; right-to-left text
@@ -847,13 +900,15 @@ server, so all are fixes.
       - san-T1 **fix**: tests feed sanitized output through `cut`, and
         the short-input test's alphabet gains CAN, SUB, DEL, `:` and
         the 8-bit DCS and APC introducers.
+- [ ] Its proposed declines are on "Proposed declines for the
+      maintainer", each with its id, this task, the reason and the date.
 
 **Verification:**
 - [ ] `cargo test -p sb-term-ui`; `scripts/check.sh task`.
 - [ ] security-auditor, library-reviewer and code-reviewer on the commit.
 
-**Dependencies:** Task 24, and the answer to the san-L2 question
-**Files:** `crates/term-ui/src/{text.rs,tree.rs}`, `crates/term-ui/src/runner.rs` (only if san-L2's reset is written there, for Plain mode), `docs/specs/term-ui.md`, `docs/specs/journal.md` (one line of display decision 2, if san-L2 is accepted)
+**Dependencies:** Task 24
+**Files:** `crates/term-ui/src/{text.rs,tree.rs}`, `crates/term-ui/src/runner.rs` (only if san-L2's reset is written there, for Plain mode), `docs/specs/term-ui.md`, `docs/specs/journal.md` (one line of display decision 2)
 **Scope:** M
 
 ## Task 26: Low sweep: term-ui's runner
@@ -867,7 +922,8 @@ server, so all are fixes.
       - ui-L7 **fix**: `tests/runner.rs` runs `script` under a
         timeout; `tests/live.rs` can't go live on a real terminal; the
         `--colour` case removes `NO_COLOR`. The two stale ignored
-        `.pending-snap` files are listed for the maintainer to delete.
+        `.pending-snap` files are listed in Checkpoint D's report for
+        the maintainer to delete.
         (The tests for ui-M1 to ui-M4 and ui-L1 come with Tasks 8, 17
         and 19-21.)
       - ui-L8 **fix**: `begin` checks that the parent is still running
@@ -884,9 +940,13 @@ server, so all are fixes.
 
 ## Checkpoint D: docker and display
 - [ ] `check.sh full`; the tmux probes at 80x12 and 36 columns.
-- [ ] The declines of Tasks 22-25 are confirmed or overruled (Task 26
-      proposes none).
-- [ ] Review with the maintainer (the looks, from screenshots).
+- [ ] The proposed declines of Tasks 22-25 are on the collected list
+      (Task 26 proposes none).
+- [ ] The maintainer has seen Task 21's looks, from screenshots
+      (decision 13).
+- [ ] A checkpoint report is committed as `tasks/checkpoints/D.md`
+      (decision 13), with Tasks 19 and 20's screenshots described:
+      results summarised, no raw output and no host details.
 
 ## Task 27: the crafted builder writes compact and keyed files
 
@@ -1067,8 +1127,9 @@ bounds only resident memory (tests-M1, tests-M3, tests-M4, tests-M5).
 **Description:** A page and the follow after it disagree about where
 the page ended (follow-H1, page-H1, fwd-M2; confirmed three times; the
 mirror case is follow-N1). This task is research: it records what is
-established, probes what isn't, and brings the options to the
-maintainer. The fix is Task 33. It commits no test.
+established, probes what isn't, and ends at a recommendation, which
+is followed once a review agrees (decision 14). The fix is Task 33. It
+commits no test.
 
 What the code does today:
 - A page reads each file's header once (n0), then each file's newest
@@ -1146,8 +1207,15 @@ named), for the platform note to be written from:
       whether the forward page takes the re-read cleanly: an entry
       before the landing the seek found must be taken by the cursor's
       order.
-- [ ] The options and a recommendation go to the maintainer. Task 33
-      records the answer and gets its option-specific criteria then.
+- [ ] The options and a recommendation are written up. The
+      recommendation includes decision 12's point on a forward page
+      bounded by its header's count.
+- [ ] The recommendation is checked by a fresh-context review on Fable.
+      If it agrees, it is recorded as reversible here and in Checkpoint
+      B's report, and Task 33 gets its option-specific criteria from
+      it. If it doesn't, or no option meets the decisions, this task
+      and the rest of lane 2 wait for the maintainer, and the other
+      lanes go on.
 
 **Verification:**
 - [ ] The probe's runs, capped, in the matrix's containers, logs kept
@@ -1161,18 +1229,20 @@ named), for the platform note to be written from:
 ## Task 33: a page and its follow give every entry once
 
 **Description:** The fix for follow-H1, page-H1, fwd-M2 and follow-N1,
-in the shape the maintainer chose after Task 32. The criteria below
+in the shape Task 32 recommended and its review agreed with (decision
+14). The criteria below
 are behaviour. They hold under any option, except that the first two
 fixtures are set up differently for each option, as each one says.
-The criteria particular to
-the chosen option (what `PageEnd` holds, what the page re-reads) are
-added to this task with the answer, before any code. Unfiltered
-queries read no value list, so neither defect exists for them, and
-they stay out of the change.
+The criteria particular to the chosen option (what `PageEnd` holds,
+what the page re-reads) are added to this task from the followed
+recommendation, before any code. Unfiltered queries read no value
+list, so neither defect exists for them, and they stay out of the
+change.
 
 **Acceptance criteria:**
-- [ ] The maintainer's decision is recorded in journal.md, and its
-      "Starting a follow" matches the code. "0 lost, 0 doubled" holds
+- [ ] The followed recommendation is recorded in journal.md, marked
+      reversible (decision 14), and its "Starting a follow" matches the
+      code. "0 lost, 0 doubled" holds
       as stated, with no new Difference.
 - [ ] An entry appended and linked during the page. The fixture is
       what the file holds at each of the page's reads, not one static
@@ -1219,8 +1289,8 @@ they stay out of the change.
 - [ ] follow.sh on at least one release, capped.
 - [ ] code-reviewer and library-reviewer on the commit.
 
-**Dependencies:** Task 32, and the maintainer's answer to the handover
-question
+**Dependencies:** Task 32 (its recommendation, with its review's
+agreement)
 **Files:** `crates/journal/src/{walk.rs,forward.rs,follow.rs,lib.rs}` (which of them depends on the answer), `crates/journal/src/testing.rs` (the test seam), `docs/specs/journal.md`, `crates/journal/tests/{follow.sh,seeds.sh}` (entry lines only)
 **Scope:** M
 
@@ -1228,9 +1298,16 @@ question
 
 **Description:** The other half of the handover (follow-H1, page-H1,
 fwd-M2): files that change between the page and the follow. Most of
-it holds today and is pinned here; two points are new.
+it holds today and is pinned here; two points are new. The flush
+question (the plan's) takes its recommendation (decision 14).
 
 **Acceptance criteria:**
+- [ ] Before code, the flush question's recommendation (Difference 13
+      extended) is checked by a fresh-context review on Fable. If it
+      agrees, it is recorded as reversible here and in Checkpoint B's
+      report. If it doesn't, or no option meets the decisions, this
+      task and the rest of lane 2 wait for the maintainer, and the
+      other lanes go on.
 - [ ] A rotation between the page and the follow: the archived file
       keeps its position by inode and file id, and every entry of the
       new file is delivered. Nothing lost or doubled.
@@ -1242,12 +1319,10 @@ it holds today and is pinned here; two points are new.
       the /var file: every flush copy is shown again, as Difference 13
       says of a followed file. A test pins it.
 - [ ] A flush between the page and the follow, where the /var file is
-      new: as the maintainer chose (the plan's question). Either
-      Difference 13's wording is extended to a page and a follow on
-      either side of a flush, or each shown entry's identity is
-      carried and one copy of each is dropped. Under both, no entry is
-      lost, and `PageEnd`'s newest entry is not raised past what the
-      headers gave.
+      new: Difference 13's wording is extended to a page and a follow
+      on either side of a flush (the followed recommendation). No
+      entry is lost, and `PageEnd`'s newest entry is not raised past
+      what the headers gave.
 - [ ] A file the page couldn't open: the follow reads it as a new
       file, and its open error is reported once.
 - [ ] A merged page over several files hands each file over on its
@@ -1257,7 +1332,7 @@ it holds today and is pinned here; two points are new.
       entry can be newer than an entry of another file that the page
       didn't read. That entry is lost only if its file is gone before
       the follow opens it, which takes a flush between the two, once
-      per boot.
+      per boot. Checkpoint B's report names it for the maintainer.
 - [ ] follow.sh gains a rotation and a flush between the page and the
       follow, next to its two "between" scenarios.
 
@@ -1266,8 +1341,7 @@ it holds today and is pinned here; two points are new.
 - [ ] follow.sh on three releases, capped.
 - [ ] code-reviewer and library-reviewer on the commit.
 
-**Dependencies:** Task 33, and the maintainer's answer to the flush
-question
+**Dependencies:** Task 33
 **Files:** `crates/journal/src/{follow.rs,lib.rs}`, `docs/specs/journal.md`, `crates/journal/tests/follow.sh`
 **Scope:** M
 
@@ -1420,7 +1494,7 @@ smaller defects go with it (file-L2, file-L3, file-L4, page-N1).
 forward paging.
 
 **Acceptance criteria:**
-- [ ] Each id is fixed, or its decline is confirmed:
+- [ ] Each id is fixed, or it is on the collected declines list:
       - page-L1 **fix**: limit notices sit outside the ten-error cap.
       - page-L2 **fix**: `omitted` counts distinct errors.
       - page-L3 **fix**: `decode` doesn't reserve by the candidate
@@ -1447,6 +1521,8 @@ forward paging.
         for `After` too; the behaviour stays journalctl's.
       - docs-L5 **fix**: `UnitRule::Pid1`'s rustdoc agrees with the
         platform note.
+- [ ] Its proposed declines are on "Proposed declines for the
+      maintainer", each with its id, this task, the reason and the date.
 
 **Verification:**
 - [ ] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh task`.
@@ -1499,7 +1575,7 @@ server with a busy or rotating journal, so all are fixes.
 **Description:** The remaining Lows of the test-evidence review.
 
 **Acceptance criteria:**
-- [ ] Each id is fixed, or its decline is confirmed:
+- [ ] Each id is fixed, or it is on the collected declines list:
       - tests-L4 **fix**: compare.sh's live row stops journald before
         its two reads, as compat.sh does, so a write between them can't
         fail it.
@@ -1516,6 +1592,8 @@ server with a busy or rotating journal, so all are fixes.
         added.
       - tests-L12 **fix**: compat.sh leaves no root-owned files in
         `target/journal-compat`.
+- [ ] Its proposed declines are on "Proposed declines for the
+      maintainer", each with its id, this task, the reason and the date.
 
 **Verification:**
 - [ ] `cargo test -p sb-journal`; compare.sh and compat.sh on at least
@@ -1538,8 +1616,11 @@ server with a busy or rotating journal, so all are fixes.
       ADR if a value passes its tolerance.
 - [ ] The new API is reviewed: decision 10's names in place, and what
       the handover changed in rustdoc or types (Tasks 33 and 34).
-- [ ] The declines of Tasks 39-41 are confirmed or overruled.
-- [ ] Review with the maintainer.
+- [ ] The proposed declines of Tasks 39-41 are on the collected list.
+- [ ] A checkpoint report is committed as `tasks/checkpoints/B.md`
+      (decision 13): results summarised, Tasks 32 and 34's followed
+      recommendations marked reversible, the limit Task 34 lists, no
+      raw output and no host details.
 
 ## Task 42: YAML: the corpus and the options
 
@@ -1547,10 +1628,11 @@ server with a busy or rotating journal, so all are fixes.
 layouts and quoted scalars that libyaml, PyYAML and yaml.v3 accept, and
 accepts two tab layouts Ansible rejects (config-H1, config-L1;
 confirmed with about 200 snippets). This task builds the standing
-differential corpus and the options, and ends at the maintainer's
-choice. Lane 3 then waits for the answer: Task 43 is next and needs it.
-So this task runs early, while lanes 1 and 2 hold the two worktrees,
-and the answer is in before lane 3's code starts.
+differential corpus and the options, and ends at a recommendation,
+which is followed once a review agrees (decision 14). Task 43 is next
+and is coded to it. So this task runs early, while lanes 1 and 2 hold
+the two worktrees, and the review is done before lane 3's code
+starts.
 
 **Acceptance criteria:**
 - [ ] A checked-in corpus of layouts, each with what libyaml accepts
@@ -1573,7 +1655,11 @@ and the answer is in before lane 3's code starts.
       it is only for a residual case the chosen fix can't cover.
       Maintenance, adoption, licence and size
       are stated for any new crate.
-- [ ] The maintainer chooses.
+- [ ] The recommendation is checked by a fresh-context review on Fable.
+      If it agrees, it is recorded as reversible here and in Checkpoint
+      Y's report, and Task 43 follows it. If it doesn't, or no option
+      meets decision 3, this task and lane 3 wait for the maintainer,
+      and the other lanes go on.
 
 **Verification:**
 - [ ] `cargo test -p sb-config`; the Python checks on the generator;
@@ -1586,16 +1672,19 @@ and the answer is in before lane 3's code starts.
 
 ## Task 43: sb accepts the YAML Ansible accepts
 
-**Description:** Implement the option chosen in Task 42 (config-H1,
-config-L1).
+**Description:** Implement the option Task 42 recommended and its
+review agreed with (decision 14; config-H1, config-L1).
 
 **Acceptance criteria:**
 - [ ] The corpus's mismatch list is empty, or holds only entries the
       maintainer accepted, each in the config spec's Differences list.
+      A residual case the fix can't cover waits for the maintainer
+      (decision 3); the rest of the task goes on.
 - [ ] validate-config and cli-core's inventory read agree on every
       corpus case; `appdata_path` no longer falls back to `/opt` on a
       file Ansible reads.
-- [ ] An ADR records the choice. If a dependency is added or changed:
+- [ ] An ADR records the choice, marked reversible (decision 14). If
+      a dependency is added or changed:
       `Cargo.toml`, `deny.toml`, the config spec's Tech Stack and the
       capability map's stack row are updated, and the production
       binary's size is measured against its ratchet (ADR-004 and
@@ -1611,7 +1700,8 @@ config-L1).
       `scripts/check.sh full` (the size).
 - [ ] library-reviewer, security-auditor and code-reviewer on the commit.
 
-**Dependencies:** Task 42 and the maintainer's answer. Lands alone on
+**Dependencies:** Task 42 (its recommendation, with its review's
+agreement). Lands alone on
 `Cargo.toml`, `Cargo.lock` and `deny.toml` (the plan, "Lanes and shared
 files").
 **Files:** `crates/config/src/parse.rs`, `crates/cli-core/src/config.rs`, `Cargo.toml` and `deny.toml` (if a dependency changes), `docs/specs/config.md`, `docs/specs/capability-map.md`, `docs/decisions/` (a new ADR)
@@ -1655,7 +1745,7 @@ routes credentials through it silently (config-M2; confirmed).
 
 **Acceptance criteria:**
 - [ ] The client reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`, and
-      their lowercase forms as the maintainer chose, in Go's order.
+      their lowercase forms (decision 17), in Go's order.
       `ALL_PROXY` and `all_proxy` are ignored. Each has a behavioural test
       of the system-proxy path (the proxy part of config-T1).
 - [ ] config.md's HTTP paragraph and its proxy Difference say exactly
@@ -1700,13 +1790,12 @@ Closes the backlog entry "config: `Node` and `Value` with a redacting
 `main.rs`, so it is in Task 52.
 
 **Acceptance criteria:**
-- [ ] Each id is fixed, or its decline is confirmed:
-      - config-L5 **fix**: a User-Agent is sent, as the maintainer
-        chose (new on the wire).
+- [ ] Each id is fixed, or it is on the collected declines list:
+      - config-L5 **fix**: a `sb/<version>` User-Agent is sent
+        (decision 17; new on the wire).
       - config-L6 **fix**: a schema pattern's `\d`, `\w` and `\s`
-        mean what they mean in Go, or such a pattern is refused at
-        load, as the maintainer chose. One of the two, with a test on
-        Arabic digits.
+        take Go's ASCII meaning (decision 17), with a test on Arabic
+        digits.
       - config-L7 **fix**: `Retry-After` is read when
         `Retry-After-Ms` can't be parsed.
       - config-L8 **fix**: a schema value of the wrong type
@@ -1717,6 +1806,8 @@ Closes the backlog entry "config: `Node` and `Value` with a redacting
       - config-L10 **fix**: UTF-16 as Task 42's corpus says libyaml
         reads it. If Task 43's parser can't, **proposed-decline** as a
         listed Difference (no Saltbox file is UTF-16).
+- [ ] Its proposed declines are on "Proposed declines for the
+      maintainer", each with its id, this task, the reason and the date.
 
 **Verification:**
 - [ ] `cargo test -p sb-config -p sb`; `scripts/check.sh task`.
@@ -1728,8 +1819,11 @@ Closes the backlog entry "config: `Node` and `Value` with a redacting
 
 ## Checkpoint Y: config
 - [ ] `check.sh full`; the differential corpus passes.
-- [ ] The declines of Task 47 are confirmed or overruled.
-- [ ] Review with the maintainer.
+- [ ] The proposed declines of Task 47 are on the collected list.
+- [ ] A checkpoint report is committed as `tasks/checkpoints/Y.md`
+      (decision 13): results summarised, Task 42's followed
+      recommendation marked reversible, any residual YAML difference
+      waiting for the maintainer, no raw output and no host details.
 
 ## Task 48: the production binary is run by the gate
 
@@ -1747,7 +1841,7 @@ named by a mutable tag (sb-L8).
       only; the other half of sb-L7). It isn't in the smoke set: no sb
       command reaches the lookup yet. The first command that does adds
       it there.
-- [ ] Startup is timed on that binary, if the maintainer agrees: the
+- [ ] Startup is timed on that binary (decision 17): the
       CONSTRAINTS Startup row names it, the `sb --help` ratchet is
       re-based, and an ADR records the old and new figures. This is
       needed whether or not a limit moves.
@@ -1761,7 +1855,7 @@ named by a mutable tag (sb-L8).
 - [ ] code-reviewer on the commit.
 
 **Dependencies:** Checkpoints D and B (Task 17 for `main.rs`, Task 31
-for the workflow), and the answer to the startup question
+for the workflow)
 **Files:** `scripts/check.sh`, `Cross.toml`, `crates/sb/tests/version.rs`, `crates/sb/tests/` (the smoke cases), `CONSTRAINTS.md`, `docs/decisions/` (a new ADR)
 **Scope:** M
 
@@ -1801,8 +1895,10 @@ the tests have them on, and sb-journal parses untrusted binary files
 (sb-M5). The panic-strategy comment goes with the profiles (sb-L11).
 
 **Acceptance criteria:**
-- [ ] `overflow-checks = true` in the release and production profiles,
-      as the maintainer decides.
+- [ ] `overflow-checks = true` in the release and production profiles
+      (decision 17). If the measurement shows a cost past a ratchet's
+      tolerance, they stay off and the figures go to the maintainer, as
+      decision 17 says of a contradicted premise.
 - [ ] Size, startup and the pread-bound tests' time are measured
       before and after. The ratchet rows are updated, with a ratchet
       ADR.
@@ -1849,19 +1945,20 @@ three times and renders help for every command (sb-M6). The unused
 fix is in `main.rs`.
 
 **Acceptance criteria:**
-- [ ] Each id is fixed, or its decline is confirmed:
-      - sb-L1, as the maintainer chose (the plan's open question):
-        the root's case recorded as a difference in the cli-core spec
-        (recommended), or a missing subcommand treated as help at the
-        root and for `sb docker`, with the docker spec amended.
+- [ ] Each id is fixed, or it is on the collected declines list:
+      - sb-L1 **fix** (decision 17): the root's `--color=never` with no
+        subcommand (exit 2) is recorded as a difference in the cli-core
+        spec, as the docker group's is.
       - sb-L2 **fix**: help to a closed or full stdout ends as the
         cli-core spec says a closed pipe does.
       - sb-L3 **fix**: a service URL override in effect shows a
         notice on screen, not only a log record.
       - sb-L4 **fix**: non-UTF-8 override values are handled one way
         (the `SB_LOG_DIR=""` part is Task 22's).
-      - sb-L6 **proposed-decline**: exception E1's ignores stay until
-        its expiry, as the recorded decision says (with docs-L12).
+      - sb-L6 **declined, confirmed** (decision 16): tasks/findings.md
+        records sb-L6 and docs-L12's E1 half as the same finding.
+        Exception E1's ignores stay until its expiry, as the recorded
+        decision says. It isn't on the collected list.
       - sb-L7 **fix**: the `getpwnam_r` rationale comment is corrected
         for static musl (Task 48 runs the lookup's test on musl).
       - sb-L9 **fix**: the version test asserts the output, not only
@@ -1872,13 +1969,15 @@ fix is in `main.rs`.
       - sb-L12 **proposed-decline**: mimalloc is a new dependency
         with C code; taken up only if Task 50's measurement shows a
         need.
+- [ ] Its proposed declines are on "Proposed declines for the
+      maintainer", each with its id, this task, the reason and the date.
 
 **Verification:**
 - [ ] `cargo test -p sb -p sb-cli-core -p sb-host`; `scripts/check.sh task`.
 - [ ] code-reviewer on the commit.
 
 **Dependencies:** Task 51
-**Files:** `crates/sb/src/main.rs`, `crates/cli-core/src/help.rs`, `crates/sb/tests/{help.rs,version.rs}`, `crates/host/src/journal.rs` (one comment), `docs/specs/cli-core.md` (one line, if sb-L1 is recorded)
+**Files:** `crates/sb/src/main.rs`, `crates/cli-core/src/help.rs`, `crates/sb/tests/{help.rs,version.rs}`, `crates/host/src/journal.rs` (one comment), `docs/specs/cli-core.md` (one line, sb-L1's difference)
 **Scope:** M
 
 ## Checkpoint C: complete
@@ -1891,11 +1990,40 @@ fix is in `main.rs`.
       task in this plan (test first, reviewed), and that area is
       reviewed again until a pass finds none. New Lows get ids in
       tasks/findings.md and a fix or a confirmed decline.
+- [ ] A checkpoint report is committed as `tasks/checkpoints/C.md`
+      (decision 13): results summarised, every followed recommendation
+      and unattended call listed as reversible, no raw output and no
+      host details.
+- [ ] The maintainer's sitting: the collected declines confirmed or
+      overruled (an overruled one becomes a fix task here, before the
+      archive), the followed recommendations and the unattended
+      calls kept or overruled, and CONSTRAINTS "Last reviewed" set
+      (docs-L16).
 - [ ] Every id in tasks/findings.md is fixed or has a confirmed
       decline; the counts restated by Task 6 (docs-L4) are current.
-- [ ] `scripts/check-plan-ids.mjs` passes.
-- [ ] Review with the maintainer, who sets CONSTRAINTS "Last reviewed"
-      (docs-L16); the plan archived to `tasks/hardening/`.
+- [ ] `scripts/check-plan-ids.mjs` passes. Then the plan is archived to
+      `tasks/hardening/`.
+
+## Proposed declines for the maintainer
+
+The running list of decision 15. A Low sweep that proposes declining a
+Low adds it here when its fixes are committed, one line each: the
+finding's id, the task, the reason in a sentence and the date it was
+added. Work doesn't wait for it. The maintainer confirms or overrules
+the whole list in one sitting at Checkpoint C; a confirmed decline is
+ticked, and an overruled one becomes a fix task in this plan before the
+plan is archived. An unattended call that declines part of a
+finding is listed here too. (docs-L12's E1 half, the one decline
+proposed before decision 15, was confirmed by decision 16 and is
+recorded in Task 6, not here.)
+
+- [ ] docs-L14, its stricter half (Task 4, 2026-11-12): "lowercase
+      first char only" read as no uppercase anywhere in the description
+      is declined; only the first letter, after leading non-letters,
+      must be lowercase. The stricter reading would reject 26 of the
+      290 existing commits, which the maintainer accepted, and would
+      need history rewritten. Agent-decided and reversible (the plan,
+      after decision 17).
 
 ## Follow-ups from docker start, stop and restart
 
