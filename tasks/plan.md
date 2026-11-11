@@ -1,4 +1,4 @@
-# Implementation Plan: hardening after the re-review (draft, 2026-11-11)
+# Implementation Plan: hardening after the re-review (approved 2026-11-11)
 
 Findings: [tasks/findings.md](findings.md) (every item, with its id).
 Specs: each crate's spec in `docs/specs/`. Quality bar:
@@ -15,7 +15,7 @@ the task that touches its code, or a per-crate Low sweep. The TUI log
 viewer spec waits for it: the viewer builds on paging, the follow,
 tables and the error display, where most of the findings are.
 
-The work is 50 small tasks: six on the gates and records, then three
+The work is 52 small tasks: six on the gates and records, then three
 lanes (text, process and display; the journal reader; config), then the
 build, then a final review.
 
@@ -27,7 +27,7 @@ build, then a final review.
    gets its ending, then sb ends by SIGHUP. This replaces the cli-core
    spec's "sb doesn't handle SIGHUP".
 3. **sb accepts the YAML Ansible accepts.** The options are researched
-   first, with pros and cons, and brought to the maintainer (Task 40). A
+   first, with pros and cons, and brought to the maintainer (Task 42). A
    standing differential test follows.
 4. **Lows are not ignored.** Every Low in tasks/findings.md, and every
    unrated item (Info, test gaps, notes), is one of:
@@ -52,17 +52,64 @@ build, then a final review.
    - a reviewer's note that asks for no change;
    - a decision already recorded in a spec or a follow-up.
 
+Answers at the plan's approval (2026-11-11):
+
+5. **The plan is approved.** Work starts with Tasks 1-6.
+6. **Task 2's ADR is accepted.** The Floor guard row becomes "zero
+   unacknowledged floor violations".
+7. **Bidi and zero-width characters are escaped in table cells**
+   (san-I2). The term-ui spec gets the table exception.
+8. **SIGHUP stays ignored when it was ignored at startup** (`nohup`).
+9. **The repeat window applies to SIGTERM and SIGHUP only.** Its value,
+   250 ms, is confirmed by the probe. If the probe shows SIGINT doubled
+   under sudo, that comes back to the maintainer.
+10. **API names:** `Page::oldest_chosen` and `Page::newest_chosen`;
+    `Journal::unit_query(&UnitName, Option<Uid>)` is added and
+    `Query::unit` kept; `PageEnd` is documented, not renamed.
+11. **The forward loop:** `boot_starts` changes, on all three releases.
+    22.04 gets a listed Difference only if journalctl 249 shows
+    something else on the fixture.
+12. **A page matches journalctl on a journal being written.** It keeps
+    reading the live lists, and there is no new Difference. The
+    follow's start moves instead, so that a page plus its follow still
+    gives 0 lost and 0 doubled. (The plan had recommended a snapshot
+    page; the maintainer chose otherwise.)
+    - What "matches" is checked against, since a journalctl run at the
+      same moment races the page: every entry a page shows is in
+      journalctl's final view, with no gap; and the page plus its
+      follow is that final view from the page's oldest entry on, each
+      entry once (Task 35).
+    - A Tail page already matches: `journalctl -n N` seeks to the
+      tail once and shows at most N lines (systemd v255 journalctl.c
+      2510-2514, 1958).
+    - A forward page that reaches the end differs: journalctl reads
+      the live count at each step and goes on to entries appended
+      meanwhile, while sb's page stops at the count its header gave.
+      Those entries come with the follow, not the page. Whether that
+      is within this decision is put to the maintainer with the
+      handover question.
+
 ## Architecture decisions
 
 - **Gates first.** The floor guard and `check.sh` are fixed before any
   code. Every later task then runs under a guard that sees non-Rust
   files, and `check.sh full` can pass with a finding acknowledged in the
   open, with no step skipped.
-- **Acknowledged floor findings (Task 3, an ADR).** One tracked file,
+- **Acknowledged floor findings (Task 2, an ADR).** One tracked file,
   `scripts/floor-acknowledged.txt`. Each entry is one line: the rule,
   the file, the flagged line's text and a reason.
   - An entry covers exactly one finding with that rule, file and line
     text. Two findings need two entries.
+  - No entry covers a file. Task 1's guard flags every changed or
+    removed code line of its own scripts (`gate-line-removed`), and
+    each such line needs its own entry. A commit that changes many
+    lines alike carries many entries; each names its line, so a
+    reviewer sees exactly what left the gate, and a removal nobody
+    looked at can't ride along.
+  - It lands second, before the guard's own patterns are extended
+    (Task 3) and before Task 4: both edit existing lines of the guard
+    scripts, which only passes once a finding can be acknowledged.
+    Each acknowledges its own edits in its own commit.
   - An entry counts only in a diff that also adds the entry. So it is
     committed with the change it acknowledges, and an entry from an
     earlier commit acknowledges nothing. A range run over several
@@ -84,9 +131,40 @@ build, then a final review.
     which escapes control characters, `\n` and `\r` in every field of
     every record, bridged dependency records included. A source scan of
     `%` Display fields is the backstop.
-- **A page is a snapshot.** A page shows only what its files' headers
-  counted when it opened them. That makes the page, its `end` and the
-  follow's start agree.
+- **A page and its follow give every entry once** (decision 12; Tasks
+  32 to 35). The defect, the facts and the options are in Task 32 and
+  in the handover question below; this is the frame.
+  - **The invariant.** The follow's start, its placing of new files
+    and its flush rule were all built on one statement: every entry
+    below the count in `PageEnd` was examined by the page. A filtered
+    page breaks it today from both sides. It can show an entry past
+    the count (the double), and it can miss the last counted entry,
+    whose value lists journald hadn't linked yet (the mirror case).
+  - **The proposal** restores the invariant in the page: after its
+    lookups the page reads the header once more and examines the
+    main-list entries from just below the first count to the second
+    by their items. `PageEnd` holds the second count. `PageEnd`, the
+    follow's start and the flush and rotation rules then stay as they
+    are. The other shape moves the follow's start and keeps a list of
+    what the page showed past the count.
+  - **Unfiltered queries stay out of the change.** They read no value
+    list, so neither defect exists for them.
+  - **What is established** from systemd's sources is listed in Task
+    32 with its citations: the order journald links an entry in, that
+    only the last counted entry can be half linked, that offsets rise
+    with the index, what a flush copy keeps, and that journalctl reads
+    live counts.
+  - **What the probe still has to do** (Task 32): the flush code of
+    249 and 259; the distribution's patch levels against the upstream
+    tags; a run under writes that tries to refute the link order. One
+    assumption can't be settled by reading at all: that a reader sees
+    journald's stores in program order. It holds on x86-64.
+  - **A limit that remains under every option:** the headers are read
+    at different instants, so `PageEnd`'s newest entry can be newer
+    than an entry of another file that the page didn't read. The
+    entry is lost only if its file is gone before the follow opens it,
+    which takes a flush in between, once per boot. Task 34 lists it in
+    the spec, and the flush question shows it to the maintainer.
 - **Test the format the releases write.** The crafted-file builder gains
   compact and keyed layouts, and the reader's suites run over both. This
   and the script hardening come before the journal fixes, so each fix is
@@ -95,8 +173,12 @@ build, then a final review.
 - **Named expected failures.** A hardened script, or the fuzz harness,
   may expose a defect that a later task fixes (follow.sh's new count
   check and follow-H1, for one). Such a check is listed as an expected
-  failure, by name, with the finding's id, the task that clears it and
-  a mark.
+  failure in one line of the script itself, at the start of a line
+  after any indentation:
+  `expected_failure <id> <task> <always|racy> <name...>`, where the id
+  is the finding's (`[a-z]+-[A-Z][0-9]+`). The guard matches that
+  form. Entries aren't kept in a data file beside the script; the
+  harness's are lines in seeds.sh.
   - `always`: the defect fails every run. The entry fails the script
     when its check passes, so it can't outlive its fix.
   - `racy`: the defect needs a race to show (follow-H1 does). The entry
@@ -118,17 +200,20 @@ build, then a final review.
   `--re` filter for the site, and records caught or missed. The site is
   found with `cargo mutants --list` at the task's start, since line
   numbers move.
-- **Research before a stop.** Two tasks end at a maintainer's choice:
-  Task 7 (the prompting child) and Task 40 (YAML). Neither commits a
-  failing test: Task 7's reproduction is a probe described in its
-  write-up, and the test lands with the fix.
+- **Research before a stop.** Three tasks end at a maintainer's
+  choice: Task 7 (the prompting child), Task 32 (the handover) and
+  Task 42 (YAML). None commits a failing test: a reproduction is a
+  probe described in the write-up, and the test lands with the fix.
   - Task 7 opens lane 1 and is done when its options are with the
     maintainer. The lane goes on; only Task 14 needs the answer, and
     records it in the spec.
-  - Lane 3 does wait: Task 41 comes straight after Task 40 and needs
-    the answer. So Task 40, which is research only, runs early, while
-    lanes 1 and 2 hold the two worktrees. The wait then costs nothing,
-    and the answer is in before lane 3's code starts.
+  - Task 32 comes after the builder, the scripts and the harness that
+    its fix is tested with. Lane 2 waits there for the answer; Task 33
+    is the fix.
+  - Lane 3 waits too: Task 43 comes straight after Task 42 and needs
+    the answer. So Task 42, which is research only, runs early, while
+    lanes 1 and 2 hold the two worktrees, and the answer is in before
+    lane 3's code starts.
 - **Test-first, as CLAUDE.md requires.** Each fix starts with a failing
   test that reproduces its finding as tasks/findings.md describes it.
 - **Reviews per commit.** Each commit gets the code-reviewer, plus the
@@ -147,30 +232,30 @@ each in its own git worktree with its own target directory.
 | Lane | Tasks | Edits |
 |---|---|---|
 | 1: text, process and display | 7-26 | `crates/{term-ui,exec,docker}`; cli-core's `exit.rs`, `log.rs`, `cancel.rs`, `root.rs`; `crates/sb/src/main.rs` and sb's signal and log tests; the cli-core, exec, term-ui and docker specs |
-| 2: the journal reader | 27-39 | `crates/journal`, `crates/host/src/journal.rs` and its tests, the journal spec, the matrix workflow |
-| 3: config | 40-45 | `crates/config`, cli-core's `config.rs`, new sb test files, the config spec |
+| 2: the journal reader | 27-41 | `crates/journal`, `crates/host/src/journal.rs` and its tests, the journal spec, the matrix workflow |
+| 3: config | 42-47 | `crates/config`, cli-core's `config.rs`, new sb test files, the config spec |
 
 A lane is sequential: its tasks share files (exec's `run.rs` and
 `pty.rs`, term-ui's `runner.rs` and `tree.rs`, docker's `connect.rs`),
 so each waits for the one before it. Lanes 1 and 2 start first, because
 the viewer needs both. Lane 3's code starts when one of them frees a
-worktree. Its first task, Task 40, is research only and runs early,
+worktree. Its first task, Task 42, is research only and runs early,
 beside them, so the YAML answer is in by then.
 
 Shared files have one owner at a time:
 - **`Cargo.toml`, `Cargo.lock`, `deny.toml`:** the main checkout owns
   them. A lane task that needs a manifest change lands it on main, as
   its own commit, while no other open task touches those files; the
-  other worktree rebases after it. That covers Task 41 (a parser), and
+  other worktree rebases after it. That covers Task 43 (a parser), and
   Task 10 or Task 31 if one needs a workspace feature
-  (tracing-subscriber, rustix). The build tasks (46-50) run on the main
+  (tracing-subscriber, rustix). The build tasks (48-52) run on the main
   checkout, one at a time, after lanes 1 and 2 are merged.
 - **`scripts/floor-acknowledged.txt`:** any lane may add entries. Lines
   are only added, so a merge takes the union of both sides' lines. No
   line is edited or removed.
 - **The CONSTRAINTS ratchet rows** ("Measured, not yet enforced"):
   changed only on the main checkout, at Checkpoints B and C and in
-  Tasks 46 and 48. A lane worktree never edits them. An Exceptions row a
+  Tasks 48 and 50. A lane worktree never edits them. An Exceptions row a
   lane needs goes in that lane's own commit.
 - **`tasks/todo.md` and `tasks/plan.md`:** ticked on the main checkout
   when a task merges.
@@ -181,9 +266,9 @@ Three tasks touch another lane's file, each in one place only:
 - **Task 9** (lane 1) calls `escape_controls`, which lives in cli-core's
   `config.rs`, lane 3's file. It uses the function as it is, and
   neither moves nor changes it.
-- **Task 42** (lane 3) changes cli-core's inventory read, which the
+- **Task 44** (lane 3) changes cli-core's inventory read, which the
   cli-core spec states in one paragraph ("Config and inventory are read
-  up to 1 MiB ..."). Task 42 edits that paragraph only; lane 1 leaves it
+  up to 1 MiB ..."). Task 44 edits that paragraph only; lane 1 leaves it
   alone.
 - **Task 25** (lane 1), if the maintainer accepts the SGR change, edits
   one line of the journal spec's display decision 2. Lane 2 leaves that
@@ -200,8 +285,8 @@ script that checks this.
 | Ids | Finding | Task |
 |---|---|---|
 | docs-H1 | The floor guard is blind outside `.rs` and CONSTRAINTS.md | 1 |
-| docs-M2 | The guard's false negatives in Rust files | 2 |
-| docs-H2 | `check.sh full` has no acknowledgement path | 3 |
+| docs-H2 | `check.sh full` has no acknowledgement path | 2 |
+| docs-M2 | The guard's false negatives in Rust files | 3 |
 | docs-M1, docs-M4 | The commit-message check is unwired; no crate-entry or tool-version check | 4 |
 | docs-M3, docs-M5 | The matrix and fuzz are in no gate; the Checkpoint A record contradicts itself | 5 |
 | docs-M6 | The capability map lacks the nix row and rustix's `event` | 6 |
@@ -222,17 +307,17 @@ script that checks this.
 | tests-H2, tests-M2, tests-M6 | stress.sh passes vacuously; unchecked variants; read errors ignored | 29 |
 | tests-M7, tests-M8 | follow.sh's overflow scenario, order and count | 30 |
 | tests-M1, tests-M3, tests-M4, tests-M5 | Fuzz seeds, clean reads, missing reads and the memory bound | 31 |
-| follow-H1, page-H1, fwd-M2 | A page shows an entry its `end` doesn't count; the follow repeats it | 32, 33 |
-| page-M1, page-M2 | A page of unreadable entries can't be paged past; `more_newer` stuck | 34 |
-| fwd-M1 | A forward page loops on the cursor's own boot | 35 |
-| file-M1 | A forward walk loses every array after a bogus item | 36 |
-| config-H1 | Valid YAML refused | 40, 41 |
-| config-M1 | A small config file exhausts memory or the stack | 42 |
-| config-M2 | `ALL_PROXY` honoured | 43 |
-| sb-M1, sb-M4 | No gate runs the production binary; cross drops the version | 46 |
-| sb-M3 | Root tests skip silently | 47 |
-| sb-M5 | Overflow checks off in production | 48 |
-| sb-M6 | Startup parses and renders more than it needs | 49 |
+| follow-H1, page-H1, fwd-M2 | A page shows an entry its `end` doesn't count; the follow repeats it | 32, 33, 34, 35 |
+| page-M1, page-M2 | A page of unreadable entries can't be paged past; `more_newer` stuck | 36 |
+| fwd-M1 | A forward page loops on the cursor's own boot | 37 |
+| file-M1 | A forward walk loses every array after a bogus item | 38 |
+| config-H1 | Valid YAML refused | 42, 43 |
+| config-M1 | A small config file exhausts memory or the stack | 44 |
+| config-M2 | `ALL_PROXY` honoured | 45 |
+| sb-M1, sb-M4 | No gate runs the production binary; cross drops the version | 48 |
+| sb-M3 | Root tests skip silently | 49 |
+| sb-M5 | Overflow checks off in production | 50 |
+| sb-M6 | Startup parses and renders more than it needs | 51 |
 
 ### Low and unrated
 
@@ -254,17 +339,17 @@ Lows that are acceptance criteria of a task:
 | tests-L3, tests-L5, tests-L6, tests-L7, tests-L13, tests-L11 (the compat step) | 29 |
 | tests-L1, tests-L2, tests-L14 | 30 |
 | tests-L11 (the seeds and fuzz in the workflow) | 31 |
-| follow-N1 | 32 |
-| fwd-L3 | 35 |
-| file-L2, file-L3, file-L4, page-N1 | 36 |
-| config-L1, config-T1 (acceptance, the parity tables) | 40, 41 |
-| config-T1 (memory) | 42 |
-| config-T1 (the proxy test) | 43 |
-| config-L2, config-L3, config-L4 | 44 |
-| sb-L8, sb-L7 (the lookup's test run on musl) | 46 |
-| sb-L10, docs-L13 (the silent non-root skip) | 47 |
-| sb-L11 | 48 |
-| sb-L5 | 49 |
+| follow-N1 | 32, 33 |
+| fwd-L3 | 37 |
+| file-L2, file-L3, file-L4, page-N1 | 38 |
+| config-L1, config-T1 (acceptance, the parity tables) | 42, 43 |
+| config-T1 (memory) | 44 |
+| config-T1 (the proxy test) | 45 |
+| config-L2, config-L3, config-L4 | 46 |
+| sb-L8, sb-L7 (the lookup's test run on musl) | 48 |
+| sb-L10, docs-L13 (the silent non-root skip) | 49 |
+| sb-L11 | 50 |
+| sb-L5 | 51 |
 
 Lows in a sweep (each sweep's task lists fix or proposed-decline):
 
@@ -276,11 +361,11 @@ Lows in a sweep (each sweep's task lists fix or proposed-decline):
 | docker | docker-L3, docker-L4, docker-L5, docker-L6, docker-L7, docker-L8, docker-L9 | 24 |
 | The sanitizer | san-L1, san-L2, san-I2 (log text), san-I3, san-I4, san-T1 (cut, alphabet) | 25 |
 | term-ui's runner | ui-L6, ui-L7, ui-L8 | 26 |
-| Journal: paging and API | page-L1, page-L2, page-L3, page-L4, page-L5, page-L6, page-L7, page-L9, fwd-L4, fwd-L5, docs-L5 | 37 |
-| Journal: the follow | follow-L1, follow-L2, follow-L3, follow-L4, follow-L5, follow-L6, follow-L7 | 38 |
-| Journal: test evidence | tests-L4, tests-L8, tests-L9, tests-L10, tests-L12 | 39 |
-| config | config-L5, config-L6, config-L7, config-L8, config-L9, config-L10 | 45 |
-| The sb binary | sb-L1, sb-L2, sb-L3, sb-L4, sb-L6, sb-L7, sb-L9, sb-L12, config-L11 | 50 |
+| Journal: paging and API | page-L1, page-L2, page-L3, page-L4, page-L5, page-L6, page-L7, page-L9, fwd-L4, fwd-L5, docs-L5 | 39 |
+| Journal: the follow | follow-L1, follow-L2, follow-L3, follow-L4, follow-L5, follow-L6, follow-L7 | 40 |
+| Journal: test evidence | tests-L4, tests-L8, tests-L9, tests-L10, tests-L12 | 41 |
+| config | config-L5, config-L6, config-L7, config-L8, config-L9, config-L10 | 47 |
+| The sb binary | sb-L1, sb-L2, sb-L3, sb-L4, sb-L6, sb-L7, sb-L9, sb-L12, config-L11 | 52 |
 
 ## Dependency graph
 
@@ -290,19 +375,21 @@ T1 ─ T2 ─ T3 ─ T4 ─ T5 ─ T6 ─ [A]
 [A] ─┬─ lane 1: T7 ─ T8 ─ T9 ─ T10 ─ T11 ─ T12 ─ T13 ─ T14 ─ T15 ─ T16 ─ T17 ─ [T]
      │          [T] ─ T18 ─ T19 ─ T20 ─ T21 ─ T22 ─ T23 ─ T24 ─ T25 ─ T26 ─ [D]
      │
-     ├─ lane 2: T27 ─ T28 ─ T29 ─ T30 ─ T31 ─ T32 ─ T33 ─ T34 ─ T35 ─ T36
-     │          T36 ─ T37 ─ T38 ─ T39 ─ [B]
+     ├─ lane 2: T27 ─ T28 ─ T29 ─ T30 ─ T31 ─ T32 ─ (the handover answer)
+     │          T33 ─ T34 ─ T35 ─ T36 ─ T37 ─ T38 ─ T39 ─ T40 ─ T41 ─ [B]
      │
-     └─ lane 3: T40 ─ (the YAML answer) ─ T41 ─ T42 ─ T43 ─ T44 ─ T45 ─ [Y]
+     └─ lane 3: T42 ─ (the YAML answer) ─ T43 ─ T44 ─ T45 ─ T46 ─ T47 ─ [Y]
 
-[D] + [B] ─ T46 ─ T47 ─ T48 ─ T49 ─ T50 ─┐
+[D] + [B] ─ T48 ─ T49 ─ T50 ─ T51 ─ T52 ─┐
 [Y] ─────────────────────────────────────┴─ [C]
 ```
 
 Each lane runs in the order shown. The dependencies that aren't just
 "the task before":
 - T14 needs the maintainer's answer to T7; the tasks between don't.
-- T41 needs the answer to T40, and lane 3 waits for it. T40 runs early,
+- T33 needs the answer to T32's handover question, and T34 the answer
+  to the flush question. Lane 2 waits for the first.
+- T43 needs the answer to T42, and lane 3 waits for it. T42 runs early,
   beside lanes 1 and 2.
 - T10 after T9: both edit cli-core's log and exit code.
 - T14 and T15 after T11: exec's `run.rs` and `pty.rs`.
@@ -311,17 +398,17 @@ Each lane runs in the order shown. The dependencies that aren't just
 - T19, T20 and T21 after T11 and T17 (term-ui's `runner.rs` and
   `tree.rs`).
 - T24 after T10: docker's `connect.rs`.
-- T27 to T31 (the builder, the scripts and the harness) before T32 to
-  T36 (the fixes).
-- T46 after T17 (sb's `main.rs`) and T31 (the workflow); T48 after T31
+- T27 to T31 (the builder, the scripts and the harness) before T33 to
+  T38 (the fixes).
+- T48 after T17 (sb's `main.rs`) and T31 (the workflow); T50 after T31
   (the fuzz harness runs once with overflow checks on).
 
 ## Task list
 
 ### Phase 0: the gates and the records
 - [ ] Task 1: the floor guard sees every gate file
-- [ ] Task 2: the floor guard's false negatives in Rust files
-- [ ] Task 3: `check.sh` accepts acknowledged floor findings
+- [ ] Task 2: `check.sh` accepts acknowledged floor findings
+- [ ] Task 3: the floor guard's false negatives in Rust files
 - [ ] Task 4: `check.sh` runs the checks that exist only on paper
 - [ ] Task 5: the gate records are put right
 - [ ] Task 6: Low sweep: documents
@@ -329,7 +416,9 @@ Each lane runs in the order shown. The dependencies that aren't just
 ### Checkpoint A: gates
 - [ ] `check.sh full` passes on its own change, every step run, with
       any expected finding acknowledged in the open
-- [ ] The open questions marked [start] are answered
+- [x] Six [start] questions were answered on 2026-11-11 (decisions 6
+      to 12); Publication and docs-L15 were deferred, and no task
+      waits on either
 - [ ] Task 6's proposed decline (the exception E1 half of docs-L12) is
       confirmed or overruled
 - [ ] `scripts/check-plan-ids.mjs` passes
@@ -374,32 +463,36 @@ Each lane runs in the order shown. The dependencies that aren't just
 - [ ] Task 29: the page scripts can't pass vacuously
 - [ ] Task 30: follow.sh checks order, count and overflow
 - [ ] Task 31: the fuzz seeds and harness check what they read
-- [ ] Task 32: a page is a snapshot of its headers
-- [ ] Task 33: stress.sh compares a snapshot page
-- [ ] Task 34: a page can always be paged past
-- [ ] Task 35: a forward page on the cursor's own boot
-- [ ] Task 36: forward walks over damaged entry arrays
-- [ ] Task 37: Low sweep: journal paging and API
-- [ ] Task 38: Low sweep: the journal follow
-- [ ] Task 39: Low sweep: journal test evidence
+- [ ] Task 32: the page-to-follow handover: facts, probe and options
+- [ ] Task 33: a page and its follow give every entry once
+- [ ] Task 34: the handover across files
+- [ ] Task 35: stress.sh checks the handover under writes
+- [ ] Task 36: a page can always be paged past
+- [ ] Task 37: a forward page on the cursor's own boot
+- [ ] Task 38: forward walks over damaged entry arrays
+- [ ] Task 39: Low sweep: journal paging and API
+- [ ] Task 40: Low sweep: the journal follow
+- [ ] Task 41: Low sweep: journal test evidence
 
 ### Checkpoint B: reader
 - [ ] The matrix (compare, compat, follow, stress) is green on 22.04,
       24.04 and 26.04 with no expected failure left, and the fuzz
       harness passes, on the final tree
+- [ ] stress.sh's handover check ran above both its floors on each
+      release: every page and its follow gave journalctl's entries once
 - [ ] Size, startup and coverage are re-measured; the ratchet rows are
       updated, with a ratchet ADR if a value passes its tolerance
-- [ ] The new API names are reviewed; the sweeps' declines are
-      confirmed or overruled
+- [ ] The new API is reviewed (decision 10's names; what the handover
+      changed); the sweeps' declines are confirmed or overruled
 - [ ] Review with the maintainer
 
 ### Phase 4 (lane 3): config
-- [ ] Task 40: YAML: the corpus and the options
-- [ ] Task 41: sb accepts the YAML Ansible accepts
-- [ ] Task 42: config files can't exhaust memory or the stack
-- [ ] Task 43: proxies as Go reads them
-- [ ] Task 44: secrets are hidden wherever their key sits, and in `Debug`
-- [ ] Task 45: Low sweep: config
+- [ ] Task 42: YAML: the corpus and the options
+- [ ] Task 43: sb accepts the YAML Ansible accepts
+- [ ] Task 44: config files can't exhaust memory or the stack
+- [ ] Task 45: proxies as Go reads them
+- [ ] Task 46: secrets are hidden wherever their key sits, and in `Debug`
+- [ ] Task 47: Low sweep: config
 
 ### Checkpoint Y: config
 - [ ] `check.sh full`; the differential corpus passes
@@ -407,11 +500,11 @@ Each lane runs in the order shown. The dependencies that aren't just
 - [ ] Review with the maintainer
 
 ### Phase 5: the build
-- [ ] Task 46: the production binary is run by the gate
-- [ ] Task 47: skipped tests are counted, and the gate runs as root
-- [ ] Task 48: overflow checks in the shipped profiles
-- [ ] Task 49: startup parses once
-- [ ] Task 50: Low sweep: the sb binary
+- [ ] Task 48: the production binary is run by the gate
+- [ ] Task 49: skipped tests are counted, and the gate runs as root
+- [ ] Task 50: overflow checks in the shipped profiles
+- [ ] Task 51: startup parses once
+- [ ] Task 52: Low sweep: the sb binary
 
 ### Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases
@@ -430,14 +523,16 @@ Each lane runs in the order shown. The dependencies that aren't just
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| A fix changes behaviour the matrix pinned | High | Each journal fix runs the matrix script that covers it on one release (Tasks 32-36); all three run at Checkpoint B. A mismatch that isn't a listed Difference stops for the maintainer. |
-| The YAML fix needs a second parser or a patched dependency | High | Task 40 builds the corpus and the options first and stops for the maintainer. Task 41 has an ADR and a size check. |
+| The page-to-follow handover is a design change, with races that tests must place by hand | High | Task 32 records what the sources establish, probes the rest and brings the options to the maintainer before any code. Crafted tests place each race (Tasks 33, 34), and the doubling test raises the header and drains again, so it can't pass vacuously. stress.sh checks the handover under real writes on three releases (Task 35), with floors at Checkpoint B. |
+| A file is gone between the page and the follow with an entry nobody showed | Med | It takes a flush between the two, once per boot. It remains under every option; Task 34 lists it in the spec as a limit, and the flush question shows it to the maintainer. |
+| A fix changes behaviour the matrix pinned | High | Each journal fix runs the matrix script that covers it on one release (Tasks 33-38); all three run at Checkpoint B. A mismatch that isn't a listed Difference stops for the maintainer. |
+| The YAML fix needs a second parser or a patched dependency | High | Task 42 builds the corpus and the options first and stops for the maintainer. Task 43 has an ADR and a size check. |
 | Two worktrees edit one file | High | Three sequential lanes with disjoint files; one owner for the shared files and three named cross-lane touches ("Lanes and shared files"); rebase and `check.sh full` before each merge. |
 | A hardened script fails on a defect not yet fixed | Med | A named expected failure, marked `always` or `racy`, with the finding's id; the fixing task removes it, and none is left at Checkpoint B. |
 | SIGHUP handling and the relayed-signal window interact | Med | Task 13 follows Task 12 at once. The window is a documented constant with an injected clock, probed under a real session scope and sudo. |
 | No safe `setsid` exists without `unsafe` | Med | Task 7 researches it first. Detecting the stopped child and ssh's batch mode need no new session. |
-| Overflow checks grow the binary or slow paging | Med | Task 48 measures size, startup and the pread-bound tests' time, with a ratchet ADR. |
-| Timing startup on the musl binary moves the ratchet's basis | Med | Task 46 changes the CONSTRAINTS row and records both figures in an ADR. |
+| Overflow checks grow the binary or slow paging | Med | Task 50 measures size, startup and the pread-bound tests' time, with a ratchet ADR. |
+| Timing startup on the musl binary moves the ratchet's basis | Med | Task 48 changes the CONSTRAINTS row and records both figures in an ADR. |
 | A display fix changes a reviewed look | Med | Tasks 19-21 bring each change to the maintainer with screenshots of both. |
 | A mutant named in a criterion is never generated | Med | The verification runs cargo-mutants on the named site and records the result. |
 | A Low sweep grows into a large change | Med | A sweep fixes only its listed ids. A fix that needs more than the sweep's files, or that changes a design (a protocol, a public API), becomes its own task. |
@@ -446,36 +541,29 @@ Each lane runs in the order shown. The dependencies that aren't just
 
 ## Open questions
 
-These are the maintainer's decisions, grouped by the task where each
-comes up, with the options and a recommendation. Each is marked by when
-its answer is needed, so Checkpoint A waits only for what the gates and
-the first tasks of lanes 1 and 2 need:
-- **[start]** before work starts (asked at the plan's approval);
+Of the eight questions asked at approval, six were answered (decisions
+6 to 12 hold the answers) and two were deferred: Publication and
+CLAUDE.md's two lines. These remain, each the maintainer's, grouped by
+the task where it comes up, with the options and a recommendation.
+Each is marked by when its answer is needed:
 - **[checkpoint T]** by Checkpoint T, before lane 1's second phase;
-- **[lane 3]** with the YAML answer, before lane 3's code (Task 41);
-- **[build]** before the build phase (Task 46);
+- **[lane 3]** with the YAML answer, before lane 3's code (Task 43);
+- **[build]** before the build phase (Task 48);
 - **[task]** at its task, because research, a probe or a screenshot
-  comes first.
+  comes first;
+- **[deferred]** put off at approval; no task waits for it.
 
-**Publication [start]**
+**Publication [deferred]**
 - tasks/findings.md lists security defects that aren't fixed yet.
-  Nothing is pushed today. May the three task files be pushed before
-  the fixes?
-  - (a) Not until Checkpoint C. Recommended.
-  - (b) Once the High items are fixed (after Checkpoints T and B).
-  - (c) Any time.
+  Nothing is pushed without the maintainer's explicit authorization, so
+  no task waits for this. When a push is considered: (a) not until
+  Checkpoint C, recommended; (b) once the High items are fixed; (c) any
+  time.
 
-**CLAUDE.md (docs-L15) [start]**
-- Its two stale lines are the maintainer's to change: "Create these
+**CLAUDE.md (docs-L15) [deferred]**
+- Its two stale lines are the maintainer's own to change: "Create these
   paths when first needed; they do not exist yet", and the `systemd-run`
-  example without `OOMPolicy=continue`. Recommended: drop the first,
-  add the option to the second.
-
-**Task 3: acknowledged floor findings [start]**
-- The Floor guard row becomes "zero unacknowledged floor violations",
-  with the entry rules under "Architecture decisions". Accept the ADR,
-  or keep the row and require an ADR for every expected finding?
-  Recommended: accept.
+  example without `OOMPolicy=continue`.
 
 **Tasks 7 and 14: a child that prompts on the terminal [task]**
 - Task 7 researches first: whether a safe `setsid` for a child exists
@@ -499,34 +587,10 @@ the first tasks of lanes 1 and 2 need:
   sb already sets `GIT_TERMINAL_PROMPT=0`, which covers git's own
   prompt and not ssh's.
 
-**Task 8: bidi and zero-width characters in table cells (san-I2) [start]**
-- After Task 8 a cell goes through `DisplayText`, which passes bidi
-  overrides and zero-width characters (term-ui spec, "Escape handling":
-  "Bidi and zero-width characters pass unmarked"). An image label can
-  then reorder a `docker ps` row.
-  - (a) Escape them in table cells, as cli-core's `escape_controls`
-    does for error text; the term-ui spec's sentence gets the table
-    exception. Recommended.
-  - (b) Pass them, as for a step's output.
-- For log text shown by the runner and the viewer, the journal spec's
-  display decision 2 already accepts them; Task 25 proposes declining
-  that half.
-
-**Task 12: SIGHUP under `nohup` [start]**
-- `nohup sb ...` starts sb with SIGHUP ignored. Installing a handler
-  overrides that.
-  - (a) Keep it ignored when it was ignored at startup. Recommended:
-    it is what `nohup` asks for.
-  - (b) Always handle it, so a hangup cancels even under `nohup`.
-
-**Task 13: the repeat window [start, the value at the task]**
-- "A second signal ends sb at once" gets an exception for the copy sudo
-  relays.
-  - The value: 250 ms (the finding's figure), confirmed or changed by
-    the probe. Recommended.
-  - Whether it applies to SIGINT: (a) SIGTERM and SIGHUP only, so two
-    quick Ctrl-C presses still force the exit; recommended, unless the
-    probe shows SIGINT doubled too. (b) every signal.
+**Task 13: SIGINT doubled under sudo [task, only if the probe shows it]**
+- Decision 9 keeps the window to SIGTERM and SIGHUP. If the probe
+  shows a terminal's SIGINT relayed twice as well, the maintainer
+  decides whether the window covers it.
 
 **Task 18: `docker restart` against sb-go [checkpoint T]**
 - The floor isn't a question: `restart` never ends without either the
@@ -569,74 +633,161 @@ the first tasks of lanes 1 and 2 need:
   - (b) The reset only; every SGR still passes.
   - (c) Decline: latent today apart from the Linux console.
 
-**Task 32: a snapshot page against journalctl [start]**
-- On a journal being written, a snapshot page can show fewer entries
-  than journalctl, which reads live lists. Is that a listed Difference?
-  - (a) Yes: list it, and stress.sh accepts journalctl's extra entries
-    only at the tail and only when the follow then delivers them
-    (Task 33). Recommended.
-  - (b) No: the page must match journalctl, and the follow's start
-    moves instead (a larger change).
+**Task 32: the shape of the handover [task]**
+- Decision 12 fixes the outcome: a page plus its follow gives every
+  entry once, with no new Difference. How is a design choice. Task 32's
+  probe and design note come first; Task 33 is coded to the answer.
+  - (a) **One re-read in the page.** For a filtered query, per file:
+    the header is read (n0), every value is looked up, the header is
+    read once more (n1), and the main-list entries from n0-1 to n1 are
+    examined by their items, as the follow examines entries, and
+    merged into the file's stream by offset. `PageEnd` holds n1.
+    - It changes the page's reads, not the follow's code: the follow
+      starts as it does today, only from a later count. That differs
+      from decision 12's wording ("the follow's start moves instead"),
+      though not from its outcome. The maintainer confirms that with
+      the choice.
+    - Why it is exact: an entry found in a looked-up list was counted
+      before it was linked there, so its index is below n1 and nothing
+      shown is past the count. Every entry below n0-1 was fully linked
+      before the first header read. The entries from n0-1 to n1 are
+      matched by their items, which covers two lists read at different
+      moments and the mirror case.
+    - For: `PageEnd`, its equality and size, the follow's start, and
+      the flush and rotation rules stay as they are. It keeps the
+      invariant they were built on.
+    - Costs:
+      - The page's read path changes in walk.rs and forward.rs. The
+        forward page is the hard part: an extra entry can lie before
+        the landing the seek found, so the stream must take it by the
+        cursor's order, not from the landing.
+      - A value first written during the page has no DATA object at
+        lookup, so the re-read must look it up again, as the follow
+        does.
+      - The page reads the entries appended while it ran: usually
+        none.
+      - The re-read starts at n0-1 only for a file that isn't sealed.
+        Otherwise the tail shows a cut-off entry of an archived file
+        (Difference 12).
+      - `PageEnd`'s newest entry is kept from the first headers, or
+        the directory is listed again after the second read.
+        Otherwise a file created during the page loses its first
+        entries.
+      - It hasn't been built.
+    - Recommended, provided Task 32's design note shows the forward
+      page takes it cleanly.
+  - (b) **An index and the entries shown past it.** `PageEnd` holds,
+    per file, the header's count and the entries the page delivered
+    at or past it, by offset. The follow reads from the count and
+    drops those entries.
+    - The last counted entry is read again only where the mirror case
+      can exist and was seen: a filtered query, a file that isn't
+      sealed, and an entry that matches by its items while the page's
+      lists didn't hold its offset. Reading it again for every file
+      would redeliver an old entry from each archived file.
+    - The drop lasts until the file's position passes the last shown
+      entry, not for the first batch only: a first batch can stop at
+      the output limit.
+    - `PageEnd`'s newest entry is not raised to the newest record
+      shown. Raising it would make a new file's start pass over the
+      copy of an older entry the page didn't show.
+    - The flush cases are as the flush question states them, against
+      Difference 13.
+    - For: the page's reads don't change.
+    - Against: `PageEnd` grows with the entries shown past the count
+      and its equality changes; the follow's start gains a filter that
+      outlives the first batch; more rules, each with its own race.
+    - The fallback if (a) doesn't fit the forward page.
+  - (c) **A high-water mark only:** per file, the position past the
+    newest entry the page showed. Not recommended: it loses an entry
+    that is older than one the page showed but was linked later (two
+    lists, and the mirror case), which breaks "0 lost".
+- Two weaker shapes, not proposed:
+  - One call that pages and then follows, keeping the page's files
+    open. It is the only shape that closes the file-gone limit, but it
+    costs a new public entry point, and `follow(PageEnd)` would still
+    need a fix or removal.
+  - `PageEnd` holding every shown record's cursor. It removes (b)'s
+    boundary logic, but `PageEnd` is then always as large as the page,
+    and equality compares the whole page.
+- With it, one point of decision 12 to confirm: is a page bounded by
+  its header's count within "a page matches journalctl"?
+  - A Tail page already matches: `journalctl -n N` seeks to the tail
+    once and shows at most N lines (systemd v255 journalctl.c
+    2510-2514, 1958).
+  - Only a forward page that reaches the end differs. journalctl
+    reads the live count at each step and goes on to entries appended
+    meanwhile; sb's unfiltered page stops at the count its header
+    gave, and under (a) a filtered page stops at its second header
+    read. The entries written after that come with the follow.
+  - The plan reads that as a yes: what is checked is journalctl's
+    final view, not a run at the same moment.
+  - What a "no" would take: a forward page that reaches its count
+    reads the header again and goes on, up to the new count, and
+    `PageEnd` is built after the walk instead of before it. That
+    touches forward.rs and the page's order of reads, for filtered
+    pages on top of (a)'s re-read. The gain for a viewer is nil: the
+    follow delivers the same entries.
 
-**Task 32: the mirror case (follow-N1) [task]**
-- A header read after the main-list link but before the item links
-  makes the page miss an entry and the follow start past it: a lost
-  entry on a live journal, against the spec's "0 lost, 0 doubled".
-  - (a) Fix it in Task 32 if the same bound or a bounded re-read of the
-    header closes it; a larger fix becomes its own task. Recommended:
-    it can happen on a real server.
-  - (b) Decline: list it in the spec's known limits with its window,
-    and reword "0 lost".
-- The task reports the fix's cost before the choice.
+**Task 34: a flush between the page and the follow [task]**
+- A flush copies /run's entries into /var and removes /run. It
+  happens once per boot, early.
+- Where the page read the /var file, every flush copy is shown again
+  today, as Difference 13 says of a followed file. That stays.
+- Where the /var file is new to the follow, a copy of an entry the
+  page showed from /run can come again:
+  - (a) Extend Difference 13's wording to a page and a follow on
+    either side of a flush. No code. It widens a listed Difference.
+    Recommended: a repeat once per boot is the safer failure than a
+    loss.
+  - (b) Carry, for each entry the page showed that is newer than
+    `PageEnd`'s newest entry, its boot id, monotonic and realtime
+    stamps and xor hash, and drop one copy of each. Only those entries
+    need carrying: under handover (a), the ones the re-read added. The
+    cost: `PageEnd` grows by them and its equality changes, for a case
+    that happens once per boot.
+- A limit remains under every option, for the maintainer to see: the
+  headers are read at different instants, so `PageEnd`'s newest entry
+  can be newer than an entry of another file that the page didn't
+  read. That entry is lost only if its file is gone before the follow
+  opens it, which takes a flush in between. Task 34 lists it in the
+  spec. Closing it needs the one-call shape above.
 
-**Tasks 34 and 37: API names [start]**
-- `Page::oldest_chosen` and `Page::newest_chosen`
-  (`Option<Cursor>`): the finding's names. Recommended.
-- `Journal::unit_query(&UnitName, Option<Uid>)`, with `Query::unit`
-  kept or removed. Recommended: add the helper, keep `Query::unit`.
-- `PageEnd` (page-L4): document that it is the journal's end, or
-  rename it. Recommended: document.
+**Task 37: 22.04 on the forward-loop fixture [task, only if it differs]**
+- Decision 11 allows a listed Difference on 22.04 if journalctl 249
+  shows something else there. Its wording is the maintainer's to
+  approve; a difference on 24.04 or 26.04 stops for the maintainer.
 
-**Task 35: the forward loop [start, the 22.04 row at the task]**
-- (a) Change `boot_starts`, so a file that holds the cursor's boot
-  always seeks per boot. Recommended: the finding's smaller fix.
-- (b) Emulate journalctl 259.9's exact-match first step.
-- 22.04: (a) fixed there too, with a Difference if journalctl 249 shows
-  something else on the fixture; recommended, since the finding loops
-  on all three releases. (b) left as journalctl 249 behaves, a listed
-  Difference, with the viewer's cursor guard as the stop.
-- The task records what journalctl shows on each release first.
-
-**Tasks 40 and 41: YAML [task]**
+**Tasks 42 and 43: YAML [task]**
 - Which fix, after the research: a fix upstream, a pure-Rust
   libyaml-compatible parser for acceptance, or a pre-pass.
 - Listing a difference isn't an option beside them (decision 3). It is
   only for a residual case the chosen fix can't cover, and each such
   case is the maintainer's to accept.
 
-**Task 43: proxy variables [lane 3]**
+**Task 45: proxy variables [lane 3]**
 - Go reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`, and the lowercase
   forms when the uppercase one is unset. (a) Read both, as Go;
   recommended. (b) Uppercase only.
 
-**Task 45: on the wire, and patterns [lane 3]**
+**Task 47: on the wire, and patterns [lane 3]**
 - A User-Agent: (a) `sb/<version>`; recommended. (b) none, as now.
   sb-go sends Go's default.
 - Unicode classes in a schema `pattern`: (a) translate `\d`, `\w` and
   `\s` to Go's ASCII meaning; recommended, since the schemas are
   written for Go. (b) refuse such a pattern at load.
 
-**Task 46: startup's basis [build]**
+**Task 48: startup's basis [build]**
 - Time startup on the musl production binary instead of the glibc
   release build? It changes the basis of the CONSTRAINTS Startup row and
   of the `sb --help` ratchet. Recommended: yes, with an ADR that records
   both figures.
 
-**Task 48: overflow checks [task]**
+**Task 50: overflow checks [task]**
 - On in the release and production profiles? Recommended: on, unless
   the measurement shows a cost past a ratchet's tolerance.
 
-**Task 50: `sb --color=never` with no subcommand (sb-L1) [build]**
+**Task 52: `sb --color=never` with no subcommand (sb-L1) [build]**
 - It exits 2 where bare `sb` prints help and exits 0; sb-go prints help
   for both. The docker spec records the same case for `sb docker` as a
   difference ("Docker group" and its differences list), and says the
@@ -647,11 +798,11 @@ the first tasks of lanes 1 and 2 need:
   - (b) Treat a missing subcommand as help, exit 0, at the root and for
     `sb docker`, and amend both docker spec passages.
 
-**The Low sweeps (Tasks 6, 22-26, 37-39, 45, 50) [task]**
+**The Low sweeps (Tasks 6, 22-26, 39-41, 47, 52) [task]**
 - Each sweep's proposed declines, listed in its task, to confirm or
   overrule before the sweep is committed.
 - Task 23: the name of the API that masks a secret sent on stdin
   (exec-L5), and whether the mask's rules for very short secrets change
   (exec-L9; the exec spec defines today's).
-- Task 50: mimalloc (sb-L12) is a new dependency; proposed-decline
-  unless Task 48's measurement shows a need.
+- Task 52: mimalloc (sb-L12) is a new dependency; proposed-decline
+  unless Task 50's measurement shows a need.

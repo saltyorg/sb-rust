@@ -34,8 +34,11 @@ Standing rules:
 - Container scripts run with a unique `SBJ_PREFIX`. A matrix mismatch
   that isn't a listed Difference stops for the maintainer.
 - A named expected failure in a script or the fuzz harness (the plan,
-  "Named expected failures") carries its finding's id and a mark,
-  `always` or `racy`. The task that fixes a finding removes that
+  "Named expected failures") is one line in the script itself, at the
+  start of a line after any indentation:
+  `expected_failure <id> <task> <always|racy> <name...>`,
+  with the finding's id (`[a-z]+-[A-Z][0-9]+`). No data file beside
+  the script holds entries. The task that fixes a finding removes that
   finding's entries wherever they are.
 - Probe logs and screenshots stay outside the repository. A platform
   note holds versions and the method, never host details.
@@ -65,11 +68,11 @@ bar, the guard's own scripts included.
       - a new tool config: `.cargo/mutants.toml`, `clippy.toml`,
         `.gitleaksignore`, `.cargo/config.toml`;
       - `crates/*/tests/*.sh`: a raised bound (`PREADS_*_MAX`), a deleted
-        script, an added expected-failure entry (acknowledged through
-        Task 3's file once it exists);
+        script, an added `expected_failure` line (acknowledged through
+        Task 2's file once it exists);
       - `scripts/floor-guard.mjs` and `scripts/check-commit-messages.sh`
         themselves: a removed rule or pattern.
-      (Task 3's acknowledgement file isn't in this list: its additions
+      (Task 2's acknowledgement file isn't in this list: its additions
       are printed, not flagged.)
 - [ ] The `deny.toml` and `clippy::all` alternatives the finding says
       can never fire now fire, each with a test.
@@ -85,10 +88,58 @@ bar, the guard's own scripts included.
 **Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/check.sh`
 **Scope:** M
 
-## Task 2: the floor guard's false negatives in Rust files
+## Task 2: `check.sh` accepts acknowledged floor findings
+
+**Description:** `check.sh full` can't pass when a floor finding is
+expected and recorded (a re-targeted assertion, an accepted exception),
+so it has been run with the guard skipped (docs-H2). Give it an
+explicit, logged acknowledgement, as the plan's architecture decision
+defines it.
+
+**Acceptance criteria:**
+- [ ] `scripts/floor-acknowledged.txt` holds entries of rule, file, the
+      flagged line's text and a reason. The guard reads it.
+- [ ] An entry covers exactly one finding with its rule, file and line
+      text; a second identical finding needs a second entry.
+- [ ] That holds for `gate-line-removed` too: each changed or removed
+      line of a guard script needs its own entry, and no entry covers
+      a file. A test removes two lines with one entry and fails. (A
+      commit that changes many lines alike, as Task 4's `--locked`
+      does, carries one entry per line; each names the line, so the
+      review sees exactly what left the gate.)
+- [ ] An entry counts only when the checked diff adds it. An entry
+      from an earlier commit acknowledges nothing; a test shows a later
+      weakening in the same file still fails.
+- [ ] `check.sh` prints each acknowledged finding with its reason. It
+      fails on any other finding, and on an added entry that matched
+      nothing.
+- [ ] `check.sh` prints each entry the diff adds; adding one is not
+      itself a finding. A range run over several commits passes when
+      each finding and its entry are both in the range (a test).
+- [ ] An ADR (the maintainer accepted the change, decision 6) records
+      the change and the file's lifetime: an entry is
+      committed with the change it acknowledges; entries are only ever
+      added, never edited or removed; a merge takes the union of lines.
+- [ ] CONSTRAINTS.md's Floor guard row reads "zero unacknowledged floor
+      violations", with a paragraph that names the file and the ADR.
+
+**Verification:**
+- [ ] The guard's tests for each rule above; `scripts/check.sh full`
+      with every step run.
+- [ ] code-reviewer on the commit.
+
+**Dependencies:** Task 1 (the guard's finding format; nothing from Task 3)
+**Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/check.sh`, `scripts/floor-acknowledged.txt`, `CONSTRAINTS.md`, `docs/decisions/` (a new ADR)
+**Scope:** M
+
+## Task 3: the floor guard's false negatives in Rust files
 
 **Description:** The guard misses several ways to silence a check or
-drop an assertion in Rust and in CONSTRAINTS.md (docs-M2).
+drop an assertion in Rust and in CONSTRAINTS.md (docs-M2). It comes
+after the acknowledgement file (Task 2): Task 1's guard flags any
+changed or removed code line of the guard's own scripts, so this
+task's edits to existing pattern lines are acknowledged in its own
+commit, one entry per line.
 
 **Acceptance criteria:**
 - [ ] It flags:
@@ -107,53 +158,18 @@ drop an assertion in Rust and in CONSTRAINTS.md (docs-M2).
 - [ ] `node --test scripts/floor-guard.test.mjs`; `scripts/check.sh fast`.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 1
-**Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`
-**Scope:** S
-
-## Task 3: `check.sh` accepts acknowledged floor findings
-
-**Description:** `check.sh full` can't pass when a floor finding is
-expected and recorded (a re-targeted assertion, an accepted exception),
-so it has been run with the guard skipped (docs-H2). Give it an
-explicit, logged acknowledgement, as the plan's architecture decision
-defines it.
-
-**Acceptance criteria:**
-- [ ] `scripts/floor-acknowledged.txt` holds entries of rule, file, the
-      flagged line's text and a reason. The guard reads it.
-- [ ] An entry covers exactly one finding with its rule, file and line
-      text; a second identical finding needs a second entry.
-- [ ] An entry counts only when the checked diff adds it. An entry
-      from an earlier commit acknowledges nothing; a test shows a later
-      weakening in the same file still fails.
-- [ ] `check.sh` prints each acknowledged finding with its reason. It
-      fails on any other finding, and on an added entry that matched
-      nothing.
-- [ ] `check.sh` prints each entry the diff adds; adding one is not
-      itself a finding. A range run over several commits passes when
-      each finding and its entry are both in the range (a test).
-- [ ] An ADR records the change and the file's lifetime: an entry is
-      committed with the change it acknowledges; entries are only ever
-      added, never edited or removed; a merge takes the union of lines.
-- [ ] CONSTRAINTS.md's Floor guard row reads "zero unacknowledged floor
-      violations", with a paragraph that names the file and the ADR.
-
-**Verification:**
-- [ ] The guard's tests for each rule above; `scripts/check.sh full`
-      with every step run.
-- [ ] code-reviewer on the commit.
-
 **Dependencies:** Task 2
-**Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/check.sh`, `scripts/floor-acknowledged.txt`, `CONSTRAINTS.md`, `docs/decisions/` (a new ADR)
-**Scope:** M
+**Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/floor-acknowledged.txt`
+**Scope:** S
 
 ## Task 4: `check.sh` runs the checks that exist only on paper
 
 **Description:** The commit-message check is wired to nothing, a new
 crate can miss its deny.toml entry and its lints, and tool versions
 aren't checked (docs-M1, docs-M4). The script's smaller defects go with
-them (docs-L13, docs-L14).
+them (docs-L13, docs-L14). Its edits to existing lines of the guard
+scripts are flagged by Task 1's rule and acknowledged in the same
+commit, one entry per line.
 
 **Acceptance criteria:**
 - [ ] `check.sh full <base>` runs `scripts/check-commit-messages.sh
@@ -182,7 +198,7 @@ them (docs-L13, docs-L14).
 - [ ] code-reviewer on the commit.
 
 **Dependencies:** Task 3
-**Files:** `scripts/check.sh`, `scripts/check-commit-messages.sh`, `scripts/floor-guard.test.mjs` (the new gate lines), `CONSTRAINTS.md`
+**Files:** `scripts/check.sh`, `scripts/check-commit-messages.sh`, `scripts/floor-guard.test.mjs` (the new gate lines), `scripts/floor-acknowledged.txt`, `CONSTRAINTS.md`
 **Scope:** M
 
 ## Task 5: the gate records are put right
@@ -258,7 +274,11 @@ the journal lane starts from a corrected spec.
 ## Checkpoint A: gates
 - [ ] `check.sh full` passes on its own change, every step run, with
       any expected finding acknowledged in the open.
-- [ ] The plan's open questions marked [start] are answered.
+- [x] Six [start] questions were answered on 2026-11-11 (the plan's
+      decisions 6 to 12): Task 2's ADR, table cells in Task 8, `nohup`
+      in Task 12, the window in Task 13, the API names, the forward
+      loop, and the page against journalctl. Publication and docs-L15
+      were deferred; no task waits on either.
 - [ ] Task 6's proposed decline (the exception E1 half of docs-L12) is
       confirmed or overruled.
 - [ ] `scripts/check-plan-ids.mjs` passes.
@@ -271,9 +291,9 @@ kernel, and sb waits silently for ever (exec-M1; confirmed). This task
 finds what can be done without `unsafe` and ends at the maintainer's
 choice. It opens lane 1 and is done when the options are with the
 maintainer, so the lane goes on while the answer is waited for; Task 14
-records the decision. It commits no test: a failing test can't pass `check.sh full`, so
-the reproduction is a probe described in the write-up, and the test
-lands with the fix in Task 14.
+records the decision. It commits no test: a failing test can't pass
+`check.sh full`, so the reproduction is a probe described in the
+write-up, and the test lands with the fix in Task 14.
 
 **Acceptance criteria:**
 - [ ] A probe reproduces the hang with a child that opens the terminal,
@@ -321,8 +341,8 @@ confirmed with OSC 52, a title change and a screen clear). Sanitize in
 - [ ] The table half of san-T1: a test over the sanitizer's alphabet in
       a cell.
 - [ ] san-I2 (table cells): bidi overrides and zero-width characters in
-      a cell are escaped or passed, as the maintainer chose, with a
-      test; the spec's "pass unmarked" sentence is amended to match.
+      a cell are escaped (decision 7), with a test; the term-ui spec's
+      "pass unmarked" sentence gets the table exception.
 
 **Verification:**
 - [ ] `cargo test -p sb-term-ui -p sb-docker`; `scripts/check.sh task`.
@@ -431,8 +451,9 @@ handled like SIGTERM.
       the plain case.
 - [ ] While an attached child runs, a SIGHUP is treated as a SIGTERM is
       (exec decision 12).
-- [ ] Under `nohup` sb behaves as the maintainer chose (the plan's open
-      question), with a test.
+- [ ] Under `nohup` (SIGHUP ignored at startup) sb leaves it ignored
+      (decision 8): a hangup then doesn't cancel the run. A test starts
+      sb that way.
 - [ ] The specs agree: cli-core.md's cancellation text, exit codes,
       testing strategy, success criterion 4 and the logrotate
       paragraph; exec.md's attached children.
@@ -457,13 +478,15 @@ leave no log record (cli-L3).
 **Acceptance criteria:**
 - [ ] The same signal repeated within the window doesn't force the
       exit. The window is one documented constant
-      (M-DOCUMENTED-MAGIC), with the value and the signals it applies
-      to as the maintainer chose.
+      (M-DOCUMENTED-MAGIC): 250 ms, unless the probe shows another
+      value is needed. It applies to SIGTERM and SIGHUP only (decision
+      9); two SIGINTs still force the exit.
 - [ ] A unit test drives the window with an injected clock
       (M-MOCKABLE-SYSCALLS): inside it, at its edge and past it.
 - [ ] A probe under a real session scope and sudo confirms the relayed
       copy's timing. Its method and versions go in the platform note,
-      with no host details.
+      with no host details. If it shows SIGINT doubled under sudo too,
+      that goes back to the maintainer before the task ends.
 - [ ] A forced exit and the hard escape each leave one log record with
       the run id.
 - [ ] `decide(Some(SIGINT), true, SIGTERM)` has its test (cli-T1).
@@ -739,8 +762,8 @@ server, so all are fixes.
         another thread while a PTY opens, and sb's runtime is
         current-thread, so no spawn runs in that window. A test in sb
         pins the runtime kind where it is built
-        (`crates/sb/src/main.rs`), and the exec spec's known limits say that
-        parallel spawns need a spawn lock in exec first.
+        (`crates/sb/src/main.rs`), and the exec spec's known limits
+        say that parallel spawns need a spawn lock in exec first.
       - exec-L9, in three parts:
         - **fix**: a secret with a leading newline and a short body is
           masked in line-split output;
@@ -870,7 +893,7 @@ server, so all are fixes.
 **Description:** The crafted builder writes only regular, unkeyed
 files, so five mutants in the compact branches survive every unit test
 (tests-H1). 24.04 and 26.04 write compact files by default. The builder
-comes first, so the fixes of Tasks 32-36 are tested in both layouts.
+comes first, so the fixes of Tasks 33-38 are tested in both layouts.
 
 **Acceptance criteria:**
 - [ ] The builder has compact and keyed modes, with tests of its own
@@ -947,10 +970,10 @@ are hardened before the fixes they must check.
       half of tests-L11).
 - [ ] The three scripts pass on 22.04, 24.04 and 26.04. A check that
       fails on a defect a later task fixes is a named expected failure
-      (the plan, "Named expected failures"): listed in the script with
-      the finding's id, the task that clears it and a mark, `always` or
-      `racy`. Each is printed on every run. An `always` entry fails the
-      script when its check passes; a `racy` one (a defect that needs a
+      (the plan, "Named expected failures"): one line in the script,
+      `expected_failure <id> <task> <always|racy> <name...>`. Each is
+      printed on every run. An `always` entry fails the script when
+      its check passes; a `racy` one (a defect that needs a
       race to show) fails nothing. Any other failure stops for the
       maintainer.
 
@@ -1024,11 +1047,11 @@ bounds only resident memory (tests-M1, tests-M3, tests-M4, tests-M5).
       change lands on main first (the plan, "Lanes and shared files").
 - [ ] The workflow runs the seeds and the harness (the second half of
       tests-L11).
-- [ ] A harness failure on a defect that Tasks 32-36 fix is a named
-      expected failure, marked `always` or `racy`, as in Task 29; the
-      list lives in seeds.sh, where the floor guard sees it, and the
-      fixing task removes it. A harness failure with no finding behind
-      it stops for the maintainer.
+- [ ] A harness failure on a defect that Tasks 33-38 fix is a named
+      expected failure, marked `always` or `racy`, as in Task 29: an
+      `expected_failure` line in seeds.sh, where the floor guard sees
+      it. The fixing task removes it. A harness failure with no finding
+      behind it stops for the maintainer.
 
 **Verification:**
 - [ ] seeds.sh and the fuzz harness on three releases, capped;
@@ -1039,80 +1062,258 @@ bounds only resident memory (tests-M1, tests-M3, tests-M4, tests-M5).
 **Files:** `crates/journal/tests/seeds.sh`, `crates/journal/src/testing/fuzz.rs`, `crates/journal/examples/fuzz.rs`, `.github/workflows/journal-matrix.yml`, `scripts/floor-acknowledged.txt` (an expected-failure entry, if any)
 **Scope:** M
 
-## Task 32: a page is a snapshot of its headers
+## Task 32: the page-to-follow handover: facts, probe and options
 
-**Description:** A page reads each header once but walks live entry
-lists, so an entry written during the page is shown and then repeated
-by the follow (follow-H1, page-H1, fwd-M2; confirmed three times).
-Bound every walk to what the header counted.
+**Description:** A page and the follow after it disagree about where
+the page ended (follow-H1, page-H1, fwd-M2; confirmed three times; the
+mirror case is follow-N1). This task is research: it records what is
+established, probes what isn't, and brings the options to the
+maintainer. The fix is Task 33. It commits no test.
+
+What the code does today:
+- A page reads each file's header once (n0), then each file's newest
+  entry, then builds `PageEnd`, then walks.
+- An unfiltered query walks the main entry list up to the header's
+  count, for Tail, Before and After. It reads no value list.
+- A filtered query walks each value's entry list. The list's count is
+  read once per value, at lookup; the items are read lazily below it.
+  So a filtered page can hold an entry past the header's count.
+- `PageEnd` holds, per file, the inode, the file id and the header's
+  count, and across files the newest entry the headers gave, with its
+  directory.
+- The follow reads a file the page read from that count (same inode
+  and file id, no fewer entries). A file the page didn't read starts
+  after its newest entry at or below `PageEnd`'s newest entry.
+- Why it doubles: an entry appended after the header read and linked
+  into a value's list before that lookup is shown by the page, at an
+  index at or past the count, and the follow reads it again.
+- Why the mirror case loses: an entry counted in the header but not
+  yet linked into its value's list is missed by the page, and the
+  follow starts past it.
+
+What is established from systemd's sources (journal-file.c unless
+named), for the platform note to be written from:
+- The main-list item is written, then `n_entries` raised: v249
+  1827-1828 and 1857-1872; v255 2100-2101 and 2132-2150; v259 the same
+  function at 2092.
+- An entry is linked into the main list and counted, then the header's
+  tail fields are set, then each value's list is linked: v249
+  1944-1966; v255 2232-2266; v259 2253-2286.
+- A value's item is written, then that list's count raised: v249
+  1892-1906; v255 2175-2189.
+- An entry's items are complete before it is linked: v259 2390-2399.
+- So, with one writer appending entry by entry, only the last counted
+  entry can be half linked for a reader (by reasoning; not probed).
+- The exception: a link that fails stays partly linked for good: v249
+  returns at the first failed item (1962-1965); v255 and v259 go on
+  past `-E2BIG` and return other errors (2257-2265; 2277-2285). That
+  is Difference 12.
+- Entry offsets rise with the main-list index in files journald
+  writes, since objects are appended at the tail: v249 1069; v255
+  1242-1259; v259 1250-1267.
+- journalctl without `--follow` reads the live count at each step
+  (v249 2902; v255 3532; v259 3551) and live value counts (v249 2975;
+  v255 3234; v259 3253), so it shows entries written after it opened
+  the file.
+- With `-n N` journalctl seeks to the tail once and shows at most N
+  lines (v255 journalctl.c 2510-2514 and 1958).
+- A flush copy keeps the boot id, both times and the xor hash: v249
+  3882-3955; v255 4436-4497; v259 4453-4515.
+- After a flush the whole /run directory is removed, and only if every
+  entry iterated was copied: v255 journald-server.c 1289-1354.
+- The compact and regular layouts link in the same order (v255
+  2089-2103).
 
 **Acceptance criteria:**
-- [ ] A crafted file whose header counts 2 entries while a value's
-      list holds 3: the page shows only the counted ones for Tail,
-      Before and After, and the follow's first batch delivers the third
-      once. In both layouts, for a filtered and an unfiltered query.
-- [ ] `PageEnd`'s newest entry is never older than a record the page
-      showed.
-- [ ] The expected-failure entries for follow-H1, page-H1 and fwd-M2
-      are removed from the scripts and the harness (the standing rule),
-      and follow.sh passes without them. The script edits here are
-      entry removals only, plus one `racy` entry in stress.sh for an
-      entry journalctl shows past the page's snapshot, which Task 33
-      clears.
-- [ ] follow-N1 (the mirror case: a header read after the main-list
-      link but before the item links): a crafted test shows no entry
-      lost between the page and the follow. The task reports the fix's
-      cost first; a fix larger than this task becomes its own task
-      before Checkpoint B. Only the maintainer can decline it (the
-      plan's open question), and then the spec's known limits and its
-      "0 lost" wording change together.
-- [ ] journal.md says a page is a snapshot of its headers, what
-      `PageEnd` is, and that a follow starts from a page with no newer
-      entries; "0 lost, 0 doubled" holds as stated. The Difference
-      from journalctl on a journal being written is listed as the
-      maintainer chose.
+- [ ] `docs/platform-notes/systemd-journal.md` records the facts above
+      with their citations, the systemd versions and the method, and no
+      host details.
+- [ ] The probe settles what reading didn't, and the note says so for
+      each:
+      - the flush code of 249 and 259 (journald-server.c): that /run
+        is removed only when every entry was copied, as on 255;
+      - that the three releases' packaged systemd matches the upstream
+        tags for the functions cited (the distribution's patch level);
+      - a run under writes, on each release, that tries to refute the
+        link order: a reader that never finds an entry in a value's
+        list before the header counts it.
+- [ ] The note states the one assumption no reading can settle: a
+      reader's `pread` sees journald's mmap stores in program order.
+      It holds on x86-64, the only architecture sb ships for.
+- [ ] A design note shows, for each option in the plan's handover
+      question, how a Tail page, a forward page, a Before page and a
+      merged page hand over. For the recommended option it shows
+      whether the forward page takes the re-read cleanly: an entry
+      before the landing the seek found must be taken by the cursor's
+      order.
+- [ ] The options and a recommendation go to the maintainer. Task 33
+      records the answer and gets its option-specific criteria then.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh task`.
-- [ ] follow.sh and stress.sh on at least one release, capped.
-- [ ] code-reviewer on the commit.
+- [ ] The probe's runs, capped, in the matrix's containers, logs kept
+      outside the repository; `scripts/check.sh fast`.
+- [ ] code-reviewer on the note.
 
 **Dependencies:** Task 31
-**Files:** `crates/journal/src/{walk.rs,forward.rs,file.rs,lib.rs}`, `docs/specs/journal.md`, `crates/journal/tests/{follow.sh,stress.sh}` (entry lines only), `scripts/floor-acknowledged.txt` (the added `racy` entry)
-**Scope:** M
-
-## Task 33: stress.sh compares a snapshot page
-
-**Description:** After Task 32 a page on a journal being written can
-show fewer entries than journalctl, which reads live lists. stress.sh
-compares the two, so what it accepts changes, as the maintainer chose
-for the plan's snapshot question. This is the script half of follow-H1 (the same defect
-as page-H1 and fwd-M2).
-
-**Acceptance criteria:**
-- [ ] Under option (a): stress.sh accepts an entry journalctl shows and
-      the page doesn't only when it is at the tail, past the page's
-      newest entry, and the follow then delivers it once. Anything else
-      still fails: a gap, a repeat, an entry missing inside the page.
-- [ ] Under option (b), this task is replaced by the larger change the
-      question names, planned then.
-- [ ] Each accepted case is counted and printed, so a run shows how
-      often it happened.
-- [ ] The `racy` entry Task 32 added is removed; stress.sh passes
-      without it.
-- [ ] The check is shown to fail once on a broken input: an entry
-      dropped inside the page.
-
-**Verification:**
-- [ ] stress.sh and follow.sh on three releases, capped; shellcheck;
-      `scripts/check.sh task`.
-- [ ] code-reviewer on the commit.
-
-**Dependencies:** Task 32, and the answer to the snapshot question
-**Files:** `crates/journal/tests/{stress.sh,checks.sh}`, `docs/specs/journal.md` (the testing strategy's stress line)
+**Files:** `docs/platform-notes/systemd-journal.md`, `tasks/plan.md` (the design note, under the handover question; it lands on the main checkout, as the plan's shared-file rule requires)
 **Scope:** S
 
-## Task 34: a page can always be paged past
+## Task 33: a page and its follow give every entry once
+
+**Description:** The fix for follow-H1, page-H1, fwd-M2 and follow-N1,
+in the shape the maintainer chose after Task 32. The criteria below
+are behaviour. They hold under any option, except that the first two
+fixtures are set up differently for each option, as each one says.
+The criteria particular to
+the chosen option (what `PageEnd` holds, what the page re-reads) are
+added to this task with the answer, before any code. Unfiltered
+queries read no value list, so neither defect exists for them, and
+they stay out of the change.
+
+**Acceptance criteria:**
+- [ ] The maintainer's decision is recorded in journal.md, and its
+      "Starting a follow" matches the code. "0 lost, 0 doubled" holds
+      as stated, with no new Difference.
+- [ ] An entry appended and linked during the page. The fixture is
+      what the file holds at each of the page's reads, not one static
+      file: at the first header read the header counts 2; at the
+      lookup a value's list holds 3; after the lookup the header
+      counts 3. Under option (a) the test raises the header between
+      the page's first and second header read, through a test seam.
+      Under (b) it raises it between the page and the follow, as the
+      follow's own tests grow a file. The follow then drains again.
+      Over the page and every batch, each of the three is delivered
+      once. For Tail and for an After page that reaches the tail; in
+      both layouts.
+- [ ] Two lists read at different moments, set up the same way: a
+      query of two values. At the first value's lookup an entry isn't
+      linked into that list yet; at the second's, a later entry is.
+      The header counts both only after the page's first header read:
+      raised through the seam under (a), between the page and the
+      follow under (b). Each entry is delivered once, though one is
+      older than an entry the page showed.
+- [ ] The mirror case (follow-N1): a header that counts 3 while a
+      value's list holds 2. The third entry is delivered once, by the
+      page or by the follow.
+- [ ] A page stopped by a limit, and a Before page: the follow starts
+      at the journal's end as today and repeats nothing the page
+      showed.
+- [ ] A Tail page over an archived file and an active one, unfiltered
+      and filtered, then a follow: its first batch is empty. An
+      archived file's last entry that journald was cut off from
+      linking (Difference 12) doesn't come again.
+- [ ] A first batch cut by a small `Limits` (`Batch::more`): the later
+      drains repeat nothing the page showed and lose nothing.
+- [ ] A page that read nothing from a file: what is written to that
+      file afterwards is delivered.
+- [ ] An unfiltered page and its follow are unchanged: the existing
+      tests pass as they are.
+- [ ] `PageEnd` stays opaque and keeps `Debug`, `Clone`, `PartialEq`,
+      `Eq`, `Default` and `Send`. Its rustdoc says what it carries.
+- [ ] The expected-failure entries for follow-H1, page-H1 and fwd-M2
+      are removed from follow.sh and seeds.sh (the standing rule). The
+      script edits here are entry removals only.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh task`.
+- [ ] follow.sh on at least one release, capped.
+- [ ] code-reviewer and library-reviewer on the commit.
+
+**Dependencies:** Task 32, and the maintainer's answer to the handover
+question
+**Files:** `crates/journal/src/{walk.rs,forward.rs,follow.rs,lib.rs}` (which of them depends on the answer), `crates/journal/src/testing.rs` (the test seam), `docs/specs/journal.md`, `crates/journal/tests/{follow.sh,seeds.sh}` (entry lines only)
+**Scope:** M
+
+## Task 34: the handover across files
+
+**Description:** The other half of the handover (follow-H1, page-H1,
+fwd-M2): files that change between the page and the follow. Most of
+it holds today and is pinned here; two points are new.
+
+**Acceptance criteria:**
+- [ ] A rotation between the page and the follow: the archived file
+      keeps its position by inode and file id, and every entry of the
+      new file is delivered. Nothing lost or doubled.
+- [ ] An archived file rewritten as a copy under a new inode before
+      the follow starts keeps its position. This is a code change:
+      today the start needs the inode and the file id to match, and
+      only a later rescan matches by file id alone.
+- [ ] A flush between the page and the follow, where the page read
+      the /var file: every flush copy is shown again, as Difference 13
+      says of a followed file. A test pins it.
+- [ ] A flush between the page and the follow, where the /var file is
+      new: as the maintainer chose (the plan's question). Either
+      Difference 13's wording is extended to a page and a follow on
+      either side of a flush, or each shown entry's identity is
+      carried and one copy of each is dropped. Under both, no entry is
+      lost, and `PageEnd`'s newest entry is not raised past what the
+      headers gave.
+- [ ] A file the page couldn't open: the follow reads it as a new
+      file, and its open error is reported once.
+- [ ] A merged page over several files hands each file over on its
+      own.
+- [ ] journal.md lists the limit that remains under every option:
+      the headers are read at different instants, so `PageEnd`'s newest
+      entry can be newer than an entry of another file that the page
+      didn't read. That entry is lost only if its file is gone before
+      the follow opens it, which takes a flush between the two, once
+      per boot.
+- [ ] follow.sh gains a rotation and a flush between the page and the
+      follow, next to its two "between" scenarios.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh task`.
+- [ ] follow.sh on three releases, capped.
+- [ ] code-reviewer and library-reviewer on the commit.
+
+**Dependencies:** Task 33, and the maintainer's answer to the flush
+question
+**Files:** `crates/journal/src/{follow.rs,lib.rs}`, `docs/specs/journal.md`, `crates/journal/tests/follow.sh`
+**Scope:** M
+
+## Task 35: stress.sh checks the handover under writes
+
+**Description:** The crafted tests of Tasks 33 and 34 place each race
+by hand. stress.sh is where the races happen for real, and today it
+checks only that each page taken during the run is a gap-free part of
+journalctl's final view. This adds the handover, as the matrix
+evidence for follow-H1 (the same defect as page-H1 and fwd-M2). A
+journalctl run at the same moment would race the page, so the oracle
+is journalctl's final view.
+
+**Acceptance criteria:**
+- [ ] The oracle, per writer: every entry a page shows is in
+      journalctl's final view, with no gap; and the page plus its
+      follow is the final view from the page's oldest entry on, each
+      entry once and in order. Only the listed Differences are allowed
+      for (2, 12 and 13).
+- [ ] While the writers and the rotations run, stress.sh repeatedly
+      takes a filtered page and follows from its end, and checks each
+      against that oracle.
+- [ ] The run prints two counts: the handovers checked, and the
+      handovers in which the file's entry count moved while the page
+      was read. The second comes from a `testing` accessor the tool
+      prints with its stats, since `PageEnd` is opaque.
+- [ ] Both counts have a floor, so a run can't pass without meeting
+      the race: the second is above zero on each release. So that a
+      quiet run doesn't fail with no defect, stress.sh repeats
+      handovers, up to a stated cap, until the count has moved in one;
+      a run that reaches the cap without one fails.
+- [ ] The check is shown to fail once on a broken input: a follow
+      started one entry early, and one started one entry late.
+- [ ] No expected-failure entry for follow-H1, page-H1 or fwd-M2 is
+      left in stress.sh.
+
+**Verification:**
+- [ ] stress.sh on three releases, capped; shellcheck;
+      `cargo test -p sb-journal`; `scripts/check.sh task`.
+- [ ] code-reviewer on the commit.
+
+**Dependencies:** Task 34
+**Files:** `crates/journal/tests/{stress.sh,checks.sh}`, `crates/journal/src/testing/tools.rs`, `crates/journal/examples/journal.rs`, `docs/specs/journal.md` (the testing strategy's stress line)
+**Scope:** M
+
+## Task 36: a page can always be paged past
 
 **Description:** A page whose chosen entries all fail to decode has no
 cursor to continue from, and `more_newer` stays set at a tail whose
@@ -1121,13 +1322,14 @@ newest entry can't be shown, so a viewer never reaches the follow
 
 **Acceptance criteria:**
 - [ ] `Page` exposes the cursors of the oldest and newest entries it
-      chose, shown or not (names as the maintainer reviewed). `Before`
-      and `After` from them step past, in both layouts.
+      chose, shown or not: `Page::oldest_chosen` and
+      `Page::newest_chosen`, each an `Option<Cursor>` (decision 10).
+      `Before` and `After` from them step past, in both layouts.
 - [ ] `After(newest_chosen)` at a tail whose newest entry can't be
       shown returns `more_newer == false`.
 - [ ] The tests at walk.rs:2111-2125 pin the old behaviour. They are
       re-targeted to the new one, and the change is acknowledged
-      through Task 3's file.
+      through Task 2's file.
 - [ ] journal.md's API section has the new fields; sb-host re-exports
       them.
 - [ ] Any expected-failure entry for page-M1 or page-M2 is removed (the
@@ -1138,11 +1340,11 @@ newest entry can't be shown, so a viewer never reaches the follow
 - [ ] compare.sh on at least one release, capped.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 33
+**Dependencies:** Task 35
 **Files:** `crates/journal/src/{lib.rs,walk.rs}`, `crates/host/src/journal.rs`, `docs/specs/journal.md`, `scripts/floor-acknowledged.txt`
 **Scope:** M
 
-## Task 35: a forward page on the cursor's own boot
+## Task 37: a forward page on the cursor's own boot
 
 **Description:** A single-boot file of the cursor's own boot falls back
 to a realtime seek that can land before the cursor, so `After` returns
@@ -1152,14 +1354,13 @@ a time loops for ever (fwd-M1; confirmed on all three releases).
 **Acceptance criteria:**
 - [ ] The task first records what journalctl shows for the reviewer's
       two-file fixture on 22.04, 24.04 and 26.04.
-- [ ] On 22.04, 24.04 and 26.04, `After(e)` on that fixture returns
-      only entries after the cursor, and paging one at a time ends. In
-      both layouts. (The plan's default. If the maintainer leaves 22.04
-      as journalctl 249 behaves, the 22.04 row instead pins that
-      behaviour, lists it as a Difference and names the viewer's cursor
-      guard as the stop.)
-- [ ] Where a release's journalctl shows something else on the
-      fixture, that is a listed Difference, approved by the maintainer.
+- [ ] `boot_starts` changes (decision 11): a file that holds the
+      cursor's boot seeks per boot. On 22.04, 24.04 and 26.04,
+      `After(e)` on that fixture returns only entries after the cursor,
+      and paging one at a time ends. In both layouts.
+- [ ] 22.04 gets a listed Difference only if journalctl 249 shows
+      something else on the fixture. A difference on 24.04 or 26.04
+      stops for the maintainer.
 - [ ] The property probe's sixth mode is a test and passes, with the
       five that passed before.
 - [ ] fwd-L3: the `_BOOT_ID` value list read per page is capped, with
@@ -1175,11 +1376,11 @@ a time loops for ever (fwd-M1; confirmed on all three releases).
 - [ ] compare.sh on 22.04 and on one of 24.04 and 26.04, capped.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 34
+**Dependencies:** Task 36
 **Files:** `crates/journal/src/{forward.rs,file.rs}`, `crates/journal/tests/checks.sh` (the fixture's row), `docs/specs/journal.md`
 **Scope:** M
 
-## Task 36: forward walks over damaged entry arrays
+## Task 38: forward walks over damaged entry arrays
 
 **Description:** A forward walk loses every array after one bogus item,
 where the backward walk goes on (file-M1; confirmed). The file layer's
@@ -1209,11 +1410,11 @@ smaller defects go with it (file-L2, file-L3, file-L4, page-N1).
 - [ ] compare.sh on at least one release, capped.
 - [ ] code-reviewer and security-auditor on the commit.
 
-**Dependencies:** Task 35
+**Dependencies:** Task 37
 **Files:** `crates/journal/src/file.rs`, `crates/journal/src/testing.rs`
 **Scope:** M
 
-## Task 37: Low sweep: journal paging and API
+## Task 39: Low sweep: journal paging and API
 
 **Description:** The remaining Lows of paging, the public API and
 forward paging.
@@ -1225,10 +1426,12 @@ forward paging.
       - page-L3 **fix**: `decode` doesn't reserve by the candidate
         count.
       - page-L4 **fix** (document): `PageEnd` is the journal's end,
-        and a follow from a `Before` page skips entries. A rename is
-        the maintainer's (the plan's open question).
+        and a follow from a `Before` page skips entries. It is
+        documented, not renamed (decision 10).
       - page-L5 **fix**: a helper builds a unit query from the
-        journal's own release and source (name as reviewed).
+        journal's own release and source:
+        `Journal::unit_query(&UnitName, Option<Uid>)`. `Query::unit`
+        stays (decision 10).
       - page-L6 **proposed-decline**: the subdirectory name rule only
         matters for an imported directory; record it in the spec.
       - page-L7 **fix**: the spec's `Record` directory text, "0
@@ -1250,11 +1453,11 @@ forward paging.
 - [ ] compare.sh on at least one release, capped.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 36
+**Dependencies:** Task 38
 **Files:** `crates/journal/src/{lib.rs,walk.rs,forward.rs,rules.rs}`, `docs/specs/journal.md`
 **Scope:** M
 
-## Task 38: Low sweep: the journal follow
+## Task 40: Low sweep: the journal follow
 
 **Description:** The follow's remaining Lows. Each can happen on a
 server with a busy or rotating journal, so all are fixes.
@@ -1287,11 +1490,11 @@ server with a busy or rotating journal, so all are fixes.
 - [ ] follow.sh on at least one release, capped.
 - [ ] library-reviewer and code-reviewer on the commit.
 
-**Dependencies:** Task 37
+**Dependencies:** Task 39
 **Files:** `crates/journal/src/{follow.rs,lib.rs}`, `crates/host/src/journal.rs`, `crates/host/tests/journal.rs`, `docs/specs/journal.md`
 **Scope:** M
 
-## Task 39: Low sweep: journal test evidence
+## Task 41: Low sweep: journal test evidence
 
 **Description:** The remaining Lows of the test-evidence review.
 
@@ -1319,7 +1522,7 @@ server with a busy or rotating journal, so all are fixes.
       one release, capped; shellcheck; `scripts/check.sh task`.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 38
+**Dependencies:** Task 40
 **Files:** `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`, `crates/journal/src/testing.rs`, `crates/journal/src/walk.rs` (tests), `scripts/floor-acknowledged.txt` (the re-targeted fixtures)
 **Scope:** M
 
@@ -1327,21 +1530,25 @@ server with a busy or rotating journal, so all are fixes.
 - [ ] The matrix (compare, compat, follow, stress) is green on 22.04,
       24.04 and 26.04 with no expected failure left, and the fuzz
       harness passes, on the final tree.
+- [ ] stress.sh's handover check ran above both its floors on each
+      release (Task 35): every page and its follow gave journalctl's
+      entries once.
 - [ ] Size, startup and coverage are re-measured as `check.sh` runs,
       and the ratchet rows updated on the main checkout, with a ratchet
       ADR if a value passes its tolerance.
-- [ ] The new API names are reviewed.
-- [ ] The declines of Tasks 37-39 are confirmed or overruled.
+- [ ] The new API is reviewed: decision 10's names in place, and what
+      the handover changed in rustdoc or types (Tasks 33 and 34).
+- [ ] The declines of Tasks 39-41 are confirmed or overruled.
 - [ ] Review with the maintainer.
 
-## Task 40: YAML: the corpus and the options
+## Task 42: YAML: the corpus and the options
 
 **Description:** Decision 3. saphyr-parser refuses multi-line flow
 layouts and quoted scalars that libyaml, PyYAML and yaml.v3 accept, and
 accepts two tab layouts Ansible rejects (config-H1, config-L1;
 confirmed with about 200 snippets). This task builds the standing
 differential corpus and the options, and ends at the maintainer's
-choice. Lane 3 then waits for the answer: Task 41 is next and needs it.
+choice. Lane 3 then waits for the answer: Task 43 is next and needs it.
 So this task runs early, while lanes 1 and 2 hold the two worktrees,
 and the answer is in before lane 3's code starts.
 
@@ -1377,9 +1584,9 @@ and the answer is in before lane 3's code starts.
 **Files:** `crates/config/tests/` (the corpus, its mismatch list and its test), `scripts/` (the generator), `docs/platform-notes/` (a YAML acceptance note)
 **Scope:** M
 
-## Task 41: sb accepts the YAML Ansible accepts
+## Task 43: sb accepts the YAML Ansible accepts
 
-**Description:** Implement the option chosen in Task 40 (config-H1,
+**Description:** Implement the option chosen in Task 42 (config-H1,
 config-L1).
 
 **Acceptance criteria:**
@@ -1404,13 +1611,13 @@ config-L1).
       `scripts/check.sh full` (the size).
 - [ ] library-reviewer, security-auditor and code-reviewer on the commit.
 
-**Dependencies:** Task 40 and the maintainer's answer. Lands alone on
+**Dependencies:** Task 42 and the maintainer's answer. Lands alone on
 `Cargo.toml`, `Cargo.lock` and `deny.toml` (the plan, "Lanes and shared
 files").
 **Files:** `crates/config/src/parse.rs`, `crates/cli-core/src/config.rs`, `Cargo.toml` and `deny.toml` (if a dependency changes), `docs/specs/config.md`, `docs/specs/capability-map.md`, `docs/decisions/` (a new ADR)
 **Scope:** M
 
-## Task 42: config files can't exhaust memory or the stack
+## Task 44: config files can't exhaust memory or the stack
 
 **Description:** A file under 1 MiB can OOM-kill or crash sb three
 ways, one of them at startup for every command (config-M1; confirmed).
@@ -1436,11 +1643,11 @@ The files are group-writable and sb runs as root.
 - [ ] `cargo test -p sb-config -p sb-cli-core -p sb`; `scripts/check.sh task`.
 - [ ] security-auditor and code-reviewer on the commit.
 
-**Dependencies:** Task 41
+**Dependencies:** Task 43
 **Files:** `crates/config/src/parse.rs`, `crates/cli-core/src/config.rs`, `crates/sb/tests/` (a limits test file), `docs/specs/config.md`, `docs/specs/cli-core.md` (the inventory-read paragraph only)
 **Scope:** M
 
-## Task 43: proxies as Go reads them
+## Task 45: proxies as Go reads them
 
 **Description:** reqwest's system proxy honours `ALL_PROXY`, which Go
 ignores: a socks proxy breaks both credential checks, and an http one
@@ -1458,11 +1665,11 @@ routes credentials through it silently (config-M2; confirmed).
 - [ ] `cargo test -p sb-config`; `scripts/check.sh task`.
 - [ ] security-auditor, library-reviewer and code-reviewer on the commit.
 
-**Dependencies:** Task 42
+**Dependencies:** Task 44
 **Files:** `crates/config/src/http.rs`, `docs/specs/config.md`
 **Scope:** S
 
-## Task 44: secrets are hidden wherever their key sits, and in `Debug`
+## Task 46: secrets are hidden wherever their key sits, and in `Debug`
 
 **Description:** A value under a secret key name is echoed when the key
 sits in a misplaced structure, hiding covers only verbatim echoes, and
@@ -1483,14 +1690,14 @@ Closes the backlog entry "config: `Node` and `Value` with a redacting
 - [ ] `cargo test -p sb-config`; `scripts/check.sh task`.
 - [ ] security-auditor and code-reviewer on the commit.
 
-**Dependencies:** Task 43
+**Dependencies:** Task 45
 **Files:** `crates/config/src/{rules.rs,secret.rs,tree.rs,scalar.rs,cloudflare.rs}`
 **Scope:** M
 
-## Task 45: Low sweep: config
+## Task 47: Low sweep: config
 
 **Description:** config's remaining Lows. config-L11's fix is in sb's
-`main.rs`, so it is in Task 50.
+`main.rs`, so it is in Task 52.
 
 **Acceptance criteria:**
 - [ ] Each id is fixed, or its decline is confirmed:
@@ -1507,24 +1714,24 @@ Closes the backlog entry "config: `Node` and `Value` with a redacting
         `pattern: 5`) is refused at load.
       - config-L9 **fix**: an empty key is shown as `""` in an
         issue's path, by the same join the parser uses.
-      - config-L10 **fix**: UTF-16 as Task 40's corpus says libyaml
-        reads it. If Task 41's parser can't, **proposed-decline** as a
+      - config-L10 **fix**: UTF-16 as Task 42's corpus says libyaml
+        reads it. If Task 43's parser can't, **proposed-decline** as a
         listed Difference (no Saltbox file is UTF-16).
 
 **Verification:**
 - [ ] `cargo test -p sb-config -p sb`; `scripts/check.sh task`.
 - [ ] security-auditor, library-reviewer and code-reviewer on the commit.
 
-**Dependencies:** Task 44
+**Dependencies:** Task 46
 **Files:** `crates/config/src/{http.rs,schema.rs,cloudflare.rs,rules.rs,parse.rs}`, `docs/specs/config.md` (config-L7 and config-L9 are a few lines each)
 **Scope:** M
 
 ## Checkpoint Y: config
 - [ ] `check.sh full`; the differential corpus passes.
-- [ ] The declines of Task 45 are confirmed or overruled.
+- [ ] The declines of Task 47 are confirmed or overruled.
 - [ ] Review with the maintainer.
 
-## Task 46: the production binary is run by the gate
+## Task 48: the production binary is run by the gate
 
 **Description:** No gate runs the production musl binary, and a cross
 build drops the version variables (sb-M1, sb-M4). The cross image is
@@ -1558,7 +1765,7 @@ for the workflow), and the answer to the startup question
 **Files:** `scripts/check.sh`, `Cross.toml`, `crates/sb/tests/version.rs`, `crates/sb/tests/` (the smoke cases), `CONSTRAINTS.md`, `docs/decisions/` (a new ADR)
 **Scope:** M
 
-## Task 47: skipped tests are counted, and the gate runs as root
+## Task 49: skipped tests are counted, and the gate runs as root
 
 **Description:** Half of sb's integration tests return early as `ok`
 without `SB_TEST_ROOT=1`, and a non-root `check.sh` run skips them
@@ -1583,11 +1790,11 @@ nothing off such a host (sb-L10).
       and without the opt-out; the skip counts recorded.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 46
+**Dependencies:** Task 48
 **Files:** `scripts/check.sh`, `crates/sb/tests/root_gate/mod.rs`, `crates/sb/tests/host_check.rs`, `crates/host/src/lib.rs`
 **Scope:** M
 
-## Task 48: overflow checks in the shipped profiles
+## Task 50: overflow checks in the shipped profiles
 
 **Description:** The production profile has overflow checks off while
 the tests have them on, and sb-journal parses untrusted binary files
@@ -1609,11 +1816,11 @@ the tests have them on, and sb-journal parses untrusted binary files
       ADR.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 47, Task 31
+**Dependencies:** Task 49, Task 31
 **Files:** `Cargo.toml`, `CONSTRAINTS.md`, `docs/decisions/` (a new ADR)
 **Scope:** S
 
-## Task 49: startup parses once
+## Task 51: startup parses once
 
 **Description:** Each run builds the command tree twice, parses up to
 three times and renders help for every command (sb-M6). The unused
@@ -1632,11 +1839,11 @@ three times and renders help for every command (sb-M6). The unused
       startup time).
 - [ ] library-reviewer and code-reviewer on the commit.
 
-**Dependencies:** Task 48
+**Dependencies:** Task 50
 **Files:** `crates/sb/src/main.rs`, `crates/cli-core/src/help.rs`, `crates/sb/Cargo.toml`, `Cargo.lock`
 **Scope:** M
 
-## Task 50: Low sweep: the sb binary
+## Task 52: Low sweep: the sb binary
 
 **Description:** The binary's remaining Lows, and config-L11, whose
 fix is in `main.rs`.
@@ -1656,21 +1863,21 @@ fix is in `main.rs`.
       - sb-L6 **proposed-decline**: exception E1's ignores stay until
         its expiry, as the recorded decision says (with docs-L12).
       - sb-L7 **fix**: the `getpwnam_r` rationale comment is corrected
-        for static musl (Task 46 runs the lookup's test on musl).
+        for static musl (Task 48 runs the lookup's test on musl).
       - sb-L9 **fix**: the version test asserts the output, not only
         the failure.
       - config-L11 **fix**: Ctrl-C ends `validate-config` promptly
         when DNS is dead; the runtime's drop doesn't wait for the
         resolver's blocking thread.
       - sb-L12 **proposed-decline**: mimalloc is a new dependency
-        with C code; taken up only if Task 48's measurement shows a
+        with C code; taken up only if Task 50's measurement shows a
         need.
 
 **Verification:**
 - [ ] `cargo test -p sb -p sb-cli-core -p sb-host`; `scripts/check.sh task`.
 - [ ] code-reviewer on the commit.
 
-**Dependencies:** Task 49
+**Dependencies:** Task 51
 **Files:** `crates/sb/src/main.rs`, `crates/cli-core/src/help.rs`, `crates/sb/tests/{help.rs,version.rs}`, `crates/host/src/journal.rs` (one comment), `docs/specs/cli-core.md` (one line, if sb-L1 is recorded)
 **Scope:** M
 
