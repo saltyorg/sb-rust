@@ -1,5 +1,16 @@
 # Prototype: proto-journal
 
+> The prototype's code was removed once its crate, `sb-journal`
+> (crates/journal), passed the release matrix and the security audit
+> (journal spec, Project Structure; sb-journal plan Task 12). It is in
+> git history (`git log -- prototypes/proto-journal`). These findings
+> stay as the record. Commands and file names below are the prototype's:
+> its reader (hash.rs, file.rs, query.rs), CLI (main.rs) and fuzz harness
+> (fuzz.rs) were ported into the crate, its container scripts moved to
+> crates/journal/tests, and `proto-journal <command>` became the crate's
+> `journal` and `fuzz` examples. Behaviour verified since, on the crate,
+> is in [docs/platform-notes/systemd-journal.md](../platform-notes/systemd-journal.md).
+
 **Question:** Can a small pure-Rust reader of systemd's journal files serve
 `sb logs` (the last 500 entries of a unit, live follow, paging back) as
 exactly as `journalctl -u`, on every supported Ubuntu release?

@@ -5,7 +5,7 @@ Throwaway spikes that test the proposed stack in
 question, result and a **technical** verdict. The look-and-feel verdict is the
 maintainer's, after trying them. A prototype is removed once its module is
 built (maintainer, 2026-11-06); its findings move to `docs/prototypes/`
-(runner, inline, help, yaml, musl so far). `proto-theme` stays while the
+(runner, inline, help, yaml, musl and journal so far). `proto-theme` stays while the
 others here build on it.
 
 ## How to try them

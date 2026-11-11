@@ -546,8 +546,11 @@ fn installed(status: &str) -> bool {
    mmap without a SIGBUS handler). sb refuses unsupported releases, so the
    reader supports exactly the formats and `-u` rules of the supported
    ones, extended with each new LTS. It is proven first in
-   `prototypes/proto-journal` (tasks/prototypes Task 11) on 22.04, 24.04
-   and 26.04 containers; its spec section follows the prototype's review.
+   `prototypes/proto-journal` (tasks/prototypes Task 11; removed in the
+   sb-journal plan's Task 12, its findings in
+   [docs/prototypes/proto-journal.md](../prototypes/proto-journal.md)) on
+   22.04, 24.04 and 26.04 containers; its spec section follows the
+   prototype's review.
    *Amended by decision 6:* the reader's spec comes with the
    `sb-journal` crate.
 5. **The lists lock:** `DPkg::Lock::Timeout` doesn't reach `apt-get

@@ -2,8 +2,9 @@
 
 Spec: [docs/specs/journal.md](../docs/specs/journal.md) (approved
 2026-11-09, decisions 1-9). Evidence:
-[prototypes/proto-journal/FINDINGS.md](../prototypes/proto-journal/FINDINGS.md)
-(moves to `docs/prototypes/proto-journal.md` in Task 12) and
+[docs/prototypes/proto-journal.md](../docs/prototypes/proto-journal.md)
+(the prototype's FINDINGS.md, moved there in Task 12, when the prototype
+was removed) and
 [docs/platform-notes/systemd-journal.md](../docs/platform-notes/systemd-journal.md).
 Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md). Earlier plans are in
 `tasks/<module>/`. Tasks: [tasks/todo.md](todo.md).
@@ -274,7 +275,7 @@ sanitizer, so it waits for T9 too.
 - [ ] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04, pinning
       the forward page, the `more_*` flags and the coredump row
 - [x] The API names are reviewed; the ratchet is re-measured
-- [x] Review with the maintainer (2026-11-11)
+- [x] Review with the maintainer (approved 2026-11-11, with ADR-014 accepted) (2026-11-11)
 
 ### Phase 2: Following
 - [x] Task 6: the follow ported, with the prototype's start
@@ -290,11 +291,13 @@ sanitizer, so it waits for T9 too.
 - [x] Task 9: term-ui's shared sanitizer (`DisplayText`)
 - [x] Task 10: sb-host's release, uid lookup, re-export and glue
 - [x] Task 11: the security audit and its fixes
-- [ ] Task 12: docs, the map's stack rows, the prototype removed
+- [x] Task 12: docs, the map's stack rows, the prototype removed
 
 ### Checkpoint C: complete
-- [ ] The spec's success criteria 1-8 met; `scripts/check.sh full`
-- [ ] Review with the maintainer; the plan archived to `tasks/journal/`
+- [x] The spec's success criteria 1-8 met; `scripts/check.sh full`
+      (except the floor guard's two ADR-014 loosenings; tasks/todo.md,
+      Checkpoint C)
+- [x] Review with the maintainer; the plan archived to `tasks/journal/`
 
 ## Risks and mitigations
 

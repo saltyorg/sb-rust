@@ -62,14 +62,14 @@ without them coverage reads lower).
 The "Today" values are written as limits, so the floor guard reports any
 value that gets worse. Within its tolerance, the reason goes in the
 commit; beyond it, the change needs an ADR (docs/decisions/), as any
-loosening does. Current values: [ADR-011](docs/decisions/ADR-011-exec-ratchet-update.md). Keep digits out of the rows except the values themselves:
+loosening does. Current values: [ADR-014](docs/decisions/ADR-014-journal-ratchet-update.md). Keep digits out of the rows except the values themselves:
 the guard reads every number as a threshold.
 
 | Metric | Today | Direction |
 |---|---|---|
-| Project coverage (`crates/`) | at least 98.34% of lines, at least 97.87% of functions (see the ratchet ADR) | must not fall; tolerance at most 0.5% |
-| Production binary size | at most 11645408 bytes (see the ratchet ADR) | must not grow; growth at most 5% per change |
-| `sb --help` median | at most 1.09 ms | must not grow; growth at most 1 ms per change |
+| Project coverage (`crates/`) | at least 98.58% of lines, at least 98.11% of functions (see the ratchet ADR) | must not fall; tolerance at most 0.5% |
+| Production binary size | at most 11932640 bytes (see the ratchet ADR) | must not grow; growth at most 5% per change |
+| `sb --help` median | at most 1.18 ms | must not grow; growth at most 1 ms per change |
 
 ## Tools
 

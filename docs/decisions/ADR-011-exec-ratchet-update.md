@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-06, exec Checkpoint C)
+Accepted (maintainer, 2026-11-06, exec Checkpoint C); values superseded
+by [ADR-014](ADR-014-journal-ratchet-update.md)
 
 ## Date
 

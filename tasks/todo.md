@@ -281,8 +281,10 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 **Scope:** M
 
 ## Checkpoint A: the reader against journalctl
-- [ ] Tasks 1-5 pass `scripts/check.sh full`; the matrix is green on
-      three releases.
+- [x] Tasks 1-5 pass `scripts/check.sh full`; the matrix is green on
+      three releases. (Recorded late, at Task 12: check.sh full over
+      3c75519..0fac785 passed with mutants 1231 caught of 1298 viable;
+      the matrix was green on 22.04, 24.04 and 26.04 at 0fac785, Task 5.)
 - [x] Ratchet re-measured: size, startup, project coverage. `crates/`
       coverage 98.47% of lines and 98.02% of functions, startup 1.17 /
       1.32 ms, binary 11924448 bytes: all within the ratchet (CONSTRAINTS.md
@@ -575,12 +577,39 @@ in the commit body. The matrix runs again where a fix touches reading.
   their reasons).
 
 **Acceptance criteria:**
-- [ ] Spec success criteria 6 and 7.
-- [ ] `scripts/check.sh full` passes within the ratchet, or with an ADR
-      for a figure that moved.
+- [x] Spec success criteria 6 and 7:
+      - 7: the capability map (tokio for sb-host in the async row; the
+        reader's stack row; sdjournal, systemd-journal-sdk and the
+        libsystemd crate rejected; "Journal cursor polling" corrected),
+        the platform note (the crate's runs, package versions, journald
+        raising the arena before linking an object), and the FINDINGS
+        moved to `docs/prototypes/proto-journal.md` with `git mv`. ADR-013,
+        deny.toml and term-ui's amendment landed in Tasks 1 and 9.
+      - The prototype removed after checking that the crate holds it all:
+        its 112 tests are in sb-journal (111 by name, one re-targeted:
+        `init_scope_rule_on_external_files_requires_uid_0`), its CLI and
+        fuzz harness are the `journal` and `fuzz` examples, and its
+        scripts were already in crates/journal/tests. Cargo.lock lost its
+        package entry only; the CI workflow, scripts and deny.toml named
+        it nowhere.
+- [x] `scripts/check.sh full` passes except the floor guard's two
+      findings, which ADR-014 (2026-11-11) explains; on the working tree
+      against fc9b7c1:
+      - the floor guard reports only ADR-014's two loosenings
+        (`threshold-loosened` on the binary size and `sb --help` rows);
+        every other step passed in a run with only that step skipped;
+      - tests 1340 passed; no changed crate code, so no changed-line
+        coverage or mutants; startup 1.19 / 1.43 ms; cargo-deny ok (its known
+        warnings); binary 11932640 bytes.
+      - Ratchet on the final tree: `crates/` coverage 98.59% of lines
+        (29247 of 29666) and 98.12% of functions (3549 of 3617, rounded
+        up from 98.119%); startup 1.18 / 1.36 ms; binary 11932640 bytes.
+        ADR-014 raises the coverage floors to 98.58% and 98.11% and
+        records the size and
+        the `sb --help` median as new limits.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; code-reviewer on the commit.
+- [x] `scripts/check.sh full`; code-reviewer on the working tree.
 
 **Dependencies:** Task 11
 **Files:** `docs/specs/capability-map.md`, `docs/platform-notes/systemd-journal.md`,
@@ -589,9 +618,29 @@ in the commit body. The matrix runs again where a fix touches reading.
 **Scope:** M
 
 ## Checkpoint C: complete
-- [ ] The spec's success criteria 1-8, with the test count from plan.md's
-      traceability table; Checkpoints A and B held.
-- [ ] Review with the maintainer; the plan archived to `tasks/journal/`.
+- [x] The spec's success criteria 1-8, with the test count from plan.md's
+      traceability table; Checkpoints A and B held. Prepared 2026-11-11
+      for the maintainer's review:
+      - 1: sb-host's tests page (Tail, Before, After) and follow crafted
+        files through the re-export (Task 10; the follow through
+        `FollowWait` since dee2ecb).
+      - 2: all 112 prototype tests are in the crate (111 by name, one
+        re-targeted in Task 3), with the traceability table's new items,
+        `Send` and the `RELEASES` check (Tasks 3, 7 and 10).
+      - 3: compare.sh, compat.sh, follow.sh and stress.sh passed on
+        22.04, 24.04 and 26.04 on Task 11's tree (fc9b7c1); Task 12
+        changed no crate code.
+      - 4: the fuzz harness passed 9,000 cases over 8 seeds (Task 11).
+      - 5: the pread bounds are asserted exactly (Task 4) and by
+        compare.sh (Task 5).
+      - 6 and 7: Task 12 above (check.sh full passes except the floor
+        guard's two ADR-014 loosenings; ADR-014 is Proposed until this
+        review).
+      - 8: the security audit found no high finding (Task 11).
+      - Checkpoint A's first box is still unticked in its record; its
+        matrix and check.sh conditions are met by Task 11's matrix run
+        and Task 12's check. Checkpoint B held.
+- [x] Review with the maintainer (approved 2026-11-11, with ADR-014 accepted); the plan archived to `tasks/journal/`.
 
 ## Follow-ups from docker start, stop and restart
 

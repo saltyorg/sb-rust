@@ -16,12 +16,14 @@ forward, and new lines as they arrive. sb-go polls `journalctl -o json
 maintained dependency for this kind of I/O rather than writing its own,
 and diverging needs evidence. The host spec (decisions 4 and 6) chose a
 small pure-Rust reader of the journal files, proven first in
-`prototypes/proto-journal`; the journal spec (docs/specs/journal.md) makes
+`prototypes/proto-journal` (removed in the plan's Task 12; in git
+history); the journal spec (docs/specs/journal.md) makes
 it the `sb-journal` crate, wrapped by sb-host.
 
 The evidence is proto-journal's FINDINGS.md ("Why not the alternatives",
-"How it was checked"), which moves to `docs/prototypes/proto-journal.md`
-in the plan's Task 12:
+"How it was checked"), moved to
+[docs/prototypes/proto-journal.md](../prototypes/proto-journal.md) in the
+plan's Task 12:
 
 - **sdjournal 0.1.22** was run hands-on, and was exact once worked around,
   but:

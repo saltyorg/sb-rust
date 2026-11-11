@@ -165,7 +165,7 @@ GitHub API (last push, archived flag).
 | Host OS release | `sysinfo` (`system` feature only), reading `/etc/os-release` | 0.40.0 / 2026-10 | 58M | host/ubuntu.go parser | cli-core (approved 2026-10-30; os_info rejected: runs `lsb_release`) |
 | Errors | `anyhow` (bin), `thiserror` (lib modules) | 2026 | 260M / 464M | — | untested |
 | Logging | `tracing` + `tracing-subscriber`, one file via `tracing-appender` (never rotating; Saltbox's logrotate rotates it) | 0.2.5 (appender) / 2026-04 | 240M / 42M | terminal/logging (screen only) | proto-runner; decision 11 |
-| Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs) | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs |
+| Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs); sb-host takes tokio's `rt` for `spawn_blocking` around the journal reads and the follow's wake wait (host spec, Tech Stack) | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs, sb-host |
 | Docker | `bollard` | 0.21.1 / 2026-08 | 20M | moby client | proto-musl, proto-logs, proto-inline |
 | systemctl JSON output | `serde_json` | 1.0.154 / 2026-10 | 389M | parsing systemctl's human-readable columns | proto-logs |
 | Timestamps | `jiff` | 0.2.38 / 2026-10 | 98M | time | proto-logs |
@@ -180,6 +180,7 @@ GitHub API (last push, archived flag).
 | Shell quoting | `shlex` | 2.0.1 / 2026-05 | 311M | go-shellquote | untested |
 | PTY | `portable-pty` (wezterm) | 0.9.0 / repo active 2026-10 | 14M | creack/pty | proto-musl, proto-runner |
 | Unix syscalls | `rustix` | 1.1.6 / 2026-10 | 320M | x/sys | proto-runner |
+| systemd journal files (service logs) | sb's own reader, `sb-journal` (pread only, pure Rust; [ADR-013](../decisions/ADR-013-own-journal-reader.md)), on `siphasher` (siphash24), `lz4_flex` (`safe-decode`), `ruzstd`, `lzma-rust2` (`xz`, without `optimization`), `rustix` (inotify, safe opening) and `itertools` (the merge) | siphasher 1.0.4, lz4_flex 0.14.0, ruzstd 0.9.1, lzma-rust2 0.25.0, rustix 1.1.6, itertools 0.14.0 | — | cmd/logs.go's `journalctl -o json --cursor` polling | proto-journal ([findings](../prototypes/proto-journal.md)), the crate's container matrix on 22.04, 24.04 and 26.04 |
 | Restore decrypt | `aes`, `cbc`, `pbkdf2`, `sha1`, `sha2` (RustCrypto) | 2026 | 48–332M | crypto/*, x/crypto/pbkdf2 | untested |
 | Self-update | hand-rolled on `reqwest` + `sha2`, sends a `User-Agent` | — | — | selfupdate pkg (keeps digest check) | proto-musl (User-Agent) |
 | Testing | `insta` + ratatui `TestBackend`, `assert_cmd`, `rexpect` (PTY smoke) | 2026 | 35M / 20M / 0.4M | — | proto-facts (recommendation) |
@@ -198,8 +199,24 @@ GitHub API (last push, archived flag).
 - Hand-written mouse hit-maps (sb-go's approach): layout rects plus
   `ListState::offset()` do the same in about a quarter of the code.
   proto-facts.
-- Journal cursor polling (sb-go's approach): replaced by `journalctl -f` and
-  bollard follow streams. proto-logs.
+- Journal cursor polling (sb-go's approach): replaced by sb's own journal
+  reader (`sb-journal`, ADR-013) for systemd units, and by bollard follow
+  streams for containers. proto-logs first replaced it with a `journalctl
+  -f` child; the host spec's decision 4 replaced that child: a host CLI
+  whose JSON has quirks of its own (fields of 4096 bytes or more `null`
+  without `--all`, byte-array lines) and whose `-f -n 0` loses writes made
+  while it starts. proto-logs, proto-journal.
+- `sdjournal` (0.1.22, run hands-on): skips `.journal~` files without an
+  error, its follow can die on a rotation race, it can't page back from a
+  cursor, its unit match isn't journalctl's `-u` rule, it carries a RustSec
+  advisory through ruzstd 0.8, its bus factor is 1, and it adds about
+  640 KB to the binary. proto-journal, ADR-013.
+- netdata's `systemd-journal-sdk`: reads through an mmap window with a
+  SIGBUS handler and links the C `zstd` crate, against the reader's
+  pread-only, pure-Rust and `unsafe_code = "forbid"` constraints. Not run.
+  ADR-013.
+- The libsystemd `systemd` crate: can't link into the static musl binary
+  (decision 6), and systemd's musl support is "incomplete". ADR-013.
 - `cloudflare` crate: about 86K downloads and last release 2025-03. sb-go only
   calls it in one config validator, so a single `reqwest` call is smaller.
 - `self_update`: active, but pulls in archive/extraction stacks we don't need.

@@ -9,9 +9,11 @@ decision 6). It reads systemd's journal files in pure Rust for
 
 It replaces sb-go's `journalctl -o json --cursor` polling (cmd/logs.go)
 and proto-logs' `journalctl -f` child. The design and its evidence come
-from `prototypes/proto-journal`: its FINDINGS.md (adopted with changes,
+from the proto-journal prototype: its findings (adopted with changes,
 maintainer 2026-11-08, including the security audit and the feature
-research) and its code, which this crate supersedes. Verified systemd
+research), now [docs/prototypes/proto-journal.md](../prototypes/proto-journal.md),
+and its code, which this crate superseded (removed in the plan's Task 12;
+in git history). Verified systemd
 behaviour is in docs/platform-notes/systemd-journal.md.
 
 ## Assumptions
@@ -627,8 +629,9 @@ The tools need file-level internals (`entry_before`, `all_entries`,
 `data_payload_within`) and the JSON form. Those sit behind the
 `testing` feature, the repository's convention as in sb-docker. Tests
 live in the library, so `cargo test` runs them all, the four `classify`
-tests included. `prototypes/proto-journal` is removed once the crate
-passes the matrix, and its FINDINGS move to `docs/prototypes/`.
+tests included. `prototypes/proto-journal` was removed once the crate
+passed the matrix (the plan's Task 12), and its FINDINGS moved to
+[docs/prototypes/proto-journal.md](../prototypes/proto-journal.md).
 
 ## Testing Strategy
 

@@ -1,13 +1,21 @@
 # systemd's journal, as sb's reader relies on it
 
-Behaviour verified while building `prototypes/proto-journal`, on
-2026-11-08. Each claim was checked one of two ways:
+Behaviour first verified while building the proto-journal prototype
+(2026-11-08; its findings are in
+[docs/prototypes/proto-journal.md](../prototypes/proto-journal.md)), and
+verified again against sb's reader, the `sb-journal` crate, in its plan's
+Tasks 5 to 11 (2026-11-10 and 2026-11-11). Each claim was checked one of
+two ways:
 - **By source:** systemd's sources at the tags named.
-- **By container runs:** unprivileged `ubuntu:22.04` (systemd 249.11),
-  `24.04` (255.4), `26.04` (259.9), `18.04` (237) and `20.04` (245)
-  containers. Each used that release's own `systemd-journald` (run
-  standalone, not as PID 1), `systemd-journal-remote` and `journalctl`.
-  The checks are compare.sh, compat.sh, follow.sh and stress.sh.
+- **By container runs:** unprivileged `ubuntu:22.04` (systemd
+  249.11-0ubuntu3.23), `24.04` (255.4-1ubuntu8.18), `26.04`
+  (259.9-0ubuntu0.1), `18.04` (237) and `20.04` (245) containers. Each
+  used that release's own `systemd-journald` (run standalone, not as
+  PID 1), `systemd-journal-remote` and `journalctl`. The checks are
+  crates/journal/tests/compare.sh, compat.sh, follow.sh and stress.sh
+  (the prototype ran their first versions); the last run, on the crate
+  after its security audit, passed all of them on 22.04, 24.04 and 26.04,
+  with the 18.04 and 20.04 files read through compat.sh.
 
 ## Matching (`journalctl -u`)
 
@@ -61,6 +69,14 @@ Behaviour verified while building `prototypes/proto-journal`, on
     higher seqnums, so sd-journal's order calls them newer. When
     `/var/log/journal` exists before it starts, `journalctl -f` 255 then
     prints each flushed entry twice.
+- **New objects:** journald raises the header's `arena_size` before it
+  writes a new object's header and links it (`journal_file_append_object`
+  calls `journal_file_allocate` first; journal-file.c at the v249, v255
+  and v259 tags). A reader that sized its reads by an earlier header can
+  therefore find a linked object past the arena it knew, and has to read
+  the header again before reading that object whole. sb-journal Task 11's
+  security audit hit this with a race probe reading a live journal while
+  journald wrote (fixed in the crate's `object_head`).
 - **Wake-ups:** journald truncates a file to its own size after writing,
   on a timer, to raise inotify events. Followers wake on the order of
   journald's 250 ms timer after a write; measured in the containers:
