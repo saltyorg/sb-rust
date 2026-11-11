@@ -87,9 +87,9 @@ fast() {
 # lower the score, apart from a timeout or a broken build outside its tests
 # (ADR-012). Add a crate here when its tests start reaching a listed one.
 declare -A MUTATION_TESTERS=()
-# sb-journal: no workspace crate's tests reach it until sb-host's glue
-# (sb-journal plan, Task 10), when sb-host joins its testers.
-MUTATION_TESTERS[sb-journal]=""
+# sb-journal: judged by its own tests and sb-host's, the one crate that
+# wraps it (sb-journal plan, Task 10).
+MUTATION_TESTERS[sb-journal]="sb-host"
 
 # mutation_pass N ARGS...: one cargo-mutants pass over the changed code with
 # the given package arguments; appends its outcomes file to `outcomes`.

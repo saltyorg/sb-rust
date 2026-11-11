@@ -81,9 +81,13 @@ stops on Ctrl-C through exec.
 - **`check_setup_support()`:** uses setup's list. Its error reads
   `UNSUPPORTED OS - Install cancelled: <cause>. Supported OS versions:
   24.04, 26.04`.
-- **`ubuntu_release()`:** os-release's `VERSION_ID` through sysinfo. It
-  serves python-env's deadsnakes rule (`22.04` only) and replaces sb-go's
-  `ParseOSRelease` caller.
+- **`ubuntu_release()`:** os-release's `VERSION_ID` through sysinfo, as
+  sb-journal's `Release` (journal spec, assumption 2). It serves
+  python-env's deadsnakes rule (`22.04` only) and replaces sb-go's
+  `ParseOSRelease` caller. A missing `VERSION_ID` gives
+  `UbuntuReleaseError::NoVersion`, with `check`'s text; one that names no
+  supported release gives `UbuntuReleaseError::Unsupported`, carrying
+  sb-journal's `ReleaseError`.
 
 ### Setup checks (system.go)
 
@@ -387,7 +391,11 @@ what both do.
   - `fs::statvfs`.
 - **walkdir 2.5:** new to the binary, already in the lockfile
 - **nix 0.28,** `user`: already linked through portable-pty; gains the
-  feature
+  feature. Also the systemd-coredump user's uid for the journal's unit
+  query (`journal::coredump_uid`, `look up user <u>: <cause>`)
+- **tokio 1.54** (the workspace entry; host uses `rt`): `spawn_blocking`
+  for the journal's blocking reads, `journal::page` and `journal::drain`
+  (journal spec, assumption 3 and API: a correction to this list)
 - **serde and serde_json:** systemctl's JSON
 - **jiff 0.2:** times
 - **tempfile 3:** atomic saves
@@ -414,7 +422,9 @@ crates/host/src/apt.rs          policy, installed, install/remove, update
 crates/host/src/apt/sources.rs  the repository rules on a given root
 crates/host/src/owner.rs        ownership
 crates/host/src/systemd.rs      service list and sb-go's formatting
+crates/host/src/journal.rs      sb-journal re-exported; coredump uid; helpers
 crates/host/src/testing.rs      stand-in programs (`testing` feature)
+crates/host/tests/journal.rs    the journal helpers on crafted files
 crates/host/tests/live.rs       opt-in live test
 docs/platform-notes/apt.md      the lock-wait check
 ```

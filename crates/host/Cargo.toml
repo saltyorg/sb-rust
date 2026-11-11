@@ -12,6 +12,18 @@ sysinfo.workspace = true
 thiserror.workspace = true
 # The journal reader, which sb-host wraps (host spec, decision 6).
 sb-journal.workspace = true
+# The systemd-coredump user's uid for `Query::unit` (host spec, decision 2).
+nix.workspace = true
+# `spawn_blocking` for the journal's blocking reads (journal spec,
+# assumption 3): the workspace entry (`rt`, `time`); only `rt` is used.
+tokio.workspace = true
+
+[dev-dependencies]
+# The crafted journal files the helpers' tests page and follow.
+sb-journal = { workspace = true, features = ["testing"] }
+# `#[tokio::test]`'s current-thread runtime.
+tokio = { workspace = true, features = ["macros"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

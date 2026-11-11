@@ -494,17 +494,17 @@ time and never committed.
 - Name sb-host in check.sh's `MUTATION_TESTERS[sb-journal]` (ADR-012).
 
 **Acceptance criteria:**
-- [ ] sb-host's tests run `page` (Tail, Before, After) and a follow on
+- [x] sb-host's tests run `page` (Tail, Before, After) and a follow on
       crafted files through the re-export, the helpers on a
       current-thread runtime (success criterion 1).
-- [ ] A test asserts that `RELEASES` and `SUPPORTED_RUNTIME_RELEASES`
+- [x] A test asserts that `RELEASES` and `SUPPORTED_RUNTIME_RELEASES`
       name the same releases.
-- [ ] `ubuntu_release()` handles a missing or unparsable `VERSION_ID`
+- [x] `ubuntu_release()` handles a missing or unparsable `VERSION_ID`
       with a typed error.
 
 **Verification:**
-- [ ] `cargo test -p sb-host`; `scripts/check.sh task`.
-- [ ] library-reviewer (spawn_blocking, the getpwnam lookup) and
+- [x] `cargo test -p sb-host`; `scripts/check.sh task`.
+- [x] library-reviewer (spawn_blocking, the getpwnam lookup) and
       code-reviewer on the commit.
 
 **Dependencies:** Task 7
@@ -583,6 +583,13 @@ in the commit body. The matrix runs again where a fix touches reading.
   controller's Rust rewrite, the maintainer's (docker decision 9).
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
+
+- The consumer's wake wait: tokio 1.54.1 deprecates `AsyncFd::new` as
+  unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
+  `unsafe`, which the workspace forbids. The spec's wake protocol
+  ("AsyncFd on wake_fd") can't be written as it stands. Waiting on the
+  maintainer's decision; sb-host's test waits with rustix poll under
+  spawn_blocking meanwhile.
 
 - crates/cli-core/src/exit.rs (about line 450) uses anstream's
   `strip_str`, which passes C1 code points through. If that text can

@@ -34,6 +34,8 @@ mod walk;
 use boots::BootOrder;
 use file::{Entry, JournalFile};
 
+// A new public item here or below is also named in sb-host's re-export
+// (crates/host/src/journal.rs), sb's only way to reach this crate.
 pub use follow::Follower;
 
 pub use rules::{
