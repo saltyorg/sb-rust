@@ -1,6 +1,7 @@
 //! The comparison CLI the container scripts run against journalctl
-//! (crates/journal/tests/compare.sh and compat.sh): pages as `-o json
-//! --all` lines, the verdicts and the fixtures. A thin wrapper: the logic
+//! (crates/journal/tests/compare.sh, compat.sh, follow.sh and stress.sh):
+//! pages and a follow as `-o json --all` lines, the verdicts and the
+//! fixtures. A thin wrapper: the logic
 //! is `sb_journal::testing::tools`, unit-tested there (plan, "The
 //! `testing` feature"). Built with `--features testing`.
 //!
@@ -97,9 +98,10 @@ impl Selecting {
     }
 }
 
-/// `tail`'s arguments.
+/// What to read and match, as journalctl's: the source, `-u` or field
+/// matches, and the release whose rules apply.
 #[derive(Args)]
-struct TailArgs {
+struct Matching {
     #[command(flatten)]
     from: Input,
     /// journalctl's `-u`.
@@ -109,10 +111,6 @@ struct TailArgs {
     /// either value.
     #[arg(long = "match")]
     matches: Vec<String>,
-    #[arg(short, default_value_t = 500)]
-    n: usize,
-    #[command(flatten)]
-    at: At,
     /// The release row whose journalctl the page matches (a canary
     /// passes its mapped row).
     #[arg(long, value_parser = Release::parse)]
@@ -120,10 +118,48 @@ struct TailArgs {
     /// The systemd-coredump user's uid, when it exists (26.04's `-u`).
     #[arg(long)]
     coredump_uid: Option<u32>,
+}
+
+impl Matching {
+    /// The journal and the query.
+    fn open(&self) -> Result<(Journal, Query)> {
+        let source = self.from.source();
+        let query = match &self.unit {
+            Some(u) => Query::unit(
+                &self.release,
+                &UnitName::new(u)?,
+                self.coredump_uid.map(Uid::new),
+                &source,
+            ),
+            None => tools::matches(&self.matches)?.unwrap_or_else(tools::every_entry),
+        };
+        Ok((Journal::open(source, &self.release)?, query))
+    }
+}
+
+/// `tail`'s arguments.
+#[derive(Args)]
+struct TailArgs {
+    #[command(flatten)]
+    matching: Matching,
+    #[arg(short, default_value_t = 500)]
+    n: usize,
+    #[command(flatten)]
+    at: At,
     /// Print the page's flags and preads to stderr, as
     /// `sb-journal: records=N more_older=B more_newer=B preads=N`.
     #[arg(long)]
     stats: bool,
+}
+
+/// `follow`'s arguments.
+#[derive(Args)]
+struct FollowArgs {
+    #[command(flatten)]
+    matching: Matching,
+    /// The newest entries first, as `journalctl -f -n`.
+    #[arg(short, default_value_t = 0)]
+    n: usize,
 }
 
 #[derive(Subcommand)]
@@ -131,6 +167,10 @@ enum Command {
     /// A page of entries (of a unit, or matching fields) as `-o json --all`
     /// lines; read errors to stderr.
     Tail(TailArgs),
+    /// The newest entries, then the new ones as they are written, as
+    /// `journalctl -f -o json --all` prints them; read errors to stderr.
+    /// It runs until it is stopped.
+    Follow(FollowArgs),
     /// The flags a page should have, from journalctl's whole output for
     /// the same query: `more_older=B more_newer=B`.
     More {
@@ -188,6 +228,13 @@ enum Command {
         /// Seconds after the fixtures' base time, one entry each.
         #[arg(long = "realtime-s", required = true, value_delimiter = ',')]
         realtimes: Vec<u64>,
+        /// The source machine each entry names in `_MACHINE_ID=`, 32 hex
+        /// digits.
+        #[arg(long)]
+        machine: Option<String>,
+        /// Leave `_MACHINE_ID=` off the last entry.
+        #[arg(long, requires = "machine")]
+        untagged_tail: bool,
     },
 }
 
@@ -213,26 +260,13 @@ fn any_release() -> Release {
 /// A page as `-o json --all` lines; read errors and `--stats` to stderr.
 fn tail(args: TailArgs) -> Result<ExitCode> {
     let TailArgs {
-        from,
-        unit,
-        matches,
+        matching,
         n,
         at,
-        release,
-        coredump_uid,
         stats,
     } = args;
-    let source = from.source();
-    let query = match unit {
-        Some(u) => Query::unit(
-            &release,
-            &UnitName::new(&u)?,
-            coredump_uid.map(Uid::new),
-            &source,
-        ),
-        None => tools::matches(&matches)?.unwrap_or_else(tools::every_entry),
-    };
-    let journal = Journal::open(source, &release)?;
+    let (journal, query) = matching.open()?;
+    let release = matching.release;
     let page = journal.page(&query, &at.position(), n, &Limits::default());
     for e in &page.errors.shown {
         eprintln!("sb-journal: {e}");
@@ -252,6 +286,28 @@ fn tail(args: TailArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The page at the tail (unless `-n 0`), then the follow's batches as they
+/// come (`tools::write_records`), until stopped. The follow starts after the
+/// page, so what is written between the two is missed (the follow's start,
+/// `Journal::follow`).
+fn follow(args: FollowArgs) -> Result<ExitCode> {
+    let FollowArgs { matching, n } = args;
+    let (journal, query) = matching.open()?;
+    let release = matching.release;
+    let limits = Limits::default();
+    let mut out = BufWriter::new(std::io::stdout().lock());
+    let mut err = std::io::stderr().lock();
+    if n > 0 {
+        let page = journal.page(&query, &Position::Tail, n, &limits);
+        tools::write_records(&page.records, &page.errors, &release, &mut out, &mut err)?;
+    }
+    let mut follower = journal.follow(query)?;
+    loop {
+        let batch = follower.drain(&limits);
+        tools::write_records(&batch.records, &batch.errors, &release, &mut out, &mut err)?;
+    }
+}
+
 /// Each item on its own line of stdout, buffered.
 fn print_lines<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> Result<ExitCode> {
     let mut out = BufWriter::new(std::io::stdout().lock());
@@ -265,6 +321,7 @@ fn print_lines<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> Resu
 fn main() -> Result<ExitCode> {
     match Cli::parse().command {
         Command::Tail(args) => tail(args),
+        Command::Follow(args) => follow(args),
         Command::More { whole, page, at } => {
             println!(
                 "{}",
@@ -316,9 +373,14 @@ fn main() -> Result<ExitCode> {
             boot,
             prefix,
             realtimes,
+            machine,
+            untagged_tail,
         } => {
             let mut out = BufWriter::new(std::io::stdout().lock());
-            tools::gen_boot(&mut out, &boot, &prefix, &realtimes)?;
+            let machine = machine
+                .as_deref()
+                .map(|id| tools::SourceMachine { id, untagged_tail });
+            tools::gen_boot(&mut out, &boot, &prefix, &realtimes, machine)?;
             out.flush()?;
             Ok(ExitCode::SUCCESS)
         }

@@ -431,6 +431,34 @@ pub fn every_entry() -> Query {
     Query::every()
 }
 
+/// Write `records` to `out` as `-o json --all` lines on `release`, then
+/// flush it, and `errors` to `err`, a line each (`sb-journal: ` and the
+/// error with its sources), then the count of the omitted ones: what the
+/// `follow` command prints for its page and each drain's batch, as they
+/// come, so the scripts read them while it runs.
+///
+/// # Errors
+///
+/// Writing to either.
+pub fn write_records(
+    records: &[Record],
+    errors: &ReadErrors,
+    release: &Release,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    for e in &errors.shown {
+        writeln!(err, "sb-journal: {}", text(e))?;
+    }
+    if errors.omitted > 0 {
+        writeln!(err, "sb-journal: {} more errors", errors.omitted)?;
+    }
+    for r in records {
+        writeln!(out, "{}", json(r, release))?;
+    }
+    out.flush()
+}
+
 /// The files `journal`'s pages would read, opened as a page opens them,
 /// with the errors listing and opening them gave (one per file).
 #[must_use]
@@ -810,6 +838,12 @@ fn branch(
 /// realtimes that step back in one file are a clock set back within a
 /// boot (decision 10).
 ///
+/// With `machine`, the entries carry `_MACHINE_ID=` that id, as
+/// systemd-journal-remote keeps a source machine's own (its file's header
+/// names the receiving machine): 26.04's boot table takes the tail entry's
+/// (decision 11, issue #34169). `machine.untagged_tail` leaves it off the
+/// last entry, whose header id then stays.
+///
 /// # Errors
 ///
 /// Writing to `out`.
@@ -818,7 +852,9 @@ pub fn gen_boot(
     boot: &str,
     prefix: &str,
     realtimes_s: &[u64],
+    machine: Option<SourceMachine<'_>>,
 ) -> io::Result<()> {
+    let last = realtimes_s.len();
     for (k, &s) in (1u64..).zip(realtimes_s) {
         export_field(
             out,
@@ -831,6 +867,12 @@ pub fn gen_boot(
             (1_000_000 + k * 1000).to_string().as_bytes(),
         )?;
         export_field(out, "_BOOT_ID", boot.as_bytes())?;
+        if let Some(m) = machine {
+            let tail = usize::try_from(k).is_ok_and(|k| k == last);
+            if !(tail && m.untagged_tail) {
+                export_field(out, "_MACHINE_ID", m.id.as_bytes())?;
+            }
+        }
         export_field(out, "_TRANSPORT", b"journal")?;
         export_field(out, "_PID", b"4242")?;
         export_field(out, "_UID", b"0")?;
@@ -840,6 +882,15 @@ pub fn gen_boot(
         out.write_all(b"\n")?;
     }
     Ok(())
+}
+
+/// The source machine of a `gen_boot` fixture.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceMachine<'a> {
+    /// Its id, 32 hex digits, for each entry's `_MACHINE_ID=`.
+    pub id: &'a str,
+    /// The last entry carries none.
+    pub untagged_tail: bool,
 }
 
 #[cfg(test)]
@@ -1601,7 +1652,7 @@ mod tests {
     #[test]
     fn a_boot_fixture_is_one_boot_at_the_times_given() {
         let mut out = Vec::new();
-        gen_boot(&mut out, &"a".repeat(32), "a", &[100, 300, 5]).expect("writes");
+        gen_boot(&mut out, &"a".repeat(32), "a", &[100, 300, 5], None).expect("writes");
         let e = exported(&out);
         assert_eq!(e.len(), 3);
         let times: Vec<&str> = e
@@ -1631,6 +1682,80 @@ mod tests {
                 ),
                 (vec!["journal"], vec!["4242"], vec!["0"], vec!["6"])
             );
+            assert_eq!(field(x, "_MACHINE_ID"), [] as [&str; 0]);
         }
+    }
+
+    /// With a source machine, each entry names it in `_MACHINE_ID=`, the
+    /// last one too unless it is to be untagged.
+    #[test]
+    fn a_boot_fixture_names_its_source_machine() {
+        let id = "c".repeat(32);
+        for untagged_tail in [false, true] {
+            let mut out = Vec::new();
+            let machine = SourceMachine {
+                id: &id,
+                untagged_tail,
+            };
+            gen_boot(&mut out, &"a".repeat(32), "a", &[1, 2, 3], Some(machine)).expect("writes");
+            let e = exported(&out);
+            let ids: Vec<Vec<&str>> = e.iter().map(|x| field(x, "_MACHINE_ID")).collect();
+            let tail = if untagged_tail {
+                vec![]
+            } else {
+                vec![id.as_str()]
+            };
+            assert_eq!(ids, [vec![id.as_str()], vec![id.as_str()], tail]);
+        }
+    }
+
+    /// `write_records`: the records as JSON lines on `out`, flushed, and the
+    /// errors with their sources on `err`, then the omitted count.
+    #[test]
+    fn records_and_errors_are_written_as_lines() {
+        let records = records(&[&[b"A=1"], &[b"A=2"]]);
+        let mut errors = ReadErrors::default();
+        errors.add(crate::ReadError {
+            path: Some("/j/x.journal".into()),
+            kind: crate::ReadErrorKind::Io {
+                context: "read at 0x10".into(),
+                source: io::Error::other("gone"),
+            },
+        });
+        errors.omitted = 2;
+        let release = Release::parse("24.04").expect("a row");
+        let mut out = io::BufWriter::new(Vec::new());
+        let mut err = Vec::new();
+        write_records(&records, &errors, &release, &mut out, &mut err).expect("writes");
+        // Flushed: the lines are in the buffer's vector, not held.
+        let lines = String::from_utf8(out.get_ref().clone()).expect("utf-8");
+        let want: Vec<String> = records
+            .iter()
+            .map(|r| json(r, &release).to_string())
+            .collect();
+        assert_eq!(lines.lines().collect::<Vec<_>>(), want);
+        assert_eq!(
+            String::from_utf8(err).expect("utf-8"),
+            "sb-journal: /j/x.journal: read at 0x10: gone\nsb-journal: 2 more errors\n"
+        );
+    }
+
+    /// No errors, no lines on `err`.
+    #[test]
+    fn records_without_errors_write_nothing_else() {
+        let records = records(&[&[b"A=1"]]);
+        let release = Release::parse("22.04").expect("a row");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        write_records(
+            &records,
+            &ReadErrors::default(),
+            &release,
+            &mut out,
+            &mut err,
+        )
+        .expect("writes");
+        let out = String::from_utf8(out).expect("utf-8");
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert_eq!(err, b"");
     }
 }

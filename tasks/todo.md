@@ -299,8 +299,7 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
       2d8b0b6a0aaf, issue #34169): the boot table takes each file's
       machine from its tail entry's `_MACHINE_ID=`, else the header's
       (`BootRule::NewestTailEntryMachine`); 24.04 and 22.04 keep the
-      header. Crafted tests only: UNVERIFIED against a running 259.9 until
-      the Task 6 matrix item below runs.
+      header. Verified by the Task 6 matrix item below.
 
 ## Task 6: the follow ported, with the prototype's start
 
@@ -311,17 +310,23 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 - Keep the prototype's start for now.
 
 **Acceptance criteria:**
-- [ ] query.rs's follow tests (21, plus `merge` and `is_old`'s 3) and main.rs's four `classify`
+- [x] query.rs's follow tests (21, plus `merge` and `is_old`'s 3) and main.rs's four `classify`
       tests pass in the library. The commit records that all 112 are
       ported.
-- [ ] Differences 2, 12, 13, 16 and 17 (the follow side) each have a
-      crafted test.
-- [ ] The follow orders boots as the page does (decision 11), with its
+- [x] Differences 2, 12, 13, 16 and 17 (the follow side) each have a
+      crafted test (`difference_*` in follow.rs; Difference 2 through
+      the follower's own watches and injected roots).
+- [x] The follow orders boots as the page does (decision 11), with its
       boot table kept current as files grow: sd-journal reads a file's
       tail again before each step (v255 `next_beyond_location`, a
-      changed mtime; v259, a new tail offset) and reorders the table.
-- [ ] follow.sh and stress.sh (moved) pass on the three releases.
-- [ ] A matrix fixture with `_MACHINE_ID=` (UNVERIFIED until it runs):
+      changed mtime; v259, a new tail offset) and reorders the table
+      (`the_follow_keeps_its_boot_table_current_as_files_grow`).
+- [x] follow.sh and stress.sh (moved) pass on the three releases:
+      follow.sh 0 lost and 0 doubled in all nine scenarios on each;
+      stress.sh every check, the follow 0 mismatches (22.04 showed one
+      Difference 12 first copy).
+- [x] A matrix fixture with `_MACHINE_ID=` (compare.sh `machines` and
+      `machines-untagged`; verified, as predicted, on all three):
       journal-remote's import of two source machines' entries (each
       carrying its `_MACHINE_ID=`, one receiving header machine), with
       overlapping clocks, paged both ways against journalctl on 24.04
@@ -329,11 +334,12 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
       orders them by boot; a tail entry without `_MACHINE_ID=` keeps the
       header's on 26.04. The default variant's pread bounds
       (compare.sh `PREADS_*_MAX`) re-measured on 26.04, which now reads
-      each file's tail entry's items (tasks/plan.md, "The pread bound").
+      each file's tail entry's items (tasks/plan.md, "The pread bound"):
+      1711, 2393 and 1747, unchanged.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`.
-- [ ] library-reviewer and code-reviewer on the commit.
+- [x] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`.
+- [x] library-reviewer and code-reviewer on the commit.
 
 **Dependencies:** Task 5
 **Files:** `crates/journal/src/{follow.rs,lib.rs}`, `crates/journal/examples/journal.rs`,
@@ -364,6 +370,18 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 **Verification:**
 - [ ] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`.
 - [ ] library-reviewer and code-reviewer on the commit.
+
+- From Task 6, decide here:
+  - whether `ReadErrorKind::OutputLimitDeferred` (a followed file stopped
+    at the limit, the rest next drain) stays once `Batch::more` says the
+    same, or goes before anything depends on it;
+  - the drain blocks in `Reader::next` until Task 7's non-blocking
+    descriptor; the crafted drain tests run it on a thread under a
+    five-second deadline (`drain_within`), which `wake_fd` and `poll`
+    can replace;
+  - a follow whose source has no directory to watch (both local roots
+    missing) starts with no watch and its drain waits for ever: refuse
+    it at the start, or let the wake fd show it.
 
 **Dependencies:** Task 6
 **Files:** `crates/journal/src/{follow.rs,lib.rs}`, `crates/journal/examples/journal.rs`, `crates/journal/tests/follow.sh`
@@ -550,11 +568,14 @@ in the commit body. The matrix runs again where a fix touches reading.
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
 
-- Two mutation survivors from before the error helpers: no test tells
-  an `Io` error from an invalid one at the `e.is_io()` guards in
-  file.rs's `test_object` and forward.rs's `all_matches_from`. Add a
-  test for each when those paths are next touched (Task 6 at the
-  latest).
+- The local CI workflow (journal-matrix.yml) doesn't run the crate's
+  follow.sh and stress.sh yet. Add them with Task 7, when the follow's
+  start and wake are final.
+
+- Done in Task 6: the two mutation survivors at the `e.is_io()` guards
+  in file.rs's `test_object` and forward.rs's `all_matches_from` are
+  killed by `the_systems_error_reading_a_probed_entry_stops_the_bisect`
+  and `the_systems_error_in_the_resumed_list_is_the_walks`.
 
 - The tui spec's viewer (the first consumer): the release's entry order
   can form a cycle when a boot is in no file's tail (Difference 20,
@@ -571,15 +592,16 @@ in the commit body. The matrix runs again where a fix touches reading.
   memory cap inside check.sh's mutation pass, so an uncapped run can't
   exhaust the host.
 
-- Task 6: a guessed `object_head` read that runs past a file cut
-  fails an intact object before the cut with `Io` until the header is
-  read again (prototype behaviour). Decide how the follow handles `Io`:
-  retry with the exact header read, or `refresh()` and retry. (A page
-  reopens its files, so its `Io` is reported and gone from the next
-  page: `Journal::page`'s docs, Task 3.)
+- Decided in Task 6: the follow reads every header first on each
+  drain (`refresh()`), which caps the guessed `object_head` reads at the
+  file's length then, and an `Io` from a cut inside one drain is
+  waited for once (`Wait::Entry`), like any read, before the next
+  drain reads the header again
+  (`a_file_cut_while_followed_reads_up_to_the_cut`).
 
 - A page holds a descriptor for every listed file at once (Task 3's
-  design, kept in Task 4). Past the soft `RLIMIT_NOFILE` (1024 by default)
+  design, kept in Task 4), and a follow holds one per followed file for
+  as long as it runs (Task 6), plus its inotify descriptor. Past the soft `RLIMIT_NOFILE` (1024 by default)
   the extra opens fail with EMFILE, reported one per file. journald's
   defaults keep a journal far below that; decide whether sb raises the
   soft limit to the hard one at startup (rustix `setrlimit`, beside

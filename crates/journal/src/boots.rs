@@ -91,7 +91,7 @@ impl BootOrder {
     /// `compare_boot_ids` compares only theirs; and none at all with fewer
     /// than two boots in the table, where no two machine ids are compared.
     /// The same order as reading every file's, for fewer reads.
-    pub(crate) fn name_machines(&mut self, machine: impl Fn(usize) -> Option<[u8; 16]>) {
+    pub(crate) fn name_machines(&mut self, mut machine: impl FnMut(usize) -> Option<[u8; 16]>) {
         if self.newest.len() < 2 {
             return;
         }

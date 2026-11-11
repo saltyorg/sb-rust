@@ -133,10 +133,20 @@ Behaviour verified while building `prototypes/proto-journal`, on
     rather than an entry. journal-remote writes the receiving machine
     into each file's header and keeps each entry's own `_MACHINE_ID=`, so
     on 259.9 imports of several machines interleave by realtime where
-    255.4 orders them by boot. Checked by source only (the v259.9 tag's
+    255.4 orders them by boot. Checked by source (the v259.9 tag's
     src/libsystemd/sd-journal/sd-journal.c, and the commit's own test,
-    `merge_interleaving` in test-journal-interleaving.c); the matrix's
-    fixtures carry no `_MACHINE_ID=`.
+    `merge_interleaving` in test-journal-interleaving.c), and since
+    sb-journal Task 6 by container runs (compare.sh's `machines`
+    fixtures, `ubuntu:22.04` 249.11-0ubuntu3.23, `24.04`
+    255.4-1ubuntu8.18, `26.04` 259.9-0ubuntu0.1): two boots in two files
+    written by that release's journal-remote, a1 and a2 at 100 and 300 s
+    naming one source machine, b1 and b2 at 200 and 400 s naming another,
+    both headers this machine. 259.9's journalctl orders them a1 b1 a2
+    b2 (realtime), 255.4's a1 a2 b1 b2 (the boot table), 249's a1 b1 a2
+    b2; with `_MACHINE_ID=` left off each file's last entry, 259.9 orders
+    them a1 a2 b1 b2 too (the header's machine). The forward pages then
+    match sb-journal's where realtime orders them, and Difference 20
+    where the table does.
 - **The coredump term of `-u` on the local journal** (same runs): with
   the `systemd-coredump` package installed, 259.9 takes coredump
   entries of that user's uid or root's; 249 and 255 take root's only.

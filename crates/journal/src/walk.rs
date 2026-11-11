@@ -66,6 +66,11 @@ pub(crate) fn directory_files(dir: &Path, out: &mut Listing) {
     }
 }
 
+/// A journal file's name, as bytes: `*.journal` or `*.journal~`.
+pub(crate) fn is_journal_name(name: &[u8]) -> bool {
+    name.ends_with(b".journal") || name.ends_with(b".journal~")
+}
+
 /// One `read_dir` of `dir`: its journal files into `files`, sorted, and
 /// its machine-id subdirectories into `subdirs`. Why not walkdir (in the
 /// tree): its depth-first, name-ordered walk puts a subdirectory's files
@@ -120,7 +125,7 @@ fn scan(
             .file_name()
             .map(OsStr::as_encoded_bytes)
             .unwrap_or_default();
-        let journal = name.ends_with(b".journal") || name.ends_with(b".journal~");
+        let journal = is_journal_name(name);
         if !journal && name.len() != 32 {
             continue;
         }
@@ -388,10 +393,7 @@ fn decode(
         End::Newest => Either::Left((0..picked.len()).rev()),
         End::Oldest => Either::Right(0..picked.len()),
     };
-    let mut payloads = Payloads {
-        whole: payload_limit,
-        ..Payloads::default()
-    };
+    let mut payloads = Payloads::within(payload_limit);
     let mut left = payload_limit;
     for (i, at) in order.enumerate() {
         let c = &picked[at];
@@ -592,6 +594,19 @@ where
     (out, more)
 }
 
+/// The newest entry matching `groups` across `files`, by sd-journal's
+/// order with `boots`, as `newest` finds it: the follow's start (the
+/// prototype's `journalctl -n 0 -f`), read without decoding it.
+pub(crate) fn newest_match(
+    files: &[JournalFile],
+    groups: &[Group],
+    boots: &BootOrder,
+    errors: &mut ReadErrors,
+) -> Option<Candidate> {
+    let walks = walks(files, groups, |_: &Cursor| Step::Take, errors);
+    newest(&mut Merge::new(walks, boots), 1, 1, errors).0.pop()
+}
+
 /// What to do with a matching entry met while walking backwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -768,11 +783,37 @@ where
 /// fit: an entry listing one is refused without decoding it again, so a
 /// page skipping several such entries decodes the object once.
 #[derive(Default)]
-struct Payloads {
+pub(crate) struct Payloads {
     fields: HashMap<(usize, u64), Option<Field>>,
     failed: HashSet<(usize, u64)>,
     too_large: HashSet<(usize, u64)>,
     whole: usize,
+}
+
+impl Payloads {
+    /// An empty cache for reads within `whole` bytes each.
+    pub(crate) fn within(whole: usize) -> Self {
+        Self {
+            whole,
+            ..Self::default()
+        }
+    }
+
+    /// Drop what file `file` read: the follow's, after it skipped an entry
+    /// over its whole limit, the only one that file read so far.
+    pub(crate) fn forget(&mut self, file: usize) {
+        self.fields.retain(|&(f, _), _| f != file);
+    }
+
+    /// The payload bytes the cache holds.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.fields
+            .values()
+            .flatten()
+            .map(|f| f.payload.len())
+            .sum()
+    }
 }
 
 /// `kind` met reading entry `seqnum`'s fields.
@@ -787,7 +828,7 @@ fn in_fields(seqnum: u64, err: ReadError) -> ReadError {
 /// within the page's `left` bytes, which every read spends (`OverLimit`
 /// when they run out). Each field held spends its own size too, so an
 /// entry listing one cached object millions of times is bounded as well.
-fn record(
+pub(crate) fn record(
     f: &JournalFile,
     e: &Entry,
     payloads: &mut Payloads,

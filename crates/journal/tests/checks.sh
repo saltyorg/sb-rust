@@ -333,33 +333,57 @@ integrity() { # name source...: hash-check and decode-all, no errors
   echo "  ${dc%, *}"
 }
 
-# Decision 11 and Difference 20: two boots of one machine in two files,
-# a1 and a2 on boot 0xa…, b1 and b2 on 0xb…, written by journal-remote
-# into /boots. `overlap` puts a at 100 and 300 s, b at 200 and 400 s (a
-# clock set back across a reboot); `apart` puts a at 100 and 200 s, b at
-# 300 and 400 s. Boot a's newest tail (300 or 200 s) is older than b's.
+# Decision 11 and Difference 20: two boots in two files, a1 and a2 on
+# boot 0xa…, b1 and b2 on 0xb…, written by journal-remote into /boots,
+# whose headers name this machine. `overlap` puts a at 100 and 300 s, b
+# at 200 and 400 s (a clock set back across a reboot); `apart` puts a at
+# 100 and 200 s, b at 300 and 400 s. Boot a's newest tail (300 or 200 s)
+# is older than b's. `machines` is `overlap` imported from two source
+# machines, each entry naming its own in `_MACHINE_ID=` (0x11… for a,
+# 0x22… for b): 26.04 (259.9) takes the tail entry's machine for the boot
+# table (issue #34169), so its boots compare equal and realtime
+# interleaves them, where 24.04 (255.4) compares the headers' machine and
+# orders them by boot. `machines-untagged` leaves `_MACHINE_ID=` off each
+# file's last entry, the tail, so 26.04 keeps the header's too.
 boot_checks() { # release remote
-  local rel=$1 remote=$2 kind j src order jc_walk sb_walk cur
+  local rel=$1 remote=$2 kind j src order d20 jc_walk sb_walk cur
+  local ma=() mb=()
   mkdir -p /boots
-  for kind in overlap apart; do
-    if [ "$kind" = overlap ]; then
-      set -- 100,300 200,400
-    else
+  for kind in overlap apart machines machines-untagged; do
+    if [ "$kind" = apart ]; then
       set -- 100,200 300,400
+    else
+      set -- 100,300 200,400
     fi
-    /sbj gen-boot --boot aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --prefix a --realtime-s "$1" > a.export
-    /sbj gen-boot --boot bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --prefix b --realtime-s "$2" > b.export
+    ma=() mb=()
+    case $kind in
+      machines)
+        ma=(--machine 11111111111111111111111111111111)
+        mb=(--machine 22222222222222222222222222222222)
+        ;;
+      machines-untagged)
+        ma=(--machine 11111111111111111111111111111111 --untagged-tail)
+        mb=(--machine 22222222222222222222222222222222 --untagged-tail)
+        ;;
+    esac
+    /sbj gen-boot --boot aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --prefix a --realtime-s "$1" "${ma[@]}" > a.export
+    /sbj gen-boot --boot bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --prefix b --realtime-s "$2" "${mb[@]}" > b.export
     rm -f "/boots/$kind-a.journal" "/boots/$kind-b.journal"
     "$remote" --output="/boots/$kind-a.journal" - < a.export >/dev/null 2>&1 || bad "boots $kind: journal-remote a"
     "$remote" --output="/boots/$kind-b.journal" - < b.export >/dev/null 2>&1 || bad "boots $kind: journal-remote b"
     src="--file /boots/$kind-a.journal --file /boots/$kind-b.journal"
     # The order between the boots: 249 by realtime; 255 and 259 by the
-    # boot table (boot a's newest tail first) where the clocks overlap.
-    if [ "$kind" = overlap ] && [ "$want" -lt 255 ]; then
+    # boot table (boot a's newest tail first) where the clocks overlap,
+    # except 259 over two machines' tail entries, by realtime. Difference
+    # 20 is where the table orders boots whose clocks overlap.
+    if [ "$kind" = apart ]; then
+      order="a1 a2 b1 b2"
+    elif [ "$want" -lt 255 ] || { [ "$kind" = machines ] && [ "$want" -ge 259 ]; }; then
       order="a1 b1 a2 b2"
     else
       order="a1 a2 b1 b2"
     fi
+    if [ "$kind" != apart ] && [ "$order" = "a1 a2 b1 b2" ]; then d20=yes; else d20=no; fi
     # shellcheck disable=SC2086 # src is word-split on purpose
     {
       journalctl $src -o json --all -q > bw.json || bad "boots $kind: journalctl whole"
@@ -400,7 +424,7 @@ boot_checks() { # release remote
         fi
         flags_check "boots $kind page forward from $j" bw.json a.json a.err --after "$cur"
         journalctl $src -o json --all -q --after-cursor "$cur" > j.json || bad "boots $kind: journalctl forward"
-        d20_page "$kind" "$j" e.json j.json
+        d20_page "$kind" "$d20" "$j" e.json j.json
       done
       # Paging forward one entry at a time from a1.
       cur=$(first_cursor bw.json)
@@ -424,7 +448,7 @@ boot_checks() { # release remote
     else
       bad "boots $kind: sb-journal one at a time from a1: $sb_walk, expected ${order#a1 }"
     fi
-    if [ "$kind" = overlap ] && [ "$want" -ge 255 ]; then
+    if [ "$d20" = yes ]; then
       if [ "$jc_walk" = "a2 b2" ]; then
         difference "boots $kind: Difference 20, journalctl $want one at a time from a1 loses b1: $jc_walk"
       else
@@ -439,13 +463,13 @@ boot_checks() { # release remote
 }
 
 # journalctl's page after the j-th entry of a boot fixture: sb-journal's
-# (e.json) where the clocks don't overlap or the release has no boot
-# table; on 24.04 and 26.04 over the overlapping clocks, what Difference
-# 20 predicts from journalctl's seek by one key per file.
-d20_page() { # kind j expected journalctl
-  local kind=$1 j=$2 got predicted
-  got=$(msgs "$4")
-  if [ "$kind" = overlap ] && [ "$want" -ge 255 ]; then
+# (e.json) where the clocks don't overlap or no boot table orders them;
+# where the table orders boots whose clocks overlap (`d20` yes), what
+# Difference 20 predicts from journalctl's seek by one key per file.
+d20_page() { # kind d20 j expected journalctl
+  local kind=$1 d20=$2 j=$3 expected=$4 got predicted
+  got=$(msgs "$5")
+  if [ "$d20" = yes ]; then
     # 255's first step is the lowest landing (after b1: a2, sought by
     # realtime, and not the cursor's entry, so shown); 259.9's is the
     # cursor's exact entry when a file lands on it (issue #31516).
@@ -458,15 +482,15 @@ d20_page() { # kind j expected journalctl
     esac
     if [ "$got" != "$predicted" ]; then
       bad "boots $kind: journalctl $want after entry $j: '$got', Difference 20 predicts '$predicted'"
-    elif [ "$got" = "$(msgs "$3")" ]; then
+    elif [ "$got" = "$(msgs "$expected")" ]; then
       ok "boots $kind: journalctl $want after entry $j: '$got', as sb-journal"
     else
-      difference "boots $kind: Difference 20, journalctl $want after entry $j: '$got', sb-journal '$(msgs "$3")'"
+      difference "boots $kind: Difference 20, journalctl $want after entry $j: '$got', sb-journal '$(msgs "$expected")'"
     fi
-  elif [ "$got" = "$(msgs "$3")" ]; then
+  elif [ "$got" = "$(msgs "$expected")" ]; then
     ok "boots $kind: journalctl $want after entry $j: '$got', as sb-journal"
   else
-    bad "boots $kind: journalctl $want after entry $j: '$got', sb-journal '$(msgs "$3")'"
+    bad "boots $kind: journalctl $want after entry $j: '$got', sb-journal '$(msgs "$expected")'"
   fi
 }
 

@@ -304,13 +304,12 @@ impl JournalFile {
         Ok(())
     }
 
-    /// The open file's metadata (its link count tells a deleted file).
-    /// The follow's (plan Task 6): until it lands, the tools' and tests'.
+    /// The open file's metadata (its link count tells the follow a
+    /// deleted file).
     ///
     /// # Errors
     ///
     /// The system's, from `fstat`.
-    #[cfg(any(test, feature = "testing"))]
     pub fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
         self.file.metadata()
     }
@@ -1831,16 +1830,13 @@ impl Iterator for EntriesFwd<'_> {
 /// following): the array object at `at`, whose first item is the chain's
 /// item number `base`. Arrays are only appended and linked forward, so a
 /// later read resumes there instead of walking the chain from its head.
-/// The follow's (plan Task 6), as `entries_since` is.
-#[cfg(any(test, feature = "testing"))]
 #[derive(Debug, Clone, Copy)]
 pub struct ArrayCursor {
     at: u64,
     base: u64,
 }
 
-/// The follow's reads (plan Task 6): until it lands, the tools' and tests'.
-#[cfg(any(test, feature = "testing"))]
+/// The follow's reads.
 impl JournalFile {
     /// The offsets of the entries numbered `from` up to the header's
     /// `n_entries` in the file's entry array chain (the list of every
@@ -2466,6 +2462,30 @@ mod tests {
         let got = f.bisect_list(
             &f.main_list(),
             realtime(35),
+            &mut ChainCache::default(),
+            &mut met,
+        );
+        let err = got.expect_err("stopped");
+        assert!(err.is_io(), "{err:?}");
+    }
+
+    /// The same with the array intact and the probed entry cut off: the
+    /// system's error reading the entry the bisect tests stops it, where an
+    /// entry that isn't well-formed would only cut the array short there.
+    #[test]
+    fn the_systems_error_reading_a_probed_entry_stops_the_bisect() {
+        let (mut c, l) = journal(4);
+        let (t, f) = c.write();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open")
+            .set_len(l.entries[2] + 8)
+            .expect("truncate");
+        let mut met = Met::default();
+        let got = f.bisect_list(
+            &f.main_list(),
+            realtime(1_000_002),
             &mut ChainCache::default(),
             &mut met,
         );

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# proto-journal's follow against `journalctl -f`, in a container per
+# sb-journal's follow against `journalctl -f`, in a container per
 # supported Ubuntu release with that release's own systemd-journald run
 # standalone (as compare.sh does; no systemd as PID 1).
 #
-#   prototypes/proto-journal/follow.sh [RELEASE]...
-#   PJ_BIN=/path/to/proto-journal prototypes/proto-journal/follow.sh ...
+#   [SBJ_BIN=binary] crates/journal/tests/follow.sh [RELEASE | IMAGE=RELEASE]...
 #
+# Default: every row of rules.rs RELEASES (`journal releases`); IMAGE=RELEASE
+# runs another image under a row's rules, as compare.sh's canaries do.
 # Scenarios, each with fresh followers started with `-n 0` and a marker
 # handshake (markers are written until both followers have printed one),
 # then numbered entries under the scenario's own identifier:
@@ -20,23 +21,34 @@
 #             queue overflow, then resumed
 #   split     root and uid 1000 at once: system and user-1000 journals
 # Each follower's numbered entries are counted: lost (a number missing)
-# and duplicated (a number printed twice), plus its CPU time.
-# Default: every row of query.rs RELEASES (`proto-journal releases`).
-# Containers (sbj-follow-<release>, or $SBJ_PREFIX-follow-<release>) are
-# removed on exit.
+# and duplicated (a number printed twice), plus its CPU time. sb-journal
+# must lose and double nothing (journal spec, Difference 2); journalctl's
+# counts are printed for comparison (255 doubles flush-var's entries, 259
+# loses those after flush's mid-follow /var creation).
+# Containers (sbj-follow-<image>, or $SBJ_PREFIX-follow-<image>) are
+# removed on exit. Needs Docker and the musl target.
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+# SBJ_BIN names a binary built already (CI builds it once). It is resolved
+# before the cd below, so a relative path works too.
+if [ -n "${SBJ_BIN:-}" ]; then
+  if ! SBJ_BIN=$(realpath -e "$SBJ_BIN") || [ ! -x "$SBJ_BIN" ]; then
+    echo "SBJ_BIN is not an executable file" >&2
+    exit 2
+  fi
+fi
+cd "$(dirname "$0")/../../.."
 releases=("$@")
 
-if [ -z "${PJ_BIN:-}" ]; then
-  # Capped, as every heavy build and run here is.
+# Without SBJ_BIN, build it here, capped, as every heavy build and run here is.
+if [ -n "${SBJ_BIN:-}" ]; then
+  bin=$SBJ_BIN
+else
   systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
-    cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
-  PJ_BIN=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
+    cargo build -q --release --target x86_64-unknown-linux-musl -p sb-journal --features testing --example journal
+  bin=$PWD/target/x86_64-unknown-linux-musl/release/examples/journal
 fi
-# Default: every row of query.rs RELEASES, as compare.sh.
-[ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$PJ_BIN" releases | cut -d' ' -f1)
+[ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$bin" releases | cut -d' ' -f1)
 
 containers=()
 # shellcheck disable=SC2317 # called by the EXIT trap
@@ -45,17 +57,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Runs inside the container, as root, with the binary at /sbj.
 inner() {
   cat <<'EOS'
 set -u -o pipefail
 rel=$1
+image=$2
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
 apt-get install -y -qq systemd >/dev/null 2>&1
-echo "$rel: $(journalctl --version | head -1)"
+echo "$image ($rel rules): $(journalctl --version | head -1)"
 systemd-machine-id-setup >/dev/null 2>&1
 mid=$(cat /etc/machine-id)
-jd=$(ls /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald 2>/dev/null | head -1)
+for jd in /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald; do
+  [ -x "$jd" ] && break
+done
 fail=0
 bad() { fail=1; echo "  FAIL  $1"; }
 
@@ -82,15 +98,16 @@ followers() {
   if [ "${2:-}" = stamp ]; then
     # bash's EPOCHREALTIME: no fork per line. Only for paced writes, as
     # `read` takes a pipe a byte at a time.
+    # shellcheck disable=SC2016 # expanded by the bash it is given to
     stamp='while IFS= read -r l; do printf "%s %s\n" "$EPOCHREALTIME" "$l"; done'
     { journalctl -f -n 0 -o json --all -q "SYSLOG_IDENTIFIER=$tag" 2>/dev/null | bash -c "$stamp" > fe.all; } &
-    { /pj tail --release "$rel" -f -n 0 --match "SYSLOG_IDENTIFIER=$tag" 2>fa.err | bash -c "$stamp" > fa.all; } &
+    { /sbj follow --release "$rel" --match "SYSLOG_IDENTIFIER=$tag" 2>fa.err | bash -c "$stamp" > fa.all; } &
   else
     journalctl -f -n 0 -o json --all -q "SYSLOG_IDENTIFIER=$tag" > fe.all 2>/dev/null &
-    /pj tail --release "$rel" -f -n 0 --match "SYSLOG_IDENTIFIER=$tag" > fa.all 2>fa.err &
+    /sbj follow --release "$rel" --match "SYSLOG_IDENTIFIER=$tag" > fa.all 2>fa.err &
   fi
   sleep 0.2
-  jf=$(pgrep -n -x journalctl); pf=$(pgrep -n -x pj)
+  jf=$(pgrep -n -x journalctl); pf=$(pgrep -n -x sbj)
   for _ in $(seq 1 100); do
     echo "ready" | systemd-cat -t "$tag"
     grep -q '"MESSAGE":"ready"' fe.all 2>/dev/null && grep -q '"MESSAGE":"ready"' fa.all 2>/dev/null && return 0
@@ -115,14 +132,14 @@ finish() {
     dup=$(( $(wc -l < "$who.nums") - got ))
     lost=$(( $(wc -l < written) - $(comm -12 <(sort -u written) <(sort -u "$who.nums") | wc -l) ))
     extra=$(comm -13 <(sort -u written) <(sort -u "$who.nums") | wc -l)
-    [ "$who" = fe ] && label=journalctl && t=$jc || { label=pj; t=$pc; }
+    if [ "$who" = fe ]; then label=journalctl t=$jc; else label=sb-journal t=$pc; fi
     printf '  %-8s %-10s written %4d  lost %3d  dup %3d  extra %d  cpu %s ticks\n' \
       "$name" "$label" "$(wc -l < written)" "$lost" "$dup" "$extra" "$t"
     if [ "$who" = fa ] && { [ "$lost" != 0 ] || [ "$dup" != 0 ] || [ "$extra" != 0 ]; }; then
-      bad "$name: pj lost $lost, duplicated $dup, extra $extra"
+      bad "$name: sb-journal lost $lost, duplicated $dup, extra $extra"
     fi
   done
-  [ -s fa.err ] && sed 's/^/    pj stderr: /' fa.err | head -5
+  [ -s fa.err ] && sed 's/^/    sb-journal stderr: /' fa.err | head -5
   return 0
 }
 
@@ -140,7 +157,7 @@ write() {
   return 0
 }
 
-mkdir -p /w && cd /w
+mkdir -p /w && cd /w || exit 2
 
 # flush: volatile first (no /var/log/journal), then persistent.
 rm -rf /var/log/journal /run/log/journal
@@ -180,7 +197,7 @@ for who in fe fa; do
   n=$(wc -l < "$who.lat")
   [ "$n" -gt 0 ] || { bad "paced: no latency samples"; continue; }
   p50=$(sed -n "$(( (n + 1) / 2 ))p" "$who.lat"); p95=$(sed -n "$(( (n * 95 + 99) / 100 ))p" "$who.lat"); max=$(tail -1 "$who.lat")
-  [ "$who" = fe ] && label=journalctl || label=pj
+  if [ "$who" = fe ]; then label=journalctl; else label=sb-journal; fi
   printf '  latency  %-10s p50 %s ms  p95 %s ms  max %s ms (%d samples)\n' "$label" "$p50" "$p95" "$max" "$n"
 done
 
@@ -254,17 +271,24 @@ sleep 0.5
 [ -n "$(find "/var/log/journal/$mid" -name 'user-1000*.journal')" ] || bad "split: no user-1000 journal"
 last_n=$(sort -n written | tail -1)
 finish "$last_n" split
-ls /var/log/journal/*/ /run/log/journal/*/ 2>/dev/null | grep journal | sed 's/^/  file: /'
+find /var/log/journal /run/log/journal -name '*.journal*' 2>/dev/null | sed 's/^/  file: /'
 exit $fail
 EOS
 }
 
 status=0
-for rel in "${releases[@]}"; do
-  c=${SBJ_PREFIX:-sbj}-follow-${rel/./}
+for arg in "${releases[@]}"; do
+  image=${arg%%=*}
+  rel=${arg#*=}
+  if ! "$bin" releases | awk -v r="$rel" '$1 == r { found = 1 } END { exit !found }'; then
+    echo "$arg: $rel is not a row of rules.rs RELEASES"
+    status=1
+    continue
+  fi
+  c=${SBJ_PREFIX:-sbj}-follow-${image/./}
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
-  docker run -d --name "$c" --memory 4g --cpus 2 -v "$PJ_BIN:/pj:ro" "ubuntu:$rel" sleep 3600 >/dev/null
-  docker exec -i "$c" bash -s -- "$rel" < <(inner) || status=1
+  docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/sbj:ro" "ubuntu:$image" sleep 3600 >/dev/null
+  docker exec -i "$c" bash -s -- "$rel" "$image" < <(inner) || status=1
 done
 exit $status

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# proto-journal reading journal files while the release's own journald
+# sb-journal reading journal files while the release's own journald
 # writes them heavily and rotates them, in an unprivileged container per
 # supported Ubuntu release (journald standalone, as in compare.sh).
 #
-#   prototypes/proto-journal/stress.sh [RELEASE]...
+#   [SBJ_BIN=binary] [SBJ_STRESS_LINES=N] crates/journal/tests/stress.sh [RELEASE | IMAGE=RELEASE]...
 #
 # While four writers log as fast as they can and the files rotate by size
 # and every half second, the reader takes snapshots (`tail`, filtered and
@@ -15,22 +15,35 @@
 # - a snapshot that reported no error has no gap in any writer's numbers;
 #   one that did names what it skipped on stderr (a transient error);
 # - the follower printed every entry, in journalctl's order, and nothing
-#   else but the declined divergence below (an entry journald wrote again
-#   across a rotation, whose first copy journalctl's match doesn't list);
+#   else but Difference 12 (journal spec): an entry journald wrote again
+#   across a rotation, whose first copy journalctl's match doesn't list;
 # - a last snapshot of the idle journal equals journalctl's.
-# Default: every row of query.rs RELEASES (`proto-journal releases`).
-# Containers (sbj-stress-<release>, or $SBJ_PREFIX-stress-<release>) are
-# removed on exit.
+# Default: every row of rules.rs RELEASES (`journal releases`); IMAGE=RELEASE
+# runs another image under a row's rules, as compare.sh's canaries do.
+# Containers (sbj-stress-<image>, or $SBJ_PREFIX-stress-<image>) are
+# removed on exit. Needs Docker and the musl target.
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+# SBJ_BIN names a binary built already (CI builds it once). It is resolved
+# before the cd below, so a relative path works too.
+if [ -n "${SBJ_BIN:-}" ]; then
+  if ! SBJ_BIN=$(realpath -e "$SBJ_BIN") || [ ! -x "$SBJ_BIN" ]; then
+    echo "SBJ_BIN is not an executable file" >&2
+    exit 2
+  fi
+fi
+cd "$(dirname "$0")/../../.."
 releases=("$@")
 lines=${SBJ_STRESS_LINES:-20000}
 
-systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
-  cargo build -q --release --target x86_64-unknown-linux-musl -p proto-journal
-bin=$PWD/target/x86_64-unknown-linux-musl/release/proto-journal
-# Default: every row of query.rs RELEASES, as compare.sh.
+# Without SBJ_BIN, build it here, capped, as every heavy build and run here is.
+if [ -n "${SBJ_BIN:-}" ]; then
+  bin=$SBJ_BIN
+else
+  systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
+    cargo build -q --release --target x86_64-unknown-linux-musl -p sb-journal --features testing --example journal
+  bin=$PWD/target/x86_64-unknown-linux-musl/release/examples/journal
+fi
 [ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$bin" releases | cut -d' ' -f1)
 
 containers=()
@@ -40,15 +53,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Runs inside the container, as root, with the binary at /pj.
+# Runs inside the container, as root, with the binary at /sbj.
 inner() {
   cat <<'EOS'
 set -u -o pipefail
-rel=$1 lines=$2
+rel=$1 lines=$2 image=$3
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
 apt-get install -y -qq systemd jq >/dev/null 2>&1
-echo "$rel: $(journalctl --version | head -1), $lines lines per writer"
+echo "$image ($rel rules): $(journalctl --version | head -1), $lines lines per writer"
 fail=0
 bad() { fail=1; echo "  FAIL  $1"; }
 ok() { echo "  ok    $1"; }
@@ -66,14 +79,16 @@ SystemMaxFiles=100000
 RateLimitIntervalSec=0
 CONF
 systemd-machine-id-setup >/dev/null 2>&1
-jd=$(ls /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald 2>/dev/null | head -1)
+for jd in /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald; do
+  [ -x "$jd" ] && break
+done
 "$jd" >/dev/null 2>&1 &
 sleep 2
 journalctl --flush >/dev/null 2>&1 || bad "journalctl --flush"
 mid=$(cat /etc/machine-id)
-mkdir -p /st && cd /st
+mkdir -p /st && cd /st || exit 2
 
-/pj tail --release "$rel" -f -n 0 --match SYSLOG_IDENTIFIER=stress > follow.all 2> follow.err &
+/sbj follow --release "$rel" --match SYSLOG_IDENTIFIER=stress > follow.all 2> follow.err &
 pf=$!
 for _ in $(seq 1 100); do
   echo "ready" | systemd-cat -t stress
@@ -107,12 +122,12 @@ run() { # name, then the command
 }
 while kill -0 "$w1" "$w2" "$w3" "$w4" 2>/dev/null; do
   k=$((k + 1))
-  run tail /pj tail --release "$rel" -n 300 --match SYSLOG_IDENTIFIER=stress > "s.$k.json" 2> "s.$k.err"
-  run tail /pj tail --release "$rel" -n 300 > "a.$k.json" 2> "a.$k.err"
+  run tail /sbj tail --release "$rel" -n 300 --match SYSLOG_IDENTIFIER=stress > "s.$k.json" 2> "s.$k.err"
+  run tail /sbj tail --release "$rel" -n 300 > "a.$k.json" 2> "a.$k.err"
   if [ $((k % 5)) = 0 ]; then
     tools=$((tools + 1))
-    run decode-all /pj decode-all > /dev/null 2>&1
-    run hash-check /pj hash-check > /dev/null 2>&1
+    run decode-all /sbj decode-all > /dev/null 2>&1
+    run hash-check /sbj hash-check > /dev/null 2>&1
   fi
 done
 wait "$w1" "$w2" "$w3" "$w4" "$rot"
@@ -121,7 +136,7 @@ kill "$pf" 2>/dev/null; wait "$pf" 2>/dev/null
 files=$(find "/var/log/journal/$mid" -name '*.journal' | wc -l)
 echo "  $k snapshot pairs, $tools tool runs, $files journal files"
 [ -s crashes.txt ] && cat crashes.txt
-[ "$crashed" = 0 ] && ok "no read crashed or hung" || bad "a read crashed or hung"
+if [ "$crashed" = 0 ]; then ok "no read crashed or hung"; else bad "a read crashed or hung"; fi
 [ "$files" -gt 10 ] || bad "only $files files: the run didn't rotate enough"
 
 journalctl -o json --all -q > final.json || bad "journalctl final"
@@ -131,8 +146,11 @@ jq -n --slurpfile final final.json '
   | [inputs | select($m[.__CURSOR] != .) | .__CURSOR] | length' s.*.json a.*.json > wrong.txt
 wrong=$(cat wrong.txt)
 total=$(cat s.*.json a.*.json | wc -l)
-[ "$wrong" = 0 ] && ok "$total snapshot entries, all in journalctl's view with the same fields" \
-  || bad "$wrong of $total snapshot entries differ from journalctl's view"
+if [ "$wrong" = 0 ]; then
+  ok "$total snapshot entries, all in journalctl's view with the same fields"
+else
+  bad "$wrong of $total snapshot entries differ from journalctl's view"
+fi
 
 # Each writer's line numbers, as {w, n}: ANSI lines arrive as byte arrays.
 numbers='[.[] | .MESSAGE | if type == "array" then implode else . end | strings
@@ -148,10 +166,12 @@ for snap in s.*.json a.*.json; do
     | map(map(.n) | select((max - min + 1) != (unique | length))) | length' "$snap")
   [ "$g" = 0 ] || { gaps=$((gaps + 1)); echo "  gap in $snap"; }
 done
-[ "$gaps" = 0 ] && ok "no gaps in $clean clean snapshots" || bad "$gaps snapshots with gaps"
+if [ "$gaps" = 0 ]; then ok "no gaps in $clean clean snapshots"; else bad "$gaps snapshots with gaps"; fi
 errs=$(cat ./*.err 2>/dev/null | sort | uniq -c | sort -rn | head -5)
 echo "  $noisy snapshots reported an error${errs:+; the errors most often reported by any read:}"
-[ -n "$errs" ] && echo "$errs" | sed 's/^/          /'
+if [ -n "$errs" ]; then
+  while IFS= read -r l; do echo "          $l"; done <<<"$errs"
+fi
 
 journalctl -o json --all -q SYSLOG_IDENTIFIER=stress | grep -v '"MESSAGE":"ready"' > fe.json
 grep -v '"MESSAGE":"ready"' follow.all > fa.json
@@ -159,7 +179,7 @@ n=$(wc -l < fe.json)
 distinct=$(jq -rs "$numbers"' | unique | length' fe.json)
 [ "$distinct" = $((4 * lines)) ] || bad "journalctl has $distinct of $((4 * lines)) lines"
 [ "$n" = "$distinct" ] || echo "  note  journald wrote $((n - distinct)) lines twice; journalctl shows both"
-# The one divergence allowed (FINDINGS, declined): when a rotation cuts
+# The one divergence allowed (journal spec, Difference 12): when a rotation cuts
 # journald off while it links an entry, the entry is in its file's entry
 # list but not in every field's, and journald writes it again as the next
 # file's first. journalctl's match reads the field's list and shows only
@@ -179,24 +199,31 @@ extra=$(($(wc -l < fa.json) - $(wc -l < fa.kept.json)))
 twice=$(jq -r .__CURSOR fa.json | sort | uniq -d | wc -l)
 [ "$twice" = 0 ] || bad "follow printed $twice entries twice"
 [ "$extra" = 0 ] || echo "  note  the follow showed $extra first copies of entries written again across a rotation that journalctl's match doesn't list"
-if out=$(/pj compare fe.json fa.kept.json); then ok "follow: $(echo "$out" | tail -1)"; else bad "follow:"; echo "$out" | head -5; fi
+if out=$(/sbj compare fe.json fa.kept.json); then ok "follow: $(echo "$out" | tail -1)"; else bad "follow:"; echo "$out" | head -5; fi
 [ -s follow.err ] && sort follow.err | uniq -c | sort -rn | head -3 | sed 's/^/  follow stderr: /'
 
 journalctl -o json --all -q -n 300 > e.json
-timeout 60 /pj tail --release "$rel" -n 300 > a.json 2> a.err
-if out=$(/pj compare e.json a.json); then ok "idle tail: $(echo "$out" | tail -1)"; else bad "idle tail:"; echo "$out" | head -5; fi
+timeout 60 /sbj tail --release "$rel" -n 300 > a.json 2> a.err
+if out=$(/sbj compare e.json a.json); then ok "idle tail: $(echo "$out" | tail -1)"; else bad "idle tail:"; echo "$out" | head -5; fi
 [ -s a.err ] && bad "idle tail reported errors: $(head -1 a.err)"
 exit $fail
 EOS
 }
 
 status=0
-for rel in "${releases[@]}"; do
-  c=${SBJ_PREFIX:-sbj}-stress-${rel/./}
+for arg in "${releases[@]}"; do
+  image=${arg%%=*}
+  rel=${arg#*=}
+  if ! "$bin" releases | awk -v r="$rel" '$1 == r { found = 1 } END { exit !found }'; then
+    echo "$arg: $rel is not a row of rules.rs RELEASES"
+    status=1
+    continue
+  fi
+  c=${SBJ_PREFIX:-sbj}-stress-${image/./}
   containers+=("$c")
   docker rm -f "$c" >/dev/null 2>&1 || true
   # Capped: the writers run flat out.
-  docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/pj:ro" "ubuntu:$rel" sleep 7200 >/dev/null
-  docker exec -i "$c" bash -s -- "$rel" "$lines" < <(inner) || status=1
+  docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/sbj:ro" "ubuntu:$image" sleep 7200 >/dev/null
+  docker exec -i "$c" bash -s -- "$rel" "$lines" "$image" < <(inner) || status=1
 done
 exit $status

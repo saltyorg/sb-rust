@@ -6,7 +6,9 @@
 //!
 //! A [`Journal`] names a [`Source`]; [`Journal::page`] reads the newest
 //! entries matching a [`Query`], or the page before or after a [`Cursor`],
-//! as [`Record`]s holding raw bytes.
+//! as [`Record`]s holding raw bytes; [`Journal::follow`] gives a
+//! [`Follower`], whose [`Follower::drain`] reads what was written since as
+//! a [`Batch`].
 
 use std::collections::HashSet;
 use std::fmt;
@@ -19,6 +21,7 @@ use std::sync::Arc;
 // declarations made it test each of file.rs's mutants twice.
 mod boots;
 mod file;
+mod follow;
 mod forward;
 mod hash;
 mod open;
@@ -28,6 +31,9 @@ pub mod testing;
 mod walk;
 
 use boots::BootOrder;
+use file::{Entry, JournalFile};
+
+pub use follow::Follower;
 
 pub use rules::{
     BootRule, FieldName, QUERY_GROUPS_MAX, Query, QueryError, RELEASES, Release, ReleaseError, Uid,
@@ -184,6 +190,16 @@ pub enum ReadErrorKind {
     /// opening (rotations in a row). No file: the list is the source's.
     #[error("the journal's file list kept changing while it was opened; entries may be missing")]
     ListChanging,
+    /// A followed file stopped at an entry that didn't fit the output limit.
+    ///
+    /// Others were read before it; the entries from there come with the
+    /// next drain, none lost (`Follower::drain`). No file: the limit is the
+    /// drain's, per file.
+    #[error("output limit of {limit} bytes reached; the rest follows on the next drain")]
+    OutputLimitDeferred {
+        /// The output limit.
+        limit: usize,
+    },
 }
 
 /// `context: what`, or `what` alone without a context.
@@ -471,6 +487,23 @@ pub enum OpenError {
         #[source]
         source: io::Error,
     },
+    /// A follow couldn't get its inotify instance (`Journal::follow`).
+    #[error("create the follow's inotify instance")]
+    Inotify {
+        /// The system's error.
+        #[source]
+        source: io::Error,
+    },
+    /// A follow couldn't watch one of the journal's directories
+    /// (`Journal::follow`): it would wait on it for ever.
+    #[error("watch the journal directory {}", .path.to_string_lossy().escape_debug())]
+    Watch {
+        /// The directory.
+        path: PathBuf,
+        /// The system's error.
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// A machine's id, as `/etc/machine-id` holds it: 32 hex digits, not all
@@ -645,23 +678,7 @@ impl Journal {
             held: limits.output(),
         };
         let lasts = walk::lasts(&files, &mut errors);
-        let table = || {
-            BootOrder::of(
-                files
-                    .iter()
-                    .zip(&lasts)
-                    .map(|(f, last)| f.tail(last.as_ref())),
-            )
-        };
-        let boots = match self.release.boot_rule() {
-            BootRule::Realtime => BootOrder::none(),
-            BootRule::NewestTail => table(),
-            BootRule::NewestTailEntryMachine => {
-                let mut boots = table();
-                boots.name_machines(|i| files[i].tail_machine_id(lasts[i].as_ref()));
-                boots
-            }
-        };
+        let boots = boot_order(self.release.boot_rule(), &files, &lasts);
         let end = walk::end(&files, &lasts, &boots);
         let paged = walk::page(&files, q.groups(), n, at, bounds, &boots, &mut errors);
         Page {
@@ -674,8 +691,38 @@ impl Journal {
     }
 
     fn list(&self) -> walk::Listing {
+        self.roots.list()
+    }
+
+    /// Follow the entries matching `q` as they are written from now on.
+    ///
+    /// The watches go on first, then the files are opened, each at the
+    /// entry count its header gives, and the newest matching entry is
+    /// where the follow goes on from (the prototype's `journalctl -n 0 -f`
+    /// start). Entries written before the call are not read, so a page
+    /// read just before can miss those written between it and the follow.
+    /// Each [`Follower::drain`] then gives what was written since.
+    ///
+    /// The follow keeps its files open, by inode, so a rotation's rename
+    /// or a vacuum doesn't lose one, and orders entries of different boots
+    /// as the page does (decision 11), its boot table read again from each
+    /// file whose header changed.
+    ///
+    /// # Errors
+    ///
+    /// `OpenError::Inotify` or `OpenError::Watch` when the follow can't
+    /// watch the journal's directories. Files that can't be opened are
+    /// errors of the first drain's batch.
+    pub fn follow(&self, q: Query) -> Result<Follower, OpenError> {
+        Follower::start(self, q)
+    }
+}
+
+impl Roots {
+    /// The journal files now, in sd-journal's search order.
+    fn list(&self) -> walk::Listing {
         let mut out = walk::Listing::default();
-        match &self.roots {
+        match self {
             Roots::Local(dirs) => {
                 for d in dirs {
                     walk::journal_files_in(d, true, &mut out);
@@ -685,6 +732,31 @@ impl Journal {
             Roots::Files(paths) => out.paths.clone_from(paths),
         }
         out
+    }
+}
+
+/// The order between boots `rule` gives for `files`, each with its newest
+/// readable entry in `lasts` (`walk::lasts`): none on 22.04; on 24.04 and
+/// 26.04 the table of the files' tails (`JournalFile::tail`), on 26.04
+/// with each boot's newest file's tail-entry machine id when two boots or
+/// more are in it.
+fn boot_order(rule: BootRule, files: &[JournalFile], lasts: &[Option<(u64, Entry)>]) -> BootOrder {
+    let table = || {
+        BootOrder::of(
+            files
+                .iter()
+                .zip(lasts)
+                .map(|(f, last)| f.tail(last.as_ref())),
+        )
+    };
+    match rule {
+        BootRule::Realtime => BootOrder::none(),
+        BootRule::NewestTail => table(),
+        BootRule::NewestTailEntryMachine => {
+            let mut boots = table();
+            boots.name_machines(|i| files[i].tail_machine_id(lasts[i].as_ref()));
+            boots
+        }
     }
 }
 
@@ -1011,6 +1083,18 @@ impl Record {
     }
 }
 
+/// What `Follower::drain` read: the matching entries written since the last
+/// drain (or the follow's start), oldest first, and what went wrong.
+/// Built by `Follower::drain` only: more fields can come.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Batch {
+    /// The new entries, oldest first.
+    pub records: Vec<Record>,
+    /// What couldn't be read, and what the limit deferred.
+    pub errors: ReadErrors,
+}
+
 // What a caller moves into `spawn_blocking` or shares across threads
 // (journal spec, assumption 3).
 const _: () = {
@@ -1018,6 +1102,8 @@ const _: () = {
     const fn send_static<T: Send + 'static>() {}
     send_sync::<Journal>();
     send_static::<Page>();
+    send_static::<Batch>();
+    send_static::<Follower>();
     send_static::<PageEnd>();
     send_static::<MachineId>();
     send_static::<Record>();
@@ -1180,6 +1266,10 @@ mod tests {
                 "ListChanging",
                 ReadError::of_page(ReadErrorKind::ListChanging),
             ),
+            (
+                "OutputLimitDeferred",
+                ReadError::of_page(ReadErrorKind::OutputLimitDeferred { limit: 5 }),
+            ),
         ]
     }
 
@@ -1202,13 +1292,14 @@ mod tests {
             ReadErrorKind::Symlink => "Symlink",
             ReadErrorKind::NotRegular => "NotRegular",
             ReadErrorKind::ListChanging => "ListChanging",
+            ReadErrorKind::OutputLimitDeferred { .. } => "OutputLimitDeferred",
         };
         let kinds = every_kind();
         for (listed, e) in &kinds {
             assert_eq!(*listed, name(e.kind()));
         }
         let distinct: std::collections::BTreeSet<&str> = kinds.iter().map(|(n, _)| *n).collect();
-        assert_eq!((kinds.len(), distinct.len()), (12, 12));
+        assert_eq!((kinds.len(), distinct.len()), (13, 13));
     }
 
     /// The kinds of `every_kind` for which `is` holds.

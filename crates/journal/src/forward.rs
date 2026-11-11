@@ -851,3 +851,39 @@ pub(crate) fn after(
         more_newer: more,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::crafted::*;
+
+    /// The system's error reading the list a forward walk resumes in (here
+    /// the file cut short after it was opened, inside the second array) is
+    /// the walk's: the list yields that error and nothing from its head.
+    /// Corruption instead makes it read the list from its head (Difference
+    /// 8). The first array is out of order, so a read from the head would
+    /// yield its first entry, which lies at or after `from`.
+    #[test]
+    fn the_systems_error_in_the_resumed_list_is_the_walks() {
+        let mut crafted = Crafted::new();
+        // One item each: an entry lists at least one DATA object.
+        let entries: Vec<u64> = (1..=4).map(|s| crafted.entry(s, &[8])).collect();
+        // An array of two items: its 24-byte header and 16 bytes of items.
+        let second = crafted.b.len() as u64 + 24 + 16;
+        let first = crafted.array(&[entries[2], entries[0]], 2, second);
+        assert_eq!(crafted.array(&[entries[1], entries[3]], 2, 0), second);
+        crafted.set(H_N_ENTRIES, 4);
+        crafted.set(H_ENTRY_ARRAY_OFFSET, first);
+        let (tmp, file) = crafted.write();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(tmp.path())
+            .expect("open")
+            .set_len(second + 8)
+            .expect("truncate");
+        let q = FileQuery::new(&file, &[], &mut ReadErrors::default());
+        let got: Vec<_> = q.all_matches_from(entries[1]).collect();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].as_ref().is_err_and(ReadError::is_io), "{got:?}");
+    }
+}

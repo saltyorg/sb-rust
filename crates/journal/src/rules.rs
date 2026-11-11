@@ -258,6 +258,11 @@ impl Query {
     pub(crate) fn groups(&self) -> &[Group] {
         &self.groups
     }
+
+    /// The groups, for a follow to keep.
+    pub(crate) fn into_groups(self) -> Vec<Group> {
+        self.groups
+    }
 }
 
 /// One supported Ubuntu release. sb refuses any other release (sb's

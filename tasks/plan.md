@@ -140,12 +140,13 @@ tools in Task 5 depend on them.
 ## Traceability
 
 The prototype has 112 tests. They are assigned as follows; each commit
-records its exact count.
+records its exact count. All 112 are ported as of Task 6: 1 + 31 + 26 +
+25 + 21 + 3 + 1 + 4.
 
 | Tests | Count | Task |
 |---|---|---|
-| hash.rs; file.rs header, objects, hash table, codecs and limits | 1 + about 35 | 1 |
-| file.rs entry arrays, chains, repeats, `all_entries`, `entries_since` | about 22 | 2 |
+| hash.rs; file.rs header, objects, hash table, codecs and limits | 1 + 31 | 1 |
+| file.rs entry arrays, chains, repeats, `all_entries`, `entries_since` | 26 | 2 |
 | query.rs tail, the merge across files (`newest`) and rules | 25 | 3 |
 | query.rs follow, plus `merge` and `is_old`, whose only caller is the follow | 21 + 3 | 6 |
 | query.rs `printable`, used only by the JSON form | 1 | 5 |
@@ -234,8 +235,9 @@ on its journal's opener (`testing::counts`).
     (Checkpoint A). That costs nothing where the files' tails are of one
     boot; where they name two or more, each boot's newest file adds a
     read per item of its tail entry (eight for entry 2999, which has no
-    `_MACHINE_ID=`), close to the 1%. Re-measured at the next matrix run
-    (tasks/todo.md).
+    `_MACHINE_ID=`), close to the 1%. Re-measured in Task 6 on 26.04 with
+    the tail-entry reading in place: 1711, 2393 and 1747 again (the
+    fixture's file is of one boot), so the bounds stand.
 
 `Before` walks back from the newest entry to the cursor, so its cost
 grows with the depth paged (accepted by success criterion 5). `After` is
@@ -275,7 +277,7 @@ sanitizer, so it waits for T9 too.
 - [x] Review with the maintainer (2026-11-11)
 
 ### Phase 2: Following
-- [ ] Task 6: the follow ported, with the prototype's start
+- [x] Task 6: the follow ported, with the prototype's start
 - [ ] Task 7: the page-anchor start, the wake fd and `Batch::more`
 - [ ] Task 8: the fuzz harness enforcing its bounds
 

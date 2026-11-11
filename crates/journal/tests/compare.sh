@@ -18,7 +18,9 @@
 # every page forward, the more_* flags, Difference 18's cursors), and by
 # field matches; the default variant's pread counts against their bounds
 # (success criterion 5). Boots: two boots in two files, their clocks
-# overlapping or apart, paged both ways (decision 11, Difference 20).
+# overlapping or apart, and overlapping from two source machines
+# (`_MACHINE_ID=`, 26.04's tail-entry machine), paged both ways
+# (decision 11, Difference 20).
 # Live: the release's systemd-journald run standalone, compared by tail.
 # The coredump row: systemd-coredump installed, its user's coredump
 # entries in the local journal, by `-u` (decisions 1 and 4).

@@ -802,8 +802,8 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
       lists two departures, neither on files as journald writes them: a
       malformed compressed `_MACHINE_ID=` before another, and a file cut
       short after it was opened.
-      UNVERIFIED against a running 259.9 until a matrix fixture with
-      `_MACHINE_ID=` runs (tasks/todo.md).
+      Verified against running 249, 255.4 and 259.9 by compare.sh's
+      `machines` fixtures (Task 6; docs/platform-notes/systemd-journal.md).
     - The release is the `Journal`'s (`Journal::open(source, &release)`),
       the caller's for every source, as for `Query::unit`.
     - The table reuses the newest entry each page reads for its end, and
@@ -854,9 +854,16 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
       overlapping or apart, paged both ways on 22.04, 24.04 and 26.04
       against each release's journalctl (Difference 20 for what 24.04's
       and 26.04's forward pages do instead).
-    - The follow (Task 6) isn't ported yet: it is to
-      keep the table current as its files grow, as sd-journal reads a
-      changed file's tail again before each step.
+    - The follow keeps the table current as its files grow or new ones
+      appear, as sd-journal reads a changed file's tail again before each
+      step (v255 `next_beyond_location` on a changed mtime, v259 on a new
+      tail offset): each drain reads every followed file's header first,
+      reads the tail again of each whose entry count or tail offsets
+      changed, and builds the table from all of them for that drain's
+      merge (follow.rs `Follow::boots`;
+      `the_follow_keeps_its_boot_table_current_as_files_grow`). The table
+      is the drain's, where sd-journal's can change between two steps of
+      one read; within a drain the files' headers are read once.
 
 ## Open questions
 
