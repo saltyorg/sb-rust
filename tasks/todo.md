@@ -424,16 +424,38 @@ time and never committed.
 **Scope:** S
 
 ## Checkpoint B: follow and robustness
-- [x] Tasks 6-8 pass `scripts/check.sh full`. follow.sh, stress.sh and
-      the fuzz harness are green. (2026-11-11: check.sh full ebaa782
-      passed apart from the floor guard's three Task 7 re-targets,
-      listed in f71ee7c; changed-line coverage 99%; mutants 386 caught
-      of 401 viable.)
-- [x] Ratchet re-measured: crates/ coverage 98.58% of lines and 98.10%
-      of functions; startup 1.18 / 1.44 ms; production binary 11932640
-      bytes, 2.5% over the recorded figure and within the 5% tolerance
-      (term-ui's DisplayText in the runner). Task 12 records the values.
-- [x] Approved by the maintainer, 2026-11-11.
+- [x] Tasks 6-8 (and Task 9) pass `scripts/check.sh full`; follow.sh,
+      stress.sh and the fuzz harness are green. Recorded 2026-11-11,
+      corrected after review:
+      - check.sh full on d0bd3c9 against base ebaa782: the floor guard
+        reported only the three Task 7 re-targets listed in f71ee7c;
+        the remaining steps passed in a run with only that step skipped.
+        Changed-line coverage 99%; mutants 386 caught of 401 viable (the
+        15 survivors are listed with their reasons in c716137, f71ee7c
+        and d0bd3c9: equivalent mutants and timeouts, two TailCache
+        cases that only cost extra reads, and one untested error sum); cargo-deny ok (with the warnings
+        it already had at Checkpoint A).
+      - follow.sh and stress.sh passed on 22.04, 24.04 and 26.04 at
+        f71ee7c (Task 7's binary).
+      - The fuzz harness passed one run at d0bd3c9: 9,000 cases over 8
+        seeds from 22.04 and 24.04 journal-remote.
+- [x] Ratchet re-measured:
+      - crates/ coverage 98.58% of lines and 98.10% of functions, above
+        the floors;
+      - startup 1.18 / 1.44 ms: `sb --help` is 0.09 ms over the recorded
+        limit, within its tolerance; run-to-run noise (Checkpoint A
+        measured 1.17 ms, and Tasks 6-9 add no startup work);
+      - production binary 11932640 bytes: 8192 bytes (0.07%) more than
+        at Checkpoint A, likely from term-ui's DisplayText in the
+        runner (580a124; not measured commit by commit). It is 2.47% over the recorded 11645408; the rest
+        came before this plan, from b7ebf17 (sb docker start, stop and
+        restart), recorded with a cargo bloat breakdown in 50ede52, and
+        was already present at Checkpoint A. Within the 5% tolerance.
+      - Task 12 writes the measured values into CONSTRAINTS.md with a
+        ratchet ADR.
+- [x] Approved by the maintainer, 2026-11-11 (follow, robustness and the
+      ratchet), on the first record (4a3a477). This correction followed
+      a review of it and was reported to the maintainer.
 
 ## Task 9: term-ui's shared sanitizer (`DisplayText`)
 
@@ -543,7 +565,10 @@ in the commit body. The matrix runs again where a fix touches reading.
 - proto-journal removed, its FINDINGS moved to
   `docs/prototypes/proto-journal.md`, and the links to it in the spec
   and the plan updated.
-- The ratchet measured.
+- The ratchet measured, and its values written into CONSTRAINTS.md's
+  "Measured, not yet enforced" table with a ratchet ADR (raised
+  coverage floors; the size and startup figures, a loosening, with
+  their reasons).
 
 **Acceptance criteria:**
 - [ ] Spec success criteria 6 and 7.
@@ -584,12 +609,21 @@ in the commit body. The matrix runs again where a fix touches reading.
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
 
+- cargo-deny reports advisory-not-detected for exception E1's two
+  ignores (RUSTSEC-2025-0141, RUSTSEC-2024-0320), although bincode,
+  yaml-rust and syntect are still in Cargo.lock. Find out why (the
+  advisory database's state, the advisories' current status, whether
+  syntect reaches the shipped graph) before E1 expires (2027-01-28).
+  Remove the ignores and the CONSTRAINTS.md row only if the advisories
+  really no longer apply.
+
 - The consumer's wake wait: tokio 1.54.1 deprecates `AsyncFd::new` as
   unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
-  `unsafe`, which the workspace forbids. The spec's wake protocol
-  ("AsyncFd on wake_fd") can't be written as it stands. Waiting on the
-  maintainer's decision; sb-host's test waits with rustix poll under
-  spawn_blocking meanwhile.
+  `unsafe`, which the workspace forbids. Maintainer's decision
+  (2026-11-11): sb-host waits with rustix poll on the wake fd and a stop
+  eventfd, inside spawn_blocking; closing the viewer writes the stop fd.
+  To build before Task 11's audit, with the journal spec's wake
+  protocol amended.
 
 - crates/cli-core/src/exit.rs (about line 450) uses anstream's
   `strip_str`, which passes C1 code points through. If that text can
