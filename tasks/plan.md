@@ -89,6 +89,63 @@ Answers at the plan's approval (2026-11-11):
       is within this decision is put to the maintainer with the
       handover question.
 
+### How the plan runs unattended (2026-11-11)
+
+13. **Checkpoints T, D, B, Y and C are reports, not stops.** Each one's
+    "Review with the maintainer" becomes a written checkpoint report
+    (what landed, the gate results, the reviews, the open risks), and
+    work goes on. The maintainer reviews the commits afterwards.
+    Nothing is pushed. Screenshots of looks (Task 21, Checkpoint D)
+    still wait for the maintainer, and only that lane pauses; the
+    screenshots Tasks 19 and 20 promise go into the checkpoint report
+    instead. Each report is committed as
+    `tasks/checkpoints/<checkpoint>.md`, with results summarised, no raw
+    output and no host details. At Checkpoint C, setting CONSTRAINTS
+    "Last reviewed" and confirming the collected declines stay open for
+    the maintainer; the plan is archived after that sitting.
+14. **A research task's question takes the recommendation.** When the
+    research for Tasks 7/14, 32, 34 and 42/43 is done, the task's
+    recommendation is followed if a fresh-context review on Fable
+    agrees with it. It is recorded as reversible, in the task and in
+    its checkpoint report, for the maintainer to overrule on return,
+    which may mean rework. The handover recommendation includes decision
+    12's point on a forward page bounded by its header's count. A
+    residual YAML difference the chosen fix can't cover still waits for
+    the maintainer (decision 3).
+    If the reviewer disagrees, or the research finds no option that
+    meets the decisions above, the task and the tasks that depend on
+    it wait for the maintainer, and other work goes on.
+15. **Low sweeps commit their fixes and collect their declines.** Each
+    sweep commits its fixes without waiting. Its proposed declines go on
+    one running list in tasks/todo.md
+    ("Proposed declines for the maintainer"), to be confirmed or
+    overruled in one sitting. An overruled decline becomes a fix task.
+16. **Task 6's proposed decline is confirmed:** the exception E1 half of
+    docs-L12 stays as the E1 decision records.
+17. **Answers given ahead of their tasks:**
+    - Task 18: the "controller may still be working" notice on every
+      ending without a final job status, and a few failed polls in a
+      row tolerated before the notice (listed differences from sb-go).
+    - Task 19: ECHO is switched off too during a live run, and the
+      term-ui spec's ECHOCTL wording is amended.
+    - Task 25 (san-L2): a reset is appended to any drawn line that kept
+      an SGR, and font-select parameters 10 to 20 are dropped; other
+      kept codes stay byte-exact. The three spec passages change.
+    - Task 20: settled lines of a tall live tree collapse to
+      "… N finished".
+    - Task 45: the lowercase proxy variables are read too, as Go does.
+    - Task 47: a `sb/<version>` User-Agent; `\d`, `\w` and `\s` in a
+      schema pattern take Go's ASCII meaning.
+    - Task 48: startup is timed on the musl production binary, with an
+      ADR recording both figures.
+    - Task 50: overflow checks on in the release and production
+      profiles, unless the measurement shows a cost past a ratchet's
+      tolerance.
+    - Task 52 (sb-L1): the root's `--color=never` with no subcommand
+      (exit 2) is recorded as a difference in the cli-core spec.
+    If research at a task contradicts the premise of one of these
+    answers, that task goes back to the maintainer.
+
 ## Architecture decisions
 
 - **Gates first.** The floor guard and `check.sh` are fixed before any
