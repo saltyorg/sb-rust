@@ -388,14 +388,19 @@ what both do.
 - **sysinfo 0.40** (`system`): os-release, already here
 - **rustix 1.1:**
   - `system::uname`, through the new `system` feature;
-  - `fs::statvfs`.
+  - `fs::statvfs`;
+  - `event::poll` and `event::eventfd`, through the `event` feature
+    (sb-host's own; the workspace entry is unchanged): the follow's wake
+    wait, `journal::FollowWait` (journal spec, decision 12).
 - **walkdir 2.5:** new to the binary, already in the lockfile
 - **nix 0.28,** `user`: already linked through portable-pty; gains the
   feature. Also the systemd-coredump user's uid for the journal's unit
   query (`journal::coredump_uid`, `look up user <u>: <cause>`)
 - **tokio 1.54** (the workspace entry; host uses `rt`): `spawn_blocking`
   for the journal's blocking reads, `journal::page` and `journal::drain`
-  (journal spec, assumption 3 and API: a correction to this list)
+  (journal spec, assumption 3 and API: a correction to this list), and
+  for the wake wait's `poll`, `journal::FollowWait`. Not `AsyncFd`, whose
+  constructors 1.54.1 deprecates as unsound (journal spec, decision 12)
 - **serde and serde_json:** systemctl's JSON
 - **jiff 0.2:** times
 - **tempfile 3:** atomic saves

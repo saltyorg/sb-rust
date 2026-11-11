@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sb_host::journal::{
-    self, Batch, Cursor, FieldName, Follower, Journal, Limits, Page, PageEnd, Position, Query,
-    Record, Release, Source, Uid, UnitName,
+    self, Batch, Cursor, FieldName, FollowStop, FollowWait, Follower, Journal, Limits, Page,
+    PageEnd, Position, Query, Record, Release, Source, Uid, UnitName, Wake,
 };
 use sb_journal::testing::crafted::{
     self, A_ITEMS, D_ENTRY_ARRAY, D_N_ENTRIES, H_ARENA_SIZE, H_N_ENTRIES,
@@ -92,55 +92,53 @@ async fn page_reads_the_entries_after_a_cursor() {
     assert!(page.more_older && page.more_newer, "{page:?}");
 }
 
-/// Whether `wake` is readable within `timeout`, waited for on tokio's
-/// blocking pool with sb-journal's test wait (rustix `poll`, level
-/// triggered).
-///
-/// Not tokio's `AsyncFd`, which the journal spec's wake protocol names: in
-/// tokio 1.54.1 `AsyncFd::new` is deprecated as unsound (tokio PR #8587)
-/// and its replacement, `AsyncFd::register`, is an `unsafe fn`, which the
-/// workspace forbids. Raised with the maintainer (sb-journal plan, Task 10).
-async fn readable(wake: &Arc<OwnedFd>, timeout: Duration) -> bool {
-    let wake = Arc::clone(wake);
-    tokio::task::spawn_blocking(move || {
-        use std::os::fd::AsFd as _;
-        sb_journal::testing::tools::wait_readable(wake.as_fd(), Some(timeout)).expect("poll")
-    })
-    .await
-    .expect("the wait ran")
-}
-
-/// One wait of a caller's follow loop: readable within five seconds, then
-/// `drain` under `spawn_blocking` while `Batch::more` (journal spec,
-/// "Waiting for new entries"). Returns the messages, the number of drains
-/// and the follower.
+/// One wake of a caller's follow loop, the journal spec's wake protocol
+/// through sb-host's helpers ("Waiting for new entries"): `FollowWait`
+/// woken within five seconds, then `drain` while `Batch::more`, and once
+/// more after a batch with errors. Returns the messages, the number of
+/// drains and the follower.
 async fn woken(
-    wake: &Arc<OwnedFd>,
+    waiter: &mut FollowWait,
     follower: Follower,
     limits: Limits,
 ) -> (Vec<String>, usize, Follower) {
-    assert!(
-        readable(wake, Duration::from_secs(5)).await,
-        "woken within five seconds"
-    );
-    let (mut follower, mut batch) = journal::drain(follower, limits).await;
-    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
-    let mut shown = messages(&batch.records);
-    let mut drains = 1;
-    while batch.more {
+    let wake = tokio::time::timeout(Duration::from_secs(5), waiter.wait())
+        .await
+        .expect("woken within five seconds");
+    assert_eq!(wake.expect("polled"), Wake::Woken);
+    let mut follower = follower;
+    let mut shown = Vec::new();
+    let mut errors = Vec::new();
+    let mut drains = 0;
+    let mut retried = false;
+    loop {
+        let batch;
         (follower, batch) = journal::drain(follower, limits).await;
-        assert!(batch.errors.is_empty(), "{:?}", batch.errors);
         shown.extend(messages(&batch.records));
+        if !batch.errors.is_empty() {
+            errors.push(format!("{:?}", batch.errors));
+        }
         drains += 1;
+        if batch.more {
+            continue;
+        }
+        if !batch.errors.is_empty() && !retried {
+            retried = true;
+            continue;
+        }
+        break;
     }
+    // None expected on these files: the errors' drain once more is the
+    // protocol's, and every batch's errors are checked here.
+    assert!(errors.is_empty(), "{errors:?}");
     (shown, drains, follower)
 }
 
 /// A follow from a page through the helpers, waited for as a caller
 /// waits. Under an output limit that fits one entry per drain, the two
 /// entries written since the page come over two drains; after them the
-/// descriptor isn't readable (the drains emptied the queue it shares),
-/// and the next write wakes it again.
+/// wait stays pending (the drains emptied the queue the wake descriptor
+/// shares), the next write wakes it again, and a stop ends the follow.
 #[tokio::test]
 async fn a_follow_from_a_page_is_woken_drained_while_more_and_woken_again() {
     // The file grows as journald appends: one layout of six entries, of
@@ -195,25 +193,30 @@ async fn a_follow_from_a_page_is_woken_drained_while_more_and_woken_again() {
         .follow(every_entry(), &page.end, &limits)
         .expect("follows");
     assert!(first.records.is_empty() && !first.more, "{first:?}");
-    let wake = Arc::new(follower.wake_fd().expect("a wake descriptor"));
+    let mut waiter = FollowWait::new(&follower).expect("a waiter");
 
     grow(4);
-    let (shown, drains, follower) = woken(&wake, follower, limits).await;
+    let (shown, drains, follower) = woken(&mut waiter, follower, limits).await;
     assert_eq!(shown, ["m2", "m3"]);
     assert_eq!(drains, 2, "one entry per drain under the limit");
     assert!(
-        !readable(&wake, Duration::from_millis(200)).await,
-        "readable after the drains"
+        tokio::time::timeout(Duration::from_millis(200), waiter.wait())
+            .await
+            .is_err(),
+        "woken after the drains"
     );
 
     grow(6);
-    let (shown, _, _follower) = woken(&wake, follower, limits).await;
+    let (shown, _, _follower) = woken(&mut waiter, follower, limits).await;
     assert_eq!(shown, ["m4", "m5"]);
+
+    waiter.stop_handle().stop();
+    assert_eq!(waiter.wait().await.expect("polled"), Wake::Stopped);
 }
 
 /// What a caller moves into `spawn_blocking`, keeps across an `.await` or
 /// hands to another task (journal spec, assumption 3), the helpers' futures
-/// included.
+/// and the wake wait's included.
 #[test]
 fn the_re_exported_types_the_wake_fd_and_the_helpers_futures_are_send() {
     fn send<T: Send + 'static>() {}
@@ -238,6 +241,9 @@ fn the_re_exported_types_the_wake_fd_and_the_helpers_futures_are_send() {
     send::<journal::ReadError>();
     send::<journal::UserLookupError>();
     send::<sb_host::UbuntuReleaseError>();
+    send::<FollowWait>();
+    send_sync::<FollowStop>();
+    send::<Wake>();
     let (_t, j) = five();
     send_value(&journal::page(
         j.clone(),
@@ -249,5 +255,7 @@ fn the_re_exported_types_the_wake_fd_and_the_helpers_futures_are_send() {
     let (follower, _) = j
         .follow(every_entry(), &PageEnd::default(), &Limits::default())
         .expect("follows");
+    let mut waiter = FollowWait::new(&follower).expect("a waiter");
+    send_value(&waiter.wait());
     send_value(&journal::drain(follower, Limits::default()));
 }

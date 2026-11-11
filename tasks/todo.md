@@ -617,13 +617,14 @@ in the commit body. The matrix runs again where a fix touches reading.
   Remove the ignores and the CONSTRAINTS.md row only if the advisories
   really no longer apply.
 
-- The consumer's wake wait: tokio 1.54.1 deprecates `AsyncFd::new` as
-  unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
+- Done: the consumer's wake wait. tokio 1.54.1 deprecates `AsyncFd::new`
+  as unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
   `unsafe`, which the workspace forbids. Maintainer's decision
-  (2026-11-11): sb-host waits with rustix poll on the wake fd and a stop
-  eventfd, inside spawn_blocking; closing the viewer writes the stop fd.
-  To build before Task 11's audit, with the journal spec's wake
-  protocol amended.
+  (2026-11-11): sb-host's `journal::FollowWait` waits with rustix poll on
+  the wake fd and a stop eventfd, inside spawn_blocking; its
+  `FollowStop` handle, or dropping it, writes the stop fd. The journal
+  spec's wake protocol is amended (decision 12), and the follow test in
+  crates/host/tests/journal.rs waits through it.
 
 - crates/cli-core/src/exit.rs (about line 450) uses anstream's
   `strip_str`, which passes C1 code points through. If that text can
@@ -662,7 +663,10 @@ in the commit body. The matrix runs again where a fix touches reading.
 
 - A page holds a descriptor for every listed file at once (Task 3's
   design, kept in Task 4), and a follow holds one per followed file for
-  as long as it runs (Task 6), plus its inotify descriptor. Past the soft `RLIMIT_NOFILE` (1024 by default)
+  as long as it runs (Task 6), plus its inotify descriptor, and each
+  waiter (`journal::FollowWait`) two more: the wake fd's duplicate and
+  its stop eventfd, so one eventfd more per follow than the `AsyncFd`
+  design. Past the soft `RLIMIT_NOFILE` (1024 by default)
   the extra opens fail with EMFILE, reported one per file. journald's
   defaults keep a journal far below that; decide whether sb raises the
   soft limit to the hard one at startup (rustix `setrlimit`, beside

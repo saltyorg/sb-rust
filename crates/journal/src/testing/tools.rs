@@ -469,9 +469,9 @@ pub fn write_records(
 /// through rustix's `poll`
 /// (<https://docs.rs/rustix/1.1.6/rustix/event/fn.poll.html>), retried on
 /// `EINTR`: the wait on `Follower::wake_fd`'s descriptor between drains,
-/// where sb would await tokio's `AsyncFd` (journal spec, "Waiting for new
-/// entries"). An error counts as woken so a broken descriptor can't make a
-/// caller's loop spin without reading.
+/// as sb-host's `journal::FollowWait` waits (journal spec, "Waiting for
+/// new entries" and decision 12). An error counts as woken so a broken
+/// descriptor can't make a caller's loop spin without reading.
 ///
 /// # Errors
 ///

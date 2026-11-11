@@ -17,6 +17,10 @@ nix.workspace = true
 # `spawn_blocking` for the journal's blocking reads (journal spec,
 # assumption 3): the workspace entry (`rt`, `time`); only `rt` is used.
 tokio.workspace = true
+# The follow's wake wait (`journal::FollowWait`): `event`'s `poll` on the
+# wake descriptor and a stop `eventfd`, under `spawn_blocking`, in place
+# of tokio's `AsyncFd` (journal spec, decision 12).
+rustix = { workspace = true, features = ["event"] }
 
 [dev-dependencies]
 # The crafted journal files the helpers' tests page and follow.

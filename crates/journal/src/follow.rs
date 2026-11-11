@@ -994,18 +994,24 @@ const EVENTS_BUF: usize = 8192;
 /// descriptor created `NONBLOCK`, `add_watch` per directory, and a
 /// `Reader` over a buffer read until it fails with `WOULDBLOCK`.
 ///
-/// Waiting for new entries (journal spec, "Waiting for new entries"), with
-/// tokio's `AsyncFd`
-/// (<https://docs.rs/tokio/1.54.1/tokio/io/unix/struct.AsyncFd.html>):
-/// 1. wrap `wake_fd()` in an `AsyncFd` and await readable;
+/// Waiting for new entries (journal spec, "Waiting for new entries" and
+/// decision 12): the caller's wait (sb-host's `journal::FollowWait`)
+/// polls `wake_fd()` beside a stop `eventfd` under `spawn_blocking`, and
+/// sb-host's module docs give the loop:
+/// 1. wait until `wake_fd()` is readable (or the wait is stopped);
 /// 2. run `drain` under `spawn_blocking` (the `Follower` is `Send`); it
 ///    reads the inotify descriptor to `EAGAIN`, which empties what the
 ///    duplicate shows, as both share one open file description;
 /// 3. while the `Batch` has `more`, drain again;
-/// 4. clear the readiness of step 1's guard, and wait again. tokio's
-///    `clear_ready` is for a descriptor seen not ready: the drain saw
-///    `EAGAIN` unless reading the events failed, so after a batch with
-///    errors, drain once more before clearing.
+/// 4. after a batch with errors, drain once more: the drain may not have
+///    read the events to `EAGAIN`;
+/// 5. wait again. `poll` is level-triggered, so there is no readiness to
+///    clear.
+///
+/// Not tokio's `AsyncFd`: tokio 1.54.1 deprecates `AsyncFd::new` as
+/// unsound (<https://github.com/tokio-rs/tokio/pull/8587>), and its
+/// replacement, `AsyncFd::register`, is an `unsafe fn`, which the
+/// workspace forbids.
 ///
 /// The crate itself spawns nothing and doesn't depend on tokio (spec,
 /// assumption 3); its tests wait with rustix's `poll`.

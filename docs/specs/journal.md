@@ -40,8 +40,9 @@ behaviour is in docs/platform-notes/systemd-journal.md.
      the output limit per call. Callers run them under
      `spawn_blocking` (capability map, decision 8).
    - The follow's inotify descriptor is created non-blocking. A
-     duplicate of it (`wake_fd`) is what the caller awaits with tokio's
-     `AsyncFd`, so the follow itself can move into `spawn_blocking`.
+     duplicate of it (`wake_fd`) is what the caller waits on, through
+     sb-host's `journal::FollowWait` (decision 12), so the follow itself
+     can move into `spawn_blocking`.
    - The crate spawns no thread or child.
    - Public types are `Send`, asserted by a test.
 4. **Exactness is checked against journalctl** of each release, value
@@ -222,14 +223,32 @@ A source with no directory to watch (neither local root, or no given
 file's directory) is refused, `OpenError::NothingToWatch`: no event could
 make its wake fd readable (sb-journal plan, Task 7).
 
-**Waiting for new entries** (tokio's `AsyncFd`,
-https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html):
-1. The caller wraps `wake_fd()` in an `AsyncFd` and awaits readable.
-2. It runs `drain` under `spawn_blocking`; `drain` reads the inotify fd
-   to EAGAIN. The duplicate shares the open file description, so that
-   empties what the `AsyncFd` registration sees.
+**Waiting for new entries** (decision 12): sb-host's
+`journal::FollowWait`, built from the `Follower`'s `wake_fd()`, waits
+with rustix `poll` on the wake fd and a stop eventfd of its own, inside
+`spawn_blocking`.
+1. The caller awaits `FollowWait::wait`: `Woken` once the wake fd is
+   readable, `Stopped` once its `FollowStop` handle stops it or the
+   waiter is dropped (the viewer closed), which ends the follow.
+2. It runs `drain` under `spawn_blocking` (sb-host's `journal::drain`);
+   `drain` reads the inotify fd to EAGAIN. The duplicate shares the open
+   file description, so that empties what the wait polls.
 3. While a `Batch` has `more`, it drains again.
-4. It clears the readiness of step 1's guard, and waits again.
+4. After a batch with errors it drains once more: reading the events may
+   have failed before EAGAIN.
+5. It waits again. `poll` is level-triggered, so the wake fd reads
+   readable for as long as an event is queued, and there is no readiness
+   to clear (the `AsyncFd` protocol's `clear_ready` step is gone).
+
+The wait is cancel-safe (a wait dropped in a `select!` leaves its poll
+running for the next wait to take over, one blocking thread per waiter);
+each `drain` is awaited to its end. A stop is for good, and wins over a
+queued event, also over a cancelled wait's poll woken before the stop.
+Each waiter holds two descriptors: the wake fd's duplicate and the stop
+eventfd; it is dropped with its follower. A wake fd whose events every
+drain failed to read would wake the loop at once each time, with the
+drain's error to show; inotify's events fit the drain's buffer, so this
+isn't expected.
 
 The `Follower` and its wake fd are `Send`.
 
@@ -871,6 +890,20 @@ passes the matrix, and its FINDINGS move to `docs/prototypes/`.
       `the_follow_keeps_its_boot_table_current_as_files_grow`). The table
       is the drain's, where sd-journal's can change between two steps of
       one read; within a drain the files' headers are read once.
+
+12. **The wake wait is sb-host's, not tokio's `AsyncFd`** (maintainer,
+    2026-11-11). tokio 1.54.1 deprecates every `AsyncFd` constructor
+    (`new`, `with_interest`, `try_new`, `try_with_interest`) as "unsound
+    due to lack of I/O safety" (tokio PR #8587,
+    https://github.com/tokio-rs/tokio/pull/8587, checked in the 1.54.1
+    source, `src/io/async_fd.rs`), and the replacement,
+    `AsyncFd::register`, is an `unsafe fn`, which the workspace forbids.
+    So sb-host provides the wait (`journal::FollowWait`): rustix `poll`
+    on the follower's wake fd and a stop eventfd (`CLOEXEC | NONBLOCK`),
+    inside `spawn_blocking`. Closing the viewer (`FollowStop::stop`), or
+    dropping the waiter, writes the stop fd, so the blocked poll returns
+    at once and its blocking thread is freed. The protocol is "Waiting
+    for new entries" above, which replaces the `AsyncFd` steps.
 
 ## Open questions
 

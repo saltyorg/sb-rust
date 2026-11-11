@@ -3290,6 +3290,7 @@ name = "sb-host"
 version = "0.1.0"
 dependencies = [
  "nix 0.28.0",
+ "rustix",
  "sb-journal",
  "sysinfo",
  "tempfile",
