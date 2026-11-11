@@ -399,7 +399,15 @@ Deliberate:
 Limits by design:
 
 5. **An entry over the output limit** isn't shown, but reported; nor
-   is a zstd frame needing a window over 128 MiB.
+   is a zstd frame needing a window over 128 MiB. An entry listing more
+   items than the limit could show (each field shown spends some of it)
+   is refused before its body is read, wherever a page or a follow reads
+   an entry, so one entry costs no more memory than the limit allows
+   (security audit, Task 11). Seeks and the boot table then take it as
+   unreadable: a bisect stops at it, and a file's tail is the newest
+   entry before it. journald writes at most 1024 fields an entry
+   (`ENTRY_FIELD_COUNT_MAX`; UNVERIFIED here, from the audit), so only a
+   limit under about 24 KiB, or a crafted file, meets this.
 6. **xz decoding has a 64 MiB decoder-memory bound** (journald's xz
    dictionary is 1 MiB).
 7. **Unit names:** only "no dot → `.service`" mangling; other forms are

@@ -210,6 +210,8 @@ pub struct JournalFile {
     /// Where objects may lie: size + `arena_size`, capped by the
     /// file's length. It grows when a read reaches past it (`within`).
     limit: Cell<u64>,
+    /// The output limit an entry must fit to be read (`bound_entries`).
+    output: Cell<usize>,
 }
 
 impl JournalFile {
@@ -243,6 +245,7 @@ impl JournalFile {
             file,
             header: empty_header(),
             limit: Cell::new(0),
+            output: Cell::new(usize::MAX),
         };
         jf.refresh()?;
         Ok(jf)
@@ -404,6 +407,11 @@ impl JournalFile {
         self.check(size >= OBJECT_HEADER && self.within(offset, size), || {
             format!("object {offset:#x} has a bad size")
         })?;
+        // An object at or near the arena's end as last read (journald
+        // raises the arena, then links the object) came back short: the
+        // `within` above grew the limit, so read up to what was promised.
+        // Callers index the first `min(size, guess)` bytes (audit M1).
+        self.object_rest(offset, size.min(guess), &mut b)?;
         b.truncate(self.to_usize(size)?);
         Ok((flags, size, b))
     }
@@ -415,6 +423,17 @@ impl JournalFile {
             b.extend_from_slice(&self.read(offset + have, size - have)?);
         }
         Ok(())
+    }
+
+    /// Refuse, from here on, an entry listing more items than an output
+    /// limit of `output` bytes could ever show: each field shown spends
+    /// `size_of::<Field>()` of that limit (`walk::record`), so such an
+    /// entry would be left out anyway (Difference 5), and it is refused
+    /// before its body is read, which bounds the memory one entry costs
+    /// by the caller's limit rather than by `ENTRY_SIZE_MAX` (security
+    /// audit, Task 11, M2). Unbounded until called (the tools).
+    pub(crate) fn bound_entries(&self, output: usize) {
+        self.output.set(output);
     }
 
     /// The entry at `offset`.
@@ -566,10 +585,9 @@ impl JournalFile {
             format!("data object {offset:#x} has a bad size")
         })?;
         // The payload's first bytes, all of it when it is no longer than a
-        // machine id's field. `object_head` reads them in its one pread,
-        // except for an object past the arena as last read (the file grew
-        // since): only its header then, and the rest is read here.
-        self.object_rest(offset, size.min(start + MACHINE_ID_PAYLOAD as u64), &mut b)?;
+        // machine id's field: `object_head` reads them, in its one pread,
+        // or in a second one for an object past the arena as last read
+        // (the file grew since).
         let stored = b.split_off(self.to_usize(start)?);
         let stored_len = size - start;
         let (payload, len) = if flags & (COMPRESSED_XZ | COMPRESSED_LZ4 | COMPRESSED_ZSTD) == 0 {
@@ -617,11 +635,19 @@ impl JournalFile {
         self.check(offset + size <= end, || {
             format!("entry {offset:#x} overlaps the next entry")
         })?;
+        let n = (size - ENTRY_HEADER) / item;
+        let output = self.output.get();
+        if n > (output / std::mem::size_of::<crate::Field>()) as u64 {
+            return Err(self.error(ReadErrorKind::OverLimit {
+                context: format!("entry {offset:#x} lists {n} items, more than the limit can show"),
+                over: OverLimit { limit: output },
+            }));
+        }
         self.object_rest(offset, size, &mut b)?;
         self.check(le64(&b, 16) != 0, || {
             format!("entry {offset:#x} has no sequence number")
         })?;
-        let n = self.to_usize((size - ENTRY_HEADER) / item)?;
+        let n = self.to_usize(n)?;
         let step = self.to_usize(item)?;
         let mut items = Vec::with_capacity(n);
         for i in 0..n {
@@ -2856,6 +2882,67 @@ mod tests {
         assert_eq!(f.data_payload(late).expect("read after growth"), b"LATE=1");
     }
 
+    /// Grow `t` to hold every object of `c`, raising its arena to match.
+    fn grow_to(c: &mut Crafted, t: &tempfile::NamedTempFile) {
+        c.set(H_ARENA_SIZE, c.b.len() as u64 - 272);
+        std::fs::write(t.path(), &c.b).expect("grow");
+    }
+
+    /// Security audit (Task 11, M1): journald raises the arena, then links
+    /// the new object, so a link read after the open can name an object
+    /// that starts at the arena's end as it was then. Its fixed fields
+    /// are read whole once the arena has grown, never sliced out of the
+    /// 16-byte object header the first read could hold. Here, a DATA
+    /// object linked into a lookup's hash chain.
+    #[test]
+    fn a_data_object_appended_at_the_arena_end_is_found() {
+        let mut c = Crafted::new();
+        c.hash_table(1);
+        c.data(b"A=1");
+        let (t, f) = c.write();
+        let late = c.data(b"MESSAGE=a");
+        grow_to(&mut c, &t);
+        let found = f.find_data(b"MESSAGE=a").expect("reads").expect("found");
+        assert_eq!(found.offset, late);
+    }
+
+    /// As above (M1), for an entry array appended to a value's list.
+    #[test]
+    fn an_entry_array_appended_at_the_arena_end_is_walked() {
+        let mut c = Crafted::new();
+        c.hash_table(1);
+        let d = c.data(b"U=x");
+        let e1 = c.entry(1, &[d]);
+        let e2 = c.entry(2, &[d]);
+        c.set(d + D_ENTRY_OFFSET, e1);
+        c.set(d + D_N_ENTRIES, 1);
+        let (t, f) = c.write();
+        let array = c.array(&[e2], 4, 0);
+        c.set(d + D_N_ENTRIES, 2);
+        c.set(d + D_ENTRY_ARRAY, array);
+        grow_to(&mut c, &t);
+        let d = f.find_data(b"U=x").expect("reads").expect("found");
+        let entries: Vec<u64> = f.entries_of_rev(&d).map(|e| e.expect("reads")).collect();
+        assert_eq!(entries, [e2, e1]);
+    }
+
+    /// As above (M1), for a FIELD object appended to its bucket, and the
+    /// DATA object it lists, appended just before it.
+    #[test]
+    fn a_field_appended_at_the_arena_end_lists_its_values() {
+        let mut c = Crafted::new();
+        c.hash_table(1);
+        c.field_table(1);
+        c.data(b"A=1");
+        let (t, f) = c.write();
+        let boot = c.data(&[b"_BOOT_ID=".as_slice(), &[b'a'; 32]].concat());
+        c.field(b"_BOOT_ID", &[boot]);
+        grow_to(&mut c, &t);
+        let values = f.field_values(b"_BOOT_ID", 64).expect("reads");
+        let offsets: Vec<u64> = values.iter().map(|(d, _)| d.offset).collect();
+        assert_eq!(offsets, [boot]);
+    }
+
     /// New in the crate: a file cut short after it was opened (a vacuum,
     /// or a copy cut off) is an I/O error from pread, never a panic or a
     /// SIGBUS; once the header is read again, what lies before the cut
@@ -3199,6 +3286,37 @@ mod tests {
         assert!(f.entry(empty).is_err());
         assert!(f.entry(l.entries[1]).is_err());
         assert!(f.entry(l.entries[0]).is_ok());
+    }
+
+    /// Security audit (Task 11, M2): an entry listing more items than an
+    /// output limit could show (each field shown spends a `Field`'s size) is
+    /// over that limit, refused from its first read, before its body is
+    /// read, so its size can't cost memory; at the bound it reads. Without
+    /// a bound (the tools) it reads too.
+    #[test]
+    fn an_entry_over_the_item_bound_is_refused_before_its_body_is_read() {
+        let mut c = Crafted::new();
+        c.hash_table(1);
+        let d = c.data(b"A=1");
+        // 100 items: 1,664 bytes, past one `READ_GUESS` read.
+        let big = c.entry(1, &[d; 100]);
+        let t = c.file();
+        let opener = Opener::default();
+        let f = JournalFile::open_with(t.path(), &opener).expect("opens");
+        assert_eq!(f.entry(big).expect("no bound").items.len(), 100);
+        let held = std::mem::size_of::<crate::Field>();
+        f.bound_entries(100 * held - 1);
+        let before = opener.counts().preads;
+        let err = f.entry(big).expect_err("over the bound");
+        assert!(err.is_over_limit(), "{err}");
+        assert!(err.to_string().contains("lists 100 items"), "{err}");
+        assert!(
+            matches!(err.kind(), ReadErrorKind::OverLimit { over, .. } if over.limit == 100 * held - 1),
+            "{err}"
+        );
+        assert_eq!(opener.counts().preads, before + 1, "its head only");
+        f.bound_entries(100 * held);
+        assert_eq!(f.entry(big).expect("at the bound").items.len(), 100);
     }
 
     /// A frame decoding to another length than it declares is corrupt,

@@ -114,7 +114,9 @@ impl UserLookupError {
 ///
 /// The lookup is nix's `User::from_name`, `getpwnam_r`
 /// (<https://docs.rs/nix/0.28.0/nix/unistd/struct.User.html#method.from_name>;
-/// host spec, decision 2).
+/// host spec, decision 2). It blocks, as an NSS lookup can (a network
+/// backend most of all): on a runtime, run it under `spawn_blocking`, as
+/// [`Journal::open`] and [`Journal::follow`] are run.
 ///
 /// # Errors
 ///

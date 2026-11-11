@@ -541,10 +541,14 @@ pre-pass. Each finding is fixed test-first, or declined with its reason
 in the commit body. The matrix runs again where a fix touches reading.
 
 **Acceptance criteria:**
-- [ ] No open high finding (success criterion 8).
+- [x] No open high finding (success criterion 8): the audit found none.
+      Its two Mediums are fixed test-first (M1, a live file's object read
+      short at the arena's end; M2, entry objects read whole); its Lows
+      and Infos are fixed or declined in the commit body, and recorded in
+      proto-journal's FINDINGS.
 
 **Verification:**
-- [ ] `scripts/check.sh full`; the affected container scripts;
+- [x] `scripts/check.sh full`; the affected container scripts;
       code-reviewer on the fixes.
 
 **Dependencies:** Tasks 8, 9 and 10
@@ -609,13 +613,22 @@ in the commit body. The matrix runs again where a fix touches reading.
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
 
+- cli-core's `error_block` prints error text raw, and cli-core can't use
+  term-ui's `DisplayText` (term-ui depends on cli-core). Check whether
+  any error text can carry untrusted bytes (a child's stderr, a file
+  name), and if so move the sanitizer's core below cli-core or sanitize
+  at the source. Also fix the stale comment in cli-core/src/log.rs
+  (about lines 184-186) that says child output is stripped with
+  `console::strip_ansi_codes`; the runner uses `DisplayText` now.
+
 - cargo-deny reports advisory-not-detected for exception E1's two
   ignores (RUSTSEC-2025-0141, RUSTSEC-2024-0320), although bincode,
-  yaml-rust and syntect are still in Cargo.lock. Find out why (the
-  advisory database's state, the advisories' current status, whether
-  syntect reaches the shipped graph) before E1 expires (2027-01-28).
-  Remove the ignores and the CONSTRAINTS.md row only if the advisories
-  really no longer apply.
+  yaml-rust and syntect are still in Cargo.lock. Found in Task 11:
+  syntect is in the lock only through `prototypes/proto-markdown`
+  (tui-markdown), not in crates/sb's graph, which the gate checks
+  (`cargo tree -p sb -i syntect` matches nothing). The ignores stay
+  until the announcements renderer brings tui-markdown into sb's graph,
+  or E1 is decided again at its expiry (2027-01-28).
 
 - Done: the consumer's wake wait. tokio 1.54.1 deprecates `AsyncFd::new`
   as unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
@@ -626,10 +639,9 @@ in the commit body. The matrix runs again where a fix touches reading.
   spec's wake protocol is amended (decision 12), and the follow test in
   crates/host/tests/journal.rs waits through it.
 
-- crates/cli-core/src/exit.rs (about line 450) uses anstream's
-  `strip_str`, which passes C1 code points through. If that text can
-  come from a child or a file, route it through term-ui's `DisplayText`
-  (colour off). Check where it comes from first.
+- Closed in Task 11: crates/cli-core/src/exit.rs's anstream `strip_str`
+  (which passes C1 code points through) is only in its test module,
+  over the test's own fixed error, so no child or file text reaches it.
 
 - Done in Task 7: the local CI workflow (journal-matrix.yml) runs the
   crate's follow.sh and stress.sh after the page checks; still unpushed.
@@ -645,6 +657,12 @@ in the commit body. The matrix runs again where a fix touches reading.
   entry at a time can loop. A page knows only its cursor, so the
   viewer (or sb-host) must stop at a cursor it has already shown.
   Decide where the guard lives with the tui spec; raise at Checkpoint A.
+  The security audit (Task 11) adds a requirement the tui spec must
+  record: the viewer passes a much smaller `Limits` than the 256 MiB
+  default (a few MiB), and caps the size of one record it displays
+  (`DisplayText` expands tabs up to 8 times). The audit accepted a page's
+  per-file memory on an imported directory of crafted files (about a
+  third of the limit per file) on that condition.
 
 - A mutant can make a walk allocate without bound (`advance ->
   Some(Ok(0))`). Under a `systemd-run` MemoryMax scope, systemd's default
@@ -671,7 +689,8 @@ in the commit body. The matrix runs again where a fix touches reading.
   defaults keep a journal far below that; decide whether sb raises the
   soft limit to the hard one at startup (rustix `setrlimit`, beside
   cli-core's `RLIMIT_CORE`) or caps the files per page (security audit of
-  Task 4, Low).
+  Task 4, Low; Task 11's audit kept it Low and open for the maintainer:
+  the opens past the limit are reported, never dropped).
 
 - CI: a workflow running `scripts/check.sh` (CONSTRAINTS.md asks for
   `full` in CI once CI exists; the runner needs cargo-deny, cargo-mutants,

@@ -59,7 +59,10 @@ const OUTPUT_DEFAULT: usize = 256 << 20;
 /// follow's wake) may read and decode. A page also holds at most this many
 /// bytes of candidate entries before it decodes the ones it shows. A limit
 /// below one candidate's size holds none: such a page shows nothing and
-/// reports the held limit.
+/// reports the held limit. An entry listing more items than the limit
+/// could show (each field shown spends some of it) is refused before its
+/// body is read, so one entry's size can't cost more memory than the
+/// limit allows (Difference 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     output: usize,
@@ -674,7 +677,7 @@ impl Journal {
     #[must_use]
     pub fn page(&self, q: &Query, at: &Position, n: usize, limits: &Limits) -> Page {
         let mut errors = ReadErrors::default();
-        let files = walk::open_listed(|| self.list(), &self.opener, &mut errors);
+        let files = walk::open_listed(|| self.list(), &self.opener, limits.output(), &mut errors);
         let bounds = walk::Bounds {
             payload: limits.output(),
             held: limits.output(),
@@ -1531,8 +1534,10 @@ mod tests {
     }
 
     use crate::testing::crafted::{
-        self, Crafted, D_ENTRY_OFFSET, D_N_ENTRIES, H_ENTRY_ARRAY_OFFSET, H_N_ENTRIES,
+        self, A_ITEMS, Crafted, D_ENTRY_ARRAY, D_ENTRY_OFFSET, D_N_ENTRIES, H_ARENA_SIZE,
+        H_ENTRY_ARRAY_OFFSET, H_N_ENTRIES, O_SIZE,
     };
+    use std::os::unix::fs::FileExt;
 
     /// A journal of one entry carrying the payloads `fields`, each its own
     /// DATA object, written to a temporary file.
@@ -2209,6 +2214,53 @@ mod tests {
             ReadErrorKind::TooLarge { limit: 1000, .. }
         ));
         assert_eq!(tail(&j, &q, 10).records.len(), 1);
+    }
+
+    /// Security audit (Task 11, M2): a page bounds each entry it reads by
+    /// its output limit, so an entry listing more items than the page
+    /// could show is refused before its body is read (here, a sparse
+    /// file's 16 MiB entry under a 1 MiB limit), reported, and the page
+    /// goes on to the older entry.
+    #[test]
+    fn a_page_refuses_an_entry_with_more_items_than_its_limit_shows() {
+        let mut c = Crafted::new();
+        c.hash_table(7);
+        let old = c.data(b"MESSAGE=old");
+        let e1 = c.entry(1, &[old]);
+        let list = c.array(&[0], 1, 0);
+        let main = c.array(&[e1, 0], 2, 0);
+        // Last, so its claimed size runs to the file's (sparse) end.
+        let big = c.entry(2, &[old]);
+        let size: u64 = 64 + 16 * (1 << 20);
+        c.set(big + O_SIZE, size);
+        c.set(list + A_ITEMS, big);
+        c.set(main + A_ITEMS + 8, big);
+        c.set(old + D_ENTRY_OFFSET, e1);
+        c.set(old + D_N_ENTRIES, 2);
+        c.set(old + D_ENTRY_ARRAY, list);
+        c.set(H_N_ENTRIES, 2);
+        c.set(H_ENTRY_ARRAY_OFFSET, main);
+        let t = c.file();
+        let disk = std::fs::OpenOptions::new()
+            .write(true)
+            .open(t.path())
+            .expect("open");
+        disk.set_len(big + size).expect("sparse growth");
+        disk.write_all_at(&(big + size - 272).to_le_bytes(), H_ARENA_SIZE)
+            .expect("arena size");
+        let j = files(&[t.path()]);
+        let query = Query::field(&name("MESSAGE"), b"old");
+        let page = j.page(&query, &Position::Tail, 10, &Limits::with_output(1 << 20));
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].message(), Some(b"old".as_slice()));
+        assert!(
+            page.errors
+                .shown
+                .iter()
+                .any(|e| e.to_string().contains("lists 1048576 items")),
+            "{:?}",
+            page.errors
+        );
     }
 
     /// The decision-11 fixture's rows: per entry its name, boot,

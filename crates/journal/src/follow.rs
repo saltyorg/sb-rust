@@ -378,11 +378,15 @@ impl Follow {
         for e in self.pending.drain(..) {
             errors.add_open(e);
         }
-        // Every header first, so the boot table is the files' as of now.
+        // Every header first, so the boot table is the files' as of now;
+        // and every entry read within the limit, as a page bounds them.
         let fresh: Vec<bool> = self
             .files
             .iter_mut()
-            .map(|f| f.refresh(&mut errors))
+            .map(|f| {
+                f.file.bound_entries(limit);
+                f.refresh(&mut errors)
+            })
             .collect();
         let boots = self.boots();
         let mut streams: Vec<Vec<Candidate>> = Vec::new();
@@ -1067,7 +1071,12 @@ impl Follower {
             return Err(OpenError::NothingToWatch);
         }
         let mut errors = ReadErrors::default();
-        let files = walk::open_listed(|| journal.list(), &journal.opener, &mut errors);
+        let files = walk::open_listed(
+            || journal.list(),
+            &journal.opener,
+            limits.output(),
+            &mut errors,
+        );
         let mut follow = Follow::start(
             files,
             from,
@@ -1363,6 +1372,31 @@ mod tests {
             f.errors
                 .iter()
                 .any(|e| e.contains("larger than the output limit")),
+            "{:?}",
+            f.errors
+        );
+    }
+
+    /// Security audit (Task 11, M2): a follow bounds each entry it reads
+    /// by its limit, as a page does: an entry listing more items than the
+    /// limit could show is refused before its body is read, reported once
+    /// the limit is whole, and the follow goes on past it.
+    #[test]
+    fn follow_refuses_an_entry_with_more_items_than_its_limit_shows() {
+        // The third entry lists one object again and again: with its
+        // message, one item more than a 1000-byte limit could show.
+        let items = 1000 / std::mem::size_of::<Field>() + 1;
+        let repeated: Vec<&[u8]> = vec![b"S=1"; items - 1];
+        let (mut c, _e) = crafted::journal_of(&[&[], &[], &repeated, &[]]);
+        let (t, mut f) = followed(&mut c, 1);
+        f.limit = 1000;
+        grow(&c, &t);
+        assert_eq!(messages(&f.poll(&[])), ["m1"]);
+        assert_eq!(messages(&f.poll(&[])), ["m3"]);
+        assert!(
+            f.errors
+                .iter()
+                .any(|e| e.contains(&format!("lists {items} items"))),
             "{:?}",
             f.errors
         );

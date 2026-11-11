@@ -535,11 +535,13 @@ pub fn wait_for(path: &Path, every: Duration, timeout: Duration) -> bool {
 }
 
 /// The files `journal`'s pages would read, opened as a page opens them,
-/// with the errors listing and opening them gave (one per file).
+/// with the errors listing and opening them gave (one per file). Their
+/// entries aren't bounded by an output limit: the tools read whole files.
 #[must_use]
 pub fn files(journal: &Journal) -> (Vec<JournalFile>, ReadErrors) {
     let mut errors = ReadErrors::default();
-    let files = crate::walk::open_listed(|| journal.list(), &journal.opener, &mut errors);
+    let files =
+        crate::walk::open_listed(|| journal.list(), &journal.opener, usize::MAX, &mut errors);
     (files, errors)
 }
 

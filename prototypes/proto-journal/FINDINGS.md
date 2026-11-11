@@ -732,7 +732,10 @@ spec.
 - **H1, decoded memory unbounded:** every item was decoded and every
   record kept, then cloned. A crafted 11 KB file exhausted a 1 GiB
   limit. *Fixed* by the reliability round: decoding on output under the
-  query limit, every read charged, and a per-query DATA cache.
+  query limit, every read charged, and a per-query DATA cache. The
+  crate's audit (Task 11, M2) found entry objects themselves still read
+  whole; *fixed* there: an entry listing more items than the limit could
+  show is refused before its body is read.
 - **M1, a forgeable coredump match on 26.04:** *decided:* the sb-journal
   spec's decisions 1 and 4 require `_UID=0` (stricter than journalctl).
   It is fixed in the crate, not here.
@@ -750,24 +753,57 @@ spec.
 
   *Decided:* the sb-journal spec's decisions 2 and 5 (the sanitizer in
   sb-term-ui, keeping SGR colour only). Built with the crate.
-- **L1:** `/etc/machine-id` joined into a path unvalidated. *Open here;
-  in the crate's first slice.*
+- **L1:** `/etc/machine-id` joined into a path unvalidated. *Closed in
+  the crate:* read bounded (64 bytes, opened as a journal file is), parsed
+  as a `MachineId` (32 hex digits, not all zero), and the parsed id's
+  lowercase form joined, never the file's text.
 - **L2:** `is_file()` then `open()` follows symlinks and races, and a
-  FIFO blocks the open. *Open here; in the crate's first slice:*
-  `O_NONBLOCK|O_NOCTTY`, then an `fstat`
-  check.
+  FIFO blocks the open. *Closed in the crate* (open.rs):
+  `O_NONBLOCK|O_NOCTTY|O_CLOEXEC|O_NOFOLLOW`, then an `fstat`
+  regular-file check; a symlinked file is an open error (Difference 4).
+  Accepted: a device node named in `Source::Files` is opened before
+  `fstat` refuses it (only the operator's own arguments reach it).
 - **L3:** lz4 allocated from its size claim. *Fixed* (255× bound).
 - **L4:** `all_data` is quadratic. It is a test tool, kept out of the
   crate API.
-- **L5:** raw paths and field names in error text. *Open here; in the
-  crate's first slice:* typed errors
-  that escape them.
+- **L5:** raw paths and field names in error text. *Closed in the
+  crate:* typed errors whose `Display` escapes paths (`escape_debug`), and
+  names quoted; no message carries a field value.
 - **L6:** driver lists held whole. *Fixed* by the lazy walk.
 - **I1:** root in a container can match the `_UID=0` groups, as with
   journalctl. A documentation note.
-- **I2:** field names are arbitrary bytes. Sanitize them too.
+- **I2:** field names are arbitrary bytes. Sanitize them too. *Closed:*
+  term-ui's `DisplayText` takes names and values alike (Difference 14).
 - **I3:** dependencies. `cargo deny` advisories are clean, but the deny
   gate only covers `crates/sb`'s graph, so the crate must join it.
+  *Closed:* sb-journal reaches sb through sb-host, so the gate covers it.
+
+**Security audit of the crate** (agent-skills:security-auditor,
+read-only, sb-journal plan Task 11, 2026-11-11), over sb-journal, sb-host's
+journal module and term-ui's sanitizer: no Critical or High finding.
+- **M1, a live file could panic a page or a follow:** an object journald
+  appends at the arena's end, then links, was read only as far as its
+  16-byte header and then sliced past it. *Fixed:* `object_head` reads
+  what its callers index once the arena has grown.
+- **M2, entry objects read whole:** a crafted (imported) file's entry of
+  up to 770 MiB was read and kept per file whatever the output limit.
+  *Fixed:* an entry listing more items than the limit could show is
+  refused before its body is read (Difference 5), in a page and in a
+  follow from its start. A page still keeps each file's newest entry,
+  about a third of the limit each at most (two thirds while one is
+  read), so an imported directory of many crafted files costs memory
+  per file (Low, accepted with the viewer's smaller limit, I-1).
+- **Low, declined:** chains of empty entry arrays cost a pread per 24
+  bytes of file (linear, imported files only); a device node named in
+  `Source::Files` is opened before `fstat` (the operator's own argument).
+  `RLIMIT_NOFILE` stays a follow-up for the maintainer: past it, opens
+  fail one reported error per file.
+- **Info:** the viewer should pass a smaller limit than the default and
+  cap one record's display (tabs expand up to 8 times); a waiter whose
+  inotify reads always failed would wake at once each time (documented);
+  `coredump_uid` blocks, as NSS can (documented).
+- The sanitizer, its C1 pre-pass and non-ASCII stand-in, and the run
+  log's path had no finding (millions of random and payload-leak inputs).
 
 **Features for Saltbox's use** (agent research, read-only: sb-go's
 cmd/logs.go, the Saltbox docs, systemd sources; 2026-11-08):

@@ -147,12 +147,15 @@ fn scan(
 /// Open each file through `opener`. A file that can't be opened is
 /// returned as its error, never dropped silently (an unsupported format
 /// names the file).
-fn open(paths: &[PathBuf], opener: &Opener) -> (Vec<JournalFile>, Vec<ReadError>) {
+fn open(paths: &[PathBuf], opener: &Opener, output: usize) -> (Vec<JournalFile>, Vec<ReadError>) {
     let mut files = Vec::new();
     let mut errors = Vec::new();
     for p in paths {
         match JournalFile::open_with(p, opener) {
-            Ok(f) => files.push(f),
+            Ok(f) => {
+                f.bound_entries(output);
+                files.push(f);
+            }
             Err(e) => errors.push(e),
         }
     }
@@ -166,15 +169,19 @@ fn open(paths: &[PathBuf], opener: &Opener) -> (Vec<JournalFile>, Vec<ReadError>
 /// lists once and has the same race: Difference 11.) A rotation after the
 /// second listing is harmless: an open file is read through its descriptor
 /// under its new name. The errors listing and opening are one per file at
-/// most, so they are shown outside the read errors' cap.
+/// most, so they are shown outside the read errors' cap. Each file is
+/// bounded by the `output` limit before anything else reads it
+/// (`JournalFile::bound_entries`): a follow's start reads tails and walks
+/// back before its first poll.
 pub(crate) fn open_listed(
     mut list: impl FnMut() -> Listing,
     opener: &Opener,
+    output: usize,
     errors: &mut ReadErrors,
 ) -> Vec<JournalFile> {
     let mut listing = list();
     for _ in 0..3 {
-        let (files, failed) = open(&listing.paths, opener);
+        let (files, failed) = open(&listing.paths, opener, output);
         let again = list();
         if again.paths == listing.paths {
             again
@@ -186,7 +193,7 @@ pub(crate) fn open_listed(
         }
         listing = again;
     }
-    let (files, failed) = open(&listing.paths, opener);
+    let (files, failed) = open(&listing.paths, opener, output);
     listing
         .errors
         .into_iter()
@@ -883,7 +890,7 @@ mod tests {
     impl Opened {
         fn new(paths: &[PathBuf]) -> Self {
             let mut errors = ReadErrors::default();
-            let (files, failed) = open(paths, &Opener::default());
+            let (files, failed) = open(paths, &Opener::default(), crate::OUTPUT_DEFAULT);
             for e in failed {
                 errors.add_open(e);
             }
@@ -1215,10 +1222,45 @@ mod tests {
         let files = open_listed(
             || lists.pop().expect("listed at most 3 times"),
             &Opener::default(),
+            crate::OUTPUT_DEFAULT,
             &mut errors,
         );
         assert_eq!(files.len(), 2);
         assert!(errors.is_empty(), "{:?}", texts(&errors));
+    }
+
+    /// Security audit (Task 11, M2): every file opened for a page or a
+    /// follow is bounded by its output limit from the start, before any
+    /// entry is read (a follow's start reads tails and walks back before
+    /// its first poll): an entry listing more items than that limit could
+    /// show is refused.
+    #[test]
+    fn opened_files_bound_their_entries_by_the_output_limit() {
+        let mut c = Crafted::new();
+        c.hash_table(1);
+        let d = c.data(b"A=1");
+        let e = c.entry(1, &[d; 3]);
+        let (t, _f) = c.write();
+        let held = std::mem::size_of::<crate::Field>();
+        let open_within = |output| {
+            let mut errors = ReadErrors::default();
+            let listing = || Listing {
+                paths: vec![t.path().to_path_buf()],
+                errors: Vec::new(),
+            };
+            open_listed(listing, &Opener::default(), output, &mut errors)
+        };
+        let refused = open_within(3 * held - 1);
+        let err = refused[0].entry(e).expect_err("over the bound");
+        assert!(err.is_over_limit(), "{err}");
+        assert_eq!(
+            open_within(3 * held)[0]
+                .entry(e)
+                .expect("at the bound")
+                .items
+                .len(),
+            3
+        );
     }
 
     /// A list that changes at every listing is opened as last listed, and
@@ -1238,6 +1280,7 @@ mod tests {
                 }
             },
             &Opener::default(),
+            crate::OUTPUT_DEFAULT,
             &mut errors,
         );
         assert_eq!((calls, files.len()), (4, 4));
@@ -1264,6 +1307,7 @@ mod tests {
                 errors: vec![ReadError::of_page(ReadErrorKind::Corrupt("listed".into()))],
             },
             &Opener::default(),
+            crate::OUTPUT_DEFAULT,
             &mut errors,
         );
         assert!(files.is_empty());
@@ -1835,6 +1879,7 @@ mod tests {
                 out
             },
             &Opener::default(),
+            crate::OUTPUT_DEFAULT,
             &mut errors,
         );
         assert!(files.is_empty());
@@ -1879,6 +1924,7 @@ mod tests {
                 out
             },
             &Opener::default(),
+            crate::OUTPUT_DEFAULT,
             &mut errors,
         );
         assert!(files.is_empty());
