@@ -278,8 +278,8 @@ sanitizer, so it waits for T9 too.
 
 ### Phase 2: Following
 - [x] Task 6: the follow ported, with the prototype's start
-- [ ] Task 7: the page-anchor start, the wake fd and `Batch::more`
-- [ ] Task 8: the fuzz harness enforcing its bounds
+- [x] Task 7: the page-anchor start, the wake fd and `Batch::more`
+- [x] Task 8: the fuzz harness enforcing its bounds
 
 ### Checkpoint B: follow and robustness
 - [ ] follow.sh (with the between-page-and-follow scenario) and
@@ -287,7 +287,7 @@ sanitizer, so it waits for T9 too.
       ratchet is re-measured
 
 ### Phase 3: Consumers and close-out
-- [ ] Task 9: term-ui's shared sanitizer (`DisplayText`)
+- [x] Task 9: term-ui's shared sanitizer (`DisplayText`)
 - [ ] Task 10: sb-host's release, uid lookup, re-export and glue
 - [ ] Task 11: the security audit and its fixes
 - [ ] Task 12: docs, the map's stack rows, the prototype removed

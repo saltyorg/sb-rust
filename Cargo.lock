@@ -3301,6 +3301,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crc32fast",
+ "fastrand",
  "hex",
  "itertools 0.14.0",
  "jiff",

@@ -556,8 +556,9 @@ As listed in the host spec's decision 6:
   - jiff;
   - thiserror;
   - for the `testing` feature only: serde_json (the JSON form), clap
-    (the examples' CLI), fastrand (the fuzz PRNG) and rustix's `process`
-    feature (the fuzz address-space limit); as dev-dependencies,
+    (the examples' CLI) and fastrand (the fuzz PRNG); rustix's `process`
+    feature (the fuzz address-space limit) is on in the workspace already;
+    as dev-dependencies,
     tempfile and crc32fast. All are already in the tree. testing.rs
     counts toward the coverage bar, with its own tests.
 - **lookup3's `hashlittle2`** stays a port, with its "why not hashers"
@@ -571,7 +572,8 @@ As listed in the host spec's decision 6:
 Check:   scripts/check.sh fast | task | full
 Test:    cargo test -p sb-journal
 Matrix:  crates/journal/tests/compare.sh [RELEASE]...   (compat.sh, follow.sh, stress.sh beside it)
-Fuzz:    systemd-run --scope -p MemoryMax=4G -p CPUQuota=200% cargo run -p sb-journal --features testing --example fuzz -- SEEDS ...
+Seeds:   crates/journal/tests/seeds.sh DIR   (the fuzz seeds, regenerated for each run, never committed)
+Fuzz:    systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% -p OOMPolicy=continue cargo run -q -p sb-journal --features testing --example fuzz -- --work DIR/work DIR/*.journal
 CI:      .github/workflows/journal-matrix.yml (daily; local until pushed)
 ```
 
@@ -588,6 +590,7 @@ crates/journal/src/follow.rs   Follower: positions, watches, classify, rescans
 crates/journal/src/rules.rs    RELEASES and the unit rules
 crates/journal/src/testing.rs  crafted-file builder, file-level access (`testing` feature)
 crates/journal/src/testing/tools.rs  the tools' JSON output, verdicts and export fixtures
+crates/journal/src/testing/fuzz.rs   the fuzz harness's seeds, mutations, reads and failure rules
 crates/journal/tests/          the container scripts and checks.sh
 crates/journal/examples/       the comparison CLI and the fuzz harness (on `testing`)
 docs/decisions/ADR-013-*.md    the ADR

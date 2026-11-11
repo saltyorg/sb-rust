@@ -16,7 +16,9 @@ publish.workspace = true
 # (dev-dependency features unify), never in a release or production build.
 # rustix's `event` gives the tools and tests `poll`, their wait on a
 # follow's wake descriptor (the crate itself waits on nothing).
-testing = ["dep:tempfile", "dep:serde_json", "dep:clap", "rustix/event"]
+# fastrand is the fuzz harness's PRNG (`testing::fuzz`); its address-space
+# limit is rustix's `process` `setrlimit`, on in the workspace already.
+testing = ["dep:tempfile", "dep:serde_json", "dep:clap", "dep:fastrand", "rustix/event"]
 
 [dependencies]
 siphasher.workspace = true
@@ -37,6 +39,8 @@ tempfile = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 # The comparison CLI's arguments (examples/journal.rs).
 clap = { workspace = true, optional = true }
+# The fuzz harness's mutations, seeded per case (`testing::fuzz`).
+fastrand = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Turns `testing` on for the unit tests and every other test target
@@ -53,6 +57,14 @@ anyhow.workspace = true
 # check under `cargo test`.
 [[example]]
 name = "journal"
+required-features = ["testing"]
+test = true
+
+# The fuzz harness (journal spec, Testing Strategy): seed journal files
+# mutated and read case by case, under its own bounds. A thin wrapper over
+# `testing::fuzz`; `test = true` runs its argument check under `cargo test`.
+[[example]]
+name = "fuzz"
 required-features = ["testing"]
 test = true
 

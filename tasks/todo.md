@@ -410,14 +410,14 @@ Seeds come from the matrix's journal-remote output, regenerated each
 time and never committed.
 
 **Acceptance criteria:**
-- [ ] Each failure rule has a unit test that makes it fire.
-- [ ] A run of at least 9,000 cases over eight seeds passes inside a
-      `systemd-run` scope.
+- [x] Each failure rule has a unit test that makes it fire (testing/fuzz.rs).
+- [x] A run of at least 9,000 cases over eight seeds passes inside a
+      `systemd-run` scope (seeds from tests/seeds.sh).
 
 **Verification:**
-- [ ] The harness run (log outside the repo); `scripts/check.sh task`.
-- [ ] library-reviewer (rlimit, /proc reads, the `clear_refs` write) and
-      code-reviewer on the commit.
+- [x] The harness run (log outside the repo); `scripts/check.sh task`.
+- [x] library-reviewer (rlimit, /proc reads, the `clear_refs` write) and
+      code-reviewer on the working tree.
 
 **Dependencies:** Task 7
 **Files:** `crates/journal/examples/fuzz.rs`, `crates/journal/src/testing.rs`, `crates/journal/Cargo.toml`

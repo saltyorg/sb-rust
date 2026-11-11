@@ -103,6 +103,9 @@ itertools = "0.14.0"
 # Re-seals an xz block header in a corruption test (sb-journal's tests
 # only); already in the tree.
 crc32fast = "1.5.3"
+# The fuzz harness's PRNG (sb-journal's `testing` feature only), seeded per
+# case so each case reproduces; already in the tree through tempfile.
+fastrand = "2.5.0"
 assert_cmd = "2.2.1"
 predicates = "3.1.4"
 insta = "1.49.0"

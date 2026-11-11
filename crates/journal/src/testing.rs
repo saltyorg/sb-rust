@@ -1,10 +1,12 @@
 //! Test support, under the `testing` feature (journal spec, Project
 //! Structure): one file's reading, re-exported for the tools, the
-//! crafted-file builder, the injectable roots and opener counts, and the
-//! tools' logic and JSON form (`tools`).
+//! crafted-file builder, the injectable roots and opener counts, the
+//! tools' logic and JSON form (`tools`), and the fuzz harness's mutations
+//! and failure rules (`fuzz`).
 
 use crate::{Journal, OpenError, Release, Source};
 
+pub mod fuzz;
 pub mod tools;
 
 // One file's reading, for the tools (the journal spec, Project
