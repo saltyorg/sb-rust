@@ -1,0 +1,9 @@
+# Acknowledged floor findings (CONSTRAINTS.md, "Floor guard"; ADR-015).
+# One entry a line, four fields with a tab between them:
+#   rule, file, the flagged line as scripts/floor-guard.mjs prints it, reason.
+# An entry counts only in the diff that adds it, and covers one finding.
+# Lines are only ever added: never edit or remove one. A merge keeps both
+# sides' lines.
+gate-line-removed	scripts/floor-guard.mjs	const tracked = git(['diff', '--unified=0', mergeBase, '--']);	the tracked diff gained the flags that stop a rename, git configuration or an added .gitattributes hiding a change (hardening Task 1)
+gate-line-removed	scripts/floor-guard.mjs	const d = git(['diff', '--no-index', '--unified=0', '/dev/null', f], { diffExit: true });	the untracked-file diff gained the same flags (hardening Task 1)
+check-disabled	scripts/floor-guard.mjs	/--cap-lints/,	the guard's own pattern for --cap-lints matches its source line; nothing is switched off (hardening Task 1)

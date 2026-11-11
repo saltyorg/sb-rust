@@ -2,7 +2,8 @@
 # Runs the CONSTRAINTS.md checks. CONSTRAINTS.md is the source of truth; this
 # script mirrors its "Checked by" column and must change with it.
 #
-#   scripts/check.sh fast [base]   after edits: fmt, clippy, floor guard, secrets
+#   scripts/check.sh fast [base]   after edits: fmt, clippy, floor guard (and its
+#                                  own tests), secrets
 #   scripts/check.sh task [base]   before handing work back: fast + tests,
 #                                  changed-line coverage, mutation score,
 #                                  startup budget
@@ -70,6 +71,12 @@ fast() {
   # yet").
   step "clippy, library and binary targets only (warnings are errors)"
   cargo clippy --workspace --lib --bins --quiet -- -D warnings
+  step "floor guard's own tests"
+  # The dot reporter: one character a test, then each failure in full (the
+  # failure report is as Node 24 prints it; the page describes the dots
+  # only): https://nodejs.org/docs/latest-v24.x/api/test.html#test-reporters
+  need node
+  node --test --test-reporter=dot scripts/floor-guard.test.mjs
   step "floor guard"
   node scripts/floor-guard.mjs --base "$base"
   step "secrets (gitleaks, redacted)"

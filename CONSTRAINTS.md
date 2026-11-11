@@ -38,7 +38,7 @@ pass clippy and their tests.
 |---|---|---|---|---|
 | Format | No diff | `cargo fmt --check -p <crates>` | fast | rustfmt is the style |
 | Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`; a prototype keeps the lints it was written under); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
-| Floor guard | Zero floor violations in the diff | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green |
+| Floor guard | Zero unacknowledged floor violations in the diff | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green |
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
 | Tests | All pass | `cargo test --workspace` | task | — |
 | Coverage | Changed lines ≥ 90% covered | `cargo llvm-cov --lcov` + `diff-cover --fail-under=90` | task | Maintainer chose stricter than the 80% default |
@@ -53,6 +53,15 @@ All of the above run through `scripts/check.sh fast|task|full [base]`.
 `fast` runs after edits, `task` before handing work back (a few minutes),
 and `full` before committing and in CI once CI exists. Every failing check
 blocks.
+
+A floor finding that is expected and accepted (a guard line changed on
+purpose, an assertion moved to another test) is acknowledged in
+`scripts/floor-acknowledged.txt`, in the commit that causes it: one line
+for each finding, with the rule, the file, the flagged line and a reason.
+The guard prints each acknowledged finding with its reason, and fails on
+any other finding and on an entry that matches none. An entry from an
+earlier commit acknowledges nothing, and entries are never edited or
+removed ([ADR-015](docs/decisions/ADR-015-acknowledged-floor-findings.md)).
 
 ## Measured, not yet enforced
 

@@ -58,7 +58,7 @@ CONSTRAINTS.md (docs-H1). Extend it to the other files that hold the
 bar, the guard's own scripts included.
 
 **Acceptance criteria:**
-- [ ] It flags a weakening in each of:
+- [x] It flags a weakening in each of:
       - `scripts/check.sh`: a lowered threshold constant, a dropped
         `-D warnings`, a new `MUTATION_TESTERS` entry, a removed step;
       - `deny.toml`: a new advisory ignore, a widened `wrappers` list, an
@@ -74,15 +74,15 @@ bar, the guard's own scripts included.
         themselves: a removed rule or pattern.
       (Task 2's acknowledgement file isn't in this list: its additions
       are printed, not flagged.)
-- [ ] The `deny.toml` and `clippy::all` alternatives the finding says
+- [x] The `deny.toml` and `clippy::all` alternatives the finding says
       can never fire now fire, each with a test.
-- [ ] Each case has a test in `scripts/floor-guard.test.mjs`, with a
+- [x] Each case has a test in `scripts/floor-guard.test.mjs`, with a
       clean case beside it. `check.sh fast` runs the file with
       `node --test`.
 
 **Verification:**
-- [ ] `node --test scripts/floor-guard.test.mjs`; `scripts/check.sh fast`.
-- [ ] code-reviewer on the commit.
+- [x] `node --test scripts/floor-guard.test.mjs`; `scripts/check.sh fast`.
+- [x] code-reviewer on the commit.
 
 **Dependencies:** None
 **Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/check.sh`
@@ -97,36 +97,36 @@ explicit, logged acknowledgement, as the plan's architecture decision
 defines it.
 
 **Acceptance criteria:**
-- [ ] `scripts/floor-acknowledged.txt` holds entries of rule, file, the
+- [x] `scripts/floor-acknowledged.txt` holds entries of rule, file, the
       flagged line's text and a reason. The guard reads it.
-- [ ] An entry covers exactly one finding with its rule, file and line
+- [x] An entry covers exactly one finding with its rule, file and line
       text; a second identical finding needs a second entry.
-- [ ] That holds for `gate-line-removed` too: each changed or removed
+- [x] That holds for `gate-line-removed` too: each changed or removed
       line of a guard script needs its own entry, and no entry covers
       a file. A test removes two lines with one entry and fails. (A
       commit that changes many lines alike, as Task 4's `--locked`
       does, carries one entry per line; each names the line, so the
       review sees exactly what left the gate.)
-- [ ] An entry counts only when the checked diff adds it. An entry
+- [x] An entry counts only when the checked diff adds it. An entry
       from an earlier commit acknowledges nothing; a test shows a later
       weakening in the same file still fails.
-- [ ] `check.sh` prints each acknowledged finding with its reason. It
+- [x] `check.sh` prints each acknowledged finding with its reason. It
       fails on any other finding, and on an added entry that matched
       nothing.
-- [ ] `check.sh` prints each entry the diff adds; adding one is not
+- [x] `check.sh` prints each entry the diff adds; adding one is not
       itself a finding. A range run over several commits passes when
       each finding and its entry are both in the range (a test).
-- [ ] An ADR (the maintainer accepted the change, decision 6) records
+- [x] An ADR (the maintainer accepted the change, decision 6) records
       the change and the file's lifetime: an entry is
       committed with the change it acknowledges; entries are only ever
       added, never edited or removed; a merge takes the union of lines.
-- [ ] CONSTRAINTS.md's Floor guard row reads "zero unacknowledged floor
+- [x] CONSTRAINTS.md's Floor guard row reads "zero unacknowledged floor
       violations", with a paragraph that names the file and the ADR.
 
 **Verification:**
-- [ ] The guard's tests for each rule above; `scripts/check.sh full`
+- [x] The guard's tests for each rule above; `scripts/check.sh full`
       with every step run.
-- [ ] code-reviewer on the commit.
+- [x] code-reviewer on the commit.
 
 **Dependencies:** Task 1 (the guard's finding format; nothing from Task 3)
 **Files:** `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/check.sh`, `scripts/floor-acknowledged.txt`, `CONSTRAINTS.md`, `docs/decisions/` (a new ADR)
