@@ -1,13 +1,13 @@
 # Implementation Plan: `sb-journal` (approved 2026-11-09)
 
-Spec: [docs/specs/journal.md](../docs/specs/journal.md) (approved
+Spec: [docs/specs/journal.md](../../docs/specs/journal.md) (approved
 2026-11-09, decisions 1-9). Evidence:
-[docs/prototypes/proto-journal.md](../docs/prototypes/proto-journal.md)
+[docs/prototypes/proto-journal.md](../../docs/prototypes/proto-journal.md)
 (the prototype's FINDINGS.md, moved there in Task 12, when the prototype
 was removed) and
-[docs/platform-notes/systemd-journal.md](../docs/platform-notes/systemd-journal.md).
-Quality bar: [CONSTRAINTS.md](../CONSTRAINTS.md). Earlier plans are in
-`tasks/<module>/`. Tasks: [tasks/todo.md](todo.md).
+[docs/platform-notes/systemd-journal.md](../../docs/platform-notes/systemd-journal.md).
+Quality bar: [CONSTRAINTS.md](../../CONSTRAINTS.md). Earlier plans are in
+`tasks/<module>/`. Tasks: [tasks/journal/todo.md](todo.md).
 
 ## Overview
 
@@ -295,8 +295,8 @@ sanitizer, so it waits for T9 too.
 
 ### Checkpoint C: complete
 - [x] The spec's success criteria 1-8 met; `scripts/check.sh full`
-      (except the floor guard's two ADR-014 loosenings; tasks/todo.md,
-      Checkpoint C)
+      (except the floor guard's two ADR-014 loosenings;
+      tasks/journal/todo.md, Checkpoint C)
 - [x] Review with the maintainer; the plan archived to `tasks/journal/`
 
 ## Risks and mitigations

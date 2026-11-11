@@ -29,8 +29,8 @@
 set -euo pipefail
 
 # The default variant's pread counts may not exceed these (success
-# criterion 5; tasks/plan.md, "The pread bound"): `-u demo.service`, 500
-# entries, the tail, the page before it and the first page forward.
+# criterion 5; tasks/journal/plan.md, "The pread bound"):
+# `-u demo.service`, 500 entries, the tail, the page before it and the first page forward.
 # The figures were the same in every run (four per release; journal-remote
 # keys each file's hashes at random, so a hash-chain collision could add
 # a pread): the bounds are 26.04's, the highest, plus 1%.

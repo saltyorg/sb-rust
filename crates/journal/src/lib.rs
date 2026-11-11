@@ -2043,8 +2043,8 @@ mod tests {
 
     /// Success criterion 5 on a crafted fixture: a tail of ten, the page
     /// before it and the page after that page's first entry take the
-    /// preads stated here, the bound tasks/plan.md records. The fixture is
-    /// `crafted::journal(200)`, matched on `U=x` (every entry), pages of
+    /// preads stated here, the bound tasks/journal/plan.md records. The
+    /// fixture is `crafted::journal(200)`, matched on `U=x` (every entry), pages of
     /// ten. Each page reads the header and the end's newest entry, then
     /// one pread per entry walked (the in-line arrays are read in chunks)
     /// and one per DATA object shown; `Before` also walks the newer entries

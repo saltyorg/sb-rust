@@ -75,8 +75,9 @@ follow.
 ## Decision
 
 sb owns its journal reader, `sb-journal`, ported from proto-journal's
-tested code (the journal spec and tasks/plan.md). It reads the files with
-`pread` only; sb's code never uses mmap or `unsafe`. It starts no child and supports
+tested code (the journal spec and tasks/journal/plan.md). It reads
+the files with `pread` only; sb's code never uses mmap or `unsafe`. It
+starts no child and supports
 exactly the formats and `-u` rules of the releases sb runs on (sb refuses
 the others at startup). Where it differs from journalctl, the spec's
 "Differences from journalctl" lists it and a test pins it; any other
