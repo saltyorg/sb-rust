@@ -322,13 +322,11 @@ pub(crate) fn end(
             .iter()
             .map(|f| FileEnd {
                 inode: f.inode,
+                file_id: f.header.file_id,
                 n_entries: f.header.n_entries,
             })
             .collect(),
-        newest: newest.map(|(l, f)| {
-            let dir = f.path.parent().map(Path::to_path_buf).unwrap_or_default();
-            (l, dir)
-        }),
+        newest: newest.map(|(l, f)| (l, f.path.parent().map(Path::to_path_buf))),
     }
 }
 
@@ -592,19 +590,6 @@ where
     };
     out.reverse();
     (out, more)
-}
-
-/// The newest entry matching `groups` across `files`, by sd-journal's
-/// order with `boots`, as `newest` finds it: the follow's start (the
-/// prototype's `journalctl -n 0 -f`), read without decoding it.
-pub(crate) fn newest_match(
-    files: &[JournalFile],
-    groups: &[Group],
-    boots: &BootOrder,
-    errors: &mut ReadErrors,
-) -> Option<Candidate> {
-    let walks = walks(files, groups, |_: &Cursor| Step::Take, errors);
-    newest(&mut Merge::new(walks, boots), 1, 1, errors).0.pop()
 }
 
 /// What to do with a matching entry met while walking backwards.
@@ -2533,10 +2518,10 @@ mod tests {
         assert_eq!(e.files[1].inode, j.files[1].inode);
         let (newest, dir) = e.newest.expect("an entry");
         assert_eq!(newest.seqnum, 3);
-        assert_eq!(dir, run.path());
+        assert_eq!(dir.as_deref(), Some(run.path()));
         let swapped = Opened::new(&[second.clone(), first.clone()]);
         let e2 = end_of(&swapped.files, &mut errors);
-        assert_eq!(e2.newest.expect("an entry").1, var.path());
+        assert_eq!(e2.newest.expect("an entry").1.as_deref(), Some(var.path()));
         // The newer of two files, whichever is first; seqnum 3 against 4.
         let (mut c, l) = crafted::journal(4);
         c.set(l.entries[3] + 16, 4);

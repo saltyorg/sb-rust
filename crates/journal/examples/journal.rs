@@ -18,9 +18,10 @@ use sb_journal::{
     Cursor, Journal, Limits, Position, Query, RELEASES, Release, Source, Uid, UnitName,
 };
 use std::io::{BufWriter, Write};
+use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(about = "sb-journal against journalctl: pages, verdicts and fixtures")]
@@ -160,6 +161,11 @@ struct FollowArgs {
     /// The newest entries first, as `journalctl -f -n`.
     #[arg(short, default_value_t = 0)]
     n: usize,
+    /// After the page, print `sb-journal: page read` to stderr and wait
+    /// until this file exists before following from the page's end, so a
+    /// script can write between the two (follow.sh's `between` scenarios).
+    #[arg(long)]
+    wait_for: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -286,25 +292,43 @@ fn tail(args: TailArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The page at the tail (unless `-n 0`), then the follow's batches as they
-/// come (`tools::write_records`), until stopped. The follow starts after the
-/// page, so what is written between the two is missed (the follow's start,
-/// `Journal::follow`).
+/// How long `--wait-for` waits for its file, and how often it looks.
+const WAIT_FOR: (Duration, Duration) = (Duration::from_secs(60), Duration::from_millis(50));
+
+/// The page at the tail (`-n 0`: an empty one), then the follow from its
+/// end (`Journal::follow`): what was written since as its first batch,
+/// then each batch as it comes (`tools::next_batch`, waiting on the wake
+/// descriptor), each printed by `tools::write_records`, until stopped.
 fn follow(args: FollowArgs) -> Result<ExitCode> {
-    let FollowArgs { matching, n } = args;
+    let FollowArgs {
+        matching,
+        n,
+        wait_for,
+    } = args;
     let (journal, query) = matching.open()?;
     let release = matching.release;
     let limits = Limits::default();
     let mut out = BufWriter::new(std::io::stdout().lock());
     let mut err = std::io::stderr().lock();
-    if n > 0 {
-        let page = journal.page(&query, &Position::Tail, n, &limits);
-        tools::write_records(&page.records, &page.errors, &release, &mut out, &mut err)?;
+    let page = journal.page(&query, &Position::Tail, n, &limits);
+    tools::write_records(&page.records, &page.errors, &release, &mut out, &mut err)?;
+    if let Some(go) = wait_for {
+        writeln!(err, "sb-journal: page read")?;
+        let (timeout, every) = WAIT_FOR;
+        anyhow::ensure!(
+            tools::wait_for(&go, every, timeout),
+            "{} didn't appear within {timeout:?}",
+            go.display()
+        );
     }
-    let mut follower = journal.follow(query)?;
+    let (mut follower, mut last) = journal.follow(query, &page.end, &limits)?;
+    tools::write_records(&last.records, &last.errors, &release, &mut out, &mut err)?;
+    let wake = follower.wake_fd()?;
     loop {
-        let batch = follower.drain(&limits);
-        tools::write_records(&batch.records, &batch.errors, &release, &mut out, &mut err)?;
+        if let Some(batch) = tools::next_batch(&mut follower, wake.as_fd(), &last, &limits, None)? {
+            tools::write_records(&batch.records, &batch.errors, &release, &mut out, &mut err)?;
+            last = batch;
+        }
     }
 }
 

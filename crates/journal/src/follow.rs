@@ -30,7 +30,7 @@ use crate::open::Opener;
 use crate::rules::Group;
 use crate::walk::{self, Candidate, Payloads};
 use crate::{
-    Batch, BootRule, Cursor, Journal, Limits, OpenError, Query, ReadError, ReadErrorKind,
+    Batch, BootRule, Cursor, Journal, Limits, OpenError, PageEnd, Query, ReadError, ReadErrorKind,
     ReadErrors, Record, Roots,
 };
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
@@ -48,6 +48,17 @@ use std::path::{Path, PathBuf};
 struct Last {
     location: Cursor,
     dir: Option<PathBuf>,
+}
+
+impl Last {
+    /// Whether `file` is in the directory this entry came from: if so, an
+    /// entry there is new by sd-journal's order; if not, by `is_old`
+    /// (`seen`).
+    fn in_dir_of(&self, file: &JournalFile) -> bool {
+        self.dir
+            .as_deref()
+            .is_some_and(|d| file.path.parent() == Some(d))
+    }
 }
 
 /// What a followed file waits one drain for before it reports and skips
@@ -162,9 +173,8 @@ struct Followed {
 
 /// Which of a followed file's entries may be ones already shown, so they
 /// are checked against the last entry shown (`seen`): copies a flush
-/// wrote, or entries counted between the open and the start. Past them
-/// the position alone decides, so an entry a slower file delivers late is
-/// still shown.
+/// wrote to a file found while following. Past them the position alone
+/// decides, so an entry a slower file delivers late is still shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Copies {
     /// Those numbered below this.
@@ -196,20 +206,31 @@ struct Follow {
 }
 
 impl Follow {
-    /// Continue from `files`, read up to the entry counts their headers
-    /// gave when they were opened, and `last`, the newest entry shown. The
-    /// headers are read again now, and entries up to those counts are
-    /// checked against `last`. `pending` are the errors opening them gave.
+    /// Continue from `from`, a page's end (journal spec, "Starting a
+    /// follow"), with its newest entry as the last one shown. A file the
+    /// page read (its inode and file id) goes on from the entry count it
+    /// recorded; one it didn't from after its newest entry at or below
+    /// that newest entry (`first_new`). Every entry from there on was
+    /// written after the page, and none is checked against the page's
+    /// newest entry, so an entry a slower file delivers late is still
+    /// shown; a copy among them of an entry another file gives in the same
+    /// poll is the merge's to drop. Flush copies appended to a /var file
+    /// the page read, of /run entries the page saw (a page and follow on
+    /// either side of a flush), are shown again, as Difference 13 says of
+    /// a followed file. `pending` are the errors opening the files gave.
     fn start(
         files: Vec<JournalFile>,
-        last: Option<Last>,
+        from: &PageEnd,
         opener: Opener,
         rule: BootRule,
         pending: Vec<ReadError>,
     ) -> Self {
         let mut follow = Self {
-            files: Vec::new(),
-            last,
+            files: files.into_iter().map(|f| Followed::new(f, 0)).collect(),
+            last: from.newest.as_ref().map(|(location, dir)| Last {
+                location: *location,
+                dir: dir.clone(),
+            }),
             pending,
             unopened: Vec::new(),
             opener,
@@ -217,15 +238,20 @@ impl Follow {
             #[cfg(test)]
             held_peak: 0,
         };
-        for mut file in files {
-            let pos = file.header.n_entries;
-            let check_until = match file.refresh() {
-                Ok(()) => file.header.n_entries,
-                Err(_) => pos,
+        let boots = follow.boots();
+        let last = follow.last.as_ref();
+        for f in &mut follow.files {
+            let h = &f.file.header;
+            // The same file, not a new one journald made at the inode once
+            // the page's was freed (ext4 reuses inodes): its file id, and no
+            // fewer entries than the page counted.
+            let read = from.files.iter().find(|e| {
+                e.inode == f.file.inode && e.file_id == h.file_id && e.n_entries <= h.n_entries
+            });
+            f.pos = match read {
+                Some(e) => e.n_entries,
+                None => first_new(&f.file, last, &boots),
             };
-            let mut f = Followed::new(file, pos);
-            f.copies = Copies::Until(check_until);
-            follow.files.push(f);
         }
         follow
     }
@@ -332,7 +358,7 @@ impl Follow {
 
     /// The matching entries appended since the last poll, oldest first,
     /// and what went wrong. Entries already shown, and copies of them from
-    /// a flush, are dropped (`check_until`, `seen`).
+    /// a flush, are dropped (`Copies`, `seen`).
     ///
     /// Each file's new matches are decoded as they are read, with each
     /// DATA object read once per poll (`walk::record`'s cache, as a page
@@ -344,10 +370,10 @@ impl Follow {
     /// Each file reads within the output limit (`limit`) per poll, as a
     /// page does: a file stops at the entry that doesn't fit, without
     /// moving past it, so the next poll goes on from there and nothing is
-    /// lost. An entry larger than the whole limit is skipped, reported,
-    /// and what it read leaves the cache with it. The errors one poll
-    /// reports are capped as a page's are.
-    fn poll(&mut self, groups: &[Group], limit: usize) -> (Vec<Record>, ReadErrors) {
+    /// lost (`Batch::more`). An entry larger than the whole limit is
+    /// skipped, reported, and what it read leaves the cache with it. The
+    /// errors one poll reports are capped as a page's are.
+    fn poll(&mut self, groups: &[Group], limit: usize) -> Batch {
         let mut errors = ReadErrors::default();
         for e in self.pending.drain(..) {
             errors.add_open(e);
@@ -366,7 +392,7 @@ impl Follow {
         for (i, f) in self.files.iter_mut().enumerate() {
             // Each file its own limit: one file's burst can't defer
             // another's entries past a `last` they are older than (where
-            // `check_until` would take them for copies), and an entry
+            // `Copies` would take them for copies), and an entry
             // larger than the limit is first in its file's next poll, so
             // it is skipped rather than deferred again behind a busy file.
             // The poll holds at most the open files' limits together; only
@@ -410,12 +436,11 @@ impl Follow {
             });
         }
         self.files.retain(Followed::keep);
-        if reached {
-            errors.add(ReadError::of_page(ReadErrorKind::OutputLimitDeferred {
-                limit,
-            }));
+        Batch {
+            records: out,
+            more: reached,
+            errors,
         }
-        (out, errors)
     }
 }
 
@@ -586,13 +611,7 @@ impl Followed {
         errors: &mut ReadErrors,
     ) -> Vec<(Candidate, Record)> {
         let mut out = Vec::new();
-        // Whether `last` came from this file's directory: if so, an entry
-        // here is new by sd-journal's order; if not, by `is_old` (`seen`).
-        let same_dir = read.last.is_some_and(|l| {
-            l.dir
-                .as_deref()
-                .is_some_and(|d| self.file.path.parent() == Some(d))
-        });
+        let same_dir = read.last.is_some_and(|l| l.in_dir_of(&self.file));
         let mut resolved = false;
         // Rounds: an item that can't be an entry ends a read
         // (`entries_since`); once it is skipped, the entries after it are
@@ -747,6 +766,29 @@ fn seen(l: &Cursor, last: &Cursor, same_dir: bool, boots: &BootOrder) -> bool {
     } else {
         is_old(l, last, boots)
     }
+}
+
+/// Where a followed file the page didn't read goes on (journal spec,
+/// "Starting a follow"): after its newest entry that `seen` takes for
+/// `last` or older, walked back from its newest entry; from its start
+/// without `last` or such an entry. `seen` is monotone within a file, so
+/// the first such entry met ends the walk, which reads only what was
+/// written after `last` and that one entry. An entry or array that can't
+/// be read is passed over, so the follow's own read meets it (waited for,
+/// then reported) rather than skip what lies after it.
+fn first_new(file: &JournalFile, last: Option<&Last>, boots: &BootOrder) -> u64 {
+    let Some(last) = last else { return 0 };
+    let same_dir = last.in_dir_of(file);
+    let mut entries = file.all_entries_rev();
+    while let Some(r) = entries.next() {
+        let Some(e) = r.ok().and_then(|off| file.entry(off).ok()) else {
+            continue;
+        };
+        if seen(&walk::location(file, &e), &last.location, same_dir, boots) {
+            return entries.index() + 1;
+        }
+    }
+    0
 }
 
 /// Whether an entry is one already shown, or older than it: by time
@@ -944,18 +986,30 @@ const EVENTS_BUF: usize = 8192;
 
 /// A follow of a journal (`Journal::follow`): its files kept open by
 /// inode with a position each, and one inotify descriptor watching their
-/// directories. `drain` gives what was written since the last call.
+/// directories. `drain` gives what was written since the last call, and
+/// never blocks; `wake_fd` is what to wait on between drains.
 ///
-/// The watching follows rustix's inotify module
+/// The watching follows rustix's inotify module and its example
 /// (<https://docs.rs/rustix/1.1.6/rustix/fs/inotify/index.html>): one
-/// descriptor, `add_watch` per directory, and a `Reader` over a buffer.
-/// Unlike that module's example and the journal spec (assumption 3: a
-/// non-blocking descriptor, drained to `EAGAIN`, waited on through a
-/// duplicate in tokio's `AsyncFd`), the descriptor blocks for now, as the
-/// prototype's did: `drain` waits in `Reader::next` for the next event
-/// (rustix documents that path for a descriptor without `NONBLOCK`), so a
-/// caller can't stop a follow between two events. The non-blocking
-/// descriptor and `wake_fd` are the plan's next task.
+/// descriptor created `NONBLOCK`, `add_watch` per directory, and a
+/// `Reader` over a buffer read until it fails with `WOULDBLOCK`.
+///
+/// Waiting for new entries (journal spec, "Waiting for new entries"), with
+/// tokio's `AsyncFd`
+/// (<https://docs.rs/tokio/1.54.1/tokio/io/unix/struct.AsyncFd.html>):
+/// 1. wrap `wake_fd()` in an `AsyncFd` and await readable;
+/// 2. run `drain` under `spawn_blocking` (the `Follower` is `Send`); it
+///    reads the inotify descriptor to `EAGAIN`, which empties what the
+///    duplicate shows, as both share one open file description;
+/// 3. while the `Batch` has `more`, drain again;
+/// 4. clear the readiness of step 1's guard, and wait again. tokio's
+///    `clear_ready` is for a descriptor seen not ready: the drain saw
+///    `EAGAIN` unless reading the events failed, so after a batch with
+///    errors, drain once more before clearing.
+///
+/// The crate itself spawns nothing and doesn't depend on tokio (spec,
+/// assumption 3); its tests wait with rustix's `poll`.
+///
 /// Why not the `notify` crate (8.2), which keeps the same wd-to-path map
 /// and turns an overflow into a rescan flag: it runs its own thread and
 /// channel, where the crate spawns no thread (journal spec, assumption 3),
@@ -977,14 +1031,22 @@ pub struct Follower {
 
 impl Follower {
     /// `Journal::follow`: the watches first, so nothing written once the
-    /// files are open waits for a later event, then the files, at their
-    /// headers' counts, and the newest matching entry for `last`. That
-    /// read's errors are dropped: what it meets lies before the point the
-    /// follow starts from, which journalctl `-n 0 -f` doesn't report either,
-    /// and a page read before reported it. The errors opening the files are
-    /// kept for the first drain.
-    pub(crate) fn start(journal: &Journal, q: Query) -> Result<Self, OpenError> {
-        let inotify = inotify::init(CreateFlags::CLOEXEC)
+    /// files are open waits for a later event, then the files, positioned
+    /// from `from` (`Follow::start`), and the first batch, read as a drain
+    /// reads. The walk back of a file the page didn't read drops its read
+    /// errors: what it can't read there it passes over, and the batch's own
+    /// read meets and reports it. The errors opening the files come with
+    /// the first batch.
+    pub(crate) fn start(
+        journal: &Journal,
+        q: Query,
+        from: &PageEnd,
+        limits: Limits,
+    ) -> Result<(Self, Batch), OpenError> {
+        // Non-blocking, so `drain` reads it to `EAGAIN` and never waits
+        // (rustix's inotify example); close-on-exec, so no child of the
+        // caller inherits it.
+        let inotify = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)
             .map_err(|e| OpenError::Inotify { source: e.into() })?;
         let mut dirs = HashMap::new();
         if let Some((path, source)) = watch(&inotify, &journal.roots, &mut dirs)
@@ -993,45 +1055,65 @@ impl Follower {
         {
             return Err(OpenError::Watch { path, source });
         }
+        // With no watch, no event could ever make the wake descriptor
+        // readable: refused rather than waited on for ever.
+        if dirs.is_empty() {
+            return Err(OpenError::NothingToWatch);
+        }
         let mut errors = ReadErrors::default();
         let files = walk::open_listed(|| journal.list(), &journal.opener, &mut errors);
-        let mut dropped = ReadErrors::default();
-        let lasts = walk::lasts(&files, &mut dropped);
-        let boots = crate::boot_order(journal.release.boot_rule(), &files, &lasts);
-        let last = walk::newest_match(&files, q.groups(), &boots, &mut dropped).map(|c| Last {
-            location: c.location,
-            dir: files[c.file].path.parent().map(Path::to_path_buf),
-        });
-        let follow = Follow::start(
+        let mut follow = Follow::start(
             files,
-            last,
+            from,
             journal.opener.clone(),
             journal.release.boot_rule(),
             errors.shown,
         );
-        Ok(Self {
+        let groups = q.into_groups();
+        let batch = follow.poll(&groups, limits.output());
+        let follower = Self {
             follow,
-            groups: q.into_groups(),
+            groups,
             roots: journal.roots.clone(),
             inotify,
             dirs,
             ignored: Vec::new(),
-        })
+        };
+        Ok((follower, batch))
+    }
+
+    /// A duplicate of the follow's inotify descriptor, for the caller's
+    /// readiness wait (see `Follower`): readable once a watched directory
+    /// has an event `drain` hasn't read. It is close-on-exec (rustix's
+    /// `fcntl_dupfd_cloexec`, `F_DUPFD_CLOEXEC`,
+    /// <https://docs.rs/rustix/1.1.6/rustix/io/fn.fcntl_dupfd_cloexec.html>),
+    /// and non-blocking as the follow's own is: `O_NONBLOCK` belongs to the
+    /// open file description the two share (fcntl(2)), and so does the
+    /// event queue `drain` empties.
+    ///
+    /// # Errors
+    ///
+    /// The system's, when the descriptor can't be duplicated (`EMFILE`
+    /// past the process's descriptor limit).
+    pub fn wake_fd(&self) -> std::io::Result<OwnedFd> {
+        Ok(rustix::io::fcntl_dupfd_cloexec(&self.inotify, 0)?)
     }
 
     /// The matching entries written since the last drain (or the start).
     ///
-    /// They come oldest first, with what couldn't be read. It blocks until the next event on the journal's directories (a
-    /// write, a rotation, a vacuum, a flush), then takes every event
-    /// already queued, so a burst of writes costs one read per file, not
-    /// one per event (`Reader::is_buffer_empty`, "useful to avoid further
-    /// blocking reads"). Every drain reads every open file; the events only
-    /// decide whether to list the directories again first.
+    /// They come oldest first, with what couldn't be read. It never
+    /// blocks: it reads every event queued on the journal's directories (a
+    /// write, a rotation, a vacuum, a flush) until the descriptor has none
+    /// left (`EAGAIN`), so a burst of writes costs one read per file, not
+    /// one per event, and the wake descriptor is no longer readable after
+    /// it. Every drain reads every open file; the events only decide
+    /// whether to list the directories again first. With no event, a drain
+    /// is a header read per file and gives an empty batch.
     ///
     /// Each file reads at most `limits`' output limit per drain: one that
     /// stops at an entry that doesn't fit goes on from there at the next
-    /// drain (`ReadErrorKind::OutputLimitDeferred`), and an entry larger
-    /// than the whole limit is skipped and reported (Difference 5).
+    /// drain (`Batch::more`), and an entry larger than the whole limit is
+    /// skipped and reported (Difference 5).
     /// Unreadable entries, slots and headers are waited for one drain
     /// (journald may be writing them), then reported once and skipped; a
     /// file whose entry list is out of order stops there (Difference 17).
@@ -1052,7 +1134,9 @@ impl Follower {
                     Wake::Rescan => rescan = true,
                     Wake::Ignore => {}
                 },
-                Err(rustix::io::Errno::INTR) => continue,
+                // Every queued event read (rustix's example stops here).
+                Err(rustix::io::Errno::WOULDBLOCK) => break,
+                Err(rustix::io::Errno::INTR) => {}
                 // The events are lost: list the directories again, as for
                 // an overflow, and report it.
                 Err(e) => {
@@ -1066,13 +1150,9 @@ impl Follower {
                     break;
                 }
             }
-            if reader.is_buffer_empty() {
-                break;
-            }
         }
         self.wake(&changed, rescan);
-        let (records, errors) = self.follow.poll(&self.groups, limits.output());
-        Batch { records, errors }
+        self.follow.poll(&self.groups, limits.output())
     }
 
     /// Act on one drain's events: list the directories again when the file
@@ -1122,12 +1202,13 @@ mod tests {
     use crate::{Field, Release, Source};
 
     /// A follow over `paths`, opened as a page opens them, polled under
-    /// `limit` per file, with every poll's errors kept as text: the
-    /// prototype's `Follow`, which its tests drive.
+    /// `limit` per file, with every poll's errors kept as text and its
+    /// last `Batch::more`: the prototype's `Follow`, which its tests drive.
     struct T {
         f: Follow,
         limit: usize,
         errors: Vec<String>,
+        more: bool,
     }
 
     impl T {
@@ -1137,14 +1218,28 @@ mod tests {
 
         fn start(paths: &[PathBuf], rule: BootRule) -> Self {
             let opener = Opener::default();
-            let files = paths
+            let files: Vec<JournalFile> = paths
                 .iter()
                 .map(|p| JournalFile::open_with(p, &opener).expect("opens"))
                 .collect();
+            // Each file from its header's count, and no entry shown yet:
+            // the prototype's start, which its tests assume.
+            let from = PageEnd {
+                files: files
+                    .iter()
+                    .map(|f| crate::FileEnd {
+                        inode: f.inode,
+                        file_id: f.header.file_id,
+                        n_entries: f.header.n_entries,
+                    })
+                    .collect(),
+                newest: None,
+            };
             Self {
-                f: Follow::start(files, None, opener, rule, Vec::new()),
+                f: Follow::start(files, &from, opener, rule, Vec::new()),
                 limit: crate::OUTPUT_DEFAULT,
                 errors: Vec::new(),
+                more: false,
             }
         }
 
@@ -1154,12 +1249,14 @@ mod tests {
         }
 
         fn poll(&mut self, groups: &[Group]) -> Vec<Record> {
-            let (records, errors) = self.f.poll(groups, self.limit);
+            let batch = self.f.poll(groups, self.limit);
+            let errors = batch.errors;
             self.errors.extend(errors.shown.iter().map(crate::key));
             if errors.omitted > 0 {
                 self.errors.push(format!("{} more errors", errors.omitted));
             }
-            records
+            self.more = batch.more;
+            batch.records
         }
 
         fn rescan(&mut self, paths: &[PathBuf]) {
@@ -1236,13 +1333,12 @@ mod tests {
         f.limit = per_record(3) + 5;
         grow(&c, &t);
         assert_eq!(messages(&f.poll(&[])), ["m2", "m3", "m4"]);
-        assert!(
-            f.errors.iter().any(|e| e.contains("output limit")),
-            "{:?}",
-            f.errors
-        );
+        assert!(f.more, "the limit stopped the poll");
+        assert!(f.errors.is_empty(), "nothing lost: {:?}", f.errors);
         assert_eq!(messages(&f.poll(&[])), ["m5", "m6", "m7"]);
+        assert!(f.more, "the limit stopped the poll");
         assert_eq!(messages(&f.poll(&[])), ["m8", "m9"]);
+        assert!(!f.more, "read to the end");
     }
 
     /// An entry larger than the whole limit is skipped, reported, and the
@@ -2103,19 +2199,29 @@ mod tests {
         );
     }
 
-    /// `f.drain`, failing the test after five seconds rather than hanging
-    /// it: the drain blocks until an event, so a watch that is missing
-    /// would otherwise stop the whole run. The follower comes back.
-    fn drain_within(f: Follower) -> (Follower, crate::Batch) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut f = f;
-            let batch = f.drain(&crate::Limits::default());
-            // The receiver is gone only once the test failed already.
-            let _ = tx.send((f, batch));
-        });
-        rx.recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the drain woke within five seconds")
+    /// Whether `fd` is readable within `ms` milliseconds, as a caller's
+    /// readiness wait on the wake descriptor sees it (rustix's `poll`).
+    fn readable(fd: &OwnedFd, ms: u64) -> bool {
+        use std::os::fd::AsFd as _;
+        let timeout = std::time::Duration::from_millis(ms);
+        crate::testing::tools::wait_readable(fd.as_fd(), Some(timeout)).expect("poll")
+    }
+
+    /// `f.drain` once its wake descriptor is readable, as a caller waits:
+    /// failing the test after five seconds without an event, so a watch
+    /// that is missing can't pass.
+    fn woken(f: &mut Follower) -> crate::Batch {
+        let wake = f.wake_fd().expect("a wake descriptor");
+        assert!(readable(&wake, 5000), "woken within five seconds");
+        f.drain(&crate::Limits::default())
+    }
+
+    /// `journal`'s follow of `q` from the end of an empty page (`-n 0`),
+    /// as the example's `follow` starts one: from now on.
+    fn follow_now(journal: &Journal, q: crate::Query) -> (Follower, crate::Batch) {
+        let limits = crate::Limits::default();
+        let page = journal.page(&q, &crate::Position::Tail, 0, &limits);
+        journal.follow(q, &page.end, &limits).expect("follows")
     }
 
     /// A local journal for `Journal::open_on`: a machine-id file and the
@@ -2155,28 +2261,29 @@ mod tests {
         let run_file = run.join("system.journal");
         journal(&run_file, 1, &FOUR[..2], 2);
         let journal_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
-        let f = journal_.follow(crate::Query::every()).expect("follows");
+        let (mut f, first) = follow_now(&journal_, crate::Query::every());
+        assert!(first.records.is_empty(), "{:?}", first.records);
         journal(&run_file, 1, &FOUR[..3], 3);
-        let (f, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [3]);
         assert!(batch.errors.is_empty(), "{:?}", batch.errors);
         // The flush: /var's directory and file appear.
         std::fs::create_dir(&var).expect("var's directory");
         let flushed = [(4, 10), (5, 20), (6, 30), (7, 40)];
         journal(&var.join("system.journal"), 1, &flushed, 4);
-        let (f, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [7]);
         assert!(batch.errors.is_empty(), "{:?}", batch.errors);
         let more = [(4, 10), (5, 20), (6, 30), (7, 40), (8, 50)];
         journal(&var.join("system.journal"), 1, &more, 5);
-        assert_eq!(seqnums(&drain_within(f).1.records), [8]);
+        assert_eq!(seqnums(&woken(&mut f).records), [8]);
     }
 
     /// A file the follow can't open at its start is an error of its first
-    /// drain, not dropped: here a symlinked journal file (Difference 4).
+    /// batch, not dropped: here a symlinked journal file (Difference 4).
     /// The other file is followed.
     #[test]
-    fn the_follows_open_errors_come_with_its_first_drain() {
+    fn the_follows_open_errors_come_with_its_first_batch() {
         let dir = tempfile::tempdir().expect("dir");
         let a = dir.path().join("a.journal");
         let link = dir.path().join("link.journal");
@@ -2184,26 +2291,28 @@ mod tests {
         std::os::unix::fs::symlink(&a, &link).expect("symlink");
         let source = Source::Files(vec![a.clone(), link.clone()]);
         let journal_ = Journal::open(source, &release("22.04")).expect("opens");
-        let f = journal_.follow(crate::Query::every()).expect("follows");
+        let (mut f, first) = follow_now(&journal_, crate::Query::every());
+        assert!(first.records.is_empty(), "{:?}", first.records);
+        assert_eq!(first.errors.shown.len(), 1, "{:?}", first.errors);
+        assert!(first.errors.shown[0].is_symlink(), "{:?}", first.errors);
+        assert_eq!(first.errors.shown[0].path(), Some(link.as_path()));
         journal(&a, 1, &FOUR[..2], 2);
-        let (_, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [2]);
-        assert_eq!(batch.errors.shown.len(), 1, "{:?}", batch.errors);
-        assert!(batch.errors.shown[0].is_symlink(), "{:?}", batch.errors);
-        assert_eq!(batch.errors.shown[0].path(), Some(link.as_path()));
+        assert!(batch.errors.is_empty(), "reported once: {:?}", batch.errors);
     }
 
-    /// The follow goes on from the newest matching entry when it started
-    /// (`Last`), so a flush right after the start shows only what is new:
-    /// the copies of the entries there before it, in /var's new file, are
-    /// dropped (Difference 2).
+    /// The follow goes on from its page's newest entry (`Last`), so a
+    /// flush right after the start shows only what is new: the copies of
+    /// the entries there before it, in /var's new file, are dropped
+    /// (Difference 2).
     #[test]
-    fn the_follow_starts_after_the_newest_match() {
+    fn the_follow_starts_after_its_pages_newest_entry() {
         let dir = tempfile::tempdir().expect("dir");
         let (host, run, var) = local(dir.path());
         journal(&run.join("system.journal"), 1, &FOUR[..2], 2);
         let journal_ = Journal::open_on(Source::Local, &release("26.04"), &host).expect("opens");
-        let f = journal_.follow(crate::Query::every()).expect("follows");
+        let (mut f, _) = follow_now(&journal_, crate::Query::every());
         std::fs::create_dir(&var).expect("var's directory");
         journal(
             &var.join("system.journal"),
@@ -2211,7 +2320,7 @@ mod tests {
             &[(1, 10), (2, 20), (3, 30)],
             3,
         );
-        let (_, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [3]);
         assert!(batch.errors.is_empty(), "{:?}", batch.errors);
     }
@@ -2423,8 +2532,9 @@ mod tests {
 
     /// Each kind of event the follow watches for wakes a drain on its own:
     /// a write (`IN_MODIFY`), a close after writing (`IN_CLOSE_WRITE`), a
-    /// creation, a move in, a move out and a deletion. A drain with no
-    /// event of its kind would block, and fail the deadline.
+    /// creation, a move in, a move out and a deletion. Without an event of
+    /// its kind the wake descriptor would stay unreadable, and fail the
+    /// deadline.
     #[test]
     fn each_watched_event_wakes_a_drain() {
         use std::io::Write as _;
@@ -2437,24 +2547,24 @@ mod tests {
         journal(&a, 1, &FOUR, 4);
         let journal_ =
             Journal::open(Source::Directory(d.clone()), &release("24.04")).expect("opens");
-        let mut f = journal_.follow(crate::Query::every()).expect("follows");
+        let (mut f, _) = follow_now(&journal_, crate::Query::every());
         let mut held = std::fs::OpenOptions::new()
             .append(true)
             .open(&a)
             .expect("open");
         held.write_all(&[0]).expect("modify only");
-        (f, _) = drain_within(f);
+        assert!(woken(&mut f).records.is_empty());
         drop(held);
-        (f, _) = drain_within(f);
+        assert!(woken(&mut f).records.is_empty());
         std::fs::create_dir(d.join("sub")).expect("create only");
-        (f, _) = drain_within(f);
+        assert!(woken(&mut f).records.is_empty());
         std::fs::write(out.join("x"), b"x").expect("outside");
         std::fs::rename(out.join("x"), d.join("x")).expect("move in only");
-        (f, _) = drain_within(f);
+        assert!(woken(&mut f).records.is_empty());
         std::fs::rename(d.join("x"), out.join("y")).expect("move out only");
-        (f, _) = drain_within(f);
+        assert!(woken(&mut f).records.is_empty());
         std::fs::remove_dir(d.join("sub")).expect("delete only");
-        let (_, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert!(batch.records.is_empty(), "{:?}", batch.records);
     }
 
@@ -2469,15 +2579,15 @@ mod tests {
         std::fs::create_dir(&d).expect("d");
         let journal_ =
             Journal::open(Source::Directory(d.clone()), &release("24.04")).expect("opens");
-        let f = journal_.follow(crate::Query::every()).expect("follows");
+        let (mut f, _) = follow_now(&journal_, crate::Query::every());
         let x = d.join("x.journal");
         std::fs::write(&x, b"not yet a journal").expect("created");
-        let (f, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert!(batch.records.is_empty(), "{:?}", batch.records);
         assert!(f.follow.is_unopened(&x));
         // Written in place: write events only, no creation.
         journal(&x, 1, &FOUR, 4);
-        let (f, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [1, 2, 3, 4]);
         assert!(f.follow.has(&x));
     }
@@ -2491,12 +2601,10 @@ mod tests {
         let source = Source::Files(vec![t.path().to_path_buf()]);
         let journal_ = Journal::open(source, &release("26.04")).expect("opens");
         let name = crate::FieldName::new(b"MESSAGE").expect("a field name");
-        let f = journal_
-            .follow(crate::Query::field(&name, b"m3"))
-            .expect("follows");
+        let (mut f, _) = follow_now(&journal_, crate::Query::field(&name, b"m3"));
         c.set(H_N_ENTRIES, 4);
         grow(&c, &t);
-        let (_, batch) = drain_within(f);
+        let batch = woken(&mut f);
         assert_eq!(messages(&batch.records), ["m3"]);
     }
 
@@ -2516,32 +2624,346 @@ mod tests {
         std::os::unix::fs::symlink(&a, &link).expect("symlink");
         let source = Source::Files(vec![a.clone(), link.clone()]);
         let journal_ = Journal::open(source, &release("22.04")).expect("opens");
-        let mut f = journal_.follow(crate::Query::every()).expect("follows");
-        // The start's own open error.
-        assert_eq!(f.follow.pending.len(), 1);
+        let (mut f, first) = follow_now(&journal_, crate::Query::every());
+        // The start's own open error, given with the first batch.
+        assert_eq!(first.errors.shown.len(), 1, "{:?}", first.errors);
+        assert!(f.follow.pending.is_empty());
         f.wake(std::slice::from_ref(&other), false);
         assert_eq!(f.ignored, std::slice::from_ref(&other));
         assert!(f.follow.is_unopened(&link) && !f.follow.is_unopened(&a));
-        assert_eq!(f.follow.pending.len(), 1, "a first failure isn't reported");
+        assert_eq!(f.follow.pending.len(), 0, "a first failure isn't reported");
         f.wake(std::slice::from_ref(&other), false);
-        assert_eq!(f.follow.pending.len(), 1, "an ignored file lists nothing");
+        assert_eq!(f.follow.pending.len(), 0, "an ignored file lists nothing");
         f.wake(&[], true);
         assert!(f.ignored.is_empty(), "{:?}", f.ignored);
-        assert_eq!(f.follow.pending.len(), 2, "the second failure is");
+        assert_eq!(f.follow.pending.len(), 1, "the second failure is");
         f.wake(std::slice::from_ref(&link), false);
         assert_eq!(
             f.follow.pending.len(),
-            3,
+            2,
             "an unopened file's event rescans"
         );
         assert!(f.ignored.is_empty(), "{:?}", f.ignored);
         f.wake(std::slice::from_ref(&a), false);
         assert_eq!(
             f.follow.pending.len(),
-            3,
+            2,
             "an open file's write lists nothing"
         );
         assert!(f.follow.has(&a) && !f.follow.has(&link));
+    }
+
+    // The start from a page's end, `Batch::more` and the wake fd.
+
+    /// What a page of `n` at the tail shows, and the follow from its end:
+    /// the page's records, the follower and its first batch.
+    fn page_then_follow(
+        journal: &Journal,
+        q: &crate::Query,
+        n: usize,
+        between: impl FnOnce(),
+    ) -> (Vec<Record>, Follower, crate::Batch) {
+        let limits = crate::Limits::default();
+        let page = journal.page(q, &crate::Position::Tail, n, &limits);
+        between();
+        let (f, first) = journal
+            .follow(q.clone(), &page.end, &limits)
+            .expect("follows");
+        (page.records, f, first)
+    }
+
+    /// Writes between a full page and its follow come as the follow's
+    /// first batch, with no event read, and later writes with the next
+    /// drain: none lost, none shown twice (journal spec, "Starting a
+    /// follow").
+    #[test]
+    fn writes_between_a_full_page_and_its_follow_come_first() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR, 2);
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("24.04")).expect("opens");
+        let (page, mut f, first) =
+            page_then_follow(&journal_, &crate::Query::every(), 2, || set_n(&a, 3));
+        assert_eq!(seqnums(&page), [1, 2]);
+        assert_eq!(seqnums(&first.records), [3]);
+        assert!(!first.more && first.errors.is_empty(), "{first:?}");
+        set_n(&a, 4);
+        assert_eq!(seqnums(&woken(&mut f).records), [4]);
+    }
+
+    /// The same after a page that matched nothing: its end still names
+    /// the files and their counts, so the entries written between it and
+    /// the follow come first, the query honoured.
+    #[test]
+    fn writes_between_an_empty_page_and_its_follow_come_first() {
+        // Two entries, m0 and m1, then the same file with four.
+        let t = crafted::journal(2).0.file();
+        let (mut c, _l) = crafted::journal(4);
+        let source = Source::Files(vec![t.path().to_path_buf()]);
+        let journal_ = Journal::open(source, &release("26.04")).expect("opens");
+        let name = crate::FieldName::new(b"MESSAGE").expect("a field name");
+        let q = crate::Query::field(&name, b"m3");
+        let (page, _f, first) = page_then_follow(&journal_, &q, 10, || {
+            c.set(H_ARENA_SIZE, c.b.len() as u64 - 272);
+            grow(&c, &t);
+        });
+        assert!(page.is_empty(), "{page:?}");
+        assert_eq!(messages(&first.records), ["m3"]);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+    }
+
+    /// A file the page didn't read (new since) is walked back to the
+    /// page's newest entry: here /var's file from a flush after the page,
+    /// its copies of /run's entries the page saw left out by the flush-copy
+    /// rule (another directory), its new entry shown. A new user file whose
+    /// every entry is newer is read from its start.
+    #[test]
+    fn a_file_new_since_the_page_is_read_from_after_the_pages_newest_entry() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (host, run, var) = local(dir.path());
+        journal(&run.join("system.journal"), 1, &FOUR[..2], 2);
+        let journal_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
+        let (page, _f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
+            std::fs::create_dir(&var).expect("var's directory");
+            // 255's flush: copies under /run's seqnum id, higher seqnums.
+            journal(
+                &var.join("system.journal"),
+                1,
+                &[(4, 10), (5, 20), (6, 30)],
+                3,
+            );
+            journal(&var.join("user-1000.journal"), 3, &[(1, 50)], 1);
+        });
+        assert_eq!(seqnums(&page), [1, 2]);
+        let got: Vec<(u8, u64)> = first
+            .records
+            .iter()
+            .map(|r| (r.cursor().seqnum_id[0], r.cursor().seqnum))
+            .collect();
+        assert_eq!(got, [(1, 6), (3, 1)]);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+    }
+
+    /// An entry written to /run after the page and flushed to /var before
+    /// the follow shows once: /run's file goes on from its count, /var's
+    /// new file from after the page's newest entry, and the merge drops
+    /// the copy.
+    #[test]
+    fn an_entry_flushed_between_a_page_and_its_follow_shows_once() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (host, run, var) = local(dir.path());
+        let run_file = run.join("system.journal");
+        journal(&run_file, 1, &FOUR[..2], 2);
+        let journal_ = Journal::open_on(Source::Local, &release("22.04"), &host).expect("opens");
+        let (_page, _f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
+            journal(&run_file, 1, &FOUR[..3], 3);
+            std::fs::create_dir(&var).expect("var's directory");
+            let flushed = [(4, 10), (5, 20), (6, 30), (7, 40)];
+            journal(&var.join("system.journal"), 1, &flushed, 4);
+        });
+        assert_eq!(seqnums(&first.records), [3, 7]);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+    }
+
+    /// The walk back of a new file passes over an entry it can't read, so
+    /// the follow's own read meets it (waited for, then reported) and
+    /// nothing after it is lost; with no entry at or below the page's
+    /// newest, the file is read from its start.
+    #[test]
+    fn the_walk_back_passes_over_an_unreadable_entry() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        let b = dir.path().join("b.journal");
+        journal(&a, 1, &FOUR[..1], 1);
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("24.04")).expect("opens");
+        let (_page, mut f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
+            // b's entries, all newer than a's 1 at 10, the second unreadable.
+            journal(&b, 2, &[(1, 20), (2, 30), (3, 40)], 3);
+            let mut bytes = std::fs::read(&b).expect("read");
+            let second = 272 + 24 + 8 * 3 + 72 + 80;
+            bytes[second + 8..second + 16].copy_from_slice(&0u64.to_le_bytes());
+            std::fs::write(&b, &bytes).expect("write");
+        });
+        assert_eq!(seqnums(&first.records), [1]);
+        assert!(first.errors.is_empty(), "waits first: {:?}", first.errors);
+        let next = f.drain(&crate::Limits::default());
+        assert_eq!(seqnums(&next.records), [3]);
+        assert_eq!(next.errors.shown.len(), 1, "{:?}", next.errors);
+    }
+
+    /// The walk back of a new file in the page's newest entry's directory
+    /// stops by sd-journal's order, not the flush-copy rule: here an entry
+    /// numbered below the page's newest, under its seqnum id, though later
+    /// by monotonic time, is taken as shown, and only the one after it is
+    /// read.
+    #[test]
+    fn the_walk_back_in_the_pages_directory_stops_by_sd_journals_order() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR[..2], 2);
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("22.04")).expect("opens");
+        let (page, _f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
+            journal(&dir.path().join("b.journal"), 1, &[(1, 25), (3, 30)], 2);
+        });
+        assert_eq!(seqnums(&page), [1, 2]);
+        assert_eq!(seqnums(&first.records), [3]);
+    }
+
+    /// A file the page read is known by its inode and its header's file
+    /// id: a new file journald made at a freed inode (a vacuum, then a
+    /// rotation) is read as new, from after the page's newest entry, not
+    /// from the old file's count; so is a file with fewer entries than the
+    /// page counted.
+    #[test]
+    fn a_new_file_at_an_inode_the_page_read_is_read_as_new() {
+        let five = [(1, 50), (2, 60), (3, 70), (4, 80), (5, 90)];
+        for (id, n) in [(0x77, 5), (0, 2)] {
+            let dir = tempfile::tempdir().expect("dir");
+            let a = dir.path().join("a.journal");
+            journal(&a, 1, &FOUR, 4);
+            let journal_ = Journal::open(Source::Directory(dir.path().into()), &release("24.04"))
+                .expect("opens");
+            let (_page, _f, first) =
+                page_then_follow(&journal_, &crate::Query::every(), 10, || {
+                    // Written in place: the same inode.
+                    let old = std::fs::read(&a).expect("read");
+                    journal(&a, 2, &five, n);
+                    let mut bytes = std::fs::read(&a).expect("read");
+                    if id == 0 {
+                        bytes[24..40].copy_from_slice(&old[24..40]);
+                    } else {
+                        bytes[24..40].copy_from_slice(&[id; 16]);
+                    }
+                    std::fs::write(&a, &bytes).expect("write");
+                });
+            let want: Vec<u64> = (1..=n).collect();
+            assert_eq!(
+                seqnums(&first.records),
+                want,
+                "file id {id:#x}, {n} entries"
+            );
+        }
+    }
+
+    /// The output limit stops the first batch as it stops a drain: `more`
+    /// is set, and drains go on from there with no event, until a batch
+    /// reads to the end.
+    #[test]
+    fn the_limit_stops_a_batch_with_more_set() {
+        let (mut c, _l) = crafted::journal(10);
+        c.set(H_N_ENTRIES, 2);
+        let t = c.file();
+        let journal_ =
+            Journal::open(Source::Files(vec![t.path().into()]), &release("24.04")).expect("opens");
+        let limits = crate::Limits::with_output(per_record(3) + 5);
+        let page = journal_.page(&crate::Query::every(), &crate::Position::Tail, 2, &limits);
+        c.set(H_N_ENTRIES, 10);
+        grow(&c, &t);
+        let (mut f, first) = journal_
+            .follow(crate::Query::every(), &page.end, &limits)
+            .expect("follows");
+        assert_eq!(messages(&first.records), ["m2", "m3", "m4"]);
+        assert!(first.more && first.errors.is_empty(), "{first:?}");
+        let next = f.drain(&limits);
+        assert_eq!(messages(&next.records), ["m5", "m6", "m7"]);
+        assert!(next.more, "{next:?}");
+        let last = f.drain(&limits);
+        assert_eq!(messages(&last.records), ["m8", "m9"]);
+        assert!(!last.more && last.errors.is_empty(), "{last:?}");
+    }
+
+    /// The wake protocol (journal spec, "Waiting for new entries"): the
+    /// duplicate is close-on-exec and non-blocking, unreadable while
+    /// nothing happened, readable after a write, and a drain clears it.
+    #[test]
+    fn a_write_makes_the_wake_fd_readable_and_a_drain_clears_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.journal");
+        journal(&a, 1, &FOUR, 2);
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("26.04")).expect("opens");
+        let (mut f, _) = follow_now(&journal_, crate::Query::every());
+        let wake = f.wake_fd().expect("a wake descriptor");
+        let fd_flags = rustix::io::fcntl_getfd(&wake).expect("getfd");
+        assert!(
+            fd_flags.contains(rustix::io::FdFlags::CLOEXEC),
+            "{fd_flags:?}"
+        );
+        let status = rustix::fs::fcntl_getfl(&wake).expect("getfl");
+        assert!(status.contains(rustix::fs::OFlags::NONBLOCK), "{status:?}");
+        assert!(!readable(&wake, 0), "nothing happened yet");
+        set_n(&a, 3);
+        assert!(readable(&wake, 5000), "a write wakes it");
+        assert_eq!(seqnums(&f.drain(&crate::Limits::default()).records), [3]);
+        assert!(!readable(&wake, 0), "the drain read every event");
+    }
+
+    /// A drain with no event doesn't wait for one: it returns an empty
+    /// batch at once. Run on a thread under a deadline, so a drain that
+    /// blocks fails the test rather than hang it.
+    #[test]
+    fn a_drain_without_an_event_returns_at_once() {
+        let dir = tempfile::tempdir().expect("dir");
+        journal(&dir.path().join("a.journal"), 1, &FOUR, 4);
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("22.04")).expect("opens");
+        let (mut f, _) = follow_now(&journal_, crate::Query::every());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let batch = f.drain(&crate::Limits::default());
+            // The receiver is gone only once the test failed already.
+            let _ = tx.send(batch);
+        });
+        let batch = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the drain returned");
+        assert!(batch.records.is_empty() && !batch.more, "{batch:?}");
+    }
+
+    /// The parent-directory watch, through the injected roots: with /var's
+    /// machine-id directory missing, its root is watched, so the directory
+    /// appearing wakes the follow, the drain watches it and clears the
+    /// descriptor, and a write in it wakes the follow again.
+    #[test]
+    fn the_root_of_a_missing_directory_wakes_the_follow() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (host, run, var) = local(dir.path());
+        journal(&run.join("system.journal"), 1, &FOUR[..2], 2);
+        let journal_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
+        let (mut f, _) = follow_now(&journal_, crate::Query::every());
+        let wake = f.wake_fd().expect("a wake descriptor");
+        assert!(!readable(&wake, 0));
+        std::fs::create_dir(&var).expect("var's directory");
+        assert!(readable(&wake, 5000), "the root's watch wakes it");
+        assert!(f.drain(&crate::Limits::default()).records.is_empty());
+        assert!(!readable(&wake, 0), "the drain read every event");
+        journal(&var.join("system.journal"), 2, &[(1, 30)], 1);
+        assert!(readable(&wake, 5000), "the new directory's watch wakes it");
+        assert_eq!(seqnums(&f.drain(&crate::Limits::default()).records), [1]);
+    }
+
+    /// A follow with no directory to watch would never wake: refused, for
+    /// the local journal with both roots missing and for files whose
+    /// directories don't exist.
+    #[test]
+    fn a_follow_with_nothing_to_watch_is_refused() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut host, _run, _var) = local(dir.path());
+        host.roots = [dir.path().join("no-run"), dir.path().join("no-var")];
+        let local_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
+        let files = Source::Files(vec![dir.path().join("gone/a.journal")]);
+        let files_ = Journal::open(files, &release("24.04")).expect("opens");
+        for j in [local_, files_] {
+            let limits = crate::Limits::default();
+            let refused = j.follow(crate::Query::every(), &PageEnd::default(), &limits);
+            assert!(
+                matches!(refused, Err(OpenError::NothingToWatch)),
+                "{refused:?}"
+            );
+        }
     }
 
     // main.rs's `classify` tests.

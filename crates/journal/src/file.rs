@@ -1117,6 +1117,21 @@ impl<'a> EntriesRev<'a> {
         self.f.error(ReadErrorKind::Corrupt(what))
     }
 
+    /// The index in the chain (its items counted from its head, zero
+    /// slots and repeats included, as `entries_since` counts them) of the
+    /// offset `next` gave last; for the main list, the number of entries
+    /// before it. A follow starting from a page's end goes on after it
+    /// (`Follow::start`). Only meaningful right after `next` gave an
+    /// offset from the chain, not the in-line entry.
+    pub(crate) fn index(&self) -> u64 {
+        // The arrays older than the one being read are unread, so each
+        // still counts its whole length; this one has `left` items below
+        // its buffer, whose top item was just popped.
+        self.arrays.split_last().map_or(0, |((_, left), older)| {
+            older.iter().map(|a| a.1).sum::<u64>() + left + self.buf.len() as u64
+        })
+    }
+
     /// The next older offset, an error where one was met, or `None` at
     /// the end.
     fn advance(&mut self) -> Option<Result<u64>> {
@@ -4507,6 +4522,34 @@ mod tests {
         let (_t, f) = file_with_object(&object_bytes(OBJECT_ENTRY_ARRAY, 20, 24));
         let err = f.array_head(272).expect_err("refused");
         assert!(err.to_string().contains("short entry array"));
+    }
+
+    /// `EntriesRev::index` is each offset's place in the main list as
+    /// `entries_since` counts it, across arrays, with the zero slot and the
+    /// repeat it passes over counted: a follow goes on from there.
+    #[test]
+    fn entries_rev_indexes_each_offset_as_entries_since_counts_it() {
+        let (t, mut f) = file_with_chain(&[&[1000, 0], &[1104, 1104, 1200, 1304]]);
+        set_list(&t, &mut f, 5, 272);
+        let mut walk = f.all_entries_rev();
+        let mut got = Vec::new();
+        while let Some(r) = walk.next() {
+            got.push((r.expect("reads"), walk.index()));
+        }
+        assert_eq!(got, [(1200, 4), (1104, 3), (1000, 0)]);
+        assert_eq!(f.entries_since(&mut None, 4).expect("reads"), [1200]);
+        // An array past one chunk (`CHUNK_ITEMS`), behind a short one: the
+        // items below the buffer count too.
+        let long: Vec<u64> = (0..600).map(|k| 2000 + 104 * k).collect();
+        let (t, mut f) = file_with_chain(&[&[1000, 1104], &long]);
+        set_list(&t, &mut f, 602, 272);
+        let mut walk = f.all_entries_rev();
+        let mut indexes = Vec::new();
+        while let Some(r) = walk.next() {
+            r.expect("reads");
+            indexes.push(walk.index());
+        }
+        assert_eq!(indexes, (0..602).rev().collect::<Vec<u64>>());
     }
 
     #[test]

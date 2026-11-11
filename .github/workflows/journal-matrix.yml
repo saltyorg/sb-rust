@@ -99,7 +99,7 @@ jobs:
       matrix:
         release: ${{ fromJSON(needs.build.outputs.releases) }}
     name: journal / ${{ matrix.release }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       RELEASE: ${{ matrix.release }}
       SBJ_PREFIX: ci
@@ -117,13 +117,22 @@ jobs:
           SBJ_BIN=$PWD/bin/journal crates/journal/tests/compare.sh "$RELEASE" 2>&1 | tee compare.log
       - name: compat.sh (files from 22.04, 20.04 and 18.04)
         run: SBJ_BIN=$PWD/bin/journal crates/journal/tests/compat.sh 22.04 20.04 18.04 -- "$RELEASE" 2>&1 | tee compat.log
+      # The follow against journalctl -f, and from a page's end; then the
+      # follow and pages while journald writes and rotates flat out. Both
+      # run whatever the page checks before them gave.
+      - name: follow.sh
+        if: ${{ !cancelled() }}
+        run: SBJ_BIN=$PWD/bin/journal crates/journal/tests/follow.sh "$RELEASE" 2>&1 | tee follow.log
+      - name: stress.sh
+        if: ${{ !cancelled() }}
+        run: SBJ_BIN=$PWD/bin/journal crates/journal/tests/stress.sh "$RELEASE" 2>&1 | tee stress.log
       - name: Summary
         if: always()
         run: |
           {
             echo "### $RELEASE"
             echo '```'
-            grep -hE '^\S.*systemd|FAIL|diff|note' compare.log compat.log 2>/dev/null || true
+            grep -hE '^\S.*systemd|FAIL|diff|note|lost|  ok ' compare.log compat.log follow.log stress.log 2>/dev/null || true
             for image in "$RELEASE" 22.04 20.04 18.04; do
               docker image inspect "ubuntu:$image" --format "ubuntu:$image {{index .RepoDigests 0}}" 2>/dev/null || true
             done

@@ -356,32 +356,41 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 - `Send` assertions for `Follower` and the fd.
 
 **Acceptance criteria:**
-- [ ] Writes between a page and its follow lose and double nothing,
+- [x] Writes between a page and its follow lose and double nothing,
       after a full page and after an empty one. `more` is set when the
       limit stops a batch.
-- [ ] Wake protocol, tested with rustix `poll`:
+- [x] Wake protocol, tested with rustix `poll`:
       - a write makes the duplicated fd readable;
       - `drain` clears it;
       - the duplicate is CLOEXEC and non-blocking.
       The parent-directory watch is tested through the injectable roots.
-- [ ] follow.sh gains the between-page-and-follow scenario. It and
-      stress.sh pass on the three releases.
+- [x] follow.sh gains the between-page-and-follow scenario. It and
+      stress.sh pass on the three releases: follow.sh 0 lost and 0
+      doubled in all eleven scenarios on each; stress.sh every check, the
+      follow 0 mismatches.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`.
-- [ ] library-reviewer and code-reviewer on the commit.
+- [x] `cargo test -p sb-journal`; the two scripts; `scripts/check.sh task`
+      (every check but the floor guard, whose re-targeted assertions the
+      commit lists).
+- [x] library-reviewer and code-reviewer on the working tree.
 
-- From Task 6, decide here:
-  - whether `ReadErrorKind::OutputLimitDeferred` (a followed file stopped
-    at the limit, the rest next drain) stays once `Batch::more` says the
-    same, or goes before anything depends on it;
-  - the drain blocks in `Reader::next` until Task 7's non-blocking
-    descriptor; the crafted drain tests run it on a thread under a
-    five-second deadline (`drain_within`), which `wake_fd` and `poll`
-    can replace;
-  - a follow whose source has no directory to watch (both local roots
-    missing) starts with no watch and its drain waits for ever: refuse
-    it at the start, or let the wake fd show it.
+- From Task 6, decided here:
+  - `ReadErrorKind::OutputLimitDeferred` is gone: `Batch::more` says the
+    same (a file stopped at the limit, the rest next drain), nothing is
+    lost, so it was a notice in `errors`, where a viewer would show it
+    as an error; nothing depended on it but the kinds test.
+  - The drain no longer blocks: the descriptor is created `NONBLOCK`,
+    `drain` reads it to `EAGAIN`, and the crafted drain tests wait on
+    `wake_fd` with rustix `poll` under a five-second deadline (`woken`)
+    in place of `drain_within`'s thread.
+  - A follow with no directory to watch (both local roots missing, or no
+    given file's directory existing) is refused at the start,
+    `OpenError::NothingToWatch`: no event could make its wake fd
+    readable.
+  - RLIMIT_NOFILE: each `wake_fd` call adds one descriptor, held by the
+    caller; past the limit it fails with `EMFILE` as an `io::Error`. The
+    follow-up below stands as it was.
 
 **Dependencies:** Task 6
 **Files:** `crates/journal/src/{follow.rs,lib.rs}`, `crates/journal/examples/journal.rs`, `crates/journal/tests/follow.sh`
@@ -568,9 +577,8 @@ in the commit body. The matrix runs again where a fix touches reading.
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
 
-- The local CI workflow (journal-matrix.yml) doesn't run the crate's
-  follow.sh and stress.sh yet. Add them with Task 7, when the follow's
-  start and wake are final.
+- Done in Task 7: the local CI workflow (journal-matrix.yml) runs the
+  crate's follow.sh and stress.sh after the page checks; still unpushed.
 
 - Done in Task 6: the two mutation survivors at the `e.is_io()` guards
   in file.rs's `test_object` and forward.rs's `all_matches_from` are

@@ -7,11 +7,16 @@
 
 use crate::file::{JournalFile, hex_id};
 use crate::{
-    Cursor, FieldName, Journal, Page, Position, Query, QueryError, ReadErrors, Record, Release,
+    Batch, Cursor, FieldName, Follower, Journal, Limits, Page, Position, Query, QueryError,
+    ReadErrors, Record, Release,
 };
+use rustix::event::{PollFd, PollFlags, Timespec};
 use serde_json::{Map, Value};
 use std::fmt;
 use std::io::{self, Write};
+use std::os::fd::BorrowedFd;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// Why a tool couldn't give a verdict: its input isn't what it reads.
 #[derive(Debug, thiserror::Error)]
@@ -457,6 +462,76 @@ pub fn write_records(
         writeln!(out, "{}", json(r, release))?;
     }
     out.flush()
+}
+
+/// Whether `fd` is readable within `timeout` (`None`: however long it
+/// takes), or in error (`POLLERR`, `POLLHUP`: a read then reports it),
+/// through rustix's `poll`
+/// (<https://docs.rs/rustix/1.1.6/rustix/event/fn.poll.html>), retried on
+/// `EINTR`: the wait on `Follower::wake_fd`'s descriptor between drains,
+/// where sb would await tokio's `AsyncFd` (journal spec, "Waiting for new
+/// entries"). An error counts as woken so a broken descriptor can't make a
+/// caller's loop spin without reading.
+///
+/// # Errors
+///
+/// `poll`'s, other than `EINTR`, and a timeout past `Timespec`'s range
+/// (rustix's `TryFrom<Duration>`).
+pub fn wait_readable(fd: BorrowedFd<'_>, timeout: Option<Duration>) -> io::Result<bool> {
+    let timeout = timeout
+        .map(Timespec::try_from)
+        .transpose()
+        .map_err(io::Error::other)?;
+    loop {
+        let mut fds = [PollFd::from_borrowed_fd(fd, PollFlags::IN)];
+        match rustix::event::poll(&mut fds, timeout.as_ref()) {
+            Ok(_) => return Ok(!fds[0].revents().is_empty()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// The follow's next batch after `last`, as the journal spec's wait
+/// protocol takes it: at once while `last` has `more` (the limit stopped
+/// it, so the descriptor may show nothing new), otherwise once `wake`, the
+/// follow's wake descriptor, is readable within `timeout` (`None`: however
+/// long it takes); `None` when it isn't.
+///
+/// # Errors
+///
+/// The wait's (`wait_readable`).
+pub fn next_batch(
+    follower: &mut Follower,
+    wake: BorrowedFd<'_>,
+    last: &Batch,
+    limits: &Limits,
+    timeout: Option<Duration>,
+) -> io::Result<Option<Batch>> {
+    if !last.more && !wait_readable(wake, timeout)? {
+        return Ok(None);
+    }
+    Ok(Some(follower.drain(limits)))
+}
+
+/// Whether `path` exists within `timeout`, looked for every `every`: the
+/// `follow` command's pause between its page and its follow
+/// (`--wait-for`), which follow.sh ends by creating the file once it has
+/// written the entries the follow must start with. Why not an inotify
+/// watch of its own: one wait per run, where a 50 ms poll of the name is
+/// enough and can't miss a file created before the wait began.
+#[must_use]
+pub fn wait_for(path: &Path, every: Duration, timeout: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        if path.exists() {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(every);
+    }
 }
 
 /// The files `journal`'s pages would read, opened as a page opens them,
@@ -1757,5 +1832,65 @@ mod tests {
         let out = String::from_utf8(out).expect("utf-8");
         assert_eq!(out.lines().count(), 1, "{out}");
         assert_eq!(err, b"");
+    }
+
+    /// `wait_for`: false only once its time is up, true for a file there
+    /// already or created while it waits.
+    #[test]
+    fn wait_for_sees_a_file_appear_or_gives_up() {
+        let dir = tempfile::tempdir().expect("dir");
+        let go = dir.path().join("go");
+        let ms = Duration::from_millis;
+        let started = Instant::now();
+        assert!(!wait_for(&go, ms(5), ms(30)));
+        assert!(started.elapsed() >= ms(30), "{:?}", started.elapsed());
+        let later = go.clone();
+        let maker = std::thread::spawn(move || {
+            std::thread::sleep(ms(50));
+            std::fs::write(later, b"").expect("go");
+        });
+        assert!(wait_for(&go, ms(5), Duration::from_secs(5)));
+        maker.join().expect("joined");
+        assert!(wait_for(&go, ms(5), Duration::ZERO));
+    }
+
+    /// `next_batch`: after a batch with `more` it drains at once, with no
+    /// event; otherwise it waits on the wake descriptor, giving `None`
+    /// once the time given is up, and the drain once a write wakes it.
+    #[test]
+    fn next_batch_drains_at_once_after_more_and_waits_otherwise() {
+        use crafted::{H_ARENA_SIZE, H_N_ENTRIES};
+        use std::os::fd::AsFd as _;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("a.journal");
+        let (mut c, _l) = crafted::journal(3);
+        c.set(H_ARENA_SIZE, c.b.len() as u64 - 272);
+        c.set(H_N_ENTRIES, 2);
+        std::fs::write(&path, &c.b).expect("write");
+        let release = Release::parse("24.04").expect("a release");
+        let journal = Journal::open(Source::Directory(dir.path().into()), &release).expect("opens");
+        let limits = Limits::default();
+        let page = journal.page(&every_entry(), &Position::Tail, 0, &limits);
+        let (mut f, first) = journal
+            .follow(every_entry(), &page.end, &limits)
+            .expect("follows");
+        let wake = f.wake_fd().expect("a wake descriptor");
+        let more = Batch {
+            records: Vec::new(),
+            more: true,
+            errors: ReadErrors::default(),
+        };
+        let ms = Some(Duration::from_millis(20));
+        let next = next_batch(&mut f, wake.as_fd(), &more, &limits, Some(Duration::ZERO));
+        assert!(next.expect("no wait").is_some(), "drained at once");
+        assert!(
+            next_batch(&mut f, wake.as_fd(), &first, &limits, ms)
+                .expect("waits")
+                .is_none()
+        );
+        c.set(H_N_ENTRIES, 3);
+        std::fs::write(&path, &c.b).expect("write");
+        let woken = next_batch(&mut f, wake.as_fd(), &first, &limits, None).expect("waits");
+        assert_eq!(woken.map(|b| b.records.len()), Some(1));
     }
 }

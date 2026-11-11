@@ -20,11 +20,17 @@
 #   overflow  followers stopped through writes, a rotation and an inotify
 #             queue overflow, then resumed
 #   split     root and uid 1000 at once: system and user-1000 journals
+#   between-full, between-empty
+#             sb-journal only (journalctl can't follow from a page's end):
+#             a page of the newest 5 of 20 entries, or of none (a page
+#             that matched nothing), then entries written between the page
+#             and the follow's start (`follow --wait-for`), then after it
 # Each follower's numbered entries are counted: lost (a number missing)
 # and duplicated (a number printed twice), plus its CPU time. sb-journal
-# must lose and double nothing (journal spec, Difference 2); journalctl's
-# counts are printed for comparison (255 doubles flush-var's entries, 259
-# loses those after flush's mid-follow /var creation).
+# must lose and double nothing (journal spec, Difference 2 and "Starting a
+# follow"); journalctl's counts are printed for comparison (255 doubles
+# flush-var's entries, 259 loses those after flush's mid-follow /var
+# creation).
 # Containers (sbj-follow-<image>, or $SBJ_PREFIX-follow-<image>) are
 # removed on exit. Needs Docker and the musl target.
 set -euo pipefail
@@ -271,6 +277,56 @@ sleep 0.5
 [ -n "$(find "/var/log/journal/$mid" -name 'user-1000*.journal')" ] || bad "split: no user-1000 journal"
 last_n=$(sort -n written | tail -1)
 finish "$last_n" split
+
+# Wait (10 s at most) until journalctl shows $2 entries of identifier $1
+# whose message starts with $3, so they are in the files.
+in_journal() {
+  for _ in $(seq 1 100); do
+    [ "$(journalctl -q -o cat "SYSLOG_IDENTIFIER=$1" | grep -c "^$3")" -ge "$2" ] && return 0
+    sleep 0.1
+  done
+  bad "$1: journald never showed $2 \"$3\" entries"
+}
+
+# between: $1 the identifier, $2 the page's size, $3 the entries before
+# the page ("before N", not counted as follow entries). The page must show
+# the newest min($2, $3) of them; then "follow 1..100" written between the
+# page and the follow, which must come first, and 101..200 after it.
+between() {
+  tag=$1 n=$2 pre=$3 name=$4
+  : > written; rm -f fa.all fa.err go
+  for i in $(seq 1 "$pre"); do echo "before $i" | systemd-cat -t "$tag"; done
+  [ "$pre" -gt 0 ] && in_journal "$tag" "$pre" before
+  /sbj follow --release "$rel" --match "SYSLOG_IDENTIFIER=$tag" -n "$n" --wait-for go > fa.all 2>fa.err &
+  pf=$!
+  for _ in $(seq 1 100); do grep -q '^sb-journal: page read' fa.err && break; sleep 0.1; done
+  grep -q '^sb-journal: page read' fa.err || bad "$name: the page was never read"
+  write 1 100
+  in_journal "$tag" 100 follow
+  : > go
+  write 101 200
+  for _ in $(seq 1 100); do grep -q '"MESSAGE":"follow 200"' fa.all && break; sleep 0.1; done
+  sleep 1
+  pc=$(cpu "$pf")
+  kill "$pf" 2>/dev/null; sleep 0.3
+  shown=$(grep -o '"MESSAGE":"before [0-9]*"' fa.all | grep -o '[0-9]*' | tr '\n' ' ')
+  want=$(if [ "$pre" -gt 0 ]; then seq $(( pre - (n < pre ? n : pre) + 1 )) "$pre" | tr '\n' ' '; fi)
+  [ "$shown" = "$want" ] || bad "$name: the page showed [$shown], not [$want]"
+  grep -o '"MESSAGE":"follow [0-9]*"' fa.all | grep -o '[0-9]*' | sort -n > fa.nums
+  got=$(sort -nu fa.nums | wc -l)
+  dup=$(( $(wc -l < fa.nums) - got ))
+  lost=$(( $(wc -l < written) - $(comm -12 <(sort -u written) <(sort -u fa.nums) | wc -l) ))
+  extra=$(comm -13 <(sort -u written) <(sort -u fa.nums) | wc -l)
+  printf '  %-8s %-10s written %4d  lost %3d  dup %3d  extra %d  cpu %s ticks (page of %d)\n' \
+    "$name" sb-journal "$(wc -l < written)" "$lost" "$dup" "$extra" "$pc" "$(echo "$want" | wc -w)"
+  if [ "$lost" != 0 ] || [ "$dup" != 0 ] || [ "$extra" != 0 ]; then
+    bad "$name: sb-journal lost $lost, duplicated $dup, extra $extra"
+  fi
+  grep -v '^sb-journal: page read' fa.err | sed 's/^/    sb-journal stderr: /' | head -5
+  return 0
+}
+between sbf-between-full 5 20 between-full
+between sbf-between-empty 10 0 between-empty
 find /var/log/journal /run/log/journal -name '*.journal*' 2>/dev/null | sed 's/^/  file: /'
 exit $fail
 EOS

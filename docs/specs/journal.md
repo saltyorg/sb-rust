@@ -218,6 +218,10 @@ only for files found by a later rescan.
 A crafted test and a follow.sh scenario write between a page and its
 follow, also after an empty page: 0 lost, 0 doubled.
 
+A source with no directory to watch (neither local root, or no given
+file's directory) is refused, `OpenError::NothingToWatch`: no event could
+make its wake fd readable (sb-journal plan, Task 7).
+
 **Waiting for new entries** (tokio's `AsyncFd`,
 https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html):
 1. The caller wraps `wake_fd()` in an `AsyncFd` and awaits readable.

@@ -6,9 +6,10 @@
 //!
 //! A [`Journal`] names a [`Source`]; [`Journal::page`] reads the newest
 //! entries matching a [`Query`], or the page before or after a [`Cursor`],
-//! as [`Record`]s holding raw bytes; [`Journal::follow`] gives a
-//! [`Follower`], whose [`Follower::drain`] reads what was written since as
-//! a [`Batch`].
+//! as [`Record`]s holding raw bytes; [`Journal::follow`] goes on from a
+//! page's [`PageEnd`], giving a [`Follower`] and what was written since as
+//! its first [`Batch`]. [`Follower::drain`] then reads what came next,
+//! without blocking, whenever [`Follower::wake_fd`] is readable.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -190,16 +191,6 @@ pub enum ReadErrorKind {
     /// opening (rotations in a row). No file: the list is the source's.
     #[error("the journal's file list kept changing while it was opened; entries may be missing")]
     ListChanging,
-    /// A followed file stopped at an entry that didn't fit the output limit.
-    ///
-    /// Others were read before it; the entries from there come with the
-    /// next drain, none lost (`Follower::drain`). No file: the limit is the
-    /// drain's, per file.
-    #[error("output limit of {limit} bytes reached; the rest follows on the next drain")]
-    OutputLimitDeferred {
-        /// The output limit.
-        limit: usize,
-    },
 }
 
 /// `context: what`, or `what` alone without a context.
@@ -446,13 +437,16 @@ pub struct Page {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PageEnd {
     files: Vec<FileEnd>,
-    newest: Option<(Cursor, PathBuf)>,
+    newest: Option<(Cursor, Option<PathBuf>)>,
 }
 
 /// One file of a `PageEnd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileEnd {
     inode: (u64, u64),
+    /// The header's file id: with the inode, what tells the file from a
+    /// new one journald made at the same inode once this one was freed.
+    file_id: [u8; 16],
     n_entries: u64,
 }
 
@@ -504,6 +498,12 @@ pub enum OpenError {
         #[source]
         source: io::Error,
     },
+    /// A follow found no directory to watch (`Journal::follow`): neither
+    /// local journal root exists, or no file given has a directory. No
+    /// event could ever wake it, so its wake descriptor would never become
+    /// readable.
+    #[error("no journal directory to watch: a follow would never wake")]
+    NothingToWatch,
 }
 
 /// A machine's id, as `/etc/machine-id` holds it: 32 hex digits, not all
@@ -694,14 +694,28 @@ impl Journal {
         self.roots.list()
     }
 
-    /// Follow the entries matching `q` as they are written from now on.
+    /// Follows the entries matching `q` from a page's end, `from`.
     ///
-    /// The watches go on first, then the files are opened, each at the
-    /// entry count its header gives, and the newest matching entry is
-    /// where the follow goes on from (the prototype's `journalctl -n 0 -f`
-    /// start). Entries written before the call are not read, so a page
-    /// read just before can miss those written between it and the follow.
-    /// Each [`Follower::drain`] then gives what was written since.
+    /// What was written since the page comes as the first [`Batch`]
+    /// (journal spec, "Starting a follow").
+    ///
+    /// The watches go on first, so nothing written once the files are
+    /// open waits for a later event. Then the files are opened, and each
+    /// is read from the entry count `from` recorded for it; a file the
+    /// page didn't read (new since) is walked back from its newest entry
+    /// to the newest one at or below `from`'s newest entry, by sd-journal's
+    /// order within that entry's directory and by the flush-copy rule
+    /// across directories. What that reads is merged as a drain merges
+    /// it, so an entry written to /run after the page and flushed to /var
+    /// before the follow shows once. Nothing written between the page and
+    /// the follow is lost or shown twice, even after a page that matched
+    /// nothing. A follow from `PageEnd::default()` reads every entry.
+    ///
+    /// The first batch holds at most `limits`' output limit per file, as a
+    /// drain does; `Batch::more` says the limit stopped it, and the next
+    /// [`Follower::drain`] goes on from there. Each drain then gives what
+    /// was written since; [`Follower::wake_fd`] is what to wait on between
+    /// drains.
     ///
     /// The follow keeps its files open, by inode, so a rotation's rename
     /// or a vacuum doesn't lose one, and orders entries of different boots
@@ -711,10 +725,16 @@ impl Journal {
     /// # Errors
     ///
     /// `OpenError::Inotify` or `OpenError::Watch` when the follow can't
-    /// watch the journal's directories. Files that can't be opened are
-    /// errors of the first drain's batch.
-    pub fn follow(&self, q: Query) -> Result<Follower, OpenError> {
-        Follower::start(self, q)
+    /// watch the journal's directories, and `OpenError::NothingToWatch`
+    /// when none of them exists. Files that can't be opened are errors of
+    /// the first batch.
+    pub fn follow(
+        &self,
+        q: Query,
+        from: &PageEnd,
+        limits: &Limits,
+    ) -> Result<(Follower, Batch), OpenError> {
+        Follower::start(self, q, from, *limits)
     }
 }
 
@@ -1083,15 +1103,20 @@ impl Record {
     }
 }
 
-/// What `Follower::drain` read: the matching entries written since the last
-/// drain (or the follow's start), oldest first, and what went wrong.
-/// Built by `Follower::drain` only: more fields can come.
+/// What a follow read: the matching entries written since the last drain
+/// (or, for `Journal::follow`'s first batch, since the page), oldest
+/// first, and what went wrong. Built by `Journal::follow` and
+/// `Follower::drain` only: more fields can come.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Batch {
     /// The new entries, oldest first.
     pub records: Vec<Record>,
-    /// What couldn't be read, and what the limit deferred.
+    /// The output limit stopped a file in this batch: the entries from
+    /// there come with the next drain, none lost. Drain again before
+    /// waiting on the wake descriptor, which may show nothing new.
+    pub more: bool,
+    /// What couldn't be read.
     pub errors: ReadErrors,
 }
 
@@ -1104,6 +1129,8 @@ const _: () = {
     send_static::<Page>();
     send_static::<Batch>();
     send_static::<Follower>();
+    // `Follower::wake_fd`'s descriptor, for the caller's readiness wait.
+    send_static::<std::os::fd::OwnedFd>();
     send_static::<PageEnd>();
     send_static::<MachineId>();
     send_static::<Record>();
@@ -1266,10 +1293,6 @@ mod tests {
                 "ListChanging",
                 ReadError::of_page(ReadErrorKind::ListChanging),
             ),
-            (
-                "OutputLimitDeferred",
-                ReadError::of_page(ReadErrorKind::OutputLimitDeferred { limit: 5 }),
-            ),
         ]
     }
 
@@ -1292,14 +1315,13 @@ mod tests {
             ReadErrorKind::Symlink => "Symlink",
             ReadErrorKind::NotRegular => "NotRegular",
             ReadErrorKind::ListChanging => "ListChanging",
-            ReadErrorKind::OutputLimitDeferred { .. } => "OutputLimitDeferred",
         };
         let kinds = every_kind();
         for (listed, e) in &kinds {
             assert_eq!(*listed, name(e.kind()));
         }
         let distinct: std::collections::BTreeSet<&str> = kinds.iter().map(|(n, _)| *n).collect();
-        assert_eq!((kinds.len(), distinct.len()), (13, 13));
+        assert_eq!((kinds.len(), distinct.len()), (12, 12));
     }
 
     /// The kinds of `every_kind` for which `is` holds.
@@ -1991,11 +2013,15 @@ mod tests {
                     std::os::unix::fs::MetadataExt::dev(&meta),
                     std::os::unix::fs::MetadataExt::ino(&meta)
                 ),
+                file_id: file::JournalFile::open(&path)
+                    .expect("opens")
+                    .header
+                    .file_id,
                 n_entries: 3
             }]
         );
         let (newest, in_dir) = page.end.newest.clone().expect("the newest entry");
-        assert_eq!((newest.seqnum, in_dir.as_path()), (3, dir.path()));
+        assert_eq!((newest.seqnum, in_dir.as_deref()), (3, Some(dir.path())));
         assert_eq!(tail(&j, &none, 10).end, page.end);
         let (mut c, _l) = crafted::journal(4);
         std::fs::write(&path, &c.b).expect("rewrite in place");

@@ -14,7 +14,9 @@ publish.workspace = true
 # spec, Project Structure), and the comparison CLI's argument parsing.
 # Turned on for every test build by the self dev-dependency below
 # (dev-dependency features unify), never in a release or production build.
-testing = ["dep:tempfile", "dep:serde_json", "dep:clap"]
+# rustix's `event` gives the tools and tests `poll`, their wait on a
+# follow's wake descriptor (the crate itself waits on nothing).
+testing = ["dep:tempfile", "dep:serde_json", "dep:clap", "rustix/event"]
 
 [dependencies]
 siphasher.workspace = true
