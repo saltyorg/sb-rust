@@ -282,7 +282,7 @@ sanitizer, so it waits for T9 too.
 - [x] Task 8: the fuzz harness enforcing its bounds
 
 ### Checkpoint B: follow and robustness
-- [ ] follow.sh (with the between-page-and-follow scenario) and
+- [x] follow.sh (with the between-page-and-follow scenario) and
       stress.sh pass on the three releases; the fuzz harness passes; the
       ratchet is re-measured
 

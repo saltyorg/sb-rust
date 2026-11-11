@@ -424,9 +424,16 @@ time and never committed.
 **Scope:** S
 
 ## Checkpoint B: follow and robustness
-- [ ] Tasks 6-8 pass `scripts/check.sh full`. follow.sh, stress.sh and
-      the fuzz harness are green.
-- [ ] Ratchet re-measured.
+- [x] Tasks 6-8 pass `scripts/check.sh full`. follow.sh, stress.sh and
+      the fuzz harness are green. (2026-11-11: check.sh full ebaa782
+      passed apart from the floor guard's three Task 7 re-targets,
+      listed in f71ee7c; changed-line coverage 99%; mutants 386 caught
+      of 401 viable.)
+- [x] Ratchet re-measured: crates/ coverage 98.58% of lines and 98.10%
+      of functions; startup 1.18 / 1.44 ms; production binary 11932640
+      bytes, 2.5% over the recorded figure and within the 5% tolerance
+      (term-ui's DisplayText in the runner). Task 12 records the values.
+- [x] Approved by the maintainer, 2026-11-11.
 
 ## Task 9: term-ui's shared sanitizer (`DisplayText`)
 
