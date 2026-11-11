@@ -21,6 +21,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anstyle.workspace = true
+anstyle-parse.workspace = true
 console.workspace = true
 tabled.workspace = true
 termtree.workspace = true

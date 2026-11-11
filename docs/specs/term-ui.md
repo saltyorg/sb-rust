@@ -116,8 +116,9 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   (decision 9). The runner draws on stderr, so stderr
   decides (indicatif's target; sb-go checks stdout, so `sb validate-config
   > file` stays live here and goes plain in sb-go). Each step prints a
-  start line (`- <running label>`), its output lines (escape codes
-  stripped when colour is off or under `ascii`), notices, and an end line
+  start line (`- <running label>`), its output lines (colour codes
+  stripped when colour is off or under `ascii`, other escapes always:
+  "Escape handling"), notices, and an end line
   (`✓ <done label>   2s`, or ✗ with the reason,
   `✗ <label>   interrupted · 2s`, and for a failure the error and the
   pointer; three spaces before the time as in the live tree, decision
@@ -157,7 +158,78 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   place; prompt answers never are. Secret values are withheld on screen
   too, the same way, unless the command's job is to show them to its
   user, such as editing a config, and then only on a terminal (decision
-  8).
+  8). Each logged output or notice line is made by `DisplayText` with
+  colour off (see "Escape handling"), so the log never holds an escape
+  sequence or its payload, APC, PM and SOS included.
+
+### Escape handling (amended 2026-11-11, journal spec decisions 2 and 5)
+
+Every line term-ui draws from text it was given (a step's output and
+notices, error lines, a child's last lines and reason), and every output
+and notice line it logs, goes through one public sanitizer,
+`DisplayText`, shared with the log viewer (journal spec, "Display
+(decision 2)"). A step's error record is logged as is, as before
+(tracing quotes it as a debug string):
+
+```rust
+/// Sanitized text, held as one `String` plus line ranges.
+pub struct DisplayText { /* … */ }
+
+impl DisplayText {
+    /// `colour`: the caller passes `keeps_codes(colour_on, profile)`.
+    pub fn from_bytes(bytes: &[u8], colour: bool) -> DisplayText;
+    /// The lines, in order; at least one.
+    pub fn lines(&self) -> impl ExactSizeIterator<Item = &str> + DoubleEndedIterator;
+    /// The lines joined by `\n`.
+    pub fn as_str(&self) -> &str;
+}
+// `Display` writes `as_str()`.
+
+/// Whether a line's own colour codes are kept: colour on, and the profile
+/// isn't `ascii`.
+pub fn keeps_codes(colour: bool, profile: Profile) -> bool;
+```
+
+- Invalid UTF-8 is decoded lossily (U+FFFD).
+- Newline splits lines, as `str::lines` does: a final newline adds none,
+  but a line after it exists when anything follows, even if all of it is
+  dropped (`a\n\x07` is two lines); empty text is one empty line. Tab
+  expands to the next 8-column stop, by display width.
+- Carriage return is the one other C0 control applied: trailing ones are
+  ignored, then what follows the last one on its line is kept (progress
+  output). A dropped control or sequence after it counts as what follows,
+  so `abc\r\x1b[K` is an empty line.
+- An SGR is kept only with `colour`, and is written from the input's own
+  bytes, ESC to the final byte, never rebuilt from parsed parameters, so
+  colon forms such as `38:2::r:g:b` stay byte-exact. A CSI counts as SGR
+  only when it matches `ESC [ [0-9;:]* m`: `ESC[?1m` or an intermediate
+  byte makes it something else.
+- Every other escape sequence is dropped, with its payload: OSC (titles,
+  OSC 8 links, OSC 52 clipboard), DCS, APC, PM, SOS, cursor and mode
+  CSIs, terminal queries, plain `ESC` sequences, and a CSI past the
+  parser's parameter limit (32; its `ignore` flag). An unterminated string
+  sequence takes the rest of the text, newlines included.
+- Other C0 controls, DEL and C1 are dropped; CAN and SUB end a sequence,
+  as in the DEC model. Bidi and zero-width characters pass unmarked.
+
+**The parser** is anstyle-parse 1.0.0 (already in the tree through
+anstream; https://docs.rs/anstyle-parse/1.0.0/anstyle_parse/), which runs
+the DEC state machine; console's `AnsiCodeIterator`, used before,
+recognises only CSI, OSC and DCS, so APC, PM and SOS payloads reached the
+screen and the log. **The 8-bit C1 forms are ours:** anstyle-parse, like
+vte, only supports 7-bit codes, so a pre-pass maps U+0090, U+0098,
+U+009B, U+009D, U+009E and U+009F to their `ESC` forms and drops the rest
+of U+0080 to U+009F (U+009C, the 8-bit ST, among them). A kept 8-bit SGR
+is written in its 7-bit form. **Non-ASCII characters reach the parser as
+a stand-in** (U+0080, absent once the pre-pass has run), swapped back
+when printed: outside its ground state the parser doesn't decode UTF-8,
+and its DCS, SOS, PM and APC states end at a 0x9C byte, which a
+character's own UTF-8 can hold (`“` is E2 80 9C), so a payload holding
+one would otherwise end early and show. The stand-in's bytes are no-ops
+in every other state of anstyle-parse 1.0.0's table (payload in OSC);
+UNVERIFIED for later versions, pinned by a test of every two-byte
+character and three- and four-byte samples inside each string
+sequence.
 
 ### Tables
 
@@ -199,6 +271,7 @@ Pinned in the workspace when added, each confirmed at source in its task:
 |---|---|---|
 | Spinners, live lines | `indicatif` 0.18.6 (printed-lines pattern) | proto-runner |
 | Widths, ANSI stripping, terminal size, colour switches | `console` 0.16 (indicatif's own); styles rendered by anstyle (Adapters) | proto-runner |
+| Escape sequences in text drawn or logged (`DisplayText`) | `anstyle-parse` 1.0.0 (anstream's own) | journal spec, decision 5 |
 | Tree glyphs | `termtree` `GlyphPalette` (the rounded `╰` checked in the plan) | proto-runner |
 | Tables | `tabled` 0.22 (`ansi` feature) | proto-inline |
 | Prompts | `dialoguer` 0.12 (console 0.16) | proto-inline |
@@ -227,6 +300,7 @@ crates/term-ui/            → sb-term-ui (library)
   src/lib.rs               → the colour hook-up called from sb's main
   src/style.rs             → theme adapters (anstyle text, tabled)
   src/runner.rs            → the task runner
+  src/text.rs              → `DisplayText`, the shared sanitizer
   src/table.rs             → tables
   src/prompt.rs            → prompts (with their first user)
   tests/                   → PTY tests of the runner (script)
@@ -356,9 +430,10 @@ impl Step {
     /// Output: shown in the live tail (or plainly) and logged (sensitive
     /// text: see `Line`). Text is
     /// split into lines at `\n`; a `\r` keeps what follows it (progress
-    /// output); escape codes are kept on a coloured target, except under
-    /// `ascii`, and stripped otherwise; a line wider than the screen is
-    /// cut with `…` on screen and logged whole.
+    /// output); colour codes are kept on a coloured target, except under
+    /// `ascii`, and stripped otherwise; every other escape sequence goes
+    /// with its payload ("Escape handling"); a line wider than the screen
+    /// is cut with `…` on screen and logged whole, with colour off.
     pub fn output(&mut self, text: impl Into<Line>);
 
     /// Run a sub-step (a deeper branch) to its end; this step's subtree
@@ -562,6 +637,13 @@ Choices behind it:
 - PTY tests (`script`, as cli-core's colour tests): live frames, no line
   erases, clean endings for success, failure and SIGINT, `ECHOCTL`
   restored.
+- `DisplayText`: a test per class of "Escape handling", 7-bit and 8-bit
+  (SGR kept byte-exact or dropped by `colour`; OSC, DCS, APC, PM and SOS
+  with their payloads; cursor and mode CSIs; the parameter limit;
+  `ESC[?1m`; C0, DEL and C1; CR; lossy UTF-8), and an exhaustive check of
+  every short input over an alphabet of sequence bytes: no control
+  character but a plain SGR's ESC gets through. The run log drops APC, PM
+  and SOS payloads.
 - A known secret marked sensitive never reaches the run log
   (CONSTRAINTS.md logging rule).
 - Prompts, when built: no-terminal failure and the given-answer path end to

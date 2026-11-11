@@ -171,6 +171,25 @@ fn colour_off_keeps_the_cursor_movement_only() {
     }
 }
 
+/// `NO_COLOR` or `--color=never` on a terminal: a child's own colour codes
+/// go too (the runner passes `keeps_codes` to `DisplayText`), while the
+/// same run with colour on keeps them.
+#[test]
+fn colour_off_strips_a_childs_own_colours() {
+    let auto = on_a_terminal("--child-colour");
+    assert_eq!(auto.status.code(), Some(0), "{auto:?}");
+    let text = String::from_utf8_lossy(&auto.stdout);
+    assert!(text.contains("\x1b[31mchild red"), "{text:?}");
+    let no_color = on_a_terminal_env("--child-colour", "xterm-256color", Some("1"));
+    let never = on_a_terminal("--no-colour --child-colour");
+    for out in [no_color, never] {
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("child red"), "{text:?}");
+        assert_eq!(sgr_codes(&text), Vec::<&str>::new(), "{text:?}");
+    }
+}
+
 /// A child's own colour codes in a step's output, plain with
 /// `--color=always`: kept under a colour profile, stripped under `ascii`
 /// (maintainer, 2026-11-05: `ascii` means no SGR code in anything term-ui

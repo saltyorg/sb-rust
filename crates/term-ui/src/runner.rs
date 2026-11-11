@@ -30,6 +30,7 @@ use tracing::Instrument;
 
 use crate::child::ChildFailure;
 use crate::style::paint;
+use crate::text::DisplayText;
 use crate::tree::{Draw, Status, Tree};
 use crate::tty::Saved;
 
@@ -528,7 +529,7 @@ fn conclude<T>(
                 // Cleaned as every drawn line is (it is public text).
                 reason: child
                     .filter(|_| status == Status::Failed)
-                    .map(|child| clean(child.reason(), false)),
+                    .map(|child| one_line(child.reason())),
             };
             (status, outcome, Some(failure))
         }
@@ -815,8 +816,7 @@ impl Step {
         // Logged outside the lock: the log write blocks on the file.
         let step = self.name.as_str();
         // The log gets secret values replaced in place, always.
-        for text in &lines(&line.masked(), codes) {
-            let text = console::strip_ansi_codes(text);
+        for text in DisplayText::from_bytes(line.masked().as_bytes(), false).lines() {
             if warn {
                 tracing::warn!(step, text = ?text, "notice");
             } else {
@@ -845,11 +845,13 @@ impl Step {
 
     /// Output: shown in the live tail (or plainly) and logged (sensitive
     /// text: see [`Line`]). Text is
-    /// split into lines (`\n` or `\r\n`); a `\r` keeps what follows it
-    /// (progress output); only colour codes are kept, and only on a
-    /// coloured target under a colour profile (not `ascii`); tabs become
-    /// spaces and other control characters are dropped; a line wider than the screen is cut with `…` on
-    /// screen. The log gets each line as plain text, whole. The live area
+    /// made into lines by [`DisplayText`]: split at `\n`; a `\r` keeps
+    /// what follows it (progress output); only colour codes are kept, and
+    /// only on a coloured target under a colour profile (not `ascii`,
+    /// [`keeps_codes`]); tabs become spaces; every other escape sequence,
+    /// with its payload, and other control characters are dropped; a line
+    /// wider than the screen is cut with `…` on screen. The log gets each
+    /// line as `DisplayText` with colour off, whole. The live area
     /// shows new lines on the next frame, so streamed output doesn't
     /// redraw the tree per line.
     pub fn output(&mut self, text: impl Into<Line>) {
@@ -861,8 +863,8 @@ impl Step {
         // plain text whatever the screen gets, and whole; secret values
         // replaced in place, always.
         let step = self.name.as_str();
-        for text in &lines(&line.masked(), codes) {
-            tracing::info!(step, text = ?console::strip_ansi_codes(text), "output");
+        for text in DisplayText::from_bytes(line.masked().as_bytes(), false).lines() {
+            tracing::info!(step, text = ?text, "output");
         }
         let mut state = lock(&self.context.shared);
         // A step kept past its end draws nothing more.
@@ -880,55 +882,27 @@ impl Step {
 
 /// Whether a line's own colour codes (a child's output) are kept: only
 /// with colour on and a colour profile; `ascii` means no SGR code in
-/// anything term-ui draws (maintainer, 2026-11-05).
-fn keeps_codes(colour: bool, profile: theme::Profile) -> bool {
+/// anything term-ui draws. What callers pass [`DisplayText::from_bytes`]
+/// as `colour`.
+#[must_use]
+pub fn keeps_codes(colour: bool, profile: theme::Profile) -> bool {
     colour && profile != theme::Profile::Ascii
 }
 
-/// Text as lines that draw predictably: std's `str::lines` (so `\r\n`
-/// ends a line, and a final newline adds none), then only what follows the
-/// last `\r` (progress output; a trailing one ignored). Empty text is one
-/// empty line.
+/// Text as the lines [`DisplayText`] makes of it, ready to draw.
 fn lines(text: &str, codes: bool) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-    text.lines()
-        .map(|line| {
-            let line = line.trim_end_matches('\r');
-            clean(line.rsplit('\r').next().unwrap_or(line), codes)
-        })
+    DisplayText::from_bytes(text.as_bytes(), codes)
+        .lines()
+        .map(str::to_owned)
         .collect()
 }
 
-/// One line with what would move the cursor or change widths behind the
-/// tree's back taken out: escape codes other than colours (all of them
-/// without `codes`, see [`keeps_codes`]), and control characters; tabs become spaces to the next
-/// 8-column stop. Escape codes found with console's `AnsiCodeIterator`
-/// (<https://docs.rs/console/0.16.6/console/struct.AnsiCodeIterator.html>).
-fn clean(line: &str, codes: bool) -> String {
-    let mut out = String::new();
-    let mut column = 0;
-    for (piece, is_ansi) in console::AnsiCodeIterator::new(line) {
-        if is_ansi {
-            let sgr = piece.starts_with("\x1b[") && piece.ends_with('m');
-            if codes && sgr {
-                out.push_str(piece);
-            }
-            continue;
-        }
-        for c in piece.chars() {
-            if c == '\t' {
-                let spaces = 8 - column % 8;
-                out.extend(std::iter::repeat_n(' ', spaces));
-                column += spaces;
-            } else if !c.is_control() {
-                out.push(c);
-                column += console::measure_text_width(c.encode_utf8(&mut [0; 4]));
-            }
-        }
-    }
-    out
+/// A child's reason as one plain line: its lines run together, as
+/// control characters (newline among them) were dropped before.
+fn one_line(text: &str) -> String {
+    DisplayText::from_bytes(text.as_bytes(), false)
+        .lines()
+        .collect()
 }
 
 /// Concurrent sibling steps under one parent, drawn in full in start
@@ -1921,6 +1895,20 @@ mod tests {
             ["\x1b[31mab\x1b[0m      c"]
         );
         assert_eq!(lines("a\x07b\x1b[K\x1b[1A", true), ["ab"]);
+    }
+
+    /// Output lines go through `DisplayText`: string sequences go with
+    /// their payloads, 8-bit forms included, colour on or off.
+    #[test]
+    fn output_lines_drop_strings_with_their_payloads() {
+        for codes in [true, false] {
+            assert_eq!(lines("a\x1b_payload\x1b\\b", codes), ["ab"]);
+            assert_eq!(lines("a\x1b]0;title\x07b", codes), ["ab"]);
+            assert_eq!(lines("a\u{9d}52;c;eA==\x07b", codes), ["ab"]);
+            assert_eq!(lines("a\u{9b}2Jb", codes), ["ab"]);
+            assert_eq!(lines("a\x1b[?1mb", codes), ["ab"]);
+        }
+        assert_eq!(lines("a\u{9b}31mb", true), ["a\x1b[31mb"]);
     }
 
     /// Output reaches the live area on the next frame, not per line.

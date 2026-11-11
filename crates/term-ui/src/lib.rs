@@ -5,12 +5,16 @@ mod child;
 mod runner;
 pub mod style;
 mod table;
+mod text;
 mod tree;
 mod tty;
 
 pub use child::ChildFailure;
-pub use runner::{Group, GroupAll, Labels, Line, Options, Runner, Step, Target, runner_live};
+pub use runner::{
+    Group, GroupAll, Labels, Line, Options, Runner, Step, Target, keeps_codes, runner_live,
+};
 pub use table::{Cell, Table};
+pub use text::DisplayText;
 
 use anstream::{AutoStream, ColorChoice};
 use sb_cli_core::theme::Profile;

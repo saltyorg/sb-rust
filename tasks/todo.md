@@ -443,7 +443,7 @@ time and never committed.
 - term-ui's spec is amended.
 
 **Acceptance criteria:**
-- [ ] Tests for every class, 7-bit and 8-bit:
+- [x] Tests for every class, 7-bit and 8-bit:
       - SGR kept or dropped by `colour`, byte-exact (`38:2::r:g:b`);
       - OSC, DCS, APC, PM and SOS dropped with their payloads;
       - cursor and mode CSIs dropped, and a CSI past the parameter limit
@@ -452,14 +452,14 @@ time and never committed.
       - C0 other than tab and newline, DEL and C1 dropped;
       - CR's rule;
       - lossy UTF-8.
-- [ ] The runner's existing tests pass. Colour is off under ascii,
+- [x] The runner's existing tests pass. Colour is off under ascii,
       `--color=never` and NO_COLOR. The log drops APC/PM/SOS payloads.
-- [ ] The term-ui spec is amended (escape handling, the public type, the
+- [x] The term-ui spec is amended (escape handling, the public type, the
       log).
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui -p sb`; `scripts/check.sh task`.
-- [ ] library-reviewer and code-reviewer on the commit.
+- [x] `cargo test -p sb-term-ui -p sb`; `scripts/check.sh task`.
+- [x] library-reviewer and code-reviewer on the commit.
 
 **Dependencies:** None (it can run beside Tasks 1-8)
 **Files:** `crates/term-ui/src/{text.rs,runner.rs,lib.rs}`,
@@ -576,6 +576,11 @@ in the commit body. The matrix runs again where a fix touches reading.
   controller's Rust rewrite, the maintainer's (docker decision 9).
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
+
+- crates/cli-core/src/exit.rs (about line 450) uses anstream's
+  `strip_str`, which passes C1 code points through. If that text can
+  come from a child or a file, route it through term-ui's `DisplayText`
+  (colour off). Check where it comes from first.
 
 - Done in Task 7: the local CI workflow (journal-matrix.yml) runs the
   crate's follow.sh and stress.sh after the page checks; still unpushed.

@@ -81,6 +81,13 @@ async fn run_steps() {
         step.output("checking item 1");
         step.output("\x1b[32mgreen\x1b[0m");
         step.output("w".repeat(300));
+        // APC, PM and SOS go from the log with their payloads, 7-bit and
+        // 8-bit, as from the screen.
+        step.output(
+            "before\x1b_apc-payload\x1b\\\x1b^pm-payload\x1b\\\x1bXsos-payload\x1b\\\
+             \u{9f}c1-payload\x1b\\\x1b_✓payload\x1b\\after",
+        );
+        step.warn("warned\x1b_notice-payload\x1b\\ here");
         step.output(Line::new("ok, token=").secret(secret));
         // A secret spanning lines is masked whole, before the split.
         step.output(Line::new("key: ").secret(format!("{secret}\nsecond-line")));
@@ -147,6 +154,9 @@ fn check(text: &str) {
         "{text}"
     );
     line_with(&format!("text=\"{}\"", "w".repeat(300)));
+    line_with("text=\"beforeafter\"");
+    assert!(line_with("text=\"warned here\"").contains(" WARN "));
+    assert!(!text.contains("payload"), "{text}");
     // Secret values are replaced in place; the rest of the line is logged.
     assert_eq!(
         text.matches("text=\"ok, token=[REDACTED]\"").count(),
