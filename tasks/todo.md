@@ -142,7 +142,7 @@ task's edits to existing pattern lines are acknowledged in its own
 commit, one entry per line.
 
 **Acceptance criteria:**
-- [ ] It flags:
+- [x] It flags:
       - `cfg_attr(.., mutants::skip)`, `cfg_attr(.., coverage(off))` and
         a `cfg_attr` expect split over lines;
       - `#[cfg(any())]` on a test, and a nested `cfg_attr(.., ignore)`;
@@ -151,11 +151,11 @@ commit, one entry per line.
       - a deleted `src/*.rs` file that held tests;
       - a changed continuation line of a Floor bullet, and a looser
         alternative threshold appended to a row.
-- [ ] Each case has a test in `scripts/floor-guard.test.mjs`, with a
+- [x] Each case has a test in `scripts/floor-guard.test.mjs`, with a
       clean case beside it.
 
 **Verification:**
-- [ ] `node --test scripts/floor-guard.test.mjs`; `scripts/check.sh fast`.
+- [x] `node --test scripts/floor-guard.test.mjs`; `scripts/check.sh fast`.
 - [ ] code-reviewer on the commit.
 
 **Dependencies:** Task 2

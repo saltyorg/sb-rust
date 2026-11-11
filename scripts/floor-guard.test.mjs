@@ -822,3 +822,278 @@ test('a removed, an unmatched and a malformed entry cannot be acknowledged', () 
   flags(checkSh, { [ACK]: short + entry('acknowledgement-malformed', ACK, short.trim().slice(0, 120).replace(/\t/g, ' ')) },
     ['acknowledgement-malformed ' + ACK, 'acknowledgement-unmatched ' + ACK]);
 });
+
+// docs-M2: false negatives in Rust files and CONSTRAINTS.md.
+
+const LIB = 'crates/exec/src/lib.rs';
+const libRs = {
+  [LIB]: `pub fn add(a: u32, b: u32) -> u32 {
+    a + b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adds() {
+        assert_eq!(add(1, 2), 3);
+    }
+}
+`,
+};
+const silenced = 'silenced-checker ' + LIB;
+const easier = 'test-made-easier ' + LIB;
+
+test('a Rust file: cfg_attr(.., mutants::skip) and cfg_attr(.., coverage(off)) are flagged, another cfg_attr is clean', () => {
+  for (const attr of ['#[cfg_attr(test, mutants::skip)]', '#[cfg_attr(coverage_nightly, coverage(off))]',
+    '#[cfg_attr(\n    coverage_nightly,\n    coverage(off)\n)]', '#[cfg_attr(\n    test,\n    mutants::skip\n)]']) {
+    flags(libRs, addLine(libRs, LIB, 'pub fn add', attr), silenced);
+  }
+  clean(libRs, addLine(libRs, LIB, 'pub fn add', '#[cfg_attr(test, derive(Debug))]\n#[cfg_attr(coverage_nightly, inline)]'));
+  clean(libRs, edit(libRs, LIB, '    a + b\n', '    coverage(offset(a)) + b\n'));
+});
+
+test('a Rust file: a cfg_attr expect split over lines is flagged, a method named expect is clean', () => {
+  flags(libRs, addLine(libRs, LIB, 'pub fn add', '#[cfg_attr(\n    test, expect(dead_code, reason = "x")\n)]'), silenced);
+  flags(libRs, addLine(libRs, LIB, 'pub fn add', '#[cfg_attr(all(test,\n    unix), allow(dead_code))]'), silenced);
+  clean(libRs, edit(libRs, LIB, '    a + b\n', '    Some(a + b)\n        .filter(|n| *n > 0)\n        .expect("positive")\n'));
+  clean(libRs, edit(libRs, LIB, '    a + b\n', '    let n = Some(a).expect("set"); n.max(b.min(a))\n'));
+});
+
+test('a Rust file: #[cfg(any())] on a test and a nested cfg_attr ignore are flagged, a real cfg is clean', () => {
+  flags(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg(any())]'), easier);
+  flags(libRs, addLine(libRs, LIB, '#[cfg(test)]', '#![cfg(all(unix, any()))]'), easier);
+  flags(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(not(miri), cfg_attr(test, ignore))]'), easier);
+  flags(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(all(unix, test), ignore = "slow")]'), easier);
+  flags(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(unix, /* x */ ignore)]'), easier);
+  clean(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(test, doc = "flaky tests get ignored")]\n    #[cfg_attr(test, ignore_x)]'));
+  flags(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(\n        not(miri),\n        ignore = "a long reason"\n    )]'), easier);
+  flags(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(\n        not(miri), ignore = "slow"\n    )]'), easier);
+  flags(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(\n        not(miri),\n        ignore\n    )]'), easier);
+  clean(libRs, edit(libRs, LIB, '    a + b\n', '    let ignore = [a];\n    stop(ignore);\n    run(\n        ignore,\n        b,\n    )\n'));
+  clean(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg(any(unix, windows))]'));
+  clean(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg_attr(not(miri), cfg_attr(test, inline))]'));
+});
+
+const CLI = 'crates/sb/tests/version.rs';
+const cliRs = {
+  [CLI]: `use assert_cmd::Command;
+
+#[test]
+fn version_runs() {
+    Command::cargo_bin("sb")
+        .unwrap()
+        .arg("version")
+        .assert()
+        .success()
+        .code(0)
+        .stdout(predicates::str::contains("sb"))
+        .stderr("");
+}
+
+#[test]
+fn bad_flag_fails() {
+    Command::cargo_bin("sb").unwrap().arg("--bad").assert().failure();
+    Command::cargo_bin("sb")
+        .unwrap()
+        .arg("--worse")
+        .assert()
+        .failure();
+}
+`,
+};
+const RUN = 'crates/exec/src/run.rs';
+const runRs = {
+  [RUN]: `use std::process::{Command, Stdio};
+
+pub fn run(r: &Runner) -> std::io::Result<bool> {
+    r.step("start")
+        .failure("Docker container start");
+    let status = Command::new("true")
+        .stdout(Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    Ok(status.success())
+}
+`,
+};
+
+test('a removed assert_cmd chain step is flagged, a removed builder step is clean', () => {
+  for (const step of ['        .assert()\n', '        .success()\n', '        .code(0)\n',
+    '        .stdout(predicates::str::contains("sb"))\n', '        .stderr("");\n']) {
+    flags(cliRs, edit(cliRs, CLI, step, step.endsWith(';\n') ? ';\n' : ''), 'assertion-removed ' + CLI);
+  }
+  flags(cliRs, edit(cliRs, CLI, '        .assert()\n        .failure();\n', '        ;\n'),
+    ['assertion-removed ' + CLI, 'assertion-removed ' + CLI]);
+  flags(cliRs, edit(cliRs, CLI, '.arg("--bad").assert().failure();', '.arg("--bad").ok();'), 'assertion-removed ' + CLI);
+  clean(cliRs, edit(cliRs, CLI, '        .arg("version")\n', ''));
+  clean(runRs, edit(runRs, RUN, '        .stdout(Stdio::piped())\n        .stderr(std::process::Stdio::null())\n', ''));
+  clean(runRs, edit(runRs, RUN, '\n        .failure("Docker container start");', ';'));
+  const exitCode = { [RUN]: runRs[RUN].replace('    Ok(status.success())\n', '    Ok(status\n        .code()\n        .is_some())\n') };
+  clean(exitCode, edit(exitCode, RUN, '        .code()\n        .is_some())\n', '        .success())\n'));
+});
+
+test('a deleted src file that held tests is flagged, one without tests is clean', () => {
+  flags(libRs, { [LIB]: null }, 'test-deleted ' + LIB);
+  flags(libRs, { [LIB]: null }, 'test-deleted ' + LIB, { commit: true });
+  const tokio = { [RUN]: runRs[RUN] + '\n#[tokio::test]\nasync fn runs() {}\n' };
+  flags(tokio, { [RUN]: null }, 'test-deleted ' + RUN);
+  flags(cliRs, { [CLI]: null }, 'test-deleted ' + CLI);
+  flags({ 'crates/sb/tests/common/mod.rs': 'pub fn sb() {}\n' }, { 'crates/sb/tests/common/mod.rs': null },
+    'test-deleted crates/sb/tests/common/mod.rs');
+  clean({ 'docs/testing.md': 'Unit tests carry #[test].\n' }, { 'docs/testing.md': null });
+  clean(runRs, { [RUN]: null });
+  flags({ ...runRs, ...cliRs }, { [RUN]: null, [CLI]: null }, 'test-deleted ' + CLI);
+  const outOfLine = { [RUN]: runRs[RUN] + '\n#[cfg(test)]\nmod tests;\n' };
+  clean(outOfLine, { [RUN]: null });
+});
+
+const CONS = 'CONSTRAINTS.md';
+const constraintsMd = {
+  [CONS]: `# Constraints
+
+## Floor (always enforced)
+
+- Formatting is rustfmt's; clippy and rustc warnings are errors.
+- No test made easier: no new \`#[ignore]\`, no deleted test, no assertion
+  removed from code that stays, without a reason in the commit message.
+
+## Enforced with numbers
+
+| Dimension | Rule | Checked by |
+|---|---|---|
+| Coverage | Changed lines ≥ 90% covered | diff-cover 9 |
+| Binary size | Production binary ≤ 45 MB | stat |
+
+## Notes
+
+- Last reviewed by the maintainer, after
+  an interview.
+`,
+};
+const continuation = '  removed from code that stays, without a reason in the commit message.';
+
+test('CONSTRAINTS.md: a changed continuation line of a Floor bullet is flagged, a rewrapped bullet is clean', () => {
+  flags(constraintsMd, edit(constraintsMd, CONS, continuation, '  removed from code that stays, unless it was slow.'),
+    'rule-changed ' + CONS);
+  flags(constraintsMd, edit(constraintsMd, CONS, continuation, continuation + '\n  Tests of the prototypes are exempt.'),
+    'rule-changed ' + CONS);
+  flags(constraintsMd, edit(constraintsMd, CONS, continuation, '  removed from code that stays, unless it was slow.'),
+    'rule-changed ' + CONS, { commit: true });
+  flags(constraintsMd, edit(constraintsMd, CONS, 'warnings are errors.', 'warnings are errors.\n  Prototypes are exempt.'),
+    'rule-changed ' + CONS);
+  clean(constraintsMd, edit(constraintsMd, CONS, 'no deleted test, no assertion\n' + continuation,
+    'no deleted test,\n  no assertion removed from code that stays, without a reason in the\n  commit message.'));
+  clean(constraintsMd, edit(constraintsMd, CONS, continuation + '\n', continuation + '\n- No secrets in source, tests\n  or logs.\n'));
+  clean(constraintsMd, edit(constraintsMd, CONS, '  an interview.', '  a second interview.'));
+  clean(constraintsMd, edit(constraintsMd, CONS, '- No test made easier:', '- No test made easier: no new skip.\n- No test made easier:'));
+});
+
+test('CONSTRAINTS.md: a changed Floor bullet is reported with both sides of the change', () => {
+  const r = run(constraintsMd, edit(constraintsMd, CONS, 'no deleted test,', 'no deleted unit test,'));
+  assert.equal(r.status, 1, r.output);
+  assert.ok(r.output.includes('[rule-changed] CONSTRAINTS.md: No test made easier: ...test, no assertion removed from  ->  ...unit test, no assertion removed\n'),
+    r.output);
+});
+
+test('CONSTRAINTS.md: a looser alternative threshold appended to a row is flagged, a stricter one is clean', () => {
+  flags(constraintsMd, edit(constraintsMd, CONS, '≥ 90% covered', '≥ 90% covered, or ≥ 50% for tests'),
+    'threshold-loosened ' + CONS);
+  flags(constraintsMd, edit(constraintsMd, CONS, '≤ 45 MB', '≤ 45 MB, or ≤ 60 MB with debug info'),
+    'threshold-loosened ' + CONS);
+  clean(constraintsMd, edit(constraintsMd, CONS, '≥ 90% covered', '≥ 90% covered, and ≥ 95% for new crates'));
+  clean(constraintsMd, edit(constraintsMd, CONS, '≤ 45 MB', '≤ 45 MB, or ≤ 40 MB stripped'));
+  clean(constraintsMd, edit(constraintsMd, CONS, '≥ 90% covered', '≥ 90% covered, in at most 5 minutes'));
+  clean(constraintsMd, edit(constraintsMd, CONS, '≥ 90% covered', '≥ 90% covered, or ≥ 90% for tests'));
+  const two = edit(constraintsMd, CONS, '≥ 90% covered', '≥ 90% of lines and ≥ 80% of functions covered');
+  clean(two, edit(two, CONS, '80% of functions covered', '80% of functions covered, or ≥ 85% for tests'));
+  flags(two, edit(two, CONS, '80% of functions covered', '80% of functions covered, or ≥ 70% for tests'),
+    'threshold-loosened ' + CONS);
+  clean(constraintsMd, edit(constraintsMd, CONS, 'diff-cover 9 |', 'diff-cover 9, since 2026 |'));
+});
+
+test('a Rust file: #[cfg(false)] and #[cfg(not(all()))] are flagged, #[cfg(not(any()))] is clean', () => {
+  for (const attr of ['    #[cfg(false)]', '    #[cfg(all(unix, false))]', '    #[cfg(not(all()))]', '    #[cfg(not( all( ) ))]']) {
+    flags(libRs, addLine(libRs, LIB, '    #[test]', attr), easier);
+  }
+  clean(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg(not(any()))]'));
+  clean(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg(not( any( ) ))]'));
+  clean(libRs, addLine(libRs, LIB, '    #[test]', '    #[cfg(feature = "false")]'));
+});
+
+test('a removed assert_cmd .code( with its argument on the next line is flagged', () => {
+  const split = { [CLI]: cliRs[CLI].replace('        .code(0)\n', '        .code(\n            predicate::in_iter([0, 1]),\n        )\n') };
+  flags(split, edit(split, CLI, '        .code(\n            predicate::in_iter([0, 1]),\n        )\n', ''), 'assertion-removed ' + CLI);
+});
+
+test('a test removed from a file that stays is flagged, a renamed or re-attributed one is clean', () => {
+  flags(libRs, edit(libRs, LIB, '    #[test]\n', ''), 'test-removed ' + LIB);
+  flags(libRs, edit(libRs, LIB, '    #[test]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n', ''),
+    ['test-removed ' + LIB, 'assertion-removed ' + LIB]);
+  flags(libRs, edit(libRs, LIB, '    #[test]', '    #[cfg_attr(any(), test)]'), 'test-removed ' + LIB);
+  const outOfLine = { [RUN]: runRs[RUN] + '\n#[cfg(test)]\nmod tests;\n' };
+  flags(outOfLine, edit(outOfLine, RUN, '\n#[cfg(test)]\nmod tests;\n', ''), 'test-removed ' + RUN);
+  clean(libRs, edit(libRs, LIB, '    fn adds() {', '    fn adds_two() {'));
+  clean(libRs, edit(libRs, LIB, '    #[test]', '    #[tokio::test]'));
+  const doc = { 'docs/testing.md': 'Unit tests carry #[test].\nThey run in CI.\n' };
+  clean(doc, edit(doc, 'docs/testing.md', 'Unit tests carry #[test].\n', ''));
+  const proto = { 'prototypes/tui/src/lib.rs': libRs[LIB] };
+  clean(proto, edit(proto, 'prototypes/tui/src/lib.rs', '    #[test]\n', ''));
+  clean(libRs, edit(libRs, LIB, '    #[test]\n    fn adds() {\n', '    #[test]\n    fn adds_more() {\n        let _ = add(0, 0);\n    }\n\n    #[test]\n    fn adds() {\n'));
+});
+
+const floorMd = {
+  [CONS]: `# Constraints
+
+## Floor (always enforced)
+
+- Formatting is rustfmt's; clippy and rustc warnings are errors.
+- Strict: tests always run.
+- No test made easier: no new \`#[ignore]\`, no deleted test, no assertion
+  removed from code that stays, without a reason in the commit message.
+
+## Enforced with numbers
+
+| Dimension | Rule | Checked by |
+|---|---|---|
+| Tests | All pass | cargo test |
+`,
+};
+
+test('CONSTRAINTS.md: a reworded one-line Floor bullet with a key is flagged', () => {
+  flags(floorMd, edit(floorMd, CONS, '- Strict: tests always run.', '- Strict: tests usually run.'), 'rule-changed ' + CONS);
+  clean(floorMd, edit(floorMd, CONS, '- Strict: tests always run.', '- Strict:  tests always run.'));
+});
+
+test('CONSTRAINTS.md: a bullet that leaves the Floor section is flagged, a new section after it is clean', () => {
+  flags(floorMd, edit(floorMd, CONS, '## Floor (always enforced)', '## The floor'),
+    ['rule-removed ' + CONS, 'rule-removed ' + CONS, 'rule-removed ' + CONS]);
+  flags(floorMd, edit(floorMd, CONS, '- No test made easier', '## Guidance\n\n- No test made easier'), 'rule-removed ' + CONS);
+  flags(floorMd, { [CONS]: floorMd[CONS].replace('- Strict: tests always run.\n', '').replace('| Tests |', '- Strict: tests always run.\n\n| Tests |') },
+    'rule-removed ' + CONS);
+  flags(floorMd, edit(floorMd, CONS, '- Strict: tests always run.', '- Rigour: tests always run.'), 'rule-removed ' + CONS);
+  clean(floorMd, edit(floorMd, CONS, '## Enforced with numbers', '## Notes\n\nSee the ADRs.\n\n## Enforced with numbers'));
+});
+
+test('CONSTRAINTS.md: the lines after a Floor bullet are part of it until a bullet, heading or table', () => {
+  const cont = '  removed from code that stays, without a reason in the commit message.';
+  flags(floorMd, edit(floorMd, CONS, cont, cont + '\nPrototype tests are exempt.'), 'rule-changed ' + CONS);
+  flags(floorMd, edit(floorMd, CONS, cont, cont + '\n\n  Slow tests are exempt.'), 'rule-changed ' + CONS);
+  flags(floorMd, edit(floorMd, CONS, cont, cont + '\n\nSlow tests are exempt.'), 'rule-changed ' + CONS);
+  const tight = { [CONS]: floorMd[CONS].replace(cont + '\n\n## Enforced', cont + '\n## Enforced') };
+  clean(tight, edit(tight, CONS, '## Enforced with numbers', '## Enforced, with numbers'));
+  const lead = { [CONS]: tight[CONS].replace('## Enforced with numbers\n', '## Enforced with numbers\nThe numbers below gate a merge.\n') };
+  clean(lead, edit(lead, CONS, 'gate a merge.', 'gate every merge.'));
+  const table = { [CONS]: floorMd[CONS].replace(cont + '\n', cont + '\n| Floor | Each bullet | review |\n') };
+  clean(table, edit(table, CONS, '| Floor | Each bullet | review |', '| Floor | Each bullet | the review |'));
+  const after = { [CONS]: table[CONS].replace('| review |\n', '| review |\nThe table above is read at review.\n') };
+  clean(after, edit(after, CONS, 'read at review.', 'read at each review.'));
+});
+
+test('a test commented out line by line is flagged, a doc comment that mentions #[test] is clean', () => {
+  const plain = { [LIB]: libRs[LIB].replace('        assert_eq!(add(1, 2), 3);\n', '        let _ = add(1, 2);\n') };
+  const fn = '    #[test]\n    fn adds() {\n        let _ = add(1, 2);\n    }\n';
+  flags(plain, edit(plain, LIB, fn, fn.split('\n').map((l) => (l ? '    // ' + l.trim() : l)).join('\n')), 'test-removed ' + LIB);
+  clean(plain, edit(plain, LIB, '#[cfg(test)]\nmod tests {', '/// Each `#[test]` below runs in CI.\n#[cfg(test)]\nmod tests {'));
+});

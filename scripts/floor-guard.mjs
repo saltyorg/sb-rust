@@ -86,14 +86,37 @@ const guarded = (f) => !f.startsWith('prototypes/');
 // 1. Silenced checker. #[allow] is also denied by the workspace lints; a new
 // #[expect] needs a CONSTRAINTS.md Exceptions row, so it is reported here.
 // So does the conditional form, `#![cfg_attr(cond, expect(...))]`: on one
-// line, or as rustfmt splits it, with `expect(` opening a line of its own
-// (no method call starts a line without its dot).
-const SUPPRESSIONS = /#!?\[\s*(allow|expect)\s*\(|#!?\[\s*cfg_attr\s*\(.*[(,]\s*(allow|expect)\s*\(|^\s*(allow|expect)\s*\(|#\[\s*coverage\s*\(\s*off|#\[\s*mutants::skip|gitleaks:allow|deny\.toml.*ignore|clippy::all\s*=\s*"allow"/;
+// line, or split over lines, with `expect(` opening a line of its own (no
+// method call starts a line without its dot) or after the condition's `,`
+// or `(` (a method call has its dot there too). `coverage(off)` and
+// `mutants::skip` are reported wherever they are, so inside a `cfg_attr`
+// too. deny.toml and the lint tables are rules 5g and 5h.
+const SUPPRESSIONS = /#!?\[\s*(allow|expect)\s*\(|[(,]\s*(allow|expect)\s*\(|^\s*(allow|expect)\s*\(|\bcoverage\s*\(\s*off\b|\bmutants::skip|gitleaks:allow/;
 // 4. Unfinished work.
 const STUBS = /\btodo!\s*\(|\bunimplemented!\s*\(|\bTODO\b|\bFIXME\b|\bXXX\b/;
 // 2. A test made easier.
-const SKIPS = /#\[\s*ignore\b|#\[\s*cfg_attr\s*\([^)]*ignore/;
-const ASSERTS = /\b(assert|assert_eq|assert_ne|debug_assert|prop_assert|insta::assert_\w+)!/;
+// - An ignore: `#[ignore]`; the word `ignore` anywhere on a `cfg_attr` line,
+//   so nested or after a comment too (a string such as `feature = "ignore"`
+//   is reported as well; `ignored` and `ignore_x` are not); and a
+//   `cfg_attr` split over lines, with `ignore` or `ignore = "..."` opening
+//   a line, or `ignore = "` after a `,` or `(` (a variable named ignore
+//   passed to a call is neither).
+// - A cfg that is never true: `any()`, `false` (the spelling since Rust
+//   1.88) or `not(all())`, but not `not(any())`, which is always true. A
+//   line pattern can't know that `cfg(not(test))` hides a test, or that a
+//   feature or cfg name is never set (`cfg(feature = "never")`,
+//   `cfg(FALSE)`): those stay unseen.
+const SKIPS = /#\[\s*ignore\b|#\[\s*cfg_attr\s*\(.*\bignore\b|^\s*ignore\s*(=\s*"|\)|$)|[(,]\s*ignore\s*=\s*"|#!?\[\s*cfg\s*(?=\().*(\b(?<!not\s*\(\s*)any\s*\(\s*\)|[(,]\s*false\s*[),]|\bnot\s*\(\s*all\s*\(\s*\)\s*\))/;
+// An assertion is a macro or a step of an assert_cmd chain: `.assert()`,
+// `.success()`, `.failure()`, `.code(..)`, `.stdout(..)` and `.stderr(..)`.
+// A chain step opens its line, as rustfmt puts it (`.code(` may end it,
+// with its argument below); `.assert()` counts anywhere. Not assertions: a
+// `Stdio` argument (std::process::Command's builder), `.code()` with no
+// argument (ExitStatus) and `.failure(` with a message (sb's own step
+// API). Any other argument to `.stdout(` or `.stderr(` (a `File`, an `if`)
+// is reported, and is acknowledged where it is std's builder. Unseen: a
+// step on a bound value (`let a = cmd.assert(); a.success();`).
+const ASSERTS = /\b(assert|assert_eq|assert_ne|debug_assert|prop_assert|insta::assert_\w+)!|\.assert\s*\(\s*\)|^\s*\.(success|failure)\s*\(\s*\)|^\s*\.code\s*\(\s*([^\s)]|$)|^\s*\.(stdout|stderr)\s*\((?!\s*(?:\w+::)*Stdio::)/;
 
 for (const { file, text } of added) {
   if (!guarded(file)) continue;
@@ -103,9 +126,28 @@ for (const { file, text } of added) {
   if (isConstraints(file) && /^\| *(W|E)\d+ *\|/.test(text)) flag('new-exception', file, text);
 }
 
-// 2b. A test file deleted, or an assertion removed from Rust code that still
-// exists (unit tests sit in the same file as the code).
-for (const f of deleted) if (guarded(f) && isTest(f)) flag('test-deleted', f, 'file deleted');
+// 2b. A test file deleted (under tests/, or any Rust file with a test
+// attribute: `#[test]`, `#[tokio::test]`), or an assertion removed from
+// Rust code that still exists (unit tests sit in the same file as the code).
+// A rename is a deletion here, so moving a src file that holds tests is
+// reported too, and is acknowledged.
+const TEST_ATTR = /#\[\s*(?:\w+::)*test\b/;
+const heldTests = (f) => removed.some((l) => l.file === f && TEST_ATTR.test(l.text));
+for (const f of deleted) if (guarded(f) && (isTest(f) || (isRust(f) && heldTests(f)))) flag('test-deleted', f, 'file deleted');
+// A test removed from a file that stays: more test-attribute lines (a test
+// attribute, or the `#[cfg(test)]` of a test module) removed than added.
+// A test renamed or moved within its file, or given another test attribute,
+// is clean; a test moved to another file is reported, and is acknowledged.
+// An added line that is a `//` comment adds no test, so a test commented
+// out line by line is reported.
+const TEST_LINE = /#\[\s*(?:\w+::)*test\b|#\[\s*cfg\s*\(\s*test\s*\)\s*\]/;
+const testLines = (lines, f) => lines.filter((l) => l.file === f && !(lines === added && l.text.trim().startsWith('//'))
+  && TEST_LINE.test(l.text)).length;
+for (const f of new Set(removed.map((l) => l.file))) {
+  if (!guarded(f) || !isRust(f) || deleted.includes(f)) continue;
+  const [gone, come] = [testLines(removed, f), testLines(added, f)];
+  if (gone > come) flag('test-removed', f, gone + ' test attribute line(s) removed, ' + come + ' added');
+}
 for (const { file, text } of removed) {
   if (guarded(file) && isRust(file) && !deleted.includes(file) && ASSERTS.test(text)) {
     flag('assertion-removed', file, text);
@@ -158,6 +200,14 @@ for (const r of removedRules) {
         verdict = dir ? 'threshold-loosened' : 'threshold-changed';
       }
     });
+    // A number appended in the same direction is read as an alternative
+    // ("≥ 90%, or ≥ 50% for tests"): looser than every number before, it
+    // lowers the bar. An added requirement on something else ("and ≥ 80%
+    // of branches") reads the same way, and is acknowledged. An appended
+    // number with no direction word of its own isn't seen.
+    const loosest = dir === 'min' ? Math.min(...was.map((b) => b.n)) : Math.max(...was.map((b) => b.n));
+    const looser = (n) => (dir === 'min' ? n.n < loosest : n.n > loosest);
+    if (!verdict && dir && was.length && now.slice(was.length).some(looser)) verdict = 'threshold-loosened';
   }
   if (verdict) flag(verdict, r.file, r.text + '  ->  ' + a.text);
 }
@@ -206,6 +256,57 @@ const newText = (f) => {
 // A line the diff both removes and adds (moved, reindented) is still there.
 // `taken` pairs each added line with one removed line at most.
 const sameLine = (a, b) => a.file === b.file && a.text.trim() === b.text.trim();
+
+// 1c. A CONSTRAINTS.md Floor bullet, changed or gone from the Floor
+// section. A continuation line has no key of its own, and a bullet whose
+// lines stay can leave the section (a heading renamed or put above it), so
+// rule 1b sees neither.
+// - A bullet runs on over every line after it in the section, blank lines
+//   aside, until the next bullet, a heading or a table row: so over a
+//   continuation, indented or not, and over a paragraph after a blank line.
+// - It is compared whole with the bullet of the same key (the one with the
+//   same words, if two share the key), word by word, so a rewrapped bullet
+//   is clean. The finding shows five words of each side from the first that
+//   differs.
+// - A bullet whose key is no longer in the section is rule-removed, once:
+//   not again when 1b reports its first line.
+// - Unseen: prose under a sub-heading inside the Floor, and an exemption
+//   written as a table row there. Added prose that weakens a rule has no
+//   bound, like an added bullet that contradicts one. Likewise in a .rs
+//   file, a test or an assertion wrapped in `/* ... */` is unseen.
+const floorBullets = (text) => {
+  const out = [];
+  let inFloor = false, bullet = null;
+  for (const line of (text ?? '').split('\n')) {
+    if (line.trim() === '') continue;
+    if (/^#{1,6}(\s|$)/.test(line)) {
+      if (/^## /.test(line)) inFloor = /^## Floor\b/.test(line);
+      bullet = null;
+    } else if (inFloor && /^[-*] /.test(line)) out.push(bullet = { key: ruleKey(line), lines: [line] });
+    else if (bullet && !/^\s*\|/.test(line)) bullet.lines.push(line);
+    else bullet = null;
+  }
+  return out;
+};
+const words = (b) => b.lines.join(' ').trim().split(/\s+/);
+for (const f of changed.filter(isConstraints)) {
+  const now = floorBullets(newText(f));
+  for (const was of floorBullets(oldText(f))) {
+    const w = words(was);
+    const same = now.filter((b) => b.key === was.key);
+    const is = same.find((b) => words(b).join(' ') === w.join(' ')) ?? same[0];
+    if (!is) {
+      const first = was.lines[0].trim().slice(0, 120);
+      if (!findings.some((x) => x.rule === 'rule-removed' && x.file === f && x.text === first)) flag('rule-removed', f, first);
+      continue;
+    }
+    const n = words(is);
+    if (w.join(' ') === n.join(' ')) continue;
+    let at = 0;
+    while (w[at] === n[at]) at++;
+    flag('rule-changed', f, was.key + ': ...' + w.slice(at, at + 5).join(' ') + '  ->  ...' + n.slice(at, at + 5).join(' '));
+  }
+}
 
 // A TOML file's lines without their comments, each with its table, its key
 // and its value; a line inside a multi-line array has the array's key.
