@@ -291,7 +291,9 @@ The `Follower` and its wake fd are `Send`.
     entries.
   - Rotation, vacuum, renames, archive rewrites, a journald restart and
     an inotify overflow are handled.
-  - follow.sh: 0 lost and 0 doubled in nine scenarios per release.
+  - follow.sh: 0 lost and 0 doubled in eleven scenarios per release
+    (nine beside `journalctl -f`, two sb-journal only: a follow from a
+    page's end).
 - **Limits:**
   - The output limit holds per page, and per file per wake when
     following.
@@ -362,8 +364,8 @@ anstream: https://docs.rs/anstyle-parse/1.0.0/anstyle_parse/. It runs
 the DEC state machine. `ESC X`, `ESC ^` and `ESC _` enter its
 `SosPmApcString` state, which ignores everything up to ST
 (src/state/codegen.rs at 1.0.0), and OSC and DCS have their own string
-states. console's `AnsiCodeIterator`, which `clean` uses today,
-recognises only CSI, OSC and DCS.
+states. console's `AnsiCodeIterator`, which term-ui's `clean` used
+before `DisplayText` replaced it, recognises only CSI, OSC and DCS.
 
 **The 8-bit C1 forms are ours.** anstyle-parse and vte both document
 "only supports 7-bit codes", and anstyle-parse's ground table gives
@@ -373,9 +375,10 @@ code points U+0090, U+0098, U+009B, U+009D, U+009E and U+009F to their
 U+0080 to U+009F. Raw 0x80 to 0x9F bytes become U+FFFD first, through
 lossy decoding. Why not the library: both parsers are 7-bit only.
 
-The sanitizer lives in sb-term-ui and is shared (decision 5). term-ui's
-`clean` becomes public, takes bytes, and is tightened to this policy,
-which amends term-ui's spec. The runner and the log viewer then use one
+The sanitizer lives in sb-term-ui and is shared (decision 5). It
+replaced term-ui's private `clean` with the public `DisplayText`, which
+takes bytes and follows this policy; term-ui's spec is amended
+("Escape handling"). The runner and the log viewer then use one
 sanitizer, and `DisplayText` is term-ui's type. sb-journal itself hands
 out only raw bytes. Viewer notices are a channel variant, never an
 in-band prefix; proto-logs' `\u{1}` marker is not carried over.
@@ -579,13 +582,18 @@ As listed in the host spec's decision 6:
   - siphasher;
   - lz4_flex (`safe-decode`), ruzstd 0.9.1 and lzma-rust2 (`std`, `xz`,
     no `optimization`);
-  - rustix (`fs` with inotify, `openat`, `fstat`);
+  - rustix (the workspace entry): `fs` for inotify and for the open
+    flags std's `OpenOptionsExt::custom_flags` passes (`O_NOFOLLOW`,
+    `O_NONBLOCK`, `O_NOCTTY`, `O_CLOEXEC`), and its always-on `io`
+    module for `Errno` and `fcntl_dupfd_cloexec` (the wake fd); the open
+    and its `fstat` are std's (`File::metadata`);
   - hex;
   - itertools (`kmerge_by`);
   - jiff;
   - thiserror;
   - for the `testing` feature only: serde_json (the JSON form), clap
-    (the examples' CLI) and fastrand (the fuzz PRNG); rustix's `process`
+    (the examples' CLI) and fastrand (the fuzz PRNG); rustix's `event`
+    (`poll`, the tools' and tests' wait on a wake fd); rustix's `process`
     feature (the fuzz address-space limit) is on in the workspace already;
     as dev-dependencies,
     tempfile and crc32fast. All are already in the tree. testing.rs
@@ -615,6 +623,7 @@ crates/journal/src/forward.rs  the forward page: journalctl 259's seek emulated,
 crates/journal/src/hash.rs     siphash, lookup3
 crates/journal/src/open.rs     safe opening (L2), Source::Local's machine-id file and roots, the opener's counts
 crates/journal/src/walk.rs     newest-first walks and the merge
+crates/journal/src/boots.rs    the order between boots of 255 and later (`compare_boot_ids`'s table; decision 11)
 crates/journal/src/follow.rs   Follower: positions, watches, classify, rescans
 crates/journal/src/rules.rs    RELEASES and the unit rules
 crates/journal/src/testing.rs  crafted-file builder, file-level access (`testing` feature)
@@ -667,10 +676,14 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
   once the maintainer pushes and authorizes it (decision 7); afl.rs
   fuzzing then; a check.sh workflow as its own task.
 - **The CONSTRAINTS bar:** changed-line coverage ≥ 90%, mutation ≥ 80%,
-  and the project ratchet. The port is large (about 3,800 lines), so it
-  lands in slices: file and hash, then walk and rules, then follow, then
-  the API. A ratchet ADR follows if the project figures move, as with
-  ADR-011. The binary-size ratchet applies: about 240 KiB expected.
+  and the project ratchet. The port is large, so it lands in slices:
+  file and hash, then walk and rules, then follow, then the API. It was
+  planned at about 3,800 lines; on 2026-11-12 it is about 4,710: the
+  nine reader modules' code lines outside their tests, without blank or
+  comment lines or the `testing` feature's modules (re-counted at the
+  hardening plan's Checkpoint C). A ratchet ADR follows if the project
+  figures move, as with ADR-011. The binary-size ratchet applies: about
+  240 KiB expected.
 
 ## Boundaries
 
@@ -733,8 +746,12 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
    `_UID=0` is required when the systemd-coredump user doesn't resolve.
 2. **The display keeps all colour:**
    - every SGR passes through when colour is on;
-   - every other escape is dropped, and so are C0 (other than tab and
-     newline), DEL and C1;
+   - every other escape is dropped, and so are C0 (other than tab,
+     newline and carriage return, which is applied: trailing ones are
+     ignored, then what follows the last one on its line is kept, as in
+     "Display (decision 2)"), DEL and C1 (carriage return's wording
+     corrected 2026-11-12, hardening Task 6, docs-L8; the rule itself is
+     unchanged);
    - bidi and zero-width characters aren't marked.
 3. **The CI matrix workflow is added locally**; pushing and running it
    needs its own go-ahead.

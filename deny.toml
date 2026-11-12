@@ -24,7 +24,6 @@ ignore = [
 # Compatible with the project's GPL-3.0-only licence. Adding one needs a
 # reason in the commit and a CONSTRAINTS.md review.
 allow = [
-    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
@@ -68,7 +67,8 @@ deny = [
     # docker: sb docker ps (and later start/stop/restart, the picker's
     # list, log streams), used by the binary.
     { crate = "sb-docker", wrappers = ["sb"] },
-    # host: only the supported-release check so far, used by the binary.
+    # host: the supported-release check and the journal reader's wrapper
+    # (sb-journal's types and its tokio glue), used by the binary.
     { crate = "sb-host", wrappers = ["sb"] },
     # journal: sb's own journal reader, depending on nothing of sb's and
     # wrapped by host (journal spec, "Capability map correction"). Its own

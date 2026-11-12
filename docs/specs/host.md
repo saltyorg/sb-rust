@@ -379,7 +379,9 @@ what both do.
   - a module row or a note under `host`;
   - a stack-table row for the reader;
   - the rejected list's "replaced by `journalctl -f`" corrected;
-  - a deny.toml entry allowing only `sb-host`;
+  - a deny.toml entry allowing `sb-host`, plus sb-journal's own name
+    for its self dev-dependency, which cargo-deny counts as a
+    parent (the sb-journal plan, "Code with no user yet");
   - the ADR for the library-first divergence.
 
 ## Tech Stack

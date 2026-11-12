@@ -277,9 +277,9 @@ capability map's missing rows (docs-M6). It runs before the lanes, so
 the journal lane starts from a corrected spec.
 
 **Acceptance criteria:**
-- [ ] docs-M6: the capability map's stack table has the nix row host.md
+- [x] docs-M6: the capability map's stack table has the nix row host.md
       requires, and the rustix row names sb-host's `event`.
-- [ ] Each id below is fixed, or it is on the collected declines list
+- [x] Each id below is fixed, or it is on the collected declines list
       (docs-L12's E1 half is confirmed already, decision 16):
       - docs-L1 **fix**: journal.md's Project Structure lists boots.rs.
       - docs-L2 **fix**: the Tech Stack describes rustix as used.
@@ -303,9 +303,9 @@ the journal lane starts from a corrected spec.
         is set when the maintainer reviews.
 
 **Verification:**
-- [ ] `scripts/check.sh fast`; `cargo deny --manifest-path
+- [x] `scripts/check.sh fast`; `cargo deny --manifest-path
       crates/sb/Cargo.toml check` after the deny.toml edit.
-- [ ] code-reviewer on the commit.
+- [x] code-reviewer on the commit.
 
 **Dependencies:** Task 5
 **Files:** `docs/specs/capability-map.md`, `docs/specs/journal.md`, `docs/specs/host.md`, `deny.toml`, `docs/decisions/ADR-013-own-journal-reader.md`

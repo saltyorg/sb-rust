@@ -157,7 +157,7 @@ GitHub API (last push, archived flag).
 | Markdown | `tui-markdown` + a small Saltbox `StyleSheet` | 0.3.12 / 2026-10 | 0.2M | glamour | proto-markdown |
 | Scrollable panes (small content) | `tui-scrollview` (ratatui org) | 0.6.8 / 2026-09 | 0.1M | bubbles viewport | proto-markdown |
 | Spinners, progress | `indicatif` (printed-lines pattern) | 0.18.6 / 2026-07 | 54M | bubbles spinner/progress, terminal runner | proto-runner |
-| Styled one-off lines, ANSI stripping | `console` (already pulled in by indicatif) | 0.16.6 / 2026-09 | 94M | lipgloss styles | proto-runner |
+| Text width, terminal size | `console` (already pulled in by indicatif): term-ui's text width, padding and truncation (`measure_text_width`, `pad_str`, `truncate_str`), `Term` (size, whether a terminal) and its colour switch. ANSI stripping is term-ui's `DisplayText` on `anstyle-parse` (term-ui spec, "Escape handling"); sb's and term-ui's tests still strip with `strip_ansi_codes` | 0.16.6 / 2026-09 | 94M | lipgloss styles | proto-runner |
 | Prompts | `dialoguer` | 0.12.0 / repo active 2026-10 | 19M | restore textinput model | proto-inline |
 | Tables | `tabled` (`ansi` feature), terminal width from `console` | 0.22.0 / 2026-09 | 13M | aquasecurity/table, terminal table | proto-inline (replaced comfy-table: no border colour) |
 | Colour decision | `anstyle` + `anstream` (clap's own), `colorchoice-clap` for `--color` | 1.0 / 2026 | 227M | lipgloss styles, colorprofile, charmtone | proto-inline |
@@ -179,7 +179,8 @@ GitHub API (last push, archived flag).
 | Fuzzy match | `strsim` | 0.11.1 (stable, low churn) | 258M | levenshtein | untested |
 | Shell quoting | `shlex` | 2.0.1 / 2026-05 | 311M | go-shellquote | untested |
 | PTY | `portable-pty` (wezterm) | 0.9.0 / repo active 2026-10 | 14M | creack/pty | proto-musl, proto-runner |
-| Unix syscalls | `rustix` | 1.1.6 / 2026-10 | 320M | x/sys | proto-runner |
+| Unix syscalls | `rustix` (the workspace's `fs`, `process`, `stdio` and `termios`; sb-host adds `event`, for the follow's wake wait, `journal::FollowWait`, journal spec decision 12, and so does sb-journal's `testing` feature) | 1.1.6 / 2026-10 | 320M | x/sys | proto-runner, sb-host |
+| User lookup | `nix` (`user` only, no default features), the 0.28 portable-pty already links | 0.31.3 / 2026-05 (checked 2026-11-12; sb: 0.28.0) | 244M | os/user | sb-host (the systemd-coredump user's uid, `journal::coredump_uid`; host spec, Tech Stack) |
 | systemd journal files (service logs) | sb's own reader, `sb-journal` (pread only, pure Rust; [ADR-013](../decisions/ADR-013-own-journal-reader.md)), on `siphasher` (siphash24), `lz4_flex` (`safe-decode`), `ruzstd`, `lzma-rust2` (`xz`, without `optimization`), `rustix` (inotify, safe opening) and `itertools` (the merge) | siphasher 1.0.4, lz4_flex 0.14.0, ruzstd 0.9.1, lzma-rust2 0.25.0, rustix 1.1.6, itertools 0.14.0 | — | cmd/logs.go's `journalctl -o json --cursor` polling | proto-journal ([findings](../prototypes/proto-journal.md)), the crate's container matrix on 22.04, 24.04 and 26.04 |
 | Restore decrypt | `aes`, `cbc`, `pbkdf2`, `sha1`, `sha2` (RustCrypto) | 2026 | 48–332M | crypto/*, x/crypto/pbkdf2 | untested |
 | Self-update | hand-rolled on `reqwest` + `sha2`, sends a `User-Agent` | — | — | selfupdate pkg (keeps digest check) | proto-musl (User-Agent) |
@@ -229,7 +230,7 @@ GitHub API (last push, archived flag).
 |---|---|---|---|
 | `cli-core` | clap tree, global flags, root relaunch, build info, signals/cancellation (an interrupted run dies of its signal, `$?` 130), error and exit-code policy | — | main.go, cmd/root.go, buildinfo, signals, layout |
 | `exec` | Child processes: streamed and captured output; PTY execution with process-group kill on cancel; secrets out of logs, output and errors | cli-core, term-ui | executor |
-| `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif; ANSI stripping of child output when not a terminal | cli-core | terminal |
+| `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif; one shared sanitizer, `DisplayText`, for every line drawn from given text and every output and notice line logged (term-ui spec, "Escape handling") | cli-core | terminal |
 | `host` | Ubuntu/arch/LXC/desktop checks, disk space, apt, systemd service list, file ownership; wraps `sb-journal` for the service logs, its blocking reads under tokio's `spawn_blocking` (host spec, decision 6) | exec, term-ui, journal | host |
 | `journal` (`sb-journal`) | sb's own read-only systemd journal reader, pread only and pure Rust: a unit's newest entries, pages back and forward, following ([journal spec](journal.md); [ADR-013](../decisions/ADR-013-own-journal-reader.md)) | — (wrapped by host) | cmd/logs.go's `journalctl` polling |
 | `repo` | Git operations on Saltbox/Sandbox checkouts, branch switching | exec, host | git |

@@ -505,7 +505,7 @@ Each lane runs in the order shown. The dependencies that aren't just
 - [x] Task 3: the floor guard's false negatives in Rust files
 - [x] Task 4: `check.sh` runs the checks that exist only on paper
 - [x] Task 5: the gate records are put right
-- [ ] Task 6: Low sweep: documents
+- [x] Task 6: Low sweep: documents
 
 ### Checkpoint A: gates
 - [ ] `check.sh full` passes on its own change, every step run, with

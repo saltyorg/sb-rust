@@ -143,3 +143,23 @@ Two of those differences are decisions, not limits:
   there, and the reader refuses unknown header flags.
 - The 26.04 coredump rule and the display policy differ from
   journalctl by decision; changing either is a spec amendment.
+
+## Amendments
+
+- 2026-11-12, hardening plan Task 6 (docs-L4): a `RELEASES` row also
+  carries the release's `BootRule`, the order between boots its
+  journalctl uses (journal spec, decision 11): `Realtime` for 249,
+  `NewestTail` for 255, `NewestTailEntryMachine` for 259.9. A new LTS row
+  needs its systemd's rule checked against that release's sd-journal
+  source and the container matrix, as for the `-u` rule. The decision
+  above is unchanged.
+- 2026-11-12, hardening plan Task 6 (docs-L4): the reader is about
+  4,710 lines, not 3,800 (Consequences): the nine reader modules' code
+  lines outside their tests, without blank or comment lines or the
+  `testing` feature's modules; re-counted at the hardening plan's
+  Checkpoint C.
+- 2026-11-12, hardening plan Task 6 (docs-L8): in decision 2 above,
+  carriage return is applied, not dropped: trailing ones are ignored,
+  then what follows the last one on its line is kept (journal spec,
+  decision 2 and "Display (decision 2)"). The rest of the C0 rule
+  stands.
