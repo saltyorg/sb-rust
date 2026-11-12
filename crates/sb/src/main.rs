@@ -317,9 +317,12 @@ fn open_log(dir: &std::path::Path) -> Option<RunLog> {
 }
 
 /// sb's `warning:` line, in the theme's warn colour, through anstream so
-/// `--color` and `NO_COLOR` are honoured.
+/// `--color` and `NO_COLOR` are honoured. The message is escaped here, the
+/// one place every warning passes (`SB_LOG_DIR` and the io error naming
+/// it can hold anything).
 fn warn(message: impl std::fmt::Display) {
     let style = theme::current().style(theme::Role::Warn);
+    let message = exit::escaped(&message.to_string());
     let _ = writeln!(anstream::stderr(), "{style}warning:{style:#} {message}");
 }
 

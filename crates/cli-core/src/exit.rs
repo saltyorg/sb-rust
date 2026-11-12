@@ -162,6 +162,10 @@ pub fn error_block(
 /// become one [`WITHHELD`](crate::log::WITHHELD) line (term-ui decision 8).
 /// Belt and braces: the marker's own Display is already the placeholder
 /// and it has no cause; stopping at it here keeps that true if it changes.
+/// The lines are raw: cli-core's block escapes them in `render_block`, and
+/// term-ui's runner draws them through its `DisplayText`, which splits a
+/// cause at its newlines (escaping here would show those as `\n` there,
+/// and escape text twice).
 pub fn shown_chain(err: &(dyn Error + 'static)) -> Vec<String> {
     let mut lines = Vec::new();
     for e in chain(err) {
@@ -172,6 +176,41 @@ pub fn shown_chain(err: &(dyn Error + 'static)) -> Vec<String> {
         lines.push(e.to_string());
     }
     lines
+}
+
+/// `text` made safe for sb's stderr on one line: the one way to put
+/// arbitrary text there (the error block's lines, sb's `warning:` lines).
+/// Control characters, invisible and direction marks are escaped
+/// (`\u{1b}`, `\r`, `\n`), so the text stays on its one line and can't
+/// forge one; quotes, apostrophes and backslashes pass as they are, so
+/// escaping twice changes nothing.
+///
+/// The text is split at those three, and each run between them goes
+/// through [`escape_controls`](crate::config::escape_controls) as it is,
+/// std's `str::escape_debug`, which escapes every non-printable character
+/// and a grapheme extender (a combining mark, ZWJ, a variation selector)
+/// only at the start of a string
+/// (<https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>):
+/// a mark stays with its base character (an NFD `Ame\u{301}lie`, Thai) and
+/// is escaped only at the start of a line or right after one of the
+/// three. Why not `escape_controls` on the whole line: it escapes those
+/// three too (`isn\'t`), and escapes text escaped already a second time.
+/// sb-config's `escape_controls` (crates/config/src/issue.rs) passes them
+/// through for the same reason (one character at a time, so it escapes
+/// every mark).
+#[must_use]
+pub fn escaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for part in text.split_inclusive(['\'', '"', '\\']) {
+        match part.strip_suffix(['\'', '"', '\\']) {
+            Some(run) => {
+                out.push_str(&crate::config::escape_controls(run));
+                out.push_str(&part[run.len()..]);
+            }
+            None => out.push_str(&crate::config::escape_controls(part)),
+        }
+    }
+    out
 }
 
 fn block(
@@ -187,15 +226,17 @@ fn block(
 
 /// sb's error block: the mark in the problem colour and the headline, then
 /// indented lines, each with an optional muted label. A plain theme renders
-/// no codes at all (anstyle renders an empty style as nothing).
+/// no codes at all (anstyle renders an empty style as nothing). The
+/// headline and every line's text are [`escaped`] (the labels are sb's).
 fn render_block<'a>(
     headline: &str,
     lines: impl IntoIterator<Item = (Option<&'a str>, String)>,
     theme: &Theme,
 ) -> String {
     let (mark, label) = (theme.style(Role::Problem), theme.style(Role::Muted));
-    let mut block = format!("{mark}✗{mark:#} {headline}\n");
+    let mut block = format!("{mark}✗{mark:#} {}\n", escaped(headline));
     for (name, text) in lines {
+        let text = escaped(&text);
         let _ = match name {
             Some(name) => writeln!(block, "  {label}{name}{label:#} {text}"),
             None => writeln!(block, "  {text}"),
@@ -252,6 +293,66 @@ mod tests {
         let (text, code) = report_text(&failure("could not read the config"), None);
         assert_eq!(text, "✗ could not read the config\n");
         assert_eq!(code, ExitCode::from(1));
+    }
+
+    /// A cause holding an OSC, a CR and a newline (san-M1, cli-M3): none
+    /// reaches the screen raw, and the cause stays on its one line, so the
+    /// block keeps its shape and no line can be forged. The headline and
+    /// the pointer are escaped too.
+    #[test]
+    fn control_characters_are_escaped_and_the_block_keeps_its_shape() {
+        let err = Failure {
+            message: "step\x1b[2J failed",
+            cause: Some(Box::new(failure(
+                "bad\x1b]0;owned\x07 name\rforged\n✗ forged line",
+            ))),
+        };
+        let (text, _) = report_text(&err, Some("/var/log/sb/x\x1b[1A.log (run 1)"));
+        assert_eq!(
+            text,
+            concat!(
+                "✗ step\\u{1b}[2J failed\n",
+                "  caused by: bad\\u{1b}]0;owned\\u{7} name\\rforged\\n✗ forged line\n",
+                "  details: /var/log/sb/x\\u{1b}[1A.log (run 1)\n",
+            )
+        );
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n'),
+            "{text:?}"
+        );
+    }
+
+    /// Quotes, apostrophes, backslashes and text escaped already (sb-config
+    /// escapes its own messages) show as they are: escaping twice changes
+    /// nothing.
+    #[test]
+    fn quotes_and_escaped_text_show_unchanged() {
+        let message = r#"Ubuntu release "jammy" isn't supported: \u{1b}]0;t\u{7} in C:\sb"#;
+        let err = Failure {
+            message: "could not read the config",
+            cause: Some(Box::new(failure(message))),
+        };
+        let (text, _) = report_text(&err, None);
+        assert_eq!(
+            text,
+            format!("✗ could not read the config\n  caused by: {message}\n")
+        );
+    }
+
+    /// A combining mark stays with its base character mid-line: an NFD
+    /// file name (macOS) and Thai show as they are.
+    #[test]
+    fn combining_marks_mid_line_show_unchanged() {
+        let message = "can't read Ame\u{301}lie.mkv or ก\u{e49}";
+        let err = Failure {
+            message: "could not read the media",
+            cause: Some(Box::new(failure(message))),
+        };
+        let (text, _) = report_text(&err, None);
+        assert_eq!(
+            text,
+            format!("✗ could not read the media\n  caused by: {message}\n")
+        );
     }
 
     #[test]

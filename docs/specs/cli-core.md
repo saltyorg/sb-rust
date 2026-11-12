@@ -138,9 +138,19 @@ SIGPIPE kills it.
 
 **Errors:** one block on stderr: `✗` and the message, each cause on its
 own line, then the log pointer (`details: /var/log/sb/sb.log (run <id>)`)
-when the run is logged. A cancellation shows "interrupted" rather than an
-error chain. Errors already shown (a failed step's tree) exit quietly, as
-the runner does.
+when the run is logged. Error text can carry untrusted bytes (a file
+name, a daemon's message), so every line of the block (the message, each
+cause, the pointer) and every `warning:` line goes through
+`exit::escaped`: its control characters, invisible and direction marks
+are escaped (`\u{1b}`, `\r`) by cli-core's `escape_controls`, run by run
+between quotes, apostrophes and backslashes, which stay as they are, so
+text escaped already isn't escaped twice. A combining mark stays with its
+base character (an NFD file name, Thai), escaped only at the start of a
+line or right after one of those three. A newline in a cause shows as a
+literal `\n` on that cause's one line: each cause stays one line of the
+block, and none can be forged. A cancellation shows "interrupted" rather
+than an error chain. Errors already shown (a failed step's tree) exit
+quietly, as the runner does.
 
 **Help and parse errors** (maintainer, 2026-10-30, after proto-help): help
 follows sb-go's (fang's) format in sb's palette: the about (long text when

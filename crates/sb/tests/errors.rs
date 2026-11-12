@@ -2,6 +2,7 @@
 //! style (cli-core spec: Help and parse errors).
 
 mod common;
+mod root_gate;
 
 use assert_cmd::prelude::*;
 use common::sb;
@@ -32,6 +33,65 @@ fn a_failed_write_shows_the_error_block() {
     );
     assert!(
         stderr.lines().skip(1).all(|l| l.starts_with("  details: ")),
+        "{stderr}"
+    );
+}
+
+/// Error text holding control characters is escaped in the block
+/// (san-M1): here the log pointer, whose path (`SB_LOG_DIR`) holds an
+/// OSC, a CR and a newline, stays on its one `details:` line. A root run,
+/// so the run logs and the block has a pointer.
+#[test]
+fn control_characters_in_the_error_block_are_escaped() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    let logs = dir.path().join("logs\x1b]0;owned\x07\rx\n✗ forged");
+    let full = std::fs::File::create("/dev/full").expect("/dev/full");
+    let out = sb()
+        .env("SB_LOG_DIR", &logs)
+        .arg("version")
+        .stdout(full)
+        .output()
+        .expect("run sb");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        !stderr.chars().any(|c| c.is_control() && c != '\n'),
+        "{stderr:?}"
+    );
+    let lines: Vec<_> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert_eq!(lines[0], "✗ No space left on device (os error 28)");
+    assert!(
+        lines[1].starts_with("  details: ")
+            && lines[1].contains(r"logs\u{1b}]0;owned\u{7}\rx\n✗ forged/sb."),
+        "{stderr}"
+    );
+}
+
+/// A warning's text is escaped too: an unusable `SB_LOG_DIR` holding an
+/// OSC, a CR and a newline (and the io error that names it) gives one
+/// `warning:` line with no control character but its newline.
+#[test]
+fn control_characters_in_a_warning_are_escaped() {
+    if !root_gate::requested() {
+        return;
+    }
+    let out = sb()
+        .env("SB_LOG_DIR", "/dev/null/x\x1b]0;owned\x07\rx\n✗ forged")
+        .arg("version")
+        .output()
+        .expect("run sb");
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    let line = stderr.strip_suffix('\n').expect("one line");
+    assert!(!line.chars().any(char::is_control), "{stderr:?}");
+    assert!(
+        line.starts_with(
+            r"warning: no run log this time (/dev/null/x\u{1b}]0;owned\u{7}\rx\n✗ forged: "
+        ),
         "{stderr}"
     );
 }
