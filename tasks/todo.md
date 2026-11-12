@@ -501,20 +501,20 @@ log (sb-M2), and a panic in a concurrent step is overdrawn by the live
 tree (ui-M3; confirmed).
 
 **Acceptance criteria:**
-- [ ] A panic hook, installed once the log is open, records the message
+- [x] A panic hook, installed once the log is open, records the message
       and location with the run id, then calls the previous hook. The
       message goes through Task 10's escaping; a test panics with a
       newline in the message.
-- [ ] A group sibling's panic stops the redraw unconditionally, so its
+- [x] A group sibling's panic stops the redraw unconditionally, so its
       message stays on screen; a PTY test asserts it.
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core -p sb-term-ui -p sb`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-cli-core -p sb-term-ui -p sb`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 10 (cli-core's log), Task 13
-**Files:** `crates/cli-core/src/log.rs`, `crates/sb/src/main.rs`, `crates/term-ui/src/runner.rs`, `crates/sb/tests/run_log.rs`
+**Files:** `crates/cli-core/src/log.rs`, `crates/sb/src/main.rs`, `crates/term-ui/src/runner.rs`, `crates/sb/tests/run_log.rs` (left as is: sb has no way to panic on demand; the hook is tested in cli-core's own test binary)
 **Scope:** M
 
 ## Checkpoint T: text and processes
