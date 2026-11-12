@@ -663,16 +663,16 @@ file layer that the kept fixes touch (Tasks 33-38) run on regular and
 compact files.
 
 **Acceptance criteria:**
-- [ ] Each suite that Tasks 33-38 touch runs over both layouts (one
+- [x] Each suite that Tasks 33-38 touch runs over both layouts (one
       parameter, not copied tests). A suite none of them touches stays
       as it is.
-- [ ] A suite that fails on compact files for a reason no finding
+- [x] A suite that fails on compact files for a reason no finding
       covers isn't committed failing: it stops for the maintainer and
       becomes a finding with an id and a task.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Task 27
 **Files:** `crates/journal/src/{walk.rs,forward.rs,boots.rs,follow.rs}` (tests; only the suites the fixes touch)

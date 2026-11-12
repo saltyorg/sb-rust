@@ -389,7 +389,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 
 ### Phase 3 (lane 2): the journal reader
 - [x] Task 27: the crafted builder writes compact files
-- [ ] Task 28: the suites the fixes touch run over both layouts
+- [x] Task 28: the suites the fixes touch run over both layouts
 - [ ] Task 32: the page-to-follow handover: facts, probe and options
 - [ ] Task 33: a page and its follow give every entry once
 - [ ] Task 34: the handover across files
