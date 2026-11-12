@@ -689,6 +689,43 @@ test("the guard's tests: a removed assertion or a deleted file is flagged, a new
   clean(guardTests, { [TESTS]: guardTests[TESTS] + "test('exit 0 is flagged', () => {\n  flags(checkSh, 'exit 0 || true');\n});\n" });
 });
 
+// The plan id check (hardening Task 5) is watched like the guard's own
+// scripts: its rules and its tests can't be dropped unseen.
+const PLAN_IDS = 'scripts/check-plan-ids.mjs';
+const planIdsMjs = {
+  [PLAN_IDS]: `// check-plan-ids.mjs: every finding id is planned.
+for (const id of defined.keys()) {
+  if (!traced.has(id)) problems.push(id + ': not in the tables');
+  if (!cited.has(id)) problems.push(id + ': not cited in any task');
+}
+`,
+};
+
+test('check-plan-ids.mjs: a removed rule or a deleted file is flagged, an added rule is clean', () => {
+  flags(planIdsMjs, edit(planIdsMjs, PLAN_IDS, "  if (!cited.has(id)) problems.push(id + ': not cited in any task');\n", ''),
+    'gate-line-removed ' + PLAN_IDS);
+  flags(planIdsMjs, { [PLAN_IDS]: null }, 'gate-file-deleted ' + PLAN_IDS);
+  clean(planIdsMjs, edit(planIdsMjs, PLAN_IDS, '}\n', "  if (twice.has(id)) problems.push(id + ': defined twice');\n}\n"));
+});
+
+const PLAN_IDS_TESTS = 'scripts/check-plan-ids.test.mjs';
+const planIdsTests = {
+  [PLAN_IDS_TESTS]: `import { test } from 'node:test';
+test('an unknown id fails', () => {
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not defined/);
+});
+`,
+};
+
+test("the plan id check's tests: a removed assertion or a deleted file is flagged, a new test is clean", () => {
+  flags(planIdsTests, edit(planIdsTests, PLAN_IDS_TESTS, '  assert.match(r.stderr, /not defined/);\n', ''),
+    'gate-line-removed ' + PLAN_IDS_TESTS);
+  flags(planIdsTests, { [PLAN_IDS_TESTS]: null }, 'gate-file-deleted ' + PLAN_IDS_TESTS);
+  clean(planIdsTests, { [PLAN_IDS_TESTS]: planIdsTests[PLAN_IDS_TESTS]
+    + "test('a duplicate fails', () => {\n  assert.equal(r.status, 1);\n});\n" });
+});
+
 // Cases a mutation probe of the guard found untested.
 
 test('check.sh: a second assignment after an unchanged value is flagged', () => {

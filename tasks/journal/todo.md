@@ -630,7 +630,9 @@ in the commit body. The matrix runs again where a fix touches reading.
         guard's two ADR-014 loosenings; ADR-014 is Proposed until this
         review).
       - 8: the security audit found no high finding (Task 11).
-      - Checkpoint A's first box is still unticked in its record; its
-        matrix and check.sh conditions are met by Task 11's matrix run
-        and Task 12's check. Checkpoint B held.
+      - Checkpoint A's first box was met at Task 5 and ticked late, at
+        Task 12, with its evidence (Checkpoint A above); its matrix and
+        check.sh conditions are met again by Task 11's matrix run and
+        Task 12's check (corrected in the hardening plan's Task 5,
+        docs-M5). Checkpoint B held.
 - [x] Review with the maintainer (approved 2026-11-11, with ADR-014 accepted); the plan archived to `tasks/journal/`.

@@ -50,11 +50,23 @@ pass clippy and their tests.
 | Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
 | Review line | Every commit's body says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review of every change (CLAUDE.md) |
 | Logging | Every root run writes its run record and outcome; logs never contain secret values | Tests in `sb-cli-core` (run log) and in each module that handles secrets (facts, accounts, credentials): the test feeds a known secret and asserts it isn't in the captured log | task | Decision 11; the run log is kept on the host |
+| Journal matrix | compare.sh, compat.sh, follow.sh and stress.sh pass on each supported release, with only the journal spec's listed Differences | `crates/journal/tests/` (the journal spec, [docs/specs/journal.md](docs/specs/journal.md), "Commands") | by hand (below) | journalctl of each release is the reference the reader must match (journal spec, assumption 4 and success criterion 3) |
+| Journal fuzz | The fuzz harness passes, its bounds enforced by itself | the `fuzz` example over seeds from `crates/journal/tests/seeds.sh` (journal spec, "Commands") | by hand (below) | The reader's bounds must hold on damaged and mutated files (journal spec, success criterion 4) |
 
-All of the above run through `scripts/check.sh fast|task|full [base]`.
+All of the above but the two journal rows run through
+`scripts/check.sh fast|task|full [base]`.
 `fast` runs after edits, `task` before handing work back (a few minutes),
 and `full` before committing and in CI once CI exists. Every failing check
 blocks.
+
+The journal matrix and the fuzz harness run by hand, capped, at each
+checkpoint and after any task that touches journal reading: a change
+under `crates/journal/`, or a version change of one of sb-journal's
+dependencies. They run so until CI is authorised: the matrix workflow
+(`.github/workflows/journal-matrix.yml`) is local and unpushed, and
+pushing and running it, and afl.rs fuzzing after it, wait for the
+maintainer's go-ahead (journal spec, decisions 3 and 7). A failing run
+blocks as a failing check does.
 
 A floor finding that is expected and accepted (a guard line changed on
 purpose, an assertion moved to another test) is acknowledged in

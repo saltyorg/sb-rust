@@ -1,7 +1,8 @@
 # Implementation Plan: `sb-journal` (approved 2026-11-09)
 
 Spec: [docs/specs/journal.md](../../docs/specs/journal.md) (approved
-2026-11-09, decisions 1-9). Evidence:
+2026-11-09 with decisions 1-9; decisions 10 and 11 were added on
+2026-11-10 and 12 on 2026-11-11, during this plan). Evidence:
 [docs/prototypes/proto-journal.md](../../docs/prototypes/proto-journal.md)
 (the prototype's FINDINGS.md, moved there in Task 12, when the prototype
 was removed) and
@@ -108,7 +109,7 @@ what prove it.
 ## API names
 
 The spec gives the shape and leaves the names to the plan (journal.md,
-"API sketch"). These names follow api-and-interface-design and the
+"API (first slice)"). These names follow api-and-interface-design and the
 Pragmatic Rust Guidelines: M-STRONG-TYPES-GUARD,
 M-ERRORS-CANONICAL-STRUCTS, M-BUILD-RESULT, M-NO-GLOB-REEXPORTS and
 M-DOC-INLINE. The maintainer reviews them at Checkpoint A, before the
@@ -272,8 +273,10 @@ sanitizer, so it waits for T9 too.
 - [x] Task 5: the comparison tools and container scripts on the crate
 
 ### Checkpoint A: the reader against journalctl
-- [ ] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04, pinning
-      the forward page, the `more_*` flags and the coredump row
+- [x] compare.sh and compat.sh pass on 22.04, 24.04 and 26.04, pinning
+      the forward page, the `more_*` flags and the coredump row (met at
+      Task 5, recorded late at Task 12: tasks/journal/todo.md,
+      Checkpoint A) (corrected in the hardening plan's Task 5, docs-M5)
 - [x] The API names are reviewed; the ratchet is re-measured
 - [x] Review with the maintainer (approved 2026-11-11, with ADR-014 accepted) (2026-11-11)
 

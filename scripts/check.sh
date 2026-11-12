@@ -204,6 +204,8 @@ fast() {
   # only): https://nodejs.org/docs/latest-v24.x/api/test.html#test-reporters
   need node
   node --test --test-reporter=dot scripts/floor-guard.test.mjs
+  step "plan id check's own tests"
+  node --test --test-reporter=dot scripts/check-plan-ids.test.mjs
   step "floor guard"
   node scripts/floor-guard.mjs --base "$base"
   step "secrets (gitleaks, redacted)"

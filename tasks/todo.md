@@ -14,6 +14,11 @@ risks, open questions). Findings, by id:
 - [tasks/cli-core/](cli-core/plan.md);
 - [tasks/prototypes/](prototypes/plan.md).
 
+[docs/specs/host.md](../docs/specs/host.md) (approved 2026-11-08) has
+no plan of its own yet: sb-host holds the supported-release check (the
+cli-core plan's Task 4) and the journal reader's wrapper (the sb-journal
+plan's Task 10), and the rest of the spec waits for its plan.
+
 Every task follows CLAUDE.md:
 - the skills;
 - TDD: each finding's probe becomes a failing test before its fix;
@@ -61,6 +66,10 @@ Standing rules:
   gate results, the reviews, the recommendations followed and the open
   risks, summarised, with no raw output and no host details. Work goes
   on after it; the maintainer reviews the commits afterwards.
+- Every checkpoint, A included, also runs `node scripts/check-plan-ids.mjs
+  tasks/findings.md tasks/plan.md tasks/todo.md` and CONSTRAINTS.md's two
+  by-hand journal rows (the matrix and the fuzz harness), and a failure
+  blocks the checkpoint (Task 5; the plan, decision 13).
 
 A Low sweep lists its ids from tasks/findings.md, each marked **fix** or
 **proposed-decline** with a reason. The sweep commits its fixes without
@@ -239,26 +248,26 @@ references and this file's housekeeping go with them (docs-L6,
 docs-L17).
 
 **Acceptance criteria:**
-- [ ] CONSTRAINTS.md says the matrix and the fuzz harness run by hand,
+- [x] CONSTRAINTS.md says the matrix and the fuzz harness run by hand,
       at each checkpoint and after any task that touches reading, until
       CI is authorised.
-- [ ] The journal plan's Checkpoint A agrees with its todo's record.
-- [ ] The journal plan's "decisions 1-9" and "API sketch" references
+- [x] The journal plan's Checkpoint A agrees with its todo's record.
+- [x] The journal plan's "decisions 1-9" and "API sketch" references
       match the spec.
-- [ ] `scripts/check-plan-ids.mjs` checks that every id in
+- [x] `scripts/check-plan-ids.mjs` checks that every id in
       tasks/findings.md is in the plan's traceability tables and in a
       task here, and that no task cites an unknown id. It takes the
       three paths and is run at each checkpoint.
-- [ ] This file: done items leave the open lists; a follow-up is added
+- [x] This file: done items leave the open lists; a follow-up is added
       for `MUTATION_TESTERS` when sb reaches sb-journal; host.md has a
       plan entry or a note that it has none.
 
 **Verification:**
-- [ ] `scripts/check.sh fast`; the links resolve; the id check passes.
-- [ ] code-reviewer on the commit.
+- [x] `scripts/check.sh fast`; the links resolve; the id check passes.
+- [x] code-reviewer on the commit.
 
 **Dependencies:** Task 4
-**Files:** `CONSTRAINTS.md`, `tasks/journal/plan.md`, `tasks/journal/todo.md`, `tasks/todo.md`, `scripts/check-plan-ids.mjs`
+**Files:** `CONSTRAINTS.md`, `tasks/journal/plan.md`, `tasks/journal/todo.md`, `tasks/todo.md`, `scripts/check-plan-ids.mjs`, `scripts/check-plan-ids.test.mjs`, `scripts/check.sh` (runs the tests), `scripts/floor-guard.mjs`, `scripts/floor-guard.test.mjs`, `scripts/floor-acknowledged.txt`
 **Scope:** S
 
 ## Task 6: Low sweep: documents
@@ -2062,27 +2071,6 @@ recorded in Task 6, not here.)
   until the announcements renderer brings tui-markdown into sb's graph,
   or E1 is decided again at its expiry (2027-01-28).
 
-- Done: the consumer's wake wait. tokio 1.54.1 deprecates `AsyncFd::new`
-  as unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
-  `unsafe`, which the workspace forbids. Maintainer's decision
-  (2026-11-11): sb-host's `journal::FollowWait` waits with rustix poll on
-  the wake fd and a stop eventfd, inside spawn_blocking; its
-  `FollowStop` handle, or dropping it, writes the stop fd. The journal
-  spec's wake protocol is amended (decision 12), and the follow test in
-  crates/host/tests/journal.rs waits through it.
-
-- Closed in Task 11: crates/cli-core/src/exit.rs's anstream `strip_str`
-  (which passes C1 code points through) is only in its test module,
-  over the test's own fixed error, so no child or file text reaches it.
-
-- Done in Task 7: the local CI workflow (journal-matrix.yml) runs the
-  crate's follow.sh and stress.sh after the page checks; still unpushed.
-
-- Done in Task 6: the two mutation survivors at the `e.is_io()` guards
-  in file.rs's `test_object` and forward.rs's `all_matches_from` are
-  killed by `the_systems_error_reading_a_probed_entry_stops_the_bisect`
-  and `the_systems_error_in_the_resumed_list_is_the_walks`.
-
 - The tui spec's viewer (the first consumer): the release's entry order
   can form a cycle when a boot is in no file's tail (Difference 20,
   `forward_paging_cycles_where_the_order_does`), so paging forward one
@@ -2104,13 +2092,6 @@ recorded in Task 6, not here.)
   memory cap inside check.sh's mutation pass, so an uncapped run can't
   exhaust the host.
 
-- Decided in Task 6: the follow reads every header first on each
-  drain (`refresh()`), which caps the guessed `object_head` reads at the
-  file's length then, and an `Io` from a cut inside one drain is
-  waited for once (`Wait::Entry`), like any read, before the next
-  drain reads the header again
-  (`a_file_cut_while_followed_reads_up_to_the_cut`).
-
 - A page holds a descriptor for every listed file at once (Task 3's
   design, kept in Task 4), and a follow holds one per followed file for
   as long as it runs (Task 6), plus its inotify descriptor, and each
@@ -2130,6 +2111,47 @@ recorded in Task 6, not here.)
   only the journal matrix (sb-journal spec, decision 7).
 - CI: pushing and running the journal matrix, then afl.rs fuzzing, each
   on the maintainer's go-ahead.
+
+- check.sh's `MUTATION_TESTERS[sb-journal]` names sb-host only, the one
+  crate whose tests reach sb-journal today (ADR-012). The task in which
+  an `sb` command first uses sb-journal (the tui picker and viewer) adds
+  `sb` to the entry, or accepts the slower pass with every crate's
+  tests, as ADR-012 says; a tester missing from the entry lowers the
+  score.
+
+## Closed follow-ups
+
+Moved here from the lists above once done, for the record (hardening
+Task 5, docs-L17). The task numbers are the sb-journal plan's
+([tasks/journal/](journal/plan.md)).
+
+- Done: the consumer's wake wait. tokio 1.54.1 deprecates `AsyncFd::new`
+  as unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
+  `unsafe`, which the workspace forbids. Maintainer's decision
+  (2026-11-11): sb-host's `journal::FollowWait` waits with rustix poll on
+  the wake fd and a stop eventfd, inside spawn_blocking; its
+  `FollowStop` handle, or dropping it, writes the stop fd. The journal
+  spec's wake protocol is amended (decision 12), and the follow test in
+  crates/host/tests/journal.rs waits through it.
+
+- Closed in Task 11: crates/cli-core/src/exit.rs's anstream `strip_str`
+  (which passes C1 code points through) is only in its test module,
+  over the test's own fixed error, so no child or file text reaches it.
+
+- Done in Task 7: the local CI workflow (journal-matrix.yml) runs the
+  crate's follow.sh and stress.sh after the page checks; still unpushed.
+
+- Done in Task 6: the two mutation survivors at the `e.is_io()` guards
+  in file.rs's `test_object` and forward.rs's `all_matches_from` are
+  killed by `the_systems_error_reading_a_probed_entry_stops_the_bisect`
+  and `the_systems_error_in_the_resumed_list_is_the_walks`.
+
+- Decided in Task 6: the follow reads every header first on each
+  drain (`refresh()`), which caps the guessed `object_head` reads at the
+  file's length then, and an `Io` from a cut inside one drain is
+  waited for once (`Wait::Entry`), like any read, before the next
+  drain reads the header again
+  (`a_file_cut_while_followed_reads_up_to_the_cut`).
 
 ## Review backlog (taken up when each crate is next touched)
 

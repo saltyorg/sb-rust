@@ -103,7 +103,11 @@ Answers at the plan's approval (2026-11-11):
     `tasks/checkpoints/<checkpoint>.md`, with results summarised, no raw
     output and no host details. At Checkpoint C, setting CONSTRAINTS
     "Last reviewed" and confirming the collected declines stay open for
-    the maintainer; the plan is archived after that sitting.
+    the maintainer; the plan is archived after that sitting. (Added in
+    Task 5, a tightening: every checkpoint, A included, also runs
+    `node scripts/check-plan-ids.mjs tasks/findings.md tasks/plan.md
+    tasks/todo.md` and CONSTRAINTS.md's two by-hand journal rows, and a
+    failure blocks the checkpoint.)
 14. **A research task's question takes the recommendation.** When the
     research for Tasks 7/14, 32, 34 and 42/43 is done, the task's
     recommendation is followed if a fresh-context review on Fable
@@ -500,7 +504,7 @@ Each lane runs in the order shown. The dependencies that aren't just
 - [x] Task 2: `check.sh` accepts acknowledged floor findings
 - [x] Task 3: the floor guard's false negatives in Rust files
 - [x] Task 4: `check.sh` runs the checks that exist only on paper
-- [ ] Task 5: the gate records are put right
+- [x] Task 5: the gate records are put right
 - [ ] Task 6: Low sweep: documents
 
 ### Checkpoint A: gates

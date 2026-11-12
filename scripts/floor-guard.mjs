@@ -215,8 +215,11 @@ for (const r of removedRules) {
 // 5. The gate files: the files outside Rust and CONSTRAINTS.md that hold
 // the bar, this guard's own scripts and tests included (docs-H1). Each is
 // compared with its copy at the merge base.
-const GATE_SCRIPTS = ['scripts/check.sh', 'scripts/floor-guard.mjs', 'scripts/check-commit-messages.sh'];
-const GUARD_TESTS = 'scripts/floor-guard.test.mjs';
+// The plan id check (hardening Task 5) and its tests are watched the same way.
+const GATE_SCRIPTS = ['scripts/check.sh', 'scripts/floor-guard.mjs', 'scripts/check-commit-messages.sh',
+  'scripts/check-plan-ids.mjs'];
+const GUARD_TESTS = ['scripts/floor-guard.test.mjs', 'scripts/check-plan-ids.test.mjs'];
+const isGuardTest = (f) => GUARD_TESTS.includes(f);
 // Files that configure a tool the gate runs, at the root or in a crate.
 // - clippy reads `clippy.toml` or `.clippy.toml` from the crate's directory
 //   (CARGO_MANIFEST_DIR), then from each parent:
@@ -346,7 +349,7 @@ const tomlItems = (text) => {
 // 5a. A gate file deleted or renamed (a crate's manifest goes with its
 // crate).
 for (const f of deleted) {
-  if (isGateScript(f) || f === GUARD_TESTS || isTestScript(f) || f === 'deny.toml' || f === 'rust-toolchain.toml') {
+  if (isGateScript(f) || isGuardTest(f) || isTestScript(f) || f === 'deny.toml' || f === 'rust-toolchain.toml') {
     flag('gate-file-deleted', f, 'file deleted');
   }
 }
@@ -397,7 +400,7 @@ for (const f of changed.filter(isShellGate)) {
 const taken = new Set();
 for (const r of removed) {
   const { file, text } = r;
-  if (!(isGateScript(file) || file === GUARD_TESTS) || deleted.includes(file) || !isCode(file, text) || limit(text)) continue;
+  if (!(isGateScript(file) || isGuardTest(file)) || deleted.includes(file) || !isCode(file, text) || limit(text)) continue;
   const twin = added.find((a) => !taken.has(a) && sameLine(a, r));
   if (twin) taken.add(twin);
   else flag('gate-line-removed', file, text);
