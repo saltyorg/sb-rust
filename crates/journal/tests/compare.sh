@@ -33,10 +33,11 @@ set -euo pipefail
 # `-u demo.service`, 500 entries, the tail, the page before it and the first page forward.
 # The figures were the same in every run (four per release; journal-remote
 # keys each file's hashes at random, so a hash-chain collision could add
-# a pread): the bounds are 26.04's, the highest, plus 1%.
-PREADS_TAIL_MAX=1728
-PREADS_BACK_MAX=2417
-PREADS_FORWARD_MAX=1765
+# a pread): the bounds are 26.04's, the highest, plus 1%, re-based after
+# the page's second header read (ADR-019).
+PREADS_TAIL_MAX=1763
+PREADS_BACK_MAX=2452
+PREADS_FORWARD_MAX=1799
 
 # SBJ_BIN names a binary built already (CI builds it once). It is resolved
 # before the cd below, so a relative path works too.
