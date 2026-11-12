@@ -14,7 +14,8 @@ place. Tasks 1-6 (the gates and the records) are done.
 
 On 2026-11-12 the maintainer cut the plan to the findings that can
 happen when sb runs on a Saltbox server (decision 18). 29 ids are
-left, about 21 distinct defects, in 22 tasks. The surviving tasks keep
+left, about 21 distinct defects, in 21 tasks (Task 35 was merged into
+Task 33, decision 21). The surviving tasks keep
 their original numbers, so the numbers have gaps. The TUI log viewer
 spec waits for this plan: the viewer builds on paging, the follow,
 tables and the error display.
@@ -31,9 +32,9 @@ reader; config.
    gets its ending, then sb ends by SIGHUP. This replaces the cli-core
    spec's "sb doesn't handle SIGHUP".
 3. **sb accepts the YAML Ansible accepts.** The options are researched
-   first, with pros and cons (Task 42), and the recommendation is
-   followed as decision 14 says. A residual case the chosen fix can't
-   cover goes to the maintainer. A standing differential test follows.
+   first, with pros and cons (Task 42), and the maintainer chooses
+   (decision 20). A residual case the chosen fix can't cover goes to
+   the maintainer. A standing differential test follows.
 4. *Superseded by decision 18.* (Was: Lows are not ignored; each is a
    task's criterion or in a per-crate Low sweep.)
 
@@ -42,8 +43,9 @@ Answers at the plan's approval (2026-11-11):
 5. **The plan is approved.** Work starts with Tasks 1-6.
 6. **Task 2's ADR is accepted.** The Floor guard row becomes "zero
    unacknowledged floor violations".
-7. *Superseded by decision 18: san-I2 is dropped.* (Was: bidi and
-   zero-width characters are escaped in table cells.)
+7. *Superseded by decision 18: san-I2 is dropped; confirmed by
+   decision 19.* (Was: bidi and zero-width characters are escaped in
+   table cells.)
 8. **SIGHUP stays ignored when it was ignored at startup** (`nohup`).
 9. **The repeat window applies to SIGTERM and SIGHUP only.** Its value,
    250 ms, is confirmed by the probe. If the probe shows SIGINT doubled
@@ -63,7 +65,7 @@ Answers at the plan's approval (2026-11-11):
       same moment races the page: every entry a page shows is in
       journalctl's final view, with no gap; and the page plus its
       follow is that final view from the page's oldest entry on, each
-      entry once (Task 35).
+      entry once (Task 33).
     - A Tail page already matches: `journalctl -n N` seeks to the
       tail once and shows at most N lines (systemd v255 journalctl.c
       2510-2514, 1958).
@@ -71,41 +73,25 @@ Answers at the plan's approval (2026-11-11):
       the live count at each step and goes on to entries appended
       meanwhile, while sb's page stops at the count its header gave.
       Those entries come with the follow, not the page. Task 32's
-      recommendation reads that as within this decision, and it is
-      followed with the handover answer, as reversible (decision 14).
+      recommendation reads that as within this decision; the
+      maintainer decides it with the handover answer (decision 20).
 
-### How the plan runs (2026-11-11; narrowed by decision 18)
+### How the plan runs (2026-11-11; narrowed by decisions 18 to 22)
 
-13. **Checkpoints T, D, B, Y and C are reports, not stops.** Each one's
-    "Review with the maintainer" becomes a written checkpoint report
-    (what landed, the gate results, the reviews, the open risks), and
-    work goes on. The maintainer reviews the commits afterwards.
-    Nothing is pushed. Screenshots of looks (Task 21, Checkpoint D)
-    still wait for the maintainer, and only that lane pauses; the
-    screenshots Tasks 19 and 20 promise go into the checkpoint report
-    instead. Each report is committed as
-    `tasks/checkpoints/<checkpoint>.md`, with results summarised, no raw
-    output and no host details. At Checkpoint C, confirming the
-    proposed declines stays open for the maintainer; the plan is
-    archived after that sitting. Every checkpoint also runs
+13. **Checkpoints T, D, B, Y and C are not stops.** Work goes on after
+    each. The maintainer reviews the commits afterwards. Nothing is
+    pushed. Screenshots of looks (Task 21, Checkpoint D) still wait for
+    the maintainer, and only that lane pauses. At Checkpoint C,
+    confirming the proposed declines stays open for the maintainer; the
+    plan is archived after that sitting. Every checkpoint also runs
     CONSTRAINTS.md's two by-hand journal rows, and a failure blocks the
     checkpoint.
     - Narrowed: the plan id check that ran at every checkpoint was
       retired on 2026-11-12. Setting CONSTRAINTS "Last reviewed" at
-      Checkpoint C went with docs-L16.
-14. **A research task's question takes the recommendation.** When the
-    research for Tasks 32, 34 and 42/43 is done, the task's
-    recommendation is followed if a fresh-context review on Fable
-    agrees with it. It is recorded as reversible, in the task and in
-    its checkpoint report, for the maintainer to overrule on return,
-    which may mean rework. The handover recommendation includes decision
-    12's point on a forward page bounded by its header's count. A
-    residual YAML difference the chosen fix can't cover still waits for
-    the maintainer (decision 3).
-    If the reviewer disagrees, or the research finds no option that
-    meets the decisions above, the task and the tasks that depend on
-    it wait for the maintainer, and other work goes on.
-    - Narrowed: Tasks 7 and 14 are gone.
+      Checkpoint C went with docs-L16. The committed report files are
+      gone (decision 22).
+14. *Superseded by decision 20.* (Was: a research task's
+    recommendation is followed once a fresh-context review agrees.)
 15. **Proposed declines are collected.** A proposed decline goes on
     one running list in tasks/todo.md ("Proposed declines for the
     maintainer"), to be confirmed or overruled in one sitting. An
@@ -157,9 +143,27 @@ Answers at the plan's approval (2026-11-11):
       finding. No gate, plan or record work is done without a defect
       that affects sb.
 
+### Answers after the cut (2026-11-12)
+
+19. **Decision 7's end is confirmed.** Bidi and zero-width characters
+    in table cells are not escaped; san-I2 stays dropped.
+20. **The maintainer chooses after research.** A research task (Tasks
+    32, 34's flush question and 42) ends by putting its options, their
+    pros and cons and a recommendation to the maintainer, who chooses.
+    The tasks that build on the answer (33, 34 and 43) wait for that
+    choice; other work goes on. This replaces decision 14.
+21. **Task 35 is merged into Task 33.** What is left of it is one
+    follow.sh scenario on real journald, run as Task 33's
+    verification, that shows a page plus its follow gives every entry
+    once. The stress.sh check and its floors are gone.
+22. **Checkpoints have no report files.** A checkpoint is its ticked
+    criteria in tasks/todo.md plus a short message to the maintainer.
+    The screenshots of Tasks 19, 20 and 21 are shown to the maintainer
+    directly.
+
 Decided unattended, reversible
-(2026-11-12; listed in Checkpoint T's report, the first one committed, and
-kept or overruled at Checkpoint C's sitting). Neither had a Fable
+(2026-11-12; named in Checkpoint T's message, and kept or overruled at
+Checkpoint C's sitting). Neither had a Fable
 review of its own before it was made; both were reviewed in the Fable
 review of this alignment, which found them accurately stated and
 checked the 26-of-290 count and the `go version -m` fact:
@@ -194,7 +198,7 @@ checked the 26-of-290 count and the `go version -m` fact:
     which escapes control characters, `\n` and `\r` in every field of
     every record, bridged dependency records included.
 - **A page and its follow give every entry once** (decision 12; Tasks
-  32 to 35). The defect, the facts and the options are in Task 32 and
+  32 to 34). The defect, the facts and the options are in Task 32 and
   in the handover question below; this is the frame.
   - **The invariant.** The follow's start, its placing of new files
     and its flush rule were all built on one statement: every entry
@@ -207,27 +211,24 @@ checked the 26-of-290 count and the `go version -m` fact:
   - **A limit remains under every option:** an entry can be lost if
     its file is gone before the follow opens it, which takes a flush
     in between, once per boot (the flush question below). Task 34
-    lists it in the spec, and Checkpoint B's report names it for the
+    lists it in the spec, and Checkpoint B's message names it for the
     maintainer.
 - **Test the format the releases write.** The crafted-file builder
   gains a compact layout, and the suites the kept journal fixes touch
   run over both (Tasks 27 and 28). This comes before the journal
   fixes, so each fix is tested in both layouts.
-- **Research tasks take their recommendation** (decision 14). Three
-  questions are settled by research: Task 32 (the handover), Task 34's
-  flush question and Task 42 (YAML). None commits a failing test: a
+- **Research first, then the maintainer chooses** (decision 20). Three
+  questions are researched: Task 32 (the handover), Task 34's flush
+  question and Task 42 (YAML). None commits a failing test: a
   reproduction is a probe described in the write-up, and the test lands
   with the fix.
-  - Each recommendation is checked by a fresh-context review on Fable.
-    If it agrees, the recommendation is followed and recorded as
-    reversible, in the task and in its checkpoint report, for the
-    maintainer to overrule on return, which may mean rework.
-  - If the review disagrees, or the research finds no option that meets
-    the decisions, that task and the tasks that depend on it wait for
-    the maintainer, and other work goes on.
+  - Each ends with its options, their pros and cons and a
+    recommendation, put to the maintainer.
+  - The tasks that build on the answer wait for the maintainer's
+    choice, and other work goes on.
   - Task 32 comes after the builder its fix is tested with; Task 33 is
     the fix. Task 42 opens lane 3 and runs early, beside lanes 1 and 2,
-    so its review is done before lane 3's code starts.
+    so the choice can be made before lane 3's code starts.
   - A residual YAML difference the chosen fix can't cover still waits
     for the maintainer (decision 3).
 - **Test-first, as CLAUDE.md requires.** Each fix starts with a failing
@@ -249,7 +250,7 @@ each in its own git worktree with its own target directory.
 | Lane | Tasks | Edits |
 |---|---|---|
 | 1: text, process and display | 8-10, 12, 13, 17-21 | `crates/{term-ui,docker}`; cli-core's `exit.rs`, `log.rs`, `cancel.rs`; `crates/sb/src/main.rs` and sb's signal and log tests; exec's attached-signals test; the cli-core, exec, term-ui and docker specs |
-| 2: the journal reader | 27, 28, 32-38 | `crates/journal`, `crates/host/src/journal.rs` and its tests, the journal spec |
+| 2: the journal reader | 27, 28, 32-34, 36-38 | `crates/journal`, `crates/host/src/journal.rs` and its tests, the journal spec |
 | 3: config | 42, 43, 46 | `crates/config`, cli-core's `config.rs`, new sb test files, the config spec |
 
 A lane is sequential: its tasks share files (cli-core's `log.rs` and
@@ -257,8 +258,8 @@ A lane is sequential: its tasks share files (cli-core's `log.rs` and
 `walk.rs` and `forward.rs`), so each waits for the one before it. Lanes
 1 and 2 start first, because the viewer needs both. Lane 3's code
 starts when one of them frees a worktree. Its first task, Task 42, is
-research and runs early, beside them, so its recommendation is
-reviewed by then.
+research and runs early, beside them, so the maintainer can choose by
+then.
 
 Shared files have one owner at a time:
 - **`Cargo.toml`, `Cargo.lock`, `deny.toml`:** the main checkout owns
@@ -306,7 +307,7 @@ deferred or dropped.
 | ui-M1 | A tall live tree hides the running step | 20 |
 | ui-L3, ui-L4 | Table wrap artefacts; notices and kept lines cut in the finished tree | 21 |
 | tests-H1 | Compact files untested above object decoding | 27, 28 |
-| follow-H1, page-H1, fwd-M2 | A page shows an entry its `end` doesn't count; the follow repeats it | 32, 33, 34, 35 |
+| follow-H1, page-H1, fwd-M2 | A page shows an entry its `end` doesn't count; the follow repeats it | 32, 33, 34 |
 | page-M1, page-M2 | A page of unreadable entries can't be paged past; `more_newer` stuck | 36 |
 | fwd-M1 | A forward page loops on the cursor's own boot | 37 |
 | file-M1 | A forward walk loses every array after a bogus item | 38 |
@@ -330,22 +331,21 @@ T1 ─ T2 ─ T3 ─ T4 ─ T5 ─ T6 ─ [A]
 [A] ─┬─ lane 1: T8 ─ T9 ─ T10 ─ T12 ─ T13 ─ T17 ─ [T]
      │          [T] ─ T18 ─ T19 ─ T20 ─ T21 ─ [D]
      │
-     ├─ lane 2: T27 ─ T28 ─ T32 ─ (its review)
-     │          T33 ─ T34 ─ T35 ─ T36 ─ T37 ─ T38 ─ [B]
+     ├─ lane 2: T27 ─ T28 ─ T32 ─ (the maintainer's choice)
+     │          T33 ─ T34 ─ T36 ─ T37 ─ T38 ─ [B]
      │
-     └─ lane 3: T42 ─ (its review) ─ T43 ─ T46 ─ [Y]
+     └─ lane 3: T42 ─ (the maintainer's choice) ─ T43 ─ T46 ─ [Y]
 
 [D] + [B] + [Y] ─ [C]
 ```
 
 Each lane runs in the order shown. The dependencies that aren't just
 "the task before":
-- T33 follows T32's recommendation, and T34 the flush recommendation,
-  each once reviewed. If a review disagrees, lane 2 waits there for the
-  maintainer.
-- T43 follows T42's recommendation once reviewed; a residual YAML
-  difference waits for the maintainer. T42 runs early, beside lanes 1
-  and 2.
+- T33 waits for the maintainer's choice on T32's options, and T34 for
+  the choice on the flush question (decision 20). Lane 2 waits there.
+- T43 waits for the maintainer's choice on T42's options; a residual
+  YAML difference waits for the maintainer too. T42 runs early, beside
+  lanes 1 and 2.
 - Checkpoint D waits until the maintainer has seen T21's looks
   (decision 13); only lane 1 pauses for them.
 - T10 after T9: both edit cli-core's log and exit code.
@@ -358,7 +358,8 @@ Each lane runs in the order shown. The dependencies that aren't just
 ## Task list
 
 The numbers are the original plan's. Tasks 7, 11, 14-16, 22-26, 29-31,
-39-41, 44, 45 and 47-52 were removed by decision 18. Each task's
+39-41, 44, 45 and 47-52 were removed by decision 18, and Task 35 was
+merged into Task 33 by decision 21. Each task's
 criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 
 ### Phase 0: the gates and the records
@@ -393,7 +394,6 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [ ] Task 32: the page-to-follow handover: facts, probe and options
 - [ ] Task 33: a page and its follow give every entry once
 - [ ] Task 34: the handover across files
-- [ ] Task 35: stress.sh checks the handover under writes
 - [ ] Task 36: a page can always be paged past
 - [ ] Task 37: a forward page on the cursor's own boot
 - [ ] Task 38: forward walks over damaged entry arrays
@@ -409,11 +409,9 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes
 - [ ] Size, startup and coverage are re-measured, with a ratchet ADR
-- [ ] A checkpoint report is committed as `tasks/checkpoints/C.md`
 - [ ] The maintainer's sitting: the proposed declines confirmed or
-      overruled (an overruled one becomes a fix task first), the
-      followed recommendations and the unattended calls kept or
-      overruled
+      overruled (an overruled one becomes a fix task first), and the
+      unattended calls kept or overruled
 - [ ] Every KEEP id in tasks/triage.md is fixed, or declined with the
       maintainer's confirmation (decision 18); then the plan is
       archived to `tasks/hardening/`
@@ -422,15 +420,15 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| The page-to-follow handover is a design change, with races that tests must place by hand | High | Task 32 records what the sources establish, probes the rest and recommends an option; a fresh-context review on Fable checks it before any code, and if it disagrees, lane 2 waits for the maintainer (decision 14). Crafted tests place each race (Tasks 33, 34), and the doubling test raises the header and drains again, so it can't pass vacuously. stress.sh checks the handover under real writes on three releases (Task 35), with floors at Checkpoint B. |
-| A file is gone between the page and the follow with an entry nobody showed | Med | It takes a flush between the two, once per boot. It remains under every option; Task 34 lists it in the spec as a limit, and Checkpoint B's report names it for the maintainer. |
+| The page-to-follow handover is a design change, with races that tests must place by hand | High | Task 32 records what the sources establish, probes the rest and puts its options and a recommendation to the maintainer, who chooses before any code (decision 20). Crafted tests place each race (Tasks 33, 34), and the doubling test raises the header and drains again, so it can't pass vacuously. One follow.sh scenario shows the handover on real journald (Task 33). |
+| A file is gone between the page and the follow with an entry nobody showed | Med | It takes a flush between the two, once per boot. It remains under every option; Task 34 lists it in the spec as a limit, and Checkpoint B's message names it for the maintainer. |
 | A fix changes behaviour the matrix pinned | High | Each journal fix runs the matrix script that covers it on one release (Tasks 33-38); all three run at Checkpoint B. A mismatch that isn't a listed Difference stops for the maintainer. |
-| The matrix scripts and the fuzz harness keep the weaknesses the test-evidence review found (dropped, decision 18) | Med | Task 35's handover check carries its own floors. The crafted tests of Tasks 33 to 38 don't depend on the scripts. |
-| The YAML fix needs a second parser or a patched dependency | High | Task 42 builds the corpus and the options first; its recommendation is followed once a fresh-context review agrees, and a residual difference waits for the maintainer. Task 43 has an ADR and a size check. |
+| The matrix scripts and the fuzz harness keep the weaknesses the test-evidence review found (dropped, decision 18) | Med | The crafted tests of Tasks 33 to 38 don't depend on the scripts. Task 33's follow.sh scenario shows the handover on real journald. |
+| The YAML fix needs a second parser or a patched dependency | High | Task 42 builds the corpus and the options first; the maintainer chooses (decision 20), and a residual difference waits for the maintainer too. Task 43 has an ADR and a size check. |
 | Two worktrees edit one file | High | Three sequential lanes with disjoint files; one owner for the shared files and two named cross-lane touches ("Lanes and shared files"); rebase and `check.sh full` before each merge. |
 | SIGHUP handling and the relayed-signal window interact | Med | Task 13 follows Task 12 at once. The window is a documented constant with an injected clock, probed under a real session scope and sudo. |
-| A display fix changes a reviewed look | Med | Tasks 19 and 20 follow decision 17, with screenshots in Checkpoint D's report; Task 21's looks wait for the maintainer, and only lane 1 pauses (decision 13). |
-| A followed recommendation is overruled on return | Med | Each is recorded as reversible in its task and its checkpoint report, with the tasks built on it, so the rework is known and scoped (decision 14). |
+| A display fix changes a reviewed look | Med | Tasks 19 and 20 follow decision 17, with screenshots shown to the maintainer at Checkpoint D; Task 21's looks wait for the maintainer, and only lane 1 pauses (decision 13). |
+| A lane waits for the maintainer's choice after research | Med | Tasks 32 and 42 come early in their lanes, and Task 42 runs beside lanes 1 and 2; the other lanes go on meanwhile (decision 20). |
 | A deferred finding is forgotten | Med | tasks/triage.md names what each DEFER id waits for; the viewer spec and release preparation start from that table. |
 | Parallel worktrees fill the disk | Med | Two at a time; `cargo clean` above 10 GB each; `df` before heavy runs; a worktree is removed when its lane ends. |
 | Fixes drift from the findings | Low | Each task names its ids, and the traceability table lists every KEEP id with its task. |
@@ -438,9 +436,9 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ## Open questions
 
 What is left is marked:
-- **[review]** a research question: its recommendation is followed once
-  a fresh-context review on Fable agrees, and recorded as reversible;
-  only if the review disagrees does it wait for the maintainer;
+- **[research]** a research question: the task puts its options, their
+  pros and cons and a recommendation to the maintainer, who chooses
+  (decision 20);
 - **[task]** a real stop at its task, for the maintainer;
 - **[deferred]** put off at approval; no task waits for it.
 
@@ -464,7 +462,7 @@ What is left is marked:
   padded bindings whole, a too-narrow terminal says so) after seeing
   the new snapshots? Recommended: yes.
 
-**Task 32: the shape of the handover [review]**
+**Task 32: the shape of the handover [research]**
 - Decision 12 fixes the outcome: a page plus its follow gives every
   entry once, with no new Difference. How is a design choice. Task 32's
   probe and design note come first; Task 33 is coded to the answer.
@@ -476,9 +474,8 @@ What is left is marked:
     - It changes the page's reads, not the follow's code: the follow
       starts as it does today, only from a later count. That differs
       from decision 12's wording ("the follow's start moves instead"),
-      though not from its outcome. Decision 14 covers that: the
-      recommendation is followed as reversible, and the maintainer may
-      overrule it on return.
+      though not from its outcome. The maintainer decides that with
+      the choice (decision 20).
     - Why it is exact: an entry found in a looked-up list was counted
       before it was linked there, so its index is below n1 and nothing
       shown is past the count. Every entry below n0-1 was fully linked
@@ -542,9 +539,9 @@ What is left is marked:
   - `PageEnd` holding every shown record's cursor. It removes (b)'s
     boundary logic, but `PageEnd` is then always as large as the page,
     and equality compares the whole page.
-- With it, one point of decision 12, which the followed recommendation
-  includes (decision 14): is a page bounded by its header's count within
-  "a page matches journalctl"?
+- With it, one point of decision 12, which the maintainer decides
+  with the choice (decision 20): is a page bounded by its header's
+  count within "a page matches journalctl"?
   - A Tail page already matches: `journalctl -n N` seeks to the tail
     once and shows at most N lines (systemd v255 journalctl.c
     2510-2514, 1958).
@@ -562,7 +559,7 @@ What is left is marked:
     pages on top of (a)'s re-read. The gain for a viewer is nil: the
     follow delivers the same entries.
 
-**Task 34: a flush between the page and the follow [review]**
+**Task 34: a flush between the page and the follow [research]**
 - A flush copies /run's entries into /var and removes /run. It
   happens once per boot, early.
 - Where the page read the /var file, every flush copy is shown again
@@ -579,7 +576,7 @@ What is left is marked:
     need carrying: under handover (a), the ones the re-read added. The
     cost: `PageEnd` grows by them and its equality changes, for a case
     that happens once per boot.
-- A limit remains under every option, named in Checkpoint B's report
+- A limit remains under every option, named in Checkpoint B's message
   for the maintainer to see: the headers are read at different
   instants, so `PageEnd`'s newest entry can be newer than an entry of
   another file that the page didn't read. That entry is lost only if
@@ -587,17 +584,13 @@ What is left is marked:
   between. Task 34 lists it in the spec. Closing it needs the one-call
   shape above.
 
-**Task 35: how much evidence [task]**
-- The triage left open whether Task 35 stays a stress.sh check with
-  its floors, or shrinks to one follow.sh scenario run as Task 33's
-  verification. Until the maintainer says, it stays as written.
 
 **Task 37: 22.04 on the forward-loop fixture [task, only if it differs]**
 - Decision 11 allows a listed Difference on 22.04 if journalctl 249
   shows something else there. Its wording is the maintainer's to
   approve; a difference on 24.04 or 26.04 stops for the maintainer.
 
-**Tasks 42 and 43: YAML [review]**
+**Tasks 42 and 43: YAML [research]**
 - Which fix, after the research: a fix upstream, a pure-Rust
   libyaml-compatible parser for acceptance, or a pre-pass.
 - Listing a difference isn't an option beside them (decision 3). It is

@@ -6,6 +6,18 @@ write themselves. The plan's decision 18 records the cut
 ([tasks/plan.md](plan.md)); the tasks are in [tasks/todo.md](todo.md);
 the findings, by id, are in [tasks/findings.md](findings.md).
 
+Later the same day the maintainer answered four open points (the plan's
+decisions 19 to 22), which change what the tables below say:
+
+- Task 35 is merged into Task 33 as one follow.sh scenario on real
+  journald; the stress.sh run and its floors are gone, so 21 tasks
+  remain. tests-H2 stays dropped. Its row's reason ("Task 35's handover
+  check carries its own floors") no longer holds: the handover fix is
+  shown by Task 33's scenario, and stress.sh keeps the weakness.
+- Decision 14 is superseded, not narrowed: the maintainer chooses after
+  each research task.
+- Decision 7's drop is confirmed, and checkpoints have no report files.
+
 Each open finding got one verdict:
 
 - **KEEP**: fixed now. It stays in the plan, in the task named here.

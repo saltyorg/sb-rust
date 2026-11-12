@@ -42,9 +42,10 @@ review.
 
 The task numbers are the original plan's and have gaps: Tasks 7, 11,
 14-16, 22-26, 29-31, 39-41, 44, 45 and 47-52 were removed by decision
-18. Tasks 1-6 and Checkpoint A are kept as they were written. Where
-they point at a later task or at Checkpoint C for docs-L13, docs-L15 or
-docs-L16, the cut closed those ids (tasks/triage.md).
+18, and Task 35 was merged into Task 33 by decision 21. Tasks 1-6 and
+Checkpoint A are kept as they were written. Where they point at a
+later task or at Checkpoint C for docs-L13, docs-L15 or docs-L16, the
+cut closed those ids (tasks/triage.md).
 
 Standing rules:
 - sb runs as root only with `SB_LOG_DIR` in `target/` or a scratch
@@ -56,26 +57,23 @@ Standing rules:
 - Container scripts run with a unique `SBJ_PREFIX`. A matrix mismatch
   that isn't a listed Difference stops for the maintainer.
 - Probe logs and screenshots stay outside the repository. A platform
-  note holds versions and the method, never host details. A checkpoint
-  report describes a screenshot, or holds a text capture of sb's own
-  output from a fixture-driven run, with no host details (decision 13;
-  a real `sb docker` run would carry container names). The images are
-  kept outside the repository and named in the handover message to the
-  maintainer.
+  note holds versions and the method, never host details. Screenshots
+  and captures for the maintainer come from fixture-driven runs (a
+  real `sb docker` run would carry container names). They are kept
+  outside the repository and shown to the maintainer directly
+  (decision 22).
 - Nothing is pushed.
-- A research task's recommendation (Tasks 32, 34's flush question
-  and 42) is followed once a fresh-context review on Fable agrees with
-  it, and is recorded as reversible in the task and in its checkpoint
-  report (decision 14). If the review disagrees, or no option meets the
-  decisions, the task and the tasks that depend on it wait for the
-  maintainer, and other work goes on.
+- A research task (Tasks 32, 34's flush question and 42) ends by
+  putting its options, their pros and cons and a recommendation to the
+  maintainer, who chooses (decision 20). The tasks that build on the
+  answer (33, 34 and 43) wait for that choice, and other work goes on.
 - If research at a task contradicts the premise of a decision 17
   answer, that task goes back to the maintainer (decision 17).
-- Checkpoints T, D, B, Y and C each end with a report committed as
-  `tasks/checkpoints/<checkpoint>.md` (decision 13): what landed, the
-  gate results, the reviews, the recommendations followed and the open
-  risks, summarised, with no raw output and no host details. Work goes
-  on after it; the maintainer reviews the commits afterwards.
+- A checkpoint is its ticked criteria here plus a short message to the
+  maintainer; no report file is committed (decision 22). Checkpoints
+  T, D, B, Y and C don't stop the work, except for the looks at
+  Checkpoint D (decision 13); the maintainer reviews the commits
+  afterwards.
 - Every checkpoint also runs CONSTRAINTS.md's two by-hand journal rows
   (the matrix and the fuzz harness), and a failure blocks the
   checkpoint (Task 5; the plan, decision 13). The plan id check that
@@ -509,9 +507,6 @@ tree (ui-M3; confirmed).
 
 ## Checkpoint T: text and processes
 - [ ] `check.sh full`; the signal probes pass under sudo.
-- [ ] A checkpoint report is committed as `tasks/checkpoints/T.md`
-      (decision 13): results summarised, no raw output and no host
-      details.
 
 ## Task 18: `docker restart` never ends silently short of a start
 
@@ -563,7 +558,7 @@ confirmed in tmux).
 **Verification:**
 - [ ] `cargo test -p sb-term-ui -p sb`; `scripts/check.sh full <base>`.
 - [ ] A before and after capture of a fixture-driven live run while
-      typing, for Checkpoint D's report (decision 13).
+      typing, shown to the maintainer at Checkpoint D (decision 22).
 - [ ] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
@@ -591,8 +586,8 @@ steps".
 
 **Verification:**
 - [ ] `cargo test -p sb-term-ui`; a tmux probe at 80x12, with
-      screenshots of before and after for Checkpoint D's report
-      (decision 13);
+      screenshots of before and after, shown to the maintainer at
+      Checkpoint D (decision 22);
       `scripts/check.sh full <base>`.
 - [ ] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
@@ -631,9 +626,8 @@ maintainer has seen the screenshots, and the other lanes go on.
 - [ ] `check.sh full`; the tmux probes at 80x12 and 36 columns.
 - [ ] The maintainer has seen Task 21's looks, from screenshots
       (decision 13).
-- [ ] A checkpoint report is committed as `tasks/checkpoints/D.md`
-      (decision 13), with Tasks 19 and 20's screenshots described:
-      results summarised, no raw output and no host details.
+- [ ] The maintainer has been shown Tasks 19 and 20's screenshots
+      (decision 22).
 
 ## Task 27: the crafted builder writes compact files
 
@@ -683,9 +677,9 @@ compact files.
 **Description:** A page and the follow after it disagree about where
 the page ended (follow-H1, page-H1, fwd-M2; confirmed three times; the
 mirror case is follow-N1). This task is research: it records what is
-established, probes what isn't, and ends at a recommendation, which
-is followed once a review agrees (decision 14). The fix is Task 33. It
-commits no test.
+established, probes what isn't, and ends at its options and a
+recommendation, put to the maintainer, who chooses (decision 20). The
+fix is Task 33. It commits no test.
 
 What the code does today:
 - A page reads each file's header once (n0), then each file's newest
@@ -766,18 +760,16 @@ named), for the platform note to be written from:
 - [ ] The options and a recommendation are written up. The
       recommendation includes decision 12's point on a forward page
       bounded by its header's count.
-- [ ] The recommendation is checked by a fresh-context review on Fable.
-      If it agrees, it is recorded as reversible here and in Checkpoint
-      B's report, and Task 33 gets its option-specific criteria from
-      it. If it doesn't, or no option meets the decisions, this task
-      and the rest of lane 2 wait for the maintainer, and the other
+- [ ] The options, their pros and cons and the recommendation are put
+      to the maintainer, who chooses (decision 20). The choice is
+      recorded here, and Task 33 gets its option-specific criteria
+      from it. The rest of lane 2 waits for the choice, and the other
       lanes go on.
 
 **Verification:**
 - [ ] The probe's runs, capped, in the matrix's containers, logs kept
       outside the repository; `scripts/check.sh full <base>`.
 - [ ] No commit review: the task commits documents only (ADR-016).
-      Its review is the check of the recommendation (decision 14).
 
 **Dependencies:** Task 28
 **Files:** `docs/platform-notes/systemd-journal.md`, `tasks/plan.md` (the design note, under the handover question; it lands on the main checkout, as the plan's shared-file rule requires)
@@ -786,20 +778,19 @@ named), for the platform note to be written from:
 ## Task 33: a page and its follow give every entry once
 
 **Description:** The fix for follow-H1, page-H1 and fwd-M2, in the
-shape Task 32 recommended and its review agreed with (decision 14).
+shape the maintainer chose from Task 32's options (decision 20).
 The criteria below
 are behaviour. They hold under any option, except that the first two
 fixtures are set up differently for each option, as each one says.
 The criteria particular to the chosen option (what `PageEnd` holds,
-what the page re-reads) are added to this task from the followed
-recommendation, before any code. Unfiltered queries read no value
+what the page re-reads) are added to this task from the maintainer's
+choice, before any code. Unfiltered queries read no value
 list, so neither defect exists for them, and they stay out of the
 change.
 
 **Acceptance criteria:**
-- [ ] The followed recommendation is recorded in journal.md, marked
-      reversible (decision 14), and its "Starting a follow" matches the
-      code. "0 lost, 0 doubled" holds
+- [ ] The maintainer's choice is recorded in journal.md (decision 20),
+      and its "Starting a follow" matches the code. "0 lost, 0 doubled" holds
       as stated, with no new Difference.
 - [ ] An entry appended and linked during the page. The fixture is
       what the file holds at each of the page's reads, not one static
@@ -841,16 +832,20 @@ change.
       `Eq`, `Default` and `Send`. Its rustdoc says what it carries, and
       that it is the journal's end, not the page's: a follow from a
       `Before` page skips entries (decision 10).
+- [ ] follow.sh has one scenario on real journald (this was Task 35,
+      decision 21): a filtered page is taken while a writer runs, a
+      follow starts from its end, and the page plus its follow give
+      every entry once.
 
 **Verification:**
 - [ ] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh full <base>`.
-- [ ] follow.sh on at least one release, capped.
+- [ ] follow.sh, with that scenario, on at least one release, capped.
 - [ ] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
-**Dependencies:** Task 32 (its recommendation, with its review's
-agreement)
-**Files:** `crates/journal/src/{walk.rs,forward.rs,follow.rs,lib.rs}` (which of them depends on the answer), `crates/journal/src/testing.rs` (the test seam), `docs/specs/journal.md`
+**Dependencies:** Task 32, and the maintainer's choice from its
+options (decision 20)
+**Files:** `crates/journal/src/{walk.rs,forward.rs,follow.rs,lib.rs}` (which of them depends on the answer), `crates/journal/src/testing.rs` (the test seam), `docs/specs/journal.md`, `crates/journal/tests/follow.sh` (the scenario)
 **Scope:** M
 
 ## Task 34: the handover across files
@@ -858,14 +853,13 @@ agreement)
 **Description:** The other half of the handover (follow-H1, page-H1,
 fwd-M2): files that change between the page and the follow. Most of
 it holds today and is pinned here; Difference 13's wording is new.
-The flush question (the plan's) takes its recommendation (decision 14).
+The flush question (the plan's) goes to the maintainer (decision 20).
 
 **Acceptance criteria:**
-- [ ] Before code, the flush question's recommendation (Difference 13
-      extended) is checked by a fresh-context review on Fable. If it
-      agrees, it is recorded as reversible here and in Checkpoint B's
-      report. If it doesn't, or no option meets the decisions, this
-      task and the rest of lane 2 wait for the maintainer, and the
+- [ ] Before code, the flush question's options and its
+      recommendation (Difference 13 extended) are put to the
+      maintainer, who chooses (decision 20). The choice is recorded
+      here. This task and the rest of lane 2 wait for it, and the
       other lanes go on.
 - [ ] A rotation between the page and the follow: the archived file
       keeps its position by inode and file id, and every entry of the
@@ -881,7 +875,8 @@ The flush question (the plan's) takes its recommendation (decision 14).
       says of a followed file. A test pins it.
 - [ ] A flush between the page and the follow, where the /var file is
       new: Difference 13's wording is extended to a page and a follow
-      on either side of a flush (the followed recommendation). No
+      on either side of a flush (the recommendation, if the maintainer
+      chooses it). No
       entry is lost, and `PageEnd`'s newest entry is not raised past
       what the headers gave.
 - [ ] A file the page couldn't open: the follow reads it as a new
@@ -893,7 +888,7 @@ The flush question (the plan's) takes its recommendation (decision 14).
       entry can be newer than an entry of another file that the page
       didn't read. That entry is lost only if its file is gone before
       the follow opens it, which takes a flush between the two, once
-      per boot. Checkpoint B's report names it for the maintainer.
+      per boot. Checkpoint B's message names it for the maintainer.
 - [ ] follow.sh gains a rotation and a flush between the page and the
       follow, next to its two "between" scenarios.
 
@@ -903,53 +898,16 @@ The flush question (the plan's) takes its recommendation (decision 14).
 - [ ] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
-**Dependencies:** Task 33
+**Dependencies:** Task 33, and the maintainer's choice on the flush
+question (decision 20)
 **Files:** `crates/journal/src/{follow.rs,lib.rs}`, `docs/specs/journal.md`, `crates/journal/tests/follow.sh`
 **Scope:** M
 
-## Task 35: stress.sh checks the handover under writes
+## Task 35: merged into Task 33
 
-**Description:** The crafted tests of Tasks 33 and 34 place each race
-by hand. stress.sh is where the races happen for real, and today it
-checks only that each page taken during the run is a gap-free part of
-journalctl's final view. This adds the handover, as the matrix
-evidence for follow-H1 (the same defect as page-H1 and fwd-M2). A
-journalctl run at the same moment would race the page, so the oracle
-is journalctl's final view.
-
-The triage allows this task to shrink to one follow.sh scenario run as
-Task 33's verification. That is open (the plan's open questions);
-until the maintainer says, the task stays as written.
-
-**Acceptance criteria:**
-- [ ] The oracle, per writer: every entry a page shows is in
-      journalctl's final view, with no gap; and the page plus its
-      follow is the final view from the page's oldest entry on, each
-      entry once and in order. Only the listed Differences are allowed
-      for (2, 12 and 13).
-- [ ] While the writers and the rotations run, stress.sh repeatedly
-      takes a filtered page and follows from its end, and checks each
-      against that oracle.
-- [ ] The run prints two counts: the handovers checked, and the
-      handovers in which the file's entry count moved while the page
-      was read. The second comes from a `testing` accessor the tool
-      prints with its stats, since `PageEnd` is opaque.
-- [ ] Both counts have a floor, so a run can't pass without meeting
-      the race: the second is above zero on each release. So that a
-      quiet run doesn't fail with no defect, stress.sh repeats
-      handovers, up to a stated cap, until the count has moved in one;
-      a run that reaches the cap without one fails.
-- [ ] The check is shown to fail once on a broken input: a follow
-      started one entry early, and one started one entry late.
-
-**Verification:**
-- [ ] stress.sh on three releases, capped; shellcheck;
-      `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
-
-**Dependencies:** Task 34
-**Files:** `crates/journal/tests/{stress.sh,checks.sh}`, `crates/journal/src/testing/tools.rs`, `crates/journal/examples/journal.rs`, `docs/specs/journal.md` (the testing strategy's stress line)
-**Scope:** M
+Merged on 2026-11-12 (the plan's decision 21). The stress.sh handover
+check and its floors are gone. What is left is one follow.sh scenario
+on real journald, in Task 33's criteria and verification.
 
 ## Task 36: a page can always be paged past
 
@@ -976,7 +934,7 @@ newest entry can't be shown, so a viewer never reaches the follow
 - [ ] compare.sh on at least one release, capped.
 - [ ] Review: one code-reviewer pass on the task's diff.
 
-**Dependencies:** Task 35
+**Dependencies:** Task 34
 **Files:** `crates/journal/src/{lib.rs,walk.rs}`, `crates/host/src/journal.rs`, `docs/specs/journal.md`, `scripts/floor-acknowledged.txt`
 **Scope:** M
 
@@ -1037,19 +995,15 @@ where the backward walk goes on (file-M1; confirmed).
 ## Checkpoint B: reader
 - [ ] The matrix (compare, compat, follow, stress) is green on 22.04,
       24.04 and 26.04, and the fuzz harness passes, on the final tree.
-- [ ] stress.sh's handover check ran above both its floors on each
-      release (Task 35): every page and its follow gave journalctl's
-      entries once.
+- [ ] follow.sh's handover scenario passed on each release (Task 33):
+      a page and its follow gave every entry once.
 - [ ] Size, startup and coverage are re-measured as `check.sh` runs,
       and the ratchet rows updated on the main checkout, with a ratchet
       ADR if a value passes its tolerance.
 - [ ] The new API is reviewed: `Page::oldest_chosen` and
       `Page::newest_chosen` in place (decision 10), and what the
       handover changed in rustdoc or types (Tasks 33 and 34).
-- [ ] A checkpoint report is committed as `tasks/checkpoints/B.md`
-      (decision 13): results summarised, Tasks 32 and 34's followed
-      recommendations marked reversible, the limit Task 34 lists, no
-      raw output and no host details.
+- [ ] The message to the maintainer names the limit Task 34 lists.
 
 ## Task 42: YAML: the corpus and the options
 
@@ -1058,10 +1012,10 @@ layouts and quoted scalars that libyaml, PyYAML and yaml.v3 accept, and
 accepts two tab layouts Ansible rejects (config-H1, config-L1;
 confirmed with about 200 snippets). This task builds the standing
 differential corpus and the options, and ends at a recommendation,
-which is followed once a review agrees (decision 14). Task 43 is next
-and is coded to it. So this task runs early, while lanes 1 and 2 hold
-the two worktrees, and the review is done before lane 3's code
-starts.
+put to the maintainer, who chooses (decision 20). Task 43 is next
+and is coded to the choice. So this task runs early, while lanes 1 and
+2 hold the two worktrees, and the choice can be made before lane 3's
+code starts.
 
 **Acceptance criteria:**
 - [ ] A checked-in corpus of layouts, each with what libyaml accepts
@@ -1083,11 +1037,10 @@ starts.
       it is only for a residual case the chosen fix can't cover.
       Maintenance, adoption, licence and size
       are stated for any new crate.
-- [ ] The recommendation is checked by a fresh-context review on Fable.
-      If it agrees, it is recorded as reversible here and in Checkpoint
-      Y's report, and Task 43 follows it. If it doesn't, or no option
-      meets decision 3, this task and lane 3 wait for the maintainer,
-      and the other lanes go on.
+- [ ] The options, their pros and cons and the recommendation are put
+      to the maintainer, who chooses (decision 20). The choice is
+      recorded here, and Task 43 follows it. Lane 3 waits for the
+      choice, and the other lanes go on.
 
 **Verification:**
 - [ ] `cargo test -p sb-config`; the Python checks on the generator;
@@ -1100,8 +1053,8 @@ starts.
 
 ## Task 43: sb accepts the YAML Ansible accepts
 
-**Description:** Implement the option Task 42 recommended and its
-review agreed with (decision 14; config-H1, config-L1).
+**Description:** Implement the option the maintainer chose from Task
+42's options (decision 20; config-H1, config-L1).
 
 **Acceptance criteria:**
 - [ ] The corpus's mismatch list is empty, or holds only entries the
@@ -1111,7 +1064,7 @@ review agreed with (decision 14; config-H1, config-L1).
 - [ ] validate-config and cli-core's inventory read agree on every
       corpus case; `appdata_path` no longer falls back to `/opt` on a
       file Ansible reads.
-- [ ] An ADR records the choice, marked reversible (decision 14). If
+- [ ] An ADR records the choice (decision 20). If
       a dependency is added or changed:
       `Cargo.toml`, `deny.toml`, the config spec's Tech Stack and the
       capability map's stack row are updated, and the production
@@ -1129,8 +1082,8 @@ review agreed with (decision 14; config-H1, config-L1).
 - [ ] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer and the security-auditor.
 
-**Dependencies:** Task 42 (its recommendation, with its review's
-agreement). Lands alone on
+**Dependencies:** Task 42, and the maintainer's choice from its
+options (decision 20). Lands alone on
 `Cargo.toml`, `Cargo.lock` and `deny.toml` (the plan, "Lanes and shared
 files").
 **Files:** `crates/config/src/parse.rs`, `crates/cli-core/src/config.rs`, `Cargo.toml` and `deny.toml` (if a dependency changes), `docs/specs/config.md`, `docs/specs/capability-map.md`, `docs/decisions/` (a new ADR)
@@ -1166,24 +1119,17 @@ finding is untested.
 
 ## Checkpoint Y: config
 - [ ] `check.sh full`; the differential corpus passes.
-- [ ] A checkpoint report is committed as `tasks/checkpoints/Y.md`
-      (decision 13): results summarised, Task 42's followed
-      recommendation marked reversible, any residual YAML difference
-      waiting for the maintainer, no raw output and no host details.
+- [ ] The message to the maintainer names any residual YAML difference
+      that waits for them.
 
 ## Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes.
 - [ ] Size, startup and coverage are re-measured, the ratchet rows
       updated, with a ratchet ADR.
-- [ ] A checkpoint report is committed as `tasks/checkpoints/C.md`
-      (decision 13): results summarised, every followed recommendation
-      and unattended call listed as reversible, no raw output and no
-      host details.
 - [ ] The maintainer's sitting: the proposed declines confirmed or
       overruled (an overruled one becomes a fix task here, before the
-      archive), and the followed recommendations and the unattended
-      calls kept or overruled.
+      archive), and the unattended calls kept or overruled.
 - [ ] Every KEEP id in tasks/triage.md is fixed, or declined with the
       maintainer's confirmation (decision 18). Then the plan is
       archived to `tasks/hardening/`.
