@@ -125,6 +125,39 @@ fn a_panic_shows_no_failure_block() {
     assert!(!text.contains("full output"), "{text}");
 }
 
+/// A group sibling's panic on a terminal (ui-M3): std's message is the
+/// last thing drawn. The live tree stops redrawing at once, though the
+/// other sibling, in a group that doesn't stop on failure, works on for
+/// about a second and the frames would otherwise keep coming; so nothing
+/// overdraws the message.
+#[test]
+fn a_sibling_panic_stays_on_screen() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let out = on_a_terminal("--sibling-panic", dir.path());
+    // The panic's exit code (`script -e` passes the demo's on).
+    assert_eq!(out.status.code(), Some(101), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let message = "a sibling was asked to panic";
+    let at = text
+        .find(message)
+        .unwrap_or_else(|| panic!("no message: {text:?}"));
+    // After the message (and std's note under it) the terminal gets no
+    // more drawing: no cursor movement, no line clearing, no spinner.
+    let after = &text[at + message.len()..];
+    for code in ["\x1b[1A", "\x1b[2K", "\x1b[J", "\r\x1b"] {
+        assert!(
+            !after.contains(code),
+            "{code:?} after the message: {after:?}"
+        );
+    }
+    assert!(
+        !after.contains("Checking the other one"),
+        "redrawn: {after:?}"
+    );
+    // The cursor is shown again at the end.
+    assert!(after.contains("\x1b[?25h"), "cursor left hidden: {after:?}");
+}
+
 /// The demo's made-up token's prefix (`DEMO_TOKEN` in the demo).
 const TOKEN: &str = "cf-demo";
 

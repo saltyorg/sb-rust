@@ -190,6 +190,8 @@ fn main() -> RunEnd {
         .flatten();
     let _run = log.as_ref().map(RunLog::enter);
     if let Some(log) = &log {
+        // A panic from here on leaves a record in the run (sb-M2).
+        log.record_panics();
         // Startup warnings go to the log too (shown on screen only once,
         // before any log was open).
         for warning in &warnings {

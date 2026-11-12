@@ -484,7 +484,8 @@ impl<T: Send + 'static> Group<'_, T> {
     /// is marked failed, the others are cancelled and waited for, then the
     /// panic resumes (`std::panic::resume_unwind`, as tokio's docs
     /// advise); the default panic hook's message lands in the live area
-    /// first. An aborted sibling's `spawn_blocking` work runs on, detached
+    /// first, and all drawing stops for the rest of the run, so nothing
+    /// draws over it (ui-M3). An aborted sibling's `spawn_blocking` work runs on, detached
     /// (an accepted limit).
     pub async fn join(self) -> Result<Vec<T>, Exit>;
 }
@@ -570,7 +571,7 @@ logged with the outcome, never shown.
 |---|---|---|---|
 | would start after the token was cancelled | not drawn; the body doesn't run | nothing | `Exit(1)` |
 | returns `Ok` (even after a cancel) | ✓ done label | | `Ok` |
-| panics, or is dropped while panicking | ✗ failure label in the tree; the screen keeps its last frame (indicatif draws nothing while a panic unwinds) | nothing (the panic message) | (the panic goes on) |
+| panics, or is dropped while panicking | ✗ failure label in the tree; the screen keeps its last frame (indicatif draws nothing while a panic unwinds). A group sibling's panic stops all drawing for the rest of the run: in a `group_all` the screen stays as it was under the panic message until the other siblings finish, and the finished tree isn't printed | nothing (the panic message) | (the panic goes on) |
 | is dropped unfinished (`select!`, a timeout, an unjoined `Group`) | "stopped" (its subtree too) | nothing | (none) |
 | returns `Err` after Ctrl-C (`Shutdown::interrupted`) | "interrupted", its last lines kept; parents too | nothing (cli-core shows "interrupted" once) | `Exit(1)` |
 | returns `Err` after the command's own `Shutdown::request` | "stopped" | nothing (cli-core exits quietly with the requested code) | `Exit(1)` |

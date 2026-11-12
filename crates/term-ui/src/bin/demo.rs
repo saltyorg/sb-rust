@@ -1,7 +1,7 @@
 //! The runner on stderr, for trying it and for the PTY tests: `cargo run
 //! -p sb-term-ui --bin demo [-- FLAGS]`, the flags being test hooks:
 //! `--fail`, `--sensitive` (wins over `--fail`), `--new-token`,
-//! `--child-fail`, `--panic`,
+//! `--child-fail`, `--panic`, `--sibling-panic`,
 //! `--interrupt`, `--interrupt-twice`, `--terminate`,
 //! `--leave-foreground`, `--table` (a table instead of the run, which
 //! returns early: any output error is exit 1 there), `--child-colour` (a
@@ -138,6 +138,26 @@ async fn demo(
             // `--panic`: a body that panics, for the test that a panic shows
             // only its own message (no failure block, no pointer).
             assert!(!arg("--panic"), "the demo was asked to panic");
+            // `--sibling-panic`: a sibling of a group that doesn't stop on
+            // failure panics while the other keeps working (and the live
+            // tree drawing), for the test that its message stays on screen.
+            if arg("--sibling-panic") {
+                let mut group = step.group_all();
+                let panics = Labels::new("Checking the panicking one", "never");
+                group.spawn(panics, move |_step| async move {
+                    tokio::time::sleep(pace).await;
+                    // Always fails (the pace isn't zero); an assert, as for
+                    // `--panic`, so the body keeps its result type.
+                    assert!(pace.is_zero(), "a sibling was asked to panic");
+                    Ok(())
+                });
+                let works = Labels::new("Checking the other one", "the other one checked");
+                group.spawn(works, move |mut step| async move {
+                    work(&mut step, 12, pace).await
+                });
+                let _ = group.join().await;
+                return Ok(());
+            }
             let mut group = step.group();
             let cloudflare = Labels::new("Checking Cloudflare token", "Cloudflare token valid")
                 .failure("Cloudflare token invalid");

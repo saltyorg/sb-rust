@@ -132,6 +132,8 @@ pub struct RunLog {
     id: String,
     /// The file the run writes to.
     file: PathBuf,
+    /// The run's span ([`RunLog::enter`], the panic hook).
+    span: std::sync::OnceLock<tracing::Span>,
 }
 
 impl RunLog {
@@ -238,7 +240,14 @@ impl RunLog {
         // Never rotating, the appender names the file by its prefix alone
         // (tracing-appender 0.2.5 rolling.rs `join_date`).
         let file = dir.join(LOG_FILE);
-        Ok((Self { id, file }, subscriber))
+        Ok((
+            Self {
+                id,
+                file,
+                span: std::sync::OnceLock::new(),
+            },
+            subscriber,
+        ))
     }
 
     #[must_use]
@@ -249,7 +258,42 @@ impl RunLog {
     /// The run's span, entered for the whole run: every event in it carries
     /// the run id.
     pub fn enter(&self) -> EnteredSpan {
-        tracing::info_span!("run", run = %self.id).entered()
+        self.span().entered()
+    }
+
+    /// The run's one span (made on first use, with the run id), so the
+    /// panic hook's record and the run's events share it.
+    fn span(&self) -> tracing::Span {
+        self.span
+            .get_or_init(|| tracing::info_span!("run", run = %self.id))
+            .clone()
+    }
+
+    /// Record panics in the run log (sb-M2): from now on a panic, on any
+    /// thread, leaves a record with its message and location in the run's
+    /// span (so with the run id, whether or not that thread is in it),
+    /// then the hook that was in place before runs (std's: the message on
+    /// stderr). Call it once, with the log's subscriber in place; the hook
+    /// holds the run's span for the life of the process. The record goes
+    /// through the log's formatter, so a message with a newline stays one
+    /// record. std's documented way: `take_hook` the previous hook,
+    /// `set_hook` one that calls it
+    /// (<https://doc.rust-lang.org/std/panic/fn.take_hook.html>,
+    /// <https://doc.rust-lang.org/std/panic/struct.PanicHookInfo.html>).
+    /// Known limit: a panic inside the log's own writing (the formatter
+    /// holding the file) can't be recorded there.
+    pub fn record_panics(&self) {
+        let run = self.span();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // A payload that isn't text reads as std's own hook writes it.
+            let message = info.payload_as_str().unwrap_or("Box<dyn Any>");
+            let location = info
+                .location()
+                .map_or_else(|| "unknown".to_string(), ToString::to_string);
+            run.in_scope(|| tracing::error!(location, "panicked: {message}"));
+            previous(info);
+        }));
     }
 
     /// The run record: sb's version (the binary's build info, not this

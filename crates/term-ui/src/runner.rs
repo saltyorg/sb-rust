@@ -954,6 +954,25 @@ impl Drop for CancelOnPanic {
     }
 }
 
+/// Stops the live tree's drawing for good if a sibling's body panics, in
+/// any group (ui-M3): std's panic message is already on stderr by then,
+/// and a redraw (the frames, the other siblings' lines) would move the
+/// cursor up over it. The same flag as a forced exit's restore hook sets.
+/// The panic itself reaches the run log through cli-core's panic hook.
+/// Why a guard rather than a check in `redraw`: the sibling runs on a
+/// runtime worker, and only its own thread knows it is panicking
+/// (`std::thread::panicking`). Why not scopeguard's `guard_on_unwind`: the
+/// same `thread::panicking` check, not worth a direct dependency.
+struct StopDrawingOnPanic(Arc<AtomicBool>);
+
+impl Drop for StopDrawingOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 impl<T: Send + 'static> Group<'_, T> {
     /// Start a sibling now (its place in the tree is its start order).
     pub fn spawn<F, Fut>(&mut self, labels: Labels, body: F)
@@ -983,12 +1002,16 @@ impl<T: Send + 'static> Group<'_, T> {
         // stopping group's failure cancels it too.
         let token = self.token.clone();
         let stop_on_failure = self.stop_on_failure;
+        let stop_drawing = Arc::clone(&lock(&context.shared).stop);
         let handle = self.tasks.spawn(
             async move {
                 let Some(step) = step else {
                     return (index, Err(Exit(1)));
                 };
+                // Dropped in reverse order: drawing stops before the cancel
+                // wakes the siblings, whose endings would redraw.
                 let _cancel_on_panic = stop_on_failure.then(|| CancelOnPanic(token.clone()));
+                let _stop_drawing = StopDrawingOnPanic(stop_drawing);
                 let result = body(step).await;
                 // Already closed: the group was dropped meanwhile.
                 let Some(guard) = take(&slot) else {
