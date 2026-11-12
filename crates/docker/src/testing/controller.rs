@@ -27,6 +27,19 @@ pub struct Answer {
     pub body: Vec<u8>,
     /// How long to wait before answering (a timeout's or a signal's test).
     pub delay: Duration,
+    /// Run just before the answer goes out (a signal landing as it
+    /// arrives).
+    pub then: Option<Hook>,
+}
+
+/// A test's action run as an answer goes out.
+#[derive(Clone)]
+pub struct Hook(Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hook")
+    }
 }
 
 impl Answer {
@@ -44,7 +57,15 @@ impl Answer {
             headers: Vec::new(),
             body: body.into(),
             delay: Duration::ZERO,
+            then: None,
         }
+    }
+
+    /// The same answer, with `hook` run just before it goes out.
+    #[must_use]
+    pub fn then(mut self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.then = Some(Hook(Arc::new(hook)));
+        self
     }
 
     /// The same answer after `delay`.
@@ -255,6 +276,9 @@ async fn answer(
         {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
+    }
+    if let Some(hook) = &answer.then {
+        (hook.0)();
     }
     let status = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = (status, answer.body).into_response();

@@ -3,6 +3,17 @@
 
 use super::{Action, ControlError, Controller, Job};
 
+/// How many failed polls in a row the wait rides out before it gives up
+/// (docker spec decision 10; docker-M2): a poll that can't reach the
+/// controller, times out, gets a non-200 or no status. One alone can be
+/// a blip: a pooled connection the controller was just closing
+/// (docker-L4), a moment of load. Three that fail at once take 10 s (two
+/// 5 s intervals between them); three that time out take 40 s (three
+/// 10 s request limits and the two intervals): long enough to mean the
+/// controller is gone or stuck, short beside the 295 s wait. Counted
+/// toward the polls, so the wait's length is unchanged.
+pub(super) const FAILED_POLLS_IN_A_ROW: u32 = 3;
+
 impl Controller {
     /// Ask the controller for a job: `POST <base>/start` or `/stop`, each
     /// non-empty name in `ignore` as an `ignore` query value. The
@@ -62,12 +73,31 @@ impl Controller {
     /// # Errors
     ///
     /// The [`ControlError`] that ended the wait: the job failed, an
-    /// unknown status, a poll that failed, or the last poll still pending
-    /// or running.
+    /// unknown status, the last of [`FAILED_POLLS_IN_A_ROW`] failed polls
+    /// (or a failed last poll), or the last poll still pending or running.
     pub async fn wait(&self, job: &Job) -> Result<(), ControlError> {
         let url = self.url(&["job_status", job.id()])?;
+        let mut failed = 0;
         for poll in 1..=self.max_polls {
-            match self.status(url.clone(), job).await?.as_str() {
+            let status = match self.status(url.clone(), job).await {
+                Ok(status) => {
+                    failed = 0;
+                    status
+                }
+                // A few failed polls in a row are ridden out (docker spec
+                // decision 10).
+                Err(err) => {
+                    failed += 1;
+                    if failed >= FAILED_POLLS_IN_A_ROW || poll == self.max_polls {
+                        return Err(err);
+                    }
+                    let error: &(dyn std::error::Error + 'static) = &err;
+                    tracing::warn!(error, failed, "job status poll failed; asking again");
+                    tokio::time::sleep(self.poll_interval).await;
+                    continue;
+                }
+            };
+            match status.as_str() {
                 "completed" => return Ok(()),
                 "failed" => return Err(ControlError::JobFailed),
                 "pending" | "running" if poll < self.max_polls => {
@@ -480,16 +510,30 @@ mod tests {
         );
     }
 
-    /// Each answer that ends the wait at once, with sb-go's text; nothing
-    /// is asked after it.
+    /// Each answer that ends the wait, with sb-go's text: a failed job or
+    /// a status sb doesn't know at once; a failed poll (a non-200, an
+    /// answer that can't be read or has no status) once it has failed
+    /// [`FAILED_POLLS_IN_A_ROW`] times in a row (docker spec decision 10,
+    /// where sb-go ends at the first). Nothing is asked after it.
     #[tokio::test]
-    async fn these_end_the_wait_at_once() {
-        let cases: [(Answer, ControlError); 6] = [
+    async fn these_end_the_wait() {
+        let at_once: [(Answer, ControlError); 2] = [
             (status("failed"), ControlError::JobFailed),
             (
                 status("queued"),
                 ControlError::UnknownStatus("queued".to_string()),
             ),
+        ];
+        for (answer, expected) in at_once {
+            let fake = FakeController::start().expect("fake");
+            fake.script("/job_status/job-1", status("running"));
+            fake.script("/job_status/job-1", answer);
+            let c = controller(&fake).with_polls(Duration::from_millis(10), 60);
+            let shown = expected.to_string();
+            assert_eq!(c.wait(&job("job-1")).await, Err(expected), "{shown}");
+            assert_eq!(fake.seen().len(), 2, "{shown}");
+        }
+        let failed_polls: [(Answer, ControlError); 4] = [
             (
                 Answer::with_status(404, r#"{"status":"not_found"}"#),
                 ControlError::StatusCheck(404),
@@ -503,14 +547,19 @@ mod tests {
             (Answer::ok("{}"), ControlError::MissingStatus),
             (Answer::ok(r#"{"status":""}"#), ControlError::MissingStatus),
         ];
-        for (answer, expected) in cases {
+        for (answer, expected) in failed_polls {
             let fake = FakeController::start().expect("fake");
             fake.script("/job_status/job-1", status("running"));
+            // The last answer scripted repeats.
             fake.script("/job_status/job-1", answer);
             let c = controller(&fake).with_polls(Duration::from_millis(10), 60);
             let shown = expected.to_string();
             assert_eq!(c.wait(&job("job-1")).await, Err(expected), "{shown}");
-            assert_eq!(fake.seen().len(), 2, "{shown}");
+            assert_eq!(
+                fake.seen().len(),
+                1 + FAILED_POLLS_IN_A_ROW as usize,
+                "{shown}"
+            );
         }
         assert_eq!(ControlError::JobFailed.to_string(), "job failed");
         assert_eq!(
@@ -532,10 +581,11 @@ mod tests {
         );
     }
 
-    /// A poll that can't reach the controller, or times out: reqwest's
-    /// cause alone, as sb-go returns its client's error.
+    /// Polls that can't reach the controller, or time out, as many in a
+    /// row as are tolerated: the wait ends with reqwest's cause alone, as
+    /// sb-go returns its client's error.
     #[tokio::test]
-    async fn a_failed_poll_is_reqwests_cause() {
+    async fn failed_polls_end_with_reqwests_cause() {
         let fake = FakeController::start().expect("fake");
         fake.script(
             "/job_status/job-1",
@@ -543,13 +593,14 @@ mod tests {
         );
         let err = controller(&fake)
             .with_request_timeout(Duration::from_millis(100))
+            .with_polls(Duration::from_millis(20), 60)
             .wait(&job("job-1"))
             .await
             .expect_err("timeout");
         assert!(matches!(err, ControlError::Poll(_)), "{err:?}");
         assert!(err.to_string().contains("timed out"), "{err}");
-        assert_eq!(fake.seen().len(), 1);
-        // Nothing listening (a port just freed): asked once, not retried.
+        assert_eq!(fake.seen().len(), FAILED_POLLS_IN_A_ROW as usize);
+        // Nothing listening (a port just freed): the same, quickly.
         let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .and_then(|l| l.local_addr())
             .expect("free port")
@@ -558,7 +609,7 @@ mod tests {
         let err = controller(&fake)
             .with_base(&format!("http://127.0.0.1:{port}"))
             .expect("base")
-            .with_polls(Duration::from_secs(5), 60)
+            .with_polls(Duration::from_millis(20), 60)
             .wait(&job("job-1"))
             .await
             .expect_err("refused");
@@ -568,6 +619,37 @@ mod tests {
             "{err}"
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// Decision 10: fewer failed polls in a row than tolerated, of each
+    /// kind (a timeout, a non-200, an answer without a status), don't end
+    /// the wait; a good answer between them starts the count again.
+    #[tokio::test]
+    async fn a_few_failed_polls_in_a_row_are_tolerated() {
+        assert_eq!(FAILED_POLLS_IN_A_ROW, 3);
+        let fake = FakeController::start().expect("fake");
+        let path = "/job_status/job-1";
+        fake.script(path, status("running").after(Duration::from_secs(5)));
+        fake.script(path, Answer::with_status(502, ""));
+        fake.script(path, status("running"));
+        fake.script(path, Answer::ok("{}"));
+        fake.script(path, Answer::with_status(503, ""));
+        fake.script(path, status("completed"));
+        let c = controller(&fake)
+            .with_request_timeout(Duration::from_millis(100))
+            .with_polls(Duration::from_millis(20), 60);
+        assert_eq!(c.wait(&job("job-1")).await, Ok(()));
+        assert_eq!(fake.seen().len(), 6);
+        // The tolerated failures count toward the polls: none left, the
+        // last one's error.
+        let fake = FakeController::start().expect("fake");
+        fake.script(path, Answer::with_status(502, ""));
+        let c = controller(&fake).with_polls(Duration::from_millis(20), 2);
+        assert_eq!(
+            c.wait(&job("job-1")).await,
+            Err(ControlError::StatusCheck(502))
+        );
+        assert_eq!(fake.seen().len(), 2);
     }
 
     /// No polls at all (sb-go's `range 0`): the timeout, nothing asked.

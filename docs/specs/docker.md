@@ -155,9 +155,10 @@ logging levels end to end.
   headings alone, as sb-go.
 - **`--json`** (decision 2), written with serde_json as `sb version
   --json` is: compact, keys in the order below, one trailing newline,
-  every control character in a string escaped as `\u00XX`, C1 and DEL
-  included (serde_json escapes only U+0000 to U+001F; a label's 8-bit
-  CSI or OSC would otherwise reach a terminal). An
+  every control character in a string escaped (`\n`, `\u001b`,
+  `\u009b`), C1 and DEL included (serde_json escapes only U+0000 to
+  U+001F; a label's 8-bit CSI or OSC would otherwise reach a terminal).
+  An
   array of the same containers in the same order, each:
 
   | Key | Value |
@@ -503,10 +504,14 @@ no `--ignore`); a failed stop starts nothing.
   escaped) at once, then every 5 s, at most 60 times; no sleep follows
   the 60th.
   - `completed` ends the step; `pending` and `running` wait.
-  - These end the wait at once: `failed` is "job failed"; another status is "unknown job
-    status: X"; a transport error or timeout is reqwest's cause; "job
+  - These end the wait at once: `failed` is "job failed"; another
+    status is "unknown job status: X".
+  - A failed poll (a transport error or timeout, reqwest's cause; "job
     status check failed with status code: N"; "decode job status
-    response: <cause>"; "job status response is missing status".
+    response: <cause>"; "job status response is missing status") is
+    asked again after the usual 5 s; three failed polls in a row
+    (`FAILED_POLLS_IN_A_ROW`) end the wait with the last one's text
+    (decision 10). Failed polls count toward the 60.
   - After the 60th: "timeout waiting for job completion".
 - **HTTP:** reqwest (already in sb through config), each request limited
   to 10 s (`RequestBuilder::timeout`), at most 1 MiB of response read
@@ -531,7 +536,21 @@ no `--ignore`); a failed stop starts nothing.
   controller's job is not cancelled (it has no cancel endpoint), so an
   interrupted request or wait adds an info notice under its step: "the
   controller may still be starting containers; `sb docker ps` shows
-  where they are" ("stopping" for a stop; decision 5).
+  where they are" ("stopping" for a stop; decision 5). The same notice
+  follows every other ending without a final job status (decision 10):
+  a request not answered or whose answer can't be read (it may have been
+  accepted), a wait that gave up (its timeout, failed polls, an unknown
+  status). A refused request and a failed job have none: their answers
+  are final.
+- **Restart's start:** a restart whose stop doesn't end done requests no
+  start and says so under its step: "the start wasn't requested: <why>"
+  (the stop job failed; the controller refused the stop; sb couldn't
+  tell whether the stop finished; the run was interrupted), as does an
+  interrupt that lands as the stop's last answer comes, which leaves the
+  start's step skipped. A refused start after a done stop says "the
+  containers were stopped and stay stopped: the controller refused the
+  start". So once the stop is asked for, a restart ends with the start
+  requested or such a line (docker-M2).
 - **Run log:** the check's answer, each request (method, path, ignored
   names) and answer (status, job ID), each poll's status, the outcome.
   Nothing secret is involved.
@@ -544,6 +563,11 @@ no `--ignore`); a failed stop starts nothing.
   leaves out.
 - An interrupted job gets the notice above (decision 5); sb-go says
   nothing.
+- Every other ending without a final job status gets the notice too,
+  and a restart that doesn't request its start says why (decision 10);
+  sb-go says only the error.
+- Up to three failed polls in a row are ridden out (decision 10); sb-go
+  ends the wait at the first.
 - sb's runner look and failure block, not sb-go's spinner and its outer
   `error: ...` wrapping; the texts above are the innermost cause.
 - `SB_DOCKER_CONTROLLER_URL` and `SB_DOCKER_CONTROLLER_UNIT` replace the
@@ -661,7 +685,9 @@ overrides.
   about 5 minutes (59 sleeps of 5 s), while the controller's own job
   timeouts are 600 s for start and 300 s for stop, and a job can wait
   `pending` behind another. "timeout waiting for job completion" can
-  come while the job goes on (as sb-go).
+  come while the job goes on (as sb-go); the notice then says the
+  controller may still be at work, and a restart says its start wasn't
+  requested (decision 10).
 - **The command-tree contract:** these commands leave out sb-go's `-v`,
   as validate-config does; a future full-equality contract test records
   them as dropped flags.
@@ -694,3 +720,10 @@ overrides.
    cancel endpoint, a version and features check) belongs to the
    controller's Rust rewrite, the maintainer's own work; sb takes it up
    then.
+
+10. **Every ending without a final job status says so** (hardening plan
+    decision 17, 2026-11-12; docker-M2): the "controller may still be
+    starting (stopping) containers" notice on each, and a few failed
+    polls in a row (three) ridden out before it; a restart whose stop
+    doesn't end done says its start wasn't requested and why. Listed
+    differences from sb-go.

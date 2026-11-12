@@ -325,6 +325,51 @@ fn each_failure_shows_its_block_and_exits_1() {
     assert!(text(&out).contains("job failed"), "{out:?}");
 }
 
+/// A restart whose stop's polls keep failing (docker spec decision 10):
+/// three in a row end the wait (about 10 s at sb's 5 s interval), the
+/// notice says the controller may still be stopping containers, and the
+/// restart says why it requested no start.
+#[test]
+fn a_restart_whose_stop_polls_fail_says_why_no_start() {
+    if !root_gate::requested() {
+        return;
+    }
+    let _spawns = SPAWNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let world = World::new("echo active");
+    let fake = FakeController::start().expect("fake");
+    fake.script("/stop", Answer::ok(JOB_S));
+    fake.script("/job_status/job-s", Answer::with_status(502, ""));
+    let out = world.sb(fake.url(), &["docker", "restart"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let shown = text(&out);
+    assert!(
+        shown.contains(
+            "the controller may still be stopping containers; sb docker ps shows where they are"
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("the start wasn't requested: sb couldn't tell whether the stop finished"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("job status check failed with status code: 502"),
+        "{shown}"
+    );
+    let asked: Vec<String> = fake.seen().into_iter().map(|s| s.path).collect();
+    assert_eq!(
+        asked,
+        [
+            "/stop",
+            "/job_status/job-s",
+            "/job_status/job-s",
+            "/job_status/job-s"
+        ]
+    );
+}
+
 /// No `systemctl` on `PATH`: "not running" (sb-go's text for a check that
 /// can't run), nothing asked of the controller.
 #[test]

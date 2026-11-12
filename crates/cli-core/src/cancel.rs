@@ -198,7 +198,7 @@ fn slot(signal: i32) -> Option<usize> {
 /// (logind's scopes have `SendSIGHUP=yes`), and under sudo, sudo relays
 /// its own copy of each; an interactive bash re-sends a hangup to its jobs
 /// before the kernel hangs up the foreground group. The copies came within
-/// about a millisecond (docs/platform-notes/exec-processes.md, "Doubled
+/// half a millisecond (docs/platform-notes/exec-processes.md, "Doubled
 /// signals"); 250 ms leaves room for a loaded host and is still far
 /// shorter than a person signalling twice on purpose. A signal at or past
 /// the window is a second signal, as before.
