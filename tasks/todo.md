@@ -521,7 +521,12 @@ tree (ui-M3; confirmed).
 **Scope:** M
 
 ## Checkpoint T: text and processes
-- [ ] `check.sh full`; the signal probes pass under sudo.
+- [x] `check.sh full`; the signal probes pass under sudo. 2026-11-12:
+      `check.sh full HEAD` passed with every step at c05c9fd; the probes
+      under sudo found every copy within 0.41 ms of the first, and the
+      hangup tests took the grace. The matrix passed on 22.04, 24.04
+      and 26.04 after compat.sh's rotation wait was raised (5482678)
+      and the pread bounds re-based (ADR-019); the fuzz harness passed.
 
 ## Task 18: `docker restart` never ends silently short of a start
 

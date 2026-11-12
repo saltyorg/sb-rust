@@ -408,7 +408,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 12: a hangup cancels cleanly
 - [x] Task 13: a relayed signal isn't a second signal
 - [x] Task 17: panics reach the run log and the screen
-- [ ] Checkpoint T: text and processes
+- [x] Checkpoint T: text and processes
 
 ### Phase 2 (lane 1): docker and the live display
 - [ ] Task 18: `docker restart` never ends silently short of a start
