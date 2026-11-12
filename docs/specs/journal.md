@@ -194,9 +194,17 @@ correction.
 On 249 and 255 the term is `_UID=0` for every source, as journalctl's.
 
 **Starting a follow.** A `Page` records where it ended, as its `end`.
-That covers each file it read, by inode, with the entry count it read
-up to, and the newest entry it examined, unfiltered, with that entry's
-directory. It exists even when the page matched nothing.
+That covers each file it read, by inode and file id, with the entry
+count it read up to, and the newest entry its first header reads gave,
+unfiltered, with that entry's directory. It exists even when the page
+matched nothing. The count is the header's for an unfiltered page or a
+sealed file. A filtered page reads each other file's header again after
+its lookups and examines the entries that read added and the newest one
+before it. It takes those its walk can show, held by then in their
+driving term's lists, and holds the second count, or the index of a
+newest entry not linked yet. An older entry not in its lists, which
+journald moved on from, is examined and not shown (decision 13). Every
+entry below the count was examined by the page.
 
 `Journal::follow(from)` then:
 1. adds the watches;
@@ -219,7 +227,13 @@ even after an empty page. The prototype's `check_until` window is kept
 only for files found by a later rescan.
 
 A crafted test and a follow.sh scenario write between a page and its
-follow, also after an empty page: 0 lost, 0 doubled.
+follow, also after an empty page: 0 lost, 0 doubled. Crafted tests also
+write during a filtered page, through a seam between its two header
+reads (an entry linked before the second read, two lists read at
+different moments, the newest counted entry not yet listed, a value
+first written during the page, forward pages landing around such
+entries). A follow.sh scenario takes filtered pages while a writer runs
+and follows from each: every entry once.
 
 A source with no directory to watch (neither local root, or no given
 file's directory) is refused, `OpenError::NothingToWatch`: no event could
@@ -429,9 +443,15 @@ Only on corrupt, live or foreign files:
 11. **The file list is read again after opening.** journalctl lists
     once, so a rotation in between loses entries in journalctl but not
     here.
-12. **When journald is cut off while linking an entry** it writes again,
-    the follow shows both copies (it matches by items). journalctl and
-    the tail show one. stress.sh allows exactly that.
+12. **An entry journald was cut off from linking into its values'
+    lists** is shown by the follow, for entries it reads, which it matches
+    by their items; a filtered journalctl, and a filtered page, find
+    entries through those lists (a page through its driving term's lists)
+    and don't show it (an unfiltered view shows every counted entry).
+    Where journald writes the entry again (a link that failed), the
+    follow shows both copies and journalctl and the page one; where it
+    never links it (journald died mid-link), the follow shows it and
+    journalctl doesn't. stress.sh allows exactly the first.
 13. **Flush copies appended to a /var file already being followed** are
     shown again (rare; declined in the prototype).
 14. **Field names aren't refused** for failing journalctl's validity
@@ -932,6 +952,64 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
     dropping the waiter, writes the stop fd, so the blocked poll returns
     at once and its blocking thread is freed. The protocol is "Waiting
     for new entries" above, which replaces the `AsyncFd` steps.
+
+13. **A filtered page reads each file's header again after its lookups**
+    (maintainer, 2026-11-12; sb-journal hardening plan, decisions 20, 23
+    and 24, from Task 32's options). A page on a journal journald is
+    writing could show an entry past the count its `PageEnd` held, which
+    the follow then showed again, and could miss the newest counted
+    entry, not yet linked into its values' lists, which the follow
+    started past (hardening findings follow-H1, page-H1, fwd-M2 and
+    follow-N1).
+    - **What the page does:** per file that isn't sealed (archived, or
+      `.journal~`), after every lookup it reads the header again (n1).
+      It reads the main-list entries from the first read's newest one
+      (n0-1) up to n1, looks the query's values up again (a value first
+      written during the page had no DATA object at its lookup), and
+      takes an entry that matches by its items where the page's walk can
+      show it: its group's driving term's lists hold it now (the walk reads
+      that term's lists and checks the other terms by items), or, for a
+      group the walk had nothing to walk in (a value first written during
+      the page), every term's. It merges those into the file's stream by
+      offset, an offset met twice taken once. `PageEnd` holds n1.
+    - **An entry counted but not in its lists yet** at the second read
+      (by the link order, on a live file, only the newest n1 counts) isn't
+      shown: the file's count in `PageEnd` is that entry's index, so the
+      follow reads it by its items, as it reads every entry. If journald
+      never links it (it died mid-link, or the file was archived with the
+      link cut off), the follow shows it and journalctl doesn't:
+      Difference 12. An older one journald moved on from was cut off for
+      good, and neither the page nor the follow shows it.
+    - **Why it is exact:** journald links an entry into the main list
+      and raises the count before it links the entry into its values'
+      lists, so an entry the lookups' lists hold is counted by n1, and
+      only the newest entry n0 counts can be half linked
+      (docs/platform-notes/systemd-journal.md, "The order journald links
+      an entry in", source and a probe on 22.04, 24.04 and 26.04).
+    - **Unchanged:** the follow's start, the flush and rotation rules,
+      and unfiltered pages (they read no value list). A sealed file's
+      count is final, and reading its newest entry again would show an
+      entry journald was cut off from linking (Difference 12).
+    - **A forward page** takes such an entry by the cursor's order where
+      it lies before the landing the lists' seek found, or where they
+      found none, and in file order after the landing, as the lists'
+      own entries. Where the file's realtime steps back among the entries
+      written during the page, that can differ from the landing a bisect
+      over the whole list finds (forward.rs lists it). A seek that meets
+      an error leaves them out, and the file hands over the first read's
+      count, as when the second read fails, so the follow reads them.
+    - **A forward page at the journal's end stops at the count it read**
+      (n0 unfiltered, n1 filtered); the follow delivers the entries
+      appended meanwhile. Every entry the page shows is in journalctl's
+      view, and the page plus its follow is the whole view (the
+      hardening plan's decision 24).
+    - **The cost,** per filtered page and unsealed file: the header, one
+      pread per array of the main list up to the newest counted entry
+      (they double in size, so about log2 of the count, as the page's walk
+      to its end already reads), that entry's item and the entry, each
+      value looked up again, and for an entry that carries one, an offset
+      bisect of its list (O(log n)): 18 preads on a one-array fixture of
+      200 entries. More when entries were written during the page.
 
 ## Open questions
 

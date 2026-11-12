@@ -40,6 +40,19 @@
 //!   entry's items, so a forward page agrees with a page back on which
 //!   entries match.
 //!
+//! A filtered page reads each unsealed file's header again after its
+//! lookups (journal spec decision 13). The matching entries that read adds
+//! join the file's stream: before the landing the lists' seek found (or
+//! where they found none) by the cursor's order, after it in file order,
+//! as the lists' own entries. A bisect over a value's whole list would
+//! have tested such an entry between two neighbours by the same key, so
+//! that is the landing it finds, while the file's clock runs forward.
+//!
+//! One departure on a live file: where the realtime clock steps back among
+//! the entries written during the page, a bisect over the whole list can
+//! land elsewhere than the cursor's order puts such an entry, and sb
+//! follows the cursor's order there.
+//!
 //! Departures, on corrupt files and errors only:
 //! - an error is reported and the page goes on, where sd-journal leaves
 //!   the whole file out ("Can't iterate through", `real_journal_next`'s
@@ -91,7 +104,7 @@
 use crate::boots::BootOrder;
 use crate::file::{ChainCache, DataRef, EntryList, JournalFile, Key, Met, Probe};
 use crate::rules::Group;
-use crate::walk::{Candidate, location};
+use crate::walk::{Candidate, Known, driver, location, reread};
 use crate::{Cursor, ReadError, ReadErrorKind, ReadErrors};
 use itertools::Itertools;
 use std::collections::HashMap;
@@ -124,6 +137,8 @@ pub(crate) struct Forward {
     pub(crate) picked: Vec<Candidate>,
     pub(crate) more_older: bool,
     pub(crate) more_newer: bool,
+    /// Per file, the entry count the page hands over (walk.rs `reread`).
+    pub(crate) counts: Vec<u64>,
 }
 
 /// One file's query: per group, per term, the DATA objects of the values
@@ -138,6 +153,17 @@ struct FileQuery<'a> {
     /// boot with no start, or before its boot's start, isn't after the
     /// cursor.
     starts: Option<Rc<Starts>>,
+    /// The matching entries the second header read added (walk.rs
+    /// `reread`), ascending by offset (file order: the binary searches and
+    /// `partition_point` below rely on it), and the count the page hands
+    /// over.
+    extras: Rc<Vec<(u64, Cursor)>>,
+    count: u64,
+    /// Of `extras`, the offsets at or after the last seek's cursor in the
+    /// release's order (`Cursor::order`), ascending. The cursor's own entry
+    /// is among them, as a landing can be: `after` steps past a landing
+    /// that is the cursor's entry, so the page never shows it.
+    extras_after: Rc<Vec<u64>>,
 }
 
 /// Per boot id, the first offset of the boot's entries after the cursor,
@@ -149,10 +175,16 @@ impl<'a> FileQuery<'a> {
     /// reported and left out, as the backward walk leaves it out; a group
     /// with a term none of whose values is here can't match, and is left
     /// out too.
+    ///
+    /// For a filtered query the header is then read again (walk.rs
+    /// `reread`): the entries it adds that match are taken by the cursor's
+    /// order where they lie before a landing (`seek`), and in file order
+    /// after it, as the lists' own entries are.
     fn new(f: &'a JournalFile, groups: &[Group], errors: &mut ReadErrors) -> Self {
+        let mut known = Known::default();
         let resolved = (!groups.is_empty()).then(|| {
             let mut out = Vec::new();
-            'groups: for group in groups {
+            'groups: for (g, group) in groups.iter().enumerate() {
                 let mut terms = Vec::new();
                 for term in group {
                     let mut refs = Vec::new();
@@ -162,6 +194,7 @@ impl<'a> FileQuery<'a> {
                             Ok(None) => {}
                             Err(e) => {
                                 errors.add(e);
+                                known.failed.insert(g);
                                 continue 'groups;
                             }
                         }
@@ -171,15 +204,23 @@ impl<'a> FileQuery<'a> {
                     }
                     terms.push(refs);
                 }
+                // The term `all_matches_from` walks, for the second read.
+                if let Some(t) = driver(&terms) {
+                    known.drivers.insert(g, t);
+                }
                 out.push(terms);
             }
             out
         });
+        let again = reread(f, groups, &known, errors);
         Self {
             f,
             groups: resolved,
             cache: ChainCache::default(),
             starts: None,
+            extras: Rc::new(again.extras),
+            count: again.n_entries,
+            extras_after: Rc::new(Vec::new()),
         }
     }
 
@@ -191,7 +232,46 @@ impl<'a> FileQuery<'a> {
     /// otherwise, and where per-boot seeking gives the same: a file with
     /// no `_BOOT_ID` values sb can read, or with one boot, the cursor's or
     /// one the table leaves equal to it.
+    ///
+    /// An entry the second header read added is taken by the cursor's
+    /// order where it lies before the landing the lists gave, or where
+    /// they gave none: a bisect over its value's whole list would have
+    /// tested it there, between two neighbours, by the same key
+    /// (`generic_array_bisect`). Not where the file's clock steps back
+    /// among the entries written during the page: a departure (the module
+    /// doc). A seek that met an error drops them, and the file hands over
+    /// its first header read's count, as when the second read fails: they
+    /// stand for list entries not linked yet, the lists' own landing was
+    /// cut short, and the follow reads them from that count instead.
     fn seek(&mut self, c: &Cursor, boots: &BootOrder, errors: &mut ReadErrors) -> Option<u64> {
+        let after: Vec<u64> = self
+            .extras
+            .iter()
+            .filter(|(_, l)| !l.order(c, boots).is_lt())
+            .map(|&(off, _)| off)
+            .collect();
+        self.extras_after = Rc::new(after);
+        let mut met = ReadErrors::default();
+        let landing = self.seek_lists(c, boots, &mut met);
+        if !met.is_empty() {
+            self.extras = Rc::new(Vec::new());
+            self.extras_after = Rc::new(Vec::new());
+            self.count = self.f.header.n_entries;
+        }
+        errors.absorb(met);
+        match (landing, self.extras_after.first().copied()) {
+            (Some(l), Some(e)) => Some(l.min(e)),
+            (l, e) => l.or(e),
+        }
+    }
+
+    /// Where `c` falls in the file by its lists (`seek`).
+    fn seek_lists(
+        &mut self,
+        c: &Cursor,
+        boots: &BootOrder,
+        errors: &mut ReadErrors,
+    ) -> Option<u64> {
         self.starts = None;
         if c.seqnum_id != self.f.header.seqnum_id && boots.is_active() {
             let mut met = Met::default();
@@ -496,14 +576,22 @@ impl<'a> FileQuery<'a> {
     /// doesn't reach them), so `more_older` stays the landings' business
     /// (`older_than_starts`). An entry of a boot the file's `_BOOT_ID`
     /// values don't name is kept, never dropped.
+    ///
+    /// An entry the second header read added is kept by the cursor's
+    /// order instead (`extras_after`): a boot's start came from its
+    /// `_BOOT_ID` list, which may not list it yet.
     fn matches_from(&self, from: u64) -> Stream<'a> {
         let all = self.all_matches_from(from);
         let Some(starts) = &self.starts else {
             return all;
         };
-        let starts = Rc::clone(starts);
+        let (starts, extras) = (Rc::clone(starts), Rc::clone(&self.extras));
+        let after = Rc::clone(&self.extras_after);
         Box::new(all.filter(move |r| {
             let Ok((off, c)) = r else { return true };
+            if extras.binary_search_by_key(off, |&(o, _)| o).is_ok() {
+                return after.binary_search(off).is_ok();
+            }
             starts
                 .get(&c.boot_id)
                 .is_none_or(|s| s.is_some_and(|s| *off >= s))
@@ -549,12 +637,7 @@ impl<'a> FileQuery<'a> {
         let mut walks: Vec<Stream<'a>> = Vec::new();
         for terms in groups {
             // The rarest term drives, as the backward walk's does.
-            let Some(driver) = terms
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, r)| r.iter().fold(0u64, |a, d| a.saturating_add(d.n_entries)))
-                .map(|(i, _)| i)
-            else {
+            let Some(driver) = driver(terms) else {
                 continue;
             };
             let lists: Vec<Stream<'a, ()>> = terms[driver]
@@ -577,6 +660,11 @@ impl<'a> FileQuery<'a> {
                 last: 0,
             }));
         }
+        // The second header read's matches, an offset the lists also give
+        // taken once (`ascending`).
+        let extras = Rc::clone(&self.extras);
+        let start = extras.partition_point(|&(off, _)| off < from);
+        walks.push(Box::new((start..extras.len()).map(move |i| Ok(extras[i]))));
         ascending(walks)
     }
 }
@@ -808,6 +896,7 @@ pub(crate) fn after(
             picked: Vec::new(),
             more_older: older,
             more_newer: false,
+            counts: queries.iter().map(|q| q.count).collect(),
         };
     };
     let taken = landings[first].clone().expect("`lowest` names a head");
@@ -849,6 +938,7 @@ pub(crate) fn after(
         picked: out,
         more_older,
         more_newer: more,
+        counts: queries.iter().map(|q| q.count).collect(),
     }
 }
 

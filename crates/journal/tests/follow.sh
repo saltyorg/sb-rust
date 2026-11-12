@@ -25,6 +25,8 @@
 #             a page of the newest 5 of 20 entries, or of none (a page
 #             that matched nothing), then entries written between the page
 #             and the follow's start (`follow --wait-for`), then after it
+#   during    sb-journal only: filtered pages taken while a writer runs,
+#             each followed from its end at once; 5 rounds of 20, each entry once
 # Each follower's numbered entries are counted: lost (a number missing)
 # and duplicated (a number printed twice), plus its CPU time. sb-journal
 # must lose and double nothing (journal spec, Difference 2 and "Starting a
@@ -327,6 +329,61 @@ between() {
 }
 between sbf-between-full 5 20 between-full
 between sbf-between-empty 10 0 between-empty
+
+# during: $1 the identifier, $2 the rounds, $3 the pages a round. Each
+# round starts a writer of 5000 entries ("follow N", numbered on from the
+# last round) in bursts of 100, and while it writes takes $3 filtered
+# pages, 20 ms apart, each of every entry so far (-n 100000) and followed
+# from its end at once (journal spec decision 13). Over each page and its
+# follow, every one of the round's entries must show once. Many pages, as
+# the race (an entry linked between a page's first header read and its
+# lookup) has a window of a fraction of a millisecond.
+during() {
+  tag=$1 rounds=$2 pages=$3 name=$4
+  : > go
+  for r in $(seq 1 "$rounds"); do
+    : > written; rm -f fa.*.all fa.*.err
+    lo=$(( (r - 1) * 5000 + 1 )) hi=$(( r * 5000 ))
+    {
+      for c in $(seq "$lo" 100 "$hi"); do
+        seq "$c" $(( c + 99 )) | sed 's/^/follow /' | systemd-cat -t "$tag" && seq "$c" $(( c + 99 )) >> written
+        sleep 0.01
+      done
+    } &
+    w=$!
+    pids=()
+    for p in $(seq 1 "$pages"); do
+      /sbj follow --release "$rel" --match "SYSLOG_IDENTIFIER=$tag" -n 100000 --wait-for go > "fa.$p.all" 2>"fa.$p.err" &
+      pids+=($!)
+      sleep 0.02
+    done
+    wait "$w"
+    for p in $(seq 1 "$pages"); do
+      for _ in $(seq 1 100); do grep -q "\"MESSAGE\":\"follow $hi\"" "fa.$p.all" && break; sleep 0.1; done
+    done
+    sleep 1
+    kill "${pids[@]}" 2>/dev/null; sleep 0.3
+    worst_lost=0 worst_dup=0
+    for p in $(seq 1 "$pages"); do
+      grep -q '^sb-journal: page read' "fa.$p.err" || bad "$name: round $r page $p was never read"
+      grep -o '"MESSAGE":"follow [0-9]*"' "fa.$p.all" | grep -o '[0-9]*' |
+        awk -v lo="$lo" -v hi="$hi" '$1 >= lo && $1 <= hi' | sort -n > fa.nums
+      got=$(sort -nu fa.nums | wc -l)
+      dup=$(( $(wc -l < fa.nums) - got ))
+      lost=$(( $(wc -l < written) - $(comm -12 <(sort -u written) <(sort -u fa.nums) | wc -l) ))
+      if [ "$lost" != 0 ] || [ "$dup" != 0 ]; then
+        bad "$name: round $r page $p: sb-journal lost $lost, duplicated $dup"
+      fi
+      [ "$lost" -gt "$worst_lost" ] && worst_lost=$lost
+      [ "$dup" -gt "$worst_dup" ] && worst_dup=$dup
+      grep -v '^sb-journal: page read' "fa.$p.err" | sed 's/^/    sb-journal stderr: /' | head -2
+    done
+    printf '  %-8s %-10s round %d written %4d  pages %d  worst lost %d  worst dup %d\n' \
+      "$name" sb-journal "$r" "$(wc -l < written)" "$pages" "$worst_lost" "$worst_dup"
+  done
+  return 0
+}
+during sbf-during 5 20 during
 find /var/log/journal /run/log/journal -name '*.journal*' 2>/dev/null | sed 's/^/  file: /'
 exit $fail
 EOS

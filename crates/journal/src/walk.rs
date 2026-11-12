@@ -10,7 +10,9 @@
 //! decides its own handling).
 
 use crate::boots::BootOrder;
-use crate::file::{DataRef, EntriesRev, Entry, JournalFile};
+use crate::file::{
+    ChainCache, DataRef, EntriesRev, Entry, EntryList, JournalFile, Key, Met, Probe,
+};
 use crate::open::Opener;
 use crate::rules::Group;
 use crate::{
@@ -217,6 +219,9 @@ pub(crate) struct Paged {
     pub(crate) records: Vec<Record>,
     pub(crate) more_older: bool,
     pub(crate) more_newer: bool,
+    /// Per file, the entry count the page hands over (`end`): the second
+    /// header read's for a filtered page (`reread`), else the header's.
+    pub(crate) counts: Vec<u64>,
 }
 
 /// The `n` matching entries at `at`, oldest first. `groups` empty means
@@ -247,11 +252,11 @@ pub(crate) fn page(
 ) -> Paged {
     let held = bounds.held / std::mem::size_of::<Candidate>();
     let beyond = Cell::new(false);
-    let (picked, more_older, more_newer, from) = match at {
+    let (picked, more_older, more_newer, from, counts) = match at {
         Position::Tail => {
-            let walks = walks(files, groups, |_: &Cursor| Step::Take, errors);
+            let (walks, counts) = walks(files, groups, |_: &Cursor| Step::Take, errors);
             let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
-            (picked, more, false, End::Newest)
+            (picked, more, false, End::Newest, counts)
         }
         Position::Before(c) => {
             let step = |l: &Cursor| {
@@ -262,13 +267,14 @@ pub(crate) fn page(
                     Step::Skip
                 }
             };
-            let walks = walks(files, groups, step, errors);
+            let (walks, counts) = walks(files, groups, step, errors);
             let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
-            (picked, more, beyond.get(), End::Newest)
+            (picked, more, beyond.get(), End::Newest, counts)
         }
         Position::After(c) => {
             let fwd = crate::forward::after(files, groups, n, c, held, boots, errors);
-            (fwd.picked, fwd.more_older, fwd.more_newer, End::Oldest)
+            let (picked, older, newer) = (fwd.picked, fwd.more_older, fwd.more_newer);
+            (picked, older, newer, End::Oldest, fwd.counts)
         }
     };
     let (records, left) = decode(files, &picked, from, bounds.payload, errors);
@@ -276,6 +282,7 @@ pub(crate) fn page(
         records,
         more_older: more_older || left.older,
         more_newer: more_newer || left.newer,
+        counts,
     }
 }
 
@@ -302,15 +309,17 @@ pub(crate) fn lasts(files: &[JournalFile], errors: &mut ReadErrors) -> Vec<Optio
         .collect()
 }
 
-/// Where the page ends (`PageEnd`): each opened file's inode and entry
-/// count, and the newest entry across them (`lasts`, one per file),
-/// unfiltered, by sd-journal's order with the page's `boots` (the earlier
-/// file on a tie, as `newest` keeps it; spelled out for the reason
+/// Where the page ends (`PageEnd`): each opened file's inode and the
+/// entry count the page hands over (`counts`, `Paged::counts`), and the
+/// newest entry across them (`lasts`, one per file, from the first header
+/// reads), unfiltered, by sd-journal's order with the page's `boots` (the
+/// earlier file on a tie, as `newest` keeps it; spelled out for the reason
 /// `Merge::best` gives), with its file's directory. A file with no newest
 /// entry still has its count.
 pub(crate) fn end(
     files: &[JournalFile],
     lasts: &[Option<(u64, Entry)>],
+    counts: &[u64],
     boots: &BootOrder,
 ) -> PageEnd {
     let mut newest: Option<(Cursor, &JournalFile)> = None;
@@ -327,32 +336,35 @@ pub(crate) fn end(
     PageEnd {
         files: files
             .iter()
-            .map(|f| FileEnd {
+            .zip(counts)
+            .map(|(f, &n_entries)| FileEnd {
                 inode: f.inode,
                 file_id: f.header.file_id,
-                n_entries: f.header.n_entries,
+                n_entries,
             })
             .collect(),
         newest: newest.map(|(l, f)| (l, f.path.parent().map(Path::to_path_buf))),
     }
 }
 
-/// One lazy walk per file, newest first. A group whose terms can't be
-/// looked up is reported in `errors` and left out, the other groups still
-/// match, as sd-journal leaves out what it can't iterate and keeps the
-/// rest: `.journal~` files are exactly the ones left dirty.
+/// One lazy walk per file, newest first, and each file's count to hand
+/// over (`file_walk`). A group whose terms can't be looked up is reported
+/// in `errors` and left out, the other groups still match, as sd-journal
+/// leaves out what it can't iterate and keeps the rest: `.journal~` files
+/// are exactly the ones left dirty.
 fn walks<'a, S>(
     files: &'a [JournalFile],
     groups: &'a [Group],
     step: S,
     errors: &mut ReadErrors,
-) -> Vec<impl Iterator<Item = Result<Candidate>> + 'a>
+) -> (Vec<impl Iterator<Item = Result<Candidate>> + 'a>, Vec<u64>)
 where
     S: Fn(&Cursor) -> Step + Copy + 'a,
 {
-    let mut out = Vec::new();
+    let (mut out, mut counts) = (Vec::new(), Vec::new());
     for (file, f) in files.iter().enumerate() {
-        let walk = file_walk(f, groups, step, errors);
+        let (walk, count) = file_walk(f, groups, step, errors);
+        counts.push(count);
         out.push(walk.map(move |r| {
             r.map(|(offset, location)| Candidate {
                 location,
@@ -361,7 +373,7 @@ where
             })
         }));
     }
-    out
+    (out, counts)
 }
 
 /// Read the chosen entries for output, from the end the page pages from
@@ -700,12 +712,17 @@ impl<S: Fn(&Cursor) -> Step> Iterator for Walk<'_, S> {
 /// match. Since the walk drives from the DATA objects' own entry lists, an
 /// entry journald was cut off from linking there isn't found through them
 /// (Difference 12: the tail shows one copy of an entry written again).
+///
+/// For a filtered query, the file's header is then read again
+/// (`reread`): the entries it finds the walk can show (in its driving
+/// term's lists by then) join the walk, an offset met twice taken once,
+/// and the count returned is the one the page hands over.
 fn file_walk<'a, S>(
     f: &'a JournalFile,
     groups: &[Group],
     step: S,
     errors: &mut ReadErrors,
-) -> Stream<'a, Cursor>
+) -> (Stream<'a, Cursor>, u64)
 where
     S: Fn(&Cursor) -> Step + Copy + 'a,
 {
@@ -725,7 +742,8 @@ where
     if groups.is_empty() {
         walks.push(walk(offsets(f.all_entries_rev()), Vec::new()));
     }
-    'groups: for group in groups {
+    let mut known = Known::default();
+    'groups: for (g, group) in groups.iter().enumerate() {
         let mut resolved: Vec<Vec<DataRef>> = Vec::new();
         for term in group {
             let mut refs = Vec::new();
@@ -735,6 +753,7 @@ where
                     Ok(None) => {}
                     Err(err) => {
                         errors.add(err);
+                        known.failed.insert(g);
                         continue 'groups;
                     }
                 }
@@ -744,15 +763,10 @@ where
         if resolved.iter().any(Vec::is_empty) {
             continue;
         }
-        let Some(driver) = resolved
-            .iter()
-            .enumerate()
-            // The counts come from the file: saturate, don't overflow.
-            .min_by_key(|(_, r)| r.iter().fold(0u64, |a, d| a.saturating_add(d.n_entries)))
-            .map(|(i, _)| i)
-        else {
+        let Some(driver) = driver(&resolved) else {
             continue;
         };
+        known.drivers.insert(g, driver);
         let lists = resolved[driver]
             .iter()
             .map(|d| offsets(f.entries_of_rev(d)))
@@ -765,7 +779,220 @@ where
             .collect();
         walks.push(walk(union(lists), others));
     }
-    union(walks)
+    let again = reread(f, groups, &known, errors);
+    if !again.extras.is_empty() {
+        // Already matched by their items; newest first, as the walks go,
+        // and through the page's step like every other match.
+        walks.push(Box::new(again.extras.into_iter().rev().filter_map(
+            move |(off, location)| match step(&location) {
+                Step::Take => Some(Ok((off, location))),
+                Step::Skip => None,
+            },
+        )));
+    }
+    (union(walks), again.n_entries)
+}
+
+/// A group's driving term: the one with the fewest entries, whose lists a
+/// walk reads, the other terms checked by the entry's items. `None` for a
+/// group of no terms.
+pub(crate) fn driver(terms: &[Vec<DataRef>]) -> Option<usize> {
+    terms
+        .iter()
+        .enumerate()
+        // The counts come from the file: saturate, don't overflow.
+        .min_by_key(|(_, r)| r.iter().fold(0u64, |a, d| a.saturating_add(d.n_entries)))
+        .map(|(i, _)| i)
+}
+
+/// What a file's lookups met, for its second header read (`reread`): the
+/// groups a lookup failed in (already reported, and left out), and per
+/// group walked, its driving term (`driver`).
+#[derive(Debug, Default)]
+pub(crate) struct Known {
+    pub(crate) failed: HashSet<usize>,
+    pub(crate) drivers: HashMap<usize, usize>,
+}
+
+/// A filtered page's second look at one file.
+#[derive(Debug)]
+pub(crate) struct Reread {
+    /// The entry count the page hands over (`PageEnd`).
+    pub(crate) n_entries: u64,
+    /// The main-list entries from the first count's newest one up to the
+    /// second count that match the query by their items and that the
+    /// group's driving term's lists hold by the second read, oldest first,
+    /// with their locations.
+    pub(crate) extras: Vec<(u64, Cursor)>,
+}
+
+/// A filtered page's second header read of `f` (journal spec decision
+/// 13), made after every lookup of `groups` (`known`). journald links an
+/// entry into the main list and raises the header's count before it links
+/// the entry into its values' lists (journal-file.c
+/// `journal_file_link_entry`; docs/platform-notes/systemd-journal.md), so
+/// every entry the lookups' lists hold is counted by this read (n1), and
+/// every entry below the first read's newest (n0-1) was already in all its
+/// lists. The entries from n0-1 to n1-1 are read here: the newest entry
+/// the first read counted, which journald may not have linked into its
+/// lists yet, and those written during the page. Every value of the query
+/// is looked up again (a value first written during the page had no DATA
+/// object at its lookup), and an entry that matches by its items is added
+/// to the page only where the walk can show it: a group's driving term's
+/// lists hold it now (the walk reads those, the other terms by items), or,
+/// for a group the walk had nothing to walk in, every term's. `PageEnd`
+/// then holds n1, and the follow goes on from there.
+///
+/// An entry that carries the query's values but isn't in their lists yet
+/// can only be the newest n1 counts, on a live file (the link order): the
+/// page doesn't show it, and hands over its index instead, so the follow
+/// reads it by its items, as it reads every entry. One journald will never
+/// link (it died, or the link failed) is then the follow's to show, as
+/// Difference 12 says. An older one, which journald moved on from, was cut
+/// off for good: neither shows it.
+///
+/// Not for an unfiltered query (it reads no value list), nor a sealed file,
+/// whose count is final: reading its newest entry again would show an entry
+/// journald was cut off from linking (Difference 12). When the second read
+/// fails, or the main list doesn't give every entry up to n1, the page hands
+/// over at n0 with nothing added, as it did before.
+pub(crate) fn reread(
+    f: &JournalFile,
+    groups: &[Group],
+    known: &Known,
+    errors: &mut ReadErrors,
+) -> Reread {
+    let n0 = f.header.n_entries;
+    let first = || Reread {
+        n_entries: n0,
+        extras: Vec::new(),
+    };
+    if groups.is_empty() || f.sealed() {
+        return first();
+    }
+    #[cfg(any(test, feature = "testing"))]
+    crate::testing::seam::before_second_read(&f.path);
+    // The two silent fallbacks below happen only on a file that isn't
+    // journald's live one (journald writes each main-list item before it
+    // raises the count, and never lowers it): one cut short or replaced in
+    // place, whose walk reports the damage itself.
+    let (n1, head) = match f.count_now() {
+        Ok((n1, head)) if n1 >= n0 => (n1, head),
+        Ok(_) => return first(),
+        Err(e) => {
+            errors.add(e);
+            return first();
+        }
+    };
+    let from = n0.saturating_sub(1);
+    let offsets = match f.entries_between(&mut None, from, (n1, head)) {
+        Ok(o) if o.len() as u64 == n1 - from && o.iter().all(|&off| f.plausible_entry(off)) => o,
+        Ok(_) => return first(),
+        Err(e) => {
+            errors.add(e);
+            return first();
+        }
+    };
+    // Per group, per term, its values' DATA objects as they are now, looked
+    // up again: their lists as journald has linked them by this read; with
+    // the group's driving term, where the walk walked one.
+    let mut wanted: Vec<(Vec<Vec<DataRef>>, Option<usize>)> = Vec::new();
+    'groups: for (g, group) in groups.iter().enumerate() {
+        if known.failed.contains(&g) {
+            continue;
+        }
+        let mut terms = Vec::new();
+        for term in group {
+            let mut values = Vec::new();
+            for payload in term {
+                match f.find_data(payload) {
+                    Ok(Some(d)) => values.push(d),
+                    Ok(None) => {}
+                    Err(e) => {
+                        // Repeat rather than lose: the follow reads from n0.
+                        errors.add(e);
+                        return first();
+                    }
+                }
+            }
+            if values.is_empty() {
+                continue 'groups;
+            }
+            terms.push(values);
+        }
+        wanted.push((terms, known.drivers.get(&g).copied()));
+    }
+    let mut extras = Vec::new();
+    let mut n_entries = n1;
+    if !wanted.is_empty() {
+        for (index, off) in (from..).zip(offsets) {
+            let e = match f.entry(off) {
+                Ok(e) => e,
+                Err(err) => {
+                    errors.add(err);
+                    return first();
+                }
+            };
+            let carries = |d: &DataRef| e.items.contains(&d.offset);
+            let by_items =
+                |terms: &[Vec<DataRef>]| terms.iter().all(|values| values.iter().any(carries));
+            let mut in_lists = |values: &[DataRef]| {
+                values
+                    .iter()
+                    .any(|d| carries(d) && lists(f, d, off, errors))
+            };
+            if !wanted.iter().any(|(terms, _)| by_items(terms)) {
+                continue;
+            }
+            // What the walk can show: a group it walked, through its driving
+            // term's lists, the others matched by items; one it couldn't
+            // (a value first written during the page), through every
+            // term's, as journalctl's match finds it.
+            let listed = wanted.iter().any(|(terms, driver)| {
+                by_items(terms)
+                    && match driver {
+                        Some(t) => in_lists(&terms[*t]),
+                        None => terms.iter().all(|values| in_lists(values)),
+                    }
+            });
+            if listed {
+                extras.push((off, location(f, &e)));
+            } else if index + 1 == n1 {
+                // Counted, not linked yet (or never: a journald that died,
+                // a link cut off). The follow reads it by its items.
+                n_entries = index;
+            }
+        }
+    }
+    Reread { n_entries, extras }
+}
+
+/// Whether the DATA object `d`'s list, as read now, holds `entry`: an
+/// offset bisect (journal-file.c `generic_array_bisect`) that lands on it.
+/// A bisect a zero item or a bad entry cuts short or refuses doesn't,
+/// unreported, as the walks pass a zero over without reporting it and read
+/// such a list from its head (Difference 8); one the system's error stops
+/// doesn't either, and that error is reported.
+fn lists(f: &JournalFile, d: &DataRef, entry: u64, errors: &mut ReadErrors) -> bool {
+    let probe = Probe {
+        key: Key::Offset,
+        needle: entry,
+    };
+    let mut met = Met::default();
+    let found = f.bisect_list(
+        &EntryList::of_data(d),
+        probe,
+        &mut ChainCache::default(),
+        &mut met,
+    );
+    match found {
+        Ok(found) => found.is_some_and(|found| found.offset == entry),
+        Err(e) if e.is_io() => {
+            errors.add(e);
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 /// The DATA payloads one page has read, keyed by (file index, offset): a
@@ -927,7 +1154,8 @@ mod tests {
     /// `end`, from the files' `lasts`, with no boot step.
     fn end_of(files: &[JournalFile], errors: &mut ReadErrors) -> PageEnd {
         let lasts = lasts(files, errors);
-        end(files, &lasts, &BootOrder::none())
+        let counts: Vec<u64> = files.iter().map(|f| f.header.n_entries).collect();
+        end(files, &lasts, &counts, &BootOrder::none())
     }
 
     fn one(path: &Path) -> Opened {
@@ -2535,10 +2763,81 @@ mod tests {
         assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
     }
 
+    /// One crafted entry's payloads.
+    type Row = &'static [&'static [u8]];
+
+    /// `c` written in place at `path` with its header counting `n`.
+    fn counted(c: &Crafted, path: &Path, n: u64) {
+        let mut c = c.clone();
+        c.set(H_N_ENTRIES, n);
+        c.set(H_ARENA_SIZE, c.b.len() as u64 - 272);
+        std::fs::write(path, &c.b).expect("write");
+    }
+
+    /// The DATA object of `payload` in `c`, found by its bytes.
+    fn data_of(c: &Crafted, payload: &[u8]) -> u64 {
+        let at = c.b.windows(payload.len()).position(|w| w == payload);
+        at.expect("the payload") as u64 - c.format().payload_at()
+    }
+
+    /// A forward page over a file written during it (decision 13), from a
+    /// cursor at m1 (seqnum 2): `A=1` on m0 and m2, `C=1` on m1, `B=1` on
+    /// m3 when `b` is set. The header counts m0 to m2 at the page's first
+    /// read, and m2 isn't in `A=1`'s list yet (the mirror case); `B=1`'s
+    /// list holds m3, which the seam's header read counts.
+    fn forward_over_a_written_file(format: Format, with_b: bool) -> Vec<String> {
+        let (in_a, in_c, in_b): (Row, Row, Row) = (&[b"A=1"], &[b"C=1"], &[b"B=1"]);
+        let mut rows = vec![in_a, in_c, in_a];
+        if with_b {
+            rows.push(in_b);
+        }
+        let (whole, _e) = crafted::journal_of_in(format, &rows);
+        let mut early = whole.clone();
+        early.set(data_of(&early, b"A=1") + D_N_ENTRIES, 1);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 3);
+        let all = rows.len() as u64;
+        let mut j = one(t.path());
+        let mut groups = vec![vec![vec![b"A=1".to_vec()]]];
+        if with_b {
+            groups.push(vec![vec![b"B=1".to_vec()]]);
+        }
+        let at = Position::After(cursor(0, 2, 7, 2, 1_000_002));
+        let pg = crate::testing::seam::between_header_reads(
+            move |p| counted(&whole, p, all),
+            || j.page(&groups, 10, &at),
+        );
+        messages(&pg.records)
+    }
+
+    /// A forward page takes an entry its second header read added by the
+    /// cursor's order, also when it lies before the landing the seek found:
+    /// `A=1`'s list has nothing after the cursor, `B=1`'s lands on m3, and
+    /// m2, re-read and matching `A=1`, is after the cursor, so it is shown
+    /// first.
+    #[test]
+    fn a_forward_page_takes_a_reread_entry_before_its_landing() {
+        each_format(|format| {
+            assert_eq!(forward_over_a_written_file(format, true), ["m2", "m3"]);
+        });
+    }
+
+    /// The landing itself can be an entry the second header read added:
+    /// no list has anything after the cursor, and the re-read m2 is after
+    /// it.
+    #[test]
+    fn a_forward_pages_landing_can_be_a_reread_entry() {
+        each_format(|format| {
+            assert_eq!(forward_over_a_written_file(format, false), ["m2"]);
+        });
+    }
+
     /// A zero slot in a value's list (a crash before journald wrote it)
     /// doesn't hide the list's other entries going forward: the walk's
     /// start is found around it, and the zero is skipped (Difference 8).
-    /// `U=x`'s chain is m1 to m5; m5's slot is zeroed.
+    /// `U=x`'s chain is m1 to m5; m5's slot is zeroed. m5 isn't shown: the
+    /// page's second header read (decision 13) finds it carrying `U=x` but
+    /// not in the list, as journalctl's view doesn't hold it either.
     #[test]
     fn a_zero_slot_hides_nothing_going_forward() {
         each_format(a_zero_slot_hides_nothing_going_forward_in);

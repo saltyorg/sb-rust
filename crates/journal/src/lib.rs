@@ -348,6 +348,14 @@ impl ReadErrors {
         }
     }
 
+    /// `other`'s read errors, as if each had been added here.
+    pub(crate) fn absorb(&mut self, other: ReadErrors) {
+        for e in other.shown {
+            self.add(e);
+        }
+        self.omitted += other.omitted;
+    }
+
     /// An error opening or listing a file: shown, outside the cap.
     fn add_open(&mut self, e: ReadError) {
         // A set, so many files failing to open (one each) cost a lookup
@@ -434,11 +442,22 @@ pub struct Page {
     pub errors: ReadErrors,
 }
 
-/// Where a page ended: each file it read, by device and inode, with the
-/// entry count its header gave, and the newest entry in those files,
-/// matching or not, with that entry's directory. Opaque: a follow starts
-/// from it. Two ends are equal when the page read the same files at the
-/// same counts and the same newest entry.
+/// Where a page ended: each file it read, by device and inode (and the
+/// header's file id), with the entry count it read up to, and the newest
+/// entry in those files, matching or not, with that entry's directory.
+/// Opaque: a follow starts from it. Two ends are equal when the page read
+/// the same files at the same counts and the same newest entry.
+///
+/// The count is the header's when the page was unfiltered, or the file is
+/// sealed; a filtered page reads the header again after its lookups and
+/// holds that count, having examined every entry below it (journal spec
+/// decision 13). So a page plus the follow from its end gives every entry
+/// once.
+///
+/// It is the journal's end, not the page's: a follow from it starts after
+/// the newest entries the files held, wherever the page was. A follow from
+/// a `Before` page, or from a page its limits stopped, skips the entries
+/// between the page's last record and the end.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PageEnd {
     files: Vec<FileEnd>,
@@ -643,6 +662,14 @@ impl Journal {
     /// an `Io` error in `errors` from a file cut short while the page read
     /// it is gone from the next page, which reads the file's header again.
     ///
+    /// On a journal being written, a filtered page reads each unsealed
+    /// file's header a second time after its lookups and also shows the
+    /// matching entries that read counts which their lists hold by then,
+    /// so its `end` covers every entry it could have shown and the follow
+    /// from it repeats and loses none (journal spec decision 13). A newest
+    /// entry not linked yet is left to the follow. The page stops at that
+    /// count: entries written after it come with the follow.
+    ///
     /// Entries of different boots that no sequence number orders are
     /// ordered as the release's journalctl orders them (decision 11): on
     /// 22.04 by realtime; on 24.04 and 26.04 first by each boot's newest
@@ -673,7 +700,13 @@ impl Journal {
     /// corrupt file, or one written to between the page's reads). On 26.04,
     /// with two boots or more in the table, it also reads each boot's
     /// newest file's tail entry's items, one pread each, up to its
-    /// `_MACHINE_ID=` (all of them without one).
+    /// `_MACHINE_ID=` (all of them without one). A filtered page's second
+    /// header read costs, per unsealed file, the header, one pread per array
+    /// of the main list up to the newest counted entry (about log2 of the
+    /// count), that entry's item and the entry, then each value looked up
+    /// again and, for an entry that carries it, its list bisected (O(log n)
+    /// preads): 18 on `crafted::journal(200)`, more when entries were
+    /// written during the page.
     #[must_use]
     pub fn page(&self, q: &Query, at: &Position, n: usize, limits: &Limits) -> Page {
         let mut errors = ReadErrors::default();
@@ -684,8 +717,10 @@ impl Journal {
         };
         let lasts = walk::lasts(&files, &mut errors);
         let boots = boot_order(self.release.boot_rule(), &files, &lasts);
-        let end = walk::end(&files, &lasts, &boots);
         let paged = walk::page(&files, q.groups(), n, at, bounds, &boots, &mut errors);
+        // The counts a filtered page read again after its lookups (journal
+        // spec decision 13); the newest entry from the first header reads.
+        let end = walk::end(&files, &lasts, &paged.counts, &boots);
         Page {
             records: paged.records,
             more_older: paged.more_older,
@@ -1478,6 +1513,24 @@ mod tests {
         assert_eq!(key(&errors.shown[1]), "/f: read at 0x110: busy");
     }
 
+    /// Errors gathered apart (a forward seek's) are absorbed as if added:
+    /// distinct ones shown up to the cap, the rest counted, with the counts
+    /// both had.
+    #[test]
+    fn absorbed_errors_are_added_and_counted() {
+        let mut errors = ReadErrors::default();
+        errors.add(page_error(ReadErrorKind::Corrupt("e0".into())));
+        errors.omitted = 3;
+        let mut met = ReadErrors::default();
+        for i in 0..12 {
+            met.add(page_error(ReadErrorKind::Corrupt(format!("e{i}"))));
+        }
+        assert_eq!((met.shown.len(), met.omitted), (10, 2));
+        errors.absorb(met);
+        // e0 was there; e1 to e9 join it; the two `met` counted are added.
+        assert_eq!((errors.shown.len(), errors.omitted), (10, 5));
+    }
+
     /// Open and listing errors are shown outside the cap: one per file,
     /// however many read errors came first.
     #[test]
@@ -2054,12 +2107,17 @@ mod tests {
     /// and one per DATA object shown; `Before` also walks the newer entries
     /// again. `After` bisects instead (an item and an entry per probe), so
     /// near the end it costs more than the walk it replaced (50) and stays
-    /// the same at any depth (`a_deep_forward_page_costs_a_bisect`).
+    /// the same at any depth (`a_deep_forward_page_costs_a_bisect`). Being
+    /// filtered, each page also reads the header again after its lookup,
+    /// then the newest counted entry's item (the one array's head and the
+    /// item) and the entry, looks `U=x` up again and bisects its list for
+    /// that entry: 18 preads (journal spec decision 13; 42, 52 and 88
+    /// before it).
     #[test]
     fn the_preads_of_a_tail_a_page_back_and_a_page_forward_are_bounded() {
-        const TAIL: u64 = 42;
-        const BACK: u64 = 52;
-        const FORWARD: u64 = 88;
+        const TAIL: u64 = 60;
+        const BACK: u64 = 70;
+        const FORWARD: u64 = 106;
         let (mut c, _l) = crafted::journal(200);
         let t = c.file();
         let j = files(&[t.path()]);
@@ -2105,9 +2163,9 @@ mod tests {
     /// read to tell whether older entries lie before it.
     #[test]
     fn a_deep_forward_page_costs_a_bisect() {
-        const DEEP: u64 = 101;
-        const NEAR_END: u64 = 101;
-        const VANISHED: u64 = 104;
+        const DEEP: u64 = 122;
+        const NEAR_END: u64 = 122;
+        const VANISHED: u64 = 125;
         let (mut c, _l) = crafted::journal(2000);
         let t = c.file();
         let j = files(&[t.path()]);
@@ -2634,6 +2692,56 @@ mod tests {
         }
     }
 
+    /// A file sought per boot (24.04's table, another seqnum space) whose
+    /// newest entry, b2, journald hasn't linked into `U=x`'s list nor its
+    /// `_BOOT_ID` list at the page's lookups. Linked by the page's second
+    /// header read, it is taken (journal spec decision 13): by the cursor's
+    /// order, as boot 0xb's start, from a list that didn't hold it yet,
+    /// can't place it; b1 by that start. Never linked, it isn't shown, as
+    /// journalctl's view doesn't hold it.
+    #[test]
+    fn a_per_boot_forward_page_takes_the_newest_entry_once_listed() {
+        each_format(a_per_boot_forward_page_takes_the_newest_entry_once_listed_in);
+    }
+
+    fn a_per_boot_forward_page_takes_the_newest_entry_once_listed_in(format: Format) {
+        let (a, b) = (
+            boot_file_in(format, 1, 9, BOOT_A, true),
+            boot_file_in(format, 2, 9, BOOT_B, true),
+        );
+        let linked = std::fs::read(b.path()).expect("read");
+        let mut early = linked.clone();
+        let n_entries = usize::try_from(D_N_ENTRIES).expect("small");
+        for payload in [b"U=x".to_vec(), boot_field(0xb)] {
+            let at = early.windows(payload.len()).position(|w| w == payload);
+            let data =
+                at.expect("the payload") - usize::try_from(format.payload_at()).expect("small");
+            early[data + n_entries..data + n_entries + 8].copy_from_slice(&1u64.to_le_bytes());
+        }
+        let j = files_on(&release("24.04"), &[a.path(), b.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let all = tail(&j, &q, 4);
+        let a2 = all
+            .records
+            .iter()
+            .find(|r| r.field(&name("WHO")) == Some(b"a2"));
+        let at = Position::After(a2.expect("a2").cursor());
+        for (links, want) in [(true, vec!["b1", "b2"]), (false, vec!["b1"])] {
+            std::fs::write(b.path(), &early).expect("write");
+            let (path, bytes) = (b.path().to_path_buf(), linked.clone());
+            let fwd = crate::testing::seam::between_header_reads(
+                move |p| {
+                    if links && p == path {
+                        std::fs::write(p, &bytes).expect("write");
+                    }
+                },
+                || j.page(&q, &at, 10, &Limits::default()),
+            );
+            assert_eq!(who(&fwd), want, "linked by the second read: {links}");
+            assert!(fwd.errors.is_empty(), "{:?}", fwd.errors);
+        }
+    }
+
     /// One file holding three boots against a cursor in boot 0xa (whose
     /// newest tail is at 300): b1 and b2 of boot 0xb, ordered after it;
     /// c1 and c2 of boot 0xc, in no file's tail, so left equal and ordered
@@ -2721,8 +2829,8 @@ mod tests {
     }
 
     /// The cost of sb's forward seek against journalctl 259's, both stated
-    /// exactly: on the decision-11 fixture, a page after a2 costs 46 preads
-    /// on 22.04 (259's seek, showing b2) and 50 on 24.04, which reads boot
+    /// exactly: on the decision-11 fixture, a page after a2 costs 68 preads
+    /// on 22.04 (259's seek, showing b2) and 72 on 24.04, which reads boot
     /// 0xb's file's `_BOOT_ID` list (the field table's bucket, the FIELD
     /// object and its one value: 3 preads, as
     /// `a_fields_values_are_its_data_objects_newest_first` counts them),
@@ -2730,7 +2838,10 @@ mod tests {
     /// as well. Boot 0xa's file shares the cursor's seqnum id, so it reads
     /// no `_BOOT_ID` list. 26.04 costs 8 more: the boot table reads each
     /// file's tail entry's four items for a `_MACHINE_ID=` it doesn't have
-    /// (`the_tail_entrys_machine_id_costs_a_pread_per_item_read`).
+    /// (`the_tail_entrys_machine_id_costs_a_pread_per_item_read`). Each
+    /// file's second header read, its newest counted entry, `U=x` looked up
+    /// again and its list bisected for that entry add 11 per file, 22 on every row
+    /// (journal spec decision 13).
     #[test]
     fn the_boot_seek_reads_the_files_boots() {
         each_format(the_boot_seek_reads_the_files_boots_in);
@@ -2766,7 +2877,7 @@ mod tests {
             )
         );
         assert_eq!(named, ["b1", "b2"]);
-        assert_eq!((old_cost, new_cost, named_cost), (46, 50, 58));
+        assert_eq!((old_cost, new_cost, named_cost), (68, 72, 80));
     }
 
     /// On every row, a page of one after an entry of the tail is the next
@@ -2947,11 +3058,11 @@ mod tests {
             (after_tail, after_back - after_tail, preads() - after_back)
         };
         for v in ["22.04", "24.04", "26.04"] {
-            assert_eq!(costs(&release(v), 199), (42, 52, 88), "{v}");
+            assert_eq!(costs(&release(v), 199), (60, 70, 106), "{v}");
         }
-        assert_eq!(costs(&release("22.04"), 5), (42, 52, 88));
+        assert_eq!(costs(&release("22.04"), 5), (60, 70, 106));
         for v in ["24.04", "26.04"] {
-            assert_eq!(costs(&release(v), 5), (43, 53, 89), "{v}");
+            assert_eq!(costs(&release(v), 5), (61, 71, 107), "{v}");
         }
     }
 }

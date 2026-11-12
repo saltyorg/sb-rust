@@ -3018,6 +3018,708 @@ mod tests {
         assert!(!last.more && last.errors.is_empty(), "{last:?}");
     }
 
+    /// One crafted entry's payloads.
+    type Row = &'static [&'static [u8]];
+
+    // A filtered page and its follow give every entry once (sb-journal
+    // hardening, Task 33: follow-H1, page-H1, fwd-M2; journal spec decision
+    // 13). The fixtures are what a file holds at each of the page's reads:
+    // the test seam between its two header reads, and what journald has
+    // written by the time the follow starts.
+
+    /// The DATA object of `payload` in `c`, found by its bytes.
+    fn data_of(c: &Crafted, payload: &[u8]) -> u64 {
+        let at = c.b.windows(payload.len()).position(|w| w == payload);
+        at.expect("the payload") as u64 - c.format().payload_at()
+    }
+
+    fn query(name: &[u8], value: &[u8]) -> crate::Query {
+        crate::Query::field(&crate::FieldName::new(name).expect("a field name"), value)
+    }
+
+    /// A cursor in a crafted file's seqnum space at `seqnum`, of its boot.
+    fn at_seqnum(seqnum: u64) -> Cursor {
+        Cursor {
+            seqnum_id: [0; 16],
+            seqnum,
+            boot_id: [7; 16],
+            monotonic: seqnum,
+            realtime: 1_000_000 + seqnum,
+            xor_hash: 0,
+        }
+    }
+
+    /// `c`'s bytes written in place at `path` (the same inode), the header
+    /// counting `n` entries.
+    fn counted(c: &Crafted, path: &Path, n: u64) {
+        let mut c = c.clone();
+        c.set(H_N_ENTRIES, n);
+        c.set(H_ARENA_SIZE, c.b.len() as u64 - 272);
+        std::fs::write(path, &c.b).expect("write");
+    }
+
+    /// A page of `q` at `at`, at most `n`, over `paths`; then a follow from
+    /// its end under `follow_limits`.
+    struct Scenario<'a> {
+        paths: &'a [PathBuf],
+        q: crate::Query,
+        at: crate::Position,
+        n: usize,
+        follow_limits: crate::Limits,
+        /// How many distinct read errors the page reports.
+        page_errors: usize,
+    }
+
+    impl<'a> Scenario<'a> {
+        fn tail(paths: &'a [PathBuf], q: crate::Query) -> Self {
+            Self {
+                paths,
+                q,
+                at: crate::Position::Tail,
+                n: 10,
+                follow_limits: crate::Limits::default(),
+                page_errors: 0,
+            }
+        }
+    }
+
+    /// `s`'s page, with `between` run at the seam between the page's two
+    /// header reads of a file, then `after`, then the follow from the
+    /// page's end, drained until a drain reads to the end and shows
+    /// nothing. Returns what the page showed and what every batch showed,
+    /// in order (each record as `show` names it), and whether a batch
+    /// stopped at the limit.
+    fn seamed(
+        s: &Scenario<'_>,
+        between: impl FnMut(&Path) + 'static,
+        after: impl FnOnce(),
+        show: impl Fn(&Record) -> String,
+    ) -> (Vec<String>, Vec<String>, bool) {
+        let follow_limits = &s.follow_limits;
+        let journal_ =
+            Journal::open(Source::Files(s.paths.to_vec()), &release("24.04")).expect("opens");
+        let limits = crate::Limits::default();
+        let page = crate::testing::seam::between_header_reads(between, || {
+            journal_.page(&s.q, &s.at, s.n, &limits)
+        });
+        assert_eq!(page.errors.shown.len(), s.page_errors, "{:?}", page.errors);
+        after();
+        let (mut f, first) = journal_
+            .follow(s.q.clone(), &page.end, follow_limits)
+            .expect("follows");
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        let mut followed: Vec<String> = first.records.iter().map(&show).collect();
+        let mut stopped = first.more;
+        let mut last_more = first.more;
+        for _ in 0..20 {
+            let b = f.drain(follow_limits);
+            assert!(b.errors.is_empty(), "{:?}", b.errors);
+            let empty = b.records.is_empty();
+            followed.extend(b.records.iter().map(&show));
+            stopped |= b.more;
+            if empty && !b.more && !last_more {
+                break;
+            }
+            last_more = b.more;
+        }
+        let shown = page.records.iter().map(&show).collect();
+        (shown, followed, stopped)
+    }
+
+    fn message(r: &Record) -> String {
+        String::from_utf8_lossy(r.message().unwrap_or_default()).into_owned()
+    }
+
+    /// An entry appended and linked during the page: the header counts 2
+    /// at the page's first read, the value's list holds 3 at the lookup,
+    /// and the header counts 3 after it. The page shows the third entry,
+    /// and the follow, drained again, doesn't show it a second time. For
+    /// a Tail page and for a forward page that reaches the tail.
+    #[test]
+    fn an_entry_linked_during_the_page_is_delivered_once() {
+        each_format(an_entry_linked_during_the_page_is_delivered_once_in);
+    }
+
+    fn an_entry_linked_during_the_page_is_delivered_once_in(format: Format) {
+        let a: &[&[u8]] = &[b"A=1"];
+        let (c, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        for at in [crate::Position::Tail, crate::Position::After(at_seqnum(0))] {
+            let t = tempfile::NamedTempFile::new().expect("temp file");
+            counted(&c, t.path(), 2);
+            let (raise, done) = (c.clone(), c.clone());
+            let path = t.path().to_path_buf();
+            let paths = [path.clone()];
+            let s = Scenario {
+                at: at.clone(),
+                ..Scenario::tail(&paths, query(b"A", b"1"))
+            };
+            let (page, followed, _) = seamed(
+                &s,
+                move |p| counted(&raise, p, 3),
+                || counted(&done, &path, 3),
+                message,
+            );
+            let all: Vec<String> = page.iter().chain(&followed).cloned().collect();
+            assert_eq!(all, ["m0", "m1", "m2"], "{at:?}: page {page:?}");
+        }
+    }
+
+    /// Two lists read at different moments: a query of two values, `A=1`
+    /// (m0, m2) and `B=1` (m1, m3). At `A=1`'s lookup m2 isn't linked into
+    /// its list yet; at `B=1`'s, m3 is. The header counts both only after
+    /// the page's first read. Each entry is delivered once, though m2 is
+    /// older than m3, which the page showed.
+    #[test]
+    fn two_lists_read_at_different_moments_give_each_entry_once() {
+        each_format(two_lists_read_at_different_moments_give_each_entry_once_in);
+    }
+
+    fn two_lists_read_at_different_moments_give_each_entry_once_in(format: Format) {
+        let (a, b): (&[&[u8]], &[&[u8]]) = (&[b"A=1"], &[b"B=1"]);
+        let (whole, _e) = crafted::journal_of_in(format, &[a, b, a, b]);
+        let mut early = whole.clone();
+        let list_a = data_of(&early, b"A=1");
+        early.set(list_a + D_N_ENTRIES, 1);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 2);
+        let (raise, done) = (whole.clone(), whole.clone());
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        let q = query(b"A", b"1").or(query(b"B", b"1"));
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, q),
+            move |p| counted(&raise, p, 4),
+            || counted(&done, &path, 4),
+            message,
+        );
+        let all: Vec<String> = page.iter().chain(&followed).cloned().collect();
+        assert_eq!(all, ["m0", "m1", "m2", "m3"], "page {page:?}");
+    }
+
+    /// The mirror case (follow-N1): the header counts 3 while the value's
+    /// list holds 2, journald not yet done linking the third. It is
+    /// delivered once. Where journald linked it by the page's second header
+    /// read, by the page, as journalctl would show it then; where it hadn't
+    /// yet, by the follow, which the page hands over at its index and which
+    /// reads it by its items.
+    #[test]
+    fn the_newest_counted_entry_not_yet_listed_is_delivered_once() {
+        each_format(the_newest_counted_entry_not_yet_listed_is_delivered_once_in);
+    }
+
+    fn the_newest_counted_entry_not_yet_listed_is_delivered_once_in(format: Format) {
+        let a: Row = &[b"A=1", b"B=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        let mut early = whole.clone();
+        early.set(data_of(&early, b"A=1") + D_N_ENTRIES, 2);
+        let both = query(b"A", b"1").and(query(b"B", b"1")).expect("an AND");
+        for (linked_by_the_second_read, q) in [
+            (true, query(b"A", b"1")),
+            (false, query(b"A", b"1")),
+            (true, both.clone()),
+            (false, both),
+        ] {
+            let t = tempfile::NamedTempFile::new().expect("temp file");
+            counted(&early, t.path(), 3);
+            let path = t.path().to_path_buf();
+            let paths = [path.clone()];
+            let (link, done) = (whole.clone(), whole.clone());
+            let (page, followed, _) = seamed(
+                &Scenario::tail(&paths, q),
+                move |p| {
+                    if linked_by_the_second_read {
+                        counted(&link, p, 3);
+                    }
+                },
+                || counted(&done, &path, 3),
+                message,
+            );
+            let (want_page, want_followed): (&[&str], &[&str]) = if linked_by_the_second_read {
+                (&["m0", "m1", "m2"], &[])
+            } else {
+                (&["m0", "m1"], &["m2"])
+            };
+            assert_eq!(page, want_page, "linked: {linked_by_the_second_read}");
+            assert_eq!(
+                followed, want_followed,
+                "linked: {linked_by_the_second_read}"
+            );
+        }
+    }
+
+    /// An entry journald counted and never linked (it died mid-link, and
+    /// nothing writes the file again): a filtered page doesn't show it, as
+    /// journalctl's filtered view doesn't, and the follow, which reads
+    /// entries by their items, does (Difference 12).
+    #[test]
+    fn an_entry_journald_never_linked_is_the_follows_to_show() {
+        each_format(an_entry_journald_never_linked_is_the_follows_to_show_in);
+    }
+
+    fn an_entry_journald_never_linked_is_the_follows_to_show_in(format: Format) {
+        let a: Row = &[b"A=1"];
+        let (mut c, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        c.set(data_of(&c, b"A=1") + D_N_ENTRIES, 2);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&c, t.path(), 3);
+        let paths = [t.path().to_path_buf()];
+        for at in [crate::Position::Tail, crate::Position::After(at_seqnum(1))] {
+            let s = Scenario {
+                at: at.clone(),
+                ..Scenario::tail(&paths, query(b"A", b"1"))
+            };
+            let (page, followed, _) = seamed(&s, |_| {}, || {}, message);
+            let want: &[&str] = match at {
+                crate::Position::Tail => &["m0", "m1"],
+                _ => &["m1"],
+            };
+            assert_eq!(page, want, "{at:?}");
+            assert_eq!(followed, ["m2"], "{at:?}");
+        }
+    }
+
+    /// An AND query whose walk drives through `A=1`'s list (the smaller):
+    /// m3 is in it, and `B=1`'s list doesn't hold m3 yet. The walk shows m3,
+    /// checking `B=1` by its items, so the second header read takes it as
+    /// shown, through the list the walk walks, and doesn't hand it to the
+    /// follow again. For a Tail page and a forward page.
+    #[test]
+    fn an_and_querys_entry_in_its_driving_list_is_delivered_once() {
+        each_format(an_and_querys_entry_in_its_driving_list_is_delivered_once_in);
+    }
+
+    fn an_and_querys_entry_in_its_driving_list_is_delivered_once_in(format: Format) {
+        let (ab, b): (Row, Row) = (&[b"A=1", b"B=1"], &[b"B=1"]);
+        let (whole, _e) = crafted::journal_of_in(format, &[ab, b, b, ab]);
+        let mut early = whole.clone();
+        early.set(data_of(&early, b"B=1") + D_N_ENTRIES, 3);
+        let both = query(b"A", b"1").and(query(b"B", b"1")).expect("an AND");
+        for (at, want) in [
+            (crate::Position::Tail, vec!["m0", "m3"]),
+            (crate::Position::After(at_seqnum(1)), vec!["m3"]),
+        ] {
+            let t = tempfile::NamedTempFile::new().expect("temp file");
+            counted(&early, t.path(), 4);
+            let path = t.path().to_path_buf();
+            let paths = [path.clone()];
+            let done = whole.clone();
+            let s = Scenario {
+                at: at.clone(),
+                ..Scenario::tail(&paths, both.clone())
+            };
+            let (page, followed, _) = seamed(&s, |_| {}, || counted(&done, &path, 4), message);
+            assert_eq!(page, want, "{at:?}");
+            assert!(followed.is_empty(), "{at:?}: {followed:?}");
+        }
+    }
+
+    /// An older entry the second header read finds carrying the value but
+    /// not in its list, while a newer one is: journald moved on from it, so
+    /// its link was cut off for good, and neither the page nor the follow
+    /// shows it (as journalctl's filtered view doesn't). Here m1 at the
+    /// first read's newest index, m2 listed by the second read.
+    #[test]
+    fn an_older_entry_cut_off_for_good_is_shown_by_neither() {
+        each_format(an_older_entry_cut_off_for_good_is_shown_by_neither_in);
+    }
+
+    fn an_older_entry_cut_off_for_good_is_shown_by_neither_in(format: Format) {
+        let a: Row = &[b"A=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        // `A=1`'s list: m0 only at the lookup; m0 and m2 by the second read
+        // (m1's slot left out of the array: the list is m0, then m2).
+        let list = data_of(&whole, b"A=1");
+        let mut early = whole.clone();
+        early.set(list + D_N_ENTRIES, 1);
+        let mut later = whole.clone();
+        let rest = later.get(list + D_ENTRY_ARRAY);
+        let m2 = later.array_item(rest, 1);
+        later.set_array_item(rest, 0, m2);
+        later.set(list + D_N_ENTRIES, 2);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 2);
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        let (raise, done) = (later.clone(), later);
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"A", b"1")),
+            move |p| counted(&raise, p, 3),
+            || counted(&done, &path, 3),
+            message,
+        );
+        assert_eq!(page, ["m0", "m2"]);
+        assert!(followed.is_empty(), "{followed:?}");
+    }
+
+    /// A file journald archived between the page's two header reads, its
+    /// last entry counted but cut off from `A=1`'s list: the page, which
+    /// judged the file live at its first read, doesn't show that entry,
+    /// and the follow, reading it by its items, does (Difference 12: where
+    /// journald writes it again in its next file, the follow shows both).
+    #[test]
+    fn an_entry_cut_off_by_an_archive_during_the_page_isnt_shown_by_it() {
+        each_format(an_entry_cut_off_by_an_archive_during_the_page_isnt_shown_by_it_in);
+    }
+
+    fn an_entry_cut_off_by_an_archive_during_the_page_isnt_shown_by_it_in(format: Format) {
+        let a: Row = &[b"A=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        let mut early = whole.clone();
+        early.set(data_of(&early, b"A=1") + D_N_ENTRIES, 2);
+        let mut archived = early.clone();
+        archived.b[16] = 2; // STATE_ARCHIVED
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 2);
+        let paths = [t.path().to_path_buf()];
+        let (cut, done) = (archived.clone(), archived);
+        let path = t.path().to_path_buf();
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"A", b"1")),
+            move |p| counted(&cut, p, 3),
+            || counted(&done, &path, 3),
+            message,
+        );
+        assert_eq!(page, ["m0", "m1"]);
+        assert_eq!(followed, ["m2"]);
+    }
+
+    /// A page stopped by its count, and a Before page, over a file written
+    /// during the page: the follow starts at the journal's end, repeating
+    /// nothing the page showed (and, after the Before page, skipping m2,
+    /// as decision 10 says of a follow from a page back).
+    #[test]
+    fn a_limited_or_before_page_hands_over_at_the_journals_end() {
+        each_format(a_limited_or_before_page_hands_over_at_the_journals_end_in);
+    }
+
+    fn a_limited_or_before_page_hands_over_at_the_journals_end_in(format: Format) {
+        let a: &[&[u8]] = &[b"A=1"];
+        let (c, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        let cases = [
+            (crate::Position::Tail, 1, vec!["m2"]),
+            (crate::Position::Before(at_seqnum(3)), 10, vec!["m0", "m1"]),
+        ];
+        for (at, n, want) in cases {
+            let t = tempfile::NamedTempFile::new().expect("temp file");
+            counted(&c, t.path(), 2);
+            let (raise, done) = (c.clone(), c.clone());
+            let path = t.path().to_path_buf();
+            let paths = [path.clone()];
+            let s = Scenario {
+                at: at.clone(),
+                n,
+                ..Scenario::tail(&paths, query(b"A", b"1"))
+            };
+            let (page, followed, _) = seamed(
+                &s,
+                move |p| counted(&raise, p, 3),
+                || counted(&done, &path, 3),
+                message,
+            );
+            assert_eq!(page, want, "{at:?}");
+            assert!(followed.is_empty(), "{at:?}: {followed:?}");
+        }
+    }
+
+    /// A Tail page over an archived file and an active one, unfiltered and
+    /// filtered, then a follow: its first batch, and every drain, is empty.
+    /// The archived file's last entry, which journald was cut off from
+    /// linking into `A=1`'s list (Difference 12), isn't shown by the
+    /// filtered page and doesn't come again: an archived file isn't read
+    /// again.
+    #[test]
+    fn an_archived_files_cut_off_entry_doesnt_come_again() {
+        each_format(an_archived_files_cut_off_entry_doesnt_come_again_in);
+    }
+
+    fn an_archived_files_cut_off_entry_doesnt_come_again_in(format: Format) {
+        let (old_a, new_a, new): (Row, Row, Row) =
+            (&[b"A=1", b"F=old"], &[b"A=1", b"F=new"], &[b"F=new"]);
+        let (mut archived, _e) = crafted::journal_of_in(format, &[old_a, old_a]);
+        archived.set(data_of(&archived, b"A=1") + D_N_ENTRIES, 1);
+        archived.b[16] = 2; // STATE_ARCHIVED
+        let (mut active, entries) = crafted::journal_of_in(format, &[new, new_a]);
+        active.b[72..88].copy_from_slice(&[2; 16]); // its own seqnum id
+        for (i, &e) in entries.iter().enumerate() {
+            active.set(e + 24, 5_000_000 + i as u64); // realtime
+            active.set(e + 32, 500 + i as u64); // monotonic
+        }
+        let (old, cur) = (archived.file(), active.file());
+        let paths = [old.path().to_path_buf(), cur.path().to_path_buf()];
+        let field = crate::FieldName::new(b"F").expect("a field name");
+        let show = move |r: &Record| {
+            let f = String::from_utf8_lossy(r.field(&field).unwrap_or_default()).into_owned();
+            format!("{f}/{}", message(r))
+        };
+        let cases = [
+            (query(b"A", b"1"), vec!["old/m0", "new/m1"]),
+            (
+                crate::Query::every(),
+                vec!["old/m0", "old/m1", "new/m0", "new/m1"],
+            ),
+        ];
+        for (q, want) in cases {
+            let (page, followed, _) =
+                seamed(&Scenario::tail(&paths, q), |_| {}, || {}, show.clone());
+            assert_eq!(page, want);
+            assert!(followed.is_empty(), "{followed:?}");
+        }
+    }
+
+    /// A first batch cut by a small output limit (`Batch::more`), after a
+    /// page over a file written during it: the drains repeat nothing the
+    /// page showed and lose nothing written after it.
+    #[test]
+    fn a_follow_cut_by_its_limit_repeats_and_loses_nothing() {
+        each_format(a_follow_cut_by_its_limit_repeats_and_loses_nothing_in);
+    }
+
+    fn a_follow_cut_by_its_limit_repeats_and_loses_nothing_in(format: Format) {
+        let a: &[&[u8]] = &[b"A=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a; 8]);
+        // At the lookup `A=1`'s list holds 4, the header counting 3; the
+        // seam raises it to 4; then journald writes the other four.
+        let mut early = whole.clone();
+        early.set(data_of(&early, b"A=1") + D_N_ENTRIES, 4);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 3);
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        // One record a batch: the shared object and one MESSAGE, as
+        // `per_record` counts `crafted::journal`'s.
+        let s = Scenario {
+            follow_limits: crate::Limits::with_output(per_record_in(format, 1) + 5),
+            ..Scenario::tail(&paths, query(b"A", b"1"))
+        };
+        let (page, followed, stopped) = seamed(
+            &s,
+            move |p| counted(&early, p, 4),
+            || counted(&whole, &path, 8),
+            message,
+        );
+        assert!(stopped, "a batch stopped at the limit");
+        let all: Vec<String> = page.iter().chain(&followed).cloned().collect();
+        let want: Vec<String> = (0..8).map(|i| format!("m{i}")).collect();
+        assert_eq!(all, want, "page {page:?}");
+    }
+
+    /// A value first written during the page has no DATA object at the
+    /// lookup: the page looks it up again for its second read, shows its
+    /// entry, and the follow doesn't show it again.
+    #[test]
+    fn a_value_first_written_during_the_page_is_delivered_once() {
+        each_format(a_value_first_written_during_the_page_is_delivered_once_in);
+    }
+
+    fn a_value_first_written_during_the_page_is_delivered_once_in(format: Format) {
+        let (c, b): (&[&[u8]], &[&[u8]]) = (&[b"C=1"], &[b"B=1"]);
+        let (whole, _e) = crafted::journal_of_in(format, &[c, c, b]);
+        // Before it: `B=1` unlinked from its hash bucket, as if not yet
+        // written. It is alone in its bucket here.
+        let mut early = whole.clone();
+        let d = data_of(&early, b"B=1");
+        let buckets = early.get(H_HASH_TABLE_SIZE) / 16;
+        let bucket = early.get(H_HASH_TABLE_OFFSET) + early.get(d + D_HASH) % buckets * 16;
+        assert_eq!(
+            (early.get(bucket), early.get(bucket + 8)),
+            (d, d),
+            "B=1 alone in its bucket"
+        );
+        early.set(bucket, 0);
+        early.set(bucket + 8, 0);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 2);
+        let (raise, done) = (whole.clone(), whole.clone());
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"B", b"1")),
+            move |p| counted(&raise, p, 3),
+            || counted(&done, &path, 3),
+            message,
+        );
+        assert_eq!(page, ["m2"]);
+        assert!(followed.is_empty(), "{followed:?}");
+    }
+
+    /// A file journald just created: at the page's first header read it
+    /// counts nothing and has no entry array yet; at the lookup `A=1`'s
+    /// list holds m0; at the second read the header counts m0 and m1 and
+    /// names the array. The second read follows the list from the header
+    /// it read, so each entry is delivered once.
+    #[test]
+    fn a_file_empty_at_the_first_read_gives_each_entry_once() {
+        each_format(a_file_empty_at_the_first_read_gives_each_entry_once_in);
+    }
+
+    fn a_file_empty_at_the_first_read_gives_each_entry_once_in(format: Format) {
+        let a: Row = &[b"A=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a, a]);
+        let mut early = whole.clone();
+        early.set(data_of(&early, b"A=1") + D_N_ENTRIES, 1);
+        early.set(H_ENTRY_ARRAY_OFFSET, 0);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 0);
+        let (raise, done) = (whole.clone(), whole.clone());
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"A", b"1")),
+            move |p| counted(&raise, p, 2),
+            || counted(&done, &path, 2),
+            message,
+        );
+        let all: Vec<String> = page.iter().chain(&followed).cloned().collect();
+        assert_eq!(all, ["m0", "m1"], "page {page:?}");
+    }
+
+    /// A forward page whose seek meets an error (`B=1`'s list names a DATA
+    /// object as its array) leaves out what the second header read added,
+    /// and hands over the first read's count, so the follow delivers m4,
+    /// which `A=1`'s list didn't hold yet at the lookup.
+    #[test]
+    fn a_forward_seek_error_hands_over_the_first_count() {
+        each_format(a_forward_seek_error_hands_over_the_first_count_in);
+    }
+
+    fn a_forward_seek_error_hands_over_the_first_count_in(format: Format) {
+        let (a, b): (Row, Row) = (&[b"A=1"], &[b"B=1"]);
+        let (mut whole, _e) = crafted::journal_of_in(format, &[a, b, a, a, a]);
+        let (list_a, list_b) = (data_of(&whole, b"A=1"), data_of(&whole, b"B=1"));
+        whole.set(list_b + D_N_ENTRIES, 2);
+        whole.set(list_b + D_ENTRY_ARRAY, list_a);
+        let mut early = whole.clone();
+        early.set(list_a + D_N_ENTRIES, 3);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 4);
+        let (raise, done) = (whole.clone(), whole.clone());
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        let s = Scenario {
+            at: crate::Position::After(at_seqnum(3)),
+            page_errors: 1,
+            ..Scenario::tail(&paths, query(b"A", b"1").or(query(b"B", b"1")))
+        };
+        let (page, followed, _) = seamed(
+            &s,
+            move |p| counted(&raise, p, 5),
+            || counted(&done, &path, 5),
+            message,
+        );
+        assert_eq!(page, ["m3"]);
+        assert_eq!(followed, ["m4"]);
+    }
+
+    /// A `.journal~` file (renamed by a journald that found it dirty) is
+    /// sealed: its newest counted entry, missing from `A=1`'s list, is one
+    /// journald was cut off from linking for good, so the filtered page
+    /// doesn't read it again and doesn't show it (Difference 12).
+    #[test]
+    fn a_dirty_files_unlisted_last_entry_isnt_shown() {
+        each_format(a_dirty_files_unlisted_last_entry_isnt_shown_in);
+    }
+
+    fn a_dirty_files_unlisted_last_entry_isnt_shown_in(format: Format) {
+        let a: Row = &[b"A=1"];
+        let (mut c, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        c.set(data_of(&c, b"A=1") + D_N_ENTRIES, 2);
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("system@0000-1111.journal~");
+        counted(&c, &path, 3);
+        let paths = [path];
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"A", b"1")),
+            |_| {},
+            || {},
+            message,
+        );
+        assert_eq!(page, ["m0", "m1"]);
+        assert!(followed.is_empty(), "{followed:?}");
+    }
+
+    /// A count that falls between the page's two header reads isn't a file
+    /// journald appends to: the page hands over the first count, so the
+    /// follow repeats nothing the page showed.
+    #[test]
+    fn a_count_that_falls_between_the_reads_hands_over_the_first() {
+        each_format(a_count_that_falls_between_the_reads_hands_over_the_first_in);
+    }
+
+    fn a_count_that_falls_between_the_reads_hands_over_the_first_in(format: Format) {
+        let a: Row = &[b"A=1"];
+        let (c, _e) = crafted::journal_of_in(format, &[a, a]);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&c, t.path(), 2);
+        let (fall, back) = (c.clone(), c.clone());
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"A", b"1")),
+            move |p| counted(&fall, p, 1),
+            || counted(&back, &path, 2),
+            message,
+        );
+        assert_eq!(page, ["m0", "m1"]);
+        assert!(followed.is_empty(), "{followed:?}");
+    }
+
+    /// A file that held only its hash table at the page's first read (no
+    /// entries, an arena that ends there) and three entries of a new value
+    /// at the second: the page looks the value up again, reads the entries
+    /// past the arena it opened with, and shows them; the follow shows
+    /// none again.
+    #[test]
+    fn entries_past_the_first_reads_arena_are_shown_once() {
+        each_format(entries_past_the_first_reads_arena_are_shown_once_in);
+    }
+
+    fn entries_past_the_first_reads_arena_are_shown_once_in(format: Format) {
+        let a: Row = &[b"A=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        // The header, then the hash table alone, its buckets empty.
+        let table = whole.get(H_HASH_TABLE_OFFSET);
+        let size = whole.get(H_HASH_TABLE_SIZE);
+        let mut early = Crafted {
+            b: whole.b[..usize::try_from(table + size).expect("small")].to_vec(),
+        };
+        early.b[usize::try_from(table).expect("small")..].fill(0);
+        early.set(H_ENTRY_ARRAY_OFFSET, 0);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&early, t.path(), 0);
+        let (raise, done) = (whole.clone(), whole.clone());
+        let path = t.path().to_path_buf();
+        let paths = [path.clone()];
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"A", b"1")),
+            move |p| counted(&raise, p, 3),
+            || counted(&done, &path, 3),
+            message,
+        );
+        assert_eq!(page, ["m0", "m1", "m2"]);
+        assert!(followed.is_empty(), "{followed:?}");
+    }
+
+    /// The seam's hook lasts for its `between_header_reads` only: a page
+    /// after it doesn't call it.
+    #[test]
+    fn the_seam_is_gone_after_its_run() {
+        let a: Row = &[b"A=1"];
+        let (c, _e) = crafted::journal_of(&[a, a]);
+        let t = tempfile::NamedTempFile::new().expect("temp file");
+        counted(&c, t.path(), 2);
+        let journal_ =
+            Journal::open(Source::Files(vec![t.path().into()]), &release("24.04")).expect("opens");
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = std::rc::Rc::clone(&calls);
+        let limits = crate::Limits::default();
+        let q = query(b"A", b"1");
+        let page = || journal_.page(&q, &crate::Position::Tail, 10, &limits);
+        crate::testing::seam::between_header_reads(move |_| seen.set(seen.get() + 1), page);
+        assert_eq!(calls.get(), 1);
+        page();
+        assert_eq!(calls.get(), 1, "called after its run");
+    }
+
     /// The wake protocol (journal spec, "Waiting for new entries"): the
     /// duplicate is close-on-exec and non-blocking, unreadable while
     /// nothing happened, readable after a write, and a drain clears it.

@@ -307,6 +307,43 @@ impl JournalFile {
         Ok(())
     }
 
+    /// Whether journald will never write the file again: archived, or
+    /// renamed to `.journal~` by a journald that found it dirty. Its
+    /// count, read after the seal, is final.
+    pub(crate) fn sealed(&self) -> bool {
+        self.header.archived() || self.path.extension().is_some_and(|x| x == "journal~")
+    }
+
+    /// The header's entry count and main entry list now, as (`n_entries`,
+    /// `entry_array_offset`), read again without replacing `header`: a
+    /// filtered page's second header read (journal spec decision 13). The
+    /// list's head is read too, as a file with no entries at the first read
+    /// had none. The arena's bound is raised to what this header gives, as
+    /// `refresh` sets it (the length read after the header), so the entries
+    /// it counts can be read.
+    ///
+    /// # Errors
+    ///
+    /// The system's, from `pread` or `fstat`, or a header that is no longer
+    /// a journal file's.
+    pub(crate) fn count_now(&self) -> Result<(u64, u64)> {
+        let mut buf = [0u8; 184];
+        self.file
+            .read_exact_at(&mut buf, 0)
+            .map_err(|e| self.io("read the header", e))?;
+        self.check(&buf[0..8] == SIGNATURE, || "not a journal file".into())?;
+        let len = self
+            .file
+            .metadata()
+            .map_err(|e| self.io("metadata", e))?
+            .len();
+        let limit = self.header.size.saturating_add(le64(&buf, 96)).min(len);
+        if limit > self.limit.get() {
+            self.limit.set(limit);
+        }
+        Ok((le64(&buf, 152), le64(&buf, 176)))
+    }
+
     /// The open file's metadata (its link count tells the follow a
     /// deleted file).
     ///
@@ -1068,10 +1105,10 @@ const CHUNK_ITEMS: u64 = 512;
 /// at its gap, so a caller that stops after N entries still sees it. An
 /// item that can't be an entry's offset is refused and skipped.
 ///
-/// - A repeat is skipped, as sd-journal skips it: systemd 249 (22.04)
-///   links an entry once per item, and an entry carrying the same
-///   FIELD=value twice lists its offset twice in a row
-///   (`journal_file_append_entry` sorts items but keeps duplicates). It
+/// - A repeat is skipped, as sd-journal skips it: systemd 237 and 245
+///   link an entry once per item, and an entry carrying the same
+///   FIELD=value twice lists its offset twice in a row (so does the v249
+///   tag; 22.04's 249.11 drops duplicate items, as 255 does). It
 ///   still counts against `n`, as systemd's `n_entries` rose once per link;
 ///   reading past `n` would reach slots written after it was read.
 /// - A zero item (a slot never written, as after an unclean shutdown) is
@@ -1902,19 +1939,34 @@ impl JournalFile {
     /// An entry array that can't be read, a link that doesn't point
     /// forward, or items out of order.
     pub fn entries_since(&self, cursor: &mut Option<ArrayCursor>, from: u64) -> Result<Vec<u64>> {
+        self.entries_between(
+            cursor,
+            from,
+            (self.header.n_entries, self.header.entry_array_offset),
+        )
+    }
+
+    /// `entries_since`, up to the count and from the list head `now` gives
+    /// instead of the header's: one read again since (`count_now`), which
+    /// also raised the arena's bound to what that header gave.
+    ///
+    /// # Errors
+    ///
+    /// As `entries_since`.
+    pub(crate) fn entries_between(
+        &self,
+        cursor: &mut Option<ArrayCursor>,
+        from: u64,
+        now: (u64, u64),
+    ) -> Result<Vec<u64>> {
+        let (to, head) = now;
         let item = self.array_item_size();
-        let n = self
-            .header
-            .n_entries
-            .min((self.limit.get() - self.header.size) / ENTRY_HEADER);
+        let n = to.min((self.limit.get() - self.header.size) / ENTRY_HEADER);
         // A cursor at offset 0 is a read made before the file had an entry
         // array: start from the head, which journald has linked since.
         let mut c = match *cursor {
             Some(c) if c.base <= from && c.at != 0 => c,
-            _ => ArrayCursor {
-                at: self.header.entry_array_offset,
-                base: 0,
-            },
+            _ => ArrayCursor { at: head, base: 0 },
         };
         let mut out: Vec<u64> = Vec::new();
         let mut index = from;

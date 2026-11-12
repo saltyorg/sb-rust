@@ -36,6 +36,57 @@ pub fn counts(journal: &Journal) -> Counts {
     journal.opener.counts()
 }
 
+/// A test seam between a filtered page's two header reads of a file
+/// (journal spec decision 13; sb-journal hardening, Task 33): the tests
+/// place journald's writes there, as a journal written during the page
+/// would hold them.
+pub mod seam {
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    type Hook = Box<dyn FnMut(&Path)>;
+
+    thread_local! {
+        static BETWEEN: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Removes the hook when `between_header_reads` returns or unwinds.
+    struct Reset;
+
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            BETWEEN.take();
+        }
+    }
+
+    /// Run `run` with `hook` called, on this thread, with each file's path
+    /// just before a filtered page reads that file's header again.
+    pub fn between_header_reads<R>(
+        hook: impl FnMut(&Path) + 'static,
+        run: impl FnOnce() -> R,
+    ) -> R {
+        BETWEEN.set(Some(Box::new(hook)));
+        let _reset = Reset;
+        run()
+    }
+
+    /// The seam itself, called by the page. The hook is taken out while it
+    /// runs, so one that reads the journal again isn't called from inside
+    /// itself, and put back after.
+    pub(crate) fn before_second_read(path: &Path) {
+        let Some(mut hook) = BETWEEN.take() else {
+            return;
+        };
+        hook(path);
+        // <https://doc.rust-lang.org/std/thread/struct.LocalKey.html#method.with_borrow_mut>
+        BETWEEN.with_borrow_mut(|slot| {
+            if slot.is_none() {
+                *slot = Some(hook);
+            }
+        });
+    }
+}
+
 /// Crafted journal files for the corruption tests: an unkeyed file, regular
 /// or compact (`Format`), laid out object by object, as journald appends
 /// them (journal-def.h layouts). "Valid" here means valid to sb's reader
