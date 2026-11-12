@@ -446,7 +446,15 @@ pub struct Page {
 /// header's file id), with the entry count it read up to, and the newest
 /// entry in those files, matching or not, with that entry's directory.
 /// Opaque: a follow starts from it. Two ends are equal when the page read
-/// the same files at the same counts and the same newest entry.
+/// the same files at the same counts and the same newest entry, and showed
+/// the same entries past it.
+///
+/// Those entries, which a filtered page showed past the newest entry its
+/// first header reads gave (written during the page), are kept by what a
+/// flush copy keeps of them: boot id, monotonic and realtime stamps and XOR
+/// hash. The follow drops one copy of each from a file the page didn't
+/// read, so a flush to a new /var file between the page and the follow
+/// doesn't show them again (journal spec decision 13).
 ///
 /// The count is the header's when the page was unfiltered, or the file is
 /// sealed; a filtered page reads the header again after its lookups and
@@ -462,6 +470,52 @@ pub struct Page {
 pub struct PageEnd {
     files: Vec<FileEnd>,
     newest: Option<(Cursor, Option<PathBuf>)>,
+    /// The entries the page showed past `newest`, oldest first.
+    shown: Vec<Copied>,
+}
+
+/// What a flush copy keeps of an entry (journal-file.c
+/// `journal_file_copy_entry`: the boot id and both times, the XOR hash
+/// computed again from the same payloads; docs/platform-notes/
+/// systemd-journal.md, "Flush"), and the directory of the file the page
+/// showed it from: how the follow knows a copy of an entry the page
+/// showed. The seqnum isn't kept: 255 numbers the copies anew. A copy is
+/// in another directory (a flush goes from /run to /var); an entry with the
+/// same identity in the same directory is 249's rotation repeat, which
+/// journalctl shows too.
+///
+/// The identity matches the copy unless the original held a duplicate
+/// `FIELD=value` (the copy drops duplicate items on 255 and later and on
+/// 22.04's 249.11, so its XOR hash differs) or a DATA object the copy
+/// skips as bad. Such a copy isn't matched, and is shown again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Copied {
+    boot_id: [u8; 16],
+    monotonic: u64,
+    realtime: u64,
+    xor_hash: u64,
+    dir: Option<PathBuf>,
+}
+
+impl Copied {
+    pub(crate) fn of(c: &Cursor, dir: Option<&Path>) -> Self {
+        Self {
+            boot_id: c.boot_id,
+            monotonic: c.monotonic,
+            realtime: c.realtime,
+            xor_hash: c.xor_hash,
+            dir: dir.map(Path::to_path_buf),
+        }
+    }
+
+    /// Whether `l`, an entry of a file in `dir`, is a copy of this one.
+    pub(crate) fn copied_as(&self, l: &Cursor, dir: Option<&Path>) -> bool {
+        self.boot_id == l.boot_id
+            && self.monotonic == l.monotonic
+            && self.realtime == l.realtime
+            && self.xor_hash == l.xor_hash
+            && self.dir.as_deref() != dir
+    }
 }
 
 /// One file of a `PageEnd`.
@@ -720,7 +774,21 @@ impl Journal {
         let paged = walk::page(&files, q.groups(), n, at, bounds, &boots, &mut errors);
         // The counts a filtered page read again after its lookups (journal
         // spec decision 13); the newest entry from the first header reads.
-        let end = walk::end(&files, &lasts, &paged.counts, &boots);
+        let mut end = walk::end(&files, &lasts, &paged.counts, &boots);
+        // The records shown past the end's newest entry: written during the
+        // page, so a flush may copy them to a file the follow finds new.
+        end.shown = paged
+            .records
+            .iter()
+            .zip(&paged.files)
+            .map(|(r, &file)| (r.cursor(), files[file].path.parent()))
+            .filter(|(c, _)| {
+                end.newest
+                    .as_ref()
+                    .is_none_or(|(n, _)| c.order(n, &boots).is_gt())
+            })
+            .map(|(c, dir)| Copied::of(&c, dir))
+            .collect();
         Page {
             records: paged.records,
             more_older: paged.more_older,

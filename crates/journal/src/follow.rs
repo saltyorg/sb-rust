@@ -30,8 +30,8 @@ use crate::open::Opener;
 use crate::rules::Group;
 use crate::walk::{self, Candidate, Payloads};
 use crate::{
-    Batch, BootRule, Cursor, Journal, Limits, OpenError, PageEnd, Query, ReadError, ReadErrorKind,
-    ReadErrors, Record, Roots,
+    Batch, BootRule, Copied, Cursor, Journal, Limits, OpenError, PageEnd, Query, ReadError,
+    ReadErrorKind, ReadErrors, Record, Roots,
 };
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use std::collections::HashMap;
@@ -169,6 +169,18 @@ struct Followed {
     sealed: bool,
     /// Its tail, for the boot table.
     tail: TailCache,
+    /// Whether the page read it (`Origin`).
+    origin: Origin,
+}
+
+/// Whether the page read a followed file: its inode and file id were in
+/// the page's end (`Follow::start`), or the follow found it new (at its
+/// start, or by a rescan), where a flush can have copied entries the page
+/// showed (`take_copy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Page,
+    New,
 }
 
 /// Which of a followed file's entries may be ones already shown, so they
@@ -200,6 +212,11 @@ struct Follow {
     opener: Opener,
     /// The release's order between boots.
     rule: BootRule,
+    /// What the page showed past its end's newest entry (`PageEnd`): one
+    /// copy of each is dropped from a file the page didn't read. At most
+    /// the page's records, and only used up, never cleared: a copy can come
+    /// at a later poll (a flush after the follow started).
+    shown: Vec<Copied>,
     /// The most payload bytes a poll's cache held after reading a file.
     #[cfg(test)]
     held_peak: usize,
@@ -217,7 +234,10 @@ impl Follow {
     /// poll is the merge's to drop. Flush copies appended to a /var file
     /// the page read, of /run entries the page saw (a page and follow on
     /// either side of a flush), are shown again, as Difference 13 says of
-    /// a followed file. `pending` are the errors opening the files gave.
+    /// a followed file. From a file the page didn't read (a /var file a
+    /// flush created, or one a later rescan finds), one copy of each entry
+    /// the page showed past its newest is dropped (`take_copy`), so those
+    /// aren't shown twice. `pending` are the errors opening the files gave.
     fn start(
         files: Vec<JournalFile>,
         from: &PageEnd,
@@ -232,6 +252,7 @@ impl Follow {
                 dir: dir.clone(),
             }),
             pending,
+            shown: from.shown.clone(),
             unopened: Vec::new(),
             opener,
             rule,
@@ -248,6 +269,9 @@ impl Follow {
             let read = from.files.iter().find(|e| {
                 e.inode == f.file.inode && e.file_id == h.file_id && e.n_entries <= h.n_entries
             });
+            if read.is_some() {
+                f.origin = Origin::Page;
+            }
             f.pos = match read {
                 Some(e) => e.n_entries,
                 None => first_new(&f.file, last, &boots),
@@ -393,6 +417,7 @@ impl Follow {
         let mut decoded: HashMap<(usize, u64), Record> = HashMap::new();
         let mut payloads = Payloads::within(limit);
         let mut reached = false;
+        let shown = &mut self.shown;
         for (i, f) in self.files.iter_mut().enumerate() {
             // Each file its own limit: one file's burst can't defer
             // another's entries past a `last` they are older than (where
@@ -420,6 +445,12 @@ impl Follow {
                     self.held_peak = self.held_peak.max(payloads.held());
                 }
                 for (c, r) in stream {
+                    // A copy of an entry the page showed, in a file the page
+                    // didn't read (a flush between the page and the follow).
+                    let dir = f.file.path.parent();
+                    if f.origin == Origin::New && take_copy(shown, &c.location, dir) {
+                        continue;
+                    }
                     decoded.insert((c.file, c.offset), r);
                     candidates.push(c);
                 }
@@ -482,6 +513,7 @@ impl Followed {
             stuck: false,
             sealed: false,
             tail: TailCache::default(),
+            origin: Origin::New,
         }
     }
 
@@ -769,6 +801,21 @@ fn seen(l: &Cursor, last: &Cursor, same_dir: bool, boots: &BootOrder) -> bool {
         !l.order(last, boots).is_gt()
     } else {
         is_old(l, last, boots)
+    }
+}
+
+/// Whether `l`, an entry of a file in `dir`, is a copy of an entry the page
+/// showed past its end's newest entry (`shown`, `PageEnd`), in another
+/// directory (`Copied::copied_as`): if so, that one is used up, so a second
+/// copy, or a later entry that happens to match, is shown. The order of
+/// `shown` doesn't matter: each is matched on its own.
+fn take_copy(shown: &mut Vec<Copied>, l: &Cursor, dir: Option<&Path>) -> bool {
+    match shown.iter().position(|s| s.copied_as(l, dir)) {
+        Some(i) => {
+            shown.swap_remove(i);
+            true
+        }
+        None => false,
     }
 }
 
@@ -1249,6 +1296,7 @@ mod tests {
                     })
                     .collect(),
                 newest: None,
+                shown: Vec::new(),
             };
             Self {
                 f: Follow::start(files, &from, opener, rule, Vec::new()),
@@ -3718,6 +3766,268 @@ mod tests {
         assert_eq!(calls.get(), 1);
         page();
         assert_eq!(calls.get(), 1, "called after its run");
+    }
+
+    // The handover across files (sb-journal hardening, Task 34; journal spec
+    // decision 13, the plan's decision 26).
+
+    /// `c` with its own seqnum id `id` and its entries renumbered from
+    /// `first`, their boot, times and XOR hash kept: the copies a flush
+    /// writes to /var (255 numbers them anew under the runtime file's
+    /// seqnum id, 249 under the new file's).
+    fn flushed_copy(c: &Crafted, entries: &[u64], id: u8, first: u64) -> Crafted {
+        let mut copy = c.clone();
+        copy.b[72..88].copy_from_slice(&[id; 16]);
+        copy.b[24..40].copy_from_slice(&[id; 16]); // its own file id
+        for (k, &e) in entries.iter().enumerate() {
+            copy.set(e + 16, first + k as u64);
+        }
+        copy
+    }
+
+    /// A flush between a filtered page and its follow, the /var file new to
+    /// the follow: the page read /run and showed m2, written during the
+    /// page, past its end's newest entry (m1, from the first header read).
+    /// The flush copies m0 to m2 to /var, adds m3 there and removes /run.
+    /// The follow walks /var's file back to m1's copy and drops m2's copy,
+    /// whose identity the page's end carries: each entry once (the plan's
+    /// decision 26), the end's newest not raised.
+    #[test]
+    fn a_flush_to_a_new_var_file_doesnt_repeat_what_the_page_showed() {
+        each_format(a_flush_to_a_new_var_file_doesnt_repeat_what_the_page_showed_in);
+    }
+
+    fn a_flush_to_a_new_var_file_doesnt_repeat_what_the_page_showed_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        let (host, run, var) = local(dir.path());
+        let a: Row = &[b"A=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        let run_file = run.join("system.journal");
+        counted(&whole, &run_file, 2);
+        let journal_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
+        let q = query(b"A", b"1");
+        let limits = crate::Limits::default();
+        let raise = whole.clone();
+        let page = crate::testing::seam::between_header_reads(
+            move |p| counted(&raise, p, 3),
+            || journal_.page(&q, &crate::Position::Tail, 10, &limits),
+        );
+        assert_eq!(messages(&page.records), ["m0", "m1", "m2"]);
+        let newest = page.end.newest.as_ref().map(|(c, _)| c.seqnum);
+        assert_eq!(newest, Some(2), "the end's newest is the first read's");
+        // The flush: /var's new file holds the copies and m3; /run goes.
+        let (four, entries) = crafted::journal_of_in(format, &[a, a, a, a]);
+        std::fs::create_dir(&var).expect("var's directory");
+        counted(
+            &flushed_copy(&four, &entries, 5, 11),
+            &var.join("system.journal"),
+            4,
+        );
+        std::fs::remove_file(&run_file).expect("the flush removes /run");
+        // The end's equality includes what it carries for the flush.
+        let mut without = page.end.clone();
+        without.shown.clear();
+        assert_ne!(without, page.end);
+        let (_f, first) = journal_.follow(q, &page.end, &limits).expect("follows");
+        assert_eq!(messages(&first.records), ["m3"]);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+    }
+
+    /// 249's rotation repeat (platform note, "Writing"): journald writes
+    /// the entry a rotation interrupted again as the next file's first, in
+    /// the same directory, with the same boot, times and XOR hash, and
+    /// journalctl shows both. A filtered page showed m2 (written during
+    /// it); the new system.journal starts with m2 again, then m3: the
+    /// follow shows the repeat, as only a copy in another directory (a
+    /// flush, from /run to /var) is dropped.
+    #[test]
+    fn a_rotation_repeat_in_the_same_directory_is_shown_again() {
+        each_format(a_rotation_repeat_in_the_same_directory_is_shown_again_in);
+    }
+
+    fn a_rotation_repeat_in_the_same_directory_is_shown_again_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        let active = dir.path().join("system.journal");
+        let a: Row = &[b"A=1"];
+        let (whole, _e) = crafted::journal_of_in(format, &[a, a, a]);
+        counted(&whole, &active, 2);
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("22.04")).expect("opens");
+        let q = query(b"A", b"1");
+        let limits = crate::Limits::default();
+        let raise = whole.clone();
+        let page = crate::testing::seam::between_header_reads(
+            move |p| counted(&raise, p, 3),
+            || journal_.page(&q, &crate::Position::Tail, 10, &limits),
+        );
+        let real = |r: &[Record]| -> Vec<u64> { r.iter().map(|r| r.cursor().realtime).collect() };
+        assert_eq!(real(&page.records), [1_000_001, 1_000_002, 1_000_003]);
+        // The rotation: the file archived and renamed; the next one holds
+        // m2 again (seqnum 4, m2's times) and m3.
+        let mut bytes = std::fs::read(&active).expect("read");
+        bytes[16] = 2; // STATE_ARCHIVED
+        std::fs::write(&active, &bytes).expect("write");
+        std::fs::rename(&active, dir.path().join("system@1-2-3.journal")).expect("rename");
+        let (mut next, entries) = crafted::journal_of_in(format, &[a, a]);
+        next.b[24..40].copy_from_slice(&[9; 16]); // its own file id
+        for (k, (&e, t)) in entries.iter().zip([3u64, 4]).enumerate() {
+            next.set(e + 16, 4 + k as u64); // seqnum
+            next.set(e + 24, 1_000_000 + t); // realtime
+            next.set(e + 32, t); // monotonic
+        }
+        counted(&next, &active, 2);
+        let (_f, first) = journal_.follow(q, &page.end, &limits).expect("follows");
+        assert_eq!(real(&first.records), [1_000_003, 1_000_004]);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+    }
+
+    /// A rotation between the page and the follow: the archived file keeps
+    /// its position by inode and file id (renamed, with the entry journald
+    /// wrote before archiving it), and every entry of the new
+    /// system.journal is delivered. Nothing lost or doubled.
+    #[test]
+    fn a_rotation_between_the_page_and_the_follow_loses_and_doubles_nothing() {
+        each_format(a_rotation_between_the_page_and_the_follow_loses_and_doubles_nothing_in);
+    }
+
+    fn a_rotation_between_the_page_and_the_follow_loses_and_doubles_nothing_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        let active = dir.path().join("system.journal");
+        journal_in(format, &active, 1, &FOUR, 2);
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("24.04")).expect("opens");
+        let (page, mut f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
+            // m3 written, then the file archived under its new name...
+            set_n(&active, 3);
+            let mut bytes = std::fs::read(&active).expect("read");
+            bytes[16] = 2; // STATE_ARCHIVED
+            std::fs::write(&active, &bytes).expect("write");
+            std::fs::rename(&active, dir.path().join("system@1-2-3.journal")).expect("rename");
+            // ...and a new system.journal with 5 and 6.
+            journal_in(format, &active, 1, &[(5, 50), (6, 60)], 2);
+        });
+        assert_eq!(seqnums(&page), [1, 2]);
+        assert_eq!(seqnums(&first.records), [3, 5, 6]);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        assert!(f.drain(&crate::Limits::default()).records.is_empty());
+    }
+
+    /// A flush between the page and the follow where the page read the
+    /// /var file: the copies appended to it, of /run entries the page
+    /// showed, are shown again, as Difference 13 says of a followed file.
+    #[test]
+    fn a_flush_into_a_var_file_the_page_read_shows_the_copies_again() {
+        each_format(a_flush_into_a_var_file_the_page_read_shows_the_copies_again_in);
+    }
+
+    fn a_flush_into_a_var_file_the_page_read_shows_the_copies_again_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        let (host, run, var) = local(dir.path());
+        std::fs::create_dir(&var).expect("var's directory");
+        let (run_file, var_file) = (run.join("system.journal"), var.join("system.journal"));
+        journal_in(format, &run_file, 1, &FOUR[..2], 2);
+        // /var's own entry, of another seqnum id, before /run's.
+        journal_in(format, &var_file, 2, &[(1, 5), (2, 10), (3, 20)], 1);
+        let journal_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
+        let (page, _f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
+            // The flush appends copies of /run's two entries to /var's file
+            // (its seqnum id, its next seqnums, /run's times).
+            set_n(&var_file, 3);
+            std::fs::remove_file(&run_file).expect("the flush removes /run");
+        });
+        let ids = |r: &[Record]| -> Vec<(u8, u64)> {
+            r.iter()
+                .map(|r| (r.cursor().seqnum_id[0], r.cursor().seqnum))
+                .collect()
+        };
+        assert_eq!(ids(&page), [(2, 1), (1, 1), (1, 2)]);
+        assert_eq!(ids(&first.records), [(2, 2), (2, 3)], "shown again");
+    }
+
+    /// A file the page couldn't open (journald creating it: no header yet)
+    /// is read as a new file by the follow, after the page's newest entry;
+    /// its open error is the page's, reported once.
+    #[test]
+    fn a_file_the_page_couldnt_open_is_read_as_new() {
+        each_format(a_file_the_page_couldnt_open_is_read_as_new_in);
+    }
+
+    fn a_file_the_page_couldnt_open_is_read_as_new_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        let (a, b) = (dir.path().join("a.journal"), dir.path().join("b.journal"));
+        journal_in(format, &a, 1, &FOUR[..2], 2);
+        std::fs::write(&b, b"").expect("an empty file");
+        let journal_ =
+            Journal::open(Source::Directory(dir.path().into()), &release("24.04")).expect("opens");
+        let limits = crate::Limits::default();
+        let page = journal_.page(&crate::Query::every(), &crate::Position::Tail, 10, &limits);
+        assert_eq!(seqnums(&page.records), [1, 2]);
+        assert_eq!(page.errors.shown.len(), 1, "{:?}", page.errors);
+        journal_in(format, &b, 2, &[(1, 30), (2, 40)], 2);
+        let (mut f, first) = journal_
+            .follow(crate::Query::every(), &page.end, &limits)
+            .expect("follows");
+        let got: Vec<(u8, u64)> = first
+            .records
+            .iter()
+            .map(|r| (r.cursor().seqnum_id[0], r.cursor().seqnum))
+            .collect();
+        assert_eq!(got, [(2, 1), (2, 2)]);
+        assert!(first.errors.is_empty(), "reported once: {:?}", first.errors);
+        assert!(f.drain(&limits).errors.is_empty());
+    }
+
+    /// A merged page over two files hands each over on its own: `a`,
+    /// written during the page (its list holds an entry its first header
+    /// read didn't count), at its second read's count; `b`, whose newest
+    /// counted entry isn't linked yet, at that entry's index. Each entry
+    /// of both is delivered once.
+    #[test]
+    fn a_merged_page_hands_each_file_over_on_its_own() {
+        each_format(a_merged_page_hands_each_file_over_on_its_own_in);
+    }
+
+    fn a_merged_page_hands_each_file_over_on_its_own_in(format: Format) {
+        let (in_a, in_b): (Row, Row) = (&[b"A=1", b"F=a"], &[b"A=1", b"F=b"]);
+        let (a_whole, _e) = crafted::journal_of_in(format, &[in_a, in_a, in_a]);
+        let (mut b_whole, b_entries) = crafted::journal_of_in(format, &[in_b, in_b, in_b]);
+        b_whole.b[72..88].copy_from_slice(&[2; 16]); // its own seqnum id
+        for (i, &e) in b_entries.iter().enumerate() {
+            b_whole.set(e + 24, 2_000_000 + i as u64); // realtime, after a's
+        }
+        let mut b_early = b_whole.clone();
+        b_early.set(data_of(&b_early, b"A=1") + D_N_ENTRIES, 2);
+        let (ta, tb) = (
+            tempfile::NamedTempFile::new().expect("temp file"),
+            tempfile::NamedTempFile::new().expect("temp file"),
+        );
+        counted(&a_whole, ta.path(), 2);
+        counted(&b_early, tb.path(), 3);
+        let paths = [ta.path().to_path_buf(), tb.path().to_path_buf()];
+        let (a_path, b_path) = (paths[0].clone(), paths[1].clone());
+        let (raise, done_a, done_b) = (a_whole.clone(), a_whole, b_whole);
+        let field = crate::FieldName::new(b"F").expect("a field name");
+        let show = move |r: &Record| {
+            let f = String::from_utf8_lossy(r.field(&field).unwrap_or_default()).into_owned();
+            format!("{f}/{}", message(r))
+        };
+        let a_seam = a_path.clone();
+        let (page, followed, _) = seamed(
+            &Scenario::tail(&paths, query(b"A", b"1")),
+            move |p| {
+                if p == a_seam {
+                    counted(&raise, p, 3);
+                }
+            },
+            || {
+                counted(&done_a, &a_path, 3);
+                counted(&done_b, &b_path, 3);
+            },
+            show,
+        );
+        // One boot, two seqnum ids: interleaved by monotonic time.
+        assert_eq!(page, ["a/m0", "b/m0", "a/m1", "b/m1", "a/m2"]);
+        assert_eq!(followed, ["b/m2"]);
     }
 
     /// The wake protocol (journal spec, "Waiting for new entries"): the

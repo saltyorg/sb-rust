@@ -236,8 +236,20 @@ What a page and the follow after it can rely on while journald writes
 
 - **A flush copy keeps the entry's boot id and both times**
   (`journal_file_copy_entry`: v249 3882-3955; v255 4436-4497; v259
-  4453-4515). Its xor hash is computed again from the same payloads, so
-  it is the original's.
+  4453-4515). Its xor hash is computed again from the payloads of the
+  original's stored items, so it is the original's, with two exceptions
+  (checked by source at v255, 2026-11-12):
+  - **An entry written with a duplicate `FIELD=value`:** the original's
+    hash runs over every field it was given, so the two copies of the
+    duplicate cancel out (journal-file.c `journal_file_append_entry`, v255
+    2590-2593). Its stored items drop the duplicate
+    (`remove_duplicate_entry_items`, 2604, on 255 and later and on 22.04's
+    249.11), and the copy's hash runs over those, so it differs.
+  - **An item whose DATA object is bad** (`-EADDRNOTAVAIL`, `-EBADMSG`)
+    is skipped by the copy (v255 4463-4466) and left out of its hash.
+
+  sb-journal matches a flush copy by these stamps and that hash, so such
+  a copy isn't matched, and is shown again.
 - **/run is removed only when every entry iterated was copied**, on all
   three releases. The flush walks the runtime journal with
   `SD_JOURNAL_FOREACH`, and any read or write error jumps to `finish`,
@@ -253,6 +265,15 @@ What a page and the follow after it can rely on while journald writes
     the runtime files with `SD_JOURNAL_ASSUME_IMMUTABLE`.
   - The function is the same at v249.11 (22.04's package, below), v255.4
     and v259.9.
+  - The removal is `rm_rf(..., REMOVE_ROOT)` without `REMOVE_PHYSICAL`,
+    which refuses a directory on a disk file system (src/shared/rm-rf.c,
+    `is_physical_fs`: anything but tmpfs, ramfs and cgroupfs, at v249 and
+    v259). On a host /run is a tmpfs. In the matrix containers it is
+    overlayfs (`stat -f` on /run/log/journal in `ubuntu:22.04` and
+    `ubuntu:26.04`). There, after `journalctl --flush` of a volatile
+    standalone journald, 22.04 (249.11-0ubuntu3.23) kept /run's
+    system.journal, and 26.04 (259.9-0ubuntu0.1) removed it, which this
+    reading doesn't explain (follow.sh's `between-flush`, 2026-11-12).
 
 ### The packages against the tags
 

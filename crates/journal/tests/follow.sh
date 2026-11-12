@@ -25,8 +25,15 @@
 #             a page of the newest 5 of 20 entries, or of none (a page
 #             that matched nothing), then entries written between the page
 #             and the follow's start (`follow --wait-for`), then after it
+#   between-rotate, between-flush
+#             the same with a rotation, or a flush of a volatile journald
+#             to a new /var/log/journal (removing the /run file the page
+#             read), between the page and the follow. Both pin behaviour
+#             that held before the hardening plan's Task 34: the start by
+#             inode and file id, and the walk back of a new file
 #   during    sb-journal only: filtered pages taken while a writer runs,
-#             each followed from its end at once; 5 rounds of 20, each entry once
+#             each followed from its end at once; 5 rounds of 20, each entry
+#             once
 # Each follower's numbered entries are counted: lost (a number missing)
 # and duplicated (a number printed twice), plus its CPU time. sb-journal
 # must lose and double nothing (journal spec, Difference 2 and "Starting a
@@ -99,6 +106,21 @@ cpu() { # pid: user+system clock ticks
   awk '{print $14 + $15}' "/proc/$1/stat" 2>/dev/null || echo "?"
 }
 
+# Wait ($4 seconds, 10 by default) until journalctl shows $2 entries of
+# identifier $1 whose message starts with $3, so they are in the files;
+# with $5 set, only wait (a vacuum deletes some), else fail on the time.
+# Why not `journalctl --sync`: it isn't documented to wait for entries
+# still queued on journald's stream sockets (systemd-cat's), and the count
+# is what the checks need anyway.
+in_journal() {
+  for _ in $(seq 1 $(( ${4:-10} * 10 ))); do
+    [ "$(journalctl -q -o cat "SYSLOG_IDENTIFIER=$1" | grep -c "^$3")" -ge "$2" ] && return 0
+    sleep 0.1
+  done
+  [ -n "${5:-}" ] && return 1
+  bad "$1: journald never showed $2 \"$3\" entries"
+}
+
 # Start both followers on identifier $1, wait for both to print a marker.
 followers() {
   tag=$1
@@ -127,6 +149,12 @@ followers() {
 # Wait until both have entry $1 (or 10 s), stop them, count. $2: scenario.
 finish() {
   last=$1 name=$2
+  # journald may still be writing (two writers at once, a user journal
+  # being created): first wait, up to 30 s, until a plain journalctl holds
+  # every entry written, so the followers' 10 s below measure them, not
+  # journald. split once timed out here for both followers alike. Only a
+  # wait: vacuum deletes entries, which then never all show.
+  in_journal "$tag" "$(wc -l < written)" "follow " 30 soft
   for _ in $(seq 1 100); do
     grep -q "\"MESSAGE\":\"follow $last\"" fe.all && grep -q "\"MESSAGE\":\"follow $last\"" fa.all && break
     sleep 0.1
@@ -280,22 +308,16 @@ sleep 0.5
 last_n=$(sort -n written | tail -1)
 finish "$last_n" split
 
-# Wait (10 s at most) until journalctl shows $2 entries of identifier $1
-# whose message starts with $3, so they are in the files.
-in_journal() {
-  for _ in $(seq 1 100); do
-    [ "$(journalctl -q -o cat "SYSLOG_IDENTIFIER=$1" | grep -c "^$3")" -ge "$2" ] && return 0
-    sleep 0.1
-  done
-  bad "$1: journald never showed $2 \"$3\" entries"
-}
-
 # between: $1 the identifier, $2 the page's size, $3 the entries before
 # the page ("before N", not counted as follow entries). The page must show
 # the newest min($2, $3) of them; then "follow 1..100" written between the
-# page and the follow, which must come first, and 101..200 after it.
+# page and the follow, which must come first, and 101..200 after it. $5,
+# if given, is done between the page and the follow, after "follow 50":
+# `rotate` (journalctl --rotate) or `flush` (/var/log/journal created and
+# journalctl --flush, journald volatile until then; the flush removes the
+# /run file the page read).
 between() {
-  tag=$1 n=$2 pre=$3 name=$4
+  tag=$1 n=$2 pre=$3 name=$4 action=${5:-}
   : > written; rm -f fa.all fa.err go
   for i in $(seq 1 "$pre"); do echo "before $i" | systemd-cat -t "$tag"; done
   [ "$pre" -gt 0 ] && in_journal "$tag" "$pre" before
@@ -303,7 +325,17 @@ between() {
   pf=$!
   for _ in $(seq 1 100); do grep -q '^sb-journal: page read' fa.err && break; sleep 0.1; done
   grep -q '^sb-journal: page read' fa.err || bad "$name: the page was never read"
-  write 1 100
+  write 1 50
+  case "$action" in
+    rotate) journalctl --rotate >/dev/null 2>&1 || bad "$name: rotate" ;;
+    flush)
+      mkdir -p /var/log/journal
+      journalctl --flush >/dev/null 2>&1 || bad "$name: flush"
+      [ -f "/var/log/journal/$mid/system.journal" ] || bad "$name: no persistent system.journal"
+      flushed "$name"
+      ;;
+  esac
+  write 51 100
   in_journal "$tag" 100 follow
   : > go
   write 101 200
@@ -329,6 +361,34 @@ between() {
 }
 between sbf-between-full 5 20 between-full
 between sbf-between-empty 10 0 between-empty
+between sbf-between-rotate 5 20 between-rotate rotate
+# The flush: journald volatile again (no /var/log/journal, no flushed
+# flag), so the page reads /run's file and the flush removes it.
+# After a flush: /run's system.journal is gone when /run/log/journal is a
+# temporary file system, as on a host. In the containers it is overlayfs,
+# where journald's rm_rf refuses a disk file system without REMOVE_PHYSICAL
+# (src/shared/rm-rf.c, `is_physical_fs`, v249 and v259): 22.04 keeps the
+# file there, so only its state is printed.
+flushed() {
+  local run="/run/log/journal/$mid/system.journal" fs
+  fs=$(stat -f -c %T /run/log/journal)
+  if [ "$fs" = tmpfs ] || [ "$fs" = ramfs ]; then
+    [ -f "$run" ] && bad "$1: /run's system.journal still there after the flush"
+  else
+    printf '  %s: /run on %s; its system.journal %s after the flush\n' \
+      "$1" "$fs" "$([ -f "$run" ] && echo kept || echo removed)"
+  fi
+  return 0
+}
+volatile() {
+  stop_jd TERM
+  rm -rf /var/log/journal /run/log/journal /run/systemd/journal/flushed
+  start_jd
+  [ -f "/run/log/journal/$mid/system.journal" ] || bad "$1: journald didn't start volatile"
+  [ -e /var/log/journal ] && bad "$1: /var/log/journal is there before the page"
+}
+volatile between-flush
+between sbf-between-flush 5 20 between-flush flush
 
 # during: $1 the identifier, $2 the rounds, $3 the pages a round. Each
 # round starts a writer of 5000 entries ("follow N", numbered on from the

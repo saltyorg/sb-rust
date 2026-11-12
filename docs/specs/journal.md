@@ -204,22 +204,48 @@ before it. It takes those its walk can show, held by then in their
 driving term's lists, and holds the second count, or the index of a
 newest entry not linked yet. An older entry not in its lists, which
 journald moved on from, is examined and not shown (decision 13). Every
-entry below the count was examined by the page.
+entry below the count was examined by the page. The end also carries
+each entry the page showed past its newest entry (written during the
+page) by what a flush copy keeps of it: boot id, monotonic and realtime
+stamps and XOR hash (docs/platform-notes/systemd-journal.md, "Flush").
+It doesn't raise its newest entry to them, which would make a new
+file's walk back pass over the copy of an older entry the page didn't
+show.
 
 `Journal::follow(from)` then:
 1. adds the watches;
 2. opens the files;
-3. reads each file from the count `from` recorded for it. A file `from`
-   didn't see (new since the page) is walked back with `EntriesRev` to
-   the newest entry at or below `from`'s newest entry. `from`'s
-   directory decides between sd-journal's order and the flush-copy
-   rule, as the prototype's `seen` does: that stop test is monotone
-   within a file.
+3. reads each file from the count `from` recorded for it, found by its
+   inode and file id: an archived file renamed by a rotation keeps its
+   position. A file `from` didn't see (new since the page: the new
+   system.journal of a rotation, a /var file a flush created, one the
+   page couldn't open) is walked back with `EntriesRev` to the newest
+   entry at or below `from`'s newest entry. `from`'s directory decides
+   between sd-journal's order and the flush-copy rule, as the
+   prototype's `seen` does: that stop test is monotone within a file.
+   From such a file, and from one a later rescan finds, the follow drops
+   one copy of each entry `from` carries as shown past its newest, so a
+   flush to a new /var file between the page and the follow shows
+   nothing twice (the hardening plan's decision 26). Copies a flush
+   appends to a /var file the page read are shown again (Difference 13).
 4. merges what it read through the same merge as `drain`, so an entry
    written to /run after the page and flushed to /var before the follow
    shows once;
 5. returns it as the first `Batch`, under the per-file output limit
    (`more` set if it stopped there).
+
+**The limit that remains.** A page reads its files' headers at different
+instants, so `from`'s newest entry can be newer than an entry appended to
+another file after the page read that file's header, which the page
+didn't read. The follow delivers that entry from the file's count. It is
+lost only if the file is gone before the follow opens it: a flush between
+the two removes /run, and the entry's copy in the new /var file lies
+before `from`'s newest entry, where that file's walk back stops. A flush
+happens once per boot, or when someone runs `journalctl --relinquish-var`
+then `journalctl --flush` by hand. Closing it would take one call that
+pages and follows with the files held open between, which sb doesn't
+have. Where the page read the /var file, the flush's copies are appended
+to it and shown again instead (Difference 13).
 
 Each file's position is then the entry count it read to. No write
 between the page and the follow is lost, even without an event, and

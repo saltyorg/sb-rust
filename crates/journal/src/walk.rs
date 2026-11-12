@@ -222,6 +222,8 @@ pub(crate) struct Paged {
     /// Per file, the entry count the page hands over (`end`): the second
     /// header read's for a filtered page (`reread`), else the header's.
     pub(crate) counts: Vec<u64>,
+    /// Each record's file, as an index into the page's files.
+    pub(crate) files: Vec<usize>,
 }
 
 /// The `n` matching entries at `at`, oldest first. `groups` empty means
@@ -277,12 +279,13 @@ pub(crate) fn page(
             (picked, older, newer, End::Oldest, fwd.counts)
         }
     };
-    let (records, left) = decode(files, &picked, from, bounds.payload, errors);
+    let (records, record_files, left) = decode(files, &picked, from, bounds.payload, errors);
     Paged {
         records,
         more_older: more_older || left.older,
         more_newer: more_newer || left.newer,
         counts,
+        files: record_files,
     }
 }
 
@@ -344,6 +347,7 @@ pub(crate) fn end(
             })
             .collect(),
         newest: newest.map(|(l, f)| (l, f.path.parent().map(Path::to_path_buf))),
+        shown: Vec::new(),
     }
 }
 
@@ -391,7 +395,8 @@ where
 /// and skipped instead (Difference 5): stopping there would show nothing at
 /// all.
 ///
-/// Also returns which sides of the records shown hold a chosen entry that
+/// Also returns each record's file (an index into `files`), and which
+/// sides of the records shown hold a chosen entry that
 /// isn't shown (`Left`): all of them, both sides, when none is shown.
 fn decode(
     files: &[JournalFile],
@@ -399,8 +404,10 @@ fn decode(
     from: End,
     payload_limit: usize,
     errors: &mut ReadErrors,
-) -> (Vec<Record>, Left) {
+) -> (Vec<Record>, Vec<usize>, Left) {
     let mut out = Vec::with_capacity(picked.len());
+    // Each record's file, as an index into `files`.
+    let mut from_files = Vec::with_capacity(picked.len());
     // The oldest and newest chosen entries shown, as indexes into `picked`.
     let mut shown: Option<(usize, usize)> = None;
     // Indexes into `picked` (oldest first), in reading order.
@@ -423,6 +430,7 @@ fn decode(
             Ok(r) => {
                 shown = Some(shown.map_or((at, at), |(lo, hi)| (lo.min(at), hi.max(at))));
                 out.push(r);
+                from_files.push(c.file);
             }
             Err(err) if err.is_over_limit() && whole => {
                 errors.add(ReadError {
@@ -451,6 +459,7 @@ fn decode(
     }
     if from == End::Newest {
         out.reverse();
+        from_files.reverse();
     }
     let left = match shown {
         Some((oldest, newest)) => Left {
@@ -462,7 +471,7 @@ fn decode(
             newer: !picked.is_empty(),
         },
     };
-    (out, left)
+    (out, from_files, left)
 }
 
 /// The end of its chosen entries a page reads first: the one it pages
@@ -1854,7 +1863,8 @@ mod tests {
                 later.contains(" (read before): payload over its limit of 1000 bytes"),
                 "{shown:?}"
             );
-            assert!(!later.contains("xz"), "{shown:?}");
+            // Not decoded again: no xz stage (the temp path can hold "xz").
+            assert!(!later.contains(": xz: "), "{shown:?}");
         }
         assert!(j.errors.shown.iter().all(ReadError::is_too_large));
     }
