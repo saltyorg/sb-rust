@@ -16,7 +16,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -188,6 +188,33 @@ const HELD: [i32; 2] = [SIGINT, SIGQUIT];
 
 fn slot(signal: i32) -> Option<usize> {
     HELD.iter().position(|held| *held == signal)
+}
+
+/// How long after sb's signals thread read the first SIGTERM or SIGHUP
+/// another SIGTERM or SIGHUP isn't a second signal (decisions 2 and 9;
+/// cli-M2): a copy, not the user asking again. Stopping a session scope
+/// (a reboot during an SSH session, `loginctl terminate-session`,
+/// `systemctl stop`) sends every process in it SIGTERM, then SIGHUP
+/// (logind's scopes have `SendSIGHUP=yes`), and under sudo, sudo relays
+/// its own copy of each; an interactive bash re-sends a hangup to its jobs
+/// before the kernel hangs up the foreground group. The copies came within
+/// about a millisecond (docs/platform-notes/exec-processes.md, "Doubled
+/// signals"); 250 ms leaves room for a loaded host and is still far
+/// shorter than a person signalling twice on purpose. A signal at or past
+/// the window is a second signal, as before.
+const REPEAT_WINDOW: Duration = Duration::from_millis(250);
+
+/// Whether `signal`, at `now`, is a copy of the `first` signal counted
+/// (and when the signals thread read it) rather than a second one: a
+/// SIGTERM or SIGHUP inside [`REPEAT_WINDOW`] of a first SIGTERM or SIGHUP,
+/// whichever came first (SIGHUP is handled as SIGTERM is, decision 2; sb
+/// still ends by the first). SIGINT pairs with neither: two Ctrl-C's still
+/// force the exit (decision 9). The time is passed in, so tests drive it
+/// (M-MOCKABLE-SYSCALLS).
+fn repeats(first: (i32, Instant), signal: i32, now: Instant) -> bool {
+    let (first, at) = first;
+    let terminating = |signal| matches!(signal, SIGTERM | SIGHUP);
+    terminating(signal) && terminating(first) && now.saturating_duration_since(at) < REPEAT_WINDOW
 }
 
 /// Whether `signal` was ignored when sb started (`nohup` ignores SIGHUP;
@@ -519,12 +546,15 @@ impl Shutdown {
     /// Why not that example's double Ctrl-C (`flag::register_conditional_shutdown`,
     /// used here before): it exits inside the signal handler, where
     /// restoring the terminal isn't async-signal-safe (term-ui spec,
-    /// decision 5). Accepted limits: the iterator reports a signal that
-    /// arrived twice before the thread read it once, and signals read
-    /// together in arbitrary order (`SignalsInfo::pending`), so two signals
-    /// within microseconds count as one (a third exits) and which of
-    /// SIGINT and SIGTERM was first is then arbitrary; a person's two
-    /// Ctrl-C presses are far apart. A third signal while the hooks run
+    /// decision 5). A SIGTERM or SIGHUP within [`REPEAT_WINDOW`] of a first
+    /// SIGTERM or SIGHUP isn't a second signal (a session scope's stop,
+    /// sudo's relay, an interactive bash's re-sent hangup). Accepted
+    /// limits: a signal delivered twice before the thread read it is read
+    /// once, and signals read together come in arbitrary order
+    /// (`SignalsInfo::pending`), so which of SIGINT and SIGTERM, or of
+    /// SIGTERM and SIGHUP, was first is then arbitrary (sb ends by the one
+    /// read first); a person's two Ctrl-C presses are far apart. A third
+    /// signal while the hooks run
     /// waits for the deadline. Likewise, a second SIGINT or SIGQUIT
     /// delivered while the thread decides the first is queued but its
     /// delivery flag is already cleared, so a hold starting or ending in
@@ -560,11 +590,16 @@ impl Shutdown {
                 // hold recorded when its child died of it (then the next
                 // signal forces the exit). A command's own request isn't
                 // one: a signal after it still cancels first.
-                let mut first = None;
+                // With when it came, for the repeat window.
+                let mut first: Option<(i32, Instant)> = None;
                 for signal in signals.forever() {
-                    match shutdown.step(first, signal) {
+                    if first.is_some_and(|first| repeats(first, signal, Instant::now())) {
+                        tracing::debug!(signal, "a copy of the first signal; not a second one");
+                        continue;
+                    }
+                    match shutdown.step(first.map(|(first, _)| first), signal) {
                         Act::Cancel => {
-                            first = Some(signal);
+                            first = Some((signal, Instant::now()));
                             shutdown.signalled(signal);
                         }
                         Act::ForcedExit(first) => {
@@ -667,6 +702,46 @@ mod tests {
         let hold = terminated.hold();
         assert_eq!(read(&terminated, SIGTERM), Act::Cancel);
         assert!(!hold.child_ended_by(Some(SIGTERM)));
+    }
+
+    /// A copy of the first SIGTERM or SIGHUP inside the repeat window isn't
+    /// a second signal (decision 9; a relayed copy under sudo, an
+    /// interactive bash's re-sent hangup): inside it, no; at its edge and
+    /// past it, a second signal as before. Another signal, or SIGINT,
+    /// is never a repeat. The clock is injected (M-MOCKABLE-SYSCALLS).
+    #[test]
+    fn a_repeat_within_the_window_is_not_a_second_signal() {
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+        let at = Instant::now();
+        let inside = at + REPEAT_WINDOW / 2;
+        let just_inside = at + REPEAT_WINDOW.saturating_sub(Duration::from_nanos(1));
+        let edge = at + REPEAT_WINDOW;
+        let past = at + REPEAT_WINDOW * 2;
+        for signal in [SIGTERM, SIGHUP] {
+            assert!(repeats((signal, at), signal, at), "{signal}");
+            assert!(repeats((signal, at), signal, inside), "{signal}");
+            assert!(repeats((signal, at), signal, just_inside), "{signal}");
+            assert!(!repeats((signal, at), signal, edge), "{signal}");
+            assert!(!repeats((signal, at), signal, past), "{signal}");
+        }
+        // Two SIGINTs still force the exit (decision 9).
+        assert!(!repeats((SIGINT, at), SIGINT, inside));
+        assert!(!repeats((SIGQUIT, at), SIGQUIT, inside));
+        // A session scope's stop sends SIGTERM, then SIGHUP (SendSIGHUP):
+        // inside the window either is a copy of the other, whichever came
+        // first; past it, a second signal.
+        assert!(repeats((SIGTERM, at), SIGHUP, inside));
+        assert!(repeats((SIGHUP, at), SIGTERM, inside));
+        assert!(!repeats((SIGTERM, at), SIGHUP, edge));
+        assert!(!repeats((SIGHUP, at), SIGTERM, past));
+        // SIGINT pairs with neither, however soon.
+        assert!(!repeats((SIGINT, at), SIGTERM, inside));
+        assert!(!repeats((SIGTERM, at), SIGINT, inside));
+        assert!(!repeats((SIGHUP, at), SIGINT, inside));
+        // A clock that went backwards (it can't, `Instant` is monotonic)
+        // reads as inside.
+        assert!(repeats((SIGTERM, inside), SIGTERM, at));
+        assert_eq!(REPEAT_WINDOW, Duration::from_millis(250));
     }
 
     /// SIGHUP is decided as SIGTERM is (decision 2), under a hold too

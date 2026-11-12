@@ -254,7 +254,12 @@ fn a_second_sigterm_forces_the_exit_and_kills_the_child() {
     let child = child_pid(&file);
     let sent = Instant::now();
     kill_process(pid(demo.0.id()), Signal::TERM).expect("SIGTERM");
-    std::thread::sleep(Duration::from_millis(200));
+    // Well past cli-core's 250 ms repeat window, which runs from when sb
+    // read the first: sooner, the same signal is a copy of the first, not
+    // a second one (decision 9). The child ignores SIGTERM, so there's no
+    // effect of the first to wait for; a second leaves room for a loaded
+    // host.
+    std::thread::sleep(Duration::from_secs(1));
     kill_process(pid(demo.0.id()), Signal::TERM).expect("SIGTERM");
     let (status, stderr) = end(&mut demo);
     assert_eq!(status.signal(), Some(15), "{status:?} {stderr}");

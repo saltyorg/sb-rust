@@ -81,6 +81,53 @@ cargo-deny 0.20.2.
   need to tell where a signal came from, nor signal-hook's
   `extended-siginfo` feature (below).
 
+## Doubled signals (a scope's stop, sudo's relay, a bash hangup)
+
+Probed 2026-11-12 on Ubuntu 24.04: Linux 7.0, sudo 1.9.15p5-3ubuntu5
+(C sudo, `use_pty` on), bash 5.2.21, util-linux 2.39.3 (`script`),
+systemd 255.4, bpftrace 0.20.2. Method: every signal generated for the
+target, a bash script that catches SIGTERM, SIGINT and SIGHUP so it
+lives on to receive a copy, was recorded by the kernel's
+`signal:signal_generate` tracepoint (bpftrace: time, sender, result),
+which doesn't depend on how the target handles them. The target ran as
+root through `sudo -n` from a non-root user with sudo rights, inside a
+`systemd-run --scope` session scope, three runs per case (six for the
+hangup).
+
+- **A signal to the whole scope is doubled under sudo.** `systemctl kill
+  --kill-whom=all` signals sudo and the command alike; sudo then relays
+  its own copy, sometimes two (its monitor and its parent). SIGTERM: copies +0.02 to +0.26 ms
+  after systemd's. SIGHUP: +0.01 to +0.13 ms. **SIGINT too:** +0.01 to
+  +0.13 ms, two of three delivered separately (the third merged with the
+  first while it was still pending). So a scope-wide SIGINT reaches sb
+  twice under sudo.
+- **A session scope's stop sends SIGTERM, then SIGHUP.** Stopping a
+  scope with `SendSIGHUP=yes`, as logind's session scopes have (a reboot
+  or shutdown during an SSH session, `loginctl terminate-session`,
+  `KillUserProcesses`; here `systemctl stop` on a `systemd-run --scope -p
+  SendSIGHUP=yes`), sends every process in it SIGTERM and then SIGHUP:
+  +0.16 to +0.48 ms apart. Under sudo the command got five within
+  0.2 ms: systemd's SIGTERM and SIGHUP and sudo's relays of both, in
+  mixed order.
+- **On a terminal, not doubled.** A Ctrl-C typed into the user's terminal
+  reaches the command once, from the kernel (sudo's `use_pty` passes the
+  byte to the command's pty); a SIGTERM to the user's foreground group
+  reaches it once, relayed by sudo (the command isn't in that group).
+- **A hangup under an interactive bash is doubled, without sudo.** With
+  `script -qec "bash --norc -i"` killed (its master closed), the job got
+  SIGHUP twice, both sent by bash's process: bash re-sends SIGHUP to its
+  jobs, then, as the session leader exits, the kernel hangs up the
+  foreground group. Copies +0.13 to +0.24 ms apart (two of six merged
+  while pending).
+
+Consequence: within 250 ms of the first SIGTERM or SIGHUP sb read, sb
+doesn't count another SIGTERM or SIGHUP, whichever came first, as a
+second signal (cli-core's `REPEAT_WINDOW`; hardening plan decisions 2 and
+9): the copies come within half a millisecond, a person signalling twice
+on purpose takes far longer. Decided 2026-11-12: SIGINT stays outside
+the window, so two Ctrl-C presses always force the exit; a scope-wide
+SIGINT under sudo forces it too.
+
 ## Process groups (Linux)
 
 Confirmed on Linux 7.0 by the script below, run as root in a new PID

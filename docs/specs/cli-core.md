@@ -132,12 +132,21 @@ terminal fail and are ignored), then sb ends by SIGHUP. When SIGHUP was
 ignored at startup (`nohup`), sb leaves it ignored and a hangup doesn't
 cancel; sb reads that from `SigIgn` in `/proc/self/status`
 (`proc_pid_status(5)`) before it registers any handler, and an unreadable
-status counts as not ignored. A doubled hangup (an interactive bash
-login shell re-sends SIGHUP to its jobs, then the kernel hangs up the
-foreground group, about 0.5 ms apart) still counts as a second signal
-and forces the exit until the repeat window lands (Task 13). A second
-signal ends sb at once, skipping remaining cleanup. Either way an interrupted run ends by the signal
-itself, re-raised with its default action after cleanup (or after the
+status counts as not ignored. A second signal ends sb at once, skipping
+remaining cleanup, except a copy of the first: a SIGTERM or SIGHUP
+within the repeat window (250 ms from when sb read a first SIGTERM or
+SIGHUP, whichever came first; `REPEAT_WINDOW`; hardening plan decisions
+2 and 9) isn't a second signal, and sb ends by the one it read first.
+Such copies come from a session scope's stop (a reboot or shutdown
+during an SSH session, `loginctl terminate-session`: SIGTERM, then
+SIGHUP, as logind's scopes have `SendSIGHUP=yes`), from sudo, which
+relays its own copy of a signal sent to the whole scope, and from an
+interactive bash, which re-sends a hangup to its jobs before the kernel
+hangs up the foreground group; all came within half a millisecond
+(docs/platform-notes/exec-processes.md, "Doubled signals"). Two SIGINTs
+still force the exit, however close (decided 2026-11-12, also for a
+scope-wide SIGINT under sudo). Either way an interrupted run ends by the
+signal itself, re-raised with its default action after cleanup (or after the
 restore hooks), not by an exit code: a calling shell then sees the death
 by signal and stops its script, as "wait and cooperative exit" requires
 (exec spec, decision 7). A command can also
@@ -333,7 +342,10 @@ boundaries that callers match on.
   registered terminal-restore hooks (term-ui's cursor and `ECHOCTL`) and
   then exits with the same code, instead of exiting inside the handler. A
   hook still running after 500 ms is abandoned and sb exits (term-ui
-  Task 3).
+  Task 3). Amended 2026-11-12 (hardening plan decisions 2 and 9): a
+  SIGTERM or SIGHUP within 250 ms of a first SIGTERM or SIGHUP isn't a
+  second signal (a session scope's stop sends both, sudo relays copies,
+  an interactive bash re-sends a hangup); SIGINT has no window.
 - The root relaunch keeps `SB_COLOR_PROFILE` and NO_COLOR through sudo
   (sb-go loses them), so a user's colour settings reach root commands; an
   unknown profile warns only in the first run. An empty value is unset,

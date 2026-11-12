@@ -32,6 +32,12 @@ struct World {
 
 impl World {
     fn new() -> Self {
+        Self::with_stand_in("exec sleep 30")
+    }
+
+    /// A world whose stand-in runs `script` once it has written its pid
+    /// (`$here` is the world's directory).
+    fn with_stand_in(script: &str) -> Self {
         let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("temp dir");
         let bin = dir.path().join("bin");
         std::fs::create_dir(&bin).expect("bin");
@@ -40,7 +46,7 @@ impl World {
             &program,
             format!(
                 "#!/bin/sh\n[ \"$1 $2\" = 'is-active {UNIT}' ] || exit 9\n\
-                 echo $$ > \"$(dirname \"$0\")/../systemctl.pid\"\nexec sleep 30\n"
+                 here=\"$(dirname \"$0\")/..\"\necho $$ > \"$here/systemctl.pid\"\n{script}\n"
             ),
         )
         .expect("systemctl");
@@ -205,6 +211,132 @@ fn a_real_hangup_logs_the_ending_and_leaves_no_child() {
         log.contains("run finished") && log.contains("outcome=\"interrupted (exit 129)\""),
         "{log}"
     );
+}
+
+/// A hangup under an interactive bash as the session leader comes twice:
+/// bash re-sends SIGHUP to its jobs, then, as it dies, the kernel hangs up
+/// the foreground group, well under a millisecond apart (the platform
+/// note's probe). The copy falls in the repeat window (decision 9), so it
+/// doesn't force the exit: the stand-in gets its SIGTERM and the grace
+/// to finish (it takes 300 ms and then marks that it did, which a forced
+/// exit's SIGKILL would stop), and the run log's ending is written. The
+/// doubling decides the outcome in only part of the runs, so the test
+/// hangs up several sessions.
+#[test]
+fn a_doubled_hangup_from_bash_still_takes_the_grace() {
+    if !root_gate::requested() {
+        return;
+    }
+    assert_sighup_not_ignored();
+    let program = common::sb().get_program().to_string_lossy().into_owned();
+    for run in 1..=5 {
+        let world = World::with_stand_in(
+            "trap 'sleep 0.3; : > \"$here/done\"; exit 0' TERM\n\
+             i=0; while [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done",
+        );
+        let fake = FakeController::start().expect("fake");
+        let mut cmd = Command::new("script");
+        world.env(&mut cmd, fake.url());
+        // bash's history goes to the world, not root's home.
+        cmd.args(["-qec", "bash --norc -i", "/dev/null"])
+            .env("SHELL", "/bin/bash")
+            .env("HISTFILE", world.file("history"))
+            .env("TERM", "xterm-256color")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut script = KillOnDrop(cmd.spawn().expect("run script"), None);
+        let line = format!(
+            "sh -c 'echo $$ > \"$1\"; exec \"$0\" docker start' '{program}' '{}'\n",
+            world.file("sb.pid").display()
+        );
+        let mut input = script.0.stdin.take().expect("script's input");
+        std::io::Write::write_all(&mut input, line.as_bytes()).expect("type the command");
+        let sb_pid: i32 = wait_for(|| {
+            std::fs::read_to_string(world.file("sb.pid"))
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+        })
+        .expect("sb's pid");
+        let stand_in = world.stand_in();
+        // The master closes with `script`: bash is hung up.
+        script.0.kill().expect("kill script");
+        let _ = script.0.wait();
+        drop(input);
+        assert!(
+            wait_for(|| gone(sb_pid).then_some(())).is_some(),
+            "run {run}: sb still running"
+        );
+        let log = world.log();
+        assert!(
+            log.contains("run finished") && log.contains("outcome=\"interrupted (exit 129)\""),
+            "run {run}: no ending in the run log\n{log}"
+        );
+        assert!(
+            world.file("done").exists(),
+            "run {run}: the stand-in didn't get its grace"
+        );
+        assert!(gone(stand_in.0), "run {run}: the stand-in was left running");
+    }
+}
+
+/// A session scope stopped (a reboot during an SSH session, `loginctl
+/// terminate-session`): systemd sends every process in it SIGTERM, then
+/// SIGHUP (`SendSIGHUP=yes`, as logind's session scopes have), about a
+/// millisecond apart. The SIGHUP falls in the first SIGTERM's repeat window
+/// (decision 9), so it doesn't force the exit: the stand-in (which ignores
+/// the SIGHUP it gets too) takes its 300 ms grace, the run log's ending is
+/// written, and sb ends by the SIGTERM it read first.
+#[test]
+fn a_session_scope_stop_takes_the_grace() {
+    if !root_gate::requested() {
+        return;
+    }
+    assert_sighup_not_ignored();
+    let world = World::with_stand_in(
+        "trap '' HUP\ntrap 'sleep 0.3; : > \"$here/done\"; exit 0' TERM\n\
+         i=0; while [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done",
+    );
+    let fake = FakeController::start().expect("fake");
+    let unit = format!("sb-test-hangup-{}", std::process::id());
+    let program = common::sb().get_program().to_os_string();
+    let mut cmd = Command::new("systemd-run");
+    world.env(&mut cmd, fake.url());
+    // A scope keeps the caller's environment, and sb is its process
+    // (systemd-run execs it).
+    cmd.args(["--scope", "-q", "--unit", &unit, "-p", "SendSIGHUP=yes"])
+        .arg(program)
+        .args(["docker", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut sb = KillOnDrop(cmd.spawn().expect("run systemd-run"), None);
+    let stand_in = world.stand_in();
+    let stopped = Command::new("systemctl")
+        .args(["stop", &format!("{unit}.scope")])
+        .status()
+        .expect("systemctl stop");
+    assert!(stopped.success(), "{stopped:?}");
+    // sb ends by the one it read first: SIGTERM, unless both were pending
+    // when its signals thread read them, which hands them over in any
+    // order (cli-core's accepted limits).
+    let status = sb.0.wait().expect("wait");
+    let code = match status.signal() {
+        Some(signal) if signal == Signal::TERM.as_raw() => 143,
+        Some(signal) if signal == Signal::HUP.as_raw() => 129,
+        _ => panic!("sb didn't end by SIGTERM or SIGHUP: {status:?}"),
+    };
+    let log = world.log();
+    assert!(
+        log.contains("run finished")
+            && log.contains(&format!("outcome=\"interrupted (exit {code})\"")),
+        "no ending in the run log\n{log}"
+    );
+    assert!(
+        world.file("done").exists(),
+        "the stand-in didn't get its grace"
+    );
+    assert!(gone(stand_in.0), "the stand-in was left running");
 }
 
 /// Under `nohup` SIGHUP stays ignored (decision 8): a hangup doesn't

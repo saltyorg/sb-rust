@@ -25,6 +25,9 @@ const HOOKS: &str = "SB_SIGNAL_HOOKS";
 /// staying busy, leaving a line on stdout unfinished: std's own flush
 /// comes after `report`, too late for a signal's default action.
 const END: &str = "SB_SIGNAL_END";
+/// Longer than cli-core's 250 ms repeat window: a SIGTERM or SIGHUP sent
+/// this long after the first is a second signal, not a copy (decision 9).
+const PAST_THE_WINDOW: Duration = Duration::from_millis(400);
 
 type Lines = std::io::Lines<BufReader<ChildStdout>>;
 
@@ -196,6 +199,8 @@ fn sigterm_cancels_then_a_second_ends_by_sigterm() {
         next_line(&mut lines),
         "cancelled Some(143) interrupted true"
     );
+    // Past the repeat window: a SIGTERM within it is a copy (decision 9).
+    std::thread::sleep(PAST_THE_WINDOW);
     send(&child, Signal::TERM);
     assert_eq!(child.wait().expect("wait").signal(), Some(SIGTERM));
 }
@@ -377,6 +382,7 @@ fn a_held_sigint_is_not_counted() {
         "cancelled Some(143) interrupted true",
         "the SIGINT didn't cancel"
     );
+    std::thread::sleep(PAST_THE_WINDOW);
     send(&child, Signal::TERM);
     assert_eq!(child.wait().expect("wait").signal(), Some(SIGTERM));
 }
