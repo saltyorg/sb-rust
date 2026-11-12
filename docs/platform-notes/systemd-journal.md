@@ -49,9 +49,12 @@ two ways:
   mode (`0x1c`). 237 and 245 write 240-byte headers, unkeyed, with lz4
   or no compression.
 - **Repeated values:** 237 and 245 link a value an entry carries twice
-  into its entry array twice (`n_entries` counts both). 249's
-  `journal_file_append_entry` keeps duplicate items too (source). 255
-  and later drop them.
+  into its entry array twice (`n_entries` counts both). The v249 tag's
+  `journal_file_append_entry` keeps duplicate items too, but 22.04's
+  249.11 drops them, as 255 and later do: systemd-stable v249.11's
+  journal-file.c has `remove_duplicate_entry_items`, and 22.04's source
+  package (249.11-0ubuntu3.23) is that file unpatched (checked
+  2026-11-12, below).
 - **249 splits** some long `systemd-cat` lines into several entries, a
   different number per run.
 - **249 writes an entry again** as the first of the next file when a
@@ -169,3 +172,168 @@ two ways:
 - **The varlink API:** v260 and later serve
   `io.systemd.JournalAccess.GetEntries`, with no cursor; v262 adds
   `follow`. It is not available on 22.04 to 26.04.
+
+## The order journald links an entry in, for a reader of a live file
+
+What a page and the follow after it can rely on while journald writes
+(sb-journal hardening, Task 32; verified 2026-11-12). Checked three ways:
+- **By source:** systemd's tags v249, v255 and v259, and the stable
+  tags the releases build on, systemd-stable v249.11 and v255.4 and
+  systemd v259.9. Line numbers are the v249, v255 and v259 tags', in
+  src/libsystemd/sd-journal/journal-file.c unless another file is named.
+- **Against the packages:** in unprivileged `ubuntu:22.04`, `24.04` and
+  `26.04` containers, with deb-src enabled, `apt-get source systemd`,
+  which unpacks the source package and applies its patches. The files
+  cited here were compared with the tags byte for byte, and
+  debian/patches was searched for patches that touch them.
+- **By a run under writes:** a reader racing that release's own
+  journald, below.
+
+### The link order
+
+- **An entry's items are written before it is linked anywhere**
+  (`journal_file_append_entry_internal`, v259 2390-2399). A full fence
+  separates them from the links: `__sync_synchronize()` on v249 (1942),
+  `__atomic_thread_fence(__ATOMIC_SEQ_CST)` on v255 (2230) and v259
+  (2251), at the top of `journal_file_link_entry`.
+- **A main-list item is written, then `n_entries` raised**
+  (`link_entry_into_array`): v249 1827-1828 and 1857-1872; v255
+  2100-2101 and 2132-2150; v259 the same function, at 2092.
+- **The entry is linked into the main list and counted, then the
+  header's tail fields are set, then each value's list is linked**
+  (`journal_file_link_entry`): v249 1944-1966; v255 2232-2266; v259
+  2253-2286.
+- **A value's item is written, then that list's count raised**
+  (`link_entry_into_array_plus_one`): v249 1892-1906; v255 2175-2189.
+- **The compact and regular layouts link in the same order:** one
+  `link_entry_into_array`, with `write_entry_array_item` choosing the
+  item's width (v255 2060 and 2089-2103).
+- **So, with journald appending entry by entry, only the newest counted
+  entry can be half linked for a reader:** counted in the header, and
+  not yet in all of its values' lists. The run below finds that case
+  under load, and finds no other.
+- **The exception: a link that fails stays partly linked for good.** v249
+  returns at the first item that fails (1962-1965). v255 and v259 go on
+  past `-E2BIG` and return other errors (2257-2265; 2277-2285). That is
+  the journal spec's Difference 12.
+- **Entry offsets rise with the main-list index** in files journald
+  writes, since each object is appended at the tail
+  (`journal_file_append_object`: v249 1069; v255 1242-1259; v259
+  1250-1267).
+
+### journalctl on a file being written
+
+- **Without `--follow` it reads the live counts at each step:** the
+  header's (`journal_file_next_entry`: v249 2902; v255 3532; v259 3551)
+  and a value's (v249 2975, `journal_file_next_entry_for_data`; v255
+  3234 and v259 3253, `generic_array_bisect_for_data`). So it shows
+  entries written after it opened the file.
+- **With `-n N` it seeks to the tail once and shows at most N lines**
+  (v255 src/journal/journalctl.c 2510-2514 and 1958; v255.4's 2520-2524
+  are the same).
+
+### Flush
+
+- **A flush copy keeps the entry's boot id and both times**
+  (`journal_file_copy_entry`: v249 3882-3955; v255 4436-4497; v259
+  4453-4515). Its xor hash is computed again from the same payloads, so
+  it is the original's.
+- **/run is removed only when every entry iterated was copied**, on all
+  three releases. The flush walks the runtime journal with
+  `SD_JOURNAL_FOREACH`, and any read or write error jumps to `finish`,
+  where `rm_rf` of the runtime directory runs only when `r >= 0`:
+  - v249 src/journal/journald-server.c `server_flush_to_var`, 1115-1220
+    (loop 1152, `finish` 1195, `rm_rf` 1202);
+  - v255 journald-server.c, same function, 1252-1373 (1289, 1347, 1354);
+  - v259 src/journal/journald-manager.c `manager_flush_to_var`, 1301-1453
+    (loop 1347, `finish` 1405, `rm_rf` 1418). v259 also removes every
+    other runtime directory the walk read (1430-1435).
+  - v259 differs before the walk: it closes the runtime journal first
+    (1329) and resets the seqnum state (1333, issue #30092), and it opens
+    the runtime files with `SD_JOURNAL_ASSUME_IMMUTABLE`.
+  - The function is the same at v249.11 (22.04's package, below), v255.4
+    and v259.9.
+
+### The packages against the tags
+
+- **22.04, systemd 249.11-0ubuntu3.23:** journal-file.c and journalctl.c
+  are systemd-stable v249.11's, byte for byte. journald-server.c is
+  v249.11's plus two Ubuntu patches,
+  `debian/Re-enable-journal-forwarding-to-syslog.patch` and
+  `debian/Don-t-enable-audit-by-default.patch`. They change two of
+  `server_init`'s defaults, not the flush. v249.11 differs from the v249
+  tag in journal-file.c only in `journal_file_append_entry_internal`'s
+  failure path (the tag reverts the entry's seqnum when a link fails;
+  v249.11 doesn't) and in dropping duplicate items. Every function cited
+  above is unchanged.
+- **24.04, systemd 255.4-1ubuntu8.18:** journal-file.c, journald-server.c
+  and journalctl.c are systemd-stable v255.4's, byte for byte. None of
+  the package's 85 patches touches them. v255.4 differs from the v255
+  tag in journal-file.c only in `journal_file_enable_post_change_timer`,
+  and in journalctl.c only in the `--after-cursor` step (Difference 18).
+- **26.04, systemd 259.9-0ubuntu0.1:** journal-file.c,
+  journald-manager.c, journalctl.c and journalctl-show.c are systemd
+  v259.9's, byte for byte. None of the package's 19 patches touches
+  them. v259.9 differs from the v259 tag in journal-file.c in the hash
+  table's setup, `journal_file_append_data`, decompression's size bound,
+  the bisect's `test_object_*` functions (a zero item is `-EBADMSG`, not
+  an assertion) and `journal_file_open`. None of these is cited above.
+
+### The run under writes
+
+On each release, journald standalone (Storage=persistent, one file, no
+rotation, no rate limit) took 40,000 lines from each of four
+`systemd-cat` writers, three with one `SYSLOG_IDENTIFIER` and one with
+another: 160,000 entries. Meanwhile a reader (sb-journal's own file
+layer) looped on the active file:
+1. read the header (n0) and the main list up to it;
+2. looked up the shared `SYSLOG_IDENTIFIER=` value and took the newest
+   64 entries of its list;
+3. read the header again (n1) and the main list up to it.
+
+It checked three things:
+- every entry found in the list is in the main list below n1, which
+  would fail if a value's list could get an entry before the header
+  counted it;
+- whether the newest entry counted at n0 carried the value and was
+  missing from the list read after it (the half-linked entry above);
+- every earlier counted entry inside the list's window that carried the
+  value was listed.
+
+As a check that the race was really exercised, it also counted the
+listed entries past n0 (written during the round).
+
+| Release | Rounds | Listed entries checked | In a list, not counted | Past n0 (race seen) | Newest counted, not yet listed | Earlier counted, not listed |
+|---|---|---|---|---|---|---|
+| 22.04 (249.11) | 3,001,963 | 192,001,837 | 0 | 1,369 | 8,214 | 0 |
+| 24.04 (255.4) | 4,547,056 | 290,887,931 | 0 | 10,450 | 632 | 0 |
+| 26.04 (259.9) | 13,295,210 | 850,808,353 | 0 | 8,368 | 4,394 | 0 |
+
+So:
+- An entry found in a value's list is always counted by a header read
+  after the lookup.
+- An entry in a list can be past a header read before it (the double
+  that hardening finding follow-H1 describes).
+- The newest counted entry is often not yet in its value's list (the
+  mirror case, follow-N1): 0.01% to 0.27% of rounds under this load, on
+  every release.
+- No entry before the newest was ever found half linked.
+
+The run doesn't prove the order. It failed to refute it hundreds of
+millions of times on each release, with the race shown to occur.
+
+On 22.04, standalone journald kept writing the /run file after
+`journalctl --flush` in this setup, so that file was the one read there;
+on 24.04 too; on 26.04 the /var file.
+
+### The one assumption no reading settles
+
+A reader's `pread` sees journald's stores, made through a shared
+`mmap` of the same file, in program order. Both go through the same
+page cache, and journald's fence orders the entry's items before its
+links. The store order of the links among themselves (main list, count,
+values' lists) on another CPU rests on the architecture. x86-64's
+memory model (total store order) keeps stores in program order to
+every other CPU, so the order above holds there. That is the only
+architecture sb ships for. On a weaker model it would need fences
+journald doesn't issue between those stores.
