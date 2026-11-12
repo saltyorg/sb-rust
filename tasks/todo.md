@@ -835,6 +835,22 @@ change.
       file afterwards is delivered.
 - [ ] An unfiltered page and its follow are unchanged: the existing
       tests pass as they are.
+- [ ] Option (a), chosen 2026-11-12 (the plan's decisions 23 and 24;
+      Task 32's design note under the handover question):
+      - for each file that isn't sealed, a filtered page reads the
+        header again after its lookups (n1), matches the main-list
+        entries from n0-1 to n1-1 by their items, and merges them into
+        the file's stream by offset, an offset met twice taken once;
+        a sealed file isn't re-read (Difference 12);
+      - `PageEnd` holds n1 for such a file; the follow's start, the
+        flush and the rotation rules are unchanged;
+      - a value first written during the page, with no DATA object at
+        lookup, is looked up again for the re-read;
+      - a forward page takes a re-read entry by the cursor's order:
+        a crafted test places one before the landing the seek found,
+        and one where the landing is itself among the re-read entries;
+      - a realtime clock stepping back among the entries written during
+        a page is listed in forward.rs's departures from journalctl.
 - [ ] `PageEnd` stays opaque and keeps `Debug`, `Clone`, `PartialEq`,
       `Eq`, `Default` and `Send`. Its rustdoc says what it carries, and
       that it is the journal's end, not the page's: a follow from a
