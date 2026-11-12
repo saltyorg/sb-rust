@@ -431,27 +431,27 @@ orphans its piped children (exec-H1, cli-M1; confirmed). SIGHUP is
 handled like SIGTERM.
 
 **Acceptance criteria:**
-- [ ] On SIGHUP the token is cancelled, children are stopped with the
+- [x] On SIGHUP the token is cancelled, children are stopped with the
       usual grace, the run log gets its ending, and sb ends by SIGHUP
       (`$?` reads 129).
-- [ ] A real hangup: a PTY test closes the master, so writes to stderr
+- [x] A real hangup: a PTY test closes the master, so writes to stderr
       and the termios restore fail with EIO; sb still logs its ending,
       leaves no child, and dies by SIGHUP. A `kill -HUP` test covers
       the plain case.
-- [ ] While an attached child runs, a SIGHUP is treated as a SIGTERM is
+- [x] While an attached child runs, a SIGHUP is treated as a SIGTERM is
       (exec decision 12).
-- [ ] Under `nohup` (SIGHUP ignored at startup) sb leaves it ignored
+- [x] Under `nohup` (SIGHUP ignored at startup) sb leaves it ignored
       (decision 8): a hangup then doesn't cancel the run. A test starts
       sb that way.
-- [ ] The specs agree: cli-core.md's cancellation text, exit codes,
+- [x] The specs agree: cli-core.md's cancellation text, exit codes,
       testing strategy, success criterion 4 and the logrotate
       paragraph; exec.md's attached children.
-- [ ] `docs/platform-notes/logrotate.md` no longer says sb doesn't
+- [x] `docs/platform-notes/logrotate.md` no longer says sb doesn't
       handle SIGHUP, and still says no `postrotate` signal is wanted.
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core -p sb-exec -p sb`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-cli-core -p sb-exec -p sb`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 10
@@ -472,6 +472,12 @@ copy counts as the second, forcing signal, so cleanup is skipped
       9); two SIGINTs still force the exit.
 - [ ] A unit test drives the window with an injected clock
       (M-MOCKABLE-SYSCALLS): inside it, at its edge and past it.
+- [ ] A hangup under an interactive bash login shell comes twice too,
+      without sudo: bash re-sends SIGHUP to its jobs, then the kernel
+      hangs up the foreground group, about 0.5 ms apart (Task 12's
+      review; its reproduction is kept outside the repo). A test with
+      `bash -i` as the session leader asserts the grace is taken and the
+      run log's ending is written.
 - [ ] A probe under a real session scope and sudo confirms the relayed
       copy's timing. Its method and versions go in the platform note,
       with no host details. If it shows SIGINT doubled under sudo too,

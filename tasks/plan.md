@@ -392,7 +392,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 8: table cells are sanitized
 - [x] Task 9: the error block escapes error text
 - [x] Task 10: no logged value can forge a run-log record
-- [ ] Task 12: a hangup cancels cleanly
+- [x] Task 12: a hangup cancels cleanly
 - [ ] Task 13: a relayed signal isn't a second signal
 - [ ] Task 17: panics reach the run log and the screen
 - [ ] Checkpoint T: text and processes
