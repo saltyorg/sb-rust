@@ -372,7 +372,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Checkpoint A: gates
 
 ### Phase 1 (lane 1): untrusted text, signals and panics
-- [ ] Task 8: table cells are sanitized
+- [x] Task 8: table cells are sanitized
 - [ ] Task 9: the error block escapes error text
 - [ ] Task 10: no logged value can forge a run-log record
 - [ ] Task 12: a hangup cancels cleanly

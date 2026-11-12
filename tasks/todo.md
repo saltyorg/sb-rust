@@ -348,16 +348,16 @@ confirmed with OSC 52, a title change and a screen clear). Sanitize in
 `Table`, the one place every cell passes.
 
 **Acceptance criteria:**
-- [ ] A cell holding OSC, CSI, C1, a tab or a CR renders with none of
+- [x] A cell holding OSC, CSI, C1, a tab or a CR renders with none of
       them; `\n` still separates a cell's lines. Colour the table adds
       itself is kept.
-- [ ] A `docker ps` test with such a Traefik label and such a name
+- [x] A `docker ps` test with such a Traefik label and such a name
       shows no escape and no forged row. `--json` is unchanged.
-- [ ] `docs/specs/term-ui.md` "Escape handling" names tables.
+- [x] `docs/specs/term-ui.md` "Escape handling" names tables.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui -p sb-docker`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-term-ui -p sb-docker`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer and the security-auditor.
 
 **Dependencies:** Checkpoint A
