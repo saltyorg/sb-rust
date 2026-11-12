@@ -1303,7 +1303,14 @@ mod tests {
     /// `U=x` object once (16 + 48 + 3 bytes), then per entry its MESSAGE
     /// object (16 + 48 + 10) and two fields.
     fn per_record(k: usize) -> usize {
-        67 + k * (74 + 2 * std::mem::size_of::<Field>())
+        per_record_in(Format::Regular, k)
+    }
+
+    /// `per_record` in `format`: a compact DATA object's header is 8 bytes
+    /// longer.
+    fn per_record_in(format: Format, k: usize) -> usize {
+        let header = usize::try_from(format.payload_at()).expect("small");
+        header + 3 + k * (header + 10 + 2 * std::mem::size_of::<Field>())
     }
 
     /// A crafted journal of `n` entries whose header counts only `shown`,
@@ -1547,8 +1554,31 @@ mod tests {
     /// the header counting `n` of them. Each entry lists one DATA object,
     /// `M=1`, the item an entry needs (sd-journal's `check_object`).
     fn journal(path: &Path, seqnum_id: u8, entries: &[(u64, u64)], n: u64) {
+        journal_in(Format::Regular, path, seqnum_id, entries, n);
+    }
+
+    /// The sizes of `journal_in`'s objects in `format`, each padded to 8
+    /// bytes as journald places objects: the entry array of `len` items,
+    /// the DATA object and one ENTRY.
+    fn sizes(format: Format, len: usize) -> (usize, usize, usize) {
+        let width = usize::try_from(format.array_item_width()).expect("small");
+        let entry_item: usize = if format == Format::Compact { 4 } else { 16 };
+        let data = usize::try_from(format.payload_at()).expect("small") + 3;
+        (
+            (24 + width * len).next_multiple_of(8),
+            data.next_multiple_of(8),
+            (64 + entry_item).next_multiple_of(8),
+        )
+    }
+
+    /// `journal`, in `format`.
+    fn journal_in(format: Format, path: &Path, seqnum_id: u8, entries: &[(u64, u64)], n: u64) {
+        let compact = format == Format::Compact;
         let mut b = vec![0u8; 272];
         b[0..8].copy_from_slice(crate::file::SIGNATURE);
+        if compact {
+            b[12..16].copy_from_slice(&crate::file::INCOMPAT_COMPACT.to_le_bytes());
+        }
         // A file id of its own, from its name, as journald gives each file
         // one: a follow tells a copy of a file by it.
         let id = crate::hash::jenkins64(path.as_os_str().as_encoded_bytes()).to_le_bytes();
@@ -1557,31 +1587,44 @@ mod tests {
         b[72..88].copy_from_slice(&[seqnum_id; 16]);
         b[88..96].copy_from_slice(&272u64.to_le_bytes());
         b[152..160].copy_from_slice(&n.to_le_bytes());
-        let array_size = 24 + 8 * entries.len() as u64;
-        let data_at = 272 + array_size;
-        let mut data = vec![0u8; 64];
+        let (array_room, data_room, entry_room) = sizes(format, entries.len());
+        let array_size = 24 + format.array_item_width() * entries.len() as u64;
+        let data_at = 272 + array_room as u64;
+        let payload_at = usize::try_from(format.payload_at()).expect("small");
+        let mut data = vec![0u8; payload_at];
         data[0] = 1;
-        data[8..16].copy_from_slice(&67u64.to_le_bytes());
+        data[8..16].copy_from_slice(&(format.payload_at() + 3).to_le_bytes());
         data.extend_from_slice(b"M=1");
-        data.resize(72, 0);
-        let mut at = data_at + 72;
+        data.resize(data_room, 0);
+        let mut at = data_at + data_room as u64;
         let mut array = vec![0u8; 24];
         array[0] = 6;
         array[8..16].copy_from_slice(&array_size.to_le_bytes());
         let mut objects = Vec::new();
+        let small = |v: u64| u32::try_from(v).expect("fits 32 bits").to_le_bytes();
         for &(seqnum, mono) in entries {
-            array.extend_from_slice(&at.to_le_bytes());
-            let mut e = vec![0u8; 80];
+            if compact {
+                array.extend_from_slice(&small(at));
+            } else {
+                array.extend_from_slice(&at.to_le_bytes());
+            }
+            let entry_size = if compact { 68u64 } else { 80 };
+            let mut e = vec![0u8; entry_room];
             e[0] = 3;
-            e[8..16].copy_from_slice(&80u64.to_le_bytes());
+            e[8..16].copy_from_slice(&entry_size.to_le_bytes());
             e[16..24].copy_from_slice(&seqnum.to_le_bytes());
             e[24..32].copy_from_slice(&(1000 + mono).to_le_bytes());
             e[32..40].copy_from_slice(&mono.to_le_bytes());
             e[40..56].copy_from_slice(&[9; 16]);
-            e[64..72].copy_from_slice(&data_at.to_le_bytes());
+            if compact {
+                e[64..68].copy_from_slice(&small(data_at));
+            } else {
+                e[64..72].copy_from_slice(&data_at.to_le_bytes());
+            }
             objects.extend_from_slice(&e);
-            at += 80;
+            at += entry_room as u64;
         }
+        array.resize(array_room, 0);
         b[176..184].copy_from_slice(&272u64.to_le_bytes());
         b.extend_from_slice(&array);
         b.extend_from_slice(&data);
@@ -2077,6 +2120,8 @@ mod tests {
     /// stays so, not even the good entries before the slot in that array.
     /// The tail walks on past it
     /// (`walk::tests::a_tail_walks_past_an_out_of_order_item`).
+    // Regular only: Difference 17 stays as is; Task 38 changes forward
+    // walks in file.rs, not this stop.
     #[test]
     fn difference_17_an_out_of_order_item_stops_a_followed_file() {
         let mut c = Crafted::new();
@@ -2149,7 +2194,13 @@ mod tests {
 
     /// Where `journal`'s entry `k` of `len` lies.
     fn entry_at(len: usize, k: usize) -> usize {
-        272 + 24 + 8 * len + 72 + 80 * k
+        entry_at_in(Format::Regular, len, k)
+    }
+
+    /// Where `journal_in`'s entry `k` of `len` lies in `format`.
+    fn entry_at_in(format: Format, len: usize, k: usize) -> usize {
+        let (array, data, entry) = sizes(format, len);
+        272 + array + data + entry * k
     }
 
     /// `set_n`, with the header's tail entry the `n`-th's.
@@ -2296,26 +2347,30 @@ mod tests {
     /// directory's once it appears.
     #[test]
     fn difference_2_the_follow_loses_and_doubles_nothing_across_a_flush() {
+        each_format(difference_2_the_follow_loses_and_doubles_nothing_across_a_flush_in);
+    }
+
+    fn difference_2_the_follow_loses_and_doubles_nothing_across_a_flush_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let (host, run, var) = local(dir.path());
         let run_file = run.join("system.journal");
-        journal(&run_file, 1, &FOUR[..2], 2);
+        journal_in(format, &run_file, 1, &FOUR[..2], 2);
         let journal_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
         let (mut f, first) = follow_now(&journal_, crate::Query::every());
         assert!(first.records.is_empty(), "{:?}", first.records);
-        journal(&run_file, 1, &FOUR[..3], 3);
+        journal_in(format, &run_file, 1, &FOUR[..3], 3);
         let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [3]);
         assert!(batch.errors.is_empty(), "{:?}", batch.errors);
         // The flush: /var's directory and file appear.
         std::fs::create_dir(&var).expect("var's directory");
         let flushed = [(4, 10), (5, 20), (6, 30), (7, 40)];
-        journal(&var.join("system.journal"), 1, &flushed, 4);
+        journal_in(format, &var.join("system.journal"), 1, &flushed, 4);
         let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [7]);
         assert!(batch.errors.is_empty(), "{:?}", batch.errors);
         let more = [(4, 10), (5, 20), (6, 30), (7, 40), (8, 50)];
-        journal(&var.join("system.journal"), 1, &more, 5);
+        journal_in(format, &var.join("system.journal"), 1, &more, 5);
         assert_eq!(seqnums(&woken(&mut f).records), [8]);
     }
 
@@ -2324,10 +2379,14 @@ mod tests {
     /// The other file is followed.
     #[test]
     fn the_follows_open_errors_come_with_its_first_batch() {
+        each_format(the_follows_open_errors_come_with_its_first_batch_in);
+    }
+
+    fn the_follows_open_errors_come_with_its_first_batch_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let a = dir.path().join("a.journal");
         let link = dir.path().join("link.journal");
-        journal(&a, 1, &FOUR[..1], 1);
+        journal_in(format, &a, 1, &FOUR[..1], 1);
         std::os::unix::fs::symlink(&a, &link).expect("symlink");
         let source = Source::Files(vec![a.clone(), link.clone()]);
         let journal_ = Journal::open(source, &release("22.04")).expect("opens");
@@ -2336,7 +2395,7 @@ mod tests {
         assert_eq!(first.errors.shown.len(), 1, "{:?}", first.errors);
         assert!(first.errors.shown[0].is_symlink(), "{:?}", first.errors);
         assert_eq!(first.errors.shown[0].path(), Some(link.as_path()));
-        journal(&a, 1, &FOUR[..2], 2);
+        journal_in(format, &a, 1, &FOUR[..2], 2);
         let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [2]);
         assert!(batch.errors.is_empty(), "reported once: {:?}", batch.errors);
@@ -2348,13 +2407,18 @@ mod tests {
     /// (Difference 2).
     #[test]
     fn the_follow_starts_after_its_pages_newest_entry() {
+        each_format(the_follow_starts_after_its_pages_newest_entry_in);
+    }
+
+    fn the_follow_starts_after_its_pages_newest_entry_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let (host, run, var) = local(dir.path());
-        journal(&run.join("system.journal"), 1, &FOUR[..2], 2);
+        journal_in(format, &run.join("system.journal"), 1, &FOUR[..2], 2);
         let journal_ = Journal::open_on(Source::Local, &release("26.04"), &host).expect("opens");
         let (mut f, _) = follow_now(&journal_, crate::Query::every());
         std::fs::create_dir(&var).expect("var's directory");
-        journal(
+        journal_in(
+            format,
             &var.join("system.journal"),
             2,
             &[(1, 10), (2, 20), (3, 30)],
@@ -2718,9 +2782,13 @@ mod tests {
     /// follow").
     #[test]
     fn writes_between_a_full_page_and_its_follow_come_first() {
+        each_format(writes_between_a_full_page_and_its_follow_come_first_in);
+    }
+
+    fn writes_between_a_full_page_and_its_follow_come_first_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let a = dir.path().join("a.journal");
-        journal(&a, 1, &FOUR, 2);
+        journal_in(format, &a, 1, &FOUR, 2);
         let journal_ =
             Journal::open(Source::Directory(dir.path().into()), &release("24.04")).expect("opens");
         let (page, mut f, first) =
@@ -2737,9 +2805,13 @@ mod tests {
     /// the follow come first, the query honoured.
     #[test]
     fn writes_between_an_empty_page_and_its_follow_come_first() {
+        each_format(writes_between_an_empty_page_and_its_follow_come_first_in);
+    }
+
+    fn writes_between_an_empty_page_and_its_follow_come_first_in(format: Format) {
         // Two entries, m0 and m1, then the same file with four.
-        let t = crafted::journal(2).0.file();
-        let (mut c, _l) = crafted::journal(4);
+        let t = crafted::journal_in(format, 2).0.file();
+        let (mut c, _l) = crafted::journal_in(format, 4);
         let source = Source::Files(vec![t.path().to_path_buf()]);
         let journal_ = Journal::open(source, &release("26.04")).expect("opens");
         let name = crate::FieldName::new(b"MESSAGE").expect("a field name");
@@ -2760,20 +2832,25 @@ mod tests {
     /// every entry is newer is read from its start.
     #[test]
     fn a_file_new_since_the_page_is_read_from_after_the_pages_newest_entry() {
+        each_format(a_file_new_since_the_page_is_read_from_after_the_pages_newest_entry_in);
+    }
+
+    fn a_file_new_since_the_page_is_read_from_after_the_pages_newest_entry_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let (host, run, var) = local(dir.path());
-        journal(&run.join("system.journal"), 1, &FOUR[..2], 2);
+        journal_in(format, &run.join("system.journal"), 1, &FOUR[..2], 2);
         let journal_ = Journal::open_on(Source::Local, &release("24.04"), &host).expect("opens");
         let (page, _f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
             std::fs::create_dir(&var).expect("var's directory");
             // 255's flush: copies under /run's seqnum id, higher seqnums.
-            journal(
+            journal_in(
+                format,
                 &var.join("system.journal"),
                 1,
                 &[(4, 10), (5, 20), (6, 30)],
                 3,
             );
-            journal(&var.join("user-1000.journal"), 3, &[(1, 50)], 1);
+            journal_in(format, &var.join("user-1000.journal"), 3, &[(1, 50)], 1);
         });
         assert_eq!(seqnums(&page), [1, 2]);
         let got: Vec<(u8, u64)> = first
@@ -2791,16 +2868,20 @@ mod tests {
     /// the copy.
     #[test]
     fn an_entry_flushed_between_a_page_and_its_follow_shows_once() {
+        each_format(an_entry_flushed_between_a_page_and_its_follow_shows_once_in);
+    }
+
+    fn an_entry_flushed_between_a_page_and_its_follow_shows_once_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let (host, run, var) = local(dir.path());
         let run_file = run.join("system.journal");
-        journal(&run_file, 1, &FOUR[..2], 2);
+        journal_in(format, &run_file, 1, &FOUR[..2], 2);
         let journal_ = Journal::open_on(Source::Local, &release("22.04"), &host).expect("opens");
         let (_page, _f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
-            journal(&run_file, 1, &FOUR[..3], 3);
+            journal_in(format, &run_file, 1, &FOUR[..3], 3);
             std::fs::create_dir(&var).expect("var's directory");
             let flushed = [(4, 10), (5, 20), (6, 30), (7, 40)];
-            journal(&var.join("system.journal"), 1, &flushed, 4);
+            journal_in(format, &var.join("system.journal"), 1, &flushed, 4);
         });
         assert_eq!(seqnums(&first.records), [3, 7]);
         assert!(first.errors.is_empty(), "{:?}", first.errors);
@@ -2812,17 +2893,21 @@ mod tests {
     /// newest, the file is read from its start.
     #[test]
     fn the_walk_back_passes_over_an_unreadable_entry() {
+        each_format(the_walk_back_passes_over_an_unreadable_entry_in);
+    }
+
+    fn the_walk_back_passes_over_an_unreadable_entry_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let a = dir.path().join("a.journal");
         let b = dir.path().join("b.journal");
-        journal(&a, 1, &FOUR[..1], 1);
+        journal_in(format, &a, 1, &FOUR[..1], 1);
         let journal_ =
             Journal::open(Source::Directory(dir.path().into()), &release("24.04")).expect("opens");
         let (_page, mut f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
             // b's entries, all newer than a's 1 at 10, the second unreadable.
-            journal(&b, 2, &[(1, 20), (2, 30), (3, 40)], 3);
+            journal_in(format, &b, 2, &[(1, 20), (2, 30), (3, 40)], 3);
             let mut bytes = std::fs::read(&b).expect("read");
-            let second = 272 + 24 + 8 * 3 + 72 + 80;
+            let second = entry_at_in(format, 3, 1);
             bytes[second + 8..second + 16].copy_from_slice(&0u64.to_le_bytes());
             std::fs::write(&b, &bytes).expect("write");
         });
@@ -2840,13 +2925,23 @@ mod tests {
     /// read.
     #[test]
     fn the_walk_back_in_the_pages_directory_stops_by_sd_journals_order() {
+        each_format(the_walk_back_in_the_pages_directory_stops_by_sd_journals_order_in);
+    }
+
+    fn the_walk_back_in_the_pages_directory_stops_by_sd_journals_order_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let a = dir.path().join("a.journal");
-        journal(&a, 1, &FOUR[..2], 2);
+        journal_in(format, &a, 1, &FOUR[..2], 2);
         let journal_ =
             Journal::open(Source::Directory(dir.path().into()), &release("22.04")).expect("opens");
         let (page, _f, first) = page_then_follow(&journal_, &crate::Query::every(), 10, || {
-            journal(&dir.path().join("b.journal"), 1, &[(1, 25), (3, 30)], 2);
+            journal_in(
+                format,
+                &dir.path().join("b.journal"),
+                1,
+                &[(1, 25), (3, 30)],
+                2,
+            );
         });
         assert_eq!(seqnums(&page), [1, 2]);
         assert_eq!(seqnums(&first.records), [3]);
@@ -2859,18 +2954,22 @@ mod tests {
     /// page counted.
     #[test]
     fn a_new_file_at_an_inode_the_page_read_is_read_as_new() {
+        each_format(a_new_file_at_an_inode_the_page_read_is_read_as_new_in);
+    }
+
+    fn a_new_file_at_an_inode_the_page_read_is_read_as_new_in(format: Format) {
         let five = [(1, 50), (2, 60), (3, 70), (4, 80), (5, 90)];
         for (id, n) in [(0x77, 5), (0, 2)] {
             let dir = tempfile::tempdir().expect("dir");
             let a = dir.path().join("a.journal");
-            journal(&a, 1, &FOUR, 4);
+            journal_in(format, &a, 1, &FOUR, 4);
             let journal_ = Journal::open(Source::Directory(dir.path().into()), &release("24.04"))
                 .expect("opens");
             let (_page, _f, first) =
                 page_then_follow(&journal_, &crate::Query::every(), 10, || {
                     // Written in place: the same inode.
                     let old = std::fs::read(&a).expect("read");
-                    journal(&a, 2, &five, n);
+                    journal_in(format, &a, 2, &five, n);
                     let mut bytes = std::fs::read(&a).expect("read");
                     if id == 0 {
                         bytes[24..40].copy_from_slice(&old[24..40]);
@@ -2893,12 +2992,16 @@ mod tests {
     /// reads to the end.
     #[test]
     fn the_limit_stops_a_batch_with_more_set() {
-        let (mut c, _l) = crafted::journal(10);
+        each_format(the_limit_stops_a_batch_with_more_set_in);
+    }
+
+    fn the_limit_stops_a_batch_with_more_set_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 10);
         c.set(H_N_ENTRIES, 2);
         let t = c.file();
         let journal_ =
             Journal::open(Source::Files(vec![t.path().into()]), &release("24.04")).expect("opens");
-        let limits = crate::Limits::with_output(per_record(3) + 5);
+        let limits = crate::Limits::with_output(per_record_in(format, 3) + 5);
         let page = journal_.page(&crate::Query::every(), &crate::Position::Tail, 2, &limits);
         c.set(H_N_ENTRIES, 10);
         grow(&c, &t);

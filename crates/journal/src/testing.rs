@@ -121,6 +121,35 @@ pub mod crafted {
     impl Format {
         /// Both formats, for a test run over each.
         pub const ALL: [Self; 2] = [Self::Regular, Self::Compact];
+
+        /// An entry-array item's width in bytes: 8 in a regular file, 4 in
+        /// a compact one.
+        #[must_use]
+        pub fn array_item_width(self) -> u64 {
+            match self {
+                Self::Regular => 8,
+                Self::Compact => 4,
+            }
+        }
+
+        /// Where a DATA object's payload starts, from the object's start:
+        /// 64 in a regular file, 72 in a compact one.
+        #[must_use]
+        pub fn payload_at(self) -> u64 {
+            match self {
+                Self::Regular => 64,
+                Self::Compact => 72,
+            }
+        }
+    }
+
+    /// Run `test` once in each format, naming the format first, so a
+    /// failing run's captured output says which one failed.
+    pub fn each_format(mut test: impl FnMut(Format)) {
+        for format in Format::ALL {
+            eprintln!("format: {format:?}");
+            test(format);
+        }
     }
 
     /// A journal file's bytes, built up object by object. The format is
@@ -215,6 +244,21 @@ pub mod crafted {
             }
         }
 
+        /// Item `i` of the entry array at `array`, read at the file's
+        /// width (`set_array_item`).
+        ///
+        /// # Panics
+        ///
+        /// The item lies past the bytes built so far.
+        #[must_use]
+        pub fn array_item(&self, array: u64, i: u64) -> u64 {
+            if self.format() == Format::Compact {
+                u64::from(le32(&self.b, at(array + A_ITEMS + 4 * i)))
+            } else {
+                self.get(array + A_ITEMS + 8 * i)
+            }
+        }
+
         /// In a compact file, set the DATA object `data`'s tail entry
         /// array and its item count, as journald keeps them
         /// (`link_entry_into_array`); a regular DATA object has no such
@@ -301,11 +345,7 @@ pub mod crafted {
         pub fn data_raw(&mut self, flags: u8, stored: &[u8], hash: u64) -> u64 {
             // A compact DATA object's tail array fields come before the
             // payload; `set_tail` fills them.
-            let header = match self.format() {
-                Format::Regular => 48,
-                Format::Compact => 56,
-            };
-            let mut body = vec![0u8; header];
+            let mut body = vec![0u8; at(self.format().payload_at() - OBJECT_HEADER)];
             body[0..8].copy_from_slice(&hash.to_le_bytes());
             body.extend_from_slice(stored);
             let d = self.object(OBJECT_DATA, flags, &body);
@@ -625,11 +665,24 @@ pub mod crafted {
             assert_eq!(item(&c, array + A_ITEMS + 8), 0);
             c.set_array_item(array, 2, 0x88);
             assert_eq!(item(&c, array + A_ITEMS + 8), 0x88);
+            assert_eq!(
+                (c.array_item(array, 1), c.array_item(array, 2)),
+                (data, 0x88)
+            );
             // The regular layout's item, for comparison.
             let mut regular = Crafted::new();
             let array = regular.array(&[], 2, 0);
             regular.set_array_item(array, 1, 0x88);
             assert_eq!(regular.get(array + A_ITEMS + 8), 0x88);
+            assert_eq!(regular.array_item(array, 1), 0x88);
+        }
+
+        /// `each_format` runs its test once per format, regular first.
+        #[test]
+        fn each_format_runs_both_formats_in_order() {
+            let mut ran = Vec::new();
+            each_format(|format| ran.push(format));
+            assert_eq!(ran, Format::ALL);
         }
 
         /// `journal_in` reads back in either format: the entries in file

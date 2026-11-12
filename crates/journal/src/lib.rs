@@ -1534,8 +1534,8 @@ mod tests {
     }
 
     use crate::testing::crafted::{
-        self, A_ITEMS, Crafted, D_ENTRY_ARRAY, D_ENTRY_OFFSET, D_N_ENTRIES, H_ARENA_SIZE,
-        H_ENTRY_ARRAY_OFFSET, H_N_ENTRIES, O_SIZE,
+        self, A_ITEMS, Crafted, D_ENTRY_ARRAY, D_ENTRY_OFFSET, D_N_ENTRIES, Format, H_ARENA_SIZE,
+        H_ENTRY_ARRAY_OFFSET, H_N_ENTRIES, O_SIZE, each_format,
     };
     use std::os::unix::fs::FileExt;
 
@@ -2004,9 +2004,13 @@ mod tests {
     /// journal end the same; an entry appended changes the end.
     #[test]
     fn an_empty_page_has_an_end() {
+        each_format(an_empty_page_has_an_end_in);
+    }
+
+    fn an_empty_page_has_an_end_in(format: Format) {
         let dir = tempfile::tempdir().expect("dir");
         let path = dir.path().join("system.journal");
-        let (mut c, _l) = crafted::journal(3);
+        let (mut c, _l) = crafted::journal_in(format, 3);
         std::fs::copy(c.file().path(), &path).expect("write");
         let j = files(&[&path]);
         let none = Query::field(&name("U"), b"nothing");
@@ -2030,7 +2034,7 @@ mod tests {
         let (newest, in_dir) = page.end.newest.clone().expect("the newest entry");
         assert_eq!((newest.seqnum, in_dir.as_deref()), (3, Some(dir.path())));
         assert_eq!(tail(&j, &none, 10).end, page.end);
-        let (mut c, _l) = crafted::journal(4);
+        let (mut c, _l) = crafted::journal_in(format, 4);
         std::fs::write(&path, &c.b).expect("rewrite in place");
         let _ = c.file();
         let later = tail(&j, &none, 10).end;
@@ -2157,7 +2161,11 @@ mod tests {
     /// tests cover each position).
     #[test]
     fn a_pages_flags_and_end_are_the_walks() {
-        let (mut c, _l) = crafted::journal(4);
+        each_format(a_pages_flags_and_end_are_the_walks_in);
+    }
+
+    fn a_pages_flags_and_end_are_the_walks_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 4);
         let t = c.file();
         let j = files(&[t.path()]);
         let q = Query::field(&name("U"), b"x");
@@ -2284,12 +2292,35 @@ mod tests {
         rows: Rows<'_>,
         matching: bool,
     ) -> tempfile::NamedTempFile {
-        boot_file_naming(seqnum_id, machine, rows, matching, &[])
+        boot_file_in(Format::Regular, seqnum_id, machine, rows, matching)
+    }
+
+    /// `boot_file`, in `format`.
+    fn boot_file_in(
+        format: Format,
+        seqnum_id: u8,
+        machine: u8,
+        rows: Rows<'_>,
+        matching: bool,
+    ) -> tempfile::NamedTempFile {
+        boot_file_naming_in(format, seqnum_id, machine, rows, matching, &[])
     }
 
     /// `boot_file`, row `i`'s entry carrying `named[i]` last when it is
     /// given (a `_MACHINE_ID=` field, as journal-remote keeps the source's).
     fn boot_file_naming(
+        seqnum_id: u8,
+        machine: u8,
+        rows: Rows<'_>,
+        matching: bool,
+        named: &[Option<&[u8]>],
+    ) -> tempfile::NamedTempFile {
+        boot_file_naming_in(Format::Regular, seqnum_id, machine, rows, matching, named)
+    }
+
+    /// `boot_file_naming`, in `format`.
+    fn boot_file_naming_in(
+        format: Format,
         seqnum_id: u8,
         machine: u8,
         rows: Rows<'_>,
@@ -2315,7 +2346,7 @@ mod tests {
             .map(|p| p.iter().map(Vec::as_slice).collect())
             .collect();
         let entries: Vec<&[&[u8]]> = refs.iter().map(Vec::as_slice).collect();
-        let (mut c, offsets) = crafted::journal_of(&entries);
+        let (mut c, offsets) = crafted::journal_of_in(format, &entries);
         for (&e, &(_, boot, mono, real)) in offsets.iter().zip(rows) {
             c.set(e + 24, real);
             c.set(e + 32, mono);
@@ -2572,7 +2603,14 @@ mod tests {
     /// entry, so b1 is shown. On 22.04 the pages are journalctl's.
     #[test]
     fn forward_pages_show_every_entry_of_another_boot() {
-        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        each_format(forward_pages_show_every_entry_of_another_boot_in);
+    }
+
+    fn forward_pages_show_every_entry_of_another_boot_in(format: Format) {
+        let (a, b) = (
+            boot_file_in(format, 1, 9, BOOT_A, true),
+            boot_file_in(format, 2, 9, BOOT_B, true),
+        );
         let paths = [a.path(), b.path()];
         let q = Query::field(&name("U"), b"x");
         let forward = |j: &Journal| {
@@ -2600,8 +2638,9 @@ mod tests {
     /// newest tail is at 300): b1 and b2 of boot 0xb, ordered after it;
     /// c1 and c2 of boot 0xc, in no file's tail, so left equal and ordered
     /// by realtime; and d0 of boot 0xd, whose tail (in a file of its own,
-    /// at 50) orders it before. Laid out b1, c1, d0, c2, b2 (tail b2).
-    fn mixed_boots() -> [tempfile::NamedTempFile; 3] {
+    /// at 50) orders it before. Laid out b1, c1, d0, c2, b2 (tail b2). In
+    /// `format`.
+    fn mixed_boots_in(format: Format) -> [tempfile::NamedTempFile; 3] {
         let mixed: Rows<'static> = &[
             ("b1", 0xb, 5, 200),
             ("c1", 0xc, 1, 150),
@@ -2610,9 +2649,9 @@ mod tests {
             ("b2", 0xb, 15, 400),
         ];
         [
-            boot_file(1, 9, BOOT_A, true),
-            boot_file(2, 9, mixed, true),
-            boot_file(3, 9, &[("d1", 0xd, 3, 50)], false),
+            boot_file_in(format, 1, 9, BOOT_A, true),
+            boot_file_in(format, 2, 9, mixed, true),
+            boot_file_in(format, 3, 9, &[("d1", 0xd, 3, 50)], false),
         ]
     }
 
@@ -2623,7 +2662,11 @@ mod tests {
     /// a1 before it in its file.)
     #[test]
     fn each_boot_of_a_file_starts_on_its_own() {
-        let files = mixed_boots();
+        each_format(each_boot_of_a_file_starts_on_its_own_in);
+    }
+
+    fn each_boot_of_a_file_starts_on_its_own_in(format: Format) {
+        let files = mixed_boots_in(format);
         let paths: Vec<&Path> = files.iter().map(tempfile::NamedTempFile::path).collect();
         let j = files_on(&release("26.04"), &paths);
         let q = Query::field(&name("U"), b"x");
@@ -2647,7 +2690,14 @@ mod tests {
     /// 259 seeks it, and the error is reported.
     #[test]
     fn an_unreadable_boot_list_falls_back_to_journalctls_seek() {
-        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        each_format(an_unreadable_boot_list_falls_back_to_journalctls_seek_in);
+    }
+
+    fn an_unreadable_boot_list_falls_back_to_journalctls_seek_in(format: Format) {
+        let (a, b) = (
+            boot_file_in(format, 1, 9, BOOT_A, true),
+            boot_file_in(format, 2, 9, BOOT_B, true),
+        );
         let mut bytes = std::fs::read(b.path()).expect("read");
         let table = usize::try_from(u64::from_le_bytes(bytes[120..128].try_into().expect("8")))
             .expect("small");
@@ -2683,7 +2733,14 @@ mod tests {
     /// (`the_tail_entrys_machine_id_costs_a_pread_per_item_read`).
     #[test]
     fn the_boot_seek_reads_the_files_boots() {
-        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        each_format(the_boot_seek_reads_the_files_boots_in);
+    }
+
+    fn the_boot_seek_reads_the_files_boots_in(format: Format) {
+        let (a, b) = (
+            boot_file_in(format, 1, 9, BOOT_A, true),
+            boot_file_in(format, 2, 9, BOOT_B, true),
+        );
         let paths = [a.path(), b.path()];
         let q = Query::field(&name("U"), b"x");
         let cost = |v: &str| {
@@ -2726,8 +2783,21 @@ mod tests {
     /// does land on a3 there.
     #[test]
     fn forward_back_and_tail_pages_agree() {
-        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
-        let mixed = boot_file(2, 9, &[("c1", 0xc, 1, 400), ("a3", 0xa, 30, 350)], true);
+        each_format(forward_back_and_tail_pages_agree_in);
+    }
+
+    fn forward_back_and_tail_pages_agree_in(format: Format) {
+        let (a, b) = (
+            boot_file_in(format, 1, 9, BOOT_A, true),
+            boot_file_in(format, 2, 9, BOOT_B, true),
+        );
+        let mixed = boot_file_in(
+            format,
+            2,
+            9,
+            &[("c1", 0xc, 1, 400), ("a3", 0xa, 30, 350)],
+            true,
+        );
         let q = Query::field(&name("U"), b"x");
         let all = ["22.04", "24.04", "26.04"];
         let layouts = [
@@ -2783,10 +2853,14 @@ mod tests {
     /// alone can't break it. (journalctl's own order cycles the same way.)
     #[test]
     fn forward_paging_cycles_where_the_order_does() {
-        let file_a = boot_file(1, 9, &[("a", 0xa, 10, 300)], true);
-        let a_tail = boot_file(2, 9, &[("a0", 0xa, 20, 50)], false);
-        let file_b = boot_file(3, 9, &[("b", 0xb, 1, 100)], true);
-        let file_c = boot_file(4, 9, &[("c", 0xc, 1, 200)], true);
+        each_format(forward_paging_cycles_where_the_order_does_in);
+    }
+
+    fn forward_paging_cycles_where_the_order_does_in(format: Format) {
+        let file_a = boot_file_in(format, 1, 9, &[("a", 0xa, 10, 300)], true);
+        let a_tail = boot_file_in(format, 2, 9, &[("a0", 0xa, 20, 50)], false);
+        let file_b = boot_file_in(format, 3, 9, &[("b", 0xb, 1, 100)], true);
+        let file_c = boot_file_in(format, 4, 9, &[("c", 0xc, 1, 200)], true);
         let mut bytes = std::fs::read(file_c.path()).expect("read");
         bytes[264..272].fill(0);
         std::fs::write(file_c.path(), &bytes).expect("write");
@@ -2820,7 +2894,14 @@ mod tests {
     /// page is every entry, and `more_older` is false.
     #[test]
     fn a_per_boot_page_from_before_everything_has_nothing_older() {
-        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        each_format(a_per_boot_page_from_before_everything_has_nothing_older_in);
+    }
+
+    fn a_per_boot_page_from_before_everything_has_nothing_older_in(format: Format) {
+        let (a, b) = (
+            boot_file_in(format, 1, 9, BOOT_A, true),
+            boot_file_in(format, 2, 9, BOOT_B, true),
+        );
         let j = files_on(&release("26.04"), &[a.path(), b.path()]);
         let q = Query::field(&name("U"), b"x");
         let start = Cursor {

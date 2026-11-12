@@ -865,11 +865,16 @@ mod tests {
     /// yield its first entry, which lies at or after `from`.
     #[test]
     fn the_systems_error_in_the_resumed_list_is_the_walks() {
-        let mut crafted = Crafted::new();
+        each_format(the_systems_error_in_the_resumed_list_is_the_walks_in);
+    }
+
+    fn the_systems_error_in_the_resumed_list_is_the_walks_in(format: Format) {
+        let mut crafted = Crafted::new_in(format);
         // One item each: an entry lists at least one DATA object.
         let entries: Vec<u64> = (1..=4).map(|s| crafted.entry(s, &[8])).collect();
-        // An array of two items: its 24-byte header and 16 bytes of items.
-        let second = crafted.b.len() as u64 + 24 + 16;
+        // An array of two items: its 24-byte header and the items (16
+        // bytes, or 8 in a compact file).
+        let second = crafted.b.len() as u64 + 24 + 2 * format.array_item_width();
         let first = crafted.array(&[entries[2], entries[0]], 2, second);
         assert_eq!(crafted.array(&[entries[1], entries[3]], 2, 0), second);
         crafted.set(H_N_ENTRIES, 4);

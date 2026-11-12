@@ -88,3 +88,4 @@ gate-line-removed	scripts/floor-guard.test.mjs	});	the test of how the guard wat
 gate-line-removed	scripts/floor-guard.test.mjs	assert.equal(guardTestRuns(checkRun('fast')), 2);	one gate test file is left to run, so the expected count is one (ADR-017)
 gate-line-removed	scripts/floor-guard.test.mjs	assert.equal(guardTestRuns(checkRun('fast', { work: { 'scripts/new.sh': 'true\n' } })), 2);	one gate test file is left to run, so the expected count is one (ADR-017)
 gate-line-removed	scripts/floor-guard.test.mjs	assert.equal(guardTestRuns(moved), 2, moved.output);	one gate test file is left to run, so the expected count is one (ADR-017)
+assertion-removed	crates/journal/src/walk.rs	assert_eq!(c.get(chain + A_ITEMS), entries[1]);	the same check reads the item at the file's width, as assert_eq!(c.array_item(chain, 0), entries[1]) now that the test runs over both layouts (Task 28)

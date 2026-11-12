@@ -1075,7 +1075,14 @@ mod tests {
     /// oldest first: the shared `U=x` object once (16 + 48 + 3 bytes),
     /// then per entry its MESSAGE object (16 + 48 + 10) and two fields.
     fn per_record(k: usize) -> usize {
-        67 + k * (74 + 2 * std::mem::size_of::<Field>())
+        per_record_in(Format::Regular, k)
+    }
+
+    /// `per_record` in `format`: a compact DATA object's header is 8 bytes
+    /// longer.
+    fn per_record_in(format: Format, k: usize) -> usize {
+        let header = usize::try_from(format.payload_at()).expect("small");
+        header + 3 + k * (header + 10 + 2 * std::mem::size_of::<Field>())
     }
 
     /// An entry listing one DATA object over and over reads it once (the
@@ -1477,7 +1484,16 @@ mod tests {
         n: u64,
         extra: impl Fn(&mut crafted::Crafted) -> Vec<Vec<u64>>,
     ) -> crafted::Crafted {
-        let (mut c, l) = crafted::journal(n);
+        with_entries_in(Format::Regular, n, extra)
+    }
+
+    /// `with_entries`, in `format`.
+    fn with_entries_in(
+        format: Format,
+        n: u64,
+        extra: impl Fn(&mut crafted::Crafted) -> Vec<Vec<u64>>,
+    ) -> crafted::Crafted {
+        let (mut c, l) = crafted::journal_in(format, n);
         let mut all = l.entries.clone();
         for (i, items) in extra(&mut c).into_iter().enumerate() {
             all.push(c.entry(100 + i as u64, &items));
@@ -1655,7 +1671,11 @@ mod tests {
     /// itself not shown; walking backwards skips the newer entries.
     #[test]
     fn before_a_cursor_gives_the_page_before_it() {
-        let (mut c, _l) = crafted::journal(6);
+        each_format(before_a_cursor_gives_the_page_before_it_in);
+    }
+
+    fn before_a_cursor_gives_the_page_before_it_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 6);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&u_is_x(), 10, None);
@@ -1674,7 +1694,11 @@ mod tests {
     /// older array; a follow would stop the file.
     #[test]
     fn a_tail_walks_past_an_out_of_order_item() {
-        let mut c = Crafted::new();
+        each_format(a_tail_walks_past_an_out_of_order_item_in);
+    }
+
+    fn a_tail_walks_past_an_out_of_order_item_in(format: Format) {
+        let mut c = Crafted::new_in(format);
         c.hash_table(7);
         let older = c.array(&[], 2, 0);
         let newer = c.array(&[], 4, 0);
@@ -1685,11 +1709,11 @@ mod tests {
         }
         c.set(older + A_NEXT, newer);
         for (k, &item) in [e[0], e[1]].iter().enumerate() {
-            c.set(older + A_ITEMS + 8 * k as u64, item);
+            c.set_array_item(older, k as u64, item);
         }
         // e[2]'s slot written again with a stale e[2]: e[3] is lost.
         for (k, &item) in [e[2], e[3], e[2], e[4]].iter().enumerate() {
-            c.set(newer + A_ITEMS + 8 * k as u64, item);
+            c.set_array_item(newer, k as u64, item);
         }
         c.set(H_N_ENTRIES, 6);
         c.set(H_ENTRY_ARRAY_OFFSET, older);
@@ -1711,7 +1735,11 @@ mod tests {
     /// match does.
     #[test]
     fn a_tail_shows_one_copy_of_an_entry_cut_off_while_linking() {
-        let (mut c, l) = crafted::journal(2);
+        each_format(a_tail_shows_one_copy_of_an_entry_cut_off_while_linking_in);
+    }
+
+    fn a_tail_shows_one_copy_of_an_entry_cut_off_while_linking_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 2);
         let again = c.data(b"MESSAGE=again");
         // The cut-off copy: in the file's list, in no DATA object's.
         let cut = c.entry(3, &[l.shared, again]);
@@ -1719,6 +1747,7 @@ mod tests {
         let main = c.array(&[l.entries[0], l.entries[1], cut, whole], 4, 0);
         let shared = c.array(&[l.entries[1], whole], 2, 0);
         c.set(l.shared + D_ENTRY_ARRAY, shared);
+        c.set_tail(l.shared, shared, 2);
         c.set(l.shared + D_N_ENTRIES, 3);
         c.set(again + D_ENTRY_OFFSET, whole);
         c.set(again + D_N_ENTRIES, 1);
@@ -1976,7 +2005,11 @@ mod tests {
     /// end.
     #[test]
     fn after_a_cursor_gives_the_page_after_it() {
-        let (mut c, _l) = crafted::journal(6);
+        each_format(after_a_cursor_gives_the_page_after_it_in);
+    }
+
+    fn after_a_cursor_gives_the_page_after_it_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 6);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&u_is_x(), 10, None);
@@ -2014,7 +2047,11 @@ mod tests {
     /// whether anything lies on each side.
     #[test]
     fn tail_and_before_flags_are_exact() {
-        let (mut c, _l) = crafted::journal(5);
+        each_format(tail_and_before_flags_are_exact_in);
+    }
+
+    fn tail_and_before_flags_are_exact_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 5);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let tail = |j: &mut Opened, n| paged(&j.page(&u_is_x(), n, &Position::Tail));
@@ -2051,8 +2088,13 @@ mod tests {
     /// flag is off). `A=1` is on m0, m2, m4 and m6.
     #[test]
     fn the_flags_look_past_entries_that_do_not_match() {
+        each_format(the_flags_look_past_entries_that_do_not_match_in);
+    }
+
+    fn the_flags_look_past_entries_that_do_not_match_in(format: Format) {
         let with_a: &[&[u8]] = &[b"A=1"];
-        let (mut c, _e) = crafted::journal_of(&[with_a, &[], with_a, &[], with_a, &[], with_a]);
+        let (mut c, _e) =
+            crafted::journal_of_in(format, &[with_a, &[], with_a, &[], with_a, &[], with_a]);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let q = vec![vec![vec![b"A=1".to_vec()]]];
@@ -2083,7 +2125,8 @@ mod tests {
         // Two terms: the walk is driven by `B=1`'s entries, of which m3
         // lacks `C=1`; m1 has both.
         let both: &[&[u8]] = &[b"B=1", b"C=1"];
-        let (mut c, _e) = crafted::journal_of(&[&[b"C=1"], both, &[b"C=1"], &[b"B=1"], both]);
+        let (mut c, _e) =
+            crafted::journal_of_in(format, &[&[b"C=1"], both, &[b"C=1"], &[b"B=1"], both]);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let q = vec![vec![vec![b"B=1".to_vec()], vec![b"C=1".to_vec()]]];
@@ -2101,21 +2144,25 @@ mod tests {
     /// show, and an unreadable one on a page that shows nothing.
     #[test]
     fn entries_chosen_but_not_shown_set_the_flags() {
-        let (mut c, _l) = crafted::journal(10);
+        each_format(entries_chosen_but_not_shown_set_the_flags_in);
+    }
+
+    fn entries_chosen_but_not_shown_set_the_flags_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 10);
         let (t, _f) = c.write();
         let mut j = one(t.path());
-        j.payload_limit = per_record(3) + 5;
+        j.payload_limit = per_record_in(format, 3) + 5;
         let pg = j.page(&[], 10, &Position::Tail);
         assert_eq!(paged(&pg), (strs(&["m7", "m8", "m9"]), true, false));
 
-        let mut c = with_entries(3, |c| vec![oversized(c, 0)]);
+        let mut c = with_entries_in(format, 3, |c| vec![oversized(c, 0)]);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         j.payload_limit = 1000;
         let pg = j.page(&[], 10, &Position::Tail);
         assert_eq!(paged(&pg), (strs(&["m0", "m1", "m2"]), false, true));
 
-        let (mut c, l) = crafted::journal(1);
+        let (mut c, l) = crafted::journal_in(format, 1);
         c.set(l.messages[0] + O_SIZE, 8);
         let (t, _f) = c.write();
         let mut j = one(t.path());
@@ -2131,11 +2178,15 @@ mod tests {
     /// next forward page goes on from the last one shown with no gap.
     #[test]
     fn a_forward_page_over_the_output_limit_leaves_out_the_newer_end() {
-        let (mut c, _l) = crafted::journal(10);
+        each_format(a_forward_page_over_the_output_limit_leaves_out_the_newer_end_in);
+    }
+
+    fn a_forward_page_over_the_output_limit_leaves_out_the_newer_end_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 10);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&u_is_x(), 10, None);
-        j.payload_limit = per_record(3) + 5;
+        j.payload_limit = per_record_in(format, 3) + 5;
         let pg = j.page(&u_is_x(), 10, &Position::After(all[1].cursor()));
         assert_eq!(paged(&pg), (strs(&["m2", "m3", "m4"]), true, true));
         assert!(
@@ -2153,14 +2204,14 @@ mod tests {
             texts(&j.errors),
             [format!(
                 "output limit of {} bytes reached; 5 newer entries left out",
-                per_record(3) + 5
+                per_record_in(format, 3) + 5
             )]
         );
         let next = j.page(&u_is_x(), 10, &Position::After(pg.records[2].cursor()));
         assert_eq!(messages(&next.records), ["m5", "m6", "m7"]);
         // An oldest entry alone over the whole limit is skipped, as the
         // tail's newest is.
-        let mut c = with_entries(0, |c| {
+        let mut c = with_entries_in(format, 0, |c| {
             let m = c.data(b"MESSAGE=newer");
             vec![oversized(c, 0), vec![m]]
         });
@@ -2182,7 +2233,11 @@ mod tests {
     /// flagged. A forward page of fewer than the limit reports nothing.
     #[test]
     fn the_held_limit_sets_the_flags() {
-        let (mut c, _l) = crafted::journal(10);
+        each_format(the_held_limit_sets_the_flags_in);
+    }
+
+    fn the_held_limit_sets_the_flags_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 10);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&[], 10, None);
@@ -2215,7 +2270,11 @@ mod tests {
     /// goes past it, reported.
     #[test]
     fn a_forward_page_reads_only_what_its_seek_needs() {
-        let (mut c, l) = crafted::journal(6);
+        each_format(a_forward_page_reads_only_what_its_seek_needs_in);
+    }
+
+    fn a_forward_page_reads_only_what_its_seek_needs_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 6);
         c.set(l.entries[1] + O_SIZE, 0);
         let (t, _f) = c.write();
         let mut j = one(t.path());
@@ -2235,7 +2294,11 @@ mod tests {
     /// finds nothing in the file.
     #[test]
     fn an_unreadable_in_line_entry_is_reported_going_forward() {
-        let (mut c, l) = crafted::journal(6);
+        each_format(an_unreadable_in_line_entry_is_reported_going_forward_in);
+    }
+
+    fn an_unreadable_in_line_entry_is_reported_going_forward_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 6);
         c.set(l.entries[0] + O_SIZE, 0);
         let (t, _f) = c.write();
         let mut j = one(t.path());
@@ -2255,7 +2318,11 @@ mod tests {
     /// shows it (`more_older`).
     #[test]
     fn a_forward_page_ordered_by_realtime_starts_at_the_landing() {
-        let (mut c, l) = crafted::journal(5);
+        each_format(a_forward_page_ordered_by_realtime_starts_at_the_landing_in);
+    }
+
+    fn a_forward_page_ordered_by_realtime_starts_at_the_landing_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 5);
         // Seqnums 1 to 5, boot 7.
         for (&e, real) in l.entries.iter().zip([10u64, 50, 20, 30, 45]) {
             c.set(e + 24, real);
@@ -2282,10 +2349,15 @@ mod tests {
     /// Without a `_BOOT_ID=` object the seek falls back to realtime.
     #[test]
     fn a_forward_page_of_the_same_boot_bisects_by_monotonic_time() {
+        each_format(a_forward_page_of_the_same_boot_bisects_by_monotonic_time_in);
+    }
+
+    fn a_forward_page_of_the_same_boot_bisects_by_monotonic_time_in(format: Format) {
         let boot = format!("_BOOT_ID={}", "07".repeat(16));
         let in_boot: &[&[u8]] = &[boot.as_bytes()];
         let with_a: &[&[u8]] = &[boot.as_bytes(), b"A=1"];
-        let (mut c, _e) = crafted::journal_of(&[with_a, in_boot, with_a, in_boot, with_a]);
+        let (mut c, _e) =
+            crafted::journal_of_in(format, &[with_a, in_boot, with_a, in_boot, with_a]);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         // Monotonic time 2 is m1's; the realtime (before every entry) would
@@ -2308,7 +2380,7 @@ mod tests {
         assert_eq!(paged(&pg), (strs(&["m2", "m4"]), true, false));
         // No `_BOOT_ID=`: by realtime, which lands on m1, whose realtime is
         // the cursor's (found counts as at or after, going down).
-        let (mut c, _l) = crafted::journal(5);
+        let (mut c, _l) = crafted::journal_in(format, 5);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let by_realtime = Cursor {
@@ -2329,7 +2401,11 @@ mod tests {
     /// journalctl-show.c's `sd_journal_test_cursor`).
     #[test]
     fn a_forward_page_lands_where_the_realtime_bisect_does() {
-        let (mut c, l) = crafted::journal(4);
+        each_format(a_forward_page_lands_where_the_realtime_bisect_does_in);
+    }
+
+    fn a_forward_page_lands_where_the_realtime_bisect_does_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 4);
         for (&e, real) in l.entries.iter().zip([10u64, 50, 5, 45]) {
             c.set(e + 24, real);
         }
@@ -2358,7 +2434,11 @@ mod tests {
     /// entry doesn't match the query.
     #[test]
     fn difference_18_nothing_after_a_vanished_cursor_is_dropped() {
-        let (mut c, _l) = crafted::journal(5);
+        each_format(difference_18_nothing_after_a_vanished_cursor_is_dropped_in);
+    }
+
+    fn difference_18_nothing_after_a_vanished_cursor_is_dropped_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 5);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&[], 10, None);
@@ -2371,7 +2451,7 @@ mod tests {
         assert_eq!(messages(&pg.records), ["m3", "m4"]);
         // A cursor whose entry doesn't match: the next match is shown.
         let with_a: &[&[u8]] = &[b"A=1"];
-        let (mut c, _e) = crafted::journal_of(&[with_a, &[], with_a, &[], with_a]);
+        let (mut c, _e) = crafted::journal_of_in(format, &[with_a, &[], with_a, &[], with_a]);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let unfiltered = j.tail(&[], 10, None);
@@ -2391,8 +2471,12 @@ mod tests {
     /// first entry, and the page goes on by seqnum.
     #[test]
     fn a_file_with_no_landing_seeks_again_from_the_first_entry() {
+        each_format(a_file_with_no_landing_seeks_again_from_the_first_entry_in);
+    }
+
+    fn a_file_with_no_landing_seeks_again_from_the_first_entry_in(format: Format) {
         let file = |seqnums: [u64; 2], reals: [u64; 2]| {
-            let (mut c, l) = crafted::journal(2);
+            let (mut c, l) = crafted::journal_in(format, 2);
             for i in 72..88 {
                 c.b[i] = 0x5a; // the header's seqnum id
             }
@@ -2430,10 +2514,14 @@ mod tests {
     /// the cursor counts) and C on m3, and the first entry with both is m4.
     #[test]
     fn a_groups_landing_is_the_next_entry_in_every_term() {
+        each_format(a_groups_landing_is_the_next_entry_in_every_term_in);
+    }
+
+    fn a_groups_landing_is_the_next_entry_in_every_term_in(format: Format) {
         let with_b: &[&[u8]] = &[b"B=1"];
         let with_c: &[&[u8]] = &[b"C=1"];
         let both: &[&[u8]] = &[b"B=1", b"C=1"];
-        let (mut c, _e) = crafted::journal_of(&[with_c, with_b, with_b, with_c, both]);
+        let (mut c, _e) = crafted::journal_of_in(format, &[with_c, with_b, with_b, with_c, both]);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&[], 10, None);
@@ -2453,9 +2541,13 @@ mod tests {
     /// `U=x`'s chain is m1 to m5; m5's slot is zeroed.
     #[test]
     fn a_zero_slot_hides_nothing_going_forward() {
-        let (mut c, l) = crafted::journal(6);
+        each_format(a_zero_slot_hides_nothing_going_forward_in);
+    }
+
+    fn a_zero_slot_hides_nothing_going_forward_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 6);
         let shared_array = c.get(l.shared + D_ENTRY_ARRAY);
-        c.set(shared_array + A_ITEMS + 8 * 4, 0);
+        c.set_array_item(shared_array, 4, 0);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&[], 10, None);
@@ -2472,9 +2564,13 @@ mod tests {
     /// chain is m1, m2, 0, m4, m5 (m3's slot zeroed).
     #[test]
     fn a_zero_slot_mid_list_hides_nothing_going_forward() {
-        let (mut c, l) = crafted::journal(6);
+        each_format(a_zero_slot_mid_list_hides_nothing_going_forward_in);
+    }
+
+    fn a_zero_slot_mid_list_hides_nothing_going_forward_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 6);
         let shared_array = c.get(l.shared + D_ENTRY_ARRAY);
-        c.set(shared_array + A_ITEMS + 8 * 2, 0);
+        c.set_array_item(shared_array, 2, 0);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&[], 10, None);
@@ -2485,8 +2581,8 @@ mod tests {
         // bisect takes the array's first item when it finds an entry
         // (`found:` in `generic_array_bisect`) and fails with -EBADMSG on a
         // 0, so journalctl leaves the file out. sb reports it.
-        let (mut c, l) = crafted::journal(6);
-        c.set(l.main_array + A_ITEMS, 0);
+        let (mut c, l) = crafted::journal_in(format, 6);
+        c.set_array_item(l.main_array, 0, 0);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&[], 10, None);
@@ -2506,13 +2602,19 @@ mod tests {
     /// from its head instead, and m3 and m4 are shown.
     #[test]
     fn a_zero_first_slot_hides_nothing_from_the_walk() {
+        each_format(a_zero_first_slot_hides_nothing_from_the_walk_in);
+    }
+
+    fn a_zero_first_slot_hides_nothing_from_the_walk_in(format: Format) {
         let with_u: &[&[u8]] = &[b"U=x"];
         let both: &[&[u8]] = &[b"U=x", b"B=1"];
-        let (mut c, entries) = crafted::journal_of(&[with_u, with_u, both, with_u, with_u]);
-        let shared = c.b.windows(3).position(|w| w == b"U=x").expect("U=x") as u64 - 64;
+        let (mut c, entries) =
+            crafted::journal_of_in(format, &[with_u, with_u, both, with_u, with_u]);
+        let shared =
+            c.b.windows(3).position(|w| w == b"U=x").expect("U=x") as u64 - format.payload_at();
         let chain = c.get(shared + D_ENTRY_ARRAY);
-        assert_eq!(c.get(chain + A_ITEMS), entries[1]);
-        c.set(chain + A_ITEMS, 0);
+        assert_eq!(c.array_item(chain, 0), entries[1]);
+        c.set_array_item(chain, 0, 0);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         let all = j.tail(&[], 10, None);
@@ -2526,7 +2628,11 @@ mod tests {
     /// from the earlier file.
     #[test]
     fn a_forward_page_shows_a_flushed_copy_once() {
-        let (mut c, _l) = crafted::journal(4);
+        each_format(a_forward_page_shows_a_flushed_copy_once_in);
+    }
+
+    fn a_forward_page_shows_a_flushed_copy_once_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 4);
         let (run, _f) = c.write();
         let (var, _g) = c.write();
         let mut j = Opened::new(&[run.path().to_path_buf(), var.path().to_path_buf()]);
@@ -2543,9 +2649,13 @@ mod tests {
     /// newest can't be read adds its error and gives the next readable one.
     #[test]
     fn the_end_names_the_files_and_the_newest_entry() {
+        each_format(the_end_names_the_files_and_the_newest_entry_in);
+    }
+
+    fn the_end_names_the_files_and_the_newest_entry_in(format: Format) {
         // Two copies of one journal in two directories, as a flush leaves
         // /run's entries in /var: the tie goes to the earlier file's.
-        let (mut c, _l) = crafted::journal(3);
+        let (mut c, _l) = crafted::journal_in(format, 3);
         let (run, var) = (
             tempfile::tempdir().expect("dir"),
             tempfile::tempdir().expect("dir"),
@@ -2554,7 +2664,7 @@ mod tests {
         let second = var.path().join("system.journal");
         std::fs::copy(c.file().path(), &first).expect("write");
         std::fs::copy(c.file().path(), &second).expect("write");
-        let (empty, _h) = Crafted::new().write();
+        let (empty, _h) = Crafted::new_in(format).write();
         let j = Opened::new(&[empty.path().to_path_buf(), first.clone(), second.clone()]);
         let mut errors = ReadErrors::default();
         let e = end_of(&j.files, &mut errors);
@@ -2569,7 +2679,7 @@ mod tests {
         let e2 = end_of(&swapped.files, &mut errors);
         assert_eq!(e2.newest.expect("an entry").1.as_deref(), Some(var.path()));
         // The newer of two files, whichever is first; seqnum 3 against 4.
-        let (mut c, l) = crafted::journal(4);
+        let (mut c, l) = crafted::journal_in(format, 4);
         c.set(l.entries[3] + 16, 4);
         let (newer, _n) = c.write();
         let j = Opened::new(&[first.clone(), newer.path().to_path_buf()]);
@@ -2578,7 +2688,7 @@ mod tests {
         // An unreadable newest entry: reported, and the next readable one
         // is the newest, as systemd's `generic_array_get` going up skips a
         // bad entry (v259 journal-file.c); none readable, no entry.
-        let (mut c, l) = crafted::journal(2);
+        let (mut c, l) = crafted::journal_in(format, 2);
         c.set(l.entries[1] + O_SIZE, 0);
         let (bad, _b) = c.clone().write();
         let j = Opened::new(&[bad.path().to_path_buf()]);
@@ -2598,7 +2708,11 @@ mod tests {
     /// The position a page is read at goes through to the walk.
     #[test]
     fn a_page_reads_at_its_position() {
-        let (mut c, _l) = crafted::journal(5);
+        each_format(a_page_reads_at_its_position_in);
+    }
+
+    fn a_page_reads_at_its_position_in(format: Format) {
+        let (mut c, _l) = crafted::journal_in(format, 5);
         let (t, _f) = c.write();
         let journal = crate::Journal::open(
             crate::Source::Files(vec![t.path().to_path_buf()]),
