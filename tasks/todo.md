@@ -465,29 +465,29 @@ copy counts as the second, forcing signal, so cleanup is skipped
 (cli-M2; live once Task 12 lands).
 
 **Acceptance criteria:**
-- [ ] The same signal repeated within the window doesn't force the
+- [x] The same signal repeated within the window doesn't force the
       exit. The window is one documented constant
       (M-DOCUMENTED-MAGIC): 250 ms, unless the probe shows another
       value is needed. It applies to SIGTERM and SIGHUP only (decision
       9); two SIGINTs still force the exit.
-- [ ] A unit test drives the window with an injected clock
+- [x] A unit test drives the window with an injected clock
       (M-MOCKABLE-SYSCALLS): inside it, at its edge and past it.
-- [ ] A hangup under an interactive bash login shell comes twice too,
+- [x] A hangup under an interactive bash login shell comes twice too,
       without sudo: bash re-sends SIGHUP to its jobs, then the kernel
-      hangs up the foreground group, about 0.5 ms apart (Task 12's
+      hangs up the foreground group, about 0.1 to 0.5 ms apart (Task 12's
       review; its reproduction is kept outside the repo). A test with
       `bash -i` as the session leader asserts the grace is taken and the
       run log's ending is written.
-- [ ] A probe under a real session scope and sudo confirms the relayed
+- [x] A probe under a real session scope and sudo confirms the relayed
       copy's timing. Its method and versions go in the platform note,
       with no host details. If it shows SIGINT doubled under sudo too,
       that goes back to the maintainer before the task ends.
-- [ ] cli-core.md's "a second signal ends sb at once" and its "Decided
+- [x] cli-core.md's "a second signal ends sb at once" and its "Decided
       in review" entry are amended.
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core -p sb`; the probe; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-cli-core -p sb`; the probe; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 12

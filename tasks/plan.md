@@ -172,6 +172,11 @@ Answers at the plan's approval (2026-11-11):
     value's list before the header counted it, and the newest counted
     entry was often not listed yet (the mirror case). Task 32's design
     note is below the handover question.
+25. **SIGINT stays outside the repeat window** (Task 13's probe,
+    2026-11-12). A scope-wide SIGINT under sudo arrives twice and forces
+    the exit; two Ctrl-C presses always force it. Following from
+    decisions 2 and 9, a SIGTERM and a SIGHUP within the window of each
+    other count as one signal, which covers a session scope's stop.
 24. **A forward page at the journal's end is within decision 12**
     (2026-11-12). It stops at the count it read (n0 unfiltered, n1
     filtered), and the follow delivers the entries appended meanwhile.
@@ -393,7 +398,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 9: the error block escapes error text
 - [x] Task 10: no logged value can forge a run-log record
 - [x] Task 12: a hangup cancels cleanly
-- [ ] Task 13: a relayed signal isn't a second signal
+- [x] Task 13: a relayed signal isn't a second signal
 - [ ] Task 17: panics reach the run log and the screen
 - [ ] Checkpoint T: text and processes
 
