@@ -181,11 +181,11 @@ impl RunLog {
             .filename_prefix(LOG_FILE)
             .build(dir)
             .map_err(std::io::Error::other)?;
-        // No colours of fmt's own. Escape codes inside logged values are
-        // escaped (written as `\x1b`), not removed: child output is stripped
-        // where it is captured (the exec module, `console::strip_ansi_codes`).
-        // A failed write (full disk) isn't reported on stderr, where it
-        // would land among the command's own output.
+        // No colours of fmt's own. Every record goes through `OneLine`, so
+        // no value can break it over lines. Child output is sanitized
+        // before it is logged (term-ui's runner, `DisplayText` with colour
+        // off). A failed write (full disk) isn't reported on stderr, where
+        // it would land among the command's own output.
         let subscriber = tracing_subscriber::fmt()
             .with_writer(appender)
             .with_ansi(false)
@@ -193,6 +193,7 @@ impl RunLog {
             // which crate wrote it (maintainer, docker Checkpoint A).
             .with_target(true)
             .log_internal_errors(false)
+            .map_event_format(OneLine)
             // fmt's own default is INFO for everything.
             .with_max_level(LevelFilter::TRACE)
             .finish();
@@ -284,6 +285,80 @@ impl RunLog {
     }
 }
 
+/// The run log's event formatter: fmt's own [`Format`] (the builder's,
+/// configured above: its layout, `key=value` fields, `error.sources`, the
+/// bare message, tracing-log's `log.*` fields left out) writes the record
+/// into a buffer, and the record goes to the file through [`Escaping`],
+/// its final newline kept. So every record (its message, an error and its
+/// causes, Debug and Display fields, span fields, those recorded later,
+/// and records bridged from `log`, their target included, which fmt
+/// writes outside the field formatter) is always one line (san-M2). The
+/// one choke point, tracing-subscriber's documented hook for how a whole
+/// event is written
+/// (<https://docs.rs/tracing-subscriber/0.3.23/tracing_subscriber/fmt/trait.FormatEvent.html>,
+/// set with
+/// <https://docs.rs/tracing-subscriber/0.3.23/tracing_subscriber/fmt/struct.SubscriberBuilder.html#method.map_event_format>).
+/// The guarantee is one line per record, not per field: a value can
+/// append text that looks like a field inside its own record (the first
+/// occurrence of a key is the real one).
+///
+/// Why not fmt's own escaping: since 0.3.20 it escapes ESC, BEL, BS, FF,
+/// DEL and C1 in messages and errors only (as `\x1b`, kept as it is),
+/// never `\n` or `\r`, and nothing in a `%` field. Why not `fmt().json()`:
+/// it escapes everything but changes the log's format (cli-core spec,
+/// step 4) and adds the `json` feature. Why not `debug_fn` as the field
+/// formatter: its visitor gets an error as its Display only, losing
+/// `error.sources`, and a target isn't a field.
+///
+/// [`Format`]: tracing_subscriber::fmt::format::Format
+struct OneLine<E>(E);
+
+impl<S, N, E> tracing_subscriber::fmt::FormatEvent<S, N> for OneLine<E>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+    E: tracing_subscriber::fmt::FormatEvent<S, N>,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let mut record = String::new();
+        self.0.format_event(
+            ctx,
+            tracing_subscriber::fmt::format::Writer::new(&mut record),
+            event,
+        )?;
+        let line = record.strip_suffix('\n').unwrap_or(&record);
+        std::fmt::Write::write_str(&mut Escaping(&mut writer), line)?;
+        std::fmt::Write::write_char(&mut writer, '\n')
+    }
+}
+
+/// A writer that escapes control characters (`\n`, `\r`, `\t`, `\u{1b}`)
+/// and the line and paragraph separators U+2028 and U+2029, which split
+/// lines in some tools, in std's `char::escape_debug` forms
+/// (<https://doc.rust-lang.org/std/primitive.char.html#method.escape_debug>),
+/// and passes everything else through, fmt's escapes (`\x1b`) included.
+/// Bidi and zero-width marks pass as they are, as in table cells (the
+/// plan's decision 19): they can't end a record.
+struct Escaping<W>(W);
+
+impl<W: std::fmt::Write> std::fmt::Write for Escaping<W> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let mut rest = 0;
+        let ends_a_line = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+        for (at, c) in text.char_indices().filter(|&(_, c)| ends_a_line(c)) {
+            self.0.write_str(&text[rest..at])?;
+            write!(self.0, "{}", c.escape_debug())?;
+            rest = at + c.len_utf8();
+        }
+        self.0.write_str(&text[rest..])
+    }
+}
+
 /// Whether every entry in `dir` is one of sb's log files: a regular file
 /// (`file_type` doesn't follow symlinks) named `sb.log` or one of
 /// logrotate's names for its rotated copies (`sb.log.1`, `sb.log.2.gz`,
@@ -370,6 +445,104 @@ mod tests {
         );
         assert!(text.contains("Get: jq"), "{text}");
         assert!(!text.contains('\x1b'), "escape codes in the log: {text:?}");
+    }
+
+    /// A forged record: a newline, then what a "run finished" line looks
+    /// like, and a carriage return.
+    const FORGED: &str =
+        "boom\n2026-11-12T00:00:00.000000Z  INFO run{run=0}: sb: run finished outcome=\"done\"\r";
+
+    /// The forged text through a Debug that writes it raw (std's Debug for
+    /// `str` would escape it itself).
+    struct RawDebug;
+
+    impl std::fmt::Debug for RawDebug {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(FORGED)
+        }
+    }
+
+    /// An error whose message and cause hold the forged text.
+    #[derive(Debug)]
+    struct Forged(Option<Box<Forged>>);
+
+    impl std::fmt::Display for Forged {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(FORGED)
+        }
+    }
+
+    impl Error for Forged {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.0.as_deref().map(|e| e as &(dyn Error + 'static))
+        }
+    }
+
+    /// No logged value can forge a record (san-M2, cli-M3, docker-L1): a
+    /// newline and a "run finished" line through the message, an error
+    /// and its cause, a Debug field, a Display field (`%`, as docker's
+    /// `error = %cause`), a span field, one recorded later, a record
+    /// bridged from `log` and one whose target is built from data each
+    /// stay in one record, escaped.
+    #[test]
+    fn no_logged_value_can_forge_a_record() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (log, subscriber) = RunLog::open(dir.path()).expect("open");
+        let error = Forged(Some(Box::new(Forged(None))));
+        let target = format!("dependency {FORGED}");
+        tracing::subscriber::with_default(subscriber, || {
+            let _run = log.enter();
+            tracing::info!("message {FORGED}");
+            tracing::info!(error = &error as &(dyn Error + 'static), "error");
+            tracing::info!(value = ?RawDebug, "debug");
+            tracing::info!(value = %FORGED, "display");
+            tracing::info_span!("step", label = %FORGED).in_scope(|| tracing::info!("span"));
+            let span = tracing::info_span!("later", label = tracing::field::Empty);
+            span.record("label", tracing::field::display(FORGED));
+            span.in_scope(|| tracing::info!("recorded"));
+            tracing_log::log::warn!(target: "dependency", "bridged {FORGED}");
+            tracing_log::log::warn!(target: &target, "dynamic");
+        });
+        let text = log_text(dir.path());
+        let records: Vec<_> = text.lines().collect();
+        assert_eq!(records.len(), 8, "{text}");
+        assert!(!text.contains('\r'), "{text:?}");
+        let escaped = r#"boom\n2026-11-12T00:00:00.000000Z  INFO run{run=0}: sb: run finished outcome="done"\r"#;
+        for (record, kind) in records.iter().zip([
+            "message", "error", "debug", "display", "span", "recorded", "bridged", "dynamic",
+        ]) {
+            assert!(record.contains(kind), "{kind}: {record}");
+            assert!(record.contains(escaped), "{kind}: {record}");
+        }
+        // The error's cause too.
+        assert!(records[1].contains("error.sources=["), "{}", records[1]);
+        assert_eq!(
+            records[1].matches("run finished").count(),
+            2,
+            "{}",
+            records[1]
+        );
+    }
+
+    /// The line and paragraph separators, which split lines in some tools,
+    /// are escaped too; an ESC is written once in fmt's own `\x1b` form in
+    /// a message, and escaped in a `%` field, where fmt leaves it.
+    #[test]
+    fn separators_and_escapes_stay_in_the_record() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (log, subscriber) = RunLog::open(dir.path()).expect("open");
+        tracing::subscriber::with_default(subscriber, || {
+            let _run = log.enter();
+            tracing::info!("separators a\u{2028}b\u{2029}c");
+            tracing::info!("esc \x1b[31mred");
+            tracing::info!(value = %"x\x1b[2Jy", "esc display");
+        });
+        let text = log_text(dir.path());
+        assert_eq!(text.lines().count(), 3, "{text}");
+        assert!(!text.contains(['\u{2028}', '\u{2029}', '\x1b']), "{text:?}");
+        assert!(text.contains(r"separators a\u{2028}b\u{2029}c"), "{text}");
+        assert!(text.contains(r"esc \x1b[31mred"), "{text}");
+        assert!(text.contains(r"value=x\u{1b}[2Jy"), "{text}");
     }
 
     /// The directory is root-only (decision 11): 0700.

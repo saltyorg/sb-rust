@@ -168,8 +168,10 @@ Every line term-ui draws from text it was given (a step's output and
 notices, error lines, a child's last lines and reason, a table's headings
 and cells), and every output and notice line it logs, goes through one
 public sanitizer, `DisplayText`, shared with the log viewer (journal
-spec, "Display (decision 2)"). A step's error record is logged as is, as
-before (tracing quotes it as a debug string):
+spec, "Display (decision 2)"). A step's error record is logged as is,
+through the run log's event formatter, which escapes every control
+character, `\n` and `\r` included, so it stays one record (cli-core
+spec, startup step 4):
 
 ```rust
 /// Sanitized text, held as one `String` plus line ranges.

@@ -79,9 +79,21 @@ both files they read are readable without root.
    regardless of outcome, for every run as root. The record holds sb's
    version and the command's name, never argument values (they can carry secrets), then the command's
    events and how the run ended; a failure's error and causes go in as
-   tracing's error field. Help, version and completion, which run as the
-   calling user, aren't logged (the directory is root-only). A log that
-   can't be opened is a warning, not a failure. `SB_LOG_DIR` overrides the
+   tracing's error field. Each record is one line in tracing-subscriber's
+   fmt format: no logged value can break it, because the run log's event
+   formatter (fmt's own `Format`, wrapped through `map_event_format`)
+   escapes every control character, `\n` and `\r` included, and U+2028
+   and U+2029, in the escape_debug form (`\n`, `\u{1b}`), in every record:
+   its message, an error and its causes, Debug and Display (`%`) fields,
+   span fields, and records bridged from dependencies' `log`, their
+   target included. Messages and errors keep fmt's own `\x1b` form for
+   what fmt escapes itself (ESC, BEL, BS, FF, DEL, C1). Bidi and
+   zero-width marks pass, as in table cells. The guarantee is one line
+   per record, not per field: a value can append text that looks like a
+   field inside its own record (the first occurrence of a key is the real
+   one). Help, version and completion, which run as the calling user,
+   aren't logged (the directory is root-only). A log that can't be opened
+   is a warning, not a failure. `SB_LOG_DIR` overrides the
    directory (tests and debugging; sudo doesn't pass it through).
 5. **Colour** (decision 10): `--color=auto|always|never` (colorchoice-clap)
    decides once and becomes anstream's global choice (console and
