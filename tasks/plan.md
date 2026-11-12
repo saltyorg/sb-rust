@@ -182,6 +182,8 @@ Answers at the plan's approval (2026-11-11):
     the exit; two Ctrl-C presses always force it. Following from
     decisions 2 and 9, a SIGTERM and a SIGHUP within the window of each
     other count as one signal, which covers a session scope's stop.
+26. **The flush double is fixed as its own task** (follow-M1, Task 34's
+    real-journald run, 2026-11-12): Task 39 in lane 2, after Task 34.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -325,6 +327,7 @@ deferred or dropped.
 
 | Ids | Finding | Task |
 |---|---|---|
+| follow-M1 | A follow doubles the last burst across a flush | 39 |
 | san-H1, docker-M1, ui-M4 | Table cells printed raw (container labels) | 8 |
 | san-M1, cli-M3 (screen) | Error text raw in the error block | 9 |
 | san-M2, cli-M3 (log), docker-L1 | Run-log injection by newline and Display fields | 10 |
@@ -422,7 +425,8 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 28: the suites the fixes touch run over both layouts
 - [x] Task 32: the page-to-follow handover: facts, probe and options
 - [x] Task 33: a page and its follow give every entry once
-- [ ] Task 34: the handover across files
+- [x] Task 34: the handover across files
+- [ ] Task 39: a follow doesn't double a burst across a flush
 - [ ] Task 36: a page can always be paged past
 - [ ] Task 37: a forward page on the cursor's own boot
 - [ ] Task 38: forward walks over damaged entry arrays

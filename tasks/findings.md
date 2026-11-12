@@ -70,6 +70,7 @@ paging and boot order), `config`.
 - follow-L5: first batch memory = limit x files when resuming from an old/default PageEnd; doc line.
 - follow-L6: double directory listing per rescan; dirs map keeps removed watches.
 - follow-L7: PROMPTLY 1 s deadlines may flake under shared CPU (host journal.rs:465); no host test of FollowWait across a rescan.
+- follow-M1 CONFIRMED on real journald (hardening Task 34, 2026-11-12; predates it): a follow running through a flush shows the last burst before it twice. journald stamps every entry of one event-loop pass with the same times (journald-server.c's sd_event_now), and `is_old` (follow.rs) takes an entry at `last`'s stamp as old only if it equals `last`, so the /var copies of the burst's other entries end the rescan's leading region and come again. Contradicts Difference 2. Fix: keep the identities of the entries shown at `last`'s stamp and drop their copies.
 
 ## paging + public API (done)
 - page-H1 CONFIRMED independently (same as follow-H1 and fwd-M2): page shows an entry written during the page, PageEnd doesn't count it, follow repeats it. Also via After paged to tail. Fix: `lasts` keeps raw offset of main-list item n_entries-1; Walk::next drops driver offsets above it; forward.rs same bound.

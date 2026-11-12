@@ -897,19 +897,19 @@ decision 12 (the plan's unattended list).
       doubled), so it isn't put to the maintainer again (the plan's
       unattended list): option (b). Extending Difference 13 would allow a
       doubled entry once per boot, against decision 12.
-- [ ] A rotation between the page and the follow: the archived file
+- [x] A rotation between the page and the follow: the archived file
       keeps its position by inode and file id, and every entry of the
       new file is delivered. Nothing lost or doubled.
-- [ ] An archived file rewritten as a copy under a new inode before
+- [x] An archived file rewritten as a copy under a new inode before
       the follow starts keeps its position, but only if Task 32 shows
       that journald rewrites an archived file that way. It would be a
       code change: today the start needs the inode and the file id to
       match, and only a later rescan matches by file id alone. If Task
       32 doesn't show it, nothing changes here.
-- [ ] A flush between the page and the follow, where the page read
+- [x] A flush between the page and the follow, where the page read
       the /var file: every flush copy is shown again, as Difference 13
       says of a followed file. A test pins it.
-- [ ] A flush between the page and the follow, where the /var file is
+- [x] A flush between the page and the follow, where the /var file is
       new: `PageEnd` carries, for each entry the page showed that is
       newer than its newest entry (under handover (a), the ones the
       re-read added), its boot id, monotonic and realtime stamps and
@@ -917,23 +917,23 @@ decision 12 (the plan's unattended list).
       equality includes them. No entry is lost or doubled, and
       `PageEnd`'s newest entry is not raised past what the headers
       gave.
-- [ ] A file the page couldn't open: the follow reads it as a new
+- [x] A file the page couldn't open: the follow reads it as a new
       file, and its open error is reported once.
-- [ ] A merged page over several files hands each file over on its
+- [x] A merged page over several files hands each file over on its
       own.
-- [ ] journal.md lists the limit that remains under every option:
+- [x] journal.md lists the limit that remains under every option:
       the headers are read at different instants, so `PageEnd`'s newest
       entry can be newer than an entry of another file that the page
       didn't read. That entry is lost only if its file is gone before
       the follow opens it, which takes a flush between the two, once
       per boot. Checkpoint B's message names it for the maintainer.
-- [ ] follow.sh gains a rotation and a flush between the page and the
+- [x] follow.sh gains a rotation and a flush between the page and the
       follow, next to its two "between" scenarios.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh full <base>`.
-- [ ] follow.sh on three releases, capped.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh full <base>`.
+- [x] follow.sh on three releases, capped.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 33, and the maintainer's choice on the flush
@@ -946,6 +946,38 @@ question (decision 20)
 Merged on 2026-11-12 (the plan's decision 21). The stress.sh handover
 check and its floors are gone. What is left is one follow.sh scenario
 on real journald, in Task 33's criteria and verification.
+
+## Task 39: a follow doesn't double a burst across a flush
+
+**Description:** follow-M1, found by Task 34's real-journald run and
+older than it: a follow running through a flush shows the last burst
+before the flush twice, because journald gives every entry of one pass
+the same timestamps and the follow matches a copy only against the very
+last entry it showed. The maintainer chose a fix (the plan's decision
+26). Waits for the maintainer's call on the libsystemd research, which
+could retire the reader it fixes.
+
+**Acceptance criteria:**
+- [ ] The follow keeps the identities (boot id, monotonic and realtime
+      stamps, xor hash) of the entries it showed at its last entry's
+      stamp, at most one burst, reset when the stamp moves on; an entry
+      at that stamp is a copy if its identity is among them.
+- [ ] A crafted test (both layouts): /run holds four entries with one
+      stamp, all shown; the flush writes their copies and a new entry
+      to /var; the follow shows only the new one.
+- [ ] follow.sh's `during` gets its flush round back (saved from Task
+      34) and passes on 22.04, 24.04 and 26.04: nothing lost or doubled.
+- [ ] Difference 2 holds as written.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal -p sb-host`; follow.sh on three releases;
+      `scripts/check.sh full <base>`.
+- [ ] Review: one code-reviewer pass on the task's diff, with the
+      library-reviewer.
+
+**Dependencies:** Task 34, and the maintainer's call on libsystemd
+**Files:** `crates/journal/src/follow.rs`, `crates/journal/tests/follow.sh`
+**Scope:** S
 
 ## Task 36: a page can always be paged past
 
