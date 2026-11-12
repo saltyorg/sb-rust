@@ -36,12 +36,15 @@ pub fn counts(journal: &Journal) -> Counts {
     journal.opener.counts()
 }
 
-/// Crafted journal files for the corruption tests: a regular (not
-/// compact), unkeyed file laid out object by object, as journald appends
-/// them (journal-def.h layouts).
+/// Crafted journal files for the corruption tests: an unkeyed file, regular
+/// or compact (`Format`), laid out object by object, as journald appends
+/// them (journal-def.h layouts). "Valid" here means valid to sb's reader
+/// only: sd-journal 255 and later refuses these files, their header tail
+/// fields being zero.
 pub mod crafted {
     use crate::file::{
-        JournalFile, OBJECT_DATA, OBJECT_ENTRY, OBJECT_ENTRY_ARRAY, OBJECT_HEADER, SIGNATURE, le64,
+        INCOMPAT_COMPACT, JournalFile, OBJECT_DATA, OBJECT_ENTRY, OBJECT_ENTRY_ARRAY,
+        OBJECT_HEADER, SIGNATURE, le32, le64,
     };
     use crate::hash;
     use std::io::Write;
@@ -52,6 +55,8 @@ pub mod crafted {
 
     // Header fields' offsets (journal-def.h `struct Header`).
 
+    /// `incompatible_flags`.
+    pub const H_INCOMPATIBLE: u64 = 12;
     /// `arena_size`.
     pub const H_ARENA_SIZE: u64 = 96;
     /// `data_hash_table_offset`.
@@ -86,6 +91,10 @@ pub mod crafted {
     pub const D_ENTRY_ARRAY: u64 = 48;
     /// `n_entries`.
     pub const D_N_ENTRIES: u64 = 56;
+    /// A compact DATA object's `tail_entry_array_offset` (32 bits).
+    pub const D_TAIL_ARRAY: u64 = 64;
+    /// A compact DATA object's `tail_entry_array_n_entries` (32 bits).
+    pub const D_TAIL_N: u64 = 68;
     /// The first item.
     pub const E_ITEMS: u64 = 64;
     /// `next_entry_array_offset`.
@@ -93,7 +102,30 @@ pub mod crafted {
     /// The first item.
     pub const A_ITEMS: u64 = 24;
 
-    /// A journal file's bytes, built up object by object.
+    /// How a file lays out its objects (journal-def.h). A regular file's
+    /// entry items are a 64-bit offset and a hash, its entry-array items
+    /// 64-bit offsets, and its DATA payloads start at 64. A compact file
+    /// (`HEADER_INCOMPATIBLE_COMPACT`, journald 252 and later) has 32-bit
+    /// entry and entry-array items, and DATA objects 8 bytes longer: their
+    /// tail entry array's offset and item count come before the payload.
+    ///
+    /// Raw `set` and `get` at `A_ITEMS` or `E_ITEMS` are for regular files
+    /// only: in a compact file a 64-bit write there overwrites two items
+    /// (`Crafted::set_array_item` writes either width).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Format {
+        Regular,
+        Compact,
+    }
+
+    impl Format {
+        /// Both formats, for a test run over each.
+        pub const ALL: [Self; 2] = [Self::Regular, Self::Compact];
+    }
+
+    /// A journal file's bytes, built up object by object. The format is
+    /// the header's: with `INCOMPAT_COMPACT` set, the objects appended are
+    /// compact.
     #[derive(Debug, Clone)]
     pub struct Crafted {
         pub b: Vec<u8>,
@@ -101,6 +133,12 @@ pub mod crafted {
 
     fn at(v: u64) -> usize {
         usize::try_from(v).expect("small")
+    }
+
+    /// A compact file's 32-bit offset or count, little-endian (journald
+    /// keeps a compact file under 4 GiB for this).
+    fn small32(v: u64) -> [u8; 4] {
+        u32::try_from(v).expect("fits 32 bits").to_le_bytes()
     }
 
     impl Default for Crafted {
@@ -120,6 +158,27 @@ pub mod crafted {
             c
         }
 
+        /// A 272-byte header of `format`, no objects.
+        #[must_use]
+        pub fn new_in(format: Format) -> Self {
+            let mut c = Self::new();
+            if format == Format::Compact {
+                c.b[at(H_INCOMPATIBLE)..at(H_INCOMPATIBLE) + 4]
+                    .copy_from_slice(&INCOMPAT_COMPACT.to_le_bytes());
+            }
+            c
+        }
+
+        /// The format the header names.
+        #[must_use]
+        pub fn format(&self) -> Format {
+            if le32(&self.b, at(H_INCOMPATIBLE)) & INCOMPAT_COMPACT == 0 {
+                Format::Regular
+            } else {
+                Format::Compact
+            }
+        }
+
         /// Write `v` little-endian at `offset`.
         ///
         /// # Panics
@@ -137,6 +196,43 @@ pub mod crafted {
         #[must_use]
         pub fn get(&self, offset: u64) -> u64 {
             le64(&self.b, at(offset))
+        }
+
+        /// Set item `i` of the entry array at `array` to `entry`, 64 bits
+        /// wide in a regular file, 32 in a compact one. Raw `set` and `get`
+        /// at `A_ITEMS` or `E_ITEMS` are for regular files only: in a
+        /// compact file a 64-bit write there overwrites two items.
+        ///
+        /// # Panics
+        ///
+        /// The item lies past the bytes built so far, or in a compact file
+        /// `entry` doesn't fit 32 bits.
+        pub fn set_array_item(&mut self, array: u64, i: u64, entry: u64) {
+            if self.format() == Format::Compact {
+                self.set32(array + A_ITEMS + 4 * i, entry);
+            } else {
+                self.set(array + A_ITEMS + 8 * i, entry);
+            }
+        }
+
+        /// In a compact file, set the DATA object `data`'s tail entry
+        /// array and its item count, as journald keeps them
+        /// (`link_entry_into_array`); a regular DATA object has no such
+        /// fields, and this does nothing.
+        ///
+        /// # Panics
+        ///
+        /// The object lies past the bytes built so far, or `array` or `n`
+        /// doesn't fit 32 bits.
+        pub fn set_tail(&mut self, data: u64, array: u64, n: u64) {
+            if self.format() == Format::Compact {
+                self.set32(data + D_TAIL_ARRAY, array);
+                self.set32(data + D_TAIL_N, n);
+            }
+        }
+
+        fn set32(&mut self, offset: u64, v: u64) {
+            self.b[at(offset)..at(offset) + 4].copy_from_slice(&small32(v));
         }
 
         /// Append an object, 8-byte aligned as journald places them; returns
@@ -203,7 +299,13 @@ pub mod crafted {
         ///
         /// There is no hash table (`hash_table`) yet.
         pub fn data_raw(&mut self, flags: u8, stored: &[u8], hash: u64) -> u64 {
-            let mut body = vec![0u8; 48];
+            // A compact DATA object's tail array fields come before the
+            // payload; `set_tail` fills them.
+            let header = match self.format() {
+                Format::Regular => 48,
+                Format::Compact => 56,
+            };
+            let mut body = vec![0u8; header];
             body[0..8].copy_from_slice(&hash.to_le_bytes());
             body.extend_from_slice(stored);
             let d = self.object(OBJECT_DATA, flags, &body);
@@ -223,28 +325,49 @@ pub mod crafted {
             self.data_raw(0, payload, hash::jenkins64(payload))
         }
 
-        /// An ENTRY object; items are DATA offsets, their hashes zero.
+        /// An ENTRY object; items are DATA offsets: in a regular file each
+        /// with a hash, zero here, in a compact file 32 bits alone.
+        ///
+        /// # Panics
+        ///
+        /// In a compact file, an item doesn't fit 32 bits.
         pub fn entry(&mut self, seqnum: u64, items: &[u64]) -> u64 {
+            let compact = self.format() == Format::Compact;
             let mut body = vec![0u8; 48];
             body[0..8].copy_from_slice(&seqnum.to_le_bytes());
             body[8..16].copy_from_slice(&(1_000_000 + seqnum).to_le_bytes()); // realtime
             body[16..24].copy_from_slice(&seqnum.to_le_bytes()); // monotonic
             body[24..40].copy_from_slice(&[7; 16]); // boot id
-            for i in items {
-                body.extend_from_slice(&i.to_le_bytes());
-                body.extend_from_slice(&[0; 8]);
+            for &i in items {
+                if compact {
+                    body.extend_from_slice(&small32(i));
+                } else {
+                    body.extend_from_slice(&i.to_le_bytes());
+                    body.extend_from_slice(&[0; 8]);
+                }
             }
             self.object(OBJECT_ENTRY, 0, &body)
         }
 
         /// An `ENTRY_ARRAY` object with room for `capacity` items, filled
-        /// with `items`.
+        /// with `items`: 64 bits each in a regular file, 32 in a compact
+        /// one.
+        ///
+        /// # Panics
+        ///
+        /// In a compact file, an item doesn't fit 32 bits.
         pub fn array(&mut self, items: &[u64], capacity: usize, next: u64) -> u64 {
+            let compact = self.format() == Format::Compact;
+            let width = if compact { 4 } else { 8 };
             let mut body = next.to_le_bytes().to_vec();
-            for i in items {
-                body.extend_from_slice(&i.to_le_bytes());
+            for &i in items {
+                if compact {
+                    body.extend_from_slice(&small32(i));
+                } else {
+                    body.extend_from_slice(&i.to_le_bytes());
+                }
             }
-            body.resize(8 + 8 * capacity.max(items.len()), 0);
+            body.resize(8 + width * capacity.max(items.len()), 0);
             self.object(OBJECT_ENTRY_ARRAY, 0, &body)
         }
 
@@ -283,12 +406,18 @@ pub mod crafted {
         pub messages: Vec<u64>,
     }
 
-    /// A valid journal of `n` entries, each carrying `MESSAGE=m<i>` and the
+    /// A journal valid to sb's reader of `n` entries, each carrying `MESSAGE=m<i>` and the
     /// shared `U=x`. The arrays are allocated before the entries, with room
     /// for all of them, so a file cut short keeps its arrays.
     #[must_use]
     pub fn journal(n: u64) -> (Crafted, Layout) {
-        let mut c = Crafted::new();
+        journal_in(Format::Regular, n)
+    }
+
+    /// `journal`, in `format`.
+    #[must_use]
+    pub fn journal_in(format: Format, n: u64) -> (Crafted, Layout) {
+        let mut c = Crafted::new_in(format);
         c.hash_table(7);
         let cap = at(n);
         let main_array = c.array(&[], cap, 0);
@@ -300,16 +429,19 @@ pub mod crafted {
             c.set(m + D_ENTRY_OFFSET, c.b.len() as u64);
             c.set(m + D_N_ENTRIES, 1);
             let e = c.entry(i + 1, &[shared, m]);
-            c.set(main_array + A_ITEMS + 8 * i, e);
+            c.set_array_item(main_array, i, e);
             if i == 0 {
                 c.set(shared + D_ENTRY_OFFSET, e);
             } else {
-                c.set(shared_array + A_ITEMS + 8 * (i - 1), e);
+                c.set_array_item(shared_array, i - 1, e);
             }
             entries.push(e);
             messages.push(m);
         }
         c.set(shared + D_ENTRY_ARRAY, shared_array);
+        if n > 1 {
+            c.set_tail(shared, shared_array, n - 1);
+        }
         c.set(shared + D_N_ENTRIES, n);
         c.set(H_N_ENTRIES, n);
         c.set(H_ENTRY_ARRAY_OFFSET, main_array);
@@ -322,14 +454,20 @@ pub mod crafted {
         (c, layout)
     }
 
-    /// A valid journal of one entry per element of `entries`, entry `i`
+    /// A journal valid to sb's reader of one entry per element of `entries`, entry `i`
     /// carrying `MESSAGE=m<i>` and then the payloads given, in that order.
     /// Each distinct payload is one DATA object listing its entries (the
     /// first in-line, the rest in one array, empty for one entry). Returns
     /// the entries' offsets.
     #[must_use]
     pub fn journal_of(entries: &[&[&[u8]]]) -> (Crafted, Vec<u64>) {
-        let mut c = Crafted::new();
+        journal_of_in(Format::Regular, entries)
+    }
+
+    /// `journal_of`, in `format`.
+    #[must_use]
+    pub fn journal_of_in(format: Format, entries: &[&[&[u8]]]) -> (Crafted, Vec<u64>) {
+        let mut c = Crafted::new_in(format);
         c.hash_table(7);
         let main = c.array(&[], entries.len(), 0);
         // Each payload's DATA object, in the order first met.
@@ -356,7 +494,7 @@ pub mod crafted {
             .map(|(i, items)| c.entry(i as u64 + 1, items))
             .collect();
         for (k, &e) in offsets.iter().enumerate() {
-            c.set(main + A_ITEMS + 8 * k as u64, e);
+            c.set_array_item(main, k as u64, e);
         }
         for &(_, d) in &objects {
             let listing: Vec<u64> = offsets
@@ -370,6 +508,9 @@ pub mod crafted {
             // The rest, possibly none (an array a lone entry never reads).
             let rest = c.array(&listing[1..], 0, 0);
             c.set(d + D_ENTRY_ARRAY, rest);
+            if listing.len() > 1 {
+                c.set_tail(d, rest, listing.len() as u64 - 1);
+            }
         }
         c.set(H_N_ENTRIES, offsets.len() as u64);
         c.set(H_ENTRY_ARRAY_OFFSET, main);
@@ -381,11 +522,20 @@ pub mod crafted {
         use super::*;
 
         /// `journal_of`'s entries carry their fields in order, and each
-        /// payload's object lists exactly the entries carrying it.
+        /// payload's object lists exactly the entries carrying it, in
+        /// either format.
         #[test]
         fn journal_of_links_each_payload_to_its_entries() {
-            let (mut c, offsets) = journal_of(&[&[b"A=1"], &[b"B=1", b"A=1"], &[b"A=1"]]);
+            for format in Format::ALL {
+                journal_of_links_in(format);
+            }
+        }
+
+        fn journal_of_links_in(format: Format) {
+            let (mut c, offsets) =
+                journal_of_in(format, &[&[b"A=1"], &[b"B=1", b"A=1"], &[b"A=1"]]);
             let (_t, file) = c.write();
+            assert_eq!(file.header.compact(), format == Format::Compact);
             assert_eq!(file.header.n_entries, 3);
             assert_eq!(file.all_entries().expect("entries"), offsets);
             let a = file.find_data(b"A=1").expect("lookup").expect("found");
@@ -398,6 +548,19 @@ pub mod crafted {
             };
             assert_eq!(rev(&a), [offsets[2], offsets[1], offsets[0]]);
             assert_eq!(rev(&b), [offsets[1]]);
+            if format == Format::Compact {
+                // A=1's two later entries are in its array, its tail; B=1
+                // has none.
+                let array = u32::try_from(c.get(a.offset + D_ENTRY_ARRAY)).expect("small");
+                let tail = |d: u64| {
+                    (
+                        le32(&c.b, at(d + D_TAIL_ARRAY)),
+                        le32(&c.b, at(d + D_TAIL_N)),
+                    )
+                };
+                assert_eq!(tail(a.offset), (array, 2));
+                assert_eq!(tail(b.offset), (0, 0));
+            }
             let second = file.entry(offsets[1]).expect("entry");
             let payloads: Vec<Vec<u8>> = second
                 .items
@@ -411,6 +574,133 @@ pub mod crafted {
         #[test]
         fn default_is_new() {
             assert_eq!(Crafted::default().b, Crafted::new().b);
+        }
+
+        /// A regular header is `new`'s; a compact one differs only by
+        /// `INCOMPAT_COMPACT` in `incompatible_flags`, and the reader
+        /// takes it as compact.
+        #[test]
+        fn new_in_sets_the_compact_flag_alone() {
+            assert_eq!(Crafted::new_in(Format::Regular).b, Crafted::new().b);
+            assert_eq!(Crafted::new().format(), Format::Regular);
+            let mut c = Crafted::new_in(Format::Compact);
+            assert_eq!(c.format(), Format::Compact);
+            let mut expected = Crafted::new().b;
+            expected[12..16].copy_from_slice(&INCOMPAT_COMPACT.to_le_bytes());
+            assert_eq!(c.b, expected);
+            let (_t, f) = c.write();
+            assert!(f.header.compact() && !f.header.keyed());
+        }
+
+        /// In a compact file, entries hold 32-bit items with no hash,
+        /// entry arrays 32-bit items, and DATA objects their tail array's
+        /// offset and count (32 bits each) before the payload, at 72
+        /// (journal-def.h `DataObject`, `EntryObject`, `EntryArrayObject`).
+        #[test]
+        fn compact_objects_take_the_compact_layout() {
+            let mut c = Crafted::new_in(Format::Compact);
+            c.hash_table(1);
+            let data = c.data(b"A=1");
+            assert_eq!(c.get(data + O_SIZE), 72 + 3);
+            assert_eq!(&c.b[at(data + 72)..at(data + 75)], b"A=1");
+            assert_eq!(c.get(data + D_HASH), hash::jenkins64(b"A=1"));
+            let entry = c.entry(5, &[0x400, 0x500]);
+            assert_eq!(c.get(entry + O_SIZE), 64 + 2 * 4);
+            assert_eq!(c.get(entry + 16), 5); // seqnum
+            let item = |c: &Crafted, offset: u64| le32(&c.b, at(offset));
+            assert_eq!(
+                (item(&c, entry + E_ITEMS), item(&c, entry + E_ITEMS + 4)),
+                (0x400, 0x500)
+            );
+            let array = c.array(&[entry, data], 3, 0x1234);
+            assert_eq!(c.get(array + O_SIZE), 24 + 3 * 4);
+            assert_eq!(c.get(array + A_NEXT), 0x1234);
+            assert_eq!(
+                (
+                    u64::from(item(&c, array + A_ITEMS)),
+                    u64::from(item(&c, array + A_ITEMS + 4))
+                ),
+                (entry, data)
+            );
+            assert_eq!(item(&c, array + A_ITEMS + 8), 0);
+            c.set_array_item(array, 2, 0x88);
+            assert_eq!(item(&c, array + A_ITEMS + 8), 0x88);
+            // The regular layout's item, for comparison.
+            let mut regular = Crafted::new();
+            let array = regular.array(&[], 2, 0);
+            regular.set_array_item(array, 1, 0x88);
+            assert_eq!(regular.get(array + A_ITEMS + 8), 0x88);
+        }
+
+        /// `journal_in` reads back in either format: the entries in file
+        /// order both ways, their fields in order, and each payload's
+        /// entries backwards and forwards. A compact file's shared DATA
+        /// object names its tail array and that array's item count.
+        #[test]
+        fn journal_in_reads_back_in_either_format() {
+            for format in Format::ALL {
+                let (mut c, layout) = journal_in(format, 5);
+                let (_t, f) = c.write();
+                assert_eq!(f.header.compact(), format == Format::Compact);
+                assert_eq!(f.all_entries().expect("entries"), layout.entries);
+                let rev: Vec<u64> = f
+                    .all_entries_rev()
+                    .collect::<Result<_, _>>()
+                    .expect("walks");
+                let newest_first: Vec<u64> = layout.entries.iter().rev().copied().collect();
+                assert_eq!(rev, newest_first);
+                assert_eq!(
+                    f.entries_since(&mut None, 1).expect("forward"),
+                    layout.entries[1..]
+                );
+                for (i, &e) in layout.entries.iter().enumerate() {
+                    let entry = f.entry(e).expect("entry");
+                    assert_eq!(entry.seqnum, i as u64 + 1);
+                    let payloads: Vec<Vec<u8>> = entry
+                        .items
+                        .iter()
+                        .map(|&d| f.data_payload(d).expect("payload"))
+                        .collect();
+                    assert_eq!(
+                        payloads,
+                        [b"U=x".to_vec(), format!("MESSAGE=m{i}").into_bytes()]
+                    );
+                }
+                let shared = f.find_data(b"U=x").expect("lookup").expect("found");
+                assert_eq!((shared.offset, shared.n_entries), (layout.shared, 5));
+                let of_shared: Vec<u64> = f
+                    .entries_of_rev(&shared)
+                    .collect::<Result<_, _>>()
+                    .expect("walks");
+                assert_eq!(of_shared, newest_first);
+                let list = crate::file::EntryList::of_data(&shared);
+                let forward: Vec<u64> = f
+                    .entries_from(&list, 0)
+                    .collect::<Result<_, _>>()
+                    .expect("walks");
+                assert_eq!(forward, layout.entries);
+                let m3 = f.find_data(b"MESSAGE=m3").expect("lookup").expect("found");
+                assert_eq!(
+                    (m3.offset, m3.entry_offset),
+                    (layout.messages[3], layout.entries[3])
+                );
+                if format == Format::Compact {
+                    let tail = (
+                        le32(&c.b, at(layout.shared + D_TAIL_ARRAY)),
+                        le32(&c.b, at(layout.shared + D_TAIL_N)),
+                    );
+                    let array = c.get(layout.shared + D_ENTRY_ARRAY);
+                    assert_eq!(tail, (u32::try_from(array).expect("small"), 4));
+                }
+            }
+            // One entry is in-line only: its array holds nothing, and the
+            // tail names none.
+            let (c, layout) = journal_in(Format::Compact, 1);
+            let tail = (
+                le32(&c.b, at(layout.shared + D_TAIL_ARRAY)),
+                le32(&c.b, at(layout.shared + D_TAIL_N)),
+            );
+            assert_eq!(tail, (0, 0));
         }
 
         /// A bare header: the signature, a 272-byte header size, nothing
