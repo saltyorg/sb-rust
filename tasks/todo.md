@@ -644,13 +644,13 @@ comes first, so the fixes of Tasks 33-38 are tested in both layouts.
 The cut keeps the builder mode only: no mutant is hunted here.
 
 **Acceptance criteria:**
-- [ ] The builder has a compact mode, with tests of its own that read
+- [x] The builder has a compact mode, with tests of its own that read
       its files back.
-- [ ] A keyed mode is added only if a fix in Tasks 33-38 needs it.
+- [x] A keyed mode is added only if a fix in Tasks 33-38 needs it.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Checkpoint A
 **Files:** `crates/journal/src/testing.rs`
