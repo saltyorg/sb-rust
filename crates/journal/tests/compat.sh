@@ -124,7 +124,10 @@ rotate() {
   local before after
   before=$(find "/var/log/journal/$mid" -name 'system@*.journal' | wc -l)
   kill -USR2 "$jpid"
-  for _ in $(seq 1 50); do
+  # Up to 30 s: on a loaded host journald took more than 5 s to archive
+  # after SIGUSR2. The wait only ends early; it checks nothing more or
+  # less.
+  for _ in $(seq 1 300); do
     after=$(find "/var/log/journal/$mid" -name 'system@*.journal' | wc -l)
     [ "$after" -gt "$before" ] && return
     sleep 0.1

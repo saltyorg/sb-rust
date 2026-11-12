@@ -1216,6 +1216,14 @@ not here.)
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
 
+- The matrix scripts' other fixed waits on journald can time out on a
+  loaded host as compat.sh's rotation wait did (raised to 30 s at
+  Checkpoint T): compat.sh's `sleep 1` before it counts the lines in
+  /var, the `sleep 2` after journald starts (compat.sh, compare.sh,
+  stress.sh), and follow.sh's 5 s `start_jd` and 10 s `in_journal` and
+  `finish` polls. A shared `wait_until <seconds> <cmd>` helper would
+  keep them in step. Raise one when it fails, not before.
+
 - ~~cli-core's `error_block` prints error text raw~~: done in hardening
   Task 9 (014f0c6), which escapes the block and sb's warnings in
   cli-core itself; the stale log.rs comment is fixed in Task 10.
