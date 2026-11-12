@@ -2,16 +2,21 @@
 # Runs the CONSTRAINTS.md checks. CONSTRAINTS.md is the source of truth; this
 # script mirrors its "Checked by" column and must change with it.
 #
-#   scripts/check.sh fast [base]   after edits: fmt, clippy, floor guard (and its
-#                                  own tests), secrets
+#   scripts/check.sh fast [base]   after edits: each crate's deny.toml entry
+#                                  and lints, fmt, clippy, floor guard (and
+#                                  its own tests), secrets
 #   scripts/check.sh task [base]   before handing work back: fast + tests,
 #                                  changed-line coverage, mutation score,
 #                                  startup budget
-#   scripts/check.sh full [base]   before committing (and CI): task +
+#   scripts/check.sh full [base]   before committing (and CI): commit
+#                                  messages after base, then task +
 #                                  dependencies, architecture, binary size
 #
 # base: the commit the work started from (default HEAD = uncommitted work).
-# Exit: 0 all passed, 1 a check failed, 2 a check could not run.
+# Every tool a stage runs is checked against the CONSTRAINTS.md Tools table
+# before the stage starts.
+# Exit: 0 all passed, 1 a check failed, 2 a check could not run (a tool
+# missing, or not the version the Tools table asks for).
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -29,6 +34,19 @@ fi
 # leftover override of the sb binary or the live opt-in would change what
 # every stage checks (docker plan Task 9).
 unset SB_TEST_BINARY SB_LIVE_DOCKER
+# Every stage builds in and reads from target/ (the cross build in its own
+# directory under it, set below): an inherited target directory, or a
+# configuration file's build.target-dir, would send a stage's build
+# elsewhere. CARGO_TARGET_DIR is read before build.target-dir:
+# https://doc.rust-lang.org/cargo/reference/config.html#buildtarget-dir
+# cargo-mutants is run without it (mutation_pass).
+unset CARGO_BUILD_TARGET_DIR CARGO_LLVM_COV_TARGET_DIR
+export CARGO_TARGET_DIR="$root/target"
+# Every diff is git's plain text, whatever the user's git configuration
+# or an attributes file says: no external diff, no textconv filter (which
+# could hide a value from gitleaks), no colour, and the a/ and b/ prefixes.
+diff_flags=(--no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/)
+arch=$(uname -m)
 
 stage="${1:-}"
 base="${2:-HEAD}"
@@ -37,6 +55,10 @@ case "$stage" in fast | task | full) ;; *)
   exit 2
   ;;
 esac
+if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  echo "check: base $base is not a commit" >&2
+  exit 2
+fi
 
 # Thresholds: keep in step with CONSTRAINTS.md.
 COVERAGE_MIN=90       # % of changed lines covered
@@ -48,7 +70,87 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 skip() { printf 'skipped: %s\n' "$1"; }
 need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONSTRAINTS.md)" >&2; exit 2; }; }
 
-# Production crates (none until cli-core lands); prototypes are evidence only.
+# tool_version NAME: the installed version of a Tools table tool, read
+# without side effects.
+# - The tools cargo installed, from `cargo install --list`, which prints
+#   `NAME vX.Y.Z:` for a crates.io release and `NAME vX.Y.Z (source):` for
+#   a git or path build. Only a release counts, so a build from elsewhere
+#   fails the exact rule. They aren't run: running one could act
+#   (`cross --version` syncs a toolchain). The limit: cargo's record is
+#   trusted, so another binary of the same name earlier on PATH isn't
+#   seen.
+# - gitleaks, from Go's build information: a `go install` build prints no
+#   version of its own ("version is set by build process"), and
+#   `go version -m` prints its module line `mod <path> vX.Y.Z <sum>`:
+#   https://pkg.go.dev/cmd/go#hdr-Print_Go_version
+# - go, from `go version` ("go version go1.27.3 linux/amd64"), whole: a
+#   pre-release (go1.27rc1) is no version number, and fails every rule.
+# - The rest, from the first version number `--version` prints on stdout
+#   (a warning on stderr can hold a number too):
+#   "diff-cover 9.7.2", "v24.20.0" (node), "script from util-linux 2.39.3",
+#   "Docker version 29.7.2, build ..." (the client's; no daemon is asked).
+tool_version() {
+  local out=''
+  case $1 in
+  cargo-llvm-cov | cargo-mutants | cargo-deny | hyperfine | cross)
+    out=$(cargo install --list | sed -n "s/^$1 v\([^ :]*\):\$/\1/p") || out=''
+    ;;
+  gitleaks)
+    out=$(go version -m "$(command -v gitleaks)" |
+      awk '$1 == "mod" && $2 == "github.com/zricethezav/gitleaks/v8" { sub(/^v/, "", $3); print $3 }') || out=''
+    ;;
+  go) out=$(go version | sed -nE '1s/^go version go([^ ]+) .*/\1/p') || out='' ;;
+  *) out=$("$1" --version 2>/dev/null | sed -nE '1s/^[^0-9]*([0-9]+(\.[0-9]+)*).*/\1/p') || out='' ;;
+  esac
+  printf '%s\n' "$out"
+}
+
+# check_tools NAME...: each tool is installed, with the version its row in
+# the CONSTRAINTS.md Tools table asks for. A row's tool is the first word
+# of its first cell, in lower case ("script (util-linux)" is script); its
+# rule is exact (the same version), major (the same major version) or
+# minimum (that version or a later one).
+check_tools() {
+  local t row want rule got
+  for t in "$@"; do
+    need "$t"
+    row=$(awk -F'|' -v t="$t" '
+      /^## / { on = ($0 ~ /^## Tools[[:space:]]*$/) }
+      on && !found && /^\|/ {
+        split($2, w, " ")
+        if (tolower(w[1]) == t) { gsub(/[[:space:]`]/, "", $3); gsub(/[[:space:]`]/, "", $4); print $3, $4; found = 1 }
+      }' CONSTRAINTS.md)
+    if [[ -z $row ]]; then
+      echo "check: CONSTRAINTS.md's Tools table has no row for $t" >&2
+      exit 2
+    fi
+    read -r want rule <<<"$row"
+    got=$(tool_version "$t")
+    if [[ -z $got ]]; then
+      echo "check: could not read the version of $t (see CONSTRAINTS.md)" >&2
+      exit 2
+    fi
+    # major and minimum compare version numbers: a pre-release fails both.
+    if [[ $rule == major || $rule == minimum ]] && ! [[ $got =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+      echo "check: $t is $got, not a release; CONSTRAINTS.md's Tools table asks for $want ($rule)" >&2
+      exit 2
+    fi
+    case $rule in
+    exact) [[ $got == "$want" ]] ;;
+    major) [[ ${got%%.*} == "${want%%.*}" ]] ;;
+    minimum) printf '%s\n' "$want" "$got" | sort -V -C ;;
+    *)
+      echo "check: CONSTRAINTS.md gives $t the rule '$rule', not exact, major or minimum" >&2
+      exit 2
+      ;;
+    esac || {
+      echo "check: $t is $got; CONSTRAINTS.md's Tools table asks for $want ($rule)" >&2
+      exit 2
+    }
+  done
+}
+
+# Production crates; prototypes are evidence only.
 mapfile -t crates < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml -printf '%h\n' 2>/dev/null |
   sed 's|^crates/|sb-|; s|^sb-sb$|sb|' | sort)
 pkg_args=()
@@ -58,11 +160,36 @@ for c in "${crates[@]}"; do
   test_pkg_args+=(--test-package "$c")
 done
 
+# Each crate under crates/ inherits the workspace lints (`[lints]` with
+# `workspace = true`; CONSTRAINTS.md, Lint) and has its architecture entry
+# in deny.toml's bans.deny, `{ crate = "<name>", wrappers = [...] }` on
+# one line (CONSTRAINTS.md, Architecture). sb has no entry: it is the root
+# of the graph cargo-deny checks, and an entry for it would ban it.
+crate_check() {
+  local c manifest bad=0
+  for c in "${crates[@]}"; do
+    manifest="crates/${c#sb-}/Cargo.toml"
+    if ! awk '/^[[:space:]]*\[/ { t = $0 }
+      t ~ /^[[:space:]]*\[lints\][[:space:]]*(#.*)?$/ && /^[[:space:]]*workspace[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ { ok = 1 }
+      END { exit !ok }' "$manifest"; then
+      echo "check: $manifest doesn't inherit the workspace lints ([lints] workspace = true)" >&2
+      bad=1
+    fi
+    if [[ $c != sb ]] && ! grep -qE "^[[:space:]]*\{[[:space:]]*crate[[:space:]]*=[[:space:]]*\"$c\"[[:space:]]*,[[:space:]]*wrappers[[:space:]]*=" deny.toml; then
+      echo "check: deny.toml has no bans.deny entry for $c (crate = \"$c\", wrappers = [...])" >&2
+      bad=1
+    fi
+  done
+  ((bad == 0))
+}
+
 fast() {
+  step "crates: workspace lints and a deny.toml entry each"
+  crate_check
   step "format"
-  if ((${#crates[@]})); then cargo fmt --check "${pkg_args[@]}"; else skip "no crates/ yet"; fi
+  cargo fmt --check "${pkg_args[@]}"
   step "clippy (warnings are errors)"
-  cargo clippy --workspace --all-targets --quiet -- -D warnings
+  cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
   # The plain build too: building any test target turns dev-dependency
   # features on (a `testing` self dev-dependency), so the step above never
   # lints a crate without them. This one builds no dev-dependencies, and a
@@ -70,7 +197,7 @@ fast() {
   # (`unfulfilled_lint_expectations`; sb-journal plan, "Code with no user
   # yet").
   step "clippy, library and binary targets only (warnings are errors)"
-  cargo clippy --workspace --lib --bins --quiet -- -D warnings
+  cargo clippy --workspace --lib --bins --locked --quiet -- -D warnings
   step "floor guard's own tests"
   # The dot reporter: one character a test, then each failure in full (the
   # failure report is as Node 24 prints it; the page describes the dots
@@ -81,7 +208,7 @@ fast() {
   node scripts/floor-guard.mjs --base "$base"
   step "secrets (gitleaks, redacted)"
   need gitleaks
-  { git diff "$base" --; git ls-files -z --others --exclude-standard | xargs -0 -r cat; } |
+  { git diff "${diff_flags[@]}" "$base" --; git ls-files -z --others --exclude-standard | xargs -0 -r cat; } |
     gitleaks stdin --redact --no-banner --log-level error
 }
 
@@ -103,7 +230,10 @@ MUTATION_TESTERS[sb-journal]="sb-host"
 mutation_pass() {
   local n=$1 list rc=0
   shift
-  local mutants=(cargo mutants --in-diff target/changes.diff "$@")
+  # Without CARGO_TARGET_DIR: cargo-mutants builds each mutant in a copy of
+  # the tree, and 27.1.0 leaves the variable as it finds it, so with it set
+  # every mutant would build into the repository's target/.
+  local mutants=(env -u CARGO_TARGET_DIR cargo mutants --in-diff target/changes.diff --cargo-arg=--locked "$@")
   # A plain assignment, so a failing list stops the check (errexit is off
   # inside an `if` condition, command substitutions included; and `local
   # list=$(...)` would take local's status: declared apart above).
@@ -147,9 +277,9 @@ mutation_check() {
   # Tracked changes plus untracked crate files (git diff alone misses new
   # files; `--no-index` exits 1 when the files differ, which they do).
   {
-    git diff "$base" -- crates
+    git diff "${diff_flags[@]}" "$base" -- crates
     git ls-files -z --others --exclude-standard -- crates | while IFS= read -r -d '' f; do
-      git diff --no-index -- /dev/null "$f" || true
+      git diff "${diff_flags[@]}" --no-index -- /dev/null "$f" || true
     done
   } >target/changes.diff
   if [[ ! -s target/changes.diff ]]; then
@@ -205,16 +335,11 @@ task() {
   fast
   step "tests"
   need script
-  cargo test --workspace --quiet
-  if ((${#crates[@]} == 0)); then
-    step "coverage, mutation, startup"
-    skip "no crates/ yet"
-    return
-  fi
+  cargo test --workspace --locked --quiet
   step "changed-line coverage >= ${COVERAGE_MIN}%"
   need cargo-llvm-cov
   need diff-cover
-  cargo llvm-cov --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
+  cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
   # New files are untracked until committed; without --include-untracked
   # they would not count as changed lines.
   diff-cover target/lcov.info --compare-branch="$base" --include-untracked \
@@ -222,7 +347,7 @@ task() {
   mutation_check
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine
-  cargo build --quiet --release -p sb
+  cargo build --locked --quiet --release -p sb
   hyperfine --warmup 5 --runs 50 --export-json target/startup.json \
     'target/release/sb --help' 'target/release/sb version' >/dev/null
   node -e '
@@ -243,28 +368,43 @@ task() {
 }
 
 full() {
-  task
-  if [[ ! -f crates/sb/Cargo.toml ]]; then
-    step "dependencies, architecture, binary size"
-    skip "no crates/sb yet"
-    return
+  # First: it takes seconds, so a bad subject fails before any build.
+  step "commit messages after $base (scripts/check-commit-messages.sh)"
+  if [[ $(git rev-parse "$base^{commit}") == "$(git rev-parse HEAD)" ]]; then
+    skip "the base $base is HEAD: no commits to check"
+  else
+    scripts/check-commit-messages.sh "$base" HEAD
   fi
+  task
   step "dependencies and architecture (cargo-deny, shipped graph)"
   need cargo-deny
-  cargo deny --manifest-path crates/sb/Cargo.toml check
+  cargo deny --locked --manifest-path crates/sb/Cargo.toml check
   step "binary size <= ${SIZE_MAX_BYTES} bytes (production musl, through cross)"
-  # aws-lc-sys compiles C for the target, so the build runs in cross's
-  # image, with a target directory of its own: build scripts compiled in
-  # the image can't run on the host or in another image (ADR-008).
-  need cross
-  need docker
-  local cross_target="$root/target/cross-musl"
-  CARGO_TARGET_DIR="$cross_target" cross build --quiet -p sb --profile production \
-    --target x86_64-unknown-linux-musl
-  size=$(stat -c %s "$cross_target/x86_64-unknown-linux-musl/production/sb")
-  echo "sb: ${size} bytes"
-  ((size <= SIZE_MAX_BYTES))
+  if [[ $arch != x86_64 ]]; then
+    # cross's images, and so the production build, are x86_64 (ADR-008).
+    skip "the production musl build and its size limit: cross builds it on x86_64 only, and this host is $arch"
+  else
+    # aws-lc-sys compiles C for the target, so the build runs in cross's
+    # image, with a target directory of its own: build scripts compiled in
+    # the image can't run on the host or in another image (ADR-008).
+    need cross
+    need docker
+    local cross_target="$root/target/cross-musl"
+    CARGO_TARGET_DIR="$cross_target" cross build --locked --quiet -p sb --profile production \
+      --target x86_64-unknown-linux-musl
+    size=$(stat -c %s "$cross_target/x86_64-unknown-linux-musl/production/sb")
+    echo "sb: ${size} bytes"
+    ((size <= SIZE_MAX_BYTES))
+  fi
 }
+
+# The tools each stage runs: fast's, then task's, then full's (cross and
+# Docker only where the production build runs).
+tools=(node go gitleaks)
+if [[ $stage != fast ]]; then tools+=(script cargo-llvm-cov diff-cover cargo-mutants hyperfine); fi
+if [[ $stage == full ]]; then tools+=(cargo-deny); fi
+if [[ $stage == full && $arch == x86_64 ]]; then tools+=(cross docker); fi
+check_tools "${tools[@]}"
 
 "$stage"
 printf '\n\033[1mcheck %s: all passed\033[0m\n' "$stage"

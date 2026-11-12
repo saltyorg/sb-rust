@@ -37,7 +37,7 @@ pass clippy and their tests.
 | Dimension | Rule | Checked by | Runs at | Why this number |
 |---|---|---|---|---|
 | Format | No diff | `cargo fmt --check -p <crates>` | fast | rustfmt is the style |
-| Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`; a prototype keeps the lints it was written under); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
+| Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`; a prototype keeps the lints it was written under); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features; `check.sh`'s crate check, that each crate has `[lints] workspace = true` | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
 | Floor guard | Zero unacknowledged floor violations in the diff | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green |
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
 | Tests | All pass | `cargo test --workspace` | task | — |
@@ -45,8 +45,10 @@ pass clippy and their tests.
 | Mutation | ≥ 80% of viable mutants in changed code caught, totalled over the passes; a crate in check.sh's `MUTATION_TESTERS` is judged by its own and its listed crates' tests, every other crate by every crate's tests | `cargo mutants --in-diff` per pass + score from each `outcomes.json` | task | Maintainer chose stricter than the 60% default; mutation checks were already part of the work; the per-crate scope is ADR-012 |
 | Startup | `sb --help` and `sb version` median ≤ 10 ms | `hyperfine --warmup 5 --runs 50`, release build | task | sb-go takes about 18 ms; the prototypes about 2 ms |
 | Dependencies | No RustSec vulnerability, no unmaintained or yanked crate, only GPL-3.0-compatible licences, crates.io only | `cargo deny --manifest-path crates/sb/Cargo.toml check` (`deny.toml`) | full | External opinion: the RustSec database |
-| Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`) | full | The compiler can't see the map; cargo-deny can |
-| Binary size | Production musl binary ≤ 45,711,520 bytes | `stat` after `cross build --profile production --target x86_64-unknown-linux-musl`, in its own target directory (see the cross ADR) | full | Never larger than sb-go's binary (2026-10-30) |
+| Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`); `check.sh`'s crate check, that each crate but `sb` has its entry (at fast) | full | The compiler can't see the map; cargo-deny can |
+| Binary size | Production musl binary ≤ 45,711,520 bytes | `stat` after `cross build --profile production --target x86_64-unknown-linux-musl`, in its own target directory (see the cross ADR); a host of another architecture skips it with a printed line | full | Never larger than sb-go's binary (2026-10-30) |
+| Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
+| Review line | Every commit's body says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review of every change (CLAUDE.md) |
 | Logging | Every root run writes its run record and outcome; logs never contain secret values | Tests in `sb-cli-core` (run log) and in each module that handles secrets (facts, accounts, credentials): the test feeds a known secret and asserts it isn't in the captured log | task | Decision 11; the run log is kept on the host |
 
 All of the above run through `scripts/check.sh fast|task|full [base]`.
@@ -82,20 +84,27 @@ the guard reads every number as a threshold.
 
 ## Tools
 
-Installed locally; `scripts/check.sh` exits 2 naming any tool that's missing.
+Installed locally; `scripts/check.sh` exits 2 naming any tool that's missing
+or not at the version its row asks for, before a stage runs. Rule: exact is
+the same version; major, the same major version; minimum, that version or a
+later one. A tool cargo installed is read from `cargo install --list`,
+gitleaks from `go version -m`, the others from their `--version`. The
+system packages have a major or minimum rule, so a host package update
+doesn't fail every run.
 
-| Tool | Version | Install |
-|---|---|---|
-| cargo-llvm-cov | 0.9.1 | `cargo install --locked cargo-llvm-cov` (needs the `llvm-tools` component, pinned in `rust-toolchain.toml`) |
-| diff-cover | 9.7.2 | `uv tool install diff-cover==9.7.2` |
-| cargo-mutants | 27.1.0 | `cargo install --locked cargo-mutants` |
-| cargo-deny | 0.20.2 | `cargo install --locked cargo-deny` |
-| hyperfine | 2.0.0 | `cargo install --locked hyperfine` |
-| gitleaks | 8.30.1 | `go install github.com/zricethezav/gitleaks/v8@v8.30.1` |
-| node | 24 | system package (runs the floor guard) |
-| script (util-linux) | 2.39 | system package (gives the colour tests a terminal) |
-| cross | 0.2.5 | `cargo install --locked cross --version 0.2.5` (the production musl build, ADR-008) |
-| Docker | 29 | system package (runs cross's build images; its first run pulls them) |
+| Tool | Version | Rule | Install |
+|---|---|---|---|
+| cargo-llvm-cov | 0.9.1 | exact | `cargo install --locked cargo-llvm-cov` (needs the `llvm-tools` component, pinned in `rust-toolchain.toml`) |
+| diff-cover | 9.7.2 | exact | `uv tool install diff-cover==9.7.2` |
+| cargo-mutants | 27.1.0 | exact | `cargo install --locked cargo-mutants` |
+| cargo-deny | 0.20.2 | exact | `cargo install --locked cargo-deny` |
+| hyperfine | 2.0.0 | exact | `cargo install --locked hyperfine` |
+| gitleaks | 8.30.1 | exact | `go install github.com/zricethezav/gitleaks/v8@v8.30.1` |
+| Go | 1.27 | minimum | system package (installs gitleaks and reports its version) |
+| node | 24 | major | system package (runs the floor guard) |
+| script (util-linux) | 2.39 | minimum | system package (gives the colour tests a terminal) |
+| cross | 0.2.5 | exact | `cargo install --locked cross --version 0.2.5` (the production musl build, ADR-008) |
+| Docker | 29 | minimum | system package (runs cross's build images; its first run pulls them) |
 
 ## Exceptions
 

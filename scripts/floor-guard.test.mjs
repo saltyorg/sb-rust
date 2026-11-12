@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+// For the stubbed runs of check.sh (hardening Task 4).
+import { readFileSync, symlinkSync } from 'node:fs';
 
 const guard = join(dirname(fileURLToPath(import.meta.url)), 'floor-guard.mjs');
 
@@ -1096,4 +1098,379 @@ test('a test commented out line by line is flagged, a doc comment that mentions 
   const fn = '    #[test]\n    fn adds() {\n        let _ = add(1, 2);\n    }\n';
   flags(plain, edit(plain, LIB, fn, fn.split('\n').map((l) => (l ? '    // ' + l.trim() : l)).join('\n')), 'test-removed ' + LIB);
   clean(plain, edit(plain, LIB, '#[cfg(test)]\nmod tests {', '/// Each `#[test]` below runs in CI.\n#[cfg(test)]\nmod tests {'));
+});
+
+// Stubbed runs of check.sh and check-commit-messages.sh (hardening Task 4).
+// A scratch repository holds a copy of both scripts, a CONSTRAINTS.md with
+// a Tools table, two crates and a deny.toml. Every tool check.sh runs is a
+// stub first on PATH, git and the shell's own tools aside; each stub
+// appends `name|CARGO_TARGET_DIR|arguments` to a log, gitleaks keeps its
+// input, and cross leaves a small binary where check.sh measures one.
+const SCRIPTS = dirname(fileURLToPath(import.meta.url));
+const TOOLS_MD = `# Constraints
+
+## Tools
+
+| Tool | Version | Rule | Install |
+|---|---|---|---|
+| cargo-llvm-cov | 0.9.1 | exact | cargo |
+| diff-cover | 9.7.2 | exact | uv |
+| cargo-mutants | 27.1.0 | exact | cargo |
+| cargo-deny | 0.20.2 | exact | cargo |
+| hyperfine | 2.0.0 | exact | cargo |
+| gitleaks | 8.30.1 | exact | go install |
+| Go | 1.27 | minimum | system package |
+| node | 24 | major | system package |
+| script (util-linux) | 2.39 | minimum | system package |
+| cross | 0.2.5 | exact | cargo |
+| Docker | 29 | minimum | system package |
+
+## Exceptions
+`;
+const VERSIONS = {
+  'cargo-llvm-cov': '0.9.1', 'diff-cover': '9.7.2', 'cargo-mutants': '27.1.0', 'cargo-deny': '0.20.2',
+  hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
+  docker: '29.7.2',
+};
+// check.sh's MUTATION_TESTERS names sb-journal and sb-host, so both are
+// here beside sb-foo and the binary.
+const manifest = (name) => '[package]\nname = "' + name + '"\n\n[lints]\nworkspace = true\n';
+const CRATES = {
+  'crates/foo/Cargo.toml': manifest('sb-foo'),
+  'crates/host/Cargo.toml': manifest('sb-host'),
+  'crates/journal/Cargo.toml': manifest('sb-journal'),
+  'crates/sb/Cargo.toml': manifest('sb'),
+  'deny.toml': '[bans]\ndeny = [\n    # foo: used by the binary.\n    { crate = "sb-foo", wrappers = ["sb"] },\n'
+    + '    { crate = "sb-host", wrappers = ["sb"] },\n    { crate = "sb-journal", wrappers = ["sb-host", "sb-journal"] },\n]\n',
+};
+// The system tools check.sh, check-commit-messages.sh and the stubs run.
+const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'git', 'grep', 'id', 'mkdir',
+  'rm', 'sed', 'sort', 'stat', 'xargs'];
+const stubs = (versions, arch) => {
+  const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
+    + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
+  const installed = ['cargo-deny', 'cargo-llvm-cov', 'cargo-mutants', 'cross', 'hyperfine']
+    .filter((t) => versions[t] && versions[t] !== 'not-from-cargo').map((t) => t + ' v' + versions[t] + ':\n    ' + t + '\n').join('');
+  // A warning with a number in it goes to stderr first: the version is
+  // read from stdout only.
+  const version = (text) => 'if [ "$1" = --version ]; then echo "warning: 3 settings ignored" >&2; echo "' + text + '"; exit 0; fi\n';
+  const out = {
+    cargo: 'if [ "$1 $2" = "install --list" ]; then printf \'%s\' "' + installed + '"; exit 0; fi\n',
+    'cargo-llvm-cov': '', 'cargo-mutants': '', 'cargo-deny': '', hyperfine: '',
+    cross: 'mkdir -p "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/production"\n'
+      + 'printf sb >"$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/production/sb"\n',
+    'diff-cover': version('diff-cover ' + versions['diff-cover']),
+    node: version('v' + versions.node),
+    script: version('script from util-linux ' + versions.script),
+    docker: version('Docker version ' + versions.docker + ', build a7dcaa6'),
+    go: 'if [ "$1 $2" = "version -m" ]; then printf \'%s: go1.27.3\\n\\tpath\\tgithub.com/zricethezav/gitleaks/v8\\n'
+      + '\\tmod\\tgithub.com/zricethezav/gitleaks/v8\\tv' + versions.gitleaks + '\\th1:x=\\n\' "$3"; exit 0; fi\n'
+      + 'echo "go version go' + versions.go + ' linux/amd64"\n',
+    gitleaks: 'cat >"$STUB_LOG.gitleaks"\n',
+    uname: 'echo ' + arch + '\n',
+  };
+  return Object.fromEntries(Object.entries(out).filter(([t]) => versions[t] !== null)
+    .map(([t, body]) => [t, '#!/bin/sh\n' + log + body]));
+};
+
+// checkRun(stage, options): runs scripts/check.sh in a scratch repository.
+// - files: added to the committed tree (path -> content, null deletes);
+// - work: changed in the work tree afterwards, uncommitted;
+// - commits: messages committed (empty) after the base commit;
+// - base: check.sh's base argument (default HEAD);
+// - versions: a stub's version (null: no stub at all);
+// - arch, env, config: uname -m, extra environment, git configuration.
+const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', versions = {}, arch = 'x86_64',
+  env: extra = {}, config = {} } = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'check-sh-'));
+  try {
+    const bin = join(dir, 'stub-bin'), repo = join(dir, 'repo'), logFile = join(dir, 'stub.log');
+    const write = (root, entries, mode) => {
+      for (const [f, text] of Object.entries(entries)) {
+        if (text === null) { rmSync(join(root, f)); continue; }
+        mkdirSync(dirname(join(root, f)), { recursive: true });
+        writeFileSync(join(root, f), text, { mode });
+      }
+    };
+    write(bin, stubs({ ...VERSIONS, ...versions }, arch), 0o755);
+    // PATH holds only scratch directories: the stubs, and links to the
+    // system tools the scripts run besides them, so no tool the host has
+    // installed is found in place of a missing stub.
+    const sys = join(dir, 'sys-bin');
+    mkdirSync(sys);
+    for (const t of SYSTEM_TOOLS) symlinkSync(execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim(), join(sys, t));
+    writeFileSync(logFile, '');
+    const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir, PATH: bin + ':' + sys, STUB_LOG: logFile, ...extra };
+    const git = (...args) => execFileSync('git', args, { cwd: repo, env: scratch, stdio: 'pipe' });
+    mkdirSync(join(repo, 'target'), { recursive: true });
+    git('init', '-q');
+    write(repo, {
+      'scripts/check.sh': readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'),
+      'scripts/check-commit-messages.sh': readFileSync(join(SCRIPTS, 'check-commit-messages.sh'), 'utf8'),
+      'CONSTRAINTS.md': TOOLS_MD, '.gitignore': '/target/\n', ...CRATES, ...files,
+    }, 0o755);
+    const commit = (message) => git('-c', 'user.name=test', '-c', 'user.email=test', 'commit', '-q', '--allow-empty', '-m', message);
+    git('add', '-A');
+    commit('chore: base\n\nReview: none, a test fixture');
+    for (const message of commits) commit(message);
+    for (const [key, value] of Object.entries(config)) git('config', key, value);
+    write(repo, work);
+    const r = spawnSync('bash', ['scripts/check.sh', stage, base], { cwd: repo, env: scratch, encoding: 'utf8' });
+    const calls = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => {
+      // The arguments come last, so a | among them stays in them.
+      const [tool, target, buildTarget, covTarget, ...args] = l.split('|');
+      return { tool, target, args: args.join('|'), buildTarget, covTarget };
+    });
+    const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return null; } };
+    return {
+      status: r.status, output: r.stdout + r.stderr, calls, root: repo,
+      gitleaksInput: read(logFile + '.gitleaks'), changesDiff: read(join(repo, 'target/changes.diff')),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+const passes = (r, stage) => {
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, new RegExp('check ' + stage + ': all passed'), r.output);
+};
+const refuses = (r, status, pattern) => {
+  assert.equal(r.status, status, r.output);
+  assert.match(r.output, pattern, r.output);
+};
+
+test('check.sh: every stage passes when the stubbed tools match the Tools table', () => {
+  passes(checkRun('fast'), 'fast');
+  passes(checkRun('task'), 'task');
+  passes(checkRun('full'), 'full');
+});
+
+test('check.sh fast: a crate without a deny.toml bans.deny entry fails', () => {
+  const bar = { 'crates/bar/Cargo.toml': '[package]\nname = "sb-bar"\n\n[lints]\nworkspace = true\n' };
+  refuses(checkRun('fast', { files: bar }), 1, /sb-bar.*deny\.toml|deny\.toml.*sb-bar/);
+  // An entry that is only a comment, or has no wrappers, is no entry.
+  const commented = { ...bar, 'deny.toml': CRATES['deny.toml'].replace('\n]\n', '\n    # { crate = "sb-bar", wrappers = ["sb"] },\n]\n') };
+  refuses(checkRun('fast', { files: commented }), 1, /sb-bar/);
+  const unwrapped = { ...bar, 'deny.toml': CRATES['deny.toml'].replace('\n]\n', '\n    { crate = "sb-bar" },\n]\n') };
+  refuses(checkRun('fast', { files: unwrapped }), 1, /sb-bar/);
+  passes(checkRun('fast', {
+    files: { ...bar, 'deny.toml': CRATES['deny.toml'].replace('\n]\n', '\n    { crate = "sb-bar", wrappers = ["sb"] },\n]\n') },
+  }), 'fast');
+});
+
+test('check.sh fast: a crate that does not inherit the workspace lints fails', () => {
+  refuses(checkRun('fast', { files: { 'crates/foo/Cargo.toml': '[package]\nname = "sb-foo"\n' } }), 1, /crates\/foo.*lints/);
+  refuses(checkRun('fast', { files: { 'crates/foo/Cargo.toml': '[package]\nname = "sb-foo"\n\n[lints]\nworkspace = false\n' } }),
+    1, /crates\/foo.*lints/);
+  // `workspace = true` under another table is not the lints table's.
+  refuses(checkRun('fast', { files: { 'crates/foo/Cargo.toml': '[package]\nname = "sb-foo"\nworkspace = true\n' } }),
+    1, /crates\/foo.*lints/);
+  refuses(checkRun('fast', { files: { 'crates/sb/Cargo.toml': '[package]\nname = "sb"\n' } }), 1, /crates\/sb.*lints/);
+});
+
+test('check.sh: a tool version that differs from the Tools table exits 2 naming the tool, before any check', () => {
+  const r = checkRun('task', { versions: { 'cargo-mutants': '27.0.0' } });
+  refuses(r, 2, /cargo-mutants.*27\.0\.0.*27\.1\.0/);
+  assert.ok(r.calls.filter((c) => c.tool === 'cargo').every((c) => c.args === 'install --list'), r.output);
+  refuses(checkRun('fast', { versions: { gitleaks: '8.30.0' } }), 2, /gitleaks/);
+  refuses(checkRun('task', { versions: { 'diff-cover': '9.7.3' } }), 2, /diff-cover/);
+  refuses(checkRun('full', { versions: { cross: '0.2.4' } }), 2, /cross/);
+  refuses(checkRun('full', { versions: { 'cargo-deny': '0.20.1' } }), 2, /cargo-deny/);
+});
+
+test('check.sh: a tool cargo did not install, or one missing, exits 2 naming it', () => {
+  refuses(checkRun('task', { versions: { hyperfine: null } }), 2, /hyperfine not installed/);
+  refuses(checkRun('fast', { versions: { go: null } }), 2, /go not installed/);
+  refuses(checkRun('fast', { versions: { node: null } }), 2, /node not installed/);
+  refuses(checkRun('full', { versions: { docker: null } }), 2, /docker not installed/);
+  // On PATH, but not in `cargo install --list` (a copy, or a distro package).
+  refuses(checkRun('task', { versions: { hyperfine: 'not-from-cargo' } }), 2, /could not read the version of hyperfine/);
+  // A git or path build is no registry release: only `NAME vX.Y.Z:` counts.
+  refuses(checkRun('full', { versions: { cross: '0.2.5 (https://github.com/cross-rs/cross#4090beca)' } }), 2,
+    /could not read the version of cross/);
+  refuses(checkRun('task', { versions: { hyperfine: '2.0.0 (/src/hyperfine)' } }), 2, /could not read the version of hyperfine/);
+});
+
+test('check.sh: node is held to its major version, script, Docker and Go to a minimum', () => {
+  refuses(checkRun('fast', { versions: { node: '22.11.0' } }), 2, /\bnode\b/);
+  refuses(checkRun('fast', { versions: { node: '25.0.0' } }), 2, /\bnode\b/);
+  passes(checkRun('fast', { versions: { node: '24.99.1' } }), 'fast');
+  refuses(checkRun('task', { versions: { script: '2.38.1' } }), 2, /\bscript\b/);
+  passes(checkRun('task', { versions: { script: '2.41' } }), 'task');
+  refuses(checkRun('full', { versions: { docker: '28.5.2' } }), 2, /\bdocker\b/);
+  passes(checkRun('full', { versions: { docker: '30.0.1' } }), 'full');
+  refuses(checkRun('fast', { versions: { go: '1.26.9' } }), 2, /\bgo\b/);
+  // A pre-release isn't the release the row names, nor later than it.
+  refuses(checkRun('fast', { versions: { go: '1.27rc1' } }), 2, /\bgo is 1\.27rc1/);
+  passes(checkRun('fast', { versions: { go: '1.30.0' } }), 'fast');
+});
+
+test('check.sh: a Tools row without a known rule, or a tool without a row, exits 2', () => {
+  refuses(checkRun('fast', { files: { 'CONSTRAINTS.md': TOOLS_MD.replace('| 24 | major |', '| 24 | latest |') } }), 2, /\bnode\b/);
+  refuses(checkRun('fast', { files: { 'CONSTRAINTS.md': TOOLS_MD.replace(/^\| gitleaks .*\n/m, '') } }), 2, /gitleaks/);
+});
+
+test('check.sh: a tool row outside the Tools section is not read', () => {
+  const decoy = '# Constraints\n\n## Notes\n\n| Tool | Version | Rule |\n|---|---|---|\n| node | 1 | exact |\n\n'
+    + TOOLS_MD.replace('# Constraints\n\n', '');
+  passes(checkRun('fast', { files: { 'CONSTRAINTS.md': decoy } }), 'fast');
+  const after = TOOLS_MD.replace('## Exceptions\n', '## Exceptions\n\n| node | 1 | exact |\n');
+  passes(checkRun('fast', { files: { 'CONSTRAINTS.md': after } }), 'fast');
+});
+
+test('check.sh full: the commit messages after the base are checked, and a base at HEAD says so', () => {
+  const good = 'fix: correct the reader\n\nReview: none, a test fixture';
+  passes(checkRun('full', { commits: [good], base: 'HEAD~1' }), 'full');
+  assert.match(checkRun('full', { commits: [good], base: 'HEAD~1' }).output, /check-commit-messages: OK/);
+  const bad = checkRun('full', { commits: ['Fix the reader\n\nReview: none, a test fixture'], base: 'HEAD~1' });
+  refuses(bad, 1, /Not a Conventional Commit.*Fix the reader/);
+  // It runs first, so a bad subject fails before any build.
+  assert.ok(bad.calls.every((c) => c.tool !== 'cargo' || c.args === 'install --list'), bad.output);
+  const atHead = checkRun('full', { commits: ['Fix the reader'] });
+  passes(atHead, 'full');
+  assert.match(atHead.output, /skipped: .*HEAD/);
+  refuses(checkRun('fast', { base: 'no-such-ref' }), 2, /no-such-ref/);
+});
+
+// CARGO_TARGET_DIR is set to the repository's target/: cargo reads it before
+// a configuration file's build.target-dir
+// (https://doc.rust-lang.org/cargo/reference/config.html#buildtarget-dir).
+// cargo-mutants gets none, so each mutant builds in its own copy.
+test('check.sh: cargo runs locked, with the target directory its own', () => {
+  const r = checkRun('full', {
+    work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+    env: { CARGO_TARGET_DIR: '/nonexistent/elsewhere', CARGO_BUILD_TARGET_DIR: '/nonexistent/elsewhere',
+      CARGO_LLVM_COV_TARGET_DIR: '/nonexistent/elsewhere' },
+  });
+  passes(r, 'full');
+  const cargo = r.calls.filter((c) => c.tool === 'cargo' && c.args !== 'install --list');
+  for (const sub of ['fmt', 'clippy', 'test', 'llvm-cov', 'mutants', 'build', 'deny']) {
+    assert.ok(cargo.some((c) => c.args.split(' ')[0] === sub), 'no cargo ' + sub + ' call:\n' + r.output);
+  }
+  for (const c of cargo) {
+    assert.equal(c.target, c.args.startsWith('mutants') ? 'unset' : join(r.root, 'target'), 'cargo ' + c.args);
+    assert.equal(c.buildTarget, 'unset', 'cargo ' + c.args);
+    assert.equal(c.covTarget, 'unset', 'cargo ' + c.args);
+    if (!c.args.startsWith('fmt')) assert.match(c.args, /(^| )(--locked|--cargo-arg=--locked)( |$)/, 'cargo ' + c.args);
+  }
+  const cross = r.calls.filter((c) => c.tool === 'cross');
+  assert.equal(cross.length, 1, r.output);
+  assert.equal(cross[0].target, join(r.root, 'target/cross-musl'));
+  assert.match(cross[0].args, /(^| )--locked( |$)/);
+});
+
+test('check.sh: diffs are plain whatever git is configured to do', () => {
+  const external = { 'external-diff.sh': '#!/bin/sh\necho EXTERNAL\n' };
+  const r = checkRun('task', {
+    files: { ...external, 'README.md': 'base\n', '.gitattributes': '*.md diff=hide\n*.rs diff=hide\n',
+      'crates/foo/src/old.rs': 'pub fn old() {}\n' },
+    work: { 'README.md': 'changed SECRET\n', 'crates/foo/src/old.rs': 'pub fn old() -> u8 { 1 }\n', 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+    config: { 'diff.noprefix': 'true', 'diff.mnemonicPrefix': 'true', 'color.ui': 'always', 'color.diff': 'always',
+      'diff.external': './external-diff.sh', 'diff.hide.textconv': 'sed s/SECRET/xxxx/; s/pub/xxx/' },
+  });
+  passes(r, 'task');
+  assert.ok(r.gitleaksInput.includes('+++ b/README.md'), r.gitleaksInput);
+  assert.ok(r.gitleaksInput.includes('+changed SECRET'), r.gitleaksInput);
+  assert.ok(r.changesDiff.includes('+pub fn f() {}'), r.changesDiff);
+  assert.ok(r.changesDiff.includes('+++ b/crates/foo/src/old.rs'), r.changesDiff);
+  assert.ok(r.changesDiff.includes('+pub fn old() -> u8 { 1 }'), r.changesDiff);
+  assert.ok(r.changesDiff.includes('+++ b/crates/foo/src/lib.rs'), r.changesDiff);
+  for (const text of [r.gitleaksInput, r.changesDiff]) {
+    assert.ok(!text.includes('EXTERNAL') && !text.includes('\x1b['), text);
+  }
+});
+
+test('check.sh full: another architecture says it skips the production build, and needs no cross or Docker', () => {
+  const r = checkRun('full', { arch: 'aarch64', versions: { cross: null, docker: null } });
+  passes(r, 'full');
+  assert.match(r.output, /skipped: .*aarch64/);
+  assert.equal(r.calls.filter((c) => c.tool === 'cross' || c.tool === 'docker').length, 0, r.output);
+});
+
+// msgRun(commits): check-commit-messages.sh over the commits made after a
+// base commit, each a message, or { merge: message } for a merge of a side
+// branch with one commit.
+const msgRun = (commits, extra = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'commit-messages-'));
+  try {
+    const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir, ...extra };
+    const git = (...args) => execFileSync('git', args, { cwd: dir, env: scratch, stdio: 'pipe' }).toString();
+    const id = ['-c', 'user.name=test', '-c', 'user.email=test'];
+    git('init', '-q', '-b', 'main');
+    git(...id, 'commit', '-q', '--allow-empty', '-m', 'chore: base');
+    const base = git('rev-parse', 'HEAD').trim();
+    for (const c of commits) {
+      if (typeof c === 'string') { git(...id, 'commit', '-q', '--allow-empty', '-m', c); continue; }
+      git('checkout', '-q', '-b', 'side');
+      git(...id, 'commit', '-q', '--allow-empty', '-m', 'feat: a side change');
+      git('checkout', '-q', 'main');
+      git(...id, 'commit', '-q', '--allow-empty', '-m', 'feat: a main change');
+      git(...id, 'merge', '-q', '--no-ff', '-m', c.merge, 'side');
+      git('branch', '-q', '-D', 'side');
+    }
+    const r = spawnSync('bash', [join(SCRIPTS, 'check-commit-messages.sh'), base, 'HEAD'], { cwd: dir, env: scratch, encoding: 'utf8' });
+    return { status: r.status, output: r.stdout + r.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+const accepted = (commits) => { const r = msgRun(commits); assert.equal(r.status, 0, r.output); };
+const rejected = (commits, pattern) => { const r = msgRun(commits); assert.equal(r.status, 1, r.output); assert.match(r.output, pattern, r.output); };
+
+test('check-commit-messages.sh: a "Merge " subject that is no merge is checked, a true merge is skipped', () => {
+  rejected(['Merge the two readers'], /Merge the two readers/);
+  accepted([{ merge: "Merge branch 'side'" }]);
+});
+
+test('check-commit-messages.sh: the description\'s first letter is lowercase, after leading non-letters', () => {
+  rejected(['fix: `Foo` reads the journal'], /`Foo` reads the journal/);
+  rejected(['fix: "Fix" the quoting'], /"Fix" the quoting/);
+  rejected(['fix: 2 Fix the readers'], /2 Fix the readers/);
+  rejected(['fix: Fix the reader'], /Fix the reader/);
+  accepted(['fix: fix the `Foo` reader', 'docs: close ADR-001', 'build: add `--locked`', 'fix: `foo` reads Rust files']);
+});
+
+test('check-commit-messages.sh: the scope is lower-case ASCII letters, digits and hyphens', () => {
+  rejected(['fix(B): an upper-case scope'], /upper-case scope/);
+  accepted(['fix(term-ui2): a scope with a digit']);
+});
+
+test('check-commit-messages.sh: the scope and the length are read the same way in any locale', (t) => {
+  const collates = spawnSync('bash', ['-c', '[[ é =~ ^[a-z]$ ]]'], { env: { ...env, LC_ALL: 'en_US.UTF-8' } }).status === 0;
+  if (!collates) { t.skip('en_US.UTF-8 is not installed, or does not collate é inside a-z'); return; }
+  for (const LC_ALL of ['C', 'en_US.UTF-8']) {
+    // é is no ASCII letter; and an a with 50 of them is 101 bytes, over
+    // the limit of 100 (lengths are bytes), though 51 characters. One byte
+    // fewer passes.
+    let r = msgRun(['fix(é): an accented scope'], { LC_ALL });
+    assert.equal(r.status, 1, LC_ALL + ': ' + r.output);
+    r = msgRun(['fix: a' + 'é'.repeat(50)], { LC_ALL });
+    assert.equal(r.status, 1, LC_ALL + ': ' + r.output);
+    r = msgRun(['fix: ' + 'é'.repeat(49) + 'a'], { LC_ALL });
+    assert.equal(r.status, 0, LC_ALL + ': ' + r.output);
+  }
+});
+
+test('check-commit-messages.sh: the first-letter rule reads ASCII letters in any locale', (t) => {
+  // en_US collates Ü inside A-Z; the rule's letters are ASCII, so Ü is
+  // skipped as a non-letter in every locale, and the n after it decides.
+  // Without that locale bash falls back to C, and the case would prove
+  // nothing: it is skipped, saying so.
+  const collates = spawnSync('bash', ['-c', '[[ Ü =~ ^[A-Z]$ ]]'], { env: { ...env, LC_ALL: 'en_US.UTF-8' } }).status === 0;
+  if (!collates) { t.skip('en_US.UTF-8 is not installed, or does not collate Ü inside A-Z'); return; }
+  for (const LC_ALL of ['C', 'C.UTF-8', 'en_US.UTF-8']) {
+    const r = msgRun(['fix: Ünicode names'], { LC_ALL });
+    assert.equal(r.status, 0, LC_ALL + ': ' + r.output);
+  }
+});
+
+test('check-commit-messages.sh: the length and the trailing period are checked as before', () => {
+  rejected(['fix: end with a period.'], /end with a period/);
+  // At any length, and a description that is only punctuation.
+  rejected(['fix: .'], /fix: \./);
+  rejected(['fix: ,;'], /fix: ,;/);
+  accepted(['build: 1.2.3', 'build: 42']);
+  rejected(['fix:  two spaces'], /two spaces/);
+  rejected(['fix: ' + 'a'.repeat(101)], /Not a Conventional Commit/);
+  accepted(['fix: ' + 'a'.repeat(100), 'fix: a']);
 });

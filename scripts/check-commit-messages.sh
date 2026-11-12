@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Fails if any commit in BEFORE..AFTER breaks the commit message rules:
-# - the subject is a Conventional Commit (lowercase description, no trailing
-#   period);
+# - the subject is a Conventional Commit: a type, an optional scope of
+#   lower-case ASCII letters, digits and hyphens, then a description of 1
+#   to 100 bytes (lengths are bytes: the script runs in the C locale, so a
+#   non-ASCII character counts as two or more) that doesn't start with a
+#   space, doesn't end with a period, and holds a letter or a digit
+#   ("build: 1.2.3" passes, "fix: ." doesn't). The description's first
+#   letter, after any leading non-letters (a backtick, a quote, a digit,
+#   punctuation), is lowercase; proper nouns and identifiers later in it
+#   may have capitals ("fix the `Foo` reader", "close ADR-001"). A
+#   description with no letter has no first letter to check;
 # - a commit that changes Rust source (*.rs) has a "Library-check:" line in
 #   its body saying which dependency APIs or documented patterns were checked
 #   and what stayed custom and why (CLAUDE.md, "Library first"). This applies
@@ -11,8 +19,13 @@
 #   subagents ran and what came of their findings (CLAUDE.md, "Fresh-context
 #   review of every change"), from the commit that introduced the rule on,
 #   the same way.
+# A merge commit (two or more parents) is skipped, whatever its subject; any
+# other commit is checked, a subject starting "Merge " included.
 # With no usable BEFORE (first push), checks every commit reachable from AFTER.
 set -euo pipefail
+# One reading everywhere: bytes for lengths, and no locale's collation in a
+# bracket expression.
+export LC_ALL=C
 before="${1:-}"
 after="${2:-HEAD}"
 if [[ -z "$before" || "$before" =~ ^0+$ ]] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
@@ -20,14 +33,32 @@ if [[ -z "$before" || "$before" =~ ^0+$ ]] || ! git cat-file -e "$before^{commit
 else
   range="$before..$after"
 fi
-pattern='^(feat|fix|docs|chore|refactor|test|ci|build|perf|style|revert)(\([a-z0-9-]+\))?!?: [^A-Z ](.{0,98}[^.])?$'
+# The letters and digits are ASCII, spelt out: a range such as A-Z follows
+# the locale's collation, which puts other letters (U+00DC, say) inside it
+# in some locales and not in others. LC_ALL=C above settles that too; the
+# lists keep the rules right if the script is run another way.
+upper=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+lower=abcdefghijklmnopqrstuvwxyz
+digits=0123456789
+pattern="^(feat|fix|docs|chore|refactor|test|ci|build|perf|style|revert)(\\([$lower$digits-]+\\))?!?: [^ ].{0,99}\$"
+# No capital before the description's first lower-case letter.
+first_letter="^[^$upper$lower]*([$lower]|\$)"
 script=scripts/check-commit-messages.sh
 status=0
-while IFS= read -r line; do
-  sha="${line%% *}"; subject="${line#* }"
-  if [[ "$subject" =~ ^Merge\  ]]; then continue; fi
+# The fields are split on the unit separator: a tab is white space to read,
+# and a run of them would drop the root commit's empty parent list.
+while IFS=$'\x1f' read -r sha parents subject; do
+  read -ra parent_list <<<"$parents"
+  if ((${#parent_list[@]} > 1)); then continue; fi
+  description=${subject#*: }
   if ! [[ "$subject" =~ $pattern ]]; then
     echo "Not a Conventional Commit: $sha $subject"
+    status=1
+  elif [[ $description == *. ]] || ! [[ $description =~ [$upper$lower$digits] ]]; then
+    echo "Not a Conventional Commit (the description ends with a period, or has no letter or digit): $sha $subject"
+    status=1
+  elif ! [[ $description =~ $first_letter ]]; then
+    echo "Not a Conventional Commit (the description's first letter is a capital): $sha $subject"
     status=1
   fi
   # Read git's output first: under pipefail, `git ... | grep -q` can fail
@@ -46,6 +77,6 @@ while IFS= read -r line; do
     echo "Missing 'Review:' line: $sha $subject"
     status=1
   fi
-done < <(git log --format='%h %s' "$range")
+done < <(git log --format='%h%x1f%p%x1f%s' "$range")
 [[ $status -eq 0 ]] && echo "check-commit-messages: OK"
 exit $status

@@ -191,17 +191,17 @@ scripts are flagged by Task 1's rule and acknowledged in the same
 commit, one entry per line.
 
 **Acceptance criteria:**
-- [ ] `check.sh full <base>` runs `scripts/check-commit-messages.sh
+- [x] `check.sh full <base>` runs `scripts/check-commit-messages.sh
       <base> HEAD` when the base isn't HEAD.
-- [ ] The commit-message script skips only true merge commits (by
+- [x] The commit-message script skips only true merge commits (by
       parent count), not any subject starting "Merge ". The
       description's first letter, after any leading non-letters (a
       backtick, a quote, a digit, punctuation), is lowercase; proper
       nouns and identifiers later in the description stay allowed.
       (Decided unattended, reversible: the plan, after decision 17.)
-- [ ] `fast` fails when a crate under `crates/` has no `deny.toml`
+- [x] `fast` fails when a crate under `crates/` has no `deny.toml`
       `bans.deny` entry, or doesn't inherit the workspace lints.
-- [ ] `check.sh` compares each tool's version with the CONSTRAINTS Tools
+- [x] `check.sh` compares each tool's version with the CONSTRAINTS Tools
       table and exits 2 naming a tool that differs: the cargo-installed
       and pinned tools exactly; the system packages (node, `script`,
       Docker) by major version or minimum, so a host package update
@@ -213,18 +213,18 @@ commit, one entry per line.
       binary, since its `go install` build can't report one. Go joins
       the Tools table as a minimum-version row. (Decided unattended,
       reversible: the plan, after decision 17.)
-- [ ] `git diff` calls use `--no-ext-diff --no-color` and fixed
+- [x] `git diff` calls use `--no-ext-diff --no-color` and fixed
       prefixes; cargo calls use `--locked`; an inherited
       `CARGO_TARGET_DIR` can't redirect a stage; a run on an
       architecture other than x86_64 says what it skips; the dead "no
       crates yet" branches go.
-- [ ] CONSTRAINTS.md gets rows for the commit-message check and the
+- [x] CONSTRAINTS.md gets rows for the commit-message check and the
       `Review:` line.
 
 **Verification:**
-- [ ] A stubbed run for each new branch (a crate without an entry, a
+- [x] A stubbed run for each new branch (a crate without an entry, a
       wrong tool version, a "Merge " subject); `scripts/check.sh full`.
-- [ ] code-reviewer on the commit.
+- [x] code-reviewer on the commit.
 
 **Dependencies:** Task 3
 **Files:** `scripts/check.sh`, `scripts/check-commit-messages.sh`, `scripts/floor-guard.test.mjs` (the new gate lines), `scripts/floor-acknowledged.txt`, `CONSTRAINTS.md`
