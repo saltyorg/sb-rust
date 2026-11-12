@@ -81,10 +81,12 @@ both files they read are readable without root.
    version and the command's name, never argument values (they can carry secrets), then the command's
    events and how the run ended; a failure's error and causes go in as
    tracing's error field. A panic, on any thread, leaves an ERROR record
-   `panicked: <message>` with its location in the run, in place of "run
-   finished" (a panic hook installed once the log is open, which then
-   calls std's own, so the message still reaches stderr); sb then exits
-   101. Each record is one line in tracing-subscriber's
+   `panicked: <message>` with its location in the run (a panic hook
+   installed once the log is open, which then calls std's own, so the
+   message still reaches stderr). When the panic ends the run, that
+   record takes the place of "run finished" and sb exits 101; a panic
+   that is caught (a restore hook's) leaves the record and the run ends
+   as it would have. Each record is one line in tracing-subscriber's
    fmt format: no logged value can break it, because the run log's event
    formatter (fmt's own `Format`, wrapped through `map_event_format`)
    escapes every control character, `\n` and `\r` included, and U+2028

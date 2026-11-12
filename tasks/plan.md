@@ -172,22 +172,16 @@ Answers at the plan's approval (2026-11-11):
     value's list before the header counted it, and the newest counted
     entry was often not listed yet (the mirror case). Task 32's design
     note is below the handover question.
-25. **SIGINT stays outside the repeat window** (Task 13's probe,
-    2026-11-12). A scope-wide SIGINT under sudo arrives twice and forces
-    the exit; two Ctrl-C presses always force it. Following from
-    decisions 2 and 9, a SIGTERM and a SIGHUP within the window of each
-    other count as one signal, which covers a session scope's stop.
-26. **Task 34's flush question takes option (b)** (2026-11-12,
-    settled by decision 12, not asked again): `PageEnd` carries the
-    identity (boot id, monotonic and realtime stamps, xor hash) of each
-    entry the page showed past its newest entry, and the follow drops
-    one flush copy of each. Extending Difference 13 instead would allow
-    a doubled entry once per boot.
 24. **A forward page at the journal's end is within decision 12**
     (2026-11-12). It stops at the count it read (n0 unfiltered, n1
     filtered), and the follow delivers the entries appended meanwhile.
     "Matches journalctl" means every entry the page shows is in
     journalctl's view, and the page plus its follow is the whole view.
+25. **SIGINT stays outside the repeat window** (Task 13's probe,
+    2026-11-12). A scope-wide SIGINT under sudo arrives twice and forces
+    the exit; two Ctrl-C presses always force it. Following from
+    decisions 2 and 9, a SIGTERM and a SIGHUP within the window of each
+    other count as one signal, which covers a session scope's stop.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -204,6 +198,13 @@ checked the 26-of-290 count and the `go version -m` fact:
   commits, which the maintainer accepted, and would need history
   rewritten. It declines the stricter half of docs-L14, so it is also
   on "Proposed declines for the maintainer" in tasks/todo.md.
+- **Task 34's flush question takes option (b) (2026-11-12).** Decision
+  12 asks for 0 lost and 0 doubled, which settles it, so it wasn't put
+  to the maintainer again: `PageEnd` carries the identity (boot id,
+  monotonic and realtime stamps, xor hash) of each entry the page
+  showed past its newest entry, and the follow drops one flush copy of
+  each from a file in another directory. Extending Difference 13
+  instead would allow a doubled entry once per boot.
 - **How tool versions are read (Task 4, docs-M4).** No cargo-installed
   tool is run for its version, since cross would sync a toolchain. The cargo-installed
   tools' versions come from `cargo install --list`; gitleaks' from
@@ -369,8 +370,9 @@ T1 ─ T2 ─ T3 ─ T4 ─ T5 ─ T6 ─ [A]
 
 Each lane runs in the order shown. The dependencies that aren't just
 "the task before":
-- T33 waits for the maintainer's choice on T32's options, and T34 for
-  the choice on the flush question (decision 20). Lane 2 waits there.
+- T33 waited for the maintainer's choice on T32's options (decision
+  23); T34's flush question was settled by decision 12 (the unattended
+  list above).
 - T43 waits for the maintainer's choice on T42's options; a residual
   YAML difference waits for the maintainer too. T42 runs early, beside
   lanes 1 and 2.
@@ -696,8 +698,8 @@ What is left is marked:
   page showed from /run can come again:
   - (a) Extend Difference 13's wording to a page and a follow on
     either side of a flush. No code. It widens a listed Difference.
-    Recommended: a repeat once per boot is the safer failure than a
-    loss.
+    Not taken: decision 12 settles the question for (b) (the
+    unattended list above).
   - (b) Carry, for each entry the page showed that is newer than
     `PageEnd`'s newest entry, its boot id, monotonic and realtime
     stamps and xor hash, and drop one copy of each. Only those entries

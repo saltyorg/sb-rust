@@ -63,10 +63,13 @@ Standing rules:
   outside the repository and shown to the maintainer directly
   (decision 22).
 - Nothing is pushed.
-- A research task (Tasks 32, 34's flush question and 42) ends by
+- A research task (Tasks 32 and 42) ends by
   putting its options, their pros and cons and a recommendation to the
   maintainer, who chooses (decision 20). The tasks that build on the
-  answer (33, 34 and 43) wait for that choice, and other work goes on.
+  answer (33 and 43) wait for that choice, and other work goes on.
+  A question the recorded decisions already settle is decided, not
+  asked, and named among the plan's unattended calls (Task 34's
+  flush question was).
 - If research at a task contradicts the premise of a decision 17
   answer, that task goes back to the maintainer (decision 17).
 - A checkpoint is its ticked criteria here plus a short message to the
@@ -474,8 +477,8 @@ copy counts as the second, forcing signal, so cleanup is skipped
       (M-MOCKABLE-SYSCALLS): inside it, at its edge and past it.
 - [x] A hangup under an interactive bash login shell comes twice too,
       without sudo: bash re-sends SIGHUP to its jobs, then the kernel
-      hangs up the foreground group, about 0.1 to 0.5 ms apart (Task 12's
-      review; its reproduction is kept outside the repo). A test with
+      hangs up the foreground group, about 0.13 to 0.24 ms apart (Task 12's
+      review; the platform note's "Doubled signals"). A test with
       `bash -i` as the session leader asserts the grace is taken and the
       run log's ending is written.
 - [x] A probe under a real session scope and sudo confirms the relayed
@@ -881,13 +884,13 @@ options (decision 20)
 
 **Description:** The other half of the handover (follow-H1, page-H1,
 fwd-M2): files that change between the page and the follow. Most of
-it holds today and is pinned here; Difference 13's wording is new.
-The flush question (the plan's) goes to the maintainer (decision 20).
+it holds today and is pinned here. The flush question was settled by
+decision 12 (the plan's unattended list).
 
 **Acceptance criteria:**
 - [x] The flush question is settled by decision 12 (0 lost, 0
       doubled), so it isn't put to the maintainer again (the plan's
-      decision 26): option (b). Extending Difference 13 would allow a
+      unattended list): option (b). Extending Difference 13 would allow a
       doubled entry once per boot, against decision 12.
 - [ ] A rotation between the page and the follow: the archived file
       keeps its position by inode and file id, and every entry of the
