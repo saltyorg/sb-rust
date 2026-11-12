@@ -371,18 +371,18 @@ cli-M3 on screen). cli-core can't use term-ui's `DisplayText`, so it
 escapes control characters itself, per line.
 
 **Acceptance criteria:**
-- [ ] `shown_chain` and `render_block` escape control characters in
+- [x] `shown_chain` and `render_block` escape control characters in
       every line; a test with an OSC, a CR and a newline in a cause shows
       none raw, and the block keeps its shape.
-- [ ] It calls cli-core's `escape_controls` as it is. That function
+- [x] It calls cli-core's `escape_controls` as it is. That function
       lives in `config.rs`, lane 3's file, which this task doesn't edit.
-- [ ] `docs/specs/cli-core.md`'s error-block text says so.
-- [ ] Closes the first half of the follow-up "cli-core's `error_block`
+- [x] `docs/specs/cli-core.md`'s error-block text says so.
+- [x] Closes the first half of the follow-up "cli-core's `error_block`
       prints error text raw" (Follow-ups from the journal reader).
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core -p sb`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-cli-core -p sb`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       security-auditor.
 
 **Dependencies:** Task 8
@@ -1189,11 +1189,9 @@ not here.)
 
 ## Follow-ups from the journal reader (proto-journal, sb-journal spec)
 
-- cli-core's `error_block` prints error text raw, and cli-core can't use
-  term-ui's `DisplayText` (term-ui depends on cli-core). Check whether
-  any error text can carry untrusted bytes (a child's stderr, a file
-  name), and if so move the sanitizer's core below cli-core or sanitize
-  at the source. Also fix the stale comment in cli-core/src/log.rs
+- ~~cli-core's `error_block` prints error text raw~~: done in hardening
+  Task 9 (014f0c6), which escapes the block and sb's warnings in
+  cli-core itself. Still open: fix the stale comment in cli-core/src/log.rs
   (about lines 184-186) that says child output is stripped with
   `console::strip_ansi_codes`; the runner uses `DisplayText` now.
 

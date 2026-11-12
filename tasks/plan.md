@@ -373,7 +373,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 
 ### Phase 1 (lane 1): untrusted text, signals and panics
 - [x] Task 8: table cells are sanitized
-- [ ] Task 9: the error block escapes error text
+- [x] Task 9: the error block escapes error text
 - [ ] Task 10: no logged value can forge a run-log record
 - [ ] Task 12: a hangup cancels cleanly
 - [ ] Task 13: a relayed signal isn't a second signal
