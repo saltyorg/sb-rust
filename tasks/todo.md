@@ -318,8 +318,14 @@ the journal lane starts from a corrected spec.
 **Scope:** S
 
 ## Checkpoint A: gates
-- [ ] `check.sh full` passes on its own change, every step run, with
-      any expected finding acknowledged in the open.
+- [x] `check.sh full` passes on its own change, every step run, with
+      any expected finding acknowledged in the open. Met on 2026-11-12
+      as the maintainer chose: `check.sh full HEAD` on the clean tree at
+      8935668 (every step runs when nothing changed since the base),
+      each earlier commit having passed against its parent. Over the
+      whole Phase 0 range the floor guard refuses entries for lines
+      added and changed again inside the range (ADR-015's earlier-base
+      limit).
 - [x] Six [start] questions were answered on 2026-11-11 (the plan's
       decisions 6 to 12): Task 2's ADR, table cells in Task 8, `nohup`
       in Task 12, the window in Task 13, the API names, the forward

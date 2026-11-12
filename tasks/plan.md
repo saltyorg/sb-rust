@@ -369,8 +369,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 4: `check.sh` runs the checks that exist only on paper
 - [x] Task 5: the gate records are put right
 - [x] Task 6: Low sweep: documents
-- [ ] Checkpoint A: gates (one line is still open: `check.sh full` on
-      its own change)
+- [x] Checkpoint A: gates
 
 ### Phase 1 (lane 1): untrusted text, signals and panics
 - [ ] Task 8: table cells are sanitized
