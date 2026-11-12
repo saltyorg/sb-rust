@@ -398,25 +398,25 @@ one choke point, the log's formatter layer (M-LOG-STRUCTURED), not at
 each call.
 
 **Acceptance criteria:**
-- [ ] The formatter escapes control characters, `\n` and `\r` in every
+- [x] The formatter escapes control characters, `\n` and `\r` in every
       field of every record: message, error, Debug and Display fields,
       and records bridged from dependencies. A record is always one
       line.
-- [ ] A test logs a value holding a newline and a forged "run finished"
+- [x] A test logs a value holding a newline and a forged "run finished"
       through each field kind and through a bridged record, and reads
       back one record each.
-- [ ] docker-L1: daemon error text reaches the log escaped, through
+- [x] docker-L1: daemon error text reaches the log escaped, through
       the formatter. It needs no change of its own.
-- [ ] The stale comment in cli-core's log.rs is corrected in passing.
+- [x] The stale comment in cli-core's log.rs is corrected in passing.
       Closes the second half of the follow-up "cli-core's `error_block`
       prints error text raw".
-- [ ] The specs agree: cli-core.md's log format, and term-ui.md's "a
+- [x] The specs agree: cli-core.md's log format, and term-ui.md's "a
       step's error record is logged as is".
 
 **Verification:**
-- [ ] `cargo test -p sb-cli-core -p sb-docker -p sb-exec -p sb`;
+- [x] `cargo test -p sb-cli-core -p sb-docker -p sb-exec -p sb`;
       `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer and the security-auditor.
 
 **Dependencies:** Task 9. A tracing-subscriber feature, if one is
@@ -1208,9 +1208,7 @@ not here.)
 
 - ~~cli-core's `error_block` prints error text raw~~: done in hardening
   Task 9 (014f0c6), which escapes the block and sb's warnings in
-  cli-core itself. Still open: fix the stale comment in cli-core/src/log.rs
-  (about lines 184-186) that says child output is stripped with
-  `console::strip_ansi_codes`; the runner uses `DisplayText` now.
+  cli-core itself; the stale log.rs comment is fixed in Task 10.
 
 - cargo-deny reports advisory-not-detected for exception E1's two
   ignores (RUSTSEC-2025-0141, RUSTSEC-2024-0320), although bincode,
