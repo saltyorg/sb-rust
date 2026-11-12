@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-12)
+Accepted (maintainer, 2026-11-12). Changed the same day: the plan id
+check named in part 2 was retired by
+[ADR-017](ADR-017-hardening-plan-cut.md), and the choice part 5 left
+open was made by [ADR-018](ADR-018-rust-skills-plugin-off.md) (the
+rust-skills plugin is off).
 
 ## Date
 

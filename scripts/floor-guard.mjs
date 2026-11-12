@@ -215,10 +215,8 @@ for (const r of removedRules) {
 // 5. The gate files: the files outside Rust and CONSTRAINTS.md that hold
 // the bar, this guard's own scripts and tests included (docs-H1). Each is
 // compared with its copy at the merge base.
-// The plan id check (hardening Task 5) and its tests are watched the same way.
-const GATE_SCRIPTS = ['scripts/check.sh', 'scripts/floor-guard.mjs', 'scripts/check-commit-messages.sh',
-  'scripts/check-plan-ids.mjs'];
-const GUARD_TESTS = ['scripts/floor-guard.test.mjs', 'scripts/check-plan-ids.test.mjs'];
+const GATE_SCRIPTS = ['scripts/check.sh', 'scripts/floor-guard.mjs', 'scripts/check-commit-messages.sh'];
+const GUARD_TESTS = ['scripts/floor-guard.test.mjs'];
 const isGuardTest = (f) => GUARD_TESTS.includes(f);
 // Files that configure a tool the gate runs, at the root or in a crate.
 // - clippy reads `clippy.toml` or `.clippy.toml` from the crate's directory

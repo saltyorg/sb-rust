@@ -689,43 +689,6 @@ test("the guard's tests: a removed assertion or a deleted file is flagged, a new
   clean(guardTests, { [TESTS]: guardTests[TESTS] + "test('exit 0 is flagged', () => {\n  flags(checkSh, 'exit 0 || true');\n});\n" });
 });
 
-// The plan id check (hardening Task 5) is watched like the guard's own
-// scripts: its rules and its tests can't be dropped unseen.
-const PLAN_IDS = 'scripts/check-plan-ids.mjs';
-const planIdsMjs = {
-  [PLAN_IDS]: `// check-plan-ids.mjs: every finding id is planned.
-for (const id of defined.keys()) {
-  if (!traced.has(id)) problems.push(id + ': not in the tables');
-  if (!cited.has(id)) problems.push(id + ': not cited in any task');
-}
-`,
-};
-
-test('check-plan-ids.mjs: a removed rule or a deleted file is flagged, an added rule is clean', () => {
-  flags(planIdsMjs, edit(planIdsMjs, PLAN_IDS, "  if (!cited.has(id)) problems.push(id + ': not cited in any task');\n", ''),
-    'gate-line-removed ' + PLAN_IDS);
-  flags(planIdsMjs, { [PLAN_IDS]: null }, 'gate-file-deleted ' + PLAN_IDS);
-  clean(planIdsMjs, edit(planIdsMjs, PLAN_IDS, '}\n', "  if (twice.has(id)) problems.push(id + ': defined twice');\n}\n"));
-});
-
-const PLAN_IDS_TESTS = 'scripts/check-plan-ids.test.mjs';
-const planIdsTests = {
-  [PLAN_IDS_TESTS]: `import { test } from 'node:test';
-test('an unknown id fails', () => {
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /not defined/);
-});
-`,
-};
-
-test("the plan id check's tests: a removed assertion or a deleted file is flagged, a new test is clean", () => {
-  flags(planIdsTests, edit(planIdsTests, PLAN_IDS_TESTS, '  assert.match(r.stderr, /not defined/);\n', ''),
-    'gate-line-removed ' + PLAN_IDS_TESTS);
-  flags(planIdsTests, { [PLAN_IDS_TESTS]: null }, 'gate-file-deleted ' + PLAN_IDS_TESTS);
-  clean(planIdsTests, { [PLAN_IDS_TESTS]: planIdsTests[PLAN_IDS_TESTS]
-    + "test('a duplicate fails', () => {\n  assert.equal(r.status, 1);\n});\n" });
-});
-
 // Cases a mutation probe of the guard found untested.
 
 test('check.sh: a second assignment after an unchanged value is flagged', () => {
@@ -1552,8 +1515,8 @@ test('check.sh full: committed documents after the base are documents only, with
 });
 
 test('check.sh fast: the gate scripts\' own tests run when scripts/ changed or nothing did, and are skipped otherwise', () => {
-  assert.equal(guardTestRuns(checkRun('fast')), 2);
-  assert.equal(guardTestRuns(checkRun('fast', { work: { 'scripts/new.sh': 'true\n' } })), 2);
+  assert.equal(guardTestRuns(checkRun('fast')), 1);
+  assert.equal(guardTestRuns(checkRun('fast', { work: { 'scripts/new.sh': 'true\n' } })), 1);
   for (const work of [{ 'docs/x.md': 'x\n' }, { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }]) {
     const r = checkRun('fast', { work });
     passes(r, 'fast');
@@ -1626,7 +1589,7 @@ test('check.sh: a file moved into docs/ is no document, and a script moved out o
   assert.ok(cargoSubs(r).includes('llvm-cov'), r.output);
   const moved = checkRun('fast', { files: fixture, moves: [['scripts/x.sh', 'docs/x.sh']] });
   passes(moved, 'fast');
-  assert.equal(guardTestRuns(moved), 2, moved.output);
+  assert.equal(guardTestRuns(moved), 1, moved.output);
 });
 
 test('check.sh task: each prototype is named, wherever its [package] section sits', () => {

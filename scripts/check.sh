@@ -4,8 +4,8 @@
 #
 #   scripts/check.sh fast [base]   after edits: each crate's deny.toml entry
 #                                  and lints, fmt, clippy, floor guard (and
-#                                  the gate scripts' own tests when scripts/
-#                                  changed), secrets
+#                                  the guard's own tests when scripts/ changed),
+#                                  secrets
 #   scripts/check.sh task [base]   before handing work back: fast + tests,
 #                                  changed-line coverage, mutation score,
 #                                  startup budget
@@ -238,13 +238,12 @@ fast() {
   step "clippy, library and binary targets only (warnings are errors)"
   cargo clippy --workspace --lib --bins --locked --quiet -- -D warnings
   need node
-  step "floor guard's own tests, and the plan id check's"
+  step "floor guard's own tests"
   if ((scripts_changed)); then
     # The dot reporter: one character a test, then each failure in full (the
     # failure report is as Node 24 prints it; the page describes the dots
     # only): https://nodejs.org/docs/latest-v24.x/api/test.html#test-reporters
     node --test --test-reporter=dot scripts/floor-guard.test.mjs
-    node --test --test-reporter=dot scripts/check-plan-ids.test.mjs
   else
     skip "nothing under scripts/ changed since $base"
   fi
