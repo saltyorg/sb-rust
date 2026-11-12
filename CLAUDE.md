@@ -2,9 +2,11 @@
 
 ## How to work (mandatory)
 
-The `agent-skills@addy-agent-skills` and `rust-skills@rust-skills` plugins
-are enabled for this repository (see the hooks in `.claude/settings.json`;
-rust-skills has its own table below).
+The `agent-skills@addy-agent-skills` plugin is enabled for this repository
+(see the hooks in `.claude/settings.json`). The rust-skills plugin is
+switched off here (ADR-018); Rust questions go to the standard library's
+and each crate's own documentation
+(`agent-skills:source-driven-development`).
 
 1. **Start every session** by invoking `agent-skills:using-agent-skills` via the
    Skill tool, before any other work.
@@ -49,38 +51,6 @@ rust-skills has its own table below).
 | Removing or migrating systems | `agent-skills:deprecation-and-migration` |
 | Preparing a release / launch | `agent-skills:shipping-and-launch` |
 | Context/rules setup, degraded output | `agent-skills:context-engineering` |
-
-### Rust task → rust-skills skill
-
-The `rust-skills@rust-skills` plugin is enabled too. It adds Rust-specific
-guidance on top of the agent-skills workflow skill; it never replaces one.
-Load one of these when a Rust question needs it:
-
-| Situation | Skill |
-|---|---|
-| Unsure which, or a compile error | `rust-skills:rust-router` |
-| Ownership, borrows, lifetimes | `rust-skills:m01-ownership` |
-| Smart pointers, RAII, Drop | `rust-skills:m02-resource`, `rust-skills:m12-lifecycle` |
-| Interior mutability, locks | `rust-skills:m03-mutability` |
-| Generics, traits, dispatch | `rust-skills:m04-zero-cost` |
-| Newtypes, builders, type state | `rust-skills:m05-type-driven` |
-| Error types and propagation | `rust-skills:m06-error-handling`, `rust-skills:m13-domain-error` |
-| Threads, async, tokio, signals | `rust-skills:m07-concurrency` |
-| Domain modelling (Saltbox rules) | `rust-skills:m09-domain` |
-| Performance | `rust-skills:m10-performance` |
-| Crates, features, workspace | `rust-skills:m11-ecosystem` |
-| Review for anti-patterns | `rust-skills:m15-anti-pattern` |
-| Naming and style | `rust-skills:coding-guidelines` |
-| CLI and terminal code | `rust-skills:domain-cli` |
-| Any `unsafe` or FFI | `rust-skills:unsafe-checker` |
-| Crate API docs | `rust-skills:docs` |
-
-`CONSTRAINTS.md` and this file win over a rust-skills suggestion that
-conflicts with them (for example `#[allow]` stays forbidden). The plugin's
-own prompt hook injects a "mandatory" routing and output format (a
-"Reasoning Chain" section, a banner); it doesn't apply here: the
-agent-skills workflow and the tables above decide which skills load and
-how answers are written.
 
 ## Library first (don't diverge from what dependencies already solve)
 

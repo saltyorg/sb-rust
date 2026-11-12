@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-05); the reminder on every prompt and the rule that a
-skill is loaded before every task are replaced by
-[ADR-016](ADR-016-lighter-process.md), part 3
+Superseded by [ADR-018](ADR-018-rust-skills-plugin-off.md) (2026-11-12).
+Was: accepted (maintainer, 2026-11-05); [ADR-016](ADR-016-lighter-process.md),
+part 3, had already replaced its reminder on every prompt
 
 ## Date
 

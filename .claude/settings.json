@@ -1,7 +1,7 @@
 {
   "enabledPlugins": {
     "agent-skills@addy-agent-skills": true,
-    "rust-skills@rust-skills": true
+    "rust-skills@rust-skills": false
   },
   "hooks": {
     "SessionStart": [
