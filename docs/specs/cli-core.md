@@ -11,7 +11,8 @@ Give every sb-rust command the same frame:
 - the command tree, global flags and help, compatible with sb-go;
 - startup: host support check, root relaunch when the command needs it,
   logging, colour and theme;
-- cancellation on Ctrl-C and SIGTERM, reaching every command;
+- cancellation on Ctrl-C, SIGTERM and a hangup (SIGHUP), reaching every
+  command;
 - one error presentation and one exit-code policy;
 - build information and the `version` command.
 
@@ -121,10 +122,21 @@ C); and `sb docker ps --json` (maintainer, 2026-11-03, docker spec
 decision 2). A test compares the tree with sb-go's command
 list (walked before clap adds `help`).
 
-**Cancellation:** the first SIGINT or SIGTERM cancels a token shared by
-every command; work stops at its next await or check, child processes are
-killed through `exec`. A second signal ends sb at once, skipping
-remaining cleanup. Either way an interrupted run ends by the signal
+**Cancellation:** the first SIGINT, SIGTERM or SIGHUP cancels a token
+shared by every command; work stops at its next await or check, child
+processes are killed through `exec`. A hangup (a dropped SSH session) is
+handled as SIGTERM is (hardening plan decisions 2 and 8, 2026-11-12,
+replacing "sb doesn't handle SIGHUP"): the children are stopped with
+their usual grace, the run log gets its ending (writes to the gone
+terminal fail and are ignored), then sb ends by SIGHUP. When SIGHUP was
+ignored at startup (`nohup`), sb leaves it ignored and a hangup doesn't
+cancel; sb reads that from `SigIgn` in `/proc/self/status`
+(`proc_pid_status(5)`) before it registers any handler, and an unreadable
+status counts as not ignored. A doubled hangup (an interactive bash
+login shell re-sends SIGHUP to its jobs, then the kernel hangs up the
+foreground group, about 0.5 ms apart) still counts as a second signal
+and forces the exit until the repeat window lands (Task 13). A second
+signal ends sb at once, skipping remaining cleanup. Either way an interrupted run ends by the signal
 itself, re-raised with its default action after cleanup (or after the
 restore hooks), not by an exit code: a calling shell then sees the death
 by signal and stops its script, as "wait and cooperative exit" requires
@@ -135,14 +147,15 @@ maintainer, 2026-11-05): the restore hooks run within their deadline, then
 sb ends by it, made not dumpable first, so no core is written. While an attached
 child runs, exec holds the signals (`Shutdown::hold`; exec decisions 2
 and 12): SIGINT and SIGQUIT are noted, not acted on and not counted, as
-the terminal delivers them to the child; a SIGTERM still cancels (exec
-passes it to the child's pid) and a second one still forces the exit;
-when the child dies of a signal sb itself received, the run is
+the terminal delivers them to the child; a SIGTERM or SIGHUP still
+cancels (exec passes a SIGTERM to the child's pid) and a second one
+still forces the exit; when the child dies of a signal sb itself received, the run is
 interrupted by it. The decision is one pure function (`decide`),
 tested case by case.
 
 **Exit codes:** 0 success; 1 error; 2 for a parse error; death by
-SIGINT or SIGTERM when interrupted (`$?` reads 130 or 143); a
+SIGINT, SIGTERM or SIGHUP when interrupted (`$?` reads 130, 143 or
+129); a
 code a command requested; a wrapped child's own code when sb only passes it
 through (`sudo` relaunch, plain pass-through commands); 141, quietly, when
 the reader of sb's output goes away (`sb ... | head`), as sb-go gets when
@@ -260,6 +273,11 @@ boundaries that callers match on.
   terminal. Done through util-linux `script` on the built binary with
   `sb validate-config` (config plan Task 12), as term-ui's own PTY tests
   are; rexpect isn't added (one PTY tool for every test).
+- **Hangup tests** (crates/sb/tests/hangup.rs): one closes the
+  terminal's master side (`script` killed), so sb's writes and terminal
+  restore fail with EIO; sb still logs its ending, leaves no child and
+  dies by SIGHUP (`$?` 129). A `kill -HUP` covers the plain case, and a
+  run under `nohup` shows a hangup then doesn't cancel.
 - Tests that need root or a real `/var/log/sb` run only when asked (an
   environment variable), never by default.
 - Each new test is confirmed by breaking the code it covers. Coverage and
@@ -292,7 +310,9 @@ boundaries that callers match on.
    wants a password, its own prompt appears and the run continues once
    answered.
 4. SIGINT and SIGTERM end sb by that signal (`$?` 130 and 143), with the
-   terminal restored.
+   terminal restored; a hangup ends it by SIGHUP (`$?` 129) with its
+   children stopped and the run log's ending written, except under
+   `nohup`.
 5. An error shows one `✗` block with its causes and the log pointer, and
    exits 1.
 6. Every root run writes its run record and outcome to
@@ -368,8 +388,9 @@ boundaries that callers match on.
   files that sb prunes (maintainer, 2026-10-30): one path to follow,
   compressed history, handled like Saltbox's other logs. No signal from
   logrotate is needed or wanted: each run opens the file afresh, a run
-  overlapping a rotation finishes in the renamed copy, and sb doesn't
-  handle SIGHUP. The rule (docs/platform-notes/logrotate.md) uses
+  overlapping a rotation finishes in the renamed copy. A SIGHUP would end
+  a running command (sb handles it as a hangup, like SIGTERM), so none
+  must be sent. The rule (docs/platform-notes/logrotate.md) uses
   `delaycompress` so that copy isn't compressed under a running sb, and
   `nocreate`: sb creates the file itself.
 - Root: only commands that need root relaunch through `sudo`; help,

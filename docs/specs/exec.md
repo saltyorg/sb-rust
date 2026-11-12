@@ -191,8 +191,10 @@ even if the child then exits 0 within the grace period.
   commands aren't supported (the install script runs `sb setup` attached,
   capability map; users have no need to pipe them), so sudo's relays in a
   piped run aren't designed for (docs/platform-notes/exec-processes.md). A
-  SIGTERM to sb is sent on to the child's pid (sudo-rs relays to sb's pid
-  only; under C sudo the child may get it twice); then the grace period
+  SIGTERM to sb, or a hangup (SIGHUP, handled as SIGTERM is: cli-core
+  spec, "Cancellation"; not held, as the terminal's hangup reaches the
+  child itself), is sent on to the child's pid as a SIGTERM (sudo-rs
+  relays to sb's pid only; under C sudo the child may get it twice); then the grace period
   applies, and `timeout` works the same way, by pid. No attached child
   runs while a term-ui `Runner` is live: term-ui exposes whether one is,
   and `attached` refuses to start then. This changes how cli-core handles
@@ -397,8 +399,9 @@ let outcome = Cmd::new("systemctl")
 3. Attached: Ctrl-C and Ctrl-\ reach the child, and sb ends by the same
    signal only if it received one and the child died of it, repeated
    signals included; a child that ignores Ctrl-C ends on Ctrl-\ or a
-   SIGTERM to sb; a SIGINT to sb alone isn't passed on; a SIGTERM to sb
-   reaches the child; `attached` refuses while a runner is live.
+   SIGTERM to sb; a SIGINT to sb alone isn't passed on; a SIGTERM or
+   SIGHUP to sb reaches the child as a SIGTERM; `attached` refuses while
+   a runner is live.
 4. A PTY child sees a TTY of sb's size; its colours follow sb's colour
    decision; a byte-split character arrives whole; `\r` progress shows at
    the next line; a reading child gets EOF; a missing directory is an

@@ -22,8 +22,9 @@ Retention (`weekly`, `rotate 8`) is a suggestion; Saltbox's own convention
 for its other logs wins. The rest matters:
 
 - **No `postrotate` signal and no `copytruncate`.** sb opens the file
-  afresh on every run and exits, so it never needs telling to reopen. sb
-  doesn't handle SIGHUP, whose default action would end a running command.
+  afresh on every run and exits, so it never needs telling to reopen. A
+  SIGHUP would end a running command: sb handles it as a hangup and
+  cancels the run, as it does SIGTERM.
 - **`delaycompress`.** A run that overlaps a rotation keeps writing to the
   renamed `sb.log.1` until it exits. Compressing that copy straight away
   would remove it under the running sb and lose the end of its record. The

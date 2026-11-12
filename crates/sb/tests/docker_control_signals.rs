@@ -16,14 +16,16 @@
 //! stand-in ran and not the host's.
 
 mod common;
+mod processes;
 mod root_gate;
 
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use processes::{KillOnDrop, StandIn, gone, wait_for};
 use rustix::process::{Pid, Signal, kill_process};
 use sb_docker::testing::controller::{Answer, FakeController};
 
@@ -34,21 +36,6 @@ const JOB: &str = r#"{"job_id":"job-1","status":"pending"}"#;
 /// second): the request or the wait is dropped at once, and `systemctl`
 /// gets exec's SIGTERM. Timed to sb's own end, not to `script`'s teardown.
 const ENDS_WITHIN: Duration = Duration::from_secs(1);
-
-/// `script` (under `timeout`), and sb itself once its pid is known,
-/// killed if a test fails before they exit: SIGKILL to `timeout` doesn't
-/// reach its children.
-struct KillOnDrop(Child, Option<i32>);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        if let Some(pid) = self.1.and_then(Pid::from_raw) {
-            let _ = kill_process(pid, Signal::KILL);
-        }
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 /// The last drawing of the step row starting `start` (live frames are
 /// redrawn with cursor codes, so a row is cut out rather than taken as a
@@ -151,40 +138,6 @@ impl World {
         .expect("sb's pid");
         child.1 = Some(pid);
         (child, pid)
-    }
-}
-
-/// `probe`'s first `Some` within ten seconds.
-fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> Option<T> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(value) = probe() {
-            return Some(value);
-        }
-        if Instant::now() > deadline {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Whether `pid` is gone (no process, or only a zombie left to reap).
-fn gone(pid: i32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| stat.contains(") Z "))
-}
-
-/// A stand-in `systemctl` (a `sleep` once it execs), killed (SIGKILL) when the
-/// test ends if it is still there and still a `sleep`.
-struct StandIn(i32);
-
-impl Drop for StandIn {
-    fn drop(&mut self) {
-        let cmdline = std::fs::read(format!("/proc/{}/cmdline", self.0)).unwrap_or_default();
-        if cmdline.starts_with(b"sleep")
-            && let Some(pid) = Pid::from_raw(self.0)
-        {
-            let _ = kill_process(pid, Signal::KILL);
-        }
     }
 }
 

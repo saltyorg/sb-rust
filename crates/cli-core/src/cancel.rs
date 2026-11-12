@@ -1,5 +1,6 @@
-//! Cancellation on SIGINT and SIGTERM, Ctrl-\\ as the hard escape, and
-//! signals held for an attached child (spec: "Cancellation").
+//! Cancellation on SIGINT, SIGTERM and SIGHUP (a hangup, unless ignored
+//! at startup as under `nohup`), Ctrl-\\ as the hard escape, and signals
+//! held for an attached child (spec: "Cancellation").
 //!
 //! The first signal cancels a token every command holds and records the
 //! exit code; a second runs the registered restore hooks (term-ui's
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use signal_hook::iterator::Signals;
 pub use tokio_util::sync::CancellationToken;
 
@@ -32,7 +33,7 @@ pub fn signal_exit_code(signal: i32) -> u8 {
 /// caught: signal-hook's `emulate_default_handler` resets the handler,
 /// unblocks the signal and raises it
 /// (<https://docs.rs/signal-hook/0.4.5/signal_hook/low_level/fn.emulate_default_handler.html>).
-/// For SIGINT and SIGTERM it never returns (should the raise fail, it
+/// For SIGINT, SIGTERM and SIGHUP it never returns (should the raise fail, it
 /// aborts, so sb dies of SIGABRT); a signal it doesn't know, or one whose
 /// default isn't to end a process, exits with 128 + the signal instead.
 pub(crate) fn end_by(signal: i32) -> ! {
@@ -189,6 +190,40 @@ fn slot(signal: i32) -> Option<usize> {
     HELD.iter().position(|held| *held == signal)
 }
 
+/// Whether `signal` was ignored when sb started (`nohup` ignores SIGHUP;
+/// decision 8), read from `/proc/self/status`. A status that can't be
+/// read or parsed counts as not ignored, so a hangup cancels the run
+/// rather than kill it.
+///
+/// Why not signal-hook, rustix or nix: none queries a disposition
+/// safely. signal-hook (0.4.5) has no query; rustix's `sigaction` is in
+/// its `runtime` module, `unsafe` and not meant for applications; nix's
+/// `sigaction` is an `unsafe fn` behind its `signal` feature. The
+/// workspace forbids `unsafe`. procfs-core's `Status::sigign` parses the
+/// same line; not added for one field.
+fn ignored_at_startup(signal: i32) -> bool {
+    std::fs::read_to_string("/proc/self/status").is_ok_and(|status| ignored_in(&status, signal))
+}
+
+/// Whether `status` (`/proc/<pid>/status`'s text) marks `signal` as
+/// ignored: its `SigIgn` line, a hexadecimal mask in which signal `n` is
+/// bit `n - 1`, documented in `proc_pid_status(5)`
+/// (<https://man7.org/linux/man-pages/man5/proc_pid_status.5.html>).
+fn ignored_in(status: &str, signal: i32) -> bool {
+    let Some(bit) = signal
+        .checked_sub(1)
+        .and_then(|bit| u32::try_from(bit).ok())
+        .filter(|&bit| bit < u64::BITS)
+    else {
+        return false;
+    };
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigIgn:"))
+        .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+        .is_some_and(|mask| mask & (1 << bit) != 0)
+}
+
 /// The hold count and what was noted, under one lock with a condvar, so
 /// the signals thread's decision and a hold's start, question and end see
 /// one state (a compound invariant: one `Mutex`, not loose atomics).
@@ -285,8 +320,8 @@ fn decide(first: Option<i32>, held: bool, signal: i32) -> Act {
 
 /// While this lives, SIGINT and SIGQUIT are held (exec's `attached`): noted
 /// and not acted on, as the terminal delivers them to the attached child
-/// itself. A SIGTERM still cancels the token (exec passes it to the
-/// child's pid), and a second one still forces the exit. Noted, not
+/// itself. A SIGTERM or SIGHUP still cancels the token (exec passes a
+/// SIGTERM to the child's pid), and a second one still forces the exit. Noted, not
 /// blocked: a blocked SIGINT would stay pending and act once the hold
 /// ends, and the child must keep the default dispositions (exec decision
 /// 2), which blocking in sb would not change anyway.
@@ -460,13 +495,16 @@ impl Shutdown {
         }
     }
 
-    /// Turn SIGINT and SIGTERM into [`signalled`] on a thread; a second
-    /// signal runs the restore hooks, then ends sb at once by the first
-    /// signal (a command's own earlier request doesn't change it; exec
-    /// decision 7), skipping remaining cleanup. SIGQUIT is the hard escape
-    /// (the hooks, then the end by it), and while a [`Hold`] is on, SIGINT
-    /// and SIGQUIT are only noted. Call it once per process: each call
-    /// starts its own thread.
+    /// Turn SIGINT, SIGTERM and SIGHUP into [`signalled`] on a thread; a
+    /// second signal runs the restore hooks, then ends sb at once by the
+    /// first signal (a command's own earlier request doesn't change it;
+    /// exec decision 7), skipping remaining cleanup. A hangup is handled
+    /// as SIGTERM is (decision 2), unless SIGHUP was ignored when sb
+    /// started (`nohup`): then it is left ignored (decision 8). SIGQUIT is
+    /// the hard escape (the hooks, then the end by it), and while a
+    /// [`Hold`] is on, SIGINT and SIGQUIT are only noted. Call it once per
+    /// process, before anything else registers a handler: each call starts
+    /// its own thread.
     ///
     /// Signals are matched by number, so a `kill -INT` from another process
     /// counts as a Ctrl-C. Why not signal-hook's `WithOrigin`, which tells
@@ -502,12 +540,18 @@ impl Shutdown {
     /// The OS error when a delivery flag or the signal iterator can't be
     /// registered, or the listening thread can't be started.
     pub fn listen_for_signals(&self) -> std::io::Result<()> {
+        // Before any handler is registered: a handler would replace an
+        // inherited "ignored" (decision 8).
+        let hangup = !ignored_at_startup(SIGHUP);
         // The delivery flags first, so each is set before the iterator
         // wakes the thread (see `Holds::arrived`).
         for (signal, flag) in HELD.iter().zip(&self.holds.arrived) {
             signal_hook::flag::register(*signal, Arc::clone(flag))?;
         }
         let mut signals = Signals::new([SIGINT, SIGTERM, SIGQUIT])?;
+        if hangup {
+            signals.add_signal(SIGHUP)?;
+        }
         let shutdown = self.clone();
         std::thread::Builder::new()
             .name("signals".into())
@@ -623,6 +667,49 @@ mod tests {
         let hold = terminated.hold();
         assert_eq!(read(&terminated, SIGTERM), Act::Cancel);
         assert!(!hold.child_ended_by(Some(SIGTERM)));
+    }
+
+    /// SIGHUP is decided as SIGTERM is (decision 2), under a hold too
+    /// (exec decision 12): the first cancels, a second forces the exit by
+    /// the first, and it is never held.
+    #[test]
+    fn a_hangup_is_decided_as_sigterm_is() {
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+        for held in [false, true] {
+            assert_eq!(decide(None, held, SIGHUP), Act::Cancel, "{held}");
+            assert_eq!(decide(Some(SIGHUP), held, SIGHUP), Act::ForcedExit(SIGHUP));
+            assert_eq!(decide(Some(SIGHUP), held, SIGTERM), Act::ForcedExit(SIGHUP));
+        }
+        assert_eq!(decide(Some(SIGINT), false, SIGHUP), Act::ForcedExit(SIGINT));
+        assert_eq!(slot(SIGHUP), None);
+        assert_eq!(signal_exit_code(SIGHUP), 129);
+    }
+
+    /// `SigIgn` in `/proc/self/status` (`proc_pid_status(5)`): SIGHUP is bit 0 of the
+    /// hex mask. Missing or malformed reads as not ignored, so a hangup
+    /// cancels.
+    #[test]
+    fn the_status_says_whether_sighup_is_ignored() {
+        use signal_hook::consts::{SIGHUP, SIGINT};
+        let status = |mask: &str| {
+            format!(
+                "Name:\tsb\nSigBlk:\t0000000000000000\nSigIgn:\t{mask}\nSigCgt:\t0000000000004002\n"
+            )
+        };
+        assert!(ignored_in(&status("0000000000000001"), SIGHUP));
+        assert!(ignored_in(&status("0000000000001001"), SIGHUP));
+        assert!(!ignored_in(&status("0000000000001000"), SIGHUP));
+        assert!(ignored_in(&status("0000000000000002"), SIGINT));
+        assert!(!ignored_in(&status("0000000000000002"), SIGHUP));
+        assert!(!ignored_in(
+            "Name:\tsb\nSigCgt:\t0000000000000001\n",
+            SIGHUP
+        ));
+        assert!(!ignored_in(&status("not hex"), SIGHUP));
+        assert!(!ignored_in(&status(""), SIGHUP));
+        assert!(!ignored_in("", SIGHUP));
+        assert!(!ignored_in(&status("ffffffffffffffff"), 0));
+        assert!(!ignored_in(&status("ffffffffffffffff"), 65));
     }
 
     /// Each held signal has its own slot; nothing else has one.
