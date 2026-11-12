@@ -177,6 +177,12 @@ Answers at the plan's approval (2026-11-11):
     the exit; two Ctrl-C presses always force it. Following from
     decisions 2 and 9, a SIGTERM and a SIGHUP within the window of each
     other count as one signal, which covers a session scope's stop.
+26. **Task 34's flush question takes option (b)** (2026-11-12,
+    settled by decision 12, not asked again): `PageEnd` carries the
+    identity (boot id, monotonic and realtime stamps, xor hash) of each
+    entry the page showed past its newest entry, and the follow drops
+    one flush copy of each. Extending Difference 13 instead would allow
+    a doubled entry once per boot.
 24. **A forward page at the journal's end is within decision 12**
     (2026-11-12). It stops at the count it read (n0 unfiltered, n1
     filtered), and the follow delivers the entries appended meanwhile.
@@ -413,7 +419,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 27: the crafted builder writes compact files
 - [x] Task 28: the suites the fixes touch run over both layouts
 - [x] Task 32: the page-to-follow handover: facts, probe and options
-- [ ] Task 33: a page and its follow give every entry once
+- [x] Task 33: a page and its follow give every entry once
 - [ ] Task 34: the handover across files
 - [ ] Task 36: a page can always be paged past
 - [ ] Task 37: a forward page on the cursor's own boot

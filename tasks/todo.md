@@ -802,10 +802,10 @@ list, so neither defect exists for them, and they stay out of the
 change.
 
 **Acceptance criteria:**
-- [ ] The maintainer's choice is recorded in journal.md (decision 20),
+- [x] The maintainer's choice is recorded in journal.md (decision 20),
       and its "Starting a follow" matches the code. "0 lost, 0 doubled" holds
       as stated, with no new Difference.
-- [ ] An entry appended and linked during the page. The fixture is
+- [x] An entry appended and linked during the page. The fixture is
       what the file holds at each of the page's reads, not one static
       file: at the first header read the header counts 2; at the
       lookup a value's list holds 3; after the lookup the header
@@ -816,32 +816,32 @@ change.
       Over the page and every batch, each of the three is delivered
       once. For Tail and for an After page that reaches the tail; in
       both layouts.
-- [ ] Two lists read at different moments, set up the same way: a
+- [x] Two lists read at different moments, set up the same way: a
       query of two values. At the first value's lookup an entry isn't
       linked into that list yet; at the second's, a later entry is.
       The header counts both only after the page's first header read:
       raised through the seam under (a), between the page and the
       follow under (b). Each entry is delivered once, though one is
       older than an entry the page showed.
-- [ ] The mirror case (follow-N1, dropped): a header that counts 3
+- [x] The mirror case (follow-N1, dropped): a header that counts 3
       while a value's list holds 2. The third entry is delivered once,
       by the page or by the follow, if the followed option gives that
       for free (the re-read shape does). It gets no work of its own; if
       it doesn't come free, this criterion is struck.
-- [ ] A page stopped by a limit, and a Before page: the follow starts
+- [x] A page stopped by a limit, and a Before page: the follow starts
       at the journal's end as today and repeats nothing the page
       showed.
-- [ ] A Tail page over an archived file and an active one, unfiltered
+- [x] A Tail page over an archived file and an active one, unfiltered
       and filtered, then a follow: its first batch is empty. An
       archived file's last entry that journald was cut off from
       linking (Difference 12) doesn't come again.
-- [ ] A first batch cut by a small `Limits` (`Batch::more`): the later
+- [x] A first batch cut by a small `Limits` (`Batch::more`): the later
       drains repeat nothing the page showed and lose nothing.
-- [ ] A page that read nothing from a file: what is written to that
+- [x] A page that read nothing from a file: what is written to that
       file afterwards is delivered.
-- [ ] An unfiltered page and its follow are unchanged: the existing
+- [x] An unfiltered page and its follow are unchanged: the existing
       tests pass as they are.
-- [ ] Option (a), chosen 2026-11-12 (the plan's decisions 23 and 24;
+- [x] Option (a), chosen 2026-11-12 (the plan's decisions 23 and 24;
       Task 32's design note under the handover question):
       - for each file that isn't sealed, a filtered page reads the
         header again after its lookups (n1), matches the main-list
@@ -857,19 +857,19 @@ change.
         and one where the landing is itself among the re-read entries;
       - a realtime clock stepping back among the entries written during
         a page is listed in forward.rs's departures from journalctl.
-- [ ] `PageEnd` stays opaque and keeps `Debug`, `Clone`, `PartialEq`,
+- [x] `PageEnd` stays opaque and keeps `Debug`, `Clone`, `PartialEq`,
       `Eq`, `Default` and `Send`. Its rustdoc says what it carries, and
       that it is the journal's end, not the page's: a follow from a
       `Before` page skips entries (decision 10).
-- [ ] follow.sh has one scenario on real journald (this was Task 35,
+- [x] follow.sh has one scenario on real journald (this was Task 35,
       decision 21): a filtered page is taken while a writer runs, a
       follow starts from its end, and the page plus its follow give
       every entry once.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh full <base>`.
-- [ ] follow.sh, with that scenario, on at least one release, capped.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh full <base>`.
+- [x] follow.sh, with that scenario, on at least one release, capped.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 32, and the maintainer's choice from its
@@ -885,11 +885,10 @@ it holds today and is pinned here; Difference 13's wording is new.
 The flush question (the plan's) goes to the maintainer (decision 20).
 
 **Acceptance criteria:**
-- [ ] Before code, the flush question's options and its
-      recommendation (Difference 13 extended) are put to the
-      maintainer, who chooses (decision 20). The choice is recorded
-      here. This task and the rest of lane 2 wait for it, and the
-      other lanes go on.
+- [x] The flush question is settled by decision 12 (0 lost, 0
+      doubled), so it isn't put to the maintainer again (the plan's
+      decision 26): option (b). Extending Difference 13 would allow a
+      doubled entry once per boot, against decision 12.
 - [ ] A rotation between the page and the follow: the archived file
       keeps its position by inode and file id, and every entry of the
       new file is delivered. Nothing lost or doubled.
@@ -903,11 +902,13 @@ The flush question (the plan's) goes to the maintainer (decision 20).
       the /var file: every flush copy is shown again, as Difference 13
       says of a followed file. A test pins it.
 - [ ] A flush between the page and the follow, where the /var file is
-      new: Difference 13's wording is extended to a page and a follow
-      on either side of a flush (the recommendation, if the maintainer
-      chooses it). No
-      entry is lost, and `PageEnd`'s newest entry is not raised past
-      what the headers gave.
+      new: `PageEnd` carries, for each entry the page showed that is
+      newer than its newest entry (under handover (a), the ones the
+      re-read added), its boot id, monotonic and realtime stamps and
+      xor hash, and the follow drops one flush copy of each. Its
+      equality includes them. No entry is lost or doubled, and
+      `PageEnd`'s newest entry is not raised past what the headers
+      gave.
 - [ ] A file the page couldn't open: the follow reads it as a new
       file, and its open error is reported once.
 - [ ] A merged page over several files hands each file over on its
