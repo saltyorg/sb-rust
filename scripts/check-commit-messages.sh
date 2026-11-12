@@ -15,10 +15,11 @@
 #   and what stayed custom and why (CLAUDE.md, "Library first"). This applies
 #   from the commit that introduced the rule onward: a commit whose parent's
 #   copy of this script doesn't mention it is exempt;
-# - every commit has a "Review:" line in its body saying which review
-#   subagents ran and what came of their findings (CLAUDE.md, "Fresh-context
-#   review of every change"), from the commit that introduced the rule on,
-#   the same way.
+# - every commit that changes a file outside docs/ and tasks/ has a
+#   "Review:" line in its body saying which review subagents ran and what
+#   came of their findings (CLAUDE.md, "Fresh-context review"; ADR-016),
+#   from the commit that introduced the rule on, the same way. A commit of
+#   documents only needs none: those are reviewed at the checkpoint.
 # A merge commit (two or more parents) is skipped, whatever its subject; any
 # other commit is checked, a subject starting "Merge " included.
 # With no usable BEFORE (first push), checks every commit reachable from AFTER.
@@ -73,8 +74,9 @@ while IFS=$'\x1f' read -r sha parents subject; do
     status=1
   fi
   if grep -q 'Review:' <<<"$parent_script" \
+    && grep -qvE '^(docs|tasks)/' <<<"$files" \
     && ! grep -qE '^Review: .+' <<<"$body"; then
-    echo "Missing 'Review:' line: $sha $subject"
+    echo "Missing 'Review:' line (commit changes files outside docs/ and tasks/): $sha $subject"
     status=1
   fi
 done < <(git log --format='%h%x1f%p%x1f%s' "$range")

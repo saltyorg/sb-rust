@@ -3,20 +3,23 @@
 ## How to work (mandatory)
 
 The `agent-skills@addy-agent-skills` and `rust-skills@rust-skills` plugins
-are enabled and enforced for this repository (see the hooks in
-`.claude/settings.json`; rust-skills has its own table below).
+are enabled for this repository (see the hooks in `.claude/settings.json`;
+rust-skills has its own table below).
 
 1. **Start every session** by invoking `agent-skills:using-agent-skills` via the
    Skill tool, before any other work.
-2. **Before starting any task**, invoke the matching skill(s) from the table
-   below *before* reading code, planning, or editing. Load the skill; do not
-   paraphrase it from memory.
+2. **When the phase of the work changes** (spec → plan → implementation →
+   tests → debugging → review → commit → release), invoke the matching
+   skill(s) from the table below. Load the skill; do not paraphrase it from
+   memory. A skill loaded earlier in the session still covers its phase:
+   don't load it again for the next task of the same kind (ADR-016).
 3. **Follow the loaded skill's steps in order**, including its verification
    step. A task is not done until verification passes with evidence.
-4. **Switch skills when the phase changes** (implementation → tests → review →
-   commit). Several skills usually apply to one task.
-5. **State which skill(s) are in use** when starting a task. If no skill fits,
+4. **State which skill(s) are in use** when a phase starts. If no skill fits,
    say so in one line, then proceed.
+5. **Keep the process in proportion.** Time goes to sb's code and its tests.
+   Work on the gate, the plans or the records needs a defect that affects
+   sb or a request from the maintainer.
 6. **Surface assumptions** before non-trivial work. If unsure, stop and ask. Do
    not guess.
 
@@ -49,10 +52,9 @@ are enabled and enforced for this repository (see the hooks in
 
 ### Rust task → rust-skills skill
 
-The `rust-skills@rust-skills` plugin is enforced too (same hooks). It adds
-Rust-specific guidance on top of the agent-skills workflow skill; it never
-replaces one. Use these alongside the table above whenever Rust is written,
-changed or reviewed:
+The `rust-skills@rust-skills` plugin is enabled too. It adds Rust-specific
+guidance on top of the agent-skills workflow skill; it never replaces one.
+Load one of these when a Rust question needs it:
 
 | Situation | Skill |
 |---|---|
@@ -100,8 +102,11 @@ how answers are written.
   constraints) is ours to write, but still goes through a library wherever
   one meets the constraint.
 - **Enforcement:**
-  - After each edit to a `.rs` file, a hook (`.claude/hooks/library-check.sh`)
-    asks for this check. Answer it then, not at commit time.
+  - After an edit to a source file of a crate with terminal, UI, input,
+    process or I/O code (`cli-core`, `docker`, `exec`, `host`, `sb`,
+    `term-ui`) or of a prototype, a hook (`.claude/hooks/library-check.sh`)
+    asks for this check. Answer it then, not at commit time. A new crate
+    of that kind is added to the hook's list.
   - Before committing changes to terminal, UI, input, event-loop,
     clipboard, process or I/O code, run the `library-reviewer` agent
     (`.claude/agents/library-reviewer.md`) on the diff. Give it the range,
@@ -111,17 +116,22 @@ how answers are written.
     whether the reviewer ran. `scripts/check-commit-messages.sh` rejects
     commits without it.
 
-## Fresh-context review of every change
+## Fresh-context review, by tier
 
-A second pair of eyes catches what the author missed.
+A second pair of eyes catches what the author missed. The review is
+sized to the change (ADR-016):
 
-- **Before committing or handing back any change** (code, tests, scripts,
-  specs, docs), run a review subagent on it: `agent-skills:code-reviewer`
-  (correctness, readability, architecture, security, performance), plus
-  the `library-reviewer` where the library rule applies. Run them in
-  parallel with `scripts/check.sh full`. The subagent is the fresh-context
-  reviewer; use `agent-skills:code-review-and-quality` when you review
-  yourself or weigh its findings.
+| What the change touches | Review |
+|---|---|
+| Only `docs/` and `tasks/` | None for the commit; read at the next checkpoint, or by the maintainer when a spec or ADR is approved. No `Review:` line. |
+| Rust, the gate (`scripts/`, `CONSTRAINTS.md`, `CLAUDE.md`, `.claude/`, `.github/`, `deny.toml`, manifests), anything else | One `agent-skills:code-reviewer` run for the task, on its whole diff, in parallel with `scripts/check.sh full`. |
+| Terminal, UI, input, event-loop, clipboard, process or I/O code | The `library-reviewer` as well. |
+| Untrusted input, privileges, secrets, dependencies | `agent-skills:security-auditor` as well, when the spec or plan asks for it. |
+
+- **One pass, one model.** A second pass on another model is for a
+  checkpoint or the maintainer's request. Use
+  `agent-skills:code-review-and-quality` when you review yourself or weigh
+  the findings.
 - **Reviewers also check Microsoft's Pragmatic Rust Guidelines**
   (https://microsoft.github.io/rust-guidelines/agents/all.txt). A
   `SubagentStart` hook (`.claude/hooks/reviewer-guidelines.sh`) caches it
@@ -132,16 +142,17 @@ A second pair of eyes catches what the author missed.
 - **Brief it with the range and the goal, not your conclusions.** Tell it
   to edit nothing, to run sb only with `SB_LOG_DIR` in the scratchpad, and
   to report findings with file:line.
-- **Act on every finding:** fix it (test-first when it changes behaviour,
-  per `agent-skills:test-driven-development`), or record in the commit body
-  why not. After fixing, re-run `scripts/check.sh full`, and review the fix
-  again unless it is a mechanical change the finding spelled out.
-- **Every commit carries a `Review:` line** in its body: which reviewers
-  ran, on what diff (a commit range, or the working tree against a base),
-  and what was fixed or declined with reasons.
-  `scripts/check-commit-messages.sh` rejects commits without it.
-- A review is not optional for small or "obvious" changes; those are where
-  unchecked assumptions hide.
+- **Weigh every finding against how sb runs on Saltbox.** Fix the ones
+  that can happen in real use (test-first when it changes behaviour, per
+  `agent-skills:test-driven-development`); decline the rest in the commit
+  body with the reason. A finding doesn't become a plan of its own.
+- **After fixing, re-run `scripts/check.sh full`.** Review the fix again
+  only when it changes behaviour beyond what the finding spelled out.
+- **A commit that changes a file outside `docs/` and `tasks/` carries a
+  `Review:` line** in its body: which reviewers ran, on what diff (a
+  commit range, or the working tree against a base), and what was fixed
+  or declined with reasons. `scripts/check-commit-messages.sh` rejects
+  such a commit without it. Keep it to what a reader needs: a few lines.
 
 ## Project artifacts
 
@@ -155,7 +166,8 @@ A second pair of eyes catches what the author missed.
 - **`CONSTRAINTS.md` is the quality contract.** Read CONSTRAINTS.md before
   writing code. Do not weaken it to make a change pass. Run
   `scripts/check.sh fast` after edits, `task` before handing work back and
-  `full` before committing.
+  `full` before committing. A change under `docs/` and `tasks/` only ends
+  `task` and `full` after the fast checks (ADR-016).
 - **Fix the code, not the lint.** `#[allow]` is forbidden. A truly justified
   exception uses `#[expect(lint, reason = "...")]`, needs a row in the
   `CONSTRAINTS.md` Exceptions table, and must be called out in review.

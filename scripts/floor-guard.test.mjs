@@ -1218,6 +1218,7 @@ const stubs = (versions, arch) => {
 // - versions: a stub's version (null: no stub at all);
 // - arch, env, config: uname -m, extra environment, git configuration.
 const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', versions = {}, arch = 'x86_64',
+  moves = [],
   env: extra = {}, config = {} } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'check-sh-'));
   try {
@@ -1252,6 +1253,8 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     for (const message of commits) commit(message);
     for (const [key, value] of Object.entries(config)) git('config', key, value);
     write(repo, work);
+    // moves: [from, to] pairs, renamed with `git mv` (staged).
+    for (const [from, to] of moves) { mkdirSync(dirname(join(repo, to)), { recursive: true }); git('mv', from, to); }
     const r = spawnSync('bash', ['scripts/check.sh', stage, base], { cwd: repo, env: scratch, encoding: 'utf8' });
     const calls = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => {
       // The arguments come last, so a | among them stays in them.
@@ -1510,4 +1513,128 @@ test('check-commit-messages.sh: the length and the trailing period are checked a
   rejected(['fix:  two spaces'], /two spaces/);
   rejected(['fix: ' + 'a'.repeat(101)], /Not a Conventional Commit/);
   accepted(['fix: ' + 'a'.repeat(100), 'fix: a']);
+});
+
+// Path-aware stages and the tiered Review line (ADR-016).
+const cargoSubs = (r) => r.calls.filter((c) => c.tool === 'cargo' && c.args !== 'install --list').map((c) => c.args.split(' ')[0]);
+const guardTestRuns = (r) => r.calls.filter((c) => c.tool === 'node' && c.args.includes('.test.mjs')).length;
+
+test('check.sh task and full: a change under docs/ and tasks/ only ends after the fast checks, and says so', () => {
+  for (const stage of ['task', 'full']) {
+    const r = checkRun(stage, { work: { 'docs/specs/x.md': 'x\n', 'tasks/todo.md': 'x\n' } });
+    passes(r, stage);
+    assert.match(r.output, /skipped: only docs\/ and tasks\/ changed/, r.output);
+    assert.deepEqual(cargoSubs(r), ['fmt', 'clippy', 'clippy'], r.output);
+    // check.sh asks each tool for its version before the stage starts.
+    for (const tool of ['hyperfine', 'diff-cover', 'cross']) assert.ok(!r.calls.some((c) => c.tool === tool && c.args !== '--version'), tool + '\n' + r.output);
+    assert.ok(r.calls.some((c) => c.tool === 'gitleaks'), r.output);
+  }
+});
+
+test('check.sh full: a document beside any other file, a clean tree, and a document outside docs/ and tasks/ run every step', () => {
+  for (const work of [{ 'docs/x.md': 'x\n', 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, {},
+    { 'docs/y.md': 'y\n', 'CONSTRAINTS.md': TOOLS_MD + '\n' }, { 'docs/y.md': 'y\n', 'crates/foo/README.md': 'x\n' }]) {
+    const r = checkRun('full', { work });
+    passes(r, 'full');
+    assert.doesNotMatch(r.output, /only docs\/ and tasks\/ changed/, r.output);
+    for (const sub of ['llvm-cov', 'test', 'build', 'deny']) assert.ok(cargoSubs(r).includes(sub), sub + '\n' + r.output);
+    assert.equal(r.calls.filter((c) => c.tool === 'cross').length, 1, r.output);
+  }
+});
+
+test('check.sh full: committed documents after the base are documents only, with their messages checked', () => {
+  // The harness commits are empty, so the document arrives in the work tree
+  // and the commit after the base is what the message check reads.
+  const r = checkRun('full', { commits: ['docs: note it\n\nReview: none, a test fixture'], base: 'HEAD~1', work: { 'docs/x.md': 'x\n' } });
+  passes(r, 'full');
+  assert.match(r.output, /check-commit-messages: OK/, r.output);
+  assert.match(r.output, /only docs\/ and tasks\/ changed/, r.output);
+});
+
+test('check.sh fast: the gate scripts\' own tests run when scripts/ changed or nothing did, and are skipped otherwise', () => {
+  assert.equal(guardTestRuns(checkRun('fast')), 2);
+  assert.equal(guardTestRuns(checkRun('fast', { work: { 'scripts/new.sh': 'true\n' } })), 2);
+  for (const work of [{ 'docs/x.md': 'x\n' }, { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }]) {
+    const r = checkRun('fast', { work });
+    passes(r, 'fast');
+    assert.equal(guardTestRuns(r), 0, r.output);
+    assert.match(r.output, /skipped: nothing under scripts\/ changed/, r.output);
+    // The guard itself always runs.
+    assert.ok(r.calls.some((c) => c.tool === 'node' && c.args.startsWith('scripts/floor-guard.mjs')), r.output);
+  }
+});
+
+test('check.sh task: the crates\' tests run once, under coverage, then the doc tests and the prototypes', () => {
+  const proto = { 'prototypes/proto-a/Cargo.toml': '[package]\nname = "proto-a"\n\n[dependencies]\nname = "1"\n' };
+  const r = checkRun('task', { files: proto, work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+  passes(r, 'task');
+  const runs = r.calls.filter((c) => c.tool === 'cargo' && /^(llvm-cov|test) /.test(c.args)).map((c) => c.args);
+  assert.equal(runs.length, 3, r.output);
+  assert.match(runs[0], /^llvm-cov .*-p sb -p sb-foo /);
+  assert.match(runs[1], /^test .*--doc .*-p sb-foo/);
+  assert.equal(runs[2], 'test --locked --quiet -p proto-a');
+  // Without a prototype there is no third run, and none over the workspace.
+  const none = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+  passes(none, 'task');
+  assert.ok(!none.calls.some((c) => c.tool === 'cargo' && /^test (?!.*--doc)/.test(c.args)), none.output);
+});
+
+// reviewRun(files, message): check-commit-messages.sh over one commit that
+// adds the files, after a base that holds the script (the Review rule
+// applies from the commit after the one that introduced it).
+const reviewRun = (files, message) => {
+  const dir = mkdtempSync(join(tmpdir(), 'commit-review-'));
+  try {
+    const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir };
+    const git = (...args) => execFileSync('git', args, { cwd: dir, env: scratch, stdio: 'pipe' }).toString();
+    const id = ['-c', 'user.name=test', '-c', 'user.email=test'];
+    const add = (f, text) => { mkdirSync(dirname(join(dir, f)), { recursive: true }); writeFileSync(join(dir, f), text); };
+    git('init', '-q', '-b', 'main');
+    add('scripts/check-commit-messages.sh', readFileSync(join(SCRIPTS, 'check-commit-messages.sh'), 'utf8'));
+    git('add', '-A');
+    git(...id, 'commit', '-q', '-m', 'chore: base');
+    for (const f of files) add(f, 'x\n');
+    git('add', '-A');
+    git(...id, 'commit', '-q', '--allow-empty', '-m', message);
+    const r = spawnSync('bash', [join(SCRIPTS, 'check-commit-messages.sh'), 'HEAD~1', 'HEAD'], { cwd: dir, env: scratch, encoding: 'utf8' });
+    return { status: r.status, output: r.stdout + r.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test('check-commit-messages.sh: a commit of docs/ and tasks/ files only needs no Review line, any other does', () => {
+  const ok = (files, message) => { const r = reviewRun(files, message); assert.equal(r.status, 0, r.output); };
+  const missing = (files, message) => { const r = reviewRun(files, message); assert.equal(r.status, 1, r.output); assert.match(r.output, /Missing 'Review:' line/, r.output); };
+  ok(['docs/specs/x.md', 'tasks/todo.md'], 'docs: note it');
+  ok(['docs/x.md', 'CONSTRAINTS.md'], 'docs: note it\n\nReview: none, a test fixture');
+  missing(['docs/x.md', 'CONSTRAINTS.md'], 'docs: note it');
+  missing(['scripts/x.sh'], 'build: add it');
+  missing(['CLAUDE.md'], 'docs: change the rules');
+  // A path that only starts like one of the two directories is no document.
+  missing(['docs-extra/x.md'], 'docs: note it');
+  missing(['crates/foo/docs/x.md'], 'docs: note it');
+  // A commit with no files says nothing about what it is: it needs the line.
+  missing([], 'chore: nothing');
+});
+
+test('check.sh: a file moved into docs/ is no document, and a script moved out of scripts/ runs the gate tests', () => {
+  const fixture = { 'crates/foo/tests/snap.txt': 'a fixture a test reads\n', 'scripts/x.sh': 'true\n' };
+  const r = checkRun('full', { files: fixture, moves: [['crates/foo/tests/snap.txt', 'docs/snap.txt']] });
+  passes(r, 'full');
+  assert.doesNotMatch(r.output, /only docs\/ and tasks\/ changed/, r.output);
+  assert.ok(cargoSubs(r).includes('llvm-cov'), r.output);
+  const moved = checkRun('fast', { files: fixture, moves: [['scripts/x.sh', 'docs/x.sh']] });
+  passes(moved, 'fast');
+  assert.equal(guardTestRuns(moved), 2, moved.output);
+});
+
+test('check.sh task: each prototype is named, wherever its [package] section sits', () => {
+  const files = {
+    'prototypes/proto-a/Cargo.toml': '[dependencies]\nname = "1"\n\n[package]\nname = "proto-a"\n',
+    'prototypes/proto-b/Cargo.toml': '[package]\nname = "proto-b"\n',
+  };
+  const r = checkRun('task', { files, work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+  passes(r, 'task');
+  assert.ok(r.calls.some((c) => c.tool === 'cargo' && c.args === 'test --locked --quiet -p proto-a -p proto-b'), r.output);
 });

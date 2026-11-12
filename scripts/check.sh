@@ -4,7 +4,8 @@
 #
 #   scripts/check.sh fast [base]   after edits: each crate's deny.toml entry
 #                                  and lints, fmt, clippy, floor guard (and
-#                                  its own tests), secrets
+#                                  the gate scripts' own tests when scripts/
+#                                  changed), secrets
 #   scripts/check.sh task [base]   before handing work back: fast + tests,
 #                                  changed-line coverage, mutation score,
 #                                  startup budget
@@ -13,6 +14,9 @@
 #                                  dependencies, architecture, binary size
 #
 # base: the commit the work started from (default HEAD = uncommitted work).
+# A change that touches only docs/ and tasks/ ends task and full after the
+# fast checks (and full's commit messages): no build can read those files
+# (ADR-016). With nothing changed since the base, every step runs.
 # Every tool a stage runs is checked against the CONSTRAINTS.md Tools table
 # before the stage starts.
 # Exit: 0 all passed, 1 a check failed, 2 a check could not run (a tool
@@ -65,6 +69,32 @@ COVERAGE_MIN=90       # % of changed lines covered
 MUTATION_MIN=80       # % of viable mutants in changed code caught
 STARTUP_MAX_MS=10     # median ms for `sb --help` and `sb version`
 SIZE_MAX_BYTES=45711520 # production musl binary, at most sb-go's size
+
+# What changed since the base, tracked and untracked (ADR-016).
+# - documents_only: something changed, and all of it is under docs/ or
+#   tasks/. Nothing a build, a test or a measurement reads is there.
+# - scripts_changed: a file under scripts/ changed, or nothing changed at
+#   all (a run over a clean tree checks everything).
+mapfile -d '' -t changed_files < <(
+  # --no-renames: a file moved into docs/ is listed under its old path
+  # too, so a moved test fixture or script isn't taken for a document.
+  git diff "${diff_flags[@]}" --no-renames --name-only -z "$base" --
+  git ls-files -z --others --exclude-standard
+)
+documents_only=0
+scripts_changed=0
+if ((${#changed_files[@]} == 0)); then
+  scripts_changed=1
+else
+  documents_only=1
+  for f in "${changed_files[@]}"; do
+    case $f in
+    docs/* | tasks/*) ;;
+    *) documents_only=0 ;;
+    esac
+    case $f in scripts/*) scripts_changed=1 ;; esac
+  done
+fi
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 skip() { printf 'skipped: %s\n' "$1"; }
@@ -160,6 +190,15 @@ for c in "${crates[@]}"; do
   test_pkg_args+=(--test-package "$c")
 done
 
+# The prototypes: their tests run on their own, outside coverage. sed -s
+# reads each manifest on its own, so one file's [package] range can't run
+# into the next.
+proto_args=()
+while IFS= read -r name; do proto_args+=(-p "$name"); done < <(
+  find prototypes -mindepth 2 -maxdepth 2 -name Cargo.toml -print0 2>/dev/null | sort -z |
+    xargs -0 -r sed -s -n '/^\[package\]/,/^\[/s/^name *= *"\(.*\)"/\1/p'
+)
+
 # Each crate under crates/ inherits the workspace lints (`[lints]` with
 # `workspace = true`; CONSTRAINTS.md, Lint) and has its architecture entry
 # in deny.toml's bans.deny, `{ crate = "<name>", wrappers = [...] }` on
@@ -198,14 +237,17 @@ fast() {
   # yet").
   step "clippy, library and binary targets only (warnings are errors)"
   cargo clippy --workspace --lib --bins --locked --quiet -- -D warnings
-  step "floor guard's own tests"
-  # The dot reporter: one character a test, then each failure in full (the
-  # failure report is as Node 24 prints it; the page describes the dots
-  # only): https://nodejs.org/docs/latest-v24.x/api/test.html#test-reporters
   need node
-  node --test --test-reporter=dot scripts/floor-guard.test.mjs
-  step "plan id check's own tests"
-  node --test --test-reporter=dot scripts/check-plan-ids.test.mjs
+  step "floor guard's own tests, and the plan id check's"
+  if ((scripts_changed)); then
+    # The dot reporter: one character a test, then each failure in full (the
+    # failure report is as Node 24 prints it; the page describes the dots
+    # only): https://nodejs.org/docs/latest-v24.x/api/test.html#test-reporters
+    node --test --test-reporter=dot scripts/floor-guard.test.mjs
+    node --test --test-reporter=dot scripts/check-plan-ids.test.mjs
+  else
+    skip "nothing under scripts/ changed since $base"
+  fi
   step "floor guard"
   node scripts/floor-guard.mjs --base "$base"
   step "secrets (gitleaks, redacted)"
@@ -335,13 +377,25 @@ mutation_check() {
 
 task() {
   fast
-  step "tests"
+  if ((documents_only)); then
+    step "tests, coverage, mutation and startup"
+    skip "only docs/ and tasks/ changed since $base"
+    return
+  fi
+  # The crates' unit and integration tests run once, under coverage: a
+  # failing test fails cargo-llvm-cov as it fails cargo test
+  # (https://github.com/taiki-e/cargo-llvm-cov#usage: "cargo llvm-cov" runs
+  # `cargo test`). It runs no doc tests on a stable toolchain, and no
+  # prototype, so those two run after it (ADR-016).
+  step "tests (crates), with changed-line coverage >= ${COVERAGE_MIN}%"
   need script
-  cargo test --workspace --locked --quiet
-  step "changed-line coverage >= ${COVERAGE_MIN}%"
   need cargo-llvm-cov
   need diff-cover
   cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
+  step "tests (doc tests, prototypes)"
+  cargo test --locked --quiet --doc "${pkg_args[@]}"
+  if ((${#proto_args[@]})); then cargo test --locked --quiet "${proto_args[@]}"; fi
+  step "changed-line coverage >= ${COVERAGE_MIN}% (diff-cover)"
   # New files are untracked until committed; without --include-untracked
   # they would not count as changed lines.
   diff-cover target/lcov.info --compare-branch="$base" --include-untracked \
@@ -378,6 +432,11 @@ full() {
     scripts/check-commit-messages.sh "$base" HEAD
   fi
   task
+  if ((documents_only)); then
+    step "dependencies, architecture and binary size"
+    skip "only docs/ and tasks/ changed since $base"
+    return
+  fi
   step "dependencies and architecture (cargo-deny, shipped graph)"
   need cargo-deny
   cargo deny --locked --manifest-path crates/sb/Cargo.toml check

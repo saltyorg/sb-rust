@@ -40,15 +40,15 @@ pass clippy and their tests.
 | Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`; a prototype keeps the lints it was written under); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features; `check.sh`'s crate check, that each crate has `[lints] workspace = true` | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
 | Floor guard | Zero unacknowledged floor violations in the diff | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green |
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
-| Tests | All pass | `cargo test --workspace` | task | — |
+| Tests | All pass | `cargo llvm-cov` for the crates' unit and integration tests (the coverage run), then `cargo test --doc` for the crates and `cargo test` for the prototypes | task | Each test runs once (ADR-016) |
 | Coverage | Changed lines ≥ 90% covered | `cargo llvm-cov --lcov` + `diff-cover --fail-under=90` | task | Maintainer chose stricter than the 80% default |
 | Mutation | ≥ 80% of viable mutants in changed code caught, totalled over the passes; a crate in check.sh's `MUTATION_TESTERS` is judged by its own and its listed crates' tests, every other crate by every crate's tests | `cargo mutants --in-diff` per pass + score from each `outcomes.json` | task | Maintainer chose stricter than the 60% default; mutation checks were already part of the work; the per-crate scope is ADR-012 |
 | Startup | `sb --help` and `sb version` median ≤ 10 ms | `hyperfine --warmup 5 --runs 50`, release build | task | sb-go takes about 18 ms; the prototypes about 2 ms |
 | Dependencies | No RustSec vulnerability, no unmaintained or yanked crate, only GPL-3.0-compatible licences, crates.io only | `cargo deny --manifest-path crates/sb/Cargo.toml check` (`deny.toml`) | full | External opinion: the RustSec database |
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`); `check.sh`'s crate check, that each crate but `sb` has its entry (at fast) | full | The compiler can't see the map; cargo-deny can |
 | Binary size | Production musl binary ≤ 45,711,520 bytes | `stat` after `cross build --profile production --target x86_64-unknown-linux-musl`, in its own target directory (see the cross ADR); a host of another architecture skips it with a printed line | full | Never larger than sb-go's binary (2026-10-30) |
-| Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
-| Review line | Every commit's body says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review of every change (CLAUDE.md) |
+| Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line when it changes a file outside `docs/` and `tasks/`; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
+| Review line | The body of every commit that changes a file outside `docs/` and `tasks/` says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review, by tier (CLAUDE.md, ADR-016) |
 | Logging | Every root run writes its run record and outcome; logs never contain secret values | Tests in `sb-cli-core` (run log) and in each module that handles secrets (facts, accounts, credentials): the test feeds a known secret and asserts it isn't in the captured log | task | Decision 11; the run log is kept on the host |
 | Journal matrix | compare.sh, compat.sh, follow.sh and stress.sh pass on each supported release, with only the journal spec's listed Differences | `crates/journal/tests/` (the journal spec, [docs/specs/journal.md](docs/specs/journal.md), "Commands") | by hand (below) | journalctl of each release is the reference the reader must match (journal spec, assumption 4 and success criterion 3) |
 | Journal fuzz | The fuzz harness passes, its bounds enforced by itself | the `fuzz` example over seeds from `crates/journal/tests/seeds.sh` (journal spec, "Commands") | by hand (below) | The reader's bounds must hold on damaged and mutated files (journal spec, success criterion 4) |
@@ -58,6 +58,13 @@ All of the above but the two journal rows run through
 `fast` runs after edits, `task` before handing work back (a few minutes),
 and `full` before committing and in CI once CI exists. Every failing check
 blocks.
+
+What a run covers follows the files that differ from the base
+([ADR-016](docs/decisions/ADR-016-lighter-process.md)). A change under
+`docs/` and `tasks/` only ends `task` and `full` after the fast checks
+(and `full`'s commit messages). The gate scripts' own tests run in `fast`
+when a file under `scripts/` changed. With nothing changed since the
+base, every step runs.
 
 The journal matrix and the fuzz harness run by hand, capped, at each
 checkpoint and after any task that touches journal reading: a change
