@@ -160,6 +160,23 @@ Answers at the plan's approval (2026-11-11):
     criteria in tasks/todo.md plus a short message to the maintainer.
     The screenshots of Tasks 19, 20 and 21 are shown to the maintainer
     directly.
+23. **The handover is option (a), one re-read in the page** (Task 32's
+    question, 2026-11-12). Per unsealed file a filtered page reads the
+    header again after its lookups (n1), matches the main-list entries
+    from n0-1 to n1-1 by their items and merges them by offset;
+    `PageEnd` holds n1, and the follow's start, the flush and the
+    rotation rules stay as they are. This keeps decision 12's outcome
+    while departing from its wording ("the follow's start moves
+    instead"), which the maintainer accepted with the choice. Task 32's
+    probe backs it: on 22.04, 24.04 and 26.04 no entry was found in a
+    value's list before the header counted it, and the newest counted
+    entry was often not listed yet (the mirror case). Task 32's design
+    note is below the handover question.
+24. **A forward page at the journal's end is within decision 12**
+    (2026-11-12). It stops at the count it read (n0 unfiltered, n1
+    filtered), and the follow delivers the entries appended meanwhile.
+    "Matches journalctl" means every entry the page shows is in
+    journalctl's view, and the page plus its follow is the whole view.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -390,7 +407,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ### Phase 3 (lane 2): the journal reader
 - [x] Task 27: the crafted builder writes compact files
 - [x] Task 28: the suites the fixes touch run over both layouts
-- [ ] Task 32: the page-to-follow handover: facts, probe and options
+- [x] Task 32: the page-to-follow handover: facts, probe and options
 - [ ] Task 33: a page and its follow give every entry once
 - [ ] Task 34: the handover across files
 - [ ] Task 36: a page can always be paged past
@@ -557,6 +574,107 @@ What is left is marked:
     touches forward.rs and the page's order of reads, for filtered
     pages on top of (a)'s re-read. The gain for a viewer is nil: the
     follow delivers the same entries.
+
+**Task 32's design note** (answered: option (a), decision 23):
+
+- **Design note (Task 32, 2026-11-12):** how each option hands over, per
+  page kind. The facts it rests on are in
+  docs/platform-notes/systemd-journal.md, "The order journald links an
+  entry in". On 22.04, 24.04 and 26.04 a run under writes found:
+  - no entry in a value's list that a header read after the lookup
+    didn't count;
+  - no half-linked entry before the newest counted one;
+  - the newest counted entry not yet in its value's list in 0.01% to
+    0.27% of rounds (the mirror case is real under load, not only
+    reasoned).
+
+  Terms used below: n0 is a file's count at the page's first header
+  read. n1 is the count at a header read after every lookup. "Extras"
+  are the main-list entries from index n0-1 to n1-1, matched by their
+  items.
+  Unfiltered pages read no value list and change under no option.
+  - (a) **One re-read in the page.**
+    - *Tail:*
+      - The extras have the file's highest offsets, so newest first they
+        come before every listed entry. Merged by offset, the file's
+        stream is its listed entries plus the matching extras, each once.
+      - Nothing listed is at or past n1 (the run's first fact), so
+        `PageEnd`'s n1 covers everything shown.
+      - The follow reads from n1, as it reads from n0 today.
+    - *Before:* the same stream, with the cursor's step applied to each
+      candidate as now. The follow from a Before page starts at the
+      journal's end, as today (decision 10).
+    - *Merged page:*
+      - Each file gets its own extras and its own n1. The merge across
+        files doesn't change.
+      - `PageEnd`'s newest entry stays from the first headers (`lasts`).
+        So a file created during the page is walked back from an entry
+        no newer than what every file's first header counted.
+    - *Forward page:* the seek lands by bisecting the value lists, which
+      the extras may be missing from. There are two cases.
+      1. The landing L lies below main[n0-1]. Every extra is after L in
+         file order, so the forward walk takes it by offset, as it takes
+         a listed entry. This is clean.
+      2. L is itself at or past main[n0-1] (an entry listed during the
+         page). Then up to the few extras between the last listed entry
+         below L and L may be missing from the list. A bisect over the
+         complete list would have tested them as the last step between
+         two adjacent items, one tested left and one right. So such an
+         extra E is taken exactly when the seek's own test (seqnum,
+         monotonic time in the cursor's boot, or realtime, as
+         `test_object_*` compares) puts E at or after the cursor. That
+         is the cursor's order, not the landing's position.
+      - On a file sought per boot (`boot_starts`), the walk already
+        takes only entries after the cursor in the release's order. An
+        extra is taken by that same order, which is clean.
+      - The one place this isn't exact: a bisect by realtime over extras
+        whose clock stepped back among the few entries written during
+        the page. There the full-list bisect's landing isn't a simple
+        predicate. The entries involved are the ones journalctl itself
+        lands on differently run to run. Recommendation: accept it, and
+        state it in forward.rs's departures.
+      - So the forward page takes the re-read cleanly. It is one rule,
+        "an extra is taken by the seek's test against the cursor", and
+        it holds on both landings.
+    - *Sealed files:* no extras. An archived file's count is final, and
+      re-reading from n0-1 would show a cut-off entry again
+      (Difference 12).
+    - *A value first written during the page:* it has no DATA object at
+      lookup. The extras are matched by looking the value up again after
+      n1, as the follow does.
+  - (b) **An index and the entries shown past it.**
+    - *Tail and Before:* `PageEnd` holds n0 per file and the offsets the
+      page showed at or past main[n0-1]'s offset. The follow reads from
+      n0 and drops those offsets until its position passes the last one.
+      That needs a filter that outlives the first batch, since a batch
+      can stop at the output limit.
+    - *The mirror case:* the page reads main[n0-1] by its items, for a
+      filtered query on a file that isn't sealed. If it matches and no
+      list held it, the follow starts at n0-1 for that file. The run
+      shows this branch is taken under ordinary load, so it is a tested
+      path, not a corner.
+    - *Merged page:* per file, as above. `PageEnd`'s newest entry is not
+      raised to the newest record shown.
+    - *Forward page:* the same set, filled where the walk reaches the
+      end. Its seek is unchanged.
+    - *`PageEnd`:* grows with the entries shown past n0, and its
+      equality compares them.
+  - (c) **A high-water mark only.**
+    - *All kinds:* per file, the position past the newest entry shown.
+      It loses the newest counted entry when that was half linked (the
+      mirror case, which the run sees under load). It also loses an
+      entry of one list read before another list gained a later one.
+    - Either way "0 lost" breaks, for Tail and forward pages alike. Not
+      recommended.
+  - **Decision 12's bounded forward page under (a):**
+    - An unfiltered forward page stops at n0, a filtered one at n1. The
+      follow delivers what came later.
+    - Going on to the live count would mean reading the header again at
+      the end of the walk and building `PageEnd` after it. That changes
+      forward.rs and the page's order of reads, for no entry the follow
+      doesn't deliver.
+    - Recommendation: read it as within decision 12.
+
 
 **Task 34: a flush between the page and the follow [research]**
 - A flush copies /run's entries into /var and removes /run. It

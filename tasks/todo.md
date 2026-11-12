@@ -742,10 +742,10 @@ named), for the platform note to be written from:
   2089-2103).
 
 **Acceptance criteria:**
-- [ ] `docs/platform-notes/systemd-journal.md` records the facts above
+- [x] `docs/platform-notes/systemd-journal.md` records the facts above
       with their citations, the systemd versions and the method, and no
       host details.
-- [ ] The probe settles what reading didn't, and the note says so for
+- [x] The probe settles what reading didn't, and the note says so for
       each:
       - the flush code of 249 and 259 (journald-server.c): that /run
         is removed only when every entry was copied, as on 255;
@@ -754,28 +754,29 @@ named), for the platform note to be written from:
       - a run under writes, on each release, that tries to refute the
         link order: a reader that never finds an entry in a value's
         list before the header counts it.
-- [ ] The note states the one assumption no reading can settle: a
+- [x] The note states the one assumption no reading can settle: a
       reader's `pread` sees journald's mmap stores in program order.
       It holds on x86-64, the only architecture sb ships for.
-- [ ] A design note shows, for each option in the plan's handover
+- [x] A design note shows, for each option in the plan's handover
       question, how a Tail page, a forward page, a Before page and a
       merged page hand over. For the recommended option it shows
       whether the forward page takes the re-read cleanly: an entry
       before the landing the seek found must be taken by the cursor's
       order.
-- [ ] The options and a recommendation are written up. The
+- [x] The options and a recommendation are written up. The
       recommendation includes decision 12's point on a forward page
       bounded by its header's count.
-- [ ] The options, their pros and cons and the recommendation are put
+- [x] The options, their pros and cons and the recommendation are put
       to the maintainer, who chooses (decision 20). The choice is
-      recorded here, and Task 33 gets its option-specific criteria
+      recorded here (2026-11-12: option (a), the plan's decisions 23 and
+      24), and Task 33 gets its option-specific criteria
       from it. The rest of lane 2 waits for the choice, and the other
       lanes go on.
 
 **Verification:**
-- [ ] The probe's runs, capped, in the matrix's containers, logs kept
+- [x] The probe's runs, capped, in the matrix's containers, logs kept
       outside the repository; `scripts/check.sh full <base>`.
-- [ ] No commit review: the task commits documents only (ADR-016).
+- [x] No commit review: the task commits documents only (ADR-016).
 
 **Dependencies:** Task 28
 **Files:** `docs/platform-notes/systemd-journal.md`, `tasks/plan.md` (the design note, under the handover question; it lands on the main checkout, as the plan's shared-file rule requires)
