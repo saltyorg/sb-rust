@@ -162,14 +162,14 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   colour off (see "Escape handling"), so the log never holds an escape
   sequence or its payload, APC, PM and SOS included.
 
-### Escape handling (amended 2026-11-11, journal spec decisions 2 and 5)
+### Escape handling (amended 2026-11-11, journal spec decisions 2 and 5; tables 2026-11-12)
 
 Every line term-ui draws from text it was given (a step's output and
-notices, error lines, a child's last lines and reason), and every output
-and notice line it logs, goes through one public sanitizer,
-`DisplayText`, shared with the log viewer (journal spec, "Display
-(decision 2)"). A step's error record is logged as is, as before
-(tracing quotes it as a debug string):
+notices, error lines, a child's last lines and reason, a table's headings
+and cells), and every output and notice line it logs, goes through one
+public sanitizer, `DisplayText`, shared with the log viewer (journal
+spec, "Display (decision 2)"). A step's error record is logged as is, as
+before (tracing quotes it as a debug string):
 
 ```rust
 /// Sanitized text, held as one `String` plus line ranges.
@@ -211,6 +211,15 @@ pub fn keeps_codes(colour: bool, profile: Profile) -> bool;
   sequence takes the rest of the text, newlines included.
 - Other C0 controls, DEL and C1 are dropped; CAN and SUB end a sequence,
   as in the DEC model. Bidi and zero-width characters pass unmarked.
+
+**Tables** sanitize in `Table::render`, the one place every heading and
+cell passes, with colour off: a cell's own SGR codes are dropped (a
+container label is untrusted text, as `sb docker ps` shows it), and the
+colour the table adds itself (border, bold headings, a cell's role) is
+applied afterwards, so it stays. A cell's `\n` still separates its
+lines; a tab and a carriage return are applied as above. `sb docker
+ps --json` doesn't pass through a table, and its output escapes every
+control character, C1 and DEL included (docker spec, `--json`).
 
 **The parser** is anstyle-parse 1.0.0 (already in the tree through
 anstream; https://docs.rs/anstyle-parse/1.0.0/anstyle_parse/), which runs

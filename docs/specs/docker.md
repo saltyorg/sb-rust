@@ -119,7 +119,7 @@ logging levels end to end.
   |---|---|
   | Container | the first name without its leading `/`; with no name, the short ID (12 characters, `unknown` when empty), as sb-go |
   | Status | the status rule below |
-  | Traefik Port | values of labels containing `traefik.http.services` and `.loadbalancer.server.port`, not containing `-http`, with more than three dot-separated parts (sb-go's rule); empty values dropped, deduplicated, numeric values in numeric order then any others in text order, joined by `, ` |
+  | Traefik Port | values of labels containing `traefik.http.services` and `.loadbalancer.server.port`, not containing `-http`, with more than three dot-separated parts (sb-go's rule); empty values dropped, deduplicated, numeric values in numeric order then any others in text order, joined by `, `; in the table each value is one line (newline and carriage return as spaces) cut to 64 characters with `…`, and `--json` keeps it whole |
   | Port Bindings | one per line, `ip:host->port/proto`, host and container ports padded to one width, so the arrows line up in the right-aligned column whatever the address (when the table wraps a narrow column, wrapped lines may not); an unset IP shown as `0.0.0.0`, every IPv6 address in brackets (`[::]`, `[::1]`); bindings without a host port left out; ordered by container port number, then protocol, then IPv4 before IPv6, then address (numerically), then host port |
 
 - **Status rule** (bollard's state and health enums, so every state is
@@ -154,7 +154,10 @@ logging levels end to end.
   `NO_COLOR` and `SB_COLOR_PROFILE` as everywhere. No containers: the
   headings alone, as sb-go.
 - **`--json`** (decision 2), written with serde_json as `sb version
-  --json` is: compact, keys in the order below, one trailing newline. An
+  --json` is: compact, keys in the order below, one trailing newline,
+  every control character in a string escaped as `\u00XX`, C1 and DEL
+  included (serde_json escapes only U+0000 to U+001F; a label's 8-bit
+  CSI or OSC would otherwise reach a terminal). An
   array of the same containers in the same order, each:
 
   | Key | Value |

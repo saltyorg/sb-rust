@@ -17,6 +17,7 @@ use tabled::settings::peaker::Priority;
 use tabled::settings::style::BorderColor;
 use tabled::settings::{Alignment, Color, Style, Width};
 
+use crate::DisplayText;
 use crate::style::table_colour;
 
 /// One cell: its text and, optionally, the theme role it is drawn in.
@@ -106,10 +107,13 @@ impl Table {
     /// under `ascii`, bold included), fitted to `width` when given.
     #[must_use]
     pub fn render(&self, theme: &Theme, colour: bool, width: Option<usize>) -> String {
+        // Every heading and cell is sanitized here, with its own colour
+        // dropped (term-ui spec, "Escape handling"): a container label is
+        // untrusted text. The table's colour is added after, by tabled.
         let mut builder = Builder::default();
-        builder.push_record(self.headings.clone());
+        builder.push_record(self.headings.iter().map(|text| shown(text)));
         for row in &self.rows {
-            builder.push_record(row.iter().map(|cell| cell.text.clone()));
+            builder.push_record(row.iter().map(|cell| shown(&cell.text)));
         }
         let mut table = builder.build();
         // Each line of a wrapped cell aligned on its own (tabled aligns a
@@ -169,6 +173,16 @@ impl Table {
         let text = self.render(theme::current(), colour, width);
         writeln!(std::io::stdout(), "{text}").map_err(output_error)
     }
+}
+
+/// `text` as a cell shows it: [`DisplayText`] without colour, its lines
+/// joined by `\n` again, which tabled splits a cell's lines at. Why not
+/// tabled's `Charset::clean()`: it drops only the ESC byte and other C0,
+/// leaving sequence payloads, DEL and C1.
+fn shown(text: &str) -> String {
+    DisplayText::from_bytes(text.as_bytes(), false)
+        .as_str()
+        .to_owned()
 }
 
 #[cfg(test)]

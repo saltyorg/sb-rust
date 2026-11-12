@@ -79,3 +79,92 @@ fn a_table_fits_a_narrow_terminal() {
     );
     assert!(plain.contains("╭"), "{plain}");
 }
+
+/// Cells as untrusted text (term-ui spec, "Escape handling"; san-H1): the
+/// sequences a container label can carry, and what each cell shows.
+mod sanitized {
+    use sb_cli_core::theme::{Palette, Profile, Role, Theme};
+    use sb_term_ui::{Cell, Table};
+
+    /// (raw, shown): OSC 52 and a title, a screen-clearing CSI, 8-bit CSI,
+    /// OSC, NEL and ST (C1), DEL, a tab, a CR.
+    const CELLS: [(&str, &str); 6] = [
+        ("a\x1b]52;c;ZGF0YQ==\x07b", "ab"),
+        ("\x1b]0;owned\x07t\x1b[2J\x1b[Hu", "tu"),
+        ("c\u{9b}31md\u{9d}0;title\x07e\u{85}", "cde"),
+        ("f\u{9c}g\u{7f}h", "fgh"),
+        ("x\ty", "x       y"),
+        ("old\rnew", "new"),
+    ];
+
+    /// A heading holding a title change, and the heading it shows.
+    const HEADING: (&str, &str) = ("Na\x1b]0;t\x07me", "Name");
+
+    fn table(heading: &str, cells: [&str; 6]) -> Table {
+        let mut table = Table::new([heading, "Status"]);
+        for text in cells {
+            table.row([Cell::new(text), Cell::new(text).role(Role::Ok)]);
+        }
+        table
+    }
+
+    fn themes() -> [Theme; 2] {
+        [
+            Theme::resolve(&Palette::default(), Profile::TrueColor),
+            Theme::resolve(&Palette::default(), Profile::Ascii),
+        ]
+    }
+
+    /// OSC, CSI, C1, DEL, a tab and a CR, in a cell or a heading: none
+    /// reaches the table, which draws as the same table of the cleaned text
+    /// would, colour on or off.
+    #[test]
+    fn a_cell_renders_without_escapes_or_controls() {
+        let raw = || table(HEADING.0, CELLS.map(|(raw, _)| raw));
+        let clean = || table(HEADING.1, CELLS.map(|(_, shown)| shown));
+        for theme in themes() {
+            let text = raw().render(&theme, false, None);
+            assert!(
+                !text.chars().any(|c| c.is_control() && c != '\n'),
+                "{text:?}"
+            );
+            for colour in [false, true] {
+                assert_eq!(
+                    raw().render(&theme, colour, None),
+                    clean().render(&theme, colour, None),
+                    "colour {colour}"
+                );
+            }
+        }
+    }
+
+    /// The table's own colour is kept: the border, the bold headings and a
+    /// cell's role; a cell's own SGR is not.
+    #[test]
+    fn the_tables_own_colour_is_kept() {
+        let [theme, _] = themes();
+        let mut hostile = Table::new(["Name"]);
+        hostile.row([Cell::new("\x1b[31mred\x1b[0m").role(Role::Ok)]);
+        let text = hostile.render(&theme, true, None);
+        assert!(text.contains("\x1b[1mName"), "{text:?}");
+        assert!(text.contains("\x1b[38;2;"), "{text:?}");
+        assert!(
+            text.contains(&sb_term_ui::style::paint(&theme, Role::Ok, true, "red")),
+            "{text:?}"
+        );
+        assert!(!text.contains("\x1b[31m"), "{text:?}");
+    }
+
+    /// `\n` still separates a cell's lines (the bindings, one per line).
+    #[test]
+    fn a_newline_still_separates_a_cells_lines() {
+        let [_, plain] = themes();
+        let mut lines = Table::new(["Port Bindings"]);
+        lines.row(["one\ntwo"]);
+        let text = lines.render(&plain, false, None);
+        assert!(
+            text.contains("│ one           │\n│ two           │"),
+            "{text}"
+        );
+    }
+}

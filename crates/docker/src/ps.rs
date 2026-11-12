@@ -279,11 +279,38 @@ pub fn table(rows: &[Row]) -> Table {
         table.row([
             Cell::new(row.name.clone()),
             Cell::new(row.status.clone()).role(row.role),
-            Cell::new(row.traefik.join(", ")),
+            Cell::new(
+                row.traefik
+                    .iter()
+                    .map(|port| one_short_line(port))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
             Cell::new(binding_lines(&row.bindings).join("\n")),
         ]);
     }
     table
+}
+
+/// A Traefik value as the table shows it: one line (newline and carriage
+/// return as spaces) of at most 64 characters, cut with `…` (a port is
+/// at most five digits; a label is the image's text). `--json` keeps it
+/// whole. Why not console's `truncate_str`
+/// (<https://docs.rs/console/0.16.6/console/fn.truncate_str.html>): it
+/// counts display width, not characters, and console is only a
+/// dev-dependency of sb-docker; the cell is sanitized by `Table` anyway.
+fn one_short_line(value: &str) -> String {
+    const MAX: usize = 64;
+    let line: String = value
+        .chars()
+        .map(|c| if matches!(c, '\n' | '\r') { ' ' } else { c })
+        .collect();
+    if line.chars().count() <= MAX {
+        return line;
+    }
+    let mut cut: String = line.chars().take(MAX - 1).collect();
+    cut.push('…');
+    cut
 }
 
 #[cfg(test)]
@@ -659,6 +686,87 @@ mod tests {
         // Wider than needed: the natural width, not stretched.
         let wide = table(&rows).render(&ascii(), false, Some(widest + 40));
         assert_eq!(wide, natural);
+    }
+
+    /// A label and a name holding escape sequences (san-H1): the table
+    /// shows none of them and keeps its one row; `--json` keeps the raw
+    /// values, as JSON escapes.
+    #[test]
+    fn hostile_labels_and_names_reach_the_table_sanitized() {
+        let name = "/evil\x1b]52;c;ZGF0YQ==\x07\x1b[1B\r│ forged │ running │";
+        let port = "8080\x1b]0;owned\x07\x1b[2J\u{9b}H\u{9d}0;t\u{9c}\u{7f}\t";
+        let inspect = serde_json::json!({
+            "Id": "0123456789abcdef",
+            "Name": name,
+            "State": { "Status": "running" },
+            "Config": { "Labels": {
+                "traefik.http.services.evil.loadbalancer.server.port": port
+            } },
+        });
+        let summary: ContainerSummary =
+            serde_json::from_value(crate::testing::summary(&inspect)).expect("summary");
+        let inspect: ContainerInspectResponse = serde_json::from_value(inspect).expect("inspect");
+        let rows = [Row::new(&summary, &inspect)];
+        let theme = sb_cli_core::theme::Theme::resolve(
+            &sb_cli_core::theme::Palette::default(),
+            sb_cli_core::theme::Profile::TrueColor,
+        );
+        // Colour off: no escape and no control but the newlines.
+        let plain = table(&rows).render(&theme, false, None);
+        assert!(
+            !plain.chars().any(|c| c.is_control() && c != '\n'),
+            "{plain:?}"
+        );
+        // One row: top, headings, rule, the row, bottom; every line as wide
+        // as the table. The CR keeps what follows it, as text in the cell.
+        let widths: Vec<_> = plain.lines().map(console::measure_text_width).collect();
+        assert_eq!(widths.len(), 5, "{plain}");
+        assert!(widths.iter().all(|&w| w == widths[0]), "{plain}");
+        assert!(
+            plain.contains("forged") && plain.contains("8080"),
+            "{plain}"
+        );
+        // Colour on: the same table in the table's own colour only.
+        let coloured = table(&rows).render(&theme, true, None);
+        assert_eq!(console::strip_ansi_codes(&coloured), plain);
+        assert!(
+            !coloured.contains("\x1b]") && !coloured.contains(['\r', '\t', '\u{9b}']),
+            "{coloured:?}"
+        );
+        // `--json` keeps the raw values, every control character escaped
+        // (C1 and DEL included).
+        let json = crate::json::json(&rows);
+        assert!(
+            !json.chars().any(|c| c.is_control() && c != '\n'),
+            "{json:?}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+        assert_eq!(value[0]["name"], name.trim_start_matches('/'));
+        assert_eq!(value[0]["traefik_ports"][0], port);
+    }
+
+    /// In the table each Traefik value is one line, capped at 64
+    /// characters (a port is at most five digits); `--json` keeps them
+    /// whole.
+    #[test]
+    fn traefik_values_are_one_short_line_in_the_table() {
+        let long = "9".repeat(100);
+        let mut rows = fixture_rows();
+        rows.truncate(2);
+        rows[1].traefik = vec!["80\n├ forged\r┤".into(), long.clone()];
+        let text = table(&rows).render(&ascii(), false, None);
+        // Two rows: top, headings, rule, a row, rule, a row, bottom.
+        assert_eq!(text.lines().count(), 7, "{text}");
+        let capped = format!("{}…", "9".repeat(63));
+        assert!(
+            text.contains(&format!("80 ├ forged ┤, {capped} │")),
+            "{text}"
+        );
+        assert!(!text.contains(&"9".repeat(64)), "{text}");
+        let value: serde_json::Value =
+            serde_json::from_str(&crate::json::json(&rows)).expect("json");
+        assert_eq!(value[1]["traefik_ports"][1], long.as_str());
+        assert_eq!(value[1]["traefik_ports"][0], "80\n├ forged\r┤");
     }
 
     /// Colour off writes no escape codes; colour on paints each status in
