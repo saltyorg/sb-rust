@@ -511,7 +511,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 53: the production build links glibc, built on 22.04
 - [x] Task 54: the journal matrix builds in the same image
 
-- [ ] Task 56: the mutation pass times out per test (decision 34)
+- [x] Task 56: the mutation pass times out per test (decision 34)
 
 ### Phase 6: the toolchain (decision 32)
 - [ ] Task 55: the toolchain pin moves to 1.100

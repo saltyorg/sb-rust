@@ -1297,37 +1297,37 @@ which the gate counts as not caught (ADR-012). Also takes the follow-up
 "check.sh's production `cross build` runs uncapped".
 
 **Acceptance criteria:**
-- [ ] check.sh's mutation passes run cargo-mutants with nextest as its
+- [x] check.sh's mutation passes run cargo-mutants with nextest as its
       test tool (https://mutants.rs/nextest.html), with a nextest
       profile whose `slow-timeout` ends a test after a set time
       (https://nexte.st/docs/features/slow-tests/). The time is set from
       the slowest test's measured duration with a stated margin, so a
       test that passes on the unmutated tree is never ended. The
       whole-mutant timeout stays as the backstop.
-- [ ] Nothing the old runner caught is lost: doc tests and anything
+- [x] Nothing the old runner caught is lost: doc tests and anything
       nextest doesn't run are named, and either still run or shown not
       to catch mutants today. Tests that share process state (for
       example a `static` lock across tests) are checked under nextest's
       process-per-test model.
-- [ ] Task 38's two mutants (its diff is uncommitted in lane 2's
+- [x] Task 38's two mutants (its diff is uncommitted in lane 2's
       worktree) are caught under the new runner. Shown by applying that
       diff in a scratch copy, not by committing it.
-- [ ] cargo-nextest joins CONSTRAINTS.md's Tools table at an exact pin,
+- [x] cargo-nextest joins CONSTRAINTS.md's Tools table at an exact pin,
       installed on this host. An ADR (the next free number) records why
       this doesn't weaken the bar, the alternatives (redundant caps in
       code, an exception, counting timeouts as caught) and the timeout
       chosen. ADR-012's timeout paragraph points to it.
-- [ ] check.sh's production `cross build` is capped through
+- [x] check.sh's production `cross build` is capped through
       `CROSS_CONTAINER_OPTS` (`--memory`, `--cpus`), as
       `crates/journal/tests/example.sh` does; the follow-up is ticked.
-- [ ] The floor guard's acknowledgements, where it flags the change
+- [x] The floor guard's acknowledgements, where it flags the change
       (ADR-015).
 
 **Verification:**
-- [ ] `scripts/check.sh full <base>`, its mutation step run on a crate
+- [x] `scripts/check.sh full <base>`, its mutation step run on a crate
       change (a scratch edit, reverted) to show the new runner works;
       the floor guard's own tests.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** none (lane 4). Its merge re-runs every open lane's full
 check (decision 30, a gate file).
@@ -1428,6 +1428,13 @@ not here.)
 - [ ] `crates/journal/src/file.rs:13` still says "static musl binary"
       (ADR-013's reasoning, from before ADR-020): reword when the file
       is next touched.
+
+## Follow-ups from the per-test timeout (Task 56)
+
+- [ ] A missed mutant outside any task's diff: `crates/journal/src/follow.rs`,
+      "delete field tail in TailCache::update", missed under both runners
+      in Task 56's Task 38 runs. A test gap in the follow's tail cache; for
+      Checkpoint B to weigh.
 
 ## Follow-ups from docker start, stop and restart
 
