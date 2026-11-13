@@ -66,6 +66,26 @@ impl Repo {
         Ok(ran.stdout.trim().to_string())
     }
 
+    /// The checked-out commit: `git rev-parse HEAD`, captured within 10 s
+    /// (repo spec, `head()`). Callers compare it before and after an
+    /// update.
+    ///
+    /// # Errors
+    ///
+    /// [`RepoError::Head`] with git's failure: an unborn branch, no
+    /// repository, or no git.
+    pub async fn head(&self, token: &CancellationToken) -> Result<String, RepoError> {
+        let cmd = self.git().arg("rev-parse").arg("HEAD");
+        let ran = self
+            .read(cmd, token)
+            .await
+            .map_err(|err| RepoError::Head(err.to_string()))?;
+        let ran = ran
+            .check()
+            .map_err(|failed| RepoError::Head(failure(&failed)))?;
+        Ok(ran.stdout.trim().to_string())
+    }
+
     /// Refuse a branch name before it reaches any other git command
     /// (repo spec, decision 3): one starting with `-` (git would read it
     /// as an option), and one `git check-ref-format --branch` rejects or

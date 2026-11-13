@@ -6,7 +6,8 @@
 //! clean or submodule-update orchestration and only blocking HTTP; git2
 //! is libgit2, C, with openssl for https. So far the first slice: [`Repo::open`],
 //! [`Repo::current_branch`], [`Repo::check_branch_name`],
-//! [`Repo::ensure_fetch_all_branches`] and [`Repo::fetch_and_reset`].
+//! [`Repo::ensure_fetch_all_branches`] and [`Repo::fetch_and_reset`], then
+//! [`Repo::head`], [`branch_choice`] and [`branch_notices`].
 
 // Output goes through steps; `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
@@ -58,9 +59,77 @@ pub enum RepoError {
     /// The branch has no upstream to reset to.
     #[error("{repo}: branch '{branch}' has no upstream to update from")]
     NoUpstream { repo: String, branch: String },
+    /// `git rev-parse HEAD` failed: an unborn branch, no repository, or
+    /// no git (sb-go's `GetGitCommitHash`, git/git.go:216-228).
+    #[error("error occurred while trying to get the git commit hash: {0}")]
+    Head(String),
     /// A local git read failed otherwise.
     #[error("{0}")]
     Git(String),
+}
+
+/// The user's answer to "reset to the wanted branch?", from a flag or the
+/// command's prompt (repo spec, decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// Reset to the wanted branch (`--reset-branch`, or yes).
+    Reset,
+    /// Update the current branch (`--keep-branch`, or no).
+    Keep,
+}
+
+/// Which branch an update uses (repo spec, `branch_choice`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Choice {
+    /// Update this branch, the wanted one.
+    Use(String),
+    /// Update this branch, the current one, as the user chose. On a
+    /// detached HEAD it is `HEAD`, which [`Repo::check_branch_name`]
+    /// refuses: the command decides what keeping a detached HEAD means.
+    Keep(String),
+    /// The branches differ and there's no answer: the command asks, or
+    /// fails naming the flag.
+    Ask,
+}
+
+/// Whether the update needs the user's answer (sb-go's
+/// `ResolveUpdateBranch`, git/git.go:80-134): the wanted branch when
+/// `current` is it, otherwise as `answer` says, or [`Choice::Ask`]. A
+/// detached HEAD (`current` is `HEAD`) is another branch.
+#[must_use]
+pub fn branch_choice(current: &str, wanted: &str, answer: Option<Answer>) -> Choice {
+    if current == wanted {
+        return Choice::Use(wanted.to_owned());
+    }
+    match answer {
+        Some(Answer::Reset) => Choice::Use(wanted.to_owned()),
+        Some(Answer::Keep) => Choice::Keep(current.to_owned()),
+        None => Choice::Ask,
+    }
+}
+
+/// sb-go's info lines for the final `choice` (git/git.go:101 and 125).
+///
+/// `<Repo>: Currently on branch '<b>'` when the branches differ, then
+/// `<Repo>: Updating the current branch '<b>'` when the current one is
+/// kept. Call it once, for the choice made after any prompt, so the first
+/// line isn't shown twice. The
+/// names are as git gives them: git's ref rules refuse control
+/// characters (git-check-ref-format(1)), and a step's notice shows any
+/// other text through term-ui's sanitizing.
+#[must_use]
+pub fn branch_notices(repo: &Repo, current: &str, wanted: &str, choice: &Choice) -> Vec<String> {
+    let mut notices = Vec::new();
+    if current != wanted {
+        notices.push(format!("{}: Currently on branch '{current}'", repo.name));
+    }
+    if let Choice::Keep(branch) = choice {
+        notices.push(format!(
+            "{}: Updating the current branch '{branch}'",
+            repo.name
+        ));
+    }
+    notices
 }
 
 impl Repo {

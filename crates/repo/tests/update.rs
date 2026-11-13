@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use sb_cli_core::cancel::Shutdown;
-use sb_repo::{Repo, RepoError};
+use sb_repo::{Answer, Choice, Repo, RepoError, branch_choice, branch_notices};
 use sb_term_ui::{Labels, Options, Runner, Target};
 use tokio_util::sync::CancellationToken;
 
@@ -675,4 +675,127 @@ async fn a_retry_that_succeeds_with_the_line_is_done() {
     let ran = update(&fixture.repo().with_git(program), "master").await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     assert_eq!(calls(bin.path()).len(), 2);
+}
+
+#[test]
+fn the_same_branch_is_used_whatever_the_answer() {
+    for answer in [None, Some(Answer::Reset), Some(Answer::Keep)] {
+        assert_eq!(
+            branch_choice("master", "master", answer),
+            Choice::Use("master".to_string()),
+            "{answer:?}"
+        );
+    }
+}
+
+#[test]
+fn another_branch_follows_the_answer() {
+    assert_eq!(
+        branch_choice("develop", "master", Some(Answer::Reset)),
+        Choice::Use("master".to_string())
+    );
+    assert_eq!(
+        branch_choice("develop", "master", Some(Answer::Keep)),
+        Choice::Keep("develop".to_string())
+    );
+    assert_eq!(branch_choice("develop", "master", None), Choice::Ask);
+}
+
+#[test]
+fn a_detached_head_is_another_branch() {
+    assert_eq!(branch_choice("HEAD", "master", None), Choice::Ask);
+    assert_eq!(
+        branch_choice("HEAD", "master", Some(Answer::Reset)),
+        Choice::Use("master".to_string())
+    );
+    assert_eq!(
+        branch_choice("HEAD", "master", Some(Answer::Keep)),
+        Choice::Keep("HEAD".to_string())
+    );
+}
+
+#[test]
+fn the_notices_are_sb_gos_info_lines() {
+    let repo = Repo::open("Sandbox", std::env::temp_dir()).expect("open");
+    let same = branch_choice("master", "master", None);
+    assert_eq!(
+        branch_notices(&repo, "master", "master", &same),
+        Vec::<String>::new()
+    );
+    let reset = branch_choice("develop", "master", Some(Answer::Reset));
+    assert_eq!(
+        branch_notices(&repo, "develop", "master", &reset),
+        ["Sandbox: Currently on branch 'develop'"]
+    );
+    let ask = branch_choice("develop", "master", None);
+    assert_eq!(
+        branch_notices(&repo, "develop", "master", &ask),
+        ["Sandbox: Currently on branch 'develop'"]
+    );
+    let keep = branch_choice("develop", "master", Some(Answer::Keep));
+    assert_eq!(
+        branch_notices(&repo, "develop", "master", &keep),
+        [
+            "Sandbox: Currently on branch 'develop'",
+            "Sandbox: Updating the current branch 'develop'"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn head_is_the_checkout_s_commit_and_moves_with_an_update() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo();
+    let before = repo.head(&token()).await.expect("head");
+    assert_eq!(before, fixture.head());
+    assert_eq!(before.len(), 40, "{before}");
+    let master = fixture.advance("master", "next.txt");
+    assert_eq!(update(&repo, "master").await.error, None);
+    let after = repo.head(&token()).await.expect("head");
+    assert_eq!(after, master);
+    assert_ne!(after, before);
+}
+
+/// `head`'s error starts with sb-go's `GetGitCommitHash` text.
+fn assert_head_error(error: &RepoError) {
+    assert!(matches!(error, RepoError::Head(_)), "{error:?}");
+    let text = error.to_string();
+    assert!(
+        text.starts_with("error occurred while trying to get the git commit hash: "),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn head_in_an_unborn_repository_is_sb_gos_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "--quiet"]);
+    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let error = repo.head(&token()).await.expect_err("unborn");
+    assert_head_error(&error);
+    assert!(
+        error.to_string().contains("exited with code 128"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn head_outside_a_repository_is_sb_gos_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let error = repo.head(&token()).await.expect_err("not a repo");
+    assert_head_error(&error);
+    assert!(
+        error.to_string().contains("exited with code 128"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn head_without_a_git_program_is_sb_gos_error() {
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = fixture.repo().with_git(bin.path().join("missing-git"));
+    let error = repo.head(&token()).await.expect_err("no git");
+    assert_head_error(&error);
 }
