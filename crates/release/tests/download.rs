@@ -507,6 +507,14 @@ async fn a_trickling_proxy_times_out() {
         screen.contains("SVM proxy timed out; trying GitHub directly"),
         "{screen}"
     );
+    // A timeout is a network error: the proxy is asked four times first.
+    let proxied = fake
+        .seen()
+        .iter()
+        .filter(|seen| seen.target.starts_with("/version"))
+        .count();
+    assert_eq!(proxied, 4);
+    assert_eq!(releases.waits(), [SECOND, 2 * SECOND, 4 * SECOND]);
 }
 
 /// A staged file outside the target's directory is refused before
@@ -563,4 +571,181 @@ fn a_failed_rename_changes_nothing() {
     );
     assert!(target.join("keep").exists());
     assert_eq!(files(dir.path()), ["sb"]);
+}
+
+const SECOND: Duration = Duration::from_secs(1);
+
+/// How many times `fake` was sent the download.
+fn downloads(fake: &Fake) -> usize {
+    fake.seen()
+        .iter()
+        .filter(|seen| seen.target == PATH)
+        .count()
+}
+
+/// A 5xx, a 429 with `Retry-After`, a short body and a broken one are each
+/// tried again, into a fresh staged file: the next whole body is used.
+#[tokio::test]
+async fn a_transient_failure_is_retried() {
+    let body = vec![6u8; 4096];
+    for (first, wait) in [
+        (Answer::new(503, "busy"), SECOND),
+        (Answer::new(429, "").header("retry-after", "2"), 2 * SECOND),
+        (Answer::new(200, vec![6u8; 1000]), SECOND),
+        (Answer::new(200, vec![6u8; 1000]).cut_off(), SECOND),
+    ] {
+        let fake = Fake::start().expect("fake");
+        describe(&fake, body.len(), &sha256_hex(&body));
+        fake.script(PATH, first.clone());
+        fake.script(PATH, Answer::new(200, body.clone()));
+        let dir = tempfile::tempdir().expect("dir");
+        let releases = fake.releases(AGENT).expect("client");
+        let staged = fetch(&releases, dir.path(), 1 << 20)
+            .await
+            .unwrap_or_else(|err| panic!("{first:?}: {err}"));
+        assert_eq!(std::fs::read(staged.path()).expect("staged"), body);
+        assert_eq!(downloads(&fake), 2, "{first:?}");
+        assert_eq!(releases.waits(), [wait], "{first:?}");
+        assert_eq!(files(dir.path()).len(), 1);
+    }
+}
+
+/// Four attempts in all, waiting 1, 2 and 4 s; the last failure is the
+/// error, and nothing is left staged.
+#[tokio::test]
+async fn four_attempts_then_the_failure() {
+    let fake = Fake::start().expect("fake");
+    let body = vec![6u8; 4096];
+    describe(&fake, body.len(), &sha256_hex(&body));
+    fake.script(PATH, Answer::new(200, vec![6u8; 1000]));
+    let dir = tempfile::tempdir().expect("dir");
+    let releases = fake.releases(AGENT).expect("client");
+    let err = fetch(&releases, dir.path(), 1 << 20)
+        .await
+        .expect_err("short");
+    assert_eq!(
+        err.to_string(),
+        "release asset \"sb_linux_amd64\" size mismatch: expected 4096 bytes, got 1000"
+    );
+    assert_eq!(downloads(&fake), 4);
+    assert_eq!(releases.waits(), [SECOND, 2 * SECOND, 4 * SECOND]);
+    assert_eq!(files(dir.path()), Vec::<String>::new());
+}
+
+/// A status that won't change, a digest mismatch and a longer body fail at
+/// once.
+#[tokio::test]
+async fn a_lasting_failure_is_not_retried() {
+    let body = vec![6u8; 4096];
+    for answer in [
+        Answer::new(404, "Not Found"),
+        Answer::new(200, vec![7u8; 4096]),
+        Answer::new(200, vec![6u8; 5000]),
+    ] {
+        let fake = Fake::start().expect("fake");
+        describe(&fake, body.len(), &sha256_hex(&body));
+        fake.script(PATH, answer.clone());
+        let dir = tempfile::tempdir().expect("dir");
+        let releases = fake.releases(AGENT).expect("client");
+        let _ = fetch(&releases, dir.path(), 1 << 20)
+            .await
+            .expect_err("refused");
+        assert_eq!(downloads(&fake), 1, "{answer:?}");
+        assert_eq!(releases.waits(), Vec::<Duration>::new());
+        assert_eq!(files(dir.path()), Vec::<String>::new());
+    }
+}
+
+/// A rate limit resetting in two hours gives up at once, with the reason.
+#[tokio::test]
+async fn a_wait_over_a_minute_gives_up_at_once() {
+    let fake = Fake::start().expect("fake");
+    let body = vec![6u8; 4096];
+    describe(&fake, body.len(), &sha256_hex(&body));
+    fake.script(PATH, Answer::new(429, "").header("retry-after", "7200"));
+    let dir = tempfile::tempdir().expect("dir");
+    let releases = fake.releases(AGENT).expect("client");
+    let err = fetch(&releases, dir.path(), 1 << 20)
+        .await
+        .expect_err("gave up");
+    assert_eq!(
+        err.to_string(),
+        "download release asset \"sb_linux_amd64\": unexpected HTTP status 429 Too Many \
+         Requests; retry wait 7200s exceeds the 60s limit"
+    );
+    assert_eq!(downloads(&fake), 1);
+}
+
+/// A body that stalls for longer than the read timeout fails each
+/// attempt (the timeout set short through the test constructor).
+#[tokio::test]
+async fn a_stalled_body_times_out() {
+    let fake = Fake::start().expect("fake");
+    let body = vec![6u8; 4096];
+    describe(&fake, body.len(), &sha256_hex(&body));
+    fake.script(
+        PATH,
+        Answer::new(200, body).trickled(1024, Duration::from_secs(2)),
+    );
+    let mut bases = fake.bases();
+    bases.read_timeout = Duration::from_millis(300);
+    let releases = Releases::testing(bases, AGENT).expect("client");
+    let dir = tempfile::tempdir().expect("dir");
+    let err = fetch(&releases, dir.path(), 1 << 20)
+        .await
+        .expect_err("stalled");
+    let text = err.to_string();
+    assert!(
+        text.starts_with(
+            "copy release asset \"sb_linux_amd64\" into staging: read response body: "
+        ),
+        "{text}"
+    );
+    assert!(text.contains("timed out"), "{text}");
+    assert_eq!(downloads(&fake), 4);
+    assert_eq!(releases.waits(), [SECOND, 2 * SECOND, 4 * SECOND]);
+    assert_eq!(files(dir.path()), Vec::<String>::new());
+}
+
+/// Ctrl-C during a retry wait ends it at once: interrupted, one request,
+/// nothing staged. The wait is taken in full here (no divisor).
+#[tokio::test]
+async fn a_cancelled_wait_ends_at_once() {
+    let fake = Fake::start().expect("fake");
+    let body = vec![6u8; 4096];
+    describe(&fake, body.len(), &sha256_hex(&body));
+    fake.script(PATH, Answer::new(429, "").header("retry-after", "30"));
+    let mut bases = fake.bases();
+    bases.wait_divisor = 1;
+    let releases = Releases::testing(bases, AGENT).expect("client");
+    let dir = tempfile::tempdir().expect("dir");
+    let start = std::time::Instant::now();
+    let err = in_step(async |step| {
+        let release = releases.release(SB, Query::Latest, ASSET, step).await?;
+        let token = step.token();
+        let stage = Stage {
+            dir: dir.path(),
+            prefix: PREFIX,
+            max_size: 1 << 20,
+        };
+        let cancel = async {
+            while downloads(&fake) == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            token.cancel();
+        };
+        let (staged, ()) = tokio::join!(releases.download(&release.asset, stage, step), cancel);
+        staged
+    })
+    .await
+    .expect_err("interrupted");
+    assert_eq!(err.to_string(), "interrupted");
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(downloads(&fake), 1);
+    assert_eq!(files(dir.path()), Vec::<String>::new());
 }

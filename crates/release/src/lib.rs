@@ -6,6 +6,7 @@ mod activate;
 mod asset;
 mod download;
 mod lookup;
+mod retry;
 mod self_update;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -21,6 +22,8 @@ const _: () = assert!(
     "a release build (SB_VERSION set) must not enable sb-release's `testing` feature"
 );
 
+#[cfg(feature = "testing")]
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -97,6 +100,17 @@ pub struct Releases {
     api: Url,
     download: Url,
     metadata_timeout: Duration,
+    /// Each retry wait is slept divided by this: 1 in production; more
+    /// for a fake, so its tests check the waits without taking them. Why
+    /// not tokio's paused clock (`tokio::time::pause`): it advances
+    /// whenever the runtime waits, on I/O too
+    /// (<https://docs.rs/tokio/1.54.1/tokio/time/fn.pause.html>), so the
+    /// client's timeouts would fire against the fake's real loopback
+    /// socket; and sb's end-to-end tests run sb as its own process.
+    wait_divisor: u32,
+    /// The retry waits taken, in order, for the tests.
+    #[cfg(feature = "testing")]
+    waited: Mutex<Vec<Duration>>,
     /// The proxy's warning and the fallback's info, once per run each.
     warned: AtomicBool,
     fell_back: AtomicBool,
@@ -153,9 +167,38 @@ impl Releases {
             api: parse(api)?,
             download: parse(download)?,
             metadata_timeout: METADATA_TIMEOUT,
+            wait_divisor: 1,
+            #[cfg(feature = "testing")]
+            waited: Mutex::new(Vec::new()),
             warned: AtomicBool::new(false),
             fell_back: AtomicBool::new(false),
         })
+    }
+
+    /// Wait `wait` before attempt `attempt + 1` at `what`, logged with
+    /// the failure `reason`, on tokio's timer, so the step's token cancels
+    /// it with the request
+    /// (<https://docs.rs/tokio/1.54.1/tokio/time/fn.sleep.html>).
+    async fn pause(
+        &self,
+        wait: Duration,
+        what: &str,
+        attempt: u32,
+        reason: &dyn std::fmt::Display,
+    ) {
+        tracing::info!(
+            ?wait,
+            what,
+            attempt,
+            %reason,
+            "retrying after a transient failure"
+        );
+        #[cfg(feature = "testing")]
+        self.waited
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(wait);
+        tokio::time::sleep(wait / self.wait_divisor.max(1)).await;
     }
 }
 

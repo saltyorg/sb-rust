@@ -19,6 +19,7 @@ sb-cli-core.workspace = true
 anyhow.workspace = true
 sb-term-ui.workspace = true
 hex.workspace = true
+jiff.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true

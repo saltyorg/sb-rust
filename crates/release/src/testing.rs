@@ -68,7 +68,16 @@ pub struct TestBases {
     /// Each metadata request's total limit (60 s in production), short
     /// for a test of a server that trickles.
     pub metadata_timeout: std::time::Duration,
+    /// Each read's limit (30 s in production), short for a test of a
+    /// stalled body.
+    pub read_timeout: std::time::Duration,
+    /// Retry waits are slept divided by this (1 in production), so tests
+    /// check the waits ([`Releases::waits`]) without taking them.
+    pub wait_divisor: u32,
 }
+
+/// The fake's retry waits are slept a thousandth as long.
+const WAIT_DIVISOR: u32 = 1000;
 
 impl Releases {
     /// A client for a fake server: `bases` instead of the production
@@ -86,13 +95,27 @@ impl Releases {
             download,
             certificate,
             metadata_timeout,
+            read_timeout,
+            wait_divisor,
         } = bases;
         let certificate = reqwest::Certificate::from_der(&certificate)
             .map_err(|err| Error::Client(err.to_string()))?;
-        let builder = builder(user_agent).no_proxy().tls_certs_only([certificate]);
+        // The later `read_timeout` replaces the production one.
+        let builder = builder(user_agent)
+            .no_proxy()
+            .tls_certs_only([certificate])
+            .read_timeout(read_timeout);
         let mut releases = Self::with(builder, [&proxy, &api, &download])?;
         releases.metadata_timeout = metadata_timeout;
+        releases.wait_divisor = wait_divisor;
         Ok(releases)
+    }
+
+    /// The retry waits this client took so far, in order, as the policy
+    /// computed them (before the divisor).
+    #[must_use]
+    pub fn waits(&self) -> Vec<std::time::Duration> {
+        lock(&self.waited).clone()
     }
 }
 
@@ -332,6 +355,8 @@ impl Fake {
             download: format!("{}/", self.url),
             certificate: self.certificate.clone(),
             metadata_timeout: crate::METADATA_TIMEOUT,
+            read_timeout: crate::READ_TIMEOUT,
+            wait_divisor: WAIT_DIVISOR,
         }
     }
 

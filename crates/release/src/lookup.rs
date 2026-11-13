@@ -6,7 +6,9 @@
 
 use std::fmt;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
+use reqwest::header::HeaderMap;
 use reqwest::{StatusCode, Url};
 use sb_term_ui::{DisplayText, Step};
 use semver::Version;
@@ -14,7 +16,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::asset::RawAsset;
-use crate::{Asset, Error, GithubRepo, Releases};
+use crate::{Asset, Error, GithubRepo, Releases, retry};
 
 /// A metadata body is read up to this many bytes; more is invalid JSON
 /// (sb-go's `io.LimitReader(resp.Body, 4<<20)`).
@@ -73,6 +75,11 @@ enum Kind {
     },
     /// The request itself failed: its causes on one line.
     Transport { timed_out: bool, causes: String },
+    /// A retryable failure whose next wait was over the limit.
+    GaveUp {
+        failure: Box<Failure>,
+        wait: Duration,
+    },
 }
 
 impl Failure {
@@ -85,6 +92,19 @@ impl Failure {
                 timed_out: true, ..
             } => "timed out".to_owned(),
             Kind::Transport { causes, .. } => format!("request failed ({causes})"),
+            Kind::GaveUp { failure, wait } => {
+                format!("{}; {}", failure.reason(), retry::too_long(*wait))
+            }
+        }
+    }
+
+    /// Worth another attempt: a transport failure or a retryable status;
+    /// an answer sb can't use is not.
+    fn retryable(&self) -> bool {
+        match &self.0 {
+            Kind::Status { code, .. } => StatusCode::from_u16(*code).is_ok_and(retry::retryable),
+            Kind::Transport { .. } => true,
+            Kind::Invalid { .. } | Kind::GaveUp { .. } => false,
         }
     }
 
@@ -120,6 +140,9 @@ impl fmt::Display for Failure {
                 cause: None,
             } => f.write_str(detail),
             Kind::Transport { causes, .. } => write!(f, "fetch releases: {causes}"),
+            Kind::GaveUp { failure, wait } => {
+                write!(f, "{failure}; {}", retry::too_long(*wait))
+            }
         }
     }
 }
@@ -312,10 +335,42 @@ impl Releases {
         url
     }
 
-    /// GET `url`, 200 only, its JSON body read chunk by chunk up to
+    /// [`Releases::get_once`] with the retry policy (decision 7): a
+    /// transport failure or a retryable status is tried again, up to
+    /// [`retry::ATTEMPTS`] in all; a wait over the limit gives up with
+    /// the reason.
+    async fn get<T: DeserializeOwned>(&self, url: Url) -> Result<T, Failure> {
+        let mut attempt = 1;
+        loop {
+            let (failure, headers) = match self.get_once::<T>(url.clone()).await {
+                Ok(answer) => return Ok(answer),
+                Err(failed) => failed,
+            };
+            if !failure.retryable() || attempt >= retry::ATTEMPTS {
+                return Err(failure);
+            }
+            match retry::wait(attempt, headers.as_deref(), jiff::Timestamp::now()) {
+                Ok(wait) => self.pause(wait, url.path(), attempt, &failure).await,
+                Err(wait) => {
+                    return Err(Failure(Kind::GaveUp {
+                        failure: Box::new(failure),
+                        wait,
+                    }));
+                }
+            }
+            attempt += 1;
+        }
+    }
+
+    /// GET `url` once, 200 only, its JSON body read chunk by chunk up to
     /// [`MAX_BODY`]
     /// (<https://docs.rs/reqwest/0.13.5/reqwest/struct.Response.html#method.chunk>).
-    async fn get<T: DeserializeOwned>(&self, url: Url) -> Result<T, Failure> {
+    /// A failure comes with the response's headers when there was one
+    /// (the retry waits read them).
+    async fn get_once<T: DeserializeOwned>(
+        &self,
+        url: Url,
+    ) -> Result<T, (Failure, Option<Box<HeaderMap>>)> {
         let mut response = self
             .client
             .get(url)
@@ -324,27 +379,28 @@ impl Releases {
             .timeout(self.metadata_timeout)
             .send()
             .await
-            .map_err(Failure::transport)?;
+            .map_err(|err| (Failure::transport(err), None))?;
         let status = response.status();
+        let headers = Box::new(response.headers().clone());
         if status != StatusCode::OK {
             let body = read(&mut response, MAX_ERROR_BODY)
                 .await
                 .unwrap_or_default();
-            return Err(Failure(Kind::Status {
+            let failure = Failure(Kind::Status {
                 code: status.as_u16(),
                 body: cut(&String::from_utf8_lossy(&body)),
-            }));
+            });
+            return Err((failure, Some(headers)));
         }
         let body = read(&mut response, MAX_BODY + 1)
             .await
-            .map_err(Failure::transport)?;
+            .map_err(|err| (Failure::transport(err), Some(headers)))?;
+        let invalid =
+            |cause: &dyn fmt::Display| (Failure::invalid("returned invalid JSON", cause), None);
         if body.len() > MAX_BODY {
-            return Err(Failure::invalid(
-                "returned invalid JSON",
-                "larger than 4 MiB",
-            ));
+            return Err(invalid(&"larger than 4 MiB"));
         }
-        serde_json::from_slice(&body).map_err(|err| Failure::invalid("returned invalid JSON", err))
+        serde_json::from_slice(&body).map_err(|err| invalid(&err))
     }
 }
 
@@ -432,5 +488,23 @@ mod tests {
             refused.reason(),
             "request failed (error sending request: connection refused)"
         );
+        let gave_up = Failure(Kind::GaveUp {
+            failure: Box::new(Failure(Kind::Status {
+                code: 403,
+                body: "API rate limit exceeded".into(),
+            })),
+            wait: Duration::from_secs(7200),
+        });
+        assert_eq!(
+            gave_up.to_string(),
+            "returned HTTP 403: API rate limit exceeded; retry wait 7200s exceeds the 60s limit"
+        );
+        assert_eq!(
+            gave_up.reason(),
+            "returned HTTP 403; retry wait 7200s exceeds the 60s limit"
+        );
+        assert!(!gave_up.retryable());
+        assert!(refused.retryable() && timeout.retryable() && status.retryable());
+        assert!(!bare.retryable() && !invalid.retryable());
     }
 }

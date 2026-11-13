@@ -7,13 +7,14 @@
 use std::path::Path;
 
 use reqwest::StatusCode;
+use reqwest::header::HeaderMap;
 use sb_term_ui::Step;
 use sha2::{Digest, Sha256};
 use tempfile::TempPath;
 use tokio::io::AsyncWriteExt;
 
 use crate::lookup::causes;
-use crate::{Asset, Error, Releases};
+use crate::{Asset, Error, Releases, retry};
 
 /// Where and how a download is staged: in `dir` (the target's directory,
 /// so the final rename stays on one filesystem), the file name starting
@@ -75,25 +76,66 @@ impl Releases {
         }
         let token = step.token();
         token
-            .run_until_cancelled(self.stage(asset, stage))
+            .run_until_cancelled(self.stage_retrying(asset, stage))
             .await
             .unwrap_or(Err(Error::Interrupted))
     }
 
-    async fn stage(&self, asset: &Asset, stage: Stage<'_>) -> Result<Staged, Error> {
+    /// [`Releases::stage`] with the retry policy (decision 7): a network
+    /// error, a retryable status or a short body is tried again, each
+    /// attempt staging a fresh file, up to [`retry::ATTEMPTS`] in all; a
+    /// wait over the limit gives up with the reason (sb-go's
+    /// `downloadVerified`).
+    async fn stage_retrying(&self, asset: &Asset, stage: Stage<'_>) -> Result<Staged, Error> {
+        let mut attempt = 1;
+        loop {
+            let (error, headers) = match self.stage(asset, stage).await {
+                Ok(staged) => return Ok(staged),
+                Err(Failed::Final(error)) => return Err(error),
+                Err(Failed::Retryable(error, headers)) => (error, headers),
+            };
+            if attempt >= retry::ATTEMPTS {
+                return Err(error);
+            }
+            match retry::wait(attempt, headers.as_deref(), jiff::Timestamp::now()) {
+                Ok(wait) => self.pause(wait, asset.name(), attempt, &error).await,
+                Err(wait) => {
+                    return Err(Error::Download(format!(
+                        "{error}; {}",
+                        retry::too_long(wait)
+                    )));
+                }
+            }
+            attempt += 1;
+        }
+    }
+
+    /// One attempt at the download, staged and verified.
+    async fn stage(&self, asset: &Asset, stage: Stage<'_>) -> Result<Staged, Failed> {
         let name = asset.name();
-        let failed = Error::Download;
+        let failed = |text: String| Failed::Final(Error::Download(text));
         let mut response = self
             .client
             .get(asset.url().clone())
             .send()
             .await
-            .map_err(|err| failed(format!("download release asset {name:?}: {}", causes(err))))?;
+            .map_err(|err| {
+                Failed::Retryable(
+                    Error::Download(format!("download release asset {name:?}: {}", causes(err))),
+                    None,
+                )
+            })?;
         let status = response.status();
+        let headers = Box::new(response.headers().clone());
         if status != StatusCode::OK {
-            return Err(failed(format!(
+            let error = Error::Download(format!(
                 "download release asset {name:?}: unexpected HTTP status {status}"
-            )));
+            ));
+            return Err(if retry::retryable(status) {
+                Failed::Retryable(error, Some(headers))
+            } else {
+                Failed::Final(error)
+            });
         }
         // tempfile's builder in the caller's directory
         // (<https://docs.rs/tempfile/3.27.0/tempfile/struct.Builder.html#method.tempfile_in>);
@@ -118,10 +160,13 @@ impl Releases {
         let mut written: u64 = 0;
         loop {
             let chunk = response.chunk().await.map_err(|err| {
-                failed(format!(
-                    "copy release asset {name:?} into staging: read response body: {}",
-                    causes(err)
-                ))
+                Failed::Retryable(
+                    Error::Download(format!(
+                        "copy release asset {name:?} into staging: read response body: {}",
+                        causes(err)
+                    )),
+                    Some(headers.clone()),
+                )
             })?;
             let Some(chunk) = chunk else { break };
             written = written.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
@@ -137,10 +182,14 @@ impl Releases {
                 .map_err(io_failed(write(name)))?;
         }
         if written < asset.size() {
-            return Err(failed(format!(
-                "release asset {name:?} size mismatch: expected {} bytes, got {written}",
-                asset.size()
-            )));
+            // Short: the connection ended early, so it is tried again.
+            return Err(Failed::Retryable(
+                Error::Download(format!(
+                    "release asset {name:?} size mismatch: expected {} bytes, got {written}",
+                    asset.size()
+                )),
+                Some(headers),
+            ));
         }
         if digest.finalize().as_slice() != asset.sha256() {
             return Err(failed(format!("release asset {name:?} digest mismatch")));
@@ -161,6 +210,20 @@ impl Releases {
         // (<https://docs.rs/tokio/1.54.1/tokio/fs/struct.File.html#method.into_std>).
         drop(file.into_std().await);
         Ok(Staged(path))
+    }
+}
+
+/// How one download attempt failed: for good (a check that won't change,
+/// a local failure), or worth another attempt, with the response's
+/// headers when there was one (the retry waits read them).
+enum Failed {
+    Final(Error),
+    Retryable(Error, Option<Box<HeaderMap>>),
+}
+
+impl From<Error> for Failed {
+    fn from(error: Error) -> Self {
+        Failed::Final(error)
     }
 }
 

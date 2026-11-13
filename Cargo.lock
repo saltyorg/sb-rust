@@ -3474,6 +3474,7 @@ dependencies = [
  "futures-util",
  "hex",
  "indicatif",
+ "jiff",
  "rcgen",
  "reqwest",
  "sb-cli-core",
