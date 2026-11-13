@@ -184,6 +184,12 @@ Answers at the plan's approval (2026-11-11):
     other count as one signal, which covers a session scope's stop.
 26. **The flush double is fixed as its own task** (follow-M1, Task 34's
     real-journald run, 2026-11-12): Task 39 in lane 2, after Task 34.
+27. **sb keeps its own journal reader** (2026-11-12, after a deep dive
+    into libsystemd): ADR-013 and the static musl binary stand. The
+    pure-Rust `libsystemd` crate can't read journals; the C library's
+    follow needs `unsafe` on 255 and 259 and loses entries across a
+    flush on every release, with SIGBUS on a truncated file. The
+    evidence is docs/platform-notes/libsystemd-reader.md.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at

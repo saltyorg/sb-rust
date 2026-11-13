@@ -954,8 +954,7 @@ older than it: a follow running through a flush shows the last burst
 before the flush twice, because journald gives every entry of one pass
 the same timestamps and the follow matches a copy only against the very
 last entry it showed. The maintainer chose a fix (the plan's decision
-26). Waits for the maintainer's call on the libsystemd research, which
-could retire the reader it fixes.
+26). sb keeps its reader (decision 27).
 
 **Acceptance criteria:**
 - [ ] The follow keeps the identities (boot id, monotonic and realtime
@@ -967,6 +966,11 @@ could retire the reader it fixes.
       to /var; the follow shows only the new one.
 - [ ] follow.sh's `during` gets its flush round back (saved from Task
       34) and passes on 22.04, 24.04 and 26.04: nothing lost or doubled.
+- [ ] The flush round also runs with `/run/log` on tmpfs, as on a host,
+      where journald removes the /run file after the flush (the matrix
+      containers' overlayfs keeps it): a follow started before
+      `/var/log/journal` existed loses nothing (the libsystemd probe saw
+      readers lose entries there; the platform note).
 - [ ] Difference 2 holds as written.
 
 **Verification:**
@@ -975,7 +979,7 @@ could retire the reader it fixes.
 - [ ] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
-**Dependencies:** Task 34, and the maintainer's call on libsystemd
+**Dependencies:** Task 34
 **Files:** `crates/journal/src/follow.rs`, `crates/journal/tests/follow.sh`
 **Scope:** S
 
