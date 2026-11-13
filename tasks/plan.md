@@ -282,6 +282,12 @@ Answers at the plan's approval (2026-11-11):
     for validate-config's DNS lag and fixed only if it reproduces.
     Declined: hiding every off-schema value (keys named and paths listed
     cover the credentials; showing a harmless value helps fix a typo).
+40. **Task 55 keeps today's escaping** (the maintainer, 2026-11-13). Rust
+    1.100's `str::escape_debug` escapes every grapheme extender; sb keeps
+    cli-core's contract instead, with a small escaper of its own that
+    leaves a combining mark after its base character and escapes it only
+    at a line start or after an escaped character. It is tested on both
+    toolchains, and the journal's path messages follow it.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at

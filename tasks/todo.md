@@ -1489,9 +1489,9 @@ the repo, not tracked).
       `\u{301}`. The options (an escaper of sb's own that keeps marks
       after a base character, as the cli-core contract at exit.rs's
       `escaped` documents; or the new output, with the spec and test
-      changed) go to the maintainer with a recommendation (decision 20).
-      The journal's path messages (crates/journal/src/lib.rs) follow the
-      same answer.
+      changed) went to the maintainer: today's output is kept, through an
+      escaper of sb's own (decision 40). The journal's path messages
+      (crates/journal/src/lib.rs) follow the same answer.
 - [ ] clippy `-D warnings` clean: the `map_unwrap_or` findings (now also
       `map(..).unwrap_or_default()`), `needless_range_loop` in
       walk.rs's tests and `unused_must_use` in the journal example.
