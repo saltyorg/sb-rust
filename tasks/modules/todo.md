@@ -2198,6 +2198,19 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       next tui-spec edit). go-shellquote didn't, so `EDITOR='vi #x'`
       differs from sb-go. List it in the tui spec's Differences.
 
+- [ ] **The hung-lookup test's baseline is too wide** (lane 3, after M36;
+      sb-config). fa72214's baseline times a whole healthy `run()`,
+      including `Http::new` and two requests, and the bound is 13 of
+      those, so under heavy load the test took a median 72 s and up to
+      117 s, past the mutation profile's 60 s per-test limit: a spurious
+      baseline failure, so no verdict (a review that arrived after the
+      merge). Time only what one attempt must outlast: build the `Http`
+      and `Check` by hand as `a_named_delay_is_taken_from_the_answer`
+      does, start the clock after `Http::new`, time one request. Keep the
+      200 ms floor and the multiplier. Re-run under spinner load and
+      check that it stays a small multiple of the old test's 2-8 s and
+      well under 60 s; clamp it with a stated reason if not.
+
 ## Ready to start
 
 Started right after this plan's commit:
