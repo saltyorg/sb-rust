@@ -706,12 +706,22 @@ mod tests {
     }
 
     /// A timed-out attempt is a connection error: retried, then the
-    /// guidance follows the transport error.
+    /// guidance follows the transport error. The fake counts an attempt
+    /// only once its request reaches the handler, so each attempt's
+    /// timeout must outlast a connection and a request on this host now:
+    /// 200 ms plus four times a whole healthy check (two requests on a new
+    /// client) timed here first, so a loaded host's costs are on both
+    /// sides.
     #[tokio::test]
     async fn a_hung_lookup_times_out_after_its_retries() {
+        let answering = Fake::start().expect("fake");
+        healthy(&answering);
+        let start = std::time::Instant::now();
+        assert_eq!(run(&answering, &token(), "example.com").await, Ok(()));
+        let timeout = Duration::from_millis(200) + start.elapsed() * 4;
         let fake = Fake::start().expect("fake");
         fake.script("/client/v4/zones", Answer::json(200, ZONES).held());
-        let err = run_with(&fake, &token(), "example.com", Duration::from_millis(200))
+        let err = run_with(&fake, &token(), "example.com", timeout)
             .await
             .expect_err("fails");
         assert!(err.starts_with("Cloudflare zone lookup failed: "), "{err}");
