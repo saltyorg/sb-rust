@@ -51,7 +51,10 @@ Rust libraries in place of sb-go's internals.
    every supported release. TLS via rustls with aws-lc-rs, whose C the
    image's GCC compiles. *Amended 2026-11-13 from static musl through
    `cross` ([ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md),
-   which supersedes ADR-008; built from hardening Tasks 53 and 54).*
+   which supersedes ADR-008; built from hardening Tasks 53 and 54).
+   musl is revisited when the CLI is feature complete, measured against
+   glibc to see whether the performance difference matters (ADR-020,
+   Consequences).*
 7. **Repository:** git repository, intended to be public under saltyorg, so
    the public-repo rules in `CLAUDE.md` apply from the first commit.
 8. **Async runtime:** tokio, confirmed by proto-logs. Blocking work (PTY

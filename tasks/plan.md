@@ -258,7 +258,10 @@ Answers at the plan's approval (2026-11-11):
     functions, size 11,843,920 bytes, `sb --help` 2.30 ms, which the old
     tree also times here) is in tasks/todo.md. The fixed limits (the 10
     ms startup budget, the size ceiling) still gate every change.
-    Checkpoint C's ratchet criterion moves with this.
+    Checkpoint C's ratchet criterion moves with this. The same point
+    revisits musl (the maintainer, 2026-11-13): glibc and musl builds
+    of the feature-complete CLI are measured side by side, and the
+    maintainer decides whether the difference matters (ADR-020).
 37. **Checkpoint B's fixes are Task 58** (decided from the
     checkpoint's findings): `Record::cursor`'s doc, the fuzz command on a
     249 host, Difference 19 for a damaged array, the tail cache's pread

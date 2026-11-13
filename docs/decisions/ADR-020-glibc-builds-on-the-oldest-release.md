@@ -164,7 +164,17 @@ above, rustc 1.99.1:
 - The binary loads glibc at start. That costs the 0.1 to 0.6 ms
   measured, inside the startup budget (CONSTRAINTS.md: 10 ms, and the
   ratchet's 1 ms growth per change). The size shrinks, inside its
-  ratchet. Checkpoint C's ratchet ADR re-measures both.
+  ratchet. The ratchet rows are re-measured when sb has its full
+  functionality (hardening plan decision 36).
+- **musl is revisited when the CLI is feature complete** (the
+  maintainer, 2026-11-13). With every command in place, glibc and musl
+  builds of the same tree are measured side by side on the same host:
+  startup, peak memory, and the commands' own run times. The maintainer
+  then decides whether the difference is a problem. The figures so far
+  disagree on startup: the libsystemd probe measured glibc 0.1 to 0.6 ms
+  slower, while Task 53's builds measured it slightly faster (`--help`
+  2.11 against 2.16 ms). Both agree glibc uses more peak memory (5.5
+  against 3.0 MiB). A move back to musl would supersede this ADR.
 - User lookup (`getpwnam_r`) and name resolution (`getaddrinfo`) go
   through glibc's NSS, as every other program on the host does, instead
   of musl's own `/etc/passwd` and `resolv.conf` readers. On a Saltbox
