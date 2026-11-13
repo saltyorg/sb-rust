@@ -219,7 +219,7 @@ unlinked through the handle. Each name is logged before it moves
   again, within the same 240 s budget as the dpkg lock, outside the 3
   mirror attempts (decision 5).
 
-**`add_repositories(step)`.** Used by setup and gha. It reads the codename
+**`add_repositories(step, run_id)`.** Used by setup and gha. `run_id` is the run log's id (cli-core's `RunLog::id()`, which host can't reach), naming the backup directory; it must be a plain name (letters and digits). It reads the codename
 from `lsb_release -sc`'s stdout only (capture, 5 s; error `error getting
 Ubuntu release codename: <cause>`). Then it applies sb-go's release rules
 on a given root:

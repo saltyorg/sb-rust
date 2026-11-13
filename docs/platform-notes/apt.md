@@ -61,6 +61,17 @@ separate files.
   the text `update_lists` matches in the stderr tail to wait and try
   again.
 
+## Names apt ignores
+
+**Method:** `apt-config dump Dir::Ignore-Files-Silently` in the same three
+images (apt's built-in defaults, set in apt-pkg/init.cc).
+
+All three list the same patterns: `~$`, `\.disabled$`, `\.bak$`,
+`\.dpkg-[a-z]+$`, `\.ucf-[a-z]+$`, `\.save$`, `\.orig$` and
+`\.distUpgrade$`. `add_repositories` writes its temporary files under a
+name ending in `~`, so apt never reads a half-written file in
+`sources.list.d` and doesn't warn about one.
+
 ## Not covered
 
 - Translated messages: the containers have no apt translations, and sb

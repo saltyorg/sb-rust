@@ -12,6 +12,10 @@ use sb_exec::{Cmd, Ending};
 use sb_term_ui::Step;
 use tokio_util::sync::CancellationToken;
 
+mod sources;
+
+pub use sources::SourcesError;
+
 /// `package_installed`'s limit outside the desktop check (host spec,
 /// difference 7).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -22,6 +26,9 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// up to 240 s. Verified on apt 2.4, 2.8 and 3.2 against an `fcntl` lock
 /// (docs/platform-notes/apt.md).
 const LOCK_TIMEOUT: &str = "DPkg::Lock::Timeout=240";
+
+/// `lsb_release`'s limit (host spec, difference 7).
+const CODENAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How many times `update_lists` runs `apt-get update` for a timeout or a
 /// mirror error (sb-go's `UpdatePackageLists`).
@@ -76,6 +83,9 @@ pub struct Apt {
     /// name).
     get_program: PathBuf,
     update: UpdateTiming,
+    lsb_release: PathBuf,
+    codename_timeout: Duration,
+    sources: sources::Roots,
 }
 
 impl Default for Apt {
@@ -92,6 +102,9 @@ impl Apt {
             dpkg_query: PathBuf::from("dpkg-query"),
             get_program: PathBuf::from("apt-get"),
             update: UPDATE_TIMING,
+            lsb_release: PathBuf::from("lsb_release"),
+            codename_timeout: CODENAME_TIMEOUT,
+            sources: sources::Roots::default(),
         }
     }
 
@@ -129,6 +142,79 @@ impl Apt {
             lock_budget,
         };
         self
+    }
+
+    /// Run `program` as `lsb_release` instead (tests).
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn with_lsb_release(mut self, program: impl Into<PathBuf>) -> Self {
+        self.lsb_release = program.into();
+        self
+    }
+
+    /// `add_repositories` on `etc_apt` and `var_backups` in place of
+    /// `/etc/apt` and `/var/backups`, with directories owned by `owner` in
+    /// place of root (tests; the real paths are never arguments).
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn with_sources_roots(
+        mut self,
+        etc_apt: impl Into<PathBuf>,
+        var_backups: impl Into<PathBuf>,
+        owner: u32,
+    ) -> Self {
+        self.sources = sources::Roots {
+            etc_apt: etc_apt.into(),
+            var_backups: var_backups.into(),
+            owner,
+            ..sources::Roots::default()
+        };
+        self
+    }
+
+    /// Saltbox's apt repositories for this release (host spec, "apt",
+    /// `add_repositories`): the codename from `lsb_release -sc`'s stdout
+    /// (5 s), then [`sources`]' rules, with the moved entries' count and
+    /// backup directory in `step`. `run_id` is the run log's, naming the
+    /// backup directory. The files are a few small ones, so the work runs
+    /// on this task.
+    ///
+    /// # Errors
+    ///
+    /// [`SourcesError`]: the codename, an unsupported release, a refused
+    /// directory, or a file that couldn't be moved, read or written.
+    pub async fn add_repositories(
+        &self,
+        step: &mut Step,
+        run_id: &str,
+    ) -> Result<(), SourcesError> {
+        let codename = self.codename(&step.token()).await?;
+        let mut report = sources::Report::default();
+        let applied = sources::apply(&self.sources, &codename, run_id, &mut report);
+        // Where the entries went, even when a later part failed.
+        if let Some(backup) = report.backup.as_ref().filter(|_| !report.moved.is_empty()) {
+            step.info(format!(
+                "Moved {} entries from {} to {}",
+                report.moved.len(),
+                self.sources.etc_apt.join("sources.list.d").display(),
+                backup.display()
+            ));
+        }
+        applied
+    }
+
+    /// `lsb_release -sc`'s stdout, trimmed (difference 3: not stderr).
+    async fn codename(&self, token: &CancellationToken) -> Result<String, SourcesError> {
+        let ran = Cmd::new(self.lsb_release.as_os_str())
+            .arg("-sc")
+            .timeout(self.codename_timeout)
+            .capture(token)
+            .await
+            .map_err(|err| SourcesError::Codename(format!("{err}: {}", err.cause())))?;
+        let ran = ran
+            .check()
+            .map_err(|failed| SourcesError::Codename(crate::child_failure(&failed)))?;
+        Ok(ran.stdout.trim().to_string())
     }
 
     /// apt-get under sb-go's policy: the two conffile options, and
@@ -554,6 +640,153 @@ mod tests {
     /// never times out.
     fn quick(program: PathBuf) -> Apt {
         timed(program, Duration::from_secs(20))
+    }
+
+    #[tokio::test]
+    async fn add_repositories_names_what_it_moved() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (etc_apt, var_backups) = (dir.path().join("etc/apt"), dir.path().join("var/backups"));
+        std::fs::create_dir_all(etc_apt.join("sources.list.d")).expect("mkdir");
+        std::fs::create_dir_all(&var_backups).expect("mkdir");
+        for path in [etc_apt.join("sources.list.d"), var_backups.clone()] {
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .expect("chmod");
+        }
+        std::fs::write(etc_apt.join("sources.list.d/docker.list"), "docker\n").expect("write");
+        let lsb = stand_in(
+            dir.path(),
+            "lsb_release",
+            "echo 'No LSB modules are available.' >&2; echo jammy",
+        );
+        let apt = Apt::new().with_lsb_release(lsb).with_sources_roots(
+            &etc_apt,
+            &var_backups,
+            rustix::process::geteuid().as_raw(),
+        );
+        let ran = in_step(async |step, _| Ok(apt.add_repositories(step, "0a1b").await?)).await;
+        assert_eq!(ran.error, None, "{}", ran.screen);
+        let line = format!(
+            "Moved 1 entries from {} to {}",
+            etc_apt.join("sources.list.d").display(),
+            var_backups.join("sb/apt-sources/0a1b").display()
+        );
+        assert!(ran.screen.contains(&line), "{}", ran.screen);
+        assert!(
+            std::fs::read_to_string(etc_apt.join("sources.list"))
+                .expect("read")
+                .contains(" jammy main")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_codename_is_sb_gos_error() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lsb = stand_in(dir.path(), "lsb_release", "echo 'broken' >&2; exit 3");
+        let apt = Apt::new()
+            .with_lsb_release(lsb)
+            .with_sources_roots(dir.path(), dir.path(), 0);
+        let ran = in_step(async |step, _| Ok(apt.add_repositories(step, "0a1b").await?)).await;
+        let error = ran.error.expect("failed");
+        assert!(
+            error.starts_with("error getting Ubuntu release codename: "),
+            "{error}"
+        );
+        assert!(error.contains("exited with code 3"), "{error}");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("list").count(),
+            1,
+            "only the stand-in"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roots_owner_is_the_one_checked() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sources_d = dir.path().join("sources.list.d");
+        std::fs::create_dir(&sources_d).expect("mkdir");
+        std::fs::set_permissions(
+            &sources_d,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("chmod");
+        let lsb = stand_in(dir.path(), "lsb_release", "echo jammy");
+        let other = rustix::process::geteuid().as_raw() + 1;
+        let apt =
+            Apt::new()
+                .with_lsb_release(lsb)
+                .with_sources_roots(dir.path(), dir.path(), other);
+        let ran = in_step(async |step, _| Ok(apt.add_repositories(step, "0a1b").await?)).await;
+        assert_eq!(
+            ran.error.expect("refused"),
+            format!(
+                "refusing to clean {}: not owned by root",
+                sources_d.display()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hung_codename_times_out() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lsb = stand_in(dir.path(), "lsb_release", "exec sleep 60");
+        let mut apt =
+            Apt::new()
+                .with_lsb_release(lsb)
+                .with_sources_roots(dir.path(), dir.path(), 0);
+        apt.codename_timeout = Duration::from_millis(200);
+        let ran = in_step(async |step, _| Ok(apt.add_repositories(step, "0a1b").await?)).await;
+        let error = ran.error.expect("timed out");
+        assert!(
+            error.starts_with("error getting Ubuntu release codename: ")
+                && error.contains("timed out"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_moved_is_reported_when_a_later_move_fails() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (etc_apt, var_backups) = (dir.path().join("etc/apt"), dir.path().join("var/backups"));
+        std::fs::create_dir_all(etc_apt.join("sources.list.d")).expect("mkdir");
+        std::fs::create_dir_all(&var_backups).expect("mkdir");
+        for path in [etc_apt.join("sources.list.d"), var_backups.clone()] {
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .expect("chmod");
+        }
+        for name in ["a.list", "b.list"] {
+            std::fs::write(etc_apt.join("sources.list.d").join(name), "x\n").expect("write");
+        }
+        let lsb = stand_in(dir.path(), "lsb_release", "echo jammy");
+        let mut apt = Apt::new().with_lsb_release(lsb).with_sources_roots(
+            &etc_apt,
+            &var_backups,
+            rustix::process::geteuid().as_raw(),
+        );
+        apt.sources.rename = |from, name, to, new| {
+            if name == c"b.list" {
+                Err(rustix::io::Errno::PERM)
+            } else {
+                rustix::fs::renameat(from, name, to, new)
+            }
+        };
+        let ran = in_step(async |step, _| Ok(apt.add_repositories(step, "0a1b").await?)).await;
+        assert!(ran.error.expect("failed").starts_with("error moving "));
+        let line = format!(
+            "Moved 1 entries from {} to {}",
+            etc_apt.join("sources.list.d").display(),
+            var_backups.join("sb/apt-sources/0a1b").display()
+        );
+        assert!(ran.screen.contains(&line), "{}", ran.screen);
+    }
+
+    #[test]
+    fn the_codename_limit_is_five_seconds() {
+        assert_eq!(CODENAME_TIMEOUT, Duration::from_secs(5));
     }
 
     const POLICY: &str = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold";

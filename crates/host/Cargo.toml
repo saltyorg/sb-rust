@@ -17,6 +17,8 @@ sysinfo.workspace = true
 thiserror.workspace = true
 # apt's step errors, with sb-go's texts as context over exec's.
 anyhow.workspace = true
+# add_repositories' atomic saves (host spec, Tech Stack).
+tempfile.workspace = true
 # The journal reader, which sb-host wraps (host spec, decision 6).
 sb-journal.workspace = true
 # The systemd-coredump user's uid for `Query::unit`, and the ownership
@@ -51,7 +53,6 @@ rustix = { workspace = true, features = ["event"] }
 sb-journal = { workspace = true, features = ["testing"] }
 # `#[tokio::test]`'s current-thread runtime.
 tokio = { workspace = true, features = ["macros", "sync"] }
-tempfile.workspace = true
 # apt's steps drawn to memory, and the runner's shutdown for Ctrl-C.
 sb-term-ui = { workspace = true, features = ["testing"] }
 sb-cli-core.workspace = true
