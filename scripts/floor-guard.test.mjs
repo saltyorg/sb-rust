@@ -1213,6 +1213,40 @@ const stubs = (versions, arch) => {
     + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
     + '  exit 0\n'
     + 'fi\n';
+  // With LEAK_DURING set, the same mutant's run starts three processes
+  // and, while it still runs, waits up to 20 s for the first to go: an
+  // orphan of the run's temp copy (its parent init, in its own session,
+  // ignoring SIGHUP, SIGINT and SIGTERM), then a decoy outside that copy,
+  // orphaned too. Their pids go to LEAK_DURING. A live child of the copy,
+  // its parent this run, stands for a test's sb. What is still running
+  // when the wait ends goes to LEAK_DURING.result.
+  out.cargo += 'if [ "$1" = mutants ] && [ -n "${LEAK_DURING:-}" ]; then\n'
+    + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
+    + '  copy="${TMPDIR:-/tmp}/cargo-mutants-repo-stub.tmp"; $LEAK_MKDIR -p "$copy/target/debug" "$LEAK_DECOY_DIR"\n'
+    + '  $LEAK_CP "$LEAK_SLEEP" "$copy/target/debug/sb"; $LEAK_CP "$LEAK_SLEEP" "$LEAK_DECOY_DIR/sb"\n'
+    + '  "$copy/target/debug/sb" 600 </dev/null >/dev/null 2>&1 &\n'
+    + '  live=$!\n'
+    + '  k=0\n'
+    + '  for exe in "$copy/target/debug/sb" "$LEAK_DECOY_DIR/sb"; do\n'
+    + '    k=$((k + 1))\n'
+    // The subshell ends at once, so init adopts the process.
+    + '    ( $LEAK_SETSID /bin/sh -c \'trap "" HUP INT TERM; echo $$ >>"$1"; exec "$0" 600\' "$exe" "$LEAK_DURING" </dev/null >/dev/null 2>&1 & )\n'
+    + '    n=0; while [ "$($LEAK_WC -l <"$LEAK_DURING")" -lt "$k" ] && [ $((n += 1)) -lt 100 ]; do $LEAK_SLEEP 0.05; done\n'
+    + '  done\n'
+    + '  read -r orphan <"$LEAK_DURING"\n'
+    // A process is running while its executable link can be read; a
+    // zombie's can't.
+    + '  n=0; while $LEAK_READLINK "/proc/$orphan/exe" >/dev/null 2>&1 && [ $((n += 1)) -lt 200 ]; do $LEAK_SLEEP 0.1; done\n'
+    + '  for p in "orphan $orphan" "live $live"; do\n'
+    + '    if $LEAK_READLINK "/proc/${p#* }/exe" >/dev/null 2>&1; then echo "${p% *}" >>"$LEAK_DURING.result"; fi\n'
+    + '  done\n'
+    + '  kill -KILL "$live"; wait "$live" || true\n'
+    + '  $LEAK_RM -rf "$copy"\n'
+    + '  while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+    + '  $LEAK_MKDIR -p "$out/mutants.out"\n'
+    + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
+    + '  exit 0\n'
+    + 'fi\n';
   // `docker run`: sb version, unless the container is of the release in
   // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
   // fails itself, with its own status 125.
@@ -1474,6 +1508,44 @@ test('check.sh: a signal-ignoring process left by a mutation pass is gone after 
     assert.ok(!alive(started[0]), 'the leaked process ' + started[0] + ' is still running:\n' + r.output);
     assert.ok(alive(started[1]), 'the decoy outside the pass was killed:\n' + r.output);
     assert.match(r.output, /mutants: killed 1 process/, r.output);
+  } finally {
+    for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A long pass leaked busy, signal-ignoring mutants while it ran, not just
+// at its end (19 at once on 2026-11-13). A sweeper kills, every few
+// seconds during the pass, the processes of its copy that init has
+// adopted; a test's live sb, whose parent is not init, and anything
+// outside the copy are left alone (ADR-021). It assumes init adopts an
+// orphan, as it does for the gate as root or under a system scope; under a
+// subreaper (a `systemd --user` session) the orphan is that process's and
+// this test fails.
+test('check.sh: an orphan of a mutation pass is killed during it, a live child and a process outside are not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'leak-'));
+  const pids = join(dir, 'pids');
+  writeFileSync(pids, '');
+  const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+  const alive = (pid) => {
+    try { return !/^\d+ \(.*\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8')); } catch { return false; }
+  };
+  let started = [];
+  try {
+    const r = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      env: { LEAK_DURING: pids, LEAK_DECOY_DIR: join(dir, 'decoy'), LEAK_CP: tool('cp'), LEAK_MKDIR: tool('mkdir'),
+        LEAK_READLINK: tool('readlink'), LEAK_RM: tool('rm'), LEAK_SETSID: tool('setsid'), LEAK_SLEEP: tool('sleep'),
+        LEAK_WC: tool('wc'), TMPDIR: dir },
+    });
+    started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
+    passes(r, 'task');
+    assert.equal(started.length, 2, r.output);
+    const left = existsSync(pids + '.result') ? readFileSync(pids + '.result', 'utf8') : '';
+    assert.doesNotMatch(left, /orphan/, 'the orphan ran on until the pass ended:\n' + r.output);
+    assert.match(left, /^live$/m, 'the live child was killed during the pass:\n' + r.output);
+    assert.ok(alive(started[1]), 'the decoy outside the pass was killed:\n' + r.output);
+    assert.match(r.output, /mutants: killed 1 orphaned process\(es\) during the pass/, r.output);
   } finally {
     for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
     rmSync(dir, { recursive: true, force: true });

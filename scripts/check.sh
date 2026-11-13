@@ -319,8 +319,56 @@ mutation_sweep() {
   if ((${#killed[@]})); then echo "mutants: killed ${#killed[@]} process(es) the pass left running"; fi
 }
 
-# On exit during a pass: its leftovers go, and its copies if they could.
+# The pid of the pass's background sweeper (mutation_sweeper), if one runs.
+mutation_sweeper_pid=
+
+# mutation_sweeper DIR: in the background, every 3 s while the pass runs,
+# SIGKILL each process whose executable lies under DIR and whose parent is
+# init (ppid 1). The sweep after the pass comes too late for a long pass:
+# busy, signal-ignoring mutants of sb piled up while it ran (19 at once on
+# 2026-11-13, each over 100% CPU). A process orphaned by a timed-out
+# test's kill is adopted by init (proc(5): /proc/PID/stat's ppid field;
+# https://man7.org/linux/man-pages/man2/prctl.2.html, PR_SET_CHILD_SUBREAPER,
+# for the adopting process); a test's live sb still has its parent (the
+# test, or `script`), so it is never touched. The loop ends by itself once
+# DIR is gone or check.sh is (a check.sh killed with SIGKILL runs no trap).
+mutation_sweeper() {
+  local dir=$1 parent=$$ pid stat ppid count
+  (
+    # The sleep holds none of check.sh's output open: it outlives a
+    # stopped sweeper by up to 3 s, and a reader of check.sh's output
+    # would wait for it.
+    while sleep 3 >/dev/null 2>&1 && [[ -d $dir ]] && kill -0 "$parent" 2>/dev/null; do
+      count=0
+      while read -r pid; do
+        # It may have ended since find saw it.
+        { stat=$(<"/proc/$pid/stat"); } 2>/dev/null || continue
+        # The fields after the parenthesised command name: state, ppid.
+        read -r _ ppid _ <<<"${stat##*) }"
+        if [[ $ppid == 1 ]] && kill -KILL "$pid" 2>/dev/null; then count=$((count + 1)); fi
+      done < <(find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$dir/*" 2>/dev/null |
+        sed 's|^/proc/\([0-9]*\)/exe$|\1|')
+      if ((count)); then echo "mutants: killed $count orphaned process(es) during the pass"; fi
+    done
+  ) &
+  mutation_sweeper_pid=$!
+}
+
+# Stops the pass's sweeper, if one runs. Its `sleep` ends on its own.
+mutation_sweeper_stop() {
+  if [[ -n $mutation_sweeper_pid ]]; then
+    # Its status (143 from the TERM, or another if its output's reader
+    # had gone) decides nothing: the cleanup on exit must go on to the
+    # sweep whatever it is.
+    if kill "$mutation_sweeper_pid" 2>/dev/null && ! wait "$mutation_sweeper_pid" 2>/dev/null; then :; fi
+    mutation_sweeper_pid=
+  fi
+}
+
+# On exit during a pass: its sweeper stops, its leftovers go, and its
+# copies if they could.
 mutation_cleanup() {
+  mutation_sweeper_stop
   if [[ -n $mutation_tmp ]] && mutation_sweep "$mutation_tmp"; then rm -rf "$mutation_tmp"; fi
 }
 trap mutation_cleanup EXIT
@@ -366,8 +414,10 @@ mutation_pass() {
   chmod 755 "$mutation_tmp"
   # The whole mutant's 300 s timeout stays as the backstop behind
   # nextest's per-test one.
+  mutation_sweeper "$mutation_tmp"
   TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o "target/mutants-run-$n" \
     --timeout 300 || rc=$?
+  mutation_sweeper_stop
   if ! mutation_sweep "$mutation_tmp"; then
     # Kept for a look, and not swept again on exit.
     mutation_tmp=

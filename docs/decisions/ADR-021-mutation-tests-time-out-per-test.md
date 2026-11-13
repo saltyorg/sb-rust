@@ -207,3 +207,15 @@ and sb-host's tests) under this profile:
   past it; a check.sh killed with SIGKILL runs no cleanup. The floor
   guard's tests check it with a signal-ignoring process in its own
   session.
+- A leaked process no longer runs until its pass ends either (2026-11-13,
+  after 19 busy, signal-ignoring mutants of `sb` piled up during one long
+  pass, each over 100% CPU). While a pass runs, a background sweeper in
+  check.sh kills, every 3 s, each process whose executable lies under the
+  pass's directory and whose parent is init (ppid 1), which is what a
+  process orphaned by a timed-out test's kill becomes. A test's live `sb`
+  still has its parent, so it is never touched. The sweeper stops when
+  the pass ends and on exit during one, and ends by itself once the
+  directory or check.sh is gone. A leak still runs for up to 3 s, and one
+  adopted by a subreaper other than init waits for the sweep after the
+  pass. The floor guard's tests check it with an orphan in the pass's
+  copy, a live child of the pass and an orphan outside it.
