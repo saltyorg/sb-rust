@@ -350,7 +350,8 @@ const tomlItems = (text) => {
 // 5a. A gate file deleted or renamed (a crate's manifest goes with its
 // crate).
 for (const f of deleted) {
-  if (isGateScript(f) || isGuardTest(f) || isTestScript(f) || f === 'deny.toml' || f === 'rust-toolchain.toml') {
+  if (isGateScript(f) || isGuardTest(f) || isTestScript(f) || f === 'deny.toml' || f === 'rust-toolchain.toml'
+    || f === 'clippy.toml') {
     flag('gate-file-deleted', f, 'file deleted');
   }
 }
@@ -488,6 +489,15 @@ for (const f of changed) {
   if (isToolConfig(f)) {
     if (oldText(f) === null) flag('tool-config-added', f, 'file added');
     else for (const a of added) if (a.file === f && isCode(f, a.text)) flag('tool-config-changed', f, a.text);
+  }
+  // 5f'. A clippy.toml's disallowed-* lists hold a rule (CONSTRAINTS.md,
+  // Floor: no child process started outside sb-exec), so a removed list or
+  // entry loosens it; other removed settings stay clean, as in any tool
+  // config.
+  if (/(^|\/)\.?clippy\.toml$/.test(f)) {
+    for (const r of removed) {
+      if (r.file === f && isCode(f, r.text) && /disallowed-|\bpath\s*=/.test(r.text)) flag('clippy-rule-removed', f, r.text);
+    }
   }
   // 5g. deny.toml.
   if (f === 'deny.toml') {

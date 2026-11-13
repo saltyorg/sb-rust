@@ -248,7 +248,12 @@ fast() {
   step "format"
   cargo fmt --check "${pkg_args[@]}"
   step "clippy (warnings are errors)"
-  cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+  # Every lint but disallowed_methods (clippy.toml: no child process
+  # started outside sb-exec), which binds library and binary code only and
+  # is checked by the step after this one: tests start the sb binary and
+  # stand-in programs directly, and clippy has no setting to spare tests
+  # (https://doc.rust-lang.org/clippy/lint_configuration.html#disallowed-methods).
+  cargo clippy --workspace --all-targets --locked --quiet -- -D warnings -A clippy::disallowed_methods
   # The plain build too: building any test target turns dev-dependency
   # features on (a `testing` self dev-dependency), so the step above never
   # lints a crate without them. This one builds no dev-dependencies, and a
@@ -256,7 +261,10 @@ fast() {
   # (`unfulfilled_lint_expectations`; sb-journal plan, "Code with no user
   # yet").
   step "clippy, library and binary targets only (warnings are errors)"
-  cargo clippy --workspace --lib --bins --locked --quiet -- -D warnings
+  # -D disallowed_methods on its own too: a command-line level comes after
+  # the manifests' [lints], so a later `disallowed_methods = "allow"` there
+  # can't turn the rule off.
+  cargo clippy --workspace --lib --bins --locked --quiet -- -D warnings -D clippy::disallowed_methods
   need node
   step "floor guard's own tests"
   if ((scripts_changed)); then

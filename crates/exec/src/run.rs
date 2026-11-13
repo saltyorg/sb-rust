@@ -447,6 +447,10 @@ impl Cmd {
         if let Some(dir) = &self.cwd {
             check_dir(dir)?;
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "sb-exec is where every child process starts (CONSTRAINTS.md E4)"
+        )]
         let mut command = Command::new(&self.program);
         for arg in &self.args {
             command.arg(arg.text());

@@ -122,6 +122,10 @@ pub fn ensure_root(
 /// (<https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.exec>).
 #[must_use]
 pub fn relaunch_as_root(exe: &Path, args: &[OsString]) -> std::io::Error {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "replaces this process with sudo before the command runs; cli-core can't use sb-exec, which depends on it (CONSTRAINTS.md E3)"
+    )]
     Command::new(OsStr::new("sudo"))
         .args(sudo_args(exe, args))
         .exec()

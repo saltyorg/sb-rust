@@ -1,0 +1,24 @@
+# Clippy's configuration (https://doc.rust-lang.org/clippy/configuration.html;
+# the file is read from each crate's directory upward, so this one is the
+# workspace's).
+
+# Every child process is started through sb-exec's `Cmd` (CLAUDE.md,
+# "Library first"; the python-env spec, "exec for every child"), which
+# gives it sb's environment, its own process group, the run log and the
+# exit handling. Library and binary code only: scripts/check.sh's
+# all-targets pass leaves this lint out, since tests start the sb binary
+# and stand-in programs directly. sb-exec's two spawns (Cmd::command, and
+# Cmd::pty_child through portable-pty) and cli-core's sudo relaunch
+# (cli-core can't depend on sb-exec, which depends on it) carry an
+# `#[expect]` with a row in CONSTRAINTS.md's Exceptions table. A clippy
+# config added later is picked up on a crate's next edit only (clippy
+# doesn't notice a new file), and the floor guard flags it.
+# https://doc.rust-lang.org/clippy/lint_configuration.html#disallowed-methods
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "start child processes through sb-exec", replacement = "sb_exec::Cmd::new" },
+  # allow-invalid: a crate without tokio can't resolve the path.
+  { path = "tokio::process::Command::new", reason = "start child processes through sb-exec", replacement = "sb_exec::Cmd::new", allow-invalid = true },
+  # A child in a PTY, which sb-exec's Cmd also gives.
+  { path = "portable_pty::CommandBuilder::new", reason = "start child processes through sb-exec", replacement = "sb_exec::Cmd::new", allow-invalid = true },
+  { path = "portable_pty::CommandBuilder::new_default_prog", reason = "start child processes through sb-exec", replacement = "sb_exec::Cmd::new", allow-invalid = true },
+]

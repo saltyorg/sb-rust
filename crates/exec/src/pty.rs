@@ -131,6 +131,10 @@ impl Cmd {
             .tty_name()
             .ok_or_else(|| std::io::Error::other("the PTY has no name"))?;
         let eof = prepare_tty(&tty)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "sb-exec is where every child process starts, a PTY's too (CONSTRAINTS.md E4)"
+        )]
         let mut builder = CommandBuilder::new(&self.program);
         for arg in &self.args {
             builder.arg(arg.text());

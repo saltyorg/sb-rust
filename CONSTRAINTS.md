@@ -19,6 +19,12 @@ pass clippy and their tests.
 - `unsafe` is forbidden (`unsafe_code = "forbid"`).
 - No `#[allow]` (`clippy::allow_attributes`). A justified exception uses
   `#[expect(lint, reason = "...")]` and a row in the Exceptions table.
+- Every child process starts through sb-exec's `Cmd`: `clippy.toml`
+  disallows `std::process::Command::new`, `tokio::process::Command::new`
+  and portable-pty's `CommandBuilder` constructors, and `check.sh` denies
+  that for library and binary code (maintainer, 2026-11-13). Tests,
+  examples and `testing`-feature support code may start processes
+  directly.
 - No unfinished work: `todo!`, `unimplemented!` and `dbg!` are denied by
   clippy; `TODO`/`FIXME`/`XXX` comments and empty stubs don't land.
 - No test made easier: no new `#[ignore]`, no deleted test, no assertion
@@ -37,7 +43,7 @@ pass clippy and their tests.
 | Dimension | Rule | Checked by | Runs at | Why this number |
 |---|---|---|---|---|
 | Format | No diff | `cargo fmt --check -p <crates>` | fast | rustfmt is the style |
-| Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`; a prototype keeps the lints it was written under); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features; `check.sh`'s crate check, that each crate has `[lints] workspace = true` | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
+| Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`; a prototype keeps the lints it was written under); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features (the first leaves out `disallowed_methods`, which binds library and binary code only, and the second denies it); `check.sh`'s crate check, that each crate has `[lints] workspace = true` | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
 | Floor guard | Zero unacknowledged floor violations in the diff | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green |
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
 | Tests | All pass | `cargo llvm-cov` for the crates' unit and integration tests (the coverage run), then `cargo test --doc` for the crates and `cargo test` for the prototypes | task | Each test runs once (ADR-016) |
@@ -136,3 +142,5 @@ called out in review, and expires.
 |---|---|---|---|---|---|
 | E1 | cargo-deny `unmaintained`: RUSTSEC-2025-0141 (bincode 1), RUSTSEC-2024-0320 (yaml-rust) | `deny.toml` `[advisories] ignore`; reached through `tui-markdown`'s default `highlight-code` feature (syntect 5.3.0) | YAML highlighting in announcements, chosen by the maintainer (2026-10-30). The crates are unmaintained, not vulnerable, and only read syntax data built into the binary. No other ratatui Markdown renderer has comparable adoption, and syntect's latest release still needs both. On expiry: check for a syntect or tui-markdown release without them, else decide again | saltydk | 2027-01-28 |
 | E2 | clippy `cast_precision_loss` | `crates/config/src/scalar.rs`, the `!!float` of an int | yaml.v3 decodes an int tagged `!!float` as Go's `float64(int64)`, rounded to the nearest `f64` beyond 2^53; sb must give the same value, and std has no conversion from `i64` to `f64` without `as`. On expiry: check for a std rounding conversion from `i64` to `f64` that isn't `as`, else renew | saltydk | 2027-05-06 |
+| E3 | clippy `disallowed_methods` (`std::process::Command::new`) | `crates/cli-core/src/root.rs`, `relaunch_as_root` | The sudo relaunch replaces sb's process (`CommandExt::exec`) before the command runs, and cli-core can't use sb-exec, which depends on it. On expiry: check that it is still the only process cli-core starts, else move it | saltydk | 2027-11-14 |
+| E4 | clippy `disallowed_methods` (`tokio::process::Command::new`, `portable_pty::CommandBuilder::new`) | `crates/exec/src/run.rs`, `Cmd::command`; `crates/exec/src/pty.rs`, `Cmd::pty_child` | sb-exec is where every child process starts, piped or in a PTY; the rule exists to send every other crate here. On expiry: check that these are sb-exec's only spawn sites in library code, else renew | saltydk | 2027-11-14 |

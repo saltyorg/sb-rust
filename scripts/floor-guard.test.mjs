@@ -321,6 +321,19 @@ test('a tool config: added lines are flagged; removed lines and other new files 
   clean({}, { '.cargo/notes.md': 'notes\n', 'docs/clippy.toml.md': 'notes\n' });
 });
 
+// clippy.toml holds a rule (no child process started outside sb-exec;
+// CONSTRAINTS.md, Floor), so taking an entry out, or the file, loosens it.
+test('clippy.toml: a removed disallowed-* entry or the deleted file is flagged; other removed settings are clean', () => {
+  const config = { 'clippy.toml': '# Why.\nmsrv = "1.99"\ndisallowed-methods = [\n  { path = "std::process::Command::new", reason = "sb-exec" },\n  { path = "tokio::process::Command::new", reason = "sb-exec" },\n]\n' };
+  flags(config, edit(config, 'clippy.toml', '  { path = "tokio::process::Command::new", reason = "sb-exec" },\n', ''),
+    'clippy-rule-removed clippy.toml');
+  flags(config, edit(config, 'clippy.toml', 'disallowed-methods = [\n  { path = "std::process::Command::new", reason = "sb-exec" },\n  { path = "tokio::process::Command::new", reason = "sb-exec" },\n]\n', ''),
+    ['clippy-rule-removed clippy.toml', 'clippy-rule-removed clippy.toml', 'clippy-rule-removed clippy.toml']);
+  flags(config, { 'clippy.toml': null }, 'gate-file-deleted clippy.toml');
+  clean(config, edit(config, 'clippy.toml', 'msrv = "1.99"\n', ''));
+  clean(config, edit(config, 'clippy.toml', '# Why.\n', ''));
+});
+
 test('nextest.toml: a changed timeout is flagged, a comment is clean', () => {
   const NEXTEST = '.config/nextest.toml';
   const config = { [NEXTEST]: '[profile.mutants]\nslow-timeout = { period = "30s", terminate-after = 2 }\n' };
