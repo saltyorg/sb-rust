@@ -2232,6 +2232,15 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       may stay as a lower bound or go. The test's timeout can then be a
       fixed small value again.
 
+- [ ] **The follow may miss a journal file with an unusual name** (lane 4;
+      sb-journal's follow). In M68's end-to-end test a crafted second file
+      named `next.journal` was not picked up while following, where the
+      same file named `user-1000.journal` was (crafted files only, not
+      checked against journald). journalctl reads every `*.journal` in a
+      directory. Find whether the follow filters by name or orders files
+      by name, compare with journalctl on 22.04, 24.04 and 26.04 in the
+      matrix, and fix or list it as a Difference.
+
 ## Ready to start
 
 Started right after this plan's commit:
