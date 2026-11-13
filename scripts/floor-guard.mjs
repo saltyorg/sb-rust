@@ -227,8 +227,11 @@ const isGuardTest = (f) => GUARD_TESTS.includes(f);
 // - rustup reads `rust-toolchain` before `rust-toolchain.toml` when a
 //   directory holds both: https://rust-lang.github.io/rustup/overrides.html
 // - .gitattributes can hide a file's changes from a diff.
+// - nextest reads `.config/nextest.toml` at the workspace root; its
+//   `mutants` profile sets the mutation passes' per-test timeout (ADR-021):
+//   https://nexte.st/docs/configuration/
 const TOOL_CONFIGS = ['.cargo/mutants.toml', '.cargo/config.toml', '.cargo/config', 'clippy.toml', '.clippy.toml',
-  '.gitleaksignore', '.gitleaks.toml', 'rust-toolchain', '.gitattributes'];
+  '.gitleaksignore', '.gitleaks.toml', 'rust-toolchain', '.gitattributes', '.config/nextest.toml'];
 const isGateScript = (f) => GATE_SCRIPTS.includes(f);
 const isTestScript = (f) => /^crates\/[^/]+\/tests\/[^/]+\.sh$/.test(f);
 const isManifest = (f) => f === 'Cargo.toml' || /^crates\/[^/]+\/Cargo\.toml$/.test(f);

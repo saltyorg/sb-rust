@@ -38,6 +38,14 @@ fi
 # leftover override of the sb binary or the live opt-in would change what
 # every stage checks (docker plan Task 9).
 unset SB_TEST_BINARY SB_LIVE_DOCKER
+# The mutation passes' nextest runs read their settings from
+# .config/nextest.toml's `mutants` profile alone: an inherited NEXTEST_*
+# variable (a profile, retries, a test-thread count, another config file)
+# would override it (https://nexte.st/docs/configuration/env-vars/). So
+# would an inherited CARGO_MUTANTS_* one (cargo-mutants 27.1.0 reads its
+# job count and its minimum test timeout from them): more mutants at once
+# slow every test towards the per-test timeout (ADR-021).
+while IFS= read -r v; do unset -v "$v"; done < <(compgen -e NEXTEST_; compgen -e CARGO_MUTANTS_)
 # Every stage builds in and reads from target/ (the production build in its
 # own directory under it, set below): an inherited target directory, or a
 # configuration file's build.target-dir, would send a stage's build
@@ -126,7 +134,7 @@ need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONS
 tool_version() {
   local out=''
   case $1 in
-  cargo-llvm-cov | cargo-mutants | cargo-deny | hyperfine | cross)
+  cargo-llvm-cov | cargo-mutants | cargo-nextest | cargo-deny | hyperfine | cross)
     out=$(cargo install --list | sed -n "s/^$1 v\([^ :]*\):\$/\1/p") || out=''
     ;;
   gitleaks)
@@ -280,7 +288,15 @@ mutation_pass() {
   # Without CARGO_TARGET_DIR: cargo-mutants builds each mutant in a copy of
   # the tree, and 27.1.0 leaves the variable as it finds it, so with it set
   # every mutant would build into the repository's target/.
-  local mutants=(env -u CARGO_TARGET_DIR cargo mutants --in-diff target/changes.diff --cargo-arg=--locked "$@")
+  # Each mutant's tests run under cargo-nextest with .config/nextest.toml's
+  # `mutants` profile, which ends a test that hangs and counts it as
+  # failed (ADR-021): https://mutants.rs/nextest.html
+  # The profile goes to the test runs only, through --cargo-test-arg
+  # (https://mutants.rs/cargo-args.html): --cargo-arg would also reach
+  # the build runs and, under --check, `cargo check`, where --profile
+  # names a cargo build profile.
+  local mutants=(env -u CARGO_TARGET_DIR cargo mutants --in-diff target/changes.diff --cargo-arg=--locked
+    --test-tool=nextest --cargo-test-arg=--profile=mutants "$@")
   # A plain assignment, so a failing list stops the check (errexit is off
   # inside an `if` condition, command substitutions included; and `local
   # list=$(...)` would take local's status: declared apart above).
@@ -288,6 +304,8 @@ mutation_pass() {
   # Changed tests or comments only: cargo-mutants writes no outcomes.
   [[ -n $list ]] || return 0
   echo "mutants: $*"
+  # The whole mutant's 300 s timeout stays as the backstop behind
+  # nextest's per-test one.
   PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o "target/mutants-run-$n" \
     --timeout 300 || rc=$?
   # 0 all caught, 2 some missed, 3 some timed out: the score decides. Any
@@ -310,6 +328,7 @@ mutation_pass() {
 mutation_check() {
   step "mutation score on changed code >= ${MUTATION_MIN}%"
   need cargo-mutants
+  need cargo-nextest
   local c t key testers=() outcomes=()
   # A key or tester that names no crate would silently change the scope.
   for key in "${!MUTATION_TESTERS[@]}"; do
@@ -453,11 +472,21 @@ full() {
     # the build in it, so the binary needs the oldest release's glibc at
     # most. The target directory is its own: build scripts compiled in the
     # image can't run on the host or in another image (ADR-020).
+    # The build runs in cross's container, so a systemd-run scope around
+    # check.sh doesn't cap it: CROSS_CONTAINER_OPTS passes the caps to that
+    # container's `docker run`, as crates/journal/tests/example.sh does
+    # (cross 0.2.5's src/docker/shared.rs and CHANGELOG):
+    # https://github.com/cross-rs/cross/blob/v0.2.5/src/docker/shared.rs
+    # https://github.com/cross-rs/cross/blob/v0.2.5/CHANGELOG.md
+    # https://docs.docker.com/engine/containers/resource_constraints/
+    # --cpus can't exceed the host's CPU count: the production build runs
+    # on a host of at least 8.
     need cross
     need docker
     local cross_target="$root/target/cross-gnu"
-    CARGO_TARGET_DIR="$cross_target" cross build --locked --quiet -p sb --profile production \
-      --target x86_64-unknown-linux-gnu
+    CARGO_TARGET_DIR="$cross_target" CROSS_CONTAINER_OPTS='--memory 16g --cpus 8' \
+      cross build --locked --quiet -p sb --profile production \
+        --target x86_64-unknown-linux-gnu
     local sb="$cross_target/x86_64-unknown-linux-gnu/production/sb"
     size=$(stat -c %s "$sb")
     echo "sb: ${size} bytes"
@@ -488,7 +517,7 @@ full() {
 # The tools each stage runs: fast's, then task's, then full's (cross and
 # Docker only where the production build runs).
 tools=(node go gitleaks)
-if [[ $stage != fast ]]; then tools+=(script cargo-llvm-cov diff-cover cargo-mutants hyperfine); fi
+if [[ $stage != fast ]]; then tools+=(script cargo-llvm-cov diff-cover cargo-mutants cargo-nextest hyperfine); fi
 if [[ $stage == full ]]; then tools+=(cargo-deny); fi
 if [[ $stage == full && $arch == x86_64 ]]; then tools+=(cross docker); fi
 check_tools "${tools[@]}"

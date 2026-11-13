@@ -42,7 +42,7 @@ pass clippy and their tests.
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
 | Tests | All pass | `cargo llvm-cov` for the crates' unit and integration tests (the coverage run), then `cargo test --doc` for the crates and `cargo test` for the prototypes | task | Each test runs once (ADR-016) |
 | Coverage | Changed lines ≥ 90% covered | `cargo llvm-cov --lcov` + `diff-cover --fail-under=90` | task | Maintainer chose stricter than the 80% default |
-| Mutation | ≥ 80% of viable mutants in changed code caught, totalled over the passes; a crate in check.sh's `MUTATION_TESTERS` is judged by its own and its listed crates' tests, every other crate by every crate's tests | `cargo mutants --in-diff` per pass + score from each `outcomes.json` | task | Maintainer chose stricter than the 60% default; mutation checks were already part of the work; the per-crate scope is ADR-012 |
+| Mutation | ≥ 80% of viable mutants in changed code caught, totalled over the passes; a crate in check.sh's `MUTATION_TESTERS` is judged by its own and its listed crates' tests, every other crate by every crate's tests | `cargo mutants --in-diff --test-tool=nextest` per pass, each test ended after 60 s and counted as failed (`.config/nextest.toml`'s `mutants` profile), each mutant after 300 s and counted as not caught; score from each `outcomes.json` | task | Maintainer chose stricter than the 60% default; mutation checks were already part of the work; the per-crate scope is ADR-012; the per-test timeout is ADR-021 |
 | Startup | `sb --help` and `sb version` median ≤ 10 ms | `hyperfine --warmup 5 --runs 50`, release build | task | sb-go takes about 18 ms; the prototypes about 2 ms |
 | Dependencies | No RustSec vulnerability, no unmaintained or yanked crate, only GPL-3.0-compatible licences, crates.io only | `cargo deny --manifest-path crates/sb/Cargo.toml check` (`deny.toml`) | full | External opinion: the RustSec database |
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`); `check.sh`'s crate check, that each crate but `sb` has its entry (at fast) | full | The compiler can't see the map; cargo-deny can |
@@ -116,6 +116,7 @@ doesn't fail every run.
 | cargo-llvm-cov | 0.9.1 | exact | `cargo install --locked cargo-llvm-cov` (needs the `llvm-tools` component, pinned in `rust-toolchain.toml`) |
 | diff-cover | 9.7.2 | exact | `uv tool install diff-cover==9.7.2` |
 | cargo-mutants | 27.1.0 | exact | `cargo install --locked cargo-mutants` |
+| cargo-nextest | 0.9.151 | exact | `cargo install --locked cargo-nextest` (runs the mutation passes' tests, ADR-021) |
 | cargo-deny | 0.20.2 | exact | `cargo install --locked cargo-deny` |
 | hyperfine | 2.0.0 | exact | `cargo install --locked hyperfine` |
 | gitleaks | 8.30.1 | exact | `go install github.com/zricethezav/gitleaks/v8@v8.30.1` |

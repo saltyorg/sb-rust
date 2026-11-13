@@ -301,7 +301,7 @@ test('rust-toolchain.toml: a removed component or file is flagged, an added comp
   clean(toolchainToml, edit(toolchainToml, TOOLCHAIN, '"llvm-tools"', '"llvm-tools", "rust-src"'));
 });
 
-for (const config of ['.cargo/mutants.toml', 'clippy.toml', '.gitleaksignore', '.cargo/config.toml']) {
+for (const config of ['.cargo/mutants.toml', 'clippy.toml', '.gitleaksignore', '.cargo/config.toml', '.config/nextest.toml']) {
   test('a new tool config is flagged: ' + config, () => {
     flags({}, { [config]: 'exclude = "everything"\n' }, 'tool-config-added ' + config);
     flags({}, { [config]: '' }, 'tool-config-added ' + config, { commit: true });
@@ -317,6 +317,14 @@ test('a tool config: added lines are flagged; removed lines and other new files 
   clean(config, edit(config, 'clippy.toml', 'msrv = "1.99"\n', ''));
   clean(config, edit(config, 'clippy.toml', '# clippy', '# Why each setting is here.\n# clippy'));
   clean({}, { '.cargo/notes.md': 'notes\n', 'docs/clippy.toml.md': 'notes\n' });
+});
+
+test('nextest.toml: a changed timeout is flagged, a comment is clean', () => {
+  const NEXTEST = '.config/nextest.toml';
+  const config = { [NEXTEST]: '[profile.mutants]\nslow-timeout = { period = "30s", terminate-after = 2 }\n' };
+  flags(config, edit(config, NEXTEST, 'terminate-after = 2', 'terminate-after = 1'), 'tool-config-changed ' + NEXTEST);
+  flags(config, edit(config, NEXTEST, ' }', ', on-timeout = "pass" }'), 'tool-config-changed ' + NEXTEST);
+  clean(config, edit(config, NEXTEST, '[profile', '# Why.\n[profile'));
 });
 
 const COMPARE = 'crates/journal/tests/compare.sh';
@@ -1116,6 +1124,7 @@ const TOOLS_MD = `# Constraints
 | cargo-llvm-cov | 0.9.1 | exact | cargo |
 | diff-cover | 9.7.2 | exact | uv |
 | cargo-mutants | 27.1.0 | exact | cargo |
+| cargo-nextest | 0.9.151 | exact | cargo |
 | cargo-deny | 0.20.2 | exact | cargo |
 | hyperfine | 2.0.0 | exact | cargo |
 | gitleaks | 8.30.1 | exact | go install |
@@ -1128,8 +1137,8 @@ const TOOLS_MD = `# Constraints
 ## Exceptions
 `;
 const VERSIONS = {
-  'cargo-llvm-cov': '0.9.1', 'diff-cover': '9.7.2', 'cargo-mutants': '27.1.0', 'cargo-deny': '0.20.2',
-  hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
+  'cargo-llvm-cov': '0.9.1', 'diff-cover': '9.7.2', 'cargo-mutants': '27.1.0', 'cargo-nextest': '0.9.151',
+  'cargo-deny': '0.20.2', hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
   docker: '29.7.2',
 };
 // check.sh's MUTATION_TESTERS names sb-journal and sb-host, so both are
@@ -1149,14 +1158,14 @@ const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
-  const installed = ['cargo-deny', 'cargo-llvm-cov', 'cargo-mutants', 'cross', 'hyperfine']
+  const installed = ['cargo-deny', 'cargo-llvm-cov', 'cargo-mutants', 'cargo-nextest', 'cross', 'hyperfine']
     .filter((t) => versions[t] && versions[t] !== 'not-from-cargo').map((t) => t + ' v' + versions[t] + ':\n    ' + t + '\n').join('');
   // A warning with a number in it goes to stderr first: the version is
   // read from stdout only.
   const version = (text) => 'if [ "$1" = --version ]; then echo "warning: 3 settings ignored" >&2; echo "' + text + '"; exit 0; fi\n';
   const out = {
     cargo: 'if [ "$1 $2" = "install --list" ]; then printf \'%s\' "' + installed + '"; exit 0; fi\n',
-    'cargo-llvm-cov': '', 'cargo-mutants': '', 'cargo-deny': '', hyperfine: '',
+    'cargo-llvm-cov': '', 'cargo-mutants': '', 'cargo-nextest': '', 'cargo-deny': '', hyperfine: '',
     cross: 'mkdir -p "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production"\n'
       + 'printf sb >"$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production/sb"\n',
     'diff-cover': version('diff-cover ' + versions['diff-cover']),
@@ -1169,6 +1178,11 @@ const stubs = (versions, arch) => {
     gitleaks: 'cat >"$STUB_LOG.gitleaks"\n',
     uname: 'echo ' + arch + '\n',
   };
+  // cross's container caps, which a scope around check.sh doesn't reach.
+  out.cross += 'printf \'%s\\n\' "${CROSS_CONTAINER_OPTS-unset}" >>"$STUB_LOG.cross-opts"\n';
+  // The NEXTEST_* and CARGO_MUTANTS_* variables cargo (cargo-mutants, so
+  // nextest) is run with.
+  out.cargo += 'env | grep -E \'^(NEXTEST|CARGO_MUTANTS)_\' >>"$STUB_LOG.nextest-env" || true\n';
   // `docker run`: sb version, unless the container is of the release in
   // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
   // fails itself, with its own status 125.
@@ -1234,6 +1248,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     return {
       status: r.status, output: r.stdout + r.stderr, calls, root: repo,
       gitleaksInput: read(logFile + '.gitleaks'), changesDiff: read(join(repo, 'target/changes.diff')),
+      crossOpts: read(logFile + '.cross-opts'), nextestEnv: read(logFile + '.nextest-env'),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1367,6 +1382,31 @@ test('check.sh: cargo runs locked, with the target directory its own', () => {
   assert.equal(cross[0].target, join(r.root, 'target/cross-gnu'));
   assert.match(cross[0].args, /(^| )--locked( |$)/);
   assert.match(cross[0].args, /(^| )--target x86_64-unknown-linux-gnu( |$)/);
+  // A scope around check.sh doesn't reach cross's container: the caps go
+  // to its `docker run`.
+  assert.equal(r.crossOpts, '--memory 16g --cpus 8\n', r.output);
+});
+
+// Each mutant's tests run under nextest's `mutants` profile, which ends a
+// hung test (ADR-021), and no inherited NEXTEST_* or CARGO_MUTANTS_*
+// variable overrides it.
+test('check.sh: the mutation passes run nextest with the mutants profile, and no NEXTEST_ or CARGO_MUTANTS_ variable', () => {
+  const r = checkRun('task', {
+    work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+    env: { NEXTEST_PROFILE: 'default', NEXTEST_RETRIES: '3', NEXTEST_TEST_THREADS: '1', CARGO_MUTANTS_JOBS: '8',
+      CARGO_MUTANTS_MINIMUM_TEST_TIMEOUT: '1' },
+  });
+  passes(r, 'task');
+  const mutants = r.calls.filter((c) => c.tool === 'cargo' && c.args.startsWith('mutants '));
+  assert.ok(mutants.length > 0, r.output);
+  for (const c of mutants) {
+    assert.match(c.args, /(^| )--test-tool=nextest( |$)/, c.args);
+    assert.match(c.args, /(^| )--cargo-test-arg=--profile=mutants( |$)/, c.args);
+    assert.match(c.args, /(^| )--timeout 300( |$)|--list/, c.args);
+  }
+  assert.equal(r.nextestEnv ?? '', '', r.nextestEnv);
+  refuses(checkRun('task', { versions: { 'cargo-nextest': '0.9.150' } }), 2, /cargo-nextest.*0\.9\.150.*0\.9\.151/);
+  refuses(checkRun('task', { versions: { 'cargo-nextest': null } }), 2, /cargo-nextest not installed/);
 });
 
 // The production binary is built on the oldest supported release, and the

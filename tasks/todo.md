@@ -1420,7 +1420,7 @@ not here.)
 
 ## Follow-ups from the glibc build (Tasks 53 and 54)
 
-- [ ] check.sh's production `cross build` runs uncapped: a
+- [x] check.sh's production `cross build` runs uncapped: a
       `systemd-run` scope around check.sh doesn't reach cross's
       container. Pass `CROSS_CONTAINER_OPTS` (`--memory`, `--cpus`), as
       `crates/journal/tests/example.sh` does (Task 54). A gate change:

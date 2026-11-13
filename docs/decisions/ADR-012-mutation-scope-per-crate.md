@@ -48,7 +48,9 @@ consumer exists; only sb-host's tests will, from the plan's Task 10.
   - **A timeout becomes caught.** A test outside the narrow set (for
     example an `sb` end-to-end test) hangs on the mutant in the wide
     scope, which counts as not caught. The narrow set's own test then
-    fails quickly, which counts as caught.
+    fails quickly, which counts as caught. Since ADR-021 a hung test
+    is ended after 60 s and counts as failed, so the wide scope catches
+    such a mutant too; the mutant's own timeout is the backstop.
   - **An unviable mutant becomes viable.** The mutant breaks only a
     dependent's build (for example through `impl Trait` auto-trait
     leakage, or different feature unification). The wide scope leaves it

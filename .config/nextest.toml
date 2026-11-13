@@ -1,0 +1,19 @@
+# cargo-nextest's configuration (https://nexte.st/docs/configuration/).
+# Only scripts/check.sh's mutation passes run nextest, with the `mutants`
+# profile (ADR-021); every other test run is cargo test or cargo llvm-cov.
+
+[profile.mutants]
+# A test still running after 2 periods of 30 s is ended and counts as
+# failed, so a mutant that makes a test hang is caught there rather than
+# at the whole mutant's 300 s timeout, which counts as not caught
+# (https://nexte.st/docs/features/slow-tests/#terminating-tests-after-a-timeout;
+# on-timeout's default is "fail"). 60 s is about six times the slowest
+# test measured under nextest on the unmutated tree (ADR-021). A mutated
+# crate's test that the unmutated tree can't pass within it fails
+# cargo-mutants' baseline, which check.sh refuses as no verdict.
+slow-timeout = { period = "30s", terminate-after = 2 }
+# The first failure decides the mutant (caught), so the tests still
+# running are ended at once instead of waited for: a hung test then costs
+# nothing once another test has failed
+# (https://nexte.st/docs/running/#termination-behavior, since 0.9.111).
+fail-fast = { max-fail = 1, terminate = "immediate" }
