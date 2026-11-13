@@ -1,7 +1,12 @@
 //! The terminal sb draws on, while the runner is live (term-ui spec,
-//! "Terminal restore"): the control-character echo (`ECHOCTL`) off, so
-//! Ctrl-C doesn't echo `^C` into the tree, and the cursor hidden; both put
+//! "Terminal restore"): the echo off (`ECHO`, and `ECHONL` for Enter), so
+//! keys typed mid-run don't land in the live area and leave stale lines
+//! when it is redrawn; the control-character echo (`ECHOCTL`) off, so
+//! Ctrl-C doesn't echo `^C` into the tree; and the cursor hidden. All put
 //! back at every ending, and by cli-core's restore hook on a second Ctrl-C.
+//! Canonical mode and `ISIG` stay on: what is typed waits in the input
+//! queue for whatever reads the terminal next, and Ctrl-C still signals.
+//! The local-mode flags: <https://man7.org/linux/man-pages/man3/termios.3.html>
 //!
 //! proto-runner's reviewed guard (tcgetattr/tcsetattr through rustix's
 //! termios wrappers; UNVERIFIED there against tmux), with two changes: the
@@ -38,7 +43,10 @@ pub(crate) struct Saved(Option<Termios>);
 
 impl Saved {
     /// Quiet the terminal on stderr, if it is one and sb is in its
-    /// foreground: `ECHOCTL` off, the cursor hidden.
+    /// foreground: the echoes off, the cursor hidden. A failed `tcsetattr`
+    /// changed nothing (it fails only when none of the changes was made:
+    /// <https://pubs.opengroup.org/onlinepubs/9799919799/functions/tcsetattr.html>),
+    /// so nothing is put back then.
     pub fn quiet() -> Self {
         let stderr = rustix::stdio::stderr();
         if !in_foreground() {
@@ -48,7 +56,11 @@ impl Saved {
             return Saved(None);
         };
         let mut quiet = original.clone();
-        quiet.local_modes.remove(LocalModes::ECHOCTL);
+        // Each echo flag off. A loop, not `ECHO | ECHONL | ECHOCTL`: with
+        // distinct bits `^` gives the same set, a mutant no test can catch.
+        for echo in [LocalModes::ECHO, LocalModes::ECHONL, LocalModes::ECHOCTL] {
+            quiet.local_modes.remove(echo);
+        }
         if tcsetattr(stderr, OptionalActions::Now, &quiet).is_err() {
             return Saved(None);
         }

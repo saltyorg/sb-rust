@@ -350,7 +350,7 @@ impl Runner {
             }
         };
         let plain = matches!(mode, Mode::Plain);
-        // Live on stderr's terminal: quiet it (`ECHOCTL` off, the cursor
+        // Live on stderr's terminal: quiet it (the echoes off, the cursor
         // hidden) before the first frame.
         let saved = if plain || !on_stderr {
             Saved::default()

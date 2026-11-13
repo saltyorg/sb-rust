@@ -345,7 +345,7 @@ boundaries that callers match on.
 - Theme shape: named built-in themes plus per-role overrides.
 - Second signal: exit at once. Amended 2026-10-30 (term-ui spec, decision
   5): the second signal is handled on the signals thread, which runs
-  registered terminal-restore hooks (term-ui's cursor and `ECHOCTL`) and
+  registered terminal-restore hooks (term-ui's cursor and echoes) and
   then exits with the same code, instead of exiting inside the handler. A
   hook still running after 500 ms is abandoned and sb exits (term-ui
   Task 3). Amended 2026-11-12 (hardening plan decisions 2 and 9): a

@@ -62,10 +62,12 @@ fn exit_code(text: &str) -> Option<i32> {
         .ok()
 }
 
-/// The control-character echo is on again (`stty -a` after the run).
-fn echoctl_restored(text: &str) -> bool {
+/// The echo and the control-character echo are on again (`stty -a` after
+/// the run).
+fn echo_restored(text: &str) -> bool {
     let modes = text.rsplit("EXIT=").next().unwrap_or_default();
-    modes.contains("echoctl") && !modes.contains("-echoctl")
+    let on = |mode: &str| modes.split_whitespace().any(|m| m == mode);
+    on("echo") && on("echoctl")
 }
 
 /// The cursor was hidden while live, and shown again after the last time.
@@ -187,7 +189,7 @@ fn a_signal_during_the_checks_interrupts_and_restores() {
         );
         let pointer = format!("details: {}", logs.path().join("sb.log").display());
         assert_eq!(plain.matches(&pointer).count(), 1, "{signal:?}: {text}");
-        assert!(echoctl_restored(&text), "{signal:?}: {text}");
+        assert!(echo_restored(&text), "{signal:?}: {text}");
         assert!(cursor_hidden_then_shown(&text), "{signal:?}: {text}");
         assert!(
             log.contains(&format!(r#"outcome="interrupted (exit {code})""#)),

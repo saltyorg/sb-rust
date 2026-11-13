@@ -3,12 +3,17 @@
 //! restore"; success criterion 6). The demo signals itself while its
 //! second step runs. After it, `stty -a` shows whether the terminal's
 //! modes were put back. Terminal runs go through util-linux `script`: why
-//! not portable-pty, a reader thread and a dependency for a few lines of
-//! test (crates/sb/tests/colour.rs); why not rexpect, the spec settled on
+//! not portable-pty, a dependency term-ui doesn't have (only sb-exec
+//! does; crates/sb/tests/colour.rs); why not rexpect, the spec settled on
 //! `script` for term-ui's PTY tests (docs/specs/term-ui.md, testing).
+//! The modes are read from `stty -a`'s output by whole token, as the PTY
+//! is `script`'s and the test can't `tcgetattr` it.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 fn demo() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_demo"))
@@ -42,10 +47,17 @@ fn exit_code(text: &str) -> Option<i32> {
         .ok()
 }
 
-/// The control-character echo is on again, as before the run.
-fn echoctl_restored(text: &str) -> bool {
+/// Whether the `stty -a` output after the run sets `mode` (`echo`, not
+/// `-echo`).
+fn mode_on(text: &str, mode: &str) -> bool {
     let modes = text.rsplit("EXIT=").next().unwrap_or_default();
-    modes.contains("echoctl") && !modes.contains("-echoctl")
+    modes.split_whitespace().any(|m| m == mode)
+}
+
+/// The echo and the control-character echo are on again, as before the
+/// run.
+fn echo_restored(text: &str) -> bool {
+    mode_on(text, "echo") && mode_on(text, "echoctl")
 }
 
 /// The cursor was hidden while live, and shown again after the last time.
@@ -71,14 +83,14 @@ fn one_sigint_ends_130_with_the_terminal_restored() {
         !text.contains("full output"),
         "no pointer of the step's own: {text:?}"
     );
-    assert!(echoctl_restored(&text), "{text:?}");
+    assert!(echo_restored(&text), "{text:?}");
     assert!(cursor_hidden_then_shown(&text), "{text:?}");
 }
 
 /// Ctrl-C twice, while the step is slow to stop: cli-core's hard exit
 /// with 130, after the restore hook put the terminal back. Mid-run the
-/// control-character echo is off (the demo runs as a job of the same
-/// process group, still in the foreground).
+/// echo and the control-character echo are off (the demo runs as a job
+/// of the same process group, still in the foreground).
 #[test]
 fn a_second_sigint_still_restores_the_terminal() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -92,15 +104,17 @@ fn a_second_sigint_still_restores_the_terminal() {
     );
     assert_eq!(exit_code(&text), Some(130), "{text:?}");
     let mid_run = text.split("EXIT=").next().unwrap_or_default();
+    let mid_run_has = |mode: &str| mid_run.split_whitespace().any(|m| m == mode);
     assert!(
-        mid_run.contains("-echoctl"),
-        "echo not off mid-run: {text:?}"
+        mid_run_has("-echoctl"),
+        "control-character echo not off mid-run: {text:?}"
     );
+    assert!(mid_run_has("-echo"), "echo not off mid-run: {text:?}");
     // The hard exit: cli-core's ending, which would print "interrupted",
     // is skipped (no time bound: a busy machine could miss it).
     let plain = console::strip_ansi_codes(&text);
     assert!(!plain.contains("✗ interrupted"), "{text:?}");
-    assert!(echoctl_restored(&text), "{text:?}");
+    assert!(echo_restored(&text), "{text:?}");
     assert!(cursor_hidden_then_shown(&text), "{text:?}");
 }
 
@@ -111,7 +125,7 @@ fn sigterm_ends_143() {
     let text = on_a_terminal("\"$DEMO\" --terminate; echo EXIT=$?; stty -a", dir.path());
     assert_eq!(exit_code(&text), Some(143), "{text:?}");
     assert!(text.contains("interrupted · "), "{text:?}");
-    assert!(echoctl_restored(&text), "{text:?}");
+    assert!(echo_restored(&text), "{text:?}");
 }
 
 /// A background run (its own process group, job control on) leaves the
@@ -124,7 +138,7 @@ fn a_background_run_leaves_the_terminal_alone() {
         dir.path(),
     );
     assert_eq!(exit_code(&text), Some(0), "{text:?}");
-    assert!(echoctl_restored(&text), "{text:?}");
+    assert!(echo_restored(&text), "{text:?}");
     assert!(
         !text.contains("\x1b[?25l"),
         "the cursor was hidden: {text:?}"
@@ -145,7 +159,7 @@ fn leaving_the_foreground_mid_run_never_stops_on_sigttou() {
 }
 
 /// Plain on a terminal (`TERM=dumb`): the terminal is left alone, the
-/// cursor never hidden and the control-character echo untouched.
+/// cursor never hidden and the echoes untouched.
 #[test]
 fn a_dumb_terminal_is_left_alone() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -158,7 +172,7 @@ fn a_dumb_terminal_is_left_alone() {
         !text.contains("\x1b[?25l"),
         "the cursor was hidden: {text:?}"
     );
-    assert!(echoctl_restored(&text), "{text:?}");
+    assert!(echo_restored(&text), "{text:?}");
 }
 
 /// Piped, so std sees how the demo ended: one signal ends it by that
@@ -199,4 +213,92 @@ fn an_interrupted_run_dies_of_its_signal() {
             ),
         }
     }
+}
+
+/// What a user types during a live run: a word and Enter, then another.
+const TYPED: &str = "typedxyz\rmorexyz\r";
+
+/// Typing and pressing Enter mid-run leaves no stale line: the terminal
+/// doesn't echo the keys into the live area (ui-M2; term-ui spec,
+/// "Terminal restore"), not even the newline with `echonl` set, and
+/// both echoes are on again after the run. The keys are sent through
+/// `script`'s stdin once the run has quieted the terminal.
+#[test]
+fn typing_during_a_live_run_leaves_no_stale_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut child = Command::new("timeout")
+        .args([
+            "30",
+            "script",
+            "-qec",
+            // Mid-run: polled until the demo has switched the echo off,
+            // then the marker (only then) asks the test to type. After the
+            // run, `read` shows the keys reached the terminal's queue.
+            "stty cols 100 rows 30 echonl; \"$DEMO\" & \
+             for _ in $(seq 100); do \
+               stty -a | grep -qw -- -echo && { echo READY-TO-TYPE; break; }; sleep 0.05; \
+             done; \
+             wait $!; echo EXIT=$?; stty -a; read -r typed; echo GOT=$typed",
+            "/dev/null",
+        ])
+        .env("DEMO", demo())
+        .env("SB_LOG_DIR", dir.path())
+        .env("TERM", "xterm-256color")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run script");
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let mut stdout = child.stdout.take().expect("stdout");
+    let reader = {
+        let output = Arc::clone(&output);
+        std::thread::spawn(move || {
+            let mut chunk = [0; 4096];
+            while let Ok(read @ 1..) = stdout.read(&mut chunk) {
+                output
+                    .lock()
+                    .expect("output")
+                    .extend_from_slice(&chunk[..read]);
+            }
+        })
+    };
+    let ready =
+        || String::from_utf8_lossy(&output.lock().expect("output")).contains("READY-TO-TYPE");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ready() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Else the keys would land after the run and prove nothing.
+    assert!(ready(), "the echo was never off mid-run: {:?}", {
+        String::from_utf8_lossy(&output.lock().expect("output")).into_owned()
+    });
+    // Kept open until the run ends: `script` ends the session at its end.
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin.write_all(TYPED.as_bytes()).expect("type");
+    reader.join().expect("reader");
+    drop(stdin);
+    let _ = child.wait();
+    let text = String::from_utf8_lossy(&output.lock().expect("output")).into_owned();
+    assert_eq!(exit_code(&text), Some(0), "{text:?}");
+    let during = text.split("EXIT=").next().unwrap_or_default();
+    assert!(
+        !during.contains("typedxyz") && !during.contains("morexyz"),
+        "the keys were echoed into the live area: {text:?}"
+    );
+    assert!(echo_restored(&text), "{text:?}");
+    assert!(mode_on(&text, "echonl"), "{text:?}");
+    assert!(
+        text.contains("GOT=typedxyz"),
+        "the keys were typed: {text:?}"
+    );
+}
+
+/// A failed run puts the terminal back too.
+#[test]
+fn a_failed_run_restores_the_terminal() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = on_a_terminal("\"$DEMO\" --fail; echo EXIT=$?; stty -a", dir.path());
+    assert_eq!(exit_code(&text), Some(1), "{text:?}");
+    assert!(echo_restored(&text), "{text:?}");
+    assert!(cursor_hidden_then_shown(&text), "{text:?}");
 }

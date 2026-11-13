@@ -4,7 +4,7 @@
 //!
 //! The first signal cancels a token every command holds and records the
 //! exit code; a second runs the registered restore hooks (term-ui's
-//! cursor and `ECHOCTL`; term-ui spec, decision 5), then ends sb at once
+//! cursor and echoes; term-ui spec, decision 5), then ends sb at once
 //! by the first signal (exec decision 7). Signals are read on a thread
 //! with signal-hook's iterator, its documented high-level API
 //! (<https://docs.rs/signal-hook/0.4.5/signal_hook/iterator/index.html>), so

@@ -59,10 +59,12 @@ fn exit_code(text: &str) -> Option<i32> {
         .ok()
 }
 
-/// The control-character echo is on again (`stty -a` after the run).
-fn echoctl_restored(text: &str) -> bool {
+/// The echo and the control-character echo are on again (`stty -a` after
+/// the run).
+fn echo_restored(text: &str) -> bool {
     let modes = text.rsplit("EXIT=").next().unwrap_or_default();
-    modes.contains("echoctl") && !modes.contains("-echoctl")
+    let on = |mode: &str| modes.split_whitespace().any(|m| m == mode);
+    on("echo") && on("echoctl")
 }
 
 /// The cursor was hidden while live, and shown again after the last time.
@@ -178,7 +180,7 @@ fn assert_interrupted(text: &str, code: i32, took: Duration, rows: &[&str]) {
             "{label}: {row:?}\n{text}"
         );
     }
-    assert!(echoctl_restored(text), "{text}");
+    assert!(echo_restored(text), "{text}");
     assert!(cursor_hidden_then_shown(text), "{text}");
 }
 
@@ -330,7 +332,7 @@ fn a_second_signal_kills_a_stuck_systemctl() {
         wait_for(|| gone(stuck).then_some(())).is_some(),
         "the stand-in was left running\n{text}"
     );
-    assert!(echoctl_restored(&text), "{text}");
+    assert!(echo_restored(&text), "{text}");
     assert!(cursor_hidden_then_shown(&text), "{text}");
     // Ended by the first signal (cli-core's forced exit; exec decision 7).
     assert_eq!(exit_code(&text), Some(130), "{text}");

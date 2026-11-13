@@ -138,15 +138,23 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   prototype). It changed stdin, which is a pipe under `curl … | sudo bash`;
   term-ui changes the terminal sb draws on instead: stderr's, which is a
   terminal whenever the runner is live (no `/dev/tty` is needed). The
-  cursor is hidden while live. The tty is only touched in the foreground
-  process group (sb-go's `tty.go` guard), checked again at every restore,
-  so a background sb (or one moved there with Ctrl-Z and `bg`) never stops
+  cursor is hidden while live. Amended (maintainer, 2026-11-11,
+  hardening plan decision 17): the echo is switched off too while live
+  (`ECHO`, and `ECHONL` so Enter echoes nothing either), because keys
+  typed or Enter pressed mid-run were echoed into the live area and left
+  stale duplicate lines at its next redraw. Canonical mode and `ISIG`
+  stay on: what is typed waits in the input queue, and Ctrl-C still
+  signals. Every ending puts back the modes sb found. The tty is only
+  touched in the foreground process group (sb-go's `tty.go` guard),
+  checked again at every restore, so a background sb (or one moved there with Ctrl-Z and `bg`) never stops
   on SIGTTOU; a job-control shell puts its own modes back then. A second
   Ctrl-C restores the terminal through a hook cli-core runs before its
   immediate exit (decision 5), which also ends the live area's line.
   Known limit: Ctrl-Z itself (SIGTSTP) leaves the cursor hidden at the
   shell's prompt until sb resumes (bash restores the modes, not the
-  cursor).
+  cursor). Known limit: `kill -9` runs no restore, so it leaves the
+  echo off (since decision 17, not only `ECHOCTL`) unless a job-control
+  shell puts its own modes back; `stty sane` turns it on again.
 - **Resize:** known limit from proto-runner: the live area's line count
   never shrinks while running (decision 2), so shrinking the terminal
   mid-run can leave stale lines.
@@ -286,7 +294,7 @@ Pinned in the workspace when added, each confirmed at source in its task:
 | Tree glyphs | `termtree` `GlyphPalette` (the rounded `╰` checked in the plan) | proto-runner |
 | Tables | `tabled` 0.22 (`ansi` feature) | proto-inline |
 | Prompts | `dialoguer` 0.12 (console 0.16) | proto-inline |
-| `ECHOCTL` | `rustix` `termios` feature (already a dependency) | proto-runner |
+| `ECHOCTL`, `ECHO`, `ECHONL` | `rustix` `termios` feature (already a dependency) | proto-runner |
 | Async steps (decision 4) | `tokio`, minimal features (approved with the plan, 2026-11-01) | proto-logs, proto-runner |
 | Snapshot tests (dev) | `insta` (approved with the plan, 2026-11-01) | capability map |
 | Colour, theme, `Shutdown`, exit, run log | `sb-cli-core` | cli-core |
@@ -339,10 +347,11 @@ pub struct Runner { /* … */ }
 impl Runner {
     /// Start drawing. Called inside the command's tokio runtime (sb builds
     /// it after argument parsing); the frame task runs on it. Never fails:
-    /// if the terminal's modes can't be read, `ECHOCTL` is left alone.
+    /// if the terminal's modes can't be read, the echoes (`ECHOCTL`,
+    /// `ECHO`, `ECHONL`) are left alone.
     /// Registers a restore hook with `shutdown` for a second Ctrl-C (it
     /// first stops the frame task drawing, then writes through its own
-    /// tty fd and puts `ECHOCTL` back), removed when the runner ends.
+    /// tty fd and puts the echoes back), removed when the runner ends.
     /// `log` gives the failure block's pointer; step records go through
     /// `tracing` in the current span, which the runner captures here and
     /// carries onto concurrent steps' tasks (`Instrument`).
@@ -647,8 +656,8 @@ Choices behind it:
   none under `ascii` or with colour off; under `ascii` also with a
   child's own SGR output fed through `Step::output`, live and plain.
 - PTY tests (`script`, as cli-core's colour tests): live frames, no line
-  erases, clean endings for success, failure and SIGINT, `ECHOCTL`
-  restored.
+  erases, clean endings for success, failure and SIGINT, `ECHOCTL` and
+  `ECHO` restored, and keys typed mid-run not echoed.
 - `DisplayText`: a test per class of "Escape handling", 7-bit and 8-bit
   (SGR kept byte-exact or dropped by `colour`; OSC, DCS, APC, PM and SOS
   with their payloads; cursor and mode CSIs; the parameter limit;
@@ -698,8 +707,8 @@ Choices behind it:
    terminal with `auto`, no escape codes.
 6. Ctrl-C marks every running step and its parents interrupted in the
    tree, cli-core shows "interrupted" and the pointer once, the cursor and
-   `ECHOCTL` are restored, and sb ends by the signal (`$?` 130, SIGTERM
-   143; exec decision 7).
+   the echoes (`ECHOCTL`, `ECHO`) are restored, and sb ends by the signal
+   (`$?` 130, SIGTERM 143; exec decision 7).
 7. A table matches the reviewed `docker ps` look (snapshot) and fits 120,
    70 and 50 columns; not on a terminal it keeps its natural width.
 8. Every runner step's start, outcome, elapsed time, notices and output
@@ -744,7 +753,7 @@ Choices behind it:
    first, as well-behaved CLIs do: cli-core handles the second signal on
    its signals thread (code in the handler itself would need signal-hook's
    unsafe registration, which the workspace forbids), runs restore hooks
-   that term-ui registers (show the cursor, restore `ECHOCTL`), then exits
+   that term-ui registers (show the cursor, restore the echoes), then exits
    130 or 143. Ctrl-\ and `kill -9` stay as hard escapes. Recorded in the
    cli-core spec too. Amended by exec decision 7 (maintainer, 2026-11-04):
    the exit is a re-raise of the first signal, so sb dies of it (`$?`
