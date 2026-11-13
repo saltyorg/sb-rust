@@ -991,22 +991,22 @@ newest entry can't be shown, so a viewer never reaches the follow
 (page-M1, page-M2; confirmed).
 
 **Acceptance criteria:**
-- [ ] `Page` exposes the cursors of the oldest and newest entries it
+- [x] `Page` exposes the cursors of the oldest and newest entries it
       chose, shown or not: `Page::oldest_chosen` and
       `Page::newest_chosen`, each an `Option<Cursor>` (decision 10).
       `Before` and `After` from them step past, in both layouts.
-- [ ] `After(newest_chosen)` at a tail whose newest entry can't be
+- [x] `After(newest_chosen)` at a tail whose newest entry can't be
       shown returns `more_newer == false`.
-- [ ] The tests at walk.rs:2111-2125 pin the old behaviour. They are
+- [x] The tests at walk.rs:2111-2125 pin the old behaviour. They are
       re-targeted to the new one, and the change is acknowledged
       through Task 2's file.
-- [ ] journal.md's API section has the new fields; sb-host re-exports
+- [x] journal.md's API section has the new fields; sb-host re-exports
       them.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh full <base>`.
-- [ ] compare.sh on at least one release, capped.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] `cargo test -p sb-journal -p sb-host`; `scripts/check.sh full <base>`.
+- [x] compare.sh on at least one release, capped.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Task 34
 **Files:** `crates/journal/src/{lib.rs,walk.rs}`, `crates/host/src/journal.rs`, `docs/specs/journal.md`, `scripts/floor-acknowledged.txt`
