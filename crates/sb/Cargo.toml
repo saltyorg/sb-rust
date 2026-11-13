@@ -15,6 +15,9 @@ sb-docker.workspace = true
 sb-config.workspace = true
 # `sb branch-sandbox` (repo spec; ops replaces the wiring, M79).
 sb-repo.workspace = true
+# `sb edit`'s editor, attached to the terminal (tui spec, editors).
+sb-exec.workspace = true
+shlex.workspace = true
 anyhow.workspace = true
 # `net` for the I/O driver bollard's sockets need (enable_all turns on
 # only what is compiled in).

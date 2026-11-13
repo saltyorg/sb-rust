@@ -57,6 +57,9 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     // Nor the developer's colour profile (an `ascii` one would turn colour
     // off on a terminal); tests that want one set it.
     cmd.env_remove("SB_COLOR_PROFILE");
+    // Nor the developer's editor: `sb edit` tests set a fake one.
+    cmd.env_remove("VISUAL");
+    cmd.env_remove("EDITOR");
     for name in [
         "DOCKER_API_VERSION",
         "DOCKER_TLS_VERIFY",

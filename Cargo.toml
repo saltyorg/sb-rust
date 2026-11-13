@@ -70,6 +70,9 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 psl = "2.1.241"
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 thiserror = "2.0.21"
+# `VISUAL`/`EDITOR` split as a shell splits words, no expansion (stack
+# table "Shell quoting"; tui spec, editors); already in the lockfile.
+shlex = "2.0.1"
 # The fake Saltbox Docker controller decodes queries with it (tests only;
 # already in the tree through url).
 form_urlencoded = "1.2.2"

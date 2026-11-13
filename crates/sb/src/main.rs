@@ -64,6 +64,76 @@ enum Command {
         /// The branch to switch to
         name: String,
     },
+    /// Edit Saltbox configuration files
+    // Alone: help on stdout, exit 0, until the picker comes (M53). The
+    // help is sb-go's without "Editor wrappers should exec the foreground
+    // editor so cancellation can stop it" (tui spec, difference 27).
+    #[command(
+        long_about = EDIT_ABOUT,
+        arg_required_else_help = true,
+        disable_help_subcommand = true
+    )]
+    Edit {
+        #[command(subcommand)]
+        command: EditCommand,
+    },
+}
+
+/// `sb edit`'s help (sb-go cmd/edit.go, `editCmd.Long`).
+const EDIT_ABOUT: &str = "Edit existing Saltbox configuration files using your preferred editor.
+
+Set VISUAL or EDITOR to an executable editor, with optional quoted arguments.
+VISUAL takes precedence over EDITOR. If neither is set, sb tries sensible-editor,
+editor, nano, then vi, using the first executable it finds.
+
+Export your preference, for example:
+  export EDITOR=\"/usr/bin/vim.basic\"
+
+Editors run as root. Sudo may change HOME and PATH. Use an absolute executable
+path for editors installed outside sudo's PATH. If you invoke sudo yourself, pass the
+preference explicitly:
+  sudo EDITOR=/usr/bin/vim.basic sb edit settings
+
+Quotes and backslash escapes are supported. Shell aliases, functions, variable
+expansion, substitutions, and ~ expansion are not supported. GUI clients may
+need a wait option and a working root GUI session.
+
+Configuration targets must already exist and be regular files. Symlinks to
+regular files are supported.";
+
+/// `sb edit`'s subcommands, one per file (tui spec, editors; sb-go's
+/// names, underscores kept).
+#[derive(Subcommand, Clone, Copy)]
+enum EditCommand {
+    /// Accounts
+    Accounts,
+    /// Advanced Settings
+    #[command(name = "adv_settings")]
+    AdvSettings,
+    /// Backup Settings
+    #[command(name = "backup_config")]
+    BackupConfig,
+    /// Hetzner VLAN Settings
+    #[command(name = "hetzner_vlan")]
+    HetznerVlan,
+    /// Settings
+    Settings,
+    /// Inventory Settings
+    Inventory,
+}
+
+impl EditCommand {
+    /// The file it opens.
+    fn file(self) -> edit::File {
+        match self {
+            Self::Accounts => edit::File::Accounts,
+            Self::AdvSettings => edit::File::AdvSettings,
+            Self::BackupConfig => edit::File::BackupConfig,
+            Self::HetznerVlan => edit::File::HetznerVlan,
+            Self::Settings => edit::File::Settings,
+            Self::Inventory => edit::File::Inventory,
+        }
+    }
 }
 
 /// `sb docker`'s subcommands (docker spec); logs comes with its own plan.
@@ -114,6 +184,14 @@ impl Command {
             },
             Command::ValidateConfig => "validate-config",
             Command::BranchSandbox { .. } => "branch-sandbox",
+            Command::Edit { command } => match command {
+                EditCommand::Accounts => "edit accounts",
+                EditCommand::AdvSettings => "edit adv_settings",
+                EditCommand::BackupConfig => "edit backup_config",
+                EditCommand::HetznerVlan => "edit hetzner_vlan",
+                EditCommand::Settings => "edit settings",
+                EditCommand::Inventory => "edit inventory",
+            },
         }
     }
 
@@ -125,10 +203,12 @@ impl Command {
             // The Docker socket, and sb's rule that only version and
             // completion run unprivileged (cli-core decision 3); Saltbox's
             // config is root's to read (config spec); the Sandbox checkout
-            // and its ownership are root's to change.
-            Command::Docker { .. } | Command::ValidateConfig | Command::BranchSandbox { .. } => {
-                true
-            }
+            // and its ownership are root's to change; so are the files
+            // `edit` opens (tui spec, editors, assumption 2).
+            Command::Docker { .. }
+            | Command::ValidateConfig
+            | Command::BranchSandbox { .. }
+            | Command::Edit { .. } => true,
         }
     }
 }
@@ -342,6 +422,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
     match *command {
         Command::ValidateConfig => validate_config(shutdown, log)?,
         Command::BranchSandbox { ref name } => branch::branch_sandbox(name, shutdown, log)?,
+        Command::Edit { command } => edit::edit(command.file(), shutdown)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -559,6 +640,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 }
 
 mod branch;
+mod edit;
 
 #[cfg(test)]
 mod contract;
@@ -643,6 +725,16 @@ mod tests {
     fn validate_config_needs_root() {
         assert!(Command::ValidateConfig.needs_root());
         assert_eq!(Command::ValidateConfig.name(), "validate-config");
+    }
+
+    /// `edit` needs root and logs each subcommand under its sb-go name.
+    #[test]
+    fn edit_needs_root_and_logs_its_file() {
+        let edit = |command| Command::Edit { command };
+        assert!(edit(EditCommand::Settings).needs_root());
+        assert_eq!(edit(EditCommand::AdvSettings).name(), "edit adv_settings");
+        assert_eq!(edit(EditCommand::Inventory).name(), "edit inventory");
+        assert_eq!(EditCommand::Inventory.file(), edit::File::Inventory);
     }
 
     /// `docker ps` needs root (cli-core decision 3).
