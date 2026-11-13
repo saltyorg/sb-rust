@@ -209,15 +209,15 @@ and the public-repo error, tested with a stand-in git.
 for ops' `update` and ansible's tag cache (M32).
 
 **Acceptance criteria:**
-- [ ] `branch_choice` covers same branch, different with each answer,
+- [x] `branch_choice` covers same branch, different with each answer,
       and different without one.
-- [ ] `head` returns the checkout's commit, and the spec's error on an
+- [x] `head` returns the checkout's commit, and the spec's error on an
       unborn or broken repository.
-- [ ] Both are public in sb-repo's API as the spec names them.
+- [x] Both are public in sb-repo's API as the spec names them.
 
 **Verification:**
-- [ ] `cargo test -p sb-repo`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-repo`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M5
 **Files:** `crates/repo/src/lib.rs`, `crates/repo/tests/`
