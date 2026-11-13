@@ -1529,7 +1529,7 @@ has merged. A trial on 67fcdd2 measured what breaks (the review's logs outside
 the repo, not tracked).
 
 **Acceptance criteria:**
-- [ ] The escaping change decided first, test-first: std's
+- [x] The escaping change decided first, test-first: std's
       `str::escape_debug` now escapes a grapheme extender anywhere
       (https://github.com/rust-lang/rust/pull/158303), so
       `exit::tests::combining_marks_mid_line_show_unchanged`
@@ -1540,20 +1540,20 @@ the repo, not tracked).
       changed) went to the maintainer: today's output is kept, through an
       escaper of sb's own (decision 40). The journal's path messages
       (crates/journal/src/lib.rs) follow the same answer.
-- [ ] clippy `-D warnings` clean: the `map_unwrap_or` findings (now also
+- [x] clippy `-D warnings` clean: the `map_unwrap_or` findings (now also
       `map(..).unwrap_or_default()`), `needless_range_loop` in
       walk.rs's tests and `unused_must_use` in the journal example.
-- [ ] Cargo's new `unused_dependencies` warning on sb-journal's optional
+- [x] Cargo's new `unused_dependencies` warning on sb-journal's optional
       `clap` (used only by its examples under `testing`) is resolved by
       structure where one fits, or a `[lints.cargo]` entry with its reason.
-- [ ] ADR-001's pins (ratatui =0.30.2, clap_complete =4.6.11) and the
+- [x] ADR-001's pins (ratatui =0.30.2, clap_complete =4.6.11) and the
       production build still pass; the doc and comment references to
       1.99.1 are updated.
 
 **Verification:**
-- [ ] `scripts/check.sh full <base>`, including the production build and
+- [x] `scripts/check.sh full <base>`, including the production build and
       cargo-llvm-cov and cargo-mutants on the new toolchain.
-- [ ] Review: one code-reviewer pass on the task's diff; the
+- [x] Review: one code-reviewer pass on the task's diff; the
       library-reviewer if the escaper becomes sb's own.
 
 **Dependencies:** every open lane task merged (it touches six crates and

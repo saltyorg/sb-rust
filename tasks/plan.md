@@ -575,7 +575,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 56: the mutation pass times out per test (decision 34)
 
 ### Phase 6: the toolchain (decision 32)
-- [ ] Task 55: the toolchain pin moves to 1.100
+- [x] Task 55: the toolchain pin moves to 1.100
 
 ### Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
