@@ -8,8 +8,10 @@ module's validation half and builds `sb validate-config`; the facts half
 into validation come with their own plans.
 
 **Also in this module, the one Saltbox-user lookup** (the python-env and
-ops specs point here): `saltbox_user(settings) -> Result<String,
-ConfigError>`: `user.name` from `<saltbox root>/accounts.yml`, read as
+ops specs point here): `user::saltbox_user(root: &Path) ->
+Result<String, UserError>` (as built in M12: validate-config's
+`Settings` carries its HTTP client and service URLs, which this lookup
+doesn't need): `user.name` from `<saltbox root>/accounts.yml`, read as
 sb-go's `GetSaltboxUser` reads it (host/system.go:69-92): the file
 through cli-core's `read_small` and sb-config's YAML entry (ADR-022),
 no schema validation, so an unrelated issue elsewhere in the file

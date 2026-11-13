@@ -161,19 +161,19 @@ repositories, wired as a bare `sb branch-sandbox <name>` (no tag cache)
 so an sb command exposes it. ops replaces the wiring in M79.
 
 **Acceptance criteria:**
-- [ ] The crate per the repo spec's Project Structure; deny.toml gets
+- [x] The crate per the repo spec's Project Structure; deny.toml gets
       `sb-repo` (wrappers `sb`) and adds it to the wrappers of `sb-exec`,
       `sb-host` and `sb-term-ui`; the library-check hook lists `repo`.
-- [ ] git runs through exec with the spec's environment (`LC_ALL=C`);
+- [x] git runs through exec with the spec's environment (`LC_ALL=C`);
       captures for reads, streams into term-ui steps for changes; sb-go's
       texts.
-- [ ] `sb branch-sandbox <name>` resets a local Sandbox checkout to the
+- [x] `sb branch-sandbox <name>` resets a local Sandbox checkout to the
       branch, owned by the given user.
 
 **Verification:**
-- [ ] `cargo test -p sb-repo` on `file://` remotes; an sb test through the
+- [x] `cargo test -p sb-repo` on `file://` remotes; an sb test through the
       binary.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M1 (M23 before Checkpoint R, not before this task)
 **Files:** `crates/repo/{Cargo.toml,src/lib.rs,src/git.rs,src/update.rs,tests/}`, `crates/sb/src/{main.rs,branch.rs}`, `crates/sb/Cargo.toml`, `deny.toml`, `.claude/hooks/library-check.sh`, `Cargo.toml`, `Cargo.lock`
@@ -187,14 +187,14 @@ so an sb command exposes it. ops replaces the wiring in M79.
 and the public-repo error, tested with a stand-in git.
 
 **Acceptance criteria:**
-- [ ] The retry happens only on the spec's conditions, once, over
+- [x] The retry happens only on the spec's conditions, once, over
       HTTP/1.1.
-- [ ] The public-repo error carries the spec's text.
-- [ ] No remote call waits on a terminal ("Never waiting on a terminal").
+- [x] The public-repo error carries the spec's text.
+- [x] No remote call waits on a terminal ("Never waiting on a terminal").
 
 **Verification:**
-- [ ] `cargo test -p sb-repo` with the stand-in git.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-repo` with the stand-in git.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M5
 **Files:** `crates/repo/src/{lib.rs,remote.rs}`, `crates/repo/tests/`
@@ -348,15 +348,15 @@ YAML entry, with no schema validation. python-env's commands and ops
 call it.
 
 **Acceptance criteria:**
-- [ ] sb-go's four texts (`failed to read accounts.yml: ...`, `failed to
+- [x] sb-go's four texts (`failed to read accounts.yml: ...`, `failed to
       unmarshal accounts.yml: ...`, `user section not found ...`,
       `user.name not found ...`).
-- [ ] An unrelated schema issue elsewhere in the file doesn't stop it.
-- [ ] It lives in its own file, so lane 3's run.rs work doesn't touch it.
+- [x] An unrelated schema issue elsewhere in the file doesn't stop it.
+- [x] It lives in its own file, so lane 3's run.rs work doesn't touch it.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-config`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** hardening Task 59 merged (plan decision 9)
 **Files:** `crates/config/src/{lib.rs,user.rs}`, `crates/config/tests/`
