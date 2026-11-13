@@ -31,6 +31,9 @@ anstyle-lossy = "1.1.5"
 # through anstream).
 anstyle-parse = "1.0.0"
 console = "0.16.6"
+# term-ui's prompts (term-ui spec, "Prompts"; stack table "Prompts"):
+# the confirm only for now; the password feature comes with its first user.
+dialoguer = { version = "0.12.0", default-features = false }
 # Only the colour type for now; tables bring `Table` with their task.
 tabled = { version = "0.22.0", default-features = false, features = ["std", "ansi"] }
 termtree = "1.0.0"

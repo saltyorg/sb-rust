@@ -1018,6 +1018,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialoguer"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25f104b501bf2364e78d0d3974cbc774f738f5865306ed128e1e0d7499c0ad96"
+dependencies = [
+ "console",
+ "shell-words",
+]
+
+[[package]]
 name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3270,6 +3280,7 @@ dependencies = [
  "clap",
  "colorchoice-clap",
  "console",
+ "hex",
  "insta",
  "predicates",
  "rustix",
@@ -3279,9 +3290,11 @@ dependencies = [
  "sb-exec",
  "sb-host",
  "sb-motd",
+ "sb-release",
  "sb-repo",
  "sb-term-ui",
  "serde_json",
+ "sha2 0.11.1",
  "shlex",
  "tempfile",
  "tokio",
@@ -3456,6 +3469,7 @@ dependencies = [
 name = "sb-release"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "futures-util",
  "hex",
@@ -3503,6 +3517,7 @@ dependencies = [
  "anstyle-parse",
  "anyhow",
  "console",
+ "dialoguer",
  "indicatif",
  "insta",
  "rustix",

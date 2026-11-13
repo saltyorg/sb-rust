@@ -23,6 +23,11 @@ pub struct BuildInfo {
     pub uv_version: String,
     /// Release builds for package managers turn self-update off.
     pub self_update_disabled: bool,
+    /// `SB_VERSION` was set at build time: a release build. Self-update
+    /// treats any other build as disabled, so a developer build never
+    /// replaces itself with a release (release spec, decision 11); `sb
+    /// version` reads the same either way.
+    pub released: bool,
 }
 
 /// sb-go's `version --json` shape; field order is the output order.
@@ -61,7 +66,15 @@ impl BuildInfo {
             git_commit: git_commit.unwrap_or_default().to_string(),
             uv_version: UV_VERSION.to_string(),
             self_update_disabled: disable_self_update == Some("true"),
+            released: version.is_some(),
         }
+    }
+
+    /// Whether self-update is off: built with it disabled, or a raw build
+    /// (release spec, decision 11). `--force-update` exists only then.
+    #[must_use]
+    pub fn self_update_off(&self) -> bool {
+        self.self_update_disabled || !self.released
     }
 
     /// `sb version`: sb-go's `Saltbox CLI version: %s (commit: %s)\n`.
@@ -99,6 +112,7 @@ mod tests {
             git_commit: "81558b9".into(),
             uv_version: "0.13.4".into(),
             self_update_disabled: false,
+            released: true,
         }
     }
 
@@ -131,6 +145,7 @@ mod tests {
         assert_eq!(current.git_commit, "");
         assert_eq!(current.uv_version, UV_VERSION);
         assert!(!current.self_update_disabled);
+        assert!(!current.released);
     }
 
     /// The fallback is the version the caller passes: the binary's own
@@ -147,6 +162,33 @@ mod tests {
         assert_eq!(current.version, "3.0.0");
         assert_eq!(current.git_commit, "abc1234");
         assert!(current.self_update_disabled);
+        assert!(current.released);
+    }
+
+    /// Released means `SB_VERSION` was set at build time, whatever else
+    /// was; `sb version` reads the same either way.
+    #[test]
+    fn released_is_sb_version_being_set() {
+        let released = BuildInfo::from_env("0.1.0", Some("0.1.0"), None, None);
+        assert!(released.released);
+        let raw = BuildInfo::from_env("0.1.0", None, Some("abc1234"), Some("true"));
+        assert!(!raw.released);
+        assert_eq!(
+            released.version_line(),
+            raw.version_line().replace("abc1234", "")
+        );
+        assert_eq!(
+            BuildInfo {
+                released: false,
+                ..released.clone()
+            }
+            .version_json(),
+            released.version_json()
+        );
+        assert!(!released.self_update_off());
+        assert!(raw.self_update_off());
+        let disabled = BuildInfo::from_env("0.1.0", Some("0.1.0"), None, Some("true"));
+        assert!(disabled.self_update_off());
     }
 
     /// Only the exact value "true" disables self-update, as sb-go's

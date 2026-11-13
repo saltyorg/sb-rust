@@ -16,6 +16,7 @@ testing = ["dep:axum", "dep:futures-util", "dep:rcgen", "dep:tokio-rustls", "tok
 
 [dependencies]
 sb-cli-core.workspace = true
+anyhow.workspace = true
 sb-term-ui.workspace = true
 hex.workspace = true
 reqwest.workspace = true
@@ -37,6 +38,7 @@ tokio-rustls = { workspace = true, optional = true }
 # Turns `testing` on for the unit tests and every other test target (as
 # sb-journal does).
 sb-release = { workspace = true, features = ["testing"] }
+hex.workspace = true
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }

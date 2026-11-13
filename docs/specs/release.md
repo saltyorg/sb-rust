@@ -199,8 +199,9 @@ section says what follows.
    (decision 11). sb-go's raw builds failed at `invalid current version
    ""`.
 8. The confirm reads the terminal, not stdin; no terminal without `--yes`
-   is an error naming the flag; `yes` and `y` both accept (term-ui
-   "Prompts"). sb-go read stdin, and EOF was an error.
+   is an error naming the flag; only the whole line `yes` or `y`
+   accepts, in any case with spaces around trimmed, and anything else
+   declines (term-ui "Prompts"). *Amended 2026-11-13 with M26.* sb-go read stdin, and EOF was an error.
 9. The lookup and the update are runner steps; sb-go printed lines only.
 10. No `-v` (decision 13).
 11. The proxy's usability check covers uv's and the fact's assets too,
@@ -301,7 +302,7 @@ and `ElfError`; R8 `sha256_file`.
 | object | 0.41.0, `default-features = false`, `features = ["read_core", "elf"]` | the ELF header (https://docs.rs/object/0.41.0/object/read/elf/index.html); goblin 0.10.7 is the alternative, with less adoption | no: new |
 | serde, serde_json, thiserror, url | workspace | JSON, errors, URL building | yes |
 | sb-exec, sb-term-ui, sb-cli-core | workspace | the staged `version --json`, steps and the prompt, `BuildInfo` | yes |
-| dialoguer | 0.12.0 | term-ui's confirm (stack table "Prompts"; https://docs.rs/dialoguer/0.12.0/dialoguer/struct.Confirm.html) | no: new, in term-ui |
+| dialoguer | 0.12.0 | term-ui's confirm, on its text input (stack table "Prompts"; https://docs.rs/dialoguer/0.12.0/dialoguer/struct.Input.html) | no: new, in term-ui |
 
 Test only (`testing` feature): axum 0.8.9 (workspace) on a tokio-rustls
 listener (axum's low-level-rustls example,
@@ -408,8 +409,12 @@ No test reaches the network or replaces an installed sb.
   a non-ELF asset (refused); SIGINT mid-download (target unchanged, no
   `.sb-update-*` left); disabled and raw builds (the texts, exit 0, and
   `--force-update` in the tree only there: the command-tree contract).
-- **Prompt:** term-ui's confirm on a PTY (rexpect, as term-ui's PTY
-  tests), with a background process group and with no terminal.
+- **Prompt:** term-ui's confirm on a PTY (util-linux `script`, as
+  term-ui's PTY tests, through `sb self-update`), answered (`y`, `Y`,
+  ` yes `), declined (`nay`, `no thank you`, Enter alone),
+  interrupted with Ctrl-C, with a background process group and with no
+  terminal. *Amended 2026-11-13 with M26: rexpect was dropped for
+  `script` with term-ui's tests.*
 - **Gates:** CONSTRAINTS.md as always; the binary-size row records
   object's and dialoguer's cost.
 

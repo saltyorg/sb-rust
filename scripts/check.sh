@@ -242,6 +242,24 @@ crate_check() {
   ((bad == 0))
 }
 
+# sb's normal build (no dev-dependencies, as a release or production build
+# resolves it) never has a crate's `testing` feature: those let a test
+# point sb at a fake, sb-release's at a fake GitHub with its own trust
+# root, and a root-run updater must never be redirectable (release spec,
+# M26's security review). cargo tree's `-e features` lists each enabled
+# feature as `<crate> feature "<name>"`
+# (https://doc.rust-lang.org/cargo/commands/cargo-tree.html#tree-options).
+# Why not deny.toml's `[bans] features`: cargo-deny's graph includes
+# dev-dependencies, where sb's tests turn `testing` on by design.
+testing_feature_check() {
+  local tree
+  tree=$(cargo tree -p sb -e normal,features --locked --quiet --prefix none) || return 1
+  if grep -E '^sb-[a-z-]+ feature "testing"' <<<"$tree"; then
+    echo "check: sb's normal build enables a testing feature (above)" >&2
+    return 1
+  fi
+}
+
 fast() {
   step "crates: workspace lints and a deny.toml entry each"
   crate_check
@@ -624,6 +642,8 @@ full() {
   step "dependencies and architecture (cargo-deny, shipped graph)"
   need cargo-deny
   cargo deny --locked --manifest-path crates/sb/Cargo.toml check
+  step "sb's normal build has no testing feature"
+  testing_feature_check
   step "binary size <= ${SIZE_MAX_BYTES} bytes (production glibc, built on ubuntu:${RUNTIME_RELEASES[0]} through cross)"
   if [[ $arch != x86_64 ]]; then
     # The image's C compiler builds for its own architecture, and the

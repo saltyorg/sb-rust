@@ -318,7 +318,17 @@ sequence.
 ### Prompts (specified now, built with their first user: decision 1)
 
 - confirm (default no), text with validation, password with a fixed-length
-  mask, themed from the palette (dialoguer's `ColorfulTheme` fields).
+  mask, themed from the palette through dialoguer's `Theme` trait (its
+  default `[y/N]` layout with `ColorfulTheme`'s `?` prefix, painted with
+  term-ui's anstyle adapters: `ColorfulTheme`'s own fields are console
+  styles, which write bright colours as 256-colour codes). *Amended
+  2026-11-13 with M26.*
+- The confirm reads the whole line, on dialoguer's text input: `y` or
+  `yes`, in any case, with spaces around trimmed, accepts; anything else
+  (`nay`, `no thank you`, Enter alone) declines. dialoguer's `Confirm`
+  keeps the last `y` or `n` typed, so `nay` would accept, and the confirm
+  guards replacing a root-run binary. The answer shows as `yes` or `no`.
+  *Amended 2026-11-13 with M26.*
 - Every prompt takes its answer from the caller when one was given (the
   command's flag), without asking.
 - Prompts read the terminal, not stdin (`curl … | sudo bash` leaves stdin

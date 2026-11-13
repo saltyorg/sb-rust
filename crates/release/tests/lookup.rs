@@ -598,3 +598,58 @@ async fn a_remote_tag_in_an_error_is_made_safe() {
         "release v1 is missing sb_linux_amd64"
     );
 }
+
+/// A testing build reaches only the fake its bases file names, and
+/// refuses to run without one: it never falls back to GitHub.
+#[tokio::test]
+async fn a_testing_build_uses_the_bases_file_only() {
+    let fake = Fake::start().expect("fake");
+    fake.script(
+        "/version",
+        Answer::json(release(
+            "v1.2.3",
+            false,
+            false,
+            &[asset(&fake, "v1.2.3", ASSET, DIGEST)],
+        )),
+    );
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("bases.json");
+    fake.write_bases(&file).expect("written");
+    let child = std::env::var_os("SB_RELEASE_BASES_CHILD");
+    if child.is_none() {
+        // The variable is process-wide: the checks run in re-runs of this
+        // test, with and without it.
+        for (bases, expected) in [
+            (Some(&file), "found v1.2.3"),
+            (
+                None,
+                "refused: build the HTTP client: a testing build needs SB_RELEASE_TEST_BASES",
+            ),
+        ] {
+            let mut run = std::process::Command::new(std::env::current_exe().expect("binary"));
+            run.args([
+                "a_testing_build_uses_the_bases_file_only",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("SB_RELEASE_BASES_CHILD", "1")
+            .env_remove(sb_release::testing::BASES_VARIABLE);
+            if let Some(bases) = bases {
+                run.env(sb_release::testing::BASES_VARIABLE, bases);
+            }
+            let out = run.output().expect("child");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{out:?}");
+            assert!(stdout.contains(expected), "{stdout}");
+        }
+        return;
+    }
+    match Releases::for_sb(AGENT) {
+        Ok(releases) => {
+            let (found, _) = latest(&releases).await;
+            println!("found {}", found.expect("found").tag);
+        }
+        Err(err) => println!("refused: {err}"),
+    }
+}

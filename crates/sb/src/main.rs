@@ -81,6 +81,38 @@ enum Command {
     // No `--verbose/-v` (motd decision 9).
     #[command(long_about = motd::ABOUT)]
     Motd(motd::Args),
+    /// Update Saltbox CLI
+    // Hidden, as sb-go's. No `--verbose/-v` (release spec, decision 13).
+    // `--force-update` exists only in builds with self-update off, raw
+    // builds included: `parse` adds it then (`force_update_arg`).
+    #[command(long_about = "Update Saltbox CLI", hide = true)]
+    SelfUpdate {
+        /// Automatically accept update without confirmation
+        #[arg(short, long)]
+        yes: bool,
+        /// Set from `--force-update` when this build has it.
+        #[arg(skip)]
+        force_update: bool,
+    },
+}
+
+/// `--force-update`, sb-go's flag in builds with self-update disabled
+/// (cmd/selfUpdate.go): added to the parsed tree only in such builds, so
+/// the tree of a release build is sb-go's. Why not a clap `hide`: a
+/// hidden flag would still parse in builds where it must not exist.
+fn force_update_arg(cmd: clap::Command, build: &BuildInfo) -> clap::Command {
+    if build.self_update_off() {
+        cmd.mut_subcommand("self-update", |sub| {
+            sub.arg(
+                clap::Arg::new("force-update")
+                    .long("force-update")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Force update even when self-update is disabled"),
+            )
+        })
+    } else {
+        cmd
+    }
 }
 
 /// `sb edit`'s help (sb-go cmd/edit.go, `editCmd.Long`).
@@ -197,6 +229,7 @@ impl Command {
                 EditCommand::Inventory => "edit inventory",
             },
             Command::Motd(_) => "motd",
+            Command::SelfUpdate { .. } => "self-update",
         }
     }
 
@@ -210,12 +243,15 @@ impl Command {
             // config is root's to read (config spec); the Sandbox checkout
             // and its ownership are root's to change; so are the files
             // `edit` opens (tui spec, editors, assumption 2); motd as every
-            // command (motd decision 20: pam_motd already runs it as root).
+            // command (motd decision 20: pam_motd already runs it as root);
+            // and sb's own file, which `self-update` replaces (release spec,
+            // assumption 5).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
             | Command::Edit { .. }
-            | Command::Motd(_) => true,
+            | Command::Motd(_)
+            | Command::SelfUpdate { .. } => true,
         }
     }
 }
@@ -366,9 +402,25 @@ fn parse(profile: theme::Profile) -> Result<Cli, clap::Error> {
     // usage block's padding rows.
     let colour =
         profile != theme::Profile::Ascii && sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
+    // Before the help's layout, which lists each command's flags.
+    let cmd = force_update_arg(cmd, &BuildInfo::current(env!("CARGO_PKG_VERSION")));
     let cmd = help::apply(cmd, theme::current(), colour);
-    cmd.try_get_matches()
-        .and_then(|matches| Cli::from_arg_matches(&matches))
+    cmd.try_get_matches().and_then(|matches| {
+        let mut cli = Cli::from_arg_matches(&matches)?;
+        if let Command::SelfUpdate { force_update, .. } = &mut cli.command {
+            *force_update = forced(&matches);
+        }
+        Ok(cli)
+    })
+}
+
+/// Whether `--force-update` was given (only builds that have it can).
+fn forced(matches: &clap::ArgMatches) -> bool {
+    matches
+        .subcommand_matches("self-update")
+        .and_then(|sub| sub.try_get_one::<bool>("force-update").ok().flatten())
+        .copied()
+        .unwrap_or(false)
 }
 
 /// What the real parse didn't turn into a command: help or version
@@ -431,6 +483,9 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::BranchSandbox { ref name } => branch::branch_sandbox(name, shutdown, log)?,
         Command::Edit { command } => edit::edit(command.file(), shutdown)?,
         Command::Motd(ref args) => motd::motd(args, shutdown)?,
+        Command::SelfUpdate { yes, force_update } => {
+            self_update::self_update(yes, force_update, shutdown, log)?;
+        }
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -650,6 +705,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 mod branch;
 mod edit;
 mod motd;
+mod self_update;
 
 #[cfg(test)]
 mod contract;
@@ -657,6 +713,61 @@ mod contract;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--force-update` is in the tree only of builds with self-update
+    /// off: raw builds and those built with it disabled, never a plain
+    /// release build (sb-go's tree); `self-update` is hidden and needs root.
+    #[test]
+    fn force_update_exists_only_where_self_update_is_off() {
+        let has_it = |build: &BuildInfo| {
+            force_update_arg(Cli::command(), build)
+                .find_subcommand("self-update")
+                .expect("self-update")
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some("force-update"))
+        };
+        let release = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, None);
+        let disabled = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Some("true"));
+        let raw = BuildInfo::from_env("0.1.0", None, None, None);
+        assert!(!has_it(&release));
+        assert!(has_it(&disabled));
+        assert!(has_it(&raw));
+        let cmd = Cli::command();
+        assert!(
+            cmd.find_subcommand("self-update")
+                .expect("self-update")
+                .is_hide_set()
+        );
+        let update = Command::SelfUpdate {
+            yes: false,
+            force_update: false,
+        };
+        assert!(update.needs_root());
+        assert_eq!(update.name(), "self-update");
+    }
+
+    /// `--force-update` given is read into the command; not given, or in a
+    /// build without it, it is false.
+    #[test]
+    fn a_given_force_update_is_read() {
+        let cmd = force_update_arg(
+            Cli::command(),
+            &BuildInfo::from_env("0.1.0", None, None, None),
+        );
+        let matches = cmd
+            .clone()
+            .try_get_matches_from(["sb", "self-update", "--force-update"])
+            .expect("parsed");
+        assert!(forced(&matches));
+        let matches = cmd
+            .try_get_matches_from(["sb", "self-update", "-y"])
+            .expect("parsed");
+        assert!(!forced(&matches));
+        let matches = Cli::command()
+            .try_get_matches_from(["sb", "self-update"])
+            .expect("parsed");
+        assert!(!forced(&matches));
+    }
 
     /// `--ignore` is repeatable and comma-separated (cobra's
     /// `StringSlice` for any Docker name); names are kept as given, empty

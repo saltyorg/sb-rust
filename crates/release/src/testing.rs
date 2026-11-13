@@ -36,10 +36,30 @@ use tokio_rustls::server::TlsStream;
 
 use crate::{Error, Releases, builder};
 
+/// The variable naming the bases file a `testing` build of sb uses.
+pub const BASES_VARIABLE: &str = "SB_RELEASE_TEST_BASES";
+
+/// The client [`Releases::for_sb`] makes in a `testing` build: from the
+/// bases file [`BASES_VARIABLE`] names (JSON, [`Fake::write_bases`]).
+pub(crate) fn from_env(user_agent: &str) -> Result<Releases, Error> {
+    let path = std::env::var_os(BASES_VARIABLE)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            Error::Client(format!(
+                "a testing build needs {BASES_VARIABLE}: it never reaches GitHub"
+            ))
+        })?;
+    let text =
+        std::fs::read(&path).map_err(|err| Error::Client(format!("{BASES_VARIABLE}: {err}")))?;
+    let bases: TestBases = serde_json::from_slice(&text)
+        .map_err(|err| Error::Client(format!("{BASES_VARIABLE}: {err}")))?;
+    Releases::testing(bases, user_agent)
+}
+
 /// Where [`Releases::testing`] sends its requests, and the certificate it
 /// trusts (DER). `download` is a root URL ending in `/` (the asset checks
 /// compare only its host and port, and name it in their message).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TestBases {
     pub proxy: String,
     pub api: String,
@@ -313,6 +333,17 @@ impl Fake {
             certificate: self.certificate.clone(),
             metadata_timeout: crate::METADATA_TIMEOUT,
         }
+    }
+
+    /// Write this fake's bases to `path`, for a `testing` build of sb
+    /// ([`BASES_VARIABLE`]).
+    ///
+    /// # Errors
+    ///
+    /// The I/O error writing the file.
+    pub fn write_bases(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = serde_json::to_vec(&self.bases()).map_err(std::io::Error::other)?;
+        std::fs::write(path, json)
     }
 
     /// A client for this fake with `User-Agent: <user_agent>`.

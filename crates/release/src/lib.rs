@@ -6,8 +6,20 @@ mod activate;
 mod asset;
 mod download;
 mod lookup;
+mod self_update;
 #[cfg(feature = "testing")]
 pub mod testing;
+
+// A release build (`SB_VERSION` set) can never carry the fake GitHub: in a
+// `testing` build `Releases::for_sb` trusts the server and certificate a
+// file names. scripts/check.sh checks sb's normal tree has no `testing`
+// feature; this stops a build that turned it on anyway (tests built in a
+// release job's target directory). (M26's security review.)
+#[cfg(feature = "testing")]
+const _: () = assert!(
+    option_env!("SB_VERSION").is_none(),
+    "a release build (SB_VERSION set) must not enable sb-release's `testing` feature"
+);
 
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -18,6 +30,7 @@ pub use activate::activate;
 pub use asset::Asset;
 pub use download::{Stage, Staged};
 pub use lookup::{Failure, Query, Release};
+pub use self_update::{Outcome, SelfUpdate, asset_name, self_update};
 
 /// A GitHub repository: the owner is a parameter (sb's and the fact's
 /// `saltyorg`, uv's `astral-sh`).
@@ -104,6 +117,22 @@ impl Releases {
     /// [`Error::Client`] when the client can't be built.
     pub fn production(user_agent: &str) -> Result<Self, Error> {
         Self::with(builder(user_agent), [PROXY, API, DOWNLOAD])
+    }
+
+    /// The client sb uses: [`Releases::production`]; in a build with the
+    /// `testing` feature (sb's own tests, never a release or production
+    /// build), the fake that `SB_RELEASE_TEST_BASES` names instead, and an
+    /// error without it, so a test build never reaches GitHub.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Client`] when the client can't be built, or (`testing`)
+    /// the variable is unset or its file unreadable.
+    pub fn for_sb(user_agent: &str) -> Result<Self, Error> {
+        #[cfg(feature = "testing")]
+        return testing::from_env(user_agent);
+        #[cfg(not(feature = "testing"))]
+        Self::production(user_agent)
     }
 
     /// The client from `builder` on the three bases (the constants or a
