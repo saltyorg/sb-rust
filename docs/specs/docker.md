@@ -275,6 +275,10 @@ logging levels end to end.
     u32 }` and a `LogLine { position, stream (stdout, stderr, tty), bytes
     }`, with:
     - `tail(daemon, id, n)`: `tail=n`, `timestamps=true`, no follow;
+      when `n` came back, the first entry's second is read again and
+      the tail's first entries are numbered after those of that time it
+      cut off, so their ordinals match every other read's (found in M63:
+      a tail can begin inside entries sharing a time);
     - `older(daemon, id, before, n, created)`: windows of `since =
       floor(t - W)` (at least 1) and `until = ceil(t)`, W starting at
       60 s and doubling, keeping the entries before `before` and the last

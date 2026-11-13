@@ -9,8 +9,11 @@
 //! runtime of its own thread, so a test can drive it from anywhere.
 
 pub mod controller;
+mod logs;
 
-use std::collections::HashSet;
+pub use logs::{FakeEntry, FakeLog};
+
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -92,6 +95,9 @@ pub struct Options {
     pub failing: HashSet<String>,
     /// Hold every inspect open until [`FakeEngine::release`].
     pub hold: bool,
+    /// The containers' logs, by ID (`/containers/{id}/logs`; an ID
+    /// without one answers 404).
+    pub logs: HashMap<String, FakeLog>,
 }
 
 impl Default for Options {
@@ -104,6 +110,7 @@ impl Default for Options {
             vanished: HashSet::new(),
             failing: HashSet::new(),
             hold: false,
+            logs: HashMap::new(),
         }
     }
 }
@@ -114,16 +121,27 @@ struct Shared {
     open: AtomicUsize,
     peak: AtomicUsize,
     release: tokio::sync::watch::Sender<bool>,
+    /// The logs, appended to by [`FakeEngine::append`].
+    logs: Mutex<HashMap<String, FakeLog>>,
+    /// IDs whose follows end once they have sent everything.
+    ended: Mutex<HashSet<String>>,
+    /// Sent on every append and end, to wake the follows waiting
+    /// (`send_replace` notifies whether or not anyone waits,
+    /// <https://docs.rs/tokio/1.54.1/tokio/sync/watch/struct.Sender.html#method.send_replace>).
+    changes: tokio::sync::watch::Sender<()>,
 }
 
 impl Shared {
     fn new(options: Options) -> Arc<Self> {
         Arc::new(Shared {
-            options,
             paths: Mutex::new(Vec::new()),
             open: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             release: tokio::sync::watch::channel(false).0,
+            logs: Mutex::new(options.logs.clone()),
+            ended: Mutex::new(HashSet::new()),
+            changes: tokio::sync::watch::channel(()).0,
+            options,
         })
     }
 
@@ -240,11 +258,34 @@ impl FakeEngine {
     pub fn release(&self) {
         self.shared.release.send_replace(true);
     }
+
+    /// Add `entry` to `id`'s log (a new log if it had none); a follow of it
+    /// sends it.
+    pub fn append(&self, id: &str, entry: FakeEntry) {
+        lock(&self.shared.logs)
+            .entry(id.to_string())
+            .or_default()
+            .entries
+            .push(entry);
+        self.shared.changes.send_replace(());
+    }
+
+    /// End `id`'s follows once they have sent what its log holds, as
+    /// dockerd ends them when the container stops; later follows end at
+    /// once.
+    pub fn end_follows(&self, id: &str) {
+        lock(&self.shared.ended).insert(id.to_string());
+        self.shared.changes.send_replace(());
+    }
 }
 
 impl Drop for FakeEngine {
     fn drop(&mut self) {
         self.release();
+        // Open follows end, so the graceful shutdown doesn't wait on them.
+        let ids: Vec<String> = lock(&self.shared.logs).keys().cloned().collect();
+        lock(&self.shared.ended).extend(ids);
+        self.shared.changes.send_replace(());
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -276,6 +317,8 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/{version}/containers/json", get(list_at))
         .route("/containers/{id}/json", get(inspect))
         .route("/{version}/containers/{id}/json", get(inspect_at))
+        .route("/containers/{id}/logs", get(logs::logs))
+        .route("/{version}/containers/{id}/logs", get(logs::logs_at))
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
         .with_state(shared)
@@ -519,6 +562,34 @@ mod tests {
             .await
             .expect("body");
         (status, header, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// The log, unversioned and versioned, as dockerd: frames with the
+    /// time; a container without a log is a 404 with its message.
+    #[tokio::test]
+    async fn logs_answer_on_both_paths() {
+        let time: jiff::Timestamp = "2026-11-13T12:00:00.5Z".parse().expect("time");
+        let shared = Shared::new(Options {
+            logs: [(
+                "abc".to_string(),
+                FakeLog {
+                    tty: false,
+                    entries: vec![FakeEntry::new(time, "hi\n")],
+                },
+            )]
+            .into(),
+            ..Options::default()
+        });
+        let frame = "\u{1}\0\0\0\0\0\0\u{22}2026-11-13T12:00:00.500000000Z hi\n";
+        for path in ["/containers/abc/logs", "/v1.53/containers/abc/logs"] {
+            let (status, _, body) = get(&shared, &format!("{path}?stdout=1&timestamps=1")).await;
+            assert_eq!((status, body.as_str()), (StatusCode::OK, frame), "{path}");
+        }
+        let (status, _, body) = get(&shared, "/v1.53/containers/gone/logs").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("No such container: gone"), "{body}");
+        let (status, _, _) = get(&shared, "/v1.99/containers/abc/logs").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
