@@ -1201,15 +1201,15 @@ file) -> Result<Checked, FileError>` (no network) and
 `Checks::Skip`; `run` moved onto them.
 
 **Acceptance criteria:**
-- [ ] `check_file` and `validate_file` give the same issues as `run` over
+- [x] `check_file` and `validate_file` give the same issues as `run` over
       the fixture sets (config criterion 13).
-- [ ] `Checks::Skip` makes no request, and adds the notice when the file
+- [x] `Checks::Skip` makes no request, and adds the notice when the file
       has credentials.
-- [ ] `validate-config`'s output is unchanged (its snapshots pass).
+- [x] `validate-config`'s output is unchanged (its snapshots pass).
 
 **Verification:**
-- [ ] `cargo test -p sb-config -p sb`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-config -p sb`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** hardening Task 55 merged (lane 3's start)
 **Files:** `crates/config/src/{run.rs,lib.rs}`, `crates/config/tests/`
@@ -2130,7 +2130,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       drain's own timeout, never a bigger magic number alone. Lanes now
       run at 12 cores each, which leaves headroom.
 
-- [ ] **The inventory read's memory** (config; lane 3, after M48). An
+- [ ] **The inventory read's memory** (lane 3, which owns cli-core's `config.rs` and `config/yaml.rs` for this). An
       uncapped read of localhost.yml peaks at about 30 times the file's size
       (3.5 MB: 0.75 s and 105 MB; 56 MB: 10-12 s and 1.55 GB, release
       build, Task 61's review). No length cap goes back (plan decision 41);
@@ -2138,12 +2138,12 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       lines lazily, and read `server_appdata_path` from the event stream
       rather than a tree. Real inventories are kilobytes, so this is not
       urgent.
-- [ ] **The duplicate-key report grows quadratically** (config; lane 3).
+- [x] **The duplicate-key report grows quadratically** (fixed in 6012fe7: each duplicate cites the first position only; 10,000 repeats now log about 600 KB, so no separate log cap) (config; lane 3).
       One key repeated N times gives N issues, each listing every earlier
       position: 10,000 repeats (50 KB) took 102 s and 5.8 GB and logged
       about 1.1 GB (Task 61's review). Report each duplicate with the
       first position only, or one issue per key, and cap what's logged.
-- [ ] **A top-level block scalar before a column-0 comment** (config; lane
+- [ ] **A top-level block scalar before a column-0 comment** (lane 3, in cli-core's `config/yaml.rs`; lane
       3, with the next YAML change). sb reads the comment as content, where
       libyaml ends the scalar there. No Saltbox file has a top-level block
       scalar; add the corpus case and match libyaml.
