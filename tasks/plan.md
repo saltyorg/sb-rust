@@ -528,7 +528,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 
 ### Phase 4 (lane 3): config
 - [x] Task 42: YAML: the corpus and the options
-- [ ] Task 43: sb accepts the YAML Ansible accepts
+- [x] Task 43: sb accepts the YAML Ansible accepts
 - [ ] Task 46: secrets are hidden wherever their key sits
 - [ ] Checkpoint Y: config
 

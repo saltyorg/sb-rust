@@ -1201,40 +1201,40 @@ code starts.
 before saphyr-parser (the plan's decision 28).
 
 **Acceptance criteria:**
-- [ ] The corpus's mismatch list is empty, or holds only entries the
+- [x] The corpus's mismatch list is empty, or holds only entries the
       maintainer accepted, each in the config spec's Differences list.
       A residual case the fix can't cover waits for the maintainer
       (decision 3); the rest of the task goes on.
-- [ ] validate-config and cli-core's inventory read agree on every
+- [x] validate-config and cli-core's inventory read agree on every
       corpus case; `appdata_path` no longer falls back to `/opt` on a
       file Ansible reads.
-- [ ] An ADR records the choice (decision 20). If
+- [x] An ADR records the choice (decision 20). If
       a dependency is added or changed:
       `Cargo.toml`, `deny.toml`, the config spec's Tech Stack and the
       capability map's stack row are updated, and the production
       binary's size is measured against its ratchet (ADR-004 and
       ADR-009 are the precedents).
-- [ ] Positions, duplicate-key reports and secret hiding are unchanged
+- [x] Positions, duplicate-key reports and secret hiding are unchanged
       on the existing tests.
-- [ ] The pre-pass pads continuation lines inside flow collections and
+- [x] The pre-pass pads continuation lines inside flow collections and
       quoted scalars and turns a tab after a colon into a space; it
       tracks quotes, comments, flow depth and block scalars, and leaves
       block scalars' contents alone. A code comment says why not a
       libyaml port (the maintainer's decision 28; Task 42's measured
       options in the platform note).
-- [ ] The tab layouts libyaml refuses (a tab-only line, a tab before a
+- [x] The tab layouts libyaml refuses (a tab-only line, a tab before a
       top-level key, `-\tvalue`) are refused with a message naming the
       line and column.
-- [ ] An error's line and column point into the original file, not the
+- [x] An error's line and column point into the original file, not the
       padded text.
-- [ ] The corpus's resolved values are unchanged for every case that
+- [x] The corpus's resolved values are unchanged for every case that
       was accepted before.
 
 **Verification:**
-- [ ] `cargo test -p sb-config -p sb-cli-core -p sb`; the corpus;
+- [x] `cargo test -p sb-config -p sb-cli-core -p sb`; the corpus;
       `cargo deny --manifest-path crates/sb/Cargo.toml check`;
       `scripts/check.sh full <base>` (the size).
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer and the security-auditor.
 
 **Dependencies:** Task 42, and the maintainer's choice from its
