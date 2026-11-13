@@ -289,16 +289,9 @@ async fn run(cmd: &Cmd, token: &CancellationToken) -> Result<String, String> {
         .capture(token)
         .await
         .map_err(|err| format!("{err}: {}", err.cause()))?;
-    match ran.check() {
-        Ok(ran) => Ok(ran.stdout),
-        Err(failed) => Err(match failed.last_lines().last() {
-            // On one line, controls escaped, as sb-cli-core's
-            // `escape_controls`: std's `str::escape_debug`
-            // (<https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>).
-            Some(line) => format!("{failed}: {}", line.escape_debug()),
-            None => failed.to_string(),
-        }),
-    }
+    ran.check()
+        .map(|ran| ran.stdout)
+        .map_err(|failed| crate::child_failure(&failed))
 }
 
 /// One row of `systemctl list-units --output=json`.

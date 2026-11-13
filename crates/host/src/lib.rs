@@ -4,13 +4,17 @@
 //! - the service logs ([`journal`]): sb-journal's reader, re-exported, with
 //!   the host's glue;
 //! - file ownership ([`owner`]);
-//! - the systemd service list ([`systemd`]).
+//! - the systemd service list ([`systemd`]);
+//! - the setup checks ([`setup`]), setup's release check and apt's
+//!   installed-state query ([`apt`]).
 
 // Output goes through `Write`; `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+pub mod apt;
 pub mod journal;
 pub mod owner;
+pub mod setup;
 pub mod systemd;
 #[cfg(test)]
 mod testing;
@@ -24,6 +28,19 @@ use journal::{Release, ReleaseError};
 
 /// Ubuntu releases sb runs on: sb-go's `SupportedUbuntuRuntimeReleases`.
 pub const SUPPORTED_RUNTIME_RELEASES: &[&str] = &["22.04", "24.04", "26.04"];
+
+/// Ubuntu releases `sb setup` installs on: sb-go's
+/// `SupportedUbuntuSetupReleases` (host spec, assumption 5).
+pub const SUPPORTED_SETUP_RELEASES: &[&str] = &["24.04", "26.04"];
+
+/// Why setup refuses this host's release, in sb-go's words: [`check`]'s
+/// cause and setup's list.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("UNSUPPORTED OS - Install cancelled: {cause}. Supported OS versions: {supported}")]
+pub struct SetupUnsupported {
+    cause: Unsupported,
+    supported: String,
+}
 
 /// Why this host isn't supported, in sb-go's words.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -63,6 +80,43 @@ pub fn check_support() -> Result<(), Unsupported> {
         System::os_version().ok().as_deref(),
         SUPPORTED_RUNTIME_RELEASES,
     )
+}
+
+/// Refuse to set up anywhere but a release setup supports (sb-go's
+/// `CheckUbuntuSupport`), read as [`check_support`] reads it.
+///
+/// # Errors
+///
+/// [`SetupUnsupported`] around [`check`]'s cause.
+pub fn check_setup_support() -> Result<(), SetupUnsupported> {
+    setup_check(
+        &System::distribution_id(),
+        System::os_version().ok().as_deref(),
+    )
+}
+
+/// Setup's decision, from the os-release values.
+///
+/// # Errors
+///
+/// [`SetupUnsupported`] when [`check`] refuses them against
+/// [`SUPPORTED_SETUP_RELEASES`].
+pub fn setup_check(id: &str, version: Option<&str>) -> Result<(), SetupUnsupported> {
+    check(id, version, SUPPORTED_SETUP_RELEASES).map_err(|cause| SetupUnsupported {
+        cause,
+        supported: SUPPORTED_SETUP_RELEASES.join(", "),
+    })
+}
+
+/// A failed child's text for an error: exec's message (the command and how
+/// it ended) and stderr's last line, on one line with controls escaped
+/// (std's `str::escape_debug`,
+/// <https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>).
+pub(crate) fn child_failure(failed: &sb_exec::Failed) -> String {
+    match failed.last_lines().last() {
+        Some(line) => format!("{failed}: {}", line.escape_debug()),
+        None => failed.to_string(),
+    }
 }
 
 /// The decision, from the os-release values (sb-go's
@@ -161,6 +215,53 @@ mod tests {
             err.to_string(),
             "unsupported Ubuntu version (detected version: 20.04, supported versions: 22.04, 24.04, 26.04)"
         );
+    }
+
+    /// sb-go: `UNSUPPORTED OS - Install cancelled: %w. Supported OS
+    /// versions: %s`, with setup's list.
+    #[test]
+    fn setup_refuses_22_04_with_its_list() {
+        assert_eq!(setup_check("ubuntu", Some("24.04")), Ok(()));
+        assert_eq!(setup_check("ubuntu", Some("26.04")), Ok(()));
+        let err = setup_check("ubuntu", Some("22.04")).expect_err("refused");
+        assert_eq!(
+            err.to_string(),
+            "UNSUPPORTED OS - Install cancelled: unsupported Ubuntu version (detected version: \
+             22.04, supported versions: 24.04, 26.04). Supported OS versions: 24.04, 26.04"
+        );
+        let err = setup_check("debian", Some("12")).expect_err("refused");
+        assert_eq!(
+            err.to_string(),
+            "UNSUPPORTED OS - Install cancelled: not an Ubuntu distribution (detected ID: \
+             debian). Supported OS versions: 24.04, 26.04"
+        );
+    }
+
+    /// The host's own answer is the decision on its os-release values.
+    #[test]
+    fn the_setup_check_reads_this_host() {
+        assert_eq!(
+            check_setup_support(),
+            setup_check(
+                &System::distribution_id(),
+                System::os_version().ok().as_deref()
+            )
+        );
+    }
+
+    #[test]
+    fn a_child_failure_carries_its_last_line_escaped() {
+        let failed = sb_exec::Failed::new(
+            "dpkg-query exited with code 2",
+            "exit 2",
+            vec!["first".into(), "last \u{1b}[1m".into()],
+        );
+        assert_eq!(
+            child_failure(&failed),
+            "dpkg-query exited with code 2: last \\u{1b}[1m"
+        );
+        let bare = sb_exec::Failed::new("x timed out", "timed out", Vec::new());
+        assert_eq!(child_failure(&bare), "x timed out");
     }
 
     /// The runtime list is sb-go's `SupportedUbuntuRuntimeReleases`.
