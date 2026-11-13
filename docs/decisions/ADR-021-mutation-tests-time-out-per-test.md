@@ -219,3 +219,12 @@ and sb-host's tests) under this profile:
   adopted by a subreaper other than init waits for the sweep after the
   pass. The floor guard's tests check it with an orphan in the pass's
   copy, a live child of the pass and an orphan outside it.
+- The sweeper kills only an orphan that has run for at least 120 s
+  (2026-11-13, after it killed the orphan of sb's hangup test, which
+  kills sb's parent shell on purpose and checks that sb still takes its
+  grace and logs its ending; the unmutated baseline then failed). nextest
+  ends any test at 60 s, so a test's own orphan never lives that long,
+  where the leaked mutants ran for hours. A leak now runs for up to about
+  two minutes. `SB_MUTATION_ORPHAN_AGE` sets the age in seconds; the
+  floor guard's tests use 0, and check that a young orphan is left
+  running at the default.

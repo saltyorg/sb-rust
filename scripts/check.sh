@@ -53,6 +53,14 @@ while IFS= read -r v; do unset -v "$v"; done < <(compgen -e NEXTEST_; compgen -e
 # https://doc.rust-lang.org/cargo/reference/config.html#buildtarget-dir
 # cargo-mutants is run without it (mutation_pass).
 unset CARGO_BUILD_TARGET_DIR CARGO_LLVM_COV_TARGET_DIR
+# How long an orphan of a mutation pass must have run before the pass's
+# sweeper kills it (see mutation_sweeper).
+SB_MUTATION_ORPHAN_AGE=${SB_MUTATION_ORPHAN_AGE:-120}
+# No leading zero: bash would read the number as octal.
+if [[ ! $SB_MUTATION_ORPHAN_AGE =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "check: SB_MUTATION_ORPHAN_AGE must be a whole number of seconds" >&2
+  exit 2
+fi
 export CARGO_TARGET_DIR="$root/target"
 # Every diff is git's plain text, whatever the user's git configuration
 # or an attributes file says: no external diff, no textconv filter (which
@@ -332,8 +340,17 @@ mutation_sweeper_pid=
 # for the adopting process); a test's live sb still has its parent (the
 # test, or `script`), so it is never touched. The loop ends by itself once
 # DIR is gone or check.sh is (a check.sh killed with SIGKILL runs no trap).
+# Only an orphan that has run for at least 120 s is killed
+# (SB_MUTATION_ORPHAN_AGE overrides it, for the floor guard's tests): some tests
+# orphan sb on purpose (a hangup kills its parent shell, and sb must still
+# take its grace and log its ending), and nextest ends any test after 60 s
+# (.config/nextest.toml), so a test's own orphan never lives that long,
+# where the leaked mutants ran for hours. The age is now minus the
+# process's start time (proc(5): /proc/PID/stat field 22, in clock ticks
+# since boot; /proc/uptime, in seconds).
 mutation_sweeper() {
-  local dir=$1 parent=$$ pid stat ppid count
+  local dir=$1 parent=$$ pid stat ppid count fields start now ticks age=$SB_MUTATION_ORPHAN_AGE
+  ticks=$(getconf CLK_TCK)
   (
     # The sleep holds none of check.sh's output open: it outlives a
     # stopped sweeper by up to 3 s, and a reader of check.sh's output
@@ -343,9 +360,16 @@ mutation_sweeper() {
       while read -r pid; do
         # It may have ended since find saw it.
         { stat=$(<"/proc/$pid/stat"); } 2>/dev/null || continue
-        # The fields after the parenthesised command name: state, ppid.
-        read -r _ ppid _ <<<"${stat##*) }"
-        if [[ $ppid == 1 ]] && kill -KILL "$pid" 2>/dev/null; then count=$((count + 1)); fi
+        # The fields after the parenthesised command name, from field 3
+        # (state): ppid is the 2nd of them, starttime (field 22) the 20th.
+        read -r -a fields <<<"${stat##*) }"
+        ppid=${fields[1]}
+        start=$((fields[19] / ticks))
+        read -r now _ </proc/uptime
+        now=${now%.*}
+        if [[ $ppid == 1 ]] && ((now - start >= age)) && kill -KILL "$pid" 2>/dev/null; then
+          count=$((count + 1))
+        fi
       done < <(find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$dir/*" 2>/dev/null |
         sed 's|^/proc/\([0-9]*\)/exe$|\1|')
       if ((count)); then echo "mutants: killed $count orphaned process(es) during the pass"; fi

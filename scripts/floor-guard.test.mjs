@@ -1157,7 +1157,7 @@ const CRATES = {
     + '    { crate = "sb-tui", wrappers = ["sb"] },\n]\n',
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
-const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'git', 'grep', 'id', 'mkdir',
+const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'getconf', 'git', 'grep', 'id', 'mkdir',
   'mktemp', 'rm', 'sed', 'sleep', 'sort', 'stat', 'xargs'];
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
@@ -1522,7 +1522,9 @@ test('check.sh: a signal-ignoring process left by a mutation pass is gone after 
 // orphan, as it does for the gate as root or under a system scope; under a
 // subreaper (a `systemd --user` session) the orphan is that process's and
 // this test fails.
-test('check.sh: an orphan of a mutation pass is killed during it, a live child and a process outside are not', () => {
+// Runs a stubbed mutation pass that orphans a process of its copy (and a
+// decoy outside it) while it runs; AGE, if set, is SB_MUTATION_ORPHAN_AGE.
+function leakDuringPass(age) {
   const dir = mkdtempSync(join(tmpdir(), 'leak-'));
   const pids = join(dir, 'pids');
   writeFileSync(pids, '');
@@ -1532,23 +1534,46 @@ test('check.sh: an orphan of a mutation pass is killed during it, a live child a
   };
   let started = [];
   try {
-    const r = checkRun('task', {
-      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
-      env: { LEAK_DURING: pids, LEAK_DECOY_DIR: join(dir, 'decoy'), LEAK_CP: tool('cp'), LEAK_MKDIR: tool('mkdir'),
-        LEAK_READLINK: tool('readlink'), LEAK_RM: tool('rm'), LEAK_SETSID: tool('setsid'), LEAK_SLEEP: tool('sleep'),
-        LEAK_WC: tool('wc'), TMPDIR: dir },
-    });
+    const env = { LEAK_DURING: pids, LEAK_DECOY_DIR: join(dir, 'decoy'), LEAK_CP: tool('cp'), LEAK_MKDIR: tool('mkdir'),
+      LEAK_READLINK: tool('readlink'), LEAK_RM: tool('rm'), LEAK_SETSID: tool('setsid'), LEAK_SLEEP: tool('sleep'),
+      LEAK_WC: tool('wc'), TMPDIR: dir };
+    // Empty is unset to check.sh, so the caller's value never leaks in.
+    env.SB_MUTATION_ORPHAN_AGE = age ?? '';
+    const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env });
     started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
-    passes(r, 'task');
-    assert.equal(started.length, 2, r.output);
     const left = existsSync(pids + '.result') ? readFileSync(pids + '.result', 'utf8') : '';
-    assert.doesNotMatch(left, /orphan/, 'the orphan ran on until the pass ended:\n' + r.output);
-    assert.match(left, /^live$/m, 'the live child was killed during the pass:\n' + r.output);
-    assert.ok(alive(started[1]), 'the decoy outside the pass was killed:\n' + r.output);
-    assert.match(r.output, /mutants: killed 1 orphaned process\(es\) during the pass/, r.output);
+    return { r, started, left, decoyAlive: started.length > 1 && alive(started[1]) };
   } finally {
     for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('check.sh: an orphan of a mutation pass is killed during it, a live child and a process outside are not', () => {
+  const { r, started, left, decoyAlive } = leakDuringPass('0');
+  passes(r, 'task');
+  assert.equal(started.length, 2, r.output);
+  assert.doesNotMatch(left, /orphan/, 'the orphan ran on until the pass ended:\n' + r.output);
+  assert.match(left, /^live$/m, 'the live child was killed during the pass:\n' + r.output);
+  assert.ok(decoyAlive, 'the decoy outside the pass was killed:\n' + r.output);
+  assert.match(r.output, /mutants: killed 1 orphaned process\(es\) during the pass/, r.output);
+});
+
+// A test may orphan sb on purpose (sb's hangup tests kill its parent
+// shell); such an orphan lives seconds, so by default only one older than
+// any test (120 s) is killed during the pass. The sweep after the pass
+// still ends it.
+test('check.sh: a young orphan of a mutation pass is left running during it by default', () => {
+  const { r, started, left } = leakDuringPass(undefined);
+  passes(r, 'task');
+  assert.equal(started.length, 2, r.output);
+  assert.match(left, /^orphan$/m, 'a young orphan was killed during the pass:\n' + r.output);
+  assert.doesNotMatch(r.output, /during the pass/, r.output);
+});
+
+test('check.sh: an orphan age that is not a whole number of seconds is refused', () => {
+  for (const age of ['2m', '08', '-1']) {
+    refuses(checkRun('fast', { env: { SB_MUTATION_ORPHAN_AGE: age } }), 2, /SB_MUTATION_ORPHAN_AGE must be a whole number/);
   }
 });
 
