@@ -5,6 +5,7 @@
 //!   the host's glue;
 //! - file ownership ([`owner`]);
 //! - the systemd service list ([`systemd`]);
+//! - disk space ([`disk`]);
 //! - the setup checks ([`setup`]), setup's release check and apt's
 //!   installed-state query ([`apt`]).
 
@@ -12,6 +13,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod apt;
+pub mod disk;
 pub mod journal;
 pub mod owner;
 pub mod setup;
@@ -19,6 +21,7 @@ pub mod systemd;
 #[cfg(test)]
 mod testing;
 
+pub use disk::{DiskError, check_disk_space, disk_space_error, free_space};
 pub use owner::{OwnerError, ensure_owner, ensure_owner_recursive};
 pub use systemd::{services, with_additional};
 
