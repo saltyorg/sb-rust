@@ -537,23 +537,23 @@ containers (docker-M2). How far it differs from sb-go is decision 17;
 the floor below holds in any case.
 
 **Acceptance criteria:**
-- [ ] The floor: `restart` never ends without either the start
+- [x] The floor: `restart` never ends without either the start
       requested or a line saying the start wasn't requested and why.
       A test covers each non-final ending: sb's timeout, a failed poll,
       a timed-out request.
-- [ ] The notice "the controller may still be working" is shown on
+- [x] The notice "the controller may still be working" is shown on
       every ending without a final job status, and a few failed polls
       in a row are tolerated before it (decision 17), each with a
       test.
-- [ ] The docker spec records decision 17, its Differences from sb-go
+- [x] The docker spec records decision 17, its Differences from sb-go
       and the amended Known limit "sb can give up before the controller
       does".
       Closes that half of the follow-up "sb's wait can give up before
       the controller's own job timeout".
 
 **Verification:**
-- [ ] `cargo test -p sb-docker -p sb`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] `cargo test -p sb-docker -p sb`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Checkpoint T
 **Files:** `crates/docker/src/control/{commands.rs,client.rs}`, `crates/docker/src/testing/`, `crates/sb/tests/docker_control.rs`, `docs/specs/docker.md`

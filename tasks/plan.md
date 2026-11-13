@@ -427,7 +427,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Checkpoint T: text and processes
 
 ### Phase 2 (lane 1): docker and the live display
-- [ ] Task 18: `docker restart` never ends silently short of a start
+- [x] Task 18: `docker restart` never ends silently short of a start
 - [ ] Task 19: echo is off during a live run
 - [ ] Task 20: a live tree taller than the terminal
 - [ ] Task 21: table wrap and uncut lines
