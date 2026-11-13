@@ -95,6 +95,70 @@
     }
    ]
   },
+  "flow-map-json-style": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "x.q",
+     "style": "double",
+     "text": "a #b",
+     "value": [
+      "str",
+      "a #b"
+     ]
+    },
+    {
+     "path": "x.k",
+     "style": "double",
+     "text": "[",
+     "value": [
+      "str",
+      "["
+     ]
+    },
+    {
+     "path": "x.c",
+     "style": "single",
+     "text": "k:\tv",
+     "value": [
+      "str",
+      "k:\tv"
+     ]
+    },
+    {
+     "path": "y",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    }
+   ]
+  },
+  "flow-map-json-style-multi-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "x.a",
+     "style": "double",
+     "text": "p q",
+     "value": [
+      "str",
+      "p q"
+     ]
+    },
+    {
+     "path": "y",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    }
+   ]
+  },
   "flow-map-quoted-values-split": {
    "accepted": true,
    "scalars": [
@@ -344,6 +408,29 @@
      "value": [
       "str",
       "b"
+     ]
+    }
+   ]
+  },
+  "flow-seq-json-pair": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "x[0].a",
+     "style": "double",
+     "text": "b #c",
+     "value": [
+      "str",
+      "b #c"
+     ]
+    },
+    {
+     "path": "y",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
      ]
     }
    ]

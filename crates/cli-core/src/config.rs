@@ -20,6 +20,8 @@ use serde::Deserialize;
 
 use crate::theme::{Palette, Profile, Role};
 
+pub mod yaml;
+
 /// The Saltbox checkout (sb-go's `SaltboxRepoPath`), unless
 /// `SB_SALTBOX_DIR` moves it.
 const SALTBOX_DIR: &str = "/srv/git/saltbox";
@@ -140,8 +142,9 @@ fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigErro
 /// `server_appdata_path` from `inventory`: an absolute value, cleaned; a
 /// missing, unreadable or oversized file, a parse error in the first
 /// document (a duplicate key included), or an empty or relative value all
-/// mean `/opt`, as in sb-go. Like sb-go's yaml.v3 it parses only the first
-/// document (`Parser::load` with `multi` off:
+/// mean `/opt`, as in sb-go. The YAML is what Ansible accepts
+/// ([`inventory_document`]), as validate-config reads it. Like sb-go's
+/// yaml.v3 it parses only the first document (`Parser::load` with `multi` off:
 /// <https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>)
 /// and reads a custom-tagged scalar as its string. Unlike yaml.v3, a merge
 /// key (`<<`) isn't followed (saphyr has none); Saltbox's `host_vars` don't
@@ -159,7 +162,7 @@ pub fn appdata_path(inventory: &Path) -> PathBuf {
         .ok()
         .flatten()
         .and_then(|text| {
-            let document = first_document(&text)?;
+            let document = inventory_document(&text)?;
             let value = document.as_mapping_get("server_appdata_path")?;
             value
                 .get_tagged_node()
@@ -171,11 +174,16 @@ pub fn appdata_path(inventory: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from("/opt"), |path| path.components().collect())
 }
 
-/// The first YAML document in `text`, parsed no further, or `None` on an
-/// error in it.
-fn first_document(text: &str) -> Option<saphyr::Yaml<'_>> {
-    let mut loader = saphyr::YamlLoader::default();
-    saphyr_parser::Parser::new_from_str(text)
+/// The first YAML document in the inventory's `text`, parsed no further,
+/// or `None` on an error in it. The text goes through [`yaml::prepare`]
+/// first, as validate-config's does, so the two accept the same layouts:
+/// what Ansible's libyaml accepts (decision 28). Public so that
+/// sb-config's YAML corpus test can check that agreement.
+#[must_use]
+pub fn inventory_document(text: &str) -> Option<saphyr::YamlOwned> {
+    let prepared = yaml::prepare(text).ok()?;
+    let mut loader = saphyr::YamlLoader::<saphyr::YamlOwned>::default();
+    saphyr_parser::Parser::new_from_str(prepared.text())
         .load(&mut loader, false)
         .ok()?;
     if loader.error().is_some() {
@@ -417,6 +425,27 @@ mod tests {
         assert_eq!(
             case("server_appdata_path: !custom /srv\n"),
             PathBuf::from("/srv")
+        );
+    }
+
+    /// The inventory is read as Ansible reads it (decision 28): a layout
+    /// libyaml accepts and saphyr alone refuses keeps its appdata path,
+    /// and a tab libyaml refuses means `/opt`, as a parse error does.
+    #[test]
+    fn the_inventory_is_read_as_ansible_reads_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let case = |text: &str| appdata_path(&file(dir.path(), "localhost.yml", text));
+        assert_eq!(
+            case("domains: [\n  \"a\",\n]\nserver_appdata_path: /data\n"),
+            PathBuf::from("/data")
+        );
+        assert_eq!(
+            case("server_appdata_path:\t/data\n"),
+            PathBuf::from("/data")
+        );
+        assert_eq!(
+            case("server_appdata_path: /data\n\t\nx: 1\n"),
+            PathBuf::from("/opt")
         );
     }
 

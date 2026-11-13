@@ -108,8 +108,13 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   `not_equals` never prints the value it compared.
 - **Parsing:** the first YAML document only (as yaml.v3 and cli-core); an
   empty file is an empty mapping (every required key missing, as sb-go);
-  a root that isn't a mapping is one issue. A syntax error is that file's
-  issue, with saphyr's line and column. Merge keys (`<<`) aren't followed
+  a root that isn't a mapping is one issue. The layouts accepted are
+  libyaml's, Ansible's parser: cli-core's YAML pre-pass rewrites the text
+  before saphyr reads it, for validate-config and the inventory read
+  alike ([ADR-022](../decisions/ADR-022-yaml-pre-pass.md); the hardening
+  plan's decision 28). A syntax error is that file's issue, with saphyr's
+  line and column in the file as written, or the pre-pass's for a tab
+  libyaml refuses. *Amended by hardening Task 43.* Merge keys (`<<`) aren't followed
   (saphyr doesn't; yaml.v3 does), so a `<<` key is an unknown field: a
   difference, below.
 - **Duplicate keys:** a pass over the parser's events runs first and
@@ -240,7 +245,16 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - Merge keys (`<<`) aren't followed.
 - A syntax error has saphyr's position and wording: where its scanner
   stops, at the end of the file for an unclosed flow sequence (yaml.v3
-  counts the line differently and words it its own way).
+  counts the line differently and words it its own way). A tab libyaml
+  refuses has sb's wording at the tab.
+- The YAML accepted is libyaml's, so Ansible's (ADR-022): yaml.v3 also
+  accepts the tab layouts libyaml refuses (a tab-only line, a tab before
+  a top-level key, `-\tvalue`), and refuses a flow collection or quoted
+  scalar continued left of its key's column. Where libyaml and saphyr
+  still differ (saphyr's own leniencies and refusals, listed in
+  docs/platform-notes/yaml-acceptance.md), sb follows saphyr; notably
+  NEL, LS and PS (U+0085, U+2028, U+2029) aren't line breaks to sb, as
+  they are to libyaml.
 - A duplicate key reads `<path>: duplicate key (also at line L, column
   C)` (sb-go: yaml.v3's `mapping key "k" already defined at line L` for
   the schema-backed files, its walker's `<path> (appears N times)` for
@@ -279,7 +293,14 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   Saltbox file uses one.
 - Nothing after the first document is read; yaml.v3's scanner reads a
   little past a `...` end marker, so an error just after one fails the
-  file in sb-go and not in sb.
+  file in sb-go and not in sb. Ansible's loader refuses a file with a
+  second document; sb, like sb-go, reads the first (the YAML corpus's
+  `multi-document` line).
+- Plain scalars resolve as yaml.v3's (YAML 1.2 core, as sb-go), not as
+  Ansible's PyYAML resolver (YAML 1.1): `yes`, `no`, `on` and `off` stay
+  strings, which the schema rules read as Ansible booleans anyway;
+  `12:30` is a string, not 750; `1e3` is a float; an integer past 64
+  bits is a float (the YAML corpus's resolution lines).
 - `ZONEINFO` naming a zip file (Go reads one) isn't read: sb reads it
   only as a directory; nor is Go's last fallback, the build machine's
   `$GOROOT/lib/time/zoneinfo.zip`, which only a host with a Go
@@ -310,7 +331,8 @@ on `sb-config`).
 
 - saphyr 0.3.3 `MarkedYaml` for the config files (positions on every
   node; already in sb for the inventory) and saphyr-parser's events for
-  the duplicate-key pass; serde-saphyr 2.0 (`deserialize` only) for the
+  the duplicate-key pass, both on cli-core's pre-passed text (ADR-022;
+  no dependency); serde-saphyr 2.0 (`deserialize` only) for the
   schema files (typed, `deny_unknown_fields`); `regex` for `pattern`.
 - reqwest (rustls, aws-lc-rs; the stack table) for the two checks; `psl`
   for the public suffix list (both sections, compiled in) and `jiff`

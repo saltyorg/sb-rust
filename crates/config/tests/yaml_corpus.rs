@@ -21,6 +21,36 @@ fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/yaml-corpus")
 }
 
+/// Every case as (name, text), in name order.
+fn cases() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(corpus().join("cases")).expect("cases") {
+        let path = entry.expect("an entry").path();
+        // The generator reads `*.yml` only.
+        if path.extension().is_none_or(|e| e != "yml") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned();
+        // sb reads config files as UTF-8 text (cli-core); a BOM is the
+        // parser's to handle.
+        let text = String::from_utf8(std::fs::read(&path).expect("read")).expect("UTF-8");
+        out.push((name, text));
+    }
+    out.sort();
+    out
+}
+
+fn expected() -> Json {
+    serde_json::from_str(
+        &std::fs::read_to_string(corpus().join("expected.json")).expect("expected.json"),
+    )
+    .expect("JSON")
+}
+
 /// One scalar value as both sides record it: key path, style, text as
 /// parsed, resolved value as [type, text].
 #[derive(Debug, PartialEq)]
@@ -226,37 +256,20 @@ fn differences(
 /// sb's parser over the whole corpus gives exactly the listed differences.
 #[test]
 fn the_corpus_differs_from_libyaml_exactly_as_listed() {
-    let expected: Json = serde_json::from_str(
-        &std::fs::read_to_string(corpus().join("expected.json")).expect("expected.json"),
-    )
-    .expect("JSON");
-    let cases = expected["cases"].as_object().expect("cases");
+    let expected = expected();
+    let listed_cases = expected["cases"].as_object().expect("cases");
     let mut found = Vec::new();
     let mut seen = BTreeSet::new();
-    for entry in std::fs::read_dir(corpus().join("cases")).expect("cases") {
-        let path = entry.expect("an entry").path();
-        // The generator reads `*.yml` only.
-        if path.extension().is_none_or(|e| e != "yml") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .expect("a name")
-            .to_string_lossy()
-            .into_owned();
-        let bytes = std::fs::read(&path).expect("read");
+    for (name, text) in cases() {
         seen.insert(name.clone());
-        let lib = libyaml(cases.get(&name).unwrap_or_else(|| {
+        let lib = libyaml(listed_cases.get(&name).unwrap_or_else(|| {
             panic!("{name} isn't in expected.json: run scripts/yaml-corpus.py")
         }));
-        // sb reads config files as UTF-8 text (cli-core); a BOM is the
-        // parser's to handle.
-        let text = String::from_utf8(bytes).expect("UTF-8");
         found.extend(differences(&name, &sb(&format!("{name}.yml"), &text), &lib));
     }
     assert_eq!(
         seen.iter().collect::<Vec<_>>(),
-        cases.keys().collect::<Vec<_>>(),
+        listed_cases.keys().collect::<Vec<_>>(),
         "expected.json doesn't match cases/: run scripts/yaml-corpus.py"
     );
     found.sort();
@@ -275,4 +288,45 @@ fn the_corpus_differs_from_libyaml_exactly_as_listed() {
         "the mismatches changed.\nNew: {added:#?}\nGone: {removed:#?}\nThe list is now:\n{}",
         found.join("\n")
     );
+}
+
+/// cli-core's inventory read accepts exactly the cases validate-config's
+/// parser accepts: both go through the same pre-pass (decision 28), so
+/// `appdata_path` falls back to `/opt` only on a file Ansible refuses too.
+#[test]
+fn the_inventory_read_agrees_with_validate_config() {
+    let mut differ = Vec::new();
+    for (name, text) in cases() {
+        let parsed = parse(&format!("{name}.yml"), &text).is_ok();
+        let read = sb_cli_core::config::inventory_document(&text).is_some();
+        if parsed != read {
+            differ.push(format!(
+                "{name}: validate-config {parsed}, inventory {read}"
+            ));
+        }
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// The tab layouts libyaml refuses (config-L1) are refused at the line and
+/// column libyaml names, in the original file.
+#[test]
+fn tabs_libyaml_refuses_are_refused_where_it_says() {
+    let expected = expected();
+    let cases = cases();
+    for name in ["tab-after-dash", "tab-indented-top-level", "tab-only-line"] {
+        let (_, text) = cases
+            .iter()
+            .find(|(case, _)| case == name)
+            .expect("the case");
+        let issues = parse(&format!("{name}.yml"), text).expect_err("refused");
+        let lib = expected["cases"][name]["error"].as_str().expect("an error");
+        let at = format!(" at line {}, column {}", issues[0].line, issues[0].column);
+        assert!(lib.ends_with(&at), "{name}: sb{at}, libyaml {lib}");
+        assert!(
+            issues[0].message.starts_with("syntax error: a tab "),
+            "{name}: {}",
+            issues[0].message
+        );
+    }
 }

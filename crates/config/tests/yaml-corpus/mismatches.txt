@@ -1,23 +1,8 @@
-# How sb's parser (saphyr-parser 0.3.3, sb's own scalar resolution)
-# differs from libyaml (expected.json) on the corpus. Asserted exactly by
-# tests/yaml_corpus.rs; a line here is a known difference, not a target.
-
-# config-H1: layouts libyaml (and so Ansible) accepts and sb refuses.
-double-quoted-multi-line-close-at-column-0: libyaml accepts, sb refuses: syntax error: invalid indentation in quoted scalar at line 1, column 7
-flow-map-empty-split: libyaml accepts, sb refuses: syntax error: invalid indentation at line 2, column 1
-flow-seq-close-at-key-column-after-quoted: libyaml accepts, sb refuses: syntax error: invalid indentation at line 3, column 1
-flow-seq-close-left-of-key-column: libyaml accepts, sb refuses: syntax error: invalid indentation at line 4, column 1
-flow-seq-empty-split: libyaml accepts, sb refuses: syntax error: invalid indentation at line 2, column 1
-flow-seq-items-one-per-line: libyaml accepts, sb refuses: syntax error: invalid indentation at line 4, column 1
-saltbox-flow-list-split-close-at-key: libyaml accepts, sb refuses: syntax error: invalid indentation at line 5, column 3
-tab-after-colon-in-nested: libyaml accepts, sb refuses: syntax error: ':' must be followed by a valid YAML whitespace at line 2, column 8
-tab-after-colon: libyaml accepts, sb refuses: syntax error: ':' must be followed by a valid YAML whitespace at line 1, column 6
-
-# config-L1: tab layouts libyaml refuses and sb accepts (the tab after a
-# dash found by this corpus).
-tab-after-dash: libyaml refuses (found character that cannot start any token at line 2, column 4), sb accepts
-tab-indented-top-level: libyaml refuses (found character that cannot start any token at line 1, column 1), sb accepts
-tab-only-line: libyaml refuses (found a tab character that violates indentation at line 2, column 1), sb accepts
+# How sb's parser (cli-core's YAML pre-pass, then saphyr-parser 0.3.3 and
+# sb's own scalar resolution) differs from libyaml (expected.json) on the
+# corpus. Asserted exactly by tests/yaml_corpus.rs; a line here is a known
+# difference, not a target. Each is in the config spec's Differences list.
+# The pre-pass closed config-H1 and config-L1 (decision 28).
 
 # Documents: sb reads the first document only, as yaml.v3 and sb-go
 # (docs/specs/config.md); Ansible's loader wants a single document.

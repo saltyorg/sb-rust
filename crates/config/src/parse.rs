@@ -2,12 +2,15 @@
 //! "Duplicate keys"): the first YAML document, with every node's position
 //! (saphyr's `MarkedYamlOwned`) and its scalars' source text kept for
 //! yaml.v3-style resolution; a pass over saphyr-parser's events first
-//! reports every duplicate key.
+//! reports every duplicate key. The text goes through cli-core's YAML
+//! pre-pass first, so sb accepts what Ansible's libyaml accepts (decision
+//! 28), and every position points into the file as written.
 
 use std::collections::HashMap;
 
 use saphyr::{MarkedYamlOwned, YamlDataOwned, YamlLoader};
-use saphyr_parser::{Event, Marker, Parser, ScanError, Span};
+use saphyr_parser::{Event, Marker, Parser, ScanError, Span, SpannedEventReceiver};
+use sb_cli_core::config::yaml::{self, Prepared};
 
 use crate::issue::Issue;
 use crate::scalar::{Value, resolve};
@@ -17,15 +20,18 @@ use crate::scalar::{Value, resolve};
 /// recursion would overflow the stack on a few kilobytes of `- - - …`).
 const MAX_DEPTH: usize = 256;
 
-/// A 1-based (line, column) from saphyr's marker (its columns start at 0).
-fn position(marker: &Marker) -> (usize, usize) {
+/// A 1-based (line, column) in the original text from saphyr's marker
+/// on the prepared text (its columns start at 0).
+fn position(prepared: &Prepared, marker: &Marker) -> (usize, usize) {
+    let marker = prepared.original(marker);
     (marker.line(), marker.col() + 1)
 }
 
 /// `text`, the config file shown as `file`, as its root mapping, or its
-/// issues: a syntax error, nesting too deep, the duplicate keys, or a
-/// root that isn't a mapping. An empty file (or a null root) is an empty
-/// mapping.
+/// issues: a syntax error (a tab Ansible's parser refuses among them),
+/// nesting too deep, the duplicate keys, or a root that isn't a mapping.
+/// An empty file (or a null root) is an empty mapping. Positions, the
+/// returned nodes' included, are the file's.
 ///
 /// # Errors
 ///
@@ -38,13 +44,19 @@ pub fn parse(file: &str, text: &str) -> Result<MarkedYamlOwned, Vec<Issue>> {
         path: String::new(),
         message,
     };
+    let prepared = yaml::prepare(text).map_err(|refusal| {
+        vec![issue(
+            (refusal.line, refusal.column),
+            format!("syntax error: {}", refusal.message),
+        )]
+    })?;
     let syntax = |err: &ScanError| {
         vec![issue(
-            position(err.marker()),
+            position(&prepared, err.marker()),
             format!("syntax error: {}", err.info()),
         )]
     };
-    let found = duplicates(file, text).map_err(|err| syntax(&err))?;
+    let found = duplicates(file, &prepared).map_err(|err| syntax(&err))?;
     if !found.is_empty() {
         return Err(found);
     }
@@ -53,14 +65,25 @@ pub fn parse(file: &str, text: &str) -> Result<MarkedYamlOwned, Vec<Issue>> {
     // The pass above decides duplicates, as yaml.v3 compares keys; the
     // loader would also compare an alias key with the text it stands for.
     loader.allow_duplicate_keys(true);
-    // The first document only (`multi: false`), as yaml.v3 and cli-core.
-    Parser::new_from_str(text)
-        .load(&mut loader, false)
+    // The first document only (`multi: false`), as yaml.v3 and cli-core,
+    // each event's span moved back into the file as written.
+    Parser::new_from_str(prepared.text())
+        .load(
+            &mut Original {
+                prepared: &prepared,
+                loader: &mut loader,
+            },
+            false,
+        )
         .map_err(|err| syntax(&err))?;
     // Errors the loader keeps to itself (an alias expansion past its
-    // budget, say), as saphyr's own `load_from_parser` checks.
+    // budget, say), as saphyr's own `load_from_parser` checks. Their
+    // positions come from the moved spans: the file's already.
     if let Some(err) = loader.error() {
-        return Err(syntax(err));
+        return Err(vec![issue(
+            (err.marker().line(), err.marker().col() + 1),
+            format!("syntax error: {}", err.info()),
+        )]);
     }
     let Some(root) = loader.into_documents().into_iter().next() else {
         return Ok(empty());
@@ -69,7 +92,7 @@ pub fn parse(file: &str, text: &str) -> Result<MarkedYamlOwned, Vec<Issue>> {
         None => Ok(root),
         Some("null") => Ok(empty()),
         Some(found) => Err(vec![issue(
-            position(&root.span.start),
+            (root.span.start.line(), root.span.start.col() + 1),
             format!("the file must be a mapping of keys, not {found}"),
         )]),
     }
@@ -87,6 +110,25 @@ fn kind_name(data: &YamlDataOwned<MarkedYamlOwned>) -> Option<&'static str> {
         }
         YamlDataOwned::Sequence(_) => Some("a sequence"),
         _ => Some("a scalar"),
+    }
+}
+
+/// The loader, fed spans in the file as written: every node's span comes
+/// from its events' spans (saphyr's `YamlLoader` implements
+/// `SpannedEventReceiver`:
+/// <https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/trait.SpannedEventReceiver.html>).
+struct Original<'a, 'input> {
+    prepared: &'a Prepared,
+    loader: &'a mut YamlLoader<'input, MarkedYamlOwned>,
+}
+
+impl<'input> SpannedEventReceiver<'input> for Original<'_, 'input> {
+    fn on_event(&mut self, event: Event<'input>, span: Span) {
+        let span = Span::new(
+            self.prepared.original(&span.start),
+            self.prepared.original(&span.end),
+        );
+        self.loader.on_event(event, span);
     }
 }
 
@@ -176,7 +218,7 @@ fn join(path: &str, key: &str) -> String {
 /// position: each with its key path and every earlier position of the
 /// same key (`KeyId`) in the same mapping. Nesting past `MAX_DEPTH`,
 /// counting what aliases copy in, is the one issue instead.
-fn duplicates(file: &str, text: &str) -> Result<Vec<Issue>, ScanError> {
+fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> {
     let mut issues = Vec::new();
     let mut frames: Vec<Frame> = Vec::new();
     // Each anchor's height: what an alias to it adds below the alias.
@@ -190,9 +232,9 @@ fn duplicates(file: &str, text: &str) -> Result<Vec<Issue>, ScanError> {
             message: format!("nested deeper than {MAX_DEPTH} levels"),
         }])
     };
-    for event in Parser::new_from_str(text) {
+    for event in Parser::new_from_str(prepared.text()) {
         let (event, span) = event?;
-        let here = position(&span.start);
+        let here = position(prepared, &span.start);
         match event {
             Event::DocumentEnd => break,
             Event::MappingStart(anchor, _) | Event::SequenceStart(anchor, _) => {
@@ -604,6 +646,99 @@ mod tests {
     fn an_empty_root_is_at_the_start() {
         let node = root("");
         assert_eq!((node.span.start.line(), node.span.start.col()), (1, 0));
+    }
+
+    /// The pre-pass pads continuation lines for saphyr (decision 28); a
+    /// duplicate on a padded line is reported where it is in the file.
+    #[test]
+    fn a_duplicate_on_a_padded_line_has_its_own_position() {
+        assert_eq!(
+            issues("a: [\n]\nb: {\nc: 1, c: 2}\n"),
+            ["test.yml:4:7: b.c: duplicate key (also at line 4, column 1)"]
+        );
+    }
+
+    /// So does a syntax error, and every node of the tree.
+    #[test]
+    fn positions_on_padded_lines_are_the_files() {
+        let found = issues("a: [\nb,\nc: d: e]\n");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].starts_with("test.yml:3:5: syntax error: "),
+            "{found:?}"
+        );
+        let node = root("a: [\nb,\n  c]\nd: 'x\ny'\n");
+        let YamlDataOwned::Mapping(map) = &node.data else {
+            panic!("mapping");
+        };
+        let at = |n: &MarkedYamlOwned| {
+            (
+                n.span.start.line(),
+                n.span.start.col(),
+                n.span.start.index(),
+                n.span.end.line(),
+                n.span.end.col(),
+            )
+        };
+        let (list, quoted) = (
+            map.values().next().expect("a"),
+            map.values().nth(1).expect("d"),
+        );
+        let YamlDataOwned::Sequence(items) = &list.data else {
+            panic!("sequence");
+        };
+        assert_eq!(at(&items[0]), (2, 0, 5, 2, 1));
+        assert_eq!(at(&items[1]), (3, 2, 10, 3, 3));
+        assert_eq!(at(quoted), (4, 3, 16, 5, 2));
+        let key = map.keys().nth(1).expect("d");
+        assert_eq!(at(key), (4, 0, 13, 4, 1));
+        // A tag's node too.
+        let tagged = root("a: !t [\nb]\n");
+        let YamlDataOwned::Mapping(map) = &tagged.data else {
+            panic!("mapping");
+        };
+        let YamlDataOwned::Tagged(_, inner) = &map.values().next().expect("a").data else {
+            panic!("tagged");
+        };
+        let YamlDataOwned::Sequence(items) = &inner.data else {
+            panic!("sequence");
+        };
+        assert_eq!(at(&items[0]), (2, 0, 8, 2, 1));
+    }
+
+    /// A tab Ansible's parser refuses is the file's syntax error, at the tab.
+    #[test]
+    fn a_tab_libyaml_refuses_is_a_syntax_error() {
+        assert_eq!(
+            issues("a: 1\n\t\nb: 2\n"),
+            ["test.yml:2:1: syntax error: a tab in the indentation (YAML indents with spaces)"]
+        );
+        assert_eq!(keys(&root("a:\t1\n")), ["a"]);
+    }
+
+    /// A `:` right after a quoted key in a flow collection is a value
+    /// indicator to both parsers: the value's quotes are its own, whatever
+    /// they hold (security audit of Task 43).
+    #[test]
+    fn json_style_flow_mappings_keep_their_values() {
+        let node =
+            root("x: {\"q\":\"a #b\", \"k\":\"a:\\tb\", 'c':'k:\tv[\t'}\ny: [\"a\":\"b\"]\n");
+        let YamlDataOwned::Mapping(map) = &node.data else {
+            panic!("mapping");
+        };
+        let x = map.values().next().expect("x");
+        let YamlDataOwned::Mapping(x) = &x.data else {
+            panic!("x is a mapping");
+        };
+        let values: Vec<String> = x
+            .values()
+            .map(|v| match &v.data {
+                YamlDataOwned::Representation(text, ..) => text.clone(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(values, ["a #b", "a:\tb", "k:\tv[\t"]);
+        assert_eq!(keys(&node), ["x", "y"]);
     }
 
     /// Duplicates are reported only from the first document too.

@@ -30,10 +30,11 @@ at tag v0.3.3 (read as data only).
   it again only when a case changes. Its mypy check needs types-PyYAML.
 - **sb's side:** `crates/config/tests/yaml_corpus.rs` runs
   `sb_config::parse::parse` and `tree::build` on each case. It asserts
-  the exact list of differences in `mismatches.txt`. It doesn't run
-  cli-core's own loader (the inventory read, `first_document` in
-  `crates/cli-core/src/config.rs`), which uses saphyr-parser the same
-  way; a fix has to cover both.
+  the exact list of differences in `mismatches.txt`. Since Task 43 it
+  also checks that cli-core's inventory read (`inventory_document` in
+  `crates/cli-core/src/config.rs`) accepts exactly the cases
+  validate-config accepts, and that the config-L1 tabs are refused
+  where libyaml says.
 - **The candidates:** a scratch harness ran each parser over the corpus
   (acceptance, plus scalar path, style and text for the event parsers).
   The decoded yaml-test-suite and the panic reproducers from
@@ -91,6 +92,46 @@ libyaml is the reference.
 - saphyr-parser 0.3.4 (2026-11-11) gives the same results on the
   corpus.
 
+## sb's pre-pass (Task 43)
+
+The maintainer chose the pre-pass (decision 28; ADR-022). With it, the
+corpus test's mismatch list holds only the first-document line and the
+eight resolution lines: every parser difference is closed, and the
+three config-L1 tab layouts are refused at the line and column libyaml
+gives. Every case accepted before resolves to the same values. Task 43
+added three cases from its security review (JSON-style flow pairs,
+`{"k":"a #b"}`), which libyaml and sb read alike.
+
+The rewritten text is used only when saphyr refuses the file as
+written, and padding stops at 1 MiB per file.
+
+Differential fuzzing (2026-11-13, scratch harnesses that weren't kept,
+by the author and Task 43's two reviewers) compared the pre-pass plus
+saphyr-parser 0.3.3 with libyaml 0.2.5 through PyYAML 6.0.3 on several
+million generated inputs: Saltbox-like
+layouts with multi-line flow collections, quoted and block scalars and
+tabs, and random strings of YAML indicators, tabs and breaks. No input
+that saphyr alone accepted was refused by sb, and the pre-pass added no
+acceptance libyaml refuses beyond what saphyr already accepts on the
+same text with spaces. What remains is saphyr's own behaviour:
+
+- saphyr accepts junk after an indented first mapping that is dedented
+  (`  a: 1\nb: 2`): its first document ends at the dedent and sb reads
+  no further; libyaml refuses the file;
+- saphyr accepts a `:` with no key at the start of a line (`: x`);
+- a clipped block scalar at the end of a file without a final line
+  break keeps its line break in saphyr, not in libyaml;
+- saphyr refuses a few layouts libyaml accepts, none in Saltbox's
+  files: a block scalar header at the key's column (`a:\n|`), a tab
+  after `?` in a flow collection, a comment glued to a token
+  (`t: |# c`, `[#\n]`), a block scalar whose leading blank line is
+  deeper than a following comment line, a lone `-` in a flow sequence;
+- libyaml also breaks lines at NEL, LS and PS (U+0085, U+2028, U+2029);
+  saphyr and the pre-pass don't, so a file using them reads differently
+  (the config spec lists it);
+- a multi-line quoted key in a flow collection (`{"k\n": 1}`) is
+  accepted once padded; libyaml refuses it.
+
 ## The candidates on the corpus
 
 Acceptance against libyaml's verdict over 59 cases (the multi-document
@@ -105,6 +146,8 @@ styles and texts.
 | saphyr-parser 0.3.3, flow and quoted patch | 54 | 2 (QB6E accepted) | the flow guard alone costs none |
 | saphyr-parser 0.3.3, both patches | 56 | 3 | config-L1 remains |
 | pre-pass prototype + saphyr-parser 0.3.3 | 56 | not run | config-L1 remains |
+| sb's pre-pass (Task 43) + saphyr-parser 0.3.3 | 59 | not run | config-L1 refused by the pre-pass |
+| granit-parser 2.0.0, default options | 55 (acceptance only) | not run | measured in Task 43's library review; refuses the column-0 quoted case, accepts the three config-L1 tab layouts; already linked as serde-saphyr's parser |
 | yaml-rust2 0.13.0 | 47 (acceptance only) | not run | same scanner lineage as saphyr |
 | rust-yaml 1.1.0 | 56 (acceptance only) | not run | refuses the column-0 quoted case; accepts tab-after-dash and tab-only-line |
 | unsafe-libyaml-norway 0.2.15 | 59 (acceptance only) | not run | libyaml translated by c2rust; unsafe throughout |
