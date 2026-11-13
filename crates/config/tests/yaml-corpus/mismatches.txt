@@ -23,3 +23,15 @@ saltbox-yes-no: dns.ipv4: resolves to str "yes", libyaml bool "true"
 saltbox-yes-no: dns.ipv6: resolves to str "no", libyaml bool "false"
 saltbox-yes-no: dns.other: resolves to str "off", libyaml bool "false"
 saltbox-yes-no: dns.proxied: resolves to str "on", libyaml bool "true"
+
+# A top-level scalar: libyaml reads it, and sb refuses it as a config
+# file, which must be a mapping of keys (the YAML read agrees: cli-core's
+# unit tests check these two scalars' values against libyaml's).
+top-level-block-scalar-blank-then-comment: libyaml accepts, sb refuses: the file must be a mapping of keys, not a scalar at line 1, column 5
+top-level-block-scalar-then-comment: libyaml accepts, sb refuses: the file must be a mapping of keys, not a scalar at line 1, column 5
+
+# A top-level block scalar with no content, whose blank lines hold
+# spaces, before an end marker: saphyr refuses it where libyaml reads an
+# empty scalar. A refusal, not a different value; no Saltbox file has a
+# top-level scalar.
+top-level-block-scalar-spaces-before-end: libyaml accepts, sb refuses: syntax error: wrongly indented line in block scalar at line 3, column 1

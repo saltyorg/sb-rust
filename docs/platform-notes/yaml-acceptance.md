@@ -381,10 +381,24 @@ indentation indicators with and without content, keep and strip, and
 mid-file scalars, which keep saphyr's value. A differential fuzz against
 libyaml's events (the code review's harness, scratch, not kept; 350,000
 generated block-scalar layouts with and without properties) left only
-one class of difference, which Task 61 doesn't touch: a top-level block
+one class of difference, which Task 61 didn't touch: a top-level block
 scalar followed by a comment at column 0 (`--- >\n\n# c`), which saphyr
-reads as content and libyaml as the scalar's end. No Saltbox file has a
-top-level block scalar.
+read as content and libyaml as the scalar's end. The module build's
+follow-up closed it in the pre-pass: under a top-level block scalar with
+no content yet, a comment at column 0 ends the scalar as libyaml ends it
+(its value is the blank lines above, kept only by `+`), the comment
+lines after it are emptied so saphyr doesn't read them on, content after
+it is refused where libyaml refuses it, and a `---` there, which saphyr
+also read as content, is refused as the second document libyaml finds.
+Checked against libyaml 0.2.5 through `PyYAML` 6.0.3, case by case and
+in the corpus and by the code review's differential run (about 620,000
+generated inputs: no value differs). The differences left are refusals
+the pass already made before: spaces-only lines in a block scalar with
+no content yet, deeper than a later end marker or indented comment
+(`--- |\n   \n...`, `k: |\n    \n  # c`), and a comment at column 0
+under a header with an indentation indicator (`|1\n# c`), which saphyr
+refuses and libyaml reads as empty. No Saltbox file has a top-level
+block scalar.
 
 **The inventory's length.** localhost.yml is read whole at any length
 (`read_inventory`), for validate-config and the inventory read; the

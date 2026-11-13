@@ -294,13 +294,18 @@ fn the_corpus_differs_from_libyaml_exactly_as_listed() {
 /// parser accepts, and refuses the others at the same line and column:
 /// both go through the same pre-pass (decisions 28 and 38), so
 /// `appdata_path` falls back to `/opt` only on a file Ansible refuses too.
+/// A root that isn't a mapping is read by both; only validate-config then
+/// refuses it as a config file, which is no YAML refusal.
 #[test]
 fn the_inventory_read_agrees_with_validate_config() {
     let mut differ = Vec::new();
     for (name, text) in cases() {
-        let parsed = parse(&format!("{name}.yml"), &text)
-            .map(|_| ())
-            .map_err(|issues| (issues[0].line, issues[0].column));
+        let parsed = match parse(&format!("{name}.yml"), &text) {
+            Err(issues) if issues[0].message.starts_with("the file must be a mapping") => Ok(()),
+            parsed => parsed
+                .map(|_| ())
+                .map_err(|issues| (issues[0].line, issues[0].column)),
+        };
         let read = sb_cli_core::config::inventory_appdata(&text)
             .map(|_| ())
             .map_err(|refusal| (refusal.line, refusal.column));

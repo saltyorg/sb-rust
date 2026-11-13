@@ -334,7 +334,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   tag Ansible's loader has no constructor for (`!custom`) as its string;
   sb refuses them all.
   A few layouts libyaml and saphyr read differently are refused though
-  libyaml accepts them (`[?x]`, `*x: 1`; the note lists them). Where libyaml
+  libyaml accepts them (`[?x]`, `*x: 1`, a block scalar's spaces-only
+  lines before its end when it has no content; the note lists them). Where libyaml
   and saphyr still differ (saphyr's own refusals:
   docs/platform-notes/yaml-acceptance.md), sb follows saphyr. NEL, LS and PS (U+0085, U+2028, U+2029), line breaks to
   libyaml and not to saphyr, are refused wherever they are, even where

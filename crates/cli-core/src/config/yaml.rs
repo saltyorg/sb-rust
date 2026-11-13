@@ -128,6 +128,10 @@ pub struct Prepared {
     before: Vec<usize>,
     /// All the spaces inserted.
     total: usize,
+    /// The characters taken out of the lines above each line (comment
+    /// lines emptied after a top-level block scalar: `top_scalar_ends`),
+    /// then the whole count; empty when none were.
+    removed: Vec<usize>,
     /// How deep its collections nest, aliases counted as what they copy.
     depth: usize,
     /// Its length in characters, as saphyr-parser's markers count them.
@@ -135,6 +139,9 @@ pub struct Prepared {
     /// Whether it ends, with no final line break, in a block scalar to
     /// which saphyr-parser adds one (`added_break`).
     eof_break: bool,
+    /// libyaml's value of a top-level block scalar that a comment at
+    /// column 0 ended before any content (`top_scalar_ends`).
+    top_scalar: Option<String>,
 }
 
 /// The config text is the user's, secrets included: its debug form shows
@@ -171,6 +178,8 @@ const FLOW_PLAIN_COLON: &str =
     "a `:` right before `,`, `?` or a bracket in a flow collection's plain value (quote the value)";
 const TOP_BLOCK_SCALAR: &str =
     "a top-level block scalar's content must be indented (Ansible's parser ends it here)";
+const AFTER_TOP_SCALAR: &str = "content after the top-level block scalar that the \
+    comment above ended (Ansible's parser reads one node per document)";
 const FLOW_QUESTION: &str =
     "a `?` in a flow collection must be followed by a space (quote a value that starts with `?`)";
 const TAG_END: &str = "a tag must be followed by a space";
@@ -243,15 +252,21 @@ impl Prepared {
     /// `marker`, a position in [`Prepared::text`], in the original text: a
     /// padded line's columns move left by its padding (a column inside
     /// the padding is the line's start), and the character index by all
-    /// the padding before it.
+    /// the padding before it, less what emptied lines above it lost.
     #[must_use]
     pub fn original(&self, marker: &Marker) -> Marker {
         let line = marker.line().saturating_sub(1);
         let pad = self.pads.get(line).copied().unwrap_or(0);
         let before = self.before.get(line).copied().unwrap_or(self.total);
+        // One entry per line and the total after them, so every line the
+        // parser names is in it.
+        let removed = self.removed.get(line).copied().unwrap_or(0);
         let in_line = pad.min(marker.col());
         Marker::new(
-            marker.index().saturating_sub(before + in_line),
+            marker
+                .index()
+                .saturating_add(removed)
+                .saturating_sub(before + in_line),
             marker.line(),
             marker.col() - in_line,
         )
@@ -295,6 +310,20 @@ impl Prepared {
     /// an option for it. Checked against libyaml through `PyYAML` 6.0.3
     /// and against yaml.v3 3.0.5 (the platform note).
     fn libyaml<'input>(&self, event: Event<'input>, span: &Span) -> Event<'input> {
+        // The top-level scalar a comment ended, the document's only scalar
+        // (no collection holds it): libyaml's value, where saphyr reads on
+        // over the emptied comment lines. Not found by its span: saphyr
+        // starts it where it ends when `...` follows.
+        if let Some(value) = &self.top_scalar
+            && let Event::Scalar(
+                _,
+                style @ (ScalarStyle::Literal | ScalarStyle::Folded),
+                anchor,
+                tag,
+            ) = event
+        {
+            return Event::Scalar(value.clone().into(), style, anchor, tag);
+        }
         match event {
             Event::Scalar(
                 text,
@@ -386,6 +415,10 @@ struct Scan {
     started: bool,
     /// Each anchor defined so far, where (1-based line and column).
     anchors: std::collections::HashMap<String, (usize, usize)>,
+    /// A top-level block scalar ended at a comment (`top_scalar_ends`):
+    /// its value. Only comments, blank lines and an end marker may follow
+    /// in the document.
+    top_scalar: Option<String>,
 }
 
 impl Scan {
@@ -468,16 +501,24 @@ pub fn prepare(text: &str) -> Result<Prepared, Refusal> {
     // The scan runs either way (it refuses what libyaml refuses); its
     // rewritten text is built only when saphyr can't read the original.
     let parses = first_document_parses(text);
-    let rewritten = rewrite(text, !parses)?;
-    let mut prepared = if parses {
+    let mut rewritten = rewrite(text, !parses)?;
+    // A top-level block scalar ended at a comment: saphyr reads the
+    // comment as content, so its text is the rewritten one either way.
+    let blanked = rewritten.top_scalar.is_some();
+    if parses && blanked {
+        rewritten = rewrite(text, true)?;
+    }
+    let mut prepared = if parses && !blanked {
         Prepared {
             text: text.to_string(),
             pads: Vec::new(),
             before: Vec::new(),
             total: 0,
+            removed: Vec::new(),
             depth: 0,
             chars: 0,
             eof_break: rewritten.eof_break,
+            top_scalar: None,
         }
     } else {
         rewritten
@@ -595,8 +636,29 @@ fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
     // The first tag Ansible's loader can't construct: its constructor runs
     // after the parser, so a syntax error anywhere comes first.
     let mut unconstructed = None;
+    let mut top_scalars = 0;
     for event in Parser::new_from_str(prepared.text()) {
         let (event, span) = event.map_err(|err| at(err.marker(), err.info()))?;
+        // A comment ended the top-level scalar (`top_scalar_ends`): the
+        // first document must be that one scalar, its lines blank, or the
+        // scan and saphyr have read the text apart and libyaml's value
+        // can't stand in for saphyr's.
+        if prepared.top_scalar.is_some() && documents == 1 {
+            let blank = match &event {
+                Event::Scalar(text, ScalarStyle::Literal | ScalarStyle::Folded, ..) => {
+                    top_scalars += 1;
+                    top_scalars == 1 && text.chars().all(|c| c == '\n' || c == ' ')
+                }
+                Event::MappingStart(..)
+                | Event::SequenceStart(..)
+                | Event::Scalar(..)
+                | Event::Alias(_) => false,
+                _ => true,
+            };
+            if !blank {
+                return Err(at(&span.start, AFTER_TOP_SCALAR));
+            }
+        }
         if let Event::Scalar(.., Some(tag))
         | Event::MappingStart(_, Some(tag))
         | Event::SequenceStart(_, Some(tag)) = &event
@@ -709,11 +771,14 @@ fn rewrite(text: &str, build: bool) -> Result<Prepared, Refusal> {
         flow_question: false,
         started: false,
         anchors: std::collections::HashMap::new(),
+        top_scalar: None,
     };
     let mut out = String::with_capacity(if build { text.len() } else { 0 });
     let mut pads = Vec::new();
     let mut before = Vec::new();
     let mut total = 0;
+    let mut removed = Vec::new();
+    let mut gone = 0;
     let mut done = false;
     // The first document ended at a `...` line.
     let mut after_end = false;
@@ -721,6 +786,7 @@ fn rewrite(text: &str, build: bool) -> Result<Prepared, Refusal> {
     for (index, (line, end)) in lines(text).enumerate() {
         if build {
             before.push(total);
+            removed.push(gone);
         }
         let mut chars: Vec<char> = line.chars().collect();
         // A byte order mark starts the stream, not a column (libyaml's
@@ -730,9 +796,15 @@ fn rewrite(text: &str, build: bool) -> Result<Prepared, Refusal> {
             chars.remove(0);
         }
         let mut pad = 0;
+        let mut emptied = false;
         if !done {
             match scan_line(&mut scan, &mut chars, index + 1)? {
                 Line::Pad(n) => pad = n,
+                Line::Blank => {
+                    gone += chars.len();
+                    chars.clear();
+                    emptied = true;
+                }
                 Line::Done => {
                     done = true;
                     after_end = document_marker(&chars) == Some('.');
@@ -763,19 +835,34 @@ fn rewrite(text: &str, build: bool) -> Result<Prepared, Refusal> {
             if bom {
                 out.push('\u{feff}');
             }
+            // A lone `\r` before an emptied line ending in `\n` would make
+            // one break of two: it becomes a `\n`, the count unchanged.
+            if emptied && end.starts_with('\n') && out.ends_with('\r') {
+                out.pop();
+                out.push('\n');
+            }
             out.extend(std::iter::repeat_n(' ', pad));
             out.extend(chars);
             out.push_str(end);
         }
+    }
+    // Past the last line, all that was taken out; nothing taken out, no
+    // list to keep.
+    if gone == 0 {
+        removed = Vec::new();
+    } else {
+        removed.push(gone);
     }
     Ok(Prepared {
         text: out,
         pads,
         before,
         total,
+        removed,
         depth: 0,
         chars: 0,
         eof_break,
+        top_scalar: scan.top_scalar,
     })
 }
 
@@ -809,6 +896,10 @@ enum Line {
     /// The first document has ended here: this line and the rest are
     /// copied as they are.
     Done,
+    /// Emptied, its line break kept: a comment after a top-level block
+    /// scalar that libyaml has ended and saphyr would read on
+    /// (`top_scalar_ends`).
+    Blank,
 }
 
 fn refuse(line: usize, col: usize, message: &str) -> Refusal {
@@ -833,10 +924,18 @@ fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line,
     for (key, _) in &mut scan.outer {
         *key = None;
     }
+    if scan.top_scalar.is_some() {
+        return after_top_scalar(chars, first, number);
+    }
     if let Within::BlockScalar { parent, indent, .. } = scan.within
         && block_scalar_line(scan, chars, parent, indent, number)?
     {
-        return Ok(Line::Pad(0));
+        // The comment that ended a top-level scalar goes too.
+        return Ok(if scan.top_scalar.is_some() {
+            Line::Blank
+        } else {
+            Line::Pad(0)
+        });
     }
     if document_marker(chars).is_some() && (scan.flow > 0 || scan.within != Within::Tokens) {
         // A marker ends a plain scalar's document; inside a quoted scalar
@@ -921,6 +1020,27 @@ fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line,
     Ok(Line::Pad(pad))
 }
 
+/// A line, `number`, after the top-level scalar a comment ended
+/// (`top_scalar_ends`), as libyaml reads it: a comment or blank line is
+/// emptied (saphyr would read it as the scalar's content), `...` ends the
+/// document, `---` starts a second one, and anything else is a second
+/// node. A tab in its leading white space is refused there: libyaml is
+/// back in block context. `first` is its first character that isn't
+/// white space.
+fn after_top_scalar(chars: &[char], first: usize, number: usize) -> Result<Line, Refusal> {
+    if let Some(tab) = chars[..first].iter().position(|&c| c == '\t') {
+        return Err(refuse(number, tab, TAB_INDENT));
+    }
+    match document_marker(chars) {
+        Some('-') => Err(refuse(number, 0, SECOND_DOCUMENT)),
+        Some(_) => Ok(Line::Done),
+        None if chars.get(first).is_some_and(|&c| c != '#') => {
+            Err(refuse(number, first, AFTER_TOP_SCALAR))
+        }
+        None => Ok(Line::Blank),
+    }
+}
+
 /// A line under a block scalar's header, on line `number`: whether it is
 /// the scalar's content (copied as it is). A line left of the content
 /// ends the scalar and starts tokens in block context.
@@ -951,12 +1071,26 @@ fn block_scalar_line(
         }
         _ if tab => return Err(refuse(number, spaces, TAB_BLOCK_SCALAR)),
         _ if !content => return Ok(true),
+        // A `---` there starts a second document in libyaml, where saphyr
+        // reads it as the scalar's content.
+        None if parent.is_none() && document_marker(chars) == Some('-') => {
+            return Err(refuse(number, 0, SECOND_DOCUMENT));
+        }
+        None if parent.is_none() && spaces == 0 && chars[0] == '#' => {
+            top_scalar_ends(scan, number);
+            return Ok(true);
+        }
         None if parent.is_none()
             && spaces == 0
             && chars[0] != '#'
             && document_marker(chars).is_none() =>
         {
             return Err(refuse(number, 0, TOP_BLOCK_SCALAR));
+        }
+        // An end marker ends the scalar (saphyr ends it there too): what
+        // follows is between documents.
+        None if parent.is_none() && document_marker(chars) == Some('.') => {
+            scan.within = Within::Tokens;
         }
         None if spaces >= least => {
             if let Within::BlockScalar { indent, seen, .. } = &mut scan.within {
@@ -969,6 +1103,25 @@ fn block_scalar_line(
     }
     scan.key_allowed = true;
     Ok(false)
+}
+
+/// A comment at column 0 under a top-level block scalar with no content
+/// yet, on line `number`: libyaml's least indentation at the top is 1, so
+/// the comment ends the scalar there, which then holds the blank lines
+/// above it, kept only by `+` (libyaml 0.2.5, `yaml_parser_scan_block_scalar`
+/// in `src/scanner.c`; checked through `PyYAML` 6.0.3 on the corpus).
+/// saphyr's least indentation there is 0, so the comment would be content.
+fn top_scalar_ends(scan: &mut Scan, number: usize) {
+    if let Within::BlockScalar { chomp, header, .. } = scan.within {
+        let breaks = number - header - 1;
+        let value = if chomp == Chomp::Keep {
+            "\n".repeat(breaks)
+        } else {
+            String::new()
+        };
+        scan.top_scalar = Some(value);
+    }
+    scan.within = Within::Tokens;
 }
 
 /// Where the quoted scalar that `chars[at..]` continues ends (after its
@@ -2460,6 +2613,101 @@ mod tests {
         let mut texts = Texts(Vec::new());
         prepared.load(&mut texts).expect("loads");
         texts.0
+    }
+
+    /// A comment at column 0 under a top-level block scalar with no
+    /// content yet ends the scalar, as libyaml ends it, where saphyr reads
+    /// it as content: the scalar holds the blank lines above (kept only by
+    /// `+`), the comments after it stay comments, and content after it is
+    /// refused where libyaml refuses it. Each value and position is
+    /// libyaml 0.2.5's through `PyYAML` 6.0.3; an indented comment stays
+    /// content in both.
+    #[test]
+    fn a_comment_at_column_0_ends_a_top_level_block_scalar() {
+        for (input, value) in [
+            ("--- >\n\n# c\n", ""),
+            ("--- |+\n\n# c\n", "\n"),
+            ("--- |+\n\n\n# c\n\n", "\n\n"),
+            ("--- >\n   \n# c\n", ""),
+            ("|+\n\n# c\n", "\n"),
+            (">\n# c\n", ""),
+            ("|+\n\n# c\n\n\n", "\n"),
+            ("|+\n# c", ""),
+            ("--- |-\n\n# c\n# d\n", ""),
+            ("--- |+\n\n# c\n...\n", "\n"),
+            ("--- |-\n\n# c\n# d\n...\n", ""),
+            (">+\n\n # c\n", "\n# c\n"),
+        ] {
+            assert_eq!(loaded(input), [value], "{input:?}");
+        }
+        let after = "content after the top-level block scalar that the comment above \
+                     ended (Ansible's parser reads one node per document)";
+        assert_eq!(
+            refused(">\n# c\nfoo\n"),
+            format!("{after} at line 3, column 1")
+        );
+        assert_eq!(
+            refused("|\n# c\n  x\n"),
+            format!("{after} at line 3, column 3")
+        );
+        // A `---` under it, or under the comment, is a second document
+        // (saphyr read it as content).
+        let second = "a second document (Ansible reads one document per file)";
+        assert_eq!(
+            refused("|\n---\nb\n"),
+            format!("{second} at line 2, column 1")
+        );
+        assert_eq!(
+            refused("|\n\n---\n"),
+            format!("{second} at line 3, column 1")
+        );
+        assert_eq!(
+            refused("|\n# c\n---\nb\n"),
+            format!("{second} at line 3, column 1")
+        );
+        assert_eq!(loaded("|\n...\n"), [""]);
+        // A tab in a line's leading white space after it is refused, as
+        // libyaml refuses it in block context, at the tab.
+        for (input, line, column) in [
+            ("|\n# c\n\t# d\n", 3, 1),
+            ("|\n# c\n\t\n", 3, 1),
+            ("|\n# c\n \n\t\n", 4, 1),
+            ("|\n# c\n \tfoo\n", 3, 2),
+        ] {
+            assert_eq!(
+                refused(input),
+                format!("{TAB_INDENT} at line {line}, column {column}"),
+                "{input:?}"
+            );
+        }
+        // Positions after the emptied lines are the file's, a lone `\r`
+        // before one included.
+        assert_eq!(
+            refused("|\n# c\n...\n---\nb\n"),
+            refused("|\n\n...\n---\nb\n")
+        );
+        assert_eq!(
+            refused("|\r# c\n...\n---\nb\n"),
+            format!("{second} at line 4, column 1")
+        );
+        // An end marker ends the scalar there: what follows it is between
+        // documents, where libyaml takes no tab.
+        assert_eq!(
+            refused("|\n...\n\t\n"),
+            format!("{TAB_INDENT} at line 3, column 1")
+        );
+        assert_eq!(loaded("|\n...\n# c\n"), [""]);
+        // Where the scan and saphyr read such a text apart (here a second
+        // byte order mark), libyaml's value doesn't stand in: refused.
+        let apart = "\u{feff}\u{feff}&a \n\n>\r\r\n>##&a :\n>\n#\u{feff}%#:";
+        assert!(prepare(apart).is_err(), "{:?}", prepare(apart));
+        // The comment lines are emptied, what they held counted.
+        let prepared = prepare("|\n# c\n  # d\n").expect("reads");
+        assert_eq!(prepared.text(), "|\n\n\n");
+        let end = prepared.original(&Marker::new(4, 4, 0));
+        assert_eq!((end.index(), end.line(), end.col()), (12, 4, 0));
+        let mid = prepared.original(&Marker::new(3, 3, 0));
+        assert_eq!(mid.index(), 6);
     }
 
     /// A block scalar at the end of a file without a final line break
