@@ -81,6 +81,9 @@ sysinfo = { version = "0.40.0", default-features = false, features = ["system"] 
 # The systemd-coredump user's uid (host spec, decision 2): the version
 # portable-pty already links, so no second copy, with only `user`.
 nix = { version = "0.28.0", default-features = false, features = ["user"] }
+# The recursive ownership walk (host spec, decision 2 and assumption 3);
+# already in the lockfile.
+walkdir = "2.5.0"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-log = { version = "0.2.0", default-features = false, features = ["std", "log-tracer"] }
