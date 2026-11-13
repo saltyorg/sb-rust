@@ -333,6 +333,22 @@ impl Walk<'_> {
                     key_at,
                 );
             }
+            // A list where the schema describes an object's keys (Task 60;
+            // sb-go skips it, a listed difference): its keys would go
+            // unchecked, and Ansible can't read them as the object's. An
+            // empty list stays as sb-go has it, as an empty value; a
+            // credential section has its own structure issue.
+            (Some(Kind::Object), Data::Sequence(items))
+                if !items.is_empty()
+                    && (rule.properties.is_some() || rule.additional_properties.is_some())
+                    && credential(rule).is_none() =>
+            {
+                self.issue(
+                    (value.line, value.column),
+                    path,
+                    "must be an object, got a list".to_string(),
+                );
+            }
             (Some(Kind::Array), Data::Sequence(items)) => {
                 if let Some(item_rule) = &rule.items {
                     for (index, item) in items.iter().enumerate() {
@@ -1016,8 +1032,37 @@ mod tests {
                 "c.yml:3:6: o.b: must be a whole number (integer), got: y",
             ]
         );
-        // A value that isn't a mapping skips them (type flexibility).
-        clean(rule, "o: [1]\n");
+        // A scalar skips them (type flexibility); a list is an issue.
+        clean(rule, "o: 1\n");
+        assert_eq!(
+            issues(rule, "o: [1]\n"),
+            ["c.yml:1:4: o: must be an object, got a list"]
+        );
+    }
+
+    /// A list where the schema describes an object's keys is an issue at
+    /// the list (Task 60; sb-go skips it); an empty list, a scalar and a
+    /// plain `type: object` aren't (a credential section: tests/rules.rs).
+    #[test]
+    fn a_list_where_an_object_belongs_is_an_issue() {
+        let schema = "user:\n  type: object\n  required: true\n  properties:\n    name: {type: string, required: true}\n    pass: {type: password}\n";
+        assert_eq!(
+            issues(schema, "user:\n  - pass: x\n"),
+            ["c.yml:2:3: user: must be an object, got a list"]
+        );
+        let nested = "a:\n  type: object\n  properties:\n    b:\n      type: object\n      properties:\n        c: {type: string}\n";
+        assert_eq!(
+            issues(nested, "a:\n  b:\n    - c: x\n    - d\n"),
+            ["c.yml:3:5: a.b: must be an object, got a list"]
+        );
+        clean(
+            schema
+                .replace("required: true\n  properties", "properties")
+                .as_str(),
+            "user: []\n",
+        );
+        clean(schema, "user: x\n");
+        clean("o: {type: object}\n", "o: [1]\n");
     }
 
     /// Items get the rules of `items`; sb-go hands them the array's parent.

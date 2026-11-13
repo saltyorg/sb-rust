@@ -289,3 +289,28 @@ fn a_string_typed_credential_is_redacted() {
         assert_eq!(issues, [expected]);
     }
 }
+
+/// A list where accounts.yml's schema wants an object is one issue at the
+/// list, with the real validators (Task 60); a credential section keeps
+/// its own structure issue, at its key, and nothing more.
+#[test]
+fn a_list_where_an_object_belongs_is_an_issue() {
+    let text = "user:\n  - name: a\n    pass: s3cret-pass\ncloudflare:\n  - api: s3cret-key\n";
+    let found: Vec<String> = report(
+        text,
+        "accounts.yml",
+        &fixture("saltbox-schemas/accounts.schema.yml"),
+        &Saltbox::with_zoneinfo(Vec::new()),
+    )
+    .issues
+    .iter()
+    .map(ToString::to_string)
+    .collect();
+    assert_eq!(
+        found,
+        [
+            "accounts.yml:2:3: user: must be an object, got a list",
+            "accounts.yml:4:1: cloudflare: cloudflare config must be an object",
+        ]
+    );
+}

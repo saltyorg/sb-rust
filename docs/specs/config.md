@@ -144,7 +144,11 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   to generate examples); plus `pattern` and `additionalProperties`.
   Semantics as sb-go, including its quirks, each pinned by a test:
   unknown config keys are errors; `string`, `boolean`, `array` and
-  `object` values aren't type-checked; empty non-required values are
+  `object` values aren't type-checked, except that a list with items
+  where an object with `properties` or `additionalProperties` belongs is
+  an issue at the list, `must be an object, got a list` (a credential
+  section keeps its own structure issue; *amended by hardening Task
+  60*, a difference, below); empty non-required values are
   skipped; `required: true` with a null value passes unless another rule
   rejects null; `required_with` fires only for a present-but-empty key;
   array items look up `required_when_true` and the like on the array's
@@ -173,8 +177,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   with neither, any keys are accepted (as sb-go). A rule (as motd's schema
   uses it, and proto-yaml implemented) checks the value of every key outside
   `properties`; `false` forbids such keys; `true` allows them (new: sb-go
-  has no way to). As with sb-go's other object rules, a value that isn't a
-  mapping skips them (type flexibility), pinned by a test.
+  has no way to). As with sb-go's other object rules, a scalar where the
+  mapping belongs skips them (type flexibility), pinned by a test; a list
+  with items is an issue (Task 60).
 - **Strict loading:** an unknown schema key, rule type, format, validator
   name, or a malformed value is an error naming the schema file and the
   line and column (and the key or value at fault, where there is one;
@@ -282,6 +287,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   `yes`, `on` and `y` are booleans, `017` is 17 and a date is a string
   (yaml.v3: the strings, 15, and a `time.Time` that matches a date in the
   config). Saltbox quotes its `not_equals` values.
+- A list with items where the schema describes an object's keys
+  (`user:\n  - pass: x`) is an issue at the list (sb-go's
+  `validateFieldWithTypeFlexibility`, saltbox/yaml_schema.go, walks an
+  object only when the value is a `map[string]any` and returns nil
+  otherwise, so the list's keys go unchecked there). An empty list passes,
+  as in sb-go.
 - A nested mapping with a key that isn't a string (`1:`, `true:`) is
   checked like any other (sb-go's yaml.v3 decodes it into a map its rules
   skip, so its keys and values go unchecked there).
