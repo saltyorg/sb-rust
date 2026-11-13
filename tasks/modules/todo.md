@@ -591,14 +591,14 @@ str, String)` joins a literal option to a user value in one argv element
 errors; `Cmd::shown()` becomes public.
 
 **Acceptance criteria:**
-- [ ] The child receives the joined element byte for byte, JSON and a
+- [x] The child receives the joined element byte for byte, JSON and a
       leading `-` included.
-- [ ] Logs and errors show the literal with `[ARG]`.
-- [ ] `shown()` is public with its doc, returning the masked rendering.
+- [x] Logs and errors show the literal with `[ARG]`.
+- [x] `shown()` is public with its doc, returning the masked rendering.
 
 **Verification:**
-- [ ] `cargo test -p sb-exec`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-exec`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None
 **Files:** `crates/exec/src/{lib.rs,mask.rs}`
@@ -614,15 +614,15 @@ and `SSH_ASKPASS=/bin/false` for every child that isn't attached
 2 s drain ends the read (exec-L2). Test-first.
 
 **Acceptance criteria:**
-- [ ] Every non-attached child gets both variables; attached children
+- [x] Every non-attached child gets both variables; attached children
       don't.
-- [ ] The last unterminated line arrives after the drain.
-- [ ] The spec's Differences and Known limits wording is in place;
+- [x] The last unterminated line arrives after the drain.
+- [x] The spec's Differences and Known limits wording is in place;
       the host-key case stays `UNVERIFIED` until a container check.
 
 **Verification:**
-- [ ] `cargo test -p sb-exec` (failing tests first).
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-exec` (failing tests first).
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None
 **Files:** `crates/exec/src/{run.rs,lib.rs}`, `crates/exec/tests/`, `docs/specs/exec.md`
@@ -638,17 +638,17 @@ sb-go's warning (R2), and the asset checks with the pinned URL (R3), on
 the fake TLS server (axum with rcgen's loopback certificate).
 
 **Acceptance criteria:**
-- [ ] The client is reqwest with rustls/aws-lc-rs, `https_only`, connect
+- [x] The client is reqwest with rustls/aws-lc-rs, `https_only`, connect
       and per-read timeouts, and a `User-Agent`.
-- [ ] An asset passes only with its name, size > 0, a `sha256:<64 hex>`
+- [x] An asset passes only with its name, size > 0, a `sha256:<64 hex>`
       digest and the pinned URL prefix; a missing one is `release <tag>
       is missing <name>`.
-- [ ] deny.toml: `sb-release` (wrappers `sb`), added to the wrappers of
+- [x] deny.toml: `sb-release` (wrappers `sb`), added to the wrappers of
       `sb-cli-core`, `sb-term-ui` and `sb-exec`; no key in the repository.
 
 **Verification:**
-- [ ] `cargo test -p sb-release` on the fake server.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor
+- [x] `cargo test -p sb-release` on the fake server.
+- [x] Review: code-reviewer, library-reviewer, security-auditor
       (downloads that replace a binary).
 
 **Dependencies:** None
@@ -2119,7 +2119,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
-- [ ] **exec's PTY timing tests fail under load** (lane 2, with or after
+- [x] **exec's PTY timing tests fail under load** (lane 2, with or after
       M23, which also touches crates/exec). `crates/exec/tests/pty.rs`'s
       `a_grandchild_holding_the_pty_is_left_after_the_drain` (3.36 s
       against its 3 s bound) and `cancellation_and_timeouts_reach_the_group`
@@ -2147,6 +2147,19 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       3, with the next YAML change). sb reads the comment as content, where
       libyaml ends the scalar there. No Saltbox file has a top-level block
       scalar; add the corpus case and match libyaml.
+
+- [ ] **exec's other fixed timing bounds** (lane 2, with its next exec
+      change). `crates/exec/tests/stream.rs:203`, `:287` and
+      `groups.rs:163-164` use fixed wall-clock bounds of the kind c06f497
+      replaced; give them the same baseline-derived bounds.
+- [ ] **release: a total timeout on the two metadata requests** (lane 2,
+      with M25 or M26). A proxy that trickles bytes keeps under the per-read
+      timeout and can stall `sb update` without end. Cap the metadata
+      requests at 60 s in total (downloads keep no total, release spec
+      decision 5). Decided: hardening that costs no
+      feature. Declined with it: a charset rule for tags and asset names
+      (the pinned URL and the digest already hold, and remote tags reach
+      messages cleaned).
 
 ## Ready to start
 
