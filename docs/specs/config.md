@@ -103,7 +103,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   config).
 - **Secrets** (term-ui decision 8): `cloudflare.api`,
   `cloudflare.scoped_token`, `dockerhub.token` and every `password`-typed
-  field are secrets: no issue, notice, output line or log record prints
+  field are secrets, and so is a key with one of their names where the
+  schema doesn't place it (`user: [{pass: …}]`; *amended by hardening
+  Task 46*): no issue, notice, output line or log record prints
   their values (an issue on one names the key, never the value), and
   `not_equals` never prints the value it compared.
 - **Parsing:** the first YAML document only (as yaml.v3 and cli-core); an

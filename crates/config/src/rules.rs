@@ -7,6 +7,7 @@
 //! parent key (1:1 at the top), "unknown field" at the key, everything
 //! else at the value.
 
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use crate::issue::Issue;
@@ -131,13 +132,44 @@ pub fn validate(file: &str, root: &Node, rules: &Rules, validators: &dyn Validat
 
 /// The secret paths of files checked against `rules` (`secret::is_secret`
 /// with each path's type), for `tree::build`'s messages before the rules
-/// run: through properties, `[n]` items and `additionalProperties`.
+/// run: through properties, `[n]` items and `additionalProperties`. A path
+/// the schema doesn't reach (a key in a structure it doesn't expect, such
+/// as a list where a mapping belongs) is secret by its key's name: the
+/// name of a credential key or of any `type: password` field (config-L2).
 pub fn secret_paths(rules: &Rules) -> impl Fn(&str) -> bool + '_ {
-    move |path| secret::is_secret(path, kind_at(rules, path))
+    let mut names: BTreeSet<&str> = secret::credential_names().collect();
+    password_names(rules, &mut names);
+    move |path| match rule_at(rules, path) {
+        Some(rule) => secret::is_secret(path, rule.kind),
+        None => names.contains(secret::key_name(path)),
+    }
 }
 
-/// The type of the rule a dotted path (with `[n]` items) reaches.
-fn kind_at(rules: &Rules, path: &str) -> Option<Kind> {
+/// The names of every `type: password` property in `rules`, at any depth
+/// (an array's items or an `additionalProperties` rule has no name).
+fn password_names<'a>(rules: &'a Rules, names: &mut BTreeSet<&'a str>) {
+    fn walk<'a>(rule: &'a Rule, names: &mut BTreeSet<&'a str>) {
+        if let Some(properties) = &rule.properties {
+            password_names(properties, names);
+        }
+        if let Some(items) = &rule.items {
+            walk(items, names);
+        }
+        if let Some(Additional::Rule(other)) = &rule.additional_properties {
+            walk(other, names);
+        }
+    }
+    for (name, rule) in rules {
+        if rule.kind == Some(Kind::Password) {
+            names.insert(name);
+        }
+        walk(rule, names);
+    }
+}
+
+/// The rule a dotted path (with `[n]` items) reaches, if the schema
+/// reaches it.
+fn rule_at<'a>(rules: &'a Rules, path: &str) -> Option<&'a Rule> {
     let mut properties = Some(rules);
     let mut additional: Option<&Additional> = None;
     let mut rule: Option<&Rule> = None;
@@ -153,7 +185,7 @@ fn kind_at(rules: &Rules, path: &str) -> Option<Kind> {
         properties = rule.and_then(|r| r.properties.as_ref());
         additional = rule.and_then(|r| r.additional_properties.as_ref());
     }
-    rule.and_then(|r| r.kind)
+    rule
 }
 
 /// The type validators and the validator each stands for (sb-go's
@@ -1366,7 +1398,7 @@ mod tests {
     fn secret_paths_follow_the_schema() {
         let rules = schema::parse(
             "s.schema.yml",
-            "user:\n  type: object\n  properties:\n    pass: {type: password}\n    name: {type: string}\nlist:\n  type: array\n  items:\n    type: object\n    properties:\n      key: {type: password}\nmore:\n  type: object\n  additionalProperties: {type: password}\n",
+            "user:\n  type: object\n  properties:\n    pass: {type: password}\n    name: {type: string}\nlist:\n  type: array\n  items:\n    type: object\n    properties:\n      key: {type: password}\nmore:\n  type: object\n  additionalProperties: {type: password}\nother:\n  type: object\n  properties:\n    pass: {type: string}\nopen:\n  type: object\n  additionalProperties:\n    type: object\n    properties:\n      deep: {type: password}\n",
         )
         .expect("schema");
         let secret = secret_paths(&rules);
@@ -1376,5 +1408,14 @@ mod tests {
         assert!(secret("more.anything"));
         assert!(secret("dockerhub.token"));
         assert!(!secret("nothing.here"));
+        // Off the schema, by the key's name (config-L2).
+        assert!(secret("user[0].pass"));
+        assert!(secret("user.extra.key"));
+        assert!(secret("anywhere[2].token"));
+        assert!(secret("pass"));
+        assert!(!secret("user[0].name"));
+        assert!(secret("elsewhere[0].deep"));
+        // On the schema, its type decides: a string named `pass` shows.
+        assert!(!secret("other.pass"));
     }
 }

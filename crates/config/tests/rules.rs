@@ -229,3 +229,29 @@ fn values_under_a_secret_field_are_redacted() {
         ["accounts.yml:3:7: user.pass[0]: cannot decode !!str `[REDACTED]` as a !!bool"]
     );
 }
+
+/// A secret key in a structure the schema doesn't expect (a list where
+/// `user` is a mapping) hides its value too (config-L2).
+#[test]
+fn a_secret_key_in_a_misplaced_list_is_redacted() {
+    let rules =
+        schema::load(&fixture("saltbox-schemas/accounts.schema.yml"), "schema").expect("schema");
+    let root = sb_config::parse::parse(
+        "accounts.yml",
+        "user:\n  - pass: !!int s3cret\ncloudflare:\n  extra:\n    api: !!int s3cret-key\n",
+    )
+    .expect("parses");
+    let issues: Vec<String> =
+        sb_config::tree::build("accounts.yml", &root, &rules::secret_paths(&rules))
+            .expect_err("fails")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+    assert_eq!(
+        issues,
+        [
+            "accounts.yml:2:11: user[0].pass: cannot decode !!str `[REDACTED]` as a !!int",
+            "accounts.yml:5:10: cloudflare.extra.api: cannot decode !!str `[REDACTED]` as a !!int",
+        ]
+    );
+}

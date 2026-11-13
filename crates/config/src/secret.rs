@@ -21,6 +21,22 @@ pub fn is_secret(path: &str, kind: Option<Kind>) -> bool {
     kind == Some(Kind::Password) || SECRET_PATHS.contains(&path)
 }
 
+/// The key names of the credential paths (`api`, `scoped_token`,
+/// `token`), secret wherever they sit off the schema (`rules::secret_paths`).
+pub(crate) fn credential_names() -> impl Iterator<Item = &'static str> {
+    SECRET_PATHS
+        .iter()
+        .filter_map(|path| path.rsplit('.').next())
+}
+
+/// The key a dotted path ends in, without its `[n]` items: `pass` for
+/// `user[0].pass[1]`.
+#[must_use]
+pub(crate) fn key_name(path: &str) -> &str {
+    let last = path.rsplit('.').next().unwrap_or(path);
+    last.split('[').next().unwrap_or(last)
+}
+
 /// `text` as a message may show it: `[REDACTED]` for a secret.
 #[must_use]
 pub fn shown(text: &str, secret: bool) -> String {
@@ -79,6 +95,15 @@ mod tests {
         assert!(!is_secret("user.name", Some(Kind::String)));
         assert!(!is_secret("dockerhub.user", Some(Kind::String)));
         assert!(!is_secret("cloudflare.email", None));
+    }
+
+    #[test]
+    fn the_key_name_is_the_last_key_without_items() {
+        assert_eq!(key_name("user[0].pass[1]"), "pass");
+        assert_eq!(key_name("pass"), "pass");
+        assert_eq!(key_name("a.b"), "b");
+        let names: Vec<_> = credential_names().collect();
+        assert_eq!(names, ["api", "scoped_token", "token"]);
     }
 
     #[test]
