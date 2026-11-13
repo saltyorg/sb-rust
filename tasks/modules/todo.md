@@ -1225,14 +1225,14 @@ subcommands, the target checks, the editor choice, exec's `attached`,
 exit codes, the log record; fake-editor tests through the binary.
 
 **Acceptance criteria:**
-- [ ] Each subcommand opens its file in the chosen editor (`VISUAL`,
+- [x] Each subcommand opens its file in the chosen editor (`VISUAL`,
       `EDITOR`, the spec's fallback).
-- [ ] The target checks refuse what the spec refuses.
-- [ ] Exit codes and the run-log record as the spec says.
+- [x] The target checks refuse what the spec refuses.
+- [x] Exit codes and the run-log record as the spec says.
 
 **Verification:**
-- [ ] `cargo test -p sb`; `crates/sb/tests/edit.rs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb`; `crates/sb/tests/edit.rs`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M48 (lane order)
 **Files:** `crates/sb/src/{main.rs,edit.rs}`, `crates/sb/tests/edit.rs`
@@ -2168,7 +2168,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       runs under load in M64's review and passed on a rerun. Give it a
       bound that holds under load, as c06f497 did for exec's PTY tests.
 
-- [ ] **A byte order mark after the stream's start** (lane 3; cli-core's
+- [x] **A byte order mark after the stream's start** (lane 3; cli-core's
       `config/yaml.rs`). Found by 985b5e7's security audit, and older than
       it: sb's pre-pass and saphyr read a U+FEFF past the first character
       differently, so sb accepts files Ansible refuses (a second BOM before
@@ -2181,6 +2181,22 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       made 1 attempt instead of 3 once during M67's full run under load,
       and passed alone three times. Give its timing a bound that holds
       under load, as c06f497 did for exec.
+
+- [ ] **Mutation runs leak sb processes** (the gate; lane 3, next, while M50
+      waits for M26). A mutant that ignores signals outlives its test: the
+      timeout kills the test without its kill-on-drop cleanup, and the sb
+      it started under `script` runs on, orphaned, at about 90% CPU for
+      hours (19 found from lane 3's runs and 4 from lane 4's on
+      2026-11-13, all stopped by hand). This load is the likely cause of
+      the PTY timing failures. Make check.sh's mutation pass leave nothing
+      behind: run each pass so that every process it started ends with it
+      (a systemd scope ended after the pass, or a sweep of processes whose
+      executable lies in the pass's own temp copy), and test that a
+      signal-ignoring child is gone after the pass. A gate change: one
+      code-reviewer pass, and an ADR line in ADR-021's consequences.
+- [ ] **shlex reads an unquoted `#` word as a comment** (lane 3, with its
+      next tui-spec edit). go-shellquote didn't, so `EDITOR='vi #x'`
+      differs from sb-go. List it in the tui spec's Differences.
 
 ## Ready to start
 
