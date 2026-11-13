@@ -1173,7 +1173,10 @@ impl Field {
 }
 
 impl Record {
-    /// Where the entry is: a page before it starts from here.
+    /// Where the entry is: `Position::Before` or `Position::After` from it
+    /// is a page next to this entry. The page next to a whole page starts
+    /// from `Page::oldest_chosen` or `Page::newest_chosen` instead: those
+    /// step past the entries the page chose but couldn't show.
     #[must_use]
     pub fn cursor(&self) -> Cursor {
         self.cursor

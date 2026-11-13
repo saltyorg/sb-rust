@@ -9,9 +9,11 @@
 # DIR receives <release>-<variant>.journal and is created if missing; files
 # already there are replaced. Then:
 #
-#   systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% -p OOMPolicy=continue \
+#   systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
 #     cargo run -q -p sb-journal --features testing --example fuzz -- \
 #     --work DIR/work DIR/*.journal
+#
+# (no OOMPolicy=, which systemd 249 refuses for a scope: examples/fuzz.rs)
 #
 # Containers (sbj-seeds-<image>, or $SBJ_PREFIX-seeds-<image>) are removed
 # on exit. Needs Docker, and cross unless SBJ_BIN is set (example.sh

@@ -2399,12 +2399,22 @@ mod tests {
     /// them by realtime.
     #[test]
     fn the_follow_keeps_its_boot_table_current_as_files_grow() {
+        // The preads of the poll after the headers change: 11 for the
+        // headers and the new entries, which is all `Realtime` reads (it
+        // keeps no boot table); one more per file for its tail, read from
+        // the entry its header names (`TailCache`), and with
+        // `NewestTailEntryMachine` two more per file for the machine id.
+        // A tail found by walking the list instead reads more.
         let rules = [
-            (BootRule::NewestTail, [(1, 2), (2, 2), (2, 3)]),
-            (BootRule::NewestTailEntryMachine, [(1, 2), (2, 2), (2, 3)]),
-            (BootRule::Realtime, [(2, 2), (1, 2), (2, 3)]),
+            (BootRule::NewestTail, [(1, 2), (2, 2), (2, 3)], 13),
+            (
+                BootRule::NewestTailEntryMachine,
+                [(1, 2), (2, 2), (2, 3)],
+                17,
+            ),
+            (BootRule::Realtime, [(2, 2), (1, 2), (2, 3)], 11),
         ];
-        for (rule, want) in rules {
+        for (rule, want, preads) in rules {
             let dir = tempfile::tempdir().expect("dir");
             let a = dir.path().join("a.journal");
             let b = dir.path().join("b.journal");
@@ -2416,6 +2426,7 @@ mod tests {
             assert!(f.poll(&[]).is_empty());
             set_tail(&a, a_entries.len(), 2);
             set_tail(&b, b_entries.len(), 3);
+            let read = f.counts().preads;
             let got: Vec<(u8, u64)> = f
                 .poll(&[])
                 .iter()
@@ -2423,6 +2434,9 @@ mod tests {
                 .collect();
             assert_eq!(got, want, "{rule:?}");
             assert!(f.errors.is_empty(), "{:?}", f.errors);
+            // Headers changed: each tail read from the entry its header
+            // names (above).
+            assert_eq!(f.counts().preads - read, preads, "{rule:?}");
             // Headers unchanged: one header read per file, no tail read
             // again (`TailCache`).
             let read = f.counts().preads;

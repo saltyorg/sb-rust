@@ -60,7 +60,11 @@
 //!   `remove_file_real`): a group whose seek fails (an unreadable extra,
 //!   the system's error) is left out and the other groups still seek; a
 //!   file whose landing can't be read seeks again in the second step; an
-//!   entry the forward walk can't read is skipped;
+//!   entry the forward walk can't read is skipped. A seek that bisects
+//!   onto an array item naming a DATA object, not an entry, fails (a
+//!   cursor just past the item seeks so): the page shows nothing of that
+//!   file, as journalctl shows nothing after such a cursor on every
+//!   release, and sb reports the damage (Difference 19);
 //! - an entry or array sd-journal's `check_object` refuses and sb doesn't
 //!   (a realtime or monotonic time out of range, a null boot id, an array
 //!   of no items), or the other way (an entry over `ENTRY_SIZE_MAX`), cuts

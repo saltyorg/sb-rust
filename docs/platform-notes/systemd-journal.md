@@ -191,6 +191,25 @@ two ways:
 - **The coredump term of `-u` on the local journal** (same runs): with
   the `systemd-coredump` package installed, 259.9 takes coredump
   entries of that user's uid or root's; 249 and 255 take root's only.
+- **A damaged entry-array item** (Checkpoint B of the hardening plan,
+  2026-11-13; journalctl 249.11, 255.4 and 259.9 from the releases'
+  `systemd` packages, in fresh `ubuntu:22.04`, `:24.04` and `:26.04`
+  containers). A 300-entry file written by systemd-journal-remote 249
+  (crates/journal/tests/seeds.sh's `default` variant) had item 13 of the
+  middle of its five main entry arrays (26 items) set to the offset of
+  a DATA object, the array's first entry's first item. Read with
+  `journalctl --file F -o json --no-pager`:
+  - `--after-cursor` the entry after the damaged slot (seqnum 0x1b):
+    no entry and no message, exit 0, on all three;
+  - `--after-cursor` the entry before it (0x19): 273 entries on 249,
+    274 on 255 and 259; the whole file: 298 on 249, 299 on 255 and 259;
+  - `-n 10` and `-n 100` print 10 and 100 entries; `-n 500` prints
+    none, on all three.
+
+  sb-journal's comparison CLI on the same file: no entry after 0x1b
+  (with "object ... is type 1, wanted 3" reported), 274 after 0x19, and
+  a tail of 286 with that error and "entry array ... is out of order"
+  (Difference 19).
 - **The varlink API:** v260 and later serve
   `io.systemd.JournalAccess.GetEntries`, with no cursor; v262 adds
   `follow`. It is not available on 22.04 to 26.04.

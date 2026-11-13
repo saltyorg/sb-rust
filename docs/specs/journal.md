@@ -527,13 +527,28 @@ Only on corrupt, live or foreign files:
     matrix's runs: docs/platform-notes/systemd-journal.md.
 19. **A forward page on a corrupt file goes on where journalctl stops**
     (crates/journal/src/forward.rs lists the departures):
-    - an error in the seek or the walk is reported and the page goes on,
-      where journalctl drops the file;
+    - an error in the seek or the walk is reported and the page goes on
+      with the other groups and files, where journalctl drops the file;
     - that includes a zero first item in the array a walk resumes in
       (as Difference 8);
     - systemd's `check_object` and sb's object checks don't refuse
       quite the same corrupt objects, so a bisect can be cut short in
-      one and not the other.
+      one and not the other;
+    - a forward page whose seek bisects onto a damaged entry-array item
+      (one naming a DATA object, not an entry), as one from a cursor
+      just past the item does, shows nothing from that file on every
+      release, as journalctl 249, 255 and 259 show nothing after such a
+      cursor; sb reports the damage ("object ... is type 1, wanted 3"),
+      journalctl says nothing. In both layouts:
+      `a_forward_page_past_a_damaged_item_shows_nothing_and_reports_it`
+      (walk.rs);
+    - on such a file sb's tail can show more than journalctl's `-n`: it
+      walks back past the damaged item and reports it. On a 300-entry
+      file written by 249 and damaged so, `-n 10` and `-n 100` showed
+      as many entries as sb on all three releases, while `-n 500`
+      showed none and sb's tail 286, with two errors reported
+      (docs/platform-notes/systemd-journal.md, "A damaged entry-array
+      item").
 20. **Forward pages over two boots whose clocks overlap follow sb's
     order** (24.04 and 26.04, decision 11). journalctl 255 and 259 seek
     each file by one key but merge by the boot table, so where a boot's
@@ -691,9 +706,17 @@ Check:   scripts/check.sh fast | task | full
 Test:    cargo test -p sb-journal
 Matrix:  crates/journal/tests/compare.sh [RELEASE]...   (compat.sh, follow.sh, stress.sh beside it)
 Seeds:   crates/journal/tests/seeds.sh DIR   (the fuzz seeds, regenerated for each run, never committed)
-Fuzz:    systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% -p OOMPolicy=continue cargo run -q -p sb-journal --features testing --example fuzz -- --work DIR/work DIR/*.journal
+Fuzz:    systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% cargo run -q -p sb-journal --features testing --example fuzz -- --work DIR/work DIR/*.journal
 CI:      .github/workflows/journal-matrix.yml (daily; local until pushed)
 ```
+
+The fuzz command runs as it is on systemd 249, 255 and 259. Its scope
+sets no `OOMPolicy=`: systemd 249 (22.04) refuses that for a scope
+("Unknown assignment"; 249's systemd.scope(5) has no such setting, and
+systemd's NEWS for 253 says "Scope units now support OOMPolicy="). The
+harness doesn't need it: its 3 GiB address-space limit stops it below
+the scope's 4G `MemoryMax`, so the kernel's OOM killer, and the policy
+with it, doesn't come into play (examples/fuzz.rs).
 
 ## Project Structure
 

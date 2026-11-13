@@ -2079,6 +2079,66 @@ mod tests {
         assert_eq!(tail, strs(&["m0", "m1", "m3", "m4", "m5"]));
     }
 
+    /// Difference 19, a damaged array: a chain of three arrays, `[e0, e1]`,
+    /// `[e2, e3, junk, e4, e5]` and `[e6, e7]`, the junk item at the
+    /// middle array's midpoint naming `m0`'s DATA object (as Checkpoint B's
+    /// probe damaged a 249-written file). A forward page from a cursor past
+    /// it, e4's or e5's, bisects onto the junk item: sb reports it and shows
+    /// nothing, as journalctl 249, 255 and 259 show nothing after such a
+    /// cursor (they leave the file out). The tail walks back past it and
+    /// reports it; the junk offset lies below every entry's, so the
+    /// middle array is out of order there and left (e2 and e3 with it).
+    #[test]
+    fn a_forward_page_past_a_damaged_item_shows_nothing_and_reports_it() {
+        each_format(a_forward_page_past_a_damaged_item_shows_nothing_and_reports_it_in);
+    }
+
+    fn a_forward_page_past_a_damaged_item_shows_nothing_and_reports_it_in(format: Format) {
+        let mut c = Crafted::new_in(format);
+        c.hash_table(7);
+        let arrays = [c.array(&[], 2, 0), c.array(&[], 5, 0), c.array(&[], 2, 0)];
+        let mut e = Vec::new();
+        let mut junk = 0;
+        for i in 0..8u64 {
+            let m = c.data(format!("MESSAGE=m{i}").as_bytes());
+            if i == 0 {
+                junk = m;
+            }
+            e.push(c.entry(i + 1, &[m]));
+        }
+        c.set(arrays[0] + A_NEXT, arrays[1]);
+        c.set(arrays[1] + A_NEXT, arrays[2]);
+        let items: [&[u64]; 3] = [
+            &[e[0], e[1]],
+            &[e[2], e[3], junk, e[4], e[5]],
+            &[e[6], e[7]],
+        ];
+        for (&array, items) in arrays.iter().zip(items) {
+            for (k, &item) in items.iter().enumerate() {
+                c.set_array_item(array, k as u64, item);
+            }
+        }
+        // Nine items: the count covers the junk one.
+        c.set(H_N_ENTRIES, 9);
+        c.set(H_ENTRY_ARRAY_OFFSET, arrays[0]);
+        let t = c.file();
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        assert_eq!(messages(&all), ["m0", "m1", "m4", "m5", "m6", "m7"]);
+        let errors = texts(&j.errors);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].contains("is type 1, wanted 3"), "{errors:?}");
+        assert!(errors[1].contains("is out of order"), "{errors:?}");
+        for past in &all[2..4] {
+            let mut j = one(t.path());
+            let pg = j.page(&[], 10, &Position::After(past.cursor()));
+            assert_eq!(messages(&pg.records), [""; 0], "{:?}", past.cursor());
+            let errors = texts(&j.errors);
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(errors[0].contains("is type 1, wanted 3"), "{errors:?}");
+        }
+    }
+
     /// An entry journald was cut off from linking into its DATA objects'
     /// lists, then wrote again whole (Difference 12): it carries `U=x`
     /// among its items but isn't in that object's list, so the tail

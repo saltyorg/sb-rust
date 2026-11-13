@@ -18,10 +18,21 @@
 //!
 //! ```text
 //! crates/journal/tests/seeds.sh DIR
-//! systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% -p OOMPolicy=continue \
+//! systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
 //!   cargo run -q -p sb-journal --features testing --example fuzz -- \
 //!   --work DIR/work DIR/*.journal
 //! ```
+//!
+//! The same command runs on systemd 249, 255 and 259: the scope sets no
+//! `OOMPolicy=`, which 249 refuses for a scope ("Unknown assignment").
+//! 249's systemd.scope(5) has no such setting
+//! (<https://www.freedesktop.org/software/systemd/man/249/systemd.scope.html>),
+//! 255's and 259's have it
+//! (<https://www.freedesktop.org/software/systemd/man/255/systemd.scope.html#OOMPolicy=>),
+//! and systemd's NEWS for 253 adds it ("Scope units now support" it).
+//! The harness doesn't need it: its 3 GiB address-space limit stops it
+//! below the scope's 4G `MemoryMax`, so the kernel's OOM killer, and the
+//! policy with it, doesn't come into play.
 //!
 //! Case `i` of run seed `s` is the same file on every run:
 //! `--seed s --start i --cases 1 --keep DIR` writes it out (such a run
