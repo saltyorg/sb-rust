@@ -250,6 +250,20 @@ Answers at the plan's approval (2026-11-11):
     for as many rows as the wrapping needs (the rest of Task 21). A
     collapsed run that holds a failure says so: "… N finished, M
     failed", in the warning role (Task 57).
+36. **The ratchet rows wait for the full functionality** (the
+    maintainer, 2026-11-13, at Checkpoint B). The rows stay as they are
+    until sb has its full functionality; then they are re-measured and
+    the maintainer decides how far they can be cut down. Checkpoint B's
+    measurement on this host (coverage 98.63% lines and 98.119%
+    functions, size 11,843,920 bytes, `sb --help` 2.30 ms, which the old
+    tree also times here) is in tasks/todo.md. The fixed limits (the 10
+    ms startup budget, the size ceiling) still gate every change.
+    Checkpoint C's ratchet criterion moves with this.
+37. **Checkpoint B's fixes are Task 58** (decided from the
+    checkpoint's findings): `Record::cursor`'s doc, the fuzz command on a
+    249 host, Difference 19 for a damaged array, the tail cache's pread
+    test. The reviewer's optional API notes wait for the viewer spec,
+    the API's first caller (decision 18).
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -509,7 +523,8 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 36: a page can always be paged past
 - [x] Task 37: a forward page on the cursor's own boot
 - [x] Task 38: forward walks over damaged entry arrays
-- [ ] Checkpoint B: reader
+- [x] Checkpoint B: reader
+- [ ] Task 58: Checkpoint B's fixes (decision 37)
 
 ### Phase 4 (lane 3): config
 - [x] Task 42: YAML: the corpus and the options
@@ -529,7 +544,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ### Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes
-- [ ] Size, startup and coverage are re-measured, with a ratchet ADR
+- [ ] Size, startup and coverage: deferred to the full functionality (decision 36)
 - [ ] The maintainer's sitting: the proposed declines confirmed or
       overruled (an overruled one becomes a fix task first), and the
       unattended calls kept or overruled

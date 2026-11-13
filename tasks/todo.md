@@ -1094,17 +1094,57 @@ where the backward walk goes on (file-M1; confirmed).
 **Scope:** M
 
 ## Checkpoint B: reader
-- [ ] The matrix (compare, compat, follow, stress) is green on 22.04,
+- [x] The matrix (compare, compat, follow, stress) is green on 22.04,
       24.04 and 26.04, and the fuzz harness passes, on the final tree.
-- [ ] follow.sh's handover scenario passed on each release (Task 33):
+- [x] follow.sh's handover scenario passed on each release (Task 33):
       a page and its follow gave every entry once.
-- [ ] Size, startup and coverage are re-measured as `check.sh` runs,
+- [x] Size, startup and coverage are re-measured as `check.sh` runs,
       and the ratchet rows updated on the main checkout, with a ratchet
-      ADR if a value passes its tolerance.
-- [ ] The new API is reviewed: `Page::oldest_chosen` and
+      ADR if a value passes its tolerance. Re-measured 2026-11-13 on
+      964f963: lines 98.63%, functions 98.119%, size 11,843,920 bytes,
+      `sb --help` 2.30 ms (85bc4f0 times the same on this host). The
+      rows' update waits for the full functionality (decision 36).
+- [x] The new API is reviewed: `Page::oldest_chosen` and
       `Page::newest_chosen` in place (decision 10), and what the
       handover changed in rustdoc or types (Tasks 33 and 34).
-- [ ] The message to the maintainer names the limit Task 34 lists.
+- [x] The message to the maintainer names the limit Task 34 lists.
+- Record (2026-11-13, on 964f963): compare, compat, follow and stress
+  passed on 22.04, 24.04 and 26.04 with only listed Differences (1, 12,
+  18, 20, 21); the handover scenario lost and doubled nothing on each;
+  the fuzz harness passed (9000 cases over 8 seeds). The API review
+  found one doc error (Task 58). The limit Task 34 lists is the journal
+  spec's "The limit that remains": an entry appended to a file after the
+  page read that file's header is lost only if a flush removes the file
+  before the follow opens it.
+
+## Task 58: Checkpoint B's fixes
+
+**Description:** What Checkpoint B found in the reader (plan decision 37).
+
+**Acceptance criteria:**
+- [ ] `Record::cursor`'s doc (crates/journal/src/lib.rs) no longer says a
+      page before a record starts from it; it points at `Page`'s chosen
+      cursors, as Task 36 made them.
+- [ ] The journal spec's fuzz command (and fuzz.rs's header) runs on a
+      22.04 host: systemd 249 has no `OOMPolicy` for scopes ("Unknown
+      assignment"). The form that works on 249, 255 and 259 is used, or
+      the property is given only where it is known.
+- [ ] Difference 19 (and forward.rs's departures) say that a forward page
+      from a cursor past a damaged array item shows nothing on every
+      release, as journalctl does, and that sb reports the damage; and
+      that sb's tail can show more of a damaged file than journalctl's
+      `-n`. A crafted test pins the forward case in both layouts.
+- [ ] A test catches the mutant "delete field tail in TailCache::update"
+      (follow.rs): the pread count of the poll after a changed header.
+
+**Verification:**
+- [ ] `cargo test -p sb-journal`; the fuzz command run as documented on
+      this 22.04 host; `scripts/check.sh full <base>`.
+- [ ] Review: one code-reviewer pass on the task's diff.
+
+**Dependencies:** Checkpoint B
+**Files:** `crates/journal/src/{lib.rs,follow.rs,forward.rs}`, `crates/journal/examples/fuzz.rs`, `docs/specs/journal.md`, a crafted-file test
+**Scope:** S
 
 ## Task 42: YAML: the corpus and the options
 
@@ -1407,8 +1447,9 @@ the gate). Lands alone on `rust-toolchain.toml` and `Cargo.toml`.
 ## Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes.
-- [ ] Size, startup and coverage are re-measured, the ratchet rows
-      updated, with a ratchet ADR.
+- [ ] Size, startup and coverage: deferred until sb has its full
+      functionality (decision 36); then re-measured, and the maintainer
+      decides how far the ratchet rows can be cut down.
 - [ ] The maintainer's sitting: the proposed declines confirmed or
       overruled (an overruled one becomes a fix task here, before the
       archive), and the unattended calls kept or overruled.
@@ -1458,10 +1499,10 @@ not here.)
 
 ## Follow-ups from the per-test timeout (Task 56)
 
-- [ ] A missed mutant outside any task's diff: `crates/journal/src/follow.rs`,
+- [x] A missed mutant outside any task's diff: `crates/journal/src/follow.rs`,
       "delete field tail in TailCache::update", missed under both runners
       in Task 56's Task 38 runs. A test gap in the follow's tail cache; for
-      Checkpoint B to weigh.
+      Checkpoint B to weigh. Weighed: Task 58.
 
 ## Follow-ups from docker start, stop and restart
 
