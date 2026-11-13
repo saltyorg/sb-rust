@@ -235,9 +235,9 @@ pub fn compare(expected: &str, actual: &str) -> Result<Comparison, ToolError> {
 /// them: `more_older=B more_newer=B`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct More {
-    /// A matching entry is older than the page's records.
+    /// A matching entry is older than the page's oldest chosen entry.
     pub older: bool,
-    /// A matching entry is newer than the page's records.
+    /// A matching entry is newer than the page's newest chosen entry.
     pub newer: bool,
 }
 

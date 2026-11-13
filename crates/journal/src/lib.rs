@@ -418,23 +418,38 @@ pub enum Position {
 /// Built by `Journal::page` only: more fields can come.
 ///
 /// `more_older` and `more_newer` are exact for the files as the page read
-/// them: whether a *matching* entry lies beyond the records shown, older or
-/// newer, even when the next entry in the file doesn't match. One the page
-/// chose but couldn't show (unreadable, or left out by a limit, with its
-/// error in `errors`) counts: a page from there meets it again. With no
-/// record shown, they say whether a matching entry lies older or newer than
-/// the position (for `Tail`, older is whether anything matched at all).
-/// Entries written after the page are not known to it: a follow from `end`
-/// reads them.
+/// them: whether a *matching* entry lies beyond the entries it chose and
+/// reached (`oldest_chosen` to `newest_chosen`), older or newer, even when
+/// the next entry in the file doesn't match. One the output limit left out
+/// counts, with its error in `errors`: a page from `oldest_chosen` or
+/// `newest_chosen` meets it again. One the page reached but couldn't show
+/// (unreadable, or alone over the limit) is reported in `errors` and
+/// doesn't count: a page from `oldest_chosen` or `newest_chosen` steps
+/// past it, so a page of entries that can't be shown can still be paged
+/// past, and a tail whose newest entry can't be shown isn't `more_newer`. With nothing chosen, they say
+/// whether a matching entry lies older or newer than the position (for
+/// `Tail`, older is whether anything matched at all). Entries written after
+/// the page are not known to it: a follow from `end` reads them.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Page {
     /// The entries, oldest first.
     pub records: Vec<Record>,
-    /// A matching entry is older than the records shown.
+    /// A matching entry is older than `oldest_chosen` (see above).
     pub more_older: bool,
-    /// A matching entry is newer than the records shown.
+    /// A matching entry is newer than `newest_chosen` (see above).
     pub more_newer: bool,
+    /// The oldest entry the page chose and reached, shown or not.
+    ///
+    /// An unreadable one, or one alone over the limit, is reported in
+    /// `errors`; `None` when the page chose none. `Position::Before` from
+    /// it is the page before this one, past the entries it couldn't show.
+    pub oldest_chosen: Option<Cursor>,
+    /// The newest entry the page chose and reached, shown or not.
+    ///
+    /// `None` when the page chose none. `Position::After` from it is the
+    /// page after this one, past the entries it couldn't show.
+    pub newest_chosen: Option<Cursor>,
     /// Where the page ended, for a follow to start from (journal spec,
     /// "Starting a follow"); it exists even when the page matched nothing.
     pub end: PageEnd,
@@ -736,8 +751,8 @@ impl Journal {
     /// journalctl 259's seek lands (decision 10): a bisect per value of the
     /// query, O(log n) preads, at any depth. It reads its entries oldest
     /// first, so its limits leave out the newer end (`OutputLimitNewer`,
-    /// `HeldLimitNewer`), and the next `After` from the last record shown
-    /// goes on from there. On 24.04 and 26.04 a file of more than one boot,
+    /// `HeldLimitNewer`), and the next `After` from the page's
+    /// `newest_chosen` goes on from there. On 24.04 and 26.04 a file of more than one boot,
     /// or of one the boot table orders against the cursor's, is sought per
     /// boot, so a forward page is the entries after the cursor in the
     /// release's order, each once, even where two boots' clocks overlap;
@@ -793,6 +808,8 @@ impl Journal {
             records: paged.records,
             more_older: paged.more_older,
             more_newer: paged.more_newer,
+            oldest_chosen: paged.oldest_chosen,
+            newest_chosen: paged.newest_chosen,
             end,
             errors,
         }

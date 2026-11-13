@@ -213,7 +213,8 @@ pub(crate) struct Bounds {
     pub(crate) held: usize,
 }
 
-/// A page's records and whether matching entries lie beyond them.
+/// A page's records, the chosen entries it reached, and whether matching
+/// entries lie beyond those.
 #[derive(Debug)]
 pub(crate) struct Paged {
     pub(crate) records: Vec<Record>,
@@ -224,6 +225,10 @@ pub(crate) struct Paged {
     pub(crate) counts: Vec<u64>,
     /// Each record's file, as an index into the page's files.
     pub(crate) files: Vec<usize>,
+    /// The oldest and newest chosen entries the page read, shown or not
+    /// (`Page::oldest_chosen`).
+    pub(crate) oldest_chosen: Option<Cursor>,
+    pub(crate) newest_chosen: Option<Cursor>,
 }
 
 /// The `n` matching entries at `at`, oldest first. `groups` empty means
@@ -239,10 +244,11 @@ pub(crate) struct Paged {
 ///   `more_older`, whether a matching entry lies before where the page
 ///   started.
 ///
-/// Either flag is also set when the page chose an entry it couldn't show
-/// on that side of the records shown (`decode`). Every comparison, the
-/// merges' and `Before`'s against its cursor, orders boots by `boots`
-/// (`Cursor::order`).
+/// Either flag is also set when the output limit left a chosen entry out
+/// on that side of the entries reached (`Reached`); an entry reached but
+/// not shown (unreadable, or alone over the limit) doesn't set it. Every
+/// comparison, the merges' and `Before`'s against its cursor, orders boots
+/// by `boots` (`Cursor::order`).
 pub(crate) fn page(
     files: &[JournalFile],
     groups: &[Group],
@@ -279,13 +285,15 @@ pub(crate) fn page(
             (picked, older, newer, End::Oldest, fwd.counts)
         }
     };
-    let (records, record_files, left) = decode(files, &picked, from, bounds.payload, errors);
+    let (records, record_files, reached) = decode(files, &picked, from, bounds.payload, errors);
     Paged {
         records,
-        more_older: more_older || left.older,
-        more_newer: more_newer || left.newer,
+        more_older: more_older || reached.older,
+        more_newer: more_newer || reached.newer,
         counts,
         files: record_files,
+        oldest_chosen: reached.oldest,
+        newest_chosen: reached.newest,
     }
 }
 
@@ -389,27 +397,27 @@ where
 /// listing it. An entry that can't be read is reported and skipped, as
 /// sd-journal skips an entry it can't read (`output_json` on -EBADMSG). The
 /// first entry that doesn't fit ends the output, so it has no gap: a page
-/// back from the first entry shown (a page forward from the last) goes on
-/// from there. The entries left out, at the far end, are reported. An entry
+/// back from the oldest chosen entry reached (a page forward from the
+/// newest, `Reached`) goes on from there. The entries left out, at the far end, are reported. An entry
 /// that doesn't fit the whole limit, read before anything else, is reported
 /// and skipped instead (Difference 5): stopping there would show nothing at
 /// all.
 ///
-/// Also returns each record's file (an index into `files`), and which
-/// sides of the records shown hold a chosen entry that
-/// isn't shown (`Left`): all of them, both sides, when none is shown.
+/// Also returns each record's file (an index into `files`), and the
+/// chosen entries the page reached (`Reached`).
 fn decode(
     files: &[JournalFile],
     picked: &[Candidate],
     from: End,
     payload_limit: usize,
     errors: &mut ReadErrors,
-) -> (Vec<Record>, Vec<usize>, Left) {
+) -> (Vec<Record>, Vec<usize>, Reached) {
     let mut out = Vec::with_capacity(picked.len());
     // Each record's file, as an index into `files`.
     let mut from_files = Vec::with_capacity(picked.len());
-    // The oldest and newest chosen entries shown, as indexes into `picked`.
-    let mut shown: Option<(usize, usize)> = None;
+    // The oldest and newest chosen entries reached (shown, or skipped as
+    // unreadable or too large), as indexes into `picked`.
+    let mut reached: Option<(usize, usize)> = None;
     // Indexes into `picked` (oldest first), in reading order.
     // <https://docs.rs/itertools/0.14.0/itertools/enum.Either.html>: an
     // iterator of either range, unboxed.
@@ -426,9 +434,13 @@ fn decode(
         let read = f
             .entry(c.offset)
             .and_then(|e| record(f, &e, &mut payloads, c.file, &mut left));
+        // Each arm but the limit's (which leaves this entry and the rest
+        // out) reaches the entry: shown, or skipped and reported.
+        if !matches!(&read, Err(err) if err.is_over_limit() && !whole) {
+            reached = Some(reached.map_or((at, at), |(lo, hi)| (lo.min(at), hi.max(at))));
+        }
         match read {
             Ok(r) => {
-                shown = Some(shown.map_or((at, at), |(lo, hi)| (lo.min(at), hi.max(at))));
                 out.push(r);
                 from_files.push(c.file);
             }
@@ -461,17 +473,15 @@ fn decode(
         out.reverse();
         from_files.reverse();
     }
-    let left = match shown {
-        Some((oldest, newest)) => Left {
-            older: oldest > 0,
-            newer: newest + 1 < picked.len(),
-        },
-        None => Left {
-            older: !picked.is_empty(),
-            newer: !picked.is_empty(),
-        },
-    };
-    (out, from_files, left)
+    // The first entry read has the whole limit, so it is reached whenever
+    // one is chosen: `None` only for a page that chose nothing.
+    let reached = reached.map_or_else(Reached::default, |(oldest, newest)| Reached {
+        older: oldest > 0,
+        newer: newest + 1 < picked.len(),
+        oldest: Some(picked[oldest].location),
+        newest: Some(picked[newest].location),
+    });
+    (out, from_files, reached)
 }
 
 /// The end of its chosen entries a page reads first: the one it pages
@@ -482,12 +492,18 @@ enum End {
     Oldest,
 }
 
-/// Whether chosen entries were left unshown older and newer than the
-/// records shown.
-#[derive(Debug, Clone, Copy)]
-struct Left {
+/// The chosen entries a page reached: those it read, shown or skipped as
+/// unreadable or too large (reported), not those the output limit left
+/// out. Its oldest and newest, and whether chosen entries the limit left
+/// out lie older or newer than them. A page from those cursors steps past
+/// an entry that can't be shown, and meets the left-out ones again
+/// (page-M1, page-M2). All empty for a page that chose nothing.
+#[derive(Debug, Clone, Copy, Default)]
+struct Reached {
     older: bool,
     newer: bool,
+    oldest: Option<Cursor>,
+    newest: Option<Cursor>,
 }
 
 /// An entry a file's walk chose: its location for the merge, and where to
@@ -2377,9 +2393,11 @@ mod tests {
         assert!(j.errors.is_empty(), "{:?}", texts(&j.errors));
     }
 
-    /// Entries the page chose but couldn't show count as beyond it: the
-    /// output limit's left-out older entries, a newest entry too large to
-    /// show, and an unreadable one on a page that shows nothing.
+    /// Of the entries the page chose but couldn't show, the output limit's
+    /// left-out older ones count as beyond it, a page from there meets them
+    /// again; a newest entry too large to show, and an unreadable one on a
+    /// page that shows nothing, were reached and reported, and don't: the
+    /// page's chosen cursors step past them (page-M1, page-M2).
     #[test]
     fn entries_chosen_but_not_shown_set_the_flags() {
         each_format(entries_chosen_but_not_shown_set_the_flags_in);
@@ -2392,13 +2410,16 @@ mod tests {
         j.payload_limit = per_record_in(format, 3) + 5;
         let pg = j.page(&[], 10, &Position::Tail);
         assert_eq!(paged(&pg), (strs(&["m7", "m8", "m9"]), true, false));
+        // The left-out ones weren't reached: the oldest chosen is the
+        // oldest shown, so a page back from it meets them.
+        assert_eq!(pg.oldest_chosen, Some(pg.records[0].cursor()));
 
         let mut c = with_entries_in(format, 3, |c| vec![oversized(c, 0)]);
         let (t, _f) = c.write();
         let mut j = one(t.path());
         j.payload_limit = 1000;
         let pg = j.page(&[], 10, &Position::Tail);
-        assert_eq!(paged(&pg), (strs(&["m0", "m1", "m2"]), false, true));
+        assert_eq!(paged(&pg), (strs(&["m0", "m1", "m2"]), false, false));
 
         let (mut c, l) = crafted::journal_in(format, 1);
         c.set(l.messages[0] + O_SIZE, 8);
@@ -2406,9 +2427,88 @@ mod tests {
         let mut j = one(t.path());
         assert_eq!(
             paged(&j.page(&[], 10, &Position::Tail)),
-            (Vec::new(), true, true)
+            (Vec::new(), false, false)
         );
         assert_eq!(j.errors.shown.len(), 1, "{:?}", texts(&j.errors));
+    }
+
+    /// page-M1: a page whose chosen entries all fail to decode shows
+    /// nothing, but exposes the cursors of the oldest and newest it chose;
+    /// `Before` and `After` from them step past those entries.
+    #[test]
+    fn a_page_of_unreadable_entries_can_be_paged_past() {
+        each_format(a_page_of_unreadable_entries_can_be_paged_past_in);
+    }
+
+    fn a_page_of_unreadable_entries_can_be_paged_past_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 6);
+        let (t, _f) = c.write();
+        let all = one(t.path()).tail(&[], 10, None);
+        // m3 to m5 unreadable: their MESSAGE objects cut short.
+        for i in 3..6 {
+            c.set(l.messages[i] + O_SIZE, 8);
+        }
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let pg = j.page(&[], 3, &Position::Tail);
+        assert!(pg.records.is_empty());
+        assert_eq!(
+            (pg.oldest_chosen, pg.newest_chosen),
+            (Some(all[3].cursor()), Some(all[5].cursor()))
+        );
+        let back = j.page(&[], 3, &Position::Before(pg.oldest_chosen.expect("chosen")));
+        assert_eq!(paged(&back), (strs(&["m0", "m1", "m2"]), false, true));
+        let on = j.page(&[], 3, &Position::After(pg.newest_chosen.expect("chosen")));
+        assert_eq!(paged(&on), (Vec::new(), true, false));
+        assert_eq!(on.newest_chosen, None);
+        assert_eq!(j.errors.shown.len(), 3, "{:?}", texts(&j.errors));
+    }
+
+    /// page-M1 going forward: a forward page whose entries all fail to
+    /// decode goes on from its `newest_chosen`.
+    #[test]
+    fn a_forward_page_of_unreadable_entries_can_be_paged_past() {
+        each_format(a_forward_page_of_unreadable_entries_can_be_paged_past_in);
+    }
+
+    fn a_forward_page_of_unreadable_entries_can_be_paged_past_in(format: Format) {
+        let (mut c, l) = crafted::journal_in(format, 6);
+        let (t, _f) = c.write();
+        let all = one(t.path()).tail(&[], 10, None);
+        for i in 1..3 {
+            c.set(l.messages[i] + O_SIZE, 8);
+        }
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        let pg = j.page(&[], 2, &Position::After(all[0].cursor()));
+        assert!(pg.records.is_empty());
+        assert_eq!(
+            (pg.oldest_chosen, pg.newest_chosen),
+            (Some(all[1].cursor()), Some(all[2].cursor()))
+        );
+        let on = j.page(&[], 2, &Position::After(pg.newest_chosen.expect("chosen")));
+        assert_eq!(paged(&on), (strs(&["m3", "m4"]), true, true));
+    }
+
+    /// page-M2: at a tail whose newest entry can't be shown (too large),
+    /// `After(newest_chosen)` finds nothing newer, so a viewer reaches the
+    /// tail and can follow.
+    #[test]
+    fn after_the_newest_chosen_at_a_tail_it_cant_show_is_the_end() {
+        each_format(after_the_newest_chosen_at_a_tail_it_cant_show_is_the_end_in);
+    }
+
+    fn after_the_newest_chosen_at_a_tail_it_cant_show_is_the_end_in(format: Format) {
+        let mut c = with_entries_in(format, 3, |c| vec![oversized(c, 0)]);
+        let (t, _f) = c.write();
+        let mut j = one(t.path());
+        j.payload_limit = 1000;
+        let pg = j.page(&[], 10, &Position::Tail);
+        assert_eq!(messages(&pg.records), strs(&["m0", "m1", "m2"]));
+        let newest = pg.newest_chosen.expect("chosen");
+        assert_ne!(Some(newest), pg.records.last().map(Record::cursor));
+        let on = j.page(&[], 10, &Position::After(newest));
+        assert_eq!(paged(&on), (Vec::new(), true, false));
     }
 
     /// A forward page under the output limit keeps the entries next to the
@@ -2445,10 +2545,14 @@ mod tests {
                 per_record_in(format, 3) + 5
             )]
         );
+        // The left-out ones weren't reached: the newest chosen is the
+        // newest shown, so a page on from it meets them.
+        assert_eq!(pg.newest_chosen, Some(pg.records[2].cursor()));
         let next = j.page(&u_is_x(), 10, &Position::After(pg.records[2].cursor()));
         assert_eq!(messages(&next.records), ["m5", "m6", "m7"]);
         // An oldest entry alone over the whole limit is skipped, as the
-        // tail's newest is.
+        // tail's newest is, and isn't older than the page: it was reached
+        // and reported.
         let mut c = with_entries_in(format, 0, |c| {
             let m = c.data(b"MESSAGE=newer");
             vec![oversized(c, 0), vec![m]]
@@ -2459,7 +2563,7 @@ mod tests {
         before_all.seqnum = 0;
         j.payload_limit = 1000;
         let pg = j.page(&[], 10, &Position::After(before_all));
-        assert_eq!(paged(&pg), (strs(&["newer"]), true, false));
+        assert_eq!(paged(&pg), (strs(&["newer"]), false, false));
         assert!(matches!(
             j.errors.shown[0].kind(),
             ReadErrorKind::TooLarge { limit: 1000, .. }

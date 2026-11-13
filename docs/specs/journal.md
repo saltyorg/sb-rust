@@ -110,8 +110,20 @@ pub enum Position { Tail, Before(Cursor), After(Cursor) }
 
 pub struct Page {
     pub records: Vec<Record>,
+    /// Whether a matching entry lies beyond the entries the page chose and
+    /// reached, older or newer. One the output limit left out counts; one
+    /// reached but not shown (unreadable, or alone over the limit; in
+    /// `errors`) doesn't.
     pub more_older: bool,
     pub more_newer: bool,
+    /// The oldest and newest entries the page chose and reached, shown or
+    /// not; `None` when it chose none (decision 10 of the hardening plan).
+    /// `Before(oldest_chosen)` and `After(newest_chosen)` page past
+    /// entries that can't be shown: a page of them all still has a way
+    /// on, and a tail whose newest entry can't be shown isn't
+    /// `more_newer` (page-M1, page-M2).
+    pub oldest_chosen: Option<Cursor>,
+    pub newest_chosen: Option<Cursor>,
     /// Where the page ended, even when it matched nothing: each file's
     /// entry count and the newest entry examined (see "Starting a
     /// follow"). Opaque.
@@ -452,7 +464,11 @@ Limits by design:
    unreadable: a bisect stops at it, and a file's tail is the newest
    entry before it. journald writes at most 1024 fields an entry
    (`ENTRY_FIELD_COUNT_MAX`; UNVERIFIED here, from the audit), so only a
-   limit under about 24 KiB, or a crafted file, meets this.
+   limit under about 24 KiB, or a crafted file, meets this. Such an
+   entry at a page's edge, or an unreadable one, doesn't count as
+   beyond the page (`more_older`/`more_newer`), where journalctl, which
+   shows it, has an entry there: the page's `oldest_chosen` and
+   `newest_chosen` page past it (page-M1, page-M2).
 6. **xz decoding has a 64 MiB decoder-memory bound** (journald's xz
    dictionary is 1 MiB).
 7. **Unit names:** only "no dot → `.service`" mangling; other forms are
@@ -765,7 +781,8 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
    pinned. That includes:
    - a forward page check;
    - exact `more_older`/`more_newer`, matched against whether journalctl
-     has entries beyond the page;
+     has entries beyond the page (except past an edge entry sb can't
+     show, Difference 5);
    - writes between a page and its follow;
    - the coredump row.
 4. **The fuzz harness passes** with the bounds above, enforced by

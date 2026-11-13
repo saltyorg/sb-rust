@@ -13,7 +13,7 @@ use sb_host::journal::{
     PageEnd, Position, Query, Record, Release, Source, Uid, UnitName, Wake,
 };
 use sb_journal::testing::crafted::{
-    self, A_ITEMS, D_ENTRY_ARRAY, D_N_ENTRIES, H_ARENA_SIZE, H_N_ENTRIES,
+    self, A_ITEMS, D_ENTRY_ARRAY, D_N_ENTRIES, H_ARENA_SIZE, H_N_ENTRIES, O_SIZE,
 };
 
 /// Every crafted entry carries `U=x` (`crafted::journal`).
@@ -56,6 +56,38 @@ async fn page_reads_the_newest_entries_at_the_tail() {
     assert_eq!(messages(&page.records), ["m3", "m4"]);
     assert!(page.more_older && !page.more_newer, "{page:?}");
     assert!(page.errors.is_empty(), "{:?}", page.errors);
+}
+
+/// A tail whose newest entries can't be read shows none of them, and its
+/// chosen cursors (`Page::oldest_chosen`, `Page::newest_chosen`, through
+/// the re-export) page past them: before, to the readable ones; after, to
+/// the end.
+#[tokio::test]
+async fn a_page_of_unreadable_entries_is_paged_past_by_its_chosen_cursors() {
+    let (mut c, layout) = crafted::journal(5);
+    for &m in &layout.messages[3..] {
+        c.set(m + O_SIZE, 8);
+    }
+    let t = c.file();
+    let source = Source::Files(vec![t.path().to_path_buf()]);
+    let j = Arc::new(Journal::open(source, &release()).expect("opens"));
+    let tail = journal::page(
+        j.clone(),
+        every_entry(),
+        Position::Tail,
+        2,
+        Limits::default(),
+    )
+    .await;
+    assert!(tail.records.is_empty(), "{tail:?}");
+    assert!(tail.more_older && !tail.more_newer, "{tail:?}");
+    let (oldest, newest) = (tail.oldest_chosen, tail.newest_chosen);
+    let before = Position::Before(oldest.expect("chosen"));
+    let page = journal::page(j.clone(), every_entry(), before, 2, Limits::default()).await;
+    assert_eq!(messages(&page.records), ["m1", "m2"]);
+    let after = Position::After(newest.expect("chosen"));
+    let page = journal::page(j, every_entry(), after, 2, Limits::default()).await;
+    assert!(page.records.is_empty() && !page.more_newer, "{page:?}");
 }
 
 #[tokio::test]
