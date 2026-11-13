@@ -624,19 +624,32 @@ mod tests {
     /// Decision 10: fewer failed polls in a row than tolerated, of each
     /// kind (a timeout, a non-200, an answer without a status), don't end
     /// the wait; a good answer between them starts the count again.
+    ///
+    /// The request timeout is bounded by a poll's own time here and now (a
+    /// loaded host slows the fake's answers too): 20 of them, at least 1 s,
+    /// so only the held answer times out. The held answer waits five
+    /// timeouts, and ends at once when the fake is dropped.
     #[tokio::test]
     async fn a_few_failed_polls_in_a_row_are_tolerated() {
         assert_eq!(FAILED_POLLS_IN_A_ROW, 3);
-        let fake = FakeController::start().expect("fake");
         let path = "/job_status/job-1";
-        fake.script(path, status("running").after(Duration::from_secs(5)));
+        let baseline = {
+            let fake = FakeController::start().expect("fake");
+            fake.script(path, status("completed"));
+            let started = std::time::Instant::now();
+            assert_eq!(controller(&fake).wait(&job("job-1")).await, Ok(()));
+            started.elapsed()
+        };
+        let timeout = (baseline * 20).max(Duration::from_secs(1));
+        let fake = FakeController::start().expect("fake");
+        fake.script(path, status("running").after(timeout * 5));
         fake.script(path, Answer::with_status(502, ""));
         fake.script(path, status("running"));
         fake.script(path, Answer::ok("{}"));
         fake.script(path, Answer::with_status(503, ""));
         fake.script(path, status("completed"));
         let c = controller(&fake)
-            .with_request_timeout(Duration::from_millis(100))
+            .with_request_timeout(timeout)
             .with_polls(Duration::from_millis(20), 60);
         assert_eq!(c.wait(&job("job-1")).await, Ok(()));
         assert_eq!(fake.seen().len(), 6);
