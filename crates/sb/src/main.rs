@@ -417,10 +417,8 @@ fn docker_control(
     }
     let title = format!("sb {title}");
     let _children = control::on_forced_exit(shutdown);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(async {
+    // The runtime's error first (`?`), then the run's, as the result.
+    block_on(async {
         let mut runner =
             sb_term_ui::Runner::start(&title, shutdown, log, sb_term_ui::Options::default());
         let result = match *command {
@@ -430,7 +428,7 @@ fn docker_control(
         };
         runner.finish();
         result.map_err(anyhow::Error::from)
-    })
+    })?
 }
 
 /// `sb docker ps [--json]` (docker spec): the table or the JSON on stdout,
@@ -449,13 +447,10 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
         env("DOCKER_TLS_VERIFY").as_deref(),
         env("DOCKER_CERT_PATH").as_deref(),
     )?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let listing = runtime.block_on(shutdown.token().run_until_cancelled(async {
+    let listing = block_on(shutdown.token().run_until_cancelled(async {
         let daemon = connect::connect(&address).await?;
         connect::list(&daemon).await
-    }));
+    }))?;
     let Some(listing) = listing else {
         anyhow::bail!("interrupted");
     };
@@ -514,27 +509,42 @@ fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<
             .unwrap_or_else(|| dockerhub::LOGIN_URL.to_string()),
         backoff: cloudflare::backoff,
     };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let result = runtime.block_on(async {
+    // The runtime's error first (`?`), then the run's, as the result.
+    block_on(async {
         let options = sb_term_ui::Options::default();
         let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
         let result = run::run(&mut runner, &settings).await;
         runner.finish();
         result.map_err(anyhow::Error::from)
-    });
-    // A host name lookup runs on a blocking thread (hyper-util's
-    // `GaiResolver` calls getaddrinfo under `spawn_blocking`), and the
-    // runtime's drop waits for every blocking task: after Ctrl-C with DNS
-    // dead, sb would hang until the resolver gave up (config-L11). The run
-    // is over here, so nothing left on the pool is waited for; the process
-    // exits with it. tokio's documented way not to wait:
-    // https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html#shutdown
-    // https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html#method.shutdown_background
-    // https://docs.rs/hyper-util/0.1.21/src/hyper_util/client/legacy/connect/dns.rs.html
+    })?
+}
+
+/// `future` run on a current-thread runtime that isn't waited for after.
+///
+/// The runtime has I/O and time, and is built here, after parsing, so
+/// help and version never pay for it (term-ui). A host name lookup runs on a blocking thread (hyper-util's
+/// `GaiResolver` calls getaddrinfo under `spawn_blocking`, for reqwest's
+/// clients and bollard's `tcp://` connector alike), and the runtime's drop
+/// waits for every blocking task: after Ctrl-C with DNS dead, sb would
+/// hang until the resolver gave up (config-L11; `docker ps` with
+/// `DOCKER_HOST` naming a host, Task 60). The run is over when the future
+/// is, so nothing left on the pool is waited for; the process exits with
+/// it. tokio's documented way not to wait:
+/// <https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html#shutdown>,
+/// <https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html#method.shutdown_background>,
+/// <https://docs.rs/hyper-util/0.1.21/src/hyper_util/client/legacy/connect/dns.rs.html>,
+/// <https://docs.rs/bollard/0.21.1/src/bollard/docker.rs.html> (`connect_with_http`).
+///
+/// # Errors
+///
+/// When the runtime can't be built.
+fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let output = runtime.block_on(future);
     runtime.shutdown_background();
-    result
+    Ok(output)
 }
 
 #[cfg(test)]

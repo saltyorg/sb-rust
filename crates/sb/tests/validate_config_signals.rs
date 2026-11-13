@@ -8,6 +8,7 @@
 //! crates/term-ui/tests/signals.rs). Root runs (`SB_TEST_ROOT=1`).
 
 mod common;
+mod dead_dns;
 mod root_gate;
 
 use std::io::Read;
@@ -15,6 +16,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use dead_dns::DeadDns;
 use rustix::process::{Pid, Signal, kill_process};
 use sb_config::testing::{Answer, Fake, saltbox_root};
 
@@ -199,80 +201,34 @@ fn a_signal_during_the_checks_interrupts_and_restores() {
 }
 
 /// Ctrl-C ends the run promptly while a host name lookup hangs on a dead
-/// DNS server (config-L11): the lookup runs on a tokio blocking thread
-/// (hyper-util's `GaiResolver`), which the runtime's drop would wait for.
-/// The host's network and resolver settings are never touched: sb runs in
-/// private network and mount namespaces whose only route leads into a
-/// dummy interface, which drops every packet unanswered, and whose
-/// `/etc/resolv.conf` names a nameserver behind it (TEST-NET-1, RFC 5737)
-/// with a 20 s timeout; `/etc/nsswitch.conf` looks host names up in files
-/// and DNS only.
+/// DNS server (config-L11; the namespaces are `dead_dns`'s).
 #[test]
 fn ctrl_c_ends_promptly_while_dns_hangs() {
     if !root_gate::requested() {
         return;
     }
-    let probe = Command::new("unshare")
-        .args(["--mount", "--net", "true"])
-        .output()
-        .expect("run unshare");
-    assert!(probe.status.success(), "no namespaces: {probe:?}");
-    let etc = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("etc");
-    let resolv = etc.path().join("resolv.conf");
-    std::fs::write(
-        &resolv,
-        "nameserver 192.0.2.1\noptions timeout:20 attempts:1\n",
-    )
-    .expect("write resolv.conf");
-    let nsswitch = etc.path().join("nsswitch.conf");
-    std::fs::write(&nsswitch, "hosts: files dns\n").expect("write nsswitch.conf");
+    let dns = DeadDns::new();
     let root = saltbox_root("valid").expect("root");
     let logs = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("logs");
-    let script = r#"ip link add dead type dummy && ip addr add 192.0.2.2/24 dev dead && ip link set dead up && mount --bind "$1" /etc/resolv.conf && mount --bind "$2" /etc/nsswitch.conf && shift 2 && exec "$@" validate-config"#;
-    let mut cmd = Command::new("unshare");
-    common::apply_sb_env(&mut cmd);
-    // `unshare` without `--fork` execs the shell, which execs sb: the
-    // child's pid is sb's.
-    cmd.args([
-        "--mount",
-        "--propagation",
-        "private",
-        "--net",
-        "sh",
-        "-c",
-        script,
-        "sh",
-    ])
-    .arg(&resolv)
-    .arg(&nsswitch)
-    .arg(common::sb().get_program())
-    .env("SB_LOG_DIR", logs.path())
-    .env("SB_SALTBOX_DIR", root.path())
-    .env(
-        "CLOUDFLARE_BASE_URL",
-        "http://cloudflare.sb-test.invalid/client/v4/",
-    )
-    .env(
-        "SB_DOCKERHUB_URL",
-        "http://dockerhub.sb-test.invalid/v2/users/login/",
-    )
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
+    let mut cmd = dns.sb(&["validate-config"]);
+    cmd.env("SB_LOG_DIR", logs.path())
+        .env("SB_SALTBOX_DIR", root.path())
+        .env(
+            "CLOUDFLARE_BASE_URL",
+            "http://cloudflare.sb-test.invalid/client/v4/",
+        )
+        .env(
+            "SB_DOCKERHUB_URL",
+            "http://dockerhub.sb-test.invalid/v2/users/login/",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     let mut child = KillOnDrop(cmd.spawn().expect("run unshare"), None);
     let pid = child.0.id();
-    // Both checks are looking their host up once sb's namespace holds two
-    // UDP sockets sent to the dead nameserver (192.0.2.1:53, as
-    // /proc/net/udp writes it).
-    let sockets = format!("/proc/{pid}/net/udp");
+    // Both checks are looking their host up.
     let deadline = Instant::now() + Duration::from_secs(10);
-    let lookups = || {
-        std::fs::read_to_string(&sockets)
-            .unwrap_or_default()
-            .matches(" 010200C0:0035 ")
-            .count()
-    };
-    while lookups() < 2 && Instant::now() < deadline {
+    while dead_dns::lookups(pid) < 2 && Instant::now() < deadline {
         // Ended early (no `ip`, a bind mount refused): say so, not
         // "both lookups open".
         if let Some(status) = child.0.try_wait().expect("check sb") {
@@ -280,7 +236,7 @@ fn ctrl_c_ends_promptly_while_dns_hangs() {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(lookups(), 2, "both lookups open");
+    assert_eq!(dead_dns::lookups(pid), 2, "both lookups open");
     let pid = i32::try_from(pid).expect("pid");
     kill_process(Pid::from_raw(pid).expect("pid"), Signal::INT).expect("kill");
     let sent = Instant::now();

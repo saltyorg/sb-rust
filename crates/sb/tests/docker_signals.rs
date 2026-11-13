@@ -8,12 +8,14 @@
 //! stdout is checked apart from stderr. Root runs (`SB_TEST_ROOT=1`).
 
 mod common;
+mod dead_dns;
 mod root_gate;
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
+use dead_dns::DeadDns;
 use rustix::process::{Pid, Signal, kill_process};
 use sb_docker::testing::{FakeEngine, Options};
 
@@ -109,4 +111,47 @@ fn sigint_and_sigterm_end_the_run_as_interrupted() {
             );
         }
     }
+}
+
+/// Ctrl-C ends `ps` promptly while the lookup of `DOCKER_HOST`'s host name
+/// hangs on a dead DNS server (Task 60, as validate-config's config-L11):
+/// bollard's connector resolves it on a tokio blocking thread, which the
+/// runtime's drop would wait for (the namespaces are `dead_dns`'s).
+#[test]
+fn ctrl_c_ends_promptly_while_dns_hangs() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dns = DeadDns::new();
+    let logs = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("logs");
+    let mut cmd = dns.sb(&["docker", "ps"]);
+    cmd.env("SB_LOG_DIR", logs.path())
+        .env("DOCKER_HOST", "tcp://docker.sb-test.invalid:2375")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = KillOnDrop(cmd.spawn().expect("run unshare"));
+    let pid = child.0.id();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while dead_dns::lookups(pid) == 0 && Instant::now() < deadline {
+        // Ended early (no `ip`, a bind mount refused): say so.
+        if let Some(status) = child.0.try_wait().expect("check sb") {
+            panic!("ended before the lookup: {status:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(dead_dns::lookups(pid) > 0, "the lookup open");
+    let raw = Pid::from_raw(pid.try_into().expect("pid")).expect("pid");
+    kill_process(raw, Signal::INT).expect("kill");
+    let sent = Instant::now();
+    let status = child.0.wait().expect("wait for sb");
+    let took = sent.elapsed();
+    let log = std::fs::read_to_string(logs.path().join("sb.log")).unwrap_or_default();
+    assert!(took < ENDS_WITHIN, "ended {took:?} after the signal\n{log}");
+    assert_eq!(
+        status.signal(),
+        Some(Signal::INT.as_raw()),
+        "{status:?}\n{log}"
+    );
+    assert!(log.contains(r#"outcome="interrupted (exit 130)""#), "{log}");
 }
