@@ -9,13 +9,15 @@
 //! runtime of its own thread, so a test can drive it from anywhere.
 
 pub mod controller;
+mod events;
 mod logs;
 
+pub use events::container_event;
 pub use logs::{FakeEntry, FakeLog};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
@@ -125,7 +127,11 @@ struct Shared {
     logs: Mutex<HashMap<String, FakeLog>>,
     /// IDs whose follows end once they have sent everything.
     ended: Mutex<HashSet<String>>,
-    /// Sent on every append and end, to wake the follows waiting
+    /// The events given by [`FakeEngine::event`], as dockerd writes them.
+    events: Mutex<Vec<Value>>,
+    /// Event streams end once they have sent every event.
+    events_ended: AtomicBool,
+    /// Sent on every append, event and end, to wake the streams waiting
     /// (`send_replace` notifies whether or not anyone waits,
     /// <https://docs.rs/tokio/1.54.1/tokio/sync/watch/struct.Sender.html#method.send_replace>).
     changes: tokio::sync::watch::Sender<()>,
@@ -140,6 +146,8 @@ impl Shared {
             release: tokio::sync::watch::channel(false).0,
             logs: Mutex::new(options.logs.clone()),
             ended: Mutex::new(HashSet::new()),
+            events: Mutex::new(Vec::new()),
+            events_ended: AtomicBool::new(false),
             changes: tokio::sync::watch::channel(()).0,
             options,
         })
@@ -277,14 +285,30 @@ impl FakeEngine {
         lock(&self.shared.ended).insert(id.to_string());
         self.shared.changes.send_replace(());
     }
+
+    /// Give `event` (one of dockerd's event objects, such as
+    /// [`container_event`]'s) to every `/events` stream, open or later.
+    pub fn event(&self, event: Value) {
+        lock(&self.shared.events).push(event);
+        self.shared.changes.send_replace(());
+    }
+
+    /// End the `/events` streams once they have sent every event, as
+    /// dockerd ends them when it stops; later ones end at once too.
+    pub fn end_events(&self) {
+        self.shared.events_ended.store(true, Ordering::SeqCst);
+        self.shared.changes.send_replace(());
+    }
 }
 
 impl Drop for FakeEngine {
     fn drop(&mut self) {
         self.release();
-        // Open follows end, so the graceful shutdown doesn't wait on them.
+        // Open follows and event streams end, so the graceful shutdown
+        // doesn't wait on them.
         let ids: Vec<String> = lock(&self.shared.logs).keys().cloned().collect();
         lock(&self.shared.ended).extend(ids);
+        self.shared.events_ended.store(true, Ordering::SeqCst);
         self.shared.changes.send_replace(());
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -319,6 +343,8 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/{version}/containers/{id}/json", get(inspect_at))
         .route("/containers/{id}/logs", get(logs::logs))
         .route("/{version}/containers/{id}/logs", get(logs::logs_at))
+        .route("/events", get(events::events))
+        .route("/{version}/events", get(events::events_at))
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
         .with_state(shared)
@@ -589,6 +615,32 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body.contains("No such container: gone"), "{body}");
         let (status, _, _) = get(&shared, "/v1.99/containers/abc/logs").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// The events, unversioned and versioned, one a line, with the `type`
+    /// filter applied; an ended stream sends what it holds and ends.
+    #[tokio::test]
+    async fn events_answer_on_both_paths() {
+        let shared = Shared::new(Options::default());
+        lock(&shared.events).extend([
+            container_event("start", "abc", "app"),
+            json!({ "Type": "network", "Action": "connect" }),
+        ]);
+        shared.events_ended.store(true, Ordering::SeqCst);
+        let start = format!("{}\n", container_event("start", "abc", "app"));
+        let filter = "filters=%7B%22type%22%3A%5B%22container%22%5D%7D";
+        for path in ["/events", "/v1.53/events"] {
+            let (status, header, body) = get(&shared, &format!("{path}?{filter}")).await;
+            assert_eq!(
+                (status, header.as_str(), body.as_str()),
+                (StatusCode::OK, "1.53", start.as_str()),
+                "{path}"
+            );
+        }
+        let (_, _, body) = get(&shared, "/events").await;
+        assert_eq!(body.lines().count(), 2, "no filter: {body}");
+        let (status, _, _) = get(&shared, "/v1.99/events").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 

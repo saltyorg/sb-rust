@@ -73,3 +73,32 @@ tui spec's known limit), with the ordinal telling the parts apart. Pages
 are cut in position order; an entry stored out of time order next to a
 page boundary can still be missed or shown twice there (the tui spec's
 known limit on equal timestamps, which this widens).
+
+## Container events
+
+Verified 2026-11-13 (module build M64) on the same daemon (Docker Engine
+29.6.2, API 1.55): one throwaway container made for the probe from an
+image already on the daemon, with no network and a health check of
+`true` every second, started, left to exit, renamed and removed. Its
+events were read through the Engine API with curl
+(`/events?since=..&until=..&filters={"type":["container"],"container":[..]}`),
+one JSON object a line.
+
+- **Actions** are plain words (`create`, `start`, `die`, `rename`,
+  `destroy`, `exec_die`), except two families that carry a value after
+  `: `: `health_status: healthy` (the state) and `exec_create: <command>`,
+  `exec_start: <command>`. A health check runs as an exec, so a container
+  with one sends three exec events per check.
+- **The container** is `Actor.ID` (the full ID) and
+  `Actor.Attributes.name`, the name without a leading `/`. After a
+  rename, `name` is the new name and `oldName` the old one with its `/`;
+  `die` adds `exitCode`. Each event also has `scope`, `time` and
+  `timeNano`.
+- **The open stream** (no `since` or `until`, nothing happening): the
+  daemon sends its headers at once (`200`, `Content-Type:
+  application/jsonl`, chunked) and then nothing until an event, so a
+  client's timeout on the response head doesn't fire on a quiet daemon.
+
+sb-docker's `events.rs` maps `create`, `start`, `die`, `destroy`,
+`rename` and `health_status: <state>`, and passes every other action
+through as written.
