@@ -185,16 +185,18 @@ async fn a_grandchild_holding_the_pty_is_left_after_the_drain() {
     );
 }
 
-/// `GIT_TERMINAL_PROMPT=0`; `COLORTERM` follows the profile, removed for
-/// the plain theme a test runs with.
+/// `GIT_TERMINAL_PROMPT=0` and ssh's failing askpass; `COLORTERM` follows
+/// the profile, removed for the plain theme a test runs with.
 #[tokio::test]
 async fn the_environment_follows_the_rules() {
     let (_, screen) = within(
-        sh("env | grep -E '^(GIT_TERMINAL_PROMPT|COLORTERM)='; exit 1")
+        sh("env | grep -E '^(GIT_TERMINAL_PROMPT|COLORTERM|SSH_ASKPASS|SSH_ASKPASS_REQUIRE)='; exit 1")
             .env("COLORTERM", "truecolor"),
     )
     .await;
     assert!(has_line(&screen, "GIT_TERMINAL_PROMPT=0"), "{screen}");
+    assert!(has_line(&screen, "SSH_ASKPASS=/bin/false"), "{screen}");
+    assert!(has_line(&screen, "SSH_ASKPASS_REQUIRE=force"), "{screen}");
     assert!(!screen.contains("COLORTERM"), "{screen}");
 }
 

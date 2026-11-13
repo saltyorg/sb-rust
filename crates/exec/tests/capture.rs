@@ -344,7 +344,15 @@ async fn the_environment_follows_the_rules() {
         .expect("ran");
     let mut vars: Vec<&str> = cleared.stdout.lines().collect();
     vars.sort_unstable();
-    assert_eq!(vars, ["GIT_TERMINAL_PROMPT=0", "SB_EXEC_B=2"]);
+    assert_eq!(
+        vars,
+        [
+            "GIT_TERMINAL_PROMPT=0",
+            "SB_EXEC_B=2",
+            "SSH_ASKPASS=/bin/false",
+            "SSH_ASKPASS_REQUIRE=force"
+        ]
+    );
 }
 
 /// `COLORTERM` is set for pty and attached children only (decision 3): a

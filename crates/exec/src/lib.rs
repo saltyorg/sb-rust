@@ -18,9 +18,20 @@ use std::time::Duration;
 use sb_cli_core::log::WITHHELD;
 use sb_cli_core::theme::Profile;
 
-/// Set for every child not attached, so git (run by the child or by a tool
-/// it starts) never waits on a prompt no one can answer.
-const NO_GIT_PROMPT: (&str, &str) = ("GIT_TERMINAL_PROMPT", "0");
+/// Set for every child not attached, over the caller's own (spec,
+/// "Environment rules"), so nothing it runs waits on a prompt no one can
+/// answer: git (run by the child or by a tool it starts) asks no terminal,
+/// and ssh (run by git, or by any child) sends every passphrase and
+/// password prompt to an askpass that fails at once (exec-M1). ssh(1),
+/// ENVIRONMENT: with `SSH_ASKPASS_REQUIRE=force` "the askpass program will
+/// be used for all passphrase input regardless of whether DISPLAY is set"
+/// (<https://man.openbsd.org/ssh.1#ENVIRONMENT>). UNVERIFIED for the
+/// host-key confirmation until the platform note's container check.
+const NO_PROMPTS: [(&str, &str); 3] = [
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("SSH_ASKPASS", "/bin/false"),
+    ("SSH_ASKPASS_REQUIRE", "force"),
+];
 
 /// What a `value` argument shows as in the log and in errors: it may be a
 /// path, a name or a user's pass-through argument (spec, "fail closed").
@@ -93,8 +104,9 @@ pub(crate) enum Way {
     Capture,
     Stream,
     Pty,
-    /// sb's own stdin, stdout and stderr, and sb's group; git may ask the
-    /// user, so `GIT_TERMINAL_PROMPT` is left alone.
+    /// sb's own stdin, stdout and stderr, and sb's group; git and ssh may
+    /// ask the user, so `GIT_TERMINAL_PROMPT` and ssh's askpass are left
+    /// alone.
     Attached,
 }
 
@@ -240,8 +252,8 @@ impl Cmd {
     }
 
     /// The environment for `way`: the caller's changes, then
-    /// `GIT_TERMINAL_PROMPT=0` for every child not attached (spec,
-    /// "Environment rules"), whatever the caller set for it.
+    /// [`NO_PROMPTS`] for every child not attached (spec, "Environment
+    /// rules"), whatever the caller set for them.
     pub(crate) fn environment(&self, way: Way) -> Environment<'_> {
         self.environment_for(way, sb_cli_core::theme::current().profile())
     }
@@ -257,12 +269,12 @@ impl Cmd {
             (Way::Pty | Way::Attached, Profile::Ansi256) => Some(Some("256color")),
             (Way::Pty | Way::Attached, Profile::Ansi | Profile::Ascii) => Some(None),
         };
-        let (rule, ruled) = NO_GIT_PROMPT;
         let no_prompt = way != Way::Attached;
+        let ruled = |name: &str| no_prompt && NO_PROMPTS.iter().any(|(rule, _)| *rule == name);
         let mut vars: Vec<(&str, Option<&str>)> = self
             .env
             .iter()
-            .filter(|(name, _)| !no_prompt || name.as_str() != rule)
+            .filter(|(name, _)| !ruled(name))
             .map(|(name, var)| {
                 let value = match var {
                     Var::Set(value) | Var::Secret(value) => Some(value.as_str()),
@@ -272,7 +284,7 @@ impl Cmd {
             })
             .collect();
         if no_prompt {
-            vars.push((rule, Some(ruled)));
+            vars.extend(NO_PROMPTS.iter().map(|&(rule, value)| (rule, Some(value))));
         }
         if let Some(value) = colorterm {
             vars.retain(|(name, _)| *name != "COLORTERM");
@@ -694,7 +706,12 @@ mod tests {
             cmd.environment(Way::Capture),
             Environment {
                 clear: false,
-                vars: vec![("A", Some("1")), ("GIT_TERMINAL_PROMPT", Some("0"))],
+                vars: vec![
+                    ("A", Some("1")),
+                    ("GIT_TERMINAL_PROMPT", Some("0")),
+                    ("SSH_ASKPASS", Some("/bin/false")),
+                    ("SSH_ASKPASS_REQUIRE", Some("force")),
+                ],
             }
         );
     }
@@ -709,7 +726,11 @@ mod tests {
         ] {
             assert_eq!(
                 cmd.environment(Way::Capture).vars,
-                [("GIT_TERMINAL_PROMPT", Some("0"))]
+                [
+                    ("GIT_TERMINAL_PROMPT", Some("0")),
+                    ("SSH_ASKPASS", Some("/bin/false")),
+                    ("SSH_ASKPASS_REQUIRE", Some("force")),
+                ]
             );
         }
     }
@@ -727,7 +748,9 @@ mod tests {
                 ("A", Some("s")),
                 ("B", Some("2")),
                 ("C", None),
-                ("GIT_TERMINAL_PROMPT", Some("0"))
+                ("GIT_TERMINAL_PROMPT", Some("0")),
+                ("SSH_ASKPASS", Some("/bin/false")),
+                ("SSH_ASKPASS_REQUIRE", Some("force")),
             ]
         );
     }
@@ -740,7 +763,12 @@ mod tests {
             cmd.environment(Way::Capture),
             Environment {
                 clear: true,
-                vars: vec![("B", Some("2")), ("GIT_TERMINAL_PROMPT", Some("0"))],
+                vars: vec![
+                    ("B", Some("2")),
+                    ("GIT_TERMINAL_PROMPT", Some("0")),
+                    ("SSH_ASKPASS", Some("/bin/false")),
+                    ("SSH_ASKPASS_REQUIRE", Some("force")),
+                ],
             }
         );
     }
@@ -847,11 +875,55 @@ mod tests {
         assert_eq!(code(Ending::TimedOut).0, Some(1));
     }
 
+    /// ssh, run by git or by any child not attached, asks no terminal:
+    /// its prompts go to a failing askpass (exec-M1), whatever the
+    /// caller set; an attached child keeps the caller's own.
+    #[test]
+    fn ssh_asks_no_terminal_unless_attached() {
+        let cmd = Cmd::new("git")
+            .env("SSH_ASKPASS", "/usr/bin/given")
+            .env_remove("SSH_ASKPASS_REQUIRE");
+        for way in [Way::Capture, Way::Stream, Way::Pty] {
+            let vars = cmd.environment_for(way, Profile::Ascii).vars;
+            assert!(
+                vars.contains(&("SSH_ASKPASS", Some("/bin/false"))),
+                "{way:?}: {vars:?}"
+            );
+            assert!(
+                vars.contains(&("SSH_ASKPASS_REQUIRE", Some("force"))),
+                "{way:?}: {vars:?}"
+            );
+            assert_eq!(
+                vars.iter().filter(|(n, _)| n.starts_with("SSH_")).count(),
+                2
+            );
+        }
+        let attached = cmd.environment_for(Way::Attached, Profile::Ascii).vars;
+        assert!(
+            attached.contains(&("SSH_ASKPASS", Some("/usr/bin/given"))),
+            "{attached:?}"
+        );
+        assert!(
+            attached.contains(&("SSH_ASKPASS_REQUIRE", None)),
+            "{attached:?}"
+        );
+        let plain = Cmd::new("git");
+        let plain = plain.environment_for(Way::Attached, Profile::Ascii).vars;
+        assert!(
+            !plain.iter().any(|(n, _)| n.starts_with("SSH_")),
+            "{plain:?}"
+        );
+    }
+
     #[test]
     fn a_streamed_child_gets_no_terminal_prompt_from_git() {
         assert_eq!(
             Cmd::new("git").environment(Way::Stream).vars,
-            [("GIT_TERMINAL_PROMPT", Some("0"))]
+            [
+                ("GIT_TERMINAL_PROMPT", Some("0")),
+                ("SSH_ASKPASS", Some("/bin/false")),
+                ("SSH_ASKPASS_REQUIRE", Some("force")),
+            ]
         );
     }
 }

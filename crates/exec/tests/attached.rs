@@ -50,7 +50,8 @@ async fn stdin_bytes_are_refused() {
     );
 }
 
-/// No `GIT_TERMINAL_PROMPT` (git may ask the user, on sb's terminal), and
+/// No `GIT_TERMINAL_PROMPT` or ssh's askpass rule (git and ssh may ask the
+/// user, on sb's terminal), and
 /// `COLORTERM` from the profile: removed under the tests' plain theme
 /// (`ascii`), whatever the command set.
 #[tokio::test]
@@ -67,6 +68,13 @@ async fn the_environment_follows_the_rules() {
     let env = std::fs::read_to_string(&file).expect("env");
     assert!(!env.contains("GIT_TERMINAL_PROMPT="), "{env}");
     assert!(!env.lines().any(|l| l.starts_with("COLORTERM=")), "{env}");
+    // ssh may ask on sb's terminal too: the askpass rule is for children
+    // without one (exec-M1).
+    assert!(!env.lines().any(|l| l == "SSH_ASKPASS=/bin/false"), "{env}");
+    assert!(
+        !env.lines().any(|l| l == "SSH_ASKPASS_REQUIRE=force"),
+        "{env}"
+    );
 }
 
 /// The hold is on while the child runs, and only then.

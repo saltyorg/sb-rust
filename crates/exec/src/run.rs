@@ -164,6 +164,10 @@ impl Cmd {
         let stdin = (child.stdin.take(), self.stdin.as_deref());
         let pipes = (child.stdout.take(), child.stderr.take());
         let (lines, mut queued) = mpsc::channel::<Vec<u8>>(QUEUED);
+        // Each reader's line so far, outside the readers: when the drain
+        // ends the read (a grandchild holding the pipe), what they had
+        // read of a last line without `\n` is still delivered (exec-L2).
+        let (mut out_line, mut err_line) = (Vec::new(), Vec::new());
         let io = async {
             let shown = async {
                 while let Some(line) = queued.recv().await {
@@ -172,12 +176,23 @@ impl Cmd {
             };
             tokio::join!(
                 write_stdin(stdin.0, stdin.1),
-                read_lines(pipes.0, &mask, lines.clone(), None),
-                read_lines(pipes.1, &mask, lines, Some(&mut tail)),
+                read_lines(pipes.0, &mask, lines.clone(), None, &mut out_line),
+                read_lines(pipes.1, &mask, lines, Some(&mut tail), &mut err_line),
                 shown,
             );
         };
         let ending = self.supervise(&mut child, group, &token, io).await?;
+        // After a drain that ended the read: the lines queued but not yet
+        // shown, then each pipe's unfinished one. Empty otherwise.
+        while let Ok(line) = queued.try_recv() {
+            step.output(String::from_utf8_lossy(&line).into_owned());
+        }
+        for (line, kept) in [(&out_line, None), (&err_line, Some(&mut tail))] {
+            if !line.is_empty() {
+                let shown = keep_line(line, &mask, kept);
+                step.output(String::from_utf8_lossy(&shown).into_owned());
+            }
+        }
         let outcome = Outcome {
             ending,
             elapsed: start.elapsed(),
@@ -477,11 +492,20 @@ impl Cmd {
 /// [`LINE`] with the rest dropped up to its end) masked and sent to
 /// `lines`; with `tail`, the masked lines are also kept, the last
 /// [`STDERR_TAIL`] bytes of them. A final line without `\n` is sent too.
+/// `line` holds the line being read, empty between lines: tokio's
+/// `read_until` appends what it has read to the buffer it was given, so
+/// if this future is dropped mid-line (the drain's end) the caller still
+/// has the start of the line
+/// (<https://docs.rs/tokio/1.54.1/tokio/io/trait.AsyncBufReadExt.html#cancel-safety>),
+/// and a read error mid-line leaves it there too. Why not tokio's
+/// `Lines::next_line`: its partial line stays in its own buffer, out of
+/// reach once dropped, and it takes UTF-8 only.
 async fn read_lines(
     pipe: Option<impl AsyncRead + Unpin>,
     mask: &Mask,
     lines: mpsc::Sender<Vec<u8>>,
     mut tail: Option<&mut Kept>,
+    line: &mut Vec<u8>,
 ) {
     let Some(pipe) = pipe else { return };
     let mut reader = BufReader::new(pipe);
@@ -490,8 +514,7 @@ async fn read_lines(
     let window = LINE + mask.longest();
     let limit = u64::try_from(window + 1).unwrap_or(u64::MAX);
     loop {
-        let mut line = Vec::new();
-        match (&mut reader).take(limit).read_until(b'\n', &mut line).await {
+        match (&mut reader).take(limit).read_until(b'\n', line).await {
             Ok(1..) => {}
             Ok(0) | Err(_) => return,
         }
@@ -499,23 +522,40 @@ async fn read_lines(
             line.pop();
         } else if line.len() > window && !skip_line(&mut reader).await {
             // The pipe ended inside the dropped rest: this line is the last.
-            send_line(&line, mask, &lines, tail.as_deref_mut()).await;
+            send_line(line, mask, &lines, tail.as_deref_mut()).await;
             return;
         }
-        if !send_line(&line, mask, &lines, tail.as_deref_mut()).await {
+        if !send_line(line, mask, &lines, tail.as_deref_mut()).await {
             return;
         }
     }
 }
 
-/// Mask `line`, keep it in `tail` if given, and send it; false once no one
-/// takes lines any more.
+/// Mask `line`, keep it in `tail` if given, send it and clear it; false
+/// once no one takes lines any more. The channel's slot is reserved
+/// first, and the rest happens at once after it, so a reader dropped
+/// while it waits (the drain's end) has kept nothing and its caller keeps
+/// the line once: tokio's `Sender::reserve` is cancel safe and
+/// `Permit::send` doesn't wait
+/// (<https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/struct.Sender.html#method.reserve>).
 async fn send_line(
-    line: &[u8],
+    line: &mut Vec<u8>,
     mask: &Mask,
     lines: &mpsc::Sender<Vec<u8>>,
     tail: Option<&mut Kept>,
 ) -> bool {
+    let Ok(slot) = lines.reserve().await else {
+        line.clear();
+        return false;
+    };
+    slot.send(keep_line(line, mask, tail));
+    line.clear();
+    true
+}
+
+/// `line` as the step gets it ([`shown_line`]), also kept in `tail` if
+/// given.
+fn keep_line(line: &[u8], mask: &Mask, tail: Option<&mut Kept>) -> Vec<u8> {
     let shown = shown_line(line, mask);
     if let Some(tail) = tail {
         tail.bytes.extend(&shown);
@@ -529,7 +569,7 @@ async fn send_line(
             tail.bytes.drain(..=end);
         }
     }
-    lines.send(shown).await.is_ok()
+    shown
 }
 
 /// A line as the step gets it: cut at [`LINE`], at a character's start

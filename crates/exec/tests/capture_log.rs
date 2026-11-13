@@ -90,7 +90,7 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
     for field in [
         r#"command="sh -c echo \"$1 $TOKEN $2\"; exit 4 sh [REDACTED] [ARG]""#,
         "masked=2",
-        r#"env="GIT_TERMINAL_PROMPT,SB_EXEC_PLAIN,TOKEN""#,
+        r#"env="GIT_TERMINAL_PROMPT,SB_EXEC_PLAIN,SSH_ASKPASS,SSH_ASKPASS_REQUIRE,TOKEN""#,
         "env_cleared=false",
         &format!("cwd=\"{}\"", dir.path().display()),
         "way=\"capture\"",

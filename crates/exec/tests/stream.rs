@@ -205,6 +205,55 @@ async fn a_grandchild_holding_stdout_is_left_after_the_drain() {
     );
 }
 
+/// A final line without `\n` still arrives when the drain ends the read
+/// because a grandchild holds the pipe (exec-L2), on stdout and stderr.
+#[tokio::test]
+async fn a_last_unterminated_line_arrives_after_the_drain() {
+    const SCRIPT: &str =
+        "sleep 30 & echo first >&2; printf 'last-of-stderr' >&2; printf 'last-of-stdout'; exit 1";
+    let (done, _) = within(sh(SCRIPT)).await;
+    let done = done.expect("ran");
+    assert_eq!(done.outcome.ending, Ending::Exited(1));
+    assert_eq!(done.stderr_tail, "first\nlast-of-stderr\n");
+    // A failed step keeps its lines on screen: stdout's last one too.
+    let term = InMemoryTerm::new(40, 120);
+    let options = Options {
+        target: Target::InMemory {
+            term: term.clone(),
+            colour: false,
+        },
+    };
+    let shutdown = Shutdown::new();
+    let mut run = Runner::start("sb test", &shutdown, None, options);
+    let _ = run
+        .step(Labels::new("Running", "ran"), async |step| {
+            let _ = sh(SCRIPT).stream(step).await?.check()?;
+            Ok(())
+        })
+        .await;
+    run.finish();
+    let screen = term.contents();
+    for line in ["first", "last-of-stderr", "last-of-stdout"] {
+        assert!(screen.lines().any(|l| l.trim() == line), "{line}: {screen}");
+    }
+}
+
+/// A grandchild still writing when the drain ends the read: a reader cut
+/// while it waits to hand a line over keeps no line twice in the tail.
+#[tokio::test]
+async fn a_line_cut_off_by_the_drain_is_kept_once() {
+    let (done, _) = within(sh(
+        "(i=0; while :; do i=$((i+1)); echo \"n$i\"; done) >&2 & exit 1",
+    ))
+    .await;
+    let tail = done.expect("ran").stderr_tail;
+    let lines: Vec<&str> = tail.lines().collect();
+    assert!(lines.len() > 100, "{}", lines.len());
+    for pair in lines.windows(2) {
+        assert_ne!(pair[0], pair[1], "kept twice");
+    }
+}
+
 /// The step's token (Ctrl-C, a failing sibling) stops the child's group.
 #[tokio::test]
 async fn the_steps_token_stops_the_child() {
@@ -252,6 +301,14 @@ async fn the_environment_follows_the_rules() {
     let tail = done.expect("ran").stderr_tail;
     assert!(tail.lines().any(|l| l == "SB_EXEC_A=1"), "{tail}");
     assert!(tail.lines().any(|l| l == "GIT_TERMINAL_PROMPT=0"), "{tail}");
+    assert!(
+        tail.lines().any(|l| l == "SSH_ASKPASS=/bin/false"),
+        "{tail}"
+    );
+    assert!(
+        tail.lines().any(|l| l == "SSH_ASKPASS_REQUIRE=force"),
+        "{tail}"
+    );
 }
 
 /// The step's lines, kept in its failure block, show the placeholder in
