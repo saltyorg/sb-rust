@@ -117,6 +117,30 @@ fn the_walk_covers_the_tree() {
     );
 }
 
+/// `sb motd` has every flag of sb-go's (cmd/motd.go:68-100) but `-v`,
+/// dropped with a parse error (motd decision 9).
+#[test]
+fn motd_has_every_sb_go_flag_but_verbose() {
+    let tree = sb_tree();
+    let sb_go: Vec<&str> = SB_GO_TREE
+        .lines()
+        .filter(|line| {
+            line.starts_with("flag\tsb motd\t") || line.starts_with("command\tsb motd\t")
+        })
+        .collect();
+    assert_eq!(sb_go.len(), 34, "sb-go's motd command and its 33 flags");
+    let missing: Vec<&str> = sb_go
+        .into_iter()
+        .filter(|line| !tree.iter().any(|ours| ours == line))
+        .collect();
+    assert_eq!(
+        missing,
+        [
+            "flag\tsb motd\tlocal\tverbose\tv\tswitch\tfalse\tIncrease verbosity level (can be used multiple times, e.g. -vvv)"
+        ]
+    );
+}
+
 /// A flag with only a short name, or one sb-go lacks, is reported, not
 /// skipped; positional arguments are left out.
 #[test]

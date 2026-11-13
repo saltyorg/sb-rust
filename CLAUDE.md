@@ -73,9 +73,9 @@ and each crate's own documentation
   one meets the constraint.
 - **Enforcement:**
   - After an edit to a source file of a crate with terminal, UI, input,
-    process or I/O code (`cli-core`, `docker`, `exec`, `host`, `release`, `sb`,
-    `term-ui`, `tui`) or of a prototype, a hook (`.claude/hooks/library-check.sh`)
-    asks for this check. Answer it then, not at commit time. A new crate
+    process or I/O code (`cli-core`, `docker`, `exec`, `host`, `motd`,
+    `release`, `sb`, `term-ui`, `tui`) or of a prototype, a hook
+    (`.claude/hooks/library-check.sh`) asks for this check. Answer it then, not at commit time. A new crate
     of that kind is added to the hook's list.
   - Before committing changes to terminal, UI, input, event-loop,
     clipboard, process or I/O code, run the `library-reviewer` agent

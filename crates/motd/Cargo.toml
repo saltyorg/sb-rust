@@ -1,0 +1,29 @@
+[package]
+name = "sb-motd"
+version = "0.1.0"
+description = "sb motd: the login's system, media-server and downloader status, collected in parallel (capability map, motd)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The run log's paths and file reads, and the theme's roles.
+sb-cli-core.workspace = true
+# `paint` for the keys and `DisplayText` for text sb didn't write.
+sb-term-ui.workspace = true
+# `uname(2)` for Kernel (motd spec, Sections; decision 16).
+rustix = { workspace = true, features = ["system"] }
+thiserror.workspace = true
+# The sections' tasks and the 30 s cap (motd decision 11).
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+# The runner's tests on tokio's paused clock (motd spec, Testing).
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

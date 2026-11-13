@@ -77,6 +77,10 @@ enum Command {
         #[command(subcommand)]
         command: EditCommand,
     },
+    /// Display system information
+    // No `--verbose/-v` (motd decision 9).
+    #[command(long_about = motd::ABOUT)]
+    Motd(motd::Args),
 }
 
 /// `sb edit`'s help (sb-go cmd/edit.go, `editCmd.Long`).
@@ -192,6 +196,7 @@ impl Command {
                 EditCommand::Settings => "edit settings",
                 EditCommand::Inventory => "edit inventory",
             },
+            Command::Motd(_) => "motd",
         }
     }
 
@@ -204,11 +209,13 @@ impl Command {
             // completion run unprivileged (cli-core decision 3); Saltbox's
             // config is root's to read (config spec); the Sandbox checkout
             // and its ownership are root's to change; so are the files
-            // `edit` opens (tui spec, editors, assumption 2).
+            // `edit` opens (tui spec, editors, assumption 2); motd as every
+            // command (motd decision 20: pam_motd already runs it as root).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
-            | Command::Edit { .. } => true,
+            | Command::Edit { .. }
+            | Command::Motd(_) => true,
         }
     }
 }
@@ -423,6 +430,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::ValidateConfig => validate_config(shutdown, log)?,
         Command::BranchSandbox { ref name } => branch::branch_sandbox(name, shutdown, log)?,
         Command::Edit { command } => edit::edit(command.file(), shutdown)?,
+        Command::Motd(ref args) => motd::motd(args, shutdown)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -641,6 +649,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 
 mod branch;
 mod edit;
+mod motd;
 
 #[cfg(test)]
 mod contract;
@@ -735,6 +744,14 @@ mod tests {
         assert_eq!(edit(EditCommand::AdvSettings).name(), "edit adv_settings");
         assert_eq!(edit(EditCommand::Inventory).name(), "edit inventory");
         assert_eq!(EditCommand::Inventory.file(), edit::File::Inventory);
+    }
+
+    /// `motd` needs root and logs under its name (motd decision 20).
+    #[test]
+    fn motd_needs_root_and_logs_its_name() {
+        let motd = Command::Motd(motd::Args::default());
+        assert!(motd.needs_root());
+        assert_eq!(motd.name(), "motd");
     }
 
     /// `docker ps` needs root (cli-core decision 3).

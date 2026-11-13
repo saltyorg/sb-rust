@@ -17,6 +17,8 @@ sb-config.workspace = true
 sb-repo.workspace = true
 # `sb edit`'s editor, attached to the terminal (tui spec, editors).
 sb-exec.workspace = true
+# `sb motd` (motd spec).
+sb-motd.workspace = true
 shlex.workspace = true
 anyhow.workspace = true
 # `net` for the I/O driver bollard's sockets need (enable_all turns on
