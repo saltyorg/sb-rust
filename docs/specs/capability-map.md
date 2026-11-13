@@ -295,8 +295,8 @@ of `--help`.
 | `install [tags]` (`-v` to `-vvvv`, `-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | not started | `-v` is counted and passed to `ansible-playbook` as `-v` to `-vvvv` (it stays here, unlike the dropped `-v` elsewhere); `-e` passes each value whole, so JSON reaches Ansible intact (open items below); the tag cache is shared with `list` and completion |
 | `list [query]` (`--include-mod`) | Lists the available tags | ansible | not started | |
 | `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | not started | |
-| `branch [name]` | Switches the branch Saltbox uses | ops, repo | not started | |
-| `branch-sandbox [name]` | Switches the branch Sandbox uses | ops, repo | not started | |
+| `branch <name>` | Switches the branch Saltbox uses | ops, repo | not started | |
+| `branch-sandbox <name>` | Switches the branch Sandbox uses | ops, repo | not started | |
 | `diag` | Runs the diagnostics role | ops, ansible | not started | |
 | `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | not started | the schema rules proto-yaml found (Upstream note) |
 | `reinstall-facts` | Reinstalls the saltbox.fact file | ops, python-env | not started | may be unnecessary if the facts install is made solid |
@@ -307,7 +307,7 @@ of `--help`.
 | `completion generate <shell>` | Writes a completion script to stdout | completion | not started | |
 | `setup` (hidden; `--branch`, `--force`) | Installs Saltbox and its dependencies | ops | not started | the first command on a new host |
 | `update-venv` (hidden) | Updates the Ansible venv and saltbox.fact | python-env | not started | overlaps the reinstall commands |
-| `self-update` (hidden; `--yes`) | Updates the CLI itself | release | not started | sends a User-Agent; keeps the digest check (stack table) |
+| `self-update` (hidden; `--yes`, and `--force-update` in builds with self-update disabled) | Updates the CLI itself | release | not started | sends a User-Agent; keeps the digest check (stack table) |
 | `announcements` (hidden; `--before`, `--after`, `--repo`) | Shows changes between two announcements files | ops | not started | called by `update`; may stay internal to it |
 | `restore` (hidden) | Fetches and decrypts a user's backed-up files | ops | not started | RustCrypto stack (stack table) |
 | `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | not started | CI-only |
