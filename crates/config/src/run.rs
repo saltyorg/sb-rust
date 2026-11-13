@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sb_cli_core::config::read_small;
+use sb_cli_core::config::{read_small, yaml};
 use sb_cli_core::exit::Exit;
 use sb_term_ui::{Labels, Runner, Step};
 
@@ -178,15 +178,22 @@ async fn validate(step: &mut Step, settings: &Settings, file: File) -> anyhow::R
         }
         None => None,
     };
-    let root = parse::parse(file.path, &text).map_err(|issues| block(&issues))?;
-    let Some(rules) = rules else {
+    let validators = Saltbox::with_zoneinfo(settings.zoneinfo.clone());
+    let prepared = parse::prepare(file.path, &text).map_err(|issues| block(&issues))?;
+    // The file's tree is loaded, checked and dropped where its depth fits.
+    let checked = yaml::with_stack(prepared.depth(), || {
+        let root = parse::load(file.path, &prepared)?;
+        let Some(rules) = &rules else {
+            return Ok(None);
+        };
+        let tree = tree::build(file.path, &root, &rules::secret_paths(rules))?;
+        Ok(Some(rules::validate(file.path, &tree, rules, &validators)))
+    })
+    .map_err(|err| anyhow::anyhow!("can't start the YAML reader's thread: {err}"))?;
+    let Some(report) = checked.map_err(|issues: Vec<Issue>| block(&issues))? else {
         tracing::info!(file = file.path, issues = 0, "config file checked");
         return Ok(());
     };
-    let tree = tree::build(file.path, &root, &rules::secret_paths(&rules))
-        .map_err(|issues| block(&issues))?;
-    let validators = Saltbox::with_zoneinfo(settings.zoneinfo.clone());
-    let report = rules::validate(file.path, &tree, &rules, &validators);
     tracing::info!(
         file = file.path,
         issues = report.issues.len(),
@@ -525,6 +532,48 @@ mod tests {
         );
         assert!(
             screen.contains("inventories/host_vars/localhost.yml:2:1: a: duplicate key (also at line 1, column 1)"),
+            "{screen}"
+        );
+    }
+
+    /// Depth is limited, never length (decision 38): a file nested as deep
+    /// as the limit is parsed, built and checked on the deep stack, with
+    /// no overflow on this test's small one, and one level more is the
+    /// file's issue where it goes too deep.
+    #[tokio::test]
+    async fn a_deep_file_is_checked_or_refused_without_overflow() {
+        let root = saltbox_root("valid").expect("root");
+        let deep = |n: usize| format!("x:\n  {}v\n", "- ".repeat(n));
+        write(
+            root.path(),
+            "inventories/host_vars/localhost.yml",
+            &deep(yaml::MAX_DEPTH - 1),
+        );
+        let accounts = std::fs::read_to_string(root.path().join("accounts.yml")).expect("read");
+        write(
+            root.path(),
+            "accounts.yml",
+            &format!("{accounts}deep:\n  {}v\n", "- ".repeat(yaml::MAX_DEPTH - 1)),
+        );
+        let (result, screen) = run_on(root.path(), &healthy()).await;
+        assert!(matches!(result, Err(Exit(1))), "{screen}");
+        assert!(
+            screen.contains("✓ Validated localhost.yml (no duplicates)"),
+            "{screen}"
+        );
+        assert!(screen.contains("deep: unknown field"), "{screen}");
+        write(
+            root.path(),
+            "inventories/host_vars/localhost.yml",
+            &deep(yaml::MAX_DEPTH),
+        );
+        let (_, screen) = run_on(root.path(), &healthy()).await;
+        assert!(
+            screen.contains(&format!(
+                "inventories/host_vars/localhost.yml:2:{}: syntax error: nested deeper than {} levels",
+                3 + 2 * (yaml::MAX_DEPTH - 1),
+                yaml::MAX_DEPTH
+            )),
             "{screen}"
         );
     }

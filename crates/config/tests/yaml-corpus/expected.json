@@ -1,5 +1,59 @@
 {
  "cases": {
+  "anchor-defined-twice": {
+   "accepted": false,
+   "error": "second occurrence at line 2, column 4"
+  },
+  "anchor-name-then-dot": {
+   "accepted": false,
+   "error": "did not find expected alphabetic or numeric character at line 1, column 6"
+  },
+  "block-scalar-clip-at-end-without-newline": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "a",
+     "style": "literal",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    }
+   ]
+  },
+  "collection-as-key": {
+   "accepted": false,
+   "error": "found unhashable key at line 1, column 3"
+  },
+  "colon-no-key-after-entry": {
+   "accepted": false,
+   "error": "did not find expected key at line 2, column 1"
+  },
+  "colon-no-key-at-top": {
+   "accepted": false,
+   "error": "did not find expected key at line 1, column 1"
+  },
+  "colon-no-key-in-flow": {
+   "accepted": false,
+   "error": "did not find expected node content at line 1, column 11"
+  },
+  "content-after-end-marker": {
+   "accepted": false,
+   "error": "did not find expected <document start> at line 3, column 1"
+  },
+  "control-character": {
+   "accepted": false,
+   "error": "control characters are not allowed at line 1, column 5"
+  },
+  "directive-unknown": {
+   "accepted": false,
+   "error": "found unknown directive name at line 1, column 5"
+  },
+  "directive-yaml-1-3": {
+   "accepted": false,
+   "error": "found incompatible YAML document at line 1, column 1"
+  },
   "double-quoted-escaped-newline": {
    "accepted": true,
    "scalars": [
@@ -42,6 +96,10 @@
     }
    ]
   },
+  "end-marker-alone": {
+   "accepted": false,
+   "error": "did not find expected node content at line 1, column 1"
+  },
   "error-bad-indent": {
    "accepted": false,
    "error": "did not find expected key at line 3, column 2"
@@ -57,6 +115,18 @@
   "error-unclosed-quote": {
    "accepted": false,
    "error": "found unexpected end of stream at line 2, column 1"
+  },
+  "explicit-key-two-values": {
+   "accepted": false,
+   "error": "did not find expected key at line 3, column 1"
+  },
+  "flow-block-indicator": {
+   "accepted": false,
+   "error": "found character that cannot start any token at line 1, column 5"
+  },
+  "flow-key-across-lines": {
+   "accepted": false,
+   "error": "did not find expected ',' or '}' at line 2, column 2"
   },
   "flow-map-close-at-key-column": {
    "accepted": true,
@@ -159,6 +229,10 @@
     }
    ]
   },
+  "flow-map-multi-line-quoted-key": {
+   "accepted": false,
+   "error": "did not find expected ',' or '}' at line 2, column 5"
+  },
   "flow-map-quoted-values-split": {
    "accepted": true,
    "scalars": [
@@ -213,6 +287,14 @@
      ]
     }
    ]
+  },
+  "flow-plain-colon-before-brace": {
+   "accepted": false,
+   "error": "found unexpected ':' at line 1, column 8"
+  },
+  "flow-question-without-space": {
+   "accepted": false,
+   "error": "did not find expected ',' or ']' at line 2, column 1"
   },
   "flow-seq-close-at-key-column-after-nested": {
    "accepted": true,
@@ -435,9 +517,40 @@
     }
    ]
   },
+  "ls-line-break": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "a",
+     "style": "plain",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    },
+    {
+     "path": "b",
+     "style": "plain",
+     "text": "y",
+     "value": [
+      "str",
+      "y"
+     ]
+    }
+   ]
+  },
+  "mapping-indented-then-dedented": {
+   "accepted": false,
+   "error": "did not find expected <document start> at line 2, column 1"
+  },
   "multi-document": {
    "accepted": false,
    "error": "but found another document at line 2, column 1"
+  },
+  "nel-line-break": {
+   "accepted": false,
+   "error": "did not find expected key at line 2, column 1"
   },
   "plain-multi-line": {
    "accepted": true,
@@ -1633,6 +1746,10 @@
    "accepted": false,
    "error": "found character that cannot start any token at line 2, column 4"
   },
+  "tab-after-end-marker": {
+   "accepted": false,
+   "error": "found character that cannot start any token at line 3, column 1"
+  },
   "tab-before-comment": {
    "accepted": true,
    "scalars": [
@@ -1699,6 +1816,14 @@
   "tab-then-spaces-indent": {
    "accepted": false,
    "error": "found character that cannot start any token at line 2, column 1"
+  },
+  "tag-before-bracket": {
+   "accepted": false,
+   "error": "did not find expected whitespace or line break at line 1, column 7"
+  },
+  "top-level-block-scalar-at-column-0": {
+   "accepted": false,
+   "error": "did not find expected <document start> at line 2, column 1"
   }
  },
  "generator": "scripts/yaml-corpus.py",

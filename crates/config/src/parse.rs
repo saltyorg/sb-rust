@@ -15,11 +15,6 @@ use sb_cli_core::config::yaml::{self, Prepared};
 use crate::issue::Issue;
 use crate::scalar::{Value, resolve};
 
-/// How deep collections may nest: saphyr-parser's own limit for flow
-/// collections, applied to block ones too, before saphyr's loader (whose
-/// recursion would overflow the stack on a few kilobytes of `- - - …`).
-const MAX_DEPTH: usize = 256;
-
 /// A 1-based (line, column) in the original text from saphyr's marker
 /// on the prepared text (its columns start at 0).
 fn position(prepared: &Prepared, marker: &Marker) -> (usize, usize) {
@@ -28,15 +23,47 @@ fn position(prepared: &Prepared, marker: &Marker) -> (usize, usize) {
 }
 
 /// `text`, the config file shown as `file`, as its root mapping, or its
-/// issues: a syntax error (a tab Ansible's parser refuses among them),
-/// nesting too deep, the duplicate keys, or a root that isn't a mapping.
+/// issues: what Ansible's loader refuses (cli-core's pre-pass: a syntax
+/// error, a tab or `:` libyaml refuses, a second document, nesting past
+/// `yaml::MAX_DEPTH`), the duplicate keys, or a root that isn't a mapping.
 /// An empty file (or a null root) is an empty mapping. Positions, the
-/// returned nodes' included, are the file's.
+/// returned nodes' included, are the file's. [`prepare`] then [`load`]: a
+/// tree deeper than `yaml::SHALLOW` levels is loaded, walked and dropped
+/// within `yaml::with_stack`, as validate-config does.
 ///
 /// # Errors
 ///
 /// The issues above, sorted by position.
 pub fn parse(file: &str, text: &str) -> Result<MarkedYamlOwned, Vec<Issue>> {
+    load(file, &prepare(file, text)?)
+}
+
+/// `text`, the config file shown as `file`, through cli-core's pre-pass:
+/// ready for [`load`], its depth known.
+///
+/// # Errors
+///
+/// What Ansible's loader refuses, as the one issue.
+pub fn prepare(file: &str, text: &str) -> Result<Prepared, Vec<Issue>> {
+    yaml::prepare(text).map_err(|refusal| {
+        vec![Issue {
+            file: file.to_string(),
+            line: refusal.line,
+            column: refusal.column,
+            path: String::new(),
+            message: format!("syntax error: {}", refusal.message),
+        }]
+    })
+}
+
+/// The prepared file shown as `file` as its root mapping, or its issues:
+/// the duplicate keys, the loader's errors, or a root that isn't a
+/// mapping (as [`parse`]).
+///
+/// # Errors
+///
+/// The issues above, sorted by position.
+pub fn load(file: &str, prepared: &Prepared) -> Result<MarkedYamlOwned, Vec<Issue>> {
     let issue = |(line, column): (usize, usize), message: String| Issue {
         file: file.to_string(),
         line,
@@ -44,19 +71,13 @@ pub fn parse(file: &str, text: &str) -> Result<MarkedYamlOwned, Vec<Issue>> {
         path: String::new(),
         message,
     };
-    let prepared = yaml::prepare(text).map_err(|refusal| {
-        vec![issue(
-            (refusal.line, refusal.column),
-            format!("syntax error: {}", refusal.message),
-        )]
-    })?;
     let syntax = |err: &ScanError| {
         vec![issue(
-            position(&prepared, err.marker()),
+            position(prepared, err.marker()),
             format!("syntax error: {}", err.info()),
         )]
     };
-    let found = duplicates(file, &prepared).map_err(|err| syntax(&err))?;
+    let found = duplicates(file, prepared).map_err(|err| syntax(&err))?;
     if !found.is_empty() {
         return Err(found);
     }
@@ -65,12 +86,12 @@ pub fn parse(file: &str, text: &str) -> Result<MarkedYamlOwned, Vec<Issue>> {
     // The pass above decides duplicates, as yaml.v3 compares keys; the
     // loader would also compare an alias key with the text it stands for.
     loader.allow_duplicate_keys(true);
-    // The first document only (`multi: false`), as yaml.v3 and cli-core,
-    // each event's span moved back into the file as written.
+    // The first document only (`multi: false`): the pre-pass has refused
+    // a second. Each event's span moved back into the file as written.
     Parser::new_from_str(prepared.text())
         .load(
             &mut Original {
-                prepared: &prepared,
+                prepared,
                 loader: &mut loader,
             },
             false,
@@ -143,14 +164,12 @@ fn empty() -> MarkedYamlOwned {
 }
 
 struct Frame {
-    path: String,
+    /// What it adds to its parent's key path (`a`, `.b`, `[0]`; nothing
+    /// for the root): the whole path is joined only for an issue, so a
+    /// deep file costs its depth, not its depth squared.
+    segment: String,
     /// Where the collection starts (for a collection used as a key).
     start: (usize, usize),
-    /// Its anchor (0: none), whose height is noted when it ends.
-    anchor: usize,
-    /// The tallest node in it so far: a collection's height, or an alias's
-    /// anchor's (an alias copies its anchor's subtree when loaded).
-    tallest: usize,
     kind: FrameKind,
 }
 
@@ -179,65 +198,45 @@ enum KeyId {
     Sequence,
 }
 
-/// The key path of a collection starting now under `frames`' innermost
-/// one: its key in a mapping, `<key>` when it is a mapping's key itself,
-/// or `[n]` in a sequence.
-fn child_path(frames: &[Frame]) -> String {
-    match frames.last() {
+/// The key path segment of a collection starting now under `frames`'
+/// innermost one: its key in a mapping, `<key>` when it is a mapping's key
+/// itself, or `[n]` in a sequence.
+fn child_segment(frames: &[Frame]) -> String {
+    // Only the root's own path is empty.
+    let top = frames.len() == 1;
+    match frames.last().map(|frame| &frame.kind) {
         None => String::new(),
-        Some(Frame {
-            path,
-            kind: FrameKind::Mapping { key: Some(key), .. },
-            ..
-        }) => join(path, key),
-        Some(Frame {
-            path,
-            kind: FrameKind::Mapping { key: None, .. },
-            ..
-        }) => join(path, "<key>"),
-        Some(Frame {
-            path,
-            kind: FrameKind::Sequence { index },
-            ..
-        }) => format!("{path}[{index}]"),
+        Some(FrameKind::Mapping { key: Some(key), .. }) => key_segment(top, key),
+        Some(FrameKind::Mapping { key: None, .. }) => key_segment(top, "<key>"),
+        Some(FrameKind::Sequence { index }) => format!("[{index}]"),
     }
 }
 
-/// `key` under `path`; an empty key shows as `""`.
-fn join(path: &str, key: &str) -> String {
+/// `key`'s segment under a path, empty when `top`; an empty key shows as
+/// `""`.
+fn key_segment(top: bool, key: &str) -> String {
     let key = if key.is_empty() { "\"\"" } else { key };
-    if path.is_empty() {
+    if top {
         key.to_string()
     } else {
-        format!("{path}.{key}")
+        format!(".{key}")
     }
 }
 
 /// Every duplicate key in `text`'s first document, from saphyr-parser's
 /// events (before any loading, which would stop at the first), sorted by
 /// position: each with its key path and every earlier position of the
-/// same key (`KeyId`) in the same mapping. Nesting past `MAX_DEPTH`,
-/// counting what aliases copy in, is the one issue instead.
+/// same key (`KeyId`) in the same mapping. The pre-pass has limited the
+/// nesting, so the frames are at most `yaml::MAX_DEPTH`.
 fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> {
     let mut issues = Vec::new();
     let mut frames: Vec<Frame> = Vec::new();
-    // Each anchor's height: what an alias to it adds below the alias.
-    let mut heights: HashMap<usize, usize> = HashMap::new();
-    let too_deep = |path: String, here: (usize, usize)| {
-        Ok(vec![Issue {
-            file: file.to_string(),
-            line: here.0,
-            column: here.1,
-            path,
-            message: format!("nested deeper than {MAX_DEPTH} levels"),
-        }])
-    };
     for event in Parser::new_from_str(prepared.text()) {
         let (event, span) = event?;
         let here = position(prepared, &span.start);
         match event {
             Event::DocumentEnd => break,
-            Event::MappingStart(anchor, _) | Event::SequenceStart(anchor, _) => {
+            Event::MappingStart(..) | Event::SequenceStart(..) => {
                 let kind = if matches!(event, Event::MappingStart(..)) {
                     FrameKind::Mapping {
                         seen: HashMap::new(),
@@ -246,24 +245,14 @@ fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> 
                 } else {
                     FrameKind::Sequence { index: 0 }
                 };
-                let path = child_path(&frames);
-                if frames.len() == MAX_DEPTH {
-                    return too_deep(path, here);
-                }
                 frames.push(Frame {
-                    path,
+                    segment: child_segment(&frames),
                     start: here,
-                    anchor,
-                    tallest: 0,
                     kind,
                 });
             }
             Event::MappingEnd | Event::SequenceEnd => {
                 if let Some(frame) = frames.pop() {
-                    let height = frame.tallest + 1;
-                    if frame.anchor != 0 {
-                        heights.insert(frame.anchor, height);
-                    }
                     let id = match frame.kind {
                         FrameKind::Mapping { .. } => KeyId::Mapping,
                         FrameKind::Sequence { .. } => KeyId::Sequence,
@@ -272,7 +261,6 @@ fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> 
                         id,
                         label: "<key>".to_string(),
                         here: frame.start,
-                        height,
                     };
                     ended(&mut issues, file, &mut frames, node);
                 }
@@ -282,20 +270,14 @@ fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> 
                     id: KeyId::Text(value.to_string()),
                     label: value.to_string(),
                     here,
-                    height: 0,
                 };
                 ended(&mut issues, file, &mut frames, node);
             }
             Event::Alias(anchor) => {
-                let height = heights.get(&anchor).copied().unwrap_or(0);
-                if frames.len() + height > MAX_DEPTH {
-                    return too_deep(child_path(&frames), here);
-                }
                 let node = Node {
                     id: KeyId::Alias(anchor),
                     label: "<alias>".to_string(),
                     here,
-                    height,
                 };
                 ended(&mut issues, file, &mut frames, node);
             }
@@ -306,23 +288,21 @@ fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> 
     Ok(issues)
 }
 
-/// A node that has ended: its key identity, its label in a path, where it
-/// started and its height.
+/// A node that has ended: its key identity, its label in a path and where
+/// it started.
 struct Node {
     id: KeyId,
     label: String,
     here: (usize, usize),
-    height: usize,
 }
 
 /// A node has ended in the innermost collection: a key is noted and
 /// compared (a repeat is an issue), a value moves its mapping back to
 /// expecting a key or its sequence to the next index.
 fn ended(issues: &mut Vec<Issue>, file: &str, frames: &mut [Frame], node: Node) {
-    let Some(frame) = frames.last_mut() else {
+    let Some((frame, outer)) = frames.split_last_mut() else {
         return;
     };
-    frame.tallest = frame.tallest.max(node.height);
     match &mut frame.kind {
         FrameKind::Mapping {
             key: next @ Some(_),
@@ -335,11 +315,14 @@ fn ended(issues: &mut Vec<Issue>, file: &str, frames: &mut [Frame], node: Node) 
                     .iter()
                     .map(|(line, column)| format!("line {line}, column {column}"))
                     .collect();
+                let mut path: String = outer.iter().map(|f| f.segment.as_str()).collect();
+                path.push_str(&frame.segment);
+                path.push_str(&key_segment(outer.is_empty(), &node.label));
                 issues.push(Issue {
                     file: file.to_string(),
                     line: node.here.0,
                     column: node.here.1,
-                    path: join(&frame.path, &node.label),
+                    path,
                     message: format!("duplicate key (also at {})", list.join(" and ")),
                 });
             }
@@ -427,12 +410,21 @@ mod tests {
         );
     }
 
-    /// The first document only, as yaml.v3 and cli-core read it: a later
-    /// document isn't read, even a broken one.
+    /// One document, as Ansible's loader reads it (decision 38; yaml.v3
+    /// read the first): a second is refused at its start, even a broken
+    /// one; an end marker alone is no document.
     #[test]
-    fn only_the_first_document_counts() {
-        assert_eq!(keys(&root("a: 1\n---\nb: 2\n")), ["a"]);
-        assert_eq!(keys(&root("a: 1\n---\nb: [\n")), ["a"]);
+    fn a_second_document_is_refused() {
+        let second = "syntax error: a second document (Ansible reads one document per file)";
+        assert_eq!(
+            issues("a: 1\n---\nb: 2\n"),
+            [format!("test.yml:2:1: {second}")]
+        );
+        assert_eq!(
+            issues("a: 1\n---\nb: [\n"),
+            [format!("test.yml:2:1: {second}")]
+        );
+        assert_eq!(keys(&root("a: 1\n...\n")), ["a"]);
     }
 
     /// saphyr doesn't follow merge keys (yaml.v3 does): `<<` stays a key,
@@ -489,13 +481,13 @@ mod tests {
         );
     }
 
-    /// A collection key's own mappings are checked too, and an alias key
-    /// isn't the text key it stands beside.
+    /// A collection key is refused before its own duplicates, and an
+    /// alias key isn't the text key it stands beside.
     #[test]
     fn collection_keys_are_walked() {
         assert_eq!(
             issues("? {k: 1, k: 2}\n: v\n"),
-            ["test.yml:1:10: <key>.k: duplicate key (also at line 1, column 4)"]
+            ["test.yml:1:3: syntax error: a mapping key must be a scalar, not a collection"]
         );
         let node = root("a: &n x\n*n : y\n");
         assert_eq!(keys(&node).len(), 2);
@@ -524,23 +516,24 @@ mod tests {
         assert!(found[0].contains("syntax error: "), "{found:?}");
     }
 
-    /// Block nesting past 256 levels (saphyr-parser's own limit for flow
-    /// nesting) is refused before the loader, whose recursion would
-    /// overflow the stack.
+    /// Nesting past cli-core's limit (`yaml::MAX_DEPTH`, under the depth
+    /// Ansible's loader takes) is refused before the loader, where it
+    /// goes too deep; at the limit the tree loads, on the deep stack.
     #[test]
     fn nesting_too_deep_is_refused() {
-        let text = format!("a:\n {}x\n", "- ".repeat(20_000));
-        let found = issues(&text);
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(
-            found[0].contains("nested deeper than 256 levels"),
-            "{found:?}"
+        let over = format!("a:\n {}x\n", "- ".repeat(yaml::MAX_DEPTH));
+        assert_eq!(
+            issues(&over),
+            [format!(
+                "test.yml:2:{}: syntax error: nested deeper than {} levels",
+                2 + 2 * (yaml::MAX_DEPTH - 1),
+                yaml::MAX_DEPTH
+            )]
         );
-        // The root mapping and 255 sequences: exactly the limit.
-        let fine = format!("a:\n {}x\n", "- ".repeat(255));
-        assert_eq!(keys(&root(&fine)), ["a"]);
-        let over = format!("a:\n {}x\n", "- ".repeat(256));
-        assert_eq!(issues(&over).len(), 1);
+        // The root mapping and the sequences: exactly the limit.
+        let fine = format!("a:\n {}x\n", "- ".repeat(yaml::MAX_DEPTH - 1));
+        let loaded = yaml::with_stack(yaml::MAX_DEPTH, || keys(&root(&fine))).expect("runs");
+        assert_eq!(loaded, ["a"]);
     }
 
     /// An alias copies its anchor's whole subtree into the loaded tree, so
@@ -548,6 +541,7 @@ mod tests {
     /// into a stack overflow.
     #[test]
     fn aliases_count_toward_the_depth() {
+        let third = yaml::MAX_DEPTH / 3 + 1;
         let mut text = String::new();
         for k in 0..3 {
             let inner = if k == 0 {
@@ -555,17 +549,18 @@ mod tests {
             } else {
                 format!("*a{}", k - 1)
             };
-            let _ = writeln!(text, "a{k}: &a{k}\n  {}{inner}", "- ".repeat(100));
+            let _ = writeln!(text, "a{k}: &a{k}\n  {}{inner}", "- ".repeat(third));
         }
         let found = issues(&text);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(
-            found[0].contains("nested deeper than 256 levels"),
+            found[0].ends_with(&format!("nested deeper than {} levels", yaml::MAX_DEPTH)),
             "{found:?}"
         );
         // Two such anchors stay within the limit.
         let two: String = text.lines().take(4).flat_map(|l| [l, "\n"]).collect();
-        assert_eq!(keys(&root(&two)), ["a0", "a1"]);
+        let loaded = yaml::with_stack(yaml::MAX_DEPTH, || keys(&root(&two))).expect("runs");
+        assert_eq!(loaded, ["a0", "a1"]);
     }
 
     /// Each sequence item has its own index in a duplicate's path.
@@ -580,31 +575,40 @@ mod tests {
     /// An alias exactly at the depth limit loads; one level deeper doesn't.
     #[test]
     fn an_alias_at_the_limit_loads() {
-        let anchor = format!("a: &a\n  {}x\n", "- ".repeat(255));
-        assert_eq!(keys(&root(&format!("{anchor}b: *a\n"))), ["a", "b"]);
+        let anchor = format!("a: &a\n  {}x\n", "- ".repeat(yaml::MAX_DEPTH - 1));
+        let loaded = yaml::with_stack(yaml::MAX_DEPTH, || keys(&root(&format!("{anchor}b: *a\n"))))
+            .expect("runs");
+        assert_eq!(loaded, ["a", "b"]);
         let found = issues(&format!("{anchor}b: [*a]\n"));
-        assert!(
-            found[0].contains("nested deeper than 256 levels"),
-            "{found:?}"
+        assert_eq!(
+            found,
+            [format!(
+                "test.yml:3:5: syntax error: nested deeper than {} levels",
+                yaml::MAX_DEPTH
+            )]
         );
     }
 
-    /// A quoted key can't pass for a collection or alias key.
+    /// A collection key, which a quoted key could once pass for, is
+    /// refused before any duplicate compares it (decision 38).
     #[test]
     fn a_text_key_never_matches_a_collection_key() {
-        assert_eq!(keys(&root("\"\\0mapping\": 1\n? {a: 1}\n: 2\n")).len(), 2);
+        assert_eq!(
+            issues("\"\\0mapping\": 1\n? {a: 1}\n: 2\n"),
+            ["test.yml:2:3: syntax error: a mapping key must be a scalar, not a collection"]
+        );
     }
 
-    /// Duplicates come out by position, though a collection key is only
-    /// known once it ends.
+    /// Duplicates come out by position, a later mapping's before an
+    /// earlier one's end.
     #[test]
     fn duplicates_come_out_by_position() {
-        let found = issues("? {k: 1}\n: 1\n? {z: 1, z: 2}\n: 2\n");
+        let found = issues("a:\n  k: 1\n  b:\n    z: 1\n    z: 2\n  k: 2\n");
         assert_eq!(
             found,
             [
-                "test.yml:3:3: <key>: duplicate key (also at line 1, column 3)",
-                "test.yml:3:10: <key>.z: duplicate key (also at line 3, column 4)",
+                "test.yml:5:5: a.b.z: duplicate key (also at line 4, column 5)",
+                "test.yml:6:3: a.k: duplicate key (also at line 2, column 3)",
             ]
         );
     }
@@ -617,11 +621,11 @@ mod tests {
             issues("a: &x k\n*x : 1\n*x : 2\n"),
             ["test.yml:3:1: <alias>: duplicate key (also at line 2, column 1)"]
         );
+        // Collection keys are refused at the first (decision 38).
         assert_eq!(
             issues("? [a]\n: 1\n? [b]\n: 2\n"),
-            ["test.yml:3:3: <key>: duplicate key (also at line 1, column 3)"]
+            ["test.yml:1:3: syntax error: a mapping key must be a scalar, not a collection"]
         );
-        assert_eq!(keys(&root("? [a]\n: 1\n? {b: 1}\n: 2\n")).len(), 2);
     }
 
     /// An alias key and the key it stands for aren't duplicates to yaml.v3
@@ -741,9 +745,12 @@ mod tests {
         assert_eq!(keys(&node), ["x", "y"]);
     }
 
-    /// Duplicates are reported only from the first document too.
+    /// A second document is the issue, not the duplicates in it.
     #[test]
-    fn duplicates_in_a_later_document_do_not_count() {
-        assert_eq!(keys(&root("a: 1\n---\nb: 1\nb: 2\n")), ["a"]);
+    fn a_second_document_is_refused_before_its_duplicates() {
+        assert_eq!(
+            issues("a: 1\n---\nb: 1\nb: 2\n"),
+            ["test.yml:2:1: syntax error: a second document (Ansible reads one document per file)"]
+        );
     }
 }

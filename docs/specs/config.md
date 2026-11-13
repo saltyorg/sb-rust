@@ -149,15 +149,24 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   *amended by hardening Task 46*): no issue, notice, output line or log
   record prints their values (an issue on one names the key, never the
   value), and `not_equals` never prints the value it compared.
-- **Parsing:** the first YAML document only (as yaml.v3 and cli-core); an
+- **Parsing:** one YAML document, as Ansible's loader wants (a second
+  is refused); an
   empty file is an empty mapping (every required key missing, as sb-go);
   a root that isn't a mapping is one issue. The layouts accepted are
   libyaml's, Ansible's parser: cli-core's YAML pre-pass rewrites the text
   before saphyr reads it, for validate-config and the inventory read
   alike ([ADR-022](../decisions/ADR-022-yaml-pre-pass.md); the hardening
-  plan's decision 28). A syntax error is that file's issue, with saphyr's
-  line and column in the file as written, or the pre-pass's for a tab
-  libyaml refuses. *Amended by hardening Task 43.* Merge keys (`<<`) aren't followed
+  plan's decision 28). What Ansible's loader refuses, sb refuses before
+  its own rules (decision 38): a second document or content after the
+  first one's end, a `:` with no key, an anchor defined twice, a
+  collection as a mapping key, a control character, NEL, LS and PS,
+  and the rest listed in docs/platform-notes/yaml-acceptance.md.
+  Nesting is limited to 23,000 levels, under the depth Ansible's loader
+  takes before it crashes (measured in that note); the limit is on depth,
+  never on length, since localhost.yml is as long as its owner makes it.
+  A syntax error is that file's issue, with saphyr's
+  line and column in the file as written, or the pre-pass's for what
+  it refuses. *Amended by hardening Tasks 43 and 59.* Merge keys (`<<`) aren't followed
   (saphyr doesn't; yaml.v3 does), so a `<<` key is an unknown field: a
   difference, below.
 - **Duplicate keys:** a pass over the parser's events runs first and
@@ -298,11 +307,21 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - The YAML accepted is libyaml's, so Ansible's (ADR-022): yaml.v3 also
   accepts the tab layouts libyaml refuses (a tab-only line, a tab before
   a top-level key, `-\tvalue`), and refuses a flow collection or quoted
-  scalar continued left of its key's column. Where libyaml and saphyr
-  still differ (saphyr's own leniencies and refusals, listed in
-  docs/platform-notes/yaml-acceptance.md), sb follows saphyr; notably
-  NEL, LS and PS (U+0085, U+2028, U+2029) aren't line breaks to sb, as
-  they are to libyaml.
+  scalar continued left of its key's column; yaml.v3 and sb-go also read
+  what libyaml refuses (a second document, of which they read the
+  first; a `:` with no key; an anchor defined twice; a control
+  character; junk after an indented first mapping), which sb refuses.
+  A few layouts libyaml and saphyr read differently are refused though
+  libyaml accepts them (`[?x]`, `*x: 1`; the note lists them). Where libyaml
+  and saphyr still differ (saphyr's own refusals, and a clipped block
+  scalar at the end of a file without a final line break, which keeps
+  its line break: docs/platform-notes/yaml-acceptance.md), sb follows
+  saphyr. NEL, LS and PS (U+0085, U+2028, U+2029), line breaks to
+  libyaml and not to saphyr, are refused wherever they are, even where
+  libyaml reads them as saphyr would.
+- Nesting deeper than 23,000 levels is refused (yaml.v3 has no limit),
+  and so is flow nesting deeper than 255, saphyr-parser's own limit,
+  which libyaml takes.
 - A duplicate key reads `<path>: duplicate key (also at line L, column
   C)` (sb-go: yaml.v3's `mapping key "k" already defined at line L` for
   the schema-backed files, its walker's `<path> (appears N times)` for
@@ -345,11 +364,6 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   base URL is ever loopback.
 - A `!!binary` scalar keeps its text (yaml.v3 decodes the base64); no
   Saltbox file uses one.
-- Nothing after the first document is read; yaml.v3's scanner reads a
-  little past a `...` end marker, so an error just after one fails the
-  file in sb-go and not in sb. Ansible's loader refuses a file with a
-  second document; sb, like sb-go, reads the first (the YAML corpus's
-  `multi-document` line).
 - Plain scalars resolve as yaml.v3's (YAML 1.2 core, as sb-go), not as
   Ansible's PyYAML resolver (YAML 1.1): `yes`, `no`, `on` and `off` stay
   strings, which the schema rules read as Ansible booleans anyway;

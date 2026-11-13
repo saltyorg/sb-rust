@@ -87,8 +87,9 @@ libyaml is the reference.
   there), `1e3` (a string there) and an integer past 64 bits (an int
   there, a float in yaml.v3). The schema rules read the Ansible booleans
   from the string either way.
-- **Documents:** sb reads the first document of a file with two;
-  libyaml's single-document loader, like Ansible's, refuses it.
+- **Documents:** sb read the first document of a file with two;
+  libyaml's single-document loader, like Ansible's, refuses it. Since
+  Task 59 sb refuses it too.
 - saphyr-parser 0.3.4 (2026-11-11) gives the same results on the
   corpus.
 
@@ -113,14 +114,18 @@ layouts with multi-line flow collections, quoted and block scalars and
 tabs, and random strings of YAML indicators, tabs and breaks. No input
 that saphyr alone accepted was refused by sb, and the pre-pass added no
 acceptance libyaml refuses beyond what saphyr already accepts on the
-same text with spaces. What remains is saphyr's own behaviour:
+same text with spaces. What remained was saphyr's own behaviour; the
+leniencies (saphyr accepts, libyaml refuses) are refused since Task 59,
+below:
 
 - saphyr accepts junk after an indented first mapping that is dedented
-  (`  a: 1\nb: 2`): its first document ends at the dedent and sb reads
+  (`  a: 1\nb: 2`): its first document ends at the dedent and sb read
   no further; libyaml refuses the file;
 - saphyr accepts a `:` with no key at the start of a line (`: x`);
 - a clipped block scalar at the end of a file without a final line
-  break keeps its line break in saphyr, not in libyaml;
+  break keeps its line break in saphyr, not in libyaml (a value
+  difference, still there: the corpus's
+  `block-scalar-clip-at-end-without-newline` lines);
 - saphyr refuses a few layouts libyaml accepts, none in Saltbox's
   files: a block scalar header at the key's column (`a:\n|`), a tab
   after `?` in a flow collection, a comment glued to a token
@@ -131,6 +136,124 @@ same text with spaces. What remains is saphyr's own behaviour:
   (the config spec lists it);
 - a multi-line quoted key in a flow collection (`{"k\n": 1}`) is
   accepted once padded; libyaml refuses it.
+
+## What Ansible refuses, sb refuses (Task 59)
+
+Decision 38 asks for exactly Ansible's acceptance. sb's pre-pass now
+also refuses, each at a 1-based line and column, in validate-config and
+in the inventory read alike:
+
+- a second document, explicit (`---`) or after the first one's `...`,
+  and junk after an indented first mapping (saphyr-parser's own error,
+  in libyaml's words, now that sb reads the whole stream);
+- a document end marker with no document (`...` alone), and a tab in a
+  line's white space after `...`;
+- a `:` with no key before it on its line, in block or flow context
+  (`: x`, `a: 1\n: b`, `{a: 1, : 2}`, a key split over lines), except
+  the one `:` an explicit `?` key takes;
+- NEL, LS and PS (U+0085, U+2028, U+2029) anywhere: libyaml reads them as
+  line breaks, saphyr as text, so a file holding one reads differently.
+  Where libyaml happens to read it as saphyr does (`a: "x<LS>y"`) sb
+  refuses what libyaml accepts: the corpus's `ls-line-break` line;
+- and, found by a differential fuzz of about 1.7 million generated
+  inputs over the same harness (scratch, not kept), extended with `?`, `:`, `...`, `---` and anchors: an
+  anchor defined twice (PyYAML's composer refuses it), an anchor or
+  alias name that libyaml ends at `.`, `:` or another character saphyr
+  takes into it, a `:` right before `,`, `?` or a bracket in a flow
+  collection's plain value (`{key:}`), and `|` or `>` starting a value
+  in a flow collection;
+- and, found by Task 59's code and security reviews: a control
+  character libyaml's reader refuses (anything below U+0020 but tab and
+  the line breaks, U+007F to U+009F, U+FFFE, U+FFFF; an ESC pasted into
+  a password is the likely one), a `%YAML` directive other than 1.1 or
+  1.2 and any directive but `%YAML` and `%TAG`, a tag followed by
+  anything but white space (or `,` in a flow collection), a `?` in a
+  flow collection with no space after it, a top-level block scalar's
+  content at column 0, a flow key split over lines in an outer flow
+  level, and a collection as a mapping key (PyYAML's constructor:
+  "found unhashable key"; nested, saphyr's loader hashed it at every
+  level, about 12 s for 46 KB of `? ? ? …`).
+
+After the last change a fuzz of 720,000 inputs, with libyaml's side
+also refusing collection keys, held none that sb accepts and libyaml
+refuses. It still held block scalars at the end of a file without a
+final line break (the value difference above) and saphyr's refusals of
+a block scalar header at an explicit key's column. sb refuses a few
+layouts libyaml reads differently from saphyr: `[?x]` (libyaml a key
+`x`, saphyr a scalar `?x`), an alias glued to its key's colon (`*x: 1`,
+which saphyr alone refused before too), and a tab-only line between a
+directive and `---`; a byte order mark inside a document is saphyr's
+own refusal. A mapping with the keys `~` and an empty one is two keys
+to validate-config's duplicate rule (yaml.v3 compares text) and one key
+twice to the inventory read's loader, which refuses it (Ansible's
+loader takes it).
+
+The corpus has a case for each refusal (`multi-document`,
+`mapping-indented-then-dedented`, `colon-no-key-*`,
+`explicit-key-two-values`, `flow-map-multi-line-quoted-key`,
+`content-after-end-marker`, `end-marker-alone`, `nel-line-break`,
+`anchor-defined-twice`, `anchor-name-then-dot`,
+`flow-plain-colon-before-brace`, `flow-block-indicator`,
+`tab-after-end-marker`, `control-character`, `directive-unknown`,
+`directive-yaml-1-3`, `tag-before-bracket`,
+`flow-question-without-space`, `top-level-block-scalar-at-column-0`,
+`flow-key-across-lines`, `collection-as-key`), its libyaml verdict from
+`scripts/yaml-corpus.py`, which since Task 59 also records the reader's
+errors and a collection as a mapping key, and the test checks sb's
+position against libyaml's. sb names an earlier point for three: the
+NEL itself (libyaml the line after it), an unknown directive's `%`
+(libyaml its name) and a flow `?` (libyaml the token after it).
+
+Not covered: what Ansible's constructor refuses beyond the parser,
+the composer and unhashable keys, notably a tag it has no constructor
+for (`!custom`, which sb reads as a string, as yaml.v3 does).
+
+## Nesting depth (Task 59)
+
+**Method:** each depth was loaded in a fresh Python process (a deep
+enough one crashes the interpreter), with `yaml.load(text,
+Loader=yaml.CSafeLoader)` (PyYAML 6.0.3, libyaml 0.2.5, Python 3.12) and
+with ansible-core 2.21.2's own `AnsibleLoader`, on the default 8 MiB
+stack (`ulimit -s`, Ubuntu 22.04). The deepest depth that loaded was
+found by doubling, then bisection, for four layouts: block sequences
+(`- - - … x`), flow sequences (`[[[…x]]]`), block mappings (`a:` each
+line two spaces deeper) and flow mappings (`{a: {a: …x}}`). Then each
+loader loaded 23,000, 23,500, 23,700 and 23,780 levels of both mapping
+layouts ten times.
+
+**Numbers:**
+
+| Layout | CSafeLoader | AnsibleLoader |
+|---|---|---|
+| Block sequences | 26,174 | 26,176 |
+| Flow sequences | 26,178 | 26,178 |
+| Block mappings | 23,805 | 23,798 |
+| Flow mappings | 23,799 | 23,791 |
+
+Neither loader has a limit of its own: one level past these the
+process dies with SIGSEGV (libyaml's composer, through PyYAML's binding,
+recurses in C), and the bound moves by a few levels between runs (the
+lowest crash seen was 23,792 flow mappings; every repeated run at
+23,780 loaded). The constructors don't recurse: both build collections
+from generators. The numbers follow the stack size.
+
+**sb:** `yaml::MAX_DEPTH` is 23,000 levels (an alias counted as the
+collections it copies, as saphyr's loader copies them): under every
+crash seen, so sb never takes a depth Ansible's loader may crash on.
+Deeper is refused, with the line and column where it goes too deep, in
+validate-config and in the inventory read. The limit is on depth only,
+never on length: the inventory (localhost.yml) is as long as its owner
+makes it. Flow collections stop at 255 levels, saphyr-parser's own
+limit (its flow level is a `u8`), with its "recursion limit exceeded"
+error: there sb refuses depths Ansible takes.
+
+A tree deeper than 256 levels is built, walked and dropped on a thread
+with a 64 MiB stack (384 MiB in a debug build), reserved, not committed: at 23,800 levels
+validate-config's parse and tree took between 64 and 128 MiB of stack
+in a debug build and between 16 and 24 MiB in a release one, and a
+40 KB `- - - …` inventory overflowed the main thread's stack before.
+Key paths are kept so that a deep file costs memory in its depth, not
+its depth squared (1.3 GB for a 46 KB file before that change).
 
 ## The candidates on the corpus
 

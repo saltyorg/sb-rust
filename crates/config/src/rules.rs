@@ -179,9 +179,15 @@ fn rule_at<'a>(rules: &'a Rules, path: &str) -> Option<&'a Rule> {
             Some(Additional::Rule(r)) => Some(r),
             _ => None,
         });
-        for _ in 0..segment.matches('[').count() {
+        for _ in segment.matches('[') {
             rule = rule.and_then(|r| r.items.as_deref());
+            if rule.is_none() {
+                break;
+            }
         }
+        // Past the rules no deeper segment has one: a deep file's paths
+        // are read only as far as its schema goes.
+        rule?;
         properties = rule.and_then(|r| r.properties.as_ref());
         additional = rule.and_then(|r| r.additional_properties.as_ref());
     }

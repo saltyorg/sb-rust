@@ -117,7 +117,10 @@ logged. *Amended 2026-11-13 by the completion spec.*
    `<server_appdata_path>/sb/config.toml`, `/opt/sb/config.toml` by
    default, so Saltbox backups cover it (maintainer, 2026-10-29).
    `server_appdata_path` comes from the Saltbox inventory, as sb-go's
-   `layout` reads it. A theme names a built-in theme (`default` built in)
+   `layout` reads it, except that the YAML is read as Ansible's loader
+   reads it: a file it refuses (a second document among them) means
+   `/opt`, as a parse error does, and nesting is limited by depth, never
+   by length (config spec, "Parsing"). *Amended by hardening Task 59.* A theme names a built-in theme (`default` built in)
    and can override individual palette roles. A missing file means the
    built-in theme; an invalid one is a warning (shown and logged) and the
    built-in theme is used, so a typo can't block `sb update`.

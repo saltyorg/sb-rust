@@ -140,13 +140,13 @@ fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigErro
 }
 
 /// `server_appdata_path` from `inventory`: an absolute value, cleaned; a
-/// missing, unreadable or oversized file, a parse error in the first
-/// document (a duplicate key included), or an empty or relative value all
-/// mean `/opt`, as in sb-go. The YAML is what Ansible accepts
-/// ([`inventory_document`]), as validate-config reads it. Like sb-go's
-/// yaml.v3 it parses only the first document (`Parser::load` with `multi` off:
-/// <https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>)
-/// and reads a custom-tagged scalar as its string. Unlike yaml.v3, a merge
+/// missing, unreadable or oversized file, a file Ansible's loader refuses
+/// or a parse error (a duplicate key included), or an empty or relative
+/// value all mean `/opt`, as in sb-go. The YAML is what Ansible accepts
+/// ([`inventory_appdata`]), as validate-config reads it, which reports the
+/// refusals; unlike sb-go's yaml.v3, a second document is refused, not
+/// ignored (decision 38). Like yaml.v3 it reads a custom-tagged scalar as
+/// its string. Unlike yaml.v3, a merge
 /// key (`<<`) isn't followed (saphyr has none); Saltbox's `host_vars` don't
 /// use one. The inventory is Saltbox config, read with saphyr as the
 /// capability map has it for Saltbox YAML
@@ -161,35 +161,66 @@ pub fn appdata_path(inventory: &Path) -> PathBuf {
     read_small(inventory)
         .ok()
         .flatten()
-        .and_then(|text| {
-            let document = inventory_document(&text)?;
-            let value = document.as_mapping_get("server_appdata_path")?;
-            value
-                .get_tagged_node()
-                .unwrap_or(value)
-                .as_str()
-                .map(PathBuf::from)
-        })
+        .and_then(|text| inventory_appdata(&text).ok().flatten())
+        .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .map_or_else(|| PathBuf::from("/opt"), |path| path.components().collect())
 }
 
-/// The first YAML document in the inventory's `text`, parsed no further,
-/// or `None` on an error in it. The text goes through [`yaml::prepare`]
-/// first, as validate-config's does, so the two accept the same layouts:
-/// what Ansible's libyaml accepts (decision 28). Public so that
-/// sb-config's YAML corpus test can check that agreement.
-#[must_use]
-pub fn inventory_document(text: &str) -> Option<saphyr::YamlOwned> {
-    let prepared = yaml::prepare(text).ok()?;
-    let mut loader = saphyr::YamlLoader::<saphyr::YamlOwned>::default();
-    saphyr_parser::Parser::new_from_str(prepared.text())
-        .load(&mut loader, false)
-        .ok()?;
-    if loader.error().is_some() {
-        return None;
-    }
-    loader.into_documents().into_iter().next()
+/// The string `server_appdata_path` holds in the inventory's `text`, if
+/// it holds one. The text goes through [`yaml::prepare`] first, as
+/// validate-config's does, so the two refuse the same files: what
+/// Ansible's loader refuses (decisions 28 and 38). The YAML read limits
+/// no length (`text` is what `read_small` read), only depth
+/// ([`yaml::MAX_DEPTH`]): a deep file is loaded on
+/// [`yaml::with_stack`]'s thread, where its tree is dropped too. Public so
+/// that sb-config's YAML corpus test can check that agreement.
+///
+/// # Errors
+///
+/// What Ansible's loader refuses, and saphyr's loader's own errors, with
+/// the line and column in `text`; a deep file whose thread couldn't start,
+/// at its start.
+pub fn inventory_appdata(text: &str) -> Result<Option<String>, yaml::Refusal> {
+    let prepared = yaml::prepare(text)?;
+    let refusal = |err: &saphyr_parser::ScanError| {
+        let marker = prepared.original(err.marker());
+        yaml::Refusal {
+            line: marker.line(),
+            column: marker.col() + 1,
+            message: err.info().to_string(),
+        }
+    };
+    let load = || {
+        let mut loader = saphyr::YamlLoader::<saphyr::YamlOwned>::default();
+        // The first document: `prepare` has refused a second
+        // (<https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>).
+        saphyr_parser::Parser::new_from_str(prepared.text())
+            .load(&mut loader, false)
+            .map_err(|err| refusal(&err))?;
+        if let Some(err) = loader.error() {
+            return Err(refusal(err));
+        }
+        Ok(loader
+            .into_documents()
+            .into_iter()
+            .next()
+            .and_then(|document| {
+                let value = document.as_mapping_get("server_appdata_path")?;
+                value
+                    .get_tagged_node()
+                    .unwrap_or(value)
+                    .as_str()
+                    .map(str::to_string)
+            }))
+    };
+    yaml::with_stack(prepared.depth(), load).unwrap_or_else(|err| {
+        Err(yaml::Refusal {
+            line: 1,
+            column: 1,
+            message: format!("can't start the YAML reader's thread: {err}"),
+        })
+    })
 }
 
 /// sb's config file under the appdata path.
@@ -398,33 +429,76 @@ mod tests {
     }
 
     /// yaml.v3 refuses a mapping with a duplicate key, so sb-go falls back
-    /// to `/opt`; a second document is ignored (yaml.v3 reads the first).
+    /// to `/opt`. A second document, which sb-go ignored, is refused as
+    /// Ansible's loader refuses it (decision 38): `/opt` too.
     #[test]
-    fn duplicate_keys_and_extra_documents_follow_sb_go() {
+    fn duplicate_keys_and_extra_documents_mean_opt() {
         let dir = tempfile::tempdir().expect("temp dir");
         let case = |text: &str| appdata_path(&file(dir.path(), "localhost.yml", text));
         assert_eq!(
             case("server_appdata_path: /a\nserver_appdata_path: /b\n"),
             PathBuf::from("/opt")
         );
+        for text in [
+            "server_appdata_path: /a\n---\nserver_appdata_path: /b\n",
+            "server_appdata_path: /a\n---\n[unclosed\n",
+            "  server_appdata_path: /a\nx: 1\n",
+        ] {
+            assert_eq!(case(text), PathBuf::from("/opt"), "{text:?}");
+        }
         assert_eq!(
-            case("server_appdata_path: /a\n---\nserver_appdata_path: /b\n"),
-            PathBuf::from("/a")
-        );
-        // yaml.v3 doesn't parse past the first document, so a broken later
-        // one doesn't matter.
-        assert_eq!(
-            case("server_appdata_path: /a\n---\n[unclosed\n"),
-            PathBuf::from("/a")
-        );
-        assert_eq!(
-            case("server_appdata_path: /a\n---\nx: 1\nx: 2\n"),
+            case("server_appdata_path: /a\n...\n# c\n"),
             PathBuf::from("/a")
         );
         // yaml.v3 decodes a custom-tagged scalar into a string.
         assert_eq!(
             case("server_appdata_path: !custom /srv\n"),
             PathBuf::from("/srv")
+        );
+    }
+
+    /// The inventory read refuses what Ansible's loader refuses at the line
+    /// and column validate-config gives, saphyr's loader errors included.
+    #[test]
+    fn the_inventory_read_says_where_it_refuses() {
+        let at = |text: &str| {
+            let refusal = inventory_appdata(text).expect_err(text);
+            (refusal.line, refusal.column)
+        };
+        assert_eq!(at("a: 1\n---\nb: 2\n"), (2, 1));
+        assert_eq!(at("a: 1\n: x\n"), (2, 1));
+        assert_eq!(at("a: [\n  1,\n  2\n"), (4, 1));
+        assert_eq!(at("a: *nowhere\n"), (1, 4));
+        assert_eq!(
+            inventory_appdata("server_appdata_path: [\n  1]\n"),
+            Ok(None)
+        );
+    }
+
+    /// Depth is limited, never length: a 40 KB `- - - …` inventory, which
+    /// overflowed the stack before, is read on the deep stack, and one
+    /// past `MAX_DEPTH` is refused where it goes too deep.
+    #[test]
+    fn a_deep_inventory_is_read_or_refused_without_overflow() {
+        let deep = |n: usize| format!("x:\n  {}v\nserver_appdata_path: /data\n", "- ".repeat(n));
+        assert_eq!(
+            inventory_appdata(&deep(20_000)),
+            Ok(Some("/data".to_string()))
+        );
+        assert_eq!(
+            inventory_appdata(&deep(yaml::MAX_DEPTH - 1)),
+            Ok(Some("/data".to_string()))
+        );
+        let refusal = inventory_appdata(&deep(yaml::MAX_DEPTH)).expect_err("too deep");
+        assert_eq!(
+            (refusal.line, refusal.column),
+            (2, 3 + 2 * (yaml::MAX_DEPTH - 1))
+        );
+        assert!(refusal.message.starts_with("nested deeper than"));
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(
+            appdata_path(&file(dir.path(), "localhost.yml", &deep(20_000))),
+            PathBuf::from("/data")
         );
     }
 

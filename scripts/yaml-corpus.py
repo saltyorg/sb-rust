@@ -5,7 +5,9 @@ For each case in CORPUS/cases/*.yml, in name order, record what libyaml
 does with it, through PyYAML's libyaml binding (`CSafeLoader`: libyaml's
 parser, and PyYAML's safe constructor and YAML 1.1 resolver, the parser
 Ansible's loader uses when libyaml is there): whether it is accepted as
-a single document, and for an accepted case, every scalar value's key path,
+a single document (the reader's errors, and a collection as a mapping
+key, which the constructor refuses, count as refusals), and for an
+accepted case, every scalar value's key path,
 style, text as parsed and resolved value, and every empty collection.
 Writes CORPUS/expected.json.
 
@@ -100,20 +102,57 @@ def scalars(
             scalars(loader, value, name if not path else f"{path}.{name}", out)
 
 
+def unhashable(node: yaml.Node) -> None:
+    """Raise the constructor's error for a collection used as a mapping
+    key under `node` ("found unhashable key"), which composing alone
+    doesn't find. Each node once: an alias is the node it names."""
+    seen: set[int] = set()
+    todo = [node]
+    while todo:
+        current = todo.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, yaml.MappingNode):
+            for key, value in current.value:
+                if not isinstance(key, yaml.ScalarNode):
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        current.start_mark,
+                        "found unhashable key",
+                        key.start_mark,
+                    )
+                todo.append(value)
+        elif isinstance(current, yaml.SequenceNode):
+            todo.extend(current.value)
+
+
+def at(data: bytes, position: int) -> str:
+    """` at line L, column C` for a character `position` in `data`."""
+    before = data.decode("utf-8", errors="replace")[:position]
+    line = before.count("\n") + 1
+    return f" at line {line}, column {position - (before.rfind(chr(10)) + 1) + 1}"
+
+
 def verdict(data: bytes) -> dict[str, Any]:
     """libyaml's verdict on one case: accepted, with its scalars, or the
-    error it stopped at (1-based line and column)."""
+    error it stopped at (1-based line and column): the reader's, the
+    parser's or the composer's, or a collection as a mapping key, which
+    the constructor refuses."""
     loader = yaml.CSafeLoader(data)
     try:
         node = loader.get_single_node()
         out: list[dict[str, Any]] = []
         if node is not None:
+            unhashable(node)
             scalars(loader, node, "", out)
         return {"accepted": True, "scalars": out}
     except yaml.MarkedYAMLError as err:
         mark = err.problem_mark
         where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
         return {"accepted": False, "error": f"{err.problem}{where}"}
+    except yaml.reader.ReaderError as err:
+        return {"accepted": False, "error": f"{err.reason}{at(data, err.position)}"}
     finally:
         loader.dispose()
 

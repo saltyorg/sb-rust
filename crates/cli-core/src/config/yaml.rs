@@ -23,12 +23,38 @@
 //!   `yaml_parser_scan_block_scalar_breaks` in `src/scanner.c`:
 //!   <https://github.com/yaml/libyaml/blob/0.2.5/src/scanner.c>), checked
 //!   against `PyYAML` 6.0.3's bundled libyaml 0.2.5 on the YAML corpus
-//!   (`crates/config/tests/yaml-corpus`).
+//!   (`crates/config/tests/yaml-corpus`);
+//! - what libyaml refuses and saphyr reads is refused (decision 38;
+//!   docs/platform-notes/yaml-acceptance.md): a `:` with no key before it
+//!   on its line (`yaml_parser_fetch_value` saves no key there, and the
+//!   parser then finds none; an explicit key's `?` takes one such `:`),
+//!   an anchor defined twice or whose name libyaml ends where saphyr
+//!   doesn't, a flow plain scalar's `:` before a flow indicator, `|` or
+//!   `>` starting a flow value, a `?` in a flow collection with no space
+//!   after it, a tag not followed by a space, a `%YAML` directive other
+//!   than 1.1 or 1.2 and any directive but `%YAML` and `%TAG`, a top-level
+//!   block scalar's content at column 0, an end marker before any
+//!   document, and a tab in a line's white space after the document's
+//!   `...`.
 //!
 //! To do that the pass tracks what the scanner tracks: quotes, comments,
 //! flow depth, block scalars (whose contents it leaves alone) and the
-//! block indentation. It reads the first document only, as sb does; the
-//! rest of the file is copied as it is.
+//! block indentation. It reads the first document only; the rest of the
+//! file is copied as it is.
+//!
+//! Then the whole stream, as saphyr-parser reads the prepared text, must
+//! be what Ansible's loader takes (hardening plan decision 38): one
+//! document (`get_single_node`, which refuses another one, and libyaml's
+//! parser, which refuses content after a document's end), scalar mapping
+//! keys, and nesting no deeper than [`MAX_DEPTH`]; before that the text
+//! must hold no character libyaml's reader refuses, and no NEL, LS or PS
+//! (line breaks to libyaml, text to saphyr). The pass limits depth only,
+//! never length: the Saltbox inventory is as long as its owner makes it
+//! (the file is still read up to cli-core's 1 MiB cap, `MAX_FILE_BYTES`).
+//! A tree deeper than [`SHALLOW`] is loaded, walked and dropped on a
+//! thread with a stack for [`MAX_DEPTH`] ([`with_stack`]): saphyr-parser's
+//! `Parser::load`, the tree's clone (an alias) and drop, and sb's walks
+//! recurse once per level.
 //!
 //! Why not a libyaml port (`libyaml-safer`, `unsafe-libyaml-norway`): the
 //! maintainer chose this pass (decision 28) over Task 42's measured
@@ -54,6 +80,34 @@ use saphyr_parser::{Event, Marker, Parser};
 
 use super::MAX_FILE_BYTES;
 
+/// How deep collections may nest, an alias counted as the collections it
+/// copies (saphyr's loader clones them; sb's walks recurse into them).
+/// Ansible's loader (`PyYAML` 6.0.3 with libyaml 0.2.5) has no limit of
+/// its own: its composer recurses in C until the interpreter's 8 MiB
+/// stack overflows and the process dies, past about 23,800 nested
+/// mappings or 26,170 nested sequences (measured, with the method, in
+/// docs/platform-notes/yaml-acceptance.md). sb reads up to a depth that
+/// loader always took in the measurement, and refuses deeper.
+pub const MAX_DEPTH: usize = 23_000;
+
+/// Up to this depth a tree is handled on the caller's stack: sb's walks
+/// held it on a test thread's 2 MiB before the deep stack came.
+pub const SHALLOW: usize = 256;
+
+/// The stack [`with_stack`] gives a deep tree: at about 23,800 levels,
+/// validate-config's parse and tree took between 16 and 24 MiB in a
+/// release build and between 64 and 128 MiB in a debug one (the tests'),
+/// so each gets about three times the most measured. UNVERIFIED: that
+/// Linux commits a thread's stack pages only as they are touched (demand
+/// paging; the `pthread_attr_setstacksize(3)` page doesn't say), checked
+/// against the deep tests' peak RSS (under 110 MB in a debug build); a
+/// host with strict overcommit charges the whole reservation.
+const DEEP_STACK: usize = if cfg!(debug_assertions) {
+    384 << 20
+} else {
+    64 << 20
+};
+
 /// The most spaces the pass inserts in one file: the padding a file needs
 /// is about its opening columns times its continuation lines, which a
 /// crafted file can make quadratic. Past it, lines stay as they are and
@@ -69,6 +123,8 @@ pub struct Prepared {
     before: Vec<usize>,
     /// All the spaces inserted.
     total: usize,
+    /// How deep its collections nest, aliases counted as what they copy.
+    depth: usize,
 }
 
 /// The config text is the user's, secrets included: its debug form shows
@@ -78,29 +134,58 @@ impl std::fmt::Debug for Prepared {
         f.debug_struct("Prepared")
             .field("bytes", &self.text.len())
             .field("padding", &self.total)
+            .field("depth", &self.depth)
             .finish_non_exhaustive()
     }
 }
 
-/// A tab libyaml refuses, at a 1-based line and column of the original
-/// text.
+/// What Ansible's loader refuses (a tab where libyaml refuses one, a
+/// second document, nesting too deep, saphyr-parser's own syntax errors),
+/// at a 1-based line and column of the original text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message} at line {line}, column {column}")]
 pub struct Refusal {
     pub line: usize,
     pub column: usize,
-    pub message: &'static str,
+    pub message: String,
 }
 
 const TAB_INDENT: &str = "a tab in the indentation (YAML indents with spaces)";
 const TAB_AFTER_INDICATOR: &str = "a tab after an indicator here (use a space)";
 const TAB_BLOCK_SCALAR: &str = "a tab in a block scalar's indentation (YAML indents with spaces)";
+const ANCHOR_NAME: &str =
+    "an anchor or alias name is letters, digits, `_` and `-`, ending at a space";
+const FLOW_BLOCK_INDICATOR: &str =
+    "a `|` or `>` can't start a value in a flow collection (quote the value)";
+const FLOW_PLAIN_COLON: &str =
+    "a `:` right before `,`, `?` or a bracket in a flow collection's plain value (quote the value)";
+const TOP_BLOCK_SCALAR: &str =
+    "a top-level block scalar's content must be indented (Ansible's parser ends it here)";
+const FLOW_QUESTION: &str =
+    "a `?` in a flow collection must be followed by a space (quote a value that starts with `?`)";
+const TAG_END: &str = "a tag must be followed by a space";
+const YAML_VERSION: &str =
+    "a %YAML directive for a version Ansible's parser doesn't read (1.1 or 1.2)";
+const UNKNOWN_DIRECTIVE: &str = "an unknown directive (Ansible's parser reads %YAML and %TAG)";
+const COLLECTION_KEY: &str = "a mapping key must be a scalar, not a collection";
+const NO_KEY: &str = "a `:` with no key before it (a key must be on the `:`'s line)";
+const LONE_END: &str = "a document end marker (`...`) with no document before it";
+const SECOND_DOCUMENT: &str = "a second document (Ansible reads one document per file)";
+const AFTER_END: &str = "content after the document's end marker (`...`)";
 
 impl Prepared {
     /// The text for saphyr-parser.
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// How deep its collections nest, an alias counted as the collections
+    /// it copies: at most [`MAX_DEPTH`]. Past [`SHALLOW`], what is built
+    /// from it is handled through [`with_stack`].
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.depth
     }
 
     /// `marker`, a position in [`Prepared::text`], in the original text: a
@@ -158,10 +243,18 @@ struct Scan {
     key_allowed: bool,
     /// Where a possible simple key on this line starts.
     key: Option<usize>,
-    /// The possible keys of the flow levels around this one.
-    outer: Vec<Option<usize>>,
+    /// The possible keys of the flow levels around this one, each with
+    /// its level's pending `?`.
+    outer: Vec<(Option<usize>, bool)>,
+    /// The columns of the `?`s in block context whose `:` hasn't come,
+    /// innermost last.
+    questions: Vec<usize>,
+    /// A `?` in this flow level whose `:` hasn't come.
+    flow_question: bool,
     /// A document has started (`---`) or has content.
     started: bool,
+    /// Each anchor defined so far, where (1-based line and column).
+    anchors: std::collections::HashMap<String, (usize, usize)>,
 }
 
 impl Scan {
@@ -193,6 +286,14 @@ impl Scan {
         self.key_allowed = false;
     }
 
+    /// The `?`s right of `col` are answered or abandoned: a token at `col`
+    /// is outside their entries.
+    fn close_questions(&mut self, col: usize) {
+        while self.questions.last().is_some_and(|&top| top >= col) {
+            self.questions.pop();
+        }
+    }
+
     /// A token at `col`, in block context, closes the deeper block
     /// collections (`unroll_indent`).
     fn unroll(&mut self, col: usize) {
@@ -220,24 +321,214 @@ fn document_marker(line: &[char]) -> Option<char> {
     }
 }
 
-/// `text` prepared for saphyr-parser, or the first tab libyaml refuses:
-/// as it is when saphyr reads its first document already, else padded and
-/// with tabs after a key's colon made spaces.
+/// `text` prepared for saphyr-parser, or the first thing Ansible's loader
+/// refuses in it: as it is when saphyr reads its first document already,
+/// else padded and with tabs after a key's colon made spaces.
 ///
 /// # Errors
 ///
-/// A [`Refusal`] naming the tab's line and column.
+/// A [`Refusal`] naming its line and column: a NEL, LS or PS, a tab or a
+/// `:` libyaml refuses, a document end marker with no document, a
+/// second document or content after the first one's end, nesting
+/// deeper than [`MAX_DEPTH`], or saphyr-parser's own syntax error.
 pub fn prepare(text: &str) -> Result<Prepared, Refusal> {
+    characters(text)?;
     let rewritten = rewrite(text)?;
-    if first_document_parses(text) {
-        return Ok(Prepared {
+    let mut prepared = if first_document_parses(text) {
+        Prepared {
             text: text.to_string(),
             pads: Vec::new(),
             before: Vec::new(),
             total: 0,
-        });
+            depth: 0,
+        }
+    } else {
+        rewritten
+    };
+    prepared.depth = stream(&prepared)?;
+    Ok(prepared)
+}
+
+/// `f`, run where a tree `depth` levels deep can be built, walked and
+/// dropped: on the caller's stack up to [`SHALLOW`], else on a thread with
+/// a stack for [`MAX_DEPTH`] (`Builder::stack_size` and `spawn_scoped`:
+/// <https://doc.rust-lang.org/std/thread/struct.Builder.html#method.spawn_scoped>).
+/// A panic in `f` goes on in the caller.
+///
+/// # Errors
+///
+/// The thread couldn't be started (the system's thread or memory limits).
+pub fn with_stack<T: Send>(depth: usize, f: impl FnOnce() -> T + Send) -> std::io::Result<T> {
+    if depth <= SHALLOW {
+        return Ok(f());
     }
-    Ok(rewritten)
+    std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new()
+            .name("sb-yaml".to_string())
+            .stack_size(DEEP_STACK)
+            .spawn_scoped(scope, f)?;
+        Ok(handle
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+    })
+}
+
+/// The first character in `text` that libyaml's reader refuses or reads
+/// as saphyr doesn't. Its reader refuses control characters but tab and
+/// the line breaks, and U+FFFE and U+FFFF ("control characters are not
+/// allowed", `yaml_parser_update_buffer` in `reader.c`). NEL, LS and PS
+/// are line breaks to libyaml (`IS_BREAK` in `yaml_private.h`:
+/// <https://github.com/yaml/libyaml/blob/0.2.5/src/yaml_private.h>) and
+/// text to saphyr: wherever one sits, a value or the structure around it
+/// reads differently. Escaped in a double-quoted scalar each is text to
+/// both. The message names the code point, never the text around it.
+fn characters(text: &str) -> Result<(), Refusal> {
+    let refused = |c: char| {
+        matches!(c, '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{7f}'..='\u{9f}')
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{fffe}' | '\u{ffff}')
+    };
+    let Some(at) = text.find(refused) else {
+        return Ok(());
+    };
+    let before = &text[..at];
+    let mut line = 1;
+    let mut start = 0;
+    for (i, c) in before.char_indices() {
+        // `\r\n` is one break: its `\n` starts the line again.
+        if c == '\n' || (c == '\r' && !before[i + 1..].starts_with('\n')) {
+            line += 1;
+            start = i + 1;
+        } else if c == '\r' {
+            start = i + 1;
+        }
+    }
+    let found = text[at..].chars().next().unwrap_or_default();
+    let code = u32::from(found);
+    let name = match found {
+        '\u{85}' => "NEL",
+        '\u{2028}' => "LS",
+        '\u{2029}' => "PS",
+        _ => "",
+    };
+    let message = if name.is_empty() {
+        format!(
+            "U+{code:04X}, a control character Ansible's YAML parser refuses \
+             (in a double-quoted string, write it as \\u{code:04x})"
+        )
+    } else {
+        format!(
+            "U+{code:04X} ({name}) is a line break to Ansible's YAML parser and not to sb's \
+             (in a double-quoted string, write it as \\u{code:04x})"
+        )
+    };
+    Err(Refusal {
+        line,
+        column: before[start..].chars().count() + 1,
+        message,
+    })
+}
+
+/// The prepared text's whole stream, as saphyr-parser reads it: its
+/// depth (an alias counted as the height of its anchor's collection, which
+/// the loader copies), or what Ansible's loader refuses: a second
+/// document, a collection as a mapping key, nesting past [`MAX_DEPTH`],
+/// or a syntax error. Why not saphyr's own limits: saphyr-parser 0.3.3
+/// has no depth or document option (only its `u8` flow level), and
+/// `YamlLoader::alias_limit` counts nodes, not depth; serde-saphyr's
+/// `check_yaml_budget` scans with another parser (granit-parser), counts
+/// no alias heights and knows nothing of the pre-pass's positions.
+fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
+    let at = |marker: &Marker, message: &str| {
+        let marker = prepared.original(marker);
+        Refusal {
+            line: marker.line(),
+            column: marker.col() + 1,
+            message: message.to_string(),
+        }
+    };
+    let mut open: Vec<Open> = Vec::new();
+    // Each anchor's height.
+    let mut heights: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut documents = 0;
+    let mut deepest = 0;
+    for event in Parser::new_from_str(prepared.text()) {
+        let (event, span) = event.map_err(|err| at(err.marker(), err.info()))?;
+        // A collection (or an alias to one) where a mapping wants a key:
+        // `PyYAML`'s constructor refuses it ("found unhashable key"), and
+        // saphyr's loader would hash it whole at every level.
+        let as_key = open
+            .last()
+            .is_some_and(|parent| parent.key_next == Some(true));
+        let height = match event {
+            Event::DocumentStart(explicit) => {
+                documents += 1;
+                if documents > 1 {
+                    let message = if explicit { SECOND_DOCUMENT } else { AFTER_END };
+                    return Err(at(&span.start, message));
+                }
+                continue;
+            }
+            Event::MappingStart(anchor, _) | Event::SequenceStart(anchor, _) => {
+                if as_key {
+                    return Err(at(&span.start, COLLECTION_KEY));
+                }
+                let mapping = matches!(event, Event::MappingStart(..));
+                open.push(Open {
+                    anchor,
+                    tallest: 0,
+                    key_next: mapping.then_some(true),
+                });
+                if open.len() > MAX_DEPTH {
+                    return Err(at(&span.start, &too_deep()));
+                }
+                deepest = deepest.max(open.len());
+                continue;
+            }
+            Event::MappingEnd | Event::SequenceEnd => {
+                let Some(ended) = open.pop() else {
+                    continue;
+                };
+                if ended.anchor != 0 {
+                    heights.insert(ended.anchor, ended.tallest + 1);
+                }
+                ended.tallest + 1
+            }
+            Event::Alias(anchor) => {
+                let height = heights.get(&anchor).copied().unwrap_or(0);
+                if as_key && height > 0 {
+                    return Err(at(&span.start, COLLECTION_KEY));
+                }
+                if open.len() + height > MAX_DEPTH {
+                    return Err(at(&span.start, &too_deep()));
+                }
+                deepest = deepest.max(open.len() + height);
+                height
+            }
+            Event::Scalar(..) => 0,
+            _ => continue,
+        };
+        // A node has ended in its parent: a mapping's key gives way to its
+        // value, and its value to the next key.
+        if let Some(parent) = open.last_mut() {
+            parent.tallest = parent.tallest.max(height);
+            parent.key_next = parent.key_next.map(|key| !key);
+        }
+    }
+    Ok(deepest)
+}
+
+/// An open collection in [`stream`].
+struct Open {
+    /// Its anchor (0: none).
+    anchor: usize,
+    /// The tallest node in it so far.
+    tallest: usize,
+    /// A mapping's: whether a key comes next. `None` for a sequence.
+    key_next: Option<bool>,
+}
+
+fn too_deep() -> String {
+    format!("nested deeper than {MAX_DEPTH} levels")
 }
 
 /// Whether saphyr-parser reads `text`'s first document without an error
@@ -260,13 +551,18 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
         key_allowed: true,
         key: None,
         outer: Vec::new(),
+        questions: Vec::new(),
+        flow_question: false,
         started: false,
+        anchors: std::collections::HashMap::new(),
     };
     let mut out = String::with_capacity(text.len());
     let mut pads = Vec::new();
     let mut before = Vec::new();
     let mut total = 0;
     let mut done = false;
+    // The first document ended at a `...` line.
+    let mut after_end = false;
     for (index, (line, end)) in lines(text).into_iter().enumerate() {
         before.push(total);
         let mut chars: Vec<char> = line.chars().collect();
@@ -280,7 +576,23 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
         if !done {
             match scan_line(&mut scan, &mut chars, index + 1)? {
                 Line::Pad(n) => pad = n,
-                Line::Done => done = true,
+                Line::Done => {
+                    done = true;
+                    after_end = document_marker(&chars) == Some('.');
+                }
+            }
+        } else if document_marker(&chars) == Some('-') {
+            // A second document: refused whole, after this pass.
+            after_end = false;
+        } else if after_end {
+            // Between documents a line's white space is block context's:
+            // libyaml takes no tab in it.
+            let first = chars.iter().position(|&c| c != ' ' && c != '\t');
+            if let Some(tab) = chars[..first.unwrap_or(chars.len())]
+                .iter()
+                .position(|&c| c == '\t')
+            {
+                return Err(refuse(index + 1, tab, TAB_INDENT));
             }
         }
         if total + pad > PAD_BUDGET {
@@ -300,6 +612,7 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
         pads,
         before,
         total,
+        depth: 0,
     })
 }
 
@@ -333,46 +646,32 @@ enum Line {
     Done,
 }
 
-fn refuse(line: usize, col: usize, message: &'static str) -> Refusal {
+fn refuse(line: usize, col: usize, message: &str) -> Refusal {
     Refusal {
         line,
         column: col + 1,
-        message,
+        message: message.to_string(),
     }
 }
 
 /// Scans `chars`, line `number`, turning a tab after a colon into a space;
 /// says how much to pad it.
 fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line, Refusal> {
-    let spaces = chars.iter().take_while(|&&c| c == ' ').count();
     let first = chars
         .iter()
         .position(|&c| c != ' ' && c != '\t')
         .unwrap_or(chars.len());
     let content = first < chars.len();
     scan.key = None;
-    if let Within::BlockScalar { parent, indent } = scan.within {
-        let tab = chars.get(spaces) == Some(&'\t');
-        // The least content indentation: one past the parent's. At the
-        // top, column 0 is content to saphyr (libyaml, which says 1,
-        // refuses the stream then), so it is left alone.
-        let least = parent.map_or(0, |col| col + 1);
-        match indent {
-            Some(n) if spaces >= n => return Ok(Line::Pad(0)),
-            _ if tab => return Err(refuse(number, spaces, TAB_BLOCK_SCALAR)),
-            _ if !content => return Ok(Line::Pad(0)),
-            None if spaces >= least => {
-                scan.within = Within::BlockScalar {
-                    parent,
-                    indent: Some(spaces),
-                };
-                return Ok(Line::Pad(0));
-            }
-            _ => scan.within = Within::Tokens,
-        }
-        // A line left of the content ends the block scalar: it starts
-        // tokens in block context.
-        scan.key_allowed = true;
+    // A possible key lasts one line, in every flow level (libyaml's
+    // `yaml_parser_stale_simple_keys`).
+    for (key, _) in &mut scan.outer {
+        *key = None;
+    }
+    if let Within::BlockScalar { parent, indent } = scan.within
+        && block_scalar_line(scan, chars, parent, indent, number)?
+    {
+        return Ok(Line::Pad(0));
     }
     if document_marker(chars).is_some() && (scan.flow > 0 || scan.within != Within::Tokens) {
         // A marker ends a plain scalar's document; inside a quoted scalar
@@ -422,7 +721,9 @@ fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line,
         }
     } else if let Within::Plain { .. } = scan.within {
         // The plain scalar goes on: the rest of it is on this line.
-        at = plain_end(scan, chars, at);
+        let end = plain_end(scan, chars, at);
+        flow_plain_colon(scan, chars, at, end, number)?;
+        at = end;
         if at >= chars.len() {
             return Ok(Line::Pad(pad));
         }
@@ -430,6 +731,7 @@ fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line,
     } else if content && scan.flow == 0 {
         if first == 0 {
             if chars[0] == '%' && !scan.started {
+                directive(chars, number)?;
                 return Ok(Line::Pad(0));
             }
             match document_marker(chars) {
@@ -439,6 +741,8 @@ fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line,
                     scan.key_allowed = false;
                     at = 3;
                 }
+                // libyaml's parser wants a node before an end marker.
+                Some('.') if !scan.started => return Err(refuse(number, 0, LONE_END)),
                 Some(_) => return Ok(Line::Done),
                 None => {}
             }
@@ -450,6 +754,47 @@ fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line,
     }
     tokens(scan, chars, at, number)?;
     Ok(Line::Pad(pad))
+}
+
+/// A line under a block scalar's header, on line `number`: whether it is
+/// the scalar's content (copied as it is). A line left of the content
+/// ends the scalar and starts tokens in block context.
+fn block_scalar_line(
+    scan: &mut Scan,
+    chars: &[char],
+    parent: Option<usize>,
+    indent: Option<usize>,
+    number: usize,
+) -> Result<bool, Refusal> {
+    let spaces = chars.iter().take_while(|&&c| c == ' ').count();
+    let content = chars.iter().any(|&c| c != ' ' && c != '\t');
+    let tab = chars.get(spaces) == Some(&'\t');
+    // The least content indentation: one past the parent's. At the top,
+    // column 0 is content to saphyr; libyaml says 1, and ends the scalar
+    // there, so content at column 0 is refused.
+    let least = parent.map_or(0, |col| col + 1);
+    match indent {
+        Some(n) if spaces >= n => return Ok(true),
+        _ if tab => return Err(refuse(number, spaces, TAB_BLOCK_SCALAR)),
+        _ if !content => return Ok(true),
+        None if parent.is_none()
+            && spaces == 0
+            && chars[0] != '#'
+            && document_marker(chars).is_none() =>
+        {
+            return Err(refuse(number, 0, TOP_BLOCK_SCALAR));
+        }
+        None if spaces >= least => {
+            scan.within = Within::BlockScalar {
+                parent,
+                indent: Some(spaces),
+            };
+            return Ok(true);
+        }
+        _ => scan.within = Within::Tokens,
+    }
+    scan.key_allowed = true;
+    Ok(false)
 }
 
 /// Where the quoted scalar that `chars[at..]` continues ends (after its
@@ -492,6 +837,30 @@ fn plain_end(scan: &Scan, chars: &[char], at: usize) -> usize {
         .map_or(chars.len(), |(i, _)| i)
 }
 
+/// In a flow collection, a plain scalar from `chars[from]` to `end` (and
+/// the `:` that may end it) holding a `:` right before `,`, `?`, `[`, `]`,
+/// `{` or `}`: libyaml refuses it ("found unexpected ':'" in
+/// `yaml_parser_scan_plain_scalar`), saphyr reads a key and its value.
+fn flow_plain_colon(
+    scan: &Scan,
+    chars: &[char],
+    from: usize,
+    end: usize,
+    number: usize,
+) -> Result<(), Refusal> {
+    if scan.flow == 0 {
+        return Ok(());
+    }
+    let last = end.min(chars.len().saturating_sub(1));
+    match (from..=last).find(|&i| {
+        chars.get(i) == Some(&':')
+            && matches!(chars.get(i + 1), Some(',' | '?' | '[' | ']' | '{' | '}'))
+    }) {
+        Some(i) => Err(refuse(number, i, FLOW_PLAIN_COLON)),
+        None => Ok(()),
+    }
+}
+
 /// Scans the tokens of `chars` from `at` to the line's end.
 fn tokens(
     scan: &mut Scan,
@@ -513,23 +882,30 @@ fn tokens(
         }
         at += word;
         // Each token moves on; anything else ends the line's scan.
-        match token(scan, chars, at) {
+        match token(scan, chars, at, number)? {
             Some(next) if next > at => at = next,
             _ => return Ok(()),
         }
     }
 }
 
-/// Scans the token at `chars[at]`: where the next one may start, or `None`
-/// when the line holds no more (a comment, a scalar going on past it, the
-/// end).
-fn token(scan: &mut Scan, chars: &mut [char], at: usize) -> Option<usize> {
-    let c = *chars.get(at)?;
+/// Scans the token at `chars[at]`, on line `number`: where the next one may
+/// start, or `None` when the line holds no more (a comment, a scalar going
+/// on past it, the end).
+fn token(
+    scan: &mut Scan,
+    chars: &mut [char],
+    at: usize,
+    number: usize,
+) -> Result<Option<usize>, Refusal> {
+    let Some(&c) = chars.get(at) else {
+        return Ok(None);
+    };
     let next = chars.get(at + 1).copied();
     let indicator = blank(next.as_ref());
     let flow = scan.flow > 0;
     if c == '#' {
-        return None;
+        return Ok(None);
     }
     scan.started = true;
     match c {
@@ -540,86 +916,198 @@ fn token(scan: &mut Scan, chars: &mut [char], at: usize) -> Option<usize> {
             }
             // Each flow level has its own possible key (libyaml's
             // `simple_keys` stack): the collection may be the outer key.
-            scan.outer.push(scan.key.take());
+            scan.outer.push((scan.key.take(), scan.flow_question));
+            scan.flow_question = false;
             scan.flow += 1;
             scan.key_allowed = true;
         }
         ']' | '}' => {
             scan.flow = scan.flow.saturating_sub(1);
-            scan.key = scan.outer.pop().flatten();
+            let (key, question) = scan.outer.pop().unwrap_or_default();
+            scan.key = key;
+            scan.flow_question = question;
             scan.key_allowed = false;
         }
-        ',' if flow => scan.key_allowed = true,
+        ',' if flow => {
+            // An entry's end: no key or `?` reaches past it.
+            scan.key_allowed = true;
+            scan.key = None;
+            scan.flow_question = false;
+        }
         '-' | '?' if indicator && !flow => {
             scan.roll(at);
             scan.key_allowed = true;
             scan.key = None;
+            // A `-` left of a `?`'s column starts another entry; a `?` at
+            // or left of one starts another key.
+            scan.close_questions(at + usize::from(c == '-'));
+            if c == '?' {
+                scan.questions.push(at);
+            }
         }
-        '?' if indicator => scan.key = None,
+        '?' if indicator => {
+            scan.key = None;
+            scan.flow_question = true;
+        }
+        // libyaml takes `?` for a key in a flow collection whatever
+        // follows it, saphyr for a plain scalar's start.
+        '?' if flow => return Err(refuse(number, at, FLOW_QUESTION)),
         // In a flow collection a `:` starting a token is always one
         // (after a quoted key: `{"k":"v"}`); a plain scalar's own `:`
         // never starts one.
-        ':' if indicator || flow => {
-            let simple = scan.key.take();
-            if let Some(key) = simple {
-                scan.roll(key);
-                scan.key_allowed = false;
-            } else {
-                scan.key_allowed = !flow;
-            }
-            // After a simple key, or anywhere in a flow collection, libyaml
-            // takes a tab as separation; after an explicit `:` in block
-            // context it refuses one, which the caller checks.
-            if next == Some('\t') && (simple.is_some() || flow) {
-                chars[at + 1] = ' ';
-            }
-        }
+        ':' if indicator || flow => colon(scan, chars, at, number)?,
         '|' | '>' if !flow => {
             block_scalar(scan, chars, at);
-            return None;
+            return Ok(None);
         }
+        // In a flow collection libyaml starts no block scalar and no plain
+        // scalar at `|` or `>`; saphyr reads a plain one.
+        '|' | '>' => return Err(refuse(number, at, FLOW_BLOCK_INDICATOR)),
         '\'' | '"' => {
             scan.node(at);
             if let Some(end) = quoted_end(chars, at + 1, c == '"') {
-                return Some(end);
+                return Ok(Some(end));
             }
             if !flow {
                 scan.open = at;
             }
             scan.within = Within::Quoted { double: c == '"' };
-            return None;
+            return Ok(None);
         }
-        '&' | '*' => {
-            // An anchor's or alias's name: letters, digits, `_` and `-`
-            // (libyaml's `yaml_parser_scan_anchor`).
-            scan.node(at);
-            let name = chars[at + 1..]
-                .iter()
-                .take_while(|&&c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                .count();
-            return Some(at + 1 + name);
-        }
-        '!' => {
-            scan.node(at);
-            let name = chars[at + 1..]
-                .iter()
-                .take_while(|&&c| c != ' ' && c != '\t' && !(flow && flow_indicator(c)))
-                .count();
-            return Some(at + 1 + name);
-        }
+        '&' | '*' => return anchor(scan, chars, at, number).map(Some),
+        '!' => return tag(scan, chars, at, number).map(Some),
         _ => {
             scan.node(at);
             let end = plain_end(scan, chars, at + 1);
+            flow_plain_colon(scan, chars, at, end, number)?;
             if end < chars.len() {
-                return Some(end);
+                return Ok(Some(end));
             }
             scan.within = Within::Plain {
                 indent: scan.plain_indent(),
             };
-            return None;
+            return Ok(None);
         }
     }
-    Some(at + 1)
+    Ok(Some(at + 1))
+}
+
+/// A `:` value indicator at `chars[at]`, on line `number`: it closes a
+/// simple key, or answers an explicit one; with neither it is refused.
+fn colon(scan: &mut Scan, chars: &mut [char], at: usize, number: usize) -> Result<(), Refusal> {
+    let flow = scan.flow > 0;
+    let next = chars.get(at + 1).copied();
+    let simple = scan.key.take();
+    if let Some(key) = simple {
+        scan.roll(key);
+        scan.key_allowed = false;
+        // A key at or left of a `?`'s column ends its entry.
+        if !flow {
+            scan.close_questions(key);
+        }
+    } else {
+        // No key on this line: only an explicit key's `:` (its
+        // `?` at this column in block context, or in this flow
+        // level), as libyaml's parser takes it. Where no key may
+        // start in block context, saphyr refuses it already.
+        let explicit = if flow {
+            std::mem::take(&mut scan.flow_question)
+        } else if scan.key_allowed {
+            scan.close_questions(at + 1);
+            scan.questions.pop() == Some(at)
+        } else {
+            true
+        };
+        if !explicit {
+            return Err(refuse(number, at, NO_KEY));
+        }
+        scan.key_allowed = !flow;
+    }
+    // After a simple key, or anywhere in a flow collection, libyaml
+    // takes a tab as separation; after an explicit `:` in block
+    // context it refuses one, which the caller checks.
+    if next == Some('\t') && (simple.is_some() || flow) {
+        chars[at + 1] = ' ';
+    }
+    Ok(())
+}
+
+/// An anchor (`&`) or alias (`*`) at `chars[at]`, on line `number`: where
+/// its name ends.
+fn anchor(scan: &mut Scan, chars: &[char], at: usize, number: usize) -> Result<usize, Refusal> {
+    let c = chars[at];
+    // An anchor's or alias's name: letters, digits, `_` and `-`,
+    // then white space or an indicator libyaml allows there
+    // (`yaml_parser_scan_anchor`), where saphyr takes more.
+    scan.node(at);
+    let name: String = chars[at + 1..]
+        .iter()
+        .take_while(|&&c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        .collect();
+    let end = at + 1 + name.len();
+    // libyaml also ends a name at `?`, `:`, `%`, `@` and a
+    // backtick, which saphyr takes into it: refused, as the two
+    // would read different names.
+    let ends = |c: &char| matches!(c, ',' | ']' | '}');
+    if name.is_empty() || !(blank(chars.get(end)) || chars.get(end).is_some_and(ends)) {
+        return Err(refuse(number, end, ANCHOR_NAME));
+    }
+    if c == '&' {
+        // The composer refuses a name defined twice (`PyYAML`'s
+        // `compose_node`: "found duplicate anchor").
+        if let Some(&(line, column)) = scan.anchors.get(&name) {
+            return Err(Refusal {
+                line: number,
+                column: at + 1,
+                // Not its name, which may be a value written twice
+                // (`pass: &secret`): positions only.
+                message: format!("an anchor defined again (first at line {line}, column {column})"),
+            });
+        }
+        scan.anchors.insert(name, (number, at + 1));
+    }
+    Ok(end)
+}
+
+/// A tag at `chars[at]`, on line `number`: where it ends. libyaml reads a
+/// handle and suffix of URI characters (`,`, `[` and `]` among them only
+/// in block context), or `!<…>`, and wants white space after it, or `,` in
+/// a flow collection (`yaml_parser_scan_tag`, `yaml_parser_scan_tag_uri`).
+fn tag(scan: &mut Scan, chars: &[char], at: usize, number: usize) -> Result<usize, Refusal> {
+    scan.node(at);
+    let flow = scan.flow > 0;
+    let end = if chars.get(at + 1) == Some(&'<') {
+        chars[at..]
+            .iter()
+            .position(|&c| c == '>')
+            .map_or(chars.len(), |close| at + close + 1)
+    } else {
+        let uri = |c: &char| {
+            c.is_ascii_alphanumeric()
+                || ";/?:@&=+$.%!~*'()-_".contains(*c)
+                || (!flow && matches!(c, ',' | '[' | ']'))
+        };
+        at + 1 + chars[at + 1..].iter().take_while(|c| uri(c)).count()
+    };
+    if blank(chars.get(end)) || (flow && chars.get(end) == Some(&',')) {
+        Ok(end)
+    } else {
+        Err(refuse(number, end, TAG_END))
+    }
+}
+
+/// A directive line before the document: `%YAML` 1.1 or 1.2, or `%TAG`,
+/// as libyaml reads them (`yaml_parser_scan_directive`, and its parser's
+/// version check).
+fn directive(chars: &[char], number: usize) -> Result<(), Refusal> {
+    let line: String = chars.iter().collect();
+    let mut words = line[1..].split([' ', '\t']).filter(|w| !w.is_empty());
+    match words.next() {
+        Some("TAG") => Ok(()),
+        Some("YAML") if matches!(words.next(), Some("1.1" | "1.2")) => Ok(()),
+        Some("YAML") => Err(refuse(number, 0, YAML_VERSION)),
+        _ => Err(refuse(number, 0, UNKNOWN_DIRECTIVE)),
+    }
 }
 
 /// A block scalar's header at `chars[at]`: its content starts on the next
@@ -829,8 +1317,9 @@ mod tests {
             "a:\n  b: |\n  c: [\n      ]\n"
         );
         assert_eq!(text("a: >\nb: [\n]\n"), "a: >\nb: [\n    ]\n");
-        // Top level: column 0 is content, as saphyr reads it.
-        assert_eq!(text("|\nx\n[\n"), "|\nx\n[\n");
+        // Top level: column 0 ends the scalar to libyaml, which then
+        // refuses the stream (saphyr reads it as content).
+        assert!(refused("|\nx\n[\n").starts_with("a top-level block scalar's content"));
     }
 
     /// The first document only: the rest is copied as it is.
@@ -838,8 +1327,17 @@ mod tests {
     fn only_the_first_document_is_prepared() {
         let rest = "a: 1\n---\n\tb: [\n]\n";
         assert_eq!(text(rest), rest);
-        let ended = "a: 1\n...\n\tb\n";
-        assert_eq!(text(ended), ended);
+        // After an end marker a tab in a line's white space is refused,
+        // as in block context; before a second document's `---`.
+        assert_eq!(
+            refused("a: 1\n...\n\tb\n"),
+            "a tab in the indentation (YAML indents with spaces) at line 3, column 1"
+        );
+        assert_eq!(
+            refused("a: x\n...\n  # c\n \t# d\n"),
+            "a tab in the indentation (YAML indents with spaces) at line 4, column 2"
+        );
+        assert!(prepare("a: 1\n...\n  # c\n\n").is_ok());
         // A leading marker, a directive and comments start the first.
         assert_eq!(
             text("%YAML 1.2\n# c\n---\na: [\n]\n"),
@@ -964,7 +1462,7 @@ mod tests {
         for input in [
             "a: [x,\n    y]\n",
             "a: 'x\n  y'\nb: 1\n",
-            "a: 1\n---\nb: [\n",
+            "a: 1\n...\n# [\n",
         ] {
             let prepared = prepare(input).expect("prepares");
             assert_eq!(prepared.text, input);
@@ -999,7 +1497,7 @@ mod tests {
         let prepared = prepare("password: hunter2\n").expect("prepares");
         assert_eq!(
             format!("{prepared:?}"),
-            "Prepared { bytes: 18, padding: 0, .. }"
+            "Prepared { bytes: 18, padding: 0, depth: 1, .. }"
         );
     }
 
@@ -1036,13 +1534,19 @@ mod tests {
     #[test]
     fn anchor_names_end_as_libyaml_ends_them() {
         let indent = "a tab in the indentation (YAML indents with spaces)";
-        // `&a` then the plain `:b`: the plain scalar goes on.
-        assert_eq!(text("- &a:b\n \tc\n"), "- &a:b\n \tc\n");
-        // `&b` then a `:` with no key on its line: libyaml refuses it.
+        // libyaml reads `&a` then the plain `:b`, saphyr the anchor `a:b`:
+        // refused where the names part.
+        let name = "an anchor or alias name is letters, digits, `_` and `-`, ending at a space";
+        assert_eq!(
+            refused("- &a:b\n \tc\n"),
+            format!("{name} at line 1, column 5")
+        );
         assert_eq!(
             refused("a: &b:\tc\n"),
-            "a tab after an indicator here (use a space) at line 1, column 7"
+            format!("{name} at line 1, column 6")
         );
+        // At a flow indicator both end it.
+        assert_eq!(text("a: [&b, *b]\n"), "a: [&b, *b]\n");
         assert_eq!(text("a: !t:x\tc\n"), "a: !t:x\tc\n");
         assert_eq!(
             refused("- *a_-1\n\t\n"),
@@ -1123,8 +1627,13 @@ mod tests {
         // In a block plain scalar a flow indicator is text.
         assert_eq!(text("a: x{y\nb: [\n]\n"), "a: x{y\nb: [\n    ]\n");
         assert_eq!(text("a: x y:z w\nb: [\n]\n"), "a: x y:z w\nb: [\n    ]\n");
-        // In a flow collection `>` and `|` start no block scalar.
-        assert_eq!(text("a: [>, b,\n  c]\nd: 1\n"), "a: [>, b,\n    c]\nd: 1\n");
+        // In a flow collection `>` and `|` start no block scalar (nor a
+        // plain one, to libyaml).
+        assert_eq!(
+            refused("a: [>, b,\n  c]\nd: 1\n"),
+            "a `|` or `>` can't start a value in a flow collection (quote the value) \
+             at line 1, column 5"
+        );
         // Anchors, aliases and tags before a flow collection.
         assert_eq!(text("a: &x [\nb]\n"), "a: &x [\n       b]\n");
         assert_eq!(text("a: &x_y-9 [\nb]\n"), "a: &x_y-9 [\n           b]\n");
@@ -1147,6 +1656,454 @@ mod tests {
             format!("{block} at line 3, column 3")
         );
         assert_eq!(text("a: |2 # c\n  x\n"), "a: |2 # c\n  x\n");
+    }
+
+    /// A `:` with no key before it on its line, which libyaml refuses
+    /// (saphyr reads an empty key), refused at the `:` as libyaml says.
+    #[test]
+    fn a_colon_with_no_key_is_refused() {
+        let no_key = "a `:` with no key before it (a key must be on the `:`'s line)";
+        for (input, at) in [
+            (": x\n", "line 1, column 1"),
+            ("a: 1\n: x\n", "line 2, column 1"),
+            ("a: 1\n:\n", "line 2, column 1"),
+            ("a:\n  : x\n", "line 2, column 3"),
+            ("- : x\n", "line 1, column 3"),
+            ("a: |\n  x\n: b\n", "line 3, column 1"),
+            ("a:\n  - b\n  : c\n", "line 3, column 3"),
+            // An explicit key takes one value, in its own collection.
+            ("? a\n: b\n: c\n", "line 3, column 1"),
+            ("? a\n:\n:\n", "line 3, column 1"),
+            ("- ? a\n- : b\n", "line 2, column 3"),
+            ("? a\nb: c\n: d\n", "line 3, column 1"),
+            // In a flow collection, and after a key on an earlier line.
+            ("x: {a: 1, : 2}\n", "line 1, column 11"),
+            ("[a, : b]\n", "line 1, column 5"),
+            ("{: x}\n", "line 1, column 2"),
+            ("{\"k\n\": 1}\n", "line 2, column 2"),
+            ("a: {\"k\n  x\": 1}\n", "line 2, column 5"),
+            ("x: {a\n  : 1}\n", "line 2, column 3"),
+            ("{\"a\"\n: 1}\n", "line 2, column 1"),
+            ("{? a : b, : c}\n", "line 1, column 11"),
+        ] {
+            assert_eq!(refused(input), format!("{no_key} at {at}"), "{input:?}");
+        }
+        // libyaml accepts these: an explicit key's value, keys before
+        // their `:` on the line, an anchor as the key.
+        for input in [
+            "? a\n: b\n",
+            "?\n:\n",
+            "- ? a\n  : b\n",
+            "? a\n? b\n: c\n",
+            "? |\n  x\n: b\n",
+            "{? a : b}\n",
+            "[? a : b]\n",
+            "{? a\n: b}\n",
+            "&x : 1\n",
+            "\"a\": 1\n",
+            "{\"a\":1}\n",
+            "a: [b, c]\n",
+            "a: x:y\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// A file holds one document, as Ansible's loader wants: a second one,
+    /// explicit or after the first one's end, is refused at its start.
+    #[test]
+    fn a_second_document_is_refused() {
+        let second = "a second document (Ansible reads one document per file)";
+        // saphyr-parser's error, in libyaml's words.
+        let after = "did not find expected <document start>";
+        assert_eq!(
+            refused("a: 1\n---\nb: 2\n"),
+            format!("{second} at line 2, column 1")
+        );
+        assert_eq!(
+            refused("a: 1\n---\n"),
+            format!("{second} at line 2, column 1")
+        );
+        assert_eq!(
+            refused("a: 1\n...\n---\nb: 1\n"),
+            format!("{second} at line 3, column 1")
+        );
+        // A broken second document is the second document.
+        assert_eq!(
+            refused("a: 1\n---\n[unclosed\n"),
+            format!("{second} at line 2, column 1")
+        );
+        assert_eq!(
+            refused("  a: 1\nb: 2\n"),
+            format!("{after} at line 2, column 1")
+        );
+        assert_eq!(
+            refused("a: 1\n...\nb: 2\n"),
+            "content after the document's end marker (`...`) at line 3, column 1"
+        );
+        // An end marker and comments after the document are no document.
+        for input in [
+            "a: 1\n...\n",
+            "a: 1\n...\n# c\n",
+            "a: 1\n... # c\n",
+            "---\n...\n",
+            "a: 1\n...\n...\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// Anchors as libyaml's scanner and `PyYAML`'s composer take them: a
+    /// name of letters, digits, `_` and `-` ending at white space or an
+    /// indicator, defined once.
+    #[test]
+    fn anchors_are_named_and_defined_once() {
+        let name = "an anchor or alias name is letters, digits, `_` and `-`, ending at a space";
+        assert_eq!(
+            refused("a: &x.y 1\n"),
+            format!("{name} at line 1, column 6")
+        );
+        assert_eq!(refused("a: *x.y\n"), format!("{name} at line 1, column 6"));
+        assert_eq!(refused("a: & 1\n"), format!("{name} at line 1, column 5"));
+        assert_eq!(
+            refused("a: &x:y 1\n"),
+            format!("{name} at line 1, column 6")
+        );
+        assert_eq!(
+            refused("- &a x\n- [&a y]\n"),
+            "an anchor defined again (first at line 1, column 3) at line 2, column 4"
+        );
+        for input in [
+            "a: &x_y-9 1\nb: *x_y-9\n",
+            "a: [&x 1, *x]\n",
+            "{&x a: 1}\n",
+            "a: &x\n  b: 1\n",
+            "&a : 1\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// In a flow collection a plain value's `:` right before a flow
+    /// indicator or `?` is refused, as libyaml refuses it; other `:`s in
+    /// it are text.
+    #[test]
+    fn a_colon_before_a_flow_indicator_is_refused_in_plain() {
+        let colon = "a `:` right before `,`, `?` or a bracket in a flow collection's plain \
+                     value (quote the value)";
+        assert_eq!(
+            refused("x: {key:}\n"),
+            format!("{colon} at line 1, column 8")
+        );
+        assert_eq!(
+            refused("x: [a:?]\n"),
+            format!("{colon} at line 1, column 6")
+        );
+        assert_eq!(
+            refused("x: [a:b:]\n"),
+            format!("{colon} at line 1, column 8")
+        );
+        assert_eq!(
+            refused("x: [a,\n  b:,c]\n"),
+            format!("{colon} at line 2, column 4")
+        );
+        for input in [
+            "{a:b}\n",
+            "x: [a:b]\n",
+            "{\"a\":}\n",
+            "a: x:]\n",
+            "x: [a: b]\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// A collection as a mapping key, which Ansible's loader refuses
+    /// ("found unhashable key"), is refused where it starts: nested, its
+    /// hashing would cost the depth squared.
+    #[test]
+    fn a_collection_key_is_refused() {
+        let key = "a mapping key must be a scalar, not a collection";
+        assert_eq!(
+            refused("? [a]\n: 1\n"),
+            format!("{key} at line 1, column 3")
+        );
+        assert_eq!(refused("[a]: 1\n"), format!("{key} at line 1, column 1"));
+        assert_eq!(
+            refused("x: {[a]: 1}\n"),
+            format!("{key} at line 1, column 5")
+        );
+        assert_eq!(
+            refused("a: 1\n? ? b\n"),
+            format!("{key} at line 2, column 3")
+        );
+        assert_eq!(
+            refused("a: &x [1]\nb:\n  *x : 1\n"),
+            format!("{key} at line 3, column 3")
+        );
+        let nested = format!("{}v\n: 1\n", "? ".repeat(MAX_DEPTH - 1));
+        assert_eq!(refused(&nested), format!("{key} at line 1, column 3"));
+        // Values may be collections; an alias to a scalar may be a key.
+        for input in [
+            "a: [1]\nb: {c: [2]}\n",
+            "a: &x 1\n*x : 2\n",
+            "? a\n: [1]\n",
+            "- [a]\n- {b: 1}\n",
+            "? \n: x\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// Characters libyaml's reader refuses are refused at the first, by
+    /// code point only.
+    #[test]
+    fn control_characters_are_refused() {
+        assert_eq!(
+            refused("a: 1\nb: \"\u{1b}[0m\"\n"),
+            "U+001B, a control character Ansible's YAML parser refuses (in a \
+             double-quoted string, write it as \\u001b) at line 2, column 5"
+        );
+        for input in [
+            "a: x\u{1}y\n",
+            "# \u{7}\n",
+            "a: x\u{7f}y\n",
+            "a: x\u{80}y\n",
+            "a: x\u{fffe}\n",
+            "\0",
+        ] {
+            assert!(refused(input).starts_with("U+"), "{input:?}");
+        }
+        for input in [
+            "a:\tb\n",
+            "a: 1\r\nb: 2\r\n",
+            "a: x\u{a0}y\n",
+            "\u{feff}a: 1\n",
+            "a: \u{1f600}\n",
+            "a: \u{fffd}\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// Directives as libyaml reads them: `%YAML` 1.1 or 1.2, and `%TAG`.
+    #[test]
+    fn directives_are_read_as_libyaml_reads_them() {
+        let version = "a %YAML directive for a version Ansible's parser doesn't read (1.1 or 1.2)";
+        let unknown = "an unknown directive (Ansible's parser reads %YAML and %TAG)";
+        for input in [
+            "%YAML 1.0\n---\na: 1\n",
+            "%YAML 1.3\n---\na: 1\n",
+            "%YAML 2.0\n---\n",
+            "%YAML\n---\n",
+        ] {
+            assert_eq!(
+                refused(input),
+                format!("{version} at line 1, column 1"),
+                "{input:?}"
+            );
+        }
+        assert_eq!(
+            refused("# c\n%FOO bar\n---\n"),
+            format!("{unknown} at line 2, column 1")
+        );
+        for input in [
+            "%YAML 1.1\n---\na: 1\n",
+            "%YAML  1.2 # c\n---\na: 1\n",
+            "%TAG !e! tag:x,2000:\n---\na: !e!y 1\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// A tag ends where libyaml's does, at white space or a flow `,`.
+    #[test]
+    fn a_tag_is_followed_by_a_space() {
+        let end = "a tag must be followed by a space";
+        assert_eq!(refused("a: [!t]\n"), format!("{end} at line 1, column 7"));
+        assert_eq!(
+            refused("a: {b: !!str}\n"),
+            format!("{end} at line 1, column 13")
+        );
+        assert_eq!(refused("a: !t# c\n"), format!("{end} at line 1, column 6"));
+        assert_eq!(
+            refused("a: [!t[x]]\n"),
+            format!("{end} at line 1, column 7")
+        );
+        for input in [
+            "a: [!t, 1]\n",
+            "a: !t #c\n",
+            "a: !<tag:x> 1\n",
+            "a: !!str x\n",
+            "a: !\n",
+            "a: ! x\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// In a flow collection libyaml reads `?` as a key's indicator whatever
+    /// follows it: one without a space after it is refused.
+    #[test]
+    fn a_flow_question_mark_needs_a_space() {
+        let question = "a `?` in a flow collection must be followed by a space (quote a \
+                        value that starts with `?`)";
+        assert_eq!(
+            refused("x: [?]\n"),
+            format!("{question} at line 1, column 5")
+        );
+        assert_eq!(
+            refused("x: {?x: 1}\n"),
+            format!("{question} at line 1, column 5")
+        );
+        for input in ["x: [? a]\n", "x: ?a\n", "x: [\"?a\"]\n", "x: [a?b]\n"] {
+            assert!(prepare(input).is_ok(), "{input:?}");
+        }
+    }
+
+    /// A top-level block scalar's content at column 0 is refused: libyaml
+    /// ends the scalar there and finds no document start.
+    #[test]
+    fn a_top_level_block_scalar_is_indented() {
+        let top = "a top-level block scalar's content must be indented (Ansible's \
+                   parser ends it here)";
+        assert_eq!(refused("|\nfoo\n"), format!("{top} at line 2, column 1"));
+        assert_eq!(
+            refused("--- >\n\nfoo\n"),
+            format!("{top} at line 3, column 1")
+        );
+        for input in ["--- |\n foo\n", "|\n# c\n", "|\n---\n", "a: |\n  x\nb: 1\n"] {
+            let prepared = prepare(input);
+            assert!(
+                !prepared.as_ref().is_err_and(|r| r.message == top),
+                "{input:?}: {prepared:?}"
+            );
+        }
+    }
+
+    /// A possible key lasts one line in every flow level, not only the
+    /// innermost: a flow collection closed on a later line is no key.
+    #[test]
+    fn a_flow_key_lasts_one_line() {
+        let no_key = "a `:` with no key before it (a key must be on the `:`'s line)";
+        assert_eq!(
+            refused("x: {[a\n]: c}\n"),
+            format!("{no_key} at line 2, column 2")
+        );
+        assert_eq!(
+            refused("x: {{a: 1\n}: c}\n"),
+            format!("{no_key} at line 2, column 2")
+        );
+    }
+
+    /// An end marker with no document before it: libyaml finds no node.
+    #[test]
+    fn an_end_marker_with_no_document_is_refused() {
+        let lone = "a document end marker (`...`) with no document before it";
+        assert_eq!(refused("...\n"), format!("{lone} at line 1, column 1"));
+        assert_eq!(refused("# c\n...\n"), format!("{lone} at line 2, column 1"));
+        assert!(prepare("").is_ok());
+        assert!(prepare("# c\n").is_ok());
+    }
+
+    /// NEL, LS and PS are line breaks to libyaml and not to saphyr: a file
+    /// holding one would read differently, so it is refused at the first.
+    #[test]
+    fn unicode_line_breaks_are_refused() {
+        assert_eq!(
+            refused("a: x\u{85}- y\n"),
+            "U+0085 (NEL) is a line break to Ansible's YAML parser and not to sb's \
+             (in a double-quoted string, write it as \\u0085) at line 1, column 5"
+        );
+        assert_eq!(
+            refused("a: 1\r\nb: \"x\u{2028}y\"\n"),
+            "U+2028 (LS) is a line break to Ansible's YAML parser and not to sb's \
+             (in a double-quoted string, write it as \\u2028) at line 2, column 6"
+        );
+        assert!(refused("# \u{2029}\n").ends_with("at line 1, column 3"));
+        assert!(refused("a\rb\u{2029}\n").ends_with("at line 2, column 2"));
+        // Escaped, it is text.
+        assert!(prepare("a: \"x\\u2028y\"\n").is_ok());
+    }
+
+    /// Nesting is limited, never length: `MAX_DEPTH` collections are read,
+    /// one more is refused where it starts, and an alias counts as the
+    /// collections it copies.
+    #[test]
+    fn nesting_is_limited_by_depth() {
+        let deep = |n: usize| format!("a:\n  {}x\n", "- ".repeat(n));
+        assert_eq!(
+            prepare(&deep(MAX_DEPTH - 1)).expect("at the limit").depth(),
+            MAX_DEPTH
+        );
+        let message = format!("nested deeper than {MAX_DEPTH} levels");
+        assert_eq!(
+            refused(&deep(MAX_DEPTH)),
+            format!("{message} at line 2, column {}", 3 + 2 * (MAX_DEPTH - 1))
+        );
+        // Flow nesting stops at saphyr-parser's own limit, with its error.
+        let flow = format!("a: {}x{}\n", "[".repeat(256), "]".repeat(256));
+        assert!(
+            refused(&flow).starts_with("recursion limit exceeded"),
+            "{}",
+            refused(&flow)
+        );
+        // An alias copies its anchor's height.
+        let tall = format!("a: &x\n  {}x\n", "- ".repeat(MAX_DEPTH - 2));
+        assert_eq!(
+            prepare(&format!("{tall}b: *x\n")).expect("as deep").depth(),
+            MAX_DEPTH - 1
+        );
+        assert_eq!(
+            prepare(&format!("{tall}b:\n  - *x\n"))
+                .expect("at it")
+                .depth(),
+            MAX_DEPTH
+        );
+        assert_eq!(
+            refused(&format!("{tall}b: [[*x]]\n")),
+            format!("{message} at line 3, column 6")
+        );
+        // Depth is the deepest branch, not the count of collections; the
+        // text's length isn't limited.
+        assert_eq!(
+            prepare("a:\n  b: [1]\nc: [[1]]\n").expect("wide").depth(),
+            3
+        );
+        assert_eq!(prepare("a: 1\n").expect("flat").depth(), 1);
+        assert_eq!(prepare("").expect("empty").depth(), 0);
+    }
+
+    /// A tree past `SHALLOW` levels is handled on the deep stack, and one
+    /// as deep as `MAX_DEPTH` fits it; a panic there comes back.
+    #[test]
+    fn deep_trees_get_the_deep_stack() {
+        assert_eq!(
+            with_stack(SHALLOW, || std::thread::current()
+                .name()
+                .map(str::to_string))
+            .expect("runs"),
+            std::thread::current().name().map(str::to_string)
+        );
+        assert_eq!(
+            with_stack(SHALLOW + 1, || std::thread::current()
+                .name()
+                .map(str::to_string))
+            .expect("runs"),
+            Some("sb-yaml".to_string())
+        );
+        let text = format!("a:\n  {}x\n", "- ".repeat(MAX_DEPTH - 1));
+        let prepared = prepare(&text).expect("at the limit");
+        let loaded = with_stack(prepared.depth(), || {
+            let mut loader = saphyr::YamlLoader::<saphyr::YamlOwned>::default();
+            Parser::new_from_str(prepared.text())
+                .load(&mut loader, false)
+                .expect("loads");
+            loader.into_documents().len()
+        });
+        assert_eq!(loaded.expect("runs"), 1);
+        let caught = std::panic::catch_unwind(|| with_stack(SHALLOW + 1, || panic!("inside")));
+        assert!(caught.is_err());
     }
 
     /// Padding up to the budget exactly is allowed; one space more isn't.

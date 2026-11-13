@@ -291,21 +291,82 @@ fn the_corpus_differs_from_libyaml_exactly_as_listed() {
 }
 
 /// cli-core's inventory read accepts exactly the cases validate-config's
-/// parser accepts: both go through the same pre-pass (decision 28), so
+/// parser accepts, and refuses the others at the same line and column:
+/// both go through the same pre-pass (decisions 28 and 38), so
 /// `appdata_path` falls back to `/opt` only on a file Ansible refuses too.
 #[test]
 fn the_inventory_read_agrees_with_validate_config() {
     let mut differ = Vec::new();
     for (name, text) in cases() {
-        let parsed = parse(&format!("{name}.yml"), &text).is_ok();
-        let read = sb_cli_core::config::inventory_document(&text).is_some();
+        let parsed = parse(&format!("{name}.yml"), &text)
+            .map(|_| ())
+            .map_err(|issues| (issues[0].line, issues[0].column));
+        let read = sb_cli_core::config::inventory_appdata(&text)
+            .map(|_| ())
+            .map_err(|refusal| (refusal.line, refusal.column));
         if parsed != read {
             differ.push(format!(
-                "{name}: validate-config {parsed}, inventory {read}"
+                "{name}: validate-config {parsed:?}, inventory {read:?}"
             ));
         }
     }
     assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// What saphyr reads and libyaml refuses (decision 38: a second document,
+/// a mapping dedented past its first line, a `:` with no key, a key
+/// split over lines, content after `...`, an end marker alone, and what
+/// differential fuzzing found: an anchor defined twice or ending in a
+/// character libyaml stops at, a flow value's `:` before a bracket, `>`
+/// starting a flow value, a tab after `...`; and what the code review
+/// found: a control character, a directive libyaml doesn't read, a tag
+/// before a bracket, a top-level block scalar at column 0, a flow key
+/// split over lines, a collection as a key) is refused at the line and
+/// column libyaml names. A NEL is refused where
+/// it is, which libyaml takes as a line break.
+#[test]
+fn what_libyaml_refuses_is_refused_where_it_says() {
+    let expected = expected();
+    let cases = cases();
+    let sb_at = |name: &str| {
+        let (_, text) = cases
+            .iter()
+            .find(|(case, _)| case == name)
+            .expect("the case");
+        let issues = parse(&format!("{name}.yml"), text).expect_err("refused");
+        format!(" at line {}, column {}", issues[0].line, issues[0].column)
+    };
+    for name in [
+        "multi-document",
+        "mapping-indented-then-dedented",
+        "colon-no-key-at-top",
+        "colon-no-key-after-entry",
+        "colon-no-key-in-flow",
+        "explicit-key-two-values",
+        "flow-map-multi-line-quoted-key",
+        "content-after-end-marker",
+        "end-marker-alone",
+        "anchor-defined-twice",
+        "anchor-name-then-dot",
+        "flow-plain-colon-before-brace",
+        "flow-block-indicator",
+        "tab-after-end-marker",
+        "control-character",
+        "directive-yaml-1-3",
+        "tag-before-bracket",
+        "top-level-block-scalar-at-column-0",
+        "flow-key-across-lines",
+        "collection-as-key",
+    ] {
+        let lib = expected["cases"][name]["error"].as_str().expect("an error");
+        let at = sb_at(name);
+        assert!(lib.ends_with(&at), "{name}: sb{at}, libyaml {lib}");
+    }
+    // Where libyaml names a later point than sb: the line after a NEL,
+    // the directive's name, the token after a flow `?`.
+    assert_eq!(sb_at("nel-line-break"), " at line 1, column 5");
+    assert_eq!(sb_at("directive-unknown"), " at line 1, column 1");
+    assert_eq!(sb_at("flow-question-without-space"), " at line 1, column 5");
 }
 
 /// The tab layouts libyaml refuses (config-L1) are refused at the line and

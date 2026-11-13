@@ -3,6 +3,8 @@
 //! with its 1-based position. A scalar whose tag doesn't fit its text
 //! fails the file there, as yaml.v3's decode does.
 
+use std::fmt::Write as _;
+
 use saphyr::{MarkedYamlOwned, YamlDataOwned};
 
 use crate::issue::Issue;
@@ -74,7 +76,7 @@ pub fn build(
     secret: &dyn Fn(&str) -> bool,
 ) -> Result<Node, Vec<Issue>> {
     let mut issues = Vec::new();
-    let node = convert(file, root, "", secret, false, &mut issues);
+    let node = convert(file, root, &mut String::new(), secret, false, &mut issues);
     if issues.is_empty() {
         Ok(node)
     } else {
@@ -92,11 +94,13 @@ fn untagged(node: &MarkedYamlOwned) -> &MarkedYamlOwned {
     }
 }
 
-/// `node` at key path `path`, its tag errors added to `issues`.
+/// `node` at key path `path`, its tag errors added to `issues`. Each child
+/// adds its segment to `path` and takes it off again, so a tree's paths
+/// take its depth in memory, not its depth squared.
 fn convert(
     file: &str,
     node: &MarkedYamlOwned,
-    path: &str,
+    path: &mut String,
     secret: &dyn Fn(&str) -> bool,
     under_secret: bool,
     issues: &mut Vec<Issue>,
@@ -121,23 +125,25 @@ fn convert(
                                 file: file.to_string(),
                                 line: key.span.start.line(),
                                 column: key.span.start.col() + 1,
-                                path: path.to_string(),
+                                path: path.clone(),
                                 message: format!("a key must be a scalar, not {kind}"),
                             });
                             "<key>".to_string()
                         }
                     };
-                    let child = if path.is_empty() {
-                        text.clone()
-                    } else {
-                        format!("{path}.{text}")
-                    };
+                    let parent = path.len();
+                    if parent > 0 {
+                        path.push('.');
+                    }
+                    path.push_str(&text);
                     let key = Key {
                         text,
                         line: key.span.start.line(),
                         column: key.span.start.col() + 1,
                     };
-                    (key, convert(file, value, &child, secret, hidden, issues))
+                    let child = convert(file, value, path, secret, hidden, issues);
+                    path.truncate(parent);
+                    (key, child)
                 })
                 .collect(),
         ),
@@ -146,14 +152,11 @@ fn convert(
                 .iter()
                 .enumerate()
                 .map(|(index, item)| {
-                    convert(
-                        file,
-                        item,
-                        &format!("{path}[{index}]"),
-                        secret,
-                        hidden,
-                        issues,
-                    )
+                    let parent = path.len();
+                    let _ = write!(path, "[{index}]");
+                    let child = convert(file, item, path, secret, hidden, issues);
+                    path.truncate(parent);
+                    child
                 })
                 .collect(),
         ),
@@ -175,7 +178,7 @@ fn convert(
                         file: file.to_string(),
                         line,
                         column,
-                        path: path.to_string(),
+                        path: path.clone(),
                         message,
                     });
                     Data::Scalar(Value::Null)
@@ -240,11 +243,22 @@ mod tests {
         assert_eq!(keys, ["1", "q"]);
     }
 
+    /// saphyr's loader, as the pre-pass would never hand it over: parse
+    /// refuses a collection key first (decision 38).
+    fn loaded(text: &str) -> MarkedYamlOwned {
+        let mut loader = saphyr::YamlLoader::<MarkedYamlOwned>::default();
+        loader.early_parse(false);
+        saphyr_parser::Parser::new_from_str(text)
+            .load(&mut loader, false)
+            .expect("loads");
+        loader.into_documents().remove(0)
+    }
+
     /// A key that is a collection fails the file there, as yaml.v3's
-    /// decode does (`invalid map key`).
+    /// decode does (`invalid map key`); the pre-pass refuses it before.
     #[test]
     fn a_collection_key_is_an_issue() {
-        let root = parse("t.yml", "a: 1\n? [x]\n: three\n").expect("parses");
+        let root = loaded("a: 1\n? [x]\n: three\n");
         let issues: Vec<String> = build("t.yml", &root, &|_| false)
             .expect_err("fails")
             .iter()
@@ -322,7 +336,7 @@ mod tests {
 
     #[test]
     fn a_mapping_key_is_an_issue_too() {
-        let root = parse("t.yml", "? {a: 1}\n: x\n").expect("parses");
+        let root = loaded("? {a: 1}\n: x\n");
         let issues: Vec<String> = build("t.yml", &root, &|_| false)
             .expect_err("fails")
             .iter()
