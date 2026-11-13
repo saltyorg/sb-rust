@@ -754,8 +754,10 @@ fn ascending<'a, T: 'a>(streams: Vec<Stream<'a, T>>) -> Stream<'a, T> {
 
 /// A group's entries from its driver's offsets: each read once and
 /// checked against the other terms' DATA offsets, as walk.rs's `Walk` does
-/// going back. An offset at or before the last read is corruption the
-/// lists' own checks report, and is passed over.
+/// going back. An offset at or before the last entry read is passed over:
+/// the lists report the break where they see it, but a list starts its
+/// order check afresh after an array it left (`EntriesFwd`), so this check
+/// is what keeps the stream ascending, each entry once.
 struct Entries<'a> {
     f: &'a JournalFile,
     offsets: Box<dyn Iterator<Item = Result<u64>> + 'a>,
@@ -776,11 +778,14 @@ impl Iterator for Entries<'_> {
             if off <= self.last {
                 continue;
             }
-            self.last = off;
+            // Only an entry read becomes the reference, as `Walk::end`
+            // does going back: an offset naming no entry would otherwise
+            // hide every later entry below it (file-M1).
             let e = match self.f.entry(off) {
                 Ok(e) => e,
                 Err(err) => return Some(Err(err)),
             };
+            self.last = off;
             let matches = self
                 .others
                 .iter()

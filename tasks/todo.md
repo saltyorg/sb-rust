@@ -1425,7 +1425,7 @@ not here.)
       container. Pass `CROSS_CONTAINER_OPTS` (`--memory`, `--cpus`), as
       `crates/journal/tests/example.sh` does (Task 54). A gate change:
       take it up with the next task that touches check.sh.
-- [ ] `crates/journal/src/file.rs:13` still says "static musl binary"
+- [x] `crates/journal/src/file.rs:13` still says "static musl binary"
       (ADR-013's reasoning, from before ADR-020): reword when the file
       is next touched.
 

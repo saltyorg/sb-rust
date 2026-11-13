@@ -9,10 +9,13 @@
 //! skips `.journal~` files silently, can lose a follow on a rotation race
 //! and carries a `RustSec` advisory through ruzstd; netdata's
 //! systemd-journal-sdk maps files with mmap and a SIGBUS handler and links
-//! the C zstd library; the libsystemd `systemd` crate can't link into the
-//! static musl binary. Fields are read with `from_le_bytes` at checked
-//! offsets rather than zerocopy or binrw: neither is in the tree, and
-//! their derived casts sit badly with `forbid(unsafe_code)`.
+//! the C zstd library; the libsystemd `systemd` crate couldn't link into
+//! the static musl binary sb was then. sb is a glibc build now (ADR-020),
+//! and still links nothing from libsystemd: plan decision 27's reasons
+//! (`unsafe` for `sd_journal_step_one`, entries lost across a flush,
+//! SIGBUS) don't depend on musl. Fields are read with `from_le_bytes` at
+//! checked offsets rather than zerocopy or binrw: neither is in the tree,
+//! and their derived casts sit badly with `forbid(unsafe_code)`.
 //!
 //! Re-exported by `testing` (the feature), for the tools (journal spec,
 //! Project Structure); the library's own API is the crate root's.
@@ -1732,8 +1735,9 @@ impl JournalFile {
 /// is skipped (Difference 8), an item that can't be an entry offset is
 /// refused, a repeat is skipped, and an item lower than the one before
 /// leaves the rest of its array (reported), the walk going on with the next
-/// array. Why not `entries_since`: that reads the main array only, and
-/// stops at the first item it can't use, for the follow to wait on.
+/// array, its order checked afresh. Why not `entries_since`: that reads
+/// the main array only, and stops at the first item it can't use, for the
+/// follow to wait on.
 #[derive(Debug)]
 pub(crate) struct EntriesFwd<'a> {
     f: &'a JournalFile,
@@ -1859,11 +1863,17 @@ impl Iterator for EntriesFwd<'_> {
                         self.at
                     )))));
                 }
-                match self.last {
-                    Some(last) if off == last => continue,
-                    Some(last) if off < last => {
-                        // Out of order: leave the rest of this array.
+                // One comparison: a repeat skipped, a lower item out of
+                // order.
+                match self.last.map(|last| off.cmp(&last)) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    Some(std::cmp::Ordering::Less) => {
+                        // Out of order: leave the rest of this array, and
+                        // start the next one afresh, as `EntriesRev` does:
+                        // one bogus high item would otherwise make every
+                        // later item look out of order (file-M1).
                         self.buf.clear();
+                        self.last = None;
                         self.next = self.base + (self.size - ENTRY_ARRAY_HEADER) / item;
                         return Some(Err(self.f.error(ReadErrorKind::Corrupt(format!(
                             "entry array {:#x} is out of order",
@@ -2711,8 +2721,10 @@ mod tests {
     #[test]
     fn entries_are_read_forward_from_an_index() {
         let (_t, f, e) = bisect_file(&[10, 20, 30, 40, 50, 60], &[2, 4]);
+        // Bounded, so a walk that never ends fails rather than hangs.
         let fwd = |list: &EntryList, from| -> Vec<std::result::Result<u64, String>> {
             f.entries_from(list, from)
+                .take(16)
                 .map(|r| r.map_err(|e| e.to_string()))
                 .collect()
         };
@@ -2754,6 +2766,7 @@ mod tests {
         };
         let got = g
             .entries_from(&chain, 0)
+            .take(16)
             .map(|r| r.map_err(|e| e.to_string()))
             .collect::<Vec<_>>();
         assert_eq!(got.len(), 4, "{got:?}");

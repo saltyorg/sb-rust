@@ -1982,6 +1982,103 @@ mod tests {
         );
     }
 
+    /// A chain of three arrays, `[e0, e1]`, `[e2, junk, e3]` and
+    /// `[e4, e5]`: the middle one holds a bogus item, a plausible offset
+    /// that names no entry. `high` puts it past every entry (a DATA object
+    /// written after them), else before them (`m0`'s DATA object).
+    fn chain_with_a_bogus_item(format: Format, high: bool) -> tempfile::NamedTempFile {
+        let mut c = Crafted::new_in(format);
+        c.hash_table(7);
+        let arrays = [c.array(&[], 2, 0), c.array(&[], 3, 0), c.array(&[], 2, 0)];
+        let (mut e, mut low) = (Vec::new(), 0);
+        for i in 0..6u64 {
+            let m = c.data(format!("MESSAGE=m{i}").as_bytes());
+            if i == 0 {
+                low = m;
+            }
+            e.push(c.entry(i + 1, &[m]));
+        }
+        let junk = if high { c.data(b"JUNK=1") } else { low };
+        c.set(arrays[0] + A_NEXT, arrays[1]);
+        c.set(arrays[1] + A_NEXT, arrays[2]);
+        let items: [&[u64]; 3] = [&[e[0], e[1]], &[e[2], junk, e[3]], &[e[4], e[5]]];
+        for (&array, items) in arrays.iter().zip(items) {
+            for (k, &item) in items.iter().enumerate() {
+                c.set_array_item(array, k as u64, item);
+            }
+        }
+        // Seven items: the count covers the bogus one, as journald's
+        // `n_entries` covered the slot.
+        c.set(H_N_ENTRIES, 7);
+        c.set(H_ENTRY_ARRAY_OFFSET, arrays[0]);
+        c.file()
+    }
+
+    /// The forward page and the tail over one file with a bogus item:
+    /// each leaves the damaged array at the break as it meets it (from its
+    /// own side, so they lose a different entry there), reports it, and
+    /// walks on: both show every entry of the arrays either side.
+    fn after_and_tail(format: Format, high: bool) -> (Vec<String>, Vec<String>) {
+        let t = chain_with_a_bogus_item(format, high);
+        let mut j = one(t.path());
+        let tail = messages(&j.tail(&[], 10, None));
+        assert!(
+            texts(&j.errors)
+                .iter()
+                .any(|m| m.contains("is out of order")),
+            "{:?}",
+            texts(&j.errors)
+        );
+        let mut j = one(t.path());
+        let mut before = cursor(7, 0, 7, 0, 0);
+        before.seqnum_id = j.files[0].header.seqnum_id;
+        let after = messages(&j.page(&[], 10, &Position::After(before)).records);
+        assert!(
+            texts(&j.errors)
+                .iter()
+                .any(|m| m.contains("is out of order")),
+            "{:?}",
+            texts(&j.errors)
+        );
+        (after, tail)
+    }
+
+    /// A bogus item higher than every entry: going forward it makes each
+    /// later item look out of order unless the order check starts afresh
+    /// after the array it left (file-M1), as the backward walk's does.
+    #[test]
+    fn after_and_tail_walk_past_a_bogus_high_item() {
+        each_format(after_and_tail_walk_past_a_bogus_high_item_in);
+    }
+
+    fn after_and_tail_walk_past_a_bogus_high_item_in(format: Format) {
+        let (after, tail) = after_and_tail(format, true);
+        assert_eq!(after, strs(&["m0", "m1", "m2", "m4", "m5"]));
+        assert_eq!(tail, strs(&["m0", "m1", "m3", "m4", "m5"]));
+        // From a cursor just before the damaged array: the page starts
+        // inside the chain (an offset bisect), not at its head.
+        let t = chain_with_a_bogus_item(format, true);
+        let mut j = one(t.path());
+        let all = j.tail(&[], 10, None);
+        assert_eq!(messages(&all[1..2]), ["m1"]);
+        let pg = j.page(&[], 10, &Position::After(all[1].cursor()));
+        assert_eq!(messages(&pg.records), ["m2", "m4", "m5"]);
+    }
+
+    /// A bogus item lower than every entry: going backward it makes each
+    /// older item look out of order unless the order check starts afresh
+    /// after the array it left.
+    #[test]
+    fn after_and_tail_walk_past_a_bogus_low_item() {
+        each_format(after_and_tail_walk_past_a_bogus_low_item_in);
+    }
+
+    fn after_and_tail_walk_past_a_bogus_low_item_in(format: Format) {
+        let (after, tail) = after_and_tail(format, false);
+        assert_eq!(after, strs(&["m0", "m1", "m2", "m4", "m5"]));
+        assert_eq!(tail, strs(&["m0", "m1", "m3", "m4", "m5"]));
+    }
+
     /// An entry journald was cut off from linking into its DATA objects'
     /// lists, then wrote again whole (Difference 12): it carries `U=x`
     /// among its items but isn't in that object's list, so the tail
