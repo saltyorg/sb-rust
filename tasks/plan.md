@@ -257,6 +257,13 @@ checked the 26-of-290 count and the `go version -m` fact:
   showed past its newest entry, and the follow drops one flush copy of
   each from a file in another directory. Extending Difference 13
   instead would allow a doubled entry once per boot.
+- **Type-ahead during a live run stays queued (Task 19, 2026-11-13).**
+  With the echo off, keys typed mid-run still wait in the terminal's
+  input queue and reach the shell after sb ends, as with sb-go and most
+  CLIs; sb doesn't flush them (`tcflush(TCIFLUSH)` would also drop
+  deliberate type-ahead). It follows decision 17, which turns the echo
+  off and says nothing of discarding input. Task 19 also clears
+  `ECHONL`, since with `echonl` set Enter still echoed a newline.
 - **How tool versions are read (Task 4, docs-M4).** No cargo-installed
   tool is run for its version, since cross would sync a toolchain. The cargo-installed
   tools' versions come from `cargo install --list`; gitleaks' from
@@ -470,7 +477,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 
 ### Phase 2 (lane 1): docker and the live display
 - [x] Task 18: `docker restart` never ends silently short of a start
-- [ ] Task 19: echo is off during a live run
+- [x] Task 19: echo is off during a live run
 - [ ] Task 20: a live tree taller than the terminal
 - [ ] Task 21: table wrap and uncut lines
 - [ ] Checkpoint D: docker and display

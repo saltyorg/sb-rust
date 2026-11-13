@@ -566,20 +566,20 @@ stale duplicate lines, because only `ECHOCTL` is cleared (ui-M2;
 confirmed in tmux).
 
 **Acceptance criteria:**
-- [ ] ECHO is off while the runner is live and restored after: on a
+- [x] ECHO is off while the runner is live and restored after: on a
       normal end, on an interruption, on the forced exit's restore hook
       and on a failed setup.
-- [ ] A PTY test types and presses Enter during a run and finds no
+- [x] A PTY test types and presses Enter during a run and finds no
       stale line.
-- [ ] term-ui.md's `ECHOCTL` wording (the terminal restore, the
+- [x] term-ui.md's `ECHOCTL` wording (the terminal restore, the
       `Runner` rustdoc, success criterion 6, decision 5) is amended
       (decision 17).
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui -p sb`; `scripts/check.sh full <base>`.
-- [ ] A before and after capture of a fixture-driven live run while
+- [x] `cargo test -p sb-term-ui -p sb`; `scripts/check.sh full <base>`.
+- [x] A before and after capture of a fixture-driven live run while
       typing, shown to the maintainer at Checkpoint D (decision 22).
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 18; Task 17 (`runner.rs`, `tty.rs`)
