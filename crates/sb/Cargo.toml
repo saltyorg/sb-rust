@@ -13,6 +13,8 @@ sb-host.workspace = true
 sb-term-ui.workspace = true
 sb-docker.workspace = true
 sb-config.workspace = true
+# `sb branch-sandbox` (repo spec; ops replaces the wiring, M79).
+sb-repo.workspace = true
 anyhow.workspace = true
 # `net` for the I/O driver bollard's sockets need (enable_all turns on
 # only what is compiled in).

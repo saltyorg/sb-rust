@@ -172,3 +172,7 @@ wrappers-widened	deny.toml	sb-term-ui: sb-release added	the capability map's rel
 wrappers-widened	deny.toml	sb-exec: sb-release added	the capability map's release row depends on cli-core, term-ui and exec (amended 2026-11-13 by the approved release spec, its deny.toml note); module task M24
 toolchain-changed	rust-toolchain.toml	channel 1.99.1  ->  1.100.0	the toolchain moves to the newest stable, 1.100.0, as its own task (plan decision 32; hardening Task 55); edition stays 2024, and the escaping change it brings keeps cli-core's output (decision 40)
 wrappers-widened	deny.toml	sb-exec: sb-host added	the capability map has host depend on exec (host row, "Depends on"); the service list runs systemctl through it (host spec, assumption 1; module build M2)
+wrappers-widened	deny.toml	sb-term-ui: sb-repo added	the capability map has repo depend on exec, host and term-ui (repo row, "Depends on"; repo spec, Project Structure; module build M5)
+wrappers-widened	deny.toml	sb-exec: sb-repo added	the capability map has repo depend on exec, host and term-ui (repo row, "Depends on"; repo spec, Project Structure; module build M5)
+wrappers-widened	deny.toml	sb-host: sb-repo added	the capability map has repo depend on exec, host and term-ui (repo row, "Depends on"; repo spec, Project Structure; module build M5)
+wrappers-widened	deny.toml	sb-cli-core: sb-repo added	sb-repo's tests start a term-ui runner, which takes cli-core's Shutdown (a dev-dependency; the deny entry comment: every module builds on cli-core; module build M5)

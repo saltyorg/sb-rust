@@ -111,11 +111,13 @@ pub fn setup_check(id: &str, version: Option<&str>) -> Result<(), SetupUnsupport
     })
 }
 
-/// A failed child's text for an error: exec's message (the command and how
-/// it ended) and stderr's last line, on one line with controls escaped
+/// A failed child's text for an error (sb-host's captures, and sb-repo's):
+/// exec's message (the command and how it ended) and stderr's last line,
+/// on one line with controls escaped
 /// (std's `str::escape_debug`,
 /// <https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>).
-pub(crate) fn child_failure(failed: &sb_exec::Failed) -> String {
+#[must_use]
+pub fn child_failure(failed: &sb_exec::Failed) -> String {
     match failed.last_lines().last() {
         Some(line) => format!("{failed}: {}", line.escape_debug()),
         None => failed.to_string(),

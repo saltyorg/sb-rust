@@ -1,0 +1,41 @@
+[package]
+name = "sb-repo"
+version = "0.1.0"
+description = "git on Saltbox's checkouts: Saltbox and Sandbox (capability map, repo)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The git program's setter, for tests outside the crate (M-TEST-UTIL);
+# never in a release build.
+testing = []
+
+[dependencies]
+# git's children (repo spec, assumption 1): captures for reads, streams
+# into term-ui steps for changes.
+sb-exec.workspace = true
+sb-term-ui.workspace = true
+# The checkout's ownership after a reset (host spec, "Ownership").
+sb-host.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio-util.workspace = true
+# `spawn_blocking` for the ownership walk.
+tokio.workspace = true
+
+[dev-dependencies]
+# Itself with `testing`, for the stand-in git its tests run (as
+# sb-journal's tests take its own `testing`).
+sb-repo = { workspace = true, features = ["testing"] }
+sb-term-ui = { workspace = true, features = ["testing"] }
+# The runner's shutdown, and its in-memory screen.
+sb-cli-core.workspace = true
+indicatif.workspace = true
+tokio = { workspace = true, features = ["macros", "sync"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -301,7 +301,7 @@ of `--help`.
 | `list [query]` (`--include-mod`) | Lists the available tags | ansible | specified ([ansible](ansible.md)) | |
 | `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`, `--migrations`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
 | `branch <name>` (required) | Switches the branch Saltbox uses | ops, repo | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
-| `branch-sandbox <name>` (required) | Switches the branch Sandbox uses | ops, repo | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
+| `branch-sandbox <name>` (required) | Switches the branch Sandbox uses | ops, repo | built, bare: no tags cache yet (module build M5; ops completes it in M79) | *Amended 2026-11-13 by the ops spec.* |
 | `diag` | Runs the diagnostics role | ansible | specified ([ansible](ansible.md)) | *Amended 2026-11-13 by the ansible spec.* |
 | `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | specified ([motd](motd.md)) | spec approved; `-v` dropped (motd decision 9). *Amended 2026-11-13 by the motd spec.* |
 | `reinstall-facts` | Reinstalls the saltbox.fact file | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |

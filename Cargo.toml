@@ -17,6 +17,7 @@ sb-docker = { path = "crates/docker" }
 sb-config = { path = "crates/config" }
 sb-exec = { path = "crates/exec" }
 sb-journal = { path = "crates/journal" }
+sb-repo = { path = "crates/repo" }
 sb-tui = { path = "crates/tui" }
 sb-release = { path = "crates/release" }
 anyhow = "1.0.104"

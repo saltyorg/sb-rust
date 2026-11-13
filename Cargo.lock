@@ -3277,6 +3277,7 @@ dependencies = [
  "sb-config",
  "sb-docker",
  "sb-host",
+ "sb-repo",
  "sb-term-ui",
  "serde_json",
  "tempfile",
@@ -3448,6 +3449,24 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
+name = "sb-repo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "indicatif",
+ "sb-cli-core",
+ "sb-exec",
+ "sb-host",
+ "sb-repo",
+ "sb-term-ui",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 

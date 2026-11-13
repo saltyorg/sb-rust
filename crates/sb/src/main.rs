@@ -58,6 +58,12 @@ enum Command {
     // No `--verbose/-v`: the run log has the detail (config decision 1).
     #[command(long_about = "Validate Saltbox configuration files")]
     ValidateConfig,
+    /// Change the branch used by Sandbox
+    #[command(long_about = "Change the branch used by Sandbox")]
+    BranchSandbox {
+        /// The branch to switch to
+        name: String,
+    },
 }
 
 /// `sb docker`'s subcommands (docker spec); logs comes with its own plan.
@@ -107,6 +113,7 @@ impl Command {
                 DockerCommand::Restart { .. } => "docker restart",
             },
             Command::ValidateConfig => "validate-config",
+            Command::BranchSandbox { .. } => "branch-sandbox",
         }
     }
 
@@ -117,8 +124,11 @@ impl Command {
             Command::Version { .. } => false,
             // The Docker socket, and sb's rule that only version and
             // completion run unprivileged (cli-core decision 3); Saltbox's
-            // config is root's to read (config spec).
-            Command::Docker { .. } | Command::ValidateConfig => true,
+            // config is root's to read (config spec); the Sandbox checkout
+            // and its ownership are root's to change.
+            Command::Docker { .. } | Command::ValidateConfig | Command::BranchSandbox { .. } => {
+                true
+            }
         }
     }
 }
@@ -331,6 +341,7 @@ fn warn(message: impl std::fmt::Display) {
 fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     match *command {
         Command::ValidateConfig => validate_config(shutdown, log)?,
+        Command::BranchSandbox { ref name } => branch::branch_sandbox(name, shutdown, log)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -546,6 +557,8 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
     runtime.shutdown_background();
     Ok(output)
 }
+
+mod branch;
 
 #[cfg(test)]
 mod contract;
