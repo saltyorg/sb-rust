@@ -665,15 +665,15 @@ Staged` (R5), streamed with the digest check and the size cap, removed on
 drop; `activate(staged, target, mode)` (R6).
 
 **Acceptance criteria:**
-- [ ] A wrong digest, an oversize body or a short body fails and leaves
+- [x] A wrong digest, an oversize body or a short body fails and leaves
       nothing staged.
-- [ ] Activation replaces the target atomically with its mode, syncing
+- [x] Activation replaces the target atomically with its mode, syncing
       the directory.
-- [ ] A caller's own staged file in the target directory activates too.
+- [x] A caller's own staged file in the target directory activates too.
 
 **Verification:**
-- [ ] `cargo test -p sb-release`.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor.
+- [x] `cargo test -p sb-release`.
+- [x] Review: code-reviewer, library-reviewer, security-auditor.
 
 **Dependencies:** M24
 **Files:** `crates/release/src/{download.rs,activate.rs,lib.rs}`
@@ -2153,7 +2153,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       change). `crates/exec/tests/stream.rs:203`, `:287` and
       `groups.rs:163-164` use fixed wall-clock bounds of the kind c06f497
       replaced; give them the same baseline-derived bounds.
-- [ ] **release: a total timeout on the two metadata requests** (lane 2,
+- [x] **release: a total timeout on the two metadata requests** (lane 2,
       with M25 or M26). A proxy that trickles bytes keeps under the per-read
       timeout and can stall `sb update` without end. Cap the metadata
       requests at 60 s in total (downloads keep no total, release spec
@@ -2210,6 +2210,27 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       200 ms floor and the multiplier. Re-run under spinner load and
       check that it stays a small multiple of the old test's 2-8 s and
       well under 60 s; clamp it with a stated reason if not.
+
+- [ ] **Leaked mutant processes during a pass** (the gate; lane 3, now).
+      8d9ed8b's sweep runs when a pass ends, but a long pass still leaks
+      signal-ignoring, busy mutant `sb` processes while it runs: 19 were
+      found at once on 2026-11-13, each over 100% CPU, with the host's load
+      far above its core count, which slowed every lane and broke timing
+      tests. Sweep during the pass too: a background loop in check.sh,
+      every few seconds, that kills only processes of this pass's own
+      TMPDIR that have been reparented to init (ppid 1), so the pass's
+      live tests are never touched; stopped when the pass ends. Test it
+      in the floor guard's stub as 8d9ed8b's test does.
+- [ ] **The hung-lookup test: count attempts on the client side** (lane 3,
+      after the sweep; replaces the uncommitted narrower-baseline change in
+      lane 3, which a review showed failing 5 of 312 runs under load). Two
+      timing bounds failed under load. Decided: count
+      the retries client-side with a counting backoff closure, as
+      `the_backoff_is_asked_per_retry` does, and assert it was asked
+      twice, so the count no longer depends on load; keep the held answer,
+      "timed out" and the guidance assertions; the fake's `seen()` count
+      may stay as a lower bound or go. The test's timeout can then be a
+      fixed small value again.
 
 ## Ready to start
 
