@@ -10,6 +10,7 @@ expression: "help(&[\"docker\", \"--help\"])"
 
   COMMANDS
 
+    logs               Display logs of Docker containers
     ps [--flags]       List Docker containers with port mappings
     restart [--flags]  Restart Docker containers managed by Saltbox
     start              Start Docker containers managed by Saltbox

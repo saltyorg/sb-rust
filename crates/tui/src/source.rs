@@ -19,6 +19,7 @@
 //! follow's batches is bounded by its output limit (a backlog comes as
 //! several), so the queue stays short while the viewer keeps up.
 
+pub mod docker;
 mod journal;
 
 use std::fmt;
@@ -28,6 +29,7 @@ use jiff::Timestamp;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 
+pub use docker::spawn as spawn_docker;
 pub use journal::spawn as spawn_journal;
 
 /// Which opening of a source an event belongs to: each source the viewer
@@ -52,6 +54,8 @@ pub struct Position(pub(crate) Inner);
 pub(crate) enum Inner {
     /// A journal entry, by its cursor.
     Journal(sb_host::journal::Cursor),
+    /// A container's log entry, by its time and ordinal.
+    Docker(sb_docker::logs::Position),
 }
 
 /// One entry of a log, as raw as its source gives it: the viewer turns
@@ -141,6 +145,29 @@ pub enum Notice {
     /// A page or a follow's batch had read errors: the first, and how
     /// many more (each is in the run log).
     ReadErrors { first: String, others: usize },
+    /// A page couldn't be read at all: its cause. Paging that way ends.
+    ReadFailed(String),
+    /// The followed container stopped; the follow waits for it to start
+    /// again.
+    Stopped,
+    /// The container started again; the follow goes on.
+    Started,
+}
+
+impl Notice {
+    /// An error, drawn in the Problem role; the others in Muted (tui spec,
+    /// "Viewer notices").
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        !matches!(self, Self::Stopped | Self::Started)
+    }
+
+    /// The follow's own notice, drawn at the bottom whatever page came
+    /// last.
+    #[must_use]
+    pub fn of_follow(&self) -> bool {
+        matches!(self, Self::CantFollow(_) | Self::Stopped | Self::Started)
+    }
 }
 
 impl fmt::Display for Notice {
@@ -151,6 +178,9 @@ impl fmt::Display for Notice {
             Self::ReadErrors { first, others } => {
                 write!(f, "read error: {first} (and {others} more)")
             }
+            Self::ReadFailed(cause) => write!(f, "couldn't read the log: {cause}"),
+            Self::Stopped => f.write_str("container stopped; waiting for it to start again"),
+            Self::Started => f.write_str("container started"),
         }
     }
 }
@@ -316,6 +346,22 @@ mod tests {
             more.to_string(),
             "read error: /j/x.journal: bad (and 3 more)"
         );
+        let failed = Notice::ReadFailed("connection refused".into());
+        assert_eq!(
+            failed.to_string(),
+            "couldn't read the log: connection refused"
+        );
+        assert_eq!(
+            Notice::Stopped.to_string(),
+            "container stopped; waiting for it to start again"
+        );
+        assert_eq!(Notice::Started.to_string(), "container started");
+        // Errors and the follow's own notices.
+        let all = [cant, more, failed, Notice::Stopped, Notice::Started];
+        let errors: Vec<bool> = all.iter().map(Notice::is_error).collect();
+        assert_eq!(errors, [true, true, true, false, false]);
+        let follows: Vec<bool> = all.iter().map(Notice::of_follow).collect();
+        assert_eq!(follows, [true, false, false, true, true]);
     }
 
     #[tokio::test]

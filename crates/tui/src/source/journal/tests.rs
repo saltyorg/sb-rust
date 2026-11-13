@@ -260,7 +260,9 @@ async fn the_cycle_guard_ends_forward_paging_where_it_began() {
     let first = walk(&mut v).await;
     // Each entry is its boot's only one: its cursor's `b=` names it.
     let who_of = |p: &Position| {
-        let Position(Inner::Journal(c)) = p;
+        let Position(Inner::Journal(c)) = p else {
+            panic!("a journal position: {p:?}");
+        };
         let text = c.to_string();
         let boot = text
             .split(';')
@@ -308,7 +310,9 @@ async fn a_tail_forgets_what_newer_pages_sent() {
 #[test]
 fn the_guard_remembers_the_newest_sent_up_to_its_cap() {
     let cursor = |n: u64| {
-        let Position(Inner::Journal(c)) = crate::testing::position(n);
+        let Position(Inner::Journal(c)) = crate::testing::position(n) else {
+            panic!("a journal position");
+        };
         c
     };
     let mut sent = Sent::new(2);
@@ -421,6 +425,23 @@ async fn entries_written_before_the_follow_starts_come_first_once() {
     v.quiet().await;
     file.grow(6);
     assert_eq!(v.followed(1).await, ["m5"]);
+}
+
+/// Another kind of source's position names none of the journal's
+/// entries: nothing is read, and the source goes on.
+#[tokio::test]
+async fn a_container_position_is_ignored() {
+    let file = Growing::new();
+    file.grow(2);
+    let mut v = Viewer::on(file.journal(), every_entry(), small(10));
+    let docker = Position(Inner::Docker(sb_docker::logs::Position {
+        time_ns: 0,
+        ordinal: 0,
+    }));
+    v.handle.send(Request::Older(docker.clone()));
+    v.handle.send(Request::Newer(docker));
+    v.quiet().await;
+    assert_eq!(v.page(Request::Tail).await.messages, ["m0", "m1"]);
 }
 
 /// A unit with no entries yet (newly installed, or vacuumed): an empty

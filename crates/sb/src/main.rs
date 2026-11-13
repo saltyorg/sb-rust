@@ -177,9 +177,14 @@ impl EditCommand {
     }
 }
 
-/// `sb docker`'s subcommands (docker spec); logs comes with its own plan.
+/// `sb docker`'s subcommands (docker spec; `logs`, the tui spec).
 #[derive(Subcommand)]
 enum DockerCommand {
+    /// Display logs of Docker containers
+    #[command(
+        long_about = "Shows Saltbox's systemd services and Docker containers, and the log of the one you choose, starting with the Docker containers."
+    )]
+    Logs,
     /// List Docker containers with port mappings
     #[command(
         long_about = "List all Docker containers and their status, displaying their internal\nports (as potentially exposed by Traefik labels) and their external port bindings."
@@ -218,6 +223,7 @@ impl Command {
         match self {
             Command::Version { .. } => "version",
             Command::Docker { command } => match command {
+                DockerCommand::Logs => "docker logs",
                 DockerCommand::Ps { .. } => "docker ps",
                 DockerCommand::Start => "docker start",
                 DockerCommand::Stop { .. } => "docker stop",
@@ -496,6 +502,9 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         }
         Command::Logs => logs::logs(shutdown)?,
         Command::Docker {
+            command: DockerCommand::Logs,
+        } => docker_logs::docker_logs(shutdown)?,
+        Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
         Command::Docker {
@@ -605,12 +614,7 @@ fn docker_control(
 /// signal, and nothing reaches stdout.
 fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
     use sb_docker::connect;
-    let env = |name| std::env::var(name).ok();
-    let address = connect::address(
-        env("DOCKER_HOST").as_deref(),
-        env("DOCKER_TLS_VERIFY").as_deref(),
-        env("DOCKER_CERT_PATH").as_deref(),
-    )?;
+    let address = docker_logs::address()?;
     let listing = block_on(shutdown.token().run_until_cancelled(async {
         let daemon = connect::connect(&address).await?;
         connect::list(&daemon).await
@@ -712,6 +716,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 }
 
 mod branch;
+mod docker_logs;
 mod edit;
 mod logs;
 mod motd;

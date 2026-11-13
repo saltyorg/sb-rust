@@ -535,6 +535,49 @@ fn notices_are_rows_of_their_own() {
     );
 }
 
+/// A container's stop and start: the follow's notices, at the bottom
+/// after an older page too, in the Muted role, and the view still
+/// following; errors are in the Problem role.
+#[test]
+fn a_stop_and_start_are_muted_rows_at_the_bottom_while_following() {
+    let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+    let mut h = open_with(
+        60,
+        8,
+        Limits::default(),
+        Format::new(TimeZone::UTC, theme.clone()),
+    );
+    h.requests();
+    h.send(tail(10..12, true));
+    h.send(older(8..10, false));
+    h.send(Event::Notice(Notice::Stopped));
+    h.send(Event::Notice(Notice::Started));
+    h.send(Event::Notice(Notice::ReadFailed("refused".into())));
+    let log = h.log();
+    let n = log.len();
+    assert_eq!(
+        log[n - 3..],
+        [
+            "container stopped; waiting for it to start again",
+            "container started",
+            "--- following ---",
+        ],
+        "{log:?}"
+    );
+    assert!(h.screen()[0].contains("following"));
+    // The page's error is the older page's: at the top.
+    assert!(matches!(
+        h.viewer.entries.front(),
+        Some(Entry::Notice(Notice::ReadFailed(_)))
+    ));
+    let fg = |role| ratatui::style::Style::from(theme.style(role)).fg;
+    let style_of = |item: isize| h.viewer.item_text(item).lines[0].style.fg;
+    let len = isize::try_from(h.viewer.entries.len()).expect("a length");
+    assert_eq!(style_of(len - 1), fg(Role::Muted), "started");
+    assert_eq!(style_of(len - 2), fg(Role::Muted), "stopped");
+    assert_eq!(style_of(0), fg(Role::Problem), "the error");
+}
+
 #[test]
 fn a_notice_after_an_older_page_goes_at_the_top() {
     let mut h = open(60, 8, Limits::default());

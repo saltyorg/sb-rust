@@ -1404,6 +1404,43 @@ the test's directory.
   adapter's test `newer_pages_reach_the_end_with_every_entry_once`). A
   cycle back into entries an older page loaded shows them once more
   before the guard stops it, at most one lap.
+- **The docker source and the Containers section (M69, 2026-11-13):**
+  - `Notice` gains `ReadFailed(cause)` (`couldn't read the log:
+    <cause>`, a page that couldn't be read: an empty page that ends
+    paging that way), `Stopped` and `Started` (the spec's two container
+    texts). Stopped and Started are drawn in Muted, the others in
+    Problem; the follow's notices (`CantFollow`, `Stopped`, `Started`)
+    go at the bottom even after an older page.
+  - The adapter keeps the container's events stream open for the
+    source's life (opened again after 5 s if it ends), so a restart
+    quicker than the end of the log stream isn't missed: a `start` for
+    the name seen while following, with no `die` after it, resumes the
+    follow as soon as the stream ends. When the stream is opened again
+    while waiting, the name is resolved through the container list (a
+    `start` may have come while it was down, as in a dockerd restart),
+    and a running container of that name is followed on.
+  - A re-created container's older pages stop at the old container's
+    creation when the new ID came from an event (it carries no creation
+    time); the old container's log is gone with it, so this costs empty
+    reads, not lines.
+  - Healthcheck `exec_*` events don't reload the Containers section
+    (they come on every check and change no row; `health_status`
+    does).
+  - When Docker was unreachable before the screen, the section stays
+    that row for the run: nothing watches for the daemon's return.
+  - A follow that must read the tail first and can't says
+    `can't follow: <cause>; f retries` and leaves the buffer as it is;
+    right after a failed tail (the viewer's opening asks for the tail,
+    then the follow) it says `can't follow: the log couldn't be read; f
+    retries` without reading again.
+  - The Containers section's watch publishes on a tokio `watch`
+    channel (only the newest list is kept while the viewer is open). A
+    reload that fails keeps the last list and shows `couldn't refresh
+    containers: <cause>` in the footer, as the services' refresh does.
+  - `sb logs` with no services and Docker unreachable opens the picker
+    with the Containers section's one row: the containers weren't
+    seen, so `No matching ... found.` would not be true.
+  - `sb docker logs` lists the containers only until `Tab` comes (M70).
 
 ## Open questions
 

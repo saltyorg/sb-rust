@@ -258,6 +258,8 @@ impl Adapter {
                 self.page(PageKind::Newer, journal::Position::After(cursor))
                     .await
             }
+            // Another source's position: none of this one's entries.
+            Request::Older(_) | Request::Newer(_) => true,
             Request::Follow(true) => self.start_following().await,
             Request::Follow(false) => {
                 self.stop_following();

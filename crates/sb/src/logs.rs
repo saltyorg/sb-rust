@@ -1,11 +1,13 @@
-//! `sb logs` (tui spec): Saltbox's systemd services in the picker, and
-//! the log of the one chosen in the viewer.
+//! `sb logs` (tui spec): Saltbox's systemd services and Docker containers
+//! in the picker, and the log of the one chosen in the viewer.
 //!
-//! Before the screen (tui decision 20): the service list (an empty one is
-//! sb-go's message and exit 0; a failed one host's error, exit 1), the
-//! terminal check, then the run's one journal and the coredump user's
-//! uid, both under `spawn_blocking` (sb-host's journal docs). Ctrl-C on
-//! the screen ends the run with 130, quietly (tui decision 13).
+//! Before the screen (tui decision 20): the service list (a failed one is
+//! host's error, exit 1) and the container list (an unreachable daemon is
+//! the Containers section's one row; none of either is sb-go's message
+//! and exit 0), the terminal check, then the run's one journal and the
+//! coredump user's uid, both under `spawn_blocking` (sb-host's journal
+//! docs). Ctrl-C on the screen ends the run with 130, quietly (tui
+//! decision 13).
 
 use std::io::{IsTerminal as _, Write as _};
 
@@ -17,7 +19,7 @@ use sb_host::journal::{self, Journal, Source};
 use sb_host::systemd::{Systemd, default_filters};
 use sb_tui::Ending;
 
-use crate::{block_on, set_override};
+use crate::{block_on, docker_logs, set_override};
 
 /// sb-go's message for an empty list, extended to both kinds (tui spec,
 /// "First load before the screen").
@@ -45,7 +47,25 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
     if token.is_cancelled() {
         anyhow::bail!("interrupted");
     }
-    if services.is_empty() {
+    // An unreachable daemon isn't an error here: the Containers section
+    // says so (tui spec, "First load before the screen").
+    let listed = match docker_logs::address() {
+        Ok(address) => token
+            .run_until_cancelled(docker_logs::containers(&address))
+            .await
+            .ok_or_else(|| anyhow::anyhow!("interrupted"))?,
+        Err(err) => Err(err),
+    };
+    let docker = match listed {
+        Ok((daemon, rows)) => sb_tui::Docker::Listed { daemon, rows },
+        Err(err) => {
+            let cause = format!("{err:#}");
+            tracing::warn!(error = %config::escape_controls(&cause), "Docker unreachable");
+            sb_tui::Docker::Unreachable(cause)
+        }
+    };
+    let no_containers = matches!(&docker, sb_tui::Docker::Listed { rows, .. } if rows.is_empty());
+    if services.is_empty() && no_containers {
         let mut out = std::io::stdout().lock();
         writeln!(out, "{NOTHING_FOUND}").map_err(exit::output_error)?;
         out.flush().map_err(exit::output_error)?;
@@ -71,14 +91,28 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
     let ending = sb_tui::logs(
         shutdown,
         sb_tui::Logs {
-            services,
-            journal,
-            coredump_uid,
+            services: Some(sb_tui::Services {
+                list: services,
+                journal,
+                coredump_uid,
+            }),
+            docker,
+            filter: sb_tui::Filter::All,
             theme: theme::current().clone(),
             zone: sb_tui::line::local_zone(),
         },
     )
     .await?;
+    ended(ending)
+}
+
+/// The run's result after the screens: 130 after Ctrl-C, quietly (tui
+/// decision 13).
+///
+/// # Errors
+///
+/// `Exit(130)` after Ctrl-C.
+pub fn ended(ending: Ending) -> anyhow::Result<()> {
     match ending {
         Ending::Interrupted => Err(Exit(130).into()),
         // A signal's ending is finish_run's to show.

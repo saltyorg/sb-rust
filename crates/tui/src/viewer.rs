@@ -74,14 +74,14 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Kind::Service => "service",
             Kind::Container => "container",
         }
     }
 
-    fn role(self) -> Role {
+    pub(crate) fn role(self) -> Role {
         match self {
             Kind::Service => Role::Service,
             Kind::Container => Role::Container,
@@ -259,8 +259,9 @@ impl Viewer {
                     }
                     self.follow = Follow::Off;
                 }
+                let of_follow = notice.of_follow();
                 let entry = Entry::Notice(notice);
-                if self.last_page == Some(PageKind::Older) && !cant_follow {
+                if self.last_page == Some(PageKind::Older) && !of_follow {
                     self.entries.push_front(entry);
                     self.anchor.item += 1;
                 } else {
@@ -420,9 +421,14 @@ impl Viewer {
             Some(Entry::Line(line)) => line::text(line, &self.format),
             Some(Entry::Notice(notice)) => {
                 let shown = DisplayText::from_bytes(notice.to_string().as_bytes(), false);
+                let role = if notice.is_error() {
+                    Role::Problem
+                } else {
+                    Role::Muted
+                };
                 Text::from(TextLine::styled(
                     shown.as_str().to_owned(),
-                    self.format.style(Role::Problem),
+                    self.format.style(role),
                 ))
             }
             None => Text::from(TextLine::styled(

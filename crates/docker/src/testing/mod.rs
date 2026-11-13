@@ -123,6 +123,9 @@ struct Shared {
     open: AtomicUsize,
     peak: AtomicUsize,
     release: tokio::sync::watch::Sender<bool>,
+    /// The containers' inspect answers, replaced by
+    /// [`FakeEngine::set_inspects`].
+    inspects: Mutex<Vec<Value>>,
     /// The logs, appended to by [`FakeEngine::append`].
     logs: Mutex<HashMap<String, FakeLog>>,
     /// IDs whose follows end once they have sent everything.
@@ -144,6 +147,7 @@ impl Shared {
             open: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             release: tokio::sync::watch::channel(false).0,
+            inspects: Mutex::new(options.inspects.clone()),
             logs: Mutex::new(options.logs.clone()),
             ended: Mutex::new(HashSet::new()),
             events: Mutex::new(Vec::new()),
@@ -284,6 +288,19 @@ impl FakeEngine {
     pub fn end_follows(&self, id: &str) {
         lock(&self.shared.ended).insert(id.to_string());
         self.shared.changes.send_replace(());
+    }
+
+    /// Let `id`'s follows run on again, as dockerd does once the container
+    /// has started again: new follows send what is appended.
+    pub fn resume_follows(&self, id: &str) {
+        lock(&self.shared.ended).remove(id);
+        self.shared.changes.send_replace(());
+    }
+
+    /// Answer the list and the inspects from `inspects` from now on (a
+    /// container started, stopped, created or removed).
+    pub fn set_inspects(&self, inspects: Vec<Value>) {
+        *lock(&self.shared.inspects) = inspects;
     }
 
     /// Give `event` (one of dockerd's event objects, such as
@@ -482,9 +499,7 @@ fn list_answer(shared: &Shared, uri: &Uri, version: Option<&str>) -> Response {
         .is_some_and(|q| q.split('&').any(|p| p == "all=true" || p == "all=1"));
     let body = shared.options.list.clone().unwrap_or_else(|| {
         Value::Array(
-            shared
-                .options
-                .inspects
+            lock(&shared.inspects)
                 .iter()
                 .filter(|i| all || i.pointer("/State/Status") == Some(&json!("running")))
                 .map(summary)
@@ -540,13 +555,12 @@ async fn inspect_answer(
             json!({ "message": "fake inspect failure" }),
         );
     }
-    match shared
-        .options
-        .inspects
+    let found = lock(&shared.inspects)
         .iter()
         .find(|inspect| inspect["Id"] == id.as_str())
-    {
-        Some(found) => answer(&shared, StatusCode::OK, found.clone()),
+        .cloned();
+    match found {
+        Some(found) => answer(&shared, StatusCode::OK, found),
         None => not_found(),
     }
 }
