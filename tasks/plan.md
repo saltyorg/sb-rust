@@ -272,6 +272,16 @@ Answers at the plan's approval (2026-11-11):
     the schema rules read yes/no/on/off as Ansible booleans, so the
     corpus's resolution lines change no validation result. Schema files
     stay outside the pre-pass (Ansible doesn't load them). Task 59.
+39. **Task 46's follow-ups are Task 60** (decided from the
+    capability map's "secrets never reach output" and decision 38's
+    "then its own rules"). Credentials the schemas type `string` (motd's
+    token, apikey and password, backup_config's `restore_service.pass`,
+    accounts' apprise URL) are secret by path. A list where the schema
+    wants an object is an issue, unless sb-go accepts it too, which
+    would make it a listed Difference. docker's commands are checked
+    for validate-config's DNS lag and fixed only if it reproduces.
+    Declined: hiding every off-schema value (keys named and paths listed
+    cover the credentials; showing a harmless value helps fix a typo).
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -538,7 +548,8 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 42: YAML: the corpus and the options
 - [x] Task 43: sb accepts the YAML Ansible accepts
 - [ ] Task 59: sb refuses the YAML Ansible refuses (decision 38)
-- [ ] Task 46: secrets are hidden wherever their key sits
+- [x] Task 46: secrets are hidden wherever their key sits
+- [ ] Task 60: Task 46's follow-ups (decision 39)
 - [ ] Checkpoint Y: config
 
 ### Phase 5 (lane 4): the glibc build (decisions 29 and 31)

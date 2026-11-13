@@ -1293,23 +1293,52 @@ in sb's `main.rs` waits for the resolver's blocking thread. That
 finding is untested.
 
 **Acceptance criteria:**
-- [ ] A value under a secret key name is hidden wherever the key sits:
+- [x] A value under a secret key name is hidden wherever the key sits:
       the review's `user:` list case has a test.
-- [ ] config-L11, as its own commit: Ctrl-C ends `validate-config`
+- [x] config-L11, as its own commit: Ctrl-C ends `validate-config`
       promptly when DNS is dead; the runtime's drop doesn't wait for
       the resolver's blocking thread. Its test reproduces the lag
       first. If the lag can't be reproduced, the id goes on "Proposed
       declines for the maintainer" instead.
 
 **Verification:**
-- [ ] `cargo test -p sb-config -p sb`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-config -p sb`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       security-auditor, and the library-reviewer for the `main.rs`
       change.
 
 **Dependencies:** Task 43
 **Files:** `crates/config/src/{rules.rs,secret.rs}`, `crates/sb/src/main.rs` (the runtime's teardown only; lane 1's file), `crates/sb/tests/` (a Ctrl-C test)
 **Scope:** M
+
+## Task 60: Task 46's follow-ups
+
+**Description:** What Task 46's reviewers found beyond its criteria
+(plan decision 39).
+
+**Acceptance criteria:**
+- [ ] Credentials typed `string` in Saltbox's schemas are secret by path,
+      so a tag error never echoes them: motd.yml's `token`, `apikey` and
+      `password` fields, backup_config.yml's `restore_service.pass`, and
+      accounts.yml's `apprise` (a URL carrying a token). The list sits
+      with the credential key names, is checked against the pinned
+      schemas by a test, and is in the config spec's "Secrets" bullet.
+- [ ] A list where the schema wants an object (`user:\n  - pass: x` in
+      accounts.yml) is an issue, with its position. If sb-go accepts it,
+      it's a listed Difference instead, with the sb-go code cited.
+- [ ] docker's commands (`ps`, `start`, `stop`, `restart`): whether a
+      Ctrl-C can wait on a hung DNS lookup as validate-config's could
+      (bollard's and reqwest's resolvers, `DOCKER_HOST=tcp://<name>`).
+      Fixed with Task 46's `shutdown_background` if it reproduces;
+      otherwise the finding goes in the commit body with the evidence.
+
+**Verification:**
+- [ ] `cargo test -p sb-config -p sb-docker -p sb`; `scripts/check.sh full <base>`.
+- [ ] Review: one code-reviewer pass with the security-auditor.
+
+**Dependencies:** Task 46
+**Files:** `crates/config/src/{rules.rs,secret.rs}`, `crates/sb/src/main.rs`, `docs/specs/config.md`
+**Scope:** S
 
 ## Checkpoint Y: config
 - [ ] `check.sh full`; the differential corpus passes.
