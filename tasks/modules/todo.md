@@ -71,23 +71,24 @@ amendments: `services(filters, token)`, `with_additional`, and sb-go's
 Services (M43) wait for it.
 
 **Acceptance criteria:**
-- [ ] `list-units`, `list-unit-files` and `list-timers` run
-      concurrently, then one `show --timestamp=unix` over the matched
+- [x] `list-units`, `list-unit-files` and `list-timers` run
+      concurrently, then one `show --timestamp=utc` over the matched
       units for `ActiveEnterTimestamp` and `StateChangeTimestamp`; each a
       10 s capture taking the caller's `CancellationToken`, so the call
       takes at most two timeouts.
-- [ ] Matching: the `saltbox_managed_` prefix and `docker`, configured
+- [x] Matching: the `saltbox_managed_` prefix and `docker`, configured
       names with `.service` stripped, a name matching nothing left out,
-      sorted, no duplicates, `not-found` dropped; `@0`, empty or missing
-      timestamps read as unknown.
-- [ ] A failed `list-units` or `list-unit-files` is `failed to list
+      sorted, no duplicates, `not-found` dropped; `n/a`, empty or missing
+      timestamps read as unknown (UTC text on every release: systemd 249
+      refuses `--timestamp=unix`, which arrived in v251).
+- [x] A failed `list-units` or `list-unit-files` is `failed to list
       systemd services: <cause>`; a failed `list-timers` or `show` leaves
       its fields empty.
 
 **Verification:**
-- [ ] `cargo test -p sb-host` on stand-in `systemctl` programs (JSON
+- [x] `cargo test -p sb-host` on stand-in `systemctl` programs (JSON
       fixtures), including cancellation mid-call and the time bound.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None
 **Files:** `crates/host/src/{lib.rs,systemd.rs,testing.rs}`, `crates/host/Cargo.toml`, `Cargo.lock`
@@ -104,17 +105,17 @@ libpq-dev check use. ansible's `install` (M31) and ops' setup (M82) are
 the checks' users.
 
 **Acceptance criteria:**
-- [ ] Each check passes and fails as the spec's table says, with sb-go's
+- [x] Each check passes and fails as the spec's table says, with sb-go's
       texts; `check_lxc` matches stdout and stderr together.
-- [ ] `package_installed` is true only for `ii`, false on exit 1, and
+- [x] `package_installed` is true only for `ii`, false on exit 1, and
       `query package <name>: <cause>` otherwise (5 s for the desktop
       check, 10 s elsewhere).
-- [ ] Program paths are fields, set through the `testing` feature only.
+- [x] Program paths are fields, set through the `testing` feature only.
 
 **Verification:**
-- [ ] `cargo test -p sb-host` with stand-in `systemd-detect-virt` and
+- [x] `cargo test -p sb-host` with stand-in `systemd-detect-virt` and
       `dpkg-query`, and an injected `uname`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None
 **Files:** `crates/host/src/{lib.rs,setup.rs,apt.rs,testing.rs}`, `crates/host/Cargo.toml`, `Cargo.toml`, `Cargo.lock`
