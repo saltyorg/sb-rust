@@ -270,6 +270,51 @@ logs, edit and facts can be built and tested without a terminal.
 `sb version`, `sb docker ps`, and `sb validate-config` on real Saltbox config,
 built in that order: `cli-core` → `term-ui` → `docker` + `config`.
 
+## Commands: sb-go's surface and sb-rust's coverage
+
+Every command sb-go offers, read from its `cmd/` package (2026-11-13),
+so the planning covers all of them. A row isn't a promise to port the
+command as it is: each is decided when its module is specified. Some
+may fold into others or go (for example, a solid saltbox-facts install
+may make `reinstall-facts` unnecessary). Update a row when a command's
+spec is approved or its build lands. "Hidden" means sb-go leaves it out
+of `--help`.
+
+| sb-go command | What it does in sb-go | Module | sb-rust | Planning note |
+|---|---|---|---|---|
+| `version` (`--json`) | Prints the CLI's version | cli-core | built | |
+| `validate-config` | Validates Saltbox's config files against their schemas | config | built | `-v` dropped (config decision 1: the run log has the detail) |
+| `docker ps` | Lists containers with their port mappings | docker | built | |
+| `docker start` | Starts Saltbox's containers through the Docker controller | docker | built | `-v` dropped (docker decision 6) |
+| `docker stop` (`--ignore`) | Stops them | docker | built | as above |
+| `docker restart` (`--ignore`) | Restarts them | docker | built | as above |
+| `docker logs` | Shows container logs | tui, docker | idea ([log-picker](../ideas/log-picker.md)) | one picker for docker and journal logs (journal spec decision 8); the next spec after hardening |
+| `logs` | Shows logs of Saltbox's systemd services | tui, host, journal | idea (log-picker) | as above; sb-journal and sb-host's follow are built |
+| `fact` | Browses and edits saltbox facts interactively | tui | idea ([fact-editor](../ideas/fact-editor.md)) | |
+| `edit <file>` | Opens one config file in an editor: `accounts`, `adv_settings`, `backup_config`, `hetzner_vlan`, `settings`, `inventory` | tui (edit picker) | not started | |
+| `install [tags]` (`-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | not started | tag cache shared with `list` and completion |
+| `list [query]` (`--include-mod`) | Lists the available tags | ansible | not started | |
+| `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | not started | |
+| `branch [name]` | Switches the branch Saltbox uses | ops, repo | not started | |
+| `branch-sandbox [name]` | Switches the branch Sandbox uses | ops, repo | not started | |
+| `diag` | Runs the diagnostics role | ops, ansible | not started | |
+| `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | not started | the schema rules proto-yaml found (Upstream note) |
+| `reinstall-facts` | Reinstalls the saltbox.fact file | ops, python-env | not started | may be unnecessary if the facts install is made solid |
+| `reinstall-python` | Reinstalls Saltbox's Python (uv) and the Ansible venv | python-env | not started | overlaps `reinstall-venv` and `update-venv` |
+| `reinstall-venv` | Reinstalls the Ansible venv | python-env | not started | as above |
+| `bench` | Runs the bundled bench.sh benchmark | ops | not started | ships a third-party script with its LICENSE and NOTICE |
+| `completion install [bash\|zsh\|fish]`, `completion <shell>` (hidden) | Installs the shell completion registration | completion | not started | dynamic completion through `CompleteEnv` (proto-complete) |
+| `completion generate <shell>` | Writes a completion script to stdout | completion | not started | |
+| `setup` (hidden; `--branch`, `--force`) | Installs Saltbox and its dependencies | ops | not started | the first command on a new host |
+| `update-venv` (hidden) | Updates the Ansible venv and saltbox.fact | python-env | not started | overlaps the reinstall commands |
+| `self-update` (hidden; `--yes`) | Updates the CLI itself | release | not started | sends a User-Agent; keeps the digest check (stack table) |
+| `announcements` (hidden; `--before`, `--after`, `--repo`) | Shows changes between two announcements files | ops | not started | called by `update`; may stay internal to it |
+| `restore` (hidden) | Fetches and decrypts a user's backed-up files | ops | not started | RustCrypto stack (stack table) |
+| `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | not started | CI-only |
+
+29 rows: every command sb-go registers, with `docker` and `completion`
+listed by their subcommands. 6 are built.
+
 ## Upstream note (for the maintainer to raise; no consumer changes here)
 
 proto-yaml found that `motd.schema.yml` uses `pattern` (regex) and
