@@ -18,7 +18,7 @@ Saltbox's checkouts: Saltbox (`/srv/git/saltbox`) and Sandbox
    D-Q1, 2026-11-13), as sb-go does (git/git.go, git/remote.go). Saltbox's
    setup installs git, so every supported host has it.
 2. **sb runs git as root in repositories the Saltbox user owns.** That
-   works because Saltbox adds `/srv/git/saltbox`, `/srv/git/sb` and
+   works because Saltbox adds `/srv/git/saltbox`, sb's own checkout and
    `<appdata>/sandbox` to root's global `safe.directory`
    (https://raw.githubusercontent.com/saltyorg/Saltbox/master/roles/pre_tasks/tasks/subtasks/git.yml).
    sb doesn't add its own.
