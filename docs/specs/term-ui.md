@@ -181,7 +181,11 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   worked out every frame from the terminal's current height, so a
   terminal resized mid-run collapses more or less from the next frame.
   Nothing is lost: the finished tree, printed for good, holds every step
-  in full, and the run log has every step whatever was drawn.
+  in full, and the run log has every step whatever was drawn. A run
+  holding failed steps reads `… N finished, M failed` in the `Warn`
+  role instead, M counting the failed steps among the N (a parent that
+  reads "sub-step failed" isn't counted again), so a failure doesn't
+  vanish from view (the maintainer, hardening plan decision 35; Task 57).
 - **Resize:** known limit from proto-runner: the live area's line count
   never shrinks while running (decision 2), so shrinking the terminal
   mid-run can leave stale lines (the tree drawn in the area still fits

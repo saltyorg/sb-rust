@@ -111,6 +111,14 @@ pub(crate) struct Tree {
     column: usize,
 }
 
+/// A run of collapsed steps in the live tree: its first step, how many
+/// steps it holds and how many of them failed.
+struct Run {
+    head: usize,
+    steps: usize,
+    failed: usize,
+}
+
 /// A step line's pieces before its time column is known.
 struct Parts {
     lead: String,
@@ -517,7 +525,8 @@ impl Tree {
     /// The live lines: every step not yet printed, in tree order, with what
     /// hangs under it. A tree taller than the screen collapses its oldest
     /// settled steps (each with its subtree and what hangs under it) to
-    /// "… N finished" until it fits, so the running steps and their
+    /// "… N finished" (", M failed" in the warning role when failed
+    /// steps are among them) until it fits, so the running steps and their
     /// output stay in view (ui-M1, hardening plan decision 17); the
     /// finished tree still prints every step (`take_printable`).
     ///
@@ -547,8 +556,9 @@ impl Tree {
         // order). A step joins the run of collapsed steps just above it
         // when it is a sibling of the run's first step (the step after a
         // collapsed subtree is its sibling or outside its parent); else
-        // it starts a run of its own, one "… N finished" line.
-        let mut runs: Vec<(usize, usize)> = Vec::new();
+        // it starts a run of its own, one "… N finished" line, which also
+        // says how many of them failed (Task 57, plan decision 35).
+        let mut runs: Vec<Run> = Vec::new();
         let mut collapsed = vec![false; steps.len()];
         let mut i = 0;
         while i < steps.len() && height > d.rows {
@@ -561,9 +571,13 @@ impl Tree {
                 && collapsed[i - 1]
                 && runs
                     .last()
-                    .is_some_and(|&(head, _)| self.nodes[head].parent == self.nodes[id].parent);
+                    .is_some_and(|run| self.nodes[run.head].parent == self.nodes[id].parent);
             if !joins {
-                runs.push((id, 0));
+                runs.push(Run {
+                    head: id,
+                    steps: 0,
+                    failed: 0,
+                });
                 height += 1;
             }
             let end = i
@@ -572,12 +586,15 @@ impl Tree {
                     .iter()
                     .take_while(|(below, _)| self.descends(*below, id))
                     .count();
-            for (j, (_, lines)) in steps.iter().enumerate().take(end).skip(i) {
+            let mut failed = 0;
+            for (j, (step, lines)) in steps.iter().enumerate().take(end).skip(i) {
                 collapsed[j] = true;
                 height -= lines.len();
+                failed += usize::from(self.nodes[*step].status == Status::Failed);
             }
-            if let Some((_, count)) = runs.last_mut() {
-                *count += end - i;
+            if let Some(run) = runs.last_mut() {
+                run.steps += end - i;
+                run.failed += failed;
             }
             i = end;
         }
@@ -586,7 +603,11 @@ impl Tree {
         for (i, (id, lines)) in steps.into_iter().enumerate() {
             if !collapsed[i] {
                 out.extend(lines);
-            } else if let Some(&(head, count)) = runs.as_slice().first()
+            } else if let Some(&Run {
+                head,
+                steps: count,
+                failed,
+            }) = runs.as_slice().first()
                 && head == id
             {
                 runs.next();
@@ -596,10 +617,15 @@ impl Tree {
                     GLYPHS.middle_item,
                     GLYPHS.item_indent
                 );
+                let (role, text) = if failed > 0 {
+                    (Role::Warn, format!("… {count} finished, {failed} failed"))
+                } else {
+                    (Role::Muted, format!("… {count} finished"))
+                };
                 out.push(format!(
                     "{}{}",
                     d.paint(Role::Faint, &lead),
-                    d.paint(Role::Muted, &format!("… {count} finished"))
+                    d.paint(role, &text)
                 ));
             }
         }
@@ -1528,6 +1554,20 @@ mod tests {
         │   │   plex: waiting 1
         │   │   plex: waiting 2
         ");
+        // Without a failure among them, muted as before (Task 57).
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let mut coloured = draw(&theme, secs(t0, 2));
+        coloured.colour = true;
+        coloured.rows = 12;
+        let live = tree.live(&coloured);
+        assert!(
+            live.contains(&format!(
+                "{}{}",
+                coloured.paint(Role::Faint, "│   ├── "),
+                coloured.paint(Role::Muted, "… 24 finished")
+            )),
+            "{live:#?}"
+        );
     }
 
     /// The live tree follows the screen's height frame by frame: a
@@ -1559,7 +1599,7 @@ mod tests {
             let shown = live.iter().filter(|l| l.contains(" started ")).count();
             let collapsed = live
                 .iter()
-                .find_map(|l| l.split("… ").nth(1)?.strip_suffix(" finished"))
+                .find_map(|l| l.split("… ").nth(1)?.split(" finished").next())
                 .and_then(|n| n.parse::<usize>().ok())
                 .unwrap_or(0);
             assert_eq!(shown + collapsed, 30, "{rows}: {live:#?}");
@@ -1617,10 +1657,25 @@ mod tests {
         d.rows = 6;
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
         ├── ⠋ Validating                                              1s
-        │   ├── … 6 finished
+        │   ├── … 6 finished, 3 failed
         │   ├── ⠋ File 3                                              1s
         ");
         assert!(tree.is_running(last));
+        // In the warning role, where a run without a failure is muted
+        // (Task 57, plan decision 35).
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let mut coloured = draw(&theme, secs(t0, 1));
+        coloured.colour = true;
+        coloured.rows = 6;
+        let live = tree.live(&coloured);
+        assert!(
+            live.contains(&format!(
+                "{}{}",
+                coloured.paint(Role::Faint, "│   ├── "),
+                coloured.paint(Role::Warn, "… 6 finished, 3 failed")
+            )),
+            "{live:#?}"
+        );
     }
 
     /// Settled steps at two depths collapse to a line each, at their own
@@ -1704,6 +1759,45 @@ mod tests {
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
         ├── ⠋ Starting                                                1s
         │   ├── … 5 finished
+        │   ├── ⠋ B                                                   1s
+        │   ├── … 4 finished
+        │   ├── ✓ c4 done                                             0s
+        │   ├── ⠋ D                                                   1s
+        ");
+    }
+
+    /// Each run counts its own failures: a failure in one run doesn't
+    /// mark the other (Task 57).
+    #[test]
+    fn each_collapsed_run_counts_its_own_failures() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let all = tree.add(None, Labels::new("Starting", "started"), t0);
+        for i in 0..5 {
+            let id = tree.add(
+                Some(all),
+                Labels::new(format!("a{i}"), format!("a{i} done")),
+                t0,
+            );
+            let status = if i == 2 { Status::Failed } else { Status::Done };
+            tree.finish(id, status, t0);
+        }
+        tree.add(Some(all), Labels::new("B", "b done"), t0);
+        for i in 0..5 {
+            let id = tree.add(
+                Some(all),
+                Labels::new(format!("c{i}"), format!("c{i} done")),
+                t0,
+            );
+            tree.finish(id, Status::Done, t0);
+        }
+        tree.add(Some(all), Labels::new("D", "d done"), t0);
+        let mut d = draw(&theme, secs(t0, 1));
+        d.rows = 6;
+        insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ⠋ Starting                                                1s
+        │   ├── … 5 finished, 1 failed
         │   ├── ⠋ B                                                   1s
         │   ├── … 4 finished
         │   ├── ✓ c4 done                                             0s
