@@ -1285,6 +1285,46 @@ build host (ADR-020, decision 5).
 names the musl build
 **Scope:** S
 
+## Task 55: the toolchain pin moves to 1.100
+
+**Description:** Move `rust-toolchain.toml` and `rust-version` from 1.99.1
+to the newest 1.100.x (plan decision 32), after every lane's current work
+has merged. A trial on 67fcdd2 measured what breaks (the review's logs outside
+the repo, not tracked).
+
+**Acceptance criteria:**
+- [ ] The escaping change decided first, test-first: std's
+      `str::escape_debug` now escapes a grapheme extender anywhere
+      (https://github.com/rust-lang/rust/pull/158303), so
+      `exit::tests::combining_marks_mid_line_show_unchanged`
+      (crates/cli-core/src/exit.rs) fails and an NFD name prints with
+      `\u{301}`. The options (an escaper of sb's own that keeps marks
+      after a base character, as the cli-core contract at exit.rs's
+      `escaped` documents; or the new output, with the spec and test
+      changed) go to the maintainer with a recommendation (decision 20).
+      The journal's path messages (crates/journal/src/lib.rs) follow the
+      same answer.
+- [ ] clippy `-D warnings` clean: the `map_unwrap_or` findings (now also
+      `map(..).unwrap_or_default()`), `needless_range_loop` in
+      walk.rs's tests and `unused_must_use` in the journal example.
+- [ ] Cargo's new `unused_dependencies` warning on sb-journal's optional
+      `clap` (used only by its examples under `testing`) is resolved by
+      structure where one fits, or a `[lints.cargo]` entry with its reason.
+- [ ] ADR-001's pins (ratatui =0.30.2, clap_complete =4.6.11) and the
+      production build still pass; the doc and comment references to
+      1.99.1 are updated.
+
+**Verification:**
+- [ ] `scripts/check.sh full <base>`, including the production build and
+      cargo-llvm-cov and cargo-mutants on the new toolchain.
+- [ ] Review: one code-reviewer pass on the task's diff; the
+      library-reviewer if the escaper becomes sb's own.
+
+**Dependencies:** every open lane task merged (it touches six crates and
+the gate). Lands alone on `rust-toolchain.toml` and `Cargo.toml`.
+**Files:** `rust-toolchain.toml`, `Cargo.toml`, `crates/cli-core/src/{exit.rs,config.rs,help.rs}`, `crates/journal/`, `crates/{config,docker,sb,term-ui}/src/` (the lint sites), the cli-core spec
+**Scope:** M
+
 ## Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes.

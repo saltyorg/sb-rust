@@ -217,6 +217,14 @@ Answers at the plan's approval (2026-11-11):
     lane stays sequential inside, because its tasks share files, and
     the shared-file rules below are unchanged. Each lane's heavy runs
     are capped at a quarter of the host.
+32. **The toolchain moves to 1.100 as its own task, after the lanes**
+    (the maintainer, 2026-11-13): Task 55, in Phase 6. A trial on
+    67fcdd2 found 20 new clippy findings, a cargo `unused_dependencies`
+    warning on sb-journal's optional `clap`, and `str::escape_debug`
+    escaping grapheme extenders mid-string
+    (https://github.com/rust-lang/rust/pull/158303), which changes sb's
+    error output for an NFD name. The edition stays 2024: nothing newer
+    is stable.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -479,6 +487,9 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ### Phase 5 (lane 4): the glibc build (decisions 29 and 31)
 - [ ] Task 53: the production build links glibc, built on 22.04
 - [ ] Task 54: the journal matrix builds in the same image
+
+### Phase 6: the toolchain (decision 32)
+- [ ] Task 55: the toolchain pin moves to 1.100
 
 ### Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
