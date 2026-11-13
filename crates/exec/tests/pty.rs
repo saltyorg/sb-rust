@@ -58,6 +58,20 @@ fn sh(script: &'static str) -> Cmd {
     Cmd::new("sh").arg("-c").arg(script)
 }
 
+/// How long output is read after the child exits (exec spec, "After the
+/// child exits"; exec's own constant is private).
+const DRAIN: Duration = Duration::from_secs(2);
+
+/// How long `cmd` takes on a PTY here and now: the baseline a timing bound
+/// is measured against, so a loaded host's spawn and scheduling costs are
+/// in both sides of the comparison.
+async fn baseline(cmd: Cmd) -> Duration {
+    let start = Instant::now();
+    let (done, _) = within(cmd).await;
+    assert_eq!(done.expect("ran").outcome.ending, Ending::Exited(0));
+    start.elapsed()
+}
+
 fn has_line(screen: &str, line: &str) -> bool {
     screen.lines().any(|l| l.trim() == line)
 }
@@ -170,18 +184,22 @@ async fn secrets_are_taken_out_of_the_lines() {
 /// A background process holding the PTY: the run returns after the 2 s
 /// read past the child's exit. It ignores SIGHUP (the kernel sends it to
 /// the terminal's foreground group when the session's leader exits), set
-/// before the leader exits.
+/// before the leader exits. It holds the PTY for 10 s, so any bound well
+/// under that proves the run didn't wait for it: the same run without it,
+/// plus the drain, plus one more drain of slack for a loaded host.
 #[tokio::test]
 async fn a_grandchild_holding_the_pty_is_left_after_the_drain() {
+    let alone = baseline(sh("sleep 0.3; echo ok")).await;
     let start = Instant::now();
     // The pause lets the background subshell set its trap first.
-    let script = "(trap '' HUP; exec sleep 3) & sleep 0.3; echo ok";
+    let script = "(trap '' HUP; exec sleep 10) & sleep 0.3; echo ok";
     let (done, _) = within(sh(script)).await;
     assert_eq!(done.expect("ran").outcome.ending, Ending::Exited(0));
     let waited = start.elapsed();
+    assert!(waited >= DRAIN, "{waited:?}");
     assert!(
-        waited >= Duration::from_secs(2) && waited < Duration::from_secs(3),
-        "{waited:?}"
+        waited < alone + DRAIN * 2,
+        "{waited:?} against {alone:?} alone"
     );
 }
 
@@ -201,21 +219,23 @@ async fn the_environment_follows_the_rules() {
 }
 
 /// The step's token and a timeout stop the session's group; a dropped run
-/// leaves nothing of it.
+/// leaves nothing of it. `sleep` dies of the stop's SIGTERM, so each run
+/// ends well before the grace runs out: within half of it after the stop,
+/// measured against a run of `true` here and now, so a loaded host's costs
+/// are on both sides. A stop that waited for the grace's SIGKILL (and the
+/// group's last check after it) would take the whole grace and more.
 #[tokio::test]
 async fn cancellation_and_timeouts_reach_the_group() {
+    const STOP_AFTER: Duration = Duration::from_millis(200);
+    const GRACE: Duration = Duration::from_secs(4);
+    let alone = baseline(Cmd::new("true")).await;
+    let bound = alone + STOP_AFTER + GRACE / 2;
     let start = Instant::now();
-    let (done, _) = within(
-        Cmd::new("sleep")
-            .arg("30")
-            .timeout(Duration::from_millis(200))
-            .grace(Duration::from_millis(500)),
-    )
-    .await;
+    let (done, _) = within(Cmd::new("sleep").arg("30").timeout(STOP_AFTER).grace(GRACE)).await;
     assert_eq!(done.expect("ran").outcome.ending, Ending::TimedOut);
     assert!(
-        start.elapsed() < Duration::from_secs(1),
-        "{:?}",
+        start.elapsed() < bound,
+        "{:?} against {bound:?}",
         start.elapsed()
     );
 
@@ -232,11 +252,9 @@ async fn cancellation_and_timeouts_reach_the_group() {
     let started = Instant::now();
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
-            let cmd = Cmd::new("sleep")
-                .arg("30")
-                .grace(Duration::from_millis(500));
+            let cmd = Cmd::new("sleep").arg("30").grace(GRACE);
             let (done, ()) = tokio::join!(cmd.pty(step), async {
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(STOP_AFTER).await;
                 shutdown.signalled(2);
             });
             ending = Some(done.expect("ran").outcome.ending);
@@ -246,8 +264,8 @@ async fn cancellation_and_timeouts_reach_the_group() {
     run.finish();
     assert_eq!(ending, Some(Ending::Interrupted));
     assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "{:?}",
+        started.elapsed() < bound,
+        "{:?} against {bound:?}",
         started.elapsed()
     );
 }
