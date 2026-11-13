@@ -43,10 +43,13 @@ Rust libraries in place of sb-go's internals.
    ratatui layout areas).
 5. **Toolchain:** pinned stable Rust, edition 2024, in `rust-toolchain.toml`.
    Bumping it is a deliberate change.
-6. **Release binaries:** static musl builds for Linux amd64 and arm64 (Ubuntu,
-   as sb-go checks today). TLS via rustls with aws-lc-rs. Release builds use a
-   musl C toolchain (`cross` today), because every rustls crypto backend
-   compiles C (proto-musl).
+6. **Release binaries:** glibc builds for Linux amd64 and arm64 (Ubuntu,
+   as sb-go checks today), built in an image of the oldest release on the
+   host spec's runtime list (`ubuntu:22.04` today), so one binary runs on
+   every supported release. TLS via rustls with aws-lc-rs, whose C the
+   image's GCC compiles. *Amended 2026-11-13 from static musl through
+   `cross` ([ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md),
+   which supersedes ADR-008; built from hardening Tasks 53 and 54).*
 7. **Repository:** git repository, intended to be public under saltyorg, so
    the public-repo rules in `CLAUDE.md` apply from the first commit.
 8. **Async runtime:** tokio, confirmed by proto-logs. Blocking work (PTY
@@ -185,7 +188,7 @@ GitHub API (last push, archived flag).
 | Restore decrypt | `aes`, `cbc`, `pbkdf2`, `sha1`, `sha2` (RustCrypto) | 2026 | 48–332M | crypto/*, x/crypto/pbkdf2 | untested |
 | Self-update | hand-rolled on `reqwest` + `sha2`, sends a `User-Agent` | — | — | selfupdate pkg (keeps digest check) | proto-musl (User-Agent) |
 | Testing | `insta` + ratatui `TestBackend`, `assert_cmd`, `rexpect` (PTY smoke) | 2026 | 35M / 20M / 0.4M | — | proto-facts (recommendation) |
-| Release build | `cross` (musl C toolchain) | 0.2.5 | — | goreleaser-style build | proto-musl |
+| Release build | an `ubuntu:22.04` build image (through `cross` 0.2.5 with a custom image, or `docker run`; Task 53 chooses) | — | — | goreleaser-style build | ADR-020; the glibc build in libsystemd-reader.md |
 
 **Rejected, with reasons:**
 - `serde_yaml`: archived and deprecated. `serde_yml`: archived.
@@ -216,8 +219,11 @@ GitHub API (last push, archived flag).
   SIGBUS handler and links the C `zstd` crate, against the reader's
   pread-only, pure-Rust and `unsafe_code = "forbid"` constraints. Not run.
   ADR-013.
-- The libsystemd `systemd` crate: can't link into the static musl binary
-  (decision 6), and systemd's musl support is "incomplete". ADR-013.
+- The libsystemd `systemd` crate: couldn't link into the static musl
+  binary, and systemd's musl support is "incomplete" (ADR-013). With
+  glibc builds (ADR-020) it could link. It stays rejected for
+  libsystemd-reader.md's reasons, which don't depend on musl (hardening
+  plan decision 27).
 - `cloudflare` crate: about 86K downloads and last release 2025-03. sb-go only
   calls it in one config validator, so a single `reqwest` call is smaller.
 - `self_update`: active, but pulls in archive/extraction stacks we don't need.

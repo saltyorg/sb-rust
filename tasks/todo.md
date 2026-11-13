@@ -1209,6 +1209,80 @@ finding is untested.
 - [ ] The message to the maintainer names any residual YAML difference
       that waits for them.
 
+## Task 53: the production build links glibc, built on 22.04
+
+**Description:** Replace the static musl build with a glibc build made
+in an `ubuntu:22.04` image (plan decision 29,
+[ADR-020](../docs/decisions/ADR-020-glibc-builds-on-the-oldest-release.md)).
+Under "Library first", first check whether `cross` 0.2.5 runs the build
+in a custom 22.04 image (`Cross.toml`'s `image` or `dockerfile`, with
+`pre-build` for the C compiler). If it doesn't, use a `docker run` of
+the repository's own image. Record which, and why, in ADR-020.
+
+**Acceptance criteria:**
+- [ ] `check.sh full` builds the production `x86_64-unknown-linux-gnu`
+      binary in the 22.04 image, in its own target directory, gates its
+      size, and runs `sb version` in a container of each release on the
+      host spec's runtime list (22.04, 24.04, 26.04); a binary one of
+      them can't load fails the gate.
+- [ ] The arm64 build (`aarch64-unknown-linux-gnu`) is made once in the
+      same image with Ubuntu's aarch64 GCC, and runs `sb version` under
+      qemu or on an arm64 host. ADR-020's UNVERIFIED mark is removed if
+      it works, and the result goes to the maintainer if it doesn't.
+- [ ] No musl target is left: `rust-toolchain.toml`'s targets, `deny.toml`'s
+      targets (on main, alone), CONSTRAINTS.md's binary-size and Tools
+      rows (`cross` stays only if it is the route), check.sh's step name and
+      `SIZE_MAX_BYTES` comment, the floor guard's tests, the cli-core
+      spec's build command, `crates/host/src/lib.rs`'s "static" comment.
+- [ ] The toolchain change is acknowledged by the floor guard
+      (ADR-015) where it flags it, citing ADR-020.
+- [ ] ADR-020 records the route chosen, and the size and startup
+      measured on this build.
+
+**Verification:**
+- [ ] `scripts/check.sh full <base>`; the glibc binary's highest
+      `GLIBC_` symbol version is at most 2.35 (`objdump -T`), recorded
+      in ADR-020.
+- [ ] Review: one code-reviewer pass on the task's diff (it changes the
+      gate), with the library-reviewer for the build route.
+
+**Dependencies:** Task 46 (lane 3's last). It lands alone on
+`deny.toml` and `rust-toolchain.toml` (the plan, "Lanes and shared files").
+**Files:** `rust-toolchain.toml`, `deny.toml`, `CONSTRAINTS.md`,
+`scripts/check.sh`, `scripts/floor-guard.test.mjs`, a build image (or
+`Cross.toml`), `docs/specs/cli-core.md`, `docs/decisions/ADR-020-*.md`,
+`docs/decisions/ADR-008-*.md`, `crates/host/src/lib.rs`
+**Scope:** M (many files, each a line or two; the image is the work)
+
+## Task 54: the journal matrix builds in the same image
+
+**Description:** The journal scripts and their CI workflow build the
+`journal` example in Task 53's image, not for musl, so the binary under
+test is built the way sb ships, and runs in the 22.04 container from any
+build host (ADR-020, decision 5).
+
+**Acceptance criteria:**
+- [ ] compare.sh, compat.sh, follow.sh, seeds.sh and stress.sh build the
+      example through one shared helper in the image (or take
+      `SBJ_BIN`, as now), and their "Needs ... the musl target" lines say
+      what they need instead.
+- [ ] `.github/workflows/journal-matrix.yml` builds the same way; its
+      step names and artifact path change with it. Local only, no push
+      or workflow run (global rules).
+- [ ] The matrix is green on 22.04, 24.04 and 26.04 with the glibc
+      example, with the same pread bounds.
+
+**Verification:**
+- [ ] compare.sh, compat.sh and follow.sh on the three releases;
+      `scripts/check.sh full <base>`.
+- [ ] Review: one code-reviewer pass on the task's diff.
+
+**Dependencies:** Task 53.
+**Files:** `crates/journal/tests/{compare,compat,follow,seeds,stress}.sh`,
+`.github/workflows/journal-matrix.yml`, the journal spec's Commands if it
+names the musl build
+**Scope:** S
+
 ## Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes.

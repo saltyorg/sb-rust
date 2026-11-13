@@ -248,10 +248,13 @@ Until it is verified, the code marks difference 1 UNVERIFIED.
     sb-go ended the whole walk silently there (difference 11).
 - **User lookup:** `nix::unistd::User::from_name` (decision 2), at the
   nix version portable-pty already links (0.28), with its `user` feature.
-  This adds no second nix to the binary. musl's `getpwnam_r` reads
-  `/etc/passwd` and asks nscd only if one runs. sb-go's pure-Go lookup
-  reads `/etc/passwd` alone. On a Saltbox host the two agree; nscd isn't
-  installed by default.
+  This adds no second nix to the binary. glibc's `getpwnam_r` goes
+  through NSS (`/etc/nsswitch.conf`, `files` first on Ubuntu), as every
+  other program on the host does (ADR-020; musl's read `/etc/passwd` and
+  asked nscd only if one ran). sb-go's pure-Go lookup reads `/etc/passwd`
+  alone. With `files` first they agree on every user in `/etc/passwd`;
+  glibc can also find a user that only systemd-userdb knows, which sb-go
+  can't.
 - **Errors** nest as sb-go's do:
   - `look up user <u>: <cause>`
   - `inspect ownership of <p>: <cause>`

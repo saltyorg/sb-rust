@@ -197,6 +197,21 @@ Answers at the plan's approval (2026-11-11):
     tab after a colon becomes a space (56 of 59 corpus cases in Task
     42's prototype). The tab layouts libyaml refuses (config-L1) are
     refused by sb's own check. No new dependency.
+29. **Release builds link glibc, built on the oldest supported release**
+    (the maintainer, 2026-11-13; the details are
+    [ADR-020](../docs/decisions/ADR-020-glibc-builds-on-the-oldest-release.md),
+    accepted as written). It replaces decision 27's "the static musl binary
+    stands"; ADR-013 stands. The image is `ubuntu:22.04`, and the gate
+    and the journal matrix build in it too. Tasks 53 and 54, in Phase
+    5.
+30. **A rebased lane runs `check.sh full` again only on overlap**
+    (the maintainer, 2026-11-13). After a rebase onto main, the full
+    check runs again only when main's new commits touch a crate the
+    task changes, or a gate file (`scripts/`, `CONSTRAINTS.md`,
+    `CLAUDE.md`, `.claude/`, `.github/`, `deny.toml`, the manifests,
+    `rust-toolchain.toml`). Otherwise the pre-rebase full result stands
+    and `check.sh fast <base>` runs on the rebased commit before the
+    merge.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -296,6 +311,7 @@ each in its own git worktree with its own target directory.
 | 1: text, process and display | 8-10, 12, 13, 17-21 | `crates/{term-ui,docker}`; cli-core's `exit.rs`, `log.rs`, `cancel.rs`; `crates/sb/src/main.rs` and sb's signal and log tests; exec's attached-signals test; the cli-core, exec, term-ui and docker specs |
 | 2: the journal reader | 27, 28, 32-34, 36-38 | `crates/journal`, `crates/host/src/journal.rs` and its tests, the journal spec |
 | 3: config | 42, 43, 46 | `crates/config`, cli-core's `config.rs`, new sb test files, the config spec |
+| 3, after 46: the glibc build | 53, 54 | `rust-toolchain.toml`, `deny.toml` (on main, alone), `CONSTRAINTS.md`, `scripts/check.sh` and the floor guard's tests, a build image, `crates/journal/tests/*.sh`, `.github/workflows/journal-matrix.yml` |
 
 A lane is sequential: its tasks share files (cli-core's `log.rs` and
 `cancel.rs`, term-ui's `runner.rs` and `tree.rs`, the journal's
@@ -320,8 +336,10 @@ Shared files have one owner at a time:
   that lane's own commit.
 - **`tasks/todo.md` and `tasks/plan.md`:** ticked on the main checkout
   when a task merges.
-- A worktree's commits are rebased onto main, and `check.sh full` runs
-  again on the rebased commit before the merge.
+- A worktree's commits are rebased onto main. `check.sh full` runs
+  again on the rebased commit only when main's new commits touch a
+  crate the task changes or a gate file; otherwise `check.sh fast`
+  does (decision 30).
 
 Two tasks touch another lane's file, each in one place only:
 - **Task 9** (lane 1) calls `escape_controls`, which lives in cli-core's
@@ -450,6 +468,10 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [ ] Task 43: sb accepts the YAML Ansible accepts
 - [ ] Task 46: secrets are hidden wherever their key sits
 - [ ] Checkpoint Y: config
+
+### Phase 5: the glibc build (decision 29)
+- [ ] Task 53: the production build links glibc, built on 22.04
+- [ ] Task 54: the journal matrix builds in the same image
 
 ### Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and

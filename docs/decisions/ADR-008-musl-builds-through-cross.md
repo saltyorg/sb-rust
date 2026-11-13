@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-03, config Checkpoint A)
+Superseded by [ADR-020](ADR-020-glibc-builds-on-the-oldest-release.md)
+(2026-11-13), which builds glibc binaries on the oldest supported
+release. Accepted (maintainer, 2026-11-03, config Checkpoint A).
 
 ## Date
 

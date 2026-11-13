@@ -327,7 +327,7 @@ on `sb-config`).
 ```
 Check: scripts/check.sh fast | task | full
 Test:  systemd-run --scope -p MemoryMax=8G -p CPUQuota=400% cargo test -p sb-config -p sb
-Try:   the production musl build as root with SB_LOG_DIR set
+Try:   the production build as root with SB_LOG_DIR set
 ```
 
 ## Project Structure
@@ -444,4 +444,7 @@ docs/specs/config.md      this spec
 8. **musl builds through `cross` (Checkpoint A, 2026-11-03):** aws-lc-sys
    compiles C, so check.sh's production musl build moves to `cross`
    ([ADR-008](../decisions/ADR-008-musl-builds-through-cross.md)), with
-   the commit that first links it (plan Task 11).
+   the commit that first links it (plan Task 11). *Superseded by
+   [ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md)
+   (2026-11-13): a glibc build in an `ubuntu:22.04` image, whose GCC
+   compiles aws-lc-sys.*

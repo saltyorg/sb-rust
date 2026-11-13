@@ -284,7 +284,7 @@ Docker controller's HTTP API after a `systemctl` check" — depends on
 Check:   scripts/check.sh fast | task | full
 Test:    cargo test -p sb-docker -p sb
 Live:    SB_LIVE_DOCKER=1 SB_LOG_DIR=<scratch> systemd-run --scope -p MemoryMax=2G -p CPUQuota=200% cargo test -p sb-docker --test live
-Try:     the production musl build of sb, run as root with SB_LOG_DIR set
+Try:     the production build of sb, run as root with SB_LOG_DIR set
 ```
 
 ## Project Structure
@@ -414,7 +414,7 @@ pub fn status(state: &ContainerState) -> (String, Role) {
 9. `sb --help` stays within its ratchet and `sb version` within the 10 ms
    budget (no runtime built for them). `sb docker ps`'s median is recorded
    beside sb-go's on the same machine, for information (no bar).
-10. The production musl build (x86_64) runs `sb docker ps` against the
+10. The production build (x86_64) runs `sb docker ps` against the
     fake Engine API and, by hand, a real daemon.
 11. Binary size measured; bollard, hyper and tokio's network stack will
     cross the 5% tolerance, so an ADR records the new size (step by step)
