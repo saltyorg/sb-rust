@@ -2241,6 +2241,16 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       by name, compare with journalctl on 22.04, 24.04 and 26.04 in the
       matrix, and fix or list it as a Difference.
 
+- [ ] **The mutation sweep misses leaked shells** (the gate; lane 3).
+      exec's tests leave helper shells (`sh -c 'trap … exit'`) that run
+      `/bin/sh`, with their working directory in the pass's deleted copy.
+      The sweeps match a process's executable only, so these survived,
+      hundreds of them, each holding its gate run's systemd scope alive
+      after the run ended. Match a process whose executable or working
+      directory lies under the pass's TMPDIR, in both the in-pass and
+      end-of-pass sweeps, and test it with a shell decoy as fe204d5's test
+      does.
+
 ## Ready to start
 
 Started right after this plan's commit:
