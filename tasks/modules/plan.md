@@ -115,8 +115,9 @@ The work, by module, with the build-order step it comes from:
    look task ahead of it. A change the maintainer asks for at a look is a
    new commit on top, not a rewrite of the stacked ones. A **free** task
    stacked behind a look waits for it.
-7. **Reviews by tier** (CLAUDE.md, ADR-016), each on `model: fable`,
-   `effort: medium` (the maintainer's standing choice), in parallel with
+7. **Reviews by tier** (CLAUDE.md, ADR-016), each on the session's own
+   model at `effort: medium` (the maintainer's standing choice; the Fable
+   requirement was dropped on 2026-11-13), in parallel with
    `scripts/check.sh full <base>`: one `agent-skills:code-reviewer` run on
    the task's whole diff for every task; `library-reviewer` where the task
    says so (terminal, UI, input, event-loop, process or I/O code);

@@ -13,7 +13,7 @@ graph, risks, open questions). Approved by the maintainer on
 - `scripts/check.sh fast` after edits, `task <base>` before review,
   `full <base>` before the commit, `<base>` being the commit the task
   started from;
-- the reviews it lists, on `model: fable` and `effort: medium`, in
+- the reviews it lists, on the session's model at `effort: medium`, in
   parallel with `check.sh full`; findings weighed against how sb runs on
   Saltbox, real ones fixed test-first, the rest declined in the commit
   body;
