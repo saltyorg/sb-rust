@@ -52,9 +52,7 @@ Rust libraries in place of sb-go's internals.
    image's GCC compiles. *Amended 2026-11-13 from static musl through
    `cross` ([ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md),
    which supersedes ADR-008; built from hardening Tasks 53 and 54).
-   musl is revisited when the CLI is feature complete, measured against
-   glibc to see whether the performance difference matters (ADR-020,
-   Consequences).*
+   musl is revisited when the binary is complete (below).*
 7. **Repository:** git repository, intended to be public under saltyorg, so
    the public-repo rules in `CLAUDE.md` apply from the first commit.
 8. **Async runtime:** tokio, confirmed by proto-logs. Blocking work (PTY
@@ -297,6 +295,22 @@ To discuss with the maintainer once every module is done, not before:
   sb-go supported it the same day), and two cheaper fixes for it: a
   `schema_version` key inside the schema files, or a scheduled sb-side
   check that loads upstream's schemas strictly.
+- **The ratchet rows** (CONSTRAINTS.md, "Measured, not yet enforced";
+  maintainer, 2026-11-13). They stay as they are until then. With every
+  command in place they are re-measured, and the maintainer decides how
+  far they can be cut down. The fixed limits (the 10 ms startup budget,
+  the size ceiling) gate every change meanwhile. Last measured at the
+  hardening plan's Checkpoint B (2026-11-13, commit 964f963, glibc
+  build): coverage 98.63% of lines and 98.119% of functions, production
+  binary 11,843,920 bytes, `sb --help` median 2.30 ms. The rows' own
+  figures came from older hardware, where 85bc4f0 also times 2.30 ms
+  on the newer host.
+- **musl or glibc** (maintainer, 2026-11-13). glibc and musl builds of
+  the feature-complete CLI are measured side by side on one host
+  (startup, peak memory, the commands' own run times), and the
+  maintainer decides whether the difference matters. The figures so far
+  are in [ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md)'s
+  Consequences; a move back to musl supersedes that ADR.
 
 ## Open items carried into module specs
 

@@ -250,18 +250,11 @@ Answers at the plan's approval (2026-11-11):
     for as many rows as the wrapping needs (the rest of Task 21). A
     collapsed run that holds a failure says so: "… N finished, M
     failed", in the warning role (Task 57).
-36. **The ratchet rows wait for the full functionality** (the
-    maintainer, 2026-11-13, at Checkpoint B). The rows stay as they are
-    until sb has its full functionality; then they are re-measured and
-    the maintainer decides how far they can be cut down. Checkpoint B's
-    measurement on this host (coverage 98.63% lines and 98.119%
-    functions, size 11,843,920 bytes, `sb --help` 2.30 ms, which the old
-    tree also times here) is in tasks/todo.md. The fixed limits (the 10
-    ms startup budget, the size ceiling) still gate every change.
-    Checkpoint C's ratchet criterion moves with this. The same point
-    revisits musl (the maintainer, 2026-11-13): glibc and musl builds
-    of the feature-complete CLI are measured side by side, and the
-    maintainer decides whether the difference matters (ADR-020).
+36. **The ratchet rows wait until the binary is complete** (the
+    maintainer, 2026-11-13, at Checkpoint B): not this plan's work.
+    Checkpoint C's ratchet criterion is dropped from it. The revisit, the
+    last figures and the musl comparison that goes with it are in the
+    capability map, "When the binary is complete".
 37. **Checkpoint B's fixes are Task 58** (decided from the
     checkpoint's findings): `Record::cursor`'s doc, the fuzz command on a
     249 host, Difference 19 for a damaged array, the tail cache's pread
@@ -560,7 +553,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ### Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes
-- [ ] Size, startup and coverage: deferred to the full functionality (decision 36)
+- [x] Size, startup and coverage: moved out of this plan (decision 36; the capability map, "When the binary is complete")
 - [ ] The maintainer's sitting: the proposed declines confirmed or
       overruled (an overruled one becomes a fix task first), and the
       unattended calls kept or overruled

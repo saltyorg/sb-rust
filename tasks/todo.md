@@ -1109,7 +1109,8 @@ where the backward walk goes on (file-M1; confirmed).
       ADR if a value passes its tolerance. Re-measured 2026-11-13 on
       964f963: lines 98.63%, functions 98.119%, size 11,843,920 bytes,
       `sb --help` 2.30 ms (85bc4f0 times the same on this host). The
-      rows' update waits for the full functionality (decision 36).
+      rows' update waits until the binary is complete (decision 36; the
+      capability map).
 - [x] The new API is reviewed: `Page::oldest_chosen` and
       `Page::newest_chosen` in place (decision 10), and what the
       handover changed in rustdoc or types (Tasks 33 and 34).
@@ -1486,9 +1487,8 @@ the gate). Lands alone on `rust-toolchain.toml` and `Cargo.toml`.
 ## Checkpoint C: complete
 - [ ] `check.sh full` passes; the matrix is green on three releases and
       the fuzz harness passes.
-- [ ] Size, startup and coverage: deferred until sb has its full
-      functionality (decision 36); then re-measured, and the maintainer
-      decides how far the ratchet rows can be cut down.
+- [x] Size, startup and coverage: moved out of this plan (decision 36)
+      to the capability map's "When the binary is complete".
 - [ ] The maintainer's sitting: the proposed declines confirmed or
       overruled (an overruled one becomes a fix task here, before the
       archive), and the unattended calls kept or overruled.

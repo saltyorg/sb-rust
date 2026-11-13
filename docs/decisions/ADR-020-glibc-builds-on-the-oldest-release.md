@@ -164,8 +164,8 @@ above, rustc 1.99.1:
 - The binary loads glibc at start. That costs the 0.1 to 0.6 ms
   measured, inside the startup budget (CONSTRAINTS.md: 10 ms, and the
   ratchet's 1 ms growth per change). The size shrinks, inside its
-  ratchet. The ratchet rows are re-measured when sb has its full
-  functionality (hardening plan decision 36).
+  ratchet. The ratchet rows are re-measured when the binary is complete
+  (the capability map, "When the binary is complete").
 - **musl is revisited when the CLI is feature complete** (the
   maintainer, 2026-11-13). With every command in place, glibc and musl
   builds of the same tree are measured side by side on the same host:
