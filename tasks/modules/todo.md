@@ -1552,18 +1552,18 @@ KiB partial lines, `until`'s inclusiveness), then `logs.rs`: `Position`,
 `/containers/{id}/logs` (multiplexed and TTY).
 
 **Acceptance criteria:**
-- [ ] The platform note records Docker's version and method, no
+- [x] The platform note records Docker's version and method, no
       environment details; the probe runs on a lane-prefixed container
       only.
-- [ ] Each read parses the RFC 3339 prefix with jiff, filters its window
+- [x] Each read parses the RFC 3339 prefix with jiff, filters its window
       itself, and counts ordinals among equal timestamps; an unparsable
       line keeps the previous position with the next ordinal.
-- [ ] `older` widens its window from 60 s, doubling, down to `created`;
+- [x] `older` widens its window from 60 s, doubling, down to `created`;
       `newer` sets `more_newer` from one extra entry.
 
 **Verification:**
-- [ ] `cargo test -p sb-docker` on the fake; the probe under the cap.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-docker` on the fake; the probe under the cap.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M62
 **Files:** `crates/docker/src/{logs.rs,lib.rs,testing/}`, `docs/platform-notes/docker-logs.md`
