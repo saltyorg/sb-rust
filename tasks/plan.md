@@ -288,6 +288,15 @@ Answers at the plan's approval (2026-11-11):
     leaves a combining mark after its base character and escapes it only
     at a line start or after an escaped character. It is tested on both
     toolchains, and the journal's path messages follow it.
+41. **Task 59's follow-ups are Task 61** (decided from
+    decision 38 and the maintainer's word on localhost.yml, 2026-11-13:
+    "you have no idea how long that will be"). The inventory read has no
+    length cap: cli-core's 1 MiB `read_small` cap no longer applies to
+    localhost.yml, and depth stays the only limit. A tag Ansible's loader
+    has no constructor for (`!custom`) is refused, as Ansible refuses it.
+    A clipped block scalar at the end of a file without a final newline
+    resolves as sb-go's yaml.v3 does; if that differs from Ansible's
+    value, it is a listed Difference.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -553,7 +562,8 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ### Phase 4 (lane 3): config
 - [x] Task 42: YAML: the corpus and the options
 - [x] Task 43: sb accepts the YAML Ansible accepts
-- [ ] Task 59: sb refuses the YAML Ansible refuses (decision 38)
+- [x] Task 59: sb refuses the YAML Ansible refuses (decision 38)
+- [ ] Task 61: Task 59's follow-ups (decision 41)
 - [x] Task 46: secrets are hidden wherever their key sits
 - [x] Task 60: Task 46's follow-ups (decision 39)
 - [ ] Checkpoint Y: config

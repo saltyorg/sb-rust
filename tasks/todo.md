@@ -1268,30 +1268,61 @@ refuses, sb's validate-config and inventory read refuse too, with a line
 and column, before sb's own rules apply.
 
 **Acceptance criteria:**
-- [ ] The corpus has no line where libyaml refuses and sb accepts: the
+- [x] The corpus has no line where libyaml refuses and sb accepts: the
       `multi-document` line goes (sb refuses a second document), and
       each leniency in docs/platform-notes/yaml-acceptance.md (a first
       mapping indented with junk after it, a top-level `:` with no key,
       and the rest listed there) has a corpus case libyaml refuses and
       sb refuses.
-- [ ] Nesting: ansible-core's loader's deepest accepted nesting is
+- [x] Nesting: ansible-core's loader's deepest accepted nesting is
       measured (PyYAML with libyaml, as scripts/yaml-corpus.py runs it)
       and recorded in the platform note. sb accepts that depth and
       refuses beyond it with a message, in validate-config and in the
       inventory read alike; a 40 KB `- - - ...` inventory no longer
       overflows the stack. Length is never limited.
-- [ ] The config spec's Differences list loses the entries this removes
+- [x] The config spec's Differences list loses the entries this removes
       (the second document); the resolution entries stay (decision 38).
-- [ ] Every case accepted before keeps its resolved values.
+- [x] Every case accepted before keeps its resolved values.
+
+**Verification:**
+- [x] `cargo test -p sb-config -p sb-cli-core -p sb`; the corpus;
+      `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass with the security-auditor.
+
+**Dependencies:** Task 43
+**Files:** `crates/cli-core/src/config/yaml.rs`, `crates/cli-core/src/config.rs`, `crates/config/src/parse.rs`, `crates/config/tests/yaml-corpus/`, `docs/specs/config.md`, `docs/platform-notes/yaml-acceptance.md`
+**Scope:** M
+
+## Task 61: Task 59's follow-ups
+
+**Description:** What Task 59 left open (plan decision 41).
+
+**Acceptance criteria:**
+- [ ] The inventory read (localhost.yml) has no length cap. cli-core's
+      1 MiB `read_small` cap no longer applies to it; nesting depth stays
+      its only limit. A test reads an inventory well over 1 MiB. The
+      config and cli-core specs say so, and other config files keep
+      their caps.
+- [ ] A tag Ansible's loader has no constructor for (`!custom`, the
+      corpus case) is refused with its line and column, in
+      validate-config and the inventory read alike. The tags Ansible
+      accepts (the YAML core tags and Ansible's own `!unsafe` and
+      `!vault`) are checked against ansible-core's loader, as
+      scripts/yaml-corpus.py runs it, and still pass.
+- [ ] A clipped block scalar at end of file without a final newline
+      resolves as sb-go's yaml.v3 does (checked against yaml.v3's
+      behaviour, cited). If that differs from Ansible's value, it is a
+      listed Difference; if yaml.v3 gives Ansible's value, sb gives it
+      too and the corpus line goes.
 
 **Verification:**
 - [ ] `cargo test -p sb-config -p sb-cli-core -p sb`; the corpus;
       `scripts/check.sh full <base>`.
 - [ ] Review: one code-reviewer pass with the security-auditor.
 
-**Dependencies:** Task 43
-**Files:** `crates/cli-core/src/config/yaml.rs`, `crates/cli-core/src/config.rs`, `crates/config/src/parse.rs`, `crates/config/tests/yaml-corpus/`, `docs/specs/config.md`, `docs/platform-notes/yaml-acceptance.md`
-**Scope:** M
+**Dependencies:** Task 59
+**Files:** `crates/cli-core/src/{config.rs,config/yaml.rs}`, `crates/config/src/parse.rs`, `crates/config/tests/yaml-corpus/`, `docs/specs/config.md`, `docs/specs/cli-core.md`
+**Scope:** S
 
 ## Task 46: secrets are hidden wherever their key sits
 
