@@ -7,7 +7,8 @@
 //! is libgit2, C, with openssl for https. So far the first slice: [`Repo::open`],
 //! [`Repo::current_branch`], [`Repo::check_branch_name`],
 //! [`Repo::ensure_fetch_all_branches`] and [`Repo::fetch_and_reset`], then
-//! [`Repo::head`], [`branch_choice`] and [`branch_notices`].
+//! [`Repo::head`], [`branch_choice`] and [`branch_notices`], and setup's
+//! [`Repo::clone`] and [`Repo::init_from_remote`].
 
 // Output goes through steps; `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
@@ -37,6 +38,10 @@ pub enum RepoError {
     /// The checkout's path couldn't be inspected.
     #[error("inspect required directory {}: {cause}", path.display())]
     Inspect { path: PathBuf, cause: io::Error },
+    /// A clone's destination is already there (sb-go's `CloneRepository`,
+    /// git/git.go:19-21).
+    #[error("destination path '{}' already exists", .0.display())]
+    Destination(PathBuf),
     /// The checkout's path isn't a directory.
     #[error("{} exists but is not a directory", .0.display())]
     NotDirectory(PathBuf),

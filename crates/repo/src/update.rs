@@ -2,6 +2,10 @@
 //! the fetch refspec, then fetch, reset to a branch, submodules and
 //! ownership, each a sub-step with sb-go's labels.
 
+use std::io;
+use std::path::PathBuf;
+
+use anyhow::Context as _;
 use sb_exec::Ending;
 use sb_term_ui::{Labels, Step};
 use tokio_util::sync::CancellationToken;
@@ -143,6 +147,219 @@ impl Repo {
         Ok(())
     }
 
+    /// Clone `url` at `branch` into `path`, which must not exist, for `sb
+    /// setup` (repo spec, "Operations"; sb-go's `CloneRepository`,
+    /// git/git.go:18-43, and setup's submodule step, saltbox/setup.go:205-220):
+    ///
+    /// 1. the branch name checked ([`Repo::check_branch_name`]) before
+    ///    anything runs;
+    /// 2. "Cloning `<name>` repository to `<path>` (branch: `<branch>`)":
+    ///    `git clone --progress --depth 1 -b <branch> <url> <path>`, a
+    ///    remote operation;
+    /// 3. "Updating git submodules".
+    ///
+    /// A failed clone leaves no checkout: git removes the directory it
+    /// made, though not the parents it made for it. A failed submodule
+    /// update leaves the checkout, as sb-go does. The clone and the
+    /// submodule update are two steps, not `git clone
+    /// --recurse-submodules`, so each has sb-go's label, error and HTTP/1.1
+    /// retry. git runs from `/`, so a relative `url` would resolve there
+    /// (setup passes Saltbox's https URL).
+    ///
+    /// An associated function, so `Repo::clone(&repo)` doesn't name
+    /// `Clone::clone`; `repo.clone()` still does.
+    ///
+    /// # Errors
+    ///
+    /// [`RepoError::BranchName`], [`RepoError::Destination`] when `path`
+    /// is there, [`RepoError::Inspect`] when it can't be inspected or
+    /// isn't UTF-8. A failed step shows its error in the step, under
+    /// sb-go's `failed to clone <name> repository '<url>' (branch:
+    /// '<branch>') to '<path>'` or `error running git submodule update`,
+    /// and the caller gets term-ui's exit.
+    pub async fn clone(
+        name: impl Into<String>,
+        path: impl Into<PathBuf>,
+        url: &str,
+        branch: &str,
+        step: &mut Step,
+    ) -> anyhow::Result<Self> {
+        Self::clone_using(PathBuf::from("git"), name, path, url, branch, step).await
+    }
+
+    /// [`Repo::clone`] running `git` as git (tests).
+    ///
+    /// # Errors
+    ///
+    /// As [`Repo::clone`].
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn clone_with_git(
+        git: impl Into<PathBuf>,
+        name: impl Into<String>,
+        path: impl Into<PathBuf>,
+        url: &str,
+        branch: &str,
+        step: &mut Step,
+    ) -> anyhow::Result<Self> {
+        Self::clone_using(git.into(), name, path, url, branch, step).await
+    }
+
+    async fn clone_using(
+        git: PathBuf,
+        name: impl Into<String>,
+        path: impl Into<PathBuf>,
+        url: &str,
+        branch: &str,
+        step: &mut Step,
+    ) -> anyhow::Result<Self> {
+        let name = name.into();
+        let path = path.into();
+        // git runs from `/`: the destination's parents may not exist yet
+        // (git clone makes them), and sb's own directory is no concern of
+        // the clone's.
+        let outside = Self {
+            name: name.clone(),
+            path: PathBuf::from("/"),
+            git: git.clone(),
+        };
+        outside.check_branch_name(branch, &step.token()).await?;
+        // Absolute, since git runs from `/`
+        // (<https://doc.rust-lang.org/std/path/fn.absolute.html>).
+        let path = std::path::absolute(&path).map_err(|cause| RepoError::Inspect {
+            path: path.clone(),
+            cause,
+        })?;
+        // Not followed: a dangling symlink is there too.
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return Err(RepoError::Destination(path).into()),
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => {}
+            Err(cause) => return Err(RepoError::Inspect { path, cause }.into()),
+        }
+        let Some(destination) = path.to_str() else {
+            let cause = io::Error::new(io::ErrorKind::InvalidInput, "the path isn't UTF-8");
+            return Err(RepoError::Inspect { path, cause }.into());
+        };
+        let cloning = format!("Cloning {name} repository to {destination} (branch: {branch})");
+        step.step(Labels::new(&cloning, &cloning), async |step| {
+            outside
+                .remote_with(
+                    step,
+                    &["clone", "--progress", "--depth", "1", "-b"],
+                    &[branch, url, destination],
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to clone {name} repository '{url}' (branch: '{branch}') to \
+                         '{destination}'"
+                    )
+                })
+        })
+        .await?;
+        let repo = Self {
+            name,
+            path: path.clone(),
+            git,
+        };
+        repo.submodules(step, "error running git submodule update")
+            .await?;
+        Ok(repo)
+    }
+
+    /// Make the existing directory a checkout of `url` at `branch`, for
+    /// `sb setup --force` over a root without `.git` (repo spec,
+    /// "Operations"; sb-go's saltbox/setup.go:235-280). Under
+    /// "Initializing Git repository", each a sub-step with sb-go's label:
+    /// `git init -b <branch>` (sb-go: `git init`, which left HEAD on git's
+    /// default branch; difference 12), `git remote add origin <url>`, `git fetch --progress
+    /// --all --prune` (a remote operation), `git branch <branch>
+    /// origin/<branch>`, `git reset --hard origin/<branch>`, and the
+    /// submodule update. The branch name is checked first.
+    ///
+    /// A failure leaves what the steps before it made, as sb-go does: a
+    /// rerun of `setup --force` then finds a checkout and fetches and
+    /// resets it (repo spec, Known limits).
+    ///
+    /// # Errors
+    ///
+    /// [`RepoError::BranchName`]. A failed step shows its error in the
+    /// step, under sb-go's `error running command [git <args>]`, and the
+    /// caller gets term-ui's exit.
+    pub async fn init_from_remote(
+        &self,
+        url: &str,
+        branch: &str,
+        step: &mut Step,
+    ) -> anyhow::Result<()> {
+        self.check_branch_name(branch, &step.token()).await?;
+        let initializing = "Initializing Git repository";
+        step.step(Labels::new(initializing, initializing), async |step| {
+            let creating = "Creating Git repository";
+            step.step(Labels::new(creating, creating), async |step| {
+                // `-b`: HEAD on `branch`, whatever `init.defaultBranch`
+                // says (difference 12; <https://git-scm.com/docs/git-init#Documentation/git-init.txt--bltbranch-namegt>).
+                let init = self.git().arg("init").arg("-b").value(branch);
+                self.change(step, init)
+                    .await
+                    .with_context(|| ran(&format!("init -b {branch}")))
+            })
+            .await?;
+            let configuring = "Configuring Git remote";
+            step.step(Labels::new(configuring, configuring), async |step| {
+                let add = self.git().arg("remote").arg("add").arg("origin").value(url);
+                self.change(step, add)
+                    .await
+                    .with_context(|| ran(&format!("remote add origin {url}")))
+            })
+            .await?;
+            let fetching = "Fetching repository branches";
+            step.step(Labels::new(fetching, fetching), async |step| {
+                self.remote(step, &["fetch", "--progress", "--all", "--prune"])
+                    .await
+                    .context(ran("fetch --progress --all --prune"))
+            })
+            .await?;
+            let tracking = format!("origin/{branch}");
+            let creating = format!("Creating branch {branch}");
+            step.step(Labels::new(&creating, &creating), async |step| {
+                let create = self.git().arg("branch").value(branch).value(&tracking);
+                self.change(step, create)
+                    .await
+                    .with_context(|| ran(&format!("branch {branch} {tracking}")))
+            })
+            .await?;
+            let resetting = format!("Resetting to branch {branch}");
+            step.step(Labels::new(&resetting, &resetting), async |step| {
+                let reset = self.git().arg("reset").arg("--hard").value(&tracking);
+                self.change(step, reset)
+                    .await
+                    .with_context(|| ran(&format!("reset --hard {tracking}")))
+            })
+            .await?;
+            self.submodules(step, &ran("submodule update --progress --init --recursive"))
+                .await
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// "Updating git submodules": `git submodule update --progress --init
+    /// --recursive`, a remote operation, its failure under `failure`
+    /// inside the step (a step's caller gets only its exit).
+    async fn submodules(&self, step: &mut Step, failure: &str) -> anyhow::Result<()> {
+        let submodules = "Updating git submodules";
+        step.step(Labels::new(submodules, submodules), async |step| {
+            self.remote(
+                step,
+                &["submodule", "update", "--progress", "--init", "--recursive"],
+            )
+            .await
+            .context(failure.to_owned())
+        })
+        .await?;
+        Ok(())
+    }
+
     /// `branch` on the remote: `git rev-parse --verify --quiet
     /// refs/remotes/origin/<branch>`.
     async fn require_remote_branch(
@@ -217,4 +434,10 @@ impl Repo {
             .arg("@{u}");
         self.change(step, reset).await
     }
+}
+
+/// sb-go's text for a failed init command (saltbox/setup.go:276):
+/// `error running command [git <args>]`.
+fn ran(args: &str) -> String {
+    format!("error running command [git {args}]")
 }

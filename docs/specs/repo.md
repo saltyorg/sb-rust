@@ -91,10 +91,16 @@ not a directory` (cmd/update.go:391-400).
      `owner` is the Saltbox user, or root for setup's clone, as sb-go.
 - **`clone(url, branch, step)`** and **`init_from_remote(url, branch,
   step)`** for `sb setup` (G-ops research §2: `clone --progress --depth 1
-  -b <b>`, then submodules; or `init`, `remote add origin`, `fetch --all
+  -b <b>`, then submodules; or `init -b <b>` (difference 12), `remote add origin`, `fetch --all
   --prune`, `branch <b> origin/<b>`, `reset --hard origin/<b>`,
   submodules). Specified here so the boundary is right; built with
-  setup's plan.
+  setup's plan. `clone` is a constructor, `Repo::clone(name, path, url,
+  branch, step) -> Result<Repo, _>`, since `Repo::open` needs an existing
+  directory; both check the branch name first (decision 3). On failure
+  they leave what sb-go leaves: git removes a failed clone's directory
+  itself, a failed submodule update after a clone leaves the checkout,
+  and a failed `init_from_remote` leaves what its earlier steps made (the
+  decision for M8, 2026-11-13; see Known limits).
 
 ### Remote operations
 
@@ -159,6 +165,11 @@ Every fetch, clone and submodule update goes through one wrapper
     gives `Ask`. sb-go's prompt read stdin and kept the current branch on
     anything but `y`, on a read error and with no TTY (ops section lists
     the command-level differences).
+12. `init_from_remote` runs `git init -b <branch>`; sb-go's plain `git
+    init` left HEAD on git's default branch (`master`, or root's
+    `init.defaultBranch`), so `-b develop`, or a `main` default, ended on
+    that branch at the wanted commit with no upstream, and the next
+    `update` asked to switch (found in M8's review, 2026-11-13).
 
 ### Scope
 
@@ -356,6 +367,9 @@ No test touches a Saltbox checkout or the network.
   ownership" error (assumption 2).
 - A user's credential helper that prompts some other way than the
   terminal or ssh isn't covered (none is configured by Saltbox).
+- A failed `init_from_remote` leaves the `.git` it made (and the remote,
+  and whatever was fetched). sb removes nothing: a rerun of `sb setup
+  --force` finds a checkout and fetches and resets it. sb-go is the same.
 
 ## Amendments to other specs
 

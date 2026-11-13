@@ -44,11 +44,22 @@ impl Repo {
         step: &mut Step,
         args: &[&'static str],
     ) -> anyhow::Result<()> {
-        let streamed = args
-            .iter()
-            .fold(self.git(), |cmd, arg| cmd.arg(arg))
-            .stream(step)
-            .await?;
+        self.remote_with(step, args, &[]).await
+    }
+
+    /// [`Repo::remote`] with `values` (a URL, a path; the log shows
+    /// `[ARG]`) after the literal `args`.
+    pub(crate) async fn remote_with(
+        &self,
+        step: &mut Step,
+        args: &[&'static str],
+        values: &[&str],
+    ) -> anyhow::Result<()> {
+        let command = |base: sb_exec::Cmd| {
+            let base = args.iter().fold(base, |cmd, arg| cmd.arg(arg));
+            values.iter().fold(base, |cmd, value| cmd.value(*value))
+        };
+        let streamed = command(self.git()).stream(step).await?;
         if !needs_retry(streamed.outcome.ending, &streamed.stderr_tail) {
             let _streamed = streamed.check()?;
             return Ok(());
@@ -61,12 +72,7 @@ impl Repo {
         )
         .failure(format!("{repo} Git {op} retry over HTTP/1.1"));
         step.step(labels, async |step| {
-            let retried = args
-                .iter()
-                .fold(
-                    self.git().arg("-c").arg("http.version=HTTP/1.1"),
-                    |cmd, arg| cmd.arg(arg),
-                )
+            let retried = command(self.git().arg("-c").arg("http.version=HTTP/1.1"))
                 .stream(step)
                 .await?;
             if needs_retry(retried.outcome.ending, &retried.stderr_tail) {
