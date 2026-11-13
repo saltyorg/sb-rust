@@ -59,8 +59,8 @@ regex-syntax = { version = "0.8.11", default-features = false, features = ["std"
 # database and no lookup of its own (config spec, decision 7).
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 # The credential checks' HTTP client (config spec, "HTTP"): rustls with
-# aws-lc-rs and the platform's roots (the stack table; ADR-008 for the
-# musl build), HTTP/1.1, JSON request bodies (`json`).
+# aws-lc-rs and the platform's roots (the stack table; ADR-020 for the
+# glibc build), HTTP/1.1, JSON request bodies (`json`).
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 # The public suffix list, compiled in, ICANN and private sections (config
 # spec: the Cloudflare zone; docs/platform-notes/saltbox-schemas.md).

@@ -46,7 +46,7 @@ pass clippy and their tests.
 | Startup | `sb --help` and `sb version` median ≤ 10 ms | `hyperfine --warmup 5 --runs 50`, release build | task | sb-go takes about 18 ms; the prototypes about 2 ms |
 | Dependencies | No RustSec vulnerability, no unmaintained or yanked crate, only GPL-3.0-compatible licences, crates.io only | `cargo deny --manifest-path crates/sb/Cargo.toml check` (`deny.toml`) | full | External opinion: the RustSec database |
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`); `check.sh`'s crate check, that each crate but `sb` has its entry (at fast) | full | The compiler can't see the map; cargo-deny can |
-| Binary size | Production musl binary ≤ 45,711,520 bytes | `stat` after `cross build --profile production --target x86_64-unknown-linux-musl`, in its own target directory (see the cross ADR); a host of another architecture skips it with a printed line | full | Never larger than sb-go's binary (2026-10-30) |
+| Binary size | Production glibc binary ≤ 45,711,520 bytes, and `sb version` runs on each release of the host spec's runtime list | `stat` after `cross build --profile production --target x86_64-unknown-linux-gnu` in `build/Dockerfile`'s image of the oldest supported release (`Cross.toml`), in its own target directory (ADR-020); then `docker run` of the binary in an `ubuntu:<release>` container of each release; a host of another architecture skips both with a printed line | full | Never larger than sb-go's binary (2026-10-30); a binary one supported release can't load never ships (ADR-020) |
 | Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line when it changes a file outside `docs/` and `tasks/`; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
 | Review line | The body of every commit that changes a file outside `docs/` and `tasks/` says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review, by tier (CLAUDE.md, ADR-016) |
 | Logging | Every root run writes its run record and outcome; logs never contain secret values | Tests in `sb-cli-core` (run log) and in each module that handles secrets (facts, accounts, credentials): the test feeds a known secret and asserts it isn't in the captured log | task | Decision 11; the run log is kept on the host |
@@ -122,8 +122,8 @@ doesn't fail every run.
 | Go | 1.27 | minimum | system package (installs gitleaks and reports its version) |
 | node | 24 | major | system package (runs the floor guard) |
 | script (util-linux) | 2.39 | minimum | system package (gives the colour tests a terminal) |
-| cross | 0.2.5 | exact | `cargo install --locked cross --version 0.2.5` (the production musl build, ADR-008) |
-| Docker | 29 | minimum | system package (runs cross's build images; its first run pulls them) |
+| cross | 0.2.5 | exact | `cargo install --locked cross --version 0.2.5` (the production glibc build, in the image `Cross.toml` names, ADR-020) |
+| Docker | 29 | minimum | system package (builds and runs cross's image from `build/Dockerfile`, and the `ubuntu:<release>` containers the binary runs in; the first run pulls them) |
 
 ## Exceptions
 

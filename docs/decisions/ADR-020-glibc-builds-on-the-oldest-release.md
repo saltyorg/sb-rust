@@ -4,8 +4,9 @@
 
 Accepted (maintainer, 2026-11-13). Supersedes
 [ADR-008](ADR-008-musl-builds-through-cross.md) and the musl half of
-the capability map's decision 6. The build lands with hardening Tasks
-53 and 54; until then the gate still builds musl through cross.
+the capability map's decision 6. The build landed with hardening Task
+53 (the gate and the release build); the journal matrix follows with
+Task 54.
 
 ## Date
 
@@ -49,9 +50,8 @@ container:
    release, the image moves to the next oldest in the same change. Like
    a toolchain bump, that is a deliberate change.
 3. **arm64 is cross-compiled in the same image**, with Ubuntu's aarch64
-   GCC and its arm64 glibc (the same 2.35). UNVERIFIED: aws-lc-sys
-   hasn't been built this way yet. Task 53 checks it, and a failure
-   comes back here.
+   GCC and its arm64 glibc (the same 2.35). Task 53 built it and ran it
+   (below, "Measured").
 4. **The gate builds and checks the production binary the same way.**
    `check.sh full` builds the production x86_64 binary in the image,
    gates its size, and runs `sb version` in a container of every
@@ -66,6 +66,78 @@ with a custom image in `Cross.toml`, if it runs this build, else a
 `docker run` of the repository's own image with `cross` leaving the
 Tools table. Docker stays a Tools row either way.
 
+## Route (Task 53): cross 0.2.5 with the repository's Dockerfile
+
+cross runs this build, so it stays, and the gate keeps no `docker run`
+of its own for the build.
+
+- **The evidence, from cross 0.2.5's own docs and source.**
+  `docs/cross_toml.md` documents `target.TARGET.dockerfile` (`file`,
+  `context`, `build-args`) and `image`
+  (https://github.com/cross-rs/cross/blob/v0.2.5/docs/cross_toml.md#targettargetdockerfile).
+  `src/docker/custom.rs` builds the named Dockerfile with `docker
+  build` and tags it `cross-custom-<workspace>:<target>-<hash>`; the base
+  image is the Dockerfile's own `FROM` (the `CROSS_BASE_IMAGE` build
+  argument it passes is only used by a Dockerfile that asks for it).
+  `src/lib.rs` runs any `--target` in the container, the host's own
+  triple included ("It's totally fine to call cross with
+  `--target=$host_triple`, for example to test custom docker images"),
+  and `src/docker/local.rs` mounts the host's toolchain at `/rust`, so
+  the image needs only the C toolchain. `pre-build` wasn't needed: the
+  Dockerfile installs the compilers.
+- **The files.** `Cross.toml` names `build/Dockerfile`, with `build/` as
+  the build context (the repository's `target/` is never sent to the
+  daemon), for `x86_64-unknown-linux-gnu` and
+  `aarch64-unknown-linux-gnu`. The Dockerfile is `FROM ubuntu:22.04` and
+  installs `gcc`, `libc6-dev`, `gcc-aarch64-linux-gnu` and
+  `libc6-dev-arm64-cross`, and sets cargo's arm64 linker and the cc
+  crate's arm64 compiler and archiver.
+- **The gate.** `check.sh full` runs `cross build --profile production
+  --target x86_64-unknown-linux-gnu` with `target/cross-gnu` as its own
+  target directory, gates the size, then runs `sb version` in an
+  `ubuntu:<release>` container (`--rm`, `--network none`) for 22.04,
+  24.04 and 26.04; a release that can't run it fails the gate.
+- **What cross passes in.** cross gives the container every host
+  `CARGO_*` variable but a few (`src/docker/shared.rs`), and these win
+  over the Dockerfile's `ENV`: a `CARGO_PROFILE_*` or a linker setting
+  in the builder's environment changes the binary. check.sh sets the
+  target directory and nothing else; a builder keeps such settings out
+  of the release build.
+- **Why not a `docker run` of our own.** It would re-do what cross
+  already does (the toolchain mount, the user, the cargo cache, the
+  target directory) in shell, against "Library first".
+
+## Measured (Task 53, 2026-11-13)
+
+On an x86_64 Ubuntu 22.04 build host with Docker 29, the Dockerfile
+above, rustc 1.99.1:
+
+- **x86_64:** the production binary is 11,843,920 bytes (the musl
+  binary of the same tree: 11,961,376; 117,456 bytes smaller). Its
+  highest symbol version is `GLIBC_2.34` (`objdump -T`), within 22.04's
+  2.35. It needs libc, libm, libgcc_s and the loader (`readelf -d`).
+  `sb version` runs in `ubuntu:22.04`, `ubuntu:24.04` and
+  `ubuntu:26.04` containers. The build ran in the image: cross built
+  and used `cross-custom-<workspace>:x86_64-unknown-linux-gnu-<hash>`,
+  the build log shows the workspace at `/project`, and the arm64 build
+  below can't have come from the host, which has no aarch64 compiler.
+- **Startup** (`hyperfine -N --warmup 10 --runs 200`, medians, beside
+  the musl binary): `sb --help` 2.11 ms (musl 2.16 ms), `sb version`
+  2.43 ms (musl 2.58 ms); peak memory 5.5 MiB (musl 3.0 MiB). Inside
+  the 10 ms budget; the startup the ratchet measures is the release
+  build, which was already glibc.
+- **arm64:** `cross build --profile production --target
+  aarch64-unknown-linux-gnu` in the same Dockerfile builds, aws-lc-sys
+  included, with Ubuntu's `aarch64-linux-gnu-gcc` (GCC 11). The binary
+  is 9,974,576 bytes, needs `GLIBC_2.34` at most, and `sb version`
+  prints its version under Ubuntu 22.04's qemu-user 6.2
+  (`qemu-aarch64 -L /usr/aarch64-linux-gnu`, in a container of the
+  image). qemu-user 6.2 answered the theme config read's `openat2`
+  with ENOSYS ("Function not implemented"), so sb fell back to the
+  built-in theme there, as it does for any unreadable config; that is
+  the emulator, not the build. An arm64
+  host hasn't run it yet.
+
 ## Alternatives considered
 
 - **Keep static musl (ADR-008).** One binary that runs anywhere, with
@@ -78,7 +150,8 @@ Tools table. Docker stays a Tools row either way.
   Rejected: the build host would decide which releases sb runs on.
 - **cross's stock gnu images.** They are built on an older Ubuntu than
   any sb supports, so a binary built there would also run on 22.04, but
-  the C compiler is old (ADR-008 noted GCC 9.2.0 in the musl images)
+  the C compiler is old (cross 0.2.5's gnu images are `FROM ubuntu:16.04`;
+  ADR-008 noted GCC 9.2.0 in its musl images)
   and the build would no longer match a release sb supports. Not
   measured; a custom image does what the maintainer asked.
 - **`cargo-zigbuild` with a glibc version suffix** (`--target

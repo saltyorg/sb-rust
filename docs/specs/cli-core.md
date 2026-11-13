@@ -232,7 +232,7 @@ each library pattern is checked against its docs and cited in the code
 
 ```
 cargo build -p sb                                   # debug build
-CARGO_TARGET_DIR=target/cross-musl cross build -p sb --profile production --target x86_64-unknown-linux-musl  # ADR-008
+CARGO_TARGET_DIR=target/cross-gnu cross build -p sb --profile production --target x86_64-unknown-linux-gnu  # in build/Dockerfile's ubuntu:22.04 image, ADR-020
 cargo test --workspace                              # all crates, prototypes included
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check -p sb -p sb-cli-core

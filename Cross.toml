@@ -1,0 +1,10 @@
+# cross builds release binaries in the repository's ubuntu:22.04 image
+# (ADR-020), for both architectures:
+# https://github.com/cross-rs/cross/blob/v0.2.5/docs/cross_toml.md#targettargetdockerfile
+[target.x86_64-unknown-linux-gnu.dockerfile]
+file = "build/Dockerfile"
+context = "build"
+
+[target.aarch64-unknown-linux-gnu.dockerfile]
+file = "build/Dockerfile"
+context = "build"

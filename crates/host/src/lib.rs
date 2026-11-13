@@ -36,8 +36,8 @@ pub enum Unsupported {
 /// (<https://docs.rs/sysinfo/0.40.0/sysinfo/struct.System.html#method.distribution_id>),
 /// which reads the file directly. Why not `os_info`: it runs `lsb_release -a`
 /// first, a Python process on Ubuntu, on every sb start. sb-go also checks
-/// the kernel is Linux; sb-rust ships only static Linux binaries, so that
-/// can't fail here.
+/// the kernel is Linux; sb-rust ships only Linux binaries (glibc, ADR-020),
+/// so that can't fail here.
 ///
 /// Differences from sb-go's own parser, none reachable on a real Ubuntu
 /// host (both files are always there and agree): a missing os-release or

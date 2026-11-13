@@ -5,8 +5,8 @@
 # so the prototypes' dependencies don't count.
 
 [graph]
-# Only what we ship (decision 6): static musl on amd64 and arm64.
-targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+# Only what we ship (decision 6, ADR-020): glibc on amd64 and arm64.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 
 [advisories]
 # Any RustSec vulnerability fails; unmaintained crates fail anywhere in the

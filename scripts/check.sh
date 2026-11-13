@@ -38,8 +38,8 @@ fi
 # leftover override of the sb binary or the live opt-in would change what
 # every stage checks (docker plan Task 9).
 unset SB_TEST_BINARY SB_LIVE_DOCKER
-# Every stage builds in and reads from target/ (the cross build in its own
-# directory under it, set below): an inherited target directory, or a
+# Every stage builds in and reads from target/ (the production build in its
+# own directory under it, set below): an inherited target directory, or a
 # configuration file's build.target-dir, would send a stage's build
 # elsewhere. CARGO_TARGET_DIR is read before build.target-dir:
 # https://doc.rust-lang.org/cargo/reference/config.html#buildtarget-dir
@@ -68,7 +68,11 @@ fi
 COVERAGE_MIN=90       # % of changed lines covered
 MUTATION_MIN=80       # % of viable mutants in changed code caught
 STARTUP_MAX_MS=10     # median ms for `sb --help` and `sb version`
-SIZE_MAX_BYTES=45711520 # production musl binary, at most sb-go's size
+SIZE_MAX_BYTES=45711520 # production glibc binary, at most sb-go's size
+# The releases the production binary must run on: the host spec's runtime
+# list, sb-host's SUPPORTED_RUNTIME_RELEASES. The oldest is the image's
+# (build/Dockerfile, ADR-020).
+RUNTIME_RELEASES=(22.04 24.04 26.04)
 
 # What changed since the base, tracked and untracked (ADR-016).
 # - documents_only: something changed, and all of it is under docs/ or
@@ -439,22 +443,45 @@ full() {
   step "dependencies and architecture (cargo-deny, shipped graph)"
   need cargo-deny
   cargo deny --locked --manifest-path crates/sb/Cargo.toml check
-  step "binary size <= ${SIZE_MAX_BYTES} bytes (production musl, through cross)"
+  step "binary size <= ${SIZE_MAX_BYTES} bytes (production glibc, built on ubuntu:${RUNTIME_RELEASES[0]} through cross)"
   if [[ $arch != x86_64 ]]; then
-    # cross's images, and so the production build, are x86_64 (ADR-008).
-    skip "the production musl build and its size limit: cross builds it on x86_64 only, and this host is $arch"
+    # The image's C compiler builds for its own architecture, and the
+    # production build is x86_64 (ADR-020).
+    skip "the production glibc build, its size limit and its runs: the production build is x86_64, made on an x86_64 host only, and this host is $arch"
   else
-    # aws-lc-sys compiles C for the target, so the build runs in cross's
-    # image, with a target directory of its own: build scripts compiled in
-    # the image can't run on the host or in another image (ADR-008).
+    # cross builds the image from build/Dockerfile (Cross.toml) and runs
+    # the build in it, so the binary needs the oldest release's glibc at
+    # most. The target directory is its own: build scripts compiled in the
+    # image can't run on the host or in another image (ADR-020).
     need cross
     need docker
-    local cross_target="$root/target/cross-musl"
+    local cross_target="$root/target/cross-gnu"
     CARGO_TARGET_DIR="$cross_target" cross build --locked --quiet -p sb --profile production \
-      --target x86_64-unknown-linux-musl
-    size=$(stat -c %s "$cross_target/x86_64-unknown-linux-musl/production/sb")
+      --target x86_64-unknown-linux-gnu
+    local sb="$cross_target/x86_64-unknown-linux-gnu/production/sb"
+    size=$(stat -c %s "$sb")
     echo "sb: ${size} bytes"
     ((size <= SIZE_MAX_BYTES))
+    # A binary one release's glibc or loader can't load fails here. No
+    # network: `sb version` needs none. The container is removed on exit;
+    # its name says, on a shared Docker host, which run it belongs to.
+    # docker's own failures exit 125, a check that could not run (exit 2):
+    # https://docs.docker.com/reference/cli/docker/container/run/#exit-status
+    step "sb version in a container of each supported release (${RUNTIME_RELEASES[*]})"
+    local release out status
+    for release in "${RUNTIME_RELEASES[@]}"; do
+      status=0
+      out=$(docker run --rm --name "sb-check-$$-${release/./}" --network none -e SB_LOG_DIR=/tmp/sb-log \
+        -v "$sb:/sb:ro" "ubuntu:$release" /sb version) || status=$?
+      if ((status == 125)); then
+        echo "check: docker could not run a ubuntu:$release container" >&2
+        exit 2
+      elif ((status != 0)); then
+        echo "check: ubuntu:$release can't run the production binary" >&2
+        exit 1
+      fi
+      echo "ubuntu:$release: $out"
+    done
   fi
 }
 

@@ -86,7 +86,7 @@ const checkSh = {
 set -euo pipefail
 # Thresholds: keep in step with CONSTRAINTS.md.
 COVERAGE_MIN=90       # % of changed lines covered
-SIZE_MAX_BYTES=45711520 # production musl binary
+SIZE_MAX_BYTES=45711520 # production glibc binary
 step() { printf '== %s\\n' "$1"; }
 fast() {
   step "clippy (warnings are errors)"
@@ -285,14 +285,14 @@ const toolchainToml = {
   [TOOLCHAIN]: `[toolchain]
 channel = "1.99.1"
 components = ["clippy", "rustfmt", "llvm-tools"]
-targets = ["x86_64-unknown-linux-musl"]
+targets = ["x86_64-unknown-linux-gnu"]
 `,
 };
 
 test('rust-toolchain.toml: a changed channel is flagged, an added target is clean', () => {
   flags(toolchainToml, edit(toolchainToml, TOOLCHAIN, '"1.99.1"', '"stable"'), 'toolchain-changed ' + TOOLCHAIN);
-  clean(toolchainToml, edit(toolchainToml, TOOLCHAIN, '"x86_64-unknown-linux-musl"',
-    '"x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"'));
+  clean(toolchainToml, edit(toolchainToml, TOOLCHAIN, '"x86_64-unknown-linux-gnu"',
+    '"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"'));
 });
 
 test('rust-toolchain.toml: a removed component or file is flagged, an added component is clean', () => {
@@ -1157,8 +1157,8 @@ const stubs = (versions, arch) => {
   const out = {
     cargo: 'if [ "$1 $2" = "install --list" ]; then printf \'%s\' "' + installed + '"; exit 0; fi\n',
     'cargo-llvm-cov': '', 'cargo-mutants': '', 'cargo-deny': '', hyperfine: '',
-    cross: 'mkdir -p "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/production"\n'
-      + 'printf sb >"$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/production/sb"\n',
+    cross: 'mkdir -p "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production"\n'
+      + 'printf sb >"$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production/sb"\n',
     'diff-cover': version('diff-cover ' + versions['diff-cover']),
     node: version('v' + versions.node),
     script: version('script from util-linux ' + versions.script),
@@ -1169,6 +1169,12 @@ const stubs = (versions, arch) => {
     gitleaks: 'cat >"$STUB_LOG.gitleaks"\n',
     uname: 'echo ' + arch + '\n',
   };
+  // `docker run`: sb version, unless the container is of the release in
+  // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
+  // fails itself, with its own status 125.
+  out.docker += 'if [ -n "${DOCKER_DOWN:-}" ]; then echo "Cannot connect to the Docker daemon" >&2; exit 125; fi\n'
+    + 'case " $* " in *" ubuntu:${DOCKER_FAILS:-none} "*) echo "sb: GLIBC_2.39 not found" >&2; exit 1 ;; esac\n'
+    + 'echo "Saltbox CLI version: 0.1.0"\n';
   return Object.fromEntries(Object.entries(out).filter(([t]) => versions[t] !== null)
     .map(([t, body]) => [t, '#!/bin/sh\n' + log + body]));
 };
@@ -1358,8 +1364,38 @@ test('check.sh: cargo runs locked, with the target directory its own', () => {
   }
   const cross = r.calls.filter((c) => c.tool === 'cross');
   assert.equal(cross.length, 1, r.output);
-  assert.equal(cross[0].target, join(r.root, 'target/cross-musl'));
+  assert.equal(cross[0].target, join(r.root, 'target/cross-gnu'));
   assert.match(cross[0].args, /(^| )--locked( |$)/);
+  assert.match(cross[0].args, /(^| )--target x86_64-unknown-linux-gnu( |$)/);
+});
+
+// The production binary is built on the oldest supported release, and the
+// gate runs it on each release of the host spec's runtime list (ADR-020).
+test('check.sh full: sb version runs in a container of each supported release, the built binary mounted', () => {
+  const r = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+  passes(r, 'full');
+  const runs = r.calls.filter((c) => c.tool === 'docker' && c.args.startsWith('run '));
+  assert.deepEqual(runs.map((c) => c.args.match(/ ubuntu:(\S+) /)[1]), ['22.04', '24.04', '26.04'], r.output);
+  const bin = join(r.root, 'target/cross-gnu/x86_64-unknown-linux-gnu/production/sb');
+  for (const c of runs) {
+    assert.ok(c.args.includes(' -v ' + bin + ':/sb:ro '), c.args);
+    assert.match(c.args, /(^| )--rm( |$)/);
+    assert.match(c.args, /(^| )--network none( |$)/);
+    assert.match(c.args, /(^| )-e SB_LOG_DIR=\S+( |$)/);
+    assert.match(c.args, / \/sb version$/);
+  }
+  assert.match(r.output, /ubuntu:26\.04: Saltbox CLI version/, r.output);
+});
+
+test('check.sh full: a release that cannot run the binary fails the gate, naming it', () => {
+  for (const release of ['22.04', '26.04']) {
+    refuses(checkRun('full', { env: { DOCKER_FAILS: release } }), 1, new RegExp('ubuntu:' + release.replace('.', '\\.')
+      + '.*can.t run'));
+  }
+});
+
+test('check.sh full: docker failing itself (status 125) means the check could not run, not that sb failed', () => {
+  refuses(checkRun('full', { env: { DOCKER_DOWN: '1' } }), 2, /docker could not run a ubuntu:22\.04 container/);
 });
 
 test('check.sh: diffs are plain whatever git is configured to do', () => {

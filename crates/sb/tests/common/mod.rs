@@ -14,7 +14,7 @@ pub fn test_log_dir() -> PathBuf {
 /// The built `sb`, logging to [`test_log_dir`]. `assert_cmd`'s prelude adds
 /// `.assert()` to it. `SB_TEST_BINARY`, an absolute path to an existing
 /// file, runs another build of sb in every test that uses this (the
-/// production musl binary, docker plan Task 9); a bare name would go
+/// production glibc binary, docker plan Task 9); a bare name would go
 /// through `PATH` and could find an installed sb, so it is refused.
 /// scripts/check.sh unsets it.
 pub fn sb() -> std::process::Command {
