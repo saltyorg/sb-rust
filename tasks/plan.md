@@ -439,7 +439,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 32: the page-to-follow handover: facts, probe and options
 - [x] Task 33: a page and its follow give every entry once
 - [x] Task 34: the handover across files
-- [ ] Task 39: a follow doesn't double a burst across a flush
+- [x] Task 39: a follow doesn't double a burst across a flush
 - [ ] Task 36: a page can always be paged past
 - [ ] Task 37: a forward page on the cursor's own boot
 - [ ] Task 38: forward walks over damaged entry arrays

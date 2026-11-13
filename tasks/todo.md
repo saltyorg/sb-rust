@@ -957,26 +957,26 @@ last entry it showed. The maintainer chose a fix (the plan's decision
 26). sb keeps its reader (decision 27).
 
 **Acceptance criteria:**
-- [ ] The follow keeps the identities (boot id, monotonic and realtime
+- [x] The follow keeps the identities (boot id, monotonic and realtime
       stamps, xor hash) of the entries it showed at its last entry's
       stamp, at most one burst, reset when the stamp moves on; an entry
       at that stamp is a copy if its identity is among them.
-- [ ] A crafted test (both layouts): /run holds four entries with one
+- [x] A crafted test (both layouts): /run holds four entries with one
       stamp, all shown; the flush writes their copies and a new entry
       to /var; the follow shows only the new one.
-- [ ] follow.sh's `during` gets its flush round back (saved from Task
+- [x] follow.sh's `during` gets its flush round back (saved from Task
       34) and passes on 22.04, 24.04 and 26.04: nothing lost or doubled.
-- [ ] The flush round also runs with `/run/log` on tmpfs, as on a host,
+- [x] The flush round also runs with `/run/log` on tmpfs, as on a host,
       where journald removes the /run file after the flush (the matrix
       containers' overlayfs keeps it): a follow started before
       `/var/log/journal` existed loses nothing (the libsystemd probe saw
       readers lose entries there; the platform note).
-- [ ] Difference 2 holds as written.
+- [x] Difference 2 holds as written.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal -p sb-host`; follow.sh on three releases;
+- [x] `cargo test -p sb-journal -p sb-host`; follow.sh on three releases;
       `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 34
