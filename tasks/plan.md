@@ -490,7 +490,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 34: the handover across files
 - [x] Task 39: a follow doesn't double a burst across a flush
 - [x] Task 36: a page can always be paged past
-- [ ] Task 37: a forward page on the cursor's own boot
+- [x] Task 37: a forward page on the cursor's own boot
 - [ ] Task 38: forward walks over damaged entry arrays
 - [ ] Checkpoint B: reader
 

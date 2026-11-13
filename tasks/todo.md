@@ -1020,25 +1020,25 @@ entries before the cursor and the cursor's own entry, and paging one at
 a time loops for ever (fwd-M1; confirmed on all three releases).
 
 **Acceptance criteria:**
-- [ ] The task first records what journalctl shows for the reviewer's
+- [x] The task first records what journalctl shows for the reviewer's
       two-file fixture on 22.04, 24.04 and 26.04.
-- [ ] `boot_starts` changes (decision 11): a file that holds the
+- [x] `boot_starts` changes (decision 11): a file that holds the
       cursor's boot seeks per boot. On 22.04, 24.04 and 26.04,
       `After(e)` on that fixture returns only entries after the cursor,
       and paging one at a time ends. In both layouts.
-- [ ] 22.04 gets a listed Difference only if journalctl 249 shows
+- [x] 22.04 gets a listed Difference only if journalctl 249 shows
       something else on the fixture. A difference on 24.04 or 26.04
       stops for the maintainer.
-- [ ] The property probe's sixth mode is a test and passes, with the
+- [x] The property probe's sixth mode is a test and passes, with the
       five that passed before.
-- [ ] The docs are corrected: forward.rs:28-32 and 81-86; journal.md's
+- [x] The docs are corrected: forward.rs:28-32 and 81-86; journal.md's
       "sb doesn't emulate that step" passage and its "259's seek is
       kept ... one of a single boot, the cursor's" sentence.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
-- [ ] compare.sh on 22.04 and on one of 24.04 and 26.04, capped.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
+- [x] compare.sh on 22.04 and on one of 24.04 and 26.04, capped.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Task 36
 **Files:** `crates/journal/src/{forward.rs,file.rs}`, `crates/journal/tests/checks.sh` (the fixture's row), `docs/specs/journal.md`
