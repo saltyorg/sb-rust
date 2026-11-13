@@ -225,6 +225,15 @@ Answers at the plan's approval (2026-11-11):
     (https://github.com/rust-lang/rust/pull/158303), which changes sb's
     error output for an NFD name. The edition stays 2024: nothing newer
     is stable.
+33. **Task 37 fixes the forward page on all three releases, with a new
+    listed Difference for 24.04** (the maintainer, 2026-11-13). One boot
+    over two files with a backward clock step: after the cursor sb shows
+    only later entries, and paging one at a time ends, as journalctl
+    249 and 259.9 do. journalctl 255 shows entries before the cursor
+    and the cursor's own, and its forward paging never ends; sb doesn't
+    follow it there (the reasoning of Difference 20: sb's order wins).
+    The tied-times case Task 37's probe also showed is fwd-L4, dropped
+    by the cut.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -485,7 +494,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [ ] Checkpoint Y: config
 
 ### Phase 5 (lane 4): the glibc build (decisions 29 and 31)
-- [ ] Task 53: the production build links glibc, built on 22.04
+- [x] Task 53: the production build links glibc, built on 22.04
 - [ ] Task 54: the journal matrix builds in the same image
 
 ### Phase 6: the toolchain (decision 32)

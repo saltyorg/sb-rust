@@ -1220,30 +1220,30 @@ in a custom 22.04 image (`Cross.toml`'s `image` or `dockerfile`, with
 the repository's own image. Record which, and why, in ADR-020.
 
 **Acceptance criteria:**
-- [ ] `check.sh full` builds the production `x86_64-unknown-linux-gnu`
+- [x] `check.sh full` builds the production `x86_64-unknown-linux-gnu`
       binary in the 22.04 image, in its own target directory, gates its
       size, and runs `sb version` in a container of each release on the
       host spec's runtime list (22.04, 24.04, 26.04); a binary one of
       them can't load fails the gate.
-- [ ] The arm64 build (`aarch64-unknown-linux-gnu`) is made once in the
+- [x] The arm64 build (`aarch64-unknown-linux-gnu`) is made once in the
       same image with Ubuntu's aarch64 GCC, and runs `sb version` under
       qemu or on an arm64 host. ADR-020's UNVERIFIED mark is removed if
       it works, and the result goes to the maintainer if it doesn't.
-- [ ] No musl target is left: `rust-toolchain.toml`'s targets, `deny.toml`'s
+- [x] No musl target is left: `rust-toolchain.toml`'s targets, `deny.toml`'s
       targets (on main, alone), CONSTRAINTS.md's binary-size and Tools
       rows (`cross` stays only if it is the route), check.sh's step name and
       `SIZE_MAX_BYTES` comment, the floor guard's tests, the cli-core
       spec's build command, `crates/host/src/lib.rs`'s "static" comment.
-- [ ] The toolchain change is acknowledged by the floor guard
+- [x] The toolchain change is acknowledged by the floor guard
       (ADR-015) where it flags it, citing ADR-020.
-- [ ] ADR-020 records the route chosen, and the size and startup
+- [x] ADR-020 records the route chosen, and the size and startup
       measured on this build.
 
 **Verification:**
-- [ ] `scripts/check.sh full <base>`; the glibc binary's highest
+- [x] `scripts/check.sh full <base>`; the glibc binary's highest
       `GLIBC_` symbol version is at most 2.35 (`objdump -T`), recorded
       in ADR-020.
-- [ ] Review: one code-reviewer pass on the task's diff (it changes the
+- [x] Review: one code-reviewer pass on the task's diff (it changes the
       gate), with the library-reviewer for the build route.
 
 **Dependencies:** none; lane 4, beside the others (plan decision 31).
