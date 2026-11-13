@@ -2131,7 +2131,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       drain's own timeout, never a bigger magic number alone. Lanes now
       run at 12 cores each, which leaves headroom.
 
-- [ ] **The inventory read's memory** (lane 3, which owns cli-core's `config.rs` and `config/yaml.rs` for this). An
+- [x] **The inventory read's memory** (lane 3, which owns cli-core's `config.rs` and `config/yaml.rs` for this). An
       uncapped read of localhost.yml peaks at about 30 times the file's size
       (3.5 MB: 0.75 s and 105 MB; 56 MB: 10-12 s and 1.55 GB, release
       build, Task 61's review). No length cap goes back (plan decision 41);
@@ -2144,7 +2144,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       position: 10,000 repeats (50 KB) took 102 s and 5.8 GB and logged
       about 1.1 GB (Task 61's review). Report each duplicate with the
       first position only, or one issue per key, and cap what's logged.
-- [ ] **A top-level block scalar before a column-0 comment** (lane 3, in cli-core's `config/yaml.rs`; lane
+- [x] **A top-level block scalar before a column-0 comment** (lane 3, in cli-core's `config/yaml.rs`; lane
       3, with the next YAML change). sb reads the comment as content, where
       libyaml ends the scalar there. No Saltbox file has a top-level block
       scalar; add the corpus case and match libyaml.
@@ -2167,6 +2167,14 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       (crates/docker/src/control/client.rs:641) timed out once in four
       runs under load in M64's review and passed on a rerun. Give it a
       bound that holds under load, as c06f497 did for exec's PTY tests.
+
+- [ ] **A byte order mark after the stream's start** (lane 3; cli-core's
+      `config/yaml.rs`). Found by 985b5e7's security audit, and older than
+      it: sb's pre-pass and saphyr read a U+FEFF past the first character
+      differently, so sb accepts files Ansible refuses (a second BOM before
+      a top-level scalar or a mapping). Decision 38: refuse U+FEFF anywhere
+      but the stream's start, with corpus cases whose libyaml verdicts
+      come from scripts/yaml-corpus.py. No Saltbox file has one.
 
 ## Ready to start
 
