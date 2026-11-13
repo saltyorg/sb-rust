@@ -3,13 +3,16 @@
 //! display name. Pure functions over bollard's model types.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use std::net::{IpAddr, Ipv6Addr};
+use std::time::Duration;
 
 use bollard::models::{
     ContainerInspectResponse, ContainerState, ContainerStateStatusEnum as Status, ContainerSummary,
     HealthStatusEnum as Health, PortMap,
 };
+use jiff::Timestamp;
 use sb_cli_core::theme::Role;
 use sb_term_ui::{Cell, Table};
 
@@ -221,6 +224,16 @@ pub struct Row {
     pub role: Role,
     pub traefik: Vec<String>,
     pub bindings: Vec<Binding>,
+    /// How often Docker restarted it (`RestartCount`).
+    pub restart_count: i64,
+    /// When it was created (`Created`). This and the two times below are
+    /// `None` for Docker's zero time (never) and for a value that doesn't
+    /// parse.
+    pub created: Option<Timestamp>,
+    /// When it last started (`State.StartedAt`).
+    pub started_at: Option<Timestamp>,
+    /// When it last stopped (`State.FinishedAt`).
+    pub finished_at: Option<Timestamp>,
 }
 
 impl Row {
@@ -254,9 +267,104 @@ impl Row {
             role,
             traefik: labels.map(traefik_ports).unwrap_or_default(),
             bindings: ports.map(bindings).unwrap_or_default(),
+            restart_count: inspect.restart_count.unwrap_or_default(),
+            created: inspect.created.as_deref().and_then(docker_time),
+            started_at: state.started_at.as_deref().and_then(docker_time),
+            finished_at: state.finished_at.as_deref().and_then(docker_time),
             id,
         }
     }
+}
+
+/// One of the inspect's RFC 3339 times, parsed with jiff
+/// (<https://docs.rs/jiff/0.2.38/jiff/struct.Timestamp.html#impl-FromStr-for-Timestamp>).
+/// Docker's zero time, `0001-01-01T00:00:00Z` (Go's zero `time.Time`),
+/// means never: `None`, as is anything that doesn't parse.
+fn docker_time(text: &str) -> Option<Timestamp> {
+    /// `0001-01-01T00:00:00Z` in Unix seconds.
+    const ZERO: Timestamp = Timestamp::constant(-62_135_596_800, 0);
+    text.parse().ok().filter(|time| *time != ZERO)
+}
+
+/// A container's status in the log picker (tui spec, "Container
+/// status"): `ps`'s text with its time and restart details, the symbol
+/// drawn before it, its role, and whether it belongs in Needs attention.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickerStatus {
+    pub symbol: char,
+    pub text: String,
+    pub role: Role,
+    pub attention: bool,
+}
+
+/// How long a container counts as just restarted (the 10-minute rule).
+const RECENT_RESTART: Duration = Duration::from_mins(10);
+
+/// `row`'s status in the log picker at `now` (the docker spec's picker
+/// status): [`status`]'s text and role, then
+/// - running: ` · up <duration>`; restarted and up for less than 10
+///   minutes, ` · restarted N× · up <duration>`, `↻`, role Problem;
+/// - exited or dead: ` · <duration> ago`;
+/// - restarting: ` (N×)`, `↻`.
+///
+/// A time Docker doesn't give leaves its part out. `format` writes the
+/// durations (the picker passes sb-host's, so motd and the picker write
+/// times alike; sb-docker doesn't depend on sb-host). Attention is role
+/// Problem.
+pub fn picker_status(
+    row: &Row,
+    now: Timestamp,
+    format: impl Fn(Duration) -> String,
+) -> PickerStatus {
+    let since = |time: Option<Timestamp>| time.map(|time| elapsed(time, now));
+    let mut text = row.status.clone();
+    let mut role = row.role;
+    let mut cycling = false;
+    match row.state.as_str() {
+        "running" => {
+            if let Some(up) = since(row.started_at) {
+                if row.restart_count > 0 && up < RECENT_RESTART {
+                    let _ = write!(text, " · restarted {}×", row.restart_count);
+                    role = Role::Problem;
+                    cycling = true;
+                }
+                let _ = write!(text, " · up {}", format(up));
+            }
+        }
+        "exited" | "dead" => {
+            if let Some(ago) = since(row.finished_at) {
+                let _ = write!(text, " · {} ago", format(ago));
+            }
+        }
+        "restarting" => {
+            let _ = write!(text, " ({}×)", row.restart_count);
+            cycling = true;
+        }
+        _ => {}
+    }
+    let symbol = if cycling {
+        '↻'
+    } else {
+        match role {
+            Role::Ok => '✓',
+            Role::Problem => '✗',
+            Role::Warn => '◌',
+            // `status` gives only the four state roles; Idle and anything
+            // else read as stopped.
+            _ => '○',
+        }
+    };
+    PickerStatus {
+        symbol,
+        text,
+        role,
+        attention: role == Role::Problem,
+    }
+}
+
+/// `now` minus `then`, zero when `then` is ahead (a clock moved back).
+fn elapsed(then: Timestamp, now: Timestamp) -> Duration {
+    Duration::try_from(now.duration_since(then)).unwrap_or(Duration::ZERO)
 }
 
 /// `rows` sorted by name, as sb-go.
@@ -582,6 +690,247 @@ mod tests {
         assert_eq!(short_id(""), "unknown");
         assert_eq!(short_id("123456789012345"), "123456789012");
         assert_eq!(short_id("123456789012"), "123456789012");
+    }
+
+    /// A row from an inspect (`state` is its `State` object), with the
+    /// picker's fields given.
+    fn picker_row(inspect: &serde_json::Value) -> Row {
+        let summary: ContainerSummary =
+            serde_json::from_value(crate::testing::summary(inspect)).expect("summary");
+        let inspect: ContainerInspectResponse =
+            serde_json::from_value(inspect.clone()).expect("inspect");
+        Row::new(&summary, &inspect)
+    }
+
+    fn at(text: &str) -> Timestamp {
+        text.parse().expect("timestamp")
+    }
+
+    #[test]
+    fn rows_carry_the_restart_count_and_the_times() {
+        let row = picker_row(&serde_json::json!({
+            "Id": "a".repeat(64),
+            "Name": "/sonarr",
+            "Created": "2026-11-01T10:00:00.123456789Z",
+            "RestartCount": 3,
+            "State": {
+                "Status": "running",
+                "StartedAt": "2026-11-13T09:58:00.5Z",
+                "FinishedAt": "2026-11-13T09:57:59Z",
+            },
+        }));
+        assert_eq!(row.restart_count, 3);
+        assert_eq!(row.created, Some(at("2026-11-01T10:00:00.123456789Z")));
+        assert_eq!(row.started_at, Some(at("2026-11-13T09:58:00.5Z")));
+        assert_eq!(row.finished_at, Some(at("2026-11-13T09:57:59Z")));
+    }
+
+    /// Docker writes its zero time for "never"; that, a value that doesn't
+    /// parse and a missing one read as no time.
+    #[test]
+    fn the_zero_time_and_unparsable_times_are_none() {
+        let row = picker_row(&serde_json::json!({
+            "Id": "b".repeat(64),
+            "Name": "/lidarr",
+            "Created": "yesterday",
+            "State": {
+                "Status": "created",
+                "StartedAt": "0001-01-01T00:00:00Z",
+            },
+        }));
+        assert_eq!(row.restart_count, 0);
+        assert_eq!(
+            (row.created, row.started_at, row.finished_at),
+            (None, None, None)
+        );
+    }
+
+    /// `"5s"`-style text, enough to see which duration was formatted.
+    fn secs(d: Duration) -> String {
+        format!("{}s", d.as_secs())
+    }
+
+    const NOW: &str = "2026-11-13T10:00:00Z";
+
+    fn picker(state: &serde_json::Value, restarts: i64) -> PickerStatus {
+        let row = picker_row(&serde_json::json!({
+            "Id": "c".repeat(64),
+            "Name": "/radarr",
+            "RestartCount": restarts,
+            "State": state,
+        }));
+        picker_status(&row, at(NOW), secs)
+    }
+
+    fn want(symbol: char, text: &str, role: Role, attention: bool) -> PickerStatus {
+        PickerStatus {
+            symbol,
+            text: text.into(),
+            role,
+            attention,
+        }
+    }
+
+    #[test]
+    fn a_running_container_shows_its_uptime() {
+        let state = serde_json::json!({ "Status": "running", "StartedAt": "2026-11-13T09:00:00Z" });
+        assert_eq!(
+            picker(&state, 0),
+            want('✓', "running · up 3600s", Role::Ok, false)
+        );
+        let unhealthy = serde_json::json!({
+            "Status": "running",
+            "StartedAt": "2026-11-13T09:00:00Z",
+            "Health": { "Status": "unhealthy" },
+        });
+        assert_eq!(
+            picker(&unhealthy, 0),
+            want('✗', "running (unhealthy) · up 3600s", Role::Problem, true)
+        );
+        let starting = serde_json::json!({
+            "Status": "running",
+            "StartedAt": "2026-11-13T09:59:00Z",
+            "Health": { "Status": "starting" },
+        });
+        assert_eq!(
+            picker(&starting, 0),
+            want('◌', "running (starting) · up 60s", Role::Warn, false)
+        );
+    }
+
+    /// The 10-minute rule: restarted and up for less than 10 minutes.
+    #[test]
+    fn a_recent_restart_needs_attention_for_ten_minutes() {
+        let up = |since: &str| serde_json::json!({ "Status": "running", "StartedAt": since });
+        assert_eq!(
+            picker(&up("2026-11-13T09:51:00Z"), 3),
+            want('↻', "running · restarted 3× · up 540s", Role::Problem, true)
+        );
+        assert_eq!(
+            picker(&up("2026-11-13T09:50:01Z"), 1),
+            want('↻', "running · restarted 1× · up 599s", Role::Problem, true)
+        );
+        assert_eq!(
+            picker(&up("2026-11-13T09:50:00Z"), 3),
+            want('✓', "running · up 600s", Role::Ok, false)
+        );
+        assert_eq!(
+            picker(&up("2026-11-13T09:49:00Z"), 3),
+            want('✓', "running · up 660s", Role::Ok, false)
+        );
+    }
+
+    /// A crash loop with a health check: the rule makes a starting
+    /// container a problem.
+    #[test]
+    fn a_recent_restart_with_a_health_check_is_a_problem() {
+        let state = serde_json::json!({
+            "Status": "running",
+            "StartedAt": "2026-11-13T09:59:00Z",
+            "Health": { "Status": "starting" },
+        });
+        assert_eq!(
+            picker(&state, 2),
+            want(
+                '↻',
+                "running (starting) · restarted 2× · up 60s",
+                Role::Problem,
+                true
+            )
+        );
+    }
+
+    /// A count below zero (never from Docker) is no restart.
+    #[test]
+    fn a_negative_restart_count_is_no_restart() {
+        let state = serde_json::json!({ "Status": "running", "StartedAt": "2026-11-13T09:59:00Z" });
+        assert_eq!(
+            picker(&state, -1),
+            want('✓', "running · up 60s", Role::Ok, false)
+        );
+    }
+
+    #[test]
+    fn a_running_container_without_a_start_time_shows_no_uptime() {
+        let state = serde_json::json!({ "Status": "running", "StartedAt": "0001-01-01T00:00:00Z" });
+        assert_eq!(picker(&state, 2), want('✓', "running", Role::Ok, false));
+    }
+
+    /// A start time ahead of the clock (a clock moved back) is up 0 s.
+    #[test]
+    fn a_start_time_in_the_future_is_up_no_time() {
+        let state = serde_json::json!({ "Status": "running", "StartedAt": "2026-11-13T10:05:00Z" });
+        assert_eq!(
+            picker(&state, 1),
+            want('↻', "running · restarted 1× · up 0s", Role::Problem, true)
+        );
+    }
+
+    #[test]
+    fn stopped_containers_show_how_long_ago() {
+        let exited = |code: i64| {
+            serde_json::json!({
+                "Status": "exited",
+                "ExitCode": code,
+                "FinishedAt": "2026-11-13T08:00:00Z",
+            })
+        };
+        assert_eq!(
+            picker(&exited(3), 0),
+            want('✗', "exited (code 3) · 7200s ago", Role::Problem, true)
+        );
+        assert_eq!(
+            picker(&exited(0), 4),
+            want('○', "exited · 7200s ago", Role::Idle, false)
+        );
+        let dead = serde_json::json!({ "Status": "dead", "FinishedAt": "2026-11-13T09:59:30Z" });
+        assert_eq!(
+            picker(&dead, 0),
+            want('✗', "dead · 30s ago", Role::Problem, true)
+        );
+        let never = serde_json::json!({ "Status": "exited", "FinishedAt": "0001-01-01T00:00:00Z" });
+        assert_eq!(picker(&never, 0), want('○', "exited", Role::Idle, false));
+    }
+
+    #[test]
+    fn a_restarting_container_shows_its_count() {
+        let state =
+            serde_json::json!({ "Status": "restarting", "StartedAt": "2026-11-13T09:59:00Z" });
+        assert_eq!(
+            picker(&state, 5),
+            want('↻', "restarting (5×)", Role::Problem, true)
+        );
+    }
+
+    /// The other states keep `ps`'s text, with the role's symbol.
+    #[test]
+    fn the_other_states_keep_their_text() {
+        let cases = [
+            ("created", '○', "created", Role::Idle, false),
+            ("paused", '○', "paused", Role::Idle, false),
+            ("removing", '◌', "removing", Role::Warn, false),
+            ("stopping", '◌', "stopping", Role::Warn, false),
+        ];
+        for (state, symbol, text, role, attention) in cases {
+            let state = serde_json::json!({
+                "Status": state,
+                "StartedAt": "2026-11-13T09:59:00Z",
+                "FinishedAt": "2026-11-13T09:59:30Z",
+            });
+            assert_eq!(
+                picker(&state, 2),
+                want(symbol, text, role, attention),
+                "{text}"
+            );
+        }
+        let unknown = serde_json::json!({ "StartedAt": "2026-11-13T09:59:00Z" });
+        assert_eq!(picker(&unknown, 1), want('◌', "unknown", Role::Warn, false));
+        let failed =
+            serde_json::json!({ "Status": "created", "Error": "port is already allocated" });
+        assert_eq!(
+            picker(&failed, 0),
+            want('✗', "created (failed to start)", Role::Problem, true)
+        );
     }
 
     #[test]

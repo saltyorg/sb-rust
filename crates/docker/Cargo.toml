@@ -28,6 +28,9 @@ tokio = { workspace = true, features = ["time"] }
 # and restart"): already in sb through sb-config.
 reqwest.workspace = true
 thiserror.workspace = true
+# The inspect's times for the log picker (tui spec's docker amendment):
+# RFC 3339 with nanoseconds, already in sb through sb-config.
+jiff.workspace = true
 # `systemctl is-active` for the controller's service check, and the step's
 # token that cancels it (exec spec; deny.toml lets sb-docker wrap sb-exec).
 sb-exec.workspace = true
