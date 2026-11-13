@@ -44,18 +44,18 @@ are its first users; the repo spec's slice 1 and python-env's slice 1
 both name it as theirs, and this task builds it once.
 
 **Acceptance criteria:**
-- [ ] A missing path or root is skipped; an empty or unknown user skips
+- [x] A missing path or root is skipped; an empty or unknown user skips
       everything; a symlink is changed itself, never its target; an entry
       that vanishes mid-walk is skipped and the walk goes on (difference
       11).
-- [ ] The errors nest with sb-go's texts (`look up user <u>: ...`,
+- [x] The errors nest with sb-go's texts (`look up user <u>: ...`,
       `inspect ownership of <p>: ...`, `set ownership of <p>: ...`,
       `set recursive ownership of <root>: ...`).
-- [ ] The run log gets one count of changed entries per root.
+- [x] The run log gets one count of changed entries per root.
 
 **Verification:**
-- [ ] `cargo test -p sb-host` with the injected `lchown` and temporary trees.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-host` with the injected `lchown` and temporary trees.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None
 **Files:** `crates/host/src/{lib.rs,owner.rs}`, `crates/host/Cargo.toml`, `Cargo.toml`, `Cargo.lock`
