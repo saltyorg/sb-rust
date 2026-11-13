@@ -7,6 +7,7 @@
 //! 28), and every position points into the file as written.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use saphyr::{MarkedYamlOwned, YamlDataOwned, YamlLoader};
 use saphyr_parser::{Event, Marker, Parser, ScanError, Span, SpannedEventReceiver};
@@ -173,8 +174,8 @@ struct Frame {
 
 enum FrameKind {
     Mapping {
-        /// Each key seen, with every position.
-        seen: HashMap<KeyId, Vec<(usize, usize)>>,
+        /// Each key seen, with where it first was.
+        seen: HashMap<KeyId, (usize, usize)>,
         /// The key whose value comes next; `None` when a key comes next.
         key: Option<String>,
     },
@@ -223,8 +224,8 @@ fn key_segment(top: bool, key: &str) -> String {
 
 /// Every duplicate key in `text`'s first document, from saphyr-parser's
 /// events (before any loading, which would stop at the first), sorted by
-/// position: each with its key path and every earlier position of the
-/// same key (`KeyId`) in the same mapping. The pre-pass has limited the
+/// position: each with its key path and the first position of the same
+/// key (`KeyId`) in the same mapping. The pre-pass has limited the
 /// nesting, so the frames are at most `yaml::MAX_DEPTH`.
 fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> {
     let mut issues = Vec::new();
@@ -307,24 +308,27 @@ fn ended(issues: &mut Vec<Issue>, file: &str, frames: &mut [Frame], node: Node) 
             ..
         } => *next = None,
         FrameKind::Mapping { seen, key: next } => {
-            let earlier = seen.entry(node.id).or_default();
-            if !earlier.is_empty() {
-                let list: Vec<String> = earlier
-                    .iter()
-                    .map(|(line, column)| format!("line {line}, column {column}"))
-                    .collect();
-                let mut path: String = outer.iter().map(|f| f.segment.as_str()).collect();
-                path.push_str(&frame.segment);
-                path.push_str(&key_segment(outer.is_empty(), &node.label));
-                issues.push(Issue {
-                    file: file.to_string(),
-                    line: node.here.0,
-                    column: node.here.1,
-                    path,
-                    message: format!("duplicate key (also at {})", list.join(" and ")),
-                });
+            // The first position only: listing every earlier one made
+            // the report of a key repeated N times grow as N² (config
+            // spec, "Duplicate keys").
+            match seen.entry(node.id) {
+                Entry::Occupied(first) => {
+                    let (line, column) = *first.get();
+                    let mut path: String = outer.iter().map(|f| f.segment.as_str()).collect();
+                    path.push_str(&frame.segment);
+                    path.push_str(&key_segment(outer.is_empty(), &node.label));
+                    issues.push(Issue {
+                        file: file.to_string(),
+                        line: node.here.0,
+                        column: node.here.1,
+                        path,
+                        message: format!("duplicate key (also at line {line}, column {column})"),
+                    });
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(node.here);
+                }
             }
-            earlier.push(node.here);
             *next = Some(node.label);
         }
         FrameKind::Sequence { index } => *index += 1,
@@ -438,14 +442,31 @@ mod tests {
     }
 
     #[test]
-    fn every_duplicate_is_reported_with_every_earlier_position() {
+    fn every_duplicate_is_reported_with_the_first_position() {
         assert_eq!(
             issues("a: 1\nb: 2\na: 3\na: 4\n"),
             [
                 "test.yml:3:1: a: duplicate key (also at line 1, column 1)",
-                "test.yml:4:1: a: duplicate key (also at line 1, column 1 and line 3, column 1)",
+                "test.yml:4:1: a: duplicate key (also at line 1, column 1)",
             ]
         );
+    }
+
+    /// A key repeated many times costs one short issue per repeat, not a
+    /// list of every earlier one (10,000 repeats took 102 s and 5.8 GB).
+    #[test]
+    fn many_repeats_stay_linear() {
+        let text = "a: 1\n".repeat(10_000);
+        let found = issues(&text);
+        assert_eq!(found.len(), 9_999);
+        assert_eq!(
+            found.last().map(String::as_str),
+            Some("test.yml:10000:1: a: duplicate key (also at line 1, column 1)")
+        );
+        // Each issue is about 61 bytes here; the old list made the last
+        // one alone about 220 KB.
+        let total: usize = found.iter().map(String::len).sum();
+        assert!(total < 9_999 * 100, "{total}");
     }
 
     #[test]

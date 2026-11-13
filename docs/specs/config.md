@@ -187,7 +187,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   difference, below.
 - **Duplicate keys:** a pass over the parser's events runs first and
   reports every duplicate in the file, each with its key path and its
-  position and every earlier one's. A file with duplicates is not
+  position and the first one's (*amended by the module build's
+  duplicate-key follow-up*: with every earlier one listed, the report
+  of a key repeated N times grew as N²). A file with duplicates is not
   schema-validated further (sb-go's decode fails there too); its
   duplicates are its issues. So too a value that can't be decoded as its
   tag (`!!int abc`) or a mapping key that is a collection: those are the
