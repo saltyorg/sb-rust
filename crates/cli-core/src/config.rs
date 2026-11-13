@@ -20,6 +20,7 @@ use serde::Deserialize;
 
 use crate::theme::{Palette, Profile, Role};
 
+mod appdata;
 pub mod yaml;
 
 /// The Saltbox checkout (sb-go's `SaltboxRepoPath`), unless
@@ -119,8 +120,10 @@ pub fn read_small(path: &Path) -> Result<Option<String>, ConfigError> {
 /// already controls root through Ansible, as for [`read_small`]'s files.
 /// The YAML read limits its nesting depth ([`yaml::MAX_DEPTH`]) and its
 /// aliases (saphyr's budget), not its length: reading and parsing it
-/// costs time and memory in proportion (about 30 times its size at the
-/// peak, measured in the platform note), on every sb start.
+/// costs time and memory in proportion (about 4 times its size at the
+/// peak for flat `key: value` lines since the event read, measured in the
+/// platform note; nested anchors cost more, as for saphyr's loader), on
+/// every sb start.
 ///
 /// # Errors
 ///
@@ -201,8 +204,9 @@ pub fn appdata_path(inventory: &Path) -> PathBuf {
 /// Ansible's loader refuses (decisions 28 and 38). Neither the read
 /// ([`read_inventory`]) nor the YAML read limits its length, only depth
 /// ([`yaml::MAX_DEPTH`]): a deep file is loaded on
-/// [`yaml::with_stack`]'s thread, where its tree is dropped too. Public so
-/// that sb-config's YAML corpus test can check that agreement.
+/// [`yaml::with_stack`]'s thread, where what is kept of it is dropped
+/// too. Public so that sb-config's YAML corpus test can check that
+/// agreement.
 ///
 /// # Errors
 ///
@@ -220,25 +224,12 @@ pub fn inventory_appdata(text: &str) -> Result<Option<String>, yaml::Refusal> {
         }
     };
     let load = || {
-        let mut loader = saphyr::YamlLoader::<saphyr::YamlOwned>::default();
         // The first document (`prepare` has refused a second), its
-        // scalars as libyaml reads them.
-        prepared.load(&mut loader).map_err(|err| refusal(&err))?;
-        if let Some(err) = loader.error() {
-            return Err(refusal(err));
-        }
-        Ok(loader
-            .into_documents()
-            .into_iter()
-            .next()
-            .and_then(|document| {
-                let value = document.as_mapping_get("server_appdata_path")?;
-                value
-                    .get_tagged_node()
-                    .unwrap_or(value)
-                    .as_str()
-                    .map(str::to_string)
-            }))
+        // scalars as libyaml reads them, decided as saphyr's loader
+        // decides but without its tree (`appdata`).
+        let mut reader = appdata::Reader::default();
+        prepared.load(&mut reader).map_err(|err| refusal(&err))?;
+        reader.finish().map_err(|err| refusal(&err))
     };
     yaml::with_stack(prepared.depth(), load).unwrap_or_else(|err| {
         Err(yaml::Refusal {
@@ -563,6 +554,193 @@ mod tests {
             inventory_appdata("server_appdata_path: [\n  1]\n"),
             Ok(None)
         );
+    }
+
+    /// The read as it was before `appdata`'s receiver: saphyr's own
+    /// loader and its tree, the oracle the receiver must match.
+    fn by_the_loader(text: &str) -> Result<Option<String>, yaml::Refusal> {
+        let prepared = yaml::prepare(text)?;
+        let refusal = |err: &saphyr_parser::ScanError| {
+            let marker = prepared.original(err.marker());
+            yaml::Refusal {
+                line: marker.line(),
+                column: marker.col() + 1,
+                message: err.info().to_string(),
+            }
+        };
+        let load = || {
+            let mut loader = saphyr::YamlLoader::<saphyr::YamlOwned>::default();
+            prepared.load(&mut loader).map_err(|err| refusal(&err))?;
+            if let Some(err) = loader.error() {
+                return Err(refusal(err));
+            }
+            Ok(loader
+                .into_documents()
+                .into_iter()
+                .next()
+                .and_then(|document| {
+                    let value = document.as_mapping_get("server_appdata_path")?;
+                    value
+                        .get_tagged_node()
+                        .unwrap_or(value)
+                        .as_str()
+                        .map(str::to_string)
+                }))
+        };
+        yaml::with_stack(prepared.depth(), load).expect("thread")
+    }
+
+    /// The event reader decides as saphyr's loader does, case by case:
+    /// the value (plain, quoted, tagged, through an alias, under an
+    /// anchored root), what isn't a string, the duplicate keys anywhere
+    /// (scalar, tagged, aliased and collection keys, a key the loader
+    /// can't parse, which leaves the key's place open), and the alias
+    /// budget.
+    #[test]
+    fn the_event_read_matches_the_loader() {
+        use std::fmt::Write as _;
+        let bomb = {
+            let mut text = String::from("a0: &a0 [x, x, x, x, x, x, x, x, x, x]\n");
+            for i in 1..6 {
+                let prev = i - 1;
+                let aliases = vec![format!("*a{prev}"); 10].join(", ");
+                writeln!(text, "a{i}: &a{i} [{aliases}]").expect("a String");
+            }
+            text.push_str("server_appdata_path: /srv\n");
+            text
+        };
+        let cases = [
+            "server_appdata_path: /srv\n",
+            "server_appdata_path: '/srv'\nx: 1\n",
+            "x: {a: 1, b: [1, 2]}\nserver_appdata_path: \"/srv\"\n",
+            "server_appdata_path: !!str /srv\n",
+            "server_appdata_path: !unsafe /srv\n",
+            "server_appdata_path: 12\n",
+            "server_appdata_path: ~\n",
+            "server_appdata_path: [a]\n",
+            "server_appdata_path: {a: b}\n",
+            "server_appdata_path: !unsafe [a]\n",
+            "'server_appdata_path': /srv\n",
+            "!!str server_appdata_path: /srv\n",
+            "!unsafe server_appdata_path: /srv\n",
+            "x: &p /srv\nserver_appdata_path: *p\n",
+            "x: &p [/srv]\nserver_appdata_path: *p\n",
+            "&root\nserver_appdata_path: /srv\ny: 1\n",
+            "&root\nserver_appdata_path: /srv\nserver_appdata_path: /x\n",
+            "- server_appdata_path: /srv\n",
+            "/srv\n",
+            "",
+            "# only a comment\n",
+            "server_appdata_path: /srv\nserver_appdata_path: /x\n",
+            "a: 1\nb:\n  c: 1\n  c: 2\nserver_appdata_path: /srv\n",
+            "a: 1\n'a': 2\n",
+            "1: a\n'1': b\n",
+            "1: a\n01: b\n",
+            "a: 1\n!!str a: 2\n",
+            "a: 1\n!unsafe a: 2\n",
+            "x: &k a\n*k : 1\n",
+            "l:\n  - {a: 1, a: 2}\n",
+            "l: [{a: 1}, {a: 1}]\nserver_appdata_path: /srv\n",
+            "!!int abc: [1]\nserver_appdata_path: /srv\n",
+            "!!int abc: {k: v}\nv2: w\nserver_appdata_path: /srv\n",
+            "!!int abc: x\n!!int def: y\nserver_appdata_path: /srv\n",
+            "m:\n  !!int abc: [1]\n  [1]: z\nserver_appdata_path: /srv\n",
+            "a: &x {k: v}\nb: *x\nc: *x\nserver_appdata_path: /srv\n",
+            "a: !custom [1]\n",
+            // A tagged root is the tag's, not a mapping, to the lookup.
+            "--- !unsafe\nserver_appdata_path: /srv\n",
+            "!unsafe\nserver_appdata_path: /srv\n",
+            "--- !vault\nserver_appdata_path: /srv\n",
+            "--- !\nserver_appdata_path: /srv\n",
+            "!unsafe {server_appdata_path: /srv}\n",
+            "--- !!map\nserver_appdata_path: /srv\n",
+            "--- !unsafe &r\nserver_appdata_path: /srv\n",
+            "--- !!map &r\nserver_appdata_path: /srv\n",
+            bomb.as_str(),
+        ];
+        // The alias budget counts through tags, as the loader's does.
+        let tagged_bomb = bomb
+            .replace("&a", "!unsafe &a")
+            .replace(": !unsafe &a", ": &a !unsafe");
+        let budget = |tag: &str, outer: bool, aliases: usize| {
+            let items = vec!["x"; 9_999].join(", ");
+            let list = if outer {
+                format!("[{tag} [{items}]]")
+            } else {
+                format!("{tag} [{items}]")
+            };
+            let mut text = format!("a: &a {list}\n");
+            for k in 0..aliases {
+                writeln!(text, "k{k}: *a").expect("a String");
+            }
+            text.push_str("server_appdata_path: /srv\n");
+            text
+        };
+        let mut generated = vec![tagged_bomb];
+        for tag in ["", "!unsafe"] {
+            for outer in [false, true] {
+                for aliases in [9, 10, 11] {
+                    generated.push(budget(tag, outer, aliases));
+                }
+            }
+        }
+        generated.push(
+            budget("", false, 0)
+                .replace("[x,", "!unsafe {m: [x,")
+                .replace(", x]", ", x]}"),
+        );
+        for text in cases
+            .iter()
+            .copied()
+            .chain(generated.iter().map(String::as_str))
+        {
+            assert_eq!(inventory_appdata(text), by_the_loader(text), "{text:.200?}");
+        }
+        assert!(by_the_loader(&bomb).is_err(), "the bomb trips the budget");
+        // The budget's edge: 10 copies of 10,000 nodes read, 11 refuse.
+        assert!(by_the_loader(&budget("", false, 10)).is_ok());
+        assert!(by_the_loader(&budget("", false, 11)).is_err());
+        assert!(by_the_loader(&budget("!unsafe", false, 11)).is_err());
+    }
+
+    /// Every case of sb-config's YAML corpus (`crates/config/tests/
+    /// yaml-corpus/cases`, the shapes Ansible's acceptance was checked on),
+    /// with and without `server_appdata_path` added, reads the same both
+    /// ways.
+    #[test]
+    fn the_yaml_corpus_reads_as_the_loader_reads_it() {
+        let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/tests/yaml-corpus/cases");
+        let mut read = 0;
+        for entry in std::fs::read_dir(cases).expect("the corpus") {
+            let path = entry.expect("an entry").path();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for text in [text.clone(), format!("server_appdata_path: /srv\n{text}")] {
+                assert_eq!(
+                    inventory_appdata(&text),
+                    by_the_loader(&text),
+                    "{}",
+                    path.display()
+                );
+            }
+            read += 1;
+        }
+        assert!(read > 50, "{read}");
+    }
+
+    /// The inventory follow-up's shape, larger: a long flat inventory with
+    /// its key last, read the same both ways.
+    #[test]
+    fn a_long_inventory_reads_as_the_loader_reads_it() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for i in 0..50_000 {
+            writeln!(text, "role_{i}: {{a: {i}, b: [x, y]}}").expect("a String");
+        }
+        text.push_str("server_appdata_path: /data\n");
+        assert_eq!(inventory_appdata(&text), Ok(Some("/data".to_string())));
+        assert_eq!(inventory_appdata(&text), by_the_loader(&text));
     }
 
     /// Depth is limited, never length: a 40 KB `- - - …` inventory, which

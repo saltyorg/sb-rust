@@ -465,8 +465,11 @@ fn document_marker(line: &[char]) -> Option<char> {
 /// Ansible's loader has no constructor for.
 pub fn prepare(text: &str) -> Result<Prepared, Refusal> {
     characters(text)?;
-    let rewritten = rewrite(text)?;
-    let mut prepared = if first_document_parses(text) {
+    // The scan runs either way (it refuses what libyaml refuses); its
+    // rewritten text is built only when saphyr can't read the original.
+    let parses = first_document_parses(text);
+    let rewritten = rewrite(text, !parses)?;
+    let mut prepared = if parses {
         Prepared {
             text: text.to_string(),
             pads: Vec::new(),
@@ -690,8 +693,10 @@ fn first_document_parses(text: &str) -> bool {
 }
 
 /// The pass itself: `text` padded and with tabs after a key's colon made
-/// spaces, or the first tab libyaml refuses.
-fn rewrite(text: &str) -> Result<Prepared, Refusal> {
+/// spaces, or the first tab libyaml refuses. Without `build`, only the
+/// scan runs: the text and its padding are left empty, and only its
+/// refusals and `eof_break` count.
+fn rewrite(text: &str, build: bool) -> Result<Prepared, Refusal> {
     let mut scan = Scan {
         within: Within::Tokens,
         indents: Vec::new(),
@@ -705,7 +710,7 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
         started: false,
         anchors: std::collections::HashMap::new(),
     };
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::with_capacity(if build { text.len() } else { 0 });
     let mut pads = Vec::new();
     let mut before = Vec::new();
     let mut total = 0;
@@ -713,8 +718,10 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
     // The first document ended at a `...` line.
     let mut after_end = false;
     let mut eof_break = false;
-    for (index, (line, end)) in lines(text).into_iter().enumerate() {
-        before.push(total);
+    for (index, (line, end)) in lines(text).enumerate() {
+        if build {
+            before.push(total);
+        }
         let mut chars: Vec<char> = line.chars().collect();
         // A byte order mark starts the stream, not a column (libyaml's
         // reader drops it).
@@ -748,16 +755,18 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
         if total + pad > PAD_BUDGET {
             pad = 0;
         }
-        pads.push(pad);
         total += pad;
-        if bom {
-            out.push('\u{feff}');
-        }
         // Only the last line has no break.
         eof_break = !done && end.is_empty() && added_break(&scan, &chars, index + 1);
-        out.extend(std::iter::repeat_n(' ', pad));
-        out.extend(chars);
-        out.push_str(end);
+        if build {
+            pads.push(pad);
+            if bom {
+                out.push('\u{feff}');
+            }
+            out.extend(std::iter::repeat_n(' ', pad));
+            out.extend(chars);
+            out.push_str(end);
+        }
     }
     Ok(Prepared {
         text: out,
@@ -771,23 +780,25 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
 }
 
 /// `text`'s lines, each with its line break (YAML's: `\r\n`, `\r` or
-/// `\n`; none at the end). Why not std's `str::lines`: it drops the break
-/// and doesn't break at a lone `\r`, which saphyr counts as a line.
-fn lines(text: &str) -> Vec<(&str, &str)> {
-    let mut out: Vec<(&str, &str)> = Vec::new();
-    for piece in text.split_inclusive(['\n', '\r']) {
-        // `\r\n` is one break: its `\n` comes as a piece of its own.
-        if piece == "\n"
-            && let Some(last) = out.last_mut()
-            && last.1 == "\r"
-        {
-            last.1 = "\r\n";
-            continue;
+/// `\n`; none at the end), one at a time. Why not std's `str::lines`: it
+/// drops the break and doesn't break at a lone `\r`, which saphyr counts
+/// as a line.
+fn lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
         }
-        let line = piece.trim_end_matches(['\n', '\r']);
-        out.push((line, &piece[line.len()..]));
-    }
-    out
+        let (line, end) = match rest.find(['\n', '\r']) {
+            Some(at) => {
+                let width = if rest[at..].starts_with("\r\n") { 2 } else { 1 };
+                (&rest[..at], &rest[at..at + width])
+            }
+            None => (rest, ""),
+        };
+        rest = &rest[line.len() + end.len()..];
+        Some((line, end))
+    })
 }
 
 /// What became of a line.
@@ -1334,13 +1345,49 @@ mod tests {
 
     /// The pass's rewrite, whether or not saphyr reads the text as it is.
     fn text(input: &str) -> String {
-        rewrite(input)
+        rewrite(input, true)
             .unwrap_or_else(|refusal| panic!("{input:?}: {refusal}"))
             .text
     }
 
     fn refused(input: &str) -> String {
         prepare(input).expect_err(input).to_string()
+    }
+
+    /// Lines keep their breaks: `\n`, `\r\n` and a lone `\r` (a line to
+    /// saphyr), none on a last line without one, nothing for no text.
+    #[test]
+    fn lines_keep_their_breaks() {
+        let all: Vec<_> = lines("a\nb\r\nc\rd\r\n\r\ne").collect();
+        assert_eq!(
+            all,
+            [
+                ("a", "\n"),
+                ("b", "\r\n"),
+                ("c", "\r"),
+                ("d", "\r\n"),
+                ("", "\r\n"),
+                ("e", "")
+            ]
+        );
+        assert_eq!(lines("x\n").collect::<Vec<_>>(), [("x", "\n")]);
+        assert_eq!(lines("\r").collect::<Vec<_>>(), [("", "\r")]);
+        assert_eq!(lines("").count(), 0);
+    }
+
+    /// A text saphyr reads as it is isn't rebuilt: the scan alone runs,
+    /// and still refuses what libyaml refuses.
+    #[test]
+    fn the_scan_alone_builds_nothing() {
+        let scanned = rewrite("a:\tb\nc: [\n 1]\n", false).expect("scans");
+        assert!(scanned.text.is_empty() && scanned.pads.is_empty() && scanned.before.is_empty());
+        let built = rewrite("a:\tb\nc: [\n 1]\n", true).expect("builds");
+        assert_eq!(built.text, "a: b\nc: [\n    1]\n");
+        assert_eq!(built.pads.len(), 3);
+        assert_eq!(
+            rewrite("a:\n\t- b\n", false).map(|_| ()),
+            rewrite("a:\n\t- b\n", true).map(|_| ())
+        );
     }
 
     /// The layouts saphyr refuses and libyaml accepts (config-H1): each
@@ -1685,7 +1732,7 @@ mod tests {
     #[test]
     fn padding_is_capped() {
         let input = format!("{}[\n{}]\n", " ".repeat(5000), "1,\n".repeat(1000));
-        let prepared = rewrite(&input).expect("prepares");
+        let prepared = rewrite(&input, true).expect("prepares");
         assert!(prepared.total <= PAD_BUDGET, "{}", prepared.total);
         assert!(prepared.total > PAD_BUDGET - 5002, "{}", prepared.total);
         assert_eq!(prepared.text.len(), input.len() + prepared.total);
@@ -2314,7 +2361,7 @@ mod tests {
         // 1024 continuation lines padded by 1024 fill it exactly; the
         // closing line's padding is over it.
         let input = format!("{}[\n{}]\n", " ".repeat(1023), "1,\n".repeat(1024));
-        let prepared = rewrite(&input).expect("prepares");
+        let prepared = rewrite(&input, true).expect("prepares");
         assert_eq!(prepared.total, PAD_BUDGET);
         assert!(prepared.text.ends_with("\n]\n"));
     }

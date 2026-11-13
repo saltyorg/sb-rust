@@ -395,3 +395,19 @@ reviews measured sb's start-up inventory read in a release build at
 12 s and 1.55 GB for 56 MB of `key: value` lines (about 30 times the
 file at the peak; 64 MB of bare line breaks took 3.1 GB). The time is
 linear in the file over the crafted shapes they tried.
+
+The module build's follow-up cut that cost, keeping no length cap: the
+pre-pass builds its rewritten text only when saphyr can't read the
+original and walks the lines one at a time, and the inventory read takes
+`server_appdata_path` from the parser's events, deciding duplicate keys
+and the alias budget as saphyr 0.3.3's loader does without building its
+tree (a test compares the two on the YAML corpus and on crafted cases).
+Measured the same way afterwards (release build, peak resident size):
+3.5 MB of `key: value` lines, 0.35 s and 16 MB; 56 MB of them, 5.9 s
+and 227 MB (887 MB before the change on the same file, about 4 times
+the file now); 64 MB of bare line breaks, 3.1 s and 126 MB. One shape
+costs as much as before: each anchored collection is copied whole when
+it ends, as the loader copies it for its aliases, so anchors nested
+inside each other grow with the square of their depth (2,500 nested in
+3.1 MB peaked at 1.48 GB with either read, the security review's
+measurement). No Saltbox inventory nests anchors.

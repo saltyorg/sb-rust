@@ -1494,6 +1494,12 @@ validate-config itself. In "Behaviour", a new bullet after "Steps":
 >   `Checks::Run`, so the paths never differ. It returns the issue count
 >   for the caller's log.
 
+*As built (M48; config spec, "One file"):* `step` is the file's own
+step, opened with `run::file_labels(file)`, so `sb edit` draws it at the
+top level. With issues the step fails with `run::Issues`, which carries
+the count (`Issues::count()`, read inside the step's body); the count is
+also in `check_file`'s "config file checked" log record.
+
 Project Structure gains: "`run.rs`: `check_file` and `validate_file`."
 Success criteria gain: "13. `check_file` and `validate_file` give the
 same issues for a file as `run` does (a test over the fixture sets), and
