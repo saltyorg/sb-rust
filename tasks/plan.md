@@ -234,6 +234,13 @@ Answers at the plan's approval (2026-11-11):
     follow it there (the reasoning of Difference 20: sb's order wins).
     The tied-times case Task 37's probe also showed is fwd-L4, dropped
     by the cut.
+34. **The mutation pass gets a per-test timeout** (the maintainer,
+    2026-11-13, from Task 38). A mutant that makes an iterator endless
+    hangs every test that consumes it, and the whole mutant times out,
+    which ADR-012 counts as not caught, though a bounded test failed at
+    once. cargo-mutants runs its tests under cargo-nextest with a
+    per-test terminate-after, so a hung test counts as failed: Task 56,
+    lane 4, with an ADR and a Tools row. Task 38 commits after it.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -342,7 +349,7 @@ lane's builds and gates capped at a quarter of the host
 | 1: text, process and display | 8-10, 12, 13, 17-21 | `crates/{term-ui,docker}`; cli-core's `exit.rs`, `log.rs`, `cancel.rs`; `crates/sb/src/main.rs` and sb's signal and log tests; exec's attached-signals test; the cli-core, exec, term-ui and docker specs |
 | 2: the journal reader | 27, 28, 32-34, 36-38 | `crates/journal`, `crates/host/src/journal.rs` and its tests, the journal spec |
 | 3: config | 42, 43, 46 | `crates/config`, cli-core's `config.rs`, new sb test files, the config spec |
-| 4: the glibc build (decision 31) | 53, 54 | `rust-toolchain.toml`, `deny.toml` (on main, alone), `CONSTRAINTS.md`, `scripts/check.sh` and the floor guard's tests, a build image, `crates/journal/tests/*.sh`, `.github/workflows/journal-matrix.yml` |
+| 4: the glibc build and the gate (decisions 31, 34) | 53, 54, 56 | `rust-toolchain.toml`, `deny.toml` (on main, alone), `CONSTRAINTS.md`, `scripts/check.sh` and the floor guard's tests, a build image, `crates/journal/tests/*.sh`, `.github/workflows/journal-matrix.yml` |
 
 A lane is sequential: its tasks share files (cli-core's `log.rs` and
 `cancel.rs`, term-ui's `runner.rs` and `tree.rs`, the journal's
@@ -503,6 +510,8 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ### Phase 5 (lane 4): the glibc build (decisions 29 and 31)
 - [x] Task 53: the production build links glibc, built on 22.04
 - [x] Task 54: the journal matrix builds in the same image
+
+- [ ] Task 56: the mutation pass times out per test (decision 34)
 
 ### Phase 6: the toolchain (decision 32)
 - [ ] Task 55: the toolchain pin moves to 1.100

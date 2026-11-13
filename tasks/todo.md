@@ -1285,6 +1285,58 @@ build host (ADR-020, decision 5).
 names the musl build
 **Scope:** S
 
+## Task 56: the mutation pass times out per test
+
+**Description:** cargo-mutants runs each mutant's tests under
+cargo-nextest with a per-test timeout, so a test that hangs on a mutant
+is ended and counted as a failure, and the mutant as caught (plan
+decision 34). Task 38 found the case: replacing `EntriesFwd::next`'s
+body with an endless `Some(Ok(0))` fails its bounded unit test at once,
+but about 30 other sb-journal tests loop until the 300 s mutant timeout,
+which the gate counts as not caught (ADR-012). Also takes the follow-up
+"check.sh's production `cross build` runs uncapped".
+
+**Acceptance criteria:**
+- [ ] check.sh's mutation passes run cargo-mutants with nextest as its
+      test tool (https://mutants.rs/nextest.html), with a nextest
+      profile whose `slow-timeout` ends a test after a set time
+      (https://nexte.st/docs/features/slow-tests/). The time is set from
+      the slowest test's measured duration with a stated margin, so a
+      test that passes on the unmutated tree is never ended. The
+      whole-mutant timeout stays as the backstop.
+- [ ] Nothing the old runner caught is lost: doc tests and anything
+      nextest doesn't run are named, and either still run or shown not
+      to catch mutants today. Tests that share process state (for
+      example a `static` lock across tests) are checked under nextest's
+      process-per-test model.
+- [ ] Task 38's two mutants (its diff is uncommitted in lane 2's
+      worktree) are caught under the new runner. Shown by applying that
+      diff in a scratch copy, not by committing it.
+- [ ] cargo-nextest joins CONSTRAINTS.md's Tools table at an exact pin,
+      installed on this host. An ADR (the next free number) records why
+      this doesn't weaken the bar, the alternatives (redundant caps in
+      code, an exception, counting timeouts as caught) and the timeout
+      chosen. ADR-012's timeout paragraph points to it.
+- [ ] check.sh's production `cross build` is capped through
+      `CROSS_CONTAINER_OPTS` (`--memory`, `--cpus`), as
+      `crates/journal/tests/example.sh` does; the follow-up is ticked.
+- [ ] The floor guard's acknowledgements, where it flags the change
+      (ADR-015).
+
+**Verification:**
+- [ ] `scripts/check.sh full <base>`, its mutation step run on a crate
+      change (a scratch edit, reverted) to show the new runner works;
+      the floor guard's own tests.
+- [ ] Review: one code-reviewer pass on the task's diff.
+
+**Dependencies:** none (lane 4). Its merge re-runs every open lane's full
+check (decision 30, a gate file).
+**Files:** `scripts/check.sh`, `scripts/floor-guard.test.mjs`,
+`scripts/floor-acknowledged.txt`, `.config/nextest.toml`,
+`CONSTRAINTS.md`, `docs/decisions/` (a new ADR, and ADR-012's pointer),
+`tasks/todo.md` (the follow-up's tick)
+**Scope:** M
+
 ## Task 55: the toolchain pin moves to 1.100
 
 **Description:** Move `rust-toolchain.toml` and `rust-version` from 1.99.1
