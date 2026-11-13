@@ -42,7 +42,9 @@ Rust libraries in place of sb-go's internals.
 4. **Fact editor:** keeps mouse support (crossterm mouse events mapped to
    ratatui layout areas).
 5. **Toolchain:** pinned stable Rust, edition 2024, in `rust-toolchain.toml`.
-   Bumping it is a deliberate change.
+   Bumping it is a deliberate change. 2024 is the latest stable edition
+   (checked 2026-11-13 on 1.99.1 and 1.100.0); revisit when a release
+   makes the next one stable.
 6. **Release binaries:** glibc builds for Linux amd64 and arm64 (Ubuntu,
    as sb-go checks today), built in an image of the oldest release on the
    host spec's runtime list (`ubuntu:22.04` today), so one binary runs on
