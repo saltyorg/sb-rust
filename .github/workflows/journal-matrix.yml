@@ -10,8 +10,9 @@
 #
 # GitHub disables scheduled workflows after 60 days without repository
 # activity. Builds aren't capped with systemd-run here (it needs root on a
-# runner); the runner is an ephemeral VM, and the containers keep their
-# --memory/--cpus caps.
+# runner); the runner is an ephemeral VM. The containers keep their
+# --memory/--cpus caps, the example's build in cross's container too
+# (example.sh).
 name: journal matrix
 
 on:
@@ -29,6 +30,8 @@ on:
       - ".github/workflows/journal-matrix.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "Cross.toml"
+      - "build/Dockerfile"
       - "rust-toolchain.toml"
   push:
     branches: [main]
@@ -37,6 +40,8 @@ on:
       - ".github/workflows/journal-matrix.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "Cross.toml"
+      - "build/Dockerfile"
       - "rust-toolchain.toml"
 
 permissions:
@@ -64,20 +69,31 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # Installs what rust-toolchain.toml pins (1.99.1, the musl target).
+      # Installs what rust-toolchain.toml pins (1.99.1, the gnu targets).
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
-      - name: Build (static musl)
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p sb-journal --features testing --example journal
+      # cross at its CONSTRAINTS.md Tools pin; the runner has Docker.
+      - name: cross
+        run: cargo install --locked cross --version 0.2.5
+      # The example as sb ships (ADR-020): glibc, built through cross in
+      # build/Dockerfile's ubuntu:22.04 image, so it runs on every
+      # supported release's container.
+      - name: Build (glibc, in the 22.04 image)
+        id: build
+        run: |
+          bin=$(crates/journal/tests/example.sh)
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
       - name: Clippy
         run: cargo clippy --locked -p sb-journal --all-targets -- -D warnings
       - name: Tests
         run: cargo test --locked -p sb-journal
       - name: Release rows
         id: releases
+        env:
+          BIN: ${{ steps.build.outputs.bin }}
         run: |
-          rows=$(target/x86_64-unknown-linux-musl/release/examples/journal releases)
+          rows=$("$BIN" releases)
           {
             echo "### Release rows"
             echo '| release | systemd |'
@@ -88,7 +104,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: sb-journal-example
-          path: target/x86_64-unknown-linux-musl/release/examples/journal
+          path: ${{ steps.build.outputs.bin }}
           retention-days: 7
 
   matrix:

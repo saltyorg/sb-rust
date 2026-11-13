@@ -21,29 +21,19 @@
 # Default: every row of rules.rs RELEASES (`journal releases`); IMAGE=RELEASE
 # runs another image under a row's rules, as compare.sh's canaries do.
 # Containers (sbj-stress-<image>, or $SBJ_PREFIX-stress-<image>) are
-# removed on exit. Needs Docker and the musl target.
+# removed on exit. Needs Docker, and cross unless SBJ_BIN is set
+# (example.sh builds the example in sb's build image).
 set -euo pipefail
 
-# SBJ_BIN names a binary built already (CI builds it once). It is resolved
-# before the cd below, so a relative path works too.
-if [ -n "${SBJ_BIN:-}" ]; then
-  if ! SBJ_BIN=$(realpath -e "$SBJ_BIN") || [ ! -x "$SBJ_BIN" ]; then
-    echo "SBJ_BIN is not an executable file" >&2
-    exit 2
-  fi
-fi
+# The example: SBJ_BIN, or a build in sb's build image (example.sh), before
+# the cd below, so a relative SBJ_BIN works too.
+# shellcheck source=example.sh
+. "$(dirname "$0")/example.sh"
+sbj_bin
 cd "$(dirname "$0")/../../.."
 releases=("$@")
 lines=${SBJ_STRESS_LINES:-20000}
 
-# Without SBJ_BIN, build it here, capped, as every heavy build and run here is.
-if [ -n "${SBJ_BIN:-}" ]; then
-  bin=$SBJ_BIN
-else
-  systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
-    cargo build -q --release --target x86_64-unknown-linux-musl -p sb-journal --features testing --example journal
-  bin=$PWD/target/x86_64-unknown-linux-musl/release/examples/journal
-fi
 [ ${#releases[@]} -gt 0 ] || mapfile -t releases < <("$bin" releases | cut -d' ' -f1)
 
 containers=()

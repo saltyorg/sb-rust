@@ -32,18 +32,16 @@
 #
 # Containers (sbj-compat-..., or $SBJ_PREFIX-compat-...) are removed on
 # exit; their files stay in target/journal-compat. Two runs in one tree
-# must not overlap: they share both.
-# Needs Docker and the musl target.
+# must not overlap: they share both. Needs Docker, and cross unless
+# SBJ_BIN is set (example.sh builds the example in sb's build image); the
+# host runs the example, so it needs 22.04's glibc or newer.
 set -euo pipefail
 
-# SBJ_BIN names a binary built already (CI builds it once). It is resolved
-# before the cd below, so a relative path works too.
-if [ -n "${SBJ_BIN:-}" ]; then
-  if ! SBJ_BIN=$(realpath -e "$SBJ_BIN") || [ ! -x "$SBJ_BIN" ]; then
-    echo "SBJ_BIN is not an executable file" >&2
-    exit 2
-  fi
-fi
+# The example: SBJ_BIN, or a build in sb's build image (example.sh), before
+# the cd below, so a relative SBJ_BIN works too.
+# shellcheck source=example.sh
+. "$(dirname "$0")/example.sh"
+sbj_bin
 cd "$(dirname "$0")/../../.."
 old=()
 new=()
@@ -55,14 +53,6 @@ done
 new=("$@")
 [ ${#old[@]} -gt 0 ] || old=(22.04 20.04 18.04)
 
-# Without SBJ_BIN, build it here, capped, as every heavy build and run here is.
-if [ -n "${SBJ_BIN:-}" ]; then
-  bin=$SBJ_BIN
-else
-  systemd-run --scope -q -p MemoryMax=4G -p CPUQuota=200% \
-    cargo build -q --release --target x86_64-unknown-linux-musl -p sb-journal --features testing --example journal
-  bin=$PWD/target/x86_64-unknown-linux-musl/release/examples/journal
-fi
 [ ${#new[@]} -gt 0 ] || mapfile -t new < <("$bin" releases | cut -d' ' -f1)
 checks=$PWD/crates/journal/tests/checks.sh
 work=$PWD/target/journal-compat
@@ -143,7 +133,10 @@ count_lines() { # identifier
 EOS
 }
 
-# Stage 1, in the old release's container: its files into /out.
+# Stage 1, in the old release's container: its files into /out, from the
+# export streams gen_exports writes into /out/gen. Nothing here runs the
+# example, which the older releases' glibc can't load (example.sh): stage 2
+# checks the files' integrity.
 # shellcheck disable=SC2317 # called through run
 produce() {
   setup
@@ -151,17 +144,14 @@ produce() {
 rel=$1
 echo "$rel (writer): $(journalctl --version | head -1)"
 mkdir -p /out/fx
-/sbj gen-export --entries 3000 > /tmp/in.export
 for variant in compressed:--compress=yes plain:--compress=no; do
   name=${variant%%:*}
-  "$remote" "${variant#*:}" --output="/out/fx/$name.journal" - < /tmp/in.export >/dev/null 2>&1 ||
+  "$remote" "${variant#*:}" --output="/out/fx/$name.journal" - < /out/gen/in.export >/dev/null 2>&1 ||
     bad "$name: journal-remote failed"
-  integrity "$rel $name" --file "/out/fx/$name.journal"
 done
 if [ "$rel" = 22.04 ]; then
   mkdir -p /out/stepback
-  /sbj gen-boot --boot cccccccccccccccccccccccccccccccc --prefix s --realtime-s 10,50,5,45 > /tmp/s.export
-  "$remote" --output=/out/stepback/stepback.journal - < /tmp/s.export >/dev/null 2>&1 ||
+  "$remote" --output=/out/stepback/stepback.journal - < /out/gen/s.export >/dev/null 2>&1 ||
     bad "stepback: journal-remote failed"
 fi
 systemd-machine-id-setup >/dev/null 2>&1
@@ -176,7 +166,6 @@ kill -TERM "$jpid"
 wait "$jpid" 2>/dev/null
 n=$(count_lines sb-old)
 [ "$n" = 300 ] || bad "old journald: $n of 300 lines in /var"
-integrity "$rel live journal" --directory /var/log/journal
 files /var/log/journal
 cp -a /var/log/journal /out/journal || bad "copy out the journal"
 # Last: stage 2 runs only for an old release whose machine id is there.
@@ -221,6 +210,7 @@ n=$(journalctl -D /mix -q -o export | grep -c '^__CURSOR=')
 # journald on top.
 cp /old/machine-id /etc/machine-id || bad "host: copy the machine id"
 mid=$(cat /etc/machine-id)
+integrity "$was live journal" --directory /old/journal
 mkdir -p /var/log/journal
 cp -a "/old/journal/$mid" /var/log/journal/ || bad "host: copy the old journal"
 # The old system.journal is already there, so start_journald's check
@@ -280,6 +270,15 @@ run() { # container image script args...
   docker exec -i "$c" bash -s -- "$@" < <("$script")
 }
 
+# Stage 1's export streams, written on the host: the example is built
+# against the oldest supported release's glibc (example.sh), which the
+# older releases' containers don't have.
+gen_exports() { # dir
+  mkdir -p "$1"
+  "$bin" gen-export --entries 3000 > "$1/in.export"
+  "$bin" gen-boot --boot cccccccccccccccccccccccccccccccc --prefix s --realtime-s 10,50,5,45 > "$1/s.export"
+}
+
 # Release numbers only: each names a directory the loop below deletes.
 for o in "${old[@]}"; do
   [[ $o =~ ^[0-9]+\.[0-9]+$ ]] || { echo "$o: not a release"; exit 2; }
@@ -289,6 +288,7 @@ status=0
 for o in "${old[@]}"; do
   rm -rf "${work:?}/$o"
   mkdir -p "$work/$o"
+  gen_exports "$work/$o/gen"
   mounts=(-v "$work/$o:/out")
   run "${SBJ_PREFIX:-sbj}-compat-${o/./}" "$o" produce "$o" || status=1
 done
