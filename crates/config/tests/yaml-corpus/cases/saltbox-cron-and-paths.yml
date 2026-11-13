@@ -1,0 +1,7 @@
+backup:
+  cron:
+    cron_time: "0 3 * * *"
+  local:
+    destination: /mnt/local/Backups/Saltbox
+  rclone:
+    destination: google:/Backups/Saltbox

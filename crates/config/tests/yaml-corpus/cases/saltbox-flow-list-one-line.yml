@@ -1,0 +1,4 @@
+traefik:
+  subdomains:
+    dash: dash
+  additional_domains: ["example.org", "example.net"]

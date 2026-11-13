@@ -1,0 +1,17 @@
+user:
+  name: seed
+  pass: "p@ss: word#1"
+  domain: example.com
+  email: user@example.com
+  ssh_key: ""
+cloudflare:
+  email: user@example.com
+  api:
+plex:
+  user: plexuser
+  pass: plexpass
+  tfa: no
+dockerhub:
+  user:
+  token:
+apprise:

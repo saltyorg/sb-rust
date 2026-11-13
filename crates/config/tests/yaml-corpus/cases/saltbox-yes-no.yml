@@ -1,0 +1,6 @@
+dns:
+  ipv4: yes
+  ipv6: no
+  proxied: on
+  other: off
+  flag: True

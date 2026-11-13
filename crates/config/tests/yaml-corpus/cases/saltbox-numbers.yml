@@ -1,0 +1,8 @@
+port: 22
+mode: 0755
+hex: 0x1F
+underscore: 1_000
+float: 1.5
+exp: 1e3
+version: 1.10
+big: 99999999999999999999

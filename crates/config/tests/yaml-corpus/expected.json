@@ -1,0 +1,1620 @@
+{
+ "cases": {
+  "double-quoted-escaped-newline": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "text",
+     "style": "double",
+     "text": "first second",
+     "value": [
+      "str",
+      "first second"
+     ]
+    }
+   ]
+  },
+  "double-quoted-multi-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "text",
+     "style": "double",
+     "text": "first second",
+     "value": [
+      "str",
+      "first second"
+     ]
+    }
+   ]
+  },
+  "double-quoted-multi-line-close-at-column-0": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "text",
+     "style": "double",
+     "text": "first second",
+     "value": [
+      "str",
+      "first second"
+     ]
+    }
+   ]
+  },
+  "error-bad-indent": {
+   "accepted": false,
+   "error": "did not find expected key at line 3, column 2"
+  },
+  "error-mapping-in-plain": {
+   "accepted": false,
+   "error": "mapping values are not allowed in this context at line 1, column 7"
+  },
+  "error-unclosed-flow": {
+   "accepted": false,
+   "error": "did not find expected ',' or ']' at line 2, column 1"
+  },
+  "error-unclosed-quote": {
+   "accepted": false,
+   "error": "found unexpected end of stream at line 2, column 1"
+  },
+  "flow-map-close-at-key-column": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "map.a",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    },
+    {
+     "path": "map.b",
+     "style": "plain",
+     "text": "2",
+     "value": [
+      "int",
+      "2"
+     ]
+    }
+   ]
+  },
+  "flow-map-empty-split": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "map",
+     "style": "map",
+     "text": "",
+     "value": [
+      "map",
+      ""
+     ]
+    }
+   ]
+  },
+  "flow-map-quoted-values-split": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "map.a",
+     "style": "double",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    },
+    {
+     "path": "map.b",
+     "style": "double",
+     "text": "y",
+     "value": [
+      "str",
+      "y"
+     ]
+    }
+   ]
+  },
+  "flow-nested-in-block-seq": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0][0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[0][1]",
+     "style": "plain",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "plain",
+     "text": "c",
+     "value": [
+      "str",
+      "c"
+     ]
+    }
+   ]
+  },
+  "flow-seq-close-at-key-column-after-nested": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0][0]",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    },
+    {
+     "path": "list[0][1]",
+     "style": "plain",
+     "text": "2",
+     "value": [
+      "int",
+      "2"
+     ]
+    },
+    {
+     "path": "list[1][0]",
+     "style": "plain",
+     "text": "3",
+     "value": [
+      "int",
+      "3"
+     ]
+    }
+   ]
+  },
+  "flow-seq-close-at-key-column-after-plain": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "plain",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "flow-seq-close-at-key-column-after-quoted": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0]",
+     "style": "double",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "double",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "flow-seq-close-indented": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "plain",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "flow-seq-close-left-of-key-column": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "outer.list[0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "outer.list[1]",
+     "style": "double",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "flow-seq-close-on-last-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "plain",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "flow-seq-empty-split": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list",
+     "style": "seq",
+     "text": "",
+     "value": [
+      "seq",
+      ""
+     ]
+    }
+   ]
+  },
+  "flow-seq-empty-split-indented": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list",
+     "style": "seq",
+     "text": "",
+     "value": [
+      "seq",
+      ""
+     ]
+    }
+   ]
+  },
+  "flow-seq-items-one-per-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0]",
+     "style": "double",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "double",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "multi-document": {
+   "accepted": false,
+   "error": "but found another document at line 2, column 1"
+  },
+  "plain-multi-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "text",
+     "style": "plain",
+     "text": "first second",
+     "value": [
+      "str",
+      "first second"
+     ]
+    }
+   ]
+  },
+  "saltbox-accounts": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "user.name",
+     "style": "plain",
+     "text": "seed",
+     "value": [
+      "str",
+      "seed"
+     ]
+    },
+    {
+     "path": "user.pass",
+     "style": "double",
+     "text": "p@ss: word#1",
+     "value": [
+      "str",
+      "p@ss: word#1"
+     ]
+    },
+    {
+     "path": "user.domain",
+     "style": "plain",
+     "text": "example.com",
+     "value": [
+      "str",
+      "example.com"
+     ]
+    },
+    {
+     "path": "user.email",
+     "style": "plain",
+     "text": "user@example.com",
+     "value": [
+      "str",
+      "user@example.com"
+     ]
+    },
+    {
+     "path": "user.ssh_key",
+     "style": "double",
+     "text": "",
+     "value": [
+      "str",
+      ""
+     ]
+    },
+    {
+     "path": "cloudflare.email",
+     "style": "plain",
+     "text": "user@example.com",
+     "value": [
+      "str",
+      "user@example.com"
+     ]
+    },
+    {
+     "path": "cloudflare.api",
+     "style": "plain",
+     "text": "",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "plex.user",
+     "style": "plain",
+     "text": "plexuser",
+     "value": [
+      "str",
+      "plexuser"
+     ]
+    },
+    {
+     "path": "plex.pass",
+     "style": "plain",
+     "text": "plexpass",
+     "value": [
+      "str",
+      "plexpass"
+     ]
+    },
+    {
+     "path": "plex.tfa",
+     "style": "plain",
+     "text": "no",
+     "value": [
+      "bool",
+      "false"
+     ]
+    },
+    {
+     "path": "dockerhub.user",
+     "style": "plain",
+     "text": "",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "dockerhub.token",
+     "style": "plain",
+     "text": "",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "apprise",
+     "style": "plain",
+     "text": "",
+     "value": [
+      "null",
+      ""
+     ]
+    }
+   ]
+  },
+  "saltbox-anchors": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "base.a",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    },
+    {
+     "path": "other.a",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    }
+   ]
+  },
+  "saltbox-announcements": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "announcements[0].date",
+     "style": "double",
+     "text": "2025-02-01",
+     "value": [
+      "str",
+      "2025-02-01"
+     ]
+    },
+    {
+     "path": "announcements[0].title",
+     "style": "double",
+     "text": "New defaults",
+     "value": [
+      "str",
+      "New defaults"
+     ]
+    },
+    {
+     "path": "announcements[0].message",
+     "style": "literal",
+     "text": "## What changed\n- Default network was updated.\n\n## Action required\nUpdate your overrides, then rerun `sb update`.\n",
+     "value": [
+      "str",
+      "## What changed\n- Default network was updated.\n\n## Action required\nUpdate your overrides, then rerun `sb update`.\n"
+     ]
+    },
+    {
+     "path": "announcements[0].migration.required",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "announcements[0].migration.tag",
+     "style": "plain",
+     "text": "migrate_database",
+     "value": [
+      "str",
+      "migrate_database"
+     ]
+    },
+    {
+     "path": "announcements[1].date",
+     "style": "double",
+     "text": "2025-04-06",
+     "value": [
+      "str",
+      "2025-04-06"
+     ]
+    },
+    {
+     "path": "announcements[1].title",
+     "style": "double",
+     "text": "Only for hosts with a folder",
+     "value": [
+      "str",
+      "Only for hosts with a folder"
+     ]
+    },
+    {
+     "path": "announcements[1].message",
+     "style": "double",
+     "text": "This only appears if the folder exists.",
+     "value": [
+      "str",
+      "This only appears if the folder exists."
+     ]
+    },
+    {
+     "path": "announcements[1].required_folder",
+     "style": "double",
+     "text": "/opt/some-app",
+     "value": [
+      "str",
+      "/opt/some-app"
+     ]
+    }
+   ]
+  },
+  "saltbox-block-scalars": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "literal",
+     "style": "literal",
+     "text": "line one\nline two\n",
+     "value": [
+      "str",
+      "line one\nline two\n"
+     ]
+    },
+    {
+     "path": "folded",
+     "style": "folded",
+     "text": "folded one folded two\n",
+     "value": [
+      "str",
+      "folded one folded two\n"
+     ]
+    },
+    {
+     "path": "keep",
+     "style": "literal",
+     "text": "kept\n\n",
+     "value": [
+      "str",
+      "kept\n\n"
+     ]
+    },
+    {
+     "path": "strip",
+     "style": "literal",
+     "text": "stripped",
+     "value": [
+      "str",
+      "stripped"
+     ]
+    }
+   ]
+  },
+  "saltbox-bom": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    }
+   ]
+  },
+  "saltbox-colon-in-plain": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "url",
+     "style": "plain",
+     "text": "http://example.com:8080/path",
+     "value": [
+      "str",
+      "http://example.com:8080/path"
+     ]
+    },
+    {
+     "path": "time",
+     "style": "plain",
+     "text": "12:30",
+     "value": [
+      "int",
+      "750"
+     ]
+    }
+   ]
+  },
+  "saltbox-comments": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    },
+    {
+     "path": "other",
+     "style": "double",
+     "text": "#not a comment",
+     "value": [
+      "str",
+      "#not a comment"
+     ]
+    }
+   ]
+  },
+  "saltbox-crlf": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    },
+    {
+     "path": "list[0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "plain",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "saltbox-cron-and-paths": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "backup.cron.cron_time",
+     "style": "double",
+     "text": "0 3 * * *",
+     "value": [
+      "str",
+      "0 3 * * *"
+     ]
+    },
+    {
+     "path": "backup.local.destination",
+     "style": "plain",
+     "text": "/mnt/local/Backups/Saltbox",
+     "value": [
+      "str",
+      "/mnt/local/Backups/Saltbox"
+     ]
+    },
+    {
+     "path": "backup.rclone.destination",
+     "style": "plain",
+     "text": "google:/Backups/Saltbox",
+     "value": [
+      "str",
+      "google:/Backups/Saltbox"
+     ]
+    }
+   ]
+  },
+  "saltbox-document-markers": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    }
+   ]
+  },
+  "saltbox-empty-values": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "restore_service",
+     "style": "map",
+     "text": "",
+     "value": [
+      "map",
+      ""
+     ]
+    },
+    {
+     "path": "list",
+     "style": "seq",
+     "text": "",
+     "value": [
+      "seq",
+      ""
+     ]
+    },
+    {
+     "path": "nothing",
+     "style": "plain",
+     "text": "",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "tilde",
+     "style": "plain",
+     "text": "~",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "null_word",
+     "style": "plain",
+     "text": "null",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "empty_string",
+     "style": "double",
+     "text": "",
+     "value": [
+      "str",
+      ""
+     ]
+    }
+   ]
+  },
+  "saltbox-flow-list-one-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "traefik.subdomains.dash",
+     "style": "plain",
+     "text": "dash",
+     "value": [
+      "str",
+      "dash"
+     ]
+    },
+    {
+     "path": "traefik.additional_domains[0]",
+     "style": "double",
+     "text": "example.org",
+     "value": [
+      "str",
+      "example.org"
+     ]
+    },
+    {
+     "path": "traefik.additional_domains[1]",
+     "style": "double",
+     "text": "example.net",
+     "value": [
+      "str",
+      "example.net"
+     ]
+    }
+   ]
+  },
+  "saltbox-flow-list-split": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "traefik.additional_domains[0]",
+     "style": "double",
+     "text": "example.org",
+     "value": [
+      "str",
+      "example.org"
+     ]
+    },
+    {
+     "path": "traefik.additional_domains[1]",
+     "style": "double",
+     "text": "example.net",
+     "value": [
+      "str",
+      "example.net"
+     ]
+    }
+   ]
+  },
+  "saltbox-flow-list-split-close-at-key": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "traefik.additional_domains[0]",
+     "style": "double",
+     "text": "example.org",
+     "value": [
+      "str",
+      "example.org"
+     ]
+    },
+    {
+     "path": "traefik.additional_domains[1]",
+     "style": "double",
+     "text": "example.net",
+     "value": [
+      "str",
+      "example.net"
+     ]
+    }
+   ]
+  },
+  "saltbox-indented-sequence": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "plain",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    },
+    {
+     "path": "nested[0][0]",
+     "style": "plain",
+     "text": "c",
+     "value": [
+      "str",
+      "c"
+     ]
+    },
+    {
+     "path": "nested[0][1]",
+     "style": "plain",
+     "text": "d",
+     "value": [
+      "str",
+      "d"
+     ]
+    }
+   ]
+  },
+  "saltbox-motd-colours": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "colors.text.app_name",
+     "style": "double",
+     "text": "#ff8800",
+     "value": [
+      "str",
+      "#ff8800"
+     ]
+    },
+    {
+     "path": "colors.text.label",
+     "style": "double",
+     "text": "#abc",
+     "value": [
+      "str",
+      "#abc"
+     ]
+    }
+   ]
+  },
+  "saltbox-motd-instances": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "sonarr[0].name",
+     "style": "plain",
+     "text": "Sonarr",
+     "value": [
+      "str",
+      "Sonarr"
+     ]
+    },
+    {
+     "path": "sonarr[0].url",
+     "style": "plain",
+     "text": "http://localhost:8989",
+     "value": [
+      "str",
+      "http://localhost:8989"
+     ]
+    },
+    {
+     "path": "sonarr[0].apikey",
+     "style": "plain",
+     "text": "abc123",
+     "value": [
+      "str",
+      "abc123"
+     ]
+    },
+    {
+     "path": "radarr.enabled",
+     "style": "plain",
+     "text": "false",
+     "value": [
+      "bool",
+      "false"
+     ]
+    },
+    {
+     "path": "radarr.instances[0].name",
+     "style": "plain",
+     "text": "Radarr 4K",
+     "value": [
+      "str",
+      "Radarr 4K"
+     ]
+    },
+    {
+     "path": "radarr.instances[0].url",
+     "style": "double",
+     "text": "http://localhost:7878",
+     "value": [
+      "str",
+      "http://localhost:7878"
+     ]
+    },
+    {
+     "path": "radarr.instances[0].apikey",
+     "style": "double",
+     "text": "def456",
+     "value": [
+      "str",
+      "def456"
+     ]
+    },
+    {
+     "path": "systemd.enabled",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "systemd.additional_services",
+     "style": "seq",
+     "text": "",
+     "value": [
+      "seq",
+      ""
+     ]
+    }
+   ]
+  },
+  "saltbox-nested-mappings": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "a",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    },
+    {
+     "path": "b",
+     "style": "plain",
+     "text": "2",
+     "value": [
+      "int",
+      "2"
+     ]
+    },
+    {
+     "path": "c",
+     "style": "plain",
+     "text": "3",
+     "value": [
+      "int",
+      "3"
+     ]
+    },
+    {
+     "path": "d.e",
+     "style": "plain",
+     "text": "4",
+     "value": [
+      "int",
+      "4"
+     ]
+    },
+    {
+     "path": "d.f.g",
+     "style": "plain",
+     "text": "5",
+     "value": [
+      "int",
+      "5"
+     ]
+    }
+   ]
+  },
+  "saltbox-no-final-newline": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    }
+   ]
+  },
+  "saltbox-numbers": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "port",
+     "style": "plain",
+     "text": "22",
+     "value": [
+      "int",
+      "22"
+     ]
+    },
+    {
+     "path": "mode",
+     "style": "plain",
+     "text": "0755",
+     "value": [
+      "int",
+      "493"
+     ]
+    },
+    {
+     "path": "hex",
+     "style": "plain",
+     "text": "0x1F",
+     "value": [
+      "int",
+      "31"
+     ]
+    },
+    {
+     "path": "underscore",
+     "style": "plain",
+     "text": "1_000",
+     "value": [
+      "int",
+      "1000"
+     ]
+    },
+    {
+     "path": "float",
+     "style": "plain",
+     "text": "1.5",
+     "value": [
+      "float",
+      "1.5"
+     ]
+    },
+    {
+     "path": "exp",
+     "style": "plain",
+     "text": "1e3",
+     "value": [
+      "str",
+      "1e3"
+     ]
+    },
+    {
+     "path": "version",
+     "style": "plain",
+     "text": "1.10",
+     "value": [
+      "float",
+      "1.1"
+     ]
+    },
+    {
+     "path": "big",
+     "style": "plain",
+     "text": "99999999999999999999",
+     "value": [
+      "int",
+      "99999999999999999999"
+     ]
+    }
+   ]
+  },
+  "saltbox-plain-date": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "date",
+     "style": "plain",
+     "text": "2025-02-01",
+     "value": [
+      "timestamp",
+      "2025-02-01"
+     ]
+    },
+    {
+     "path": "stamp",
+     "style": "plain",
+     "text": "2025-02-01 10:00:00",
+     "value": [
+      "timestamp",
+      "2025-02-01 10:00:00"
+     ]
+    }
+   ]
+  },
+  "saltbox-quoted-keys": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "quoted key",
+     "style": "plain",
+     "text": "1",
+     "value": [
+      "int",
+      "1"
+     ]
+    },
+    {
+     "path": "single key",
+     "style": "plain",
+     "text": "2",
+     "value": [
+      "int",
+      "2"
+     ]
+    }
+   ]
+  },
+  "saltbox-settings-remotes": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "rclone.enabled",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].remote",
+     "style": "plain",
+     "text": "google",
+     "value": [
+      "str",
+      "google"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.mount",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.template",
+     "style": "plain",
+     "text": "google",
+     "value": [
+      "str",
+      "google"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.union",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.upload",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.upload_from",
+     "style": "plain",
+     "text": "/mnt/local/Media",
+     "value": [
+      "str",
+      "/mnt/local/Media"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.vfs_cache.enabled",
+     "style": "plain",
+     "text": "false",
+     "value": [
+      "bool",
+      "false"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.vfs_cache.max_age",
+     "style": "plain",
+     "text": "504h",
+     "value": [
+      "str",
+      "504h"
+     ]
+    },
+    {
+     "path": "rclone.remotes[0].settings.vfs_cache.size",
+     "style": "plain",
+     "text": "50G",
+     "value": [
+      "str",
+      "50G"
+     ]
+    },
+    {
+     "path": "rclone.remotes[1].remote",
+     "style": "plain",
+     "text": "dropbox",
+     "value": [
+      "str",
+      "dropbox"
+     ]
+    },
+    {
+     "path": "rclone.remotes[1].settings.mount",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "rclone.remotes[1].settings.template",
+     "style": "plain",
+     "text": "dropbox",
+     "value": [
+      "str",
+      "dropbox"
+     ]
+    },
+    {
+     "path": "rclone.version",
+     "style": "plain",
+     "text": "latest",
+     "value": [
+      "str",
+      "latest"
+     ]
+    },
+    {
+     "path": "shell",
+     "style": "plain",
+     "text": "bash",
+     "value": [
+      "str",
+      "bash"
+     ]
+    }
+   ]
+  },
+  "saltbox-trailing-spaces": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    },
+    {
+     "path": "other",
+     "style": "plain",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    }
+   ]
+  },
+  "saltbox-unicode": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "name",
+     "style": "double",
+     "text": "café ✓",
+     "value": [
+      "str",
+      "café ✓"
+     ]
+    },
+    {
+     "path": "plain",
+     "style": "plain",
+     "text": "naïve",
+     "value": [
+      "str",
+      "naïve"
+     ]
+    }
+   ]
+  },
+  "saltbox-yes-no": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "dns.ipv4",
+     "style": "plain",
+     "text": "yes",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "dns.ipv6",
+     "style": "plain",
+     "text": "no",
+     "value": [
+      "bool",
+      "false"
+     ]
+    },
+    {
+     "path": "dns.proxied",
+     "style": "plain",
+     "text": "on",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "dns.other",
+     "style": "plain",
+     "text": "off",
+     "value": [
+      "bool",
+      "false"
+     ]
+    },
+    {
+     "path": "dns.flag",
+     "style": "plain",
+     "text": "True",
+     "value": [
+      "bool",
+      "true"
+     ]
+    }
+   ]
+  },
+  "single-quoted-blank-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "text",
+     "style": "single",
+     "text": "first\nsecond",
+     "value": [
+      "str",
+      "first\nsecond"
+     ]
+    }
+   ]
+  },
+  "single-quoted-multi-line": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "text",
+     "style": "single",
+     "text": "first second",
+     "value": [
+      "str",
+      "first second"
+     ]
+    }
+   ]
+  },
+  "tab-after-colon": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    }
+   ]
+  },
+  "tab-after-colon-in-nested": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "outer.key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    }
+   ]
+  },
+  "tab-after-dash": {
+   "accepted": false,
+   "error": "found character that cannot start any token at line 2, column 4"
+  },
+  "tab-before-comment": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "value",
+     "value": [
+      "str",
+      "value"
+     ]
+    }
+   ]
+  },
+  "tab-in-flow": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "list[0]",
+     "style": "plain",
+     "text": "a",
+     "value": [
+      "str",
+      "a"
+     ]
+    },
+    {
+     "path": "list[1]",
+     "style": "plain",
+     "text": "b",
+     "value": [
+      "str",
+      "b"
+     ]
+    }
+   ]
+  },
+  "tab-indented-nested": {
+   "accepted": false,
+   "error": "found character that cannot start any token at line 2, column 1"
+  },
+  "tab-indented-top-level": {
+   "accepted": false,
+   "error": "found character that cannot start any token at line 1, column 1"
+  },
+  "tab-inside-plain-value": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "key",
+     "style": "plain",
+     "text": "a\tb",
+     "value": [
+      "str",
+      "a\tb"
+     ]
+    }
+   ]
+  },
+  "tab-only-line": {
+   "accepted": false,
+   "error": "found a tab character that violates indentation at line 2, column 1"
+  },
+  "tab-then-spaces-indent": {
+   "accepted": false,
+   "error": "found character that cannot start any token at line 2, column 1"
+  }
+ },
+ "generator": "scripts/yaml-corpus.py",
+ "libyaml": "0.2.5",
+ "pyyaml": "6.0.3"
+}

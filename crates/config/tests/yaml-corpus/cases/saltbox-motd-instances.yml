@@ -1,0 +1,13 @@
+sonarr:
+  - name: Sonarr
+    url: http://localhost:8989
+    apikey: abc123
+radarr:
+  enabled: false
+  instances:
+    - name: Radarr 4K
+      url: "http://localhost:7878"
+      apikey: "def456"
+systemd:
+  enabled: true
+  additional_services: []

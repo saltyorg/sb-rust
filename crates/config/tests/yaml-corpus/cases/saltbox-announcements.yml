@@ -1,0 +1,17 @@
+announcements:
+  - date: "2025-02-01"
+    title: "New defaults"
+    message: |
+      ## What changed
+      - Default network was updated.
+
+      ## Action required
+      Update your overrides, then rerun `sb update`.
+    migration:
+      required: true
+      tag: migrate_database
+
+  - date: "2025-04-06"
+    title: "Only for hosts with a folder"
+    message: "This only appears if the folder exists."
+    required_folder: "/opt/some-app"

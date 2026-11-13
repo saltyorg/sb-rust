@@ -1,0 +1,4 @@
+outer:
+  list: [a,
+    "b"
+]

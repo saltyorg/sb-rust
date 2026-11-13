@@ -1,0 +1,20 @@
+rclone:
+  enabled: true
+  remotes:
+    - remote: google
+      settings:
+        mount: true
+        template: google
+        union: true
+        upload: true
+        upload_from: /mnt/local/Media
+        vfs_cache:
+          enabled: false
+          max_age: 504h
+          size: 50G
+    - remote: dropbox
+      settings:
+        mount: true
+        template: dropbox
+  version: latest
+shell: bash

@@ -1,0 +1,5 @@
+# A comment
+key: value # trailing
+# indented below
+  # comment
+other: "#not a comment"
