@@ -10,7 +10,8 @@
 # Scenarios, each with fresh followers started with `-n 0` and a marker
 # handshake (markers are written until both followers have printed one),
 # then numbered entries under the scenario's own identifier:
-#   flush     volatile journald, then /var/log/journal and a flush mid-stream
+#   flush     volatile journald, then /var/log/journal and a flush mid-stream,
+#             the entries just before it one burst (follow-M1)
 #   flush-var the same, /var/log/journal there (empty) before the followers
 #   paced     entries 20 ms apart; latency = receipt - __REALTIME_TIMESTAMP
 #   burst     entries written back to back from one process
@@ -34,6 +35,17 @@
 #   during    sb-journal only: filtered pages taken while a writer runs,
 #             each followed from its end at once; 5 rounds of 20, each entry
 #             once
+# A second container per release has /run/log on tmpfs, as /run is on a
+# host, so journald removes /run's file after a flush (the first one's
+# overlayfs keeps it): there flush, then during-tmpfs, one `during` round
+# that flushes a volatile journald to /var midway, with followers started
+# before /var/log/journal exists (follow-M1; docs/platform-notes/
+# libsystemd-reader.md saw libsystemd's readers lose entries there). The
+# flushed round is tmpfs-only: on overlayfs 255 keeps the /run file, and
+# its flush copies carry /run's seqnum id with higher seqnums, so a page
+# taken after the flush shows them twice, as `journalctl -n` 255 does (the
+# page matches journalctl, the plan's decision 12). On a host /run is
+# tmpfs and the file goes (decision 18).
 # Each follower's numbered entries are counted: lost (a number missing)
 # and duplicated (a number printed twice), plus its CPU time. sb-journal
 # must lose and double nothing (journal spec, Difference 2 and "Starting a
@@ -78,10 +90,12 @@ inner() {
 set -u -o pipefail
 rel=$1
 image=$2
+# all: every scenario; tmpfs: the flush ones, /run/log being a tmpfs.
+mode=${3:-all}
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
 apt-get install -y -qq systemd >/dev/null 2>&1
-echo "$image ($rel rules): $(journalctl --version | head -1)"
+echo "$image ($rel rules, /run/log on $(stat -f -c %T /run/log 2>/dev/null || stat -f -c %T /run)): $(journalctl --version | head -1)"
 systemd-machine-id-setup >/dev/null 2>&1
 mid=$(cat /etc/machine-id)
 for jd in /usr/lib/systemd/systemd-journald /lib/systemd/systemd-journald; do
@@ -146,6 +160,34 @@ followers() {
   bad "$tag: followers never got ready"
 }
 
+# After a flush: /run's system.journal is gone when /run/log/journal is a
+# temporary file system, as on a host (the tmpfs container). In the first
+# container it is overlayfs, where journald's rm_rf refuses a disk file
+# system without REMOVE_PHYSICAL (src/shared/rm-rf.c, `is_physical_fs`,
+# v249 and v259): 22.04 keeps the file there, so only its state is
+# printed.
+flushed() {
+  local run="/run/log/journal/$mid/system.journal" fs
+  fs=$(stat -f -c %T /run/log/journal)
+  # The tmpfs container must be on tmpfs, or it repeats the first run.
+  [ "$mode" = tmpfs ] && [ "$fs" != tmpfs ] && bad "$1: /run/log is on ${fs:-?}, not tmpfs"
+  if [ "$fs" = tmpfs ] || [ "$fs" = ramfs ]; then
+    [ -f "$run" ] && bad "$1: /run's system.journal still there after the flush"
+  else
+    printf '  %s: /run on %s; its system.journal %s after the flush\n' \
+      "$1" "$fs" "$([ -f "$run" ] && echo kept || echo removed)"
+  fi
+  return 0
+}
+# journald restarted volatile: no /var/log/journal, no flushed flag.
+volatile() {
+  stop_jd TERM
+  rm -rf /var/log/journal /run/log/journal /run/systemd/journal/flushed
+  start_jd
+  [ -f "/run/log/journal/$mid/system.journal" ] || bad "$1: journald didn't start volatile"
+  [ -e /var/log/journal ] && bad "$1: /var/log/journal is there before the page"
+}
+
 # Wait until both have entry $1 (or 10 s), stop them, count. $2: scenario.
 finish() {
   last=$1 name=$2
@@ -199,12 +241,20 @@ mkdir -p /w && cd /w || exit 2
 rm -rf /var/log/journal /run/log/journal
 start_jd
 : > written; followers sbf-flush
-write 1 100
+write 1 50
+# The last before the flush one burst (one stamp, follow-M1), shown
+# before the flush copies it.
+write 51 100 burst
+in_journal "$tag" 100 "follow "
+for _ in $(seq 1 50); do grep -q "\"MESSAGE\":\"follow 100\"" fa.all && break; sleep 0.1; done
 mkdir -p /var/log/journal
 journalctl --flush >/dev/null 2>&1 || bad "flush"
 [ -f "/var/log/journal/$mid/system.journal" ] || bad "flush: no persistent system.journal"
+flushed flush
 write 101 200
 finish 200 flush
+
+if [ "$mode" = all ]; then
 
 # flush-var: the same, with an empty /var/log/journal there before the
 # followers start, so both watch it (journalctl doesn't watch a missing
@@ -364,31 +414,9 @@ between sbf-between-empty 10 0 between-empty
 between sbf-between-rotate 5 20 between-rotate rotate
 # The flush: journald volatile again (no /var/log/journal, no flushed
 # flag), so the page reads /run's file and the flush removes it.
-# After a flush: /run's system.journal is gone when /run/log/journal is a
-# temporary file system, as on a host. In the containers it is overlayfs,
-# where journald's rm_rf refuses a disk file system without REMOVE_PHYSICAL
-# (src/shared/rm-rf.c, `is_physical_fs`, v249 and v259): 22.04 keeps the
-# file there, so only its state is printed.
-flushed() {
-  local run="/run/log/journal/$mid/system.journal" fs
-  fs=$(stat -f -c %T /run/log/journal)
-  if [ "$fs" = tmpfs ] || [ "$fs" = ramfs ]; then
-    [ -f "$run" ] && bad "$1: /run's system.journal still there after the flush"
-  else
-    printf '  %s: /run on %s; its system.journal %s after the flush\n' \
-      "$1" "$fs" "$([ -f "$run" ] && echo kept || echo removed)"
-  fi
-  return 0
-}
-volatile() {
-  stop_jd TERM
-  rm -rf /var/log/journal /run/log/journal /run/systemd/journal/flushed
-  start_jd
-  [ -f "/run/log/journal/$mid/system.journal" ] || bad "$1: journald didn't start volatile"
-  [ -e /var/log/journal ] && bad "$1: /var/log/journal is there before the page"
-}
 volatile between-flush
 between sbf-between-flush 5 20 between-flush flush
+fi
 
 # during: $1 the identifier, $2 the rounds, $3 the pages a round. Each
 # round starts a writer of 5000 entries ("follow N", numbered on from the
@@ -397,11 +425,13 @@ between sbf-between-flush 5 20 between-flush flush
 # from its end at once (journal spec decision 13). Over each page and its
 # follow, every one of the round's entries must show once. Many pages, as
 # the race (an entry linked between a page's first header read and its
-# lookup) has a window of a fraction of a millisecond.
+# lookup) has a window of a fraction of a millisecond. Round $5, if given,
+# starts from a volatile journald and flushes it to /var halfway through.
 during() {
-  tag=$1 rounds=$2 pages=$3 name=$4
+  tag=$1 rounds=$2 pages=$3 name=$4 flush_round=${5:-0}
   : > go
   for r in $(seq 1 "$rounds"); do
+    [ "$r" = "$flush_round" ] && volatile "$name: round $r"
     : > written; rm -f fa.*.all fa.*.err
     lo=$(( (r - 1) * 5000 + 1 )) hi=$(( r * 5000 ))
     {
@@ -416,6 +446,16 @@ during() {
       /sbj follow --release "$rel" --match "SYSLOG_IDENTIFIER=$tag" -n 100000 --wait-for go > "fa.$p.all" 2>"fa.$p.err" &
       pids+=($!)
       sleep 0.02
+      # One round flushes the volatile journal to /var halfway through its
+      # pages: the follows of the pages before it find /var's file new and
+      # drop the copies of what their pages showed past their newest entry
+      # (the plan's decision 26), and of the burst at it or the bursts they
+      # showed (follow-M1, Task 39).
+      if [ "$r" = "$flush_round" ] && [ "$p" = $(( pages / 2 )) ]; then
+        mkdir -p /var/log/journal
+        journalctl --flush >/dev/null 2>&1 || bad "$name: round $r: flush"
+        flushed "$name: round $r"
+      fi
     done
     wait "$w"
     for p in $(seq 1 "$pages"); do
@@ -443,7 +483,11 @@ during() {
   done
   return 0
 }
-during sbf-during 5 20 during
+if [ "$mode" = all ]; then
+  during sbf-during 5 20 during
+else
+  during sbf-during-tmpfs 1 20 during-tmpfs 1
+fi
 find /var/log/journal /run/log/journal -name '*.journal*' 2>/dev/null | sed 's/^/  file: /'
 exit $fail
 EOS
@@ -463,5 +507,11 @@ for arg in "${releases[@]}"; do
   docker rm -f "$c" >/dev/null 2>&1 || true
   docker run -d --name "$c" --memory 4g --cpus 2 -v "$bin:/sbj:ro" "ubuntu:$image" sleep 3600 >/dev/null
   docker exec -i "$c" bash -s -- "$rel" "$image" < <(inner) || status=1
+  # The flush scenarios again with /run/log on tmpfs, as on a host.
+  c=$c-tmpfs
+  containers+=("$c")
+  docker rm -f "$c" >/dev/null 2>&1 || true
+  docker run -d --name "$c" --memory 4g --cpus 2 --tmpfs /run/log -v "$bin:/sbj:ro" "ubuntu:$image" sleep 3600 >/dev/null
+  docker exec -i "$c" bash -s -- "$rel" "$image" tmpfs < <(inner) || status=1
 done
 exit $status

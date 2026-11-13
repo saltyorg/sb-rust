@@ -71,7 +71,11 @@ two ways:
   - 255's flush gives the copies the runtime file's seqnum id with new,
     higher seqnums, so sd-journal's order calls them newer. When
     `/var/log/journal` exists before it starts, `journalctl -f` 255 then
-    prints each flushed entry twice.
+    prints each flushed entry twice. Where the /run file stays after the
+    flush (a container's overlayfs /run; on a host /run is tmpfs and
+    journald removes it), sb's page shows the flushed entries twice on
+    255 (follow.sh, 2026-11-13). Its merge is `journalctl -n`'s loop, so
+    by the same order journalctl does too (read from the code, not run).
 - **New objects:** journald raises the header's `arena_size` before it
   writes a new object's header and links it (`journal_file_append_object`
   calls `journal_file_allocate` first; journal-file.c at the v249, v255

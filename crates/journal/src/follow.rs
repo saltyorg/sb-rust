@@ -34,7 +34,7 @@ use crate::{
     ReadErrorKind, ReadErrors, Record, Roots,
 };
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, OsStr};
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
@@ -48,6 +48,92 @@ use std::path::{Path, PathBuf};
 struct Last {
     location: Cursor,
     dir: Option<PathBuf>,
+    /// The entries at `location`'s stamp taken as shown, `location` among
+    /// them: those the follow showed, and at its start every entry of the
+    /// page's newest's directory at that stamp (`Burst::page_end`).
+    burst: Burst,
+}
+
+/// The identities of the entries shown at one stamp (boot, monotonic and
+/// realtime times): one burst at most, started again when the stamp moves
+/// on (`took`). journald stamps every entry of one event-loop pass alike
+/// (`sd_event_now`), so a flush's copies of a burst differ from each
+/// other only by their XOR hashes, and each is checked against them all,
+/// not only against the newest (follow-M1). The stamp once and the
+/// hashes, at most `BURST_MAX`.
+#[derive(Debug, Clone, Default)]
+struct Burst {
+    stamp: Option<Cursor>,
+    xors: HashSet<u64>,
+}
+
+/// The most XOR hashes a follow keeps of one burst, about 512 KiB, and the
+/// most entries `Burst::page_end` walks back. journald's stream reads give
+/// a few thousand entries at one stamp; past this, a flush's copies of the
+/// rest are shown again, which only a crafted file can cause.
+const BURST_MAX: usize = 65_536;
+
+/// Whether two entries have one journald stamp: the same boot and the
+/// same monotonic and realtime times.
+fn same_stamp(a: &Cursor, b: &Cursor) -> bool {
+    a.boot_id == b.boot_id && a.monotonic == b.monotonic && a.realtime == b.realtime
+}
+
+impl Burst {
+    /// One entry's burst.
+    fn of(c: Cursor) -> Self {
+        let mut b = Self::default();
+        b.took(c);
+        b
+    }
+
+    /// Add `file`'s entries at the burst's stamp: walked back from its
+    /// newest, past entries newer than the stamp (written since the page),
+    /// to the first one older or of another boot. Unfiltered, as a follow
+    /// drops a copy before matching it. An entry that can't be read is
+    /// passed over (the follow's read reports it); at most `BURST_MAX`
+    /// entries are read.
+    fn page_end(&mut self, file: &JournalFile) {
+        let Some(stamp) = self.stamp else { return };
+        for r in file.all_entries_rev().take(BURST_MAX) {
+            let Ok(e) = r.and_then(|off| file.entry(off)) else {
+                continue;
+            };
+            let l = walk::location(file, &e);
+            if self.at_stamp(&l) {
+                self.add(l.xor_hash);
+            } else if l.boot_id != stamp.boot_id || l.monotonic <= stamp.monotonic {
+                return;
+            }
+        }
+    }
+
+    /// `c` was just shown: one more of the burst at its stamp, or the
+    /// first of a new one.
+    fn took(&mut self, c: Cursor) {
+        if !self.at_stamp(&c) {
+            self.stamp = Some(c);
+            self.xors.clear();
+        }
+        self.add(c.xor_hash);
+    }
+
+    fn add(&mut self, xor: u64) {
+        if self.xors.len() < BURST_MAX {
+            self.xors.insert(xor);
+        }
+    }
+
+    /// Whether `l` has the burst's stamp.
+    fn at_stamp(&self, l: &Cursor) -> bool {
+        self.stamp.as_ref().is_some_and(|s| same_stamp(s, l))
+    }
+
+    /// Whether `l` has the identity of one of the burst's entries (boot,
+    /// monotonic and realtime stamps, XOR hash), as a flush copies it.
+    fn has(&self, l: &Cursor) -> bool {
+        self.at_stamp(l) && self.xors.contains(&l.xor_hash)
+    }
 }
 
 impl Last {
@@ -250,6 +336,7 @@ impl Follow {
             last: from.newest.as_ref().map(|(location, dir)| Last {
                 location: *location,
                 dir: dir.clone(),
+                burst: Burst::of(*location),
             }),
             pending,
             shown: from.shown.clone(),
@@ -259,6 +346,16 @@ impl Follow {
             #[cfg(test)]
             held_peak: 0,
         };
+        // The burst the page ended at: the entries at its newest's stamp
+        // in that entry's directory (follow-M1), read once here rather
+        // than by every page.
+        if let Some(l) = follow.last.as_mut() {
+            for f in &follow.files {
+                if l.in_dir_of(&f.file) {
+                    l.burst.page_end(&f.file);
+                }
+            }
+        }
         let boots = follow.boots();
         let last = follow.last.as_ref();
         for f in &mut follow.files {
@@ -459,7 +556,13 @@ impl Follow {
             streams.push(candidates);
         }
         let dirs: Vec<Option<&Path>> = self.files.iter().map(|f| f.file.path.parent()).collect();
-        let picked = merge(&streams, |a, b| dirs[a] == dirs[b], &boots);
+        // Taken for the merge, and given back with what it took.
+        let burst = self
+            .last
+            .as_mut()
+            .map(|l| std::mem::take(&mut l.burst))
+            .unwrap_or_default();
+        let (picked, burst) = merge(&streams, |a, b| dirs[a] == dirs[b], &boots, burst);
         let out: Vec<Record> = picked
             .iter()
             .filter_map(|c| decoded.remove(&(c.file, c.offset)))
@@ -468,7 +571,10 @@ impl Follow {
             self.last = Some(Last {
                 location: c.location,
                 dir: dirs[c.file].map(Path::to_path_buf),
+                burst,
             });
+        } else if let Some(l) = self.last.as_mut() {
+            l.burst = burst;
         }
         self.files.retain(Followed::keep);
         Batch {
@@ -758,7 +864,7 @@ impl Followed {
     ) -> Result<Option<(Candidate, Record)>, ReadError> {
         let e = self.file.entry_before(off, end)?;
         let location = walk::location(&self.file, &e);
-        let shown = |l: &Last| seen(&location, &l.location, same_dir, read.boots);
+        let shown = |l: &Last| seen(&location, &l.location, &l.burst, same_dir, read.boots);
         // The first entry newer than the last shown ends a new file's
         // leading copies, whether it matches or not.
         if self.copies == Copies::Leading && !read.last.is_some_and(shown) {
@@ -795,12 +901,16 @@ impl Followed {
 /// it, and splits a long line into entries with equal times and hash) are
 /// all shown, as journalctl shows them. From another directory: `is_old`,
 /// which drops a flush's copies; a flush always crosses roots (/run to
-/// /var). When `last`'s directory is unknown, `is_old`.
-fn seen(l: &Cursor, last: &Cursor, same_dir: bool, boots: &BootOrder) -> bool {
+/// /var). When `last`'s directory is unknown, `is_old`, and a copy of
+/// any entry of `last`'s `burst` is old too: journald stamps a burst
+/// alike, so `is_old` alone would take only `last`'s own copy for one
+/// (follow-M1). Not within the directory, where entries with equal times
+/// and hash are all journalctl's to show.
+fn seen(l: &Cursor, last: &Cursor, burst: &Burst, same_dir: bool, boots: &BootOrder) -> bool {
     if same_dir {
         !l.order(last, boots).is_gt()
     } else {
-        is_old(l, last, boots)
+        is_old(l, last, boots) || burst.has(l)
     }
 }
 
@@ -835,7 +945,13 @@ fn first_new(file: &JournalFile, last: Option<&Last>, boots: &BootOrder) -> u64 
         let Some(e) = r.ok().and_then(|off| file.entry(off).ok()) else {
             continue;
         };
-        if seen(&walk::location(file, &e), &last.location, same_dir, boots) {
+        if seen(
+            &walk::location(file, &e),
+            &last.location,
+            &last.burst,
+            same_dir,
+            boots,
+        ) {
             return entries.index() + 1;
         }
     }
@@ -874,6 +990,10 @@ fn is_old(l: &Cursor, last: &Cursor, boots: &BootOrder) -> bool {
 /// `kmerge_by`: its heap needs a transitive order and has no tie rule
 /// (`walk::Merge` spells out the same loop for the page).
 ///
+/// `burst` is the last poll's (`Last::burst`), extended by each entry
+/// taken and returned; it is checked from the second head on, as the
+/// first is checked against the last poll's entry in `read_entry`.
+///
 /// `same_dir` tells whether two candidates' files (by index) share a
 /// directory. Within one, the skip is sd-journal's not-beyond rule, as
 /// `journalctl -f` goes on with `sd_journal_next`. Across directories it is
@@ -887,7 +1007,8 @@ fn merge(
     streams: &[Vec<Candidate>],
     same_dir: impl Fn(usize, usize) -> bool,
     boots: &BootOrder,
-) -> Vec<Candidate> {
+    mut burst: Burst,
+) -> (Vec<Candidate>, Burst) {
     // One position per stream; the head of stream `i` is streams[i][pos[i]].
     let mut pos = vec![0usize; streams.len()];
     let mut out: Vec<Candidate> = Vec::new();
@@ -898,6 +1019,7 @@ fn merge(
                     seen(
                         &h.location,
                         &last.location,
+                        &burst,
                         same_dir(h.file, last.file),
                         boots,
                     )
@@ -918,9 +1040,10 @@ fn merge(
                 best = Some(i);
             }
         }
-        let Some(b) = best else { return out };
+        let Some(b) = best else { return (out, burst) };
         let next = streams[b][pos[b]].clone();
         pos[b] += 1;
+        burst.took(next.location);
         out.push(next);
     }
 }
@@ -1567,7 +1690,9 @@ mod tests {
             &in_files(vec![run, var, other]),
             |a, b| a == b,
             &BootOrder::none(),
-        );
+            Burst::default(),
+        )
+        .0;
         let got: Vec<(u8, u64)> = out
             .iter()
             .map(|r| (r.location.seqnum_id[0], r.location.realtime))
@@ -1591,7 +1716,7 @@ mod tests {
         assert!(z.location.order(&x.location, &none).is_lt());
         for one_dir in [false, true] {
             let streams = in_files(vec![vec![y.clone()], vec![z.clone()], vec![x.clone()]]);
-            let out = merge(&streams, |a, b| one_dir || a == b, &none);
+            let (out, _) = merge(&streams, |a, b| one_dir || a == b, &none, Burst::default());
             let got: Vec<u64> = out.iter().map(|r| r.location.realtime).collect();
             assert_eq!(got, vec![300, 100], "one directory: {one_dir}");
         }
@@ -2420,6 +2545,125 @@ mod tests {
         let more = [(4, 10), (5, 20), (6, 30), (7, 40), (8, 50)];
         journal_in(format, &var.join("system.journal"), 1, &more, 5);
         assert_eq!(seqnums(&woken(&mut f).records), [8]);
+    }
+
+    /// Give `journal_in`'s entries of `path` (`len` of them) the XOR hashes
+    /// `xors`, in order: journald's one stamp for a burst leaves them, and
+    /// the boot, as what tells the burst's entries apart.
+    fn set_xors(format: Format, path: &Path, len: usize, xors: &[u64]) {
+        let mut b = std::fs::read(path).expect("read");
+        for (k, x) in xors.iter().enumerate() {
+            let at = entry_at_in(format, len, k) + 56;
+            b[at..at + 8].copy_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(path, &b).expect("write");
+    }
+
+    /// The cursors' seqnum ids and seqnums, telling /run's from /var's.
+    fn ids(r: &[Record]) -> Vec<(u8, u64)> {
+        r.iter()
+            .map(|r| (r.cursor().seqnum_id[0], r.cursor().seqnum))
+            .collect()
+    }
+
+    /// follow-M1: journald stamps every entry of one event-loop pass with
+    /// the same times, so a burst's entries differ only by their XOR
+    /// hashes. /run holds four such entries, all shown; the flush writes
+    /// their copies (another seqnum id, as 249 writes them) and a new
+    /// entry to /var. Only the new one is shown, not the burst again.
+    #[test]
+    fn a_flushed_burst_the_follow_showed_is_not_shown_again() {
+        each_format(a_flushed_burst_the_follow_showed_is_not_shown_again_in);
+    }
+
+    fn a_flushed_burst_the_follow_showed_is_not_shown_again_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        for root in ["run", "var"] {
+            std::fs::create_dir(dir.path().join(root)).expect("root");
+        }
+        let run = dir.path().join("run/system.journal");
+        let var = dir.path().join("var/system.journal");
+        let burst = [(1, 10), (2, 10), (3, 10), (4, 10)];
+        journal_in(format, &run, 1, &burst, 0);
+        set_xors(format, &run, 4, &[1, 2, 3, 4]);
+        let mut f = T::of(std::slice::from_ref(&run));
+        set_n(&run, 4);
+        assert_eq!(ids(&f.poll(&[])), [(1, 1), (1, 2), (1, 3), (1, 4)]);
+        let copies = [(11, 10), (12, 10), (13, 10), (14, 10), (15, 20)];
+        journal_in(format, &var, 2, &copies, 5);
+        set_xors(format, &var, 5, &[1, 2, 3, 4, 5]);
+        f.rescan(&[run.clone(), var.clone()]);
+        let first = f.poll(&[]);
+        let second = f.poll(&[]);
+        assert_eq!((ids(&first), ids(&second)), (vec![(2, 15)], vec![]));
+        assert!(f.errors.is_empty(), "{:?}", f.errors);
+    }
+
+    /// follow-M1 from a page: the page read a journal whose newest entries
+    /// are one burst (the page's end `newest` the last of them), and its
+    /// follow has shown nothing yet when the flush writes their copies and
+    /// a new entry to /var. Only the new one is shown.
+    #[test]
+    fn a_flushed_burst_the_page_ended_at_is_not_shown_again() {
+        each_format(a_flushed_burst_the_page_ended_at_is_not_shown_again_in);
+    }
+
+    fn a_flushed_burst_the_page_ended_at_is_not_shown_again_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        let (host, run, var) = local(dir.path());
+        let run_file = run.join("system.journal");
+        let burst = [(1, 10), (2, 10), (3, 10), (4, 10)];
+        journal_in(format, &run_file, 1, &burst, 4);
+        set_xors(format, &run_file, 4, &[1, 2, 3, 4]);
+        let journal_ = Journal::open_on(Source::Local, &release("26.04"), &host).expect("opens");
+        let limits = crate::Limits::default();
+        let q = crate::Query::every();
+        let page = journal_.page(&q, &crate::Position::Tail, 10, &limits);
+        assert_eq!(seqnums(&page.records), [1, 2, 3, 4]);
+        let (mut f, first) = journal_.follow(q, &page.end, &limits).expect("follows");
+        assert!(first.records.is_empty(), "{:?}", first.records);
+        std::fs::create_dir(&var).expect("var's directory");
+        let var_file = var.join("system.journal");
+        let copies = [(11, 10), (12, 10), (13, 10), (14, 10), (15, 20)];
+        journal_in(format, &var_file, 2, &copies, 5);
+        set_xors(format, &var_file, 5, &[1, 2, 3, 4, 5]);
+        let batch = woken(&mut f);
+        assert_eq!(ids(&batch.records), [(2, 15)]);
+        assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    }
+
+    /// follow-M1 across a poll: the follow has shown half a burst when the
+    /// rest of it and the flush's copies (under /run's seqnum id with
+    /// higher seqnums, 255's flush) are read in one poll. The copies of the
+    /// half already shown, and of the rest, are each dropped: every entry
+    /// is shown once.
+    #[test]
+    fn a_burst_half_shown_before_its_flush_shows_once() {
+        each_format(a_burst_half_shown_before_its_flush_shows_once_in);
+    }
+
+    fn a_burst_half_shown_before_its_flush_shows_once_in(format: Format) {
+        let dir = tempfile::tempdir().expect("dir");
+        for root in ["run", "var"] {
+            std::fs::create_dir(dir.path().join(root)).expect("root");
+        }
+        let run = dir.path().join("run/system.journal");
+        let var = dir.path().join("var/system.journal");
+        let burst = [(1, 10), (2, 10), (3, 10), (4, 10)];
+        journal_in(format, &run, 1, &burst, 0);
+        set_xors(format, &run, 4, &[1, 2, 3, 4]);
+        let mut f = T::of(std::slice::from_ref(&run));
+        set_n(&run, 2);
+        assert_eq!(seqnums(&f.poll(&[])), [1, 2]);
+        set_n(&run, 4);
+        let copies = [(5, 10), (6, 10), (7, 10), (8, 10), (9, 20)];
+        journal_in(format, &var, 1, &copies, 5);
+        set_xors(format, &var, 5, &[1, 2, 3, 4, 5]);
+        f.rescan(&[run.clone(), var.clone()]);
+        let first = f.poll(&[]);
+        let second = f.poll(&[]);
+        assert_eq!((seqnums(&first), seqnums(&second)), (vec![3, 4, 9], vec![]));
+        assert!(f.errors.is_empty(), "{:?}", f.errors);
     }
 
     /// A file the follow can't open at its start is an error of its first
