@@ -725,8 +725,9 @@ impl Journal {
     /// reading, not matching: its order between entries of different boots
     /// (`Release::boot_rule`, journal spec decision 11). For every source,
     /// `Directory` and `Files` too, it is the release the caller passes:
-    /// sb-host's, the host's own. Pass the same release to `Query::unit`:
-    /// nothing checks that the two agree.
+    /// sb-host's, the host's own. [`Journal::unit_query`] builds a unit
+    /// query with that release; one built with `Query::unit` must be given
+    /// the same release, as nothing checks that the two agree.
     ///
     /// # Errors
     ///
@@ -751,6 +752,19 @@ impl Journal {
             opener: open::Opener::default(),
             release: *release,
         })
+    }
+
+    /// journalctl's `-u` for the release and source this journal was
+    /// opened with: [`Query::unit`] without passing them again (journal
+    /// spec, page-L5). `coredump_uid` is the systemd-coredump user's uid
+    /// if it resolves (sb-host's lookup).
+    ///
+    /// The follow rule stays the caller's: a [`Journal::follow`]'s `from`
+    /// is the `end` of a page of the same query, so a source keeps one
+    /// query for its pages and its follow.
+    #[must_use]
+    pub fn unit_query(&self, unit: &UnitName, coredump_uid: Option<Uid>) -> Query {
+        Query::unit(&self.release, unit, coredump_uid, &self.roots.source())
     }
 
     /// The `n` matching entries at `at`, oldest first: the newest ones
@@ -897,6 +911,16 @@ impl Journal {
 }
 
 impl Roots {
+    /// The source these roots were opened from (the local journal's
+    /// directories stand for `Source::Local`).
+    fn source(&self) -> Source {
+        match self {
+            Roots::Local(_) => Source::Local,
+            Roots::Directory(path) => Source::Directory(path.clone()),
+            Roots::Files(paths) => Source::Files(paths.clone()),
+        }
+    }
+
     /// The journal files now, in sd-journal's search order.
     fn list(&self) -> walk::Listing {
         let mut out = walk::Listing::default();
@@ -1911,6 +1935,49 @@ mod tests {
             .expect_err("missing");
         assert!(matches!(&err, OpenError::MachineId { path, .. } if *path == gone));
         assert_eq!(err.to_string(), format!("read {}", gone.display()));
+    }
+
+    /// `unit_query` is `Query::unit` with the journal's own release and
+    /// source, for every release and source; 26.04's coredump term tells
+    /// a local journal from a directory, so the source really is passed.
+    #[test]
+    fn the_unit_query_is_the_journals_own() {
+        let dir = tempfile::tempdir().expect("dir");
+        let host = host_in(dir.path(), MID.as_bytes());
+        let unit = UnitName::new("demo").expect("a unit name");
+        let uid = Some(Uid::new(998));
+        for release in RELEASES {
+            let local = crate::testing::open_on(Source::Local, release, &host).expect("opens");
+            let sources = [
+                (local, Source::Local),
+                (
+                    Journal::open(Source::Directory(dir.path().into()), release).expect("opens"),
+                    Source::Directory(dir.path().into()),
+                ),
+                (
+                    Journal::open(Source::Files(vec![dir.path().join("f")]), release)
+                        .expect("opens"),
+                    Source::Files(vec![dir.path().join("f")]),
+                ),
+            ];
+            for (journal, source) in &sources {
+                for uid in [None, uid] {
+                    assert_eq!(
+                        journal.unit_query(&unit, uid),
+                        Query::unit(release, &unit, uid, source),
+                        "{release:?} {source:?} {uid:?}"
+                    );
+                }
+            }
+        }
+        let release = release("26.04");
+        let local = crate::testing::open_on(Source::Local, &release, &host).expect("opens");
+        let directory =
+            Journal::open(Source::Directory(dir.path().into()), &release).expect("opens");
+        assert_ne!(
+            local.unit_query(&unit, uid),
+            directory.unit_query(&unit, uid)
+        );
     }
 
     /// The machine id in the file is the id and one newline at most:
