@@ -502,7 +502,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 
 ### Phase 5 (lane 4): the glibc build (decisions 29 and 31)
 - [x] Task 53: the production build links glibc, built on 22.04
-- [ ] Task 54: the journal matrix builds in the same image
+- [x] Task 54: the journal matrix builds in the same image
 
 ### Phase 6: the toolchain (decision 32)
 - [ ] Task 55: the toolchain pin moves to 1.100

@@ -1264,20 +1264,20 @@ test is built the way sb ships, and runs in the 22.04 container from any
 build host (ADR-020, decision 5).
 
 **Acceptance criteria:**
-- [ ] compare.sh, compat.sh, follow.sh, seeds.sh and stress.sh build the
+- [x] compare.sh, compat.sh, follow.sh, seeds.sh and stress.sh build the
       example through one shared helper in the image (or take
       `SBJ_BIN`, as now), and their "Needs ... the musl target" lines say
       what they need instead.
-- [ ] `.github/workflows/journal-matrix.yml` builds the same way; its
+- [x] `.github/workflows/journal-matrix.yml` builds the same way; its
       step names and artifact path change with it. Local only, no push
       or workflow run (global rules).
-- [ ] The matrix is green on 22.04, 24.04 and 26.04 with the glibc
+- [x] The matrix is green on 22.04, 24.04 and 26.04 with the glibc
       example, with the same pread bounds.
 
 **Verification:**
-- [ ] compare.sh, compat.sh and follow.sh on the three releases;
+- [x] compare.sh, compat.sh and follow.sh on the three releases;
       `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Task 53.
 **Files:** `crates/journal/tests/{compare,compat,follow,seeds,stress}.sh`,
@@ -1365,6 +1365,17 @@ not here.)
   that wait for a consumer. The tui spec takes up the journal items and
   the ones on exec's streaming, PTY, attached and mask paths; release
   preparation takes up sb-M1, sb-M4 and sb-L8.
+
+## Follow-ups from the glibc build (Tasks 53 and 54)
+
+- [ ] check.sh's production `cross build` runs uncapped: a
+      `systemd-run` scope around check.sh doesn't reach cross's
+      container. Pass `CROSS_CONTAINER_OPTS` (`--memory`, `--cpus`), as
+      `crates/journal/tests/example.sh` does (Task 54). A gate change:
+      take it up with the next task that touches check.sh.
+- [ ] `crates/journal/src/file.rs:13` still says "static musl binary"
+      (ADR-013's reasoning, from before ADR-020): reword when the file
+      is next touched.
 
 ## Follow-ups from docker start, stop and restart
 
