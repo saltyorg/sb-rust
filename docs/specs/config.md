@@ -120,7 +120,15 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
     `credential checks skipped; sb validate-config runs them` when the
     file has credentials set. `run` calls it for each file with
     `Checks::Run`, so the paths never differ. It returns the issue count
-    for the caller's log.
+    for the caller's log. *As built (M48):* `step` is the file's own
+    step, which the caller opens with `run::file_labels(file)` (so `sb
+    edit` can draw it at the top level); the count comes back on the
+    error the step fails with, `run::Issues::count()`, and is in
+    `check_file`'s "config file checked" log record. `FileError` also
+    names a missing file: `Missing` (required, the issue) or `Skipped`
+    (optional, the info notice). The tree comes back as `tree::Tree`,
+    which drops level by level, so a deep file's tree can be dropped on
+    any stack.
 - **When the checks run:** after accounts.yml's own validation, and only for
   a section with no issues of its own (an unknown key or a format error
   inside `cloudflare:` or `dockerhub:` skips that check too). Structure

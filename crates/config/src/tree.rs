@@ -85,6 +85,61 @@ pub fn build(
     }
 }
 
+/// A whole file's tree, handed to a caller (`run::check_file`) that may
+/// keep it on any stack. A file is nested up to `yaml::MAX_DEPTH` levels,
+/// and `Node`'s own drop recurses once per level, more than a tokio
+/// worker's stack holds; this drops it level by level from a list on the
+/// heap instead, so its depth costs no stack. Its debug output names no
+/// value (secrets) and doesn't recurse. Only its own drop is flat: read
+/// it by known paths, and only when its file has no issues; a clone of a
+/// subtree or a recursive walk still costs a frame per level.
+pub struct Tree(Node);
+
+impl Tree {
+    /// `root`, to be dropped level by level.
+    #[must_use]
+    pub fn new(root: Node) -> Self {
+        Self(root)
+    }
+}
+
+impl std::ops::Deref for Tree {
+    type Target = Node;
+
+    fn deref(&self) -> &Node {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Tree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tree")
+            .field("line", &self.0.line)
+            .field("column", &self.0.column)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let mut pending = vec![std::mem::replace(
+            &mut self.0.data,
+            Data::Scalar(Value::Null),
+        )];
+        // Each collection's children are moved out before it is dropped,
+        // so no drop below goes more than one level down.
+        while let Some(data) = pending.pop() {
+            match data {
+                Data::Mapping(entries) => {
+                    pending.extend(entries.into_iter().map(|(_, node)| node.data));
+                }
+                Data::Sequence(items) => pending.extend(items.into_iter().map(|node| node.data)),
+                Data::Scalar(_) => {}
+            }
+        }
+    }
+}
+
 /// `node` without a tag on a collection: saphyr keeps a tagged
 /// mapping or sequence as `Tagged`; yaml.v3 decodes the collection itself.
 fn untagged(node: &MarkedYamlOwned) -> &MarkedYamlOwned {
@@ -200,6 +255,45 @@ mod tests {
     fn tree(text: &str) -> Node {
         let root = parse("t.yml", text).expect("parses");
         build("t.yml", &root, &|_| false).unwrap_or_else(|issues| panic!("{issues:?}"))
+    }
+
+    /// A tree nested as deep as a file may be is dropped on a small stack
+    /// (a tokio worker's is 2 MiB), mappings and sequences alike, and its
+    /// debug output shows neither its values nor its depth.
+    #[test]
+    fn a_deep_tree_drops_without_recursion() {
+        let mut node = Node {
+            line: 1,
+            column: 1,
+            data: Data::Scalar(Value::Str("secret-leaf".into())),
+        };
+        for level in 0..sb_cli_core::config::yaml::MAX_DEPTH {
+            let data = if level % 2 == 0 {
+                Data::Sequence(vec![node])
+            } else {
+                let key = Key {
+                    text: "k".into(),
+                    line: 1,
+                    column: 1,
+                };
+                Data::Mapping(vec![(key, node)])
+            };
+            node = Node {
+                line: 2,
+                column: 3,
+                data,
+            };
+        }
+        let tree = Tree::new(node);
+        assert!(matches!(tree.data, Data::Mapping(_)));
+        let shown = format!("{tree:?}");
+        assert_eq!(shown, "Tree { line: 2, column: 3, .. }");
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || drop(tree))
+            .expect("thread")
+            .join()
+            .expect("dropped without overflow");
     }
 
     #[test]
