@@ -628,17 +628,17 @@ maintainer has seen the screenshots, and the other lanes go on.
 - [x] ui-L3: a wrapped table has no blank line at exact multiples of
       the width, a padded binding stays whole, and a terminal below the
       minimum width says so instead of emptying cells.
-- [ ] ui-L4: notices and kept output lines in the finished tree are
+- [x] ui-L4: notices and kept output lines in the finished tree are
       shown as the maintainer chose (whole, or cut). Chosen 2026-11-13
       (decision 35): whole, each continuation row with the line's own
       guide lines and indent. ui-L3's part merged as 1bcc303.
-- [ ] The snapshots change only where these criteria say; term-ui.md
+- [x] The snapshots change only where these criteria say; term-ui.md
       records the looks.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui -p sb-docker`; a tmux probe at 36
+- [x] `cargo test -p sb-term-ui -p sb-docker`; a tmux probe at 36
       columns; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 20
@@ -654,28 +654,33 @@ being checked). The maintainer chose (decision 35) that the line says
 so.
 
 **Acceptance criteria:**
-- [ ] A collapsed run that holds a failed step reads "… N finished, M
+- [x] A collapsed run that holds a failed step reads "… N finished, M
       failed", in the warning role; one without reads as now. N counts
       every collapsed step, M the failed ones among them.
-- [ ] The finished tree is unchanged.
-- [ ] An in-memory test with a failure among the collapsed steps; the
+- [x] The finished tree is unchanged.
+- [x] An in-memory test with a failure among the collapsed steps; the
       term-ui spec records the look.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; a tmux capture at 80x12 shown to the
+- [x] `cargo test -p sb-term-ui`; a tmux capture at 80x12 shown to the
       maintainer with Task 21's ui-L4 look; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Task 21
 **Files:** `crates/term-ui/src/tree.rs`, `docs/specs/term-ui.md`
 **Scope:** S
 
 ## Checkpoint D: docker and display
-- [ ] `check.sh full`; the tmux probes at 80x12 and 36 columns.
-- [ ] The maintainer has seen Task 21's looks, from screenshots
+- [x] `check.sh full`; the tmux probes at 80x12 and 36 columns.
+- [x] The maintainer has seen Task 21's looks, from screenshots
       (decision 13).
-- [ ] The maintainer has been shown Tasks 19 and 20's screenshots
+- [x] The maintainer has been shown Tasks 19 and 20's screenshots
       (decision 22).
+- Record (2026-11-13): `check.sh full` passed on ba42588. The maintainer
+  saw the screenshots of Tasks 19, 20, 21 and 57 (80x12, 36 and 12
+  columns, 80 columns for the wrapped lines) and chose the looks
+  (decision 35); the in-tree wrap (cdf01f5) and "… N finished, M
+  failed" (ba42588) were seen before they merged.
 
 ## Task 27: the crafted builder writes compact files
 

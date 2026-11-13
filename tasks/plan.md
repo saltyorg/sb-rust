@@ -521,9 +521,9 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 18: `docker restart` never ends silently short of a start
 - [x] Task 19: echo is off during a live run
 - [x] Task 20: a live tree taller than the terminal
-- [ ] Task 21: table wrap and uncut lines
-- [ ] Task 57: a collapsed run says how many failed (decision 35)
-- [ ] Checkpoint D: docker and display
+- [x] Task 21: table wrap and uncut lines
+- [x] Task 57: a collapsed run says how many failed (decision 35)
+- [x] Checkpoint D: docker and display
 
 ### Phase 3 (lane 2): the journal reader
 - [x] Task 27: the crafted builder writes compact files
