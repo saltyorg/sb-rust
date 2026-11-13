@@ -492,3 +492,187 @@ async fn a_name_git_rewrites_is_refused() {
         .expect_err("rewritten");
     assert_eq!(error.to_string(), "'@{-1}' is not a valid branch name");
 }
+
+/// What GitHub's https remote makes git print when it may not prompt.
+const ASKED: &str =
+    "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+
+/// A git in `dir` whose plain `fetch` fails with `first` (stderr, exit
+/// 128), whose `-c http.version=HTTP/1.1 fetch` does `retry`, and which
+/// runs the real git otherwise; each call's arguments go to `calls.log`.
+fn flaky_git(dir: &Path, first: &str, retry: &str) -> PathBuf {
+    let path = dir.join("git");
+    let log = dir.join("calls.log");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
+             if [ \"$1\" = fetch ]; then echo \"{first}\" >&2; exit 128; fi\n\
+             if [ \"$1 $2 $3\" = '-c http.version=HTTP/1.1 fetch' ]; then {retry}; fi\n\
+             exec git \"$@\"\n",
+            log = log.display(),
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}
+
+fn calls(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("calls.log"))
+        .expect("calls")
+        .lines()
+        .filter(|line| line.contains("fetch") && !line.starts_with("config"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_credentials_prompt_is_retried_once_over_http_1_1() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    let program = flaky_git(bin.path(), ASKED, "shift 2; exec git \"$@\"");
+    let ran = update(&fixture.repo().with_git(program), "master").await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(
+        calls(bin.path()),
+        [
+            "fetch --progress",
+            "-c http.version=HTTP/1.1 fetch --progress"
+        ]
+    );
+    assert!(
+        ran.screen
+            .contains("Retried Sandbox Git fetch over HTTP/1.1"),
+        "{}",
+        ran.screen
+    );
+}
+
+#[tokio::test]
+async fn a_retry_asked_again_is_sb_gos_public_repository_error() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    let program = flaky_git(
+        bin.path(),
+        ASKED,
+        &format!("echo \"{ASKED}\" >&2; exit 128"),
+    );
+    let ran = update(&fixture.repo().with_git(program), "master").await;
+    assert!(ran.error.is_some());
+    assert_eq!(calls(bin.path()).len(), 2);
+    for text in [
+        "Sandbox Git fetch retry over HTTP/1.1",
+        "GitHub unexpectedly requested authentication for the public Sandbox repository.",
+        "Git details:",
+    ] {
+        assert!(ran.screen.contains(text), "{text}\n{}", ran.screen);
+    }
+}
+
+#[tokio::test]
+async fn a_retry_failing_otherwise_is_exec_s_error() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    let program = flaky_git(bin.path(), ASKED, "echo 'fatal: other' >&2; exit 2");
+    let ran = update(&fixture.repo().with_git(program), "master").await;
+    assert!(ran.error.is_some());
+    assert!(ran.screen.contains("exited with code 2"), "{}", ran.screen);
+    assert!(
+        !ran.screen.contains("GitHub unexpectedly"),
+        "{}",
+        ran.screen
+    );
+}
+
+#[tokio::test]
+async fn another_failure_is_not_retried() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    let program = flaky_git(bin.path(), "fatal: repository not found", "exit 0");
+    let ran = update(&fixture.repo().with_git(program), "master").await;
+    assert!(ran.error.is_some());
+    assert_eq!(calls(bin.path()), ["fetch --progress"]);
+    assert!(
+        ran.screen.contains("exited with code 128"),
+        "{}",
+        ran.screen
+    );
+    assert!(!ran.screen.contains("HTTP/1.1"), "{}", ran.screen);
+}
+
+#[tokio::test]
+async fn ssh_never_waits_on_a_terminal() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    // A stand-in ssh that records what decides whether ssh may prompt,
+    // then fails as ssh does (255).
+    let ssh = bin.path().join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nprintf '%s %s\\n' \"$SSH_ASKPASS\" \"$SSH_ASKPASS_REQUIRE\" > '{}'\nexit 255\n",
+            bin.path().join("ssh.log").display()
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    git(
+        &fixture.checkout,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://git@example.invalid/sandbox.git",
+        ],
+    );
+    git(
+        &fixture.checkout,
+        &["config", "core.sshCommand", ssh.to_str().expect("utf-8")],
+    );
+    let ran = update(&fixture.repo(), "master").await;
+    assert!(ran.error.is_some());
+    assert_eq!(
+        std::fs::read_to_string(bin.path().join("ssh.log")).expect("ssh ran"),
+        "/bin/false force\n"
+    );
+}
+
+#[tokio::test]
+async fn a_credentials_line_in_a_run_that_succeeds_is_not_retried() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    // git's own retries (a submodule clone) can print the line and still
+    // exit 0.
+    let program = flaky_git(bin.path(), ASKED, "exit 0");
+    let path = bin.path().join("git");
+    let script = std::fs::read_to_string(&path).expect("read").replace(
+        &format!("echo \"{ASKED}\" >&2; exit 128"),
+        &format!("echo \"{ASKED}\" >&2; exec git \"$@\""),
+    );
+    std::fs::write(&path, script).expect("write");
+    let ran = update(&fixture.repo().with_git(program), "master").await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(calls(bin.path()), ["fetch --progress"]);
+}
+
+#[tokio::test]
+async fn a_retry_that_succeeds_with_the_line_is_done() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    let program = flaky_git(
+        bin.path(),
+        ASKED,
+        &format!("echo \"{ASKED}\" >&2; shift 2; exec git \"$@\""),
+    );
+    let ran = update(&fixture.repo().with_git(program), "master").await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(calls(bin.path()).len(), 2);
+}

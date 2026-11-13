@@ -110,8 +110,7 @@ impl Repo {
         self.ensure_fetch_all_branches(&token).await?;
         let fetching = "Fetching repository changes";
         step.step(Labels::new(fetching, fetching), async |step| {
-            self.change(step, self.git().arg("fetch").arg("--progress"))
-                .await
+            self.remote(step, &["fetch", "--progress"]).await
         })
         .await?;
         if current != branch {
@@ -124,14 +123,11 @@ impl Repo {
         .await?;
         let submodules = "Updating git submodules";
         step.step(Labels::new(submodules, submodules), async |step| {
-            let cmd = self
-                .git()
-                .arg("submodule")
-                .arg("update")
-                .arg("--progress")
-                .arg("--init")
-                .arg("--recursive");
-            self.change(step, cmd).await
+            self.remote(
+                step,
+                &["submodule", "update", "--progress", "--init", "--recursive"],
+            )
+            .await
         })
         .await?;
         let owning = "Setting repository ownership";

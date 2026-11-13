@@ -12,7 +12,10 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod git;
+mod remote;
 mod update;
+
+pub use remote::PublicRepoError;
 
 use std::io;
 use std::path::{Path, PathBuf};
