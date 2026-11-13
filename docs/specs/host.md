@@ -68,7 +68,8 @@ One crate answers the host questions for every later module:
 - **install** (`ansible`): the LXC and disk-space checks.
 - **python-env:** apt and ownership.
 - **repo:** recursive ownership after a reset.
-- **motd and tui:** the systemd service list.
+- **motd and tui:** the systemd service list; tui reads it again every
+  5 s while its picker shows. *Amended 2026-11-13 by the tui spec.*
 
 Every answer carries sb-go's texts, so a user who knows sb-go's errors sees
 the same ones. Every child has a timeout or a stated reason for none, and
@@ -127,6 +128,9 @@ ancestor, then checks each filesystem once, de-duplicated by `f_fsid`.
   each skipped duplicate. sb-go printed these as debug lines.
 - **`disk_space_error(path)`** builds the failure text with 100% and 0
   free, for install's hidden `--force-disk-full`.
+- **`free_space(path) -> u64`:** the `f_bavail × f_frsize` of the path's
+  nearest existing ancestor, which `check_disk_space` uses and bench
+  calls. *Amended 2026-11-13 by the ops spec.*
 
 ### apt (apt.go)
 
@@ -154,6 +158,37 @@ Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold <args>`.
 **`remove(step, packages)` and `autoremove(step)`.** Run `remove -y
 <packages>` and `autoremove -y`, python-env's deadsnakes cleanup. No
 timeout, for the same reason as `install`.
+
+**Two read-only apt queries for python-env's deadsnakes cleanup.**
+*Amended 2026-11-13 by the python-env spec (H2).*
+- `package_list()`: `dpkg-query -W
+  -f=${binary:Package}\t${source:Package}\t${db:Status-Abbrev}\t${Version}\n`
+  (capture, 10 s), returned as rows of four fields. Error: `list
+  packages: <cause>`.
+- `package_policy(name)`: `apt-cache policy <name>` (capture, 10 s, with
+  `LC_ALL=C` so the `***` and origin lines parse whatever the locale),
+  returned as text; python-env parses it. Error: `query package policy
+  <name>: <cause>`.
+
+**`remove_sources_mentioning(needle, backup) -> Result<Vec<PathBuf>, _>`.**
+*Amended 2026-11-13 by the python-env spec (H3).* Moves each regular
+file directly in `sources.list.d` (on host's `/etc/apt` root field) whose
+content contains `needle` out of it, into a root-only
+`/var/backups/sb/<backup>/<run id>/`, and returns what it moved. `backup`
+is a `&'static str` folder name, never input (python-env passes
+`deadsnakes`); the run id is the run log's. A subdirectory or symlink is
+left alone. It uses the same fenced directory handles and folder scheme
+as `add_repositories`' cleanup (ops spec decisions 5 and 28): both
+directories are fixed paths (the root arguments exist for tests only);
+`sources.list.d` is opened `O_DIRECTORY | O_NOFOLLOW` and refused when
+it is a symlink, not root's, or group- or world-writable, and so are
+`/var/backups/sb` and `<backup>` (created 0700 when missing); the run's
+directory is created 0700 with `mkdirat`, exclusively, only when there
+is something to move; each entry is `lstat`ed and read through the
+handle and moved with `renameat` between the two handles, and across
+filesystems (`EXDEV`) copied with its bytes and mode, synced, then
+unlinked through the handle. Each name is logged before it moves
+(difference 14).
 
 **`update_lists(step)`.** Runs `update` with retries.
 - **Attempts:** up to 3, each with a 2 min timeout.
@@ -185,9 +220,23 @@ on a given root:
 - **Accepted codenames:** `jammy` (legacy `sources.list`), and `noble` or
   `resolute` (DEB822). Any other codename fails before anything changes:
   `unsupported Ubuntu release: <x>`.
-- **Cleanup:** removes every entry in `sources.list.d`. On DEB822
-  releases it keeps `ubuntu.sources`. A subdirectory fails to remove, as
-  in sb-go (`error removing <p>: <cause>`).
+- **Cleanup:** clears every entry in `sources.list.d`; on DEB822
+  releases it keeps `ubuntu.sources`. The entries are moved into a
+  root-only `/var/backups/sb/apt-sources/<run id>/`, not deleted. Both
+  directories are fixed paths (the function's root arguments exist for
+  tests only). `sources.list.d` is opened with `O_DIRECTORY |
+  O_NOFOLLOW`; a symlink, or a directory not owned by uid 0 or
+  writable by group or others, fails before anything is moved
+  (`refusing to clean <dir>: <reason>`), and so do `/var/backups/sb`
+  and `apt-sources` (created 0700 when missing); the run's directory is
+  created 0700, exclusively, only when there is something to move.
+  Each entry is `lstat`ed through the handle and moved with `renameat`
+  between the two handles, so a link is moved, never followed; across
+  filesystems (`EXDEV`) it is copied, synced, then unlinked through the
+  handle. A subdirectory fails, as in sb-go (`error removing <p>:
+  <cause>`). The names are logged before they move, and the step
+  reports their count and the backup directory (ops spec decisions 5
+  and 28; difference 13). *Amended 2026-11-13 by the ops spec.*
 - **jammy:** appends the four archive lines to `sources.list` and rewrites
   it without blank or duplicate lines.
 - **DEB822:** writes `ubuntu-archive.sources` (sb-go's exact content), but
@@ -265,19 +314,24 @@ Until it is verified, the code marks difference 1 UNVERIFIED.
 
 ### systemd services (systemd.go)
 
-`services(filters)` returns one record per matching service unit. Each
-record holds:
+*Amended 2026-11-13 by the tui and motd specs.*
+
+`services(filters, token)` returns one record per matching service unit.
+Each record holds:
 - the name;
 - the active and sub state;
 - the unit-file state;
 - when the unit entered its active state;
+- when the unit last changed state (`StateChangeTimestamp`), for the log
+  picker's "failed 2h ago" (tui spec);
 - its timer, when one exists: the timer's active and sub state, and its
   next run.
 
 **Matching.** sb-go's filters: the prefix `saltbox_managed_` and the exact
 name `docker`. `with_additional(names)` adds motd's configured names, with
-`.service` stripped. The result is sorted by name, without duplicates, and
-`not-found` units are dropped.
+`.service` stripped. A configured name that matches no loaded unit or
+unit file is left out, as sb-go leaves out `not-found` units. The result
+is sorted by name, without duplicates, and `not-found` units are dropped.
 
 **How it is read.** Each call below is a capture with a 10 s timeout:
 1. `systemctl list-units --type=service,timer --all --output=json`.
@@ -285,15 +339,28 @@ name `docker`. `with_additional(names)` adds motd's configured names, with
 2. `systemctl list-unit-files --type=service --output=json`, so unloaded,
    disabled leftovers still appear (proto-logs).
 3. `systemctl list-timers --all --output=json`, for next runs.
-4. One `systemctl show --timestamp=unix` over the matched units, for
-   `ActiveEnterTimestamp`.
+4. One `systemctl show --timestamp=unix
+   --property=Id,ActiveEnterTimestamp,StateChangeTimestamp` over the
+   matched units, for both timestamps. `@0`, an empty value or a missing
+   property reads as unknown.
 
 **Failures.**
 - A failed `list-units` or `list-unit-files` is an error: `failed to list
   systemd services: <cause>`. sb-go named the pattern, one call per
   filter (difference 6).
-- A failed `list-timers` or `show` leaves those fields empty, as sb-go
-  ignores those errors.
+- A failed `list-timers` or `show` leaves those fields empty (both
+  timestamps for `show`), as sb-go ignores those errors.
+
+**Cancellation and time.** `services(filters, token)` takes the
+caller's `CancellationToken`, which reaches every capture, so motd's
+section cap and Ctrl-C end it. `list-units`, `list-unit-files` and
+`list-timers` run concurrently, then `show` runs on the matched
+units, so the call takes at most two timeouts (20 s), not four
+(40 s), inside motd's 30 s cap. The `show` call reads both
+`ActiveEnterTimestamp` and `StateChangeTimestamp` (the tui spec's
+amendment to step 4). motd and tui are its consumers (decision 1);
+this part of the host plan is built before whichever of motd's
+Services slice and tui's first slice comes first.
 
 **sb-go's formatting** comes with the facts, for motd:
 - **`format_duration`:** `FormatDuration`'s forms, `Ns`, `Nm Ns`, `Nh Nm`
@@ -334,6 +401,15 @@ Pinned tests are named in Success criteria.
     the walk continues.
 12. **`update_lists` waits for the lists lock** by retrying on apt's lock
     error (decision 5); sb-go failed at once.
+13. The sources.list.d cleanup refuses a symlinked, foreign-owned or
+    group- or world-writable directory, works through directory handles,
+    and moves the entries into /var/backups/sb/apt-sources/<run id>/
+    instead of deleting them (sb-go deleted by path). *Amended 2026-11-13
+    by the ops spec.*
+14. The deadsnakes source files are moved into
+    `/var/backups/sb/deadsnakes/<run id>/` through fenced handles instead
+    of deleted by path (python-env decision 22). *Amended 2026-11-13 by
+    the python-env spec.*
 
 Note: sb-go's `UpdatePackageLists` comment says the delays are 5/10/20 s,
 but the third delay never runs. sb-rust's docs say 5 s and 10 s, which is
@@ -511,7 +587,11 @@ fn installed(status: &str) -> bool {
 - **Ask first:**
   - any new dependency beyond decision 2;
   - any change to apt's policy beyond the lock timeout;
-  - anything touching `/etc/apt` outside `add_repositories`.
+  - anything touching `/etc/apt` outside `add_repositories` (with
+    `/var/backups/sb` as its backup target) and
+    `remove_sources_mentioning` (the second allowed writer, with
+    `/var/backups/sb/<backup>` as its backup target). *Amended 2026-11-13
+    by the ops and python-env specs.*
 - **Never:**
   - change packages or ownership on the developer's host in a test;
   - read or touch `/srv/git/saltbox` in a test;
@@ -539,10 +619,14 @@ fn installed(status: &str) -> bool {
 1. **First users:** every part is built now, as a library with
    stand-in-program tests, as exec was. Each part is wired by its first
    consumer:
-   - ownership: `repo`;
+   - ownership: `python-env` or `repo`, whichever is built first;
    - apt: `python-env`;
    - the checks: setup and install;
-   - the service list: `motd` and `tui`.
+   - the service list: `motd` and `tui`, built by the first of the tui
+     and motd plans.
+
+   *Amended 2026-11-13 by the python-env and tui specs:* the deny.toml
+   entry for `sb-host` allows `sb-python-env`.
 2. **Dependencies:** nix (`user`) for the uid/gid lookup, and walkdir.
 3. **apt's lock wait:** apt's own `DPkg::Lock::Timeout`, not a poll in sb.
 4. **The journal log stream:** sb reads the journal files itself with a

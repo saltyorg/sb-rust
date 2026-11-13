@@ -68,6 +68,13 @@ group, within the grace period plus one second.
   the program, the literals in place and the count of masked arguments.
   argv is readable in `/proc/<pid>/cmdline` by other users, so a caller
   passes a secret through the environment or stdin where the tool allows.
+- **A joined option:** `option_value(&'static str, String)` for a literal
+  option joined to a user value in one element (`--extra-vars=<value>`):
+  the child gets the two joined, the log and errors show the literal and
+  `[ARG]` (`--extra-vars=[ARG]`). `Cmd::shown()` is public: the masked
+  rendering the log and errors use, for a caller that prints the command
+  (ansible's `Executing...` line). *Amended 2026-11-13 by the ansible
+  spec.*
 - **Environment:** inherited; `env(name, value)`,
   `secret_env(name, value)` (taken out of output too), `env_remove(name)`,
   or `env_clear()` (sb-go's `WithEnv`). The log names changed variables,
@@ -104,6 +111,9 @@ cli-core's `Shutdown`, its token and its hold (decision 13).
   character's start, and the rest up to its `\n` dropped; then each line
   is handed to the step, which keeps what follows the last `\r`. term-ui has no "replace the last line" call, so `\r` progress
   shows at the next `\n`; a final line without `\n` is still delivered.
+  For `stream`, the final line without `\n` is delivered also when the
+  2 s drain after exit ends the read (exec-L2). *Amended 2026-11-13 by
+  the repo spec.*
 - **Past a cap:** reading goes on (a full pipe would block the child);
   `capture` keeps the first 1 MiB of stdout and the last 1 MiB of stderr
   (its tail holds the error) and marks the result truncated.
@@ -240,7 +250,9 @@ even if the child then exits 0 within the grace period.
   of Ctrl-\'s restore hooks, just before sb ends by it, isn't killed with
   sb: the hard escape doesn't cancel the token, so a command whose step
   ends in those 500 ms can still start one. Accepted: Ctrl-\ outside an
-  attached child is the user abandoning sb.
+  attached child is the user abandoning sb. A tool that opens `/dev/tty`
+  itself can still prompt there: the askpass rule below covers ssh, not
+  every such tool. *Amended 2026-11-13 by the repo spec.*
 
 ### Environment rules
 
@@ -250,6 +262,12 @@ even if the child then exits 0 within the grace period.
 - `COLORTERM` from the colour profile for `pty` and `attached` children
   only (truecolor, 256color; an inherited one removed for ansi and
   ascii), decision 3.
+- `SSH_ASKPASS_REQUIRE=force` and `SSH_ASKPASS=/bin/false` for every
+  child that isn't attached, so an ssh run by git (or by any child) asks
+  no terminal and fails at once (exec-M1; ssh(1), ENVIRONMENT: with
+  `force`, the askpass program is used for all passphrase input).
+  `UNVERIFIED` for the host-key confirmation until the platform note's
+  container check. *Amended 2026-11-13 by the repo spec.*
 
 ### Logging
 
@@ -280,6 +298,8 @@ reaches the log.
   process-wide from the colour profile, so every child gets it).
 - After a child exits, output is read for at most 2 s (sb-go: until the
   pipe closes, except where a caller sets `WaitDelay`).
+- ssh's prompts are sent to a failing askpass (sb-go: none). *Amended
+  2026-11-13 by the repo spec.*
 
 ### Scope
 

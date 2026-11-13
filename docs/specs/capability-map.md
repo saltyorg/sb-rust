@@ -157,30 +157,34 @@ GitHub API (last push, archived flag).
 | CLI parsing | `clap` 4 (derive) | 4.6.7 / 2026-09 | 267M | cobra, pflag, fang | proto-musl, proto-complete |
 | Completions | `clap_complete` + `unstable-dynamic`, exact pin | 4.6.11 / 2026-09 | 34M | completion pkg, tag_completion | proto-complete |
 | Man pages | `clap_mangen` | 0.3.3 / 2026-08 | 4.8M | mango | untested |
-| Full-screen TUI | `ratatui` + `crossterm` (`event-stream`) | 0.30.2 / 0.29 | 24M / 54M | bubbletea, bubbles, lipgloss | proto-facts, proto-logs |
-| Text input / editor | `ratatui-textarea` (ratatui org) | 0.9.3 / 2026-10 | 0.6M | bubbles textinput/textarea | proto-facts, proto-logs |
+| Full-screen TUI | `ratatui` + `crossterm` (`event-stream`); exact pins `ratatui =0.30.2` (`crossterm_0_29`, `layout-cache`, `underline-color`, `unstable-rendered-line-info`) and `ratatui-core =0.1.2` with its `anstyle` feature (tui spec). *Amended 2026-11-13 by the tui spec.* | 0.30.2 / 0.29 | 24M / 54M | bubbletea, bubbles, lipgloss | proto-facts, proto-logs |
+| Text input / editor | `ratatui-textarea` (ratatui org), staying at 0.9.3 (tui spec). *Amended 2026-11-13 by the tui spec.* | 0.9.3 / 2026-10 | 0.6M | bubbles textinput/textarea | proto-facts, proto-logs |
 | ANSI log text in TUI | `ansi-to-tui` (ratatui org) | 8.0.1 / 2026-01 | 3.4M | (lipgloss/ansi handling) | proto-logs |
 | Markdown | `tui-markdown` + a small Saltbox `StyleSheet` | 0.3.12 / 2026-10 | 0.2M | glamour | proto-markdown |
 | Scrollable panes (small content) | `tui-scrollview` (ratatui org) | 0.6.8 / 2026-09 | 0.1M | bubbles viewport | proto-markdown |
+| Dialogs | `tui-popup` (ratatui org). *Amended 2026-11-13 by the tui spec.* | 0.7.7 | — | bubbletea overlays | proto-facts |
 | Spinners, progress | `indicatif` (printed-lines pattern) | 0.18.6 / 2026-07 | 54M | bubbles spinner/progress, terminal runner | proto-runner |
 | Text width, terminal size | `console` (already pulled in by indicatif): term-ui's text width, padding and truncation (`measure_text_width`, `pad_str`, `truncate_str`), `Term` (size, whether a terminal) and its colour switch. ANSI stripping is term-ui's `DisplayText` on `anstyle-parse` (term-ui spec, "Escape handling"); sb's and term-ui's tests still strip with `strip_ansi_codes` | 0.16.6 / 2026-09 | 94M | lipgloss styles | proto-runner |
 | Prompts | `dialoguer` | 0.12.0 / repo active 2026-10 | 19M | restore textinput model | proto-inline |
 | Tables | `tabled` (`ansi` feature), terminal width from `console` | 0.22.0 / 2026-09 | 13M | aquasecurity/table, terminal table | proto-inline (replaced comfy-table: no border colour) |
 | Colour decision | `anstyle` + `anstream` (clap's own), `colorchoice-clap` for `--color` | 1.0 / 2026 | 227M | lipgloss styles, colorprofile, charmtone | proto-inline |
 | Signals | `signal-hook` | 0.4.5 / 2026-10 | 67M | signals pkg | proto-runner |
-| Host OS release | `sysinfo` (`system` feature only), reading `/etc/os-release` | 0.40.0 / 2026-10 | 58M | host/ubuntu.go parser | cli-core (approved 2026-10-30; os_info rejected: runs `lsb_release`) |
+| Host OS release | `sysinfo` (`system` feature, and `disk` for bench's Total Disk, ops spec), reading `/etc/os-release`. *Amended 2026-11-13 by the ops spec.* | 0.40.0 / 2026-10 | 58M | host/ubuntu.go parser | cli-core (approved 2026-10-30; os_info rejected: runs `lsb_release`) |
 | Errors | `anyhow` (bin), `thiserror` (lib modules) | 2026 | 260M / 464M | — | untested |
 | Logging | `tracing` + `tracing-subscriber`, one file via `tracing-appender` (never rotating; Saltbox's logrotate rotates it) | 0.2.5 (appender) / 2026-04 | 240M / 42M | terminal/logging (screen only) | proto-runner; decision 11 |
 | Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs); sb-host takes tokio's `rt` for `spawn_blocking` around the journal reads and the follow's wake wait (host spec, Tech Stack) | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs, sb-host |
 | Docker | `bollard` | 0.21.1 / 2026-08 | 20M | moby client | proto-musl, proto-logs, proto-inline |
 | systemctl JSON output | `serde_json` | 1.0.154 / 2026-10 | 389M | parsing systemctl's human-readable columns | proto-logs |
 | Timestamps | `jiff` | 0.2.38 / 2026-10 | 98M | time | proto-logs |
-| Atomic file saves (facts, config) | `tempfile` (`NamedTempFile::persist`), keeping owner and mode | 3.27.0 / 2026-03 | 227M | os.CreateTemp + rename | proto-facts |
+| Atomic file saves (facts, config) | `tempfile` (`NamedTempFile::persist`), keeping owner and mode; fact files: a temp file on the pinned directory fd (`rustix::fs::openat`, `O_EXCL`), not tempfile, which re-resolves the path (tui spec, Editors). *Amended 2026-11-13 by the tui spec.* | 3.27.0 / 2026-03 | 227M | os.CreateTemp + rename | proto-facts |
 | TOML (sb's own config) | `toml` (serde, parse only) | 1.1.8 / 2026-10 | 286M | viper/koanf config | cli-core (theme file) |
 | YAML, typed | `serde-saphyr` (`deserialize` only for sb-config) | 2.0.0 / 2026-10 | 16M | yaml.v3 | proto-yaml, proto-markdown, config Task 1 |
 | YAML, schema-validated config | `saphyr` (`MarkedYaml`, positions, duplicate-key rejection) | 0.3.3 / 2026-10 | 1.1M | yaml.v3 nodes + custom duplicate-key walker | proto-yaml, cli-core (inventory) |
 | Schema `pattern` rules | `regex` | 1.13.1 / 2026-07 | 1.3B | (not enforced by sb-go) | proto-yaml, config Task 1 |
-| XML-RPC (rTorrent) | `quick-xml` (thin client) | 0.42.0 / 2026-08 | 151M | go-rtorrent | untested |
+| XML-RPC (rTorrent) | `quick-xml` (thin client) | 0.42.0 / 2026-08 | 151M | go-rtorrent | the motd spec. *Amended 2026-11-13 by the motd spec.* |
+| System facts from /proc (motd) | `procfs` (no default features). *Amended 2026-11-13 by the motd spec.* | 0.18.0 | 23.7M | /proc parsing and `uptime`, `ps` children (motd/info.go) | the motd spec |
+| ELF header check (staged sb, saltbox.fact) | `object` (`read_core`, `elf`; no default features). *Amended 2026-11-13 by the release spec.* | 0.41.0 | — | debug/elf (release/asset.go, saltbox/fact.go) | untested (release and python-env specs) |
+| Archives (uv, Speedtest) | `tar` + `flate2` (`rust_backend`). *Amended 2026-11-13 by the ops spec.* | 0.4.46 / 1.1.10 | — | archive/tar, compress/gzip | untested (python-env and ops specs) |
 | Versions | `semver` | 1.0.28 | 253M | Masterminds/semver | untested |
 | Fuzzy match | `strsim` | 0.11.1 (stable, low churn) | 258M | levenshtein | untested |
 | Shell quoting | `shlex` | 2.0.1 / 2026-05 | 311M | go-shellquote | untested |
@@ -242,16 +246,16 @@ GitHub API (last push, archived flag).
 | `term-ui` | Inline UI only: task runner (indicatif, finished steps printed as lines), tables, prompts with a non-interactive flag for each, one colour decision feeding anstream/tabled/indicatif; one shared sanitizer, `DisplayText`, for every line drawn from given text and every output and notice line logged (term-ui spec, "Escape handling") | cli-core | terminal |
 | `host` | Ubuntu/arch/LXC/desktop checks, disk space, apt, systemd service list, file ownership; wraps `sb-journal` for the service logs, its blocking reads under tokio's `spawn_blocking` (host spec, decision 6) | exec, term-ui, journal | host |
 | `journal` (`sb-journal`) | sb's own read-only systemd journal reader, pread only and pure Rust: a unit's newest entries, pages back and forward, following ([journal spec](journal.md); [ADR-013](../decisions/ADR-013-own-journal-reader.md)) | — (wrapped by host) | cmd/logs.go's `journalctl` polling |
-| `repo` | Git operations on Saltbox/Sandbox checkouts, branch switching | exec, host | git |
-| `release` | GitHub release lookup (with User-Agent), version compare, self-update with digest verification | cli-core | release, selfupdate |
-| `python-env` | uv-managed Python, Ansible venv build/update, deadsnakes cleanup | exec, host, release | python |
-| `ansible` | Playbook execution with tags, tag listing/cache, `install`/`list` | exec, repo, term-ui | ansible, cmd/install, cmd/list |
+| `repo` | Git operations on Saltbox/Sandbox checkouts, branch switching ([repo spec](repo.md)) | exec, host, term-ui. *Amended 2026-11-13 by the repo spec.* | git |
+| `release` | GitHub release lookup (with User-Agent), version compare, self-update with digest verification ([release spec](release.md)) | cli-core, term-ui, exec. *Amended 2026-11-13 by the release spec.* | release, selfupdate |
+| `python-env` | uv-managed Python, Ansible venv build/update, deadsnakes cleanup, saltbox.fact install ([python-env spec](python-env.md)). *Amended 2026-11-13 by the python-env spec.* | exec, term-ui, host, release | python |
+| `ansible` | Playbook execution with tags, tag listing/cache, `install`/`list` ([ansible spec](ansible.md)) | exec, host, repo, term-ui, cli-core; deny.toml follows. *Amended 2026-11-13 by the ansible spec.* | ansible, cmd/install, cmd/list |
 | `config` | Saltbox YAML: strict schema loading (drift fails loudly), position-carrying validation collecting all issues, `pattern` and `additionalProperties` support, `validate-config`; facts with a line-preserving writer (round-trip tests), locking and drift detection | cli-core, term-ui (validate-config); exec, host, ansible, release from the facts half and `sb update` on (config spec) | saltbox, facts |
 | `docker` | ps, the container list (kept live by the event stream) and log streams via bollard; start/stop/restart via the Saltbox Docker controller's HTTP API after a `systemctl` check (docker spec) | cli-core, term-ui; exec and an HTTP client from start/stop/restart on | cmd/docker* |
-| `motd` | System info plus media-server and downloader providers (thin reqwest clients), parallel collection | host, config, term-ui | motd |
-| `tui` | ratatui screens: one shared streaming log viewer (docker and systemd) with an inline fallback; fact editor (modal editor, masked secrets, mouse); edit picker; announcements viewer (tui-markdown, announcement list, tui-scrollview). Mouse via recorded layout rects on all screens | docker, host, config | cmd/logs, cmd/dockerLogs, cmd/edit, factui, saltbox/announcements |
-| `ops` | Workflow commands: setup, update, branch, branch-sandbox, reinstall-*, update-venv, restore, diag, bench, gha | all of the above as needed | remaining cmd/* |
-| `completion` | Dynamic completion via `CompleteEnv` (one tag completer reading the tag cache); install writes the generated per-shell registration stub | cli-core, ansible | completion, cmd/tag_completion |
+| `motd` | System facts (/proc, sysfs, syscalls), packages, logins, disks, services, containers and Traefik, plus media-server and downloader providers (thin reqwest clients), collected in parallel under the login's time budget ([motd spec](motd.md)). *Amended 2026-11-13 by the motd spec.* | cli-core, term-ui, exec, host, config, docker | motd |
+| `tui` | ratatui screens: one shared streaming log viewer (docker and systemd) with an inline fallback; fact editor (modal editor, masked secrets, mouse); edit picker; announcements viewer (tui-markdown, announcement list, tui-scrollview). Mouse via recorded layout rects on all screens ([tui spec](tui.md)) | docker, host, config | cmd/logs, cmd/dockerLogs, cmd/edit, factui, saltbox/announcements |
+| `ops` | Workflow commands: setup, update, branch, branch-sandbox, reinstall-*, update-venv, restore, diag, bench, gha ([ops spec](ops.md)) | all of the above as needed | remaining cmd/* |
+| `completion` | Dynamic completion via `CompleteEnv` (one tag completer reading the tag cache); install writes the generated per-shell registration stub ([completion spec](completion.md)) | cli-core, exec, term-ui, ansible; deny.toml's wrappers follow. *Amended 2026-11-13 by the completion spec.* | completion, cmd/tag_completion |
 
 Arrows point one way, with no cycles. `tui` sits above the data modules so that
 logs, edit and facts can be built and tested without a terminal.
@@ -288,32 +292,33 @@ of `--help`.
 | `docker start` | Starts Saltbox's containers through the Docker controller | docker | built | `-v` dropped (docker decision 6) |
 | `docker stop` (`--ignore`) | Stops them | docker | built | as above |
 | `docker restart` (`--ignore`) | Restarts them | docker | built | as above |
-| `docker logs` | Shows container logs | tui, docker | idea ([log-picker](../ideas/log-picker.md)) | one picker for docker and journal logs (journal spec decision 8); the next spec after hardening |
-| `logs` | Shows logs of Saltbox's systemd services | tui, host, journal | idea (log-picker) | as above; sb-journal and sb-host's follow are built |
-| `fact` | Browses and edits saltbox facts interactively | tui | idea ([fact-editor](../ideas/fact-editor.md)) | |
-| `edit <file>` | Opens one config file in an editor: `accounts`, `adv_settings`, `backup_config`, `hetzner_vlan`, `settings`, `inventory` | tui (edit picker) | not started | |
-| `install [tags]` (`-v` to `-vvvv`, `-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | not started | `-v` is counted and passed to `ansible-playbook` as `-v` to `-vvvv` (it stays here, unlike the dropped `-v` elsewhere); `-e` passes each value whole, so JSON reaches Ansible intact (open items below); the tag cache is shared with `list` and completion |
-| `list [query]` (`--include-mod`) | Lists the available tags | ansible | not started | |
-| `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | not started | |
-| `branch <name>` | Switches the branch Saltbox uses | ops, repo | not started | |
-| `branch-sandbox <name>` | Switches the branch Sandbox uses | ops, repo | not started | |
-| `diag` | Runs the diagnostics role | ops, ansible | not started | |
-| `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | not started | the schema rules proto-yaml found (Upstream note) |
-| `reinstall-facts` | Reinstalls the saltbox.fact file | ops, python-env | not started | may be unnecessary if the facts install is made solid |
-| `reinstall-python` | Reinstalls Saltbox's Python (uv) and the Ansible venv | python-env | not started | overlaps `reinstall-venv` and `update-venv` |
-| `reinstall-venv` | Reinstalls the Ansible venv | python-env | not started | as above |
-| `bench` | Runs the bundled bench.sh benchmark | ops | not started | ships a third-party script with its LICENSE and NOTICE |
-| `completion install [bash\|zsh\|fish]`, `completion <shell>` (hidden) | Installs the shell completion registration | completion | not started | dynamic completion through `CompleteEnv` (proto-complete) |
-| `completion generate <shell>` | Writes a completion script to stdout | completion | not started | |
-| `setup` (hidden; `--branch`, `--force`) | Installs Saltbox and its dependencies | ops | not started | the first command on a new host |
-| `update-venv` (hidden) | Updates the Ansible venv and saltbox.fact | python-env | not started | overlaps the reinstall commands |
-| `self-update` (hidden; `--yes`, and `--force-update` in builds with self-update disabled) | Updates the CLI itself | release | not started | sends a User-Agent; keeps the digest check (stack table) |
-| `announcements` (hidden; `--before`, `--after`, `--repo`) | Shows changes between two announcements files | ops | not started | called by `update`; may stay internal to it |
-| `restore` (hidden) | Fetches and decrypts a user's backed-up files | ops | not started | RustCrypto stack (stack table) |
-| `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | not started | CI-only |
+| `docker logs` | Shows container logs | tui, docker | specified ([tui](tui.md)), then built per slice | one picker for docker and journal logs (journal spec decision 8; idea: [log-picker](../ideas/log-picker.md)). *Amended 2026-11-13 by the tui spec.* |
+| `logs` | Shows logs of Saltbox's systemd services | tui, host, journal | specified ([tui](tui.md)), then built per slice | as above; sb-journal and sb-host's follow are built. *Amended 2026-11-13 by the tui spec.* |
+| `fact` | Browses and edits saltbox facts interactively | tui | specified ([tui](tui.md)) | edits `<appdata>/saltbox/<role>.ini`, not `saltbox.fact`; the role lock only at Save (tui spec decision 38; idea: [fact-editor](../ideas/fact-editor.md)). *Amended 2026-11-13 by the tui spec.* |
+| `edit <file>` | Opens one config file in an editor: `accounts`, `adv_settings`, `backup_config`, `hetzner_vlan`, `settings`, `inventory` | tui (edit picker) | specified ([tui](tui.md)) | validates the file after the editor exits (tui spec). *Amended 2026-11-13 by the tui spec.* |
+| `install [tags]` (`-v` to `-vvvv`, `-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | specified ([ansible](ansible.md)) | `-v` is counted and passed to `ansible-playbook` as `-v` to `-vvvv` (it stays here, unlike the dropped `-v` elsewhere); `-e` passes each value whole, so JSON reaches Ansible intact (open items below); the tag cache is shared with `list` and completion |
+| `list [query]` (`--include-mod`) | Lists the available tags | ansible | specified ([ansible](ansible.md)) | |
+| `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`, `--migrations`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
+| `branch <name>` (required) | Switches the branch Saltbox uses | ops, repo | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
+| `branch-sandbox <name>` (required) | Switches the branch Sandbox uses | ops, repo | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
+| `diag` | Runs the diagnostics role | ansible | specified ([ansible](ansible.md)) | *Amended 2026-11-13 by the ansible spec.* |
+| `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | specified ([motd](motd.md)) | spec approved; `-v` dropped (motd decision 9). *Amended 2026-11-13 by the motd spec.* |
+| `reinstall-facts` | Reinstalls the saltbox.fact file | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `reinstall-python` | Reinstalls Saltbox's Python (uv) and the Ansible venv | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `reinstall-venv` | Reinstalls the Ansible venv | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `bench` | Runs the bundled bench.sh benchmark | ops | specified ([ops](ops.md)) | rewritten in Rust (ops spec decision 11): sysinfo, an in-process disk test, the pinned Ookla Speedtest; no vendored script. *Amended 2026-11-13 by the ops spec.* |
+| `completion install [bash\|zsh\|fish]`, `completion <shell>` (hidden) | Installs the shell completion registration | completion | specified ([completion](completion.md)) | dynamic completion through `CompleteEnv` (proto-complete); slices paused until the maintainer reviews proto-complete's look (completion slice 0). *Amended 2026-11-13 by the completion spec.* |
+| `completion generate <shell>` | Writes a completion script to stdout | completion | specified ([completion](completion.md)) | as above. *Amended 2026-11-13 by the completion spec.* |
+| `setup` (hidden; `--branch`, `--force`, `--keep-branch`, `--reset-branch`, `-v` hidden and ignored) | Installs Saltbox and its dependencies | ops | specified ([ops](ops.md)) | the first command on a new host. *Amended 2026-11-13 by the ops spec.* |
+| `update-venv` (hidden) | Updates the Ansible venv and saltbox.fact | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `self-update` (hidden; `--yes`, and `--force-update` in builds with self-update disabled, raw builds included) | Updates the CLI itself | release | specified ([release](release.md)) | sends a User-Agent; keeps the digest check (stack table). *Amended 2026-11-13 by the release spec.* |
+| `announcements` (hidden; `--before`, `--after`, `--repo`) | Shows changes between two announcements files | ops | specified ([ops](ops.md)) | a test harness for announcement files (runs nothing), `--migrations` (ops spec). *Amended 2026-11-13 by the ops spec.* |
+| `restore` (hidden) | Fetches and decrypts a user's backed-up files | ops | specified ([ops](ops.md)) | RustCrypto stack (stack table); --user and --password-file, no -v (ops spec). *Amended 2026-11-13 by the ops spec.* |
+| `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | specified ([ops](ops.md)) | CI-only |
 
 29 rows: every command sb-go registers, with `docker` and `completion`
-listed by their subcommands. 6 are built.
+listed by their subcommands. 6 are built; the other 23 are specified
+(2026-11-13).
 
 ## Upstream note (for the maintainer to raise; no consumer changes here)
 
@@ -394,9 +399,14 @@ To discuss with the maintainer once every module is done, not before:
   palette (proto-theme), so a theme is a set of values for those roles.
   The config format and where it lives go in the cli-core spec, alongside
   the colour fallback (decision 10).
-- **Install script:** moves into this repository and runs `sb setup`
-  attached to the terminal instead of capturing it (tasks/prototypes/todo.md, "Later:
-  Install script lives in this repository").
+- **Install script:** moves into this repository (ops spec, "The
+  install script"), starting from sb-go's `install.sh` plus `-b`. The
+  served installer (`sb_install.sh` in saltyorg/sb, behind
+  install.saltbox.dev) no longer captures `sb setup`'s output (checked
+  2026-11-13); it passes `-v` and `-b`, so `sb setup` accepts `-v`
+  hidden and ignored until the served script is replaced. Publishing
+  the new script is a separate, explicitly authorised step. *Amended
+  2026-11-13 by the ops spec.*
 - **Shell completion:** proto-complete's look and feel is not yet reviewed
   by the maintainer; review it before the `completion` module spec. fish
   registration is generated but untested. Completion runs without sudo
@@ -406,8 +416,9 @@ To discuss with the maintainer once every module is done, not before:
   to the PTY haven't been prototyped. Evaluate a terminal-emulator crate
   (`vt100`, or termwiz's escape parser) for the output tail instead of the
   custom line splitter.
-- **Edit picker:** not prototyped on its own. It reuses the proto-facts and
-  proto-logs patterns (list picker, then `$EDITOR`).
+- **Edit picker:** closed by the editors' picker slice (tui spec). It
+  reuses the proto-facts and proto-logs patterns (list picker, then
+  `$EDITOR`). *Amended 2026-11-13 by the tui spec.*
 - **Release tooling:** evaluate cross from git main or `cargo-zigbuild` when CI
   is set up, to drop the old 0.2.5 images and the per-target target-dir
   workaround.

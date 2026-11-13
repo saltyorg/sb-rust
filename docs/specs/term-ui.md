@@ -58,6 +58,12 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   becomes styled text and a tabled colour, both rendered by anstyle. No
   colour maths in term-ui. Under `ascii` or with colour off the adapters
   give no styling.
+- **`bar(theme, role, on, ratio, width)`:** a one-line usage bar,
+  `█` for the filled part (`round(width × ratio)` cells) in `role` and
+  `░` for the rest in Faint, through `paint` (the styled-text adapter,
+  `src/style.rs`). Its first user is motd's Disk Usage (motd decision 8,
+  with the "why not indicatif or ratatui" evidence). *Amended 2026-11-13
+  by the motd spec.*
 - **Chosen in Task 2, approved at Checkpoint A (maintainer,
   2026-11-01)** (with the anstyle rendering above, console's switches off
   under `ascii`, and the stack table's console row and `src/style.rs`
@@ -305,8 +311,9 @@ sequence.
 - **Piped:** the same table without colour, at its natural width (sb-go's
   piped table wraps at 80 columns and keeps its bold and border codes;
   docker spec, differences). Plain or JSON output is decided per command
-  (capability map, open items). Column spans (`sb list`) come with that
-  command.
+  (capability map, open items). `Table::spanning_row(text)` adds a bold
+  row across every column (`sb list`'s later repos), through tabled's
+  `Span`. *Amended 2026-11-13 by the ansible spec.*
 
 ### Prompts (specified now, built with their first user: decision 1)
 
@@ -318,12 +325,21 @@ sequence.
   as the script; the install-script plan says prompts use `/dev/tty`). No
   terminal, or a background process group, and no answer: a clear error
   naming the flag, exit 1; never a hang.
+- Built with `release` (self-update's confirm); the label is the caller's
+  text, `?` and the `[y/N]` hint are dialoguer's. *Amended 2026-11-13 by
+  the release spec.*
+- The text and password prompts' first user is `sb restore` (ops spec;
+  the confirm comes earlier with `release`). dialoguer's text and
+  password prompts have no cancel key; Ctrl-C is the way out (cli-core's
+  interrupted ending). *Amended 2026-11-13 by the ops spec.*
 
 ## Out of scope
 
 Full-screen screens (`tui`), Markdown output (announcements, `tui`),
 starting processes and PTYs (`exec`), per-command output formats
-(`--plain`, JSON), restore prompts (deferred with the restore backend).
+(`--plain`, JSON). *Amended 2026-11-13 by the ops spec:* "restore
+prompts (deferred with the restore backend)" dropped; `sb restore` is
+the text and password prompts' first user (Prompts).
 
 ## Tech stack
 

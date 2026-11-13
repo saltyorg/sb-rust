@@ -250,12 +250,58 @@ logging levels end to end.
   - `start`, `stop`, `restart`: need `exec` (for `systemctl`) and an HTTP
     client; sb-go's `--ignore`; the unit-file check and timeouts above.
     sb-go gives them `--verbose/-v`; dropped (decision 6).
-  - The container list for the tui log picker (proto-logs: list plus a
-    parallel inspect, kept live by bollard's event stream, with a richer
-    status: restart count, restarted in the last 10 minutes). `ps`'s
-    status function is the module's one container classification; the
-    picker extends it rather than adding a second.
-  - Container log streams the `tui` viewer consumes.
+  - *Amended 2026-11-13 by the tui spec:*
+  - **The picker's container list** is `connect::list` (all containers,
+    already). `Row` gains, from the inspect: `restart_count`
+    (`RestartCount`), `created` (`Created`), `started_at` and
+    `finished_at` (`State.StartedAt`, `State.FinishedAt`; Docker's zero
+    time `0001-01-01T00:00:00Z` and an unparsable value read as `None`),
+    as `jiff::Timestamp`. `--json`'s keys are unchanged.
+  - **`picker_status(row, now)`** returns a symbol, a text, a role and an
+    `attention` flag. The text is `ps::status`'s text (the one
+    classification), followed by:
+    - running: ` · up <duration>`; with a restart count above 0 and up
+      less than 10 minutes, ` · restarted N× · up <duration>`, symbol
+      `↻`, role Problem, attention;
+    - exited, dead: ` · <duration> ago` from `finished_at`;
+    - restarting: ` (N×)`.
+
+    The symbol follows the role (`✓` ok, `✗` problem, `◌` warn, `○`
+    idle), `↻` for restarting. Attention is role Problem, or the
+    10-minute rule. Durations are formatted by a function the caller
+    passes (the tui picker passes sb-host's `format_duration`), because
+    sb-docker doesn't depend on sb-host (deny.toml).
+  - **`logs.rs`, the log reads:** a `Position { time_ns: i128, ordinal:
+    u32 }` and a `LogLine { position, stream (stdout, stderr, tty), bytes
+    }`, with:
+    - `tail(daemon, id, n)`: `tail=n`, `timestamps=true`, no follow;
+    - `older(daemon, id, before, n, created)`: windows of `since =
+      floor(t - W)` (at least 1) and `until = ceil(t)`, W starting at
+      60 s and doubling, keeping the entries before `before` and the last
+      `n` of them, until `n` are found or `since` reaches `created` (then
+      `more_older` is false);
+    - `newer(daemon, id, after, n)`: `since = floor(t)`, the entries at
+      or before `after` dropped, the stream dropped after `n + 1` (the
+      extra one sets `more_newer`);
+    - `follow(daemon, id, after)`: as `newer` with `follow=true` and no
+      count, ending when the daemon ends the stream.
+
+    Every read parses the RFC 3339 nanosecond prefix with jiff, filters
+    the window itself too (moby's filter is one-sided), and counts
+    ordinals among equal timestamps in the order the daemon sends them.
+    A line without a parsable timestamp keeps the previous line's
+    position with the next ordinal. Errors carry the daemon's message.
+  - **`events.rs`:** `container_events(daemon)`, bollard's `events` with
+    `type=container`, yielding the action (`create`, `start`, `die`,
+    `destroy`, `rename`, `health_status`, others passed through) and the
+    container's ID and name.
+  - **A platform note** (docs/platform-notes/docker-logs.md) records the
+    daemon probe: `tail` before `since`/`until`, the order of equal
+    timestamps, 16 KiB partial lines, `until`'s inclusiveness, with
+    Docker's version and the method.
+  - **The fake Engine API** serves `/containers/{id}/logs` (multiplexed
+    frames and a TTY stream, `tail` applied before `since` and `until` as
+    moby does) and `/events`.
 - **Not here:** a name filter (proto-inline had one; sb-go has none).
 
 ### Capability map correction (term-ui decision 6)

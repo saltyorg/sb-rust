@@ -140,6 +140,9 @@ impl Journal {
     /// later call are errors of that call, not an `OpenError`. Pages
     /// order boots as `release`'s journalctl does (decision 11).
     pub fn open(source: Source, release: &Release) -> Result<Self, OpenError>;
+    /// journalctl's `-u` for the release and source this journal was
+    /// opened with: `Query::unit` without passing them again (page-L5).
+    pub fn unit_query(&self, unit: &UnitName, coredump_uid: Option<Uid>) -> Query;
     /// The `n` entries at `at`. Every call lists and reopens the files.
     pub fn page(&self, q: &Query, at: &Position, n: usize, limits: &Limits) -> Page;
     /// A follow continuing from where `from` ended, with what was written
@@ -194,6 +197,12 @@ decision 11) and its `-o json` shape (`prints_seqnum`);
 the latter is used only by the test tools, behind the `testing` feature.
 sb-host adds tokio for its `spawn_blocking` helpers: a host spec
 correction.
+
+`Journal::unit_query` is the way sb's callers build a unit query;
+`Query::unit` stays for the test tools. A `follow`'s `from` must be the
+`end` of a page of the same query: the caller keeps that rule (the tui
+spec's journal adapter owns one query per source). *Amended 2026-11-13
+by the tui spec.*
 
 **The coredump term** of `Query::unit` (decisions 1 and 4):
 

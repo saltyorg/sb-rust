@@ -52,8 +52,10 @@ keyboard both work.
 - **A review that only appears at the end:** the changes panel replaces it.
 - **Revealing all secrets at once by default:** it stays an option, not the
   norm.
-- **Adding brand-new settings or renaming them:** sb-go doesn't do this
-  either. Saltbox's apps create settings, and the editor maintains them.
+- **Renaming settings, or adding apps or copies:** Saltbox's apps create
+  them, and the editor maintains them. Adding a key to an existing copy
+  stays, as sb-go's `a` has done since b1945e4 (2026-09-05). *Corrected
+  2026-11-13 by the tui spec, decision 35.*
 
 ## Open Questions
 

@@ -29,6 +29,10 @@ The colour choice (step 5) and the theme (step 6: the theme file, then the
 colour profile) are settled before step 1, so every message follows them;
 both files they read are readable without root.
 
+`CompleteEnv` runs before startup step 1 when `SB_COMPLETE` is set
+(completion spec); such a run prints only candidates and is never
+logged. *Amended 2026-11-13 by the completion spec.*
+
 1. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
    sb-go does (maintainer, 2026-10-29). It reads `/etc/os-release` and
@@ -128,6 +132,19 @@ C); and `sb docker ps --json` (maintainer, 2026-11-03, docker spec
 decision 2). A test compares the tree with sb-go's command
 list (walked before clap adds `help`).
 
+Further deliberate extensions (ops spec): `sb restore --user` and
+`--password-file`, `sb setup`'s hidden `--verbose`, and `sb bench`'s help
+text, with the contract test's `EXTENSIONS` entries `flag\tsb
+restore\tlocal\tuser`, `flag\tsb restore\tlocal\tpassword-file`,
+`flag\tsb setup\tglobal\tverbose` and `command\tsb bench`; `sb setup`'s
+`--keep-branch` and `--reset-branch` (ops decision 29; entries
+`flag\tsb setup\tglobal\tkeep-branch` and `flag\tsb
+setup\tglobal\treset-branch`); and the new `--migrations` on `sb update`
+and `sb announcements` (`flag\tsb update\tlocal\tmigrations`, `flag\tsb
+announcements\tlocal\tmigrations`). The completion run (`CompleteEnv`
+with `SB_COMPLETE`) comes before startup, above. *Amended 2026-11-13 by
+the ops and completion specs.*
+
 **Cancellation:** the first SIGINT, SIGTERM or SIGHUP cancels a token
 shared by every command; work stops at its next await or check, child
 processes are killed through `exec`. A hangup (a dropped SSH session) is
@@ -217,6 +234,10 @@ convention (sb-go exits 1; a deliberate difference). Run errors keep sb's
 build time; release builds can switch self-update off. `sb version` prints
 `Saltbox CLI version: <v> (commit: <c>)`, and `--json` prints
 `{"version", "git_commit", "uv_version"}`, as sb-go.
+`BuildInfo::released`: true when `SB_VERSION` was set at build time.
+Self-update treats a build that isn't released as disabled (release spec,
+decision 11); `sb version` is unchanged. *Amended 2026-11-13 by the
+release spec.*
 
 ## Tech stack
 
@@ -385,6 +406,9 @@ boundaries that callers match on.
   drops it too). The completion tag cache (`cache.json`, above) moves
   with it when the ansible and completion modules are built. *Amended
   2026-11-03 (config spec, one Saltbox root; config plan Task 3).*
+  `SB_ANSIBLE_PLAYBOOK` replaces `/usr/local/bin/ansible-playbook` (tests
+  and debugging; unset or empty means the default; sudo drops it).
+  *Amended 2026-11-13 by the ansible spec.*
   Startup warnings (theme file, colour profile) show once, in the first
   run, and go to the run log in the run that has one. Config and
   inventory are read up to 1 MiB; config errors are one line with

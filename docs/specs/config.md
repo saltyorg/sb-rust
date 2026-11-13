@@ -7,6 +7,22 @@ module's validation half and builds `sb validate-config`; the facts half
 (line-preserving writer, locking, drift detection) and `sb update`'s call
 into validation come with their own plans.
 
+**Also in this module, the one Saltbox-user lookup** (the python-env and
+ops specs point here): `saltbox_user(settings) -> Result<String,
+ConfigError>`: `user.name` from `<saltbox root>/accounts.yml`, read as
+sb-go's `GetSaltboxUser` reads it (host/system.go:69-92): the file
+through cli-core's `read_small` and sb-config's YAML entry (ADR-022),
+no schema validation, so an unrelated issue elsewhere in the file
+doesn't stop `update`. sb-go's texts: `failed to read accounts.yml:
+<cause>`, `failed to unmarshal accounts.yml: <cause>`, `user section
+not found in accounts.yml`, `user.name not found in accounts.yml`.
+Callers add their own wrapping (`error getting saltbox user: <cause>`
+in python-env's commands, `get Saltbox user: <cause>` in setup). Its
+users: ops (`update`, `branch`, `branch-sandbox`, `setup`), which
+passes the name to repo's `fetch_and_reset` as `owner`, and
+python-env's commands. *Amended 2026-11-13 by the repo spec (with the
+python-env and ops specs).*
+
 ## Assumptions
 
 1. **sb-go's command, with the map's decisions.** The files, schema
@@ -83,6 +99,25 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   set isn't started: an info notice under accounts.yml's step says it was
   skipped ("no Cloudflare credentials set; skipped"). Warnings (sb-go's
   short-password text) are notices under their file's step.
+- **One file** (for `sb edit` and `sb motd`; tui and motd specs):
+  *Amended 2026-11-13 by the tui and motd specs.*
+  - `check_file(settings, file) -> Result<Checked, FileError>` reads one
+    entry of `FILES` and its schema as validate-config does (cli-core's
+    `read_small` and 1 MiB cap, the YAML pre-pass, the parse, duplicate
+    keys, the schema rules and the warnings), with no network request.
+    `Checked` holds the `Report` (issues with positions, warnings, the
+    issue count) and the parsed tree, so a caller that needs the values
+    (motd's typed model) reads the file once. `FileError` is a read or
+    schema-load failure, worded as validate-config words it.
+  - `run::validate_file(step, settings, file, checks)` draws
+    `check_file`'s result under the caller's step exactly as `run` does
+    for that file. `checks` is `Checks::Run` (validate-config and `sb
+    update`: accounts.yml's credential checks as concurrent sibling
+    steps) or `Checks::Skip`, which makes no request and adds the notice
+    `credential checks skipped; sb validate-config runs them` when the
+    file has credentials set. `run` calls it for each file with
+    `Checks::Run`, so the paths never differ. It returns the issue count
+    for the caller's log.
 - **When the checks run:** after accounts.yml's own validation, and only for
   a section with no issues of its own (an unknown key or a format error
   inside `cloudflare:` or `dockerhub:` skips that check too). Structure
@@ -379,6 +414,8 @@ crates/config/            sb-config: schema loading, rules, validators,
                           validate-config's steps
   tests/fixtures/         synthetic config sets; Saltbox's schemas at a
                           pinned upstream commit
+  src/run.rs              `check_file` and `validate_file` (amended
+                          2026-11-13 by the tui spec)
 crates/sb/src/main.rs     the validate-config command
 docs/specs/config.md      this spec
 ```
@@ -420,7 +457,9 @@ docs/specs/config.md      this spec
 
 - **Always:** read-only on Saltbox files; tests on fixtures only; secrets
   marked where they're read.
-- **Ask first:** writing to any Saltbox file (the facts half); calling the
+- **Ask first:** writing to any Saltbox file outside the facts half's
+  specified saves (tui spec, Editors; *amended 2026-11-13 by the tui
+  spec*); calling the
   real Cloudflare or Docker Hub APIs from a test; a term-ui API change
   beyond decision 3's group mode; a difference from sb-go not listed.
 - **Never:** read or change a real Saltbox checkout in tests or reviews;
@@ -454,6 +493,10 @@ docs/specs/config.md      this spec
 10. Startup budget kept; binary size measured, with an ADR if past the
     tolerance (reqwest and rustls will be).
 11. The maintainer runs it on a real host's config (the slice's goal).
+12. `check_file` and `validate_file` give the same issues for a file as
+    `run` does (a test over the fixture sets), and neither makes a request
+    with `Checks::Skip`. *Amended 2026-11-13 by the tui spec* (numbered 13
+    in its wording; 12 is the next free number here).
 
 ## Decisions (maintainer, 2026-11-03)
 
