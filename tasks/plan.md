@@ -524,7 +524,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 37: a forward page on the cursor's own boot
 - [x] Task 38: forward walks over damaged entry arrays
 - [x] Checkpoint B: reader
-- [ ] Task 58: Checkpoint B's fixes (decision 37)
+- [x] Task 58: Checkpoint B's fixes (decision 37)
 
 ### Phase 4 (lane 3): config
 - [x] Task 42: YAML: the corpus and the options

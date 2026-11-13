@@ -51,8 +51,9 @@ Standing rules:
 - sb runs as root only with `SB_LOG_DIR` in `target/` or a scratch
   directory outside the repository. Every brief that may run sb says so.
 - Heavy builds, the matrix, the fuzz harness and every probe run capped:
-  `systemd-run --scope -p MemoryMax=... -p CPUQuota=... -p
-  OOMPolicy=continue`.
+  `systemd-run --scope -p MemoryMax=... -p CPUQuota=...`, plus
+  `-p OOMPolicy=continue` on systemd 253 and later (scopes on 249, the
+  22.04 host, refuse it: Task 58).
 - Waits poll a PID or a done-file, never `pgrep -f`.
 - Container scripts run with a unique `SBJ_PREFIX`. A matrix mismatch
   that isn't a listed Difference stops for the maintainer.
@@ -1122,25 +1123,25 @@ where the backward walk goes on (file-M1; confirmed).
 **Description:** What Checkpoint B found in the reader (plan decision 37).
 
 **Acceptance criteria:**
-- [ ] `Record::cursor`'s doc (crates/journal/src/lib.rs) no longer says a
+- [x] `Record::cursor`'s doc (crates/journal/src/lib.rs) no longer says a
       page before a record starts from it; it points at `Page`'s chosen
       cursors, as Task 36 made them.
-- [ ] The journal spec's fuzz command (and fuzz.rs's header) runs on a
+- [x] The journal spec's fuzz command (and fuzz.rs's header) runs on a
       22.04 host: systemd 249 has no `OOMPolicy` for scopes ("Unknown
       assignment"). The form that works on 249, 255 and 259 is used, or
       the property is given only where it is known.
-- [ ] Difference 19 (and forward.rs's departures) say that a forward page
+- [x] Difference 19 (and forward.rs's departures) say that a forward page
       from a cursor past a damaged array item shows nothing on every
       release, as journalctl does, and that sb reports the damage; and
       that sb's tail can show more of a damaged file than journalctl's
       `-n`. A crafted test pins the forward case in both layouts.
-- [ ] A test catches the mutant "delete field tail in TailCache::update"
+- [x] A test catches the mutant "delete field tail in TailCache::update"
       (follow.rs): the pread count of the poll after a changed header.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; the fuzz command run as documented on
+- [x] `cargo test -p sb-journal`; the fuzz command run as documented on
       this 22.04 host; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Checkpoint B
 **Files:** `crates/journal/src/{lib.rs,follow.rs,forward.rs}`, `crates/journal/examples/fuzz.rs`, `docs/specs/journal.md`, a crafted-file test
@@ -1561,7 +1562,8 @@ not here.)
 - A mutant can make a walk allocate without bound (`advance ->
   Some(Ok(0))`). Under a `systemd-run` MemoryMax scope, systemd's default
   OOMPolicy then stops the whole scope, cargo-mutants included. Run
-  `check.sh task` with `-p OOMPolicy=continue` added, so only the test
+  `check.sh task` with `-p OOMPolicy=continue` added (systemd 253 and
+  later; a 249 scope refuses it), so only the test
   process dies and the mutant counts as caught. Consider a per-test
   memory cap inside check.sh's mutation pass, so an uncapped run can't
   exhaust the host.

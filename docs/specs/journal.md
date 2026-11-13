@@ -548,7 +548,11 @@ Only on corrupt, live or foreign files:
       as many entries as sb on all three releases, while `-n 500`
       showed none and sb's tail 286, with two errors reported
       (docs/platform-notes/systemd-journal.md, "A damaged entry-array
-      item").
+      item");
+    - on that file a forward page from the entry just before the
+      damaged item shows 274 entries in sb, 255 and 259, and 273 in
+      journalctl 249, which also drops the entry after it (the same
+      note). sb shows what is readable, as this Difference says.
 20. **Forward pages over two boots whose clocks overlap follow sb's
     order** (24.04 and 26.04, decision 11). journalctl 255 and 259 seek
     each file by one key but merge by the boot table, so where a boot's
