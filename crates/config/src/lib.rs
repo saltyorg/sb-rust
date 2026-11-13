@@ -14,4 +14,5 @@ pub mod secret;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod tree;
+pub mod user;
 pub mod validators;
