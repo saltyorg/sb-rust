@@ -362,6 +362,17 @@ To discuss with the maintainer once every module is done, not before:
   maintainer decides whether the difference matters. The figures so far
   are in [ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md)'s
   Consequences; a move back to musl supersedes that ADR.
+- **Tests on a real machine** (maintainer, 2026-11-13). Every test of
+  sb's host-changing commands uses stand-ins (apt-get, ansible-playbook,
+  systemctl on `PATH`, a fake GitHub and Engine API), and the by-hand
+  containers have no systemd and no Docker daemon. Disposable Ubuntu
+  VMs of each supported release (cloud image and cloud-init under
+  QEMU/KVM) would run `sb install`, `sb update`, self-update and the
+  service and container commands for real, as root. Ideas from
+  bootvine's NixOS VM tests: the machine holds at fixed points on a
+  marker file, and the check reads the screen as text and waits on an
+  event instead of sleeping. Costs: a harness of our own, KVM, heavy CPU
+  within the host's cap, slow runs, and CI not yet authorised.
 
 ## Open items carried into module specs
 

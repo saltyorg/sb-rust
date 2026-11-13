@@ -2120,6 +2120,19 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **At M67's look: weigh a side-effect-free viewer core** (the
+      maintainer, 2026-11-13, from a comparison with bootvine). The
+      maintainer asked for it to be weighed in the viewer's spec, but the
+      tui spec is approved and M67 is built (lane 4, unmerged): its
+      viewer state holds tokio's `Notify` and `mpsc` and crossterm's key
+      events. The alternative is ratatui's Elm pattern
+      (https://ratatui.rs/concepts/application-patterns/the-elm-architecture/):
+      `update(model, message, now)` returns its effects as data, in a
+      crate without tokio or crossterm, with the runtime apart. Pros:
+      plain synchronous unit tests, no tokio test-util, an easier
+      mutation bar. Cons: another crate (deny.toml wrappers, capability
+      map rows), and rework of the built viewer. The maintainer decides
+      at the look.
 - [x] **exec's PTY timing tests fail under load** (lane 2, with or after
       M23, which also touches crates/exec). `crates/exec/tests/pty.rs`'s
       `a_grandchild_holding_the_pty_is_left_after_the_drain` (3.36 s
