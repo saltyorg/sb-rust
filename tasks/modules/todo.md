@@ -1577,13 +1577,13 @@ KiB partial lines, `until`'s inclusiveness), then `logs.rs`: `Position`,
 bollard's `events` with `type=container`, and the fake's `/events`.
 
 **Acceptance criteria:**
-- [ ] The named actions map; others pass through.
-- [ ] Each event carries the container's ID and name.
-- [ ] The stream ends cleanly when the daemon ends it.
+- [x] The named actions map; others pass through.
+- [x] Each event carries the container's ID and name.
+- [x] The stream ends cleanly when the daemon ends it.
 
 **Verification:**
-- [ ] `cargo test -p sb-docker`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-docker`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M63
 **Files:** `crates/docker/src/{events.rs,lib.rs,testing/}`
@@ -1598,14 +1598,14 @@ coredump_uid) -> Query`, journalctl's `-u` for the release and source the
 journal was opened with (page-L5).
 
 **Acceptance criteria:**
-- [ ] It equals `Query::unit` with the journal's own release and source.
-- [ ] The doc states the follow rule (a follow's `from` is the `end` of a
+- [x] It equals `Query::unit` with the journal's own release and source.
+- [x] The doc states the follow rule (a follow's `from` is the `end` of a
       page of the same query).
-- [ ] `Query::unit` stays for the test tools.
+- [x] `Query::unit` stays for the test tools.
 
 **Verification:**
-- [ ] `cargo test -p sb-journal -p sb-host`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-journal -p sb-host`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M64 (lane order only)
 **Files:** `crates/journal/src/lib.rs`, `crates/journal/tests/`
@@ -2161,6 +2161,12 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       feature. Declined with it: a charset rule for tags and asset names
       (the pinned URL and the digest already hold, and remote tags reach
       messages cleaned).
+
+- [ ] **docker's poll-tolerance test times out under load** (lane 4, with
+      its next docker change). `control::client::tests::a_few_failed_polls_in_a_row_are_tolerated`
+      (crates/docker/src/control/client.rs:641) timed out once in four
+      runs under load in M64's review and passed on a rerun. Give it a
+      bound that holds under load, as c06f497 did for exec's PTY tests.
 
 ## Ready to start
 
