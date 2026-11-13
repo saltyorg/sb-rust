@@ -1733,7 +1733,8 @@ mod tests {
 
     use crate::testing::crafted::{
         self, A_ITEMS, Crafted, D_ENTRY_ARRAY, D_ENTRY_OFFSET, D_N_ENTRIES, Format, H_ARENA_SIZE,
-        H_ENTRY_ARRAY_OFFSET, H_N_ENTRIES, O_SIZE, each_format,
+        H_ENTRY_ARRAY_OFFSET, H_N_ENTRIES, O_SIZE, Rows, boot_field, boot_file_in,
+        boot_file_naming_in, each_format,
     };
     use std::os::unix::fs::FileExt;
 
@@ -2551,21 +2552,7 @@ mod tests {
         );
     }
 
-    /// The decision-11 fixture's rows: per entry its name, boot,
-    /// monotonic and realtime.
-    type Rows<'a> = &'a [(&'a str, u8, u64, u64)];
-
-    /// `_BOOT_ID=` and the boot's id, as journald writes the field.
-    fn boot_field(boot: u8) -> Vec<u8> {
-        format!("_BOOT_ID={}", file::hex_id(&[boot; 16])).into_bytes()
-    }
-
-    /// A file of `rows`, each entry carrying `WHO=<name>`, its
-    /// `_BOOT_ID=` and, when `matching`, `U=x`; its seqnum id and machine
-    /// id all `seqnum_id` and `machine` bytes; its header's
-    /// `tail_entry_offset` naming its last entry, as journald 254 and
-    /// later write it; and a field table with the `_BOOT_ID` FIELD object
-    /// listing the boots' DATA objects.
+    /// `crafted::boot_file_in` in a regular file.
     fn boot_file(
         seqnum_id: u8,
         machine: u8,
@@ -2575,19 +2562,7 @@ mod tests {
         boot_file_in(Format::Regular, seqnum_id, machine, rows, matching)
     }
 
-    /// `boot_file`, in `format`.
-    fn boot_file_in(
-        format: Format,
-        seqnum_id: u8,
-        machine: u8,
-        rows: Rows<'_>,
-        matching: bool,
-    ) -> tempfile::NamedTempFile {
-        boot_file_naming_in(format, seqnum_id, machine, rows, matching, &[])
-    }
-
-    /// `boot_file`, row `i`'s entry carrying `named[i]` last when it is
-    /// given (a `_MACHINE_ID=` field, as journal-remote keeps the source's).
+    /// `crafted::boot_file_naming_in` in a regular file.
     fn boot_file_naming(
         seqnum_id: u8,
         machine: u8,
@@ -2596,60 +2571,6 @@ mod tests {
         named: &[Option<&[u8]>],
     ) -> tempfile::NamedTempFile {
         boot_file_naming_in(Format::Regular, seqnum_id, machine, rows, matching, named)
-    }
-
-    /// `boot_file_naming`, in `format`.
-    fn boot_file_naming_in(
-        format: Format,
-        seqnum_id: u8,
-        machine: u8,
-        rows: Rows<'_>,
-        matching: bool,
-        named: &[Option<&[u8]>],
-    ) -> tempfile::NamedTempFile {
-        let payloads: Vec<Vec<Vec<u8>>> = rows
-            .iter()
-            .enumerate()
-            .map(|(i, &(who, boot, ..))| {
-                let mut p = vec![format!("WHO={who}").into_bytes(), boot_field(boot)];
-                if matching {
-                    p.push(b"U=x".to_vec());
-                }
-                if let Some(Some(field)) = named.get(i) {
-                    p.push(field.to_vec());
-                }
-                p
-            })
-            .collect();
-        let refs: Vec<Vec<&[u8]>> = payloads
-            .iter()
-            .map(|p| p.iter().map(Vec::as_slice).collect())
-            .collect();
-        let entries: Vec<&[&[u8]]> = refs.iter().map(Vec::as_slice).collect();
-        let (mut c, offsets) = crafted::journal_of_in(format, &entries);
-        for (&e, &(_, boot, mono, real)) in offsets.iter().zip(rows) {
-            c.set(e + 24, real);
-            c.set(e + 32, mono);
-            let e = usize::try_from(e).expect("small");
-            c.b[e + 40..e + 56].copy_from_slice(&[boot; 16]);
-        }
-        c.b[40..56].copy_from_slice(&[machine; 16]);
-        c.b[72..88].copy_from_slice(&[seqnum_id; 16]);
-        c.set(264, *offsets.last().expect("an entry"));
-        // The boots' DATA objects, oldest first, found in the file so far.
-        let t = c.file();
-        let f = file::JournalFile::open(t.path()).expect("opens");
-        let mut boots: Vec<u64> = Vec::new();
-        for &(_, boot, ..) in rows {
-            let d = f.find_data(&boot_field(boot)).expect("lookup");
-            let d = d.expect("found").offset;
-            if !boots.contains(&d) {
-                boots.push(d);
-            }
-        }
-        c.field_table(3);
-        c.field(b"_BOOT_ID", &boots);
-        c.file()
     }
 
     /// Two boots of one machine whose realtimes overlap, in two files

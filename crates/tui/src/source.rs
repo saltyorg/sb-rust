@@ -1,0 +1,347 @@
+//! The log-source protocol (tui spec, "Sources"; research decision 7;
+//! tui decision 10): each open source is a task that takes [`Request`]s
+//! and sends [`Event`]s, each tagged with the source's [`Generation`], so
+//! the viewer drops the events of a source the user has left. A channel,
+//! not a trait: the viewer runs against a fake source task in tests
+//! (`testing`), and the journal and docker adapters need no shared async
+//! trait object.
+//!
+//! The wake-up path: a source sends on the viewer's unbounded channel,
+//! then calls `notify_one` on the screen's `Arc<tokio::sync::Notify>`
+//! ([`Outbox`]). `Notify` keeps one permit when nothing waits
+//! (<https://docs.rs/tokio/1.54.1/tokio/sync/struct.Notify.html#method.notify_one>),
+//! so a wake is never lost and a burst of events costs one wake; the
+//! screen then takes every event waiting with `try_recv`.
+//!
+//! The channels are tokio's `mpsc::unbounded_channel`
+//! (<https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/fn.unbounded_channel.html>):
+//! the viewer asks for one page at a time per direction, and each of a
+//! follow's batches is bounded by its output limit (a backlog comes as
+//! several), so the queue stays short while the viewer keeps up.
+
+mod journal;
+
+use std::fmt;
+use std::sync::Arc;
+
+use jiff::Timestamp;
+use tokio::sync::{Notify, mpsc};
+use tokio::task::JoinHandle;
+
+pub use journal::spawn as spawn_journal;
+
+/// Which opening of a source an event belongs to: each source the viewer
+/// opens gets the next one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Generation(u64);
+
+impl Generation {
+    /// The generation after this one.
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+/// Where a line is in its source: opaque to the viewer, which hands an
+/// edge's position back in [`Request::Older`] and [`Request::Newer`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Position(pub(crate) Inner);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Inner {
+    /// A journal entry, by its cursor.
+    Journal(sb_host::journal::Cursor),
+}
+
+/// One entry of a log, as raw as its source gives it: the viewer turns
+/// the bytes into screen text (`DisplayText`, journal spec "Display").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    /// When the entry was written; `None` when the source doesn't say.
+    pub time: Option<Timestamp>,
+    /// Who wrote it: for a service journalctl's `ident[pid]`, for a
+    /// container the stream; empty when unknown. Untrusted bytes.
+    pub origin: Vec<u8>,
+    /// The message, untrusted bytes, uncut (the viewer cuts at 64 KiB).
+    pub message: Vec<u8>,
+    /// Where it is.
+    pub position: Position,
+}
+
+/// What the viewer asks of a source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    /// The newest entries. It ends a follow, and the source forgets the
+    /// lines it sent (a new buffer starts).
+    Tail,
+    /// The page before this position: the oldest edge of the viewer's
+    /// buffer ([`Event::Page`]'s `oldest`, or a line's position after
+    /// the buffer dropped its old end).
+    Older(Position),
+    /// The page after this position: the newest edge, as for `Older`.
+    /// The source's cycle guard ends forward paging on a page of lines it
+    /// has sent already, so after dropping its newest end the viewer asks
+    /// from its new edge (a line it still holds), never from an older one.
+    Newer(Position),
+    /// Follow (`true`) or stop following. A follow starts from the end of
+    /// the last `Tail`, or `Newer` page with nothing newer, since the
+    /// last follow; with none, the source reads the tail first (an
+    /// [`Event::Page`] of [`PageKind::Tail`]), as `f` with the newest line
+    /// not loaded does (tui spec, "Follow"). A viewer that has dropped its
+    /// newest end sends `Tail` or pages `Newer` to the end before it
+    /// follows; a `Newer` from below the newest line sent already makes
+    /// the next follow read the tail first.
+    Follow(bool),
+}
+
+/// Which request a page answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageKind {
+    /// The newest entries: the buffer starts again with these.
+    Tail,
+    /// Entries before the buffer.
+    Older,
+    /// Entries after the buffer.
+    Newer,
+}
+
+/// What a source sends the viewer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// A page, oldest line first.
+    Page {
+        /// The request it answers.
+        kind: PageKind,
+        lines: Vec<Line>,
+        /// The page's oldest edge: where the next `Older` starts. It can
+        /// be past the oldest line, at an entry the page reached but
+        /// couldn't show. `None` when the page reached none.
+        oldest: Option<Position>,
+        /// The page's newest edge, as `oldest`.
+        newest: Option<Position>,
+        /// Older entries exist (`false`: `--- start of log ---`).
+        more_older: bool,
+        /// Newer entries exist (`false`: `--- end of log ---` when not
+        /// following).
+        more_newer: bool,
+    },
+    /// New entries while following, oldest first.
+    Followed(Vec<Line>),
+    /// Something to show as its own row, never in a log line.
+    Notice(Notice),
+}
+
+/// A viewer notice from a source (tui spec, "Viewer notices").
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Notice {
+    /// The follow couldn't start; the view stays paged (follow-L4).
+    CantFollow(String),
+    /// A page or a follow's batch had read errors: the first, and how
+    /// many more (each is in the run log).
+    ReadErrors { first: String, others: usize },
+}
+
+impl fmt::Display for Notice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CantFollow(cause) => write!(f, "can't follow: {cause}; f retries"),
+            Self::ReadErrors { first, others: 0 } => write!(f, "read error: {first}"),
+            Self::ReadErrors { first, others } => {
+                write!(f, "read error: {first} (and {others} more)")
+            }
+        }
+    }
+}
+
+/// An event and the generation of the source that sent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tagged {
+    pub generation: Generation,
+    pub event: Event,
+}
+
+/// Where a source sends its events: the viewer's channel, the screen's
+/// wake, and the generation every event is tagged with.
+#[derive(Clone, Debug)]
+pub struct Outbox {
+    events: mpsc::UnboundedSender<Tagged>,
+    wake: Arc<Notify>,
+    generation: Generation,
+}
+
+impl Outbox {
+    #[must_use]
+    pub fn new(
+        events: mpsc::UnboundedSender<Tagged>,
+        wake: Arc<Notify>,
+        generation: Generation,
+    ) -> Self {
+        Self {
+            events,
+            wake,
+            generation,
+        }
+    }
+
+    /// The generation its events carry.
+    #[must_use]
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    /// Send `event`, tagged, and wake the screen. `false` once the viewer
+    /// is gone: the source then ends.
+    #[must_use]
+    pub fn send(&self, event: Event) -> bool {
+        let sent = self
+            .events
+            .send(Tagged {
+                generation: self.generation,
+                event,
+            })
+            .is_ok();
+        self.wake.notify_one();
+        sent
+    }
+}
+
+/// An open source: its request channel and its task. Dropping it ends
+/// the task (the source's stream stopped and its follow freed, tui spec
+/// "Leaving"), through tokio's `JoinHandle::abort`
+/// (<https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinHandle.html#method.abort>).
+/// Why not tokio-util's `AbortOnDropHandle`: it needs tokio-util's `rt`
+/// feature, a workspace-wide change, for a three-line `Drop`.
+#[derive(Debug)]
+pub struct SourceHandle {
+    requests: mpsc::UnboundedSender<Request>,
+    generation: Generation,
+    /// `None` for the fake source, whose requests the test takes.
+    task: Option<JoinHandle<()>>,
+}
+
+impl SourceHandle {
+    /// A source task running `run`, which takes its requests and an
+    /// [`Outbox`] for `generation`.
+    pub(crate) fn spawn<F, Fut>(outbox: Outbox, run: F) -> Self
+    where
+        F: FnOnce(mpsc::UnboundedReceiver<Request>, Outbox) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let (requests, received) = mpsc::unbounded_channel();
+        let generation = outbox.generation;
+        let task = tokio::spawn(run(received, outbox));
+        Self {
+            requests,
+            generation,
+            task: Some(task),
+        }
+    }
+
+    /// A handle with no task: the requests go to the receiver returned
+    /// (the fake source, `testing`).
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn detached(generation: Generation) -> (Self, mpsc::UnboundedReceiver<Request>) {
+        let (requests, received) = mpsc::unbounded_channel();
+        let handle = Self {
+            requests,
+            generation,
+            task: None,
+        };
+        (handle, received)
+    }
+
+    /// Ask the source for `request`; its answer comes as events. A source
+    /// that has ended takes it and does nothing.
+    pub fn send(&self, request: Request) {
+        let _ = self.requests.send(request);
+    }
+
+    /// The generation its events carry.
+    #[must_use]
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+}
+
+impl Drop for SourceHandle {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generations_follow_each_other() {
+        let first = Generation::default();
+        assert_ne!(first, first.next());
+        assert!(first < first.next());
+        assert_eq!(first.next(), first.next());
+    }
+
+    #[test]
+    fn notices_say_what_happened() {
+        let cant = Notice::CantFollow("inotify watch limit reached".into());
+        assert_eq!(
+            cant.to_string(),
+            "can't follow: inotify watch limit reached; f retries"
+        );
+        let one = Notice::ReadErrors {
+            first: "/j/x.journal: bad".into(),
+            others: 0,
+        };
+        assert_eq!(one.to_string(), "read error: /j/x.journal: bad");
+        let more = Notice::ReadErrors {
+            first: "/j/x.journal: bad".into(),
+            others: 3,
+        };
+        assert_eq!(
+            more.to_string(),
+            "read error: /j/x.journal: bad (and 3 more)"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outbox_tags_its_events_and_wakes_the_screen() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let wake = Arc::new(Notify::new());
+        let generation = Generation::default().next();
+        let outbox = Outbox::new(tx, Arc::clone(&wake), generation);
+        assert!(outbox.send(Event::Followed(Vec::new())));
+        assert!(outbox.send(Event::Followed(Vec::new())));
+        // Two sends, one stored permit: the wait ends at once.
+        tokio::time::timeout(std::time::Duration::from_secs(5), wake.notified())
+            .await
+            .expect("woken");
+        let got = rx.try_recv().expect("an event");
+        assert_eq!(got.generation, generation);
+        assert_eq!(got.event, Event::Followed(Vec::new()));
+        drop(rx);
+        assert!(!outbox.send(Event::Followed(Vec::new())), "viewer gone");
+    }
+
+    #[tokio::test]
+    async fn dropping_the_handle_ends_the_task() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let outbox = Outbox::new(tx, Arc::new(Notify::new()), Generation::default());
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = SourceHandle::spawn(outbox, |mut requests, _outbox| async move {
+            // Held until the task is dropped.
+            let _done = done_tx;
+            while requests.recv().await.is_some() {}
+            std::future::pending::<()>().await;
+        });
+        assert_eq!(handle.generation(), Generation::default());
+        handle.send(Request::Tail);
+        drop(handle);
+        // The sender inside the aborted task is dropped with it.
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), done_rx).await;
+        assert!(ended.expect("ended in time").is_err());
+    }
+}

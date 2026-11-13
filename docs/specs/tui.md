@@ -274,7 +274,10 @@ docs/community/support.md:34) and sb-go's screens can't give.
   because the map's arrows point down (`tui` above `docker` and `host`).
   A channel, not a trait: the viewer then runs against a fake source
   task in tests, and the two kinds need no shared async trait object.
-  The plan settles names with agent-skills:api-and-interface-design.
+  The plan settles names with agent-skills:api-and-interface-design;
+  the names settled (M66: `Page { kind, lines, oldest, newest,
+  more_older, more_newer }` in place of `end`) are in "Verification
+  notes".
 
 ### The inline fallback (decided.md A-Q4)
 
@@ -1359,6 +1362,42 @@ the test's directory.
   `crates/tui/tests/term.rs`'s `input_reaches_the_screen_within_a_few_frames`;
   the method and the binary's growth are in
   [ADR-023](../decisions/ADR-023-tui-binary-size.md).
+- **The source protocol's names (M66, 2026-11-13, settled with
+  agent-skills:api-and-interface-design):** `sb_tui::source` holds
+  `Request` (`Tail`, `Older(Position)`, `Newer(Position)`,
+  `Follow(bool)`), `Event` (`Page { kind, lines, oldest, newest,
+  more_older, more_newer }`, `Followed(lines)`, `Notice`), `Line { time,
+  origin, message, position }` with an opaque `Position`, `Generation`,
+  `Tagged { generation, event }`, an `Outbox` per source and a
+  `SourceHandle` whose drop aborts the task. The spec's `end` field
+  became `kind` (`Tail`, `Older`, `Newer`): a journal page's `PageEnd`
+  stays in the adapter, which follows from it, and the viewer needs to
+  know which request a page answers. `oldest` and `newest` are the
+  page's edges (`oldest_chosen`, `newest_chosen`), which can lie past
+  the lines at an entry the page couldn't show, so `Older` and `Newer`
+  carry the viewer's edge, not a line's. `Follow(true)` with no page
+  holding the newest entry since the last follow reads the tail first.
+- **The wake-up path (M66, used by M67):** each source holds, in its
+  `Outbox`, an `Arc<tokio::sync::Notify>` the `Tui` owns, and calls
+  `notify_one()` after each event it sends on the viewer's unbounded
+  channel. `Notify` keeps one permit, so no wake is lost and a burst
+  costs one. `run_loop` gains a wake arm after input (the token, then
+  input, then the wake, so a busy follow can't starve input) and calls
+  `App::wake() -> Flow` (default `Unchanged`), where the viewer takes
+  every waiting event with `try_recv` and drops those of an old
+  generation.
+- **The cycle guard's memory (M66):** the cursors sent by the tail,
+  newer pages and follow batches, first in first out, at most 20,000,
+  forgotten on `Tail` and on `Older`, and those sent after a `Newer`'s
+  edge when that edge isn't the newest sent (the viewer dropped its
+  newest end while following; the next follow then reads the tail
+  first). Forgetting on `Older` too: paging
+  back is when the viewer drops its newest end (by its 32 MiB byte cap
+  before its 20,000 entries), and the newer pages that load it again
+  would otherwise read as a cycle and end at a false `end of log` (the
+  adapter's test `newer_pages_reach_the_end_with_every_entry_once`). A
+  cycle back into entries an older page loaded shows them once more
+  before the guard stops it, at most one lap.
 
 ## Open questions
 

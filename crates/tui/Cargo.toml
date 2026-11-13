@@ -7,8 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The fake source task for the viewer's tests (`testing`); never in a
+# release build.
+testing = []
+
 [dependencies]
 sb-cli-core.workspace = true
+# The service list and status times, and the journal reader's API the
+# journal adapter pages and follows on (tui spec, Sources).
+sb-host.workspace = true
+# Line times and the status rule's durations (tui spec, Tech Stack).
+jiff.workspace = true
+# The run log's records: pages, follows, read errors (tui spec, "The run
+# log").
+tracing.workspace = true
 ratatui.workspace = true
 # The palette and log spans (M67): added with the groundwork, as the tui
 # spec's slice 0 lists it.
@@ -23,6 +36,9 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 sb-cli-core.workspace = true
+# The crafted journal files the journal adapter pages and follows (tui
+# spec, Testing Strategy).
+sb-journal = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["sync", "macros", "test-util"] }
 portable-pty.workspace = true
 vt100.workspace = true
