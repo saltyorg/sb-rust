@@ -57,13 +57,13 @@ features = [
 # "Depends on" column. Added with each crate.
 deny = [
     # cli-core: every module builds on it.
-    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui"] },
+    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates.
-    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui"] },
+    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release"] },
     # exec: child processes; its first user is sb-docker's start, stop and
     # restart (exec spec, decision 4).
-    { crate = "sb-exec", wrappers = ["sb-docker"] },
+    { crate = "sb-exec", wrappers = ["sb-docker", "sb-release"] },
     # docker: sb docker ps (and later start/stop/restart, the picker's
     # list, log streams), used by the binary.
     { crate = "sb-docker", wrappers = ["sb", "sb-tui"] },
@@ -81,6 +81,11 @@ deny = [
     # editors) over docker, host, term-ui and cli-core, used by the binary
     # (tui spec, "Gate bookkeeping").
     { crate = "sb-tui", wrappers = ["sb"] },
+    # release: GitHub release lookup, verified downloads and sb
+    # self-update, used by the binary (and later python-env and ops). Its
+    # own name is its self dev-dependency, which turns `testing` on for
+    # its tests (as sb-journal's).
+    { crate = "sb-release", wrappers = ["sb", "sb-release"] },
 ]
 
 [sources]

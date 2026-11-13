@@ -18,6 +18,7 @@ sb-config = { path = "crates/config" }
 sb-exec = { path = "crates/exec" }
 sb-journal = { path = "crates/journal" }
 sb-tui = { path = "crates/tui" }
+sb-release = { path = "crates/release" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"
@@ -127,6 +128,16 @@ ansi-to-tui = "8.0.1"
 # The PTY tests' screen (tests only; already in the tree through
 # indicatif's `in_memory`).
 vt100 = "0.16.2"
+# Release tags and the running version (stack table "Versions"; release
+# spec); already in the tree as a build dependency.
+semver = "1.0.28"
+# sb-release's fake GitHub for tests only (its `testing` feature): a
+# loopback certificate made at test time, no key in the repository
+# (release spec, Tech Stack). aws-lc-rs as the client's rustls, not ring.
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"] }
+# The fake's TLS listener (axum's low-level-rustls example); already in
+# the tree through reqwest.
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 assert_cmd = "2.2.1"
 predicates = "3.1.4"
 insta = "1.49.0"
