@@ -1050,16 +1050,16 @@ a time loops for ever (fwd-M1; confirmed on all three releases).
 where the backward walk goes on (file-M1; confirmed).
 
 **Acceptance criteria:**
-- [ ] A forward walk goes on after an out-of-order array, as the
+- [x] A forward walk goes on after an out-of-order array, as the
       backward walk does; `After` and the tail agree. Each direction
       has a test, in both layouts.
-- [ ] Deleting the backward walk's reset now fails a test (shown once
+- [x] Deleting the backward walk's reset now fails a test (shown once
       by breaking it).
 
 **Verification:**
-- [ ] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
-- [ ] compare.sh on at least one release, capped.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] `cargo test -p sb-journal`; `scripts/check.sh full <base>`.
+- [x] compare.sh on at least one release, capped.
+- [x] Review: one code-reviewer pass on the task's diff, with the
       security-auditor.
 
 **Dependencies:** Task 37
