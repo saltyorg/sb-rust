@@ -15,6 +15,11 @@ use tracing::Instrument;
 /// A known secret, marked sensitive wherever the steps print it.
 const SECRET: &str = "hunter2-not-a-real-token";
 
+/// A notice longer than any screen, wrapped at words in the finished
+/// tree: the log keeps it whole, on one line.
+const LONG_NOTICE: &str = "a long notice that goes on past the width of any screen the tree is drawn on, \
+    so the finished tree wraps it at words while the run log keeps every word of it on one line";
+
 /// A log writer the test can read back.
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<u8>>>);
@@ -81,6 +86,9 @@ async fn run_steps() {
         step.output("checking item 1");
         step.output("\x1b[32mgreen\x1b[0m");
         step.output("w".repeat(300));
+        // Long lines with words, which the finished tree wraps (ui-L4).
+        step.warn(LONG_NOTICE);
+        step.output(LONG_NOTICE.replace("notice", "output"));
         // APC, PM and SOS go from the log with their payloads, 7-bit and
         // 8-bit, as from the screen.
         step.output(
@@ -154,6 +162,11 @@ fn check(text: &str) {
         "{text}"
     );
     line_with(&format!("text=\"{}\"", "w".repeat(300)));
+    assert!(line_with(&format!("text=\"{LONG_NOTICE}\"")).contains(" WARN "));
+    line_with(&format!(
+        "text=\"{}\"",
+        LONG_NOTICE.replace("notice", "output")
+    ));
     line_with("text=\"beforeafter\"");
     assert!(line_with("text=\"warned here\"").contains(" WARN "));
     assert!(!text.contains("payload"), "{text}");

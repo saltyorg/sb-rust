@@ -12,6 +12,7 @@ use sb_cli_core::theme::{Role, Theme};
 
 use crate::runner::Labels;
 use crate::style::paint;
+use crate::text::wrap_line;
 
 /// The column times end in at least (proto-runner's reviewed layout);
 /// further right when a line needs it, never past the screen.
@@ -393,36 +394,49 @@ impl Tree {
             0
         };
         let room = d.width.saturating_sub(width(&lead_text));
+        // Notices, the failure block and kept output lines: cut to the
+        // screen while live (the live area draws one row per line), and
+        // in the finished tree whole, wrapped inside the tree: each
+        // continuation row starts with the guide lines and indent of the
+        // line it continues, so nothing is lost and no row reaches the
+        // terminal's own wrap (ui-L4, plan decision 35). Below two
+        // columns of room (a wide character needs two) it is cut.
+        // termtree's `with_multiline` does this only for the items of a
+        // whole tree it draws itself (see `GLYPHS`).
+        let fit = |text: &str, room: usize| {
+            if live || room < 2 {
+                vec![cut(text, room)]
+            } else {
+                wrap_line(text, room, true)
+            }
+        };
         let mut lines: Vec<String> = Vec::new();
         if hidden > 0 {
             let count = format!("… {hidden} earlier");
             lines.push(format!("{lead}{}", d.paint(Role::Muted, &count)));
         }
-        lines.extend(node.notices.iter().skip(hidden).map(|notice| {
-            let text = cut(&notice.text, room.saturating_sub(2));
-            let mark = if notice.warn {
-                format!("{} {text}", d.paint(Role::Warn, "!"))
-            } else {
-                d.paint(Role::Muted, &format!("› {text}"))
-            };
-            format!("{lead}{mark}")
-        }));
-        // The failure block: the error, every line, under the step. Cut to
-        // the screen only while live (a wrapped live line would break the
-        // redraw); printed for good, nothing of it is lost.
-        let fit = |text: &str, room: usize| {
-            if live {
-                cut(text, room)
-            } else {
-                text.to_string()
+        for notice in node.notices.iter().skip(hidden) {
+            // A notice's continuation rows start under its text, past the
+            // mark.
+            for (i, text) in fit(&notice.text, room.saturating_sub(2)).iter().enumerate() {
+                let row = match (i, notice.warn) {
+                    (0, true) => format!("{} {text}", d.paint(Role::Warn, "!")),
+                    (_, true) => format!("  {text}"),
+                    (0, false) => d.paint(Role::Muted, &format!("› {text}")),
+                    (_, false) => d.paint(Role::Muted, &format!("  {text}")),
+                };
+                lines.push(format!("{lead}{row}"));
             }
-        };
+        }
+        // The failure block: the error, every line, under the step.
         if node.status == Status::Failed {
-            lines.extend(
-                node.error
-                    .iter()
-                    .map(|line| format!("{lead}{}", d.paint(Role::Problem, &fit(line, room)))),
-            );
+            for line in &node.error {
+                lines.extend(
+                    fit(line, room)
+                        .iter()
+                        .map(|text| format!("{lead}{}", d.paint(Role::Problem, text))),
+                );
+            }
         }
         let shown = match node.status {
             Status::Running => self.tail_shown(d.rows),
@@ -431,21 +445,27 @@ impl Tree {
             _ => 0,
         };
         let skip = node.tail.len().saturating_sub(shown);
-        lines.extend(
-            node.tail
-                .iter()
-                .skip(skip)
-                .map(|line| format!("{lead}{}", d.paint(Role::Muted, &cut(line, room)))),
-        );
-        // Then where the full output is, when the run is logged.
+        for line in node.tail.iter().skip(skip) {
+            lines.extend(
+                fit(line, room)
+                    .iter()
+                    .map(|text| format!("{lead}{}", d.paint(Role::Muted, text))),
+            );
+        }
+        // Then where the full output is, when the run is logged; its
+        // continuation rows start under its text, past the branch.
         if let (Status::Failed, Some(pointer)) = (node.status, &self.pointer) {
             let branch = format!("{}{}", GLYPHS.last_item, GLYPHS.item_indent);
-            let text = fit(&format!("full output: {pointer}"), room.saturating_sub(4));
-            lines.push(format!(
-                "{lead}{}{}",
-                d.paint(Role::Faint, &branch),
-                d.paint(Role::Muted, &text)
-            ));
+            let under = " ".repeat(width(&branch));
+            let texts = fit(&format!("full output: {pointer}"), room.saturating_sub(4));
+            for (i, text) in texts.iter().enumerate() {
+                let branch = if i == 0 { &branch } else { &under };
+                lines.push(format!(
+                    "{lead}{}{}",
+                    d.paint(Role::Faint, branch),
+                    d.paint(Role::Muted, text)
+                ));
+            }
         }
         lines
     }
@@ -1039,6 +1059,141 @@ mod tests {
             !printed.iter().any(|l| l.contains("full output")),
             "{printed:?}"
         );
+    }
+
+    /// In the finished tree a notice, an error line, a kept output line
+    /// and the pointer longer than the screen wrap inside the tree, at
+    /// words: each continuation row carries the guide lines and indent of
+    /// the line it continues (a notice's under its text, past the mark),
+    /// and no row is wider than the screen (ui-L4, plan decision 35).
+    #[test]
+    fn the_finished_tree_wraps_long_lines_inside_the_tree() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        tree.set_pointer(Some(
+            "/var/log/sb/a-long-folder-name/for-the-run-logs/sb.log (run 1a2b)".into(),
+        ));
+        let all = tree.add(None, Labels::new("Setting up", "set up"), t0);
+        let settings = tree.add(Some(all), Labels::new("Checking", "checked"), t0);
+        tree.notice(
+            settings,
+            false,
+            "downloads.path is /mnt/unionfs/downloads, which is on the merged mount rather than a local disk",
+        );
+        tree.notice(
+            settings,
+            true,
+            "unknown key: downloads.extra_options_for_the_torrent_client (ignored; see the settings reference)",
+        );
+        tree.finish(settings, Status::Done, t0);
+        let pull = tree.add(
+            Some(all),
+            Labels::new("Pulling", "pulled").failure("pull failed"),
+            t0,
+        );
+        tree.output(pull, "Pulling ghcr.io/hotio/plex:release");
+        tree.output(
+            pull,
+            "Error response from daemon: Head \"https://ghcr.io/v2/hotio/plex/manifests/release\": denied: denied",
+        );
+        tree.set_error(
+            pull,
+            vec!["docker pull ghcr.io/hotio/plex:release exited with code 1 after three attempts to reach the registry".into()],
+        );
+        tree.finish(pull, Status::Failed, t0);
+        tree.finish(all, Status::SubStepFailed, t0);
+        tree.end();
+        let mut d = draw(&theme, t0);
+        d.width = 80;
+        let printed = tree.take_printable(&d);
+        assert!(printed.iter().all(|l| width(l) <= 80), "{printed:#?}");
+        insta::assert_snapshot!(printed.join("\n"), @r#"
+        ╰── ✗ Setting up                            sub-step failed · 0s
+            ├── ✓ checked                                             0s
+            │   › downloads.path is /mnt/unionfs/downloads, which is on the merged mount
+            │     rather than a local disk
+            │   ! unknown key: downloads.extra_options_for_the_torrent_client (ignored;
+            │     see the settings reference)
+            ╰── ✗ pull failed                                         0s
+                docker pull ghcr.io/hotio/plex:release exited with code 1 after three
+                attempts to reach the registry
+                Pulling ghcr.io/hotio/plex:release
+                Error response from daemon: Head
+                "https://ghcr.io/v2/hotio/plex/manifests/release": denied: denied
+                ╰── full output: /var/log/sb/a-long-folder-name/for-the-run-logs/sb.log
+                    (run 1a2b)
+        "#);
+    }
+
+    /// A kept line's own indent and a blank kept line stay in the finished
+    /// tree; a child's colour across a break is closed and reopened on
+    /// each row; a narrow screen wraps within it; live, the same line is
+    /// still cut (ui-L4).
+    #[test]
+    fn wrapped_kept_lines_keep_indent_blank_lines_and_colour() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let id = tree.add(
+            None,
+            Labels::new("Running", "ran").failure("run failed"),
+            t0,
+        );
+        tree.output(id, "    ^ here");
+        tree.output(id, "");
+        tree.output(
+            id,
+            "\x1b[31mred words that run on past the narrow screen\x1b[0m",
+        );
+        tree.set_error(id, vec!["failed".into()]);
+        let mut d = draw(&theme, t0);
+        d.colour = true;
+        d.width = 36;
+        let live = tree.live(&d);
+        assert!(
+            live.iter()
+                .any(|l| console::strip_ansi_codes(l).ends_with('…')),
+            "{live:#?}"
+        );
+        tree.finish(id, Status::Failed, t0);
+        tree.end();
+        let printed = tree.take_printable(&d);
+        assert!(printed.iter().all(|l| width(l) <= 36), "{printed:#?}");
+        let plain: Vec<String> = printed
+            .iter()
+            .map(|l| console::strip_ansi_codes(l).into_owned())
+            .collect();
+        assert!(plain.contains(&"        ^ here".to_owned()), "{plain:#?}");
+        assert!(plain.contains(&"    ".to_owned()), "{plain:#?}");
+        let red: Vec<&String> = printed.iter().filter(|l| l.contains("\x1b[31m")).collect();
+        assert!(red.len() >= 2, "{printed:#?}");
+        assert!(
+            red.iter().all(|l| l.matches("\x1b[31m").count() == 1),
+            "{red:#?}"
+        );
+    }
+
+    /// Two columns of room wrap a finished kept line; less cuts it, and
+    /// no room leaves its row empty (ui-L4).
+    #[test]
+    fn a_finished_line_wraps_from_two_columns_of_room() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let kept = |screen: usize| {
+            let mut tree = Tree::default();
+            let id = tree.add(None, Labels::new("Pulling", "pulled"), t0);
+            tree.output(id, "abcd");
+            tree.finish(id, Status::Interrupted, t0);
+            tree.end();
+            let mut d = draw(&theme, t0);
+            d.width = screen;
+            tree.take_printable(&d)[1..].to_vec()
+        };
+        // The lead is four columns wide.
+        assert_eq!(kept(6), ["    ab", "    cd"]);
+        assert_eq!(kept(5), ["    …"]);
+        assert_eq!(kept(4), ["    "]);
     }
 
     /// An interrupted step keeps its last lines in the finished tree.

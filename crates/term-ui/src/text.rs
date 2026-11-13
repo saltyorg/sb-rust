@@ -261,9 +261,121 @@ impl Perform for Sink<'_> {
     }
 }
 
+/// One line of display text wrapped to `width` columns, measured as
+/// display width with colour codes left out.
+///
+/// A line that fits comes back as it is, its indent and a blank line
+/// included. A longer one goes through tabled's `Wrap::wrap`
+/// (<https://docs.rs/tabled/0.22.0/tabled/settings/width/struct.Wrap.html#method.wrap>),
+/// at words when `words` is set, else at any character; with tabled's
+/// `ansi` feature a colour is closed at each piece's end and re-emitted at
+/// the next. A word wider than `width` breaks at any character. A piece
+/// holding only spaces is dropped (tabled leaves one where a line ended
+/// at the width). In word mode the spaces at each break are taken off:
+/// tabled carries the space it broke at to the start of the next piece,
+/// which also makes that piece break a column early. The first piece
+/// keeps the line's own indent.
+///
+/// Why not textwrap's `Options::subsequent_indent`
+/// (<https://docs.rs/textwrap/0.16.2/textwrap/struct.Options.html#structfield.subsequent_indent>):
+/// textwrap isn't a dependency (the term-ui spec asks first for a new
+/// one); it doesn't close and reopen a colour at a break, so a child's
+/// colour would run into the next row's guide lines; and its indent is
+/// one plain string, where the tree paints each row's lead in its own
+/// role.
+pub(crate) fn wrap_line(line: &str, width: usize, words: bool) -> Vec<String> {
+    if console::measure_text_width(line) <= width {
+        return vec![line.to_owned()];
+    }
+    let wrapped = tabled::settings::width::Wrap::wrap(line, width, words);
+    let pieces: Vec<&str> = wrapped
+        .split('\n')
+        .filter(|piece| !console::strip_ansi_codes(piece).trim().is_empty())
+        .collect();
+    let last = pieces.len().saturating_sub(1);
+    pieces
+        .iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let mut piece = (*piece).to_owned();
+            if words && i > 0 {
+                trim_start(&mut piece);
+            }
+            if words && i < last {
+                trim_end(&mut piece);
+            }
+            piece
+        })
+        .collect()
+}
+
+/// Take off the spaces `piece`'s visible text starts with, colour codes
+/// kept. A colour code holds no space (only SGR codes reach a wrapped
+/// line), so while the visible text starts with a space, the first space
+/// in the piece is that one. Why not ansi-str's `ansi_trim`
+/// (<https://docs.rs/ansi-str/0.9.0/ansi_str/trait.AnsiStr.html#tymethod.ansi_trim>):
+/// ansi-str is only tabled's dependency, not term-ui's (a direct one asks
+/// first), and it trims both ends, where only a break's side is trimmed.
+fn trim_start(piece: &mut String) {
+    while console::strip_ansi_codes(piece).starts_with(' ') {
+        let Some(at) = piece.find(' ') else { break };
+        piece.remove(at);
+    }
+}
+
+/// Take off the spaces `piece`'s visible text ends with, as `trim_start`.
+fn trim_end(piece: &mut String) {
+    while console::strip_ansi_codes(piece).ends_with(' ') {
+        let Some(at) = piece.rfind(' ') else { break };
+        piece.remove(at);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::DisplayText;
+    use super::{DisplayText, wrap_line};
+
+    /// Wrapping counts display width: colour codes count nothing and stay
+    /// whole on each piece, a wide character counts two; no piece starts
+    /// or ends with the space it was broken at (ui-L4).
+    #[test]
+    fn wrapped_lines_are_measured_in_display_width() {
+        let red = "\x1b[31mred red red red\x1b[0m";
+        let pieces = wrap_line(red, 7, true);
+        let plain: Vec<String> = pieces
+            .iter()
+            .map(|p| console::strip_ansi_codes(p).into_owned())
+            .collect();
+        // tabled carries the break's space to the next piece, so it
+        // breaks a column early: "red" alone, then "red".
+        assert_eq!(plain, ["red red", "red", "red"], "{pieces:?}");
+        assert!(
+            pieces.iter().all(|p| p.starts_with("\x1b[31m")),
+            "{pieces:?}"
+        );
+        let wide = "漢字漢字 漢字漢字漢字";
+        let pieces = wrap_line(wide, 6, true);
+        assert!(
+            pieces.iter().all(|p| console::measure_text_width(p) <= 6),
+            "{pieces:?}"
+        );
+        assert_eq!(pieces.concat(), "漢字漢字 漢字漢字漢字", "{pieces:?}");
+        assert_eq!(wrap_line("fits", 4, true), ["fits"]);
+    }
+
+    /// A line's own spaces stay: one that fits comes back as it is, blank
+    /// or indented, and a wrapped one keeps its indent on its first piece;
+    /// only the spaces at a break go.
+    #[test]
+    fn a_lines_own_indent_and_blank_lines_stay() {
+        assert_eq!(wrap_line("    ^ here", 40, true), ["    ^ here"]);
+        assert_eq!(wrap_line("", 40, true), [""]);
+        assert_eq!(wrap_line("   ", 40, true), ["   "]);
+        assert_eq!(
+            wrap_line("  key: one two three", 10, true),
+            ["  key: one", "two three"]
+        );
+    }
 
     /// The lines of `text` sanitized with `colour`.
     fn shown(text: &str, colour: bool) -> Vec<String> {

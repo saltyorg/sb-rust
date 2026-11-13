@@ -850,7 +850,8 @@ impl Step {
     /// only on a coloured target under a colour profile (not `ascii`,
     /// [`keeps_codes`]); tabs become spaces; every other escape sequence,
     /// with its payload, and other control characters are dropped; a line
-    /// wider than the screen is cut with `…` on screen. The log gets each
+    /// wider than the screen is cut with `…` while live and wrapped inside
+    /// the finished tree (term-ui spec, "Long lines"). The log gets each
     /// line as `DisplayText` with colour off, whole. The live area
     /// shows new lines on the next frame, so streamed output doesn't
     /// redraw the tree per line.

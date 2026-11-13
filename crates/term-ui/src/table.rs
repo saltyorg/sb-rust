@@ -265,12 +265,10 @@ fn narrowest(columns: usize) -> usize {
 }
 
 /// `text` wrapped to `width` columns: each of its lines on its own,
-/// through tabled's `Wrap::wrap`
-/// (<https://docs.rs/tabled/0.22.0/tabled/settings/width/struct.Wrap.html#method.wrap>),
-/// at words when `words` is set, else at any character. A line that held
-/// only spaces (the space after a full line, or a run of padding) is
-/// dropped; a blank line of the
-/// cell's own is kept.
+/// through [`crate::text::wrap_line`] (tabled's `Wrap::wrap`), at words
+/// when `words` is set, else at any character. A piece that held only
+/// spaces (the space after a full line, or a run of padding) is dropped;
+/// a blank line of the cell's own is kept.
 ///
 /// Why not tabled's `Width::wrap(..).keep_words(true)` on the table
 /// (ui-L3, tabled 0.22.0, its `wrap_text_keeping_words`, which hands
@@ -287,13 +285,7 @@ fn wrapped(text: &str, width: usize, words: bool) -> String {
             lines.push(line.to_owned());
             continue;
         }
-        let wrapped = tabled::settings::width::Wrap::wrap(line, width, words);
-        lines.extend(
-            wrapped
-                .split('\n')
-                .filter(|piece| !piece.trim().is_empty())
-                .map(str::to_owned),
-        );
+        lines.extend(crate::text::wrap_line(line, width, words));
     }
     lines.join("\n")
 }

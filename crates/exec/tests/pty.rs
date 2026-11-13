@@ -366,11 +366,15 @@ async fn long_lines_and_secrets_across_the_cut() {
         "head -c 20000 /dev/zero | tr '\\0' w; echo; echo ok; exit 1",
     ))
     .await;
-    assert_eq!(
-        screen.lines().filter(|l| l.contains("www")).count(),
-        1,
-        "{screen}"
-    );
+    // One kept line, cut at exec's 4 KiB: the finished tree wraps it over
+    // rows (term-ui spec, "Long lines"), so its rows hold that one line's
+    // characters, not the 20000 the child wrote.
+    let shown: usize = screen
+        .lines()
+        .filter(|l| l.contains("www"))
+        .map(|l| l.matches('w').count())
+        .sum();
+    assert!(shown > 0 && shown <= 4096, "{shown}: {screen}");
     assert!(has_line(&screen, "ok"), "{screen}");
     let cmd = sh("head -c 4090 /dev/zero | tr '\\0' x; printf '%s\\n' \"$T\"; exit 1")
         .secret_env("T", "across-the-cut-secret");

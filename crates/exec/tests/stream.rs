@@ -117,7 +117,9 @@ async fn lines_are_split_from_bytes_and_bounded() {
     let script = "printf '\\303'; sleep 0.1; printf '\\251\\n'; \
                   printf '10%%\\r50%%\\r100%%\\n'; \
                   head -c 5000 /dev/zero | tr '\\0' x; echo; echo after; exit 1";
-    let term = InMemoryTerm::new(40, 120);
+    // Tall enough for the finished tree, which wraps the 4 KiB line over
+    // rows (term-ui spec, "Long lines").
+    let term = InMemoryTerm::new(200, 120);
     let options = Options {
         target: Target::InMemory {
             term: term.clone(),

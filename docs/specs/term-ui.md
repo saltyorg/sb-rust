@@ -95,6 +95,19 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   in the finished tree (sb-go's `Task.Info` and `Task.Warning`), drawn as
   bullets: `›` for info in the muted colour, an orange `!` for warnings
   (decision 7).
+- **Long lines** (the maintainer, hardening plan decision 35; ui-L4):
+  while live, a notice, an error line, a kept output line or the
+  failure block's pointer wider than the screen is cut with `…`. In the
+  finished tree it is shown whole, wrapped at words inside the tree:
+  each continuation row starts with the guide lines and indent of the
+  line it continues (a notice's and the pointer's under their text, past
+  the mark or branch), for as many rows as it needs, so no row is left
+  to the terminal's own wrap. A line's own indent and a blank line stay;
+  a word wider than the row (a long path or URL) breaks at any
+  character. Wrapping is tabled's `Wrap::wrap`, by display width, a
+  child's colour closed and reopened on each row (textwrap isn't a
+  dependency). The run log keeps every line whole. A kept line can be up
+  to exec's 4 KiB, about 54 rows at 80 columns.
 - **Nesting and concurrency:** a step can run sub-steps (a deeper branch),
   and sibling steps can run at the same time. How this fits the no-blink
   technique and the last-branch glyph: decisions 2 and 3; what a failing
@@ -479,7 +492,8 @@ impl Step {
     /// output); colour codes are kept on a coloured target, except under
     /// `ascii`, and stripped otherwise; every other escape sequence goes
     /// with its payload ("Escape handling"); a line wider than the screen
-    /// is cut with `…` on screen and logged whole, with colour off.
+    /// is cut with `…` while live, wrapped inside the finished tree ("Long
+    /// lines"), and logged whole, with colour off.
     pub fn output(&mut self, text: impl Into<Line>);
 
     /// Run a sub-step (a deeper branch) to its end; this step's subtree
