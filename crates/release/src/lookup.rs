@@ -95,19 +95,11 @@ impl Failure {
         })
     }
 
-    /// `err` with its causes on one line (cli-core's `chain`), without
-    /// the request's URL (reqwest's `without_url`,
-    /// <https://docs.rs/reqwest/0.13.5/reqwest/struct.Error.html#method.without_url>):
-    /// the cause is what the warning needs, and the URL is in the log.
+    /// The cause is what the warning needs; the URL is in the log.
     fn transport(err: reqwest::Error) -> Self {
-        let err = err.without_url();
-        let causes = sb_cli_core::exit::chain(&err)
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(": ");
         Failure(Kind::Transport {
             timed_out: err.is_timeout(),
-            causes: cut(&causes),
+            causes: causes(err),
         })
     }
 }
@@ -133,6 +125,19 @@ impl fmt::Display for Failure {
 }
 
 impl std::error::Error for Failure {}
+
+/// `err` with its causes on one line (cli-core's `chain`), without the
+/// request's URL (reqwest's `without_url`,
+/// <https://docs.rs/reqwest/0.13.5/reqwest/struct.Error.html#method.without_url>),
+/// made safe and cut.
+pub(crate) fn causes(err: reqwest::Error) -> String {
+    let err = err.without_url();
+    let causes = sb_cli_core::exit::chain(&err)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ");
+    cut(&causes)
+}
 
 /// Remote text as a message shows it: escape sequences and controls
 /// dropped by term-ui's `DisplayText`, whitespace runs one space, cut at
@@ -314,6 +319,9 @@ impl Releases {
         let mut response = self
             .client
             .get(url)
+            // A total for the request, body included
+            // (<https://docs.rs/reqwest/0.13.5/reqwest/struct.RequestBuilder.html#method.timeout>).
+            .timeout(self.metadata_timeout)
             .send()
             .await
             .map_err(Failure::transport)?;

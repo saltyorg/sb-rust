@@ -141,6 +141,9 @@ vt100 = "0.16.2"
 # Release tags and the running version (stack table "Versions"; release
 # spec); already in the tree as a build dependency.
 semver = "1.0.28"
+# Streamed SHA-256 of downloads (stack table "Self-update"; release spec);
+# already in the tree through lzma-rust2.
+sha2 = "0.11.1"
 # sb-release's fake GitHub for tests only (its `testing` feature): a
 # loopback certificate made at test time, no key in the repository
 # (release spec, Tech Stack). aws-lc-rs as the client's rustls, not ring.

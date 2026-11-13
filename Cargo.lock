@@ -3442,6 +3442,7 @@ name = "sb-release"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "hex",
  "indicatif",
  "rcgen",
@@ -3452,6 +3453,8 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",

@@ -12,7 +12,7 @@ publish.workspace = true
 # (`testing` module) for sb-release's tests and sb's end-to-end tests: built
 # into the sb that `cargo test` runs (resolver 3 unifies dev-dependency
 # features only for test builds), never into a release or production build.
-testing = ["dep:axum", "dep:rcgen", "dep:tokio-rustls", "tokio/net", "tokio/rt", "tokio/sync"]
+testing = ["dep:axum", "dep:futures-util", "dep:rcgen", "dep:tokio-rustls", "tokio/macros", "tokio/net", "tokio/rt", "tokio/sync"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -22,10 +22,14 @@ reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "time"] }
 tracing.workspace = true
 axum = { workspace = true, optional = true }
+# The fake's bodies sent in parts, with pauses (a slow or stalled server).
+futures-util = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 

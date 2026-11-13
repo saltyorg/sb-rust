@@ -1,9 +1,10 @@
 //! GitHub releases for sb (docs/specs/release.md): the lookup through the
-//! SVM proxy, then GitHub, and the checks every asset passes before a
-//! download. Verified downloads, activation and `sb self-update` build on
-//! these.
+//! SVM proxy, then GitHub, the checks every asset passes, the verified
+//! download and the atomic activation. `sb self-update` builds on these.
 
+mod activate;
 mod asset;
+mod download;
 mod lookup;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -13,7 +14,9 @@ use std::time::Duration;
 
 use reqwest::Url;
 
+pub use activate::activate;
 pub use asset::Asset;
+pub use download::{Stage, Staged};
 pub use lookup::{Failure, Query, Release};
 
 /// A GitHub repository: the owner is a parameter (sb's and the fact's
@@ -42,6 +45,12 @@ pub enum Error {
     /// A tag query was answered with another release (the tag made safe).
     #[error("release {asked} answered as {got}")]
     OtherTag { asked: String, got: String },
+    /// A download failed or didn't verify; nothing is left staged.
+    #[error("{0}")]
+    Download(String),
+    /// A staged file couldn't be put in place.
+    #[error("{0}")]
+    Activate(String),
     /// The step's token was cancelled (Ctrl-C, a failing sibling).
     #[error("interrupted")]
     Interrupted,
@@ -60,6 +69,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Each read within this, reset after every successful read: no total, so
 /// a slow link finishes (release spec, decision 5).
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Each metadata request in total, body included: a proxy trickling bytes
+/// under the read timeout can't stall a lookup without end. Downloads have
+/// no total (decision 5; the module plan's follow-ups).
+pub(crate) const METADATA_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One HTTP client and the three bases: the SVM proxy, GitHub's API and
 /// GitHub's download host. A run makes one, so its notices come at most
@@ -70,6 +83,7 @@ pub struct Releases {
     proxy: Url,
     api: Url,
     download: Url,
+    metadata_timeout: Duration,
     /// The proxy's warning and the fallback's info, once per run each.
     warned: AtomicBool,
     fell_back: AtomicBool,
@@ -109,6 +123,7 @@ impl Releases {
             proxy: parse(proxy)?,
             api: parse(api)?,
             download: parse(download)?,
+            metadata_timeout: METADATA_TIMEOUT,
             warned: AtomicBool::new(false),
             fell_back: AtomicBool::new(false),
         })

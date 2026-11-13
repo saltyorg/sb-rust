@@ -20,12 +20,14 @@
 //! TLS with a certificate made at test time.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::IntoFuture;
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
@@ -43,6 +45,9 @@ pub struct TestBases {
     pub api: String,
     pub download: String,
     pub certificate: Vec<u8>,
+    /// Each metadata request's total limit (60 s in production), short
+    /// for a test of a server that trickles.
+    pub metadata_timeout: std::time::Duration,
 }
 
 impl Releases {
@@ -60,11 +65,14 @@ impl Releases {
             api,
             download,
             certificate,
+            metadata_timeout,
         } = bases;
         let certificate = reqwest::Certificate::from_der(&certificate)
             .map_err(|err| Error::Client(err.to_string()))?;
         let builder = builder(user_agent).no_proxy().tls_certs_only([certificate]);
-        Self::with(builder, [&proxy, &api, &download])
+        let mut releases = Self::with(builder, [&proxy, &api, &download])?;
+        releases.metadata_timeout = metadata_timeout;
+        Ok(releases)
     }
 }
 
@@ -74,6 +82,12 @@ pub struct Answer {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Send the body in parts of this many bytes, pausing this long before
+    /// each (a slow or trickling server); all at once when `None`.
+    pub trickle: Option<(usize, std::time::Duration)>,
+    /// End the body with an error after what it sent (a connection that
+    /// breaks mid-body).
+    pub cut_off: bool,
 }
 
 impl Answer {
@@ -83,7 +97,27 @@ impl Answer {
             status,
             headers: Vec::new(),
             body: body.into(),
+            trickle: None,
+            cut_off: false,
         }
+    }
+
+    /// This answer's body broken off after it is sent: the connection
+    /// fails before the body's end.
+    #[must_use]
+    pub fn cut_off(mut self) -> Self {
+        self.cut_off = true;
+        self.trickle
+            .get_or_insert((self.body.len().max(1), std::time::Duration::ZERO));
+        self
+    }
+
+    /// This answer with its body sent `part` bytes at a time, `pause`
+    /// before each part.
+    #[must_use]
+    pub fn trickled(mut self, part: usize, pause: std::time::Duration) -> Self {
+        self.trickle = Some((part.max(1), pause));
+        self
     }
 
     /// 200 with a JSON `body`.
@@ -127,7 +161,7 @@ struct Script {
     seen: Vec<Seen>,
 }
 
-/// A running fake; it stops when dropped.
+/// A running fake; it stops when dropped, closing its connections.
 pub struct Fake {
     url: String,
     certificate: Vec<u8>,
@@ -238,11 +272,17 @@ impl Fake {
                         }
                     };
                     let _ = ready.send(Ok(()));
-                    let _ = axum::serve(Tls { tcp, acceptor }, app)
-                        .with_graceful_shutdown(async move {
-                            let _ = stopped.await;
-                        })
-                        .await;
+                    // Stopped at once, not gracefully: a client that
+                    // stopped reading mid-body (a refused download) would
+                    // hold a graceful shutdown for ever, and `Drop` waits
+                    // on this thread from the test's own runtime. Leaving
+                    // `block_on` drops the server, and the runtime's end
+                    // with the thread cancels its connection tasks
+                    // (<https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html#shutdown>).
+                    tokio::select! {
+                        _ = axum::serve(Tls { tcp, acceptor }, app).into_future() => {}
+                        _ = stopped => {}
+                    }
                 });
             })?;
         started
@@ -271,6 +311,7 @@ impl Fake {
             api: format!("{}/api", self.url),
             download: format!("{}/", self.url),
             certificate: self.certificate.clone(),
+            metadata_timeout: crate::METADATA_TIMEOUT,
         }
     }
 
@@ -346,11 +387,28 @@ async fn answer(
     let Some(answer) = scripted else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut response = (
-        StatusCode::from_u16(answer.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-        answer.body,
-    )
-        .into_response();
+    let status = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = match answer.trickle {
+        None => (status, answer.body).into_response(),
+        // A body from a stream of parts, each after its pause (axum's
+        // `Body::from_stream`,
+        // <https://docs.rs/axum/0.8.9/axum/body/struct.Body.html#method.from_stream>).
+        Some((part, pause)) => {
+            let mut parts: Vec<Result<Vec<u8>, std::io::Error>> = answer
+                .body
+                .chunks(part)
+                .map(|part| Ok(part.to_vec()))
+                .collect();
+            if answer.cut_off {
+                parts.push(Err(std::io::Error::other("cut off")));
+            }
+            let stream = futures_util::stream::iter(parts).then(move |part| async move {
+                tokio::time::sleep(pause).await;
+                part
+            });
+            (status, axum::body::Body::from_stream(stream)).into_response()
+        }
+    };
     for (name, value) in &answer.headers {
         if let (Ok(name), Ok(value)) = (
             axum::http::HeaderName::try_from(name.as_str()),
