@@ -175,7 +175,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   collection as a mapping key, a tag Ansible's loader has no constructor
   for (`!custom`; it takes the YAML types' tags and its own `!unsafe` and
   `!vault`, which sb reads as their strings, as yaml.v3 does), a control
-  character, NEL, LS and PS, and the rest listed in
+  character, NEL, LS and PS, a byte order mark past the file's start
+  (libyaml reads one there as a column or as text), and the rest listed in
   docs/platform-notes/yaml-acceptance.md. A block scalar at the end of a
   file without a final line break ends without one, as in libyaml and
   yaml.v3 (saphyr adds one; sb takes it off).
@@ -184,7 +185,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   never on length, since localhost.yml is as long as its owner makes it.
   A syntax error is that file's issue, with saphyr's
   line and column in the file as written, or the pre-pass's for what
-  it refuses. *Amended by hardening Tasks 43, 59 and 61.* Merge keys (`<<`) aren't followed
+  it refuses. *Amended by hardening Tasks 43, 59 and 61, and the module
+  build's byte order mark follow-up.* Merge keys (`<<`) aren't followed
   (saphyr doesn't; yaml.v3 does), so a `<<` key is an unknown field: a
   difference, below.
 - **Duplicate keys:** a pass over the parser's events runs first and
@@ -339,7 +341,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   and saphyr still differ (saphyr's own refusals:
   docs/platform-notes/yaml-acceptance.md), sb follows saphyr. NEL, LS and PS (U+0085, U+2028, U+2029), line breaks to
   libyaml and not to saphyr, are refused wherever they are, even where
-  libyaml reads them as saphyr would.
+  libyaml reads them as saphyr would; so is a byte order mark past the
+  file's first character (a column or text to libyaml).
 - Nesting deeper than 23,000 levels is refused (yaml.v3 has no limit),
   and so is flow nesting deeper than 255, saphyr-parser's own limit,
   which libyaml takes.

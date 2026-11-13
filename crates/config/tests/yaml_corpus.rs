@@ -370,10 +370,13 @@ fn what_libyaml_refuses_is_refused_where_it_says() {
         assert!(lib.ends_with(&at), "{name}: sb{at}, libyaml {lib}");
     }
     // Where libyaml names a later point than sb: the line after a NEL,
-    // the directive's name, the token after a flow `?`.
+    // the directive's name, the token after a flow `?`, the key or line
+    // after a byte order mark past the file's start (sb names the mark).
     assert_eq!(sb_at("nel-line-break"), " at line 1, column 5");
     assert_eq!(sb_at("directive-unknown"), " at line 1, column 1");
     assert_eq!(sb_at("flow-question-without-space"), " at line 1, column 5");
+    assert_eq!(sb_at("bom-on-second-line"), " at line 2, column 1");
+    assert_eq!(sb_at("bom-twice-then-mapping"), " at line 1, column 1");
 }
 
 /// The tab layouts libyaml refuses (config-L1) are refused at the line and

@@ -48,8 +48,9 @@
 //! parser, which refuses content after a document's end), scalar mapping
 //! keys, only the tags its constructor knows (decision 41), and nesting
 //! no deeper than [`MAX_DEPTH`]; before that the text
-//! must hold no character libyaml's reader refuses, and no NEL, LS or PS
-//! (line breaks to libyaml, text to saphyr). The pass limits depth only,
+//! must hold no character libyaml's reader refuses, no NEL, LS or PS
+//! (line breaks to libyaml, text to saphyr), and no byte order mark past
+//! its first character. The pass limits depth only,
 //! never length: the Saltbox inventory is as long as its owner makes it,
 //! and cli-core reads it whole (`read_inventory`, decision 41).
 //! Its events are loaded through [`Prepared::load`], which gives a block
@@ -559,19 +560,33 @@ pub fn with_stack<T: Send>(depth: usize, f: impl FnOnce() -> T + Send) -> std::i
 /// are line breaks to libyaml (`IS_BREAK` in `yaml_private.h`:
 /// <https://github.com/yaml/libyaml/blob/0.2.5/src/yaml_private.h>) and
 /// text to saphyr: wherever one sits, a value or the structure around it
-/// reads differently. Escaped in a double-quoted scalar each is text to
-/// both. The message names the code point, never the text around it.
+/// reads differently. A byte order mark (U+FEFF) is refused past the
+/// stream's first character (decision 38): libyaml's reader drops only
+/// that one (`yaml_parser_determine_encoding`), its scanner skips one at
+/// a line's start but counts it as a column (`yaml_parser_scan_to_next_token`
+/// in `scanner.c`), and elsewhere it is text. The pre-pass dropped only
+/// the first and saphyr reads the others its own way, so some files
+/// libyaml refuses read (the corpus's `bom-*` cases); one rule refuses
+/// them all, the few libyaml reads as saphyr does too. Escaped in a double-quoted scalar each is
+/// text to both. The message names the code point, never the text around
+/// it; the stream's own mark is no column.
 fn characters(text: &str) -> Result<(), Refusal> {
     let refused = |c: char| {
         matches!(c, '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{7f}'..='\u{9f}')
-            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{fffe}' | '\u{ffff}')
+            || matches!(
+                c,
+                '\u{2028}' | '\u{2029}' | '\u{fffe}' | '\u{ffff}' | '\u{feff}'
+            )
     };
-    let Some(at) = text.find(refused) else {
+    let mark = text
+        .strip_prefix('\u{feff}')
+        .map_or(0, |_| '\u{feff}'.len_utf8());
+    let Some(at) = text[mark..].find(refused).map(|at| at + mark) else {
         return Ok(());
     };
     let before = &text[..at];
     let mut line = 1;
-    let mut start = 0;
+    let mut start = mark;
     for (i, c) in before.char_indices() {
         // `\r\n` is one break: its `\n` starts the line again.
         if c == '\n' || (c == '\r' && !before[i + 1..].starts_with('\n')) {
@@ -589,7 +604,11 @@ fn characters(text: &str) -> Result<(), Refusal> {
         '\u{2029}' => "PS",
         _ => "",
     };
-    let message = if name.is_empty() {
+    let message = if found == '\u{feff}' {
+        "U+FEFF, a byte order mark, is allowed only as the file's first character \
+         (remove it, or in a double-quoted string write it as \\ufeff)"
+            .to_string()
+    } else if name.is_empty() {
         format!(
             "U+{code:04X}, a control character Ansible's YAML parser refuses \
              (in a double-quoted string, write it as \\u{code:04x})"
@@ -2428,6 +2447,36 @@ mod tests {
         assert!(prepare("a: \"x\\u2028y\"\n").is_ok());
     }
 
+    /// A byte order mark past the stream's first character is refused
+    /// (decision 38): libyaml skips one at a line's start but counts it
+    /// as a column, and reads one elsewhere as text, where saphyr reads
+    /// it otherwise. The stream's own mark is no column.
+    #[test]
+    fn a_byte_order_mark_past_the_start_is_refused() {
+        let bom = "U+FEFF, a byte order mark, is allowed only as the file's first \
+                   character (remove it, or in a double-quoted string write it as \\ufeff)";
+        assert_eq!(
+            refused("\u{feff}\u{feff}a: 1\nb: 2\n"),
+            format!("{bom} at line 1, column 1")
+        );
+        assert_eq!(
+            refused("a: 1\n\u{feff}b: 2\n"),
+            format!("{bom} at line 2, column 1")
+        );
+        assert_eq!(
+            refused("a: \"x\u{feff}y\"\n"),
+            format!("{bom} at line 1, column 6")
+        );
+        assert_eq!(
+            refused("\u{feff}a: x\u{feff}\n"),
+            format!("{bom} at line 1, column 5")
+        );
+        // The stream's own mark isn't a column for other refusals either.
+        assert!(refused("\u{feff}a: \u{1}\n").ends_with("at line 1, column 4"));
+        assert!(prepare("\u{feff}a: 1\n").is_ok());
+        assert!(prepare("a: \"x\\ufeffy\"\n").is_ok());
+    }
+
     /// Nesting is limited, never length: `MAX_DEPTH` collections are read,
     /// one more is refused where it starts, and an alias counts as the
     /// collections it copies.
@@ -2697,8 +2746,18 @@ mod tests {
             format!("{TAB_INDENT} at line 3, column 1")
         );
         assert_eq!(loaded("|\n...\n# c\n"), [""]);
-        // Where the scan and saphyr read such a text apart (here a second
-        // byte order mark), libyaml's value doesn't stand in: refused.
+        // Where the scan and saphyr read such a text apart (here saphyr
+        // reads the indented `>` lines as the scalar's and the next `>` as
+        // more content; found by a fuzz), libyaml's value doesn't stand in:
+        // refused.
+        let read_apart = "|\n  >\n\r\n>\n\n# c\n";
+        assert!(
+            refused(read_apart).starts_with(AFTER_TOP_SCALAR),
+            "{:?}",
+            prepare(read_apart)
+        );
+        // The fuzz's first such text held a second byte order mark, which
+        // the character check now refuses before the scan.
         let apart = "\u{feff}\u{feff}&a \n\n>\r\r\n>##&a :\n>\n#\u{feff}%#:";
         assert!(prepare(apart).is_err(), "{:?}", prepare(apart));
         // The comment lines are emptied, what they held counted.

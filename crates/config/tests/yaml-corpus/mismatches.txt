@@ -12,6 +12,12 @@
 # where libyaml reads it.
 ls-line-break: libyaml accepts, sb refuses: syntax error: U+2028 (LS) is a line break to Ansible's YAML parser and not to sb's (in a double-quoted string, write it as \u2028) at line 1, column 5
 
+# A byte order mark past the file's start: libyaml skips one at a line's
+# start but counts it as a column, and reads one elsewhere as text, where
+# sb's pre-pass and saphyr read it otherwise, so sb refuses each
+# (decision 38), even where libyaml reads it as saphyr does.
+bom-in-double-quoted: libyaml accepts, sb refuses: syntax error: U+FEFF, a byte order mark, is allowed only as the file's first character (remove it, or in a double-quoted string write it as \ufeff) at line 1, column 6
+
 # Resolution: sb resolves plain scalars as yaml.v3 does (YAML 1.2 core,
 # as sb-go; docs/specs/config.md), libyaml's PyYAML resolver is YAML 1.1.
 # The schema rules read yes/no/on/off as Ansible booleans either way.

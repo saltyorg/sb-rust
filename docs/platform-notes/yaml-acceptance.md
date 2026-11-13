@@ -181,9 +181,18 @@ a block scalar header at an explicit key's column. sb refuses a few
 layouts libyaml reads differently from saphyr: `[?x]` (libyaml a key
 `x`, saphyr a scalar `?x`), an alias glued to its key's colon (`*x: 1`,
 which saphyr alone refused before too), and a tab-only line between a
-directive and `---`; a byte order mark inside a document is saphyr's
-own refusal. A mapping with the keys `~` and an empty one is two keys
-to validate-config's duplicate rule (yaml.v3 compares text) and one key
+directive and `---`. A byte order mark past the stream's first
+character is refused wherever it is (the module build's follow-up,
+decision 38): libyaml 0.2.5's scanner skips one at a line's start but
+counts it as a column (`a: 1` then `<BOM>b: 2` is "did not find expected
+key"; two marks before a mapping start it at column 1), and reads one
+elsewhere as text, while the pre-pass dropped only the first and saphyr
+read the rest its own way, so sb accepted some files libyaml refuses.
+Where libyaml reads it as saphyr does (`a: "x<BOM>y"`) sb refuses what
+libyaml accepts: the corpus's `bom-in-double-quoted` line.
+
+A mapping with the keys `~` and an empty one is two keys to
+validate-config's duplicate rule (yaml.v3 compares text) and one key
 twice to the inventory read's loader, which refuses it (Ansible's
 loader takes it).
 
@@ -196,12 +205,15 @@ The corpus has a case for each refusal (`multi-document`,
 `tab-after-end-marker`, `control-character`, `directive-unknown`,
 `directive-yaml-1-3`, `tag-before-bracket`,
 `flow-question-without-space`, `top-level-block-scalar-at-column-0`,
-`flow-key-across-lines`, `collection-as-key`), its libyaml verdict from
+`flow-key-across-lines`, `collection-as-key`, `bom-on-second-line`,
+`bom-twice-then-mapping`), its libyaml verdict from
 `scripts/yaml-corpus.py`, which since Task 59 also records the reader's
 errors and a collection as a mapping key, and the test checks sb's
-position against libyaml's. sb names an earlier point for three: the
+position against libyaml's. sb names an earlier point for five: the
 NEL itself (libyaml the line after it), an unknown directive's `%`
-(libyaml its name) and a flow `?` (libyaml the token after it).
+(libyaml its name), a flow `?` (libyaml the token after it), and a byte
+order mark past the stream's start in the two `bom-*` cases (libyaml the
+key or line after it).
 
 Not covered by Task 59: a tag Ansible's constructor has none for
 (Task 61 refuses it, below), and a value its constructor can't build.
