@@ -1,0 +1,14 @@
+---
+source: crates/sb/tests/logs.rs
+expression: "String::from_utf8_lossy(&help.get_output().stdout)"
+---
+  Shows Saltbox's systemd services and Docker containers, and the log of the one you choose.
+
+  USAGE
+
+    sb logs [--flags]
+
+  FLAGS
+
+    --color    Controls when to use color (auto)
+    -h --help  Help for logs

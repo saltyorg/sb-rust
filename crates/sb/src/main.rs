@@ -81,6 +81,11 @@ enum Command {
     // No `--verbose/-v` (motd decision 9).
     #[command(long_about = motd::ABOUT)]
     Motd(motd::Args),
+    /// Display logs of managed systemd services
+    #[command(
+        long_about = "Shows Saltbox's systemd services and Docker containers, and the log of the one you choose."
+    )]
+    Logs,
     /// Update Saltbox CLI
     // Hidden, as sb-go's. No `--verbose/-v` (release spec, decision 13).
     // `--force-update` exists only in builds with self-update off, raw
@@ -230,6 +235,7 @@ impl Command {
             },
             Command::Motd(_) => "motd",
             Command::SelfUpdate { .. } => "self-update",
+            Command::Logs => "logs",
         }
     }
 
@@ -242,7 +248,8 @@ impl Command {
             // completion run unprivileged (cli-core decision 3); Saltbox's
             // config is root's to read (config spec); the Sandbox checkout
             // and its ownership are root's to change; so are the files
-            // `edit` opens (tui spec, editors, assumption 2); motd as every
+            // `edit` opens (tui spec, editors, assumption 2); the journal
+            // files are root's to read (tui assumption 2); motd as every
             // command (motd decision 20: pam_motd already runs it as root);
             // and sb's own file, which `self-update` replaces (release spec,
             // assumption 5).
@@ -251,7 +258,8 @@ impl Command {
             | Command::BranchSandbox { .. }
             | Command::Edit { .. }
             | Command::Motd(_)
-            | Command::SelfUpdate { .. } => true,
+            | Command::SelfUpdate { .. }
+            | Command::Logs => true,
         }
     }
 }
@@ -486,6 +494,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::SelfUpdate { yes, force_update } => {
             self_update::self_update(yes, force_update, shutdown, log)?;
         }
+        Command::Logs => logs::logs(shutdown)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -704,6 +713,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 
 mod branch;
 mod edit;
+mod logs;
 mod motd;
 mod self_update;
 
@@ -863,6 +873,13 @@ mod tests {
         let motd = Command::Motd(motd::Args::default());
         assert!(motd.needs_root());
         assert_eq!(motd.name(), "motd");
+    }
+
+    /// `logs` reads root's journal and logs under its name.
+    #[test]
+    fn logs_needs_root() {
+        assert!(Command::Logs.needs_root());
+        assert_eq!(Command::Logs.name(), "logs");
     }
 
     /// `docker ps` needs root (cli-core decision 3).

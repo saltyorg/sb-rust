@@ -54,6 +54,9 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
         "DOCKER_HOST",
         format!("unix://{}", test_log_dir().join("no-docker.sock").display()),
     );
+    // Nor the host's journal: a directory that doesn't exist, unless a
+    // test points `SB_JOURNAL_DIR` at its own crafted files.
+    cmd.env("SB_JOURNAL_DIR", test_log_dir().join("no-journal"));
     // Nor the developer's colour profile (an `ascii` one would turn colour
     // off on a terminal); tests that want one set it.
     cmd.env_remove("SB_COLOR_PROFILE");

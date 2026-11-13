@@ -9,8 +9,9 @@ publish.workspace = true
 
 [features]
 # The program-path and timeout setters for tests outside the crate
-# (M-TEST-UTIL); never in a release build.
-testing = []
+# (M-TEST-UTIL), and sb-journal's crafted journals re-exported for sb's
+# `sb logs` tests; never in a release build.
+testing = ["sb-journal/testing"]
 
 [dependencies]
 sysinfo.workspace = true

@@ -85,6 +85,13 @@ pub use sb_journal::{
     UnitName, UnitRule,
 };
 
+/// sb-journal's crafted journal files, for tests above sb-host (sb's
+/// `sb logs` end to end through `SB_JOURNAL_DIR`), which reach the
+/// reader only through sb-host (deny.toml's wrappers); never in a release
+/// build.
+#[cfg(feature = "testing")]
+pub use sb_journal::testing;
+
 /// The user systemd-coredump runs as (its package's sysusers entry).
 const COREDUMP_USER: &str = "systemd-coredump";
 

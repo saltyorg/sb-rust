@@ -46,8 +46,9 @@ sb-cli-core.workspace = true
 # The viewer's `TestBackend` snapshots (tui spec, Testing Strategy).
 insta.workspace = true
 # The crafted journal files the journal adapter pages and follows (tui
-# spec, Testing Strategy).
-sb-journal = { workspace = true, features = ["testing"] }
+# spec, Testing Strategy): sb-journal's, through sb-host, the reader's
+# one wrapper (deny.toml), now that sb's graph holds sb-tui.
+sb-host = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["sync", "macros", "test-util"] }
 portable-pty.workspace = true
 vt100.workspace = true

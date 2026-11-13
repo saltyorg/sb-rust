@@ -8,8 +8,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use sb_host::journal::testing::crafted::{self, Format, H_ARENA_SIZE, H_N_ENTRIES, boot_file_in};
 use sb_host::journal::{FieldName, Release, Source};
-use sb_journal::testing::crafted::{self, Format, H_ARENA_SIZE, H_N_ENTRIES, boot_file_in};
 use tokio::sync::Notify;
 
 use super::*;

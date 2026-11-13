@@ -22,6 +22,8 @@ sb-motd.workspace = true
 shlex.workspace = true
 # `sb self-update` (release spec).
 sb-release.workspace = true
+# `sb logs`: the picker and the viewer (tui spec; ADR-023).
+sb-tui.workspace = true
 anyhow.workspace = true
 # `net` for the I/O driver bollard's sockets need (enable_all turns on
 # only what is compiled in).
@@ -48,6 +50,13 @@ tempfile.workspace = true
 # The fake release's digest (self-update's tests).
 sha2.workspace = true
 hex.workspace = true
+# `sb logs` end to end: crafted journal files in `SB_JOURNAL_DIR`
+# (sb-journal's, through sb-host: deny.toml lets only sb-host wrap the
+# reader), the screen on a PTY read through vt100 (tui spec, Testing
+# Strategy).
+sb-host = { workspace = true, features = ["testing"] }
+portable-pty.workspace = true
+vt100.workspace = true
 
 [lints]
 workspace = true

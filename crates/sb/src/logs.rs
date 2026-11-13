@@ -1,0 +1,120 @@
+//! `sb logs` (tui spec): Saltbox's systemd services in the picker, and
+//! the log of the one chosen in the viewer.
+//!
+//! Before the screen (tui decision 20): the service list (an empty one is
+//! sb-go's message and exit 0; a failed one host's error, exit 1), the
+//! terminal check, then the run's one journal and the coredump user's
+//! uid, both under `spawn_blocking` (sb-host's journal docs). Ctrl-C on
+//! the screen ends the run with 130, quietly (tui decision 13).
+
+use std::io::{IsTerminal as _, Write as _};
+
+use sb_cli_core::cancel::Shutdown;
+use sb_cli_core::config;
+use sb_cli_core::exit::{self, Exit};
+use sb_cli_core::theme;
+use sb_host::journal::{self, Journal, Source};
+use sb_host::systemd::{Systemd, default_filters};
+use sb_tui::Ending;
+
+use crate::{block_on, set_override};
+
+/// sb-go's message for an empty list, extended to both kinds (tui spec,
+/// "First load before the screen").
+pub const NOTHING_FOUND: &str = "No matching systemd services or Docker containers found.";
+
+/// The error with no terminal to draw the picker on (tui spec, "The
+/// inline fallback").
+pub const NO_TERMINAL: &str = "sb logs needs a terminal to choose a log";
+
+/// `sb logs`. The runtime is built here, after parsing, as for the other
+/// commands.
+///
+/// # Errors
+///
+/// The service list's error, no terminal, an unknown release, a journal
+/// that can't be opened, a screen that fails; `Exit(130)` after Ctrl-C.
+pub fn logs(shutdown: &Shutdown) -> anyhow::Result<()> {
+    block_on(run(shutdown))?
+}
+
+async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
+    let token = shutdown.token();
+    let services = Systemd::new().services(&default_filters(), &token).await?;
+    // A signal during the list: finish_run shows "interrupted".
+    if token.is_cancelled() {
+        anyhow::bail!("interrupted");
+    }
+    if services.is_empty() {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{NOTHING_FOUND}").map_err(exit::output_error)?;
+        out.flush().map_err(exit::output_error)?;
+        return Ok(());
+    }
+    // The inline fallback (the picker on /dev/tty, the log on stdout)
+    // comes with the tui spec's slice 5; until then the screen needs
+    // stdout to be the terminal.
+    if !std::io::stdout().is_terminal() {
+        anyhow::bail!(NO_TERMINAL);
+    }
+    let release = sb_host::ubuntu_release()?;
+    let source = journal_source(set_override(std::env::var_os("SB_JOURNAL_DIR")));
+    let journal = tokio::task::spawn_blocking(move || Journal::open(source, &release)).await??;
+    let coredump_uid = tokio::task::spawn_blocking(journal::coredump_uid)
+        .await?
+        .unwrap_or_else(|err| {
+            // The unit's own entries still show; only 26.04's coredump
+            // term needs the uid.
+            tracing::warn!(error = %err, "systemd-coredump's uid not looked up");
+            None
+        });
+    let ending = sb_tui::logs(
+        shutdown,
+        sb_tui::Logs {
+            services,
+            journal,
+            coredump_uid,
+            theme: theme::current().clone(),
+            zone: sb_tui::line::local_zone(),
+        },
+    )
+    .await?;
+    match ending {
+        Ending::Interrupted => Err(Exit(130).into()),
+        // A signal's ending is finish_run's to show.
+        Ending::Quit | Ending::Cancelled => Ok(()),
+    }
+}
+
+/// The journal to read: `SB_JOURNAL_DIR`'s directory (tests and
+/// debugging, tui decision 19; logged), else the host's own. sudo's
+/// relaunch keeps only the variables `root::relaunch_as_root` names, so
+/// an unprivileged caller's value never reaches the root run.
+fn journal_source(dir: Option<std::ffi::OsString>) -> Source {
+    match dir {
+        Some(dir) => {
+            let dir = std::path::PathBuf::from(dir);
+            tracing::info!(
+                variable = "SB_JOURNAL_DIR",
+                dir = %config::escape_controls(&dir.display().to_string()),
+                "journal directory overridden"
+            );
+            Source::Directory(dir)
+        }
+        None => Source::Local,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sb_journal_dir_replaces_the_local_journal() {
+        assert_eq!(journal_source(None), Source::Local);
+        assert_eq!(
+            journal_source(Some("/x/journal".into())),
+            Source::Directory("/x/journal".into())
+        );
+    }
+}
