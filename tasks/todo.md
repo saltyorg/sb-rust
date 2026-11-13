@@ -1246,8 +1246,10 @@ the repository's own image. Record which, and why, in ADR-020.
 - [ ] Review: one code-reviewer pass on the task's diff (it changes the
       gate), with the library-reviewer for the build route.
 
-**Dependencies:** Task 46 (lane 3's last). It lands alone on
-`deny.toml` and `rust-toolchain.toml` (the plan, "Lanes and shared files").
+**Dependencies:** none; lane 4, beside the others (plan decision 31).
+It lands alone on `deny.toml` and `rust-toolchain.toml` (the plan, "Lanes
+and shared files"), and its merge re-runs every open lane's full check
+(decision 30, a gate file).
 **Files:** `rust-toolchain.toml`, `deny.toml`, `CONSTRAINTS.md`,
 `scripts/check.sh`, `scripts/floor-guard.test.mjs`, a build image (or
 `Cross.toml`), `docs/specs/cli-core.md`, `docs/decisions/ADR-020-*.md`,

@@ -203,7 +203,7 @@ Answers at the plan's approval (2026-11-11):
     accepted as written). It replaces decision 27's "the static musl binary
     stands"; ADR-013 stands. The image is `ubuntu:22.04`, and the gate
     and the journal matrix build in it too. Tasks 53 and 54, in Phase
-    5.
+    5, run as lane 4 beside the others (the maintainer, 2026-11-13).
 30. **A rebased lane runs `check.sh full` again only on overlap**
     (the maintainer, 2026-11-13). After a rebase onto main, the full
     check runs again only when main's new commits touch a crate the
@@ -212,6 +212,11 @@ Answers at the plan's approval (2026-11-11):
     `rust-toolchain.toml`). Otherwise the pre-rebase full result stands
     and `check.sh fast <base>` runs on the rebased commit before the
     merge.
+31. **All lanes run at once** (the maintainer, 2026-11-13: the new host
+    has the space). The two-at-a-time limit was for disk space only. A
+    lane stays sequential inside, because its tasks share files, and
+    the shared-file rules below are unchanged. Each lane's heavy runs
+    are capped at a quarter of the host.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -303,15 +308,17 @@ checked the 26-of-290 count and the `go version -m` fact:
 
 ## Lanes and shared files
 
-After Checkpoint A the work runs in three lanes, at most two at a time,
-each in its own git worktree with its own target directory.
+After Checkpoint A the work runs in lanes, all at once (decision 31),
+each in its own git worktree with its own target directory, and each
+lane's builds and gates capped at a quarter of the host
+(`systemd-run --scope -p MemoryMax=... -p CPUQuota=...`).
 
 | Lane | Tasks | Edits |
 |---|---|---|
 | 1: text, process and display | 8-10, 12, 13, 17-21 | `crates/{term-ui,docker}`; cli-core's `exit.rs`, `log.rs`, `cancel.rs`; `crates/sb/src/main.rs` and sb's signal and log tests; exec's attached-signals test; the cli-core, exec, term-ui and docker specs |
 | 2: the journal reader | 27, 28, 32-34, 36-38 | `crates/journal`, `crates/host/src/journal.rs` and its tests, the journal spec |
 | 3: config | 42, 43, 46 | `crates/config`, cli-core's `config.rs`, new sb test files, the config spec |
-| 3, after 46: the glibc build | 53, 54 | `rust-toolchain.toml`, `deny.toml` (on main, alone), `CONSTRAINTS.md`, `scripts/check.sh` and the floor guard's tests, a build image, `crates/journal/tests/*.sh`, `.github/workflows/journal-matrix.yml` |
+| 4: the glibc build (decision 31) | 53, 54 | `rust-toolchain.toml`, `deny.toml` (on main, alone), `CONSTRAINTS.md`, `scripts/check.sh` and the floor guard's tests, a build image, `crates/journal/tests/*.sh`, `.github/workflows/journal-matrix.yml` |
 
 A lane is sequential: its tasks share files (cli-core's `log.rs` and
 `cancel.rs`, term-ui's `runner.rs` and `tree.rs`, the journal's
@@ -469,7 +476,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [ ] Task 46: secrets are hidden wherever their key sits
 - [ ] Checkpoint Y: config
 
-### Phase 5: the glibc build (decision 29)
+### Phase 5 (lane 4): the glibc build (decisions 29 and 31)
 - [ ] Task 53: the production build links glibc, built on 22.04
 - [ ] Task 54: the journal matrix builds in the same image
 
@@ -498,7 +505,8 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 | A display fix changes a reviewed look | Med | Tasks 19 and 20 follow decision 17, with screenshots shown to the maintainer at Checkpoint D; Task 21's looks wait for the maintainer, and only lane 1 pauses (decision 13). |
 | A lane waits for the maintainer's choice after research | Med | Tasks 32 and 42 come early in their lanes, and Task 42 runs beside lanes 1 and 2; the other lanes go on meanwhile (decision 20). |
 | A deferred finding is forgotten | Med | tasks/triage.md names what each DEFER id waits for; the viewer spec and release preparation start from that table. |
-| Parallel worktrees fill the disk | Med | Two at a time; `cargo clean` above 10 GB each; `df` before heavy runs; a worktree is removed when its lane ends. |
+| Parallel worktrees fill the disk | Low | The host has the space (decision 31); `cargo clean` only when the disk is short; a worktree is removed when its lane ends. |
+| Parallel lanes starve each other or the host | Med | Each lane's builds and gates capped at a quarter of the host's memory and CPU (decision 31); the matrix runs one release container set per lane at a time. |
 | Fixes drift from the findings | Low | Each task names its ids, and the traceability table lists every KEEP id with its task. |
 
 ## Open questions
