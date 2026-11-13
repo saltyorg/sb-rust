@@ -268,12 +268,14 @@ pub fn sorted(mut rows: Vec<Row>) -> Vec<Row> {
 
 /// The table in sb-go's columns: headings centred and bold (term-ui), the
 /// port columns right-aligned, each status in its role, the bindings one
-/// per line, columns capped at 100 as sb-go.
+/// per line (on a narrow terminal each wraps at any character, not at its
+/// padding), columns capped at 100 as sb-go.
 #[must_use]
 pub fn table(rows: &[Row]) -> Table {
     let mut table = Table::new(["Container", "Status", "Traefik Port", "Port Bindings"])
         .right_align(2)
         .right_align(3)
+        .wrap_anywhere(3)
         .max_column_width(100);
     for row in rows {
         table.row([
@@ -686,6 +688,40 @@ mod tests {
         // Wider than needed: the natural width, not stretched.
         let wide = table(&rows).render(&ascii(), false, Some(widest + 40));
         assert_eq!(wide, natural);
+    }
+
+    /// On a narrow terminal each binding wraps at any character, not at
+    /// its padding, and starts its own line (ui-L3).
+    #[test]
+    fn padded_bindings_wrap_whole_on_a_narrow_terminal() {
+        let mut plex = fixture_rows().swap_remove(3);
+        plex.bindings = bindings(&port_map(&[
+            ("80/tcp", &[("", "8080"), ("::1", "8080")]),
+            ("32400/tcp", &[("::", "32400")]),
+        ]));
+        insta::assert_snapshot!(table(&[plex]).render(&ascii(), false, Some(36)), @r"
+        ╭────────┬────────┬────────┬───────╮
+        │ Contai │ Status │ Traefi │ Port  │
+        │  ner   │        │ k Port │ Bindi │
+        │        │        │        │  ngs  │
+        ├────────┼────────┼────────┼───────┤
+        │ plex   │ runnin │  32400 │ 0.0.0 │
+        │        │ g (hea │        │ .0: 8 │
+        │        │ lthy)  │        │ 080-> │
+        │        │        │        │    80 │
+        │        │        │        │  /tcp │
+        │        │        │        │ [::1] │
+        │        │        │        │ : 808 │
+        │        │        │        │   0-> │
+        │        │        │        │  80/t │
+        │        │        │        │    cp │
+        │        │        │        │ [::]: │
+        │        │        │        │ 32400 │
+        │        │        │        │ ->324 │
+        │        │        │        │ 00/tc │
+        │        │        │        │     p │
+        ╰────────┴────────┴────────┴───────╯
+        ");
     }
 
     /// A label and a name holding escape sequences (san-H1): the table

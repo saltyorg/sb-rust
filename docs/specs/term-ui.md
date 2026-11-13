@@ -274,6 +274,17 @@ sequence.
   stdout); the widest column wraps first; a maximum column width where the
   caller asks (sb-go's `docker ps` caps at 100). Not a terminal: natural
   width.
+- **Wrapping (ui-L3, 2026-11-13):** tabled chooses the column widths;
+  term-ui wraps each line of a cell on its own (tabled's `Wrap::wrap`), at
+  words, or at any character in a column the caller marks (`docker ps`'s
+  bindings, whose spaces are padding). A wrapped cell has no blank line
+  where a line ended exactly at the width. A terminal narrower than the
+  narrowest table (a character a cell; a wide character in a column one
+  character wide shows as `�`) gets a line saying so and the
+  width needed, instead of a table of empty cells. Why not tabled's
+  `keep_words` on the whole table: it counts a cell's line break as a
+  character, leaves those blank lines, splits a binding at its padding,
+  and below that width empties cells, a column at a time.
 - **Piped:** the same table without colour, at its natural width (sb-go's
   piped table wraps at 80 columns and keeps its bold and border codes;
   docker spec, differences). Plain or JSON output is decided per command

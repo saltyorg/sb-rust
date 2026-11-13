@@ -210,6 +210,7 @@ fn table() -> ExitCode {
     let mut table = Table::new(["Container", "Status", "Traefik Port", "Port Bindings"])
         .right_align(2)
         .right_align(3)
+        .wrap_anywhere(3)
         .max_column_width(100);
     table.row([
         Cell::new("authelia"),
