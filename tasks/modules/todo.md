@@ -2241,7 +2241,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       by name, compare with journalctl on 22.04, 24.04 and 26.04 in the
       matrix, and fix or list it as a Difference.
 
-- [ ] **The mutation sweep misses leaked shells** (the gate; lane 3).
+- [x] **The mutation sweep misses leaked shells** (the gate; lane 3).
       exec's tests leave helper shells (`sh -c 'trap … exit'`) that run
       `/bin/sh`, with their working directory in the pass's deleted copy.
       The sweeps match a process's executable only, so these survived,

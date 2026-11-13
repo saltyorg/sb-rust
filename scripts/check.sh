@@ -295,25 +295,37 @@ MUTATION_TESTERS[sb-tui]="sb"
 # The temp directory of the mutation pass under way, swept on exit too.
 mutation_tmp=
 
-# mutation_sweep DIR: SIGKILL every process whose executable lies under
-# DIR, the pass's own temp copies, until none is left; fails if some
-# still are after about 10 s. A mutant that ignores signals outlives its
-# test: nextest ends a timed-out test's process group, as cargo-mutants
-# does a timed-out mutant's (cargo-nextest 0.9.151's runner/unix.rs,
-# cargo-mutants 27.1.0's process/unix.rs; https://nexte.st/docs/features/slow-tests/),
-# a process that left that group or was orphaned by the kill runs on:
-# util-linux `script`, which the terminal tests run sb under, starts its
-# child in a new session. The copies of this pass alone lie under DIR, a
-# directory made for it, so another pass or checkout is never touched. A
-# killed process's exe link goes with it, so a zombie isn't found again.
+# mutation_pids DIR: the pid of each process whose executable or working
+# directory lies under DIR, once each. /proc/PID/exe and cwd name a
+# deleted file as "PATH (deleted)"; -lname matches the link's text, so a
+# deleted copy's processes match too. DIR itself and "DIR (deleted)" are
+# matched for a process started from the pass's directory, which no
+# known test does. A zombie has neither link, so it isn't found again.
+mutation_pids() {
+  local dir=$1
+  find /proc -mindepth 2 -maxdepth 2 \( -name exe -o -name cwd \) \( -lname "$dir/*" -o -lname "$dir" -o -lname "$dir (deleted)" \) 2>/dev/null |
+    sed 's|^/proc/\([0-9]*\)/[a-z]*$|\1|' | sort -u
+}
+
+# mutation_sweep DIR: SIGKILL every process whose executable or working
+# directory lies under DIR, the pass's own temp copies, until none is
+# left; fails if some still are after about 10 s. (exec's tests leave
+# helper shells that run /bin/sh from a directory of the copy: matching
+# executables only, hundreds outlived their passes.) A mutant that ignores
+# signals outlives its test: nextest ends a timed-out test's process
+# group, as cargo-mutants does a timed-out mutant's (cargo-nextest
+# 0.9.151's runner/unix.rs, cargo-mutants 27.1.0's process/unix.rs;
+# https://nexte.st/docs/features/slow-tests/), a process that left that
+# group or was orphaned by the kill runs on: util-linux `script`, which
+# the terminal tests run sb under, starts its child in a new session. The
+# copies of this pass alone lie under DIR, a directory made for it, so
+# another pass or checkout is never touched. Anything else there goes too,
+# a shell someone opened in a copy to look at a hung mutant included.
 mutation_sweep() {
   local dir=$1 pid tries=0
   local -a pids
   local -A killed=()
-  # /proc/PID/exe names a deleted file as "PATH (deleted)"; -lname matches
-  # the link's text, so a deleted copy's processes match too.
-  while mapfile -t pids < <(find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$dir/*" 2>/dev/null |
-    sed 's|^/proc/\([0-9]*\)/exe$|\1|'); ((${#pids[@]})); do
+  while mapfile -t pids < <(mutation_pids "$dir"); ((${#pids[@]})); do
     if ((tries++ >= 100)); then
       echo "check: processes left under $dir: ${pids[*]}" >&2
       return 1
@@ -331,23 +343,25 @@ mutation_sweep() {
 mutation_sweeper_pid=
 
 # mutation_sweeper DIR: in the background, every 3 s while the pass runs,
-# SIGKILL each process whose executable lies under DIR and whose parent is
-# init (ppid 1). The sweep after the pass comes too late for a long pass:
-# busy, signal-ignoring mutants of sb piled up while it ran (19 at once on
-# 2026-11-13, each over 100% CPU). A process orphaned by a timed-out
-# test's kill is adopted by init (proc(5): /proc/PID/stat's ppid field;
-# https://man7.org/linux/man-pages/man2/prctl.2.html, PR_SET_CHILD_SUBREAPER,
-# for the adopting process); a test's live sb still has its parent (the
-# test, or `script`), so it is never touched. The loop ends by itself once
-# DIR is gone or check.sh is (a check.sh killed with SIGKILL runs no trap).
-# Only an orphan that has run for at least 120 s is killed
-# (SB_MUTATION_ORPHAN_AGE overrides it, for the floor guard's tests): some tests
-# orphan sb on purpose (a hangup kills its parent shell, and sb must still
-# take its grace and log its ending), and nextest ends any test after 60 s
-# (.config/nextest.toml), so a test's own orphan never lives that long,
-# where the leaked mutants ran for hours. The age is now minus the
-# process's start time (proc(5): /proc/PID/stat field 22, in clock ticks
-# since boot; /proc/uptime, in seconds).
+# SIGKILL each process whose executable or working directory lies under
+# DIR and whose parent is init (ppid 1). The sweep after the pass comes
+# too late for a long pass: busy, signal-ignoring mutants of sb piled up
+# while it ran (19 at once on 2026-11-13, each over 100% CPU). A process
+# orphaned by a timed-out test's kill is adopted by init (proc(5):
+# /proc/PID/stat's ppid field;
+# https://man7.org/linux/man-pages/man2/prctl.2.html,
+# PR_SET_CHILD_SUBREAPER, for the adopting process); a test's live sb
+# still has its parent (the test, or `script`), so it is never touched.
+# The loop ends by itself once DIR is gone or check.sh is (a check.sh
+# killed with SIGKILL runs no trap). Only an orphan that has run for at
+# least 120 s is killed (SB_MUTATION_ORPHAN_AGE overrides it, for the
+# floor guard's tests): some tests orphan sb on purpose (a hangup kills
+# its parent shell, and sb must still take its grace and log its ending),
+# and nextest ends any test after 60 s (.config/nextest.toml), so a test's
+# own orphan never lives that long, where the leaked mutants ran for
+# hours. The age is now minus the process's start time (proc(5):
+# /proc/PID/stat field 22, in clock ticks since boot; /proc/uptime, in
+# seconds).
 mutation_sweeper() {
   local dir=$1 parent=$$ pid stat ppid count fields start now ticks age=$SB_MUTATION_ORPHAN_AGE
   ticks=$(getconf CLK_TCK)
@@ -370,8 +384,7 @@ mutation_sweeper() {
         if [[ $ppid == 1 ]] && ((now - start >= age)) && kill -KILL "$pid" 2>/dev/null; then
           count=$((count + 1))
         fi
-      done < <(find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$dir/*" 2>/dev/null |
-        sed 's|^/proc/\([0-9]*\)/exe$|\1|')
+      done < <(mutation_pids "$dir")
       if ((count)); then echo "mutants: killed $count orphaned process(es) during the pass"; fi
     done
   ) &

@@ -228,3 +228,9 @@ and sb-host's tests) under this profile:
   two minutes. `SB_MUTATION_ORPHAN_AGE` sets the age in seconds; the
   floor guard's tests use 0, and check that a young orphan is left
   running at the default.
+- Both sweeps match a process whose executable or working directory lies
+  under the pass's directory (2026-11-13). exec's tests leave helper
+  shells that run `/bin/sh` from a directory of the copy. Matched by
+  executable only, hundreds outlived their passes, each holding its gate
+  run's systemd scope open. The floor guard's tests add such a shell to
+  both cases.
