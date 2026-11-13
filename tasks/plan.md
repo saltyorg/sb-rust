@@ -549,7 +549,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 43: sb accepts the YAML Ansible accepts
 - [ ] Task 59: sb refuses the YAML Ansible refuses (decision 38)
 - [x] Task 46: secrets are hidden wherever their key sits
-- [ ] Task 60: Task 46's follow-ups (decision 39)
+- [x] Task 60: Task 46's follow-ups (decision 39)
 - [ ] Checkpoint Y: config
 
 ### Phase 5 (lane 4): the glibc build (decisions 29 and 31)

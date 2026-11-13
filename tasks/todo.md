@@ -1317,24 +1317,24 @@ finding is untested.
 (plan decision 39).
 
 **Acceptance criteria:**
-- [ ] Credentials typed `string` in Saltbox's schemas are secret by path,
+- [x] Credentials typed `string` in Saltbox's schemas are secret by path,
       so a tag error never echoes them: motd.yml's `token`, `apikey` and
       `password` fields, backup_config.yml's `restore_service.pass`, and
       accounts.yml's `apprise` (a URL carrying a token). The list sits
       with the credential key names, is checked against the pinned
       schemas by a test, and is in the config spec's "Secrets" bullet.
-- [ ] A list where the schema wants an object (`user:\n  - pass: x` in
+- [x] A list where the schema wants an object (`user:\n  - pass: x` in
       accounts.yml) is an issue, with its position. If sb-go accepts it,
       it's a listed Difference instead, with the sb-go code cited.
-- [ ] docker's commands (`ps`, `start`, `stop`, `restart`): whether a
+- [x] docker's commands (`ps`, `start`, `stop`, `restart`): whether a
       Ctrl-C can wait on a hung DNS lookup as validate-config's could
       (bollard's and reqwest's resolvers, `DOCKER_HOST=tcp://<name>`).
       Fixed with Task 46's `shutdown_background` if it reproduces;
       otherwise the finding goes in the commit body with the evidence.
 
 **Verification:**
-- [ ] `cargo test -p sb-config -p sb-docker -p sb`; `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass with the security-auditor.
+- [x] `cargo test -p sb-config -p sb-docker -p sb`; `scripts/check.sh full <base>`.
+- [x] Review: one code-reviewer pass with the security-auditor.
 
 **Dependencies:** Task 46
 **Files:** `crates/config/src/{rules.rs,secret.rs}`, `crates/sb/src/main.rs`, `docs/specs/config.md`
