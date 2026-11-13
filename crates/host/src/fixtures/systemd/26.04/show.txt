@@ -1,0 +1,31 @@
+Id=docker.service
+StateChangeTimestamp=Thu 2026-01-15 10:00:29 UTC
+ActiveEnterTimestamp=Thu 2026-01-15 10:00:29 UTC
+
+Id=saltbox_managed_crash.service
+StateChangeTimestamp=Thu 2026-01-15 10:00:29 UTC
+ActiveEnterTimestamp=Thu 2026-01-15 10:00:29 UTC
+
+Id=saltbox_managed_gone.service
+StateChangeTimestamp=
+ActiveEnterTimestamp=
+
+Id=saltbox_managed_job.service
+StateChangeTimestamp=
+ActiveEnterTimestamp=
+
+Id=saltbox_managed_left.service
+StateChangeTimestamp=
+ActiveEnterTimestamp=
+
+Id=saltbox_managed_once.service
+StateChangeTimestamp=Thu 2026-01-15 10:00:29 UTC
+ActiveEnterTimestamp=Thu 2026-01-15 10:00:29 UTC
+
+Id=saltbox_managed_restart.service
+StateChangeTimestamp=Thu 2026-01-15 10:00:29 UTC
+ActiveEnterTimestamp=Thu 2026-01-15 10:00:29 UTC
+
+Id=saltbox_managed_web.service
+StateChangeTimestamp=Thu 2026-01-15 10:00:29 UTC
+ActiveEnterTimestamp=Thu 2026-01-15 10:00:29 UTC

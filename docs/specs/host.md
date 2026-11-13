@@ -48,8 +48,15 @@ left out: benchmark.go and the journal log stream (Scope).
      doesn't descend.
 4. **The service list's facts come from systemctl's JSON output**
    (proto-logs, maintainer-reviewed 2026-10-29), not sb-go's parsing of
-   human-readable columns. Times are read with `--timestamp=unix`
-   (`@secs`), which avoids sb-go's locale and time-zone parsing. The
+   human-readable columns. Times are read with `--timestamp=utc`
+   (`Thu 2026-01-15 09:30:00 UTC`), which avoids sb-go's locale and
+   time-zone parsing: systemd writes the weekday in English whatever the
+   locale (`format_timestamp`, src/basic/time-util.c, v249) and the time
+   in UTC, so one fixed format is parsed, with jiff. systemd 249 (22.04)
+   rejects `--timestamp=unix` ("Invalid value: unix"); the `unix` style
+   came with v251 (systemd's v251 NEWS). *Amended 2026-11-13 (module
+   build, M2), from this assumption's intent: one code path, no version
+   probe.* The
    texts motd shows stay sb-go's (motd/systemd.go). proto-logs' picker status
    rule belongs to the picker in `tui`, not here.
 5. **The supported lists stay in host:**
@@ -339,10 +346,12 @@ is sorted by name, without duplicates, and `not-found` units are dropped.
 2. `systemctl list-unit-files --type=service --output=json`, so unloaded,
    disabled leftovers still appear (proto-logs).
 3. `systemctl list-timers --all --output=json`, for next runs.
-4. One `systemctl show --timestamp=unix
+4. One `systemctl show --timestamp=utc
    --property=Id,ActiveEnterTimestamp,StateChangeTimestamp` over the
-   matched units, for both timestamps. `@0`, an empty value or a missing
-   property reads as unknown.
+   matched units, for both timestamps, each `<English weekday>
+   %Y-%m-%d %H:%M:%S UTC`. `n/a` (249's text for no time), an empty
+   value, a missing property or any other text reads as unknown
+   (assumption 4, amended).
 
 **Failures.**
 - A failed `list-units` or `list-unit-files` is an error: `failed to list
@@ -369,7 +378,7 @@ Services slice and tui's first slice comes first.
   reads empty.
 - **The runtime:** now minus the active-enter time. sb-go computed it from
   the monotonic timestamp and `/proc/uptime`, falling back to the wall
-  clock. The unix timestamp gives the same value in one step.
+  clock. The UTC wall-clock timestamp gives the same value in one step.
 
 ### Differences from sb-go (the complete list)
 
@@ -394,8 +403,9 @@ Pinned tests are named in Success criteria.
    `lsb_release`. A hung call would hang sb-go.
 8. **`add_repositories` writes atomically,** keeping owner and mode,
    instead of truncating in place.
-9. **The runtime comes from the unix active-enter timestamp,** not the
-   monotonic one plus `/proc/uptime`.
+9. **The runtime comes from the active-enter wall-clock timestamp**
+   (`--timestamp=utc`, assumption 4), not the monotonic one plus
+   `/proc/uptime`.
 10. **Free space uses `f_frsize`,** not `f_bsize`.
 11. **An entry that vanishes during a recursive chown is skipped,** and
     the walk continues.

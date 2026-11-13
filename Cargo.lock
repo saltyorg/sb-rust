@@ -3390,13 +3390,18 @@ dependencies = [
 name = "sb-host"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "nix 0.28.0",
  "rustix",
+ "sb-exec",
  "sb-journal",
+ "serde",
+ "serde_json",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "walkdir",

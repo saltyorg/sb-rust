@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The program-path and timeout setters for tests outside the crate
+# (M-TEST-UTIL); never in a release build.
+testing = []
+
 [dependencies]
 sysinfo.workspace = true
 thiserror.workspace = true
@@ -19,9 +24,18 @@ nix.workspace = true
 walkdir.workspace = true
 # The run log's records (the ownership counts).
 tracing.workspace = true
+# systemctl's captures for the service list (host spec, assumption 1), and
+# the caller's token that ends them.
+sb-exec.workspace = true
+tokio-util.workspace = true
+# systemctl's JSON tables and the service times (host spec, Tech Stack).
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
 # `spawn_blocking` for the journal's blocking reads (journal spec,
-# assumption 3): the workspace entry (`rt`, `time`); only `rt` is used.
-tokio.workspace = true
+# assumption 3): the workspace entry (`rt`, `time`); `macros` for the
+# service list's `join!`.
+tokio = { workspace = true, features = ["macros"] }
 # The follow's wake wait (`journal::FollowWait`): `event`'s `poll` on the
 # wake descriptor and a stop `eventfd`, under `spawn_blocking`, in place
 # of tokio's `AsyncFd` (journal spec, decision 12).
@@ -31,7 +45,7 @@ rustix = { workspace = true, features = ["event"] }
 # The crafted journal files the helpers' tests page and follow.
 sb-journal = { workspace = true, features = ["testing"] }
 # `#[tokio::test]`'s current-thread runtime.
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "sync"] }
 tempfile.workspace = true
 # The run log test's capture.
 tracing-subscriber.workspace = true

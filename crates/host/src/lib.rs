@@ -3,15 +3,20 @@
 //!   (cli-core spec, startup step 1), and the host's release;
 //! - the service logs ([`journal`]): sb-journal's reader, re-exported, with
 //!   the host's glue;
-//! - file ownership ([`owner`]).
+//! - file ownership ([`owner`]);
+//! - the systemd service list ([`systemd`]).
 
 // Output goes through `Write`; `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod journal;
 pub mod owner;
+pub mod systemd;
+#[cfg(test)]
+mod testing;
 
 pub use owner::{OwnerError, ensure_owner, ensure_owner_recursive};
+pub use systemd::{services, with_additional};
 
 use sysinfo::System;
 

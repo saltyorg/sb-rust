@@ -1375,10 +1375,13 @@ The wording below was applied to those specs on 2026-11-13.
 - In the record list, after "when the unit entered its active state;",
   add: "- when the unit last changed state (`StateChangeTimestamp`),
   for the log picker's "failed 2h ago" (tui spec);".
-- Replace step 4 with: "4. One `systemctl show --timestamp=unix
+- Replace step 4 with: "4. One `systemctl show --timestamp=utc
   --property=Id,ActiveEnterTimestamp,StateChangeTimestamp` over the
-  matched units, for both timestamps. `@0`, an empty value or a missing
-  property reads as unknown."
+  matched units, for both timestamps. `n/a`, an empty value or a missing
+  property reads as unknown." *Amended 2026-11-13 (module build, M2):
+  this read `--timestamp=unix`, which systemd 249 (22.04) rejects; the
+  `unix` style came with v251 (systemd's v251 NEWS). The host spec's
+  assumption 4 has the reason.*
 - In "Failures", the second bullet becomes: "A failed `list-timers` or
   `show` leaves those fields empty (both timestamps for `show`), as
   sb-go ignores those errors."

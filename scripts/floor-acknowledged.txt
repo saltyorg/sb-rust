@@ -171,3 +171,4 @@ wrappers-widened	deny.toml	sb-cli-core: sb-release added	the capability map's re
 wrappers-widened	deny.toml	sb-term-ui: sb-release added	the capability map's release row depends on cli-core, term-ui and exec (amended 2026-11-13 by the approved release spec, its deny.toml note); module task M24
 wrappers-widened	deny.toml	sb-exec: sb-release added	the capability map's release row depends on cli-core, term-ui and exec (amended 2026-11-13 by the approved release spec, its deny.toml note); module task M24
 toolchain-changed	rust-toolchain.toml	channel 1.99.1  ->  1.100.0	the toolchain moves to the newest stable, 1.100.0, as its own task (plan decision 32; hardening Task 55); edition stays 2024, and the escaping change it brings keeps cli-core's output (decision 40)
+wrappers-widened	deny.toml	sb-exec: sb-host added	the capability map has host depend on exec (host row, "Depends on"); the service list runs systemctl through it (host spec, assumption 1; module build M2)

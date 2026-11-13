@@ -62,8 +62,8 @@ deny = [
     # with their crates.
     { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release"] },
     # exec: child processes; its first user is sb-docker's start, stop and
-    # restart (exec spec, decision 4).
-    { crate = "sb-exec", wrappers = ["sb-docker", "sb-release"] },
+    # restart (exec spec, decision 4); sb-host's systemctl calls.
+    { crate = "sb-exec", wrappers = ["sb-docker", "sb-release", "sb-host"] },
     # docker: sb docker ps (and later start/stop/restart, the picker's
     # list, log streams), used by the binary.
     { crate = "sb-docker", wrappers = ["sb", "sb-tui"] },
