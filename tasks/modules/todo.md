@@ -2182,7 +2182,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       and passed alone three times. Give its timing a bound that holds
       under load, as c06f497 did for exec.
 
-- [ ] **Mutation runs leak sb processes** (the gate; lane 3, next, while M50
+- [x] **Mutation runs leak sb processes** (the gate; lane 3, next, while M50
       waits for M26). A mutant that ignores signals outlives its test: the
       timeout kills the test without its kill-on-drop cleanup, and the sb
       it started under `script` runs on, orphaned, at about 90% CPU for
@@ -2194,7 +2194,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       executable lies in the pass's own temp copy), and test that a
       signal-ignoring child is gone after the pass. A gate change: one
       code-reviewer pass, and an ADR line in ADR-021's consequences.
-- [ ] **shlex reads an unquoted `#` word as a comment** (lane 3, with its
+- [x] **shlex reads an unquoted `#` word as a comment** (lane 3, with its
       next tui-spec edit). go-shellquote didn't, so `EDITOR='vi #x'`
       differs from sb-go. List it in the tui spec's Differences.
 
