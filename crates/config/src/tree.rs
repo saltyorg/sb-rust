@@ -85,7 +85,7 @@ pub fn build(
     }
 }
 
-/// `node` without a custom tag on a collection: saphyr keeps a tagged
+/// `node` without a tag on a collection: saphyr keeps a tagged
 /// mapping or sequence as `Tagged`; yaml.v3 decodes the collection itself.
 fn untagged(node: &MarkedYamlOwned) -> &MarkedYamlOwned {
     match &node.data {
@@ -270,11 +270,12 @@ mod tests {
         );
     }
 
-    /// A custom tag on a collection doesn't hide it (yaml.v3 decodes it
-    /// as the mapping or sequence it is).
+    /// A tag on a collection that isn't the core schema's (Ansible's
+    /// `!unsafe`) doesn't hide it (yaml.v3 decodes it as the mapping or
+    /// sequence it is).
     #[test]
     fn tagged_collections_keep_their_content() {
-        let node = tree("o: !foo {a: x}\nl: !foo [y]\n");
+        let node = tree("o: !unsafe {a: x}\nl: !unsafe [y]\n");
         assert_eq!(
             node.get("o").expect("o").get("a").expect("a").data,
             Data::Scalar(Value::Str("x".into()))

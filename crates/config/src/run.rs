@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sb_cli_core::config::{read_small, yaml};
+use sb_cli_core::config::{read_inventory, read_small, yaml};
 use sb_cli_core::exit::Exit;
 use sb_term_ui::{Labels, Runner, Step};
 
@@ -21,12 +21,15 @@ use crate::tree;
 use crate::validators::Saltbox;
 
 /// One config file: its path under the Saltbox root, its schema under
-/// `schema/` (none: duplicate keys only), and whether it must exist.
+/// `schema/` (none: duplicate keys only), whether it must exist, and
+/// whether it is read up to cli-core's 1 MiB cap (`read_small`) or at any
+/// length (`read_inventory`: the inventory, hardening plan decision 41).
 #[derive(Clone, Copy, Debug)]
 pub struct File {
     pub path: &'static str,
     pub schema: Option<&'static str>,
     pub required: bool,
+    pub capped: bool,
 }
 
 /// The files, in sb-go's order.
@@ -35,36 +38,43 @@ pub const FILES: [File; 7] = [
         path: "accounts.yml",
         schema: Some("accounts.schema.yml"),
         required: true,
+        capped: true,
     },
     File {
         path: "adv_settings.yml",
         schema: Some("adv_settings.schema.yml"),
         required: true,
+        capped: true,
     },
     File {
         path: "backup_config.yml",
         schema: Some("backup_config.schema.yml"),
         required: true,
+        capped: true,
     },
     File {
         path: "hetzner_vlan.yml",
         schema: Some("hetzner_vlan.schema.yml"),
         required: true,
+        capped: true,
     },
     File {
         path: "settings.yml",
         schema: Some("settings.schema.yml"),
         required: true,
+        capped: true,
     },
     File {
         path: "motd.yml",
         schema: Some("motd.schema.yml"),
         required: false,
+        capped: true,
     },
     File {
         path: "inventories/host_vars/localhost.yml",
         schema: None,
         required: false,
+        capped: false,
     },
 ];
 
@@ -152,7 +162,12 @@ fn shown(file: File) -> String {
 /// log through term-ui's step records; this adds what they don't say.
 async fn validate(step: &mut Step, settings: &Settings, file: File) -> anyhow::Result<()> {
     let path = settings.root.join(file.path);
-    let text = match read_small(&path) {
+    let read = if file.capped {
+        read_small
+    } else {
+        read_inventory
+    };
+    let text = match read(&path) {
         Ok(Some(text)) => text,
         Ok(None) if file.required => {
             anyhow::bail!(
@@ -501,6 +516,38 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("is bigger than"), "{screen}");
+    }
+
+    /// The inventory has no length cap (decision 41): localhost.yml well
+    /// over a mebibyte is read and checked whole, its duplicates found at
+    /// its end.
+    #[tokio::test]
+    async fn localhost_has_no_length_cap() {
+        use std::fmt::Write as _;
+        let root = saltbox_root("valid").expect("root");
+        let mut long = String::new();
+        for i in 0..200_000 {
+            writeln!(long, "key_{i}: value").expect("a String");
+        }
+        assert!(long.len() > 3 << 20, "{}", long.len());
+        write(root.path(), "inventories/host_vars/localhost.yml", &long);
+        let (result, screen) = run_on(root.path(), &healthy()).await;
+        assert!(result.is_ok(), "{screen}");
+        assert!(
+            screen.contains("✓ Validated localhost.yml (no duplicates)"),
+            "{screen}"
+        );
+        write(
+            root.path(),
+            "inventories/host_vars/localhost.yml",
+            &format!("{long}key_0: again\n"),
+        );
+        let (result, screen) = run_on(root.path(), &healthy()).await;
+        assert!(matches!(result, Err(Exit(1))), "{screen}");
+        assert!(
+            screen.contains("inventories/host_vars/localhost.yml:200001:1: key_0: duplicate key (also at line 1, column 1)"),
+            "{screen}"
+        );
     }
 
     /// localhost.yml: duplicate keys only, labelled so, whole (sb-go's

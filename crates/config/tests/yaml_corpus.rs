@@ -321,8 +321,9 @@ fn the_inventory_read_agrees_with_validate_config() {
 /// starting a flow value, a tab after `...`; and what the code review
 /// found: a control character, a directive libyaml doesn't read, a tag
 /// before a bracket, a top-level block scalar at column 0, a flow key
-/// split over lines, a collection as a key) is refused at the line and
-/// column libyaml names. A NEL is refused where
+/// split over lines, a collection as a key; and decision 41's tag
+/// Ansible's loader has no constructor for) is refused at the line and
+/// column libyaml and Ansible's constructor name. A NEL is refused where
 /// it is, which libyaml takes as a line break.
 #[test]
 fn what_libyaml_refuses_is_refused_where_it_says() {
@@ -357,6 +358,7 @@ fn what_libyaml_refuses_is_refused_where_it_says() {
         "top-level-block-scalar-at-column-0",
         "flow-key-across-lines",
         "collection-as-key",
+        "tag-custom",
     ] {
         let lib = expected["cases"][name]["error"].as_str().expect("an error");
         let at = sb_at(name);

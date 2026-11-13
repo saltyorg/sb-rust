@@ -1,4 +1,5 @@
 {
+ "ansible_core": "2.21.3",
  "cases": {
   "anchor-defined-twice": {
    "accepted": false,
@@ -8,7 +9,35 @@
    "accepted": false,
    "error": "did not find expected alphabetic or numeric character at line 1, column 6"
   },
+  "block-scalar-blank-last-line-without-newline": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "a",
+     "style": "literal",
+     "text": "x\n",
+     "value": [
+      "str",
+      "x\n"
+     ]
+    }
+   ]
+  },
   "block-scalar-clip-at-end-without-newline": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "a",
+     "style": "literal",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    }
+   ]
+  },
+  "block-scalar-keep-at-end-without-newline": {
    "accepted": true,
    "scalars": [
     {
@@ -1817,9 +1846,203 @@
    "accepted": false,
    "error": "found character that cannot start any token at line 2, column 1"
   },
+  "tag-ansible": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "a",
+     "style": "double",
+     "text": "{{ not_a_template }}",
+     "value": [
+      "str",
+      "{{ not_a_template }}"
+     ]
+    },
+    {
+     "path": "b",
+     "style": "literal",
+     "text": "$ANSIBLE_VAULT;1.1;AES256\n6162636465\n",
+     "value": [
+      "str",
+      "$ANSIBLE_VAULT;1.1;AES256\n6162636465\n"
+     ]
+    },
+    {
+     "path": "c.d",
+     "style": "plain",
+     "text": "e",
+     "value": [
+      "str",
+      "e"
+     ]
+    }
+   ]
+  },
+  "tag-ansible-constructed": {
+   "accepted": true,
+   "scalars": [
+    {
+     "path": "s",
+     "style": "plain",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    },
+    {
+     "path": "i",
+     "style": "plain",
+     "text": "12",
+     "value": [
+      "int",
+      "12"
+     ]
+    },
+    {
+     "path": "f",
+     "style": "plain",
+     "text": "1.5",
+     "value": [
+      "float",
+      "1.5"
+     ]
+    },
+    {
+     "path": "b",
+     "style": "plain",
+     "text": "true",
+     "value": [
+      "bool",
+      "true"
+     ]
+    },
+    {
+     "path": "n",
+     "style": "single",
+     "text": "",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "t",
+     "style": "plain",
+     "text": "2001-01-01",
+     "value": [
+      "timestamp",
+      "2001-01-01"
+     ]
+    },
+    {
+     "path": "m.k",
+     "style": "plain",
+     "text": "v",
+     "value": [
+      "str",
+      "v"
+     ]
+    },
+    {
+     "path": "q[0]",
+     "style": "plain",
+     "text": "v",
+     "value": [
+      "str",
+      "v"
+     ]
+    },
+    {
+     "path": "o[0].k",
+     "style": "plain",
+     "text": "v",
+     "value": [
+      "str",
+      "v"
+     ]
+    },
+    {
+     "path": "p[0].k",
+     "style": "plain",
+     "text": "v",
+     "value": [
+      "str",
+      "v"
+     ]
+    },
+    {
+     "path": "e.k",
+     "style": "plain",
+     "text": "",
+     "value": [
+      "null",
+      ""
+     ]
+    },
+    {
+     "path": "d.k",
+     "style": "plain",
+     "text": "v",
+     "value": [
+      "str",
+      "v"
+     ]
+    },
+    {
+     "path": "u",
+     "style": "plain",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    },
+    {
+     "path": "v",
+     "style": "plain",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    },
+    {
+     "path": "w",
+     "style": "plain",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    },
+    {
+     "path": "z",
+     "style": "plain",
+     "text": "x",
+     "value": [
+      "str",
+      "x"
+     ]
+    },
+    {
+     "path": "r",
+     "style": "plain",
+     "text": "12",
+     "value": [
+      "int",
+      "12"
+     ]
+    }
+   ]
+  },
   "tag-before-bracket": {
    "accepted": false,
    "error": "did not find expected whitespace or line break at line 1, column 7"
+  },
+  "tag-custom": {
+   "accepted": false,
+   "error": "could not determine a constructor for the tag '!custom' at line 1, column 4"
   },
   "top-level-block-scalar-at-column-0": {
    "accepted": false,

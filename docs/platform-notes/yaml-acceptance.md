@@ -124,8 +124,7 @@ below:
 - saphyr accepts a `:` with no key at the start of a line (`: x`);
 - a clipped block scalar at the end of a file without a final line
   break keeps its line break in saphyr, not in libyaml (a value
-  difference, still there: the corpus's
-  `block-scalar-clip-at-end-without-newline` lines);
+  difference; since Task 61 sb takes saphyr's break off, below);
 - saphyr refuses a few layouts libyaml accepts, none in Saltbox's
   files: a block scalar header at the key's column (`a:\n|`), a tab
   after `?` in a flow collection, a comment glued to a token
@@ -177,7 +176,7 @@ in the inventory read alike:
 After the last change a fuzz of 720,000 inputs, with libyaml's side
 also refusing collection keys, held none that sb accepts and libyaml
 refuses. It still held block scalars at the end of a file without a
-final line break (the value difference above) and saphyr's refusals of
+final line break (the value difference above, closed by Task 61) and saphyr's refusals of
 a block scalar header at an explicit key's column. sb refuses a few
 layouts libyaml reads differently from saphyr: `[?x]` (libyaml a key
 `x`, saphyr a scalar `?x`), an alias glued to its key's colon (`*x: 1`,
@@ -204,9 +203,8 @@ position against libyaml's. sb names an earlier point for three: the
 NEL itself (libyaml the line after it), an unknown directive's `%`
 (libyaml its name) and a flow `?` (libyaml the token after it).
 
-Not covered: what Ansible's constructor refuses beyond the parser,
-the composer and unhashable keys, notably a tag it has no constructor
-for (`!custom`, which sb reads as a string, as yaml.v3 does).
+Not covered by Task 59: a tag Ansible's constructor has none for
+(Task 61 refuses it, below), and a value its constructor can't build.
 
 ## Nesting depth (Task 59)
 
@@ -301,3 +299,99 @@ styles and texts.
 - **Binary size** (sb's production profile, musl, stripped):
   saphyr-parser alone 508,664 bytes. With libyaml-safer beside it,
   586,488 (+77,824). With unsafe-libyaml-norway, 570,104 (+61,440).
+
+## Task 61: tags, the end of a block scalar, the inventory's length
+
+Verified 2026-11-13 for decision 41.
+
+**Software:** ansible-core 2.21.3 (its loader run, and its source read),
+PyYAML 6.0.3 with libyaml 0.2.5, Python 3.12; go.yaml.in/yaml/v3 v3.0.5
+(sb-go's YAML library, run with Go 1.27.4); saphyr-parser 0.3.3.
+
+**Tags.** Method: each tagged layout was loaded with ansible-core's
+`AnsibleLoader` (`ansible/_internal/_yaml/_loader.py`: libyaml's
+`CParser`, `AnsibleConstructor`, PyYAML's `Resolver`) and with
+`CSafeLoader`, through `get_single_data`, in a scratch probe; the
+constructor's source names the same table (`_register_constructors`).
+Ansible's loader constructs a node whose tag, as libyaml resolves it, is
+one of:
+
+- the non-specific `!`, resolved as if untagged;
+- PyYAML's `SafeConstructor` tags: `!!null`, `!!bool`, `!!int`,
+  `!!float`, `!!binary`, `!!timestamp`, `!!omap`, `!!pairs`, `!!set`,
+  `!!str`, `!!seq`, `!!map`;
+- ansible-core's `!!python/dict` and `!!python/unicode` (CSafeLoader
+  refuses both);
+- ansible-core's own `!unsafe`, `!vault` and `!vault-encrypted` (the last
+  deprecated, as are `!!omap` and `!!pairs`), which resolve the node as
+  if untagged first.
+
+Any other tag is refused ("could not determine a constructor for the
+tag"), at the node's start, on a scalar, a collection, a key or the
+root: `!custom`, `!!merge` and `!!value` as values, `!!python/str`, a
+`%TAG` handle naming another prefix (`%TAG ! tag:yaml.org,2002:` makes
+`!unsafe` the unknown `tag:yaml.org,2002:unsafe`). Verbatim and escaped
+forms count as what they resolve to (`!<!unsafe>`, `!%75nsafe`,
+`!<tag:yaml.org,2002:%73tr>`). saphyr-parser 0.3.3 resolves each of
+these layouts' tags to libyaml's (its handle replaced by the prefix,
+escapes decoded), and sb refuses the others at the same line and column,
+in validate-config and the inventory read alike. With two such tags in
+different collections PyYAML names the first it constructs, nested
+collections later; sb names the first in the file. sb reads `!unsafe`
+and `!vault` values as their text, as yaml.v3 does.
+
+Still not covered: a value Ansible's constructor can't build (`!!int abc`,
+`!!str [a]`, `!vault {}`): validate-config reports yaml.v3's decode
+error for a scalar one; the inventory read takes them. `!!merge` and
+`!!value` on a mapping key, which PyYAML's `flatten_mapping` reads, are
+refused.
+
+The corpus has `tag-custom` (refused), `tag-ansible` (`!unsafe` and
+`!vault` as Saltbox would write them) and `tag-ansible-constructed`
+(every constructed tag but `!!binary`, whose value sb keeps as text);
+`scripts/yaml-corpus.py` takes the tags Ansible constructs from
+ansible-core's constructor table, so its regeneration needs ansible-core
+(2.19 or later, where the loader moved to `ansible._internal`), records
+its version, and flags a tag a later ansible-core drops. Task 61's code
+review ran a differential fuzz of 60,000 tag-heavy inputs (handles,
+`%TAG` redefinitions, verbatim and escaped forms, keys, roots) against
+`AnsibleLoader` (scratch, not kept): none that Ansible refuses for a
+missing constructor did sb accept.
+
+**The end of a block scalar.** Method: the same layouts through
+yaml.v3 3.0.5's `Unmarshal` (a scratch Go program), libyaml through
+`CSafeLoader`, and saphyr-parser 0.3.3's events. At the end of a file
+with no final line break, yaml.v3 gives libyaml's value in every layout:
+`a: |\n  x` is `x`, as are `|+`, `|-` and `>`; a last line of spaces
+only is a blank line when it reaches the indentation (`a: |\n  x\n  ` is
+`x\n`) and content past it. yaml.v3's `yaml_parser_scan_block_scalar`
+(`scannerc.go`, "Chomp the tail") adds only the line break it read.
+saphyr-parser adds a line break there when the last line reaches the
+indentation and the scalar isn't stripped, and gives a `|+` scalar with
+one blank line and no content `\n` (libyaml and yaml.v3: empty). So no
+Difference is listed: sb takes saphyr's added break off, and the
+corpus's `block-scalar-clip-at-end-without-newline` lines are gone, with
+two cases added (`|+`, and a last line of spaces). The pre-pass decides
+from the text whether saphyr added one (the scalar's chomping, its
+content indentation, explicit or found, whether a content line came, and
+the last line's length), not from the scalar's span, which starts at a
+tag or an anchor when it has one (`a: !vault |`). The unit tests hold
+the layouts run against libyaml: tagged and anchored headers,
+indentation indicators with and without content, keep and strip, and
+mid-file scalars, which keep saphyr's value. A differential fuzz against
+libyaml's events (the code review's harness, scratch, not kept; 350,000
+generated block-scalar layouts with and without properties) left only
+one class of difference, which Task 61 doesn't touch: a top-level block
+scalar followed by a comment at column 0 (`--- >\n\n# c`), which saphyr
+reads as content and libyaml as the scalar's end. No Saltbox file has a
+top-level block scalar.
+
+**The inventory's length.** localhost.yml is read whole at any length
+(`read_inventory`), for validate-config and the inventory read; the
+other files keep cli-core's 1 MiB cap. A 3.5 MB inventory of 200,000
+keys is read and checked in the tests. The cost grows with it: Task 61's
+reviews measured sb's start-up inventory read in a release build at
+0.75 s and 105 MB peak for 3.5 MB, 1.3 s and 211 MB for 7 MB, and 10 to
+12 s and 1.55 GB for 56 MB of `key: value` lines (about 30 times the
+file at the peak; 64 MB of bare line breaks took 3.1 GB). The time is
+linear in the file over the crafted shapes they tried.

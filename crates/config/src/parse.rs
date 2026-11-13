@@ -86,16 +86,14 @@ pub fn load(file: &str, prepared: &Prepared) -> Result<MarkedYamlOwned, Vec<Issu
     // The pass above decides duplicates, as yaml.v3 compares keys; the
     // loader would also compare an alias key with the text it stands for.
     loader.allow_duplicate_keys(true);
-    // The first document only (`multi: false`): the pre-pass has refused
-    // a second. Each event's span moved back into the file as written.
-    Parser::new_from_str(prepared.text())
-        .load(
-            &mut Original {
-                prepared,
-                loader: &mut loader,
-            },
-            false,
-        )
+    // The first document only: the pre-pass has refused a second. Its
+    // scalars as libyaml reads them, each event's span moved back into
+    // the file as written.
+    prepared
+        .load(&mut Original {
+            prepared,
+            loader: &mut loader,
+        })
         .map_err(|err| syntax(&err))?;
     // Errors the loader keeps to itself (an alias expansion past its
     // budget, say), as saphyr's own `load_from_parser` checks. Their
@@ -697,7 +695,7 @@ mod tests {
         let key = map.keys().nth(1).expect("d");
         assert_eq!(at(key), (4, 0, 13, 4, 1));
         // A tag's node too.
-        let tagged = root("a: !t [\nb]\n");
+        let tagged = root("a: !unsafe [\nb]\n");
         let YamlDataOwned::Mapping(map) = &tagged.data else {
             panic!("mapping");
         };
@@ -707,7 +705,7 @@ mod tests {
         let YamlDataOwned::Sequence(items) = &inner.data else {
             panic!("sequence");
         };
-        assert_eq!(at(&items[0]), (2, 0, 8, 2, 1));
+        assert_eq!(at(&items[0]), (2, 0, 13, 2, 1));
     }
 
     /// A tab Ansible's parser refuses is the file's syntax error, at the tab.

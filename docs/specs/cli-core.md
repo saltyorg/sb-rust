@@ -118,9 +118,10 @@ logged. *Amended 2026-11-13 by the completion spec.*
    default, so Saltbox backups cover it (maintainer, 2026-10-29).
    `server_appdata_path` comes from the Saltbox inventory, as sb-go's
    `layout` reads it, except that the YAML is read as Ansible's loader
-   reads it: a file it refuses (a second document among them) means
-   `/opt`, as a parse error does, and nesting is limited by depth, never
-   by length (config spec, "Parsing"). *Amended by hardening Task 59.* A theme names a built-in theme (`default` built in)
+   reads it: a file it refuses (a second document or a tag it has no
+   constructor for among them) means `/opt`, as a parse error does, and
+   nesting is limited by depth, never by length, in the YAML or the read
+   (config spec, "Parsing"). *Amended by hardening Tasks 59 and 61.* A theme names a built-in theme (`default` built in)
    and can override individual palette roles. A missing file means the
    built-in theme; an invalid one is a warning (shown and logged) and the
    built-in theme is used, so a typo can't block `sb update`.
@@ -413,8 +414,9 @@ boundaries that callers match on.
   and debugging; unset or empty means the default; sudo drops it).
   *Amended 2026-11-13 by the ansible spec.*
   Startup warnings (theme file, colour profile) show once, in the first
-  run, and go to the run log in the run that has one. Config and
-  inventory are read up to 1 MiB; config errors are one line with
+  run, and go to the run log in the run that has one. Config is read
+  up to 1 MiB, the inventory whole (`read_inventory`: it is as long as
+  its owner makes it; hardening Task 61); config errors are one line with
   control characters escaped (the file is group-writable). The real
   config is opened beneath
   `<server_appdata_path>` with `openat2` (no symlinks, no mount crossing),

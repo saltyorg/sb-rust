@@ -1,0 +1,17 @@
+s: !!str x
+i: !!int 12
+f: !!float 1.5
+b: !!bool true
+n: !!null ''
+t: !!timestamp 2001-01-01
+m: !!map {k: v}
+q: !!seq [v]
+o: !!omap [k: v]
+p: !!pairs [k: v]
+e: !!set {k}
+d: !!python/dict {k: v}
+u: !!python/unicode x
+v: !vault-encrypted x
+w: !vault x
+z: !unsafe x
+r: ! 12

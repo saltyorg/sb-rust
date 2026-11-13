@@ -5,10 +5,12 @@ For each case in CORPUS/cases/*.yml, in name order, record what libyaml
 does with it, through PyYAML's libyaml binding (`CSafeLoader`: libyaml's
 parser, and PyYAML's safe constructor and YAML 1.1 resolver, the parser
 Ansible's loader uses when libyaml is there): whether it is accepted as
-a single document (the reader's errors, and a collection as a mapping
-key, which the constructor refuses, count as refusals), and for an
-accepted case, every scalar value's key path,
-style, text as parsed and resolved value, and every empty collection.
+a single document (the reader's errors, a collection as a mapping key
+and a tag ansible-core's `AnsibleLoader` has no constructor for, which
+its constructor refuses, count as refusals), and for an accepted case,
+every scalar value's key path, style, text as parsed and resolved value,
+and every empty collection. A scalar tagged with one of Ansible's own
+tags is resolved as ansible-core's constructor first resolves it.
 Writes CORPUS/expected.json.
 
 Run once, and again only when a case is added or changed:
@@ -16,14 +18,16 @@ Run once, and again only when a case is added or changed:
     scripts/yaml-corpus.py [CORPUS]
 
 CORPUS defaults to the repository's crates/config/tests/yaml-corpus.
-Needs PyYAML built with libyaml (`yaml.__with_libyaml__`); the versions
-used are recorded in the output and in
+Needs PyYAML built with libyaml (`yaml.__with_libyaml__`) and
+ansible-core, whose constructor table names the tags Ansible constructs;
+the versions used are recorded in the output and in
 docs/platform-notes/yaml-acceptance.md. Type-checking it needs
 types-PyYAML beside mypy.
 """
 
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import sys
@@ -31,6 +35,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+# ansible-core ships no type information (no py.typed marker, no stubs):
+# these two names are only read here (a class's constructor table and a
+# version string), so their types being unchecked hides nothing.
+from ansible._internal._yaml._constructor import (  # type: ignore[import-untyped]
+    AnsibleConstructor,
+)
+from ansible.release import __version__ as ANSIBLE_CORE  # type: ignore[import-untyped]
 
 DEFAULT_CORPUS = (
     Path(__file__).resolve().parent.parent / "crates/config/tests/yaml-corpus"
@@ -45,6 +57,23 @@ STYLES = {
     '"': "double",
     "|": "literal",
     ">": "folded",
+}
+
+
+# The tags ansible-core's `AnsibleLoader` constructs (its constructor's
+# table; `None` is PyYAML's fallback, `construct_undefined`, which
+# refuses).
+CONSTRUCTED = {tag for tag in AnsibleConstructor.yaml_constructors if tag is not None}
+
+# What ansible-core builds for its tags `CSafeLoader` lacks, as a tag
+# `CSafeLoader` constructs: `None` resolves the node implicitly first, as
+# its `_resolve_and_construct_object` does for `!unsafe` and `!vault`.
+AS_SAFE = {
+    "tag:yaml.org,2002:python/dict": "tag:yaml.org,2002:map",
+    "tag:yaml.org,2002:python/unicode": "tag:yaml.org,2002:str",
+    "!unsafe": None,
+    "!vault": None,
+    "!vault-encrypted": None,
 }
 
 
@@ -75,8 +104,14 @@ def scalars(
     `map` entry. Keys name the path (`a.b`, `a[0]`) and aren't listed
     themselves."""
     if isinstance(node, yaml.ScalarNode):
+        built = node
+        if node.tag in AS_SAFE:
+            built = copy.copy(node)
+            built.tag = AS_SAFE[node.tag] or loader.resolve(
+                yaml.ScalarNode, node.value, (True, False)
+            )
         try:
-            value = resolved(loader.construct_object(node, deep=True), node.value)
+            value = resolved(loader.construct_object(built, deep=True), node.value)
         except (yaml.YAMLError, ValueError) as err:
             # A scalar libyaml parses but PyYAML can't construct (a date
             # like 2025-13-45): recorded, not fatal.
@@ -127,6 +162,33 @@ def unhashable(node: yaml.Node) -> None:
             todo.extend(current.value)
 
 
+def unconstructed(node: yaml.Node) -> None:
+    """Raise the constructor's error for the first node under `node`, in
+    document order, whose tag ansible-core's `AnsibleLoader` has no
+    constructor for ("could not determine a constructor for the tag",
+    PyYAML's `construct_undefined`). Each node once: an alias is the node
+    it names."""
+    seen: set[int] = set()
+    todo = [node]
+    while todo:
+        current = todo.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if current.tag not in CONSTRUCTED:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"could not determine a constructor for the tag {current.tag!r}",
+                current.start_mark,
+            )
+        if isinstance(current, yaml.MappingNode):
+            for key, value in reversed(current.value):
+                todo.extend([value, key])
+        elif isinstance(current, yaml.SequenceNode):
+            todo.extend(reversed(current.value))
+
+
 def at(data: bytes, position: int) -> str:
     """` at line L, column C` for a character `position` in `data`."""
     before = data.decode("utf-8", errors="replace")[:position]
@@ -137,14 +199,15 @@ def at(data: bytes, position: int) -> str:
 def verdict(data: bytes) -> dict[str, Any]:
     """libyaml's verdict on one case: accepted, with its scalars, or the
     error it stopped at (1-based line and column): the reader's, the
-    parser's or the composer's, or a collection as a mapping key, which
-    the constructor refuses."""
+    parser's or the composer's, or a collection as a mapping key or a tag
+    with no constructor, which the constructor refuses."""
     loader = yaml.CSafeLoader(data)
     try:
         node = loader.get_single_node()
         out: list[dict[str, Any]] = []
         if node is not None:
             unhashable(node)
+            unconstructed(node)
             scalars(loader, node, "", out)
         return {"accepted": True, "scalars": out}
     except yaml.MarkedYAMLError as err:
@@ -170,6 +233,7 @@ def main(argv: list[str]) -> int:
         "generator": "scripts/yaml-corpus.py",
         "pyyaml": yaml.__version__,
         "libyaml": yaml._yaml.get_version_string(),
+        "ansible_core": ANSIBLE_CORE,
         "cases": {case.stem: verdict(case.read_bytes()) for case in cases},
     }
     text = json.dumps(expected, indent=1, sort_keys=True, ensure_ascii=False)

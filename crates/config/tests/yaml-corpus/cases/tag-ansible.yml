@@ -1,0 +1,5 @@
+a: !unsafe "{{ not_a_template }}"
+b: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  6162636465
+c: !unsafe {d: e}

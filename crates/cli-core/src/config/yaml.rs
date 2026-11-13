@@ -46,11 +46,14 @@
 //! be what Ansible's loader takes (hardening plan decision 38): one
 //! document (`get_single_node`, which refuses another one, and libyaml's
 //! parser, which refuses content after a document's end), scalar mapping
-//! keys, and nesting no deeper than [`MAX_DEPTH`]; before that the text
+//! keys, only the tags its constructor knows (decision 41), and nesting
+//! no deeper than [`MAX_DEPTH`]; before that the text
 //! must hold no character libyaml's reader refuses, and no NEL, LS or PS
 //! (line breaks to libyaml, text to saphyr). The pass limits depth only,
-//! never length: the Saltbox inventory is as long as its owner makes it
-//! (the file is still read up to cli-core's 1 MiB cap, `MAX_FILE_BYTES`).
+//! never length: the Saltbox inventory is as long as its owner makes it,
+//! and cli-core reads it whole (`read_inventory`, decision 41).
+//! Its events are loaded through [`Prepared::load`], which gives a block
+//! scalar at the end of a file without a final line break libyaml's value.
 //! A tree deeper than [`SHALLOW`] is loaded, walked and dropped on a
 //! thread with a stack for [`MAX_DEPTH`] ([`with_stack`]): saphyr-parser's
 //! `Parser::load`, the tree's clone (an alias) and drop, and sb's walks
@@ -76,7 +79,9 @@
 //! file can't grow without bound. Positions saphyr reports on the padded
 //! text go back to the original file through [`Prepared::original`].
 
-use saphyr_parser::{Event, Marker, Parser};
+use saphyr_parser::{
+    Event, Marker, Parser, ScalarStyle, ScanError, Span, SpannedEventReceiver, Tag,
+};
 
 use super::MAX_FILE_BYTES;
 
@@ -125,6 +130,11 @@ pub struct Prepared {
     total: usize,
     /// How deep its collections nest, aliases counted as what they copy.
     depth: usize,
+    /// Its length in characters, as saphyr-parser's markers count them.
+    chars: usize,
+    /// Whether it ends, with no final line break, in a block scalar to
+    /// which saphyr-parser adds one (`added_break`).
+    eof_break: bool,
 }
 
 /// The config text is the user's, secrets included: its debug form shows
@@ -172,6 +182,48 @@ const NO_KEY: &str = "a `:` with no key before it (a key must be on the `:`'s li
 const LONE_END: &str = "a document end marker (`...`) with no document before it";
 const SECOND_DOCUMENT: &str = "a second document (Ansible reads one document per file)";
 const AFTER_END: &str = "content after the document's end marker (`...`)";
+const NO_CONSTRUCTOR: &str = "a tag Ansible's YAML loader has no constructor for \
+     (it takes the YAML types' tags, !unsafe and !vault)";
+
+/// The tags Ansible's loader constructs, as resolved (`!!` is the core
+/// prefix): `PyYAML` 6.0.3's `SafeConstructor` and ansible-core 2.21.3's
+/// `AnsibleInstrumentedConstructor` and `AnsibleConstructor`
+/// (`ansible/_internal/_yaml/_constructor.py`, their
+/// `_register_constructors`), checked with its `AnsibleLoader` on libyaml
+/// 0.2.5 (docs/platform-notes/yaml-acceptance.md). Any other tag is
+/// `construct_undefined`'s error, and a non-specific `!` is resolved as
+/// if untagged.
+const CONSTRUCTED: [&str; 17] = [
+    "tag:yaml.org,2002:binary",
+    "tag:yaml.org,2002:bool",
+    "tag:yaml.org,2002:float",
+    "tag:yaml.org,2002:int",
+    "tag:yaml.org,2002:map",
+    "tag:yaml.org,2002:null",
+    "tag:yaml.org,2002:omap",
+    "tag:yaml.org,2002:pairs",
+    "tag:yaml.org,2002:python/dict",
+    "tag:yaml.org,2002:python/unicode",
+    "tag:yaml.org,2002:seq",
+    "tag:yaml.org,2002:set",
+    "tag:yaml.org,2002:str",
+    "tag:yaml.org,2002:timestamp",
+    "!unsafe",
+    "!vault",
+    "!vault-encrypted",
+];
+
+/// Whether Ansible's loader constructs a node tagged `tag`: saphyr-parser
+/// resolves a tag as libyaml does (its handle replaced by the `%TAG`
+/// prefix or the default one, escapes decoded), so the handle and suffix
+/// together are libyaml's tag. Why not serde-saphyr 2.0.0's
+/// `Options::reject_unsupported_tags`: its set is fixed, without
+/// `!unsafe`, `!vault`, `!!omap`, `!!pairs` or `!!set`, and it reads with
+/// granit-parser, not the stream this pass checks.
+fn constructed(tag: &Tag) -> bool {
+    let full = format!("{}{}", tag.handle, tag.suffix);
+    full == "!" || CONSTRUCTED.contains(&full.as_str())
+}
 
 impl Prepared {
     /// The text for saphyr-parser.
@@ -204,6 +256,72 @@ impl Prepared {
             marker.col() - in_line,
         )
     }
+
+    /// The first document's events into `receiver`, as saphyr-parser's
+    /// `Parser::load` gives them with `multi` off
+    /// (<https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>;
+    /// [`prepare`] has refused a second document), each scalar's text as
+    /// libyaml reads it (`Prepared::libyaml`). Spans are this text's:
+    /// [`Prepared::original`] moves them into the file.
+    ///
+    /// # Errors
+    ///
+    /// saphyr-parser's syntax error, which [`prepare`] has already seen.
+    pub fn load<'input, R: SpannedEventReceiver<'input>>(
+        &'input self,
+        receiver: &mut R,
+    ) -> Result<(), ScanError> {
+        Parser::new_from_str(&self.text).load(
+            &mut Libyaml {
+                prepared: self,
+                receiver,
+            },
+            false,
+        )
+    }
+
+    /// `event`, at `span` in this text, with a scalar's text as libyaml
+    /// reads it. One case differs: a block scalar at the end of a text
+    /// with no final line break. libyaml 0.2.5 and sb-go's yaml.v3
+    /// (go.yaml.in/yaml/v3 v3.0.5, `yaml_parser_scan_block_scalar` in
+    /// `scannerc.go`: "Chomp the tail" adds only the line break it read,
+    /// <https://github.com/yaml/go-yaml/blob/v3.0.5/scannerc.go>) keep no
+    /// line break there; saphyr-parser 0.3.3's `scan_block_scalar` adds
+    /// one, and its own case for a scalar with no content line adds one
+    /// to a `|+` scalar whose only line is blank. The pass decides from
+    /// the text whether it did ([`added_break`]); the scalar is then the
+    /// one whose span reaches the text's end, and that break goes. Why
+    /// not saphyr's own: neither it, 0.3.4, nor granit-parser 2.0.0 has
+    /// an option for it. Checked against libyaml through `PyYAML` 6.0.3
+    /// and against yaml.v3 3.0.5 (the platform note).
+    fn libyaml<'input>(&self, event: Event<'input>, span: &Span) -> Event<'input> {
+        match event {
+            Event::Scalar(
+                text,
+                style @ (ScalarStyle::Literal | ScalarStyle::Folded),
+                anchor,
+                tag,
+            ) if self.eof_break && span.end.index() == self.chars && text.ends_with('\n') => {
+                let mut text = text.into_owned();
+                text.pop();
+                Event::Scalar(text.into(), style, anchor, tag)
+            }
+            event => event,
+        }
+    }
+}
+
+/// A receiver that hands each event on as [`Prepared::libyaml`] reads it.
+struct Libyaml<'a, R> {
+    prepared: &'a Prepared,
+    receiver: &'a mut R,
+}
+
+impl<'input, R: SpannedEventReceiver<'input>> SpannedEventReceiver<'input> for Libyaml<'_, R> {
+    fn on_event(&mut self, event: Event<'input>, span: Span) {
+        let event = self.prepared.libyaml(event, &span);
+        self.receiver.on_event(event, span);
+    }
 }
 
 /// What the scanner is in when a line ends.
@@ -219,11 +337,24 @@ enum Within {
     Quoted { double: bool },
     /// A block scalar's content, under a block collection indented
     /// `parent` (none at the top), its content indentation known once a
-    /// line sets it.
+    /// line sets it (or its header's indentation indicator); whether a
+    /// content line has come; its header's chomping indicator and line
+    /// number.
     BlockScalar {
         parent: Option<usize>,
         indent: Option<usize>,
+        seen: bool,
+        chomp: Chomp,
+        header: usize,
     },
+}
+
+/// A block scalar's chomping indicator: none (clip), `+` or `-`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chomp {
+    Clip,
+    Keep,
+    Strip,
 }
 
 /// The scanner's state across lines.
@@ -330,7 +461,8 @@ fn document_marker(line: &[char]) -> Option<char> {
 /// A [`Refusal`] naming its line and column: a NEL, LS or PS, a tab or a
 /// `:` libyaml refuses, a document end marker with no document, a
 /// second document or content after the first one's end, nesting
-/// deeper than [`MAX_DEPTH`], or saphyr-parser's own syntax error.
+/// deeper than [`MAX_DEPTH`], saphyr-parser's own syntax error, or a tag
+/// Ansible's loader has no constructor for.
 pub fn prepare(text: &str) -> Result<Prepared, Refusal> {
     characters(text)?;
     let rewritten = rewrite(text)?;
@@ -341,11 +473,14 @@ pub fn prepare(text: &str) -> Result<Prepared, Refusal> {
             before: Vec::new(),
             total: 0,
             depth: 0,
+            chars: 0,
+            eof_break: rewritten.eof_break,
         }
     } else {
         rewritten
     };
     prepared.depth = stream(&prepared)?;
+    prepared.chars = prepared.text.chars().count();
     Ok(prepared)
 }
 
@@ -432,8 +567,11 @@ fn characters(text: &str) -> Result<(), Refusal> {
 /// depth (an alias counted as the height of its anchor's collection, which
 /// the loader copies), or what Ansible's loader refuses: a second
 /// document, a collection as a mapping key, nesting past [`MAX_DEPTH`],
-/// or a syntax error. Why not saphyr's own limits: saphyr-parser 0.3.3
-/// has no depth or document option (only its `u8` flow level), and
+/// a syntax error, or a tag its constructor doesn't know ([`CONSTRUCTED`];
+/// the first in the file, where `PyYAML` names the first it constructs,
+/// which for two in different collections may be another).
+///
+/// Why not saphyr's own limits: saphyr-parser 0.3.3 has no depth or document option (only its `u8` flow level), and
 /// `YamlLoader::alias_limit` counts nodes, not depth; serde-saphyr's
 /// `check_yaml_budget` scans with another parser (granit-parser), counts
 /// no alias heights and knows nothing of the pre-pass's positions.
@@ -451,8 +589,19 @@ fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
     let mut heights: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     let mut documents = 0;
     let mut deepest = 0;
+    // The first tag Ansible's loader can't construct: its constructor runs
+    // after the parser, so a syntax error anywhere comes first.
+    let mut unconstructed = None;
     for event in Parser::new_from_str(prepared.text()) {
         let (event, span) = event.map_err(|err| at(err.marker(), err.info()))?;
+        if let Event::Scalar(.., Some(tag))
+        | Event::MappingStart(_, Some(tag))
+        | Event::SequenceStart(_, Some(tag)) = &event
+            && unconstructed.is_none()
+            && !constructed(tag)
+        {
+            unconstructed = Some(at(&span.start, NO_CONSTRUCTOR));
+        }
         // A collection (or an alias to one) where a mapping wants a key:
         // `PyYAML`'s constructor refuses it ("found unhashable key"), and
         // saphyr's loader would hash it whole at every level.
@@ -514,7 +663,7 @@ fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
             parent.key_next = parent.key_next.map(|key| !key);
         }
     }
-    Ok(deepest)
+    unconstructed.map_or(Ok(deepest), Err)
 }
 
 /// An open collection in [`stream`].
@@ -563,6 +712,7 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
     let mut done = false;
     // The first document ended at a `...` line.
     let mut after_end = false;
+    let mut eof_break = false;
     for (index, (line, end)) in lines(text).into_iter().enumerate() {
         before.push(total);
         let mut chars: Vec<char> = line.chars().collect();
@@ -603,6 +753,8 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
         if bom {
             out.push('\u{feff}');
         }
+        // Only the last line has no break.
+        eof_break = !done && end.is_empty() && added_break(&scan, &chars, index + 1);
         out.extend(std::iter::repeat_n(' ', pad));
         out.extend(chars);
         out.push_str(end);
@@ -613,6 +765,8 @@ fn rewrite(text: &str) -> Result<Prepared, Refusal> {
         before,
         total,
         depth: 0,
+        chars: 0,
+        eof_break,
     })
 }
 
@@ -668,7 +822,7 @@ fn scan_line(scan: &mut Scan, chars: &mut [char], number: usize) -> Result<Line,
     for (key, _) in &mut scan.outer {
         *key = None;
     }
-    if let Within::BlockScalar { parent, indent } = scan.within
+    if let Within::BlockScalar { parent, indent, .. } = scan.within
         && block_scalar_line(scan, chars, parent, indent, number)?
     {
         return Ok(Line::Pad(0));
@@ -774,7 +928,16 @@ fn block_scalar_line(
     // there, so content at column 0 is refused.
     let least = parent.map_or(0, |col| col + 1);
     match indent {
-        Some(n) if spaces >= n => return Ok(true),
+        Some(n) if spaces >= n => {
+            // A line past the indentation is content, spaces or not
+            // (saphyr's and libyaml's content loop starts at the column).
+            if chars.len() > n
+                && let Within::BlockScalar { seen, .. } = &mut scan.within
+            {
+                *seen = true;
+            }
+            return Ok(true);
+        }
         _ if tab => return Err(refuse(number, spaces, TAB_BLOCK_SCALAR)),
         _ if !content => return Ok(true),
         None if parent.is_none()
@@ -785,10 +948,10 @@ fn block_scalar_line(
             return Err(refuse(number, 0, TOP_BLOCK_SCALAR));
         }
         None if spaces >= least => {
-            scan.within = Within::BlockScalar {
-                parent,
-                indent: Some(spaces),
-            };
+            if let Within::BlockScalar { indent, seen, .. } = &mut scan.within {
+                *indent = Some(spaces);
+                *seen = true;
+            }
             return Ok(true);
         }
         _ => scan.within = Within::Tokens,
@@ -957,7 +1120,7 @@ fn token(
         // never starts one.
         ':' if indicator || flow => colon(scan, chars, at, number)?,
         '|' | '>' if !flow => {
-            block_scalar(scan, chars, at);
+            block_scalar(scan, chars, at, number);
             return Ok(None);
         }
         // In a flow collection libyaml starts no block scalar and no plain
@@ -1110,20 +1273,59 @@ fn directive(chars: &[char], number: usize) -> Result<(), Refusal> {
     }
 }
 
-/// A block scalar's header at `chars[at]`: its content starts on the next
-/// line, indented by its indentation indicator past the block
-/// indentation, or as its first non-empty line sets.
-fn block_scalar(scan: &mut Scan, chars: &[char], at: usize) {
+/// A block scalar's header at `chars[at]`, on line `header`: its content
+/// starts on the next line, indented by its indentation indicator past the
+/// block indentation, or as its first non-empty line sets.
+fn block_scalar(scan: &mut Scan, chars: &[char], at: usize, header: usize) {
     let parent = scan.indent();
-    let explicit = chars[at + 1..]
-        .iter()
-        .take_while(|&&c| c != ' ' && c != '\t')
+    let indicators = || {
+        chars[at + 1..]
+            .iter()
+            .take_while(|&&c| c != ' ' && c != '\t')
+    };
+    let explicit = indicators()
         .find_map(|c| c.to_digit(10))
         .filter(|&n| n > 0)
         .and_then(|n| usize::try_from(n).ok());
     let indent = explicit.map(|n| parent.map_or(n, |p| p + n));
-    scan.within = Within::BlockScalar { parent, indent };
+    let chomp = match indicators().find(|&&c| c == '+' || c == '-') {
+        Some('+') => Chomp::Keep,
+        Some(_) => Chomp::Strip,
+        None => Chomp::Clip,
+    };
+    scan.within = Within::BlockScalar {
+        parent,
+        indent,
+        seen: false,
+        chomp,
+        header,
+    };
     scan.key_allowed = true;
+}
+
+/// Whether saphyr-parser 0.3.3 gives the block scalar that `scan` is in at
+/// the end of a text whose last line, `last` (line `number`), has no line
+/// break, one more line break than libyaml. Its `scan_block_scalar` adds
+/// one there when the last line reaches the content's indentation, unless
+/// the scalar strips its breaks ("Chomp the tail"), and gives a `|+`
+/// scalar with no content line `"\n"` when its one line after the header
+/// is blank (its early return for a scalar that ends before content).
+fn added_break(scan: &Scan, last: &[char], number: usize) -> bool {
+    let Within::BlockScalar {
+        indent,
+        seen,
+        chomp,
+        header,
+        ..
+    } = scan.within
+    else {
+        return false;
+    };
+    match indent {
+        _ if chomp == Chomp::Strip => false,
+        Some(indent) if seen => last.len() >= indent.max(1),
+        _ => chomp == Chomp::Keep && number == header + 1 && !last.is_empty(),
+    }
 }
 
 #[cfg(test)]
@@ -1910,7 +2112,7 @@ mod tests {
         for input in [
             "%YAML 1.1\n---\na: 1\n",
             "%YAML  1.2 # c\n---\na: 1\n",
-            "%TAG !e! tag:x,2000:\n---\na: !e!y 1\n",
+            "%TAG !e! tag:yaml.org,2002:\n---\na: !e!str 1\n",
         ] {
             assert!(prepare(input).is_ok(), "{input:?}");
         }
@@ -1931,9 +2133,9 @@ mod tests {
             format!("{end} at line 1, column 7")
         );
         for input in [
-            "a: [!t, 1]\n",
-            "a: !t #c\n",
-            "a: !<tag:x> 1\n",
+            "a: [!unsafe, 1]\n",
+            "a: !unsafe #c\n",
+            "a: !<tag:yaml.org,2002:str> 1\n",
             "a: !!str x\n",
             "a: !\n",
             "a: ! x\n",
@@ -2115,5 +2317,187 @@ mod tests {
         let prepared = rewrite(&input).expect("prepares");
         assert_eq!(prepared.total, PAD_BUDGET);
         assert!(prepared.text.ends_with("\n]\n"));
+    }
+
+    /// A tag Ansible's loader has no constructor for is refused at its
+    /// node, as `PyYAML`'s constructor refuses it ("could not determine a
+    /// constructor for the tag"), checked with ansible-core 2.21.3's
+    /// `AnsibleLoader` on `PyYAML` 6.0.3 and libyaml 0.2.5 (the platform
+    /// note): a custom tag on a scalar, a collection, a key or the root,
+    /// a core tag `SafeConstructor` lacks, and `%TAG` handles that
+    /// resolve to one. The first in the file is named.
+    #[test]
+    fn a_tag_ansible_cannot_construct_is_refused() {
+        for (input, line, column) in [
+            ("a: !custom x\n", 1, 4),
+            ("a: !custom {b: 1}\n", 1, 4),
+            ("a: !custom [1]\n", 1, 4),
+            ("!custom k: 1\n", 1, 1),
+            ("!custom\na: 1\n", 1, 1),
+            ("a: !!merge x\n", 1, 4),
+            ("a: !!value x\n", 1, 4),
+            ("a: !!python/str x\n", 1, 4),
+            ("a: !!foo x\n", 1, 4),
+            ("a: !<tag:x,2000:y> x\n", 1, 4),
+            ("%TAG !e! tag:x,2000:\n---\na: !e!y 1\n", 3, 4),
+            ("%TAG ! tag:yaml.org,2002:\n---\na: !unsafe x\n", 3, 4),
+            ("%TAG !! tag:x,2000:\n---\na: !!str x\n", 3, 4),
+            ("a: &x !custom 1\nb: *x\n", 1, 4),
+            ("a: !unsafe {b: !custom 1}\n", 1, 16),
+            ("a: !one 1\nb: !two 2\n", 1, 4),
+        ] {
+            let refusal = prepare(input).expect_err(input);
+            assert_eq!(
+                (refusal.line, refusal.column, refusal.message.as_str()),
+                (line, column, NO_CONSTRUCTOR),
+                "{input:?}"
+            );
+        }
+        // A syntax error later in the file is named first, as libyaml's
+        // parser stops before Ansible's constructor runs.
+        let refusal = prepare("a: !custom x\nb: [\n").expect_err("unclosed");
+        assert_ne!(refusal.message, NO_CONSTRUCTOR);
+    }
+
+    /// The tags Ansible's loader constructs pass: the non-specific `!`,
+    /// `SafeConstructor`'s core tags, ansible-core's `python/dict` and
+    /// `python/unicode`, and its own `!unsafe`, `!vault` and
+    /// `!vault-encrypted`, however they are written.
+    #[test]
+    fn the_tags_ansible_constructs_pass() {
+        for input in [
+            "a: ! 12\n",
+            "a: ! {b: 1}\n",
+            "a: !<!> x\n",
+            "a: !!str 12\n",
+            "a: !!int 12\n",
+            "a: !!float 1\n",
+            "a: !!bool true\n",
+            "a: !!null ''\n",
+            "a: !!binary aGk=\n",
+            "a: !!timestamp 2001-01-01\n",
+            "a: !!map {b: 1}\n",
+            "a: !!seq [1]\n",
+            "a: !!omap [b: 1]\n",
+            "a: !!pairs [b: 1]\n",
+            "a: !!set {b}\n",
+            "a: !!python/dict {b: 1}\n",
+            "a: !!python/unicode x\n",
+            "a: !unsafe x\n",
+            "a: !unsafe {b: 1}\n",
+            "a: !vault x\n",
+            "a: !vault-encrypted x\n",
+            "a: !<tag:yaml.org,2002:str> x\n",
+            "a: !<tag:yaml.org,2002:%73tr> x\n",
+            "a: !<!unsafe> x\n",
+            "a: !%75nsafe x\n",
+            "%TAG !e! tag:yaml.org,2002:\n---\na: !e!str x\n",
+            "%TAG ! tag:yaml.org,2002:\n---\na: !str x\n",
+            "%TAG ! !\n---\na: !unsafe x\n",
+        ] {
+            assert!(prepare(input).is_ok(), "{input:?}: {:?}", prepare(input));
+        }
+    }
+
+    /// Every scalar's text as [`Prepared::load`] hands it on.
+    fn loaded(input: &str) -> Vec<String> {
+        struct Texts(Vec<String>);
+        impl<'input> saphyr_parser::SpannedEventReceiver<'input> for Texts {
+            fn on_event(&mut self, event: Event<'input>, _: saphyr_parser::Span) {
+                if let Event::Scalar(text, ..) = event {
+                    self.0.push(text.into_owned());
+                }
+            }
+        }
+        let prepared = prepare(input).unwrap_or_else(|refusal| panic!("{input:?}: {refusal}"));
+        let mut texts = Texts(Vec::new());
+        prepared.load(&mut texts).expect("loads");
+        texts.0
+    }
+
+    /// A block scalar at the end of a file without a final line break
+    /// ends without one, as in libyaml and yaml.v3 (go.yaml.in/yaml/v3
+    /// v3.0.5, `yaml_parser_scan_block_scalar`: only a line break it read
+    /// is kept); saphyr-parser 0.3.3 adds one. Each expected value is
+    /// libyaml 0.2.5's through `PyYAML` 6.0.3, and yaml.v3's where the
+    /// platform note shows it.
+    #[test]
+    fn a_block_scalar_at_the_end_keeps_no_break_it_lacks() {
+        for (input, value) in [
+            ("a: |\n  x", "x"),
+            ("a: |+\n  x", "x"),
+            ("a: |-\n  x", "x"),
+            ("a: >\n  x", "x"),
+            ("a: >\n  x\n\n  y", "x\ny"),
+            ("a: |2\n   x", " x"),
+            ("a: |\n\n  x", "\nx"),
+            ("- |\n x", "x"),
+            ("|\n x", "x"),
+            // A last line of spaces only: content past the indentation,
+            // a blank line at it, nothing left of it.
+            ("a: |\n  x\n    ", "x\n  "),
+            ("a: |-\n  x\n    ", "x\n  "),
+            ("a: |\n  x\n  ", "x\n"),
+            ("a: |+\n  x\n  ", "x\n"),
+            ("a: |\n  x\n ", "x\n"),
+            ("a: |+\n  x\n ", "x\n"),
+            ("a:\n  b: |\n    x\n  ", "x\n"),
+            ("a: |\n  x\r\n  ", "x\n"),
+            // No content line.
+            ("a: |+\n  ", ""),
+            ("a: |\n  ", ""),
+            ("a: |+\n\n  ", "\n"),
+            ("a: |+\n", ""),
+            ("a: |+", ""),
+            // A tag or an anchor before the header.
+            ("k: !vault |\n  x", "x"),
+            ("k: !vault |\n  x\n  ", "x\n"),
+            ("a: &x |\n  x\n ", "x\n"),
+            ("a: &x |1\n  ", " "),
+            ("a: !!str >\n     - z\n\n\n   ", "- z\n"),
+            ("a: !unsafe |+\n  ", ""),
+            ("a: |2\n    x\n  ", "  x\n"),
+            ("a:\n  - |1\n    x\n   ", " x\n"),
+            ("a: |+\n\n\n\n   ", "\n\n\n"),
+            // An indentation indicator and no content line.
+            ("- a: |+1\n  ", ""),
+            ("- a: >+1 #c\n  ", ""),
+            ("a: !!str >+1  \n\n ", "\n"),
+            ("- - >+1\n\n\n\n   ", "\n\n\n"),
+            // With a final line break, as saphyr reads it.
+            ("a: |\n  x\n", "x\n"),
+            ("a: |\n  x\n\n", "x\n"),
+            ("a: |+\n  x\n\n", "x\n\n"),
+        ] {
+            assert_eq!(
+                loaded(input).last().map(String::as_str),
+                Some(value),
+                "{input:?}"
+            );
+        }
+        // Not at the end: as saphyr reads it, a tagged one and one with no
+        // content line included; only the last scalar loses its break.
+        assert_eq!(loaded("a: |\n  x\nb: 1"), ["a", "x\n", "b", "1"]);
+        assert_eq!(
+            loaded(
+                "a: !vault |\n          $ANSIBLE_VAULT;1.1;AES256\n          6162\n     # note\nb: 1\n"
+            ),
+            ["a", "$ANSIBLE_VAULT;1.1;AES256\n6162\n", "b", "1"]
+        );
+        assert_eq!(
+            loaded("a:\n  b: |+\n\n\n  c: 1\n"),
+            ["a", "b", "\n\n", "c", "1"]
+        );
+        assert_eq!(loaded("a: |\n  x\nb: |\n  y"), ["a", "x\n", "b", "y"]);
+        // Padding before it doesn't move the end.
+        assert_eq!(
+            loaded("a: [1,\n2]\nb: |\n  x").last().map(String::as_str),
+            Some("x")
+        );
+        // A byte order mark doesn't either.
+        assert_eq!(
+            loaded("\u{feff}a: |\n  x").last().map(String::as_str),
+            Some("x")
+        );
     }
 }

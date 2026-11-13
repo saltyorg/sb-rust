@@ -46,9 +46,9 @@ pub fn inventory_path(root: &Path) -> PathBuf {
 /// sb's config file, relative to the appdata path.
 const CONFIG_FILE: &str = "sb/config.toml";
 
-/// Files larger than this are not sb's or Saltbox's: refused, not read whole
-/// (a huge inventory took over a second to fail in a debug build). The
-/// cap for any text sb reads (exec's captured output too).
+/// Files larger than this are not sb's or Saltbox's: refused, not read whole.
+/// The cap for any text sb reads (exec's captured output too), except the
+/// inventory ([`read_inventory`]), which has none.
 pub const MAX_FILE_BYTES: usize = 1 << 20;
 
 /// The open flags for both files: never block (a FIFO, or a lease the
@@ -62,9 +62,10 @@ fn read_flags() -> rustix::fs::OFlags {
 }
 
 /// The text of an opened file: a regular file (checked on the handle, so
-/// there's no race) of at most `MAX_FILE_BYTES`, in UTF-8.
+/// there's no race) of at most `cap` bytes (`None`: any length), in UTF-8.
 fn read_opened(
     opened: rustix::io::Result<std::os::fd::OwnedFd>,
+    cap: Option<usize>,
 ) -> Result<Option<String>, ConfigError> {
     let file = match opened {
         Ok(fd) => std::fs::File::from(fd),
@@ -80,11 +81,18 @@ fn read_opened(
         return Err(ConfigError::NotAFile);
     }
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(ConfigError::Read)?;
-    if bytes.len() > MAX_FILE_BYTES {
-        return Err(ConfigError::TooBig(MAX_FILE_BYTES));
+    match cap {
+        Some(cap) => {
+            file.take(cap as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(ConfigError::Read)?;
+            if bytes.len() > cap {
+                return Err(ConfigError::TooBig(cap));
+            }
+        }
+        None => {
+            (&file).read_to_end(&mut bytes).map_err(ConfigError::Read)?;
+        }
     }
     String::from_utf8(bytes)
         .map(Some)
@@ -92,21 +100,39 @@ fn read_opened(
 }
 
 /// `path`'s text, or `None` when there is no such file: a regular file of
-/// at most 1 MiB in UTF-8, opened without blocking. For the inventory and
-/// Saltbox's schema files (their writer already controls root through
-/// Ansible, and sb-go reads them the same way) and an `SB_CONFIG` path
-/// (the user's own run).
+/// at most 1 MiB in UTF-8, opened without blocking. For Saltbox's config
+/// and schema files (their writer already controls root through Ansible,
+/// and sb-go reads them the same way) and an `SB_CONFIG` path (the user's
+/// own run).
 ///
 /// # Errors
 ///
 /// A [`ConfigError`] when the file can't be opened or read, isn't a regular
 /// file, is over 1 MiB or isn't UTF-8.
 pub fn read_small(path: &Path) -> Result<Option<String>, ConfigError> {
-    read_opened(rustix::fs::open(
-        path,
-        read_flags(),
-        rustix::fs::Mode::empty(),
-    ))
+    read_opened(open_plain(path), Some(MAX_FILE_BYTES))
+}
+
+/// The inventory's text (localhost.yml), as [`read_small`] reads a file
+/// but of any length: the inventory is as long as its owner makes it
+/// (hardening plan decision 41), and Ansible reads it whole. Its writer
+/// already controls root through Ansible, as for [`read_small`]'s files.
+/// The YAML read limits its nesting depth ([`yaml::MAX_DEPTH`]) and its
+/// aliases (saphyr's budget), not its length: reading and parsing it
+/// costs time and memory in proportion (about 30 times its size at the
+/// peak, measured in the platform note), on every sb start.
+///
+/// # Errors
+///
+/// A [`ConfigError`] when the file can't be opened or read, isn't a regular
+/// file or isn't UTF-8.
+pub fn read_inventory(path: &Path) -> Result<Option<String>, ConfigError> {
+    read_opened(open_plain(path), None)
+}
+
+/// `path` opened with [`read_flags`], following links as sb-go does.
+fn open_plain(path: &Path) -> rustix::io::Result<std::os::fd::OwnedFd> {
+    rustix::fs::open(path, read_flags(), rustix::fs::Mode::empty())
 }
 
 /// `relative`'s text beneath `dir`, for the real config: its directory is
@@ -135,18 +161,20 @@ fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigErro
         // plainly: a config kept as a symlink would otherwise warn "Too
         // many levels of symbolic links" on every run.
         Err(rustix::io::Errno::LOOP | rustix::io::Errno::XDEV) => Err(ConfigError::Refused),
-        opened => read_opened(opened),
+        opened => read_opened(opened, Some(MAX_FILE_BYTES)),
     }
 }
 
 /// `server_appdata_path` from `inventory`: an absolute value, cleaned; a
-/// missing, unreadable or oversized file, a file Ansible's loader refuses
-/// or a parse error (a duplicate key included), or an empty or relative
-/// value all mean `/opt`, as in sb-go. The YAML is what Ansible accepts
+/// missing or unreadable file (read whole, at any length:
+/// [`read_inventory`]), a file Ansible's loader refuses or a parse error
+/// (a duplicate key included), or an empty or relative value all mean
+/// `/opt`, as in sb-go. The YAML is what Ansible accepts
 /// ([`inventory_appdata`]), as validate-config reads it, which reports the
-/// refusals; unlike sb-go's yaml.v3, a second document is refused, not
-/// ignored (decision 38). Like yaml.v3 it reads a custom-tagged scalar as
-/// its string. Unlike yaml.v3, a merge
+/// refusals; unlike sb-go's yaml.v3, a second document and a tag Ansible's
+/// loader has no constructor for (`!custom`) are refused, not ignored
+/// (decisions 38 and 41). Like yaml.v3 it reads a scalar tagged `!unsafe`
+/// or `!vault` as its string. Unlike yaml.v3, a merge
 /// key (`<<`) isn't followed (saphyr has none); Saltbox's `host_vars` don't
 /// use one. The inventory is Saltbox config, read with saphyr as the
 /// capability map has it for Saltbox YAML
@@ -158,7 +186,7 @@ fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigErro
 /// is unstable).
 #[must_use]
 pub fn appdata_path(inventory: &Path) -> PathBuf {
-    read_small(inventory)
+    read_inventory(inventory)
         .ok()
         .flatten()
         .and_then(|text| inventory_appdata(&text).ok().flatten())
@@ -170,8 +198,8 @@ pub fn appdata_path(inventory: &Path) -> PathBuf {
 /// The string `server_appdata_path` holds in the inventory's `text`, if
 /// it holds one. The text goes through [`yaml::prepare`] first, as
 /// validate-config's does, so the two refuse the same files: what
-/// Ansible's loader refuses (decisions 28 and 38). The YAML read limits
-/// no length (`text` is what `read_small` read), only depth
+/// Ansible's loader refuses (decisions 28 and 38). Neither the read
+/// ([`read_inventory`]) nor the YAML read limits its length, only depth
 /// ([`yaml::MAX_DEPTH`]): a deep file is loaded on
 /// [`yaml::with_stack`]'s thread, where its tree is dropped too. Public so
 /// that sb-config's YAML corpus test can check that agreement.
@@ -193,11 +221,9 @@ pub fn inventory_appdata(text: &str) -> Result<Option<String>, yaml::Refusal> {
     };
     let load = || {
         let mut loader = saphyr::YamlLoader::<saphyr::YamlOwned>::default();
-        // The first document: `prepare` has refused a second
-        // (<https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>).
-        saphyr_parser::Parser::new_from_str(prepared.text())
-            .load(&mut loader, false)
-            .map_err(|err| refusal(&err))?;
+        // The first document (`prepare` has refused a second), its
+        // scalars as libyaml reads them.
+        prepared.load(&mut loader).map_err(|err| refusal(&err))?;
         if let Some(err) = loader.error() {
             return Err(refusal(err));
         }
@@ -450,10 +476,24 @@ mod tests {
             case("server_appdata_path: /a\n...\n# c\n"),
             PathBuf::from("/a")
         );
-        // yaml.v3 decodes a custom-tagged scalar into a string.
+        // A tag Ansible's loader has no constructor for is refused
+        // (decision 41); its own `!unsafe` and `!vault` are read, as
+        // yaml.v3 decodes them, into the string.
         assert_eq!(
             case("server_appdata_path: !custom /srv\n"),
-            PathBuf::from("/srv")
+            PathBuf::from("/opt")
+        );
+        for text in [
+            "server_appdata_path: !unsafe /srv\n",
+            "server_appdata_path: !vault /srv\n",
+        ] {
+            assert_eq!(case(text), PathBuf::from("/srv"), "{text:?}");
+        }
+        // A block scalar at the end without a final line break has none,
+        // as in libyaml and yaml.v3.
+        assert_eq!(
+            inventory_appdata("server_appdata_path: |\n  /srv").expect("reads"),
+            Some("/srv".to_string())
         );
     }
 
@@ -846,13 +886,26 @@ mod tests {
             .expect_err("too big")
             .to_string();
         assert!(message.contains("bigger than"), "{message}");
-        assert_eq!(
-            appdata_path(&file(
-                dir.path(),
-                "localhost.yml",
-                &format!("server_appdata_path: /data\n{big}")
-            )),
-            PathBuf::from("/opt")
+    }
+
+    /// The inventory has no length cap (decision 41): one well over the
+    /// cap is read whole, its last key included.
+    #[test]
+    fn the_inventory_has_no_length_cap() {
+        use std::fmt::Write as _;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut long = String::new();
+        for i in 0..200_000 {
+            writeln!(long, "key_{i}: value").expect("a String");
+        }
+        assert!(long.len() > 3 * MAX_FILE_BYTES, "{}", long.len());
+        let inventory = file(
+            dir.path(),
+            "localhost.yml",
+            &format!("{long}server_appdata_path: /data\n"),
         );
+        assert!(read_inventory(&inventory).expect("read").is_some());
+        assert!(read_small(&inventory).is_err());
+        assert_eq!(appdata_path(&inventory), PathBuf::from("/data"));
     }
 }

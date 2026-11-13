@@ -79,7 +79,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   found: <path>`); a missing schema for a present file is its issue too
   (`schema file not found: <path>`). Files and schemas are read up to
   1 MiB each (cli-core's cap for config it reads): a larger one is an
-  issue.
+  issue. localhost.yml has no cap: cli-core reads it whole
+  (`read_inventory`; hardening decision 41), and only its nesting depth
+  is limited, below. *Amended by hardening Task 61.*
 - **Steps** (term-ui's runner, titled "sb validate-config"): one parent
   step, "Validating Saltbox configuration" → "Saltbox configuration
   validated" (a failed file makes it read term-ui's "sub-step failed"),
@@ -103,7 +105,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   *Amended 2026-11-13 by the tui and motd specs.*
   - `check_file(settings, file) -> Result<Checked, FileError>` reads one
     entry of `FILES` and its schema as validate-config does (cli-core's
-    `read_small` and 1 MiB cap, the YAML pre-pass, the parse, duplicate
+    `read_small` and 1 MiB cap, or `read_inventory` with none for
+    localhost.yml, the YAML pre-pass, the parse, duplicate
     keys, the schema rules and the warnings), with no network request.
     `Checked` holds the `Report` (issues with positions, warnings, the
     issue count) and the parsed tree, so a caller that needs the values
@@ -159,14 +162,19 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   plan's decision 28). What Ansible's loader refuses, sb refuses before
   its own rules (decision 38): a second document or content after the
   first one's end, a `:` with no key, an anchor defined twice, a
-  collection as a mapping key, a control character, NEL, LS and PS,
-  and the rest listed in docs/platform-notes/yaml-acceptance.md.
+  collection as a mapping key, a tag Ansible's loader has no constructor
+  for (`!custom`; it takes the YAML types' tags and its own `!unsafe` and
+  `!vault`, which sb reads as their strings, as yaml.v3 does), a control
+  character, NEL, LS and PS, and the rest listed in
+  docs/platform-notes/yaml-acceptance.md. A block scalar at the end of a
+  file without a final line break ends without one, as in libyaml and
+  yaml.v3 (saphyr adds one; sb takes it off).
   Nesting is limited to 23,000 levels, under the depth Ansible's loader
   takes before it crashes (measured in that note); the limit is on depth,
   never on length, since localhost.yml is as long as its owner makes it.
   A syntax error is that file's issue, with saphyr's
   line and column in the file as written, or the pre-pass's for what
-  it refuses. *Amended by hardening Tasks 43 and 59.* Merge keys (`<<`) aren't followed
+  it refuses. *Amended by hardening Tasks 43, 59 and 61.* Merge keys (`<<`) aren't followed
   (saphyr doesn't; yaml.v3 does), so a `<<` key is an unknown field: a
   difference, below.
 - **Duplicate keys:** a pass over the parser's events runs first and
@@ -310,13 +318,13 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   scalar continued left of its key's column; yaml.v3 and sb-go also read
   what libyaml refuses (a second document, of which they read the
   first; a `:` with no key; an anchor defined twice; a control
-  character; junk after an indented first mapping), which sb refuses.
+  character; junk after an indented first mapping), and yaml.v3 reads a
+  tag Ansible's loader has no constructor for (`!custom`) as its string;
+  sb refuses them all.
   A few layouts libyaml and saphyr read differently are refused though
   libyaml accepts them (`[?x]`, `*x: 1`; the note lists them). Where libyaml
-  and saphyr still differ (saphyr's own refusals, and a clipped block
-  scalar at the end of a file without a final line break, which keeps
-  its line break: docs/platform-notes/yaml-acceptance.md), sb follows
-  saphyr. NEL, LS and PS (U+0085, U+2028, U+2029), line breaks to
+  and saphyr still differ (saphyr's own refusals:
+  docs/platform-notes/yaml-acceptance.md), sb follows saphyr. NEL, LS and PS (U+0085, U+2028, U+2029), line breaks to
   libyaml and not to saphyr, are refused wherever they are, even where
   libyaml reads them as saphyr would.
 - Nesting deeper than 23,000 levels is refused (yaml.v3 has no limit),
@@ -328,7 +336,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   localhost.yml).
 - A missing motd.yml or localhost.yml is a step with a "not found;
   skipped" notice (sb-go: no step; a line only with `--verbose`).
-- Files, schemas and HTTP response bodies read up to 1 MiB each; control
+- Files (localhost.yml excepted, read whole as sb-go reads it), schemas
+  and HTTP response bodies read up to 1 MiB each; control
   characters in echoed values and remote text escaped.
 - Cloudflare failures show the HTTP status and Cloudflare's own messages
   (sb-go: cloudflare-go's error text) before sb-go's guidance.
@@ -490,7 +499,8 @@ docs/specs/config.md      this spec
 3. Duplicate keys: every one, with path and positions, in schema-backed
    files and localhost.yml; such a file isn't schema-validated further.
 4. Missing required file or schema: that file's issue; missing motd.yml or
-   localhost.yml: skipped and logged; a file over 1 MiB: an issue.
+   localhost.yml: skipped and logged; a file over 1 MiB: an issue, but
+   localhost.yml, which is read at any length.
 5. The credential checks against fakes: success; each failure's text with
    its guidance; retries (Cloudflare) and none (Docker Hub); a timeout;
    structure errors as accounts.yml issues; skipped with a notice without
