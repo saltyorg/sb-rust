@@ -370,6 +370,13 @@ ratchet rows and how far to cut them; glibc and musl side by side.
    wants each confirmed, its task waits, and M1 (walkdir) and M61
    (ratatui-core) are first.
 
+**Lane change (2026-11-13):** motd's tasks M36-M47
+move from lane 2 to lane 3. Lane 3 was idle, waiting on M26 and M74; motd
+depends only on M2 and M48, both merged; and its files (`crates/motd`,
+`crates/sb/src/motd.rs`, the file holding term-ui's `bar`,
+`docs/platform-notes/motd-sources.md`) belong to no other open task.
+Lane 2 keeps exec, release and ansible (M22-M35).
+
 ## Ready to start
 
 These start right after this plan's commit, one per

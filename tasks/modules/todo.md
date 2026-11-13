@@ -921,7 +921,7 @@ cases and Ctrl-C; the `--list-tags` fixture recorded from it.
 
 ## Task M36: motd: crate, flags, runner, layout, distro and kernel
 
-**Lane:** 2 · **Gate:** look (motd's layout) · **Shared files:** yes (new crate sb-motd; deny.toml; the hook's list)
+**Lane:** 3 · **Gate:** look (motd's layout) · **Shared files:** yes (new crate sb-motd; deny.toml; the hook's list)
 
 **Description:** The first half of motd's slice 1: all 32 clap flags,
 the selection and `--all` rules with their texts, the runner (30 s cap,
@@ -947,7 +947,7 @@ kernel sections, so `sb motd --distro --kernel` shows the layout.
 
 ## Task M37: motd: the system sections
 
-**Lane:** 2 · **Gate:** free (M36's layout) · **Shared files:** yes (procfs, no default features)
+**Lane:** 3 · **Gate:** free (M36's layout) · **Shared files:** yes (procfs, no default features)
 
 **Description:** The rest of slice 1: uptime, CPU (load), memory,
 processes, cpu-info and reboot from procfs, rustix and os-release, with
@@ -970,7 +970,7 @@ baseline beside sb-go.
 
 ## Task M38: motd: Disk Usage and term-ui's `bar`
 
-**Lane:** 2 · **Gate:** look (the bars)
+**Lane:** 3 · **Gate:** look (the bars)
 
 **Description:** Slice 3: mountinfo, statvfs, df's rules, and term-ui's
 `bar(theme, role, on, ratio, width)` (the motd amendment), with the
@@ -992,7 +992,7 @@ library-reviewer.
 
 ## Task M39: motd: packages and GPU
 
-**Lane:** 2 · **Gate:** free (the approved layout; seen at Checkpoint M)
+**Lane:** 3 · **Gate:** free (the approved layout; seen at Checkpoint M)
 
 **Description:** Slice 4: update-notifier's sources and children; sysfs
 and the host-pci.ids parser (decision 2) with fixture tests.
@@ -1013,7 +1013,7 @@ and the host-pci.ids parser (decision 2) with fixture tests.
 
 ## Task M40: motd: logins
 
-**Lane:** 2 · **Gate:** free (seen at Checkpoint M)
+**Lane:** 3 · **Gate:** free (seen at Checkpoint M)
 
 **Description:** Slice 5: the container matrix first (logind JSON and
 `last` on 22.04, 24.04 and 26.04, `docs/platform-notes/motd-sources.md`),
@@ -1035,7 +1035,7 @@ then sessions and the last login.
 
 ## Task M41: motd: Docker and Traefik
 
-**Lane:** 2 · **Gate:** free (seen at Checkpoint M)
+**Lane:** 3 · **Gate:** free (seen at Checkpoint M)
 
 **Description:** Slice 6: containers through sb-docker's listing, and the
 Traefik client.
@@ -1055,7 +1055,7 @@ Traefik client.
 
 ## Task M42: motd: motd.yml
 
-**Lane:** 2 · **Gate:** look (colours, the `Config:` line)
+**Lane:** 3 · **Gate:** look (colours, the `Config:` line)
 
 **Description:** Slice 2, after config's `check_file` exists: the typed
 model read through `check_file` (motd decision 17), the `Config:` line,
@@ -1078,7 +1078,7 @@ colours, `--generate-config` and its golden file.
 
 ## Task M43: motd: services
 
-**Lane:** 2 · **Gate:** free (seen at Checkpoint M)
+**Lane:** 3 · **Gate:** free (seen at Checkpoint M)
 
 **Description:** Slice 7: host's `services` (M2) with motd's configured
 names and display names.
@@ -1098,7 +1098,7 @@ names and display names.
 
 ## Task M44: motd: HTTP providers, media servers and downloaders
 
-**Lane:** 2 · **Gate:** free (seen at Checkpoint M)
+**Lane:** 3 · **Gate:** free (seen at Checkpoint M)
 
 **Description:** The first half of slice 8: the shared client on
 `sb_config::http::Http`, the redaction helper and the secret canary
@@ -1121,7 +1121,7 @@ test, with Plex, Emby, Jellyfin, SABnzbd and NZBGet.
 
 ## Task M45: motd: HTTP providers, queues and torrents
 
-**Lane:** 2 · **Gate:** free (seen at Checkpoint M) · **Shared files:** yes (quick-xml, plan decision 8)
+**Lane:** 3 · **Gate:** free (seen at Checkpoint M) · **Shared files:** yes (quick-xml, plan decision 8)
 
 **Description:** The second half of slice 8: the Arr queues,
 qBittorrent, and rTorrent's XML-RPC with quick-xml.
@@ -1142,7 +1142,7 @@ qBittorrent, and rTorrent's XML-RPC with quick-xml.
 
 ## Task M46: motd: the banner
 
-**Lane:** 2 · **Gate:** look (the banner) · **Shared files:** yes (shlex, plan decision 8)
+**Lane:** 3 · **Gate:** look (the banner) · **Shared files:** yes (shlex, plan decision 8)
 
 **Description:** Slice 9: the toilet and boxes children, fallbacks, the
 type and font checks, `--banner-file-toilet`'s arguments through shlex.
@@ -1163,7 +1163,7 @@ type and font checks, `--banner-file-toilet`'s arguments through shlex.
 
 ## Task M47: motd: `--share` and the budgets
 
-**Lane:** 2 · **Gate:** free
+**Lane:** 3 · **Gate:** free
 
 **Description:** Slice 10: `--share`'s filter, then the spec's criteria
 9 to 11 measured on the production build.
