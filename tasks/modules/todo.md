@@ -1498,18 +1498,18 @@ restore hook and panic path, the async event loop on the current-thread
 runtime with the PTY input-latency measurement, and the size ADR.
 
 **Acceptance criteria:**
-- [ ] deny.toml: `sb-tui` (wrappers `sb`), added to the wrappers of
+- [x] deny.toml: `sb-tui` (wrappers `sb`), added to the wrappers of
       `sb-cli-core`, `sb-term-ui`, `sb-host`, `sb-docker`; the hook lists
       `tui`; `MUTATION_TESTERS[sb-tui]="sb"` and `sb` joins sb-journal's
       entry.
-- [ ] A panic or signal restores the terminal (mouse off) through the
+- [x] A panic or signal restores the terminal (mouse off) through the
       chained hooks.
-- [ ] The size ADR records the production binary's growth; the
+- [x] The size ADR records the production binary's growth; the
       input-latency figure is in the spec's verification notes.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui`; the production build's size.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui`; the production build's size.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None
 **Files:** `crates/tui/{Cargo.toml,src/lib.rs,src/term.rs}`, `deny.toml`, `.claude/hooks/library-check.sh`, `scripts/check.sh`, `docs/decisions/` (the size ADR), `Cargo.toml`, `Cargo.lock`
