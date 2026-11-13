@@ -264,6 +264,18 @@ Answers at the plan's approval (2026-11-11):
     249 host, Difference 19 for a damaged array, the tail cache's pread
     test. The reviewer's optional API notes wait for the viewer spec,
     the API's first caller (decision 18).
+38. **sb passes only the YAML Ansible accepts, then its own rules**
+    (the maintainer, 2026-11-13, restating decision 3 after Task 43).
+    Acceptance is exactly Ansible's: a file Ansible's loader refuses, sb
+    refuses too, even where sb-go read it. That covers a second document,
+    a first mapping indented with junk after it (`  a: 1` then `b: 2`),
+    saphyr's other leniencies in yaml-acceptance.md, and nesting deeper
+    than ansible-core's loader accepts (the inventory read, localhost.yml,
+    gets that limit, measured, instead of a stack overflow; the limit is
+    on depth, never on length). Scalars keep resolving as decided before:
+    the schema rules read yes/no/on/off as Ansible booleans, so the
+    corpus's resolution lines change no validation result. Schema files
+    stay outside the pre-pass (Ansible doesn't load them). Task 59.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -529,6 +541,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 ### Phase 4 (lane 3): config
 - [x] Task 42: YAML: the corpus and the options
 - [x] Task 43: sb accepts the YAML Ansible accepts
+- [ ] Task 59: sb refuses the YAML Ansible refuses (decision 38)
 - [ ] Task 46: secrets are hidden wherever their key sits
 - [ ] Checkpoint Y: config
 

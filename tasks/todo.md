@@ -1244,6 +1244,39 @@ files").
 **Files:** `crates/config/src/parse.rs`, `crates/cli-core/src/config.rs`, `Cargo.toml` and `deny.toml` (if a dependency changes), `docs/specs/config.md`, `docs/specs/capability-map.md`, `docs/decisions/` (a new ADR)
 **Scope:** M
 
+## Task 59: sb refuses the YAML Ansible refuses
+
+**Description:** Task 43 made sb accept what Ansible accepts. Decision 38
+asks for exactly Ansible's acceptance: every file Ansible's loader
+refuses, sb's validate-config and inventory read refuse too, with a line
+and column, before sb's own rules apply.
+
+**Acceptance criteria:**
+- [ ] The corpus has no line where libyaml refuses and sb accepts: the
+      `multi-document` line goes (sb refuses a second document), and
+      each leniency in docs/platform-notes/yaml-acceptance.md (a first
+      mapping indented with junk after it, a top-level `:` with no key,
+      and the rest listed there) has a corpus case libyaml refuses and
+      sb refuses.
+- [ ] Nesting: ansible-core's loader's deepest accepted nesting is
+      measured (PyYAML with libyaml, as scripts/yaml-corpus.py runs it)
+      and recorded in the platform note. sb accepts that depth and
+      refuses beyond it with a message, in validate-config and in the
+      inventory read alike; a 40 KB `- - - ...` inventory no longer
+      overflows the stack. Length is never limited.
+- [ ] The config spec's Differences list loses the entries this removes
+      (the second document); the resolution entries stay (decision 38).
+- [ ] Every case accepted before keeps its resolved values.
+
+**Verification:**
+- [ ] `cargo test -p sb-config -p sb-cli-core -p sb`; the corpus;
+      `scripts/check.sh full <base>`.
+- [ ] Review: one code-reviewer pass with the security-auditor.
+
+**Dependencies:** Task 43
+**Files:** `crates/cli-core/src/config/yaml.rs`, `crates/cli-core/src/config.rs`, `crates/config/src/parse.rs`, `crates/config/tests/yaml-corpus/`, `docs/specs/config.md`, `docs/platform-notes/yaml-acceptance.md`
+**Scope:** M
+
 ## Task 46: secrets are hidden wherever their key sits
 
 **Description:** A value under a secret key name is echoed when the key
