@@ -284,6 +284,47 @@ MUTATION_TESTERS[sb-journal]="sb-host sb"
 # sb-tui: its own tests and sb's end-to-end screens (tui spec).
 MUTATION_TESTERS[sb-tui]="sb"
 
+# The temp directory of the mutation pass under way, swept on exit too.
+mutation_tmp=
+
+# mutation_sweep DIR: SIGKILL every process whose executable lies under
+# DIR, the pass's own temp copies, until none is left; fails if some
+# still are after about 10 s. A mutant that ignores signals outlives its
+# test: nextest ends a timed-out test's process group, as cargo-mutants
+# does a timed-out mutant's (cargo-nextest 0.9.151's runner/unix.rs,
+# cargo-mutants 27.1.0's process/unix.rs; https://nexte.st/docs/features/slow-tests/),
+# a process that left that group or was orphaned by the kill runs on:
+# util-linux `script`, which the terminal tests run sb under, starts its
+# child in a new session. The copies of this pass alone lie under DIR, a
+# directory made for it, so another pass or checkout is never touched. A
+# killed process's exe link goes with it, so a zombie isn't found again.
+mutation_sweep() {
+  local dir=$1 pid tries=0
+  local -a pids
+  local -A killed=()
+  # /proc/PID/exe names a deleted file as "PATH (deleted)"; -lname matches
+  # the link's text, so a deleted copy's processes match too.
+  while mapfile -t pids < <(find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$dir/*" 2>/dev/null |
+    sed 's|^/proc/\([0-9]*\)/exe$|\1|'); ((${#pids[@]})); do
+    if ((tries++ >= 100)); then
+      echo "check: processes left under $dir: ${pids[*]}" >&2
+      return 1
+    fi
+    for pid in "${pids[@]}"; do
+      # It may have ended since find saw it; the next look settles that.
+      if kill -KILL "$pid" 2>/dev/null; then killed[$pid]=1; fi
+    done
+    sleep 0.1
+  done
+  if ((${#killed[@]})); then echo "mutants: killed ${#killed[@]} process(es) the pass left running"; fi
+}
+
+# On exit during a pass: its leftovers go, and its copies if they could.
+mutation_cleanup() {
+  if [[ -n $mutation_tmp ]] && mutation_sweep "$mutation_tmp"; then rm -rf "$mutation_tmp"; fi
+}
+trap mutation_cleanup EXIT
+
 # mutation_pass N ARGS...: one cargo-mutants pass over the changed code with
 # the given package arguments; appends its outcomes file to `outcomes`.
 mutation_pass() {
@@ -308,10 +349,28 @@ mutation_pass() {
   # Changed tests or comments only: cargo-mutants writes no outcomes.
   [[ -n $list ]] || return 0
   echo "mutants: $*"
+  # The pass's copies of the tree go under a directory of its own:
+  # cargo-mutants makes them with the tempfile crate, under TMPDIR (27.1.0's
+  # copy_tree.rs; https://doc.rust-lang.org/std/env/fn.temp_dir.html).
+  # Every process still running from them is killed after the pass, or
+  # when check.sh exits during it (mutation_sweep). A new directory under
+  # the system's temp directory, never inside a repository: the tests
+  # inherit TMPDIR, and sb-repo's expect git to find no repository above
+  # their temp directories. The physical path, since a process's
+  # executable is named by it.
+  mutation_tmp=$(mktemp -d "${TMPDIR:-/tmp}/sb-mutants-$n.XXXXXX")
+  mutation_tmp=$(cd "$mutation_tmp" && pwd -P)
   # The whole mutant's 300 s timeout stays as the backstop behind
   # nextest's per-test one.
-  PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o "target/mutants-run-$n" \
+  TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o "target/mutants-run-$n" \
     --timeout 300 || rc=$?
+  if ! mutation_sweep "$mutation_tmp"; then
+    # Kept for a look, and not swept again on exit.
+    mutation_tmp=
+    exit 2
+  fi
+  rm -rf "$mutation_tmp"
+  mutation_tmp=
   # 0 all caught, 2 some missed, 3 some timed out: the score decides. Any
   # other status (4: the unmutated baseline failed, so nothing was tested)
   # means no verdict (https://mutants.rs/exit-codes.html).

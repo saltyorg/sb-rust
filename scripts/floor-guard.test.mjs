@@ -11,6 +11,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 // For the stubbed runs of check.sh (hardening Task 4).
 import { readFileSync, symlinkSync } from 'node:fs';
+// For the mutation pass's directory (ADR-021).
+import { existsSync } from 'node:fs';
 
 const guard = join(dirname(fileURLToPath(import.meta.url)), 'floor-guard.mjs');
 
@@ -1156,7 +1158,7 @@ const CRATES = {
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
 const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'git', 'grep', 'id', 'mkdir',
-  'rm', 'sed', 'sort', 'stat', 'xargs'];
+  'mktemp', 'rm', 'sed', 'sleep', 'sort', 'stat', 'xargs'];
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
@@ -1185,6 +1187,32 @@ const stubs = (versions, arch) => {
   // The NEXTEST_* and CARGO_MUTANTS_* variables cargo (cargo-mutants, so
   // nextest) is run with.
   out.cargo += 'env | grep -E \'^(NEXTEST|CARGO_MUTANTS)_\' >>"$STUB_LOG.nextest-env" || true\n';
+  // With LEAK_PIDS set, cargo-mutants lists one mutant in the wide pass
+  // (sb-foo's), and its run leaves a process behind as a signal-ignoring
+  // mutant of sb does: in its own session (as under `script`), ignoring
+  // SIGHUP, SIGINT and SIGTERM, its executable in the run's temp copy
+  // (under TMPDIR, deleted at the end).
+  // A decoy outside that copy is started beside it. Their pids go to
+  // LEAK_PIDS, the TMPDIR to LEAK_PIDS.tmpdir.
+  out.cargo += 'if [ "$1" = mutants ] && [ -n "${LEAK_PIDS:-}" ]; then\n'
+    + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
+    + '  echo "${TMPDIR-unset}" >"$LEAK_PIDS.tmpdir"\n'
+    + '  copy="${TMPDIR:-/tmp}/cargo-mutants-repo-stub.tmp"; $LEAK_MKDIR -p "$copy/target/debug" "$LEAK_DECOY_DIR"\n'
+    + '  $LEAK_CP "$LEAK_SLEEP" "$copy/target/debug/sb"; $LEAK_CP "$LEAK_SLEEP" "$LEAK_DECOY_DIR/sb"\n'
+    // One after the other, so the leak's pid is the first line.
+    + '  k=0\n'
+    + '  for exe in "$copy/target/debug/sb" "$LEAK_DECOY_DIR/sb"; do\n'
+    + '    k=$((k + 1))\n'
+    + '    $LEAK_SETSID /bin/sh -c \'trap "" HUP INT TERM; echo $$ >>"$1"; exec "$0" 600\' "$exe" "$LEAK_PIDS" </dev/null >/dev/null 2>&1 &\n'
+    + '    n=0; while [ "$($LEAK_WC -l <"$LEAK_PIDS")" -lt "$k" ] && [ $((n += 1)) -lt 100 ]; do $LEAK_SLEEP 0.05; done\n'
+    + '  done\n'
+    + '  $LEAK_SLEEP 0.2\n'
+    + '  $LEAK_RM -rf "$copy"\n'
+    + '  while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+    + '  $LEAK_MKDIR -p "$out/mutants.out"\n'
+    + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
+    + '  exit 0\n'
+    + 'fi\n';
   // `docker run`: sb version, unless the container is of the release in
   // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
   // fails itself, with its own status 125.
@@ -1409,6 +1437,47 @@ test('check.sh: the mutation passes run nextest with the mutants profile, and no
   assert.equal(r.nextestEnv ?? '', '', r.nextestEnv);
   refuses(checkRun('task', { versions: { 'cargo-nextest': '0.9.150' } }), 2, /cargo-nextest.*0\.9\.150.*0\.9\.151/);
   refuses(checkRun('task', { versions: { 'cargo-nextest': null } }), 2, /cargo-nextest not installed/);
+});
+
+// A mutant that ignores signals outlives its test when nextest or
+// cargo-mutants ends the test's process group: under `script` it runs in
+// its own session. Each pass's temp copies go under a new directory of
+// its own, outside the repository, and every process whose executable
+// lies there is killed after the pass; nothing outside it is touched
+// (ADR-021).
+test('check.sh: a signal-ignoring process left by a mutation pass is gone after it, a process outside its copy is not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'leak-'));
+  const pids = join(dir, 'pids');
+  writeFileSync(pids, '');
+  const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+  // Gone: no process, or a zombie (its parent hasn't reaped it yet).
+  const alive = (pid) => {
+    try { return !/^\d+ \(.*\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8')); } catch { return false; }
+  };
+  let started = [];
+  try {
+    const r = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      env: { LEAK_PIDS: pids, LEAK_DECOY_DIR: join(dir, 'decoy'), LEAK_CP: tool('cp'), LEAK_MKDIR: tool('mkdir'),
+        LEAK_RM: tool('rm'), LEAK_SETSID: tool('setsid'), LEAK_SLEEP: tool('sleep'), LEAK_WC: tool('wc'), TMPDIR: dir },
+    });
+    started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
+    passes(r, 'task');
+    assert.equal(started.length, 2, r.output);
+    const passTmp = readFileSync(pids + '.tmpdir', 'utf8').trim();
+    assert.match(passTmp, new RegExp('^' + dir + '/sb-mutants-0\\.\\w+$'), r.output);
+    assert.ok(!existsSync(passTmp), 'the pass directory is left: ' + passTmp);
+    // A SIGKILLed process drops its executable link before it has fully
+    // exited, so it is given up to 5 s to finish.
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (let i = 0; i < 50 && alive(started[0]); i++) Atomics.wait(pause, 0, 0, 100);
+    assert.ok(!alive(started[0]), 'the leaked process ' + started[0] + ' is still running:\n' + r.output);
+    assert.ok(alive(started[1]), 'the decoy outside the pass was killed:\n' + r.output);
+    assert.match(r.output, /mutants: killed 1 process/, r.output);
+  } finally {
+    for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // The production binary is built on the oldest supported release, and the

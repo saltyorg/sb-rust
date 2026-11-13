@@ -1040,6 +1040,11 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     staged change and holds it until the editor closes
     (facts/session.go:288-380), so a concurrent Saltbox run fails on
     that role after 30 s.
+33. An unquoted word that starts with `#` in `VISUAL` or `EDITOR` starts
+    a comment: shlex 2.0.1 drops it and the rest of the line, so
+    `EDITOR='vi #x'` runs `vi` alone. go-shellquote has no comments and
+    passes `#x` to the editor. Quoted (`'#x'`) or inside a word (`a#b`),
+    `#` is kept by both.
 
 ### Scope
 

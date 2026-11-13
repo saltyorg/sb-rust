@@ -190,3 +190,19 @@ and sb-host's tests) under this profile:
   needs a unit test.
 - ADR-012's timeout edge case (a test outside a narrow pass hanging)
   becomes rare: the hung test is ended and fails in the wide pass too.
+- Each mutation pass leaves no process behind (2026-11-13, after 23
+  orphaned `sb` processes from two parallel passes ran on for hours). Ending
+  a test's process group, as nextest does at the timeout and cargo-mutants
+  at the mutant's, misses a process that left the group or that the kill
+  orphaned: util-linux `script`, which the terminal tests run sb under,
+  puts its child in a new session. So each pass's temp copies go under a
+  new directory of its own (`mktemp -d` under the system's temp
+  directory; cargo-mutants copies under `TMPDIR`), and check.sh kills
+  every process whose executable lies there after the pass, and on exit
+  during one. The directory is outside any repository, since the tests
+  inherit `TMPDIR` and sb-repo's expect git to find none above their temp
+  directories. Another pass's or checkout's processes lie elsewhere and
+  are never touched. A leaked process still runs until its pass ends, not
+  past it; a check.sh killed with SIGKILL runs no cleanup. The floor
+  guard's tests check it with a signal-ignoring process in its own
+  session.
