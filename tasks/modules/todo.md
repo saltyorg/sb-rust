@@ -130,17 +130,17 @@ the checks' users.
 amendment's `free_space`, over an injected `statvfs`.
 
 **Acceptance criteria:**
-- [ ] Paths resolve to their nearest existing ancestor and each
+- [x] Paths resolve to their nearest existing ancestor and each
       filesystem is checked once (by `f_fsid`); free space is
       `f_bavail × f_frsize`, used percent sb-go's formula; under 2 GiB
       fails with sb-go's text and `formatBytes` sizes.
-- [ ] Zero blocks and other errors nest as sb-go's; the run log gets each
+- [x] Zero blocks and other errors nest as sb-go's; the run log gets each
       filesystem's figures and each skipped duplicate.
-- [ ] `free_space(path)` returns the same free figure `check_disk_space` uses.
+- [x] `free_space(path)` returns the same free figure `check_disk_space` uses.
 
 **Verification:**
-- [ ] `cargo test -p sb-host` with the injected `statvfs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-host` with the injected `statvfs`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None
 **Files:** `crates/host/src/{lib.rs,disk.rs}`
