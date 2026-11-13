@@ -1,0 +1,34 @@
+[package]
+name = "sb-tui"
+version = "0.1.0"
+description = "sb's full-screen screens: the log picker and viewer, the editors (capability map, tui)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sb-cli-core.workspace = true
+ratatui.workspace = true
+# The palette and log spans (M67): added with the groundwork, as the tui
+# spec's slice 0 lists it.
+ratatui-core.workspace = true
+crossterm.workspace = true
+# SGR in log text (M67), likewise.
+ansi-to-tui.workspace = true
+futures-util.workspace = true
+# The event loop's channel and `select!` (tui spec, Tech Stack).
+tokio = { workspace = true, features = ["sync", "macros"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+sb-cli-core.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "test-util"] }
+portable-pty.workspace = true
+vt100.workspace = true
+rustix.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

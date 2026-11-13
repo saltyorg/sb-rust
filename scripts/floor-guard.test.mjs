@@ -1141,16 +1141,18 @@ const VERSIONS = {
   'cargo-deny': '0.20.2', hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
   docker: '29.7.2',
 };
-// check.sh's MUTATION_TESTERS names sb-journal and sb-host, so both are
-// here beside sb-foo and the binary.
+// check.sh's MUTATION_TESTERS names sb-journal, sb-host and sb-tui, so
+// they are here beside sb-foo and the binary.
 const manifest = (name) => '[package]\nname = "' + name + '"\n\n[lints]\nworkspace = true\n';
 const CRATES = {
   'crates/foo/Cargo.toml': manifest('sb-foo'),
   'crates/host/Cargo.toml': manifest('sb-host'),
   'crates/journal/Cargo.toml': manifest('sb-journal'),
   'crates/sb/Cargo.toml': manifest('sb'),
+  'crates/tui/Cargo.toml': manifest('sb-tui'),
   'deny.toml': '[bans]\ndeny = [\n    # foo: used by the binary.\n    { crate = "sb-foo", wrappers = ["sb"] },\n'
-    + '    { crate = "sb-host", wrappers = ["sb"] },\n    { crate = "sb-journal", wrappers = ["sb-host", "sb-journal"] },\n]\n',
+    + '    { crate = "sb-host", wrappers = ["sb"] },\n    { crate = "sb-journal", wrappers = ["sb-host", "sb-journal"] },\n'
+    + '    { crate = "sb-tui", wrappers = ["sb"] },\n]\n',
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
 const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'git', 'grep', 'id', 'mkdir',

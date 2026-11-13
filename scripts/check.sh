@@ -277,8 +277,12 @@ fast() {
 # (ADR-012). Add a crate here when its tests start reaching a listed one.
 declare -A MUTATION_TESTERS=()
 # sb-journal: judged by its own tests and sb-host's, the one crate that
-# wraps it (sb-journal plan, Task 10).
-MUTATION_TESTERS[sb-journal]="sb-host"
+# wraps it (sb-journal plan, Task 10), and sb's, whose end-to-end tests
+# read crafted journals through the log viewer (tui spec, "Gate
+# bookkeeping").
+MUTATION_TESTERS[sb-journal]="sb-host sb"
+# sb-tui: its own tests and sb's end-to-end screens (tui spec).
+MUTATION_TESTERS[sb-tui]="sb"
 
 # mutation_pass N ARGS...: one cargo-mutants pass over the changed code with
 # the given package arguments; appends its outcomes file to `outcomes`.

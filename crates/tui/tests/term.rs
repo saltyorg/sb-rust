@@ -1,0 +1,530 @@
+//! The screen on a real PTY (tui spec, Testing Strategy): setup, every way
+//! out restoring the terminal (alternate screen left, mouse off, raw mode
+//! off read back from the PTY's termios), and the input latency of the
+//! event loop on the current-thread runtime.
+//!
+//! Each test re-runs this test binary as the child on the PTY (filtered to
+//! `pty_child`, with `SB_TUI_CHILD` set), as cli-core's signal tests do,
+//! and reads its screen through vt100.
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use crossterm::event::{Event, KeyCode};
+use portable_pty::{
+    Child, CommandBuilder, ExitStatus, MasterPty, PtySize, SlavePty, native_pty_system,
+};
+use ratatui::Frame;
+use ratatui::widgets::Paragraph;
+use rustix::fs::{Mode, OFlags, open};
+use rustix::process::{Pid, Signal, kill_process};
+use rustix::termios::{LocalModes, tcgetattr};
+use sb_cli_core::cancel::Shutdown;
+use sb_cli_core::exit::finish_run;
+use sb_cli_core::log::RunLog;
+use sb_tui::{App, Flow, Tui};
+
+/// The child's mode: `screen` (the screen below), `dropped` (the same,
+/// dropped instead of left) or `baseline` (raw mode and a plain read
+/// loop, the harness's own latency).
+const CHILD: &str = "SB_TUI_CHILD";
+/// The run log's directory in the child.
+const LOG_DIR: &str = "SB_TUI_LOG";
+const WAIT: Duration = Duration::from_secs(20);
+/// Longer than cli-core's 250 ms repeat window: a second SIGTERM this long
+/// after the first is a second signal, not a copy.
+const PAST_THE_WINDOW: Duration = Duration::from_millis(400);
+
+/// Counts keys and shows the count; `q` quits, `p` panics, `t` panics on
+/// another thread and exits, `s` blocks the runtime's thread (a stuck
+/// screen, for the forced exit).
+struct Keys(usize);
+
+impl App for Keys {
+    fn input(&mut self, input: Event) -> Flow {
+        let Event::Key(key) = input else {
+            return Flow::Unchanged;
+        };
+        match key.code {
+            KeyCode::Char('q') => Flow::Quit,
+            KeyCode::Char('p') => panic!("a planned panic"),
+            // A panic on another thread, then an exit that drops nothing:
+            // only the panic hooks restore the terminal.
+            KeyCode::Char('t') => {
+                let _ = std::thread::spawn(|| panic!("a thread's panic")).join();
+                std::process::exit(3)
+            }
+            KeyCode::Char('s') => {
+                let mut out = std::io::stdout();
+                write!(out, "stuck").expect("write");
+                out.flush().expect("flush");
+                std::thread::sleep(Duration::from_secs(60));
+                Flow::Unchanged
+            }
+            _ => {
+                self.0 += 1;
+                Flow::Redraw
+            }
+        }
+    }
+
+    fn draw(&mut self, frame: &mut Frame<'_>) {
+        frame.render_widget(Paragraph::new(format!("keys {}", self.0)), frame.area());
+    }
+}
+
+/// The child: a run log with cli-core's panic record, the signals thread,
+/// then the screen on a current-thread runtime, as sb runs.
+#[test]
+fn pty_child() {
+    let Ok(mode) = std::env::var(CHILD) else {
+        return;
+    };
+    if mode == "baseline" {
+        baseline();
+        return;
+    }
+    let dir = std::env::var_os(LOG_DIR).expect("log dir");
+    let (log, subscriber) = RunLog::open(Path::new(&dir)).expect("run log");
+    tracing::subscriber::set_global_default(subscriber).expect("subscriber");
+    log.record_panics();
+    let shutdown = Shutdown::new();
+    shutdown.listen_for_signals().expect("signals");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let ending = runtime.block_on(async {
+        let mut tui = Tui::enter(&shutdown)?;
+        let ending = tui.run(&mut Keys(0)).await;
+        // `dropped`: the screen goes without `leave`, as on an early `?`.
+        if mode == "dropped" {
+            drop(tui);
+        } else {
+            tui.leave().await?;
+        }
+        ending
+    });
+    println!("ending {ending:?}");
+    // As sb's main ends a run: by the signal after a SIGTERM.
+    let _ = std::process::Termination::report(finish_run(
+        &shutdown.snapshot(),
+        None,
+        None,
+        &mut std::io::stderr(),
+    ));
+}
+
+/// The harness's baseline: raw mode, then each byte read shows the count
+/// at once.
+fn baseline() {
+    crossterm::terminal::enable_raw_mode().expect("raw mode");
+    let mut out = std::io::stdout();
+    let mut count = 0;
+    write!(out, "\r\nkeys {count}").expect("write");
+    out.flush().expect("flush");
+    let mut byte = [0];
+    while std::io::stdin().read(&mut byte).expect("read") == 1 && byte[0] != b'q' {
+        count += 1;
+        write!(out, "\r\nkeys {count}").expect("write");
+        out.flush().expect("flush");
+    }
+    crossterm::terminal::disable_raw_mode().expect("cooked mode");
+}
+
+/// The child on a PTY, its screen parsed as it arrives.
+struct Pty {
+    child: Box<dyn Child + Send + Sync>,
+    // Both ends kept open, as a shell keeps its terminal: the termios
+    // check reads the terminal after the child is gone, and input that
+    // comes after the restore is echoed, as a shell's terminal echoes it.
+    _master: Box<dyn MasterPty + Send>,
+    _slave: Box<dyn SlavePty + Send>,
+    tty: PathBuf,
+    writer: Box<dyn Write + Send>,
+    output: mpsc::Receiver<Vec<u8>>,
+    parser: vt100::Parser,
+    /// Every byte the child wrote.
+    raw: Vec<u8>,
+    log: tempfile::TempDir,
+}
+
+impl Pty {
+    fn spawn(mode: &str) -> Self {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("pty");
+        let log = tempfile::tempdir().expect("log dir");
+        let mut cmd = CommandBuilder::new(std::env::current_exe().expect("test binary"));
+        cmd.args(["pty_child", "--exact", "--nocapture", "--test-threads=1"]);
+        cmd.cwd(std::env::current_dir().expect("cwd"));
+        cmd.env(CHILD, mode);
+        cmd.env(LOG_DIR, log.path().join("log"));
+        let child = pair.slave.spawn_command(cmd).expect("spawn");
+        let tty = pair.master.tty_name().expect("tty name");
+        let mut reader = pair.master.try_clone_reader().expect("reader");
+        let writer = pair.master.take_writer().expect("writer");
+        let (tx, output) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0; 4096];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            _master: pair.master,
+            _slave: pair.slave,
+            tty,
+            writer,
+            output,
+            parser: vt100::Parser::new(24, 80, 0),
+            raw: Vec::new(),
+            log,
+        }
+    }
+
+    fn process(&mut self, bytes: &[u8]) {
+        self.parser.process(bytes);
+        self.raw.extend_from_slice(bytes);
+    }
+
+    fn send(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).expect("write");
+        self.writer.flush().expect("flush");
+    }
+
+    fn signal(&self, signal: Signal) {
+        let pid = self.child.process_id().expect("pid");
+        let pid = Pid::from_raw(i32::try_from(pid).expect("pid")).expect("pid");
+        kill_process(pid, signal).expect("kill");
+    }
+
+    /// Wait until `done` holds for the screen; false at the timeout.
+    fn wait_for(&mut self, timeout: Duration, done: impl Fn(&vt100::Screen) -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if done(self.parser.screen()) {
+                return true;
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            match self.output.recv_timeout(left) {
+                Ok(bytes) => self.process(&bytes),
+                Err(mpsc::RecvTimeoutError::Timeout) => return false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return done(self.parser.screen()),
+            }
+        }
+    }
+
+    /// Wait until the child has written `bytes`; false at the timeout.
+    fn wrote(&mut self, bytes: &[u8]) -> bool {
+        let deadline = Instant::now() + WAIT;
+        while !self.raw.windows(bytes.len()).any(|w| w == bytes) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            match self.output.recv_timeout(left) {
+                Ok(bytes) => self.process(&bytes),
+                Err(_) => return false,
+            }
+        }
+        true
+    }
+
+    /// Whether the child has written `bytes` by now, reading what has
+    /// already arrived without waiting.
+    fn wrote_now(&mut self, bytes: &[u8]) -> bool {
+        while let Ok(more) = self.output.try_recv() {
+            self.process(&more);
+        }
+        self.raw.windows(bytes.len()).any(|w| w == bytes)
+    }
+
+    fn showing(&mut self, text: &str) -> bool {
+        self.wait_for(WAIT, |screen| screen.contents().contains(text))
+    }
+
+    /// Wait for the child to exit, reading its output meanwhile.
+    fn exit(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("wait") {
+                // What it wrote before exiting.
+                while let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(200)) {
+                    self.process(&bytes);
+                }
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the child didn't exit:\n{}",
+                self.parser.screen().contents()
+            );
+            if let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(10)) {
+                self.process(&bytes);
+            }
+        }
+    }
+
+    /// The screen is up: the alternate screen and mouse capture on.
+    fn assert_up(&mut self) {
+        assert!(
+            self.showing("keys 0"),
+            "{}",
+            self.parser.screen().contents()
+        );
+        let screen = self.parser.screen();
+        assert!(screen.alternate_screen());
+        assert_ne!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+    }
+
+    /// The terminal is restored: the alternate screen left, mouse capture
+    /// off, the cursor shown, and the PTY back in canonical mode with echo.
+    fn assert_restored(&self) {
+        let screen = self.parser.screen();
+        assert!(!screen.alternate_screen(), "{}", screen.contents());
+        assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        assert!(!screen.hide_cursor());
+        // NOCTTY: the test process never takes the PTY as its terminal.
+        let tty = open(&self.tty, OFlags::RDONLY | OFlags::NOCTTY, Mode::empty()).expect("tty");
+        let modes = tcgetattr(&tty).expect("termios").local_modes;
+        assert!(
+            modes.contains(LocalModes::ICANON | LocalModes::ECHO),
+            "{modes:?}"
+        );
+    }
+
+    fn run_log(&self) -> String {
+        std::fs::read_to_string(self.log.path().join("log/sb.log")).unwrap_or_default()
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn q_leaves_the_screen_and_restores_the_terminal() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(b"x");
+    assert!(pty.showing("keys 1"));
+    pty.send(b"q");
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}");
+    assert!(pty.parser.screen().contents().contains("ending Ok(Quit)"));
+    pty.assert_restored();
+}
+
+/// An SGR mouse report, as a terminal sends one while capture is on.
+const MOUSE_MOVE: &[u8] = b"\x1b[<35;10;5M";
+/// The first code of crossterm's `DisableMouseCapture` (SGR reports off).
+const MOUSE_OFF: &[u8] = b"\x1b[?1006l";
+
+#[test]
+fn q_leaves_the_screen_once_and_mouse_codes_after_it_never_reach_the_shell() {
+    // A run where the harness was too slow to send the codes inside the
+    // child's drain proves nothing either way; it is run again.
+    for _ in 0..3 {
+        let mut pty = Pty::spawn("screen");
+        pty.assert_up();
+        pty.send(b"q");
+        // Mouse codes still on their way once capture is off: sent after
+        // the child has turned it off, timed by the child's sequence
+        // rather than the harness's clock.
+        assert!(
+            pty.wrote(MOUSE_OFF),
+            "{:?}",
+            String::from_utf8_lossy(&pty.raw)
+        );
+        for after in [0, 10, 20] {
+            std::thread::sleep(Duration::from_millis(after));
+            pty.send(MOUSE_MOVE);
+        }
+        // Already restored (raw mode goes off before the screen is left):
+        // the codes may have come after the drain.
+        let late = pty.wrote_now(b"\x1b[?1049l");
+        assert!(pty.exit().success());
+        pty.assert_restored();
+        let raw = String::from_utf8_lossy(&pty.raw).into_owned();
+        assert_eq!(raw.matches("\x1b[?1049l").count(), 1, "{raw:?}");
+        if late {
+            continue;
+        }
+        // Back in cooked mode the terminal would echo them (`^[[<35;10;5M`).
+        assert!(!raw.contains("<35;10;5M"), "{raw:?}");
+        return;
+    }
+    panic!("the harness never sent the codes inside the drain");
+}
+
+#[test]
+fn dropping_the_screen_restores_the_terminal() {
+    let mut pty = Pty::spawn("dropped");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    assert!(pty.parser.screen().contents().contains("ending Ok(Quit)"));
+    pty.assert_restored();
+}
+
+#[test]
+fn ctrl_c_ends_the_screen_as_interrupted() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(b"\x03");
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}");
+    assert!(
+        pty.parser
+            .screen()
+            .contents()
+            .contains("ending Ok(Interrupted)")
+    );
+    pty.assert_restored();
+}
+
+#[test]
+fn sigterm_restores_the_terminal_then_ends_by_the_signal() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.signal(Signal::TERM);
+    let status = pty.exit();
+    assert!(
+        status.signal().is_some_and(|s| s.contains("Terminated")),
+        "{status:?}"
+    );
+    assert!(
+        pty.parser
+            .screen()
+            .contents()
+            .contains("ending Ok(Cancelled)")
+    );
+    pty.assert_restored();
+}
+
+#[test]
+fn a_panic_restores_the_terminal_and_reaches_the_run_log() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(b"p");
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 101, "{status:?}");
+    pty.assert_restored();
+    // Restored once, before std's message: nothing after the message
+    // moves the cursor back over it.
+    let raw = String::from_utf8_lossy(&pty.raw);
+    assert_eq!(raw.matches("\x1b[?1049l").count(), 1, "{raw:?}");
+    let message = raw.find("a planned panic").expect("the message");
+    // (ratatui's `Terminal`, dropped later, only shows the cursor.)
+    assert!(!raw[message..].contains("\x1b[?1049l"), "{raw:?}");
+    assert!(pty.parser.screen().contents().contains("a planned panic"));
+    assert!(
+        pty.run_log().contains("panicked: a planned panic"),
+        "{}",
+        pty.run_log()
+    );
+}
+
+#[test]
+fn a_panic_on_another_thread_restores_the_terminal_through_the_hooks() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(b"t");
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 3, "{status:?}");
+    pty.assert_restored();
+    assert!(
+        pty.run_log().contains("panicked: a thread's panic"),
+        "{}",
+        pty.run_log()
+    );
+}
+
+#[test]
+fn a_second_signal_on_a_stuck_screen_restores_the_terminal_through_the_hook() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    // The app blocks the runtime's only thread, so the loop never sees the
+    // first signal's cancellation.
+    pty.send(b"s");
+    assert!(pty.showing("stuck"));
+    // The first SIGTERM, then more until it ends: each is past cli-core's
+    // repeat window as the harness counts, and a late read of one by the
+    // signals thread only makes it a copy, so the next one counts.
+    pty.signal(Signal::TERM);
+    let status = loop {
+        std::thread::sleep(PAST_THE_WINDOW);
+        if let Some(status) = pty.child.try_wait().expect("wait") {
+            break status;
+        }
+        pty.signal(Signal::TERM);
+    };
+    pty.exit();
+    assert!(
+        status.signal().is_some_and(|s| s.contains("Terminated")),
+        "{status:?}"
+    );
+    assert!(!pty.parser.screen().contents().contains("ending"));
+    pty.assert_restored();
+}
+
+/// Key to screen change, `count` times; the median. The pause before each
+/// key varies over a whole frame (30 ms plus 0 to 16 ms, in steps of
+/// 7 ms modulo 17), so the keys don't stay in step with the render
+/// interval and the figure covers every phase of it.
+fn median_latency(pty: &mut Pty, count: usize) -> Duration {
+    let mut times = Vec::with_capacity(count);
+    for i in 1..=count {
+        let offset = u64::try_from(i * 7 % 17).expect("small");
+        std::thread::sleep(Duration::from_millis(30 + offset));
+        let start = Instant::now();
+        pty.send(b"k");
+        let shown = format!("keys {i}");
+        assert!(
+            pty.wait_for(WAIT, |screen| screen.contents().contains(&shown)),
+            "{shown}"
+        );
+        times.push(start.elapsed());
+    }
+    times.sort();
+    times[count / 2]
+}
+
+/// The groundwork's input-latency measurement (tui spec, Testing
+/// Strategy): the loop's added latency against the harness's baseline.
+/// The bound catches the class of bug proto-logs had (input noticed only
+/// on a tick: about 100 ms median added); a frame is 17 ms. The release
+/// figure is recorded in the size ADR.
+#[test]
+fn input_reaches_the_screen_within_a_few_frames() {
+    let mut baseline = Pty::spawn("baseline");
+    assert!(baseline.showing("keys 0"));
+    let base = median_latency(&mut baseline, 30);
+    baseline.send(b"q");
+    assert!(baseline.exit().success());
+
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    let screen = median_latency(&mut pty, 30);
+    pty.send(b"q");
+    assert!(pty.exit().success());
+
+    let added = screen.saturating_sub(base);
+    eprintln!("input latency: median {screen:?} on the screen, {base:?} baseline, {added:?} added");
+    assert!(added < Duration::from_millis(100), "{added:?} added");
+}

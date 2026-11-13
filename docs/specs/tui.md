@@ -1350,6 +1350,16 @@ the test's directory.
   drift dialog then reloads (dropping that role's staged changes) or
   keeps them staged (decision 38).
 
+## Verification notes
+
+- **Input latency (groundwork, M61, 2026-11-13):** a key to the screen's
+  change on a PTY, release build, current-thread runtime: a median of 9.2
+  to 11.2 ms more than the harness's baseline over three runs, within one
+  60 fps frame (proto-logs: about 14 ms on multi-thread). Measured by
+  `crates/tui/tests/term.rs`'s `input_reaches_the_screen_within_a_few_frames`;
+  the method and the binary's growth are in
+  [ADR-023](../decisions/ADR-023-tui-binary-size.md).
+
 ## Open questions
 
 None. decided.md settled the brief's nine; decisions 18 to 20 follow

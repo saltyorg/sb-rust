@@ -57,19 +57,19 @@ features = [
 # "Depends on" column. Added with each crate.
 deny = [
     # cli-core: every module builds on it.
-    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec"] },
+    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates.
-    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec"] },
+    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui"] },
     # exec: child processes; its first user is sb-docker's start, stop and
     # restart (exec spec, decision 4).
     { crate = "sb-exec", wrappers = ["sb-docker"] },
     # docker: sb docker ps (and later start/stop/restart, the picker's
     # list, log streams), used by the binary.
-    { crate = "sb-docker", wrappers = ["sb"] },
+    { crate = "sb-docker", wrappers = ["sb", "sb-tui"] },
     # host: the supported-release check and the journal reader's wrapper
     # (sb-journal's types and its tokio glue), used by the binary.
-    { crate = "sb-host", wrappers = ["sb"] },
+    { crate = "sb-host", wrappers = ["sb", "sb-tui"] },
     # journal: sb's own journal reader, depending on nothing of sb's and
     # wrapped by host (journal spec, "Capability map correction"). Its own
     # name is its self dev-dependency, which turns `testing` on for its
@@ -77,6 +77,10 @@ deny = [
     { crate = "sb-journal", wrappers = ["sb-host", "sb-journal"] },
     # config: sb validate-config's schemas and checks, used by the binary.
     { crate = "sb-config", wrappers = ["sb"] },
+    # tui: sb's full-screen screens (the log picker and viewer, the
+    # editors) over docker, host, term-ui and cli-core, used by the binary
+    # (tui spec, "Gate bookkeeping").
+    { crate = "sb-tui", wrappers = ["sb"] },
 ]
 
 [sources]
