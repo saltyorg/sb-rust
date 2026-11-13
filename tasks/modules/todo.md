@@ -2117,6 +2117,19 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       maintainer: the schemas' owner, the ratchet rows re-measured, glibc
       and musl side by side.
 
+## Follow-ups found during the build
+
+- [ ] **exec's PTY timing tests fail under load** (lane 2, with or after
+      M23, which also touches crates/exec). `crates/exec/tests/pty.rs`'s
+      `a_grandchild_holding_the_pty_is_left_after_the_drain` (3.36 s
+      against its 3 s bound) and `cancellation_and_timeouts_reach_the_group`
+      (1.26 s against 1 s) failed in M62's full check with the host fully loaded,
+      and passed on a rerun. Make each
+      bound robust under load without losing what it proves: measure
+      against the test's own baseline, or a margin derived from the
+      drain's own timeout, never a bigger magic number alone. Lanes now
+      run at 12 cores each, which leaves headroom.
+
 ## Ready to start
 
 Started right after this plan's commit:
