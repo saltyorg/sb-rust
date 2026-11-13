@@ -20,6 +20,16 @@ no plan of its own yet: sb-host holds the supported-release check (the
 cli-core plan's Task 4) and the journal reader's wrapper (the sb-journal
 plan's Task 10), and the rest of the spec waits for its plan.
 
+Approved 2026-11-13, no plans yet (planning comes next): the
+[tui](../docs/specs/tui.md), [ansible](../docs/specs/ansible.md),
+[completion](../docs/specs/completion.md) (its slices paused until the
+maintainer reviews proto-complete's look),
+[python-env](../docs/specs/python-env.md),
+[repo](../docs/specs/repo.md), [release](../docs/specs/release.md),
+[ops](../docs/specs/ops.md) and [motd](../docs/specs/motd.md) specs.
+Their amendments to the approved specs are applied; exec-M1 and exec-L2
+are specified for the repo plan ([tasks/triage.md](triage.md)).
+
 Every task follows CLAUDE.md:
 - the skills;
 - TDD: each finding's probe becomes a failing test before its fix;

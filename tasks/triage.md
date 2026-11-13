@@ -18,6 +18,14 @@ decisions 19 to 22), which change what the tables below say:
   each research task.
 - Decision 7's drop is confirmed, and checkpoints have no report files.
 
+On 2026-11-13 the maintainer approved eight module specs (tui, ansible,
+completion, python-env, repo, release, ops and motd, in
+[docs/specs/](../docs/specs/)). The repo spec's exec amendment specifies
+the fixes for exec-M1 and exec-L2, so both leave the DEFER table's
+waiting state: their rows say where the fix is specified, and each is
+fixed with the repo plan. The tui spec takes up the journal items and
+the viewer's exec and sanitizer items, as the DEFER rule says.
+
 Each open finding got one verdict:
 
 - **KEEP**: fixed now. It stays in the plan, in the task named here.
@@ -113,11 +121,11 @@ column. The maintainer adopted those as they stand.
 
 | id | severity | crate | task | description | reason | was unsure |
 |---|---|---|---|---|---|---|
-| exec-M1 | Medium | exec | 7, 14 | A piped child prompting on the terminal hangs sb for ever | exec's only caller is a captured `systemctl is-active`; matters with the first command that runs git or ssh |  |
+| exec-M1 | Medium | exec | 7, 14 | A piped child prompting on the terminal hangs sb for ever | exec's only caller is a captured `systemctl is-active`; matters with the first command that runs git or ssh. **Fix specified 2026-11-13** (repo spec's exec amendment: `SSH_ASKPASS_REQUIRE=force`, `SSH_ASKPASS=/bin/false`, exec spec "Environment rules"); fixed with the repo plan |  |
 | exec-M2 | Medium | exec | 11 | A secret split by an escape evades the mask | No command registers a secret with exec or streams child output yet |  |
 | san-L3 | Low | exec | 11 | Mask runs before sanitizing | Same defect as exec-M2 |  |
 | exec-M3 | Medium | exec | 15 | `pty` with a cleared environment can't find a bare program name | No command uses `pty` yet |  |
-| exec-L2 | Low | exec | 15 | `stream` loses a final unterminated line when a grandchild holds the pipe | No command uses `stream` yet |  |
+| exec-L2 | Low | exec | 15 | `stream` loses a final unterminated line when a grandchild holds the pipe | No command uses `stream` yet. **Fix specified 2026-11-13** (repo spec's exec amendment, exec spec "Ways to run"); fixed with the repo plan |  |
 | exec-L6 | Low | exec | 15 | `attached` doesn't re-check the token after the hold | No command uses `attached` yet |  |
 | exec-L4 | Low | exec | 23 | A PTY child that reads twice hangs until its timeout | No command uses `pty` yet; a doc line when one does |  |
 | exec-L5 | Low | exec | 23 | No mask for a secret sent on stdin | An API addition with no consumer |  |

@@ -299,11 +299,16 @@ the static musl binary.
 Not part of the prototype plan; recorded so it isn't lost. To be specified
 once cli-core and the runner module exist.
 
-**Why:** today's installer (`sb_install.sh` in the `sb` repository) captures
-`sb setup`'s output in a shell variable when not verbose. sb then sees no
-terminal, so the user gets no progress and no colour, only a dump of the
-captured text if setup fails. sb-rust draws its own progress and keeps a
-failed step's last lines, so the installer should stop capturing.
+**Why:** *Amended 2026-11-13 by the ops spec:* the capture premise is
+stale. The served installer (`sb_install.sh` in the `sb` repository) no
+longer captures `sb setup`'s output (checked 2026-11-13); it passes `-v`
+and `-b`. The install script is now specified in
+[the ops spec](../../docs/specs/ops.md) ("The install script"), starting
+from sb-go's `install.sh` plus `-b`, and that spec supersedes this
+section. Originally: the installer captured `sb setup`'s output in a
+shell variable when not verbose, so sb saw no terminal, and the user got
+no progress and no colour, only a dump of the captured text if setup
+failed.
 
 **How it must work** (documented usage, step 1 of
 https://docs.saltbox.dev/saltbox/install/install/#step-1-dependencies):
