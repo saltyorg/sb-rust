@@ -197,7 +197,8 @@ and sb-host's tests) under this profile:
   orphaned: util-linux `script`, which the terminal tests run sb under,
   puts its child in a new session. So each pass's temp copies go under a
   new directory of its own (`mktemp -d` under the system's temp
-  directory; cargo-mutants copies under `TMPDIR`), and check.sh kills
+  directory, then made 0755, since sb's relaunch tests run from it as
+  `nobody`; cargo-mutants copies under `TMPDIR`), and check.sh kills
   every process whose executable lies there after the pass, and on exit
   during one. The directory is outside any repository, since the tests
   inherit `TMPDIR` and sb-repo's expect git to find none above their temp

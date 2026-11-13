@@ -360,6 +360,10 @@ mutation_pass() {
   # executable is named by it.
   mutation_tmp=$(mktemp -d "${TMPDIR:-/tmp}/sb-mutants-$n.XXXXXX")
   mutation_tmp=$(cd "$mutation_tmp" && pwd -P)
+  # mktemp makes the directory 0700. sb's relaunch tests run a stand-in
+  # sudo, and the copy's sb, as `nobody`, which must be able to enter it:
+  # 0755, searchable by everyone as /tmp is, but writable by root only.
+  chmod 755 "$mutation_tmp"
   # The whole mutant's 300 s timeout stays as the backstop behind
   # nextest's per-test one.
   TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o "target/mutants-run-$n" \
