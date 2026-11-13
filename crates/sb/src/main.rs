@@ -517,13 +517,24 @@ fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let options = sb_term_ui::Options::default();
         let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
         let result = run::run(&mut runner, &settings).await;
         runner.finish();
         result.map_err(anyhow::Error::from)
-    })
+    });
+    // A host name lookup runs on a blocking thread (hyper-util's
+    // `GaiResolver` calls getaddrinfo under `spawn_blocking`), and the
+    // runtime's drop waits for every blocking task: after Ctrl-C with DNS
+    // dead, sb would hang until the resolver gave up (config-L11). The run
+    // is over here, so nothing left on the pool is waited for; the process
+    // exits with it. tokio's documented way not to wait:
+    // https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html#shutdown
+    // https://docs.rs/tokio/1.54.1/tokio/runtime/struct.Runtime.html#method.shutdown_background
+    // https://docs.rs/hyper-util/0.1.21/src/hyper_util/client/legacy/connect/dns.rs.html
+    runtime.shutdown_background();
+    result
 }
 
 #[cfg(test)]

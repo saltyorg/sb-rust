@@ -197,3 +197,102 @@ fn a_signal_during_the_checks_interrupts_and_restores() {
         );
     }
 }
+
+/// Ctrl-C ends the run promptly while a host name lookup hangs on a dead
+/// DNS server (config-L11): the lookup runs on a tokio blocking thread
+/// (hyper-util's `GaiResolver`), which the runtime's drop would wait for.
+/// The host's network and resolver settings are never touched: sb runs in
+/// private network and mount namespaces whose only route leads into a
+/// dummy interface, which drops every packet unanswered, and whose
+/// `/etc/resolv.conf` names a nameserver behind it (TEST-NET-1, RFC 5737)
+/// with a 20 s timeout; `/etc/nsswitch.conf` looks host names up in files
+/// and DNS only.
+#[test]
+fn ctrl_c_ends_promptly_while_dns_hangs() {
+    if !root_gate::requested() {
+        return;
+    }
+    let probe = Command::new("unshare")
+        .args(["--mount", "--net", "true"])
+        .output()
+        .expect("run unshare");
+    assert!(probe.status.success(), "no namespaces: {probe:?}");
+    let etc = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("etc");
+    let resolv = etc.path().join("resolv.conf");
+    std::fs::write(
+        &resolv,
+        "nameserver 192.0.2.1\noptions timeout:20 attempts:1\n",
+    )
+    .expect("write resolv.conf");
+    let nsswitch = etc.path().join("nsswitch.conf");
+    std::fs::write(&nsswitch, "hosts: files dns\n").expect("write nsswitch.conf");
+    let root = saltbox_root("valid").expect("root");
+    let logs = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("logs");
+    let script = r#"ip link add dead type dummy && ip addr add 192.0.2.2/24 dev dead && ip link set dead up && mount --bind "$1" /etc/resolv.conf && mount --bind "$2" /etc/nsswitch.conf && shift 2 && exec "$@" validate-config"#;
+    let mut cmd = Command::new("unshare");
+    common::apply_sb_env(&mut cmd);
+    // `unshare` without `--fork` execs the shell, which execs sb: the
+    // child's pid is sb's.
+    cmd.args([
+        "--mount",
+        "--propagation",
+        "private",
+        "--net",
+        "sh",
+        "-c",
+        script,
+        "sh",
+    ])
+    .arg(&resolv)
+    .arg(&nsswitch)
+    .arg(common::sb().get_program())
+    .env("SB_LOG_DIR", logs.path())
+    .env("SB_SALTBOX_DIR", root.path())
+    .env(
+        "CLOUDFLARE_BASE_URL",
+        "http://cloudflare.sb-test.invalid/client/v4/",
+    )
+    .env(
+        "SB_DOCKERHUB_URL",
+        "http://dockerhub.sb-test.invalid/v2/users/login/",
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    let mut child = KillOnDrop(cmd.spawn().expect("run unshare"), None);
+    let pid = child.0.id();
+    // Both checks are looking their host up once sb's namespace holds two
+    // UDP sockets sent to the dead nameserver (192.0.2.1:53, as
+    // /proc/net/udp writes it).
+    let sockets = format!("/proc/{pid}/net/udp");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let lookups = || {
+        std::fs::read_to_string(&sockets)
+            .unwrap_or_default()
+            .matches(" 010200C0:0035 ")
+            .count()
+    };
+    while lookups() < 2 && Instant::now() < deadline {
+        // Ended early (no `ip`, a bind mount refused): say so, not
+        // "both lookups open".
+        if let Some(status) = child.0.try_wait().expect("check sb") {
+            panic!("ended before both lookups: {status:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(lookups(), 2, "both lookups open");
+    let pid = i32::try_from(pid).expect("pid");
+    kill_process(Pid::from_raw(pid).expect("pid"), Signal::INT).expect("kill");
+    let sent = Instant::now();
+    let status = child.0.wait().expect("wait for sb");
+    let took = sent.elapsed();
+    let log = std::fs::read_to_string(logs.path().join("sb.log")).unwrap_or_default();
+    assert!(took < ENDS_WITHIN, "ended {took:?} after the signal\n{log}");
+    // sb ends by the signal itself, which a shell shows as `$?` 130.
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(Signal::INT.as_raw()),
+        "{status:?}\n{log}"
+    );
+    assert!(log.contains(r#"outcome="interrupted (exit 130)""#), "{log}");
+}
