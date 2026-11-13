@@ -2198,7 +2198,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       next tui-spec edit). go-shellquote didn't, so `EDITOR='vi #x'`
       differs from sb-go. List it in the tui spec's Differences.
 
-- [ ] **The hung-lookup test's baseline is too wide** (lane 3, after M36;
+- [x] **The hung-lookup test's baseline is too wide** (superseded by 67cfbfe, which counts retries client-side) (lane 3, after M36;
       sb-config). fa72214's baseline times a whole healthy `run()`,
       including `Http::new` and two requests, and the bound is 13 of
       those, so under heavy load the test took a median 72 s and up to
@@ -2211,7 +2211,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       check that it stays a small multiple of the old test's 2-8 s and
       well under 60 s; clamp it with a stated reason if not.
 
-- [ ] **Leaked mutant processes during a pass** (the gate; lane 3, now).
+- [x] **Leaked mutant processes during a pass** (the gate; lane 3, now).
       8d9ed8b's sweep runs when a pass ends, but a long pass still leaks
       signal-ignoring, busy mutant `sb` processes while it runs: 19 were
       found at once on 2026-11-13, each over 100% CPU, with the host's load
@@ -2221,7 +2221,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       TMPDIR that have been reparented to init (ppid 1), so the pass's
       live tests are never touched; stopped when the pass ends. Test it
       in the floor guard's stub as 8d9ed8b's test does.
-- [ ] **The hung-lookup test: count attempts on the client side** (lane 3,
+- [x] **The hung-lookup test: count attempts on the client side** (lane 3,
       after the sweep; replaces the uncommitted narrower-baseline change in
       lane 3, which a review showed failing 5 of 312 runs under load). Two
       timing bounds failed under load. Decided: count
