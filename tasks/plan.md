@@ -566,7 +566,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 61: Task 59's follow-ups (decision 41)
 - [x] Task 46: secrets are hidden wherever their key sits
 - [x] Task 60: Task 46's follow-ups (decision 39)
-- [ ] Checkpoint Y: config
+- [x] Checkpoint Y: config
 
 ### Phase 5 (lane 4): the glibc build (decisions 29 and 31)
 - [x] Task 53: the production build links glibc, built on 22.04

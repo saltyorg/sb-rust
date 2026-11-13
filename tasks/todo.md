@@ -1382,9 +1382,16 @@ finding is untested.
 **Scope:** S
 
 ## Checkpoint Y: config
-- [ ] `check.sh full`; the differential corpus passes.
-- [ ] The message to the maintainer names any residual YAML difference
+- [x] `check.sh full`; the differential corpus passes.
+- [x] The message to the maintainer names any residual YAML difference
       that waits for them.
+- Record (2026-11-13): `check.sh full` passed on 33118b4, with the YAML
+  corpus test. Nine corpus lines remain. Eight are scalar resolutions,
+  kept by decision 38 (the schema rules read yes/no/on/off as Ansible
+  booleans). One waits for the maintainer: `ls-line-break`. sb refuses a
+  file holding U+2028, which Ansible's parser accepts as a line break.
+  That is the one place sb is stricter than Ansible. It fails with a
+  message naming the character, and no Saltbox file contains one.
 
 ## Task 53: the production build links glibc, built on 22.04
 
