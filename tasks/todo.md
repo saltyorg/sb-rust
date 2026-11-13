@@ -595,21 +595,21 @@ validate-config's failure blocks on 80x24). Takes up the backlog entry
 steps".
 
 **Acceptance criteria:**
-- [ ] With more live lines than rows, the running step and its output
+- [x] With more live lines than rows, the running step and its output
       lines stay visible: settled lines collapse to "… N finished"
       (decision 17).
-- [ ] An in-memory test has fewer rows than the tree; a second covers
+- [x] An in-memory test has fewer rows than the tree; a second covers
       a terminal resized while live.
-- [ ] The finished tree is complete: nothing collapsed is lost from
+- [x] The finished tree is complete: nothing collapsed is lost from
       the final output or the log.
-- [ ] term-ui.md records the decision.
+- [x] term-ui.md records the decision.
 
 **Verification:**
-- [ ] `cargo test -p sb-term-ui`; a tmux probe at 80x12, with
+- [x] `cargo test -p sb-term-ui`; a tmux probe at 80x12, with
       screenshots of before and after, shown to the maintainer at
       Checkpoint D (decision 22);
       `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff, with the
+- [x] Review: one code-reviewer pass on the task's diff, with the
       library-reviewer.
 
 **Dependencies:** Task 19
