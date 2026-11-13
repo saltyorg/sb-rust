@@ -190,6 +190,13 @@ Answers at the plan's approval (2026-11-11):
     follow needs `unsafe` on 255 and 259 and loses entries across a
     flush on every release, with SIGBUS on a truncated file. The
     evidence is docs/platform-notes/libsystemd-reader.md.
+28. **YAML: a pre-pass in sb** (Task 42's question, 2026-11-12; the
+    maintainer chose it over the recommended libyaml-safer event
+    source). Before saphyr-parser, sb rewrites the input: continuation
+    lines inside flow collections and quoted scalars are padded, and a
+    tab after a colon becomes a space (56 of 59 corpus cases in Task
+    42's prototype). The tab layouts libyaml refuses (config-L1) are
+    refused by sb's own check. No new dependency.
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -439,7 +446,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [ ] Checkpoint B: reader
 
 ### Phase 4 (lane 3): config
-- [ ] Task 42: YAML: the corpus and the options
+- [x] Task 42: YAML: the corpus and the options
 - [ ] Task 43: sb accepts the YAML Ansible accepts
 - [ ] Task 46: secrets are hidden wherever their key sits
 - [ ] Checkpoint Y: config

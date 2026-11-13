@@ -1092,34 +1092,35 @@ and is coded to the choice. So this task runs early, while lanes 1 and
 code starts.
 
 **Acceptance criteria:**
-- [ ] A checked-in corpus of layouts, each with what libyaml accepts
+- [x] A checked-in corpus of layouts, each with what libyaml accepts
       and, for an accepted case, the resolved value of each scalar, so
       a parser change can't alter scalar resolution unnoticed:
       the review's table, the tab-only line and the tab-indented top
       level.
-- [ ] The expected results are generated once from libyaml through
+- [x] The expected results are generated once from libyaml through
       PyYAML, by a checked-in generator. Its versions and method go in
       a platform note. The generator passes ruff, `ruff format
       --check`, mypy and Bandit.
-- [ ] A test runs sb's parser over the corpus and asserts the exact
+- [x] A test runs sb's parser over the corpus and asserts the exact
       list of mismatches, checked in beside it. Today's list is the
       finding.
-- [ ] The options are written up with pros and cons, each run against
+- [x] The options are written up with pros and cons, each run against
       the corpus where it can be: a fix upstream, a pure-Rust
       libyaml-compatible parser used for acceptance, or a pre-pass.
       Listing a difference isn't an option beside them (decision 3):
       it is only for a residual case the chosen fix can't cover.
       Maintenance, adoption, licence and size
       are stated for any new crate.
-- [ ] The options, their pros and cons and the recommendation are put
+- [x] The options, their pros and cons and the recommendation are put
       to the maintainer, who chooses (decision 20). The choice is
-      recorded here, and Task 43 follows it. Lane 3 waits for the
+      recorded here (2026-11-12: a pre-pass in sb, the plan's decision
+      28), and Task 43 follows it. Lane 3 waits for the
       choice, and the other lanes go on.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`; the Python checks on the generator;
+- [x] `cargo test -p sb-config`; the Python checks on the generator;
       `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass on the task's diff.
+- [x] Review: one code-reviewer pass on the task's diff.
 
 **Dependencies:** Checkpoint A
 **Files:** `crates/config/tests/` (the corpus, its mismatch list and its test), `scripts/` (the generator), `docs/platform-notes/` (a YAML acceptance note)
@@ -1128,7 +1129,8 @@ code starts.
 ## Task 43: sb accepts the YAML Ansible accepts
 
 **Description:** Implement the option the maintainer chose from Task
-42's options (decision 20; config-H1, config-L1).
+42's options (decision 20; config-H1, config-L1): a pre-pass in sb
+before saphyr-parser (the plan's decision 28).
 
 **Acceptance criteria:**
 - [ ] The corpus's mismatch list is empty, or holds only entries the
@@ -1146,6 +1148,17 @@ code starts.
       ADR-009 are the precedents).
 - [ ] Positions, duplicate-key reports and secret hiding are unchanged
       on the existing tests.
+- [ ] The pre-pass pads continuation lines inside flow collections and
+      quoted scalars and turns a tab after a colon into a space; it
+      tracks quotes, comments, flow depth and block scalars, and leaves
+      block scalars' contents alone. A code comment says why not a
+      libyaml port (the maintainer's decision 28; Task 42's measured
+      options in the platform note).
+- [ ] The tab layouts libyaml refuses (a tab-only line, a tab before a
+      top-level key, `-\tvalue`) are refused with a message naming the
+      line and column.
+- [ ] An error's line and column point into the original file, not the
+      padded text.
 - [ ] The corpus's resolved values are unchanged for every case that
       was accepted before.
 
