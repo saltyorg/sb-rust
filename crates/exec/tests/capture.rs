@@ -285,6 +285,29 @@ async fn secrets_are_taken_out_of_output_and_errors() {
     assert_eq!(err.last_lines(), ["[REDACTED] [REDACTED]"]);
 }
 
+/// A joined option (ansible's `--extra-vars=<value>`) reaches the child
+/// as one element, byte for byte, JSON and a leading `-` included; the
+/// error shows the literal with `[ARG]`, never the value.
+#[tokio::test]
+async fn a_joined_option_is_one_element_and_masked() {
+    let cmd = sh("printf '%s\\n' \"$#\" \"$@\"; exit 2")
+        .arg("sh")
+        .option_value("--extra-vars=", r#"{"a": [1, "b c"], "d": "-e"}"#)
+        .option_value("--x=", "-leading value-not-real");
+    let done = capture(&cmd).await.expect("ran");
+    assert_eq!(
+        done.stdout,
+        "2\n--extra-vars={\"a\": [1, \"b c\"], \"d\": \"-e\"}\n--x=-leading value-not-real\n"
+    );
+    let err = done.check().expect_err("exit 2");
+    assert!(!format!("{err:?}").contains("value-not-real"), "{err:?}");
+    assert!(
+        err.to_string()
+            .ends_with("sh --extra-vars=[ARG] --x=[ARG] exited with code 2"),
+        "{err}"
+    );
+}
+
 /// A secret crossing the cap is cut out whole, not left in part.
 #[tokio::test]
 async fn a_secret_across_the_cap_leaves_no_part() {

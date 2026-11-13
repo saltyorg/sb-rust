@@ -92,7 +92,7 @@ impl Cmd {
     /// isn't one or can't be looked at, or the operating system refuses
     /// (not found, not executable, ...).
     pub async fn capture(&self, token: &CancellationToken) -> Result<Captured, SpawnError> {
-        let (command, _) = self.shown();
+        let command = self.shown();
         let (mut child, group) = self.spawn(Way::Capture)?;
         let start = Instant::now();
         let mask = self.mask();
@@ -155,7 +155,7 @@ impl Cmd {
     /// isn't one or can't be looked at, or the operating system refuses
     /// (not found, not executable, ...).
     pub async fn stream(&self, step: &mut Step) -> Result<Streamed, SpawnError> {
-        let (command, _) = self.shown();
+        let command = self.shown();
         let token = step.token();
         let (mut child, group) = self.spawn(Way::Stream)?;
         let start = Instant::now();
@@ -213,7 +213,7 @@ impl Cmd {
     /// also when stdin bytes were given ([`SpawnCause::StdinRefused`]) or a
     /// term-ui runner is drawing ([`SpawnCause::RunnerLive`]).
     pub async fn attached(&self, shutdown: &Shutdown) -> Result<Ran, SpawnError> {
-        let (command, _) = self.shown();
+        let command = self.shown();
         // Refused before the hold (whose start can wait) and the spawn.
         if let Err(cause) = self.attached_refusal() {
             return Err(self.not_started(cause));
@@ -256,7 +256,7 @@ impl Cmd {
     /// so its causes are logged too (`error.sources`, as cli-core's run
     /// record).
     fn not_started(&self, cause: SpawnCause) -> SpawnError {
-        let (command, _) = self.shown();
+        let command = self.shown();
         let error: &(dyn std::error::Error + 'static) = &cause;
         tracing::warn!(command, error, "child not started");
         self.failed(cause)

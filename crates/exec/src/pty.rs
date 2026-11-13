@@ -55,7 +55,7 @@ impl Cmd {
     /// the PTY can't be opened; also when stdin bytes were given
     /// ([`SpawnCause::StdinRefused`]).
     pub async fn pty(&self, step: &mut Step) -> Result<Ran, SpawnError> {
-        let (command, _) = self.shown();
+        let command = self.shown();
         let token = step.token();
         let (mut leader, group, reader) = self.spawn_pty()?;
         let start = Instant::now();
@@ -101,7 +101,7 @@ impl Cmd {
                 Ok((leader, Some(group), reader))
             }
             Err(cause) => {
-                let (command, _) = self.shown();
+                let command = self.shown();
                 let error: &(dyn std::error::Error + 'static) = &cause;
                 tracing::warn!(command, error, "child not started");
                 Err(SpawnError {

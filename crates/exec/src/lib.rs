@@ -47,6 +47,12 @@ enum Arg {
     Literal(&'static str),
     Value(String),
     Secret(String),
+    /// A literal option and a value in one element: `joined` is the two
+    /// together, as the child gets them.
+    Joined {
+        option: &'static str,
+        joined: String,
+    },
 }
 
 impl Arg {
@@ -54,7 +60,7 @@ impl Arg {
     fn text(&self) -> &str {
         match self {
             Self::Literal(literal) => literal,
-            Self::Value(text) | Self::Secret(text) => text,
+            Self::Value(text) | Self::Secret(text) | Self::Joined { joined: text, .. } => text,
         }
     }
 }
@@ -68,7 +74,7 @@ enum Var {
 impl fmt::Debug for Cmd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cmd")
-            .field("command", &self.shown().0)
+            .field("command", &self.shown())
             .field("env_cleared", &self.clear_env)
             .field("env", &self.env.keys().collect::<Vec<_>>())
             .field("cwd", &self.cwd)
@@ -140,6 +146,22 @@ impl Cmd {
     #[must_use]
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.args.push(Arg::Value(value.into()));
+        self
+    }
+
+    /// A literal option joined to a value in one argument
+    /// (`--extra-vars=<value>`, for a tool that refuses the value as a
+    /// separate argument when it starts with `-`): the child gets the two
+    /// together, the log and errors show the literal and `[ARG]`
+    /// (`--extra-vars=[ARG]`). Nothing goes between the two: `option`
+    /// carries its own `=`.
+    #[must_use]
+    pub fn option_value(mut self, option: &'static str, value: impl Into<String>) -> Self {
+        let value = value.into();
+        let mut joined = String::with_capacity(option.len() + value.len());
+        joined.push_str(option);
+        joined.push_str(&value);
+        self.args.push(Arg::Joined { option, joined });
         self
     }
 
@@ -263,30 +285,41 @@ impl Cmd {
         }
     }
 
-    /// The command as the log and errors show it: the program, literals in
-    /// place, `[ARG]` and `[REDACTED]` for the rest; and how many are
-    /// masked.
-    pub(crate) fn shown(&self) -> (String, usize) {
+    /// The command as the log and errors show it, for a caller that prints
+    /// it (ansible's `Executing...` line): the program, literals in place,
+    /// `[ARG]` for each value, `[REDACTED]` for each secret, and a joined
+    /// option's literal followed by `[ARG]` (`--extra-vars=[ARG]`).
+    #[must_use]
+    pub fn shown(&self) -> String {
         let mut shown = self.program.to_string_lossy().into_owned();
-        let mut masked = 0;
         for arg in &self.args {
-            let word = match arg {
-                Arg::Literal(literal) => literal,
-                Arg::Value(_) => VALUE,
-                Arg::Secret(_) => WITHHELD,
-            };
-            masked += usize::from(!matches!(arg, Arg::Literal(_)));
             shown.push(' ');
-            shown.push_str(word);
+            match arg {
+                Arg::Literal(literal) => shown.push_str(literal),
+                Arg::Value(_) => shown.push_str(VALUE),
+                Arg::Secret(_) => shown.push_str(WITHHELD),
+                Arg::Joined { option, .. } => {
+                    shown.push_str(option);
+                    shown.push_str(VALUE);
+                }
+            }
         }
-        (shown, masked)
+        shown
+    }
+
+    /// How many arguments [`Cmd::shown`] masks, for the log.
+    fn masked(&self) -> usize {
+        self.args
+            .iter()
+            .filter(|arg| !matches!(arg, Arg::Literal(_)))
+            .count()
     }
 
     /// The secrets to take out of this command's output and errors.
     pub(crate) fn mask(&self) -> mask::Mask {
         let args = self.args.iter().filter_map(|arg| match arg {
             Arg::Secret(secret) => Some(secret.as_str()),
-            Arg::Literal(_) | Arg::Value(_) => None,
+            Arg::Literal(_) | Arg::Value(_) | Arg::Joined { .. } => None,
         });
         let vars = self.env.values().filter_map(|var| match var {
             Var::Secret(secret) => Some(secret.as_str()),
@@ -299,7 +332,8 @@ impl Cmd {
     /// command as shown, the count of masked arguments, the names of
     /// changed variables, the working directory and the way.
     pub(crate) fn log_start(&self, way: Way) {
-        let (command, masked) = self.shown();
+        let command = self.shown();
+        let masked = self.masked();
         let environment = self.environment(way);
         let changed: Vec<&str> = environment.vars.iter().map(|(name, _)| *name).collect();
         let cwd = self
@@ -567,8 +601,24 @@ mod tests {
             .value("some/repo")
             .arg("fetch")
             .secret("hunter2-not-real");
-        assert_eq!(cmd.shown(), ("git -C [ARG] fetch [REDACTED]".to_owned(), 2));
-        assert_eq!(Cmd::new("true").shown(), ("true".to_owned(), 0));
+        assert_eq!(cmd.shown(), "git -C [ARG] fetch [REDACTED]");
+        assert_eq!(cmd.masked(), 2);
+        assert_eq!(Cmd::new("true").shown(), "true");
+        assert_eq!(Cmd::new("true").masked(), 0);
+    }
+
+    /// A joined option shows its literal with `[ARG]` and counts as
+    /// masked; the child gets the two joined.
+    #[test]
+    fn a_joined_option_shows_its_literal_only() {
+        let cmd = Cmd::new("ansible-playbook")
+            .arg("--become")
+            .option_value("--extra-vars=", r#"{"k": "v"}"#);
+        assert_eq!(cmd.shown(), "ansible-playbook --become --extra-vars=[ARG]");
+        assert_eq!(cmd.masked(), 1);
+        let argv: Vec<&str> = cmd.args.iter().map(Arg::text).collect();
+        assert_eq!(argv, ["--become", r#"--extra-vars={"k": "v"}"#]);
+        assert!(!format!("{cmd:?}").contains("\"k\""));
     }
 
     #[test]
@@ -634,7 +684,7 @@ mod tests {
     #[test]
     fn a_path_program_shows_in_full() {
         let cmd = Cmd::new("/srv/ansible/venv/bin/python").arg("-V");
-        assert_eq!(cmd.shown().0, "/srv/ansible/venv/bin/python -V");
+        assert_eq!(cmd.shown(), "/srv/ansible/venv/bin/python -V");
     }
 
     #[test]
