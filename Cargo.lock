@@ -3391,11 +3391,15 @@ dependencies = [
 name = "sb-host"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "indicatif",
  "jiff",
  "nix 0.28.0",
  "rustix",
+ "sb-cli-core",
  "sb-exec",
  "sb-journal",
+ "sb-term-ui",
  "serde",
  "serde_json",
  "sysinfo",

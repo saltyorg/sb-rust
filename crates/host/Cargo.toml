@@ -15,6 +15,8 @@ testing = []
 [dependencies]
 sysinfo.workspace = true
 thiserror.workspace = true
+# apt's step errors, with sb-go's texts as context over exec's.
+anyhow.workspace = true
 # The journal reader, which sb-host wraps (host spec, decision 6).
 sb-journal.workspace = true
 # The systemd-coredump user's uid for `Query::unit`, and the ownership
@@ -28,6 +30,9 @@ tracing.workspace = true
 # the caller's token that ends them.
 sb-exec.workspace = true
 tokio-util.workspace = true
+# The caller's step that apt's install, remove and update stream into
+# (host spec, Tech Stack).
+sb-term-ui.workspace = true
 # systemctl's JSON tables and the service times (host spec, Tech Stack).
 serde.workspace = true
 serde_json.workspace = true
@@ -47,6 +52,10 @@ sb-journal = { workspace = true, features = ["testing"] }
 # `#[tokio::test]`'s current-thread runtime.
 tokio = { workspace = true, features = ["macros", "sync"] }
 tempfile.workspace = true
+# apt's steps drawn to memory, and the runner's shutdown for Ctrl-C.
+sb-term-ui = { workspace = true, features = ["testing"] }
+sb-cli-core.workspace = true
+indicatif.workspace = true
 # The run log test's capture.
 tracing-subscriber.workspace = true
 

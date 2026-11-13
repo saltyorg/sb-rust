@@ -176,3 +176,5 @@ wrappers-widened	deny.toml	sb-term-ui: sb-repo added	the capability map has repo
 wrappers-widened	deny.toml	sb-exec: sb-repo added	the capability map has repo depend on exec, host and term-ui (repo row, "Depends on"; repo spec, Project Structure; module build M5)
 wrappers-widened	deny.toml	sb-host: sb-repo added	the capability map has repo depend on exec, host and term-ui (repo row, "Depends on"; repo spec, Project Structure; module build M5)
 wrappers-widened	deny.toml	sb-cli-core: sb-repo added	sb-repo's tests start a term-ui runner, which takes cli-core's Shutdown (a dev-dependency; the deny entry comment: every module builds on cli-core; module build M5)
+wrappers-widened	deny.toml	sb-term-ui: sb-host added	the host spec's Tech Stack names term-ui's Step: apt's install, remove, autoremove and update stream into the caller's step (host spec, "apt"; module build M9)
+wrappers-widened	deny.toml	sb-cli-core: sb-host added	sb-host's apt tests start a term-ui runner, which takes cli-core's Shutdown (a dev-dependency, as sb-repo's; module build M9)
