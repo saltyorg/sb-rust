@@ -12,6 +12,7 @@
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::io::{self, Read as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
@@ -102,8 +103,10 @@ const SOURCES_D: &str = "sources.list.d";
 const KEPT: &str = "ubuntu.sources";
 /// The file sb adds beside a custom mirror.
 const ARCHIVE: &str = "ubuntu-archive.sources";
-/// The backup folders under `/var/backups`.
-const BACKUP: [&str; 2] = ["sb", "apt-sources"];
+/// sb's backup folder under `/var/backups`.
+const BACKUP_ROOT: &str = "sb";
+/// `add_repositories`' folder under it.
+const APT_SOURCES: &str = "apt-sources";
 /// A temporary file's suffix: apt ignores a name ending in `~` silently
 /// (`Dir::Ignore-Files-Silently` "~$", apt 2.4, 2.8 and 3.2;
 /// docs/platform-notes/apt.md).
@@ -129,12 +132,7 @@ pub(crate) fn apply(
     report: &mut Report,
 ) -> Result<(), SourcesError> {
     let release = release(codename)?;
-    if run_id.is_empty() || !run_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return Err(SourcesError::Refused {
-            dir: backup_path(roots, ""),
-            reason: format!("{run_id:?} is not a run id"),
-        });
-    }
+    check_names(roots, APT_SOURCES, run_id)?;
     let sources_d = roots.etc_apt.join(SOURCES_D);
     let dir = match open_dir(&sources_d, roots.owner) {
         Ok(dir) => Some(dir),
@@ -189,9 +187,62 @@ pub(crate) fn apply(
     }
 }
 
-/// `/var/backups/sb/apt-sources/<run id>`.
-fn backup_path(roots: &Roots, run_id: &str) -> PathBuf {
-    let base = roots.var_backups.join(BACKUP[0]).join(BACKUP[1]);
+/// python-env's deadsnakes cleanup (host spec, "apt",
+/// `remove_sources_mentioning`, amendment H3): each regular file directly
+/// in `sources.list.d` whose bytes contain `needle` moved aside into
+/// `/var/backups/sb/<folder>/<run id>/`, through the same fenced handles,
+/// refusals and modes as [`apply`]'s cleanup. Symlinks, subdirectories and
+/// anything else are left alone; every candidate is read before anything
+/// moves. Returns where each moved file now is, in name order. An empty
+/// `needle` names nothing, and a missing `sources.list.d` holds nothing.
+pub(crate) fn remove_mentioning(
+    roots: &Roots,
+    needle: &'static str,
+    folder: &str,
+    run_id: &str,
+) -> Result<Vec<PathBuf>, SourcesError> {
+    check_names(roots, folder, run_id)?;
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sources_d = roots.etc_apt.join(SOURCES_D);
+    let dir = match open_dir(&sources_d, roots.owner) {
+        Ok(dir) => dir,
+        Err(Opened::Missing) => return Ok(Vec::new()),
+        Err(failed) => return Err(failed.error(&sources_d)),
+    };
+    let names = mentioning(&dir, &sources_d, needle.as_bytes())?;
+    let mut report = Report::default();
+    move_aside(roots, &dir, &sources_d, folder, run_id, &names, &mut report)?;
+    // Built from the raw names, so a name that isn't UTF-8 is exact.
+    let backup = backup_path(roots, folder, run_id);
+    Ok(names
+        .iter()
+        .map(|(raw, _)| backup.join(OsStr::from_bytes(raw.to_bytes())))
+        .collect())
+}
+
+/// A run id is letters and digits; a folder is a single plain name.
+/// Either otherwise is refused before anything is looked at.
+fn check_names(roots: &Roots, folder: &str, run_id: &str) -> Result<(), SourcesError> {
+    if folder.is_empty() || folder == "." || folder == ".." || folder.contains('/') {
+        return Err(SourcesError::Refused {
+            dir: roots.var_backups.join(BACKUP_ROOT),
+            reason: format!("{folder:?} is not a folder name"),
+        });
+    }
+    if run_id.is_empty() || !run_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(SourcesError::Refused {
+            dir: backup_path(roots, folder, ""),
+            reason: format!("{run_id:?} is not a run id"),
+        });
+    }
+    Ok(())
+}
+
+/// `/var/backups/sb/<folder>/<run id>`, or the folder for an empty run id.
+fn backup_path(roots: &Roots, folder: &str, run_id: &str) -> PathBuf {
+    let base = roots.var_backups.join(BACKUP_ROOT).join(folder);
     if run_id.is_empty() {
         base
     } else {
@@ -211,22 +262,37 @@ fn clean(
     report: &mut Report,
 ) -> Result<(), SourcesError> {
     let names = entries(dir, sources_d, release)?;
+    move_aside(roots, dir, sources_d, APT_SOURCES, run_id, &names, report)
+}
+
+/// `names` from `dir` (`sources_d`) into `/var/backups/sb/<folder>/<run
+/// id>/`, made only when there is something to move, each recorded in
+/// `report` as it moves.
+fn move_aside(
+    roots: &Roots,
+    dir: &OwnedFd,
+    sources_d: &Path,
+    folder: &str,
+    run_id: &str,
+    names: &[(CString, String)],
+    report: &mut Report,
+) -> Result<(), SourcesError> {
     if names.is_empty() {
         return Ok(());
     }
     // Evidence before acting: every name in the run log first, escaped so a
     // control character in a name can't forge a log line.
-    for (_, name) in &names {
+    for (_, name) in names {
         tracing::info!(
             name = %name.escape_debug(),
             dir = %sources_d.display(),
             "apt source to move aside"
         );
     }
-    let backup = backup_path(roots, run_id);
-    let into = backup_dir(roots, run_id)?;
+    let backup = backup_path(roots, folder, run_id);
+    let into = backup_dir(roots, folder, run_id)?;
     report.backup = Some(backup.clone());
-    for (raw, name) in &names {
+    for (raw, name) in names {
         move_entry(roots.rename, dir.as_fd(), into.as_fd(), raw).map_err(|cause| {
             SourcesError::Move {
                 path: sources_d.join(name),
@@ -291,6 +357,41 @@ fn entries(
             }
         }
         names.push((raw, name));
+    }
+    names.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(names)
+}
+
+/// The regular files directly in `dir` (`path`) whose bytes contain
+/// `needle`, in name order: each `lstat`ed through the handle, then read
+/// through it without following a link or waiting on a FIFO (the type
+/// checked again on the opened file). Anything else is left alone.
+fn mentioning(
+    dir: &OwnedFd,
+    path: &Path,
+    needle: &[u8],
+) -> Result<Vec<(CString, String)>, SourcesError> {
+    let failed = |path: PathBuf, cause: io::Error| SourcesError::Read { path, cause };
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(dir).map_err(|err| failed(path.into(), err.into()))? {
+        let raw = entry
+            .map_err(|err| failed(path.into(), err.into()))?
+            .file_name()
+            .to_owned();
+        let name = raw.to_string_lossy().into_owned();
+        let stat = rustix::fs::statat(dir, raw.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|err| failed(path.join(&name), err.into()))?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            continue;
+        }
+        let bytes = rustix::fs::openat(dir, raw.as_c_str(), file_flags(), Mode::empty())
+            .map_err(io::Error::from)
+            .and_then(read_regular)
+            .map_err(|cause| failed(path.join(&name), cause))?
+            .0;
+        if contains(&bytes, needle) {
+            names.push((raw, name));
+        }
     }
     names.sort_by(|a, b| a.1.cmp(&b.1));
     Ok(names)
@@ -389,16 +490,16 @@ fn checked(
     Ok(fd)
 }
 
-/// `/var/backups/sb/apt-sources/<run id>`: `/var/backups` checked like the
+/// `/var/backups/sb/<folder>/<run id>`: `/var/backups` checked like the
 /// others, the two folders created 0700 when missing and checked, the
 /// run's created 0700, exclusively, each new one's parent synced.
-fn backup_dir(roots: &Roots, run_id: &str) -> Result<OwnedFd, SourcesError> {
+fn backup_dir(roots: &Roots, folder: &str, run_id: &str) -> Result<OwnedFd, SourcesError> {
     let base = open_dir(&roots.var_backups, roots.owner)
         .map_err(|failed| failed.error(&roots.var_backups))?;
-    let sb_path = roots.var_backups.join(BACKUP[0]);
-    let sb = ensure_dir(&base, &sb_path, BACKUP[0], roots.owner)?;
-    let sources_path = sb_path.join(BACKUP[1]);
-    let sources = ensure_dir(&sb, &sources_path, BACKUP[1], roots.owner)?;
+    let sb_path = roots.var_backups.join(BACKUP_ROOT);
+    let sb = ensure_dir(&base, &sb_path, BACKUP_ROOT, roots.owner)?;
+    let sources_path = sb_path.join(folder);
+    let sources = ensure_dir(&sb, &sources_path, folder, roots.owner)?;
     let run_path = sources_path.join(run_id);
     match rustix::fs::mkdirat(&sources, run_id, Mode::RWXU) {
         Ok(()) => sync_dir(&sources, &sources_path)?,
@@ -591,7 +692,10 @@ fn uses_archive(dir: &OwnedFd, path: &Path) -> Result<bool, SourcesError> {
         }))
 }
 
-/// Whether `needle` occurs in `haystack`.
+/// Whether `needle` (not empty: `windows(0)` panics) occurs in `haystack`.
+/// Why not `memchr::memmem::find`: memchr is only a transitive dependency
+/// here, and making it sb-host's own is a new dependency (host spec,
+/// Boundaries, "ask first") for a scan of a few small files.
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())

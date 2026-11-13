@@ -752,3 +752,280 @@ fn across_filesystems_setuid_and_setgid_are_dropped() {
     assert_eq!(mode(&fixture.backup().join("a.list")), 0o755);
     assert!(!entry.exists());
 }
+
+// `remove_mentioning` (host spec, "apt", amendment H3): python-env's
+// deadsnakes cleanup on the same fenced handles.
+
+const PPA: &str = "deb https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main\n";
+
+/// `/var/backups/sb/deadsnakes/<RUN>` under the fixture.
+fn deadsnakes(fixture: &Fixture) -> PathBuf {
+    fixture.roots.var_backups.join("sb/deadsnakes").join(RUN)
+}
+
+/// [`remove_mentioning`] of `deadsnakes`, into the `deadsnakes` folder.
+fn remove(roots: &Roots, run_id: &str) -> Result<Vec<PathBuf>, SourcesError> {
+    remove_mentioning(roots, "deadsnakes", "deadsnakes", run_id)
+}
+
+#[test]
+fn only_regular_files_that_mention_the_needle_move() {
+    let fixture = Fixture::new();
+    let ppa = "deadsnakes-ubuntu-ppa-jammy.list";
+    write(&fixture.sources_d().join(ppa), PPA);
+    std::fs::set_permissions(
+        fixture.sources_d().join(ppa),
+        std::fs::Permissions::from_mode(0o640),
+    )
+    .expect("chmod");
+    write(&fixture.sources_d().join("docker.list"), "docker\n");
+    let target = fixture.dir.path().join("target.list");
+    write(&target, PPA);
+    std::os::unix::fs::symlink(&target, fixture.sources_d().join("link.list")).expect("symlink");
+    std::fs::create_dir(fixture.sources_d().join("nested")).expect("mkdir");
+    write(&fixture.sources_d().join("nested/inner.list"), PPA);
+    fifo(&fixture.sources_d(), "pipe.list");
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(moved, [deadsnakes(&fixture).join(ppa)]);
+    assert_eq!(read(&deadsnakes(&fixture).join(ppa)), PPA);
+    assert_eq!(mode(&deadsnakes(&fixture).join(ppa)), 0o640);
+    assert!(!fixture.sources_d().join(ppa).exists());
+    for kept in ["docker.list", "link.list", "nested/inner.list", "pipe.list"] {
+        assert!(
+            fixture.sources_d().join(kept).symlink_metadata().is_ok(),
+            "{kept}"
+        );
+    }
+    for dir in [
+        fixture.roots.var_backups.join("sb"),
+        fixture.roots.var_backups.join("sb/deadsnakes"),
+        deadsnakes(&fixture),
+    ] {
+        assert_eq!(mode(&dir), 0o700, "{}", dir.display());
+    }
+}
+
+#[test]
+fn every_file_that_mentions_it_moves_in_name_order() {
+    let fixture = Fixture::new();
+    for name in ["b.list", "a.sources", "c.list"] {
+        write(&fixture.sources_d().join(name), PPA);
+    }
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(
+        moved,
+        ["a.sources", "b.list", "c.list"].map(|name| deadsnakes(&fixture).join(name))
+    );
+    assert_eq!(
+        std::fs::read_dir(fixture.sources_d())
+            .expect("list")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn a_name_that_is_not_utf8_is_returned_as_it_is() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let fixture = Fixture::new();
+    let name = OsStr::from_bytes(b"caf\xe9.list");
+    write(&fixture.sources_d().join(name), PPA);
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(moved, [deadsnakes(&fixture).join(name)]);
+    assert_eq!(read(&moved[0]), PPA);
+}
+
+#[test]
+fn nothing_mentioning_it_moves_nothing_and_makes_no_backup() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("docker.list"), "docker\n");
+    let before = fixture.tree();
+    assert_eq!(
+        remove(&fixture.roots, RUN).expect("remove"),
+        Vec::<PathBuf>::new()
+    );
+    assert_eq!(fixture.tree(), before);
+    assert!(!fixture.roots.var_backups.join("sb").exists());
+}
+
+#[test]
+fn an_empty_needle_moves_nothing() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("docker.list"), "docker\n");
+    let before = fixture.tree();
+    let moved = remove_mentioning(&fixture.roots, "", "deadsnakes", RUN).expect("remove");
+    assert_eq!(moved, Vec::<PathBuf>::new());
+    assert_eq!(fixture.tree(), before);
+}
+
+#[test]
+fn a_missing_sources_list_d_moves_nothing() {
+    let fixture = Fixture::new();
+    std::fs::remove_dir(fixture.sources_d()).expect("rmdir");
+    assert_eq!(
+        remove(&fixture.roots, RUN).expect("remove"),
+        Vec::<PathBuf>::new()
+    );
+}
+
+/// `remove` refused with `refusing to clean <dir>: <reason>`, nothing
+/// changed.
+fn assert_remove_refused(fixture: &Fixture, dir: &Path, reason: &str) {
+    let before = fixture.tree();
+    let error = remove(&fixture.roots, RUN).expect_err("refused");
+    assert_eq!(
+        error.to_string(),
+        format!("refusing to clean {}: {reason}", dir.display())
+    );
+    assert_eq!(fixture.tree(), before);
+}
+
+#[test]
+fn a_symlinked_writable_or_foreign_sources_list_d_is_refused_for_removal() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    for mode in [0o775, 0o757] {
+        std::fs::set_permissions(fixture.sources_d(), std::fs::Permissions::from_mode(mode))
+            .expect("chmod");
+        assert_remove_refused(
+            &fixture,
+            &fixture.sources_d(),
+            "writable by group or others",
+        );
+    }
+    std::fs::set_permissions(fixture.sources_d(), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let mut foreign = Fixture {
+        dir: fixture.dir,
+        roots: fixture.roots.clone(),
+    };
+    foreign.roots.owner += 1;
+    let dir = foreign.sources_d();
+    assert_remove_refused(&foreign, &dir, "not owned by root");
+    foreign.roots.owner -= 1;
+    let elsewhere = foreign.dir.path().join("elsewhere");
+    std::fs::rename(foreign.sources_d(), &elsewhere).expect("rename");
+    std::os::unix::fs::symlink(&elsewhere, foreign.sources_d()).expect("symlink");
+    assert_remove_refused(&foreign, &dir, "it is a symlink");
+}
+
+#[test]
+fn a_symlinked_or_writable_deadsnakes_folder_is_refused() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    let sb = fixture.roots.var_backups.join("sb");
+    std::fs::create_dir(&sb).expect("mkdir");
+    std::fs::set_permissions(&sb, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let elsewhere = fixture.dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("mkdir");
+    std::os::unix::fs::symlink(&elsewhere, sb.join("deadsnakes")).expect("symlink");
+    assert_remove_refused(&fixture, &sb.join("deadsnakes"), "it is a symlink");
+    std::fs::remove_file(sb.join("deadsnakes")).expect("unlink");
+    std::fs::create_dir(sb.join("deadsnakes")).expect("mkdir");
+    std::fs::set_permissions(
+        sb.join("deadsnakes"),
+        std::fs::Permissions::from_mode(0o770),
+    )
+    .expect("chmod");
+    assert_remove_refused(
+        &fixture,
+        &sb.join("deadsnakes"),
+        "writable by group or others",
+    );
+}
+
+#[test]
+fn an_existing_deadsnakes_run_directory_is_refused() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    std::fs::create_dir_all(deadsnakes(&fixture)).expect("mkdir");
+    for dir in ["sb", "sb/deadsnakes"] {
+        let path = fixture.roots.var_backups.join(dir);
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    assert_remove_refused(&fixture, &deadsnakes(&fixture), "it already exists");
+}
+
+#[test]
+fn a_bad_run_id_or_folder_is_refused_for_removal() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    let before = fixture.tree();
+    for run_id in ["", "..", "a/b"] {
+        let error = remove(&fixture.roots, run_id).expect_err("refused");
+        assert!(error.to_string().contains("not a run id"), "{error}");
+    }
+    for folder in ["", ".", "..", "a/b"] {
+        let error =
+            remove_mentioning(&fixture.roots, "deadsnakes", folder, RUN).expect_err("refused");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "refusing to clean {}: {folder:?} is not a folder name",
+                fixture.roots.var_backups.join("sb").display()
+            )
+        );
+    }
+    assert_eq!(fixture.tree(), before);
+}
+
+#[test]
+fn across_filesystems_a_deadsnakes_file_is_copied_then_removed() {
+    let mut fixture = Fixture::new();
+    fixture.roots.rename = |_, _, _, _| Err(rustix::io::Errno::XDEV);
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    std::fs::set_permissions(
+        fixture.sources_d().join("ppa.list"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .expect("chmod");
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(moved, [deadsnakes(&fixture).join("ppa.list")]);
+    assert_eq!(read(&moved[0]), PPA);
+    assert_eq!(mode(&moved[0]), 0o600);
+    assert!(!fixture.sources_d().join("ppa.list").exists());
+}
+
+#[test]
+fn a_failed_removal_move_is_named() {
+    let mut fixture = Fixture::new();
+    fixture.roots.rename = |_, _, _, _| Err(rustix::io::Errno::PERM);
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    let error = remove(&fixture.roots, RUN).expect_err("failed");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "error moving {} to {}: Operation not permitted (os error 1)",
+            fixture.sources_d().join("ppa.list").display(),
+            deadsnakes(&fixture).display()
+        )
+    );
+    assert!(fixture.sources_d().join("ppa.list").exists());
+}
+
+/// Each name logged, escaped, before the first move, as `apply` logs them.
+#[test]
+fn every_deadsnakes_name_is_logged_before_anything_moves() {
+    let mut fixture = Fixture::new();
+    fixture.roots.rename = |from, name, to, new| {
+        tracing::info!("renameat called");
+        rustix::fs::renameat(from, name, to, new)
+    };
+    for name in ["a.list", "evil\nname.list"] {
+        write(&fixture.sources_d().join(name), PPA);
+    }
+    let (result, text) = capture(|| remove(&fixture.roots, RUN));
+    result.expect("remove");
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.contains("apt source moved aside"))
+        .collect();
+    assert_eq!(lines.len(), 4, "{text}");
+    for (line, name) in lines[..2].iter().zip(["a.list", "evil\\nname.list"]) {
+        assert!(
+            line.contains("apt source to move aside") && line.contains(&format!("name={name}")),
+            "{text}"
+        );
+    }
+    assert!(lines[2].contains("renameat called"), "{text}");
+}

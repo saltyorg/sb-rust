@@ -75,6 +75,41 @@ pub struct PackageQueryError {
     cause: String,
 }
 
+/// `package_list`'s format: four tab-separated fields a row, in dpkg's own
+/// escapes, which dpkg-query expands (python-env amendment H2).
+const LIST_FORMAT: &str =
+    r"-f=${binary:Package}\t${source:Package}\t${db:Status-Abbrev}\t${Version}\n";
+
+/// One package in dpkg's database, as [`Apt::package_list`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageRow {
+    /// `${binary:Package}`: the name, with its architecture when it is
+    /// multi-arch (`libc6:amd64`).
+    pub binary: String,
+    /// `${source:Package}`: its source package.
+    pub source: String,
+    /// `${db:Status-Abbrev}` without its trailing blank: `ii`, `rc`,
+    /// `un`, ... (a third letter is dpkg's error flag).
+    pub status: String,
+    /// `${Version}`; empty for a package that isn't installed.
+    pub version: String,
+}
+
+/// The package list couldn't be read (python-env amendment H2).
+#[derive(Debug, thiserror::Error)]
+#[error("list packages: {cause}")]
+pub struct PackageListError {
+    cause: String,
+}
+
+/// A package's apt policy couldn't be read (python-env amendment H2).
+#[derive(Debug, thiserror::Error)]
+#[error("query package policy {name}: {cause}")]
+pub struct PackagePolicyError {
+    name: String,
+    cause: String,
+}
+
 /// apt and dpkg, as sb runs them.
 #[derive(Debug, Clone)]
 pub struct Apt {
@@ -82,6 +117,10 @@ pub struct Apt {
     /// apt-get's program (a field named `apt_get` would repeat the type's
     /// name).
     get_program: PathBuf,
+    /// apt-cache's program.
+    cache_program: PathBuf,
+    /// `package_list`'s and `package_policy`'s limit.
+    query_timeout: Duration,
     update: UpdateTiming,
     lsb_release: PathBuf,
     codename_timeout: Duration,
@@ -101,6 +140,8 @@ impl Apt {
         Self {
             dpkg_query: PathBuf::from("dpkg-query"),
             get_program: PathBuf::from("apt-get"),
+            cache_program: PathBuf::from("apt-cache"),
+            query_timeout: QUERY_TIMEOUT,
             update: UPDATE_TIMING,
             lsb_release: PathBuf::from("lsb_release"),
             codename_timeout: CODENAME_TIMEOUT,
@@ -121,6 +162,14 @@ impl Apt {
     #[must_use]
     pub fn with_apt_get(mut self, program: impl Into<PathBuf>) -> Self {
         self.get_program = program.into();
+        self
+    }
+
+    /// Run `program` as apt-cache instead (tests).
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn with_apt_cache(mut self, program: impl Into<PathBuf>) -> Self {
+        self.cache_program = program.into();
         self
     }
 
@@ -152,9 +201,10 @@ impl Apt {
         self
     }
 
-    /// `add_repositories` on `etc_apt` and `var_backups` in place of
-    /// `/etc/apt` and `/var/backups`, with directories owned by `owner` in
-    /// place of root (tests; the real paths are never arguments).
+    /// `add_repositories` and `remove_sources_mentioning` on `etc_apt` and
+    /// `var_backups` in place of `/etc/apt` and `/var/backups`, with
+    /// directories owned by `owner` in place of root (tests; the real
+    /// paths are never arguments).
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn with_sources_roots(
@@ -170,6 +220,32 @@ impl Apt {
             ..sources::Roots::default()
         };
         self
+    }
+
+    /// Moves each regular file directly in `/etc/apt/sources.list.d` whose
+    /// content contains `needle` into a root-only
+    /// `/var/backups/sb/<backup>/<run id>/`, and returns where each now
+    /// is (host spec, "apt", `remove_sources_mentioning`, amendment H3;
+    /// python-env passes `deadsnakes` for both). `needle` and `backup` are
+    /// written in sb's code, never input; `run_id` is the run log's, as
+    /// for [`Apt::add_repositories`]. Symlinks and subdirectories are left
+    /// alone; each name is logged before it moves. The files are a few
+    /// small ones, so the work runs on the caller's thread.
+    ///
+    /// # Errors
+    ///
+    /// [`SourcesError`]: a refused directory, an existing run directory,
+    /// a bad run id or folder, a file that couldn't be read or moved, or a
+    /// directory that couldn't be synced afterwards. Nothing has moved
+    /// unless the error is a move's or a sync's; each move before it is in
+    /// the run log.
+    pub fn remove_sources_mentioning(
+        &self,
+        needle: &'static str,
+        backup: &'static str,
+        run_id: &str,
+    ) -> Result<Vec<PathBuf>, SourcesError> {
+        sources::remove_mentioning(&self.sources, needle, backup, run_id)
     }
 
     /// Saltbox's apt repositories for this release (host spec, "apt",
@@ -383,6 +459,90 @@ impl Apt {
             .map(|ran| installed(&ran.stdout))
             .map_err(|failure| failed(crate::child_failure(&failure)))
     }
+
+    /// Every package in dpkg's database, one [`PackageRow`] each, for
+    /// python-env's deadsnakes cleanup (host spec, "apt", amendment H2):
+    /// `dpkg-query -W` with [`LIST_FORMAT`], captured, 10 s.
+    ///
+    /// # Errors
+    ///
+    /// [`PackageListError`] when dpkg-query can't run, times out, is
+    /// interrupted or fails; when its output was cut at exec's capture
+    /// limit (a row could be missing); or when a row doesn't hold four
+    /// fields.
+    pub async fn package_list(
+        &self,
+        token: &CancellationToken,
+    ) -> Result<Vec<PackageRow>, PackageListError> {
+        let failed = |cause: String| PackageListError { cause };
+        let ran = Cmd::new(self.dpkg_query.as_os_str())
+            .arg("-W")
+            .arg(LIST_FORMAT)
+            .timeout(self.query_timeout)
+            .capture(token)
+            .await
+            .map_err(|err| failed(format!("{err}: {}", err.cause())))?
+            .check()
+            .map_err(|failure| failed(crate::child_failure(&failure)))?;
+        if ran.truncated {
+            return Err(failed(
+                "dpkg-query's output was cut at exec's limit".to_string(),
+            ));
+        }
+        ran.stdout
+            .lines()
+            .map(|line| {
+                package_row(line)
+                    .ok_or_else(|| failed(format!("unexpected row \"{}\"", line.escape_debug())))
+            })
+            .collect()
+    }
+
+    /// `apt-cache policy <name>`'s text, for python-env to parse (host
+    /// spec, "apt", amendment H2): captured, 10 s, with `LC_ALL=C` so the
+    /// `***` and origin lines read the same whatever the locale. An
+    /// unknown package is apt's empty answer, not an error.
+    ///
+    /// # Errors
+    ///
+    /// [`PackagePolicyError`] when apt-cache can't run, times out, is
+    /// interrupted or fails.
+    pub async fn package_policy(
+        &self,
+        name: &str,
+        token: &CancellationToken,
+    ) -> Result<String, PackagePolicyError> {
+        let failed = |cause: String| PackagePolicyError {
+            name: name.to_string(),
+            cause,
+        };
+        let ran = Cmd::new(self.cache_program.as_os_str())
+            .arg("policy")
+            // The name can never be read as an option (apt 2.4 honours `--`).
+            .arg("--")
+            .value(name)
+            .env("LC_ALL", "C")
+            .timeout(self.query_timeout)
+            .capture(token)
+            .await
+            .map_err(|err| failed(format!("{err}: {}", err.cause())))?
+            .check()
+            .map_err(|failure| failed(crate::child_failure(&failure)))?;
+        Ok(ran.stdout)
+    }
+}
+
+/// A [`LIST_FORMAT`] row: exactly four tab-separated fields, the status's
+/// trailing blank trimmed.
+fn package_row(line: &str) -> Option<PackageRow> {
+    let mut fields = line.split('\t');
+    let row = PackageRow {
+        binary: fields.next()?.to_string(),
+        source: fields.next()?.to_string(),
+        status: fields.next()?.trim_end().to_string(),
+        version: fields.next()?.to_string(),
+    };
+    fields.next().is_none().then_some(row)
 }
 
 /// sb-go's desktop rule on dpkg's abbreviated status: only an installed
@@ -554,6 +714,188 @@ mod tests {
     #[test]
     fn the_default_limit_is_ten_seconds() {
         assert_eq!(QUERY_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(Apt::new().query_timeout, QUERY_TIMEOUT);
+    }
+
+    async fn list(script: &str) -> Result<Vec<PackageRow>, PackageListError> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let program = stand_in(dir.path(), "dpkg-query", script);
+        Apt::new()
+            .with_dpkg_query(program)
+            .package_list(&CancellationToken::new())
+            .await
+    }
+
+    fn row(binary: &str, source: &str, status: &str, version: &str) -> PackageRow {
+        PackageRow {
+            binary: binary.to_string(),
+            source: source.to_string(),
+            status: status.to_string(),
+            version: version.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn package_list_reads_four_fields_a_row() {
+        let _spawns = SPAWNS.lock().await;
+        // The format reaches dpkg-query with its `\t` and `\n` escapes,
+        // which dpkg expands (checked on dpkg 1.21).
+        let script = r#"[ "$*" = '-W -f=${binary:Package}\t${source:Package}\t${db:Status-Abbrev}\t${Version}\n' ] || exit 9
+printf 'python3.12\tpython3.12\tii \t3.12.1-1+jammy1\n'
+printf 'libc6:amd64\tglibc\tii \t2.35-0ubuntu3\n'
+printf 'old-tool\told-tool\trc \t1.0\n'
+printf 'gone\tgone\tun \t\n'"#;
+        assert_eq!(
+            list(script).await.expect("list"),
+            [
+                row("python3.12", "python3.12", "ii", "3.12.1-1+jammy1"),
+                row("libc6:amd64", "glibc", "ii", "2.35-0ubuntu3"),
+                row("old-tool", "old-tool", "rc", "1.0"),
+                row("gone", "gone", "un", ""),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_without_four_fields_is_the_list_error() {
+        let _spawns = SPAWNS.lock().await;
+        let error = list(r"printf 'a\ta\tii \t1\nb\tb\tii\n'")
+            .await
+            .expect_err("bad row");
+        assert_eq!(
+            error.to_string(),
+            r#"list packages: unexpected row "b\tb\tii""#
+        );
+        let error = list(r"printf 'a\ta\tii \t1\textra\n'")
+            .await
+            .expect_err("bad row");
+        assert_eq!(
+            error.to_string(),
+            r#"list packages: unexpected row "a\ta\tii \t1\textra""#
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_cut_at_exec_s_cap_is_the_list_error() {
+        let _spawns = SPAWNS.lock().await;
+        let error = list("yes 'a\ta\tii \t1' | head -c 2000000")
+            .await
+            .expect_err("cut");
+        assert_eq!(
+            error.to_string(),
+            "list packages: dpkg-query's output was cut at exec's limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_list_is_the_list_error() {
+        let _spawns = SPAWNS.lock().await;
+        let error = list("echo 'dpkg-query: error' >&2; exit 2")
+            .await
+            .expect_err("failed");
+        let text = error.to_string();
+        assert!(text.starts_with("list packages: "), "{text}");
+        assert!(
+            text.contains("exited with code 2") && text.contains("dpkg-query: error"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hung_list_times_out() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut apt =
+            Apt::new().with_dpkg_query(stand_in(dir.path(), "dpkg-query", "exec sleep 60"));
+        apt.query_timeout = Duration::from_millis(200);
+        let error = apt
+            .package_list(&CancellationToken::new())
+            .await
+            .expect_err("timed out");
+        let text = error.to_string();
+        assert!(
+            text.starts_with("list packages: ") && text.contains("timed out"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_dpkg_query_is_the_list_error() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = Apt::new()
+            .with_dpkg_query(dir.path().join("missing"))
+            .package_list(&CancellationToken::new())
+            .await
+            .expect_err("failed");
+        assert!(
+            error
+                .to_string()
+                .starts_with("list packages: could not run "),
+            "{error}"
+        );
+    }
+
+    async fn policy(script: &str, name: &str) -> Result<String, PackagePolicyError> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let program = stand_in(dir.path(), "apt-cache", script);
+        Apt::new()
+            .with_apt_cache(program)
+            .package_policy(name, &CancellationToken::new())
+            .await
+    }
+
+    #[tokio::test]
+    async fn package_policy_runs_in_the_c_locale_and_returns_its_text() {
+        let _spawns = SPAWNS.lock().await;
+        let script = r#"[ "$*" = 'policy -- python3.12' ] || exit 9
+[ "$LC_ALL" = C ] || exit 8
+printf 'python3.12:\n  Installed: 3.12.1-1+jammy1\n *** 3.12.1-1+jammy1 100\n'"#;
+        assert_eq!(
+            policy(script, "python3.12").await.expect("policy"),
+            "python3.12:\n  Installed: 3.12.1-1+jammy1\n *** 3.12.1-1+jammy1 100\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_package_s_policy_is_empty() {
+        let _spawns = SPAWNS.lock().await;
+        let script = "echo 'N: Unable to locate package nope' >&2";
+        assert_eq!(policy(script, "nope").await.expect("policy"), "");
+    }
+
+    #[tokio::test]
+    async fn a_failed_policy_is_the_policy_error() {
+        let _spawns = SPAWNS.lock().await;
+        let error = policy("echo 'E: broken cache' >&2; exit 100", "python3.12")
+            .await
+            .expect_err("failed");
+        let text = error.to_string();
+        assert!(
+            text.starts_with("query package policy python3.12: "),
+            "{text}"
+        );
+        assert!(
+            text.contains("exited with code 100") && text.contains("E: broken cache"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hung_policy_times_out() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut apt = Apt::new().with_apt_cache(stand_in(dir.path(), "apt-cache", "exec sleep 60"));
+        apt.query_timeout = Duration::from_millis(200);
+        let error = apt
+            .package_policy("x", &CancellationToken::new())
+            .await
+            .expect_err("timed out");
+        let text = error.to_string();
+        assert!(
+            text.starts_with("query package policy x: ") && text.contains("timed out"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -677,6 +1019,31 @@ mod tests {
                 .expect("read")
                 .contains(" jammy main")
         );
+    }
+
+    #[test]
+    fn remove_sources_mentioning_returns_where_the_files_went() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (etc_apt, var_backups) = (dir.path().join("etc/apt"), dir.path().join("var/backups"));
+        std::fs::create_dir_all(etc_apt.join("sources.list.d")).expect("mkdir");
+        std::fs::create_dir_all(&var_backups).expect("mkdir");
+        for path in [etc_apt.join("sources.list.d"), var_backups.clone()] {
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .expect("chmod");
+        }
+        let sources_d = etc_apt.join("sources.list.d");
+        std::fs::write(sources_d.join("ppa.list"), "deadsnakes/ppa\n").expect("write");
+        std::fs::write(sources_d.join("docker.list"), "docker\n").expect("write");
+        let apt = Apt::new().with_sources_roots(
+            &etc_apt,
+            &var_backups,
+            rustix::process::geteuid().as_raw(),
+        );
+        let moved = apt
+            .remove_sources_mentioning("deadsnakes", "deadsnakes", "0a1b")
+            .expect("remove");
+        assert_eq!(moved, [var_backups.join("sb/deadsnakes/0a1b/ppa.list")]);
+        assert!(sources_d.join("docker.list").exists());
     }
 
     #[tokio::test]

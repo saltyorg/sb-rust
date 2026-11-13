@@ -172,18 +172,23 @@ timeout, for the same reason as `install`.
   -f=${binary:Package}\t${source:Package}\t${db:Status-Abbrev}\t${Version}\n`
   (capture, 10 s), returned as rows of four fields. Error: `list
   packages: <cause>`.
-- `package_policy(name)`: `apt-cache policy <name>` (capture, 10 s, with
+- `package_policy(name)`: `apt-cache policy -- <name>` (`--` so a name is
+  never read as an option; capture, 10 s, with
   `LC_ALL=C` so the `***` and origin lines parse whatever the locale),
   returned as text; python-env parses it. Error: `query package policy
   <name>: <cause>`.
 
-**`remove_sources_mentioning(needle, backup) -> Result<Vec<PathBuf>, _>`.**
+**`remove_sources_mentioning(needle, backup, run_id) -> Result<Vec<PathBuf>, _>`.**
 *Amended 2026-11-13 by the python-env spec (H3).* Moves each regular
 file directly in `sources.list.d` (on host's `/etc/apt` root field) whose
 content contains `needle` out of it, into a root-only
-`/var/backups/sb/<backup>/<run id>/`, and returns what it moved. `backup`
-is a `&'static str` folder name, never input (python-env passes
-`deadsnakes`); the run id is the run log's. A subdirectory or symlink is
+`/var/backups/sb/<backup>/<run id>/`, and returns what it moved: each
+file's new path in that directory, in name order, so the caller has the
+count and the directory for its step line. `backup` is a `&'static str`
+folder name, never input (python-env passes `deadsnakes`); `run_id` is
+the run log's (cli-core's `RunLog::id()`, which host can't reach, as for
+`add_repositories`), letters and digits. An empty `needle` and a missing
+`sources.list.d` move nothing. A subdirectory or symlink is
 left alone. It uses the same fenced directory handles and folder scheme
 as `add_repositories`' cleanup (ops spec decisions 5 and 28): both
 directories are fixed paths (the root arguments exist for tests only);
