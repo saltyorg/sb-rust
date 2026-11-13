@@ -374,8 +374,12 @@ To discuss with the maintainer once every module is done, not before:
     through a shell. Early sb-go split them on commas, which broke JSON
     with more than one key. It used cobra's `StringSlice`, and sb-go
     bc1be03 (issue #11, 2025-05-31) moved it to `StringArray`. In clap:
-    `ArgAction::Append` with no `value_delimiter`, and the values go to
-    the child's argv one per element (exec's argument list, no shell).
+    `ArgAction::Append` with no `value_delimiter`, plus
+    `allow_hyphen_values` so a value may start with `-`. Each value goes
+    to the child as one argv element, `--extra-vars=<value>` (exec's
+    argument list, no shell). Not the two elements `--extra-vars <value>`
+    that sb-go sends: Ansible's argparse refuses a following element
+    that starts with `-` (checked by the ansible research, 2026-11-13).
     The spec's tests cover multi-key JSON, nested quotes, unicode, a
     value starting with `-`, and several `-e`s in order.
 - **Manual real-terminal check** (two emulators): mouse use and Shift-drag
