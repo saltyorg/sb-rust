@@ -453,13 +453,8 @@ mod tests {
         Duration::ZERO
     }
 
-    async fn run_with(
-        fake: &Fake,
-        credentials: &Credentials,
-        domain: &str,
-        timeout: Duration,
-    ) -> Result<(), String> {
-        let http = Http::new(&Proxy::Off, timeout).expect("client");
+    async fn run(fake: &Fake, credentials: &Credentials, domain: &str) -> Result<(), String> {
+        let http = Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client");
         let base = format!("{}/client/v4/", fake.url());
         check(
             &Check {
@@ -471,10 +466,6 @@ mod tests {
             domain,
         )
         .await
-    }
-
-    async fn run(fake: &Fake, credentials: &Credentials, domain: &str) -> Result<(), String> {
-        run_with(fake, credentials, domain, Duration::from_secs(5)).await
     }
 
     fn healthy(fake: &Fake) {
@@ -706,28 +697,36 @@ mod tests {
     }
 
     /// A timed-out attempt is a connection error: retried, then the
-    /// guidance follows the transport error. The fake counts an attempt
-    /// only once its request reaches the handler, so each attempt's
-    /// timeout must outlast a connection and a request on this host now:
-    /// 200 ms plus four times a whole healthy check (two requests on a new
-    /// client) timed here first, so a loaded host's costs are on both
-    /// sides.
+    /// guidance follows the transport error. The retries are counted on
+    /// the client's side, by the backoff it asks before each one: the
+    /// fake counts an attempt only once its request reaches the handler,
+    /// which a loaded host can delay past the attempt's timeout.
     #[tokio::test]
     async fn a_hung_lookup_times_out_after_its_retries() {
-        let answering = Fake::start().expect("fake");
-        healthy(&answering);
-        let start = std::time::Instant::now();
-        assert_eq!(run(&answering, &token(), "example.com").await, Ok(()));
-        let timeout = Duration::from_millis(200) + start.elapsed() * 4;
+        let counts = std::sync::Mutex::new(Vec::new());
+        let record = |count: u32| {
+            counts.lock().expect("lock").push(count);
+            Duration::ZERO
+        };
         let fake = Fake::start().expect("fake");
         fake.script("/client/v4/zones", Answer::json(200, ZONES).held());
-        let err = run_with(&fake, &token(), "example.com", timeout)
-            .await
-            .expect_err("fails");
+        let http = Http::new(&Proxy::Off, Duration::from_millis(200)).expect("client");
+        let base = format!("{}/client/v4/", fake.url());
+        let err = check(
+            &Check {
+                http: &http,
+                base_url: &base,
+                backoff: &record,
+            },
+            &token(),
+            "example.com",
+        )
+        .await
+        .expect_err("fails");
         assert!(err.starts_with("Cloudflare zone lookup failed: "), "{err}");
         assert!(err.contains("timed out"), "{err}");
         assert!(err.contains("\n  Fix the scoped token"), "{err}");
-        assert_eq!(fake.seen().len(), 3);
+        assert_eq!(*counts.lock().expect("lock"), [0, 1]);
     }
 
     /// The key and token never appear in a result, even when echoed.
