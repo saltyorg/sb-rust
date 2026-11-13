@@ -336,13 +336,13 @@ fn follow(args: FollowArgs) -> Result<ExitCode> {
 }
 
 /// Each item on its own line of stdout, buffered.
-fn print_lines<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> Result<ExitCode> {
+fn print_lines<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> Result<()> {
     let mut out = BufWriter::new(std::io::stdout().lock());
     for item in items {
         writeln!(out, "{item}")?;
     }
     out.flush()?;
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 fn main() -> Result<ExitCode> {
@@ -356,10 +356,14 @@ fn main() -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Command::Fields { file, name } => print_lines(tools::fields(&read(&file)?, &name)?),
+        Command::Fields { file, name } => {
+            print_lines(tools::fields(&read(&file)?, &name)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Select { file, selection } => {
             let text = read(&file)?;
-            print_lines(tools::select(&text, &selection.selection())?)
+            print_lines(tools::select(&text, &selection.selection())?)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Compare { expected, actual } => {
             let c = tools::compare(&read(&expected)?, &read(&actual)?)?;
@@ -381,11 +385,14 @@ fn main() -> Result<ExitCode> {
             println!("{d}, {:?}", started.elapsed());
             Ok(verdict(d.passed()))
         }
-        Command::Releases => print_lines(
-            RELEASES
-                .iter()
-                .map(|r| format!("{} {}", r.version_id(), r.systemd())),
-        ),
+        Command::Releases => {
+            print_lines(
+                RELEASES
+                    .iter()
+                    .map(|r| format!("{} {}", r.version_id(), r.systemd())),
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::GenExport {
             entries,
             generation,

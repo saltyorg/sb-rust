@@ -27,6 +27,9 @@ tracing-appender.workspace = true
 tracing-log.workspace = true
 tracing-subscriber.workspace = true
 unicode-width.workspace = true
+# A combining mark stays with its base character in escaped text
+# (plan decision 40).
+icu_properties.workspace = true
 
 [dev-dependencies]
 anstream.workspace = true

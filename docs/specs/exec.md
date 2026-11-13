@@ -313,7 +313,7 @@ reaches the log.
 
 ## Tech Stack
 
-Rust 1.99.1 (edition 2024, the workspace pin); tokio with `process`
+Rust 1.100.0 (edition 2024, the workspace pin); tokio with `process`
 (added), portable-pty 0.9.0 (new; it brings nix 0.28 among others, so the
 binary size and cargo-deny are measured when sb first links it, per the
 ratchet), rustix (process groups and signals), tokio-util's

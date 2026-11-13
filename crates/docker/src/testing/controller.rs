@@ -244,8 +244,7 @@ async fn answer(
         // (<https://docs.rs/form_urlencoded/1.2.2/form_urlencoded/fn.parse.html>).
         let query = uri
             .query()
-            .map(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect())
-            .unwrap_or_default();
+            .map_or_default(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect());
         script.seen.push(Seen {
             method: method.to_string(),
             path: uri.path().to_string(),

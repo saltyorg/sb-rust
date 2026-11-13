@@ -32,7 +32,7 @@ impl Controller {
     pub async fn check_service(&self, token: &CancellationToken) -> Result<(), ControlError> {
         // `fs::exists`: `metadata` (links followed) with ENOENT alone as
         // `false`, as only ENOENT is Go's `ErrNotExist`
-        // (<https://doc.rust-lang.org/1.99.1/std/fs/fn.exists.html>).
+        // (<https://doc.rust-lang.org/1.100.0/std/fs/fn.exists.html>).
         match std::fs::exists(&self.unit_file) {
             Ok(true) => {}
             Ok(false) => return Err(ControlError::NoService),

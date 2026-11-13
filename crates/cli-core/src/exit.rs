@@ -28,7 +28,7 @@ pub struct Exit(pub u8);
 /// run log and the terminal are already put back when the signal ends the
 /// process, and flushes stdout only after it returns (UNVERIFIED: no
 /// documented guarantee; checked against std's `rt::lang_start_internal`
-/// and `rt::cleanup` in Rust 1.99.1, and pinned by cli-core's
+/// and `rt::cleanup` in Rust 1.99.1 and 1.100.0, and pinned by cli-core's
 /// `a_finished_interrupted_run_ends_by_its_signal`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[must_use = "the run ends as this says only when main returns it"]
@@ -185,32 +185,19 @@ pub fn shown_chain(err: &(dyn Error + 'static)) -> Vec<String> {
 /// forge one; quotes, apostrophes and backslashes pass as they are, so
 /// escaping twice changes nothing.
 ///
-/// The text is split at those three, and each run between them goes
-/// through [`escape_controls`](crate::config::escape_controls) as it is,
-/// std's `str::escape_debug`, which escapes every non-printable character
-/// and a grapheme extender (a combining mark, ZWJ, a variation selector)
-/// only at the start of a string
-/// (<https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>):
-/// a mark stays with its base character (an NFD `Ame\u{301}lie`, Thai) and
-/// is escaped only at the start of a line or right after one of the
-/// three. Why not `escape_controls` on the whole line: it escapes those
+/// It is cli-core's `config::escape` with quotes, apostrophes and
+/// backslashes passed: a combining mark stays with its base character
+/// (an NFD `Ame\u{301}lie`, Thai) and is escaped only at the start of a
+/// line, right after one of those three or after an escaped character
+/// (plan decision 40). Why not
+/// [`escape_controls`](crate::config::escape_controls): it escapes those
 /// three too (`isn\'t`), and escapes text escaped already a second time.
 /// sb-config's `escape_controls` (crates/config/src/issue.rs) passes them
 /// through for the same reason (one character at a time, so it escapes
 /// every mark).
 #[must_use]
 pub fn escaped(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for part in text.split_inclusive(['\'', '"', '\\']) {
-        match part.strip_suffix(['\'', '"', '\\']) {
-            Some(run) => {
-                out.push_str(&crate::config::escape_controls(run));
-                out.push_str(&part[run.len()..]);
-            }
-            None => out.push_str(&crate::config::escape_controls(part)),
-        }
-    }
-    out
+    crate::config::escape(text, true)
 }
 
 fn block(
@@ -352,6 +339,38 @@ mod tests {
         assert_eq!(
             text,
             format!("✗ could not read the media\n  caused by: {message}\n")
+        );
+    }
+
+    /// A mark is escaped where it has no base character to stay with: at
+    /// the start of a line, after a quote, an apostrophe or a backslash
+    /// (passed as they are), and after an escaped character, where it
+    /// would sit on the escape's last letter (plan decision 40).
+    #[test]
+    fn a_mark_without_its_base_is_escaped() {
+        assert_eq!(escaped("\u{301}x"), "\\u{301}x");
+        assert_eq!(escaped("it'\u{301}s"), "it'\\u{301}s");
+        assert_eq!(escaped("\"\u{301}\\\u{301}"), "\"\\u{301}\\\\u{301}");
+        assert_eq!(escaped("a\n\u{301}"), "a\\n\\u{301}");
+        assert_eq!(escaped("\u{1b}\u{e49}"), "\\u{1b}\\u{e49}");
+    }
+
+    /// Marks stacked on one base stay with it (Vietnamese, Thai tone
+    /// marks over vowels).
+    #[test]
+    fn stacked_marks_stay_with_their_base() {
+        let text = "e\u{302}\u{301} \u{e01}\u{e34}\u{e48}";
+        assert_eq!(escaped(text), text);
+    }
+
+    /// Invisible extenders are escaped even after a base character: a
+    /// variation selector, the zero-width joiner and non-joiner, the
+    /// combining grapheme joiner and a tag character.
+    #[test]
+    fn invisible_extenders_are_escaped_after_a_base() {
+        assert_eq!(
+            escaped("a\u{fe0f}b\u{200d}c\u{200c}d\u{34f}e\u{e0041}"),
+            "a\\u{fe0f}b\\u{200d}c\\u{200c}d\\u{34f}e\\u{e0041}"
         );
     }
 

@@ -210,7 +210,7 @@ fn prefixed(context: &str, what: &dyn fmt::Display) -> String {
 /// An error reading a journal: the file, when it is about one, and what
 /// went wrong.
 ///
-/// `Display` writes the path escaped (`str::escape_debug`), so control
+/// `Display` writes the path escaped (`escaped`), so control
 /// bytes in a file name can't reach a terminal (security audit L5). No
 /// message carries a field's name or value.
 ///
@@ -293,12 +293,7 @@ impl ReadError {
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.path {
-            Some(path) => write!(
-                f,
-                "{}: {}",
-                path.to_string_lossy().escape_debug(),
-                self.kind
-            ),
+            Some(path) => write!(f, "{}: {}", escaped(path), self.kind),
             None => write!(f, "{}", self.kind),
         }
     }
@@ -549,7 +544,7 @@ struct FileEnd {
 #[non_exhaustive]
 pub enum OpenError {
     /// The machine id couldn't be read (`Source::Local`).
-    #[error("read {}", .path.to_string_lossy().escape_debug())]
+    #[error("read {}", escaped(.path))]
     MachineId {
         /// The machine-id file.
         path: PathBuf,
@@ -566,7 +561,7 @@ pub enum OpenError {
         path: Option<PathBuf>,
     },
     /// The directory couldn't be read (`Source::Directory`).
-    #[error("read the journal directory {}", .path.to_string_lossy().escape_debug())]
+    #[error("read the journal directory {}", escaped(.path))]
     Directory {
         /// The directory.
         path: PathBuf,
@@ -583,7 +578,7 @@ pub enum OpenError {
     },
     /// A follow couldn't watch one of the journal's directories
     /// (`Journal::follow`): it would wait on it for ever.
-    #[error("watch the journal directory {}", .path.to_string_lossy().escape_debug())]
+    #[error("watch the journal directory {}", escaped(.path))]
     Watch {
         /// The directory.
         path: PathBuf,
@@ -652,10 +647,48 @@ impl fmt::Display for MachineId {
     }
 }
 
+/// `path` on one line, escaped character by character as
+/// `char::escape_debug` does
+/// (<https://doc.rust-lang.org/std/primitive.char.html#method.escape_debug>),
+/// so control bytes in a file name can't reach a terminal (security audit
+/// L5), except that a combining mark stays with its base character: one
+/// right after a character shown as itself goes out as itself, as
+/// sb-cli-core's escaper keeps it (plan decision 40). A mark at the start
+/// or after an escaped character is escaped, and so is an invisible one
+/// (a variation selector, a joiner). sb-journal depends on no sb crate, so
+/// it holds its own copy of the rule.
+///
+/// Why not std's `str::escape_debug`: Rust 1.100 escapes every grapheme
+/// extender (<https://github.com/rust-lang/rust/pull/158303>), which
+/// would show an NFD name as `Ame\u{301}lie`. Unicode's `Grapheme_Extend`
+/// and `Default_Ignorable_Code_Point` come from ICU4X, as std's own test is
+/// private; its data can know marks newer than std's tables
+/// (<https://docs.rs/icu_properties/2.4.0/icu_properties/props/struct.GraphemeExtend.html>).
+fn escaped(path: &Path) -> String {
+    use icu_properties::CodePointSetData;
+    use icu_properties::props::{DefaultIgnorableCodePoint, GraphemeExtend};
+    let path = path.to_string_lossy();
+    let mut out = String::with_capacity(path.len());
+    // Whether the last character went out as itself, a base a mark keeps.
+    let mut base = false;
+    for c in path.chars() {
+        if base
+            && CodePointSetData::new::<GraphemeExtend>().contains(c)
+            && !CodePointSetData::new::<DefaultIgnorableCodePoint>().contains(c)
+        {
+            out.push(c);
+        } else {
+            let shown = c.escape_debug();
+            base = shown.len() == 1;
+            out.extend(shown);
+        }
+    }
+    out
+}
+
 /// `PATH: `, escaped, or nothing without a path.
 fn file_prefix(path: Option<&Path>) -> String {
-    path.map(|p| format!("{}: ", p.to_string_lossy().escape_debug()))
-        .unwrap_or_default()
+    path.map_or_default(|p| format!("{}: ", escaped(p)))
 }
 
 /// The files a journal's pages read, found again on every page.
@@ -2341,6 +2374,40 @@ mod tests {
         assert!(
             shown.contains("x\\u{1b}]52;c;aGk=\\u{7}.journal: "),
             "{shown}"
+        );
+    }
+
+    /// A combining mark in a file name stays with its base character (an
+    /// NFD name), as cli-core shows it; one after an escaped character is
+    /// escaped (plan decision 40).
+    #[test]
+    fn a_paths_combining_marks_stay_with_their_base() {
+        let err = OpenError::Directory {
+            path: PathBuf::from("/var/log/Ame\u{301}lie/\"\u{301}"),
+            source: io::Error::from(io::ErrorKind::NotFound),
+        };
+        assert_eq!(
+            err.to_string(),
+            "read the journal directory /var/log/Ame\u{301}lie/\\\"\\u{301}"
+        );
+    }
+
+    /// A path's mark with no base is escaped, and so are invisible
+    /// extenders and direction marks after a base character (audit L5),
+    /// as cli-core's escaper does.
+    #[test]
+    fn a_paths_marks_without_a_base_and_invisibles_are_escaped() {
+        let shown = |path: &str| {
+            OpenError::Directory {
+                path: PathBuf::from(path),
+                source: io::Error::from(io::ErrorKind::NotFound),
+            }
+            .to_string()
+        };
+        assert_eq!(shown("\u{301}x"), "read the journal directory \\u{301}x");
+        assert_eq!(
+            shown("a\u{fe0f}b\u{200d}c\u{200c}d\u{34f}e\u{202e}f\n\u{301}"),
+            "read the journal directory a\\u{fe0f}b\\u{200d}c\\u{200c}d\\u{34f}e\\u{202e}f\\n\\u{301}"
         );
     }
 

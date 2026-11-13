@@ -514,7 +514,7 @@ fn conclude<T>(
             let child = err.chain().find_map(|e| e.downcast_ref::<ChildFailure>());
             let screen = if status == Status::Failed {
                 let codes = lock(&context.shared).sink.codes;
-                let child_lines = child.map(ChildFailure::last_lines).unwrap_or_default();
+                let child_lines = child.map_or_default(ChildFailure::last_lines);
                 chain
                     .iter()
                     .chain(child_lines)
@@ -617,10 +617,7 @@ impl Ending {
         self.open = false;
         {
             let mut state = lock(&self.shared);
-            let screen = failure
-                .as_ref()
-                .map(|f| f.screen.clone())
-                .unwrap_or_default();
+            let screen = failure.as_ref().map_or_default(|f| f.screen.clone());
             let reason = failure.as_ref().and_then(|f| f.reason.clone());
             state.tree.set_error(self.id, screen);
             state.tree.set_reason(self.id, reason.clone());

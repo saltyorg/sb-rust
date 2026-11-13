@@ -73,7 +73,7 @@ fn short_tag(tag: &Tag) -> String {
 ///
 /// yaml.v3's "cannot decode" text when `tag` doesn't fit `text`.
 pub fn resolve(text: &str, style: ScalarStyle, tag: Option<&Tag>) -> Result<Value, String> {
-    let mut tag = tag.map(short_tag).unwrap_or_default();
+    let mut tag = tag.map_or_default(short_tag);
     // decode.go: an untagged (or `!`) quoted, literal or folded scalar is
     // a string, as is anything tagged `!!str`.
     let styled = !matches!(style, ScalarStyle::Plain);

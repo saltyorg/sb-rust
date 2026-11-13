@@ -230,7 +230,7 @@ fn ensure_tree(
 /// A walk error as sb-go's text, or `None` for an entry that isn't there
 /// (any more), which the walk skips.
 fn inspect_failure(error: walkdir::Error) -> Option<OwnerError> {
-    let path = error.path().map(Path::to_path_buf).unwrap_or_default();
+    let path = error.path().map_or_default(Path::to_path_buf);
     // Without followed links walkdir reports no loop, so every error
     // carries an I/O error; `other` keeps the text if one ever doesn't.
     let cause = match error.into_io_error() {

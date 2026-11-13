@@ -38,7 +38,7 @@ fn tree(root: &clap::Command) -> Vec<String> {
             Some(parent) => format!("{parent} {}", cmd.get_name()),
             None => cmd.get_name().to_string(),
         };
-        let about = cmd.get_about().map(ToString::to_string).unwrap_or_default();
+        let about = cmd.get_about().map_or_default(ToString::to_string);
         lines.push(format!("command\t{path}\t{}\t{about}", cmd.is_hide_set()));
         for arg in cmd.get_arguments() {
             if arg.is_positional() {
@@ -52,13 +52,13 @@ fn tree(root: &clap::Command) -> Vec<String> {
             } else {
                 "local"
             };
-            let short = arg.get_short().map(String::from).unwrap_or_default();
+            let short = arg.get_short().map_or_default(String::from);
             let shape = if arg.get_action().takes_values() {
                 "value"
             } else {
                 "switch"
             };
-            let help = arg.get_help().map(ToString::to_string).unwrap_or_default();
+            let help = arg.get_help().map_or_default(ToString::to_string);
             lines.push(format!(
                 "flag\t{path}\t{scope}\t{long}\t{short}\t{shape}\t{}\t{help}",
                 arg.is_hide_set()

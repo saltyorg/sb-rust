@@ -87,8 +87,7 @@ mod tests {
         let theme = Theme::resolve(&Palette::default(), profile);
         Role::ALL.into_iter().fold(String::new(), |mut out, role| {
             let table = table_colour(&theme, role, true)
-                .map(|c| format!("{}x{}", c.get_prefix(), c.get_suffix()))
-                .unwrap_or_default();
+                .map_or_default(|c| format!("{}x{}", c.get_prefix(), c.get_suffix()));
             let _ = write!(out, "{}{table}", paint(&theme, role, true, "x"));
             out
         })

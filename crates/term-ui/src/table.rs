@@ -228,10 +228,7 @@ impl Table {
         // does when nothing set them.
         let mut dimension = probe.get_dimension().clone();
         dimension.estimate(probe.get_records(), probe.get_config());
-        Ok(dimension
-            .get_widths()
-            .map(<[usize]>::to_vec)
-            .unwrap_or_default())
+        Ok(dimension.get_widths().map_or_default(<[usize]>::to_vec))
     }
 
     /// Print the table on stdout: fitted to the terminal there (console's

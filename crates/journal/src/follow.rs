@@ -560,8 +560,7 @@ impl Follow {
         let burst = self
             .last
             .as_mut()
-            .map(|l| std::mem::take(&mut l.burst))
-            .unwrap_or_default();
+            .map_or_default(|l| std::mem::take(&mut l.burst));
         let (picked, burst) = merge(&streams, |a, b| dirs[a] == dirs[b], &boots, burst);
         let out: Vec<Record> = picked
             .iter()

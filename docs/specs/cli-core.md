@@ -203,15 +203,17 @@ when the run is logged. Error text can carry untrusted bytes (a file
 name, a daemon's message), so every line of the block (the message, each
 cause, the pointer) and every `warning:` line goes through
 `exit::escaped`: its control characters, invisible and direction marks
-are escaped (`\u{1b}`, `\r`) by cli-core's `escape_controls`, run by run
-between quotes, apostrophes and backslashes, which stay as they are, so
-text escaped already isn't escaped twice. A combining mark stays with its
-base character (an NFD file name, Thai), escaped only at the start of a
-line or right after one of those three. A newline in a cause shows as a
-literal `\n` on that cause's one line: each cause stays one line of the
-block, and none can be forged. A cancellation shows "interrupted" rather
-than an error chain. Errors already shown (a failed step's tree) exit
-quietly, as the runner does.
+are escaped (`\u{1b}`, `\r`) in `char::escape_debug`'s forms, while
+quotes, apostrophes and backslashes stay as they are, so text escaped
+already isn't escaped twice. A combining mark stays with its base
+character (an NFD file name, Thai), escaped only at the start of a line,
+right after one of those three or after an escaped character. sb's own
+escaper does this on every toolchain: Rust 1.100's `str::escape_debug`
+escapes every grapheme extender (plan decision 40). A newline in a
+cause shows as a literal `\n` on that cause's one line: each cause stays
+one line of the block, and none can be forged. A cancellation shows
+"interrupted" rather than an error chain. Errors already shown (a failed
+step's tree) exit quietly, as the runner does.
 
 **Help and parse errors** (maintainer, 2026-10-30, after proto-help): help
 follows sb-go's (fang's) format in sb's palette: the about (long text when
@@ -245,11 +247,12 @@ release spec.*
 
 ## Tech stack
 
-Rust 1.99.1, edition 2024 (`rust-toolchain.toml`). From the capability
+Rust 1.100.0, edition 2024 (`rust-toolchain.toml`). From the capability
 map's stack: clap 4 (derive), colorchoice-clap, anstream/anstyle, console,
 tokio (signals, cancellation via `tokio-util`'s `CancellationToken`),
 tracing + tracing-subscriber + tracing-appender, rustix (euid), serde and
-`toml` for the config. Exact versions are pinned when the crate is added;
+`toml` for the config; icu_properties for the escaper's combining marks
+(plan decision 40). Exact versions are pinned when the crate is added;
 each library pattern is checked against its docs and cited in the code
 (CLAUDE.md, library first).
 

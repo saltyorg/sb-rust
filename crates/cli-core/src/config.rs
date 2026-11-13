@@ -291,13 +291,63 @@ pub enum ConfigError {
 }
 
 /// `text` on one line with control characters, invisible and direction
-/// marks (which can reorder a line on screen) escaped: std's
-/// `str::escape_debug`, which escapes every non-printable character
-/// (<https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>);
-/// it also escapes quotes and backslashes.
+/// marks (which can reorder a line on screen) escaped, in std's
+/// `char::escape_debug` forms
+/// (<https://doc.rust-lang.org/std/primitive.char.html#method.escape_debug>);
+/// it also escapes quotes and backslashes. A combining mark stays with
+/// its base character (see [`escape`]).
 #[must_use]
 pub fn escape_controls(text: &str) -> String {
-    text.escape_debug().to_string()
+    escape(text, false)
+}
+
+/// `text` escaped character by character as `char::escape_debug` does,
+/// except that a combining mark stays with its base character: one that
+/// [`is_combining_mark`] shows as itself right after a character shown as
+/// itself, and escapes at the start of `text` or after an escaped
+/// character, where it would sit on the escape's last letter (plan
+/// decision 40). With `quotes_as_they_are`, quotes, apostrophes and
+/// backslashes pass as they are, and a mark after one is escaped.
+///
+/// Why not std's `str::escape_debug`: it left a mark after its first
+/// character until Rust 1.100, which escapes every grapheme extender
+/// (<https://github.com/rust-lang/rust/pull/158303>), so an NFD file name
+/// would show as `Ame\u{301}lie`; cli-core's contract keeps it readable.
+pub(crate) fn escape(text: &str, quotes_as_they_are: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    // Whether the last character went out as itself, a base a mark keeps.
+    let mut base = false;
+    for c in text.chars() {
+        if quotes_as_they_are && matches!(c, '\'' | '"' | '\\') {
+            out.push(c);
+            base = false;
+        } else if base && is_combining_mark(c) {
+            out.push(c);
+        } else {
+            let shown = c.escape_debug();
+            base = shown.len() == 1;
+            out.extend(shown);
+        }
+    }
+    out
+}
+
+/// A visible mark that joins the character before it: Unicode's
+/// `Grapheme_Extend` (a combining accent, a Thai tone mark), less the
+/// `Default_Ignorable_Code_Point` ones, which are invisible (variation
+/// selectors, the zero-width non-joiner, the combining grapheme joiner,
+/// tag characters) and stay escaped as std escapes them. No extender is
+/// a control, private-use, whitespace or format character, so std's other
+/// reasons to escape don't apply; the set is ICU4X's data, which can know
+/// marks newer than std's own tables (Rust 1.99.1 escaped 37 of them as
+/// unassigned). std's own test is private, so ICU4X decides
+/// (<https://docs.rs/icu_properties/2.4.0/icu_properties/props/struct.GraphemeExtend.html>,
+/// <https://docs.rs/icu_properties/2.4.0/icu_properties/props/struct.DefaultIgnorableCodePoint.html>).
+fn is_combining_mark(c: char) -> bool {
+    use icu_properties::CodePointSetData;
+    use icu_properties::props::{DefaultIgnorableCodePoint, GraphemeExtend};
+    CodePointSetData::new::<GraphemeExtend>().contains(c)
+        && !CodePointSetData::new::<DefaultIgnorableCodePoint>().contains(c)
 }
 
 /// A toml error as one line: toml's own message (`Error::message`) and
@@ -801,6 +851,49 @@ mod tests {
         );
         let choice = load_theme_in(appdata.path()).expect("valid");
         assert_eq!(choice.palette.get(Role::Ok), anstyle::RgbColor(0, 0, 1));
+    }
+
+    /// A combining mark stays with its base character (an NFD file name)
+    /// and is escaped where it has none: at the start, or after an
+    /// escaped quote (plan decision 40).
+    #[test]
+    fn combining_marks_stay_with_their_base() {
+        assert_eq!(escape_controls("Ame\u{301}lie.mkv"), "Ame\u{301}lie.mkv");
+        assert_eq!(escape_controls("\u{301}\"\u{301}"), "\\u{301}\\\"\\u{301}");
+    }
+
+    /// No mark the escaper keeps as itself is a control, separator,
+    /// format, private-use or unassigned character, a direction control
+    /// or an invisible one, over every character (a guard on an ICU4X
+    /// data update).
+    #[test]
+    fn no_kept_mark_can_disturb_a_line() {
+        use icu_properties::props::{
+            BidiControl, DefaultIgnorableCodePoint, GeneralCategory as Gc,
+        };
+        use icu_properties::{CodePointMapData, CodePointSetData};
+        let kept: Vec<char> = (char::MIN..=char::MAX)
+            .filter(|&c| is_combining_mark(c))
+            .collect();
+        assert!(kept.len() > 1000, "{}", kept.len());
+        for c in kept {
+            let category = CodePointMapData::<Gc>::new().get(c);
+            assert!(
+                !matches!(
+                    category,
+                    Gc::Unassigned
+                        | Gc::SpaceSeparator
+                        | Gc::LineSeparator
+                        | Gc::ParagraphSeparator
+                        | Gc::Control
+                        | Gc::Format
+                        | Gc::PrivateUse
+                        | Gc::Surrogate
+                ) && !CodePointSetData::new::<BidiControl>().contains(c)
+                    && !CodePointSetData::new::<DefaultIgnorableCodePoint>().contains(c),
+                "{c:?} {category:?}"
+            );
+        }
     }
 
     /// Invisible direction marks could reorder a warning line on screen.

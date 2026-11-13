@@ -425,7 +425,7 @@ impl Leader for Child {
     /// the pid is unreaped while tokio's `Child` hasn't seen it exit
     /// (`id` is `None` after). Why not tokio's `start_kill` or std's
     /// `send_signal`: the first is SIGKILL only, the second unstable on
-    /// Rust 1.99.1.
+    /// Rust 1.100.0.
     fn terminate(&mut self) {
         if let Some(pid) = self.id().and_then(crate::group::pid_of) {
             let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);

@@ -194,7 +194,7 @@ command's failure (sb-go's `runner.Warning`). `ops` calls it.
 
 ## Tech Stack
 
-Rust 1.99.1 (edition 2024). New crate `sb-completion`
+Rust 1.100.0 (edition 2024). New crate `sb-completion`
 (crates/completion), depending on sb-cli-core, sb-exec, sb-term-ui (the
 refresh step) and sb-ansible (the cache reader).
 

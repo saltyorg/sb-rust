@@ -18,7 +18,7 @@ publish.workspace = true
 # follow's wake descriptor (the crate itself waits on nothing).
 # fastrand is the fuzz harness's PRNG (`testing::fuzz`); its address-space
 # limit is rustix's `process` `setrlimit`, on in the workspace already.
-testing = ["dep:tempfile", "dep:serde_json", "dep:clap", "dep:fastrand", "rustix/event"]
+testing = ["dep:tempfile", "dep:serde_json", "dep:fastrand", "rustix/event"]
 
 [dependencies]
 siphasher.workspace = true
@@ -28,6 +28,9 @@ lzma-rust2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 itertools.workspace = true
+# A combining mark stays with its base character in escaped text
+# (plan decision 40).
+icu_properties.workspace = true
 # A record's time (`Record::realtime`).
 jiff.workspace = true
 # Opening files safely: the `O_*` flag values for std's `custom_flags`
@@ -37,8 +40,6 @@ rustix.workspace = true
 tempfile = { workspace = true, optional = true }
 # The tools' JSON form, journalctl's `-o json` (`testing::tools::json`).
 serde_json = { workspace = true, optional = true }
-# The comparison CLI's arguments (examples/journal.rs).
-clap = { workspace = true, optional = true }
 # The fuzz harness's mutations, seeded per case (`testing::fuzz`).
 fastrand = { workspace = true, optional = true }
 
@@ -51,6 +52,10 @@ crc32fast.workspace = true
 # The comparison CLI's errors (examples/journal.rs; plan, "Typed errors":
 # anyhow only in the examples).
 anyhow.workspace = true
+# The comparison CLI's arguments (examples/journal.rs): examples build
+# with the dev-dependencies, so the library itself never carries clap
+# (https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#development-dependencies).
+clap.workspace = true
 
 # The comparison CLI the container scripts run (crates/journal/tests/):
 # a thin wrapper over `testing::tools`. `test = true` runs its argument

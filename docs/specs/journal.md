@@ -685,7 +685,7 @@ As listed in the host spec's decision 6:
 
 ## Tech Stack
 
-- Rust 1.99.1, edition 2024, `unsafe_code = "forbid"`, the workspace
+- Rust 1.100.0, edition 2024, `unsafe_code = "forbid"`, the workspace
   lints (pedantic).
 - **Libraries:**
   - siphasher;
@@ -700,13 +700,16 @@ As listed in the host spec's decision 6:
   - itertools (`kmerge_by`);
   - jiff;
   - thiserror;
-  - for the `testing` feature only: serde_json (the JSON form), clap
-    (the examples' CLI) and fastrand (the fuzz PRNG); rustix's `event`
-    (`poll`, the tools' and tests' wait on a wake fd); rustix's `process`
-    feature (the fuzz address-space limit) is on in the workspace already;
-    as dev-dependencies,
-    tempfile and crc32fast. All are already in the tree. testing.rs
-    counts toward the coverage bar, with its own tests.
+  - icu_properties (compiled data only): Grapheme_Extend and
+    Default_Ignorable_Code_Point, so a path's combining mark stays with
+    its base character in an error message (plan decision 40);
+  - for the `testing` feature only: serde_json (the JSON form) and
+    fastrand (the fuzz PRNG); rustix's `event` (`poll`, the tools' and
+    tests' wait on a wake fd); rustix's `process` feature (the fuzz
+    address-space limit) is on in the workspace already; as
+    dev-dependencies, tempfile, crc32fast and clap (the examples' CLI;
+    examples build with the dev-dependencies). All are already in the
+    tree. testing.rs counts toward the coverage bar, with its own tests.
 - **lookup3's `hashlittle2`** stays a port, with its "why not hashers"
   note.
 - **No nix and no sysinfo:** sb-host passes the coredump uid and the

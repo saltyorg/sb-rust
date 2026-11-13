@@ -254,7 +254,7 @@ impl Row {
             .and_then(|settings| settings.ports.as_ref());
         Row {
             name: display_name(&id, names),
-            state: state.status.map(|s| s.to_string()).unwrap_or_default(),
+            state: state.status.map_or_default(|s| s.to_string()),
             // `none` and empty mean no health check (docker spec).
             health: state
                 .health
@@ -265,8 +265,8 @@ impl Row {
             oom_killed: state.oom_killed.unwrap_or_default(),
             status,
             role,
-            traefik: labels.map(traefik_ports).unwrap_or_default(),
-            bindings: ports.map(bindings).unwrap_or_default(),
+            traefik: labels.map_or_default(traefik_ports),
+            bindings: ports.map_or_default(bindings),
             restart_count: inspect.restart_count.unwrap_or_default(),
             created: inspect.created.as_deref().and_then(docker_time),
             started_at: state.started_at.as_deref().and_then(docker_time),

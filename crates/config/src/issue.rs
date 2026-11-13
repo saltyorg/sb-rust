@@ -32,8 +32,8 @@ impl fmt::Display for Issue {
 /// reorder a line on screen, as `char::escape_debug` judges them (it
 /// passes every other character through unchanged), but not quotes or
 /// backslashes, which messages use as they are; so escaping twice changes
-/// nothing. (cli-core's `str::escape_debug` leaves combining marks after
-/// the first character alone; this escapes them too.)
+/// nothing. (cli-core's escapers keep a combining mark after its base
+/// character; this escapes every mark.)
 #[must_use]
 pub fn escape_controls(text: &str) -> String {
     text.chars()

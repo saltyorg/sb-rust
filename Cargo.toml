@@ -4,7 +4,7 @@ members = ["crates/*", "prototypes/*"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.100"
 license = "GPL-3.0-only"
 publish = false
 
@@ -91,6 +91,11 @@ tracing-appender = "0.2.5"
 tracing-log = { version = "0.2.0", default-features = false, features = ["std", "log-tracer"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "tracing-log"] }
 unicode-width = "0.2.3"
+# Unicode's Grapheme_Extend and Default_Ignorable_Code_Point, which std
+# doesn't expose: sb's escapers keep a combining mark with its base
+# character (plan decision 40). ICU4X, in the tree already through url's
+# idna; its compiled data only.
+icu_properties = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 # sb-journal's reader (journal spec, Tech Stack; versions and notes from
 # proto-journal). siphash24 keyed by the file id, for keyed-hash files
 # (JOURNAL_FILE_FORMAT, Data Objects).

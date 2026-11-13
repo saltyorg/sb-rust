@@ -282,7 +282,7 @@ nothing from ops, so it lands here.
 
 ## Tech Stack
 
-Rust 1.99.1 (edition 2024, the workspace pin). New crate `sb-ansible`
+Rust 1.100.0 (edition 2024, the workspace pin). New crate `sb-ansible`
 (crates/ansible), depending on sb-cli-core, sb-term-ui, sb-exec, sb-host
 and sb-repo.
 

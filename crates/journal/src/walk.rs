@@ -123,10 +123,7 @@ fn scan(
         let p = entry.path();
         // Names as bytes, as sd-journal compares them: a name that isn't
         // UTF-8 is still a journal file's.
-        let name = p
-            .file_name()
-            .map(OsStr::as_encoded_bytes)
-            .unwrap_or_default();
+        let name = p.file_name().map_or_default(OsStr::as_encoded_bytes);
         let journal = is_journal_name(name);
         if !journal && name.len() != 32 {
             continue;
@@ -2602,8 +2599,8 @@ mod tests {
         let (t, _f) = c.write();
         let all = one(t.path()).tail(&[], 10, None);
         // m3 to m5 unreadable: their MESSAGE objects cut short.
-        for i in 3..6 {
-            c.set(l.messages[i] + O_SIZE, 8);
+        for &m in &l.messages[3..6] {
+            c.set(m + O_SIZE, 8);
         }
         let (t, _f) = c.write();
         let mut j = one(t.path());
@@ -2632,8 +2629,8 @@ mod tests {
         let (mut c, l) = crafted::journal_in(format, 6);
         let (t, _f) = c.write();
         let all = one(t.path()).tail(&[], 10, None);
-        for i in 1..3 {
-            c.set(l.messages[i] + O_SIZE, 8);
+        for &m in &l.messages[1..3] {
+            c.set(m + O_SIZE, 8);
         }
         let (t, _f) = c.write();
         let mut j = one(t.path());
@@ -2976,9 +2973,7 @@ mod tests {
     fn a_file_with_no_landing_seeks_again_from_the_first_entry_in(format: Format) {
         let file = |seqnums: [u64; 2], reals: [u64; 2]| {
             let (mut c, l) = crafted::journal_in(format, 2);
-            for i in 72..88 {
-                c.b[i] = 0x5a; // the header's seqnum id
-            }
+            c.b[72..88].fill(0x5a); // the header's seqnum id
             for ((&e, seq), real) in l.entries.iter().zip(seqnums).zip(reals) {
                 c.set(e + 16, seq);
                 c.set(e + 24, real);

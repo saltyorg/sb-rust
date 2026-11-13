@@ -112,7 +112,7 @@ fn flag_row(arg: &Arg) -> (String, String, String) {
         (Some(short), None) => format!("-{short}"),
         (None, _) => format!("--{long}"),
     };
-    let mut help = arg.get_help().map(ToString::to_string).unwrap_or_default();
+    let mut help = arg.get_help().map_or_default(ToString::to_string);
     let default = arg
         .get_default_values()
         .iter()
@@ -133,7 +133,7 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], theme: &Theme, colour: 
         .get_subcommands()
         .filter(|c| !c.is_hide_set())
         .map(|c| {
-            let about = c.get_about().map(ToString::to_string).unwrap_or_default();
+            let about = c.get_about().map_or_default(ToString::to_string);
             (c.get_name().to_string(), hint(c), about)
         })
         .collect();
@@ -181,8 +181,7 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], theme: &Theme, colour: 
     let about = cmd
         .get_long_about()
         .or(cmd.get_about())
-        .map(ToString::to_string)
-        .unwrap_or_default();
+        .map_or_default(ToString::to_string);
     let mut out = String::new();
     for line in about.lines() {
         if line.is_empty() {

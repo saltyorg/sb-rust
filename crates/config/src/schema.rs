@@ -253,9 +253,7 @@ fn message(err: &serde_saphyr::Error) -> String {
     match err.without_snippet() {
         serde_saphyr::Error::DuplicateMappingKey { key, location } => format!(
             "duplicate key{} at line {}, column {}",
-            key.as_deref()
-                .map(|key| format!(" `{key}`"))
-                .unwrap_or_default(),
+            key.as_deref().map_or_default(|key| format!(" `{key}`")),
             location.line(),
             location.column()
         ),
