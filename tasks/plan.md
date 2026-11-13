@@ -241,6 +241,15 @@ Answers at the plan's approval (2026-11-11):
     once. cargo-mutants runs its tests under cargo-nextest with a
     per-test terminate-after, so a hung test counts as failed: Task 56,
     lane 4, with an ADR and a Tools row. Task 38 commits after it.
+35. **Checkpoint D's looks** (the maintainer, 2026-11-13, from the
+    screenshots). Tasks 19 and 20's looks and Task 21's table look are
+    accepted; the bindings column wraps at any character, as
+    committed. Notices and kept output lines in the finished tree are
+    shown whole, wrapped *inside* the tree: each continuation row
+    carries the same guide lines and indent as the line it continues,
+    for as many rows as the wrapping needs (the rest of Task 21). A
+    collapsed run that holds a failure says so: "… N finished, M
+    failed", in the warning role (Task 57).
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
@@ -487,6 +496,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 19: echo is off during a live run
 - [x] Task 20: a live tree taller than the terminal
 - [ ] Task 21: table wrap and uncut lines
+- [ ] Task 57: a collapsed run says how many failed (decision 35)
 - [ ] Checkpoint D: docker and display
 
 ### Phase 3 (lane 2): the journal reader
