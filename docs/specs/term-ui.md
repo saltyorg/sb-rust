@@ -155,9 +155,24 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   cursor). Known limit: `kill -9` runs no restore, so it leaves the
   echo off (since decision 17, not only `ECHOCTL`) unless a job-control
   shell puts its own modes back; `stty sane` turns it on again.
+- **Taller than the terminal** (maintainer, hardening plan decision 17;
+  ui-M1): when the live area has more lines than the terminal has rows,
+  its oldest settled steps (each with its subtree, notices and failure
+  block) collapse to one `… N finished` line in the `Muted` role, N
+  counting steps, at the first collapsed step's branch, until the area
+  fits; the newest finished steps fill what room is left, and the
+  running steps and their output stay in view while they themselves fit
+  (a terminal too short even for them shows their top lines). indicatif
+  stops drawing at the terminal's height and ratatui's inline viewport
+  is clamped to it, so neither picks what to keep; the rule is term-ui's. It is
+  worked out every frame from the terminal's current height, so a
+  terminal resized mid-run collapses more or less from the next frame.
+  Nothing is lost: the finished tree, printed for good, holds every step
+  in full, and the run log has every step whatever was drawn.
 - **Resize:** known limit from proto-runner: the live area's line count
   never shrinks while running (decision 2), so shrinking the terminal
-  mid-run can leave stale lines.
+  mid-run can leave stale lines (the tree drawn in the area still fits
+  the new height, as above).
 - **Run log:** every step's start, outcome and elapsed time, its notices,
   and its output lines go to the run log (capability map, decision 11),
   in the run's span (carried onto other threads for concurrent steps).

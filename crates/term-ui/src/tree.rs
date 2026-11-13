@@ -495,15 +495,95 @@ impl Tree {
     }
 
     /// The live lines: every step not yet printed, in tree order, with what
-    /// hangs under it.
+    /// hangs under it. A tree taller than the screen collapses its oldest
+    /// settled steps (each with its subtree and what hangs under it) to
+    /// "… N finished" until it fits, so the running steps and their
+    /// output stay in view (ui-M1, hardening plan decision 17); the
+    /// finished tree still prints every step (`take_printable`).
+    ///
+    /// Why not indicatif or ratatui: both clip a draw taller than the
+    /// terminal and neither picks what to keep. indicatif stops drawing
+    /// the bar's lines at the terminal's height (`draw_to_term`, "Stop
+    /// here if printing this bar would exceed the terminal height",
+    /// <https://docs.rs/indicatif/0.18.6/src/indicatif/draw_target.rs.html>),
+    /// which hid the running step at the bottom; ratatui's inline viewport
+    /// (not a term-ui dependency) "is clamped to the current terminal
+    /// height"
+    /// (<https://docs.rs/ratatui/0.30.2/ratatui/enum.Viewport.html#variant.Inline>).
+    /// What to collapse is the tree's own rule.
     pub fn live(&self, d: &Draw) -> Vec<String> {
         let column = self.column(d);
-        self.order[self.printed..]
+        let steps: Vec<(usize, Vec<String>)> = self.order[self.printed..]
             .iter()
-            .flat_map(|&id| {
-                std::iter::once(self.line(id, d, column)).chain(self.under(id, d, true))
+            .map(|&id| {
+                let mut lines = vec![self.line(id, d, column)];
+                lines.extend(self.under(id, d, true));
+                (id, lines)
             })
-            .collect()
+            .collect();
+        let mut height: usize = steps.iter().map(|(_, lines)| lines.len()).sum();
+        // Collapse settled steps from the top until the tree fits, each
+        // with its whole subtree (settled too, and right after it in tree
+        // order). A step joins the run of collapsed steps just above it
+        // when it is a sibling of the run's first step (the step after a
+        // collapsed subtree is its sibling or outside its parent); else
+        // it starts a run of its own, one "… N finished" line.
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut collapsed = vec![false; steps.len()];
+        let mut i = 0;
+        while i < steps.len() && height > d.rows {
+            let id = steps[i].0;
+            if !self.settled(id) {
+                i += 1;
+                continue;
+            }
+            let joins = i > 0
+                && collapsed[i - 1]
+                && runs
+                    .last()
+                    .is_some_and(|&(head, _)| self.nodes[head].parent == self.nodes[id].parent);
+            if !joins {
+                runs.push((id, 0));
+                height += 1;
+            }
+            let end = i
+                + 1
+                + steps[i + 1..]
+                    .iter()
+                    .take_while(|(below, _)| self.descends(*below, id))
+                    .count();
+            for (j, (_, lines)) in steps.iter().enumerate().take(end).skip(i) {
+                collapsed[j] = true;
+                height -= lines.len();
+            }
+            if let Some((_, count)) = runs.last_mut() {
+                *count += end - i;
+            }
+            i = end;
+        }
+        let mut runs = runs.into_iter();
+        let mut out = Vec::new();
+        for (i, (id, lines)) in steps.into_iter().enumerate() {
+            if !collapsed[i] {
+                out.extend(lines);
+            } else if let Some(&(head, count)) = runs.as_slice().first()
+                && head == id
+            {
+                runs.next();
+                let lead = format!(
+                    "{}{}{}",
+                    self.indent(head),
+                    GLYPHS.middle_item,
+                    GLYPHS.item_indent
+                );
+                out.push(format!(
+                    "{}{}",
+                    d.paint(Role::Faint, &lead),
+                    d.paint(Role::Muted, &format!("… {count} finished"))
+                ));
+            }
+        }
+        out
     }
 }
 
@@ -1244,6 +1324,235 @@ mod tests {
             ├── ✓ inner done                                          1s
             │   ╰── ✓ leaf done                                       1s
             ╰── ✓ outer done                                          1s
+        ");
+    }
+
+    /// A running step with 30 finished sub-steps above its running one, as
+    /// ui-M1 found it: the tree a docker or validate-config run can grow.
+    fn tall(t0: Instant) -> (Tree, usize, usize) {
+        let mut tree = Tree::default();
+        let all = tree.add(None, Labels::new("Starting containers", "started"), t0);
+        for i in 0..30 {
+            let app = tree.add(
+                Some(all),
+                Labels::new(format!("Starting app{i:02}"), format!("app{i:02} started")),
+                t0,
+            );
+            tree.finish(app, Status::Done, secs(t0, 1));
+        }
+        let plex = tree.add(Some(all), Labels::new("Starting plex", "plex started"), t0);
+        for j in 0..3 {
+            tree.output(plex, format!("plex: waiting {j}"));
+        }
+        (tree, all, plex)
+    }
+
+    /// A live tree taller than the screen collapses its oldest settled
+    /// lines to "… N finished", so the running step and its output stay
+    /// in view (ui-M1, hardening plan decision 17); the newest finished
+    /// steps fill what room is left.
+    #[test]
+    fn a_tree_taller_than_the_screen_keeps_the_running_step() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let (tree, _, _) = tall(t0);
+        let mut d = draw(&theme, secs(t0, 2));
+        d.width = 80;
+        d.rows = 12;
+        insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ⠋ Starting containers                                     2s
+        │   ├── … 24 finished
+        │   ├── ✓ app24 started                                       1s
+        │   ├── ✓ app25 started                                       1s
+        │   ├── ✓ app26 started                                       1s
+        │   ├── ✓ app27 started                                       1s
+        │   ├── ✓ app28 started                                       1s
+        │   ├── ✓ app29 started                                       1s
+        │   ├── ⠋ Starting plex                                       2s
+        │   │   plex: waiting 0
+        │   │   plex: waiting 1
+        │   │   plex: waiting 2
+        ");
+    }
+
+    /// The live tree follows the screen's height frame by frame: a
+    /// terminal made shorter while live collapses more, a taller one
+    /// shows everything again.
+    #[test]
+    fn a_resized_screen_collapses_to_its_new_height() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let (tree, _, _) = tall(t0);
+        let mut d = draw(&theme, secs(t0, 2));
+        d.rows = 40;
+        let whole = tree.live(&d);
+        assert_eq!(whole.len(), 35, "{whole:#?}");
+        assert!(!whole.iter().any(|l| l.contains("finished")), "{whole:#?}");
+        for rows in [20, 12, 8, 5] {
+            d.rows = rows;
+            let live = tree.live(&d);
+            assert!(live.len() <= rows, "{rows}: {live:#?}");
+            assert!(live[0].contains("Starting containers"), "{live:#?}");
+            assert!(
+                live.iter().any(|l| l.contains("Starting plex")),
+                "{live:#?}"
+            );
+            assert!(
+                live.iter().any(|l| l.ends_with("plex: waiting 2")),
+                "{live:#?}"
+            );
+            let shown = live.iter().filter(|l| l.contains(" started ")).count();
+            let collapsed = live
+                .iter()
+                .find_map(|l| l.split("… ").nth(1)?.strip_suffix(" finished"))
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(0);
+            assert_eq!(shown + collapsed, 30, "{rows}: {live:#?}");
+        }
+        d.rows = 40;
+        assert_eq!(tree.live(&d), whole);
+    }
+
+    /// Nothing collapsed is lost: the finished tree prints every step.
+    #[test]
+    fn a_collapsed_tree_prints_whole_when_done() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let (mut tree, all, plex) = tall(t0);
+        let mut d = draw(&theme, secs(t0, 2));
+        d.rows = 12;
+        assert!(tree.live(&d).len() <= 12);
+        tree.finish(plex, Status::Done, secs(t0, 2));
+        tree.finish(all, Status::Done, secs(t0, 2));
+        tree.end();
+        let printed = tree.take_printable(&d);
+        assert_eq!(printed.len(), 32, "{printed:#?}");
+        assert!(
+            !printed.iter().any(|l| l.contains("finished")),
+            "{printed:#?}"
+        );
+        assert_eq!(tree.live(&d), Vec::<String>::new());
+    }
+
+    /// A settled subtree collapses whole, and the count is of steps; a
+    /// failure block collapses with its step (the finished tree has it).
+    #[test]
+    fn settled_subtrees_and_failure_blocks_collapse_whole() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let all = tree.add(None, Labels::new("Validating", "validated"), t0);
+        for i in 0..3 {
+            let file = tree.add(
+                Some(all),
+                Labels::new(format!("File {i}"), format!("file {i}")),
+                t0,
+            );
+            let check = tree.add(
+                Some(file),
+                Labels::new(format!("Check {i}"), format!("check {i}")),
+                t0,
+            );
+            tree.finish(check, Status::Done, t0);
+            tree.set_error(file, vec!["bad: one".into(), "bad: two".into()]);
+            tree.finish(file, Status::Failed, t0);
+        }
+        let last = tree.add(Some(all), Labels::new("File 3", "file 3"), t0);
+        let mut d = draw(&theme, secs(t0, 1));
+        d.rows = 6;
+        insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ⠋ Validating                                              1s
+        │   ├── … 6 finished
+        │   ├── ⠋ File 3                                              1s
+        ");
+        assert!(tree.is_running(last));
+    }
+
+    /// Settled steps at two depths collapse to a line each, at their own
+    /// depth: a run doesn't join steps of another parent.
+    #[test]
+    fn nested_runs_collapse_at_their_own_depth() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let all = tree.add(None, Labels::new("Starting", "started"), t0);
+        let done = |tree: &mut Tree, parent: usize, name: &str, n: usize| {
+            for i in 0..n {
+                let id = tree.add(
+                    Some(parent),
+                    Labels::new(format!("{name}{i}"), format!("{name}{i} done")),
+                    t0,
+                );
+                tree.finish(id, Status::Done, t0);
+            }
+        };
+        done(&mut tree, all, "a", 10);
+        let inner = tree.add(Some(all), Labels::new("Inner", "inner done"), t0);
+        done(&mut tree, inner, "b", 10);
+        tree.add(Some(inner), Labels::new("Last", "last done"), t0);
+        let mut d = draw(&theme, secs(t0, 1));
+        d.rows = 8;
+        insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ⠋ Starting                                                1s
+        │   ├── … 10 finished
+        │   ├── ⠋ Inner                                               1s
+        │   │   ├── … 7 finished
+        │   │   ├── ✓ b7 done                                         0s
+        │   │   ├── ✓ b8 done                                         0s
+        │   │   ├── ✓ b9 done                                         0s
+        │   │   ├── ⠋ Last                                            1s
+        ");
+    }
+
+    /// A screen too short even for the running steps collapses every
+    /// settled step and leaves the rest to the terminal (indicatif draws
+    /// from the top).
+    #[test]
+    fn a_screen_shorter_than_the_running_steps_collapses_everything() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let (tree, _, _) = tall(t0);
+        let mut d = draw(&theme, secs(t0, 2));
+        d.rows = 3;
+        insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ⠋ Starting containers                                     2s
+        │   ├── … 30 finished
+        │   ├── ⠋ Starting plex                                       2s
+        │   │   plex: waiting 2
+        ");
+    }
+
+    /// Finished siblings on either side of a running one collapse to a
+    /// line each: a run never reaches across a step still in view.
+    #[test]
+    fn a_running_step_splits_the_runs() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let all = tree.add(None, Labels::new("Starting", "started"), t0);
+        let done = |tree: &mut Tree, name: &str| {
+            for i in 0..5 {
+                let id = tree.add(
+                    Some(all),
+                    Labels::new(format!("{name}{i}"), format!("{name}{i} done")),
+                    t0,
+                );
+                tree.finish(id, Status::Done, t0);
+            }
+        };
+        done(&mut tree, "a");
+        tree.add(Some(all), Labels::new("B", "b done"), t0);
+        done(&mut tree, "c");
+        tree.add(Some(all), Labels::new("D", "d done"), t0);
+        let mut d = draw(&theme, secs(t0, 1));
+        d.rows = 6;
+        insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ⠋ Starting                                                1s
+        │   ├── … 5 finished
+        │   ├── ⠋ B                                                   1s
+        │   ├── … 4 finished
+        │   ├── ✓ c4 done                                             0s
+        │   ├── ⠋ D                                                   1s
         ");
     }
 }

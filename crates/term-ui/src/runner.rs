@@ -1513,6 +1513,57 @@ mod tests {
         );
     }
 
+    /// A live tree taller than the screen keeps its running step and the
+    /// step's output in view: the oldest finished steps collapse to
+    /// "… N finished" (ui-M1, hardening plan decision 17).
+    #[tokio::test(start_paused = true)]
+    async fn a_tree_taller_than_the_screen_keeps_the_running_step() {
+        let term = InMemoryTerm::new(12, 80);
+        let options = Options {
+            target: Target::InMemory {
+                term: term.clone(),
+                colour: false,
+            },
+        };
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
+        let seen = run
+            .step(
+                Labels::new("Starting containers", "containers started"),
+                async |step| {
+                    for i in 0..30 {
+                        step.step(
+                            Labels::new(
+                                format!("Starting app{i:02}"),
+                                format!("app{i:02} started"),
+                            ),
+                            async |_| Ok(()),
+                        )
+                        .await?;
+                    }
+                    step.step(Labels::new("Starting plex", "plex started"), async |step| {
+                        step.output("plex: waiting for its health check");
+                        // A few frames, so one has drawn the output line
+                        // whichever tick the paused clock lands on.
+                        tokio::time::sleep(FRAME * 3).await;
+                        Ok(term.contents())
+                    })
+                    .await
+                    .map_err(anyhow::Error::from)
+                },
+            )
+            .await
+            .expect("step");
+        let lines: Vec<&str> = seen.lines().collect();
+        assert_eq!(lines.len(), 12, "{seen}");
+        assert!(lines[0].contains("Starting containers"), "{seen}");
+        assert_eq!(lines[1], "│   ├── … 22 finished", "{seen}");
+        assert!(lines[2].contains("✓ app22 started"), "{seen}");
+        assert!(lines[10].contains("Starting plex"), "{seen}");
+        assert_eq!(lines[11], "│   │   plex: waiting for its health check");
+        run.finish();
+    }
+
     /// A body's error fails the step: ✗ with its failure label, and the
     /// quiet `Exit(1)` comes back, so the command's `?` ends the run.
     #[tokio::test]
