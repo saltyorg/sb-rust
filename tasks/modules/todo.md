@@ -232,14 +232,14 @@ step)`, `init_from_remote(url, branch, step)`), with setup's plan from
 the ops spec.
 
 **Acceptance criteria:**
-- [ ] `clone` into a missing directory and `init_from_remote` over an
+- [x] `clone` into a missing directory and `init_from_remote` over an
       existing one behave as the spec says, streamed into the step.
-- [ ] Failures leave the directory as the spec says.
-- [ ] sb-go's texts.
+- [x] Failures leave the directory as the spec says.
+- [x] sb-go's texts.
 
 **Verification:**
-- [ ] `cargo test -p sb-repo` on `file://` remotes.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-repo` on `file://` remotes.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M5
 **Files:** `crates/repo/src/{lib.rs,update.rs}`, `crates/repo/tests/`
@@ -261,18 +261,18 @@ and lists-lock wait (decision 5), plus the lock-wait verification and
 `docs/platform-notes/apt.md`.
 
 **Acceptance criteria:**
-- [ ] Each call's argv, environment, timeout and texts as the spec says,
+- [x] Each call's argv, environment, timeout and texts as the spec says,
       on stand-in `apt-get`; an interrupted attempt is never retried.
-- [ ] `update_lists`: 3 attempts, 2 min each, 5 s and 10 s delays on the
+- [x] `update_lists`: 3 attempts, 2 min each, 5 s and 10 s delays on the
       named mirror errors; the lists-lock retry every 5 s within 240 s.
-- [ ] The lock-wait check runs in a throwaway Ubuntu container (never the
+- [x] The lock-wait check runs in a throwaway Ubuntu container (never the
       host's apt) with `-o Debug::Locking=1`, and the note records
       versions and method; difference 1 loses `UNVERIFIED` only if it
       holds.
 
 **Verification:**
-- [ ] `cargo test -p sb-host`; the container check under the cap.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-host`; the container check under the cap.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M3
 **Files:** `crates/host/src/{apt.rs,testing.rs}`, `docs/platform-notes/apt.md`
