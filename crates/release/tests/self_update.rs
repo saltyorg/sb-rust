@@ -9,7 +9,7 @@ use std::path::Path;
 use indicatif::InMemoryTerm;
 use sb_cli_core::build_info::BuildInfo;
 use sb_cli_core::cancel::Shutdown;
-use sb_release::testing::{Answer, Fake};
+use sb_release::testing::{Answer, Fake, stand_in};
 use sb_release::{GithubRepo, Outcome, SelfUpdate, self_update};
 use sb_term_ui::{Options, Runner, Target};
 use semver::Version;
@@ -19,10 +19,14 @@ const SB: GithubRepo = GithubRepo {
     owner: "saltyorg",
     name: "sb-go",
 };
-const NEW: &[u8] = b"the new sb";
-
-/// A fake offering `tag` with [`NEW`] as this architecture's asset.
+/// A fake offering `tag` with the stand-in sb of that version as this
+/// architecture's asset.
 fn fake(tag: &str) -> Fake {
+    fake_serving(tag, &stand_in(tag.trim_start_matches('v')))
+}
+
+/// A fake offering `tag` with `body` as this architecture's asset.
+fn fake_serving(tag: &str, body: &[u8]) -> Fake {
     let fake = Fake::start().expect("fake");
     let asset = sb_release::asset_name().expect("asset");
     let path = format!("/saltyorg/sb-go/releases/download/{tag}/{asset}");
@@ -30,12 +34,12 @@ fn fake(tag: &str) -> Fake {
         "/version",
         Answer::json(format!(
             r#"[{{"tag_name":"{tag}","assets":[{{"name":"{asset}","size":{},"digest":"sha256:{}","browser_download_url":"{}{path}"}}]}}]"#,
-            NEW.len(),
-            hex::encode(Sha256::digest(NEW)),
+            body.len(),
+            hex::encode(Sha256::digest(body)),
             fake.url()
         )),
     );
-    fake.script(&path, Answer::new(200, NEW.to_vec()));
+    fake.script(&path, Answer::new(200, body.to_vec()));
     fake
 }
 
@@ -48,6 +52,18 @@ async fn run(
     force: bool,
     message: Option<&str>,
 ) -> (Outcome, String) {
+    let (outcome, screen) = try_run(fake, build, target, force, message).await;
+    (outcome.expect("ran"), screen)
+}
+
+/// [`run`], its error kept.
+async fn try_run(
+    fake: &Fake,
+    build: &BuildInfo,
+    target: &Path,
+    force: bool,
+    message: Option<&str>,
+) -> (anyhow::Result<Outcome>, String) {
     let releases = fake.releases("sb/test").expect("client");
     let term = InMemoryTerm::new(40, 160);
     let shutdown = Shutdown::new();
@@ -72,8 +88,7 @@ async fn run(
             },
         )
     })
-    .await
-    .expect("ran");
+    .await;
     (outcome, term.contents())
 }
 
@@ -102,9 +117,10 @@ async fn a_released_build_updates() {
     )
     .await;
     assert_eq!(outcome, Outcome::Updated(Version::new(2, 0, 0)));
-    assert_eq!(std::fs::read(&target).expect("target"), NEW);
+    assert_eq!(std::fs::read(&target).expect("target"), stand_in("2.0.0"));
     for line in [
         "New sb CLI version available: 2.0.0 (current: 1.0.0)",
+        "Checked the new binary",
         "Successfully updated sb CLI to version: 2.0.0",
         "Read the news",
     ] {
@@ -151,7 +167,7 @@ async fn a_disabled_build_only_updates_when_forced() {
         screen.contains("Forcing self-update despite build configuration"),
         "{screen}"
     );
-    assert_eq!(std::fs::read(&target).expect("target"), NEW);
+    assert_eq!(std::fs::read(&target).expect("target"), stand_in("2.0.0"));
 }
 
 /// A version that isn't semantic can't be compared: sb-go's error.
@@ -199,4 +215,55 @@ async fn an_unreadable_version_fails_the_check() {
         "{}",
         term.contents()
     );
+}
+
+/// The files in `target`'s directory but `target`: none is left staged.
+fn staged(target: &Path) -> Vec<String> {
+    std::fs::read_dir(target.parent().expect("dir"))
+        .expect("dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name != "sb")
+        .collect()
+}
+
+/// The new binary must report the release's version (decided.md D-Q5):
+/// one reporting another is refused, sb left as it was, nothing staged.
+#[tokio::test]
+async fn a_binary_reporting_another_version_is_refused() {
+    let fake = fake_serving("v2.0.0", &stand_in("1.9.0"));
+    let (_dir, target) = target();
+    let (outcome, screen) = try_run(&fake, &released("1.0.0"), &target, false, None).await;
+    assert!(outcome.is_err(), "{screen}");
+    for line in [
+        "binary update failed validation",
+        "the new binary reports version 1.9.0, not 2.0.0",
+    ] {
+        assert!(screen.contains(line), "{line}: {screen}");
+    }
+    assert_eq!(std::fs::read(&target).expect("target"), b"old");
+    assert_eq!(staged(&target), Vec::<String>::new());
+}
+
+/// An asset that isn't an ELF binary is refused before it runs (sb-go's
+/// text), sb left as it was, nothing staged.
+#[tokio::test]
+async fn an_asset_that_is_not_an_elf_is_refused() {
+    let fake = fake_serving("v2.0.0", b"#!/bin/sh\necho '{\"version\":\"2.0.0\"}'\n");
+    let (_dir, target) = target();
+    let (outcome, screen) = try_run(&fake, &released("1.0.0"), &target, false, None).await;
+    assert!(outcome.is_err(), "{screen}");
+    for line in [
+        "binary update failed validation",
+        "open ELF executable: Unknown file magic",
+    ] {
+        assert!(screen.contains(line), "{line}: {screen}");
+    }
+    assert_eq!(std::fs::read(&target).expect("target"), b"old");
+    assert_eq!(staged(&target), Vec::<String>::new());
 }

@@ -18,8 +18,11 @@ testing = ["dep:axum", "dep:futures-util", "dep:rcgen", "dep:tokio-rustls", "tok
 sb-cli-core.workspace = true
 anyhow.workspace = true
 sb-term-ui.workspace = true
+# The staged binary's `version --json` (release spec, step 4).
+sb-exec.workspace = true
 hex.workspace = true
 jiff.workspace = true
+object.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true

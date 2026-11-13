@@ -148,6 +148,10 @@ semver = "1.0.28"
 # Streamed SHA-256 of downloads (stack table "Self-update"; release spec);
 # already in the tree through lzma-rust2.
 sha2 = "0.11.1"
+# The ELF header of a downloaded binary (release spec, "ELF check"; R7):
+# its ELF reader only, no std, no other formats. goblin is the
+# alternative, with less adoption.
+object = { version = "0.41.0", default-features = false, features = ["read_core", "elf"] }
 # sb-release's fake GitHub for tests only (its `testing` feature): a
 # loopback certificate made at test time, no key in the repository
 # (release spec, Tech Stack). aws-lc-rs as the client's rustls, not ring.

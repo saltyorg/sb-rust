@@ -56,6 +56,43 @@ pub(crate) fn from_env(user_agent: &str) -> Result<Releases, Error> {
     Releases::testing(bases, user_agent)
 }
 
+/// The stand-in sb's version marker and the field after it (`stand_in.rs`).
+const STAND_IN_MARKER: &[u8] = b"SB-STAND-IN-VERSION=";
+const STAND_IN_WIDTH: usize = 20;
+
+/// A stand-in sb, an ELF of this build's architecture built by sb-release's
+/// build script (`stand_in.rs`), that reports `version` (`{"version":
+/// "<version>"}` for `version --json`, `stand-in sb <version>` otherwise):
+/// self-update's tests serve it as a release asset (release spec, "Testing
+/// strategy"). The version is patched into its fixed-width field, so one
+/// build serves every version.
+///
+/// # Panics
+///
+/// When `version` is empty, holds a space or is longer than the field, or
+/// the build's stand-in doesn't hold the marker exactly once.
+#[must_use]
+pub fn stand_in(version: &str) -> Vec<u8> {
+    assert!(
+        !version.is_empty() && version.len() <= STAND_IN_WIDTH && !version.contains(' '),
+        "a stand-in version fits its field: {version:?}"
+    );
+    let mut bytes = include_bytes!(concat!(env!("OUT_DIR"), "/stand-in")).to_vec();
+    let mut found = bytes
+        .windows(STAND_IN_MARKER.len())
+        .enumerate()
+        .filter(|(_, window)| *window == STAND_IN_MARKER)
+        .map(|(at, _)| at);
+    let (Some(at), None) = (found.next(), found.next()) else {
+        panic!("the stand-in holds its version marker exactly once");
+    };
+    let start = at + STAND_IN_MARKER.len();
+    let field = &mut bytes[start..start + STAND_IN_WIDTH];
+    field.fill(b' ');
+    field[..version.len()].copy_from_slice(version.as_bytes());
+    bytes
+}
+
 /// Where [`Releases::testing`] sends its requests, and the certificate it
 /// trusts (DER). `download` is a root URL ending in `/` (the asset checks
 /// compare only its host and port, and name it in their message).

@@ -13,13 +13,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use sb_release::testing::{Answer, Fake};
+use sb_release::testing::{Answer, Fake, stand_in};
 use sha2::{Digest, Sha256};
 
 /// The running test build's version (a raw build: the package's).
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
-/// What the new release's asset holds.
-const NEW_SB: &[u8] = b"#!/bin/sh\necho 'the new sb'\n";
+/// What the new release's asset holds: the stand-in sb of its version.
+fn new_sb() -> Vec<u8> {
+    stand_in("99.0.0")
+}
 
 /// A copy of the built sb in its own directory, the bases file of a fake
 /// offering `tag` with `body` as this architecture's asset.
@@ -127,7 +129,7 @@ fn a_raw_build_is_self_update_disabled() {
     if !root_gate::requested() {
         return;
     }
-    let setup = setup("v99.0.0", NEW_SB);
+    let setup = setup("v99.0.0", &new_sb());
     let before = setup.sb_bytes();
     let out = setup.run(&[]);
     let shown = text(&out);
@@ -151,18 +153,19 @@ fn a_forced_update_replaces_sb() {
     if !root_gate::requested() {
         return;
     }
-    let setup = setup("v99.0.0", NEW_SB);
+    let setup = setup("v99.0.0", &new_sb());
     let out = setup.run(&["--force-update", "--yes"]);
     let shown = text(&out);
     assert!(out.status.success(), "{shown}");
     for line in [
         "Forcing self-update despite build configuration",
         &format!("New sb CLI version available: 99.0.0 (current: {CURRENT})"),
+        "Checked the new binary",
         "Successfully updated sb CLI to version: 99.0.0",
     ] {
         assert!(shown.contains(line), "{line}: {shown}");
     }
-    assert_eq!(setup.sb_bytes(), NEW_SB);
+    assert_eq!(setup.sb_bytes(), new_sb());
     let mode = std::fs::metadata(&setup.sb)
         .expect("sb")
         .permissions()
@@ -171,7 +174,7 @@ fn a_forced_update_replaces_sb() {
     assert_eq!(setup.leftovers(), Vec::<String>::new());
     // The new file runs.
     let ran = Command::new(&setup.sb).output().expect("run the new sb");
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "the new sb\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "stand-in sb 99.0.0\n");
     for request in setup.fake.seen() {
         assert_eq!(
             request.header("user-agent"),
@@ -186,7 +189,7 @@ fn the_latest_version_is_left_alone() {
     if !root_gate::requested() {
         return;
     }
-    let setup = setup("v0.0.1", NEW_SB);
+    let setup = setup("v0.0.1", &new_sb());
     let before = setup.sb_bytes();
     let out = setup.run(&["--force-update", "--yes"]);
     let shown = text(&out);
@@ -206,7 +209,7 @@ fn without_a_terminal_yes_is_needed() {
     if !root_gate::requested() {
         return;
     }
-    let setup = setup("v99.0.0", NEW_SB);
+    let setup = setup("v99.0.0", &new_sb());
     let before = setup.sb_bytes();
     let out = setup.run(&["--force-update"]);
     let shown = text(&out);
@@ -246,7 +249,7 @@ fn the_question_is_answered_on_the_terminal() {
         ("no thank you\r", false),
         ("\r", false),
     ] {
-        let setup = setup("v99.0.0", NEW_SB);
+        let setup = setup("v99.0.0", &new_sb());
         let before = setup.sb_bytes();
         let out = on_a_terminal(&setup, "", keys);
         assert!(
@@ -263,7 +266,7 @@ fn the_question_is_answered_on_the_terminal() {
                 out.contains("Successfully updated sb CLI to version: 99.0.0"),
                 "{out}"
             );
-            assert_eq!(setup.sb_bytes(), NEW_SB);
+            assert_eq!(setup.sb_bytes(), new_sb());
         } else {
             assert!(out.contains("Update of sb CLI cancelled"), "{out}");
             assert!(!setup.downloaded());
@@ -281,7 +284,7 @@ fn type_ahead_doesnt_answer_the_question() {
     if !root_gate::requested() {
         return;
     }
-    let setup = setup("v99.0.0", NEW_SB);
+    let setup = setup("v99.0.0", &new_sb());
     let before = setup.sb_bytes();
     let out = on_a_terminal_typing(&setup, "", "y\r", "\r");
     assert!(out.contains("Update of sb CLI cancelled"), "{out}");
@@ -296,7 +299,7 @@ fn ctrl_c_at_the_question_shows_the_cursor() {
     if !root_gate::requested() {
         return;
     }
-    let setup = setup("v99.0.0", NEW_SB);
+    let setup = setup("v99.0.0", &new_sb());
     let before = setup.sb_bytes();
     let out = on_a_terminal(&setup, "", "no\x03");
     let shown = out.rfind("\x1b[?25h").expect("the cursor is shown");
@@ -316,7 +319,7 @@ fn in_the_background_yes_is_needed() {
     if !root_gate::requested() {
         return;
     }
-    let setup = setup("v99.0.0", NEW_SB);
+    let setup = setup("v99.0.0", &new_sb());
     let before = setup.sb_bytes();
     let out = on_a_terminal(&setup, "set -m; ", "");
     assert!(
@@ -412,6 +415,50 @@ fn an_interrupted_download_changes_nothing() {
     rustix::process::kill_process(pid, rustix::process::Signal::INT).expect("SIGINT");
     let out = child.wait_with_output().expect("sb");
     assert!(!out.status.success(), "{}", text(&out));
+    assert_eq!(setup.sb_bytes(), before);
+    assert_eq!(setup.leftovers(), Vec::<String>::new());
+}
+
+/// The new binary must report the release's version (decided.md D-Q5):
+/// one reporting another is refused, exit 1, sb unchanged, nothing staged.
+#[test]
+fn a_binary_reporting_another_version_is_refused() {
+    if !root_gate::requested() {
+        return;
+    }
+    let setup = setup("v99.0.0", &stand_in("98.0.0"));
+    let before = setup.sb_bytes();
+    let out = setup.run(&["--force-update", "--yes"]);
+    let shown = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{shown}");
+    for line in [
+        "binary update failed validation",
+        "the new binary reports version 98.0.0, not 99.0.0",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+    assert_eq!(setup.sb_bytes(), before);
+    assert_eq!(setup.leftovers(), Vec::<String>::new());
+}
+
+/// An asset that isn't an ELF binary is refused before it runs: exit 1,
+/// sb unchanged, nothing staged.
+#[test]
+fn an_asset_that_is_not_an_elf_is_refused() {
+    if !root_gate::requested() {
+        return;
+    }
+    let setup = setup("v99.0.0", b"#!/bin/sh\necho '{\"version\":\"99.0.0\"}'\n");
+    let before = setup.sb_bytes();
+    let out = setup.run(&["--force-update", "--yes"]);
+    let shown = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{shown}");
+    for line in [
+        "binary update failed validation",
+        "open ELF executable: Unknown file magic",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
     assert_eq!(setup.sb_bytes(), before);
     assert_eq!(setup.leftovers(), Vec::<String>::new());
 }

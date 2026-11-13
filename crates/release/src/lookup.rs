@@ -165,7 +165,7 @@ pub(crate) fn causes(err: reqwest::Error) -> String {
 /// Remote text as a message shows it: escape sequences and controls
 /// dropped by term-ui's `DisplayText`, whitespace runs one space, cut at
 /// [`MAX_DETAIL`] characters with `...` (sb-go's `cleanDetail`).
-fn cut(text: &str) -> String {
+pub(crate) fn cut(text: &str) -> String {
     let safe = DisplayText::from_bytes(text.as_bytes(), false);
     let joined = safe
         .as_str()

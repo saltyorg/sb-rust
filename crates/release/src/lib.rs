@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use reqwest::Url;
 
-pub use activate::activate;
+pub use activate::{ElfError, activate, check_elf};
 pub use asset::Asset;
 pub use download::{Stage, Staged};
 pub use lookup::{Failure, Query, Release};
@@ -43,9 +43,43 @@ pub struct GithubRepo {
     pub name: &'static str,
 }
 
+/// A CPU architecture sb has releases for (release spec, R4): sb's and
+/// the fact's assets name it as Go does, uv's as Rust does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arch {
+    /// 64-bit x86 (`x86_64`).
+    Amd64,
+    /// 64-bit Arm (`aarch64`).
+    Arm64,
+}
+
+impl Arch {
+    /// This build's architecture, from `std::env::consts::ARCH`
+    /// (<https://doc.rust-lang.org/std/env/consts/constant.ARCH.html>).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Arch`] for any other: `unsupported architecture <a>`.
+    pub fn current() -> Result<Self, Error> {
+        Self::named(std::env::consts::ARCH)
+    }
+
+    /// The architecture `std::env::consts::ARCH` calls `arch`.
+    fn named(arch: &str) -> Result<Self, Error> {
+        match arch {
+            "x86_64" => Ok(Self::Amd64),
+            "aarch64" => Ok(Self::Arm64),
+            other => Err(Error::Arch(other.to_owned())),
+        }
+    }
+}
+
 /// Why a release couldn't be looked up or used.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// sb has no releases for this build's architecture.
+    #[error("unsupported architecture {0}")]
+    Arch(String),
     /// The HTTP client couldn't be built (its TLS setup).
     #[error("build the HTTP client: {0}")]
     Client(String),
@@ -209,4 +243,31 @@ fn builder(user_agent: &str) -> reqwest::ClientBuilder {
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .https_only(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_architecture_is_std_s_name() {
+        assert_eq!(Arch::named("x86_64").expect("amd64"), Arch::Amd64);
+        assert_eq!(Arch::named("aarch64").expect("arm64"), Arch::Arm64);
+        assert_eq!(
+            Arch::named("riscv64").expect_err("none").to_string(),
+            "unsupported architecture riscv64"
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn an_x86_64_build_is_amd64() {
+        assert_eq!(Arch::current().expect("this build's"), Arch::Amd64);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn an_aarch64_build_is_arm64() {
+        assert_eq!(Arch::current().expect("this build's"), Arch::Arm64);
+    }
 }
