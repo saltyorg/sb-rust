@@ -2176,7 +2176,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       but the stream's start, with corpus cases whose libyaml verdicts
       come from scripts/yaml-corpus.py. No Saltbox file has one.
 
-- [ ] **sb-config's hung-lookup test times out under load** (lane 3, with
+- [x] **sb-config's hung-lookup test times out under load** (lane 3, with
       its next sb-config change). `cloudflare::tests::a_hung_lookup_times_out_after_its_retries`
       made 1 attempt instead of 3 once during M67's full run under load,
       and passed alone three times. Give its timing a bound that holds
