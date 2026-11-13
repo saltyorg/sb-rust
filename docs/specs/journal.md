@@ -562,6 +562,25 @@ Only on corrupt, live or foreign files:
     `forward_pages_show_every_entry_of_another_boot`). Boots whose
     clocks don't overlap give journalctl's pages. Where the order itself
     cycles, so do sb's pages, as journalctl's (decision 11).
+21. **A forward page over one boot in two seqnum spaces, its clock set
+    back between them, shows only the entries after the cursor**
+    (24.04 only; the hardening plan's decision 33). A journald restart
+    on a 249 host, or journal-remote, can write one boot into files of
+    two seqnum ids. Where the realtime clock was set back between them,
+    journalctl 255 seeks the older file by realtime (no matching entry
+    of it in the cursor's boot reaches the cursor's monotonic time),
+    lands before the cursor, and shows that file's entries, then the
+    cursor's own entry and the rest; paging forward one entry at a time
+    never ends. sb seeks such a file per boot and shows only the
+    entries after the cursor. journalctl 249 and 259.9 show what sb
+    shows. With file b holding b1 and b2 (monotonic 1.001 and 1.002 s,
+    realtimes 300 and 400 s) and file x holding x1 to x4 (monotonic
+    1.003 to 1.006 s, realtimes 10 to 40 s), all of one boot (the
+    matrix's `own boot` fixture, run on 249.11, 255.4 and 259.9, also
+    filtered with a later non-matching entry in file b): after x3,
+    24.04's journalctl shows b1, b2, x3 and x4, and sb x4; one at a
+    time from x1, journalctl shows b1, b2, x1, b1, ... and sb x2, x3,
+    x4 (`a_forward_page_on_the_cursors_own_boot_shows_only_later_entries`).
 
 The rules are keyed by Ubuntu release (`VERSION_ID`), not by systemd
 version. journalctl on a 26.04 host still at systemd 259.0 matches
@@ -866,11 +885,14 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
       the cursor's exact entry as the first step, before the lowest
       landing (stable backport, issue #31516). sb doesn't emulate that
       step: it changes the first step only where another file's landing
-      orders before the cursor's own entry, which takes two boots the
-      boot table orders against their clocks, and there sb seeks such a
-      file per boot (decision 11), so its pages are what they would be
-      if it emulated that step (they still differ from 259.9's where
-      Difference 20 says).
+      orders before the cursor's own entry. That takes two boots the
+      boot table orders against their clocks (decision 11), or a file of
+      the cursor's boot and another seqnum space that 259 seeks by
+      realtime, as none of its matching entries of that boot reaches the
+      cursor's monotonic time (the hardening plan's decision 33). sb
+      seeks such a file per boot in both cases, so its pages are what
+      they would be if it emulated that step (they still differ from
+      259.9's where Difference 20 says).
     - Verified against running journalctl by Task 5's matrix: every
       forward page of the fixtures, page by page, on 22.04, 24.04 and
       26.04 (Difference 18 aside, on 22.04), and the stepped-back
@@ -950,16 +972,24 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
       one seqnum id, so file order is the release's order there). 259's
       seek is kept where per-boot seeking gives its landing anyway: a
       file of the cursor's seqnum space, one with no `_BOOT_ID` values
-      sb can read, or one of a single boot, the cursor's or one the
-      table leaves equal to it; so is every file on 22.04, which is
-      unchanged. The cost is the field lookup (a pread for the bucket,
+      sb can read, or one of a single boot, not the cursor's, that the
+      table leaves equal to it. On 24.04 and 26.04 a file that holds the
+      cursor's boot is sought per boot (the hardening plan's decision
+      33): where none of
+      its matching entries of that boot reaches the cursor's monotonic
+      time, 259 seeks it by realtime and can land before the cursor
+      (Difference 21). On 22.04 only such a file is sought per boot, its
+      other boots by realtime (249 has no table): sb takes 259's seek
+      and seeks again per boot where it fell back to realtime in the
+      cursor's boot; every other file keeps 259's seek there, at no
+      extra cost. The cost is the field lookup (a pread for the bucket,
       one per FIELD object in its chain, one per boot) and a bisect per
       boot started by time, per such file and page (asserted in
       `the_boot_seek_reads_the_files_boots`), plus the matching entries
-      of other boots the walk passes over. Every file outside the
-      cursor's seqnum space pays the field lookup on each forward page,
-      even when the cursor's boot is in no file's tail: the price of
-      knowing its boots.
+      of other boots the walk passes over. On 24.04 and 26.04 every file
+      outside the cursor's seqnum space pays the field lookup on each
+      forward page, even when the cursor's boot is in no file's tail:
+      the price of knowing its boots.
     - The order isn't transitive, and the boot step adds cycles: a boot
       in no file's tail compares equal to every boot, so realtime orders
       its pairs while the table orders the rest. Where three boots

@@ -344,7 +344,8 @@ integrity() { # name source...: hash-check and decode-all, no errors
 # table (issue #34169), so its boots compare equal and realtime
 # interleaves them, where 24.04 (255.4) compares the headers' machine and
 # orders them by boot. `machines-untagged` leaves `_MACHINE_ID=` off each
-# file's last entry, the tail, so 26.04 keeps the header's too.
+# file's last entry, the tail, so 26.04 keeps the header's too. Then the
+# `own boot` fixture (own_boot_checks).
 boot_checks() { # release remote
   local rel=$1 remote=$2 kind j src order d20 jc_walk sb_walk cur
   local ma=() mb=()
@@ -459,6 +460,123 @@ boot_checks() { # release remote
     else
       bad "boots $kind: journalctl $want one at a time from a1: $jc_walk, sb-journal $sb_walk"
     fi
+  done
+  own_boot_checks "$rel" "$remote"
+}
+
+# The `own boot` fixture (the hardening plan's decision 33, Difference
+# 21): one boot, 0xc…, written to two files of two seqnum ids with its
+# realtime clock set back between them. File b holds b1 and b2 (monotonic
+# 1.001 and 1.002 s, realtimes 300 and 400 s), file x holds x1 to x4
+# (monotonic 1.003 to 1.006 s, realtimes 10 to 40 s); each entry names
+# source machine 0x11… in `_MACHINE_ID=`. `filtered` reads file bc, b's
+# entries and c1 (monotonic 1.007 s, realtime 500 s, no `_MACHINE_ID=`),
+# by `_MACHINE_ID=11…`: the query's seek in bc finds c1's place in the
+# boot but no matching entry from it. After an entry, sb-journal shows
+# the entries after it, on every row, in either file order, and paging
+# one entry at a time from x1 ends at x4. journalctl 249 and 259.9 show
+# the same; 255 seeks file b by realtime (no matching entry of it reaches
+# the cursor's monotonic time), lands before the cursor, shows b1 and b2
+# then the cursor's entry, and pages for ever.
+own_boot_checks() { # release remote
+  local rel=$1 remote=$2 kind layout src name order who i cur got want_jc walk jc_walk f
+  local boot=cccccccccccccccccccccccccccccccc m=11111111111111111111111111111111
+  local jf=() sf=()
+  mkdir -p /own
+  /sbj gen-boot --boot "$boot" --prefix b --realtime-s 300,400 --machine "$m" > b.export
+  /sbj gen-boot --boot "$boot" --prefix c --realtime-s 500 --monotonic-skip 6 > c.export
+  cat b.export c.export > bc.export
+  /sbj gen-boot --boot "$boot" --prefix x --realtime-s 10,20,30,40 --monotonic-skip 2 --machine "$m" > x.export
+  rm -f /own/b.journal /own/bc.journal /own/x.journal
+  for f in b bc x; do
+    "$remote" --output="/own/$f.journal" - < "$f.export" >/dev/null 2>&1 || bad "own boot: journal-remote $f"
+  done
+  order=(b1 b2 x1 x2 x3 x4)
+  for kind in plain filtered; do
+    if [ "$kind" = plain ]; then
+      jf=()
+      sf=()
+      set -- "b x" "x b"
+    else
+      jf=("_MACHINE_ID=$m")
+      sf=(--match "_MACHINE_ID=$m")
+      set -- "bc x" "x bc"
+    fi
+    for layout; do
+      name="own boot $kind $layout"
+      src="--file /own/${layout% *}.journal --file /own/${layout#* }.journal"
+      # shellcheck disable=SC2086 # src is word-split on purpose
+      {
+        journalctl $src -o json --all -q "${jf[@]}" > ow.json || bad "$name: journalctl whole"
+        if [ "$(msgs ow.json)" = "${order[*]}" ]; then
+          ok "$name: journalctl $want orders them ${order[*]}"
+        else
+          bad "$name: journalctl $want orders them $(msgs ow.json), expected ${order[*]}"
+        fi
+        sbj_tail "$rel" $src -n 100 "${sf[@]}" > a.json || bad "$name: sbj whole"
+        check "$name whole" ow.json a.json
+        for i in 0 1 2 3 4 5; do
+          who=${order[$i]}
+          sed -n "$((i + 1))p" ow.json > c.json
+          cur=$(first_cursor c.json)
+          tail -n +$((i + 2)) ow.json > e.json
+          sbj_tail "$rel" $src -n 10 "${sf[@]}" --after "$cur" --stats > a.json 2> a.err || bad "$name: sbj forward"
+          if [ "$i" = 5 ]; then
+            [ -s a.json ] && bad "$name: sb-journal shows entries after x4"
+          else
+            check "$name page forward from $who" e.json a.json
+          fi
+          flags_check "$name page forward from $who" ow.json a.json a.err --after "$cur"
+          journalctl $src -o json --all -q --after-cursor "$cur" "${jf[@]}" > j.json || bad "$name: journalctl forward"
+          got=$(msgs j.json)
+          if [ "$want" = 255 ] && [ "$i" -ge 2 ]; then
+            want_jc="b1 b2 ${order[*]:$i}"
+            if [ "$got" = "$want_jc" ]; then
+              difference "$name: Difference 21, journalctl 255 after $who: '$got', sb-journal '$(msgs e.json)'"
+            else
+              bad "$name: journalctl 255 after $who: '$got', Difference 21 predicts '$want_jc'"
+            fi
+          elif [ "$got" = "$(msgs e.json)" ]; then
+            ok "$name: journalctl $want after $who: '$got', as sb-journal"
+          else
+            bad "$name: journalctl $want after $who: '$got', sb-journal '$(msgs e.json)'"
+          fi
+        done
+        # Paging forward one entry at a time from x1, at most six pages.
+        walk='' jc_walk=''
+        sed -n 3p ow.json > c.json
+        cur=$(first_cursor c.json)
+        for _ in 1 2 3 4 5 6; do
+          sbj_tail "$rel" $src -n 1 "${sf[@]}" --after "$cur" > a.json || bad "$name: sbj walk"
+          [ -s a.json ] || break
+          walk="${walk:+$walk }$(msgs a.json)"
+          cur=$(last_cursor a.json)
+        done
+        cur=$(first_cursor c.json)
+        for _ in 1 2 3 4 5 6; do
+          journalctl $src -o json --all -q --after-cursor "$cur" "${jf[@]}" | head -n 1 > j.json
+          [ -s j.json ] || break
+          jc_walk="${jc_walk:+$jc_walk }$(msgs j.json)"
+          cur=$(last_cursor j.json)
+        done
+      }
+      if [ "$walk" = "x2 x3 x4" ]; then
+        ok "$name: sb-journal one at a time from x1: $walk"
+      else
+        bad "$name: sb-journal one at a time from x1: $walk, expected x2 x3 x4"
+      fi
+      if [ "$want" = 255 ]; then
+        if [ "$jc_walk" = "b1 b2 x1 b1 b2 x1" ]; then
+          difference "$name: Difference 21, journalctl 255 one at a time from x1 never ends: $jc_walk ..."
+        else
+          bad "$name: journalctl 255 one at a time from x1: $jc_walk, Difference 21 predicts b1 b2 x1 b1 b2 x1"
+        fi
+      elif [ "$jc_walk" = "$walk" ]; then
+        ok "$name: journalctl $want one at a time from x1: $jc_walk"
+      else
+        bad "$name: journalctl $want one at a time from x1: $jc_walk, sb-journal $walk"
+      fi
+    done
   done
 }
 

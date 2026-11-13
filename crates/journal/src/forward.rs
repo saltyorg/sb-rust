@@ -27,9 +27,10 @@
 //!   does the same (systemd-stable v255.1's backport); 22.04's always
 //!   steps past it: Difference 18. 26.04's (259.9) first prefers a file
 //!   whose landing is the cursor's exact entry (issue #31516), which sb
-//!   doesn't emulate: it differs only where another file's landing orders
-//!   before the cursor's entry, across two boots the table orders against
-//!   their clocks, and such a file is sought per boot here (below);
+//!   doesn't emulate. It differs only where another file's landing orders
+//!   before the cursor's entry: across two boots the table orders against
+//!   their clocks, or in a file of the cursor's boot that 259 seeks by
+//!   realtime. Such a file is sought per boot here (below);
 //! - a file the first step found nothing in seeks again from the entry it
 //!   took (`next_beyond_location` keeps no direction after an empty seek);
 //! - then forward: each file's matching entries after its landing, in file
@@ -81,7 +82,10 @@
 //! Verified against running journalctl by Task 5's matrix: forward pages
 //! page by page on 22.04, 24.04 and 26.04 (Difference 18 aside, on
 //! 22.04), and the landing on a 249-written file whose clock steps back
-//! (docs/platform-notes/systemd-journal.md).
+//! (docs/platform-notes/systemd-journal.md); and by the `own boot` row
+//! (Task 37): one boot in two seqnum spaces with its clock set back,
+//! where 249 and 259.9 show what sb shows and 255 doesn't (Difference
+//! 21).
 //!
 //! The order between entries, for the first step's lowest landing and for
 //! every head against the entry just taken, is `Cursor::order` with the
@@ -95,11 +99,16 @@
 //! seqnum id isn't the cursor's is sought per boot
 //! (`FileQuery::boot_starts`), and only its entries after the cursor are
 //! walked, unless that gives 259's landing anyway (no `_BOOT_ID` values
-//! read, or one boot, the cursor's or one the table leaves equal to it).
-//! Those files, files of the cursor's seqnum space, and every file on
-//! 22.04 are sought as 259 seeks them. The order can still cycle (a boot
-//! not in the table between two it orders), and so can paging forward:
-//! `forward_paging_cycles_where_the_order_does`.
+//! read, or one boot, not the cursor's, that the table leaves equal to
+//! it). On 22.04 a file is sought per boot only where 259's seek falls
+//! back to realtime in a file of the cursor's boot (no matching entry of
+//! that boot at or after the cursor's monotonic time): it can land before
+//! the cursor there, and 255 then shows entries before it and its own,
+//! and pages forward for ever (Difference 21; the hardening plan's
+//! decision 33). The other files, files of the cursor's seqnum space, and
+//! every other file on 22.04 are sought as 259 seeks them. The order can
+//! still cycle (a boot not in the table between two it orders), and so
+//! can paging forward: `forward_paging_cycles_where_the_order_does`.
 
 use crate::boots::BootOrder;
 use crate::file::{ChainCache, DataRef, EntryList, JournalFile, Key, Met, Probe};
@@ -153,6 +162,12 @@ struct FileQuery<'a> {
     /// boot with no start, or before its boot's start, isn't after the
     /// cursor.
     starts: Option<Rc<Starts>>,
+    /// Whether journalctl 259's seek (`seek_259`) fell back to realtime
+    /// for the main list or a value in a file that holds the cursor's
+    /// boot: its monotonic bisect, with a query its stepping between the
+    /// boot's and the value's lists, found no entry. 22.04 then seeks the
+    /// file per boot (`seek_lists`).
+    fell_back: bool,
     /// The matching entries the second header read added (walk.rs
     /// `reread`), ascending by offset (file order: the binary searches and
     /// `partition_point` below rely on it), and the count the page hands
@@ -169,6 +184,14 @@ struct FileQuery<'a> {
 /// Per boot id, the first offset of the boot's entries after the cursor,
 /// if any.
 type Starts = HashMap<[u8; 16], Option<u64>>;
+
+/// What seeking a file per boot gave (`FileQuery::seek_per_boot`).
+enum PerBoot {
+    /// The file was sought per boot: its landing, if any.
+    Sought(Option<u64>),
+    /// Not sought per boot: journalctl 259's seek stands.
+    Not,
+}
 
 impl<'a> FileQuery<'a> {
     /// Look the query's values up in `f`. A group whose lookup fails is
@@ -218,6 +241,7 @@ impl<'a> FileQuery<'a> {
             groups: resolved,
             cache: ChainCache::default(),
             starts: None,
+            fell_back: false,
             extras: Rc::new(again.extras),
             count: again.n_entries,
             extras_after: Rc::new(Vec::new()),
@@ -225,13 +249,14 @@ impl<'a> FileQuery<'a> {
     }
 
     /// Where `c` falls in the file, in the release's order (decision 11,
-    /// Difference 20). On a release with the boot table, a file whose
-    /// seqnum id isn't the cursor's is sought per boot (`boot_starts`),
-    /// and the landing is the first matching entry, from the lowest start,
-    /// at or after its boot's start; journalctl 259's seek (`seek_259`)
-    /// otherwise, and where per-boot seeking gives the same: a file with
-    /// no `_BOOT_ID` values sb can read, or with one boot, the cursor's or
-    /// one the table leaves equal to it.
+    /// Difference 20). A file whose seqnum id isn't the cursor's is sought
+    /// per boot (`boot_starts`) on a release with the boot table; on
+    /// 22.04 only where journalctl 259's seek (`seek_259`) fell back to
+    /// realtime in the cursor's boot (`fell_back`; Difference 21). The
+    /// landing is then the first matching entry, from the lowest start, at
+    /// or after its boot's start. 259's seek otherwise, and where per-boot
+    /// seeking gives the same: a file with no `_BOOT_ID` values sb can
+    /// read, or with one boot, one the table leaves equal to the cursor's.
     ///
     /// An entry the second header read added is taken by the cursor's
     /// order where it lies before the landing the lists gave, or where
@@ -273,31 +298,57 @@ impl<'a> FileQuery<'a> {
         errors: &mut ReadErrors,
     ) -> Option<u64> {
         self.starts = None;
-        if c.seqnum_id != self.f.header.seqnum_id && boots.is_active() {
-            let mut met = Met::default();
-            let starts = self.boot_starts(c, boots, &mut met);
-            for e in met.errors {
-                errors.add(e);
+        if c.seqnum_id == self.f.header.seqnum_id {
+            return self.seek_259(c, errors);
+        }
+        // 22.04: journalctl 259's seek, unless it fell back to realtime in
+        // a file of the cursor's boot (the hardening plan's decision 33).
+        let mut landing_259 = None;
+        if !boots.is_active() {
+            self.fell_back = false;
+            let landing = self.seek_259(c, errors);
+            if !self.fell_back {
+                return landing;
             }
-            match starts {
-                Ok(Some(starts)) => {
-                    let from = starts.values().flatten().min().copied();
-                    self.starts = Some(Rc::new(starts));
-                    let from = from?;
-                    for r in self.matches_from(from) {
-                        match r {
-                            Ok((off, _)) => return Some(off),
-                            Err(e) => errors.add(e),
-                        }
+            landing_259 = Some(landing);
+        }
+        match self.seek_per_boot(c, boots, errors) {
+            PerBoot::Sought(landing) => landing,
+            PerBoot::Not => landing_259.unwrap_or_else(|| self.seek_259(c, errors)),
+        }
+    }
+
+    /// The landing per boot (`boot_starts`), or `PerBoot::Not` where that
+    /// gives journalctl 259's landing anyway or the file's boots are
+    /// unknown.
+    fn seek_per_boot(&mut self, c: &Cursor, boots: &BootOrder, errors: &mut ReadErrors) -> PerBoot {
+        let mut met = Met::default();
+        let starts = self.boot_starts(c, boots, &mut met);
+        for e in met.errors {
+            errors.add(e);
+        }
+        match starts {
+            Ok(Some(starts)) => {
+                let from = starts.values().flatten().min().copied();
+                self.starts = Some(Rc::new(starts));
+                let Some(from) = from else {
+                    return PerBoot::Sought(None);
+                };
+                for r in self.matches_from(from) {
+                    match r {
+                        Ok((off, _)) => return PerBoot::Sought(Some(off)),
+                        Err(e) => errors.add(e),
                     }
-                    return None;
                 }
-                Ok(None) => {}
-                // The file's boots unknown: journalctl's seek.
-                Err(e) => errors.add(e),
+                PerBoot::Sought(None)
+            }
+            Ok(None) => PerBoot::Not,
+            // The file's boots unknown: journalctl's seek.
+            Err(e) => {
+                errors.add(e);
+                PerBoot::Not
             }
         }
-        self.seek_259(c, errors)
     }
 
     /// Each of the file's boots (its `_BOOT_ID` values, `field_values`)
@@ -318,12 +369,16 @@ impl<'a> FileQuery<'a> {
     /// if any, are kept (`matches_from`), never dropped.
     ///
     /// `None` when per-boot seeking would give journalctl 259's landing
-    /// anyway: no boot read, or one boot that is the cursor's or that the
-    /// table leaves equal to it. The cost: the field lookup
-    /// (`field_values`) and a bisect per boot started by time; then the
-    /// walk from the lowest start reads the matching entries of the other
-    /// boots it passes over before its landing and among the entries shown
-    /// (as their boots lie in the file).
+    /// anyway: no boot read, or one boot, not the cursor's, that the table
+    /// leaves equal to it. A file of the cursor's boot is sought per boot
+    /// even when it holds no other: where none of its matching entries of
+    /// that boot reaches the cursor's monotonic time, 259 seeks it by
+    /// realtime and can land before the cursor (the hardening plan's
+    /// decision 33). The cost: the field lookup (`field_values`) and a
+    /// bisect per boot started by time; then the walk from the lowest
+    /// start reads the matching entries of the other boots it passes over
+    /// before its landing and among the entries shown (as their boots lie
+    /// in the file).
     fn boot_starts(
         &mut self,
         c: &Cursor,
@@ -361,7 +416,7 @@ impl<'a> FileQuery<'a> {
             };
             starts.insert(boot, start);
         }
-        Ok((ordered || starts.len() > 1).then_some(starts))
+        Ok((ordered || starts.len() > 1 || starts.contains_key(&c.boot_id)).then_some(starts))
     }
 
     fn bisect(
@@ -413,10 +468,11 @@ impl<'a> FileQuery<'a> {
         if c.seqnum_id == self.f.header.seqnum_id {
             return self.bisect(&main, Key::Seqnum, c.seqnum, met);
         }
-        if let Some(boot) = self.boot_list(c)?
-            && let Some(p) = self.bisect(&boot, Key::Monotonic, c.monotonic, met)?
-        {
-            return Ok(Some(p));
+        if let Some(boot) = self.boot_list(c)? {
+            if let Some(p) = self.bisect(&boot, Key::Monotonic, c.monotonic, met)? {
+                return Ok(Some(p));
+            }
+            self.fell_back = true;
         }
         self.bisect(&main, Key::Realtime, c.realtime, met)
     }
@@ -482,18 +538,22 @@ impl<'a> FileQuery<'a> {
             return Ok(None);
         };
         let Some(mut z) = self.bisect(&boot, Key::Monotonic, c.monotonic, met)? else {
+            // Not found in the cursor's boot: 259 falls back to realtime.
+            self.fell_back = true;
             return Ok(None);
         };
         // Each step's offset is at least the last one's, and a step that
         // doesn't move ends it: at most one step per entry of the lists.
         loop {
             let Some(p) = self.bisect(list, Key::Offset, z, met)? else {
+                self.fell_back = true;
                 return Ok(None);
             };
             if p == z {
                 return Ok(Some(z));
             }
             let Some(q) = self.bisect(&boot, Key::Offset, p, met)? else {
+                self.fell_back = true;
                 return Ok(None);
             };
             z = q;

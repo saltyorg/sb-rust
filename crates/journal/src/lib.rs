@@ -3085,6 +3085,176 @@ mod tests {
         assert_eq!(shown, ["c", "a", "b", "c", "a", "b"]);
     }
 
+    /// One boot, 0xc, in two files of two seqnum spaces, its realtime
+    /// clock set back between them (journald restarted on a 249 host, or
+    /// journal-remote): b1 and b2 at monotonic 1 and 2 µs, realtimes 300
+    /// and 400 µs; then x1 to x4 at monotonic 3 to 6, realtimes 10 to 40.
+    /// The matrix's `own boot` row has the same shape (the hardening
+    /// plan's decision 33).
+    const OWN_BOOT_B: Rows<'static> = &[("b1", 0xc, 1, 300), ("b2", 0xc, 2, 400)];
+    const OWN_BOOT_X: Rows<'static> = &[
+        ("x1", 0xc, 3, 10),
+        ("x2", 0xc, 4, 20),
+        ("x3", 0xc, 5, 30),
+        ("x4", 0xc, 6, 40),
+    ];
+
+    /// fwd-M1, decision 33: after an entry of `OWN_BOOT_X`, file b's
+    /// matching entries all lie before the cursor by monotonic time, and
+    /// the file is sought per boot, so b1 and b2 aren't shown, nor the
+    /// cursor's own entry; paging forward one at a time from b1 ends at
+    /// the last. As journalctl 249 and 259.9 show it; 255 shows b1 and
+    /// b2, then the cursor's entry (Difference 21). On every row, in both
+    /// file orders, with the query and without; and with file b also
+    /// holding b3, at monotonic 10 and realtime 500, which doesn't match
+    /// `U=x`: the query's seek then finds b3's boot position but no
+    /// matching entry from it, and falls back to realtime as well.
+    #[test]
+    fn a_forward_page_on_the_cursors_own_boot_shows_only_later_entries() {
+        each_format(a_forward_page_on_the_cursors_own_boot_shows_only_later_entries_in);
+    }
+
+    fn a_forward_page_on_the_cursors_own_boot_shows_only_later_entries_in(format: Format) {
+        let u = Some(b"U=x".as_slice());
+        let with_b3: Rows<'static> = &[
+            ("b1", 0xc, 1, 300),
+            ("b2", 0xc, 2, 400),
+            ("b3", 0xc, 10, 500),
+        ];
+        let x = boot_file_in(format, 1, 9, OWN_BOOT_X, true);
+        let bs = [
+            (boot_file_in(format, 2, 9, OWN_BOOT_B, true), false),
+            (
+                boot_file_naming_in(format, 2, 9, with_b3, false, &[u, u, None]),
+                true,
+            ),
+        ];
+        let matching = Query::field(&name("U"), b"x");
+        let all = crate::testing::tools::every_entry();
+        for (b, b3) in &bs {
+            let queries = [
+                (&matching, vec!["b1", "b2", "x1", "x2", "x3", "x4"]),
+                (
+                    &all,
+                    if *b3 {
+                        vec!["b1", "b2", "x1", "x2", "x3", "x4", "b3"]
+                    } else {
+                        vec!["b1", "b2", "x1", "x2", "x3", "x4"]
+                    },
+                ),
+            ];
+            let layouts = [[b.path(), x.path()], [x.path(), b.path()]];
+            for v in ["22.04", "24.04", "26.04"] {
+                for (paths, (q, order)) in layouts
+                    .iter()
+                    .flat_map(|p| queries.iter().map(move |q| (p, q)))
+                {
+                    let at = format!("{v}, b3 {b3}, {} entries", order.len());
+                    let j = files_on(&release(v), paths);
+                    let whole = tail(&j, q, 10);
+                    assert_eq!(who(&whole), *order, "{at}");
+                    for (i, r) in whole.records.iter().enumerate() {
+                        let fwd = j.page(q, &Position::After(r.cursor()), 10, &Limits::default());
+                        assert_eq!(who(&fwd), order[i + 1..], "{at}, after {}", order[i]);
+                    }
+                    let mut shown = Vec::new();
+                    let mut cursor = whole.records[0].cursor();
+                    // One page per entry and one more: a loop fails here.
+                    for _ in 0..order.len() {
+                        let page = j.page(q, &Position::After(cursor), 1, &Limits::default());
+                        let Some(r) = page.records.first() else { break };
+                        shown.extend(who(&page));
+                        cursor = r.cursor();
+                    }
+                    assert_eq!(shown, order[1..], "{at}, one at a time");
+                }
+            }
+        }
+    }
+
+    /// The property probe's sixth mode (fwd-M1): one boot written to
+    /// several files of their own seqnum spaces, each file's monotonic
+    /// times rising and its realtimes anywhere (clocks set back and
+    /// forward), each entry matching `U=x` or not. One boot orders by
+    /// monotonic time alone, so on every row a page after any matching
+    /// entry is exactly the matching entries with a later monotonic time,
+    /// in that order, and a page before it the earlier ones. 300 seeded
+    /// cases per format.
+    #[test]
+    fn pages_over_one_boot_in_several_seqnum_spaces_follow_its_monotonic_order() {
+        each_format(pages_over_one_boot_in_several_seqnum_spaces_follow_its_monotonic_order_in);
+    }
+
+    fn pages_over_one_boot_in_several_seqnum_spaces_follow_its_monotonic_order_in(format: Format) {
+        let q = Query::field(&name("U"), b"x");
+        let u = b"U=x".as_slice();
+        for seed in 0..300 {
+            let mut rng = fastrand::Rng::with_seed(seed);
+            let n_files = rng.usize(2..=3);
+            let n = rng.u64(u64::try_from(n_files).expect("small")..=8);
+            // Distinct monotonic times 1..=n, dealt to the files (each gets
+            // one at least), each file's in rising order, as journald writes
+            // them; two entries in three match.
+            let mut monotonic: Vec<u64> = (1..=n).collect();
+            rng.shuffle(&mut monotonic);
+            let mut dealt: Vec<Vec<u64>> = vec![Vec::new(); n_files];
+            for (k, &m) in monotonic.iter().enumerate() {
+                let to = if k < n_files { k } else { rng.usize(..n_files) };
+                dealt[to].push(m);
+            }
+            let matches: Vec<bool> = (0..=n).map(|_| rng.u8(..3) < 2).collect();
+            let names: Vec<String> = (0..=n).map(|m| format!("m{m}")).collect();
+            let files: Vec<tempfile::NamedTempFile> = dealt
+                .iter_mut()
+                .zip(1u8..)
+                .map(|(ms, seqnum_id)| {
+                    ms.sort_unstable();
+                    let rows: Vec<(&str, u8, u64, u64)> = ms
+                        .iter()
+                        .map(|&m| {
+                            (
+                                names[usize::try_from(m).expect("small")].as_str(),
+                                0xc,
+                                m,
+                                rng.u64(1..1000),
+                            )
+                        })
+                        .collect();
+                    let fields: Vec<Option<&[u8]>> = ms
+                        .iter()
+                        .map(|&m| matches[usize::try_from(m).expect("small")].then_some(u))
+                        .collect();
+                    boot_file_naming_in(format, seqnum_id, 9, &rows, false, &fields)
+                })
+                .collect();
+            let paths: Vec<&Path> = files.iter().map(tempfile::NamedTempFile::path).collect();
+            let order: Vec<String> = (1..=n)
+                .filter(|&m| matches[usize::try_from(m).expect("small")])
+                .map(|m| format!("m{m}"))
+                .collect();
+            for v in ["22.04", "24.04", "26.04"] {
+                let j = files_on(&release(v), &paths);
+                let whole = tail(&j, &q, 10);
+                assert_eq!(who(&whole), order, "seed {seed}, {v}");
+                for (i, r) in whole.records.iter().enumerate() {
+                    let page = |at: Position| who(&j.page(&q, &at, 10, &Limits::default()));
+                    assert_eq!(
+                        page(Position::After(r.cursor())),
+                        order[i + 1..],
+                        "seed {seed}, {v}, after {}",
+                        order[i]
+                    );
+                    assert_eq!(
+                        page(Position::Before(r.cursor())),
+                        order[..i],
+                        "seed {seed}, {v}, before {}",
+                        order[i]
+                    );
+                }
+            }
+        }
+    }
+
     /// A per-boot page with nothing older: from a cursor of another seqnum
     /// space at the very start of boot 0xa (monotonic and realtime 0), the
     /// page is every entry, and `more_older` is false.

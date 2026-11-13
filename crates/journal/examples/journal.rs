@@ -234,6 +234,9 @@ enum Command {
         /// Seconds after the fixtures' base time, one entry each.
         #[arg(long = "realtime-s", required = true, value_delimiter = ',')]
         realtimes: Vec<u64>,
+        /// Start the monotonic times this many milliseconds later.
+        #[arg(long, default_value_t = 0)]
+        monotonic_skip: u64,
         /// The source machine each entry names in `_MACHINE_ID=`, 32 hex
         /// digits.
         #[arg(long)]
@@ -397,6 +400,7 @@ fn main() -> Result<ExitCode> {
             boot,
             prefix,
             realtimes,
+            monotonic_skip,
             machine,
             untagged_tail,
         } => {
@@ -404,7 +408,14 @@ fn main() -> Result<ExitCode> {
             let machine = machine
                 .as_deref()
                 .map(|id| tools::SourceMachine { id, untagged_tail });
-            tools::gen_boot(&mut out, &boot, &prefix, &realtimes, machine)?;
+            tools::gen_boot(
+                &mut out,
+                &boot,
+                &prefix,
+                &realtimes,
+                monotonic_skip,
+                machine,
+            )?;
             out.flush()?;
             Ok(ExitCode::SUCCESS)
         }

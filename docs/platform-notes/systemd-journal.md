@@ -170,6 +170,24 @@ two ways:
     them a1 a2 b1 b2 too (the header's machine). The forward pages then
     match sb-journal's where realtime orders them, and Difference 20
     where the table does.
+- **One boot in two seqnum spaces, its clock set back between them**
+  (sb-journal hardening, Task 37; 2026-11-13; container runs on the same
+  three images, files written by each release's journal-remote, which
+  gives each output file its own seqnum id). File b holds b1 and b2 at
+  monotonic 1.001 and 1.002 s, realtimes 300 and 400 s; file x holds x1
+  to x4 at monotonic 1.003 to 1.006 s, realtimes 10 to 40 s; one boot
+  id. All three order the whole b1 b2 x1 x2 x3 x4. `--after-cursor`
+  x3: 249.11 and 259.9 show x4; 255.4 shows b1 b2 x3 x4 (file b sought
+  by realtime once its monotonic bisect finds nothing, that landing the
+  lowest, and shown as it isn't the cursor's entry). Paging one entry
+  at a time from x1, 249.11 and 259.9 end at x4, and 255.4 goes b1 b2
+  x1 b1 b2 x1 ... for ever. The same in either `--file` order. After
+  b1 or b2 all three show the later entries. The same again filtered
+  by `_MACHINE_ID=`, with file b also holding c1 (monotonic 1.007 s,
+  realtime 500 s) without that field, where the query's monotonic seek
+  in file b finds c1's place but no matching entry from it. 259.9's
+  answer comes from its exact-cursor first step (issue #31516, above).
+  sb-journal follows 249 and 259.9 there on every row (Difference 21).
 - **The coredump term of `-u` on the local journal** (same runs): with
   the `systemd-coredump` package installed, 259.9 takes coredump
   entries of that user's uid or root's; 249 and 255 take root's only.

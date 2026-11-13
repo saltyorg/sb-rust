@@ -909,11 +909,12 @@ fn branch(
 /// A boot fixture in export format: one entry per element of
 /// `realtimes_s`, at `EXPORT_BASE` plus that many seconds, all on `boot`
 /// (32 hex digits), monotonic time rising by a millisecond from one
-/// second, each with `MESSAGE=<prefix><k>` counting from 1 and
-/// `SYSLOG_IDENTIFIER=sb-boots`. Two such files with overlapping realtimes
-/// are two boots whose clocks overlap (decision 11, Difference 20);
-/// realtimes that step back in one file are a clock set back within a
-/// boot (decision 10).
+/// second (from `monotonic_skip` milliseconds later: a file the boot's
+/// journald wrote after another), each with `MESSAGE=<prefix><k>`
+/// counting from 1 and `SYSLOG_IDENTIFIER=sb-boots`. Two such files
+/// with overlapping realtimes are two boots whose clocks overlap
+/// (decision 11, Difference 20); realtimes that step back in one file
+/// are a clock set back within a boot (decision 10).
 ///
 /// With `machine`, the entries carry `_MACHINE_ID=` that id, as
 /// systemd-journal-remote keeps a source machine's own (its file's header
@@ -929,6 +930,7 @@ pub fn gen_boot(
     boot: &str,
     prefix: &str,
     realtimes_s: &[u64],
+    monotonic_skip: u64,
     machine: Option<SourceMachine<'_>>,
 ) -> io::Result<()> {
     let last = realtimes_s.len();
@@ -941,7 +943,9 @@ pub fn gen_boot(
         export_field(
             out,
             "__MONOTONIC_TIMESTAMP",
-            (1_000_000 + k * 1000).to_string().as_bytes(),
+            (1_000_000 + (monotonic_skip + k) * 1000)
+                .to_string()
+                .as_bytes(),
         )?;
         export_field(out, "_BOOT_ID", boot.as_bytes())?;
         if let Some(m) = machine {
@@ -1729,7 +1733,7 @@ mod tests {
     #[test]
     fn a_boot_fixture_is_one_boot_at_the_times_given() {
         let mut out = Vec::new();
-        gen_boot(&mut out, &"a".repeat(32), "a", &[100, 300, 5], None).expect("writes");
+        gen_boot(&mut out, &"a".repeat(32), "a", &[100, 300, 5], 0, None).expect("writes");
         let e = exported(&out);
         assert_eq!(e.len(), 3);
         let times: Vec<&str> = e
@@ -1745,6 +1749,13 @@ mod tests {
             .map(|x| field(x, "__MONOTONIC_TIMESTAMP")[0])
             .collect();
         assert_eq!(mono, ["1001000", "1002000", "1003000"]);
+        let mut skipped = Vec::new();
+        gen_boot(&mut skipped, &"a".repeat(32), "a", &[1, 2], 3, None).expect("writes");
+        let later: Vec<String> = exported(&skipped)
+            .iter()
+            .map(|x| field(x, "__MONOTONIC_TIMESTAMP")[0].to_owned())
+            .collect();
+        assert_eq!(later, ["1004000", "1005000"]);
         let messages: Vec<&str> = e.iter().map(|x| field(x, "MESSAGE")[0]).collect();
         assert_eq!(messages, ["a1", "a2", "a3"]);
         for x in &e {
@@ -1774,7 +1785,7 @@ mod tests {
                 id: &id,
                 untagged_tail,
             };
-            gen_boot(&mut out, &"a".repeat(32), "a", &[1, 2, 3], Some(machine)).expect("writes");
+            gen_boot(&mut out, &"a".repeat(32), "a", &[1, 2, 3], 0, Some(machine)).expect("writes");
             let e = exported(&out);
             let ids: Vec<Vec<&str>> = e.iter().map(|x| field(x, "_MACHINE_ID")).collect();
             let tail = if untagged_tail {
