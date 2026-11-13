@@ -292,7 +292,7 @@ of `--help`.
 | `logs` | Shows logs of Saltbox's systemd services | tui, host, journal | idea (log-picker) | as above; sb-journal and sb-host's follow are built |
 | `fact` | Browses and edits saltbox facts interactively | tui | idea ([fact-editor](../ideas/fact-editor.md)) | |
 | `edit <file>` | Opens one config file in an editor: `accounts`, `adv_settings`, `backup_config`, `hetzner_vlan`, `settings`, `inventory` | tui (edit picker) | not started | |
-| `install [tags]` (`-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | not started | tag cache shared with `list` and completion |
+| `install [tags]` (`-v` to `-vvvv`, `-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | not started | `-v` is counted and passed to `ansible-playbook` as `-v` to `-vvvv` (it stays here, unlike the dropped `-v` elsewhere); `-e` passes each value whole, so JSON reaches Ansible intact (open items below); the tag cache is shared with `list` and completion |
 | `list [query]` (`--include-mod`) | Lists the available tags | ansible | not started | |
 | `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | not started | |
 | `branch [name]` | Switches the branch Saltbox uses | ops, repo | not started | |
@@ -359,6 +359,25 @@ To discuss with the maintainer once every module is done, not before:
 
 ## Open items carried into module specs
 
+- **`install`'s Ansible pass-through** (maintainer, 2026-11-13; for the
+  ansible module spec). Both are requirements, with tests in the spec:
+  - **Verbosity:** `-v` is a counted flag (`-v`, `-vv`, `-vvv`, `-vvvv`,
+    and `-v -v`), passed to every `ansible-playbook` run as one `-v...`
+    argument of the same count. sb-go does this with cobra's `CountVarP`
+    (cmd/install.go); clap's `ArgAction::Count` is the equivalent. sb-go
+    also turns on its own debug lines with it. Whether sb's does too, or
+    leaves that to the run log, is for the spec.
+  - **`-e` / `--extra-vars` keeps every value whole.** Each `-e` value
+    reaches Ansible as one `--extra-vars` argument, exactly as given:
+    JSON with commas (`-e '{"a": 1, "b": [2, 3]}'`), `key=value` pairs,
+    and `@file`. Values are never split on commas, joined, or passed
+    through a shell. Early sb-go split them on commas, which broke JSON
+    with more than one key. It used cobra's `StringSlice`, and sb-go
+    bc1be03 (issue #11, 2025-05-31) moved it to `StringArray`. In clap:
+    `ArgAction::Append` with no `value_delimiter`, and the values go to
+    the child's argv one per element (exec's argument list, no shell).
+    The spec's tests cover multi-key JSON, nested quotes, unicode, a
+    value starting with `-`, and several `-e`s in order.
 - **Manual real-terminal check** (two emulators): mouse use and Shift-drag
   native selection in the fact editor.
 - **Logging (decision 11):** the logging spec (format, location,
