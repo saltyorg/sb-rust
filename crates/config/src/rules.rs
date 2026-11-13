@@ -1418,4 +1418,92 @@ mod tests {
         // On the schema, its type decides: a string named `pass` shows.
         assert!(!secret("other.pass"));
     }
+
+    /// The pinned Saltbox schemas (tests/fixtures/saltbox-schemas).
+    fn pinned_schemas() -> Vec<(&'static str, Rules)> {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/saltbox-schemas");
+        [
+            "accounts",
+            "adv_settings",
+            "backup_config",
+            "hetzner_vlan",
+            "motd",
+            "settings",
+        ]
+        .into_iter()
+        .map(|name| {
+            let file = format!("{name}.schema.yml");
+            let rules = schema::load(&dir.join(&file), &file).expect("pinned schema");
+            (name, rules)
+        })
+        .collect()
+    }
+
+    /// Every property's path (`[]` for an array's items) and rule.
+    fn property_paths<'a>(rules: &'a Rules, at: &str, out: &mut Vec<(String, &'a Rule)>) {
+        fn walk<'a>(rule: &'a Rule, path: String, out: &mut Vec<(String, &'a Rule)>) {
+            if let Some(properties) = &rule.properties {
+                property_paths(properties, &path, out);
+            }
+            if let Some(items) = &rule.items {
+                walk(items, format!("{path}[]"), out);
+            }
+            if let Some(Additional::Rule(other)) = &rule.additional_properties {
+                walk(other, format!("{path}.<any>"), out);
+            }
+            out.push((path, rule));
+        }
+        for (name, rule) in rules {
+            walk(rule, join(at, name), out);
+        }
+    }
+
+    /// The credential paths (`secret`'s list) each reach a `type: string`
+    /// field of exactly one pinned schema, and every `string` or `url`
+    /// field of a pinned schema whose name looks like a credential's
+    /// (`api`, `pass`, `token`, `key`, `secret`, `auth`, `hook` or
+    /// `apprise` in it, any case) is on the list (Task 60): a schema pin that moves one, or
+    /// adds one under such a name, fails here and forces a decision.
+    #[test]
+    fn the_credential_paths_match_the_pinned_schemas() {
+        let schemas = pinned_schemas();
+        for path in secret::credential_paths() {
+            let found: Vec<_> = schemas
+                .iter()
+                .filter_map(|(name, rules)| {
+                    rule_at(rules, &path.replace("[]", "[0]")).map(|rule| (name, rule.kind))
+                })
+                .collect();
+            assert_eq!(found.len(), 1, "{path}: {found:?}");
+            assert_eq!(found[0].1, Some(Kind::String), "{path}");
+        }
+        let credential_like = |key: &str| {
+            let key = key.to_ascii_lowercase();
+            [
+                "api", "pass", "token", "key", "secret", "auth", "hook", "apprise",
+            ]
+            .iter()
+            .any(|part| key.contains(part))
+        };
+        let listed: BTreeSet<_> = secret::credential_paths().collect();
+        let mut checked = 0;
+        for (name, rules) in &schemas {
+            let mut paths = Vec::new();
+            property_paths(rules, "", &mut paths);
+            for (path, rule) in paths {
+                if matches!(rule.kind, Some(Kind::String | Kind::Url))
+                    && credential_like(secret::key_name(&path))
+                {
+                    assert!(listed.contains(path.as_str()), "{name}: {path}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(
+            checked,
+            listed.len(),
+            "every listed path is credential-like"
+        );
+    }
 }

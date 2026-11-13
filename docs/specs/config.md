@@ -103,11 +103,17 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   config).
 - **Secrets** (term-ui decision 8): `cloudflare.api`,
   `cloudflare.scoped_token`, `dockerhub.token` and every `password`-typed
-  field are secrets, and so is a key with one of their names where the
-  schema doesn't place it (`user: [{pass: …}]`; *amended by hardening
-  Task 46*): no issue, notice, output line or log record prints
-  their values (an issue on one names the key, never the value), and
-  `not_equals` never prints the value it compared.
+  field are secrets; so are the credentials the schemas type `string`
+  (*amended by hardening Task 60*): accounts.yml's `apprise` (a URL that
+  carries a token), backup_config.yml's `backup.restore_service.pass`,
+  and motd.yml's `token` (emby, jellyfin, plex), `apikey` (lidarr,
+  radarr, readarr, sabnzbd, sonarr) and `password` (nzbget, qbittorrent,
+  rtorrent) of each `<app>.instances` item. A test checks the list
+  against the pinned schemas. A key with one of their names is a
+  secret too where the schema doesn't place it (`user: [{pass: …}]`;
+  *amended by hardening Task 46*): no issue, notice, output line or log
+  record prints their values (an issue on one names the key, never the
+  value), and `not_equals` never prints the value it compared.
 - **Parsing:** the first YAML document only (as yaml.v3 and cli-core); an
   empty file is an empty mapping (every required key missing, as sb-go);
   a root that isn't a mapping is one issue. The layouts accepted are

@@ -255,3 +255,37 @@ fn a_secret_key_in_a_misplaced_list_is_redacted() {
         ]
     );
 }
+
+/// A credential the schema types `string` hides its value too, at any
+/// item of a list (Task 60): motd.yml's tokens and `backup_config.yml`'s
+/// restore password.
+#[test]
+fn a_string_typed_credential_is_redacted() {
+    for (schema_file, file, text, expected) in [
+        (
+            "motd.schema.yml",
+            "motd.yml",
+            "plex:\n  instances:\n    - name: a\n    - token: !!int s3cret-token\n",
+            "motd.yml:4:14: plex.instances[1].token: cannot decode !!str `[REDACTED]` as a !!int",
+        ),
+        (
+            "backup_config.schema.yml",
+            "backup_config.yml",
+            "backup:\n  restore_service:\n    pass: !!bool s3cret\n",
+            "backup_config.yml:3:11: backup.restore_service.pass: cannot decode !!str `[REDACTED]` as a !!bool",
+        ),
+    ] {
+        let rules = schema::load(
+            &fixture(&format!("saltbox-schemas/{schema_file}")),
+            "schema",
+        )
+        .expect("schema");
+        let root = sb_config::parse::parse(file, text).expect("parses");
+        let issues: Vec<String> = sb_config::tree::build(file, &root, &rules::secret_paths(&rules))
+            .expect_err("fails")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(issues, [expected]);
+    }
+}
