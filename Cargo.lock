@@ -3548,8 +3548,11 @@ name = "sb-tui"
 version = "0.1.0"
 dependencies = [
  "ansi-to-tui",
+ "anstyle",
+ "anstyle-lossy",
  "crossterm",
  "futures-util",
+ "insta",
  "jiff",
  "portable-pty",
  "ratatui",
@@ -3558,6 +3561,7 @@ dependencies = [
  "sb-cli-core",
  "sb-host",
  "sb-journal",
+ "sb-term-ui",
  "tempfile",
  "tokio",
  "tokio-util",

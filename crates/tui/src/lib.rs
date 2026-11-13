@@ -6,12 +6,14 @@
 //!
 //! The parts of slice 1 with no screen: the log-source protocol and the
 //! journal adapter ([`source`]), and the service status rule
-//! ([`status`]).
+//! ([`status`]); then the viewer ([`viewer`]) and its lines ([`line`]).
 
+pub mod line;
 pub mod source;
 pub mod status;
 mod term;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod viewer;
 
 pub use term::{App, Ending, Flow, Tui};

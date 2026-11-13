@@ -26,8 +26,8 @@
 use std::fs::File;
 use std::io::{self, Write as _};
 use std::os::fd::AsFd as _;
-use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use crossterm::cursor::Show;
@@ -40,7 +40,7 @@ use futures_util::{FutureExt as _, Stream, StreamExt as _};
 use ratatui::backend::Backend;
 use ratatui::{DefaultTerminal, Frame, Terminal};
 use sb_cli_core::cancel::{RestoreHook, Shutdown};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
@@ -78,6 +78,11 @@ pub trait App {
 
     /// The 4/s tick.
     fn tick(&mut self) -> Flow {
+        Flow::Unchanged
+    }
+
+    /// A source woke the screen ([`Tui::waker`]): take what it sent.
+    fn wake(&mut self) -> Flow {
         Flow::Unchanged
     }
 
@@ -127,6 +132,9 @@ pub struct Tui {
     events: mpsc::UnboundedReceiver<Event>,
     task: JoinHandle<()>,
     token: CancellationToken,
+    /// What the screen's sources wake it with (docs/specs/tui.md,
+    /// "Verification notes": the wake-up path).
+    wake: Arc<Notify>,
     /// Removes the forced-exit hook when the screen goes.
     _restore: RestoreHook,
     left: bool,
@@ -163,6 +171,7 @@ impl Tui {
             events,
             task,
             token: shutdown.token(),
+            wake: Arc::new(Notify::new()),
             _restore: restore,
             left: false,
         })
@@ -176,7 +185,24 @@ impl Tui {
     /// The I/O error when drawing fails or the terminal's input can't be
     /// read or has ended.
     pub async fn run<A: App>(&mut self, app: &mut A) -> io::Result<Ending> {
-        run_loop(&mut self.terminal, &mut self.events, app, &self.token).await
+        let wake = Arc::clone(&self.wake);
+        run_loop(
+            &mut self.terminal,
+            &mut self.events,
+            app,
+            &self.token,
+            &wake,
+        )
+        .await
+    }
+
+    /// The screen's wake: a source calls `notify_one` on it after each
+    /// event it sends, and the loop calls [`App::wake`]. `Notify` keeps
+    /// one permit, so a wake is never lost and a burst costs one
+    /// (<https://docs.rs/tokio/1.54.1/tokio/sync/struct.Notify.html#method.notify_one>).
+    #[must_use]
+    pub fn waker(&self) -> Arc<Notify> {
+        Arc::clone(&self.wake)
     }
 
     /// Restore the terminal: mouse capture off, then input read and dropped
@@ -320,12 +346,14 @@ where
 
 /// The loop: each event to `app`, a frame on a render event after a
 /// change, until an [`Ending`] or an error. A cancelled `token` wins over
-/// events already waiting.
+/// events already waiting, and the terminal's events over a source's
+/// `wake`, so a busy follow can't starve input.
 async fn run_loop<B, A>(
     terminal: &mut Terminal<B>,
     events: &mut mpsc::UnboundedReceiver<Event>,
     app: &mut A,
     token: &CancellationToken,
+    wake: &Notify,
 ) -> io::Result<Ending>
 where
     B: Backend,
@@ -338,7 +366,16 @@ where
         let event = tokio::select! {
             biased;
             () = token.cancelled() => return Ok(Ending::Cancelled),
-            event = events.recv() => event,
+            event = events.recv() => Some(event),
+            () = wake.notified() => None,
+        };
+        let Some(event) = event else {
+            match app.wake() {
+                Flow::Redraw => changed = true,
+                Flow::Unchanged => {}
+                Flow::Quit => return Ok(Ending::Quit),
+            }
+            continue;
         };
         let flow = match event {
             Some(Event::Render) => {
@@ -395,6 +432,9 @@ mod tests {
         ticks: usize,
         draws: usize,
         tick_flow: Option<Flow>,
+        /// The inputs seen when each wake came.
+        wakes: Vec<usize>,
+        wake_flow: Option<Flow>,
     }
 
     impl App for Script {
@@ -411,6 +451,11 @@ mod tests {
         fn tick(&mut self) -> Flow {
             self.ticks += 1;
             self.tick_flow.unwrap_or(Flow::Unchanged)
+        }
+
+        fn wake(&mut self) -> Flow {
+            self.wakes.push(self.inputs.len());
+            self.wake_flow.unwrap_or(Flow::Unchanged)
         }
 
         fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -439,7 +484,7 @@ mod tests {
         for event in events {
             tx.send(event).expect("send");
         }
-        let ending = run_loop(&mut terminal, &mut rx, app, token).await;
+        let ending = run_loop(&mut terminal, &mut rx, app, token, &Notify::new()).await;
         drop(tx);
         ending
     }
@@ -472,9 +517,15 @@ mod tests {
             tx.send(event).expect("send");
         }
         let mut app = Script::default();
-        run_loop(&mut terminal, &mut rx, &mut app, &CancellationToken::new())
-            .await
-            .expect("ends");
+        run_loop(
+            &mut terminal,
+            &mut rx,
+            &mut app,
+            &CancellationToken::new(),
+            &Notify::new(),
+        )
+        .await
+        .expect("ends");
         terminal
             .backend()
             .assert_buffer_lines(["draw 1              ", "                    "]);
@@ -494,6 +545,56 @@ mod tests {
         let ending = run(&mut app, events, &CancellationToken::new()).await;
         assert_eq!(ending.expect("ends"), Ending::Interrupted);
         assert_eq!(app.inputs, [key(KeyCode::Char('c'), KeyModifiers::NONE)]);
+    }
+
+    /// The viewer on the loop: a source's page reaches it through the
+    /// wake, and Ctrl-C ends the run as interrupted (sb exits 130, tui
+    /// decision 13) with the source still open until the viewer goes.
+    #[tokio::test]
+    async fn the_viewer_takes_wakes_and_ctrl_c_interrupts_it() {
+        use crate::line::Format;
+        use crate::source::{Event as SourceEvent, PageKind};
+        use crate::testing::{fake_source, line, position};
+        use crate::viewer::{Kind, Viewer};
+
+        let wake = Arc::new(Notify::new());
+        let mut fake = None;
+        let format = Format::new(jiff::tz::TimeZone::UTC, sb_cli_core::theme::Theme::plain());
+        let mut viewer = Viewer::open("app", Kind::Service, format, Arc::clone(&wake), |outbox| {
+            let (handle, source) = fake_source(outbox);
+            fake = Some(source);
+            handle
+        });
+        let fake = fake.expect("opened");
+        assert!(fake.send(SourceEvent::Page {
+            kind: PageKind::Tail,
+            lines: vec![line(1, "hello")],
+            oldest: Some(position(1)),
+            newest: Some(position(1)),
+            more_older: false,
+            more_newer: false,
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(30, 4)).expect("test terminal");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let token = CancellationToken::new();
+        let ran = tokio::time::timeout(
+            Duration::from_millis(200),
+            run_loop(&mut terminal, &mut rx, &mut viewer, &token, &wake),
+        )
+        .await;
+        assert!(ran.is_err(), "the loop waits for input");
+        tx.send(Event::Render).expect("send");
+        tx.send(Event::Input(key(KeyCode::Char('c'), KeyModifiers::CONTROL)))
+            .expect("send");
+        let ending = run_loop(&mut terminal, &mut rx, &mut viewer, &token, &wake).await;
+        assert_eq!(ending.expect("ends"), Ending::Interrupted);
+        terminal.backend().assert_buffer_lines([
+            "app  service  following   f fo",
+            "--- start of log ---          ",
+            "hello                         ",
+            "--- following ---             ",
+        ]);
+        assert_eq!(viewer.leave(), None);
     }
 
     #[tokio::test]
@@ -529,8 +630,9 @@ mod tests {
         let (_tx, mut rx) = mpsc::unbounded_channel();
         let mut app = Script::default();
         let cancel = token.clone();
+        let wake = Notify::new();
         let (ending, ()) = tokio::join!(
-            run_loop(&mut terminal, &mut rx, &mut app, &token),
+            run_loop(&mut terminal, &mut rx, &mut app, &token, &wake),
             async move {
                 tokio::task::yield_now().await;
                 cancel.cancel();
@@ -559,9 +661,15 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         drop(tx);
         let mut app = Script::default();
-        let err = run_loop(&mut terminal, &mut rx, &mut app, &CancellationToken::new())
-            .await
-            .expect_err("fails");
+        let err = run_loop(
+            &mut terminal,
+            &mut rx,
+            &mut app,
+            &CancellationToken::new(),
+            &Notify::new(),
+        )
+        .await
+        .expect_err("fails");
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
@@ -581,6 +689,52 @@ mod tests {
             .await
             .expect("ends");
         assert_eq!((app.ticks, app.draws), (1, 2));
+    }
+
+    /// A wake waiting with input: the input first, then one wake for
+    /// any number of notifies, which can ask for a frame.
+    #[tokio::test]
+    async fn a_wake_comes_after_waiting_input_and_can_ask_for_a_frame() {
+        let mut app = Script {
+            wake_flow: Some(Flow::Redraw),
+            ..Script::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("test terminal");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let wake = Notify::new();
+        wake.notify_one();
+        wake.notify_one();
+        tx.send(Event::Render).expect("send");
+        tx.send(Event::Input(char_key('x'))).expect("send");
+        let token = CancellationToken::new();
+        let ran = tokio::time::timeout(
+            Duration::from_millis(300),
+            run_loop(&mut terminal, &mut rx, &mut app, &token, &wake),
+        )
+        .await;
+        assert!(ran.is_err(), "the loop waits for more");
+        assert_eq!(app.wakes, [1], "after the input, once");
+        assert_eq!(app.draws, 1);
+        tx.send(Event::Render).expect("send");
+        tx.send(Event::Input(char_key('q'))).expect("send");
+        let ending = run_loop(&mut terminal, &mut rx, &mut app, &token, &wake).await;
+        assert_eq!(ending.expect("ends"), Ending::Quit);
+        assert_eq!(app.draws, 2, "the wake's frame");
+    }
+
+    #[tokio::test]
+    async fn a_wake_can_quit() {
+        let mut app = Script {
+            wake_flow: Some(Flow::Quit),
+            ..Script::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("test terminal");
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let wake = Notify::new();
+        wake.notify_one();
+        let token = CancellationToken::new();
+        let ending = run_loop(&mut terminal, &mut rx, &mut app, &token, &wake).await;
+        assert_eq!(ending.expect("ends"), Ending::Quit);
     }
 
     #[tokio::test]

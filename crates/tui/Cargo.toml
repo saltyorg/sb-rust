@@ -29,6 +29,13 @@ ratatui-core.workspace = true
 crossterm.workspace = true
 # SGR in log text (M67), likewise.
 ansi-to-tui.workspace = true
+# `DisplayText`, the one way untrusted bytes reach the screen (journal
+# spec, "Display").
+sb-term-ui.workspace = true
+# Log spans' colours brought down to the run's profile, as the palette's
+# (ADR-002), through ratatui-core's `anstyle` conversions.
+anstyle.workspace = true
+anstyle-lossy.workspace = true
 futures-util.workspace = true
 # The event loop's channel and `select!` (tui spec, Tech Stack).
 tokio = { workspace = true, features = ["sync", "macros"] }
@@ -36,6 +43,8 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 sb-cli-core.workspace = true
+# The viewer's `TestBackend` snapshots (tui spec, Testing Strategy).
+insta.workspace = true
 # The crafted journal files the journal adapter pages and follows (tui
 # spec, Testing Strategy).
 sb-journal = { workspace = true, features = ["testing"] }

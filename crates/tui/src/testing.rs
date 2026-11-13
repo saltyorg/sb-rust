@@ -36,6 +36,14 @@ impl FakeSource {
     pub fn send(&self, event: Event) -> bool {
         self.outbox.send(event)
     }
+
+    /// Send `event` tagged with another generation, as a source the
+    /// viewer left would have.
+    #[must_use]
+    pub fn send_stale(&self, event: Event) -> bool {
+        let stale = self.outbox.generation().next();
+        self.outbox.retagged(stale).send(event)
+    }
 }
 
 /// A position that orders as `n` does: a journal cursor of one boot,

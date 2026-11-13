@@ -191,6 +191,17 @@ impl Outbox {
         self.generation
     }
 
+    /// The same channel and wake, tagging with `generation`: an old
+    /// source's events, for the tests.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub(crate) fn retagged(&self, generation: Generation) -> Self {
+        Self {
+            generation,
+            ..self.clone()
+        }
+    }
+
     /// Send `event`, tagged, and wake the screen. `false` once the viewer
     /// is gone: the source then ends.
     #[must_use]

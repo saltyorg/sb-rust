@@ -1390,7 +1390,8 @@ the test's directory.
   input, then the wake, so a busy follow can't starve input) and calls
   `App::wake() -> Flow` (default `Unchanged`), where the viewer takes
   every waiting event with `try_recv` and drops those of an old
-  generation.
+  generation. Built in M67: `Tui::waker()` hands the `Arc<Notify>` out, and
+  `Viewer::open` gives it to the source's `Outbox`.
 - **The cycle guard's memory (M66):** the cursors sent by the tail,
   newer pages and follow batches, first in first out, at most 20,000,
   forgotten on `Tail` and on `Older`, and those sent after a `Newer`'s
