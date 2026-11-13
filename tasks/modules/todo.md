@@ -1525,16 +1525,16 @@ inspect; `picker_status(row, now, format)` returns symbol, text, role and
 attention.
 
 **Acceptance criteria:**
-- [ ] Docker's zero time and unparsable values read as `None`;
+- [x] Docker's zero time and unparsable values read as `None`;
       `--json`'s keys are unchanged.
-- [ ] The status text follows `ps::status` with the spec's suffixes, the
+- [x] The status text follows `ps::status` with the spec's suffixes, the
       10-minute restart rule, `↻` and attention.
-- [ ] Durations come from the caller's function (sb-docker doesn't
+- [x] Durations come from the caller's function (sb-docker doesn't
       depend on sb-host).
 
 **Verification:**
-- [ ] `cargo test -p sb-docker -p sb` (ps's snapshots unchanged).
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-docker -p sb` (ps's snapshots unchanged).
+- [x] Review: code-reviewer.
 
 **Dependencies:** M61 (lane order only)
 **Files:** `crates/docker/src/{ps.rs,connect.rs}`
