@@ -1621,15 +1621,15 @@ guard, the follow with `FollowWait`, one query per source), and the pure
 service status rule.
 
 **Acceptance criteria:**
-- [ ] The adapter pages and follows on crafted journals, giving every
+- [x] The adapter pages and follows on crafted journals, giving every
       entry once across the handover.
-- [ ] The cycle guard stops a page that returns where it began.
-- [ ] The status rule's table from the spec, with "failed 2h ago" from
+- [x] The cycle guard stops a page that returns where it began.
+- [x] The status rule's table from the spec, with "failed 2h ago" from
       `StateChangeTimestamp`.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui` on sb-journal's `testing` builder.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui` on sb-journal's `testing` builder.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M61, M65, M2
 **Files:** `crates/tui/src/{source.rs,source/journal.rs,status.rs,testing.rs}`
@@ -2175,6 +2175,12 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       a top-level scalar or a mapping). Decision 38: refuse U+FEFF anywhere
       but the stream's start, with corpus cases whose libyaml verdicts
       come from scripts/yaml-corpus.py. No Saltbox file has one.
+
+- [ ] **sb-config's hung-lookup test times out under load** (lane 3, with
+      its next sb-config change). `cloudflare::tests::a_hung_lookup_times_out_after_its_retries`
+      made 1 attempt instead of 3 once during M67's full run under load,
+      and passed alone three times. Give its timing a bound that holds
+      under load, as c06f497 did for exec.
 
 ## Ready to start
 
