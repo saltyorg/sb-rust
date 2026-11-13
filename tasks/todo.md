@@ -1298,27 +1298,27 @@ and column, before sb's own rules apply.
 **Description:** What Task 59 left open (plan decision 41).
 
 **Acceptance criteria:**
-- [ ] The inventory read (localhost.yml) has no length cap. cli-core's
+- [x] The inventory read (localhost.yml) has no length cap. cli-core's
       1 MiB `read_small` cap no longer applies to it; nesting depth stays
       its only limit. A test reads an inventory well over 1 MiB. The
       config and cli-core specs say so, and other config files keep
       their caps.
-- [ ] A tag Ansible's loader has no constructor for (`!custom`, the
+- [x] A tag Ansible's loader has no constructor for (`!custom`, the
       corpus case) is refused with its line and column, in
       validate-config and the inventory read alike. The tags Ansible
       accepts (the YAML core tags and Ansible's own `!unsafe` and
       `!vault`) are checked against ansible-core's loader, as
       scripts/yaml-corpus.py runs it, and still pass.
-- [ ] A clipped block scalar at end of file without a final newline
+- [x] A clipped block scalar at end of file without a final newline
       resolves as sb-go's yaml.v3 does (checked against yaml.v3's
       behaviour, cited). If that differs from Ansible's value, it is a
       listed Difference; if yaml.v3 gives Ansible's value, sb gives it
       too and the corpus line goes.
 
 **Verification:**
-- [ ] `cargo test -p sb-config -p sb-cli-core -p sb`; the corpus;
+- [x] `cargo test -p sb-config -p sb-cli-core -p sb`; the corpus;
       `scripts/check.sh full <base>`.
-- [ ] Review: one code-reviewer pass with the security-auditor.
+- [x] Review: one code-reviewer pass with the security-auditor.
 
 **Dependencies:** Task 59
 **Files:** `crates/cli-core/src/{config.rs,config/yaml.rs}`, `crates/config/src/parse.rs`, `crates/config/tests/yaml-corpus/`, `docs/specs/config.md`, `docs/specs/cli-core.md`

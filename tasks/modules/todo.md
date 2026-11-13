@@ -2130,6 +2130,24 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       drain's own timeout, never a bigger magic number alone. Lanes now
       run at 12 cores each, which leaves headroom.
 
+- [ ] **The inventory read's memory** (config; lane 3, after M48). An
+      uncapped read of localhost.yml peaks at about 30 times the file's size
+      (3.5 MB: 0.75 s and 105 MB; 56 MB: 10-12 s and 1.55 GB, release
+      build, Task 61's review). No length cap goes back (plan decision 41);
+      cut the cost instead: rewrite only when the pre-pass must, iterate
+      lines lazily, and read `server_appdata_path` from the event stream
+      rather than a tree. Real inventories are kilobytes, so this is not
+      urgent.
+- [ ] **The duplicate-key report grows quadratically** (config; lane 3).
+      One key repeated N times gives N issues, each listing every earlier
+      position: 10,000 repeats (50 KB) took 102 s and 5.8 GB and logged
+      about 1.1 GB (Task 61's review). Report each duplicate with the
+      first position only, or one issue per key, and cap what's logged.
+- [ ] **A top-level block scalar before a column-0 comment** (config; lane
+      3, with the next YAML change). sb reads the comment as content, where
+      libyaml ends the scalar there. No Saltbox file has a top-level block
+      scalar; add the corpus case and match libyaml.
+
 ## Ready to start
 
 Started right after this plan's commit:

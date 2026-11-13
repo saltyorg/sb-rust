@@ -563,7 +563,7 @@ criteria, and each checkpoint's, are in [tasks/todo.md](todo.md).
 - [x] Task 42: YAML: the corpus and the options
 - [x] Task 43: sb accepts the YAML Ansible accepts
 - [x] Task 59: sb refuses the YAML Ansible refuses (decision 38)
-- [ ] Task 61: Task 59's follow-ups (decision 41)
+- [x] Task 61: Task 59's follow-ups (decision 41)
 - [x] Task 46: secrets are hidden wherever their key sits
 - [x] Task 60: Task 46's follow-ups (decision 39)
 - [ ] Checkpoint Y: config
