@@ -929,17 +929,17 @@ panics, fixed order), the layout writer, the run log, and the distro and
 kernel sections, so `sb motd --distro --kernel` shows the layout.
 
 **Acceptance criteria:**
-- [ ] The contract test sees every flag of cmd/motd.go:68-100; deny.toml
+- [x] The contract test sees every flag of cmd/motd.go:68-100; deny.toml
       has `sb-motd` (wrappers `sb`) and adds it to the wrappers of
       `sb-cli-core`, `sb-term-ui`, `sb-exec`, `sb-host`, `sb-config` and
       `sb-docker`, all at once.
-- [ ] A panicking or slow section shows the spec's line, and the rest
+- [x] A panicking or slow section shows the spec's line, and the rest
       still print in order.
-- [ ] Screenshots of `sb motd --distro --kernel`.
+- [x] Screenshots of `sb motd --distro --kernel`.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd -p sb`; `crates/sb/tests/motd.rs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-motd -p sb`; `crates/sb/tests/motd.rs`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** None (the docker and config parts come later)
 **Files:** `crates/motd/{Cargo.toml,src/lib.rs,src/run.rs,src/layout.rs,src/system.rs}`, `crates/sb/src/{main.rs,motd.rs}`, `crates/sb/Cargo.toml`, `crates/sb/tests/motd.rs`, `deny.toml`, `.claude/hooks/library-check.sh`, `Cargo.toml`, `Cargo.lock`
