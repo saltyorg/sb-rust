@@ -858,13 +858,13 @@ for ops.
 and lenient repo failures, the error layout.
 
 **Acceptance criteria:**
-- [ ] Each kind's cases from the spec, with strsim's `levenshtein`.
-- [ ] Fatal and lenient failures as the spec says.
-- [ ] The error layout matches the spec's texts.
+- [x] Each kind's cases from the spec, with strsim's `levenshtein`.
+- [x] Fatal and lenient failures as the spec says.
+- [x] The error layout matches the spec's texts.
 
 **Verification:**
-- [ ] `cargo test -p sb-ansible -p sb`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-ansible -p sb`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M32
 **Files:** `crates/ansible/{Cargo.toml,src/suggest.rs}`, `crates/sb/tests/ansible.rs`, `Cargo.toml`, `Cargo.lock`
@@ -879,16 +879,16 @@ and lenient repo failures, the error layout.
 term-ui amendment `Table::spanning_row`, error collection.
 
 **Acceptance criteria:**
-- [ ] Columns fill as many as the terminal width allows, through
+- [x] Columns fill as many as the terminal width allows, through
       uutils_term_grid (its size measured).
-- [ ] `sb list <query>` prints the search table with bold spanning rows
+- [x] `sb list <query>` prints the search table with bold spanning rows
       for the later repos.
-- [ ] Screenshots of `sb list`, `sb list -m` and a search, on a fixture
+- [x] Screenshots of `sb list`, `sb list -m` and a search, on a fixture
       cache.
 
 **Verification:**
-- [ ] `cargo test -p sb-ansible -p sb-term-ui -p sb` with insta snapshots.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ansible -p sb-term-ui -p sb` with insta snapshots.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M33
 **Files:** `crates/ansible/{Cargo.toml,src/list.rs}`, `crates/term-ui/src/table.rs`, `crates/sb/src/ansible.rs`, `crates/sb/tests/ansible.rs`, `Cargo.toml`, `Cargo.lock`
@@ -2120,7 +2120,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
-- [ ] **sb-ansible's log test is flaky under load** (lane 4, with its next
+- [x] **sb-ansible's log test is flaky under load** (lane 4, with its next
       task). `cache::tests::a_corrupt_or_unreadable_file_is_logged`
       (crates/ansible/src/cache.rs) captured an empty log once, during the
       instrumented coverage run on a loaded host; eight plain reruns
@@ -2139,7 +2139,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       Ansible whole...") never reaches `sb install --help`. cli-core shows
       the long help on `--help`, as clap does
       (https://docs.rs/clap/latest/clap/struct.Arg.html#method.long_help).
-- [ ] **M33: does install and list need a top-level cache form** (from
+- [x] **M33: does install and list need a top-level cache form** (from
       M32). `tags` and `refresh` open "Updating <Repo> tags cache" as a
       sub-step of a parent `Step`, which ops needs; sb-go's install and
       list have no parent step. M33 decides whether a `Runner` form is
