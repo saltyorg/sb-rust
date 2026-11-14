@@ -362,6 +362,21 @@ To discuss with the maintainer once every module is done, not before:
   maintainer decides whether the difference matters. The figures so far
   are in [ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md)'s
   Consequences; a move back to musl supersedes that ADR.
+- **A phase exploring alternative output designs** (maintainer,
+  2026-11-14). The maintainer's design canvas "sb list: refined columns"
+  (https://claude.ai/artifact/FLU6EQNhqSh2BHD9NkeHv2) is the starting point, one of the designs to weigh, not a spec. It
+  proposes, for `sb list`: bold, coloured headings with tag counts; a
+  rule under each heading; "install as sandbox-<tag>"; uniform
+  column-major columns (the longest tag plus a gap); and a footer hint.
+  The maintainer's notes on it:
+  - keep a bit of colour;
+  - align the columns across the Saltbox and Sandbox sections, so they
+    are easier on the eyes;
+  - fix what the canvas gets wrong: no blank line at the top, and the
+    cache state shown as a right-aligned "cached" or "rebuilt, repo
+    changed" is not how it should look.
+  The phase explores alternatives for sb's outputs, this one included,
+  once the commands exist; until then the approved looks stand.
 - **Tests on a real machine** (maintainer, 2026-11-13). Every test of
   sb's host-changing commands uses stand-ins (apt-get, ansible-playbook,
   systemctl on `PATH`, a fake GitHub and Engine API), and the by-hand
