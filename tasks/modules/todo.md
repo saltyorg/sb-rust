@@ -372,18 +372,18 @@ lock digest, the isolated `Cmd` builder (decision 11), and the uv
 `--version` probe with uv present.
 
 **Acceptance criteria:**
-- [ ] The crate per the spec's Project Structure; deny.toml adds
+- [x] The crate per the spec's Project Structure; deny.toml adds
       `sb-python-env` to the wrappers of `sb-exec`, `sb-term-ui`,
       `sb-host` and `sb-release` (an allow-list, so ahead of use is
       harmless), its own entry allowing `sb`; the hook lists `python-env`.
-- [ ] The isolated builder sets exactly the spec's environment for uv,
+- [x] The isolated builder sets exactly the spec's environment for uv,
       python and entry points.
-- [ ] The probe parses uv's version and applies the minimum, with the
+- [x] The probe parses uv's version and applies the minimum, with the
       spec's texts.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env` with stand-in programs.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-python-env` with stand-in programs.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M12 (the user, for the next task); none for the code here
 **Files:** `crates/python-env/{Cargo.toml,src/lib.rs,src/toolchain.rs,src/isolate.rs,src/uv.rs,src/testing.rs}`, `deny.toml`, `.claude/hooks/library-check.sh`, `Cargo.toml`, `Cargo.lock`
@@ -399,15 +399,15 @@ present (M3's `package_installed`); deadsnakes and the fact as stubs
 answering "nothing to do" behind the same steps; `sb update-venv` wired.
 
 **Acceptance criteria:**
-- [ ] On a healthy tree `sb update-venv` passes every step with the
+- [x] On a healthy tree `sb update-venv` passes every step with the
       spec's step texts and changes nothing it needn't.
-- [ ] Wrappers are rewritten and old generations removed as the spec says.
-- [ ] `error getting saltbox user: <cause>` wraps M12's errors.
+- [x] Wrappers are rewritten and old generations removed as the spec says.
+- [x] `error getting saltbox user: <cause>` wraps M12's errors.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env`; an sb test through the binary on a
+- [x] `cargo test -p sb-python-env`; an sb test through the binary on a
       stand-in tree.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M1, M3, M12, M13
 **Files:** `crates/python-env/src/{lib.rs,manifest.rs,venv.rs,wrappers.rs}`, `crates/sb/src/{main.rs,python_env.rs}`, `crates/sb/Cargo.toml`, `crates/sb/tests/python_env.rs`, `Cargo.lock`
@@ -422,15 +422,15 @@ venv`, `pip sync` streamed, discovery, the staged check and the manifest
 write.
 
 **Acceptance criteria:**
-- [ ] Each step's argv, isolation and texts as the spec's "venv
+- [x] Each step's argv, isolation and texts as the spec's "venv
       reconcile, step by step" says.
-- [ ] A failed or cancelled build leaves the live venv untouched and the
+- [x] A failed or cancelled build leaves the live venv untouched and the
       staging cleaned up.
-- [ ] The manifest is schema 1, written atomically.
+- [x] The manifest is schema 1, written atomically.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env` with stand-in uv and python.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-python-env` with stand-in uv and python.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M14
 **Files:** `crates/python-env/src/{venv.rs,manifest.rs,testing.rs}`, `crates/python-env/tests/`
