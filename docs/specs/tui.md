@@ -201,7 +201,9 @@ docs/community/support.md:34) and sb-go's screens can't give.
   searches the loaded buffer, smart-case (case-sensitive once the query
   has an upper-case letter), substring, over the plain text the screen
   shows (`DisplayText` with colour off, research decision 10). Every
-  match is highlighted in the `SearchHit` role. `n` and `N` jump to the
+  match is highlighted: in the `SearchHit` role under truecolor and
+  `ansi256`, in reverse video under `ansi` and with colour off (decision
+  23). `n` and `N` jump to the
   next and previous match and pause following; a search while following
   starts at the newest match (proto-logs' fix). The header shows `3/17`.
   Esc clears the search. The query resets when another source opens.
@@ -729,6 +731,17 @@ no real systemctl.
     binary is complete").
 22. **No `-v`:** the run log has the detail (research decision 21; config
     decision 1).
+23. **Search matches are reversed under 16 colours and with colour off**
+    (the maintainer, 2026-11-14). Under `ansi` the
+    `SearchHit` pick, yellow, turned a yellow span inside a match yellow
+    on yellow; under `ascii`, `NO_COLOR` and `--color=never` the role has
+    no colour, so matches weren't lit at all. Both now patch reverse video
+    (ratatui's `Modifier::REVERSED`) over each span's own colours; under
+    truecolor and `ansi256` a match keeps the `SearchHit` background. With
+    colour off (anstream's choice for stdout, as sb's other output reads
+    it) the screens take the plain theme, so lines are built with colour
+    off as "Text path" says, also under `--color=never`, which crossterm
+    doesn't know.
 
 ## Known limits
 
@@ -1491,9 +1504,10 @@ the test's directory.
     mapped back to its character, so a match is a range of the shown
     text. A match across the log's colour spans is lit whole: the spans
     are split at its edges and patched with `SearchHit` as a background
-    (ratatui patches whole spans only). Under `ascii` and `NO_COLOR` the
-    role has no colour, so matches aren't lit; the header's count and the
-    jump show them.
+    (ratatui patches whole spans only). Under `ansi`, `ascii`, `NO_COLOR`
+    and `--color=never` a match is patched with reverse video instead
+    (decision 23), so a log span in reverse video (SGR 7) inside a match
+    looks as it did.
   - `/` opens the line on the search in effect, as the picker's filter
     does. Enter with an empty line clears the search; Esc in the line
     clears it; Esc outside it clears a search in effect first, then goes

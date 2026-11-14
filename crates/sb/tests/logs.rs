@@ -348,6 +348,78 @@ fn q_in_the_viewer_quits() {
     pty.assert_restored();
 }
 
+/// How a search for `hello` lights the app's first line on screen with
+/// `extra` set (no value removes a variable): whether `hello` is drawn in
+/// reverse video, `from` after it not, and `hello`'s background.
+fn hello_lit(args: &[&str], extra: &[(&str, Option<&str>)]) -> (bool, bool, vt100::Color) {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let mut envs = world.envs();
+    // A developer's CLICOLOR settings would change the colour-on cases.
+    envs.push(("CLICOLOR".to_owned(), None));
+    envs.push(("CLICOLOR_FORCE".to_owned(), None));
+    envs.extend(
+        extra
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.map(str::to_owned))),
+    );
+    let mut pty = Pty::spawn(args, envs);
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    pty.send(b"jj\r");
+    assert!(pty.showing("app[42]: hello from app"), "{}", pty.contents());
+    pty.send(b"/hello\r");
+    assert!(pty.showing("/hello 1/1"), "{}", pty.contents());
+    let screen = pty.parser.screen();
+    let (row, text) = screen
+        .rows(0, 100)
+        .enumerate()
+        .find(|(_, text)| text.contains("app[42]: hello from app"))
+        .expect("the line");
+    let at = |word: &str| {
+        let col = text.find(word).expect("the word");
+        let row = u16::try_from(row).expect("a row");
+        let col = u16::try_from(col).expect("a column");
+        screen.cell(row, col).expect("a cell").clone()
+    };
+    let (hello, from) = (at("hello"), at("from"));
+    // The column is a byte offset: right while the row's lead is ASCII.
+    assert_eq!((hello.contents(), from.contents()), ("h", "f"));
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    (hello.inverse(), from.inverse(), hello.bgcolor())
+}
+
+/// A match is drawn in reverse video with colour off (`NO_COLOR`,
+/// `--color=never`) and under the 16 colours, in `SearchHit`'s background
+/// under truecolor and 256 (the maintainer, 2026-11-14; tui spec,
+/// decision 23).
+#[test]
+fn a_match_is_reversed_with_colour_off_and_in_sixteen_colours() {
+    let reversed = (true, false, vt100::Color::Default);
+    assert_eq!(hello_lit(&["logs"], &[]), reversed, "NO_COLOR");
+    assert_eq!(
+        hello_lit(&["logs", "--color=never"], &[("NO_COLOR", None)]),
+        reversed,
+        "--color=never"
+    );
+    assert_eq!(
+        hello_lit(
+            &["logs"],
+            &[("NO_COLOR", None), ("SB_COLOR_PROFILE", Some("ansi"))]
+        ),
+        reversed,
+        "ansi"
+    );
+    for profile in ["truecolor", "ansi256"] {
+        let (inverse, _, bg) = hello_lit(
+            &["logs"],
+            &[("NO_COLOR", None), ("SB_COLOR_PROFILE", Some(profile))],
+        );
+        assert!(!inverse, "{profile}");
+        assert_ne!(bg, vt100::Color::Default, "{profile}");
+    }
+}
+
 /// A dotted service name opens its own log (sb-host lists it without
 /// `.service`).
 #[test]

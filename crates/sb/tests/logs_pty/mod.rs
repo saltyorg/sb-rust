@@ -149,8 +149,8 @@ pub struct Pty {
 }
 
 impl Pty {
-    /// sb with `args` and `envs` ([`sb_envs`]), `TERM=xterm-256color` and
-    /// `NO_COLOR`.
+    /// sb with `TERM=xterm-256color` and `NO_COLOR`, then `args` and
+    /// `envs` ([`sb_envs`]; one with no value removes it).
     pub fn spawn(args: &[&str], envs: Vec<(String, Option<String>)>) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -162,14 +162,14 @@ impl Pty {
             .expect("pty");
         let mut cmd = CommandBuilder::new(common::sb().get_program());
         cmd.args(args);
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("NO_COLOR", "1");
         for (k, v) in envs {
             match v {
                 Some(v) => cmd.env(k, v),
                 None => cmd.env_remove(k),
             }
         }
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("NO_COLOR", "1");
         let child = pair.slave.spawn_command(cmd).expect("spawn");
         let tty = pair.master.tty_name().expect("tty name");
         let mut reader = pair.master.try_clone_reader().expect("reader");

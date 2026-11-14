@@ -22,7 +22,7 @@
 use ansi_to_tui::IntoText as _;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TextLine, Span, Text};
 use sb_cli_core::theme::{Profile, Role, Theme};
 use sb_term_ui::DisplayText;
@@ -79,9 +79,23 @@ impl Format {
         Style::from(self.theme.style(role))
     }
 
-    /// `role`'s colour as a background (`SearchHit`), none under `ascii`.
+    /// `role`'s colour as a background, none under `ascii`.
     pub(crate) fn bg(&self, role: Role) -> Style {
         Style::from(anstyle::Style::new().bg_color(self.theme.color(role)))
+    }
+
+    /// How a search match is lit (the maintainer, 2026-11-14; tui
+    /// decision 23): the `SearchHit` background under truecolor and
+    /// ansi256, reverse video under ansi and ascii. The 16-colour pick,
+    /// yellow, hid a yellow span inside a match, and ascii has no colour;
+    /// ratatui's `Modifier::REVERSED`
+    /// (<https://docs.rs/ratatui/0.30.2/ratatui/style/struct.Modifier.html>)
+    /// is patched over each span's own colours.
+    pub(crate) fn hit(&self) -> Style {
+        match self.theme.profile() {
+            Profile::TrueColor | Profile::Ansi256 => self.bg(Role::SearchHit),
+            Profile::Ansi | Profile::Ascii => Style::new().add_modifier(Modifier::REVERSED),
+        }
     }
 
     fn colour(&self) -> bool {
@@ -156,8 +170,7 @@ pub(crate) fn hit_lead(
 }
 
 /// [`text`] with every match of `query` in the message patched with `hit`
-/// (the `SearchHit` role); the time, origin and cut notice aren't
-/// searched.
+/// ([`Format::hit`]); the time, origin and cut notice aren't searched.
 pub(crate) fn searched(line: &Line, format: &Format, query: &str, hit: Style) -> Text<'static> {
     let (shown, cut) = shown(line, format);
     let colour = format.colour();
@@ -177,7 +190,7 @@ pub(crate) fn searched(line: &Line, format: &Format, query: &str, hit: Style) ->
     while text.lines.len() < display.lines().len() {
         text.lines.push(TextLine::default());
     }
-    // Under `ascii` the hit has no style: nothing to split for.
+    // A caller's empty style (as `text` passes): nothing to light.
     if !query.is_empty() && hit != Style::new() {
         for screen_line in &mut text.lines {
             search::highlight(screen_line, query, hit);
@@ -538,5 +551,41 @@ mod tests {
         assert!(f.bg(Role::SearchHit).bg.is_some());
         assert_eq!(f.bg(Role::SearchHit).fg, None);
         assert_eq!(format(Profile::Ascii).bg(Role::SearchHit), Style::new());
+    }
+
+    /// A match is lit by the `SearchHit` background under truecolor and
+    /// ansi256, and in reverse video under ansi and ascii (the maintainer,
+    /// 2026-11-14): ansi's pick, yellow, hid a yellow span, and ascii has
+    /// no colour to light it with.
+    #[test]
+    fn a_hit_is_the_search_hit_background_or_reverse_video() {
+        for profile in [Profile::TrueColor, Profile::Ansi256] {
+            let f = format(profile);
+            assert_eq!(f.hit(), f.bg(Role::SearchHit), "{profile:?}");
+            assert!(f.hit().bg.is_some(), "{profile:?}");
+            assert_eq!(f.hit().fg, None, "{profile:?}");
+            assert!(f.hit().add_modifier.is_empty(), "{profile:?}");
+        }
+        for profile in [Profile::Ansi, Profile::Ascii] {
+            assert_eq!(
+                format(profile).hit(),
+                Style::new().add_modifier(Modifier::REVERSED),
+                "{profile:?}"
+            );
+        }
+    }
+
+    /// Under ascii a match is reversed, the text around it untouched.
+    #[test]
+    fn under_ascii_a_match_is_reversed() {
+        let f = format(Profile::Ascii);
+        let text = searched(&service_line(b"one two one"), &f, "one", f.hit());
+        let lit: Vec<String> = text.lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(lit, ["one", "one"]);
     }
 }

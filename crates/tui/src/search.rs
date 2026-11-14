@@ -52,8 +52,8 @@ fn caseless_matches(plain: &str, query: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// `line` with every match of `query` in its text patched with `hit` (the
-/// `SearchHit` role): spans are split at the matches' edges, so a match
+/// `line` with every match of `query` in its text patched with `hit`
+/// (`Format::hit`): spans are split at the matches' edges, so a match
 /// across styled spans is highlighted whole and each piece keeps its own
 /// style beneath the hit's. Why not ratatui's `Line::patch_style` or
 /// `Span::patch_style`

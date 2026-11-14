@@ -9,6 +9,7 @@ use insta::assert_snapshot;
 use jiff::tz::TimeZone;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::style::{Color, Modifier};
 use sb_cli_core::theme::{Palette, Profile, Theme};
 
 use super::*;
@@ -1024,6 +1025,46 @@ fn matches_are_lit_in_the_search_hit_role() {
         .map(|x| buffer[(x, row)].symbol().to_owned())
         .collect();
     assert_eq!(lit, "Info] House");
+    assert!(
+        (0..buffer.area.width).all(|x| !buffer[(x, row)].modifier.contains(Modifier::REVERSED)),
+        "no reverse video under truecolor"
+    );
+}
+
+/// Under 16 colours and under ascii every match is drawn in reverse
+/// video, not on `SearchHit`'s background (the maintainer, 2026-11-14):
+/// the 16-colour pick, yellow, hid a yellow span inside a match, which
+/// now keeps its colour, reversed.
+#[test]
+fn matches_are_reversed_in_sixteen_colours_and_ascii() {
+    for (profile, fg) in [
+        (Profile::Ansi, Color::Yellow),
+        (Profile::Ascii, Color::Reset),
+    ] {
+        let theme = Theme::resolve(&Palette::default(), profile);
+        let mut h = open_with(60, 8, Limits::default(), Format::new(TimeZone::UTC, theme));
+        h.requests();
+        h.send(Event::Page {
+            kind: PageKind::Tail,
+            oldest: Some(position(0)),
+            newest: Some(position(0)),
+            lines: vec![line(0, "\x1b[33m[Warn]\x1b[0m disk low")],
+            more_older: false,
+            more_newer: false,
+        });
+        h.search("warn] d");
+        let buffer = h.terminal.backend().buffer();
+        let row = (0..buffer.area.height)
+            .find(|&y| buffer[(0, y)].symbol() == "[")
+            .expect("the line");
+        let lit: String = (0..buffer.area.width)
+            .filter(|&x| buffer[(x, row)].modifier.contains(Modifier::REVERSED))
+            .map(|x| buffer[(x, row)].symbol().to_owned())
+            .collect();
+        assert_eq!(lit, "Warn] d", "{profile:?}");
+        let w = &buffer[(1, row)];
+        assert_eq!((w.fg, w.bg), (fg, Color::Reset), "{profile:?}");
+    }
 }
 
 /// With wrap off, ←/→, Shift+wheel and the horizontal wheel step 8

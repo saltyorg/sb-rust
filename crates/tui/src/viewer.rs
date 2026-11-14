@@ -29,7 +29,8 @@
 //!   (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html>),
 //!   as the picker's filter does; Enter searches the loaded buffer,
 //!   smart-case substring over each message as the screen shows it
-//!   (`search`, `line::searched`), every match lit in the `SearchHit` role.
+//!   (`search`, `line::searched`), every match lit by `Format::hit`: the
+//!   `SearchHit` background, or reverse video under 16 colours and with colour off.
 //!   A search while following starts at the newest match, else at the
 //!   first from the window's top; the view moves to it only when it isn't
 //!   in sight. `n` and `N` jump to the next and previous match (no wrap at
@@ -497,12 +498,9 @@ impl Viewer {
             return Text::from(TextLine::styled("--- start of log ---", muted));
         }
         match usize::try_from(item).ok().and_then(|i| self.entries.get(i)) {
-            Some(Entry::Line(line, _)) => line::searched(
-                line,
-                &self.format,
-                &self.query,
-                self.format.bg(Role::SearchHit),
-            ),
+            Some(Entry::Line(line, _)) => {
+                line::searched(line, &self.format, &self.query, self.format.hit())
+            }
             Some(Entry::Notice(notice)) => {
                 let shown = DisplayText::from_bytes(notice.to_string().as_bytes(), false);
                 let role = if notice.is_error() {

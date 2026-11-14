@@ -84,12 +84,30 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
             services: Ok(services),
             docker,
             filter: sb_tui::Filter::All,
-            theme: theme::current().clone(),
+            theme: screen_theme(),
             zone: sb_tui::line::local_zone(),
         },
     )
     .await?;
     ended(ending)
+}
+
+/// The theme the logs screens draw with: the run's, or none when stdout
+/// gets no colour (`NO_COLOR`, `--color=never`; ADR-002 decision 4, the
+/// tui spec's "Text path"), read as sb's other output reads it
+/// (`colour_on`, anstream's choice). crossterm drops only colours under
+/// `NO_COLOR` and doesn't know `--color`, so without this the viewer
+/// lit a match with a background that isn't drawn; the plain theme's
+/// `ascii` lights it in reverse video (tui decision 23). Left as it is:
+/// `NO_COLOR` with `--color=always` gets the run's theme, whose colours
+/// crossterm still drops (crossterm's `force_color_output` would follow
+/// the choice; no Saltbox use sets both).
+pub(crate) fn screen_theme() -> theme::Theme {
+    if sb_term_ui::colour_on(sb_term_ui::Stream::Stdout) {
+        theme::current().clone()
+    } else {
+        theme::Theme::plain()
+    }
 }
 
 /// `list` with the journal their logs are read from (the run's one,

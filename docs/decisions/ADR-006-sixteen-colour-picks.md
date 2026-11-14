@@ -77,3 +77,12 @@ role keeps the nearest match.
   reviewed picks of its own.
 - 16-colour output still depends on the terminal's own palette, as
   ADR-002 accepted.
+
+## Amendments
+
+- **2026-11-14 (the maintainer; tui spec decision 23):** the viewer's
+  search matches are drawn in reverse video under `ansi`, so the
+  `search_hit` pick above (yellow) is no longer drawn: it turned a yellow
+  span inside a match yellow on yellow. The pick and its guard test stay
+  in the table; a theme file's `search_hit` still counts under truecolor
+  and `ansi256` only.

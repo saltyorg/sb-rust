@@ -15,7 +15,6 @@ use std::sync::Arc;
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::exit;
-use sb_cli_core::theme;
 use sb_docker::connect::{self, Daemon};
 use sb_docker::ps::Row;
 use sb_host::systemd::{Systemd, default_filters};
@@ -68,7 +67,7 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
             services,
             docker: sb_tui::Docker::Listed { daemon, rows },
             filter: sb_tui::Filter::Containers,
-            theme: theme::current().clone(),
+            theme: crate::logs::screen_theme(),
             zone: sb_tui::line::local_zone(),
         },
     )
