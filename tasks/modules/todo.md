@@ -788,16 +788,16 @@ pass-through, Ctrl-C and 99, `SB_ANSIBLE_PLAYBOOK` (cli-core
 amendment), `sb diag` through the binary with the fake playbook.
 
 **Acceptance criteria:**
-- [ ] The crate per the spec's Project Structure; deny.toml per the
+- [x] The crate per the spec's Project Structure; deny.toml per the
       capability map's row (exec, host, repo, term-ui, cli-core).
-- [ ] The fake `ansible-playbook` records argv NUL-separated; `diag`'s
+- [x] The fake `ansible-playbook` records argv NUL-separated; `diag`'s
       argv and `Executing...` line (through `Cmd::shown()`) match.
-- [ ] Ctrl-C ends with 130, and the playbook's exit code passes through.
+- [x] Ctrl-C ends with 130, and the playbook's exit code passes through.
 
 **Verification:**
-- [ ] `cargo test -p sb-ansible -p sb`; `crates/sb/tests/ansible.rs`,
+- [x] `cargo test -p sb-ansible -p sb`; `crates/sb/tests/ansible.rs`,
       `ansible_signals.rs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M22
 **Files:** `crates/ansible/{Cargo.toml,src/lib.rs,src/run.rs,tests/fixtures/}`, `crates/sb/src/{main.rs,ansible.rs}`, `crates/sb/Cargo.toml`, `crates/sb/tests/{ansible.rs,ansible_signals.rs}`, `deny.toml`, `.claude/hooks/library-check.sh`, `Cargo.toml`, `Cargo.lock`
@@ -813,15 +813,15 @@ included), `--skip-tags`, `--no-cache` as the only path for now, host's
 LXC and disk checks (`--force-disk-full`).
 
 **Acceptance criteria:**
-- [ ] `-v` to `-vvvv` and `-v -v` reach every run as one `-v...` element.
-- [ ] Each `-e` reaches Ansible as one `--extra-vars=<value>`: multi-key
+- [x] `-v` to `-vvvv` and `-v -v` reach every run as one `-v...` element.
+- [x] Each `-e` reaches Ansible as one `--extra-vars=<value>`: multi-key
       JSON, nested quotes, unicode, a leading `-`, several in order (the
       capability map's open item).
-- [ ] The LXC and disk checks run before any playbook, with host's texts.
+- [x] The LXC and disk checks run before any playbook, with host's texts.
 
 **Verification:**
-- [ ] `cargo test -p sb-ansible -p sb` with both fixtures.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ansible -p sb` with both fixtures.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M30, M3, M4
 **Files:** `crates/ansible/src/{args.rs,run.rs,lib.rs}`, `crates/sb/src/ansible.rs`, `crates/sb/tests/ansible.rs`
@@ -837,14 +837,14 @@ corrupt files, sb-go-written fixtures; `TagCache::refresh(repo, step)`
 for ops.
 
 **Acceptance criteria:**
-- [ ] sb-go's `cache.json` loads unchanged; a stale commit rebuilds.
-- [ ] Writes are atomic and 0644, set explicitly (completion reads
+- [x] sb-go's `cache.json` loads unchanged; a stale commit rebuilds.
+- [x] Writes are atomic and 0644, set explicitly (completion reads
       without sudo).
-- [ ] A corrupt file rebuilds with the spec's notice.
+- [x] A corrupt file rebuilds with the spec's notice.
 
 **Verification:**
-- [ ] `cargo test -p sb-ansible` with sb-go fixtures.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ansible` with sb-go fixtures.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M31, M7
 **Files:** `crates/ansible/src/{cache.rs,lib.rs}`, `crates/ansible/tests/`
@@ -2120,6 +2120,17 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **`--help` shows a flag's long help** (from M31, lane 2 with M70).
+      sb's help renderer (cli-core's `flag_row`) shows only the short help,
+      so `-e`'s long help (ansible spec, lines 75-77: "Each value reaches
+      Ansible whole...") never reaches `sb install --help`. cli-core shows
+      the long help on `--help`, as clap does
+      (https://docs.rs/clap/latest/clap/struct.Arg.html#method.long_help).
+- [ ] **M33: does install and list need a top-level cache form** (from
+      M32). `tags` and `refresh` open "Updating <Repo> tags cache" as a
+      sub-step of a parent `Step`, which ops needs; sb-go's install and
+      list have no parent step. M33 decides whether a `Runner` form is
+      needed.
 - [ ] **Before M20: symlinked sources and the re-check** (from M11, lane
       1). Two things M20 needs settled first:
       - The specs disagree on a symlink in `sources.list.d`.
