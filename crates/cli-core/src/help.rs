@@ -20,20 +20,46 @@
 //! blank line after the text, which its own trim at the end of
 //! `write_help` removes again, so the output is the same; a literal `{n}`
 //! in a text would become a new line (sb's texts have none; sb's unit
-//! tests, `crates/sb/src/main.rs`, check); and the text would be wrapped at
-//! the terminal's width if clap's `wrap_help` feature were on (it is off;
-//! sb's help tests check).
+//! tests, `crates/sb/src/main.rs`, check); and clap would wrap the text
+//! again, from column 0, if its `wrap_help` feature were on (it is off;
+//! sb's help tests check that continuation lines keep their indent).
+//!
+//! Every line is wrapped to [`width`], fang's: the terminal's width capped
+//! at 120 columns (fang v2.0.1 `help.go`, `width`). The about wraps under
+//! its two-space indent, as fang's `Width(width()).PaddingLeft(2)` does; a
+//! command's or a flag's text wraps under the help column, which fang
+//! leaves to the terminal (maintainer, 2026-11-14). Why not clap's own wrap
+//! (`wrap_help`, `Command::term_width`, `Command::max_term_width`,
+//! <https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.max_term_width>):
+//! those only size clap's own layout. A `before_help` text is wrapped
+//! whole from column 0 (`clap_builder` 4.6.7 `write_before_help`), clap's
+//! width probe is private (`dimensions`), and the feature would add the
+//! `terminal_size` crate.
 //!
 //! Why not clap's own renderer with styles or a template: its command list shows names
 //! only (no usage hints), its usage says `[OPTIONS]` and its lists are
 //! indented its own way (docs/prototypes/proto-help.md). The layout follows fang
 //! v2.0.1 `help.go`; widths are display widths (unicode-width), padded by
 //! hand since `{:<w$}` counts chars and clap's width helper is private.
+//! Why not a borderless two-column tabled `Table` with `Width::wrap` on
+//! the text column, for the rows: each row's lead carries its own styles,
+//! the key column's width is fang's (widest key plus two, across commands
+//! and flags), and tabled's word wrap would keep the space it carries to a
+//! piece's start, shifting some continuation lines a column right.
 //!
 //! Differences from fang: clap trims the blank line fang prints before and
-//! after help; the about isn't wrapped at 120 columns yet (tasks/cli-core/todo.md);
-//! `sb help help` is clap's own, since clap adds that subcommand after
-//! `apply` runs. clap settings fang's format has no place for (short-only
+//! after help; fang pads the about's lines with spaces to the width, sb
+//! doesn't; command and flag rows wrap under their help column and drop
+//! their text's blank lines (fang shows a paragraph break); the usage
+//! line isn't wrapped (sb's longest is far below 80 columns); with no
+//! terminal, `COLUMNS` gives the width (clap's order; fang reads only the
+//! terminal), and a PTY nobody sized counts as none (fang's `min(0, 120)`
+//! doesn't wrap); a row's text keeps at least 20 columns; and the wrap
+//! itself is tabled's, which differs from fang's (charmbracelet/x/ansi
+//! `Wrap`) in two rare cases: the line after one that fills the width
+//! exactly breaks a column early, and fang also breaks after a hyphen and
+//! starts a word wider than the width on a fresh line. `sb help help` is
+//! clap's own, since clap adds that subcommand after `apply` runs. clap settings fang's format has no place for (short-only
 //! help texts, `hide_default_value`, `last` positionals, visible aliases)
 //! are not shown.
 
@@ -50,9 +76,102 @@ use crate::theme::{Role, Theme};
 /// `_check_help_and_version`), which sb keeps listed (maintainer).
 const HELP_SUBCOMMAND_ABOUT: &str = "Print this message or the help of the given subcommand(s)";
 
+/// The widest help sb lays out, fang's cap (fang v2.0.1 `help.go`,
+/// `width`), and its width when neither the terminal nor `COLUMNS` gives
+/// one.
+pub const MAX_WIDTH: usize = 120;
+
+/// The about's indent, fang's `PaddingLeft(2)`.
+const ABOUT_INDENT: usize = 2;
+
+/// The fewest columns a row's text wraps at. A terminal so narrow that the
+/// help column leaves fewer wraps the text at this, past the edge, rather
+/// than one or two characters a row.
+const MIN_TEXT_WIDTH: usize = 20;
+
+/// The width help is laid out for: stdout's terminal width, else
+/// `COLUMNS`, in clap's order (`clap_builder` 4.6.7
+/// `src/output/help_template.rs`, `dimensions`: the terminal first, the
+/// variable when there is none), else [`MAX_WIDTH`]; never more than
+/// [`MAX_WIDTH`], as fang. The terminal's width is `TIOCGWINSZ` through
+/// rustix's `tcgetwinsize`
+/// (<https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcgetwinsize.html>),
+/// as sb-exec reads it for a PTY.
+#[must_use]
+pub fn width() -> usize {
+    let terminal = rustix::termios::tcgetwinsize(std::io::stdout())
+        .ok()
+        .map(|size| usize::from(size.ws_col));
+    layout_width(terminal, std::env::var_os("COLUMNS").as_deref())
+}
+
+/// [`width`]'s rule over what it read: a terminal width of 0 (a PTY
+/// nobody sized) and a `COLUMNS` that isn't a positive number count as
+/// none.
+fn layout_width(terminal: Option<usize>, columns: Option<&std::ffi::OsStr>) -> usize {
+    terminal
+        .filter(|&w| w > 0)
+        .or_else(|| {
+            columns
+                .and_then(|c| c.to_str()?.trim().parse::<usize>().ok())
+                .filter(|&w| w > 0)
+        })
+        .map_or(MAX_WIDTH, |w| w.min(MAX_WIDTH))
+}
+
+/// One line of plain text wrapped at words to `width` display columns: a
+/// line that fits comes back as it is; a longer one goes through tabled's
+/// `Wrap::wrap`
+/// (<https://docs.rs/tabled/0.22.0/tabled/settings/width/struct.Wrap.html#method.wrap>),
+/// the wrap term-ui's tree uses (`sb_term_ui`'s `text::wrap_line`), and a
+/// word wider than `width` (a long path or URL) breaks at any character,
+/// from where it starts. The spaces at each break are taken off (tabled
+/// carries the one it broke at to the next piece, which also makes the
+/// line after an exactly full one break a column early) and a piece of
+/// spaces only is dropped; the first piece keeps the line's own indent,
+/// and a line of spaces only comes back as one empty piece.
+///
+/// Why not textwrap (`Options::subsequent_indent`,
+/// <https://docs.rs/textwrap/0.16.2/textwrap/struct.Options.html#structfield.subsequent_indent>):
+/// it isn't a dependency (a new crate goes to the maintainer), and
+/// tabled's wrap is already in sb's binary. sb's help texts hold no
+/// colour codes: the styles are added to each piece after.
+fn wrapped(line: &str, width: usize) -> Vec<String> {
+    if line.width() <= width {
+        return vec![line.to_owned()];
+    }
+    let wrapped = tabled::settings::width::Wrap::wrap(line, width, true);
+    let pieces: Vec<&str> = wrapped
+        .split('\n')
+        .filter(|piece| !piece.trim().is_empty())
+        .collect();
+    if pieces.is_empty() {
+        return vec![String::new()];
+    }
+    let last = pieces.len().saturating_sub(1);
+    pieces
+        .iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let piece = if i > 0 {
+                piece.trim_start_matches(' ')
+            } else {
+                piece
+            };
+            let piece = if i < last {
+                piece.trim_end_matches(' ')
+            } else {
+                piece
+            };
+            piece.to_owned()
+        })
+        .collect()
+}
+
 /// Each command in `cmd` with its help replaced by sb's format. `colour`
 /// says whether help will be shown in colour (the shaded usage block's
-/// padding rows are left out otherwise, as fang does).
+/// padding rows are left out otherwise, as fang does); `width` is the
+/// width its lines wrap at ([`width`]).
 ///
 /// Why not read the tree after `Command::build()`, which fills in command
 /// paths, inherited globals and clap's help flag and subcommand: a built
@@ -61,17 +180,30 @@ const HELP_SUBCOMMAND_ABOUT: &str = "Print this message or the help of the given
 /// apart without comparing each command with its parent, which costs as
 /// much as passing the inherited flags down here.
 #[must_use]
-pub fn apply(cmd: Command, theme: &Theme, colour: bool) -> Command {
+pub fn apply(cmd: Command, theme: &Theme, colour: bool, width: usize) -> Command {
     let path = cmd.get_name().to_string();
-    apply_at(cmd, &path, &[], theme, colour)
+    let look = Look {
+        theme,
+        colour,
+        width,
+    };
+    apply_at(cmd, &path, &[], &look)
 }
 
-fn apply_at(cmd: Command, path: &str, inherited: &[Arg], theme: &Theme, colour: bool) -> Command {
+/// How help is drawn: the theme, whether in colour, and the width its
+/// lines wrap at.
+struct Look<'a> {
+    theme: &'a Theme,
+    colour: bool,
+    width: usize,
+}
+
+fn apply_at(cmd: Command, path: &str, inherited: &[Arg], look: &Look<'_>) -> Command {
     let refs: Vec<&Arg> = inherited.iter().collect();
-    let text = render(&cmd, path, &refs, theme, colour, false);
+    let text = render(&cmd, path, &refs, look, false);
     let long = shown_flags(&cmd, &refs)
         .any(|a| a.get_long_help().is_some())
-        .then(|| render(&cmd, path, &refs, theme, colour, true));
+        .then(|| render(&cmd, path, &refs, look, true));
     let mut below = inherited.to_vec();
     below.extend(cmd.get_arguments().filter(|a| a.is_global_set()).cloned());
     let names: Vec<String> = cmd
@@ -86,7 +218,7 @@ fn apply_at(cmd: Command, path: &str, inherited: &[Arg], theme: &Theme, colour: 
     }
     for name in names {
         let sub_path = format!("{path} {name}");
-        cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, theme, colour));
+        cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, look));
     }
     cmd
 }
@@ -166,17 +298,37 @@ fn flag_row(arg: &Arg, long_help: bool) -> (String, String, String) {
     (key, shown, help)
 }
 
+/// `help` beside a row's `lead`, which ends at the help column `column`,
+/// in `style`: each of its lines wrapped to `width`, every piece after the
+/// first under the help column. A blank line in `help` (a long help's
+/// paragraph break, as `-e`'s) is left out, so the command and flag lists
+/// have no blank line (maintainer, 2026-11-14); the row's first line is
+/// written even when empty, for its lead.
+fn write_row(out: &mut String, lead: &str, help: &str, column: usize, width: usize, style: Style) {
+    let avail = width.saturating_sub(column).max(MIN_TEXT_WIDTH);
+    let indent = " ".repeat(column);
+    let mut first = true;
+    for line in help.split('\n') {
+        if line.trim().is_empty() && !first {
+            continue;
+        }
+        for piece in wrapped(line, avail) {
+            let lead = if first { lead } else { indent.as_str() };
+            let _ = writeln!(out, "{lead}{style}{piece}{style:#}");
+            first = false;
+        }
+    }
+}
+
 /// The help text for `cmd`, reached through `path` (`sb install`), with
 /// `inherited` the global flags of its ancestors; its flags' long help
 /// when `long`.
-fn render(
-    cmd: &Command,
-    path: &str,
-    inherited: &[&Arg],
-    theme: &Theme,
-    colour: bool,
-    long: bool,
-) -> String {
+fn render(cmd: &Command, path: &str, inherited: &[&Arg], look: &Look<'_>, long: bool) -> String {
+    let Look {
+        theme,
+        colour,
+        width,
+    } = *look;
     let mut commands: Vec<(String, String, String)> = cmd
         .get_subcommands()
         .filter(|c| !c.is_hide_set())
@@ -204,7 +356,8 @@ fn render(
         ));
     }
     flags.sort();
-    let width = commands
+    // The key column: the widest key plus two (fang's `calculateSpace`).
+    let key_width = commands
         .iter()
         .map(|(name, hint, _)| name.width() + hint.width())
         .chain(flags.iter().map(|(_, shown, _)| shown.width()))
@@ -228,11 +381,16 @@ fn render(
         .or(cmd.get_about())
         .map_or_default(ToString::to_string);
     let mut out = String::new();
+    // fang wraps the about at the width less its indent.
+    let about_width = width.saturating_sub(ABOUT_INDENT).max(MIN_TEXT_WIDTH);
+    let indent = " ".repeat(ABOUT_INDENT);
     for line in about.lines() {
         if line.is_empty() {
             out.push('\n');
-        } else {
-            let _ = writeln!(out, "  {text}{line}{text:#}");
+            continue;
+        }
+        for piece in wrapped(line, about_width) {
+            let _ = writeln!(out, "{indent}{text}{piece}{text:#}");
         }
     }
     let _ = writeln!(out, "\n  {heading}USAGE{heading:#}\n");
@@ -240,31 +398,16 @@ fn render(
     if !commands.is_empty() {
         let _ = writeln!(out, "\n  {heading}COMMANDS{heading:#}\n");
         for (name, hint, about) in &commands {
-            let pad = " ".repeat(width - name.width() - hint.width());
-            let _ = writeln!(
-                out,
-                "    {name_style}{name}{name_style:#}{muted}{hint}{muted:#}{pad}{text}{about}{text:#}"
-            );
+            let pad = " ".repeat(key_width - name.width() - hint.width());
+            let lead = format!("    {name_style}{name}{name_style:#}{muted}{hint}{muted:#}{pad}");
+            write_row(&mut out, &lead, about, key_width + 4, width, text);
         }
     }
     let _ = writeln!(out, "\n  {heading}FLAGS{heading:#}\n");
     for (_, shown, help) in &flags {
-        let pad = " ".repeat(width - shown.width());
-        // A long help's later lines sit under the help column; its blank
-        // lines stay blank.
-        let (first, later) = match help.split_once('\n') {
-            Some((first, later)) => (first, Some(later)),
-            None => (help.as_str(), None),
-        };
-        let _ = writeln!(out, "    {flag}{shown}{flag:#}{pad}{text}{first}{text:#}");
-        let indent = " ".repeat(width + 4);
-        for line in later.into_iter().flat_map(|later| later.split('\n')) {
-            if line.is_empty() {
-                out.push('\n');
-            } else {
-                let _ = writeln!(out, "{indent}{text}{line}{text:#}");
-            }
-        }
+        let pad = " ".repeat(key_width - shown.width());
+        let lead = format!("    {flag}{shown}{flag:#}{pad}");
+        write_row(&mut out, &lead, help, key_width + 4, width, text);
     }
     out
 }
@@ -468,8 +611,22 @@ mod tests {
             .subcommand(Command::new("secret").about("Hidden").hide(true))
     }
 
+    fn look(theme: &Theme, colour: bool, width: usize) -> Look<'_> {
+        Look {
+            theme,
+            colour,
+            width,
+        }
+    }
+
     fn plain(cmd: &Command, path: &str, inherited: &[&Arg]) -> String {
-        render(cmd, path, inherited, &Theme::plain(), false, false)
+        render(
+            cmd,
+            path,
+            inherited,
+            &look(&Theme::plain(), false, MAX_WIDTH),
+            false,
+        )
     }
 
     /// sb-go's layout: about, headings, usage, commands sorted with fang's
@@ -504,7 +661,7 @@ mod tests {
     #[test]
     fn colour_adds_the_shaded_usage_block() {
         let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
-        let text = render(&sb(), "sb", &[], &theme, true, false);
+        let text = render(&sb(), "sb", &[], &look(&theme, true, MAX_WIDTH), false);
         let lines: Vec<&str> = text.lines().collect();
         let usage = lines
             .iter()
@@ -536,7 +693,7 @@ mod tests {
     /// `--help` at any level and for `help <command>`.
     #[test]
     fn apply_replaces_every_commands_help() {
-        let mut cmd = apply(sb(), &Theme::plain(), false);
+        let mut cmd = apply(sb(), &Theme::plain(), false, MAX_WIDTH);
         let root = cmd.render_help().to_string();
         assert!(root.contains("  USAGE\n"), "{root}");
         let install = cmd
@@ -548,7 +705,7 @@ mod tests {
             install.contains("    sb install [tags] [--flags]\n"),
             "{install}"
         );
-        let via_help = apply(sb(), &Theme::plain(), false)
+        let via_help = apply(sb(), &Theme::plain(), false, MAX_WIDTH)
             .try_get_matches_from(["sb", "help", "version"])
             .expect_err("help is shown as an error")
             .to_string();
@@ -574,20 +731,21 @@ mod tests {
 
     /// The help clap prints for `args` once `apply` has run.
     fn shown(cmd: Command, args: &[&str]) -> String {
-        apply(cmd, &Theme::plain(), false)
+        apply(cmd, &Theme::plain(), false, MAX_WIDTH)
             .try_get_matches_from(args)
             .expect_err("help is shown as an error")
             .to_string()
     }
 
     /// `--help` shows a flag's long help, its later lines under the help
-    /// column; `-h` shows the short help; `help <command>` is clap's long
-    /// help, as `--help`.
+    /// column and its blank line left out (maintainer, 2026-11-14); `-h`
+    /// shows the short help; `help <command>` is clap's long help, as
+    /// `--help`.
     #[test]
     fn long_help_shows_on_help_only() {
         let long = shown(with_long_help(), &["sb", "install", "--help"]);
         assert!(
-            long.contains("    -e --extra-vars  Extra variables\n\n                     Each value reaches Ansible whole.\n"),
+            long.contains("    -e --extra-vars  Extra variables\n                     Each value reaches Ansible whole.\n"),
             "{long}"
         );
         let short = shown(with_long_help(), &["sb", "install", "-h"]);
@@ -604,7 +762,7 @@ mod tests {
         // The rest is the same text.
         assert_eq!(
             long.replace(
-                "\n\n                     Each value reaches Ansible whole.",
+                "\n                     Each value reaches Ansible whole.",
                 ""
             ),
             short
@@ -715,7 +873,7 @@ mod tests {
                     )
                     .subcommand(Command::new("ps").about("List containers")),
             );
-        let mut cmd = apply(cmd, &Theme::plain(), false);
+        let mut cmd = apply(cmd, &Theme::plain(), false, MAX_WIDTH);
         let ps = cmd
             .find_subcommand_mut("docker")
             .and_then(|d| d.find_subcommand_mut("ps"))
@@ -984,5 +1142,163 @@ mod tests {
         let block = parse_error_block(err, &theme);
         let headline = block.lines().nth(3).expect("headline");
         assert!(!headline.contains('\x1b'), "{block:?}");
+    }
+
+    /// `width`'s rule: the terminal first, then `COLUMNS` (clap's order),
+    /// else 120; never more than 120 (fang's cap).
+    #[test]
+    fn the_width_is_the_terminals_then_columns_capped_at_120() {
+        use std::ffi::OsStr;
+        assert_eq!(layout_width(Some(80), Some(OsStr::new("100"))), 80);
+        assert_eq!(layout_width(Some(200), None), 120);
+        assert_eq!(layout_width(Some(119), None), 119);
+        assert_eq!(layout_width(None, Some(OsStr::new("100"))), 100);
+        assert_eq!(layout_width(None, Some(OsStr::new(" 90 "))), 90);
+        assert_eq!(layout_width(None, Some(OsStr::new("121"))), 120);
+        assert_eq!(layout_width(Some(0), Some(OsStr::new("90"))), 90);
+        for bad in ["", "0", "wide", "-5"] {
+            assert_eq!(layout_width(None, Some(OsStr::new(bad))), 120, "{bad:?}");
+        }
+        assert_eq!(layout_width(None, None), MAX_WIDTH);
+        assert_eq!(layout_width(Some(1), None), 1);
+    }
+
+    /// fang wraps the about at the width less its two-space indent:
+    /// update-venv's about (sb-go's text) at 120 columns, its first line
+    /// exactly 118; at 60 every line fits.
+    #[test]
+    fn the_about_wraps_under_its_indent() {
+        let about = "Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git repositories";
+        let cmd = Command::new("update-venv")
+            .about("Update")
+            .long_about(about);
+        let at = |width| {
+            render(
+                &cmd,
+                "sb update-venv",
+                &[],
+                &look(&Theme::plain(), false, width),
+                false,
+            )
+        };
+        assert!(
+            at(120).starts_with(&format!(
+                "  {}\n  repositories\n\n  USAGE\n",
+                about.trim_end_matches(" repositories")
+            )),
+            "{}",
+            at(120)
+        );
+        let narrow = at(60);
+        assert!(narrow.lines().all(|l| l.width() <= 60), "{narrow}");
+        assert!(
+            narrow.starts_with(
+                "  Update the Ansible virtual environment from the current\n  Saltbox checkout"
+            ),
+            "{narrow}"
+        );
+    }
+
+    /// The help `args` shows once `apply` has run at `width`.
+    fn shown_at(cmd: Command, args: &[&str], width: usize) -> String {
+        apply(cmd, &Theme::plain(), false, width)
+            .try_get_matches_from(args)
+            .expect_err("help is shown as an error")
+            .to_string()
+    }
+
+    /// A row's text wraps at the width under the help column: a default
+    /// with its help, a long help's lines each, its blank line left out.
+    #[test]
+    fn rows_wrap_under_the_help_column() {
+        assert_eq!(
+            shown_at(with_long_help(), &["sb", "install", "--help"], 50),
+            "  Runs Ansible playbooks.\n\n  Tags select what runs.\n\n  USAGE\n\n    sb install [tags] [--flags]\n\n  FLAGS\n\n    --color          Controls when to use color\n                     (auto)\n    -e --extra-vars  Extra variables\n                     Each value reaches Ansible\n                     whole.\n    -h --help        Help for install\n    -s --skip-tags   Tags to skip\n"
+        );
+        let root = shown_at(sb(), &["sb", "--help"], 60);
+        assert!(
+            root.contains("    help [command]            Print this message or the help\n                              of the given subcommand(s)\n"),
+            "{root}"
+        );
+        assert!(root.lines().all(|l| l.width() <= 60), "{root}");
+        // Wide enough, nothing changes.
+        assert_eq!(
+            shown_at(with_long_help(), &["sb", "install", "--help"], 120),
+            shown(with_long_help(), &["sb", "install", "--help"])
+        );
+    }
+
+    /// With colour, each wrapped piece is styled on its own: no row's
+    /// colour runs into the next row's indent.
+    #[test]
+    fn each_wrapped_piece_takes_the_text_style() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let text = theme.style(Role::Text);
+        let out = render(
+            &with_long_help()
+                .find_subcommand("install")
+                .expect("install")
+                .clone(),
+            "sb install",
+            &[],
+            &look(&theme, true, 50),
+            true,
+        );
+        assert!(
+            out.contains(&format!("{text}Each value reaches Ansible{text:#}\n                     {text}whole.{text:#}\n")),
+            "{out:?}"
+        );
+    }
+
+    /// A word wider than the row breaks at any character, from where it
+    /// starts (tabled's rule); a terminal too
+    /// narrow for the help column wraps the text at 20 columns, past the
+    /// edge, rather than a character a row.
+    #[test]
+    fn narrow_rows_keep_twenty_columns() {
+        assert_eq!(
+            wrapped("see https://docs.example/a/very/long/path/to/a/page", 20),
+            [
+                "see https://docs.exa",
+                "mple/a/very/long/pat",
+                "h/to/a/page"
+            ]
+        );
+        let out = shown_at(with_long_help(), &["sb", "install", "--help"], 10);
+        assert!(
+            out.contains(
+                "    --color          Controls when to use\n                     color (auto)\n"
+            ),
+            "{out}"
+        );
+    }
+
+    /// A wrapped line keeps its own indent on its first piece and its own
+    /// trailing space on its last; the spaces at each break go; a line of
+    /// spaces only is one empty piece.
+    #[test]
+    fn a_wrapped_line_keeps_its_own_ends() {
+        assert_eq!(wrapped("  aaaa bbbb cccc ", 8), ["  aaaa", "bbbb", "cccc "]);
+        assert_eq!(wrapped(&" ".repeat(30), 8), [""]);
+    }
+
+    /// A row's text writes no blank line: a paragraph break, a line of
+    /// spaces and a trailing new line are left out; a flag with no help
+    /// still has its row.
+    #[test]
+    fn rows_have_no_blank_lines() {
+        let mut out = String::new();
+        write_row(
+            &mut out,
+            "    -x  ",
+            "one\n\n   \ntwo\n",
+            8,
+            120,
+            Style::new(),
+        );
+        assert_eq!(out, "    -x  one\n        two\n");
+        let mut out = String::new();
+        write_row(&mut out, "    -y  ", "", 8, 120, Style::new());
+        assert_eq!(out, "    -y  \n");
     }
 }

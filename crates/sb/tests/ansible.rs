@@ -887,18 +887,18 @@ fn install_long_help_is_on_help_only() {
         assert!(output.status.success());
         stdout(&output)
     };
-    let sentence = "Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the repository the playbook runs in).";
     let long = help("--help");
+    // Wrapped at 120 columns, under the help column (cli-core spec, Help).
     assert!(
-        long.lines().any(|line| line.trim_start() == sentence),
+        long.contains("\n                     Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the\n                     repository the playbook runs in).\n"),
         "{long}"
     );
     assert!(
-        long.contains("Extra variables to pass to Ansible\n\n"),
+        long.contains("Extra variables to pass to Ansible\n                     Each value"),
         "{long}"
     );
     let short = help("-h");
-    assert!(!short.contains(sentence), "{short}");
+    assert!(!short.contains("Each value reaches"), "{short}");
     assert!(
         short.contains("Extra variables to pass to Ansible\n"),
         "{short}"

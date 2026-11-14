@@ -20,12 +20,13 @@ fn update_venv_is_hidden_and_takes_no_arguments() {
         .assert()
         .success()
         .stdout(predicate::str::contains("update-venv").not());
+    // The about wraps at 120 columns, as sb-go's (fang's) does.
     common::sb()
         .args(["update-venv", "--help", "--color=never"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git repositories",
+            "  Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git\n  repositories\n",
         ));
     common::sb().args(["update-venv", "extra"]).assert().code(2);
     common::sb().args(["update-venv", "-v"]).assert().code(2);

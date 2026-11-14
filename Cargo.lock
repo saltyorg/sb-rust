@@ -3387,6 +3387,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook 0.4.5",
+ "tabled",
  "tempfile",
  "thiserror 2.0.21",
  "tokio-util",

@@ -230,11 +230,25 @@ column): clap prints it for `--help` and `sb help <cmd>`, and the short
 text for `-h` (maintainer, 2026-11-14; `override_help`, used before, gives
 one text for both). Bare
 `sb` prints the help on stdout and exits 0, as sb-go (clap would treat it
-as an error). Not copied yet: fang's 120-column wrap of the about;
-`sb help help` stays clap's own (clap adds that subcommand after sb sets
-the others). Parse errors (unknown command
-or flag, bad value) follow sb-go's layout in sb's palette (maintainer,
-2026-11-01, look H1 from proto-help): an `ERROR` badge, clap's message with
+as an error). Every help line wraps at words to the help's width: the
+width of stdout's terminal, else `COLUMNS` (clap's order; fang reads
+only the terminal), else 120, and never more than 120, fang's cap
+(maintainer, 2026-11-14). The about wraps under its two-space indent as
+fang's does; a command's or a flag's text wraps under the help column,
+its later lines too (fang leaves those rows to the terminal, which wraps
+them to column 0), and a blank line in a row's text (a long help's
+paragraph break) is left out, so the command and flag lists have none
+(maintainer, 2026-11-14). A help column that leaves fewer than 20
+columns wraps the text at 20; the usage line isn't wrapped. Wrapping is
+tabled's `Wrap::wrap`, as term-ui's tree wraps (textwrap isn't a
+dependency). It differs from fang's in two rare cases: the line after
+one that fills the width exactly breaks a column early, and fang breaks
+after a hyphen and starts an overlong word on a fresh line. clap's own
+wrap (`wrap_help`, `max_term_width`) stays off, since it would wrap sb's
+text again from column 0. `sb help help` stays clap's own (clap adds
+that subcommand after sb sets the others). Parse errors (unknown
+command or flag, bad value) follow sb-go's layout in sb's palette
+(maintainer, 2026-11-01, look H1 from proto-help): an `ERROR` badge, clap's message with
 the value you typed in the problem colour, clap's tips as `hint:` lines
 (label orange, the fix green; "a similar … exists: 'x'" reads "did you
 mean 'x'?") and its context lines (possible values in green), with no
@@ -258,7 +272,8 @@ map's stack: clap 4 (derive), colorchoice-clap, anstream/anstyle, console,
 tokio (signals, cancellation via `tokio-util`'s `CancellationToken`),
 tracing + tracing-subscriber + tracing-appender, rustix (euid), serde and
 `toml` for the config; icu_properties for the escaper's combining marks
-(plan decision 40). Exact versions are pinned when the crate is added;
+(plan decision 40); tabled's `Wrap::wrap` for help's line wrap (already
+term-ui's; 2026-11-14). Exact versions are pinned when the crate is added;
 each library pattern is checked against its docs and cited in the code
 (CLAUDE.md, library first).
 

@@ -40,6 +40,10 @@ pub fn sb() -> std::process::Command {
 /// every test starting sb by its path calls this.
 pub fn apply_sb_env(cmd: &mut std::process::Command) {
     cmd.env("SB_LOG_DIR", test_log_dir());
+    // Help wraps at the width COLUMNS gives when stdout isn't a terminal
+    // (cli-core spec, Help): none of the developer's; tests that want one
+    // set it.
+    cmd.env_remove("COLUMNS");
     // No test reads a real /opt/sb/config.toml; tests that want one set it.
     cmd.env("SB_CONFIG", test_log_dir().join("no-such-config.toml"));
     // Nor the real Saltbox checkout: a root with no Saltbox files; tests

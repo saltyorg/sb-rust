@@ -2,7 +2,8 @@
 source: crates/sb/tests/logs_docker.rs
 expression: "String::from_utf8_lossy(&help.get_output().stdout)"
 ---
-  Shows Saltbox's systemd services and Docker containers, and the log of the one you choose, starting with the Docker containers.
+  Shows Saltbox's systemd services and Docker containers, and the log of the one you choose, starting with the Docker
+  containers.
 
   USAGE
 

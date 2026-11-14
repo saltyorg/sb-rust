@@ -466,12 +466,12 @@ fn parse(profile: theme::Profile) -> Result<Cli, clap::Error> {
         _ => Cli::command(),
     };
     // Help goes to stdout; whether it shows in colour decides the shaded
-    // usage block's padding rows.
+    // usage block's padding rows, and its width where its lines wrap.
     let colour =
         profile != theme::Profile::Ascii && sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
     // Before the help's layout, which lists each command's flags.
     let cmd = force_update_arg(cmd, &BuildInfo::current(env!("CARGO_PKG_VERSION")));
-    let cmd = help::apply(cmd, theme::current(), colour);
+    let cmd = help::apply(cmd, theme::current(), colour, help::width());
     cmd.try_get_matches().and_then(|matches| {
         let mut cli = Cli::from_arg_matches(&matches)?;
         if let Command::SelfUpdate { force_update, .. } = &mut cli.command {
@@ -812,6 +812,7 @@ mod tests {
             force_update_arg(Cli::command(), &raw),
             &sb_cli_core::theme::Theme::plain(),
             false,
+            help::MAX_WIDTH,
         );
         let mut texts = Vec::new();
         walk(&cmd, &mut texts);
