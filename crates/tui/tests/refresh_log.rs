@@ -3,7 +3,9 @@
 //! refresh that changes nothing writes nothing, not even the records the
 //! read itself writes (sb-exec's child records, sb-host's list record);
 //! a failed refresh and each service whose state changed, or that was
-//! added or went, are logged. A
+//! added or went, are logged. A failure is logged when it starts or its
+//! cause changes, and the first good read after it logs one recovery
+//! record with the count of reads that failed (maintainer, 2026-11-14). A
 //! test binary of its own: tracing caches each callsite's interest
 //! process-wide
 //! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>),
@@ -126,8 +128,13 @@ async fn a_quiet_refresh_writes_nothing_and_failures_and_changes_are_logged() {
     assert!(text.contains("systemctl timed out"), "{text}");
     assert!(!text.contains("child started"), "{text}");
     // A service added and one gone: each named; the one unchanged since
-    // the last list read isn't.
+    // the last list read isn't. The read works again: one recovery
+    // record, with the one read that failed.
     let text = refresh().await;
+    assert!(
+        text.contains("service refresh recovered failed_reads=1"),
+        "{text}"
+    );
     assert!(
         text.contains("service listed service=saltbox_managed_new"),
         "{text}"
@@ -139,6 +146,56 @@ async fn a_quiet_refresh_writes_nothing_and_failures_and_changes_are_logged() {
     assert!(!text.contains("saltbox_managed_web"), "{text}");
     drop(refresh);
     each_field_is_a_change_and_a_missing_time_is_not(&log).await;
+    a_failure_is_logged_when_it_starts_or_changes(&log).await;
+}
+
+/// A read that keeps failing logs its failure once, again only when the
+/// cause changes; the first good read logs one recovery record with how
+/// many reads failed in between, and a good read after that logs none.
+/// Called from the one test: the binary has one global subscriber.
+async fn a_failure_is_logged_when_it_starts_or_changes(log: &Captured) {
+    let list = vec![service("docker", "active", "running")];
+    let waker = Arc::new(Notify::new());
+    let mut picker = Picker::new(&list, Timestamp::now(), Theme::plain()).with_refresh(
+        lister(vec![
+            Err("systemctl timed out".into()),
+            Err("systemctl timed out".into()),
+            Err("systemctl timed out".into()),
+            Err("systemctl exited with 1".into()),
+            Err("systemctl exited with 1".into()),
+            Ok(list.clone()),
+            Ok(list.clone()),
+        ]),
+        Arc::clone(&waker),
+    );
+    let mut refresh = async || {
+        tokio::time::advance(Duration::from_secs(5)).await;
+        picker.tick();
+        waker.notified().await;
+        picker.wake();
+        log.take()
+    };
+    let text = refresh().await;
+    assert_eq!(text.matches("service refresh failed").count(), 1, "{text}");
+    assert!(text.contains("systemctl timed out"), "{text}");
+    assert_eq!(refresh().await, "", "the same cause again: nothing");
+    assert_eq!(refresh().await, "", "and again");
+    let text = refresh().await;
+    assert_eq!(text.matches("service refresh failed").count(), 1, "{text}");
+    assert!(
+        text.contains("systemctl exited with 1"),
+        "a new cause: {text}"
+    );
+    assert_eq!(refresh().await, "", "the new cause again: nothing");
+    let text = refresh().await;
+    assert_eq!(
+        text.matches("service refresh recovered").count(),
+        1,
+        "{text}"
+    );
+    assert!(text.contains("failed_reads=5"), "{text}");
+    assert!(!text.contains("refresh failed"), "{text}");
+    assert_eq!(refresh().await, "", "a good read after: nothing");
 }
 
 /// The other fields of a state, each alone, are a change; a time that a

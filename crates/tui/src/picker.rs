@@ -174,6 +174,38 @@ enum Row {
     Unavailable(Kind),
 }
 
+/// A refresh that keeps failing (maintainer, 2026-11-14; tui spec,
+/// "Verification notes"): the cause last logged and how many reads have
+/// failed since the last good one.
+#[derive(Debug)]
+struct Failing {
+    cause: String,
+    failed_reads: u64,
+}
+
+/// A failed read: logged when the failure starts or its cause changes,
+/// not each 5 s while it keeps failing.
+fn log_failure(failing: &mut Option<Failing>, cause: &str) {
+    match failing {
+        Some(last) if last.cause == cause => last.failed_reads += 1,
+        _ => {
+            tracing::warn!(error = %escape_controls(cause), "service refresh failed");
+            let failed_reads = failing.as_ref().map_or(0, |f| f.failed_reads) + 1;
+            *failing = Some(Failing {
+                cause: cause.to_owned(),
+                failed_reads,
+            });
+        }
+    }
+}
+
+/// A good read: after failed ones, one record with how many failed.
+fn log_recovery(failing: &mut Option<Failing>) {
+    if let Some(Failing { failed_reads, .. }) = failing.take() {
+        tracing::info!(failed_reads, "service refresh recovered");
+    }
+}
+
 /// The 5 s refresh of the services.
 struct Refresh {
     list: ListServices,
@@ -241,6 +273,8 @@ pub struct Picker {
     refresh: Option<Refresh>,
     /// Why the services may be out of date, in the footer.
     services_trouble: Option<String>,
+    /// The refresh's failure since its last good read, for the run log.
+    failing: Option<Failing>,
     /// When the statuses were last worked out (and the services last
     /// asked for).
     restated: Instant,
@@ -276,6 +310,7 @@ impl Picker {
             trouble: None,
             refresh: None,
             services_trouble: None,
+            failing: None,
             restated: Instant::now(),
             area: Rect::default(),
             chosen: None,
@@ -722,12 +757,13 @@ impl Picker {
         match result {
             Ok(services) => {
                 self.services_trouble = None;
+                log_recovery(&mut self.failing);
                 log_changes(&self.services, &services);
                 self.services = services;
                 self.restate(Timestamp::now());
             }
             Err(cause) => {
-                tracing::warn!(error = %escape_controls(&cause), "service refresh failed");
+                log_failure(&mut self.failing, &cause);
                 self.services_trouble = Some(format!("couldn't refresh services: {cause}"));
             }
         }

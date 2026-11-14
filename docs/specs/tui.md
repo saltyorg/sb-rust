@@ -330,9 +330,10 @@ docs/community/support.md:34) and sb-go's screens can't give.
   count, `more_*`, time taken), follow start and stop, every error and
   notice, saves (path and line count), and the exit. Never log content
   (capability map decision 11, "Never logged"): it can hold tokens. The
-  picker's 5 s service refresh logs only a failed read and each service
-  whose state changed, was added or went (maintainer, 2026-11-14;
-  "Verification notes").
+  picker's 5 s service refresh logs only a failure (when it starts or its
+  cause changes), the recovery after it, and each service whose state
+  changed, was added or went (maintainer, 2026-11-14; "Verification
+  notes").
 
 ### Help texts
 
@@ -1450,7 +1451,8 @@ the test's directory.
   `WithSubscriber::with_subscriber` with a `NoSubscriber`), so a refresh
   that changes nothing writes nothing: none of sb-exec's child records
   and none of sb-host's list records. The picker logs a failed read
-  (`service refresh failed`) and each service whose state changed
+  (`service refresh failed`; when the failure starts or its cause
+  changes, next bullet) and each service whose state changed
   (`service state changed`, with all four: systemd's active state,
   sub-state, unit file state and state-change time), was added (`service
   listed`) or went (`service no longer listed`), outside the silenced
@@ -1471,7 +1473,15 @@ the test's directory.
     dropped: the picker quit mid-read, sb-exec's group-kill record.
   `crates/tui/tests/refresh_log.rs` tests both directions, and
   `crates/sb/tests/logs.rs` counts the real read's records end to end.
-  A read that keeps failing still logs each failure, every 5 s.
+- **A refresh that keeps failing (maintainer, 2026-11-14):** a failed
+  read is logged (`service refresh failed`, with its cause) when the
+  failure starts, or when its cause changes (the cause's text differs
+  from the one last logged); a read that fails as the last one did logs
+  nothing. When a read works again, one record, `service refresh
+  recovered`, carries how many reads failed since the last good one
+  (`failed_reads`), across cause changes. The footer still shows the
+  newest cause on every failed read. `crates/tui/tests/refresh_log.rs`
+  tests repeated failures, a changed cause and the recovery's count.
 
 ## Open questions
 
