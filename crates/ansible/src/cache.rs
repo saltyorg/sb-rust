@@ -711,34 +711,67 @@ mod tests {
         );
     }
 
-    /// A corrupt or unreadable file is logged as such (the spec's notice:
-    /// treated as empty, rebuilt and written over), naming the file. The
-    /// capture writer is the workspace's pattern for reading tracing back
-    /// (`crates/exec/tests/capture_log.rs`): tracing-subscriber has no writer
-    /// a test can read after `with_default` takes the subscriber.
-    #[test]
-    fn a_corrupt_or_unreadable_file_is_logged() {
-        #[derive(Clone, Default)]
-        struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Captured {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().expect("lock").extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
+    std::thread_local! {
+        /// This thread's captured log text while [`capture`] runs, else
+        /// `None`.
+        static CAPTURE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// The global subscriber's writer: appends to the calling thread's
+    /// [`CAPTURE`] buffer when one is on, and drops the text otherwise.
+    /// The fmt layer writes on the thread that emits the event.
+    struct ThreadCapture;
+
+    impl std::io::Write for ThreadCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            CAPTURE.with_borrow_mut(|buffer| {
+                if let Some(buffer) = buffer {
+                    buffer.extend_from_slice(bytes);
+                }
+            });
+            Ok(bytes.len())
         }
-        let logged = |dir: &Path| {
-            let log = Captured::default();
-            let writer = log.clone();
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs `body` with this thread's log records captured, and returns
+    /// its result with their text (sb-host's `capture`, M10's fix).
+    ///
+    /// One global subscriber for the whole test binary, installed once
+    /// (<https://docs.rs/tracing/0.1.44/tracing/subscriber/fn.set_global_default.html>).
+    /// A scoped one (`with_default`) is not enough: callsite interest is
+    /// process-wide, and while the scoped one is the only dispatcher, a
+    /// callsite first hit on a thread without a subscriber (another test
+    /// loading a corrupt file) is cached as "never" for as long as it
+    /// lives (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>;
+    /// tracing-core 0.1.36's `Rebuilder::JustOne` in src/callsite.rs), so
+    /// a record went missing under load. With a global dispatcher always
+    /// present, no callsite is cached as "never". No other test in this
+    /// binary installs a subscriber.
+    fn capture<T>(body: impl FnOnce() -> T) -> (T, String) {
+        static GLOBAL: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        GLOBAL.get_or_init(|| {
             let subscriber = tracing_subscriber::fmt()
-                .with_writer(move || writer.clone())
+                .with_writer(|| ThreadCapture)
                 .with_ansi(false)
                 .finish();
-            tracing::subscriber::with_default(subscriber, || TagCache::load(dir));
-            String::from_utf8_lossy(&log.0.lock().expect("lock")).into_owned()
-        };
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("the only global subscriber");
+        });
+        CAPTURE.set(Some(Vec::new()));
+        let result = body();
+        let bytes = CAPTURE.take().unwrap_or_default();
+        (result, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// A corrupt or unreadable file is logged as such (the spec's notice:
+    /// treated as empty, rebuilt and written over), naming the file;
+    /// captured through [`capture`].
+    #[test]
+    fn a_corrupt_or_unreadable_file_is_logged() {
+        let logged = |dir: &Path| capture(|| TagCache::load(dir)).1;
         let corrupt = root_with(Some("{not json"));
         let text = logged(corrupt.path());
         assert!(
