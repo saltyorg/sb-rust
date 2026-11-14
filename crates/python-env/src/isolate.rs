@@ -257,14 +257,7 @@ impl Env<'_> {
                     cause,
                 })?;
         }
-        let scratch = tempfile::Builder::new()
-            .prefix(SCRATCH_PREFIX)
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir_in(&layout.scratch)
-            .map_err(|cause| IsolateError::Scratch {
-                dir: layout.scratch.clone(),
-                cause,
-            })?;
+        let scratch = scratch(layout)?;
         let changes = changes(kind, parent, caller_dir, scratch.path(), &layout.uv_cache)?;
         let mut cmd = Cmd::new(program.as_os_str());
         cmd = match kind {
@@ -287,6 +280,24 @@ impl Env<'_> {
         }
         Ok(Isolated { cmd, scratch })
     }
+}
+
+/// A fresh scratch directory under `layout.scratch`, 0700 (sb-go's
+/// `newScratch`): each child's `TMPDIR`, and the uv archive's download
+/// (spec, step 2). Removed when dropped.
+///
+/// # Errors
+///
+/// [`IsolateError::Scratch`] when it can't be made.
+pub(crate) fn scratch(layout: &crate::Layout) -> Result<TempDir, IsolateError> {
+    tempfile::Builder::new()
+        .prefix(SCRATCH_PREFIX)
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(&layout.scratch)
+        .map_err(|cause| IsolateError::Scratch {
+            dir: layout.scratch.clone(),
+            cause,
+        })
 }
 
 /// An empty file only its owner reads (sb-go writes it 0600), made new

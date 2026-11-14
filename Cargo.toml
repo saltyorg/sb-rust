@@ -160,6 +160,12 @@ sha2 = "0.11.1"
 # its ELF reader only, no std, no other formats. goblin is the
 # alternative, with less adoption.
 object = { version = "0.41.0", default-features = false, features = ["read_core", "elf"] }
+# uv's release archive, read in pure Rust (python-env spec, decision 13;
+# plan decision 8): tar without `xattr` (it only reads entries, never
+# unpacks them to disk), and flate2 on miniz_oxide (`rust_backend`), the
+# version already in the tree through syntect.
+tar = { version = "0.4.46", default-features = false }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 # sb-release's fake GitHub for tests only (its `testing` feature): a
 # loopback certificate made at test time, no key in the repository
 # (release spec, Tech Stack). aws-lc-rs as the client's rustls, not ring.

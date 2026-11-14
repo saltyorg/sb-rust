@@ -1,8 +1,8 @@
 //! `sb-python-env`: the uv-managed Python, the Ansible venv Saltbox runs,
 //! the 22.04 deadsnakes cleanup and `saltbox.fact` (python-env spec). So
-//! far slices 1 to 3: the fixed [`Layout`], the toolchain
-//! ([`toolchain`]), the isolated child builder (`isolate`), the uv
-//! `--version` probe ([`uv`]), the venv's checks, its reconcile with the
+//! far slices 1 to 4: the fixed [`Layout`], the toolchain
+//! ([`toolchain`]), the isolated child builder (`isolate`), the uv probe
+//! and install ([`uv`]), the venv's checks, its reconcile with the
 //! clean retry and the build into staging ([`venv`]), the manifest, the
 //! wrappers, activation and the generation cleanup ([`activate`]), and
 //! [`reconcile_runtime`].
@@ -25,7 +25,7 @@ pub mod wrappers;
 
 pub use isolate::IsolateError;
 pub use toolchain::{Toolchain, ToolchainError};
-pub use uv::UvError;
+pub use uv::{ExtractError, UvError};
 pub use venv::{CheckError, Force, VenvError, VenvOutcome, reconcile_venv};
 
 use std::path::{Path, PathBuf};
@@ -128,13 +128,19 @@ impl Layout {
 }
 
 /// What python-env's calls run with: the layout, the uv this sb pins
-/// (`cli-core::UV_VERSION`, passed in by `sb`) and the programs it runs
-/// besides the layout's.
+/// (`cli-core::UV_VERSION`, passed in by `sb`), the release client and
+/// the build's architecture its downloads are for (spec, "Library
+/// surface"), and the programs it runs besides the layout's.
 #[derive(Debug, Clone)]
 pub struct Env<'a> {
     pub layout: &'a Layout,
+    /// The release client: uv's (and later the fact's) metadata and
+    /// downloads.
+    pub release: &'a sb_release::Releases,
     /// The uv release this sb provides.
     pub uv_version: &'a str,
+    /// Which assets to download (decision 8).
+    pub arch: sb_release::Arch,
     /// git, for the checkout's commit (`git` from `PATH`).
     pub git: PathBuf,
     /// apt and dpkg, for libpq-dev (spec, step 3).
@@ -142,12 +148,20 @@ pub struct Env<'a> {
 }
 
 impl<'a> Env<'a> {
-    /// `layout` with `uv_version`, git, apt and dpkg from `PATH`.
+    /// `layout` with `release`, `uv_version` and `arch`, git, apt and
+    /// dpkg from `PATH`.
     #[must_use]
-    pub fn new(layout: &'a Layout, uv_version: &'a str) -> Self {
+    pub fn new(
+        layout: &'a Layout,
+        release: &'a sb_release::Releases,
+        uv_version: &'a str,
+        arch: sb_release::Arch,
+    ) -> Self {
         Self {
             layout,
+            release,
             uv_version,
+            arch,
             git: PathBuf::from("git"),
             apt: Apt::new(),
         }
@@ -157,8 +171,13 @@ impl<'a> Env<'a> {
     /// `testing` feature, the stand-in tree's git, dpkg-query and apt-get
     /// when [`testing::ROOT_VAR`] is set.
     #[must_use]
-    pub fn for_sb(layout: &'a Layout, uv_version: &'a str) -> Self {
-        let env = Self::new(layout, uv_version);
+    pub fn for_sb(
+        layout: &'a Layout,
+        release: &'a sb_release::Releases,
+        uv_version: &'a str,
+        arch: sb_release::Arch,
+    ) -> Self {
+        let env = Self::new(layout, release, uv_version, arch);
         #[cfg(feature = "testing")]
         if let Some(root) = testing::root() {
             return testing::with_stand_ins(env, &root);

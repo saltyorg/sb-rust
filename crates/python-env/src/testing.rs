@@ -8,6 +8,10 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
+use sb_release::testing::{Answer, Fake};
+use sb_release::{Arch, Releases};
+use sha2::{Digest as _, Sha256};
+
 use crate::Layout;
 use crate::manifest::Manifest;
 
@@ -90,7 +94,9 @@ pub fn record_line(record: &Path) -> String {
 }
 
 /// A Saltbox tree on a temporary root: the checkout's pins and lock, the
-/// scratch directory, a stand-in git, and a uv and uvx reporting [`UV`].
+/// scratch directory, a stand-in git, a uv and uvx reporting [`UV`], and
+/// sb-release's fake GitHub with a client for it (nothing scripted on it
+/// yet: [`Tree::serve_uv`]).
 #[derive(Debug)]
 pub struct Tree {
     /// The root; removed when the tree is dropped.
@@ -98,7 +104,15 @@ pub struct Tree {
     pub layout: Layout,
     /// The stand-in git.
     pub git: PathBuf,
+    /// The fake proxy, GitHub API and download host.
+    pub fake: Fake,
+    /// A client of [`Tree::fake`].
+    pub releases: Releases,
 }
+
+/// The file under the root holding the fake's bases, for an sb run
+/// ([`sb_release::testing::BASES_VARIABLE`]).
+const BASES: &str = "release-bases.json";
 
 impl Tree {
     /// The tree.
@@ -123,7 +137,16 @@ impl Tree {
             "git",
             &format!("[ \"$*\" = 'rev-parse HEAD' ] || exit 2\necho {COMMIT}"),
         );
-        let tree = Self { root, layout, git };
+        let fake = Fake::start().expect("fake GitHub");
+        fake.write_bases(&root.path().join(BASES)).expect("bases");
+        let releases = fake.releases("sb/test").expect("release client");
+        let tree = Self {
+            root,
+            layout,
+            git,
+            fake,
+            releases,
+        };
         let templates = tree.root.path().join("templates");
         tree.python(&templates.join("python3"), PYTHON);
         tree.entry_points(&templates.join("bin"));
@@ -147,12 +170,24 @@ impl Tree {
     /// When they can't be written.
     pub fn uv(&self, uv: &str, uvx: &str) {
         let bin = &self.layout.wrappers;
+        let _ = stand_in(bin, "uv", &self.uv_script(uv));
+        let _ = stand_in(bin, "uvx", &self.uvx_script(uvx));
+    }
+
+    /// The stand-in uvx's script, reporting `uvx` as its version.
+    fn uvx_script(&self, uvx: &str) -> String {
+        format!("{}\necho 'uvx {uvx} (stand-in)'", self.calls_line())
+    }
+
+    /// The stand-in uv's script ([`Tree::uv`]), reporting `uv` as its
+    /// version.
+    fn uv_script(&self, uv: &str) -> String {
         let calls = self.calls_line();
         let root = self.root.path().display();
         // `$1` is `--no-config`; `$2 $3` name the operation. A file named
         // after it under `fail/` makes it fail, under `hang/` hang (after
         // touching `hang/started`).
-        let script = format!(
+        format!(
             "{calls}\n\
              op=\"$2-$3\"\n\
              [ -e '{root}/fail/'\"$op\" ] && {{ echo \"uv: $op failed (stand-in)\" >&2; exit 1; }}\n\
@@ -175,9 +210,67 @@ impl Tree {
              pip-sync) cp '{root}/templates/bin/'* \"$(dirname \"$py\")/\" ;;\n\
              *) exit 2 ;;\n\
              esac"
+        )
+    }
+
+    /// uv's release archive for this build's architecture, as astral-sh
+    /// lays it out: `uv-<arch>-unknown-linux-gnu/uv` and `.../uvx`, the
+    /// stand-ins of [`Tree::uv`] reporting `uv` and `uvx`.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be built.
+    #[must_use]
+    pub fn uv_archive(&self, uv: &str, uvx: &str) -> Vec<u8> {
+        let arch = Arch::current().expect("arch");
+        let dir = format!("uv-{}-unknown-linux-gnu", arch.rust_name());
+        let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gzip);
+        for (name, script) in [("uv", self.uv_script(uv)), ("uvx", self.uvx_script(uvx))] {
+            let body = format!("#!/bin/sh\n{script}\n");
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            tar.append_data(&mut header, format!("{dir}/{name}"), body.as_bytes())
+                .expect("entry");
+        }
+        tar.into_inner().expect("tar").finish().expect("gzip")
+    }
+
+    /// The fake serving uv's release [`UV`] for `arch` with `archive` as
+    /// its asset, from GitHub's API (the proxy is down: unscripted, 404).
+    pub fn serve_uv(&self, arch: Arch, archive: &[u8]) {
+        let name = crate::uv::asset_name(arch);
+        self.serve(
+            &format!("/api/repos/astral-sh/uv/releases/tags/{UV}"),
+            &format!("/astral-sh/uv/releases/download/{UV}/{name}"),
+            UV,
+            &name,
+            archive,
         );
-        let _ = stand_in(bin, "uv", &script);
-        let _ = stand_in(bin, "uvx", &format!("{calls}\necho 'uvx {uvx} (stand-in)'"));
+    }
+
+    /// The fake answering `api` with release `tag`, its one asset `name`
+    /// holding `body`, served at `download`.
+    fn serve(&self, api: &str, download: &str, tag: &str, name: &str, body: &[u8]) {
+        let release = serde_json::json!({
+            "tag_name": tag,
+            "assets": [{
+                "name": name,
+                "size": body.len(),
+                "digest": format!("sha256:{}", hex::encode(Sha256::digest(body))),
+                "browser_download_url": format!("{}{download}", self.fake.url()),
+            }],
+        });
+        self.fake.script(api, Answer::json(release.to_string()));
+        self.fake.script(download, Answer::new(200, body.to_vec()));
+    }
+
+    /// The fake's bases file, for an sb run's
+    /// [`sb_release::testing::BASES_VARIABLE`].
+    #[must_use]
+    pub fn bases(&self) -> PathBuf {
+        self.root.path().join(BASES)
     }
 
     /// The log every stand-in appends its argv to, one line per call:
@@ -387,10 +480,17 @@ impl Tree {
         let _ = stand_in(dir, name, &script);
     }
 
-    /// An [`Env`](crate::Env) on this tree with its git.
+    /// An [`Env`](crate::Env) on this tree with its git and the fake's
+    /// client, for this build's architecture.
+    ///
+    /// # Panics
+    ///
+    /// On an architecture sb has no releases for.
     #[must_use]
     pub fn env(&self) -> crate::Env<'_> {
-        with_stand_ins(crate::Env::new(&self.layout, UV), self.root.path())
+        let arch = Arch::current().expect("arch");
+        let env = crate::Env::new(&self.layout, &self.releases, UV, arch);
+        with_stand_ins(env, self.root.path())
     }
 }
 

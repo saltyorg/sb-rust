@@ -101,9 +101,10 @@ async fn a_missing_python_pin_is_named() {
 async fn the_pinned_uv_passes_the_probe() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
-    uv::check_installed(&tree.env(), &token())
+    let installed = uv::is_installed(&tree.env(), &token())
         .await
-        .expect("pinned uv");
+        .expect("probed");
+    assert!(installed);
     // A version probe makes no cache (sb-go's `isVersionProbe`).
     assert!(!tree.layout.uv_cache.exists());
     let uv = tree.layout.uv.display();
@@ -117,31 +118,23 @@ async fn the_pinned_uv_passes_the_probe() {
     );
 }
 
+/// Another release of either is not the pinned uv (module build M18
+/// installs it then; tests/uv.rs).
 #[tokio::test]
-async fn another_uv_or_uvx_release_fails_the_probe() {
+async fn another_uv_or_uvx_release_is_not_installed() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
     tree.uv("0.13.3", UV);
-    let err = uv::check_installed(&tree.env(), &token())
-        .await
-        .expect_err("old uv");
-    assert_eq!(
-        err.to_string(),
-        format!(
-            "{} reports version 0.13.3, expected 0.13.4",
-            tree.layout.uv.display()
-        )
+    assert!(
+        !uv::is_installed(&tree.env(), &token())
+            .await
+            .expect("probed")
     );
     tree.uv(UV, "0.14.0");
-    let err = uv::check_installed(&tree.env(), &token())
-        .await
-        .expect_err("new uvx");
-    assert_eq!(
-        err.to_string(),
-        format!(
-            "{} reports version 0.14.0, expected 0.13.4",
-            tree.layout.uvx.display()
-        )
+    assert!(
+        !uv::is_installed(&tree.env(), &token())
+            .await
+            .expect("probed")
     );
 }
 
@@ -149,24 +142,48 @@ async fn another_uv_or_uvx_release_fails_the_probe() {
 async fn a_missing_or_strange_uv_fails_the_probe() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
+    let env = tree.env();
+    let probe = async || uv::version_of(&env, &tree.layout.uv, "uv", &token()).await;
     let _ = stand_in(&tree.layout.wrappers, "uv", "echo 'astral 0.13.4'");
-    let err = uv::check_installed(&tree.env(), &token())
-        .await
-        .expect_err("strange");
+    let err = probe().await.expect_err("strange");
     assert_eq!(
         err.to_string(),
         "unexpected uv version output \"astral 0.13.4\""
     );
+    assert!(!uv::is_installed(&env, &token()).await.expect("probed"));
     std::fs::remove_file(&tree.layout.uv).expect("rm uv");
-    let err = uv::check_installed(&tree.env(), &token())
-        .await
-        .expect_err("missing");
+    let err = probe().await.expect_err("missing");
     assert!(err.to_string().contains("could not run"), "{err}");
+    assert!(!uv::is_installed(&env, &token()).await.expect("probed"));
     let _ = stand_in(&tree.layout.wrappers, "uv", "echo broken >&2; exit 3");
-    let err = uv::check_installed(&tree.env(), &token())
-        .await
-        .expect_err("failing");
+    let err = probe().await.expect_err("failing");
     assert!(err.to_string().contains("broken"), "{err}");
+    assert!(!uv::is_installed(&env, &token()).await.expect("probed"));
+}
+
+/// A binary that fails its probe and can't be looked at stops the
+/// install (sb-go's `error checking installed`): here its directory is a
+/// file.
+#[tokio::test]
+async fn a_binary_that_cant_be_looked_at_is_an_error() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let mut layout = tree.layout.clone();
+    let file = tree.root.path().join("a-file");
+    std::fs::write(&file, "").expect("file");
+    layout.uvx = file.join("uvx");
+    let env = sb_python_env::testing::with_stand_ins(
+        sb_python_env::Env::new(&layout, &tree.releases, UV, tree.env().arch),
+        tree.root.path(),
+    );
+    let err = uv::is_installed(&env, &token())
+        .await
+        .expect_err("not a directory");
+    assert!(
+        err.to_string()
+            .starts_with("error checking installed uvx: "),
+        "{err}"
+    );
 }
 
 #[tokio::test]

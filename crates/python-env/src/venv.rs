@@ -355,7 +355,7 @@ pub async fn reconcile_venv(
     let toolchain = toolchain::read_toolchain(env, &token).await?;
     let ensuring = format!("Ensuring uv {} is installed", env.uv_version);
     step.step(Labels::new(&ensuring, &ensuring), async |step| {
-        uv::check_installed(env, &step.token())
+        uv::ensure_installed(step, env)
             .await
             .context("install pinned uv")
     })
@@ -1185,7 +1185,9 @@ mod tests {
         let layout = Layout::under(dir.path());
         let (old, staged) = staged_tree(&layout);
         let generation = staged.generation.clone();
-        let env = Env::new(&layout, "0.13.4");
+        let fake = sb_release::testing::Fake::start().expect("fake");
+        let releases = fake.releases("sb/test").expect("client");
+        let env = Env::new(&layout, &releases, "0.13.4", sb_release::Arch::Amd64);
         let token = CancellationToken::new();
         token.cancel();
         let err = activate_staged(&env, staged, &token)
@@ -1209,7 +1211,9 @@ mod tests {
         let (old, staged) = staged_tree(&layout);
         let generation = staged.generation.clone();
         std::fs::remove_dir(&layout.wrappers).expect("rm bin");
-        let env = Env::new(&layout, "0.13.4");
+        let fake = sb_release::testing::Fake::start().expect("fake");
+        let releases = fake.releases("sb/test").expect("client");
+        let env = Env::new(&layout, &releases, "0.13.4", sb_release::Arch::Amd64);
         let err = activate_staged(&env, staged, &CancellationToken::new())
             .await
             .expect_err("no bin");

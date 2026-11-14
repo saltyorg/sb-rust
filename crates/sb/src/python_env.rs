@@ -3,11 +3,12 @@
 //! reinstall-python` (M16).
 
 use anyhow::Context as _;
-use sb_cli_core::build_info::UV_VERSION;
+use sb_cli_core::build_info::{BuildInfo, UV_VERSION};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::log::RunLog;
 use sb_python_env::{Env, Force, Layout, reconcile_runtime, reconcile_venv};
+use sb_release::{Arch, Releases};
 use sb_term_ui::{Labels, Options, Runner, Step};
 
 /// The Saltbox user (config's `saltbox_user`, under `SB_SALTBOX_DIR`'s
@@ -34,7 +35,11 @@ fn run(
 ) -> anyhow::Result<()> {
     let user = saltbox_user()?;
     let layout = Layout::for_sb();
-    let env = Env::for_sb(&layout, UV_VERSION);
+    let build = BuildInfo::current(env!("CARGO_PKG_VERSION"));
+    // uv's release (and the fact's) through the proxy or GitHub, as `sb
+    // self-update` reaches sb's; in a test build, the fake GitHub only.
+    let releases = Releases::for_sb(&format!("sb/{}", build.version))?;
+    let env = Env::for_sb(&layout, &releases, UV_VERSION, Arch::current()?);
     super::block_on(async {
         let mut runner = Runner::start(name, shutdown, log, Options::default());
         let result = runner

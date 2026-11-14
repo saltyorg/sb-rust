@@ -11,7 +11,9 @@ mod root_gate;
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
-use sb_python_env::testing::{ROOT_VAR, Tree};
+use sb_python_env::testing::{ROOT_VAR, Tree, UV};
+use sb_release::Arch;
+use sb_release::testing::BASES_VARIABLE;
 
 #[test]
 fn update_venv_is_hidden_and_takes_no_arguments() {
@@ -53,6 +55,7 @@ fn a_healthy_tree_is_up_to_date() {
     common::sb()
         .args(["update-venv", "--color=never"])
         .env(ROOT_VAR, tree.root.path())
+        .env(BASES_VARIABLE, tree.bases())
         .env("SB_SALTBOX_DIR", &tree.layout.checkout)
         .assert()
         .success()
@@ -79,6 +82,7 @@ fn a_missing_user_is_sb_gos_error() {
     common::sb()
         .args(["update-venv", "--color=never"])
         .env(ROOT_VAR, tree.root.path())
+        .env(BASES_VARIABLE, tree.bases())
         .env("SB_SALTBOX_DIR", &tree.layout.checkout)
         .assert()
         .code(1)
@@ -123,6 +127,7 @@ fn run(tree: &Tree, command: &str) -> assert_cmd::assert::Assert {
     common::sb()
         .args([command, "--color=never"])
         .env(ROOT_VAR, tree.root.path())
+        .env(BASES_VARIABLE, tree.bases())
         .env("SB_SALTBOX_DIR", &tree.layout.checkout)
         .assert()
 }
@@ -229,4 +234,26 @@ fn a_reinstall_without_a_user_is_sb_gos_error() {
         );
         assert_eq!(active_generation(&tree), active.dir);
     }
+}
+
+/// A wrong uv is replaced by the pinned release, from the fake GitHub
+/// (module build M18), and the run goes on with it.
+#[test]
+fn update_venv_installs_the_pinned_uv() {
+    if !root_gate::requested() {
+        return;
+    }
+    let tree = tree("nobody");
+    let _ = tree.healthy();
+    tree.uv("0.13.3", "0.13.3");
+    tree.serve_uv(Arch::current().expect("arch"), &tree.uv_archive(UV, UV));
+    run(&tree, "update-venv").success().stderr(
+        predicate::str::contains("Ensuring uv 0.13.4 is installed").and(predicate::str::contains(
+            "Ansible virtual environment was already up to date",
+        )),
+    );
+    let uv = std::fs::read_to_string(&tree.layout.uv).expect("uv");
+    assert!(uv.contains("echo 'uv 0.13.4 (stand-in)'"), "{uv}");
+    let uvx = std::fs::read_to_string(&tree.layout.uvx).expect("uvx");
+    assert!(uvx.contains("echo 'uvx 0.13.4 (stand-in)'"), "{uvx}");
 }

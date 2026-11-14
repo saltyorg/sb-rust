@@ -630,8 +630,10 @@ async fn a_failures_cause_is_shown_once() {
     assert_eq!(error.matches("external-python").count(), 1, "{error}");
 }
 
+/// A wrong uv whose install fails (here GitHub knows no such release)
+/// fails its step (module build M18 replaced M15's "a wrong uv fails").
 #[tokio::test]
-async fn a_wrong_uv_fails_its_step() {
+async fn a_failed_uv_install_fails_its_step() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
     let _ = tree.healthy();
@@ -646,7 +648,7 @@ async fn a_wrong_uv_fails_its_step() {
     // The nested step shows the cause; the steps above it end quietly.
     assert!(
         ran.screen
-            .contains("reports version 0.13.3, expected 0.13.4"),
+            .contains("error fetching uv 0.13.4 release metadata: "),
         "{}",
         ran.screen
     );

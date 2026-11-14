@@ -8,12 +8,12 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Stand-in uv, python and entry-point programs and a Saltbox tree on a
-# temporary root (`testing` module), for sb-python-env's tests and sb's
-# end-to-end tests: built into the sb that `cargo test` runs (resolver 3
+# Stand-in uv, python and entry-point programs, a Saltbox tree on a
+# temporary root and sb-release's fake GitHub (`testing` module), for
+# sb-python-env's tests and sb's end-to-end tests: built into the sb that `cargo test` runs (resolver 3
 # unifies dev-dependency features only for test builds), never into a
 # release or production build.
-testing = ["sb-host/testing"]
+testing = ["dep:sha2", "sb-host/testing", "sb-release/testing"]
 
 [dependencies]
 # Every uv, Python, entry-point and git child (python-env spec,
@@ -26,8 +26,12 @@ sb-host.workspace = true
 sb-term-ui.workspace = true
 # A nested step's quiet exit (`Exit`), passed up.
 sb-cli-core.workspace = true
-# The streamed lock digest (release spec amendment R8).
+# The streamed lock digest (release spec amendment R8); uv's release
+# metadata, verified download and activation (R1-R6).
 sb-release.workspace = true
+# uv's archive (spec, step 2; decision 13).
+tar.workspace = true
+flate2.workspace = true
 # The manifest (spec, step 11; decision 7).
 serde.workspace = true
 serde_json.workspace = true
@@ -47,6 +51,8 @@ hex.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
+# The fake release's digests (`testing` only).
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Itself with `testing`, for the stand-in programs its tests run (as
