@@ -1,12 +1,30 @@
 //! Help in sb-go's (fang's) format, in sb's palette (cli-core spec: Help and
 //! parse errors; chosen by the maintainer from proto-help's comparison).
 //!
-//! clap still parses and still prints help: each command's text is set with
-//! clap's `Command::override_help`
-//! (<https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.override_help>),
+//! clap still parses and still prints help: each command's text is set as
+//! its `Command::before_help`, the whole of a `{before-help}` help template
+//! (<https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.help_template>,
+//! <https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.before_help>),
 //! so `-h`, `--help`, `sb help <command>`, the colour choice (clap strips
-//! styles when colour is off) and the exit code stay clap's. Why not clap's
-//! own renderer with styles or a template: its command list shows names
+//! styles when colour is off) and the exit code stay clap's. A command with
+//! a shown flag that has a long help (`Arg::long_help`) also gets a long
+//! text, its `Command::before_long_help`
+//! (<https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.before_long_help>):
+//! clap prints it for `--help` and `sb help <command>`, and the short one
+//! for `-h`, as it does for its own help.
+//!
+//! Why not `Command::override_help`: clap prints that one text for `-h`
+//! and `--help` alike (`clap_builder` 4.6.7 `src/output/help.rs`,
+//! `write_help`). What the template way costs, from `clap_builder`
+//! 4.6.7's `src/output/help_template.rs` and `styled_str.rs`: clap adds a
+//! blank line after the text, which its own trim at the end of
+//! `write_help` removes again, so the output is the same; a literal `{n}`
+//! in a text would become a new line (sb's texts have none; sb's unit
+//! tests, `crates/sb/src/main.rs`, check); and the text would be wrapped at
+//! the terminal's width if clap's `wrap_help` feature were on (it is off;
+//! sb's help tests check).
+//!
+//! Why not clap's own renderer with styles or a template: its command list shows names
 //! only (no usage hints), its usage says `[OPTIONS]` and its lists are
 //! indented its own way (docs/prototypes/proto-help.md). The layout follows fang
 //! v2.0.1 `help.go`; widths are display widths (unicode-width), padded by
@@ -50,14 +68,22 @@ pub fn apply(cmd: Command, theme: &Theme, colour: bool) -> Command {
 
 fn apply_at(cmd: Command, path: &str, inherited: &[Arg], theme: &Theme, colour: bool) -> Command {
     let refs: Vec<&Arg> = inherited.iter().collect();
-    let text = render(&cmd, path, &refs, theme, colour);
+    let text = render(&cmd, path, &refs, theme, colour, false);
+    let long = shown_flags(&cmd, &refs)
+        .any(|a| a.get_long_help().is_some())
+        .then(|| render(&cmd, path, &refs, theme, colour, true));
     let mut below = inherited.to_vec();
     below.extend(cmd.get_arguments().filter(|a| a.is_global_set()).cloned());
     let names: Vec<String> = cmd
         .get_subcommands()
         .map(|c| c.get_name().to_string())
         .collect();
-    let mut cmd = cmd.override_help(StyledStr::from(text));
+    let mut cmd = cmd
+        .help_template("{before-help}")
+        .before_help(StyledStr::from(text));
+    if let Some(long) = long {
+        cmd = cmd.before_long_help(StyledStr::from(long));
+    }
     for name in names {
         let sub_path = format!("{path} {name}");
         cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, theme, colour));
@@ -103,16 +129,30 @@ fn hint(cmd: &Command) -> String {
     hint
 }
 
-/// A flag as fang shows it: `-s --long` (no value placeholder), its help,
-/// and its default as ` (value)` unless empty, false, 0 or [].
-fn flag_row(arg: &Arg) -> (String, String, String) {
+/// The flags `cmd`'s help lists: its own and `inherited`, positionals and
+/// hidden ones left out.
+fn shown_flags<'a>(cmd: &'a Command, inherited: &'a [&'a Arg]) -> impl Iterator<Item = &'a Arg> {
+    cmd.get_arguments()
+        .chain(inherited.iter().copied())
+        .filter(|a| !a.is_positional() && !a.is_hide_set())
+}
+
+/// A flag as fang shows it: `-s --long` (no value placeholder), its help
+/// (the long one, if it has one, when `long_help`), and its default as
+/// ` (value)` unless empty, false, 0 or [].
+fn flag_row(arg: &Arg, long_help: bool) -> (String, String, String) {
     let long = arg.get_long().unwrap_or_default().to_string();
     let shown = match (arg.get_short(), arg.get_long()) {
         (Some(short), Some(long)) => format!("-{short} --{long}"),
         (Some(short), None) => format!("-{short}"),
         (None, _) => format!("--{long}"),
     };
-    let mut help = arg.get_help().map_or_default(ToString::to_string);
+    let help = if long_help {
+        arg.get_long_help().or(arg.get_help())
+    } else {
+        arg.get_help()
+    };
+    let mut help = help.map_or_default(ToString::to_string);
     let default = arg
         .get_default_values()
         .iter()
@@ -127,8 +167,16 @@ fn flag_row(arg: &Arg) -> (String, String, String) {
 }
 
 /// The help text for `cmd`, reached through `path` (`sb install`), with
-/// `inherited` the global flags of its ancestors.
-fn render(cmd: &Command, path: &str, inherited: &[&Arg], theme: &Theme, colour: bool) -> String {
+/// `inherited` the global flags of its ancestors; its flags' long help
+/// when `long`.
+fn render(
+    cmd: &Command,
+    path: &str,
+    inherited: &[&Arg],
+    theme: &Theme,
+    colour: bool,
+    long: bool,
+) -> String {
     let mut commands: Vec<(String, String, String)> = cmd
         .get_subcommands()
         .filter(|c| !c.is_hide_set())
@@ -145,11 +193,8 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], theme: &Theme, colour: 
         ));
     }
     commands.sort();
-    let mut flags: Vec<(String, String, String)> = cmd
-        .get_arguments()
-        .chain(inherited.iter().copied())
-        .filter(|a| !a.is_positional() && !a.is_hide_set())
-        .map(flag_row)
+    let mut flags: Vec<(String, String, String)> = shown_flags(cmd, inherited)
+        .map(|arg| flag_row(arg, long))
         .collect();
     if !cmd.is_disable_help_flag_set() {
         flags.push((
@@ -205,7 +250,21 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], theme: &Theme, colour: 
     let _ = writeln!(out, "\n  {heading}FLAGS{heading:#}\n");
     for (_, shown, help) in &flags {
         let pad = " ".repeat(width - shown.width());
-        let _ = writeln!(out, "    {flag}{shown}{flag:#}{pad}{text}{help}{text:#}");
+        // A long help's later lines sit under the help column; its blank
+        // lines stay blank.
+        let (first, later) = match help.split_once('\n') {
+            Some((first, later)) => (first, Some(later)),
+            None => (help.as_str(), None),
+        };
+        let _ = writeln!(out, "    {flag}{shown}{flag:#}{pad}{text}{first}{text:#}");
+        let indent = " ".repeat(width + 4);
+        for line in later.into_iter().flat_map(|later| later.split('\n')) {
+            if line.is_empty() {
+                out.push('\n');
+            } else {
+                let _ = writeln!(out, "{indent}{text}{line}{text:#}");
+            }
+        }
     }
     out
 }
@@ -410,7 +469,7 @@ mod tests {
     }
 
     fn plain(cmd: &Command, path: &str, inherited: &[&Arg]) -> String {
-        render(cmd, path, inherited, &Theme::plain(), false)
+        render(cmd, path, inherited, &Theme::plain(), false, false)
     }
 
     /// sb-go's layout: about, headings, usage, commands sorted with fang's
@@ -445,7 +504,7 @@ mod tests {
     #[test]
     fn colour_adds_the_shaded_usage_block() {
         let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
-        let text = render(&sb(), "sb", &[], &theme, true);
+        let text = render(&sb(), "sb", &[], &theme, true, false);
         let lines: Vec<&str> = text.lines().collect();
         let usage = lines
             .iter()
@@ -497,6 +556,85 @@ mod tests {
             via_help.contains("    sb version [--flags]\n"),
             "{via_help}"
         );
+    }
+
+    /// A command with a flag that has a long help (clap's `Arg::long_help`,
+    /// <https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.long_help>).
+    fn with_long_help() -> Command {
+        sb().mut_subcommand("install", |install| {
+            install.arg(
+                Arg::new("extra-vars")
+                    .short('e')
+                    .long("extra-vars")
+                    .help("Extra variables")
+                    .long_help("Extra variables\n\nEach value reaches Ansible whole."),
+            )
+        })
+    }
+
+    /// The help clap prints for `args` once `apply` has run.
+    fn shown(cmd: Command, args: &[&str]) -> String {
+        apply(cmd, &Theme::plain(), false)
+            .try_get_matches_from(args)
+            .expect_err("help is shown as an error")
+            .to_string()
+    }
+
+    /// `--help` shows a flag's long help, its later lines under the help
+    /// column; `-h` shows the short help; `help <command>` is clap's long
+    /// help, as `--help`.
+    #[test]
+    fn long_help_shows_on_help_only() {
+        let long = shown(with_long_help(), &["sb", "install", "--help"]);
+        assert!(
+            long.contains("    -e --extra-vars  Extra variables\n\n                     Each value reaches Ansible whole.\n"),
+            "{long}"
+        );
+        let short = shown(with_long_help(), &["sb", "install", "-h"]);
+        assert!(
+            short.contains("    -e --extra-vars  Extra variables\n"),
+            "{short}"
+        );
+        assert!(!short.contains("Each value"), "{short}");
+        assert_eq!(
+            shown(with_long_help(), &["sb", "help", "install"]),
+            long,
+            "help <command> is the long help"
+        );
+        // The rest is the same text.
+        assert_eq!(
+            long.replace(
+                "\n\n                     Each value reaches Ansible whole.",
+                ""
+            ),
+            short
+        );
+    }
+
+    /// A command with no long help shows one text for `-h`, `--help` and
+    /// `help <command>`, as before; so does a command whose only long
+    /// help is in another command.
+    #[test]
+    fn without_a_long_help_both_flags_show_one_text() {
+        for (cmd, path) in [(sb(), "version"), (with_long_help(), "version")] {
+            let long = shown(cmd.clone(), &["sb", path, "--help"]);
+            assert_eq!(shown(cmd.clone(), &["sb", path, "-h"]), long);
+            assert_eq!(shown(cmd, &["sb", "help", path]), long);
+            assert!(long.contains("    sb version [--flags]\n"), "{long}");
+        }
+        let root = shown(with_long_help(), &["sb", "--help"]);
+        assert_eq!(shown(with_long_help(), &["sb", "-h"]), root);
+    }
+
+    /// An inherited flag's long help shows in the subcommand's long help.
+    #[test]
+    fn an_inherited_flags_long_help_shows_below() {
+        let cmd = sb().mut_arg("color", |color| {
+            color.long_help("Controls when to use color\n\nauto, always or never.")
+        });
+        let long = shown(cmd.clone(), &["sb", "version", "--help"]);
+        assert!(long.contains("auto, always or never."), "{long}");
+        assert!(!shown(cmd, &["sb", "version", "-h"]).contains("auto, always"));
     }
 
     /// The cases sb doesn't have yet but will: a required positional, an

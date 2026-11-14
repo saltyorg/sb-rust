@@ -655,9 +655,7 @@ fn no_cache_runs_without_a_listing() {
 }
 
 /// `sb install --help` lists sb-go's flags with their short help and
-/// hides `--force-disk-full`. (sb's help shows each flag's short help
-/// only, so `-e`'s long help is checked on clap's definition, in
-/// sb-ansible's unit tests.)
+/// hides `--force-disk-full`.
 #[test]
 fn install_help_lists_sb_gos_flags() {
     let output = common::sb()
@@ -675,4 +673,34 @@ fn install_help_lists_sb_gos_flags() {
         assert!(text.contains(line), "{text}");
     }
     assert!(!text.contains("force-disk-full"), "{text}");
+}
+
+/// `-e`'s long help (ansible spec, `sb install`) shows on `--help`, under
+/// the help column, and not on `-h`, which shows the short help.
+#[test]
+fn install_long_help_is_on_help_only() {
+    let help = |flag| {
+        let output = common::sb()
+            .args(["install", flag, "--color=never"])
+            .output()
+            .expect("run sb");
+        assert!(output.status.success());
+        stdout(&output)
+    };
+    let sentence = "Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the repository the playbook runs in).";
+    let long = help("--help");
+    assert!(
+        long.lines().any(|line| line.trim_start() == sentence),
+        "{long}"
+    );
+    assert!(
+        long.contains("Extra variables to pass to Ansible\n\n"),
+        "{long}"
+    );
+    let short = help("-h");
+    assert!(!short.contains(sentence), "{short}");
+    assert!(
+        short.contains("Extra variables to pass to Ansible\n"),
+        "{short}"
+    );
 }

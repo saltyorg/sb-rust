@@ -221,8 +221,14 @@ there is one), bold section headings, the usage line in a shaded block,
 commands with fang's usage hints (`[command]`, the arguments, `[--flags]`),
 flags as `-s --long` with defaults as ` (value)`, all in one column. sb
 draws it from clap's own command data at startup and sets each command's
-text with clap's `Command::override_help`, so `-h`, `--help`,
-`sb help <cmd>`, the colour choice and the exit code stay clap's. Bare
+text as its `Command::before_help` under a `{before-help}` help template,
+so `-h`, `--help`, `sb help <cmd>`, the colour choice and the exit code
+stay clap's. A command with a shown flag that has a long help
+(`Arg::long_help`) also gets a long text, its `Command::before_long_help`,
+with that flag's long help in the flag's row (later lines under the help
+column): clap prints it for `--help` and `sb help <cmd>`, and the short
+text for `-h` (maintainer, 2026-11-14; `override_help`, used before, gives
+one text for both). Bare
 `sb` prints the help on stdout and exits 0, as sb-go (clap would treat it
 as an error). Not copied yet: fang's 120-column wrap of the about;
 `sb help help` stays clap's own (clap adds that subcommand after sb sets

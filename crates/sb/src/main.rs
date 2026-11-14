@@ -755,6 +755,40 @@ mod contract;
 mod tests {
     use super::*;
 
+    /// No help text sb gives clap holds `{n}`: clap's help template would
+    /// print it as a new line (cli-core's help module, "What the template
+    /// way costs"). Checked on the texts `help::apply` sets, every flag and
+    /// default included, for a build with `--force-update`.
+    #[test]
+    fn no_help_text_holds_claps_new_line_variable() {
+        fn walk(cmd: &clap::Command, texts: &mut Vec<String>) {
+            texts.extend(
+                [cmd.get_before_help(), cmd.get_before_long_help()]
+                    .into_iter()
+                    .flatten()
+                    .map(ToString::to_string),
+            );
+            for sub in cmd.get_subcommands() {
+                walk(sub, texts);
+            }
+        }
+        let raw = BuildInfo::from_env("0.1.0", None, None, None);
+        let cmd = help::apply(
+            force_update_arg(Cli::command(), &raw),
+            &sb_cli_core::theme::Theme::plain(),
+            false,
+        );
+        let mut texts = Vec::new();
+        walk(&cmd, &mut texts);
+        assert!(texts.len() > 10, "the walk sees the tree: {}", texts.len());
+        assert!(
+            texts.iter().any(|t| t.contains("--force-update")),
+            "and the flags added after the derive"
+        );
+        let found: Vec<&String> = texts.iter().filter(|t| t.contains("{n}")).collect();
+        assert!(found.is_empty(), "{found:?}");
+    }
+
     /// `--force-update` is in the tree only of builds with self-update
     /// off: raw builds and those built with it disabled, never a plain
     /// release build (sb-go's tree); `self-update` is hidden and needs root.
