@@ -197,7 +197,7 @@ async fn a_healthy_venv_passes_every_probe() {
         ]
     );
     // Only ansible gets the isolated config, an empty file while it runs.
-    let configs = std::fs::read_to_string(tree.entry_points()).expect("entry points");
+    let configs = std::fs::read_to_string(tree.entry_points_log()).expect("entry points");
     assert_eq!(
         configs,
         "ansible empty-file\ncertbot unset\napprise unset\n"

@@ -1,9 +1,10 @@
-//! The venv's health (python-env spec, step 4; sb-go's `python/venv.go`,
-//! `validatePython`, `validateEnvironment` and `validateEntrypoints`): the
-//! Python check and the environment check, each probe an isolated child
-//! captured within 30 s (spec, difference 8).
+//! The venv (python-env spec, "The venv reconcile"; sb-go's
+//! `python/venv.go`): the Python check and the environment check (step 4,
+//! each probe an isolated child captured within 30 s, difference 8), the
+//! reconcile, and the build into staging (steps 7-11 and 17).
 
 use std::io;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -417,4 +418,583 @@ async fn ensure_ownership(layout: &Layout, user: Option<&str>) -> Result<(), Ven
     .await
     .map_err(VenvError::Join)??;
     Ok(())
+}
+
+/// `uv python find`'s limit: a local lookup, as quick as a health probe
+/// (sb-go has none; the spec's rule "a timeout or a stated reason for
+/// none", and its difference 8).
+const FIND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Go's `20060102T150405.000000000` in jiff's strftime
+/// (<https://docs.rs/jiff/0.2.38/jiff/fmt/strtime/index.html>: `%N` is
+/// `%9f`, always nine digits).
+const STAMP: &str = "%Y%m%dT%H%M%S.%N";
+
+/// Why the build failed, in sb-go's words. A nested step shows its own
+/// failure (install, venv, sync) and ends the build as
+/// [`BuildError::Stopped`].
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    #[error(transparent)]
+    Isolate(#[from] IsolateError),
+    #[error("create Python release directory: {0}")]
+    PythonDir(io::Error),
+    #[error("error finding Python {version}: {cause}")]
+    Find { version: String, cause: String },
+    #[error("uv returned non-absolute path {path:?} for Python {version}")]
+    NotAbsolute { path: String, version: String },
+    #[error(transparent)]
+    Python(CheckError),
+    #[error("create Ansible generation {id}: {cause}")]
+    Generation { id: String, cause: io::Error },
+    #[error("read venv commands: {0}")]
+    Commands(io::Error),
+    #[error("inspect venv command {name}: {cause}")]
+    Command { name: String, cause: io::Error },
+    #[error("unsafe venv command name {0:?}")]
+    UnsafeName(String),
+    #[error("required command {0} is missing from staged venv")]
+    Missing(&'static str),
+    #[error("validate staged Ansible environment: {0}")]
+    Staged(CheckError),
+    #[error(transparent)]
+    Manifest(#[from] manifest::WriteError),
+    /// A nested step failed or was interrupted; it says why itself.
+    #[error("a step stopped the Ansible virtual environment's build")]
+    Stopped(#[from] Exit),
+}
+
+/// What a build has made so far (sb-go's deferred cleanup, venv.go:163-171
+/// and 259-264; spec, step 17): the new generation, and the new Python
+/// release. A failed build removes them on a blocking thread
+/// ([`Leftovers::remove`]: a venv holds thousands of files, and sb's
+/// runtime has one thread); dropped while still armed (a panic, a future
+/// dropped, a [`Staged`] never kept), they go in `Drop`. Neither removes
+/// the generation the active link points at, nor a Python release an
+/// active manifest names. Removal is best effort, as sb-go's; a failure
+/// goes to the run log. Why not tempfile's `TempDir` for them: it can't
+/// make the missing `releases/` parents, drops its removal error unseen,
+/// and can't spare a release the active manifest names.
+#[derive(Debug)]
+struct Leftovers<'a> {
+    layout: &'a Layout,
+    generation: Option<PathBuf>,
+    python: Option<PathBuf>,
+    armed: bool,
+}
+
+impl Leftovers<'_> {
+    /// Remove them now, off the runtime's thread
+    /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>),
+    /// and disarm.
+    async fn remove(&mut self) {
+        self.armed = false;
+        let (layout, generation, python) = (
+            self.layout.clone(),
+            self.generation.take(),
+            self.python.take(),
+        );
+        let removed = tokio::task::spawn_blocking(move || {
+            remove_leftovers(&layout, generation.as_deref(), python.as_deref());
+        })
+        .await;
+        if let Err(err) = removed {
+            tracing::warn!(%err, "the failed build's removal stopped");
+        }
+    }
+}
+
+impl Drop for Leftovers<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            remove_leftovers(
+                self.layout,
+                self.generation.as_deref(),
+                self.python.as_deref(),
+            );
+        }
+    }
+}
+
+/// A build's `generation` and `python`, unless the active link or
+/// manifest still uses them.
+fn remove_leftovers(layout: &Layout, generation: Option<&Path>, python: Option<&Path>) {
+    let active = std::fs::canonicalize(&layout.active_venv)
+        .ok()
+        .and_then(|venv| venv.parent().map(Path::to_path_buf));
+    if let Some(generation) = generation
+        && active.as_deref() != Some(generation)
+    {
+        remove_tree(generation);
+    }
+    if let Some(python) = python {
+        let named = active
+            .and_then(|generation| manifest::read(&generation).ok().flatten())
+            .is_some_and(|manifest| Path::new(&manifest.python_install) == python);
+        if !named && crate::activate::direct_child(python, &layout.python_releases) {
+            remove_tree(python);
+        }
+    }
+}
+
+/// `path` and everything under it, best effort.
+fn remove_tree(path: &Path) {
+    if let Err(err) = std::fs::remove_dir_all(path)
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), %err, "could not remove a failed build");
+    }
+}
+
+/// A generation built into staging and checked, its manifest written. It
+/// is removed when dropped, unless [`Staged::keep`] took it (activation).
+#[derive(Debug)]
+#[must_use = "dropping it removes the build"]
+pub struct Staged<'a> {
+    leftovers: Leftovers<'a>,
+    /// The generation directory, holding `venv/` and `manifest.json`.
+    pub generation: PathBuf,
+    /// Its venv.
+    pub venv: PathBuf,
+    /// What its manifest holds.
+    pub manifest: Manifest,
+}
+
+impl Staged<'_> {
+    /// Keep the build (it was activated) and return its manifest.
+    #[must_use]
+    pub fn keep(mut self) -> Manifest {
+        self.leftovers.armed = false;
+        self.manifest
+    }
+}
+
+/// The Python a build uses: its interpreter and the release holding it.
+#[derive(Debug)]
+struct Python {
+    path: String,
+    install: String,
+}
+
+/// The Python the build uses: the active manifest's when the force allows,
+/// its version matches and it passes the Python check (spec, step 7),
+/// else a new release.
+async fn python<'a>(
+    step: &mut Step,
+    env: &Env<'a>,
+    toolchain: &Toolchain,
+    previous: Option<&Manifest>,
+    force: Force,
+    leftovers: &mut Leftovers<'a>,
+) -> Result<Python, BuildError> {
+    let token = step.token();
+    if force != Force::Python
+        && let Some(previous) = previous
+        && previous.python_version == toolchain.python
+    {
+        match check_python(
+            env,
+            Path::new(&previous.python_path),
+            &toolchain.python,
+            &token,
+        )
+        .await
+        {
+            Ok(()) => {
+                return Ok(Python {
+                    path: previous.python_path.clone(),
+                    install: previous.python_install.clone(),
+                });
+            }
+            Err(err) => tracing::info!(cause = %err, "the active Python is not reused"),
+        }
+    }
+    install_python(step, env, &toolchain.python, force, leftovers).await
+}
+
+/// A new Python release for `version` (sb-go's `createPythonRelease`):
+/// its directory, "Installing Python <v>", uv's find and the Python
+/// check.
+async fn install_python<'a>(
+    step: &mut Step,
+    env: &Env<'a>,
+    version: &String,
+    force: Force,
+    leftovers: &mut Leftovers<'a>,
+) -> Result<Python, BuildError> {
+    let token = step.token();
+    let id = format!(
+        "python-{}-{}",
+        version.replace('.', "-"),
+        stamp(jiff::Timestamp::now())
+    );
+    let dir = env.layout.python_releases.join(id);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(&dir)
+        .map_err(BuildError::PythonDir)?;
+    leftovers.python = Some(dir.clone());
+    let dir_arg = dir.to_string_lossy().into_owned();
+    let installing = format!("Installing Python {version}");
+    step.step(Labels::new(&installing, &installing), async |step| {
+        let install = env
+            .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
+            .map(|cmd| {
+                let cmd = cmd
+                    .arg("python")
+                    .arg("install")
+                    .arg("--managed-python")
+                    .arg("--no-bin")
+                    .arg("--install-dir")
+                    .value(dir_arg.clone());
+                let cmd = if force == Force::Python {
+                    cmd.arg("--reinstall")
+                } else {
+                    cmd
+                };
+                let cmd = if force == Force::None {
+                    cmd
+                } else {
+                    cmd.arg("--no-cache")
+                };
+                cmd.value(version.clone())
+            });
+        let _streamed = install
+            .cmd
+            .stream(step)
+            .await?
+            .check()
+            .with_context(|| format!("error installing Python {version}"))
+            .context("install Python release")?;
+        anyhow::Ok(())
+    })
+    .await?;
+    let find = env
+        .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
+        .map(|cmd| {
+            cmd.arg("python")
+                .arg("find")
+                .arg("--managed-python")
+                .arg("--no-project")
+                .arg("--no-python-downloads")
+                .value(version.clone())
+                .env("UV_PYTHON_INSTALL_DIR", dir_arg.clone())
+                .timeout(FIND_TIMEOUT)
+        });
+    let found = crate::captured(&find.cmd, &token)
+        .await
+        .map_err(|cause| BuildError::Find {
+            version: version.clone(),
+            cause,
+        })?;
+    let found = found.trim();
+    if !Path::new(found).is_absolute() {
+        return Err(BuildError::NotAbsolute {
+            path: found.to_string(),
+            version: version.clone(),
+        });
+    }
+    check_python(env, Path::new(found), version, &token)
+        .await
+        .map_err(BuildError::Python)?;
+    // Go's `filepath.Clean` for an absolute path uv printed: repeated
+    // and trailing separators and `.` parts go (std's `components`,
+    // <https://doc.rust-lang.org/std/path/struct.Path.html#method.components>;
+    // `..` stays, which uv never prints).
+    let found: PathBuf = Path::new(found).components().collect();
+    let found = found.to_string_lossy().into_owned();
+    Ok(Python {
+        path: found,
+        install: dir_arg,
+    })
+}
+
+/// Build a new generation into staging (spec, steps 7-11): the Python
+/// (the active one's, or a new release); `releases/<stamp>-<lock[:12]>/`; "Creating Ansible
+/// virtual environment" (`uv venv`); "Syncing hashed Saltbox
+/// requirements" (`uv pip sync --require-hashes`, `--no-cache` when
+/// forced), both streamed into their steps with no timeout (Ctrl-C stops
+/// them); the exported commands; the environment check on the new venv;
+/// the manifest. `previous` is the active generation's manifest, if any.
+///
+/// # Errors
+///
+/// [`BuildError`]: the first part that fails; everything the build made
+/// is removed by then.
+pub async fn build<'a>(
+    step: &mut Step,
+    env: &Env<'a>,
+    toolchain: &Toolchain,
+    previous: Option<&Manifest>,
+    force: Force,
+) -> Result<Staged<'a>, BuildError> {
+    let mut leftovers = Leftovers {
+        layout: env.layout,
+        generation: None,
+        python: None,
+        armed: true,
+    };
+    match stage(step, env, toolchain, previous, force, &mut leftovers).await {
+        Ok((generation, venv, manifest)) => Ok(Staged {
+            leftovers,
+            generation,
+            venv,
+            manifest,
+        }),
+        Err(err) => {
+            leftovers.remove().await;
+            Err(err)
+        }
+    }
+}
+
+/// [`build`]'s parts, each thing made recorded in `leftovers`.
+async fn stage<'a>(
+    step: &mut Step,
+    env: &Env<'a>,
+    toolchain: &Toolchain,
+    previous: Option<&Manifest>,
+    force: Force,
+    leftovers: &mut Leftovers<'a>,
+) -> Result<(PathBuf, PathBuf, Manifest), BuildError> {
+    let Python {
+        path: python_path,
+        install: python_install,
+    } = python(step, env, toolchain, previous, force, leftovers).await?;
+    let id = format!(
+        "{}-{}",
+        stamp(jiff::Timestamp::now()),
+        &toolchain.lock_sha256[..12]
+    );
+    let generation = env.layout.ansible_releases.join(&id);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(&generation)
+        .map_err(|cause| BuildError::Generation {
+            id: id.clone(),
+            cause,
+        })?;
+    leftovers.generation = Some(generation.clone());
+    let venv = generation.join("venv");
+    let creating = "Creating Ansible virtual environment";
+    step.step(Labels::new(creating, creating), async |step| {
+        let create = env
+            .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
+            .map(|cmd| {
+                cmd.arg("venv")
+                    .arg("--python")
+                    .value(python_path.clone())
+                    .arg("--no-project")
+                    .arg("--no-python-downloads")
+                    .value(venv.to_string_lossy())
+            });
+        let _streamed = create
+            .cmd
+            .stream(step)
+            .await?
+            .check()
+            .context("error creating venv")?;
+        anyhow::Ok(())
+    })
+    .await?;
+    let syncing = "Syncing hashed Saltbox requirements";
+    step.step(Labels::new(syncing, syncing), async |step| {
+        let python = venv.join("bin/python3");
+        let sync = env
+            .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
+            .map(|cmd| {
+                let cmd = cmd
+                    .arg("pip")
+                    .arg("sync")
+                    .arg("--no-progress")
+                    .arg("--python")
+                    .value(python.to_string_lossy())
+                    .arg("--require-hashes");
+                let cmd = if force == Force::None {
+                    cmd
+                } else {
+                    cmd.arg("--no-cache")
+                };
+                cmd.value(env.layout.lock.to_string_lossy())
+            });
+        let _streamed = sync
+            .cmd
+            .stream(step)
+            .await?
+            .check()
+            .context("error syncing requirements")?;
+        anyhow::Ok(())
+    })
+    .await?;
+    let commands = discover(&venv)?;
+    check_environment(env, &venv, &toolchain.python, &step.token())
+        .await
+        .map_err(BuildError::Staged)?;
+    let manifest = Manifest {
+        schema_version: manifest::SCHEMA,
+        generation_id: id,
+        python_version: toolchain.python.clone(),
+        python_path,
+        python_install,
+        uv_version: env.uv_version.to_string(),
+        lock_sha256: toolchain.lock_sha256.clone(),
+        saltbox_commit: toolchain.commit.clone(),
+        created_at: created_at(jiff::Timestamp::now()),
+        exported_commands: commands,
+    };
+    manifest::write(&generation, &manifest)?;
+    Ok((generation, venv, manifest))
+}
+
+/// A UTC time in Go's `20060102T150405.000000000` (generation and
+/// Python release names).
+fn stamp(at: jiff::Timestamp) -> String {
+    at.strftime(STAMP).to_string()
+}
+
+/// A UTC time in Go's `time.RFC3339Nano` (the manifest's `created_at`):
+/// jiff's RFC 3339 `Display`, `Z` and the fraction's trailing zeros cut,
+/// none when it is zero
+/// (<https://docs.rs/jiff/0.2.38/jiff/struct.Timestamp.html#impl-Display-for-Timestamp>).
+fn created_at(at: jiff::Timestamp) -> String {
+    at.to_string()
+}
+
+/// The commands a staged venv exports (sb-go's `discoverCommands`; spec,
+/// step 10): regular executable files in `bin` named `ansible*`, `certbot`
+/// or `apprise`, sorted; `ansible`, `certbot` and `apprise` required. A
+/// symlink is no command: sb-go reads `lstat`'s type, and std's
+/// `DirEntry::metadata` doesn't follow symlinks
+/// (<https://doc.rust-lang.org/std/fs/struct.DirEntry.html#method.metadata>).
+fn discover(venv: &Path) -> Result<Vec<String>, BuildError> {
+    let bin = venv.join("bin");
+    let entries = std::fs::read_dir(&bin).map_err(BuildError::Commands)?;
+    let mut commands = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(BuildError::Commands)?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("ansible") || name == "certbot" || name == "apprise") {
+            continue;
+        }
+        let meta = entry.metadata().map_err(|cause| BuildError::Command {
+            name: name.to_string(),
+            cause,
+        })?;
+        if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+            if name.contains(['\n', '\r']) || entry.file_name().to_str().is_none() {
+                return Err(BuildError::UnsafeName(name.to_string()));
+            }
+            commands.push(name.into_owned());
+        }
+    }
+    commands.sort();
+    for required in ENTRY_POINTS {
+        if !commands.iter().any(|name| name == required) {
+            return Err(BuildError::Missing(required));
+        }
+    }
+    Ok(commands)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(second: i64, nanosecond: i32) -> jiff::Timestamp {
+        jiff::Timestamp::new(second, nanosecond).expect("timestamp")
+    }
+
+    /// 2026-08-07T12:00:00Z, sb-go's test generation's time.
+    const NOON: i64 = 1_786_104_000;
+
+    /// Go's `20060102T150405.000000000`: always nine digits.
+    #[test]
+    fn stamps_are_gos_layout() {
+        assert_eq!(stamp(at(NOON, 0)), "20260807T120000.000000000");
+        assert_eq!(stamp(at(NOON, 1_200)), "20260807T120000.000001200");
+    }
+
+    /// Go's `RFC3339Nano`: trailing zeros cut, no fraction when zero.
+    #[test]
+    fn created_at_is_rfc3339_nano() {
+        assert_eq!(created_at(at(NOON, 0)), "2026-08-07T12:00:00Z");
+        assert_eq!(created_at(at(NOON, 120_000_000)), "2026-08-07T12:00:00.12Z");
+        assert_eq!(
+            created_at(at(NOON, 123_456_789)),
+            "2026-08-07T12:00:00.123456789Z"
+        );
+    }
+
+    fn executable(path: &Path) {
+        std::fs::write(path, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    /// sb-go's `TestDiscoverCommands`: regular executables named
+    /// `ansible*`, `certbot` or `apprise`, sorted; a symlink, a plain file,
+    /// a directory and other names left out.
+    #[test]
+    fn commands_are_the_venvs_entry_points() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).expect("bin");
+        for name in [
+            "certbot",
+            "ansible-playbook",
+            "apprise",
+            "ansible",
+            "pip",
+            "python3",
+        ] {
+            executable(&bin.join(name));
+        }
+        std::fs::write(bin.join("ansible-notes"), "").expect("plain file");
+        std::fs::create_dir(bin.join("ansible-dir")).expect("dir");
+        std::os::unix::fs::symlink(bin.join("ansible"), bin.join("ansible-link")).expect("link");
+        assert_eq!(
+            discover(dir.path()).expect("commands"),
+            ["ansible", "ansible-playbook", "apprise", "certbot"]
+        );
+    }
+
+    /// sb-go's `TestDiscoverCommandsRequiresEntrypoints`.
+    #[test]
+    fn each_entry_point_is_required() {
+        for missing in ENTRY_POINTS {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let bin = dir.path().join("bin");
+            std::fs::create_dir(&bin).expect("bin");
+            for name in ENTRY_POINTS.iter().filter(|name| **name != missing) {
+                executable(&bin.join(name));
+            }
+            let err = discover(dir.path()).expect_err(missing);
+            assert_eq!(
+                err.to_string(),
+                format!("required command {missing} is missing from staged venv")
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_name_with_a_line_break_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).expect("bin");
+        for name in ENTRY_POINTS {
+            executable(&bin.join(name));
+        }
+        executable(&bin.join("ansible\nx"));
+        let err = discover(dir.path()).expect_err("unsafe");
+        assert_eq!(err.to_string(), "unsafe venv command name \"ansible\\nx\"");
+    }
+
+    #[test]
+    fn a_venv_without_bin_is_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = discover(dir.path()).expect_err("no bin");
+        assert!(err.to_string().starts_with("read venv commands: "), "{err}");
+    }
 }

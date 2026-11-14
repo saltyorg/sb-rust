@@ -99,6 +99,54 @@ pub fn read(generation: &Path) -> Result<Option<Manifest>, ManifestError> {
     Ok(stored.complete())
 }
 
+/// Why a manifest couldn't be written, in sb-go's words.
+#[derive(Debug, thiserror::Error)]
+pub enum WriteError {
+    #[error("encode generation manifest: {0}")]
+    Encode(serde_json::Error),
+    #[error("create generation manifest: {0}")]
+    Create(io::Error),
+    #[error("write generation manifest: {0}")]
+    Write(io::Error),
+    #[error("chmod generation manifest: {0}")]
+    Chmod(io::Error),
+    #[error("activate generation manifest: {0}")]
+    Activate(io::Error),
+}
+
+/// `manifest` into `generation` as sb-go's `writeManifest` writes it:
+/// `json.MarshalIndent`'s two-space form and a newline (`serde_json`'s
+/// pretty printer gives the same bytes, see the tests), through a
+/// temporary `.manifest-*.json` beside it, mode 0644 set on the open file
+/// (why not tempfile's `Builder::permissions`: the umask applies to it,
+/// not to sb-go's chmod), then renamed over `manifest.json` (tempfile's `NamedTempFile::persist`,
+/// <https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html#method.persist>).
+/// Go's encoder also escapes `<`, `>`, `&`, U+2028 and U+2029 in
+/// strings; no field sb writes holds one (paths under `/srv`, versions, hex and command
+/// names).
+///
+/// # Errors
+///
+/// [`WriteError`]: the first part that fails; the temporary file goes.
+pub fn write(generation: &Path, manifest: &Manifest) -> Result<(), WriteError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut text = serde_json::to_string_pretty(manifest).map_err(WriteError::Encode)?;
+    text.push('\n');
+    let mut file = tempfile::Builder::new()
+        .prefix(".manifest-")
+        .suffix(".json")
+        .tempfile_in(generation)
+        .map_err(WriteError::Create)?;
+    file.write_all(text.as_bytes()).map_err(WriteError::Write)?;
+    file.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o644))
+        .map_err(WriteError::Chmod)?;
+    file.persist(generation.join(FILE))
+        .map_err(|err| WriteError::Activate(err.error))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +239,32 @@ mod tests {
             let dir = written(&value.to_string());
             assert_eq!(read(dir.path()).expect(field), None, "{field}");
         }
+    }
+
+    /// `write` gives sb-go's bytes, 0644, and leaves no temporary file.
+    #[test]
+    fn the_written_manifest_is_sb_gos_bytes() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), &sb_go()).expect("written");
+        let path = dir.path().join(FILE);
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), SB_GO);
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o7777, 0o644);
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(names, [FILE]);
+    }
+
+    #[test]
+    fn a_manifest_in_a_missing_generation_is_named() {
+        let err = write(Path::new("/nonexistent/generation"), &sb_go()).expect_err("missing");
+        assert!(
+            err.to_string().starts_with("create generation manifest: "),
+            "{err}"
+        );
     }
 
     #[test]

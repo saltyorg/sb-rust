@@ -3508,6 +3508,7 @@ dependencies = [
  "anyhow",
  "hex",
  "indicatif",
+ "jiff",
  "sb-cli-core",
  "sb-exec",
  "sb-host",

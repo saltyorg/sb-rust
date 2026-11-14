@@ -389,7 +389,9 @@ moved), so `ops` callers and the tests can read them.
    `https://github.com/<owner>/<repo>/releases/download/...` (release's
    rule, decided D-Q2). sb-go accepts any https URL.
 8. **Timeouts sb-go lacks:** 10 s on `git rev-parse` and the uv version
-   probes, 30 s on each health probe. sb-go's health probes had none.
+   probes, 30 s on each health probe and on `uv python find` (a local
+   lookup; added with the build, module build M15). sb-go's health probes
+   and its find had none.
 9. **Scratch TMPDIR prefix** `sb-python-` instead of `sb-go-python-`
    (temporary, not part of the layout).
 10. **Errors** are cli-core's error block; a positional argument is a parse

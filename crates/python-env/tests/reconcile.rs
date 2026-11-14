@@ -404,6 +404,26 @@ async fn a_wrong_uv_fails_its_step() {
     assert!(ran.error.is_some());
 }
 
+/// Everything else under both `releases/` goes, a stray file or link as
+/// well as old directories; a link is removed, never followed.
+#[tokio::test]
+async fn cleanup_removes_stray_entries_too() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let active = tree.healthy();
+    let outside = tree.root.path().join("outside");
+    std::fs::create_dir(&outside).expect("outside");
+    std::fs::write(outside.join("kept"), "").expect("kept");
+    std::fs::write(tree.layout.ansible_releases.join("stray"), "").expect("stray");
+    std::os::unix::fs::symlink(&outside, tree.layout.python_releases.join("link")).expect("link");
+    activate::cleanup_generations(&tree.layout).expect("cleaned");
+    assert!(!tree.layout.ansible_releases.join("stray").exists());
+    assert!(std::fs::symlink_metadata(tree.layout.python_releases.join("link")).is_err());
+    assert!(outside.join("kept").exists());
+    assert!(active.dir.exists());
+    assert!(active.python_install.exists());
+}
+
 /// sb-go's `TestCleanupGenerationsFailsClosedWithoutActiveGeneration`.
 #[tokio::test]
 async fn cleanup_without_an_active_generation_removes_nothing() {

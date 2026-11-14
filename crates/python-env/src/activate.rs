@@ -49,7 +49,7 @@ pub enum CleanupError {
 /// Whether `path` is one entry directly inside `root`, compared by their
 /// components as sb-go's `directChildOf` compares by `filepath.Rel`
 /// (lexically: neither is resolved).
-fn direct_child(path: &Path, root: &Path) -> bool {
+pub(crate) fn direct_child(path: &Path, root: &Path) -> bool {
     let Ok(rest) = path.strip_prefix(root) else {
         return false;
     };

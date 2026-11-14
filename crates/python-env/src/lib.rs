@@ -1,9 +1,10 @@
 //! `sb-python-env`: the uv-managed Python, the Ansible venv Saltbox runs,
 //! the 22.04 deadsnakes cleanup and `saltbox.fact` (python-env spec). So
-//! far the first half of slice 1: the fixed [`Layout`], the toolchain pin
-//! files with the uv minimum and the lock digest ([`toolchain`]), the
-//! isolated child builder (`isolate`), the uv `--version` probe ([`uv`]),
-//! and the Python and environment checks ([`venv`]).
+//! far slice 1 and the first half of slice 2: the fixed [`Layout`], the
+//! toolchain ([`toolchain`]), the isolated child builder (`isolate`), the
+//! uv `--version` probe ([`uv`]), the venv's checks, its reconcile on a
+//! healthy tree and the build into staging ([`venv`]), the manifest, the
+//! wrappers, the generation cleanup, and [`reconcile_runtime`].
 //!
 //! Every child is built as an sb-exec `Cmd` (spec, assumption 4); nothing
 //! here draws.

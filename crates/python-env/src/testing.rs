@@ -124,6 +124,9 @@ impl Tree {
             &format!("[ \"$*\" = 'rev-parse HEAD' ] || exit 2\necho {COMMIT}"),
         );
         let tree = Self { root, layout, git };
+        let templates = tree.root.path().join("templates");
+        tree.python(&templates.join("python3"), PYTHON);
+        tree.entry_points(&templates.join("bin"));
         tree.uv(UV, UV);
         tree.libpq(true);
         let _ = stand_in(&tree.stand_ins(), "apt-get", &tree.calls_line());
@@ -131,7 +134,13 @@ impl Tree {
     }
 
     /// The uv and uvx stand-ins, reporting `uv` and `uvx` as their
-    /// versions.
+    /// versions. uv also runs `pip check` (passing), and the build's
+    /// `python install` (the template Python into the install dir's
+    /// `cpython/bin/python3.12`), `python find` (that path, or
+    /// [`Tree::find_answer`]'s), `venv` (the template Python as
+    /// `bin/python3`) and `pip sync` (the template entry points into the
+    /// venv's `bin`); [`Tree::fail`] and [`Tree::hang`] change one of
+    /// them.
     ///
     /// # Panics
     ///
@@ -139,9 +148,31 @@ impl Tree {
     pub fn uv(&self, uv: &str, uvx: &str) {
         let bin = &self.layout.wrappers;
         let calls = self.calls_line();
+        let root = self.root.path().display();
+        // `$1` is `--no-config`; `$2 $3` name the operation. A file named
+        // after it under `fail/` makes it fail, under `hang/` hang (after
+        // touching `hang/started`).
         let script = format!(
-            "{calls}\ncase \"$2\" in\n--version) echo 'uv {uv} (stand-in)' ;;\n\
-             pip) [ \"$3\" = check ] || exit 2 ;;\n*) exit 2 ;;\nesac"
+            "{calls}\n\
+             op=\"$2-$3\"\n\
+             [ -e '{root}/fail/'\"$op\" ] && {{ echo \"uv: $op failed (stand-in)\" >&2; exit 1; }}\n\
+             [ -e '{root}/hang/'\"$op\" ] && {{ : > '{root}/hang/started'; exec sleep 600; }}\n\
+             prev=; last=; dir=; py=\n\
+             for a; do\n\
+               [ \"$prev\" = --install-dir ] && dir=$a\n\
+               [ \"$prev\" = --python ] && py=$a\n\
+               prev=$a; last=$a\n\
+             done\n\
+             case \"$op\" in\n\
+             --version-) echo 'uv {uv} (stand-in)' ;;\n\
+             pip-check) ;;\n\
+             python-install) mkdir -p \"$dir/cpython/bin\" && cp '{root}/templates/python3' \"$dir/cpython/bin/python3.12\" ;;\n\
+             python-find) if [ -e '{root}/find-answer' ]; then cat '{root}/find-answer'; \
+             else echo \"$UV_PYTHON_INSTALL_DIR/cpython/bin/python3.12\"; fi ;;\n\
+             venv-*) mkdir -p \"$last/bin\" && cp '{root}/templates/python3' \"$last/bin/python3\" ;;\n\
+             pip-sync) cp '{root}/templates/bin/'* \"$(dirname \"$py\")/\" ;;\n\
+             *) exit 2 ;;\n\
+             esac"
         );
         let _ = stand_in(bin, "uv", &script);
         let _ = stand_in(bin, "uvx", &format!("{calls}\necho 'uvx {uvx} (stand-in)'"));
@@ -252,7 +283,7 @@ impl Tree {
 
     /// Where the venv's entry points record their Ansible config.
     #[must_use]
-    pub fn entry_points(&self) -> PathBuf {
+    pub fn entry_points_log(&self) -> PathBuf {
         self.root.path().join("entry-points.log")
     }
 
@@ -264,7 +295,7 @@ impl Tree {
     /// A healthy venv at `venv`: a `bin/python3` reporting [`PYTHON`] and
     /// importing everything, and `ansible`, `certbot` and `apprise`
     /// reporting versions. Each entry point also appends its name and its
-    /// Ansible config to [`Tree::entry_points`]: `empty-file` when
+    /// Ansible config to [`Tree::entry_points_log`]: `empty-file` when
     /// `ANSIBLE_CONFIG` names an existing empty file, else its value or
     /// `unset`.
     ///
@@ -273,9 +304,15 @@ impl Tree {
     /// When it can't be written.
     pub fn venv(&self, venv: &Path) {
         let bin = venv.join("bin");
-        let calls = self.calls_line();
         self.python(&bin.join("python3"), PYTHON);
-        let record = self.entry_points();
+        self.entry_points(&bin);
+    }
+
+    /// The stand-in `ansible`, `certbot` and `apprise` in `bin`, each
+    /// recording its Ansible config (see [`Tree::venv`]).
+    fn entry_points(&self, bin: &Path) {
+        let calls = self.calls_line();
+        let record = self.entry_points_log();
         let record = record.display();
         for name in ["ansible", "certbot", "apprise"] {
             let script = format!(
@@ -283,8 +320,43 @@ impl Tree {
                  if [ -f \"$c\" ] && [ ! -s \"$c\" ]; then c=empty-file; fi\n\
                  echo \"{name} $c\" >> '{record}'\necho '{name} 1.0'"
             );
-            let _ = stand_in(&bin, name, &script);
+            let _ = stand_in(bin, name, &script);
         }
+    }
+
+    /// Make uv's `op` (`python-install`, `venv---python`, `pip-sync`,
+    /// `pip-check`, ...: its first two arguments after `--no-config`,
+    /// joined by `-`) fail.
+    ///
+    /// # Panics
+    ///
+    /// When the marker can't be written.
+    pub fn fail(&self, op: &str) {
+        self.mark("fail", op);
+    }
+
+    /// Make uv's `op` hang, after it touches `hang/started` under the root.
+    ///
+    /// # Panics
+    ///
+    /// When the marker can't be written.
+    pub fn hang(&self, op: &str) {
+        self.mark("hang", op);
+    }
+
+    /// Make `uv python find` print `answer`.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    pub fn find_answer(&self, answer: &str) {
+        std::fs::write(self.root.path().join("find-answer"), answer).expect("answer");
+    }
+
+    fn mark(&self, kind: &str, op: &str) {
+        let dir = self.root.path().join(kind);
+        std::fs::create_dir_all(&dir).expect("marker dir");
+        std::fs::write(dir.join(op), "").expect("marker");
     }
 
     /// A Python at `path` reporting `version`, `-I` required, whose `-c`

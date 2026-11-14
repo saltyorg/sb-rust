@@ -37,6 +37,9 @@ anyhow.workspace = true
 tracing.workspace = true
 # `spawn_blocking` for the ownership walk.
 tokio.workspace = true
+# Generation and Python release names, the manifest's `created_at`
+# (spec, Tech Stack).
+jiff.workspace = true
 # The uv minimum (decision 14).
 semver.workspace = true
 hex.workspace = true
