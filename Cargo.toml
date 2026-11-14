@@ -22,6 +22,7 @@ sb-tui = { path = "crates/tui" }
 sb-release = { path = "crates/release" }
 sb-motd = { path = "crates/motd" }
 sb-ansible = { path = "crates/ansible" }
+sb-python-env = { path = "crates/python-env" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"

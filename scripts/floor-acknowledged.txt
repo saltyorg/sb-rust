@@ -266,3 +266,7 @@ assertion-removed	crates/tui/src/picker/tests.rs	assert!(rows[2].starts_with("  
 assertion-removed	crates/tui/src/picker/tests.rs	assert_eq!(names(&p).len(), 6);	Needs attention lists the attention sources a second time (module task M70); kept with the new count
 assertion-removed	crates/tui/src/picker/tests.rs	assert_eq!(	Needs attention now heads the picker (module task M70), which moves the rows and the first selection; kept with the new rows and selection in the same test
 assertion-removed	crates/tui/src/picker/tests.rs	assert_eq!(names(&p).len(), 5, "{:?}", names(&p));	Needs attention lists the attention sources a second time (module task M70); kept with the new count
+wrappers-widened	deny.toml	sb-term-ui: sb-python-env added	the capability map has python-env depend on exec, term-ui, host and release (python-env row, "Depends on"; python-env spec, Project Structure: deny.toml; module build M13)
+wrappers-widened	deny.toml	sb-exec: sb-python-env added	every uv, Python and entry-point child goes through exec (python-env spec, assumption 4 and decision 11; capability map python-env row; module build M13)
+wrappers-widened	deny.toml	sb-host: sb-python-env added	python-env calls host for apt, ownership and the release check (host spec amendment H1; python-env spec, Project Structure; module build M13)
+wrappers-widened	deny.toml	sb-release: sb-python-env added	python-env downloads uv and the fact through release (python-env spec, decision 12 and Project Structure; added ahead of use as module build M13 asks, M29 relies on it)

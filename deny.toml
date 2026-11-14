@@ -60,18 +60,18 @@ deny = [
     { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates; host's apt streams into its steps.
-    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible"] },
+    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
     # exec: child processes; its first user is sb-docker's start, stop and
     # restart (exec spec, decision 4); sb-host's systemctl calls; the
     # binary's `sb edit`, which runs the editor attached (tui spec,
-    # editors: crates/sb/src/edit.rs).
-    { crate = "sb-exec", wrappers = ["sb", "sb-docker", "sb-release", "sb-host", "sb-repo", "sb-motd", "sb-ansible"] },
+    # editors: crates/sb/src/edit.rs); python-env's uv, Python and git.
+    { crate = "sb-exec", wrappers = ["sb", "sb-docker", "sb-release", "sb-host", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env"] },
     # docker: sb docker ps (and later start/stop/restart, the picker's
     # list, log streams), used by the binary.
     { crate = "sb-docker", wrappers = ["sb", "sb-tui", "sb-motd"] },
     # host: the supported-release check and the journal reader's wrapper
     # (sb-journal's types and its tokio glue), used by the binary.
-    { crate = "sb-host", wrappers = ["sb", "sb-tui", "sb-repo", "sb-motd", "sb-ansible"] },
+    { crate = "sb-host", wrappers = ["sb", "sb-tui", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env"] },
     # journal: sb's own journal reader, depending on nothing of sb's and
     # wrapped by host (journal spec, "Capability map correction"). Its own
     # name is its self dev-dependency, which turns `testing` on for its
@@ -91,7 +91,7 @@ deny = [
     # self-update, used by the binary (and later python-env and ops). Its
     # own name is its self dev-dependency, which turns `testing` on for
     # its tests (as sb-journal's).
-    { crate = "sb-release", wrappers = ["sb", "sb-release"] },
+    { crate = "sb-release", wrappers = ["sb", "sb-release", "sb-python-env"] },
     # motd: `sb motd`, the login's status, over cli-core, term-ui, exec,
     # host, config and docker (capability map motd row; motd spec,
     # Project Structure), used by the binary.
@@ -101,6 +101,12 @@ deny = [
     # (ansible spec, amendment 4), used by the binary (and later
     # completion and ops).
     { crate = "sb-ansible", wrappers = ["sb"] },
+    # python-env: the uv-managed Python, the Ansible venv, deadsnakes and
+    # saltbox.fact (python-env spec), over exec, term-ui, host and release;
+    # used by the binary (and later ops). Its own name is its self
+    # dev-dependency, which turns `testing` on for its tests (as
+    # sb-repo's).
+    { crate = "sb-python-env", wrappers = ["sb", "sb-python-env"] },
 ]
 
 [sources]

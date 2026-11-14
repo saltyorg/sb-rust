@@ -1,0 +1,42 @@
+[package]
+name = "sb-python-env"
+version = "0.1.0"
+description = "The uv-managed Python and the Ansible venv Saltbox runs (capability map, python-env)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Stand-in uv, python and entry-point programs and a Saltbox tree on a
+# temporary root (`testing` module), for sb-python-env's tests and sb's
+# end-to-end tests: built into the sb that `cargo test` runs (resolver 3
+# unifies dev-dependency features only for test builds), never into a
+# release or production build.
+testing = []
+
+[dependencies]
+# Every uv, Python, entry-point and git child (python-env spec,
+# assumption 4 and decision 11).
+sb-exec.workspace = true
+# A failed child's one-line text (sb-host's `child_failure`); later its
+# apt and ownership calls (spec, steps 3 and 16).
+sb-host.workspace = true
+# The uv minimum (decision 14).
+semver.workspace = true
+# The lock's digest (spec, "The toolchain").
+sha2.workspace = true
+hex.workspace = true
+# The scratch TMPDIR of each child (spec, "Child isolation").
+tempfile.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+# Itself with `testing`, for the stand-in programs its tests run (as
+# sb-repo's tests take its own `testing`).
+sb-python-env = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "sync"] }
+
+[lints]
+workspace = true

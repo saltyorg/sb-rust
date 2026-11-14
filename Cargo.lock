@@ -3501,6 +3501,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sb-python-env"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "sb-exec",
+ "sb-host",
+ "sb-python-env",
+ "semver",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "sb-release"
 version = "0.1.0"
 dependencies = [

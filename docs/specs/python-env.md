@@ -200,11 +200,13 @@ Every uv, Python and entrypoint child:
   (entrypoints: the venv's `bin` first);
 - **`TMPDIR`, `TMP`, `TEMP`** a fresh `tempfile::TempDir` (prefix
   `sb-python-`), removed after the call;
-- **removed:** every `UV*`, `PIP_*`, `PYTHON*`, `VIRTUAL_ENV*`, `CONDA_*`
-  and `__PYVENV_LAUNCHER__` variable except `UV_SYSTEM_CERTS` and
-  `UV_NATIVE_TLS`; relative `SSL_CERT_FILE`, `SSL_CERT_DIR`,
-  `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` are made absolute against the
-  caller's cwd;
+- **removed:** `UV` and every `UV_*`, `PIP_*`, `PYTHON*`, `VIRTUAL_ENV*`,
+  `CONDA_*` and `_CONDA_*` variable, and `__PYVENV_LAUNCHER__`, except
+  `UV_SYSTEM_CERTS` and `UV_NATIVE_TLS` (sb-go's
+  `filteredManagedEnvironmentName`; a name like `UVICORN_HOST` stays);
+  relative `SSL_CERT_FILE`, `SSL_CLIENT_CERT`, `REQUESTS_CA_BUNDLE` and
+  `CURL_CA_BUNDLE`, and each relative entry of `SSL_CERT_DIR`, are made
+  absolute against the caller's cwd;
 - **uv** gets `--no-config` first and `UV_CACHE_DIR`; **python** gets `-I`;
   entrypoints get `PYTHONNOUSERSITE=1` and `PYTHONSAFEPATH=1`.
 
