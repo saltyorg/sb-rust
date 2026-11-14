@@ -445,15 +445,15 @@ symlink swap with legacy adoption, stale wrapper removal, failure and
 cancel cleanup; `sb reinstall-venv` and `sb reinstall-python` wired.
 
 **Acceptance criteria:**
-- [ ] Activation swaps atomically; a legacy (sb-go) venv is adopted as
+- [x] Activation swaps atomically; a legacy (sb-go) venv is adopted as
       the spec says.
-- [ ] Stale wrappers go; a failure or Ctrl-C leaves the previous
+- [x] Stale wrappers go; a failure or Ctrl-C leaves the previous
       generation active.
-- [ ] Both commands force their rebuilds with sb-go's texts.
+- [x] Both commands force their rebuilds with sb-go's texts.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env`; sb tests through the binary.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-python-env`; sb tests through the binary.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M15
 **Files:** `crates/python-env/src/{activate.rs,wrappers.rs,lib.rs}`, `crates/sb/src/{main.rs,python_env.rs}`, `crates/sb/tests/python_env.rs`
@@ -468,13 +468,13 @@ clean retry on the normal path, through `reconcile_runtime`, which
 `update` and `branch` call.
 
 **Acceptance criteria:**
-- [ ] A broken venv found by the wider check is rebuilt once, cleanly.
-- [ ] A second failure is reported, not retried.
-- [ ] `reconcile_runtime(step, env, user)` is public, as ops needs it.
+- [x] A broken venv found by the wider check is rebuilt once, cleanly.
+- [x] A second failure is reported, not retried.
+- [x] `reconcile_runtime(step, env, user)` is public, as ops needs it.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-python-env`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M16
 **Files:** `crates/python-env/src/{venv.rs,lib.rs}`, `crates/python-env/tests/`
@@ -955,14 +955,14 @@ fixture tests; colour with `CLICOLOR_FORCE` piped; the fast-path timing
 baseline beside sb-go.
 
 **Acceptance criteria:**
-- [ ] Each section matches sb-go's values on fixtures.
-- [ ] Piped output is plain unless `CLICOLOR_FORCE` is set.
-- [ ] The baseline timing is recorded in the spec's verification notes;
+- [x] Each section matches sb-go's values on fixtures.
+- [x] Piped output is plain unless `CLICOLOR_FORCE` is set.
+- [x] The baseline timing is recorded in the spec's verification notes;
       procfs's size is measured.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-motd -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M36
 **Files:** `crates/motd/{Cargo.toml,src/system.rs}`, `crates/motd/tests/`, `Cargo.toml`, `Cargo.lock`
@@ -977,14 +977,14 @@ baseline beside sb-go.
 library-reviewer.
 
 **Acceptance criteria:**
-- [ ] The filesystems and percentages match df's rules on fixtures.
-- [ ] `bar` draws `round(width × ratio)` filled cells in the role and the
+- [x] The filesystems and percentages match df's rules on fixtures.
+- [x] `bar` draws `round(width × ratio)` filled cells in the role and the
       rest in Faint, through `paint`.
-- [ ] Screenshots of `sb motd --disk`.
+- [x] Screenshots of `sb motd --disk`.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd -p sb-term-ui`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-motd -p sb-term-ui`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M37
 **Files:** `crates/motd/src/disk.rs`, `crates/term-ui/src/{style.rs,lib.rs}`
@@ -2120,6 +2120,15 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **Leaked exec helper shells after 517de92** (the gate). On
+      2026-11-14, 185 orphaned `dash` helper shells (exec's tests' `sh -c
+      'trap ... exit'`) were found with their working directory in five
+      deleted mutation-pass copies of one lane's worktree, though both
+      sweeps match a process's working directory since 517de92. Either
+      those gate runs were killed without their EXIT trap, or the sweep
+      misses a case (a shell started after the last sweep, by a process
+      the sweep killed?). Reproduce with a pass over sb-exec, find which,
+      and fix or document it.
 - [x] **sb-ansible's log test is flaky under load** (lane 4, with its next
       task). `cache::tests::a_corrupt_or_unreadable_file_is_logged`
       (crates/ansible/src/cache.rs) captured an empty log once, during the

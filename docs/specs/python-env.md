@@ -402,6 +402,14 @@ moved), so `ops` callers and the tests can read them.
 12. **The deadsnakes source files are moved aside** into a root-only
     `/var/backups/sb/deadsnakes/<run id>/` through fenced directory
     handles, not deleted (decision 22). sb-go deleted them by path.
+13. **`reinstall-python` reads the Saltbox user before its runner
+    starts** (M16), as this spec's table says. sb-go read it inside the
+    outer step, so there a missing user showed as a failed "Python and
+    Ansible environment reinstall" step.
+14. **"error managing Ansible venv" sits in the failing step's error
+    block** (M16), as `update-venv` already has it: when a nested step
+    such as the sync fails, that step shows its own cause and the steps
+    above it end quietly.
 
 ### Scope
 
