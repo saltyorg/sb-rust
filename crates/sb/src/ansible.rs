@@ -167,8 +167,9 @@ async fn check_tags(
 
 /// `sb list [query]` (ansible spec, `sb list`; module build M34): Saltbox's
 /// and Sandbox's tags through the cache, a rebuild a step of a runner
-/// titled `sb list` that starts only then and ends before any output;
-/// `saltbox_mod`'s with `-m`; then the columns, or the search table, on
+/// titled `sb list` that starts at its first step and ends before any
+/// output; `saltbox_mod`'s with `-m`, listed in a transient step of that
+/// runner (spec, decision 18); then the columns, or the search table, on
 /// stdout, fitted to its terminal (80 columns when it isn't one), and the
 /// repositories that failed as one error after them.
 ///

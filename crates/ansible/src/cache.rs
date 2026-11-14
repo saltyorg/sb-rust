@@ -330,7 +330,8 @@ enum Lookup {
 /// A term-ui runner started by its first step, for a command whose
 /// rebuilds have no parent step (`install`, `list`; the M32 follow-up,
 /// settled in M33): sb-go prints nothing when the cache is valid, and a
-/// runner prints its title as it starts. `start` is the command's own
+/// started runner shows its title from its first step on (term-ui holds
+/// it back only for transient steps). `start` is the command's own
 /// [`Runner::start`] (its title, shutdown and run log), as sb-release's
 /// `self_update` takes one. Why not a runner started up front: its title
 /// would print on every run. The start is std's `LazyCell`
@@ -353,8 +354,8 @@ impl<F: FnOnce() -> Runner> LazyRunner<F> {
         }
     }
 
-    /// The run's token, for a child run outside a step (`sb list`'s
-    /// `saltbox_mod` listing).
+    /// The run's token, for what runs before the first step (the HEAD
+    /// read in [`TagCache::tags_on`]).
     #[must_use]
     pub fn token(&self) -> CancellationToken {
         self.token.clone()
@@ -367,7 +368,7 @@ impl<F: FnOnce() -> Runner> LazyRunner<F> {
     }
 
     /// The runner, started now if it wasn't.
-    fn runner(&mut self) -> &mut Runner {
+    pub(crate) fn runner(&mut self) -> &mut Runner {
         LazyCell::force_mut(&mut self.runner)
     }
 }

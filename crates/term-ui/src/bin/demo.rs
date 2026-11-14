@@ -4,7 +4,9 @@
 //! `--child-fail`, `--panic`, `--sibling-panic`,
 //! `--interrupt`, `--interrupt-twice`, `--terminate`,
 //! `--leave-foreground`, `--table` (a table instead of the run, which
-//! returns early: any output error is exit 1 there), `--child-colour` (a
+//! returns early: any output error is exit 1 there), `--transient` and
+//! `--transient-fail` (a run of one transient step instead, which
+//! succeeds or fails), `--child-colour` (a
 //! step's output line with its own colour codes), `--ascii` (the `ascii`
 //! profile's theme) and `--colour` / `--no-colour`. A binary
 //! rather than an example because `cargo test --tests` (the coverage run)
@@ -205,6 +207,32 @@ async fn demo(
     Ok(())
 }
 
+/// `--transient` and `--transient-fail`: a run of one transient step
+/// (decision 12) with an output line, a sub-step and a transient sub-step
+/// that fails and is caught; with `fail`, the step then fails itself.
+async fn transient(shutdown: &Shutdown, fail: bool) -> anyhow::Result<()> {
+    let mut run = Runner::start("sb demo", shutdown, None, Options::default());
+    let listing = Labels::new("Listing tags", "tags listed").transient();
+    run.step(listing, async |step| {
+        step.output("TASK TAGS: [always]");
+        step.step(Labels::new("Reading", "read"), async |_| Ok(()))
+            .await?;
+        let inner = Labels::new("Retrying", "retried").transient();
+        let _ = step
+            .step(inner, async |_| -> anyhow::Result<()> {
+                anyhow::bail!("first try refused")
+            })
+            .await;
+        if fail {
+            anyhow::bail!("listing refused");
+        }
+        Ok(())
+    })
+    .await?;
+    run.finish();
+    Ok(())
+}
+
 /// `--table`: a `docker ps`-like table on stdout, in the reviewed look.
 fn table() -> ExitCode {
     let mut table = Table::new(["Container", "Status", "Traefik Port", "Port Bindings"])
@@ -274,7 +302,11 @@ fn main() -> RunEnd {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build();
+    let transient_run = arg("--transient") || arg("--transient-fail");
     let result = match (shutdown.listen_for_signals(), runtime) {
+        (Ok(()), Ok(runtime)) if transient_run => {
+            runtime.block_on(transient(&shutdown, arg("--transient-fail")))
+        }
         (Ok(()), Ok(runtime)) => runtime.block_on(demo(&shutdown, fail, sensitive, log.as_ref())),
         (Err(err), _) | (_, Err(err)) => Err(err.into()),
     };

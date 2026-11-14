@@ -137,6 +137,43 @@ fn piped_output_is_plain() {
     );
 }
 
+/// Piped, a transient step that succeeds prints nothing, nor the run's
+/// title, though a sub-step ran and a transient sub-step failed and was
+/// caught under it (decision 12: a step under a transient one is never
+/// kept on its own).
+#[test]
+fn piped_a_transient_step_that_succeeds_prints_nothing() {
+    let out = Command::new(demo())
+        .arg("--transient")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("run demo");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+/// Piped, a transient step that fails prints its title, start line, end
+/// line and failure block at its ending; its output and its sub-steps'
+/// lines go to the run log only (decision 12).
+#[test]
+fn piped_a_failed_transient_step_prints_its_lines_at_its_end() {
+    let out = Command::new(demo())
+        .arg("--transient-fail")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("run demo");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        text.starts_with("sb demo\n- Listing tags\n✗ Listing tags   "),
+        "{text:?}"
+    );
+    assert!(text.contains("\n  listing refused\n"), "{text:?}");
+    for hidden in ["TASK TAGS", "Reading", "read ", "Retrying", "first try"] {
+        assert!(!text.contains(hidden), "{hidden}: {text:?}");
+    }
+}
+
 /// The SGR sequences in `text` (`ESC [ params m`), resets included.
 fn sgr_codes(text: &str) -> Vec<&str> {
     text.split("\x1b[")

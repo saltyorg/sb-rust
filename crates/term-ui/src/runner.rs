@@ -46,6 +46,7 @@ pub struct Labels {
     pub(crate) running: String,
     pub(crate) done: String,
     pub(crate) failure: Option<String>,
+    pub(crate) transient: bool,
 }
 
 impl Labels {
@@ -54,6 +55,27 @@ impl Labels {
             running: running.into(),
             done: done.into(),
             failure: None,
+            transient: false,
+        }
+    }
+
+    /// A step shown only while it runs (the maintainer, 2026-11-14; term-ui
+    /// spec, decision 12): once it succeeds, its line and everything under
+    /// it leave the tree, and the run's title is printed only with the
+    /// first line that stays, so a run of transient steps alone leaves
+    /// nothing on the screen. Plain, a succeeding one prints nothing. Any
+    /// other ending (failed, interrupted, stopped) is drawn as any step's.
+    /// A step under a transient one never stays on its own: it goes or
+    /// stays with that step. Logged as every step is. Why not indicatif's
+    /// `ProgressBar::finish_and_clear` on a bar of its own: the live area
+    /// is one bar holding the whole tree (the module doc), and a bar
+    /// removed would shrink the area, which indicatif's cursor-moving
+    /// redraw doesn't clear (`Area::draw`).
+    #[must_use]
+    pub fn transient(self) -> Self {
+        Self {
+            transient: true,
+            ..self
         }
     }
 
@@ -145,12 +167,25 @@ enum Mode {
 struct State {
     /// Set by the restore hook on a second Ctrl-C: no more drawing.
     stop: Arc<AtomicBool>,
+    title: Title,
     tree: Tree,
     mode: Mode,
     sink: Sink,
     size: Size,
     frame: usize,
     ended: bool,
+}
+
+/// The run's title, held back until the first line that stays, so a run
+/// of transient steps alone leaves nothing (`Labels::transient`).
+enum Title {
+    /// Not out yet; live, it heads the live area meanwhile.
+    Held(String),
+    /// Live: a line that stays has come, so it is printed at the next
+    /// redraw.
+    Due(String),
+    /// Printed, or it never will be.
+    Shown,
 }
 
 /// What the drawing target takes, read together wherever a line is
@@ -208,13 +243,41 @@ impl State {
             theme: theme::current(),
             colour: self.sink.colour,
             width,
-            rows,
+            // A title not yet printed takes the live area's first row.
+            rows: rows.saturating_sub(usize::from(!matches!(self.title, Title::Shown))),
             frame: self.frame,
             now: Instant::now(),
         };
-        let printed = self.tree.take_printable(&d);
-        let live = self.tree.live(&d);
+        let mut printed = self.tree.take_printable(&d);
+        let mut live = self.tree.live(&d);
+        match std::mem::replace(&mut self.title, Title::Shown) {
+            Title::Held(title) if printed.is_empty() => {
+                live.insert(0, title.clone());
+                self.title = Title::Held(title);
+            }
+            Title::Held(title) | Title::Due(title) => printed.insert(0, title),
+            Title::Shown => {}
+        }
         area.draw(&printed, &live);
+    }
+
+    /// The held title goes out, before the line that stays: printed now
+    /// when plain, at the next redraw when live.
+    /// Plain, nothing is printed after the run's end, as no other plain
+    /// line is (`Ending::close`).
+    fn show_title(&mut self) {
+        if let Title::Held(title) = &mut self.title {
+            let title = std::mem::take(title);
+            self.title = match self.mode {
+                Mode::Plain => {
+                    if !self.ended {
+                        plain_line(&title);
+                    }
+                    Title::Shown
+                }
+                Mode::Live(_) => Title::Due(title),
+            };
+        }
     }
 
     /// End the run once: the last lines printed, the live area cleared.
@@ -226,6 +289,11 @@ impl State {
             return;
         }
         self.tree.end();
+        // A run without any step still shows its title; one whose steps
+        // were all transient and done leaves nothing.
+        if self.tree.is_empty() {
+            self.show_title();
+        }
         if std::thread::panicking() {
             self.ended = true;
             return;
@@ -310,14 +378,15 @@ impl Runner {
         options: Options,
     ) -> Runner {
         let pointer = log.map(RunLog::pointer);
-        // The title goes out before the live area exists: a
+        // The title is held back until the first line that stays
+        // (`State::title`). Live, it heads the live area meanwhile, so the
+        // bar has drawn before the title is printed above it: a
         // `MultiProgress::println` before its bar first drew was lost
         // (seen on indicatif's in-memory terminal).
         let Options { target } = options;
         let on_stderr = matches!(target, Target::Stderr);
         let (mode, colour, size, terminal) = match target {
             Target::Stderr => {
-                plain_line(title);
                 // indicatif hides its stderr target when stderr isn't a
                 // terminal or `TERM` is dumb or unset (draw_target.rs,
                 // `ProgressDrawTarget::stderr`), so live follows it: a
@@ -339,7 +408,6 @@ impl Runner {
             // Always live: the in-memory screen is for the live snapshots.
             #[cfg(any(test, feature = "testing"))]
             Target::InMemory { term, colour } => {
-                let _ = indicatif::TermLike::write_line(&term, title);
                 let size = Size::Fixed {
                     rows: usize::from(indicatif::TermLike::height(&term)),
                     width: usize::from(indicatif::TermLike::width(&term)),
@@ -360,6 +428,7 @@ impl Runner {
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Mutex::new(State {
             stop: Arc::clone(&stop),
+            title: Title::Held(title.to_string()),
             tree: {
                 let mut tree = Tree::default();
                 tree.set_pointer(pointer);
@@ -476,8 +545,12 @@ fn begin(
     let mut state = lock(&context.shared);
     let id = state.tree.add(parent, labels.clone(), started);
     tracing::info!(step = labels.running.as_str(), "step started");
-    if matches!(state.mode, Mode::Plain) {
-        plain_line(&prefixed(prefix, &format!("- {}", labels.running)));
+    // A transient step's lines (and its sub-steps') wait for its ending.
+    if !state.tree.held(id) {
+        state.show_title();
+        if matches!(state.mode, Mode::Plain) {
+            plain_line(&prefixed(prefix, &format!("- {}", labels.running)));
+        }
     }
     state.redraw();
     Some((id, started))
@@ -622,9 +695,24 @@ impl Ending {
             state.tree.set_error(self.id, screen);
             state.tree.set_reason(self.id, reason.clone());
             state.tree.finish(self.id, status, Instant::now());
+            // A transient step that didn't succeed stays: the title goes
+            // out before it, and plain, its start line, held until now.
+            // Under a transient step, plain lines go to the log only, and
+            // a step there never stays on its own: its fate is that step's.
+            let held = state.tree.held(self.id);
+            let kept = self.labels.transient
+                && status != Status::Done
+                && !state.tree.under_transient(self.id);
+            if kept {
+                state.show_title();
+            }
             // Plain lines go through anstream, so they still print while a
             // panic unwinds; the live area doesn't (see `State::end`).
-            if matches!(state.mode, Mode::Plain) && !state.ended {
+            if matches!(state.mode, Mode::Plain) && !state.ended && (!held || kept) {
+                if kept {
+                    let start = format!("- {}", self.labels.running);
+                    plain_line(&prefixed(self.prefix.as_deref(), &start));
+                }
                 let colour = state.sink.colour;
                 let elapsed = self.started.elapsed();
                 let line = end_line(
@@ -825,8 +913,9 @@ impl Step {
         if !state.tree.is_running(self.id) {
             return;
         }
+        let plain = matches!(state.mode, Mode::Plain) && !state.tree.held(self.id);
         for text in line.on_screen(codes, terminal) {
-            if matches!(state.mode, Mode::Plain) {
+            if plain {
                 let (role, mark) = if warn {
                     (Role::Warn, "!")
                 } else {
@@ -869,8 +958,9 @@ impl Step {
         if !state.tree.is_running(self.id) {
             return;
         }
+        let plain = matches!(state.mode, Mode::Plain) && !state.tree.held(self.id);
         for text in line.on_screen(codes, terminal) {
-            if matches!(state.mode, Mode::Plain) {
+            if plain {
                 plain_line(&prefixed(self.prefix.as_deref(), &text));
             }
             state.tree.output(self.id, text);
@@ -1478,6 +1568,148 @@ mod tests {
         │   › 3 accounts
         ╰── ✓ settings.yml checked                                    0s
             ! unknown key: downloads.extra
+        ");
+    }
+
+    /// A transient step (the maintainer, 2026-11-14) shows under the
+    /// run's title while it runs; once it succeeds, neither it nor the
+    /// title is left: a run of transient steps alone leaves nothing.
+    #[tokio::test]
+    async fn a_transient_step_leaves_nothing_once_done() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        let seen = run
+            .step(
+                Labels::new("Listing Saltbox_mod tags", "Saltbox_mod tags listed").transient(),
+                async |step| {
+                    step.output("TASK TAGS: [always]");
+                    Ok(term.contents())
+                },
+            )
+            .await
+            .expect("step");
+        assert!(seen.starts_with("sb list\n"), "{seen}");
+        assert!(seen.contains("⠋ Listing Saltbox_mod tags"), "{seen}");
+        run.finish();
+        assert_eq!(term.contents().trim(), "", "{}", term.contents());
+    }
+
+    /// A transient step that fails stays, drawn as any failed step, with
+    /// the title it was held back with; one that succeeds after a kept
+    /// step leaves that step the last branch.
+    #[tokio::test]
+    async fn a_failed_transient_step_stays() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        let result: Result<(), Exit> = run
+            .step(
+                Labels::new("Listing Saltbox_mod tags", "listed").transient(),
+                async |_| anyhow::bail!("ansible-playbook exited with code 4"),
+            )
+            .await;
+        assert!(matches!(result, Err(Exit(1))));
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb list
+        ╰── ✗ Listing Saltbox_mod tags                                0s
+            ansible-playbook exited with code 4
+        ");
+
+        let (term, options) = screen();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        run.step(Labels::new("Updating", "updated"), async |_| Ok(()))
+            .await
+            .expect("step");
+        run.step(Labels::new("Listing", "listed").transient(), async |_| {
+            Ok(())
+        })
+        .await
+        .expect("step");
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb list
+        ╰── ✓ updated                                                 0s
+        ");
+    }
+
+    /// A transient step before a kept one: the title is printed with the
+    /// kept step, and the transient step is gone.
+    #[tokio::test]
+    async fn a_kept_step_after_a_transient_one_prints_the_title() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        run.step(Labels::new("Listing", "listed").transient(), async |_| {
+            Ok(())
+        })
+        .await
+        .expect("step");
+        run.step(Labels::new("Updating", "updated"), async |step| {
+            step.step(Labels::new("Inner", "inner").transient(), async |_| Ok(()))
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("step");
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb list
+        ╰── ✓ updated                                                 0s
+        ");
+    }
+
+    /// A transient step that Ctrl-C interrupts stays, with the title it was
+    /// held back with, as any interrupted step (decision 12).
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupted_transient_step_stays() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        let signal = shutdown.clone();
+        let result: Result<(), Exit> = run
+            .step(Labels::new("Listing", "listed").transient(), async |step| {
+                let token = step.token();
+                let wait = tokio::time::sleep(Duration::from_secs(9));
+                tokio::select! {
+                    () = wait => Ok(()),
+                    () = async {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        signal.signalled(2);
+                        token.cancelled().await;
+                    } => anyhow::bail!("cancelled"),
+                }
+            })
+            .await;
+        assert!(result.is_err());
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb list
+        ╰── ✗ Listing                                   interrupted · 0s
+        ");
+    }
+
+    /// A transient step whose future is dropped (a timeout) ends stopped
+    /// and stays (decision 12).
+    #[tokio::test(start_paused = true)]
+    async fn a_stopped_transient_step_stays() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        let step = run.step(
+            Labels::new("Listing", "listed").transient(),
+            async |_| -> anyhow::Result<()> {
+                tokio::time::sleep(Duration::from_secs(9)).await;
+                Ok(())
+            },
+        );
+        let timed_out = tokio::time::timeout(Duration::from_secs(1), step).await;
+        assert!(timed_out.is_err());
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb list
+        ╰── ✗ Listing                                       stopped · 0s
         ");
     }
 

@@ -964,6 +964,9 @@ fn list_include_mod_lists_saltbox_mod_fresh() {
         out.ends_with("\nSaltbox_mod tags (prepend mod-):\n\nalways  jf\n"),
         "{out}"
     );
+    // Its listing's step is transient: piped, a success prints nothing,
+    // nor the runner's title (the maintainer, 2026-11-14).
+    assert_eq!(stderr(&output), "");
     let runs = world.runs();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0][0], modded.display().to_string());
@@ -1070,8 +1073,25 @@ fn list_reports_saltbox_mods_failures() {
     let modded = world.appdata().join("saltbox_mod");
     tag_cache::listing(&modded, &["jf"]);
     std::fs::write(modded.join(".fake-ansible/FAKE_ANSIBLE_EXIT"), "4").expect("exit");
+    std::fs::write(
+        modded.join(".fake-ansible/FAKE_ANSIBLE_STDERR"),
+        "ERROR! the playbook could not be found",
+    )
+    .expect("stderr");
     let output = world.sb(&["list", "-m"]).output().expect("run sb");
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    // The failed listing's step stays, with its cause, as any step's.
+    let err = stderr(&output);
+    assert!(
+        err.starts_with(
+            "sb list\n- Listing Saltbox_mod tags\n✗ Listing Saltbox_mod tags   exit 4 · "
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("ERROR! the playbook could not be found"),
+        "{err}"
+    );
     assert!(
         stdout(&output).contains("Sandbox tags"),
         "{}",
@@ -1144,6 +1164,50 @@ fn list_fits_the_terminals_width() {
             .all(|line| line.chars().count() <= 40),
         "{out}"
     );
+}
+
+/// On a terminal, `saltbox_mod`'s listing shows as a step while it runs
+/// (`Listing Saltbox_mod tags`, the maintainer's text, 2026-11-14), and
+/// nothing of it, nor the runner's title, is left on the screen once the
+/// tags print. The screen is the PTY's bytes read through vt100.
+#[test]
+fn list_shows_the_mod_listing_only_while_it_runs() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    tag_cache::listing(&world.appdata().join("saltbox_mod"), &["always", "jf"]);
+    let program = common::sb().get_program().to_string_lossy().into_owned();
+    let mut cmd = Command::new("script");
+    common::apply_sb_env(&mut cmd);
+    let output = cmd
+        .args([
+            "-qec",
+            &format!("stty cols 80 rows 24; exec '{program}' list -m"),
+            "/dev/null",
+        ])
+        .env("SB_SALTBOX_DIR", world.root())
+        .env("SB_LOG_DIR", world.logs())
+        .env("SB_ANSIBLE_PLAYBOOK", FAKE)
+        .env("TERM", "xterm-256color")
+        .output()
+        .expect("run script");
+    assert!(output.status.success(), "{output:?}");
+    let drawn = console::strip_ansi_codes(&stdout(&output)).into_owned();
+    assert!(drawn.contains("Listing Saltbox_mod tags"), "{drawn:?}");
+    let mut screen = vt100::Parser::new(24, 80, 0);
+    screen.process(&output.stdout);
+    let shown = screen.screen().contents();
+    assert!(shown.starts_with("Saltbox tags: (cached)\n"), "{shown}");
+    assert!(
+        shown.contains("Saltbox_mod tags (prepend mod-):\n\nalways  jf"),
+        "{shown}"
+    );
+    assert!(!shown.contains("Listing"), "{shown}");
+    assert!(!shown.contains("sb list"), "{shown}");
+    // The step is logged as every step is.
+    let log = world.log();
+    assert!(log.contains("Listing Saltbox_mod tags"), "{log}");
 }
 
 /// A search with `-m` and no `saltbox_mod` prints sb-go's notice first, as

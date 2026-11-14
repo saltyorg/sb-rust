@@ -163,7 +163,9 @@ death by signal for an interrupted run (cli-core).
   term-ui decision 9): the run log holds the detail.
 - Repos: Saltbox and Sandbox through the cache (rebuilt as a step when
   stale); with `-m`, saltbox_mod if its directory exists, listed fresh
-  every time and never cached (list.go:119-128); a missing directory
+  every time and never cached (list.go:119-128), in a transient term-ui
+  step `Listing Saltbox_mod tags` shown only while it runs (decision 18);
+  a missing directory
   prints `Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is
   installed.` and goes on; another stat error is that repo's error.
 - **No query:** per repo a title (`Saltbox tags:`, `\nSandbox tags
@@ -265,6 +267,9 @@ nothing from ops, so it lands here.
     (sb-go: every column the widest tag's width plus 2).
 13. The rebuild's listing never adds `sanity_check` to the skipped tags
     (sb-go's `list` did; it changed nothing).
+14. `sb list -m` shows `Listing Saltbox_mod tags` while `saltbox_mod`'s
+    tags are listed, gone from the output once the tags print, kept with
+    its cause when the listing fails (sb-go: nothing while listing).
 
 ### Scope
 
@@ -524,6 +529,15 @@ for validate-config.
     tags on the same command line, and the line still names the
     playbook and each option. Decided from recorded
     rules, 2026-11-13.
+18. **`saltbox_mod`'s listing in `sb list -m` is a transient step**,
+    `Listing Saltbox_mod tags` (term-ui's `Labels::transient`, its
+    decision 12): `--list-tags` takes seconds with real Ansible and
+    nothing showed meanwhile. It shows while the listing runs and is gone
+    once the tags print, the runner's title with it when no rebuild step
+    ran; a failure stays with its cause, as other steps do, and is also
+    one line of the closing error (`listing the tags failed`). Source:
+    the maintainer, 2026-11-14 ("show listing saltbox_mod but it should
+    not be in the output once we print").
 
 ## Known limits
 

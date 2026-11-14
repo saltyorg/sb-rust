@@ -8,11 +8,11 @@ use std::fmt::Write as _;
 
 use sb_cli_core::exit::escaped;
 use sb_cli_core::theme::Theme;
-use sb_term_ui::{Runner, Table};
+use sb_term_ui::{Labels, Runner, Table};
 use term_grid::{Direction, Filling, Grid, GridOptions};
 
 use crate::cache::{LazyRunner, TagCache};
-use crate::{Ansible, Kind, Repos};
+use crate::{Ansible, Kind, Repo, Repos};
 
 /// The width the columns fill when stdout isn't a terminal (sb-go's
 /// default).
@@ -101,7 +101,7 @@ pub async fn gather<F: FnOnce() -> Runner>(
             Err(err) => listing
                 .failures
                 .push(format!("inspect Saltbox-mod directory: {err}")),
-            Ok(true) => match ansible.list_tags(repo, &runner.token()).await {
+            Ok(true) => match list_mod(ansible, repo, runner).await {
                 Ok(tags) => listing.sections.push(Section {
                     repo: Kind::Mod,
                     tags,
@@ -115,6 +115,30 @@ pub async fn gather<F: FnOnce() -> Runner>(
         }
     }
     listing
+}
+
+/// The step `saltbox_mod`'s listing shows in while it runs (the
+/// maintainer's text, 2026-11-14).
+const MOD_STEP: &str = "Listing Saltbox_mod tags";
+
+/// `saltbox_mod`'s tags, listed fresh in a transient top-level step of
+/// `runner` (ansible spec, decision 18): shown while the listing runs,
+/// gone once it succeeds, kept with its cause when it fails (term-ui's
+/// `Labels::transient`).
+async fn list_mod<F: FnOnce() -> Runner>(
+    ansible: &Ansible,
+    repo: &Repo,
+    runner: &mut LazyRunner<F>,
+) -> anyhow::Result<Vec<String>> {
+    let labels = Labels::new(MOD_STEP, "Saltbox_mod tags listed").transient();
+    runner
+        .runner()
+        .step(labels, async |step| {
+            ansible.list_tags(repo, &step.token()).await
+        })
+        .await
+        // The step has shown why; its `Exit` says only that it ended.
+        .map_err(|_| anyhow::anyhow!("listing the tags failed"))
 }
 
 /// The listing without a query: sb-go's notice for a missing
