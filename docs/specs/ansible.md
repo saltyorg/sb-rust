@@ -163,11 +163,15 @@ death by signal for an interrupted run (cli-core).
   term-ui decision 9): the run log holds the detail.
 - Repos: Saltbox and Sandbox through the cache (rebuilt as a step when
   stale); with `-m`, saltbox_mod if its directory exists, listed fresh
-  every time and never cached (list.go:119-128), in a transient term-ui
-  step `Listing Saltbox_mod tags` shown only while it runs (decision 18);
-  a missing directory
-  prints `Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is
-  installed.` and goes on; another stat error is that repo's error.
+  every time and never cached (list.go:119-128), in a step `Listing
+  Saltbox_mod tags`; a missing directory prints `Saltbox-mod directory
+  not found, skipping.  Ensure Saltbox-mod is installed.` and goes on;
+  another stat error is that repo's error.
+- **Steps:** every step of `sb list` (the rebuilds and the listing) is a
+  transient term-ui step (decision 18): shown while it runs, gone once
+  it succeeds, so on success only the tags are left, without the `sb
+  list` title; a step that fails stays under the title with its cause.
+  `sb install`'s rebuild steps stay.
 - **No query:** per repo a title (`Saltbox tags:`, `\nSandbox tags
   (prepend sandbox-):`, `\nSaltbox_mod tags (prepend mod-):`), ` (cached)`
   when the cache wasn't rebuilt, a blank line, then the tags in
@@ -257,9 +261,10 @@ nothing from ops, so it lands here.
 8. `sb list` has no `-v` (exit 2).
 9. A cache rebuild in `install` and `list` shows as a step, labelled as
    in `update` and `branch` (`Updating <Repo> tags cache`), also when
-   only the commit changed (sb-go: `INFO: Cache missing or incomplete,
-   updating the cache` only for a missing or empty entry, nothing for a
-   commit change).
+   only the commit changed (sb-go's `install`: `INFO: Cache missing or
+   incomplete, updating the cache` only for a missing or empty entry,
+   nothing for a commit change; its `list`: nothing). In `list` the step
+   is transient (difference 14).
 10. A corrupt or unreadable cache is rebuilt (sb-go: an error).
 11. The cache is written atomically, with 0644 set explicitly, and only
     when it changed (sb-go: `os.WriteFile` in place on every use).
@@ -268,8 +273,10 @@ nothing from ops, so it lands here.
 13. The rebuild's listing never adds `sanity_check` to the skipped tags
     (sb-go's `list` did; it changed nothing).
 14. `sb list -m` shows `Listing Saltbox_mod tags` while `saltbox_mod`'s
-    tags are listed, gone from the output once the tags print, kept with
-    its cause when the listing fails (sb-go: nothing while listing).
+    tags are listed (sb-go: nothing while listing); that step and `sb
+    list`'s rebuild steps are gone from the output once the tags print,
+    kept with their cause when they fail (sb-go: nothing while listing
+    or rebuilding; a failure shows only in its closing error).
 
 ### Scope
 
@@ -529,15 +536,24 @@ for validate-config.
     tags on the same command line, and the line still names the
     playbook and each option. Decided from recorded
     rules, 2026-11-13.
-18. **`saltbox_mod`'s listing in `sb list -m` is a transient step**,
-    `Listing Saltbox_mod tags` (term-ui's `Labels::transient`, its
-    decision 12): `--list-tags` takes seconds with real Ansible and
-    nothing showed meanwhile. It shows while the listing runs and is gone
-    once the tags print, the runner's title with it when no rebuild step
-    ran; a failure stays with its cause, as other steps do, and is also
-    one line of the closing error (`listing the tags failed`). Source:
-    the maintainer, 2026-11-14 ("show listing saltbox_mod but it should
-    not be in the output once we print").
+18. **Every step of `sb list` is transient** (term-ui's
+    `Labels::transient`, its decision 12). `saltbox_mod`'s listing in
+    `sb list -m` shows as `Listing Saltbox_mod tags`: `--list-tags` takes
+    seconds with real Ansible and nothing showed meanwhile. It and the
+    stale cache's rebuild steps (`Updating Saltbox tags cache`,
+    `Updating Sandbox tags cache`) show while they run and are gone once
+    they succeed, the runner's title with them, so on success only the
+    tags are left. A step that fails stays with its cause, as other
+    steps do, and is also one line of the closing error (`listing the
+    tags failed`, `error running and caching ansible tags for <path>`);
+    one that succeeded before it is gone. The rebuild runs through
+    `TagCache::tags_on`, shared with `install`: `LazyRunner::transient`
+    makes every step of that runner transient (the listing's too), and
+    only `sb list` asks for it, so
+    `install`'s rebuild steps stay. Source: the maintainer, 2026-11-14
+    ("show listing saltbox_mod but it should not be in the output once
+    we print"; then: the whole step tree goes when everything succeeds,
+    the rebuild steps included; any failure keeps it with its error).
 
 ## Known limits
 

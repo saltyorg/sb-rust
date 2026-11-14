@@ -908,15 +908,15 @@ Choices behind it:
     (`✗ Pulling   interrupted · 2s`; the maintainer, 2026-11-04).
 12. **Transient steps (the maintainer, 2026-11-14):** `Labels::transient()`
     marks a step shown only while it runs, for work that takes a while
-    but whose result is the command's output (`sb list -m`'s
-    `saltbox_mod` listing: "show listing saltbox_mod but it should not be
-    in the output once we print"). Once it succeeds, its line and subtree
-    leave the tree; failed, interrupted or stopped, it stays as any
-    step's, with its cause. A step under a transient step (transient or
-    not) never stays on its own: it goes or stays with that step, so
-    plain output never shows a sub-step without its parent. A running
-    transient sibling doesn't make an
-    earlier step a middle branch, so no `├──` is left above a line that
+    but whose result is the command's output (`sb list`'s steps, its
+    cache rebuilds and `-m`'s `saltbox_mod` listing: "show listing
+    saltbox_mod but it should not be in the output once we print", and
+    the whole tree goes when everything succeeds). Once it succeeds, its
+    line and subtree leave the tree; failed, interrupted or stopped, it
+    stays as any step's, with its cause. A step under a transient step
+    (transient or not) never stays on its own: it goes or stays with
+    that step, so plain output never shows a sub-step without its
+    parent. A running transient sibling doesn't make an earlier step a middle branch, so no `├──` is left above a line that
     goes. The run's title is held back until the first line that stays:
     live, it heads the live area meanwhile (so the bar has drawn before
     the title is printed above it), and a run whose steps were all

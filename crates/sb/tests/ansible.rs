@@ -749,6 +749,10 @@ fn a_missing_cache_is_rebuilt_as_steps_before_the_runs() {
     let saltbox = err.find("Updating Saltbox tags cache");
     let sandbox_step = err.find("Updating Sandbox tags cache");
     assert!(saltbox.is_some() && saltbox < sandbox_step, "{err}");
+    // install's rebuild steps stay once done (only sb list's go,
+    // decision 18).
+    assert!(err.contains("\n✓ Updating Saltbox tags cache"), "{err}");
+    assert!(err.contains("\n✓ Updating Sandbox tags cache"), "{err}");
     let cache = std::fs::read_to_string(world.root().join("cache.json")).expect("written");
     assert!(cache.contains("tautulli"), "{cache}");
 }
@@ -921,8 +925,9 @@ fn list_shows_the_cached_tags_in_columns() {
     assert_eq!(world.runs(), Vec::<Vec<String>>::new());
 }
 
-/// No cache: each repository is listed in a step of a runner titled
-/// `sb list` on stderr, written, and shown without `(cached)`.
+/// No cache: each repository is listed in a transient step of a runner
+/// titled `sb list`, written, and shown without `(cached)`; piped, the
+/// steps that succeeded print nothing, nor the title (decision 18).
 #[test]
 fn list_rebuilds_a_missing_cache_as_steps() {
     if !root_gate::requested() {
@@ -939,12 +944,50 @@ fn list_rebuilds_a_missing_cache_as_steps() {
         "Saltbox tags:\n\nalways  plex  sonarr\n\
          \nSandbox tags (prepend sandbox-):\n\nalways  b\n"
     );
-    let err = stderr(&output);
-    assert!(err.starts_with("sb list\n"), "{err}");
-    assert!(err.contains("Updating Saltbox tags cache"), "{err}");
-    assert!(err.contains("Updating Sandbox tags cache"), "{err}");
+    assert_eq!(stderr(&output), "");
     assert_eq!(world.runs().len(), 2);
     assert!(world.root().join("cache.json").exists());
+    // The steps are logged as every step is.
+    let log = world.log();
+    assert!(log.contains("Updating Saltbox tags cache"), "{log}");
+    assert!(log.contains("Updating Sandbox tags cache"), "{log}");
+}
+
+/// A rebuild that fails stays under the `sb list` title with its cause,
+/// piped as on a terminal; a step that succeeded before it is gone, as
+/// any transient step that succeeds (decision 18).
+#[test]
+fn list_keeps_a_failed_rebuild_with_its_cause() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let sandbox = world.appdata().join("sandbox");
+    std::fs::remove_file(world.root().join("cache.json")).expect("no cache");
+    tag_cache::listing(&world.root(), &["always", "plex"]);
+    tag_cache::listing(&sandbox, &["always", "b"]);
+    std::fs::write(sandbox.join(".fake-ansible/FAKE_ANSIBLE_EXIT"), "4").expect("exit");
+    std::fs::write(
+        sandbox.join(".fake-ansible/FAKE_ANSIBLE_STDERR"),
+        "ERROR! the playbook could not be found",
+    )
+    .expect("stderr");
+    let output = world.sb(&["list"]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Saltbox tags:\n\nalways  plex\n");
+    let err = stderr(&output);
+    assert!(
+        err.starts_with(
+            "sb list\n- Updating Sandbox tags cache\n\
+             ✗ Updating Sandbox tags cache   exit 4 · "
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("ERROR! the playbook could not be found"),
+        "{err}"
+    );
+    assert!(!err.contains("Updating Saltbox"), "{err}");
 }
 
 /// `-m`: `saltbox_mod` listed fresh after the others, never cached; with
@@ -1208,6 +1251,47 @@ fn list_shows_the_mod_listing_only_while_it_runs() {
     // The step is logged as every step is.
     let log = world.log();
     assert!(log.contains("Listing Saltbox_mod tags"), "{log}");
+}
+
+/// On a terminal, a stale cache's rebuild steps show while they run and
+/// are gone, the `sb list` title with them, once the tags print
+/// (decision 18). The screen is the PTY's bytes read through vt100.
+#[test]
+fn list_shows_the_rebuild_only_while_it_runs() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::remove_file(world.root().join("cache.json")).expect("no cache");
+    tag_cache::listing(&world.root(), &["always", "plex"]);
+    tag_cache::listing(&world.appdata().join("sandbox"), &["always", "b"]);
+    let program = common::sb().get_program().to_string_lossy().into_owned();
+    let mut cmd = Command::new("script");
+    common::apply_sb_env(&mut cmd);
+    let output = cmd
+        .args([
+            "-qec",
+            &format!("stty cols 80 rows 24; exec '{program}' list"),
+            "/dev/null",
+        ])
+        .env("SB_SALTBOX_DIR", world.root())
+        .env("SB_LOG_DIR", world.logs())
+        .env("SB_ANSIBLE_PLAYBOOK", FAKE)
+        .env("TERM", "xterm-256color")
+        .output()
+        .expect("run script");
+    assert!(output.status.success(), "{output:?}");
+    let drawn = console::strip_ansi_codes(&stdout(&output)).into_owned();
+    assert!(drawn.contains("Updating Saltbox tags cache"), "{drawn:?}");
+    assert!(drawn.contains("Updating Sandbox tags cache"), "{drawn:?}");
+    let mut screen = vt100::Parser::new(24, 80, 0);
+    screen.process(&output.stdout);
+    let shown = screen.screen().contents();
+    assert_eq!(
+        shown.trim_end(),
+        "Saltbox tags:\n\nalways  plex\n\nSandbox tags (prepend sandbox-):\n\nalways  b",
+        "{shown}"
+    );
 }
 
 /// A search with `-m` and no `saltbox_mod` prints sb-go's notice first, as

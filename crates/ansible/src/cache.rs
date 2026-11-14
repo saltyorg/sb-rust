@@ -178,7 +178,8 @@ impl TagCache {
     /// [`TagCache::tags`] for a command with no parent step (`install`,
     /// `list`: sb-go has none there): a rebuild is a top-level step of
     /// `runner`, which starts at the first one, so a valid cache prints
-    /// nothing (sb-go's texts; spec, difference 9).
+    /// nothing (sb-go's texts; spec, difference 9). The step is
+    /// transient when `runner` is ([`LazyRunner::transient`]).
     ///
     /// # Errors
     ///
@@ -195,9 +196,10 @@ impl TagCache {
             Lookup::Stale(head) => head,
         };
         let label = label(repo.kind());
+        let labels = runner.labels(label.clone(), label);
         let tags = runner
             .runner()
-            .step(Labels::new(label.clone(), label), async |step| {
+            .step(labels, async |step| {
                 self.list_and_record(ansible, repo, head, &step.token())
                     .await
             })
@@ -342,6 +344,7 @@ enum Lookup {
 pub struct LazyRunner<F> {
     runner: LazyCell<Runner, F>,
     token: CancellationToken,
+    transient: bool,
 }
 
 impl<F: FnOnce() -> Runner> LazyRunner<F> {
@@ -351,6 +354,31 @@ impl<F: FnOnce() -> Runner> LazyRunner<F> {
         Self {
             runner: LazyCell::new(start),
             token,
+            transient: false,
+        }
+    }
+
+    /// Every step started on it is transient (term-ui's
+    /// `Labels::transient`): [`TagCache::tags_on`]'s rebuilds and `sb
+    /// list -m`'s listing show while they run, are gone once they
+    /// succeed and stay with their cause otherwise. `sb list`'s runner
+    /// is, its output being the tags (spec, decision 18); `install`'s
+    /// isn't, so its rebuild steps stay.
+    #[must_use]
+    pub fn transient(self) -> Self {
+        Self {
+            transient: true,
+            ..self
+        }
+    }
+
+    /// A step's labels, transient when this runner's are.
+    pub(crate) fn labels(&self, running: impl Into<String>, done: impl Into<String>) -> Labels {
+        let labels = Labels::new(running, done);
+        if self.transient {
+            labels.transient()
+        } else {
+            labels
         }
     }
 

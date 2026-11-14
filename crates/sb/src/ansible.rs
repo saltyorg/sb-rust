@@ -168,10 +168,11 @@ async fn check_tags(
 /// `sb list [query]` (ansible spec, `sb list`; module build M34): Saltbox's
 /// and Sandbox's tags through the cache, a rebuild a step of a runner
 /// titled `sb list` that starts at its first step and ends before any
-/// output; `saltbox_mod`'s with `-m`, listed in a transient step of that
-/// runner (spec, decision 18); then the columns, or the search table, on
-/// stdout, fitted to its terminal (80 columns when it isn't one), and the
-/// repositories that failed as one error after them.
+/// output; `saltbox_mod`'s with `-m`, listed in a step of that runner.
+/// Every step is transient (spec, decision 18): on success only the tags
+/// are left. Then the columns, or the search table, on stdout, fitted to
+/// its terminal (80 columns when it isn't one), and the repositories
+/// that failed as one error after them.
 ///
 /// # Errors
 ///
@@ -188,7 +189,8 @@ pub fn list(args: &ListArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> anyho
         let mut cache = TagCache::load(&root);
         let mut runner = LazyRunner::new(shutdown.token(), || {
             sb_term_ui::Runner::start("sb list", shutdown, log, sb_term_ui::Options::default())
-        });
+        })
+        .transient();
         let listing =
             sb_ansible::gather(&mut cache, &ansible, &repos, args.include_mod, &mut runner).await;
         // The steps end before the output starts.

@@ -395,6 +395,15 @@ struct Lazy<T> {
 async fn lazily<T>(
     body: impl AsyncFnOnce(&mut LazyRunner<Box<dyn FnOnce() -> Runner>>) -> T,
 ) -> Lazy<T> {
+    lazily_with(false, body).await
+}
+
+/// [`lazily`], the runner's steps transient when `transient` is set
+/// (`sb list`'s, ansible spec decision 18).
+async fn lazily_with<T>(
+    transient: bool,
+    body: impl AsyncFnOnce(&mut LazyRunner<Box<dyn FnOnce() -> Runner>>) -> T,
+) -> Lazy<T> {
     let term = indicatif::InMemoryTerm::new(40, 300);
     let shutdown = Shutdown::new();
     let start: Box<dyn FnOnce() -> Runner> = {
@@ -410,6 +419,9 @@ async fn lazily<T>(
         })
     };
     let mut runner = LazyRunner::new(shutdown.token(), start);
+    if transient {
+        runner = runner.transient();
+    }
     let result = body(&mut runner).await;
     let started = runner.started();
     // Dropping it ends the drawing.
@@ -464,6 +476,50 @@ async fn tags_on_a_lazy_runner_start_it_only_to_rebuild() {
     assert!(!ran.started);
     assert_eq!(ran.screen.trim(), "", "nothing drawn");
     assert_eq!(world.runs().len(), 1, "no second listing");
+}
+
+/// A transient lazy runner (`sb list`'s, decision 18): a rebuild that
+/// succeeds leaves nothing, title included; one that fails stays under
+/// the title with its cause.
+#[tokio::test]
+async fn tags_on_a_transient_lazy_runner_keep_only_a_failure() {
+    let world = World::new();
+    let ansible = Ansible::with_program(FAKE);
+    let (repo, checkout) = (world.repo(), world.checkout());
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily_with(true, async |runner| {
+        cache
+            .tags_on(&ansible, &repo, &checkout, runner)
+            .await
+            .map(|listed| listed.cached)
+            .map_err(|err| error_text(&err))
+    })
+    .await;
+    assert_eq!(ran.result, Ok(false));
+    assert!(ran.started);
+    assert_eq!(ran.screen.trim(), "", "{}", ran.screen);
+
+    std::fs::remove_file(world.root().join(sb_ansible::CACHE_FILE)).expect("stale again");
+    world.set("FAKE_ANSIBLE_EXIT", "4");
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily_with(true, async |runner| {
+        cache
+            .tags_on(&ansible, &repo, &checkout, runner)
+            .await
+            .map(|listed| listed.cached)
+            .map_err(|err| error_text(&err))
+    })
+    .await;
+    let err = ran.result.expect_err("a failed rebuild");
+    assert!(err.starts_with("step:"), "{err}");
+    assert!(ran.screen.contains("exit 4"), "{}", ran.screen);
+    let lines: Vec<&str> = ran.screen.lines().map(str::trim_end).collect();
+    assert_eq!(lines[0], "sb install", "{}", ran.screen);
+    assert!(
+        lines[1].starts_with("╰── ✗ Updating Saltbox tags cache"),
+        "{}",
+        ran.screen
+    );
 }
 
 /// `known_tags`: Saltbox's and Sandbox's tags, each rebuilt as a step

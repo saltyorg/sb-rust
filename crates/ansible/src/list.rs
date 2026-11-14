@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use sb_cli_core::exit::escaped;
 use sb_cli_core::theme::Theme;
-use sb_term_ui::{Labels, Runner, Table};
+use sb_term_ui::{Runner, Table};
 use term_grid::{Direction, Filling, Grid, GridOptions};
 
 use crate::cache::{LazyRunner, TagCache};
@@ -121,16 +121,16 @@ pub async fn gather<F: FnOnce() -> Runner>(
 /// maintainer's text, 2026-11-14).
 const MOD_STEP: &str = "Listing Saltbox_mod tags";
 
-/// `saltbox_mod`'s tags, listed fresh in a transient top-level step of
-/// `runner` (ansible spec, decision 18): shown while the listing runs,
-/// gone once it succeeds, kept with its cause when it fails (term-ui's
-/// `Labels::transient`).
+/// `saltbox_mod`'s tags, listed fresh in a top-level step of `runner`,
+/// transient when its steps are (`sb list`'s: ansible spec, decision
+/// 18): shown while the listing runs, gone once it succeeds, kept with
+/// its cause when it fails.
 async fn list_mod<F: FnOnce() -> Runner>(
     ansible: &Ansible,
     repo: &Repo,
     runner: &mut LazyRunner<F>,
 ) -> anyhow::Result<Vec<String>> {
-    let labels = Labels::new(MOD_STEP, "Saltbox_mod tags listed").transient();
+    let labels = runner.labels(MOD_STEP, "Saltbox_mod tags listed");
     runner
         .runner()
         .step(labels, async |step| {
