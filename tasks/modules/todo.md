@@ -690,18 +690,18 @@ and term-ui's confirm prompt (term-ui spec "Prompts", built with its
 first user).
 
 **Acceptance criteria:**
-- [ ] `sb self-update` looks up, checks, downloads, verifies and
+- [x] `sb self-update` looks up, checks, downloads, verifies and
       activates; a build without `SB_VERSION` is treated as disabled;
       `sb version` is unchanged.
-- [ ] The confirm reads the terminal, not stdin; `--yes` answers it; no
+- [x] The confirm reads the terminal, not stdin; `--yes` answers it; no
       terminal and no answer fails as term-ui's criterion 10 says.
-- [ ] Screenshots of the confirm, and of a full self-update run, through
+- [x] Screenshots of the confirm, and of a full self-update run, through
       `sb self-update` against the fake server.
 
 **Verification:**
-- [ ] `cargo test -p sb-release -p sb-term-ui -p sb-cli-core -p sb`;
+- [x] `cargo test -p sb-release -p sb-term-ui -p sb-cli-core -p sb`;
       `crates/sb/tests/self_update.rs`.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor.
+- [x] Review: code-reviewer, library-reviewer, security-auditor.
 
 **Dependencies:** M25
 **Files:** `crates/release/src/self_update.rs`, `crates/term-ui/{Cargo.toml,src/prompt.rs,src/lib.rs}`, `crates/cli-core/src/build_info.rs` (and its build script), `crates/sb/src/{main.rs,self_update.rs}`, `crates/sb/tests/self_update.rs`, `Cargo.toml`, `Cargo.lock`
@@ -715,14 +715,14 @@ first user).
 attempts, sb-go's backoff, `Retry-After`), and the per-read timeout.
 
 **Acceptance criteria:**
-- [ ] The fake server's 5xx, 429 with `Retry-After`, and a stalled body
+- [x] The fake server's 5xx, 429 with `Retry-After`, and a stalled body
       each produce the spec's retries and waits.
-- [ ] A non-retryable status fails at once.
-- [ ] The "why not reqwest::retry" comment is in the code.
+- [x] A non-retryable status fails at once.
+- [x] The "why not reqwest::retry" comment is in the code.
 
 **Verification:**
-- [ ] `cargo test -p sb-release` with paused tokio time where it fits.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-release` with paused tokio time where it fits.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M26
 **Files:** `crates/release/src/{retry.rs,lookup.rs,download.rs}`
@@ -736,15 +736,15 @@ attempts, sb-go's backoff, `Retry-After`), and the per-read timeout.
 `Arch` (R4), and the staged `version --json` run before activation.
 
 **Acceptance criteria:**
-- [ ] An ELF of the wrong architecture, a non-ELF and a truncated file
+- [x] An ELF of the wrong architecture, a non-ELF and a truncated file
       fail with the two `ElfError` variants.
-- [ ] The staged binary's `version --json` must run and parse before
+- [x] The staged binary's `version --json` must run and parse before
       activation.
-- [ ] object's size cost is measured on the production build.
+- [x] object's size cost is measured on the production build.
 
 **Verification:**
-- [ ] `cargo test -p sb-release`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-release`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M27
 **Files:** `crates/release/{Cargo.toml,src/activate.rs,src/lib.rs,src/self_update.rs}`, `Cargo.toml`, `Cargo.lock`
@@ -761,13 +761,13 @@ caller in the tests (deny.toml already lets `sb-python-env` use it,
 from M13).
 
 **Acceptance criteria:**
-- [ ] Each of R1-R8 is public under the release spec's names.
-- [ ] `GithubRepo` takes the owner as a parameter (uv's `astral-sh`).
-- [ ] A stub caller exercises the interface as python-env will.
+- [x] Each of R1-R8 is public under the release spec's names.
+- [x] `GithubRepo` takes the owner as a parameter (uv's `astral-sh`).
+- [x] A stub caller exercises the interface as python-env will.
 
 **Verification:**
-- [ ] `cargo test -p sb-release`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-release`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M28
 **Files:** `crates/release/src/{lib.rs,asset.rs}`, `crates/release/tests/`
