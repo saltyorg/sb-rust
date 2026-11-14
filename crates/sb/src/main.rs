@@ -109,10 +109,24 @@ enum Command {
     // Hidden, as sb-go's. No `--verbose/-v` (python-env decision 9).
     #[command(long_about = UPDATE_VENV_ABOUT, hide = true)]
     UpdateVenv,
+    /// List available Saltbox, Sandbox or Saltbox-mod tags
+    #[command(long_about = LIST_LONG)]
+    List(sb_ansible::ListArgs),
 }
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
 const UPDATE_VENV_ABOUT: &str = "Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git repositories";
+
+/// `sb list`'s long help, sb-go's (cmd/list.go).
+const LIST_LONG: &str = "List available Saltbox, Sandbox or Saltbox-mod tags
+
+Without arguments, displays all available tags.
+With a query argument, performs fuzzy search across all tags.
+
+Examples:
+  sb list                # List all tags
+  sb list plex           # Search for tags matching \"plex\"
+  sb list arr            # Search for tags matching \"arr\"";
 
 /// `--force-update`, sb-go's flag in builds with self-update disabled
 /// (cmd/selfUpdate.go): added to the parsed tree only in such builds, so
@@ -258,6 +272,7 @@ impl Command {
             Command::Diag => "diag",
             Command::Install(_) => "install",
             Command::UpdateVenv => "update-venv",
+            Command::List(_) => "list",
         }
     }
 
@@ -275,8 +290,9 @@ impl Command {
             // command (motd decision 20: pam_motd already runs it as root);
             // sb's own file, which `self-update` replaces (release spec,
             // assumption 5); playbooks run with `--become` from root's
-            // Saltbox checkout (ansible spec, success criterion 9); the venv, its wrappers
-            // and apt, which `update-venv` changes (python-env assumption 5).
+            // Saltbox checkout (ansible spec, success criterion 9); list
+            // writes that checkout's tag cache; the venv, its wrappers and
+            // apt, which `update-venv` changes (python-env assumption 5).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
@@ -286,7 +302,8 @@ impl Command {
             | Command::Logs
             | Command::Diag
             | Command::Install(_)
-            | Command::UpdateVenv => true,
+            | Command::UpdateVenv
+            | Command::List(_) => true,
         }
     }
 }
@@ -528,6 +545,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         } => docker_logs::docker_logs(shutdown)?,
         Command::Diag => ansible::diag(shutdown)?,
         Command::Install(ref args) => ansible::install(args, shutdown, log)?,
+        Command::List(ref args) => ansible::list(args, shutdown, log)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -969,6 +987,17 @@ mod tests {
     fn update_venv_needs_root_and_logs_its_name() {
         assert!(Command::UpdateVenv.needs_root());
         assert_eq!(Command::UpdateVenv.name(), "update-venv");
+    }
+
+    /// `list` writes the Saltbox checkout's tag cache, as root (ansible
+    /// spec, success criterion 9).
+    #[test]
+    fn list_needs_root() {
+        let list = Cli::try_parse_from(["sb", "list", "plex", "-m"])
+            .expect("parses")
+            .command;
+        assert!(list.needs_root());
+        assert_eq!(list.name(), "list");
     }
 
     /// `docker ps` needs root (cli-core decision 3).

@@ -1,0 +1,15 @@
+---
+source: crates/ansible/src/list.rs
+expression: text
+---
+Found 2 matching tag(s) for 'abc':
+
+╭────────────────────────────────╮
+│            Saltbox             │
+├──────┬─────────────────────────┤
+│ abd  │ sb install abd          │
+├──────┴─────────────────────────┤
+│            Sandbox             │
+├──────┬─────────────────────────┤
+│ abc1 │ sb install sandbox-abc1 │
+╰──────┴─────────────────────────╯

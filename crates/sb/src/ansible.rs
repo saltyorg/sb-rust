@@ -1,11 +1,12 @@
 //! `sb diag` (ansible spec; module build M30): Saltbox's `diag` tag in
 //! one attached playbook run, through sb-ansible; `sb install` (M31),
-//! its tags validated against the tag cache (M32, M33). `list` comes
-//! with its task.
+//! its tags validated against the tag cache (M32, M33); `sb list` (M34).
 
 use std::io::Write as _;
 
-use sb_ansible::{Ansible, InstallArgs, LazyRunner, Repo, Repos, Routed, RunArgs, TagCache, Tags};
+use sb_ansible::{
+    Ansible, InstallArgs, LazyRunner, ListArgs, Repo, Repos, Routed, RunArgs, TagCache, Tags,
+};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::exit::Exit;
@@ -162,4 +163,63 @@ async fn check_tags(
     // As cli-core's error block: nothing better to do if stderr fails.
     let _ = anstream::stderr().write_all(text.as_bytes());
     Err(Exit(1).into())
+}
+
+/// `sb list [query]` (ansible spec, `sb list`; module build M34): Saltbox's
+/// and Sandbox's tags through the cache, a rebuild a step of a runner
+/// titled `sb list` that starts only then and ends before any output;
+/// `saltbox_mod`'s with `-m`; then the columns, or the search table, on
+/// stdout, fitted to its terminal (80 columns when it isn't one), and the
+/// repositories that failed as one error after them.
+///
+/// # Errors
+///
+/// A repository that failed (exit 1, the others printed); an interruption
+/// during a listing (cli-core then shows it and ends sb by the signal);
+/// stdout that can't be written.
+pub fn list(args: &ListArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
+    let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
+    let appdata = config::appdata_path(&config::inventory_path(&root));
+    let repos = Repos::new(&root, &appdata);
+    let ansible = ansible();
+    let _children = sb_exec::on_forced_exit(shutdown);
+    super::block_on(async {
+        let mut cache = TagCache::load(&root);
+        let mut runner = LazyRunner::new(shutdown.token(), || {
+            sb_term_ui::Runner::start("sb list", shutdown, log, sb_term_ui::Options::default())
+        });
+        let listing =
+            sb_ansible::gather(&mut cache, &ansible, &repos, args.include_mod, &mut runner).await;
+        // The steps end before the output starts.
+        drop(runner);
+        if shutdown.token().is_cancelled() {
+            anyhow::bail!("interrupted");
+        }
+        let width = sb_term_ui::stdout_width();
+        // An empty query is none, as in sb-go (`query != ""`).
+        let query = args.query.as_deref().filter(|query| !query.is_empty());
+        let text = match query {
+            None => Some(sb_ansible::render_list(
+                &listing,
+                width.unwrap_or(sb_ansible::PIPED_WIDTH),
+            )),
+            Some(query) => sb_ansible::render_search(
+                &listing,
+                query,
+                theme::current(),
+                sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
+                width,
+            ),
+        };
+        if let Some(text) = text {
+            std::io::stdout()
+                .write_all(text.as_bytes())
+                .and_then(|()| std::io::stdout().flush())
+                .map_err(sb_cli_core::exit::output_error)?;
+        }
+        match sb_ansible::list_failures(&listing, query.is_some()) {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    })?
 }

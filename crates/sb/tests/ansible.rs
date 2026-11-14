@@ -900,3 +900,276 @@ fn install_long_help_is_on_help_only() {
         "{short}"
     );
 }
+
+/// `sb list` from a valid cache: each repository's title with `(cached)`,
+/// its tags in columns at 80 (stdout isn't a terminal), nothing on
+/// stderr, no listing run.
+#[test]
+fn list_shows_the_cached_tags_in_columns() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world.sb(&["list"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "Saltbox tags: (cached)\n\nalways  plex  sonarr\n\
+         \nSandbox tags (prepend sandbox-): (cached)\n\nalways  b  tautulli\n"
+    );
+    assert_eq!(stderr(&output), "");
+    assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+}
+
+/// No cache: each repository is listed in a step of a runner titled
+/// `sb list` on stderr, written, and shown without `(cached)`.
+#[test]
+fn list_rebuilds_a_missing_cache_as_steps() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::remove_file(world.root().join("cache.json")).expect("no cache");
+    tag_cache::listing(&world.root(), &["always", "plex", "sonarr"]);
+    tag_cache::listing(&world.appdata().join("sandbox"), &["always", "b"]);
+    let output = world.sb(&["list"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "Saltbox tags:\n\nalways  plex  sonarr\n\
+         \nSandbox tags (prepend sandbox-):\n\nalways  b\n"
+    );
+    let err = stderr(&output);
+    assert!(err.starts_with("sb list\n"), "{err}");
+    assert!(err.contains("Updating Saltbox tags cache"), "{err}");
+    assert!(err.contains("Updating Sandbox tags cache"), "{err}");
+    assert_eq!(world.runs().len(), 2);
+    assert!(world.root().join("cache.json").exists());
+}
+
+/// `-m`: `saltbox_mod` listed fresh after the others, never cached; with
+/// no directory, sb-go's notice first and the rest as usual.
+#[test]
+fn list_include_mod_lists_saltbox_mod_fresh() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let modded = world.appdata().join("saltbox_mod");
+    tag_cache::listing(&modded, &["always", "jf"]);
+    let output = world.sb(&["list", "-m"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(
+        out.ends_with("\nSaltbox_mod tags (prepend mod-):\n\nalways  jf\n"),
+        "{out}"
+    );
+    let runs = world.runs();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0][0], modded.display().to_string());
+    assert_eq!(
+        args_of(&runs[0]),
+        [
+            "saltbox_mod.yml",
+            "--become",
+            "--list-tags",
+            "--skip-tags=always"
+        ]
+    );
+    let cache = std::fs::read_to_string(world.root().join("cache.json")).expect("cache");
+    assert!(!cache.contains("saltbox_mod"), "{cache}");
+
+    std::fs::remove_dir_all(&modded).expect("no saltbox_mod");
+    let output = world
+        .sb(&["list", "--include-mod"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).starts_with(
+            "Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is installed.\n\
+             Saltbox tags: (cached)\n"
+        ),
+        "{}",
+        stdout(&output)
+    );
+}
+
+/// A failing repository between two good ones: the others print, then
+/// one error naming it, exit 1.
+#[test]
+fn list_reports_a_failing_repo_after_the_others() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let sandbox = world.appdata().join("sandbox");
+    std::fs::remove_dir_all(&sandbox).expect("no Sandbox");
+    tag_cache::listing(&world.appdata().join("saltbox_mod"), &["jf"]);
+    let output = world.sb(&["list", "-m"]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "Saltbox tags: (cached)\n\nalways  plex  sonarr\n\
+         \nSaltbox_mod tags (prepend mod-):\n\njf\n"
+    );
+    let err = stderr(&output);
+    assert!(
+        err.contains("✗ errors occurred while listing tags"),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "error running and caching ansible tags for {}",
+            sandbox.display()
+        )),
+        "{err}"
+    );
+}
+
+/// A search: sb-go's heading line and one table, later repositories as
+/// spanning rows; no match says so, exit 0.
+#[test]
+fn list_with_a_query_searches_every_repo() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world.sb(&["list", "TAUTULI"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "Found 1 matching tag(s) for 'TAUTULI':\n\n\
+         ╭────────────────────────────────────────╮\n\
+         │                Sandbox                 │\n\
+         ├──────────┬─────────────────────────────┤\n\
+         │ tautulli │ sb install sandbox-tautulli │\n\
+         ╰──────────┴─────────────────────────────╯\n\n"
+    );
+    let output = world.sb(&["list", "zzzzzz"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "No tags found matching 'zzzzzz'\n");
+}
+
+/// `sb list` has no `-v` (spec, difference 8): a usage error, exit 2.
+#[test]
+fn list_has_no_verbose_flag() {
+    let output = common::sb().args(["list", "-v"]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+}
+
+/// `saltbox_mod`'s failures are its own: a listing that fails, or a
+/// directory that can't be inspected (a symlink loop, not a missing
+/// directory: no notice), each a line of the error, the others printed.
+#[test]
+fn list_reports_saltbox_mods_failures() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let modded = world.appdata().join("saltbox_mod");
+    tag_cache::listing(&modded, &["jf"]);
+    std::fs::write(modded.join(".fake-ansible/FAKE_ANSIBLE_EXIT"), "4").expect("exit");
+    let output = world.sb(&["list", "-m"]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("Sandbox tags"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains(&format!(
+            "error running ansible list tags for {}",
+            modded.display()
+        )),
+        "{}",
+        stderr(&output)
+    );
+
+    std::fs::remove_dir_all(&modded).expect("no saltbox_mod");
+    std::os::unix::fs::symlink(&modded, &modded).expect("a loop");
+    let output = world.sb(&["list", "-m"]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        !stdout(&output).contains("not found"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains("inspect Saltbox-mod directory:"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// On a terminal, the columns fit its width (console's size, as term-ui's
+/// tables read it), not the 80 of piped output.
+#[test]
+fn list_fits_the_terminals_width() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let tags: Vec<String> = (0..30).map(|n| format!("tag-{n:02}")).collect();
+    // Saltbox's entry with these tags, Sandbox's as seeded: no listing.
+    let path = world.root().join("cache.json");
+    let mut cache: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("cache")).expect("JSON");
+    cache[world.root().display().to_string()]["tags"] = serde_json::json!(tags);
+    std::fs::write(&path, cache.to_string()).expect("cache");
+    let program = common::sb().get_program().to_string_lossy().into_owned();
+    let mut cmd = Command::new("script");
+    common::apply_sb_env(&mut cmd);
+    let output = cmd
+        .args([
+            "-qec",
+            &format!("stty cols 40 rows 24; exec '{program}' list"),
+            "/dev/null",
+        ])
+        .env("SB_SALTBOX_DIR", world.root())
+        .env("SB_LOG_DIR", world.logs())
+        .env("SB_ANSIBLE_PLAYBOOK", FAKE)
+        .env("TERM", "xterm-256color")
+        .output()
+        .expect("run script");
+    let out = console::strip_ansi_codes(&stdout(&output)).replace('\r', "");
+    // 30 tags of 6 characters: 5 to a 40-column line (80 would fit 10).
+    assert!(
+        out.contains("tag-00  tag-06  tag-12  tag-18  tag-24\n"),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .filter(|line| line.starts_with("tag-"))
+            .all(|line| line.chars().count() <= 40),
+        "{out}"
+    );
+}
+
+/// A search with `-m` and no `saltbox_mod` prints sb-go's notice first, as
+/// the listing does; an empty query is no query (sb-go: `query != ""`).
+#[test]
+fn list_search_shows_the_mod_notice_and_an_empty_query_lists() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::remove_dir_all(world.appdata().join("saltbox_mod")).expect("no saltbox_mod");
+    let output = world.sb(&["list", "plex", "-m"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).starts_with(
+            "Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is installed.\n\
+             Found 1 matching tag(s) for 'plex':\n"
+        ),
+        "{}",
+        stdout(&output)
+    );
+    let output = world.sb(&["list", ""]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).starts_with("Saltbox tags: (cached)\n"),
+        "{}",
+        stdout(&output)
+    );
+}

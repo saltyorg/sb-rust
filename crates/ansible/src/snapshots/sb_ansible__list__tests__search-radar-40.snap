@@ -1,0 +1,16 @@
+---
+source: crates/ansible/src/list.rs
+expression: text
+---
+Found 2 matching tag(s) for 'radar':
+
+╭──────────────────────────────╮
+│           Saltbox            │
+├──────────┬───────────────────┤
+│ radarr   │ sb install radarr │
+├──────────┴───────────────────┤
+│           Sandbox            │
+├──────────┬───────────────────┤
+│ radarr4k │ sb install        │
+│          │ sandbox-radarr4k  │
+╰──────────┴───────────────────╯

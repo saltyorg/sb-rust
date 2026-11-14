@@ -29,6 +29,17 @@ pub enum Stream {
     Stderr,
 }
 
+/// stdout's terminal width, none when stdout isn't a terminal (console's
+/// `size_checked`:
+/// <https://docs.rs/console/0.16.6/console/struct.Term.html#method.size_checked>):
+/// what tables fit to, and `sb list`'s columns.
+#[must_use]
+pub fn stdout_width() -> Option<usize> {
+    console::Term::stdout()
+        .size_checked()
+        .map(|(_, cols)| usize::from(cols))
+}
+
 /// Whether `stream` gets colour: anstream's resolved choice for it
 /// (`--color`, `NO_COLOR`, `CLICOLOR_FORCE`, a terminal or not;
 /// <https://docs.rs/anstream/1.0.0/anstream/struct.AutoStream.html#method.choice>).

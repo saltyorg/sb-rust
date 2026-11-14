@@ -70,6 +70,9 @@ enum Stale {
     /// Saltbox's entry valid, Sandbox's gone; the fake waits (in `mode`'s
     /// place, which is empty) only in the Sandbox checkout.
     Sandbox(&'static str),
+    /// Both entries valid; a `saltbox_mod` directory whose listing (never
+    /// cached) runs in the fake with this mode.
+    Mod(&'static str),
 }
 
 /// [`start_with`], with one repository's cache entry `stale`.
@@ -102,6 +105,11 @@ fn start_in(
             std::fs::write(&path, cache.to_string()).expect("cache");
             tag_cache::listing(&sandbox, &tag_cache::SANDBOX_TAGS);
             std::fs::write(sandbox.join(".fake-ansible/FAKE_ANSIBLE_MODE"), mode).expect("mode");
+        }
+        Some(Stale::Mod(mode)) => {
+            let modded = appdata.join("saltbox_mod");
+            tag_cache::listing(&modded, &["jf"]);
+            std::fs::write(modded.join(".fake-ansible/FAKE_ANSIBLE_MODE"), mode).expect("mode");
         }
     }
     std::fs::write(
@@ -373,4 +381,66 @@ fn ctrl_c_during_sandboxs_listing_runs_nothing() {
     );
     assert!(!dir.path().join("argv.1").exists(), "no playbook ran");
     assert!(!stdout.contains("Executing"), "{stdout}");
+}
+
+/// Ctrl-C while `sb list -m` lists `saltbox_mod`'s tags (no step, never
+/// cached): the listing gets SIGTERM, sb ends by SIGINT and prints no
+/// listing.
+#[test]
+fn ctrl_c_during_the_mod_listing_ends_sb_list() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
+    let group = start_in(
+        dir.path(),
+        "",
+        &["list", "-m"],
+        None,
+        Some(Stale::Mod("wait")),
+    );
+    press_ctrl_c(&group);
+    let (status, stdout, stderr) = end(group);
+    assert_eq!(
+        status.signal(),
+        Some(Signal::INT.as_raw()),
+        "{status:?} {stderr}"
+    );
+    assert!(
+        dir.path().join("argv.term").exists(),
+        "the listing got SIGTERM"
+    );
+    assert_eq!(stdout, "", "nothing listed");
+}
+
+/// Ctrl-C while `sb list -m` lists Saltbox's tags: no later repository
+/// starts a child (Sandbox's listing, `saltbox_mod`'s), and sb ends by
+/// SIGINT with nothing listed.
+#[test]
+fn ctrl_c_during_sb_lists_first_listing_starts_no_other() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
+    std::fs::create_dir_all(dir.path().join("appdata/saltbox_mod")).expect("saltbox_mod");
+    let group = start_in(
+        dir.path(),
+        "wait",
+        &["list", "-m"],
+        None,
+        Some(Stale::Saltbox),
+    );
+    press_ctrl_c(&group);
+    let (status, stdout, stderr) = end(group);
+    assert_eq!(
+        status.signal(),
+        Some(Signal::INT.as_raw()),
+        "{status:?} {stderr}"
+    );
+    assert!(
+        dir.path().join("argv.term").exists(),
+        "the listing got SIGTERM"
+    );
+    assert!(!dir.path().join("argv.1").exists(), "nothing else started");
+    assert_eq!(stdout, "", "nothing listed");
 }

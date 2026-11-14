@@ -30,8 +30,12 @@ anyhow.workspace = true
 # install's suggestions: Levenshtein distance per Unicode scalar, as
 # sb-go's agnivade/levenshtein (spec, step 5; plan decision 8).
 strsim.workspace = true
+# sb list's columns, as many as the width holds (spec, decision 16).
+uutils_term_grid.workspace = true
 
 [dev-dependencies]
+# sb list's outputs as snapshots (spec, Testing strategy).
+insta.workspace = true
 # A real Shutdown and runtime for the attached runs, with the fake
 # playbook (tests/fixtures/fake-ansible-playbook).
 tokio = { workspace = true, features = ["macros", "time"] }

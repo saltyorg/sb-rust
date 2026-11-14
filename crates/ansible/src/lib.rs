@@ -2,13 +2,14 @@
 //! the tag listing and its cache (ansible spec). Every child is
 //! `ansible-playbook` through sb-exec: `attached` for the runs a user
 //! watches, so Ansible's prompts reach the terminal (spec, assumption 2).
-//! So far the first four slices: the playbook paths ([`Repo`],
+//! So far the first five slices: the playbook paths ([`Repo`],
 //! [`Repos`]), one attached run by tag ([`Ansible::run`],
 //! [`pass_through`]), `sb install`'s arguments, tags and routing
 //! ([`InstallArgs`], [`parse_tags`], [`Routed`]), and the tag cache
 //! ([`TagCache`]: `load`, `tags`, `refresh`; [`Ansible::list_tags`]),
-//! and install's validation ([`known_tags`], [`validate`],
-//! [`render_suggestions`]).
+//! install's validation ([`known_tags`], [`validate`],
+//! [`render_suggestions`]), and `sb list` ([`gather`], [`render_list`],
+//! [`render_search`]).
 
 // sb's lines go to the writer a caller passes; `print!`/`eprint!` panic on a
 // closed pipe.
@@ -16,12 +17,17 @@
 
 mod args;
 mod cache;
+mod list;
 mod run;
 mod suggest;
 
 pub use args::{InstallArgs, NoTags, Routed, parse_tags};
 pub use cache::{
     CacheError, FILE as CACHE_FILE, LazyRunner, Listed, RepoTags, TagCache, label as cache_label,
+};
+pub use list::{
+    ListArgs, Listing, Match, PIPED_WIDTH, Section, columns, failures_error as list_failures,
+    gather, render_list, render_search, search,
 };
 pub use run::{RunArgs, RunError, Tags, pass_through};
 pub use suggest::{

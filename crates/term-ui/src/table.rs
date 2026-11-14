@@ -5,7 +5,9 @@
 //! width, fitted to the terminal (the widest column wraps first, each
 //! cell's lines at words, or at any character in a column the caller
 //! marks) and of natural width when stdout isn't one. A terminal too
-//! narrow for a character a cell gets a line saying so instead.
+//! narrow for a character a cell gets a line saying so instead. Rows
+//! across every column, bold (`sb list`'s later repositories, and a lone
+//! heading over several columns), through tabled's `Span`.
 //! <https://docs.rs/tabled/0.22.0/tabled/>
 
 use std::io::Write;
@@ -17,7 +19,9 @@ use tabled::grid::dimension::Estimate;
 use tabled::settings::formatting::{AlignmentStrategy, TrimStrategy};
 use tabled::settings::object::{Columns, Rows, Segment};
 use tabled::settings::peaker::Priority;
+use tabled::settings::span::ColumnSpan;
 use tabled::settings::style::BorderColor;
+use tabled::settings::themes::BorderCorrection;
 use tabled::settings::{Alignment, Color, Style, Width};
 
 use crate::DisplayText;
@@ -60,11 +64,16 @@ impl From<String> for Cell {
 }
 
 /// A table: headings, rows of cells, right-aligned columns and an optional
-/// maximum column width (sb-go's `docker ps` caps at 100).
+/// maximum column width (sb-go's `docker ps` caps at 100), and rows that
+/// span every column (`sb list`).
 #[derive(Clone, Debug, Default)]
 pub struct Table {
     headings: Vec<String>,
     rows: Vec<Vec<Cell>>,
+    /// The rows (by index in `rows`) that span every column.
+    spanning: Vec<usize>,
+    /// Whether the one heading spans every column.
+    spanning_heading: bool,
     right: Vec<usize>,
     anywhere: Vec<usize>,
     max_column_width: Option<usize>,
@@ -116,6 +125,35 @@ impl Table {
         self.rows.push(cells.into_iter().map(Into::into).collect());
     }
 
+    /// A table whose one heading spans every column, bold and centred
+    /// (`sb list`'s first repository, over the tag and its `sb install`).
+    pub fn spanning(heading: impl Into<String>) -> Self {
+        Table {
+            headings: vec![heading.into()],
+            spanning_heading: true,
+            ..Table::default()
+        }
+    }
+
+    /// Add a row of `text` across every column, bold and centred as a
+    /// heading (`sb list`'s later repositories: term-ui spec, "Tables",
+    /// amended by the ansible spec), through tabled's `Span`
+    /// (<https://docs.rs/tabled/0.22.0/tabled/settings/span/struct.Span.html>).
+    pub fn spanning_row(&mut self, text: impl Into<String>) {
+        self.spanning.push(self.rows.len());
+        self.rows.push(vec![Cell::new(text)]);
+    }
+
+    /// The records (the heading row is 0) that span every column: the
+    /// heading row of a [`Table::spanning`], and each spanning row.
+    fn spans(&self) -> Vec<usize> {
+        self.spanning_heading
+            .then_some(0)
+            .into_iter()
+            .chain(self.spanning.iter().map(|row| row + 1))
+            .collect()
+    }
+
     /// The table as text: in `theme`'s colours when `colour` is on (none
     /// under `ascii`, bold included), fitted to `width` when given. Below
     /// the narrowest table that width can hold (a character a cell), a
@@ -131,17 +169,26 @@ impl Table {
             .iter()
             .map(|row| row.iter().map(|cell| shown(&cell.text)).collect())
             .collect();
-        let widths = match self.widths(&headings, &rows, width) {
-            Ok(widths) => widths,
+        let spans = self.spans();
+        let (widths, inner) = match self.widths(&headings, &rows, &spans, width) {
+            Ok(fitted) => fitted,
             Err(too_narrow) => return too_narrow,
         };
         // Each cell wrapped to its column here, a line at a time, then
         // drawn at those widths (why not tabled's own wrap: `wrapped`).
-        // Every column has a width: they come from the same cells.
-        let fit = |text: &str, column: usize, words: bool| {
-            widths.get(column).map_or_else(
+        // Every column has a width: they come from the same cells. A
+        // spanning cell has every column's width and the borders between
+        // them, as tabled counts them.
+        let across = widths.iter().sum::<usize>() + inner;
+        let fit = |text: &str, record: usize, column: usize, words: bool| {
+            let width = if spans.contains(&record) {
+                Some(across)
+            } else {
+                widths.get(column).copied()
+            };
+            width.map_or_else(
                 || text.to_owned(),
-                |&width| wrapped(text, width.saturating_sub(PADDING), words),
+                |width| wrapped(text, width.saturating_sub(PADDING), words),
             )
         };
         let mut builder = Builder::default();
@@ -149,16 +196,20 @@ impl Table {
             headings
                 .iter()
                 .enumerate()
-                .map(|(j, text)| fit(text, j, true)),
+                .map(|(j, text)| fit(text, 0, j, true)),
         );
-        for row in &rows {
+        for (i, row) in rows.iter().enumerate() {
+            let words = |j| !self.anywhere.contains(&j) || self.spanning.contains(&i);
             builder.push_record(
                 row.iter()
                     .enumerate()
-                    .map(|(j, text)| fit(text, j, !self.anywhere.contains(&j))),
+                    .map(|(j, text)| fit(text, i + 1, j, words(j))),
             );
         }
         let mut table = builder.build();
+        for &record in &spans {
+            table.modify((record, 0), ColumnSpan::spread());
+        }
         // Each line of a wrapped cell aligned on its own (tabled aligns a
         // multi-line cell as one block by default), without the spaces
         // wrapping at words leaves at line ends.
@@ -170,14 +221,21 @@ impl Table {
         for &index in &self.right {
             table.modify(Columns::one(index), Alignment::right());
         }
-        // After the columns' alignment, so headings stay centred.
+        // After the columns' alignment, so headings stay centred, as the
+        // spanning rows are.
         table.modify(Rows::first(), Alignment::center());
+        for &record in &spans {
+            table.modify(Rows::one(record), Alignment::center());
+        }
         // The theme's colours, and bold headings only where the theme has
         // colour at all (every role has one, except under `ascii`): `ascii`
         // and colour off write no SGR codes.
         if let Some(border) = table_colour(theme, Role::Border, colour) {
             table.modify(Segment::all(), BorderColor::filled(border));
             table.modify(Rows::first(), Color::BOLD);
+            for &record in &spans {
+                table.modify(Rows::one(record), Color::BOLD);
+            }
         }
         for (i, row) in self.rows.iter().enumerate() {
             for (j, cell) in row.iter().enumerate() {
@@ -190,6 +248,12 @@ impl Table {
         // at words keeps the width the fit gave it.
         // https://docs.rs/tabled/0.22.0/tabled/settings/width/struct.Width.html#method.list
         table.with(Width::list(widths));
+        // The rules above and below a spanning row without the joints of
+        // the columns it crosses
+        // (<https://docs.rs/tabled/0.22.0/tabled/settings/themes/struct.BorderCorrection.html>).
+        if !spans.is_empty() {
+            table.with(BorderCorrection::span());
+        }
         table.to_string()
     }
 
@@ -197,14 +261,16 @@ impl Table {
     /// at the maximum column width, then fitted to `width` with the widest
     /// column narrowed first, as tabled's `Wrap` chooses them
     /// (<https://docs.rs/tabled/0.22.0/tabled/settings/width/struct.Wrap.html#method.priority>,
-    /// `Priority::max`). `Err` is the line saying so, when `width` is below
-    /// the narrowest table.
+    /// `Priority::max`), and how many vertical borders are between them.
+    /// `Err` is the line saying so, when `width` is below the narrowest
+    /// table.
     fn widths(
         &self,
         headings: &[String],
         rows: &[Vec<String>],
+        spans: &[usize],
         width: Option<usize>,
-    ) -> Result<Vec<usize>, String> {
+    ) -> Result<(Vec<usize>, usize), String> {
         let mut builder = Builder::default();
         builder.push_record(headings.iter().cloned());
         for row in rows {
@@ -212,6 +278,9 @@ impl Table {
         }
         let mut probe = builder.build();
         probe.with(Style::modern_rounded());
+        for &record in spans {
+            probe.modify((record, 0), ColumnSpan::spread());
+        }
         if let Some(max) = self.max_column_width {
             probe.modify(Columns::new(..), Width::wrap(max));
         }
@@ -228,7 +297,14 @@ impl Table {
         // does when nothing set them.
         let mut dimension = probe.get_dimension().clone();
         dimension.estimate(probe.get_records(), probe.get_config());
-        Ok(dimension.get_widths().map_or_default(<[usize]>::to_vec))
+        let widths = dimension.get_widths().map_or_default(<[usize]>::to_vec);
+        // The vertical borders between the columns, as tabled draws them
+        // (papergrid's `has_vertical`; its span width sums the same).
+        let columns = widths.len();
+        let inner = (1..columns)
+            .filter(|&column| probe.get_config().has_vertical(column, columns))
+            .count();
+        Ok((widths, inner))
     }
 
     /// Print the table on stdout: fitted to the terminal there (console's
@@ -240,9 +316,7 @@ impl Table {
     /// The [`OutputError`](sb_cli_core::exit::OutputError) when stdout
     /// can't be written (its reader went away, say).
     pub fn print(&self) -> Result<(), sb_cli_core::exit::OutputError> {
-        let width = console::Term::stdout()
-            .size_checked()
-            .map(|(_, cols)| usize::from(cols));
+        let width = crate::stdout_width();
         let colour = crate::colour_on(crate::Stream::Stdout);
         let text = self.render(theme::current(), colour, width);
         writeln!(std::io::stdout(), "{text}").map_err(output_error)
@@ -497,6 +571,89 @@ mod tests {
                 .all(|l| console::measure_text_width(l) <= 17),
             "{narrowest}"
         );
+    }
+
+    /// `sb list`'s search table: the first repository as the heading
+    /// across both columns, each later one a spanning row, centred.
+    fn search() -> Table {
+        let mut table = Table::spanning("Saltbox");
+        table.row(["plex", "sb install plex"]);
+        table.row(["plex-autoscan", "sb install plex-autoscan"]);
+        table.spanning_row("Sandbox");
+        table.row(["plex-meta-manager", "sb install sandbox-plex-meta-manager"]);
+        table
+    }
+
+    #[test]
+    fn a_spanning_row_crosses_every_column() {
+        insta::assert_snapshot!(search().render(&plain(), false, None), @r"
+        ╭──────────────────────────────────────────────────────────╮
+        │                         Saltbox                          │
+        ├───────────────────┬──────────────────────────────────────┤
+        │ plex              │ sb install plex                      │
+        ├───────────────────┼──────────────────────────────────────┤
+        │ plex-autoscan     │ sb install plex-autoscan             │
+        ├───────────────────┴──────────────────────────────────────┤
+        │                         Sandbox                          │
+        ├───────────────────┬──────────────────────────────────────┤
+        │ plex-meta-manager │ sb install sandbox-plex-meta-manager │
+        ╰───────────────────┴──────────────────────────────────────╯
+        ");
+    }
+
+    /// A spanning row wider than the columns widens them; fitted, it wraps
+    /// across the whole table, not one column.
+    #[test]
+    fn a_spanning_row_fits_the_table() {
+        let mut table = Table::spanning("Saltbox");
+        table.row(["a", "b"]);
+        table.spanning_row("Saltbox-mod, a long section name");
+        insta::assert_snapshot!(table.render(&plain(), false, None), @r"
+        ╭──────────────────────────────────╮
+        │             Saltbox              │
+        ├─────────────────┬────────────────┤
+        │ a               │ b              │
+        ├─────────────────┴────────────────┤
+        │ Saltbox-mod, a long section name │
+        ╰──────────────────────────────────╯
+        ");
+        insta::assert_snapshot!(table.render(&plain(), false, Some(20)), @r"
+        ╭────────────────╮
+        │    Saltbox     │
+        ├────────┬───────┤
+        │ a      │ b     │
+        ├────────┴───────┤
+        │ Saltbox-mod, a │
+        │  long section  │
+        │      name      │
+        ╰────────────────╯
+        ");
+    }
+
+    /// Only a `Table::spanning` heading spans: one heading of `Table::new`
+    /// over two columns stays in the first.
+    #[test]
+    fn only_a_spanning_heading_spans() {
+        let mut table = Table::new(["Name"]);
+        table.row(["a", "b"]);
+        insta::assert_snapshot!(table.render(&plain(), false, None), @r"
+        ╭──────┬───╮
+        │ Name │   │
+        ├──────┼───┤
+        │ a    │ b │
+        ╰──────┴───╯
+        ");
+    }
+
+    /// With colour, the spanning row is bold as the heading is; without,
+    /// no codes.
+    #[test]
+    fn a_spanning_row_is_bold_with_colour() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let text = search().render(&theme, true, None);
+        assert!(text.contains("\x1b[1mSandbox"), "{text:?}");
+        assert!(text.contains("\x1b[1mSaltbox"), "{text:?}");
+        assert!(!search().render(&theme, false, None).contains('\x1b'));
     }
 
     /// A cell made from a `String` or a `&str` holds its text, no role.

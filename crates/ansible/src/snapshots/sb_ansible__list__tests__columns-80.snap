@@ -1,0 +1,9 @@
+---
+source: crates/ansible/src/list.rs
+expression: "columns(&strings(&SALTBOX), PIPED_WIDTH)"
+---
+always      crowdsec  jackett   ombi           portainer    sabnzbd
+authelia    ddclient  jellyfin  organizr       prowlarr     sanity-check
+autoscan    docker    lidarr    overseerr      qbittorrent  sonarr
+bazarr      emby      mariadb   plex           radarr       tautulli
+cloudflare  glances   nzbget    plex-autoscan  rclone       traefik

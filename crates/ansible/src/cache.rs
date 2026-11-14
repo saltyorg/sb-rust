@@ -190,7 +190,7 @@ impl TagCache {
         checkout: &sb_repo::Repo,
         runner: &mut LazyRunner<F>,
     ) -> Result<Listed, CacheError> {
-        let head = match self.lookup(repo, checkout, &runner.token).await? {
+        let head = match self.lookup(repo, checkout, &runner.token()).await? {
             Lookup::Fresh(tags) => return Ok(Listed { tags, cached: true }),
             Lookup::Stale(head) => head,
         };
@@ -351,6 +351,13 @@ impl<F: FnOnce() -> Runner> LazyRunner<F> {
             runner: LazyCell::new(start),
             token,
         }
+    }
+
+    /// The run's token, for a child run outside a step (`sb list`'s
+    /// `saltbox_mod` listing).
+    #[must_use]
+    pub fn token(&self) -> CancellationToken {
+        self.token.clone()
     }
 
     /// Whether a step has started it.

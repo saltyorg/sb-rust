@@ -1,0 +1,18 @@
+---
+source: crates/ansible/src/list.rs
+expression: "render_list(&fresh, 120)"
+---
+Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is installed.
+Saltbox tags:
+
+always    bazarr      ddclient  glances   lidarr   ombi       plex           prowlarr     rclone        sonarr
+authelia  cloudflare  docker    jackett   mariadb  organizr   plex-autoscan  qbittorrent  sabnzbd       tautulli
+autoscan  crowdsec    emby      jellyfin  nzbget   overseerr  portainer      radarr       sanity-check  traefik
+
+Sandbox tags (prepend sandbox-):
+
+always  autobrr  bazarr4k  plex-meta-manager  plexripper  radarr4k  sonarr4k  tdarr
+
+Saltbox_mod tags (prepend mod-):
+
+always  plexguide
