@@ -903,7 +903,7 @@ cases and Ctrl-C; the `--list-tags` fixture recorded from it.
 
 **Acceptance criteria:**
 - [ ] Every `-e` case reaches the play intact.
-- [ ] Ctrl-C stops the play, and sb exits 130.
+- [ ] Ctrl-C stops the play, and sb exits 99 (Ansible catches the interrupt and exits 99; ansible spec step 7, difference 6, decision 7).
 - [ ] The fixture is the real `--list-tags` output, with no environment
       details.
 
