@@ -63,22 +63,25 @@ pub fn confirm(
     answer: Option<bool>,
     flag: &'static str,
 ) -> Result<bool, PromptError> {
-    confirm_on(question, answer, flag, || {
+    confirm_on(question, answer, flag, crate::runner_live(), || {
         OpenOptions::new().read(true).write(true).open("/dev/tty")
     })
 }
 
-/// [`confirm`] with the terminal from `terminal`.
+/// [`confirm`] with the terminal from `terminal`, `runner_live` saying
+/// whether a runner is live (a parameter, so a test doesn't read the
+/// process-wide count that other tests' runners raise at the same time).
 fn confirm_on(
     question: &str,
     answer: Option<bool>,
     flag: &'static str,
+    runner_live: bool,
     terminal: impl FnOnce() -> std::io::Result<File>,
 ) -> Result<bool, PromptError> {
     if let Some(answer) = answer {
         return Ok(answer);
     }
-    if crate::runner_live() {
+    if runner_live {
         return Err(PromptError::RunnerLive(question.to_owned()));
     }
     let no_terminal = |reason: String| PromptError::NoTerminal {
@@ -218,7 +221,7 @@ mod tests {
     #[test]
     fn a_given_answer_is_used_without_asking() {
         for answer in [true, false] {
-            let asked = confirm_on("Do you want to update", Some(answer), "--yes", || {
+            let asked = confirm_on("Do you want to update", Some(answer), "--yes", true, || {
                 unreachable!("not asked")
             });
             assert_eq!(asked.expect("answered"), answer);
@@ -228,8 +231,8 @@ mod tests {
     /// No terminal and no answer: an error naming the flag, never a hang.
     #[test]
     fn without_a_terminal_the_error_names_the_flag() {
-        let err =
-            confirm_on("Do you want to update", None, "--yes", no_tty).expect_err("no terminal");
+        let err = confirm_on("Do you want to update", None, "--yes", false, no_tty)
+            .expect_err("no terminal");
         assert!(matches!(err, PromptError::NoTerminal { flag: "--yes", .. }));
         assert_eq!(
             err.to_string(),
@@ -238,12 +241,26 @@ mod tests {
         );
     }
 
+    /// While a runner draws, nothing is asked (the question would share
+    /// the screen with its live lines), terminal or not.
+    #[test]
+    fn while_a_runner_draws_nothing_is_asked() {
+        let err = confirm_on("Do you want to update", None, "--yes", true, || {
+            unreachable!("no terminal opened")
+        })
+        .expect_err("refused");
+        assert_eq!(
+            err.to_string(),
+            "can't ask \"Do you want to update\" while the runner draws"
+        );
+    }
+
     /// A file that isn't a terminal reads as the background (its group
     /// can't be read), so it is refused the same way.
     #[test]
     fn a_file_that_isnt_a_terminal_is_refused() {
         let file = tempfile::tempfile().expect("file");
-        let err = confirm_on("Do you want to update", None, "--yes", || Ok(file))
+        let err = confirm_on("Do you want to update", None, "--yes", false, || Ok(file))
             .expect_err("not a terminal");
         assert_eq!(
             err.to_string(),
