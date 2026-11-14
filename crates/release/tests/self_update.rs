@@ -15,6 +15,17 @@ use sb_term_ui::{Options, Runner, Target};
 use semver::Version;
 use sha2::{Digest, Sha256};
 
+/// Taken by [`try_run`] for the whole flow, which writes the download and
+/// then runs it for its version.
+///
+/// No other test's fork in this process may hold the staged file's write
+/// descriptor when it runs, or exec fails with ETXTBSY (ADR-021, "Process
+/// state"; sb-host's and sb-docker's `SPAWNS`). Every flow in this binary
+/// runs through `try_run`; anything else here that starts a process must
+/// take the lock too. In real use sb starts no other child while it stages
+/// the new binary.
+static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const SB: GithubRepo = GithubRepo {
     owner: "saltyorg",
     name: "sb-go",
@@ -64,6 +75,7 @@ async fn try_run(
     force: bool,
     message: Option<&str>,
 ) -> (anyhow::Result<Outcome>, String) {
+    let _spawns = SPAWNS.lock().await;
     let releases = fake.releases("sb/test").expect("client");
     let term = InMemoryTerm::new(40, 160);
     let shutdown = Shutdown::new();
@@ -175,33 +187,8 @@ async fn a_disabled_build_only_updates_when_forced() {
 async fn an_unreadable_version_fails_the_check() {
     let fake = fake("v2.0.0");
     let (_dir, target) = target();
-    let releases = fake.releases("sb/test").expect("client");
-    let shutdown = Shutdown::new();
-    let term = InMemoryTerm::new(40, 160);
-    let build = released("nightly");
-    let update = SelfUpdate {
-        repo: SB,
-        build: &build,
-        target: &target,
-        yes: true,
-        force: false,
-        message: None,
-    };
-    let err = self_update(&releases, update, || {
-        Runner::start(
-            "sb self-update",
-            &shutdown,
-            None,
-            Options {
-                target: Target::InMemory {
-                    term: term.clone(),
-                    colour: false,
-                },
-            },
-        )
-    })
-    .await
-    .expect_err("fails");
+    let (outcome, screen) = try_run(&fake, &released("nightly"), &target, false, None).await;
+    let err = outcome.expect_err("fails");
     // The step failed, showing why; the run ends with its exit code.
     assert_eq!(
         err.downcast_ref::<sb_cli_core::exit::Exit>()
@@ -210,10 +197,8 @@ async fn an_unreadable_version_fails_the_check() {
         "{err}"
     );
     assert!(
-        term.contents()
-            .contains("check for updates: invalid current version \"nightly\""),
-        "{}",
-        term.contents()
+        screen.contains("check for updates: invalid current version \"nightly\""),
+        "{screen}"
     );
 }
 
