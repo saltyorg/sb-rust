@@ -3584,6 +3584,7 @@ dependencies = [
  "portable-pty",
  "ratatui",
  "ratatui-core",
+ "ratatui-textarea",
  "rustix",
  "sb-cli-core",
  "sb-docker",

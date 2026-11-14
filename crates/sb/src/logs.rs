@@ -16,7 +16,7 @@ use sb_cli_core::config;
 use sb_cli_core::exit::{self, Exit};
 use sb_cli_core::theme;
 use sb_host::journal::{self, Journal, Source};
-use sb_host::systemd::{Systemd, default_filters};
+use sb_host::systemd::{Service, Systemd, default_filters};
 use sb_tui::Ending;
 
 use crate::{block_on, docker_logs, set_override};
@@ -77,6 +77,29 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
     if !std::io::stdout().is_terminal() {
         anyhow::bail!(NO_TERMINAL);
     }
+    let services = with_journal(services).await?;
+    let ending = sb_tui::logs(
+        shutdown,
+        sb_tui::Logs {
+            services: Ok(services),
+            docker,
+            filter: sb_tui::Filter::All,
+            theme: theme::current().clone(),
+            zone: sb_tui::line::local_zone(),
+        },
+    )
+    .await?;
+    ended(ending)
+}
+
+/// `list` with the journal their logs are read from (the run's one,
+/// opened under `spawn_blocking`, as sb-host's journal docs ask) and the
+/// systemd-coredump user's uid.
+///
+/// # Errors
+///
+/// An unknown release, or a journal that can't be opened.
+pub async fn with_journal(list: Vec<Service>) -> anyhow::Result<sb_tui::Services> {
     let release = sb_host::ubuntu_release()?;
     let source = journal_source(set_override(std::env::var_os("SB_JOURNAL_DIR")));
     let journal = tokio::task::spawn_blocking(move || Journal::open(source, &release)).await??;
@@ -88,22 +111,11 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
             tracing::warn!(error = %err, "systemd-coredump's uid not looked up");
             None
         });
-    let ending = sb_tui::logs(
-        shutdown,
-        sb_tui::Logs {
-            services: Some(sb_tui::Services {
-                list: services,
-                journal,
-                coredump_uid,
-            }),
-            docker,
-            filter: sb_tui::Filter::All,
-            theme: theme::current().clone(),
-            zone: sb_tui::line::local_zone(),
-        },
-    )
-    .await?;
-    ended(ending)
+    Ok(sb_tui::Services {
+        list,
+        journal,
+        coredump_uid,
+    })
 }
 
 /// The run's result after the screens: 130 after Ctrl-C, quietly (tui

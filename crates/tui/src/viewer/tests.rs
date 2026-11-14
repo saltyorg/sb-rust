@@ -4,7 +4,7 @@
 //! by bytes, notices, events of an old generation dropped, and
 //! `TestBackend` snapshots at 120×40 and 80×24.
 
-use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use insta::assert_snapshot;
 use jiff::tz::TimeZone;
 use ratatui::Terminal;
@@ -71,6 +71,17 @@ impl Harness {
         let flow = self
             .viewer
             .input(Input::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        self.draw();
+        flow
+    }
+
+    fn mouse(&mut self, kind: MouseEventKind) -> Flow {
+        let flow = self.viewer.input(Input::Mouse(MouseEvent {
+            kind,
+            column: 3,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        }));
         self.draw();
         flow
     }
@@ -205,6 +216,28 @@ fn scrolling_up_pauses_following_and_the_bottom_resumes_it() {
     h.send(Event::Followed(lines(22..23)));
     assert_eq!(h.log()[h.log().len() - 2], "m22");
     assert_eq!(h.requests(), []);
+}
+
+/// The wheel scrolls 3 rows (tui spec, "Scrolling"): up pauses the
+/// follow, down to the bottom resumes it; other mouse events change
+/// nothing.
+#[test]
+fn the_wheel_scrolls_three_rows() {
+    let mut h = open(40, 6, Limits::default());
+    h.requests();
+    h.send(tail(0..20, false));
+    assert_eq!(h.log().first().map(String::as_str), Some("m16"));
+    assert_eq!(h.mouse(MouseEventKind::ScrollUp), Flow::Redraw);
+    assert_eq!(h.log().first().map(String::as_str), Some("m13"));
+    assert!(h.screen()[0].contains("following, paused"));
+    assert_eq!(h.mouse(MouseEventKind::Moved), Flow::Unchanged);
+    assert_eq!(
+        h.mouse(MouseEventKind::Down(MouseButton::Left)),
+        Flow::Unchanged
+    );
+    h.mouse(MouseEventKind::ScrollDown);
+    assert_eq!(h.log().first().map(String::as_str), Some("m16"));
+    assert!(!h.screen()[0].contains("paused"), "{:?}", h.screen());
 }
 
 #[test]

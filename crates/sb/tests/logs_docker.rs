@@ -232,3 +232,42 @@ fn sb_logs_lists_services_and_containers() {
     assert!(pty.exit().success());
     pty.assert_restored();
 }
+
+/// `sb docker logs` opens on the containers; `Tab` clears the filter, so
+/// the services show too (tui spec, "Entry points").
+#[test]
+fn tab_shows_the_services_too() {
+    let units = r#"[{"unit":"docker.service","load":"loaded","active":"active","sub":"running","description":"Docker"}]"#;
+    let files = r#"[{"unit_file":"docker.service","state":"enabled","vendor_preset":null}]"#;
+    let engine = engine();
+    let world = World::new(units, files).on_docker(engine.host());
+    let mut pty = Pty::spawn(&["docker", "logs"], world.envs());
+    assert!(pty.showing("Containers (2)"), "{}", pty.contents());
+    assert!(!pty.contents().contains("Services"), "{}", pty.contents());
+    pty.send(b"\t");
+    assert!(pty.showing("Services (1)"), "{}", pty.contents());
+    assert!(
+        pty.contents().contains("1 service · 2 containers"),
+        "{}",
+        pty.contents()
+    );
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    pty.assert_restored();
+}
+
+/// A service list that fails doesn't end `sb docker logs`: the Services
+/// section, after `Tab`, is the one row saying why.
+#[test]
+fn a_failing_service_list_is_the_services_row() {
+    let engine = engine();
+    let world = World::with_script("echo 'systemd is down' >&2\nexit 3\n").on_docker(engine.host());
+    let mut pty = Pty::spawn(&["docker", "logs"], world.envs());
+    assert!(pty.showing("Containers (2)"), "{}", pty.contents());
+    pty.send(b"\t");
+    assert!(pty.showing("Services unavailable: "), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    let log = world.log();
+    assert!(log.contains("services unavailable"), "{log}");
+}

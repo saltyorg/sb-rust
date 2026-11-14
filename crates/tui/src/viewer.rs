@@ -29,7 +29,9 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    Event as Input, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line as TextLine, Span, Text};
@@ -43,6 +45,9 @@ use crate::source::{
     Event, Generation, Line, Notice, Outbox, PageKind, Position, Request, SourceHandle, Tagged,
 };
 use crate::term::{App, Flow};
+
+/// Rows the wheel scrolls (tui spec, "Scrolling").
+const WHEEL_ROWS: usize = 3;
 
 /// The buffer's caps (tui decision 12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -669,6 +674,21 @@ impl Viewer {
         Flow::Redraw
     }
 
+    /// The wheel scrolls as ↑ and ↓ do, 3 rows at a time (crossterm's
+    /// `MouseEventKind::ScrollUp`/`ScrollDown`,
+    /// <https://docs.rs/crossterm/0.29.0/crossterm/event/enum.MouseEventKind.html>).
+    /// Shift+wheel and the horizontal wheel come with sideways scrolling
+    /// (the tui spec's slice 4).
+    fn mouse(&mut self, mouse: MouseEvent) -> Flow {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_up(WHEEL_ROWS),
+            MouseEventKind::ScrollDown => self.scroll_down(WHEEL_ROWS),
+            _ => return Flow::Unchanged,
+        }
+        self.prefetch();
+        Flow::Redraw
+    }
+
     fn header(&self) -> TextLine<'static> {
         let muted = self.format.style(Role::Muted);
         let state = match self.follow {
@@ -690,6 +710,7 @@ impl App for Viewer {
     fn input(&mut self, input: Input) -> Flow {
         match input {
             Input::Key(key) => self.key(key),
+            Input::Mouse(mouse) => self.mouse(mouse),
             _ => Flow::Unchanged,
         }
     }

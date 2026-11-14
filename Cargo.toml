@@ -140,6 +140,9 @@ ratatui-core = { version = "=0.1.2", features = ["anstyle"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 # SGR in log text to ratatui `Text` (ratatui org).
 ansi-to-tui = "8.0.1"
+# The picker's name filter line (ratatui org; tui spec, Tech Stack: 0.9.4
+# was under two weeks old when the spec was checked).
+ratatui-textarea = "0.9.3"
 # The PTY tests' screen (tests only; already in the tree through
 # indicatif's `in_memory`).
 vt100 = "0.16.2"

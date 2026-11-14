@@ -27,13 +27,14 @@ use sb_cli_core::theme::Theme;
 use sb_docker::connect::Daemon;
 use sb_docker::ps::Row as ContainerRow;
 use sb_host::journal::{Journal, Uid, UnitName};
-use sb_host::systemd::Service;
+use sb_host::systemd::{Service, Systemd, default_filters};
+use tokio_util::sync::CancellationToken;
 
 pub use picker::Filter;
 pub use term::{App, Ending, Flow, Tui};
 
 use crate::line::Format;
-use crate::picker::{Choice, Picker};
+use crate::picker::{Choice, ListServices, Picker};
 use crate::source::{Outbox, SourceHandle};
 use crate::viewer::{Kind, Leave, Viewer};
 
@@ -42,9 +43,10 @@ use crate::viewer::{Kind, Leave, Viewer};
 /// one `Journal::open` per run) and its Docker daemon.
 #[derive(Debug)]
 pub struct Logs {
-    /// The services, with the journal their logs are read from; `None`
-    /// for `sb docker logs`.
-    pub services: Option<Services>,
+    /// The services, with the journal their logs are read from, or why
+    /// they couldn't be listed (`sb docker logs` shows that as the
+    /// Services section's one row; `sb logs` ends before the screen).
+    pub services: Result<Services, String>,
     pub docker: Docker,
     /// The kinds shown.
     pub filter: Filter,
@@ -91,20 +93,26 @@ pub enum Docker {
 /// a real error).
 pub async fn logs(shutdown: &Shutdown, logs: Logs) -> io::Result<Ending> {
     let mut tui = Tui::enter(shutdown)?;
-    let ending = screens(&mut tui, logs).await;
+    let ending = screens(&mut tui, logs, shutdown.token()).await;
     let left = tui.leave().await;
     tracing::info!(ending = ?ending.as_ref().ok(), "logs screen closed");
     ended(ending, left)
 }
 
-/// The picker and the viewers, in turn, on `tui`.
-async fn screens(tui: &mut Tui, logs: Logs) -> io::Result<Ending> {
+/// The picker and the viewers, in turn, on `tui`; `token` is the run's.
+async fn screens(tui: &mut Tui, logs: Logs, token: CancellationToken) -> io::Result<Ending> {
     let now = Timestamp::now();
-    let (services, journal, coredump_uid) = match logs.services {
-        Some(s) => (s.list, Some(Arc::new(s.journal)), s.coredump_uid),
-        None => (Vec::new(), None, None),
+    let (services, journal, coredump_uid, no_services) = match logs.services {
+        Ok(s) => (s.list, Some(Arc::new(s.journal)), s.coredump_uid, None),
+        Err(cause) => (Vec::new(), None, None, Some(cause)),
     };
-    let mut picker = Picker::new(&services, now, logs.theme.clone()).with_filter(logs.filter);
+    let mut picker = Picker::new(&services, now, logs.theme.clone());
+    picker = match no_services {
+        // The list is read again every 5 s while the picker shows (tui
+        // spec, "Live updates").
+        None => picker.with_refresh(list_services(token), tui.waker()),
+        Some(cause) => picker.with_no_services(&cause),
+    };
     // The watcher is held for the screens' life: its drop ends the watch.
     let (daemon, _watcher) = match logs.docker {
         Docker::Listed { daemon, rows } => {
@@ -117,6 +125,7 @@ async fn screens(tui: &mut Tui, logs: Logs) -> io::Result<Ending> {
             (None, None)
         }
     };
+    picker = picker.with_filter(logs.filter);
     let format = Format::new(logs.zone.clone(), logs.theme.clone());
     loop {
         // A list that came while the viewer showed: the viewer took the
@@ -163,6 +172,20 @@ async fn screens(tui: &mut Tui, logs: Logs) -> io::Result<Ending> {
             (ending, _) => return Ok(ending),
         }
     }
+}
+
+/// The picker's 5 s read of the services: sb-host's list with the
+/// default filters, as before the screen, ended by the run's `token`.
+fn list_services(token: CancellationToken) -> ListServices {
+    Box::new(move || {
+        let token = token.clone();
+        Box::pin(async move {
+            Systemd::new()
+                .services(&default_filters(), &token)
+                .await
+                .map_err(|err| err.to_string())
+        })
+    })
 }
 
 /// The unit of a service sb-host listed as `name` (without `.service`,

@@ -268,16 +268,19 @@ fn the_picker_opens_a_services_log_which_follows() {
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
     assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    // The whole screen: its last row is drawn last.
+    assert!(pty.showing("Docker unreachable: "), "{}", pty.contents());
     let screen = pty.contents();
-    assert!(screen.contains("› docker"), "{screen}");
+    // The failed unit heads the list, under Needs attention.
+    assert!(screen.contains("› saltbox_managed_backup"), "{screen}");
     assert!(screen.contains("saltbox_managed_app"), "{screen}");
     assert!(screen.contains("✗ failed"), "{screen}");
     assert!(!screen.contains("ssh"), "{screen}");
     // No daemon in the test's environment: the Containers section's row.
     assert!(screen.contains("Docker unreachable: "), "{screen}");
     assert!(pty.parser.screen().alternate_screen());
-    // The second row is the app.
-    pty.send(b"j\r");
+    // Past Needs attention and docker: the app.
+    pty.send(b"jj\r");
     assert!(pty.showing("app[42]: hello from app"), "{}", pty.contents());
     assert!(pty.showing("--- following ---"), "{}", pty.contents());
     let screen = pty.contents();
@@ -308,7 +311,7 @@ fn ctrl_c_exits_130_with_the_terminal_restored() {
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
     assert!(pty.showing("Services (3)"), "{}", pty.contents());
-    pty.send(b"j\r");
+    pty.send(b"jj\r");
     assert!(pty.showing("hello from app"), "{}", pty.contents());
     pty.send(b"\x03");
     let status = pty.exit();
@@ -337,7 +340,7 @@ fn q_in_the_viewer_quits() {
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
     assert!(pty.showing("Services (3)"), "{}", pty.contents());
-    pty.send(b"j\r");
+    pty.send(b"jj\r");
     assert!(pty.showing("hello from app"), "{}", pty.contents());
     pty.send(b"q");
     let status = pty.exit();
@@ -360,6 +363,35 @@ fn a_dotted_service_name_opens_its_log() {
     assert!(pty.showing("Services (1)"), "{}", pty.contents());
     pty.send(b"\r");
     assert!(pty.showing("dotted unit line"), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.exit().success());
+}
+
+/// A service's change shows within 6 s, without input: the picker reads
+/// the services again every 5 s (tui spec, success criterion 4).
+#[test]
+fn a_service_change_shows_within_six_seconds() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let mut pty = Pty::spawn(&["logs"], world.envs());
+    assert!(pty.showing("Needs attention (1)"), "{}", pty.contents());
+    let recovered = UNITS.replace(
+        r#""active":"failed","sub":"failed""#,
+        r#""active":"active","sub":"running""#,
+    );
+    std::fs::write(world.dir.path().join("units.json"), recovered).expect("units");
+    let changed = std::time::Instant::now();
+    assert!(pty.showing("all healthy"), "{}", pty.contents());
+    assert!(
+        changed.elapsed() < std::time::Duration::from_secs(6),
+        "{:?}",
+        changed.elapsed()
+    );
+    assert!(
+        !pty.contents().contains("Needs attention"),
+        "{}",
+        pty.contents()
+    );
     pty.send(b"q");
     assert!(pty.exit().success());
 }

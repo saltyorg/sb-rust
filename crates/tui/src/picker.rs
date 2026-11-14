@@ -1,7 +1,7 @@
-//! The log picker (tui spec, "The picker"): the Services and Containers
-//! sections, one row per source, `name  <symbol> <status text>`, with a
-//! selection that skips the sections' heading rows and the
-//! Docker-unreachable notice row.
+//! The log picker (tui spec, "The picker"): the Needs attention,
+//! Services and Containers sections, one row per source,
+//! `name  <symbol> <status text>`, with a selection that skips the
+//! sections' heading rows and their notice rows.
 //!
 //! The list is ratatui's `List` with a `ListState`
 //! (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.List.html>,
@@ -13,26 +13,48 @@
 //! index arithmetic that would stop on a heading (ratatui-widgets 0.3.2
 //! has no non-selectable rows).
 //!
-//! The Containers section is kept live by the docker adapter's
-//! [`watch`](crate::source::docker::watch): each new list replaces the
-//! section, the selection staying on the same source, or on the row now
-//! at its place when that source is gone (tui spec, "Live updates").
-//!
-//! Needs attention, the name and kind filters (`Tab`), the mouse and the
-//! services' 5 s refresh come with the tui spec's slice 3.
+//! - **Needs attention** heads the list: every shown source whose status
+//!   has `attention`, also listed under its kind.
+//! - **Filters:** `Tab` cycles the kind filter (all, services,
+//!   containers); `/` opens the name filter, a ratatui-textarea line
+//!   (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html>)
+//!   that narrows the list as it is typed, smart-case substring; Enter
+//!   keeps it, Esc clears it.
+//! - **Live:** the Containers section follows the docker adapter's
+//!   [`watch`](crate::source::docker::watch); the services are read again
+//!   every 5 s while the picker shows (its tick), and every status is
+//!   worked out again then, so times and the 10-minute restart rule move
+//!   on. Across reloads and filtering the selection stays on the same
+//!   source, or on the row now at its place when that source is gone
+//!   (tui spec, "Live updates").
+//! - **Mouse:** the wheel moves the selection; a click selects a row, a
+//!   click on the selected row opens it; other rows ignore clicks. The
+//!   row under the pointer is the list's area and `ListState::offset()`
+//!   (tui spec, "Mouse").
 
-use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyModifiers};
+use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
+
+use crossterm::event::{
+    Event as Input, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use futures_util::future::BoxFuture;
 use jiff::Timestamp;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use ratatui_textarea::{CursorMove, TextArea};
+use sb_cli_core::config::escape_controls;
 use sb_cli_core::theme::{Role, Theme};
 use sb_docker::ps::{Row as ContainerRow, picker_status};
 use sb_host::systemd::{Service, format_duration};
 use sb_term_ui::DisplayText;
-use tokio::sync::watch;
+use tokio::sync::{Notify, oneshot, watch};
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::source::docker::{Container, Snapshot};
 use crate::status::{Status, service_status};
@@ -43,12 +65,21 @@ use crate::viewer::Kind;
 /// reviewed 2026-10-29); it shows the selection without colour too.
 const MARK: &str = "› ";
 
+/// How often the services are read again while the picker shows (tui
+/// spec, "Live updates").
+const REFRESH: Duration = Duration::from_secs(5);
+
+/// The label before the name filter's line, and the hint after it.
+const FILTER_LABEL: &str = " Filter: ";
+const FILTER_HINT: &str = "Enter keeps · Esc clears ";
+
 /// The kinds the picker shows (tui spec, "Entry points": `sb logs` all,
-/// `sb docker logs` containers; `Tab` comes with slice 3).
+/// `sb docker logs` containers; `Tab` cycles them).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Filter {
     #[default]
     All,
+    Services,
     Containers,
 }
 
@@ -56,8 +87,29 @@ impl Filter {
     fn shows(self, kind: Kind) -> bool {
         match self {
             Filter::All => true,
+            Filter::Services => kind == Kind::Service,
             Filter::Containers => kind == Kind::Container,
         }
+    }
+
+    /// The filter `Tab` moves to.
+    fn next(self) -> Self {
+        match self {
+            Filter::All => Filter::Services,
+            Filter::Services => Filter::Containers,
+            Filter::Containers => Filter::All,
+        }
+    }
+}
+
+/// Smart case (decided.md A-Q5), as the viewer's search: a query with an
+/// upper-case letter is matched exactly, any other ignoring case. `shown`
+/// is the name as the screen shows it.
+fn name_matches(shown: &str, query: &str) -> bool {
+    if query.chars().any(char::is_uppercase) {
+        shown.contains(query)
+    } else {
+        shown.to_lowercase().contains(&query.to_lowercase())
     }
 }
 
@@ -68,6 +120,11 @@ pub enum Choice {
     Service(String),
     Container(Container),
 }
+
+/// Reads the service list again for the 5 s refresh: the cause as text
+/// when it fails.
+pub type ListServices =
+    Box<dyn Fn() -> BoxFuture<'static, Result<Vec<Service>, String>> + Send + Sync>;
 
 /// One source in the picker.
 #[derive(Clone, Debug)]
@@ -92,16 +149,57 @@ impl Entry {
     }
 }
 
+/// The list's sections, in their order (tui spec, "Sections").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    Attention,
+    Services,
+    Containers,
+}
+
 /// One row of the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     /// A section's heading; the selection skips it.
-    Heading(Kind),
-    /// The source at this index of the entries.
-    Source(usize),
-    /// The Containers section's one row when Docker is unreachable; the
-    /// selection skips it.
-    Unreachable,
+    Heading(Section),
+    /// The source at this index of the entries, in that section.
+    Source(Section, usize),
+    /// A kind's section's one row when its list couldn't be read (Docker
+    /// unreachable, or the services for `sb docker logs`); the selection
+    /// skips it.
+    Unavailable(Kind),
+}
+
+/// The 5 s refresh of the services.
+struct Refresh {
+    list: ListServices,
+    /// What wakes the screen when a read ends ([`crate::Tui::waker`]).
+    waker: Arc<Notify>,
+    /// The read under way, if any.
+    pending: Option<Pending>,
+}
+
+impl fmt::Debug for Refresh {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Refresh")
+            .field("pending", &self.pending.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A read of the services under way; dropping it stops the read. Why not
+/// tokio-util's `AbortOnDropHandle`: see [`crate::source::SourceHandle`]'s
+/// why-not (the `rt` feature it needs).
+#[derive(Debug)]
+struct Pending {
+    result: oneshot::Receiver<Result<Vec<Service>, String>>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 /// The picker: an [`App`] for [`crate::Tui::run`]. Enter on a source
@@ -109,57 +207,74 @@ enum Row {
 /// and Esc quit it with none.
 #[derive(Debug)]
 pub struct Picker {
+    /// The services and containers as last listed, for working out their
+    /// status again.
+    services: Vec<Service>,
+    containers: Vec<ContainerRow>,
     /// The services, then the containers, each sorted by name.
     entries: Vec<Entry>,
     rows: Vec<Row>,
     state: ListState,
     theme: Theme,
     filter: Filter,
+    /// The name filter in effect.
+    query: String,
+    /// The name filter's line while it is open.
+    editing: Option<TextArea<'static>>,
     /// The Containers section is shown (Docker was asked).
     docker: bool,
     /// Why Docker couldn't be reached, shown as the section's one row.
     unreachable: Option<String>,
+    /// Why the services couldn't be listed, shown as the section's one
+    /// row.
+    no_services: Option<String>,
     /// The Containers section's live list.
     updates: Option<watch::Receiver<Snapshot>>,
     /// Why the containers may be out of date, in the footer.
     trouble: Option<String>,
-    /// The list's height at the last draw, for the page keys.
-    height: usize,
+    refresh: Option<Refresh>,
+    /// Why the services may be out of date, in the footer.
+    services_trouble: Option<String>,
+    /// When the statuses were last worked out (and the services last
+    /// asked for).
+    restated: Instant,
+    /// The list's area at the last draw, for the mouse and the page keys.
+    area: Rect,
     chosen: Option<usize>,
 }
 
 impl Picker {
     /// The picker on `services`, their status as at `now`, sorted by name
-    /// (tui spec, "Sections"), the first one selected; no Containers
+    /// (tui spec, "Sections"), the first row selected; no Containers
     /// section until [`Picker::with_containers`] or
-    /// [`Picker::with_unreachable`].
+    /// [`Picker::with_unreachable`]. [`Picker::with_containers`],
+    /// [`Picker::with_unreachable`], [`Picker::with_no_services`] and
+    /// [`Picker::with_filter`] select the first row again: they build the
+    /// picker the screen opens on.
     #[must_use]
     pub fn new(services: &[Service], now: Timestamp, theme: Theme) -> Self {
-        let mut entries: Vec<Entry> = services
-            .iter()
-            .map(|service| Entry {
-                kind: Kind::Service,
-                name: service.name.clone(),
-                shown: one_line(&service.name),
-                status: service_status(service, now),
-                container: None,
-            })
-            .collect();
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
         let mut picker = Self {
-            entries,
+            services: services.to_vec(),
+            containers: Vec::new(),
+            entries: Vec::new(),
             rows: Vec::new(),
             state: ListState::default(),
             theme,
             filter: Filter::All,
+            query: String::new(),
+            editing: None,
             docker: false,
             unreachable: None,
+            no_services: None,
             updates: None,
             trouble: None,
-            height: 0,
+            refresh: None,
+            services_trouble: None,
+            restated: Instant::now(),
+            area: Rect::default(),
             chosen: None,
         };
-        picker.lay_out();
+        picker.restate(now);
         picker
     }
 
@@ -167,7 +282,10 @@ impl Picker {
     #[must_use]
     pub fn with_containers(mut self, rows: &[ContainerRow], now: Timestamp) -> Self {
         self.docker = true;
-        self.set_containers(rows, now);
+        self.containers = rows.to_vec();
+        self.unreachable = None;
+        self.state.select(None);
+        self.restate(now);
         self
     }
 
@@ -177,6 +295,18 @@ impl Picker {
     pub fn with_unreachable(mut self, cause: &str) -> Self {
         self.docker = true;
         self.unreachable = Some(one_line(cause));
+        self.state.select(None);
+        self.lay_out();
+        self
+    }
+
+    /// The Services section as one notice row: the services couldn't be
+    /// listed, for `cause` (`sb docker logs`, whose services show after
+    /// `Tab`).
+    #[must_use]
+    pub fn with_no_services(mut self, cause: &str) -> Self {
+        self.no_services = Some(one_line(cause));
+        self.state.select(None);
         self.lay_out();
         self
     }
@@ -185,6 +315,7 @@ impl Picker {
     #[must_use]
     pub fn with_filter(mut self, filter: Filter) -> Self {
         self.filter = filter;
+        self.state.select(None);
         self.lay_out();
         self
     }
@@ -197,6 +328,19 @@ impl Picker {
         self
     }
 
+    /// Read the services again with `list` every 5 s while the picker
+    /// shows, `waker` woken when a read ends. The reads run on the tokio
+    /// runtime the picker's tick runs on.
+    #[must_use]
+    pub fn with_refresh(mut self, list: ListServices, waker: Arc<Notify>) -> Self {
+        self.refresh = Some(Refresh {
+            list,
+            waker,
+            pending: None,
+        });
+        self
+    }
+
     /// The source chosen with Enter, taken so that the next run of the
     /// picker starts with none.
     pub fn take_choice(&mut self) -> Option<Choice> {
@@ -206,13 +350,23 @@ impl Picker {
             .map(Entry::choice)
     }
 
-    /// Replace the containers with `rows`, as at `now`, keeping the
+    /// The entries from the lists, their status as at `now`, keeping the
     /// selection.
-    fn set_containers(&mut self, rows: &[ContainerRow], now: Timestamp) {
-        let selected = self.selected_entry().map(|e| (e.kind, e.name.clone()));
-        let at = self.state.selected();
-        self.entries.retain(|e| e.kind != Kind::Container);
-        let mut containers: Vec<Entry> = rows
+    fn restate(&mut self, now: Timestamp) {
+        let selected = self.selected_key();
+        let mut services: Vec<Entry> = self
+            .services
+            .iter()
+            .map(|service| Entry {
+                kind: Kind::Service,
+                name: service.name.clone(),
+                shown: one_line(&service.name),
+                status: service_status(service, now),
+                container: None,
+            })
+            .collect();
+        let mut containers: Vec<Entry> = self
+            .containers
             .iter()
             .map(|row| {
                 let status = picker_status(row, now, format_duration);
@@ -234,17 +388,36 @@ impl Picker {
                 }
             })
             .collect();
+        services.sort_by(|a, b| a.name.cmp(&b.name));
         containers.sort_by(|a, b| a.name.cmp(&b.name));
-        self.entries.extend(containers);
-        self.unreachable = None;
+        services.extend(containers);
+        self.entries = services;
         // A chosen index would point elsewhere now.
         self.chosen = None;
-        self.lay_out();
-        let same = selected.and_then(|(kind, name)| {
-            self.rows.iter().position(|row| match row {
-                Row::Source(i) => self.entries[*i].kind == kind && self.entries[*i].name == name,
+        self.lay_out_keeping(selected);
+    }
+
+    /// The rows for the entries and the filters, keeping the selection.
+    fn lay_out(&mut self) {
+        let selected = self.selected_key();
+        self.lay_out_keeping(selected);
+    }
+
+    /// The rows for the entries and the filters; the selection on
+    /// `selected` (section, kind and name) if it is still listed, else on
+    /// that source in another section, else on the row now at its place.
+    fn lay_out_keeping(&mut self, selected: Option<(Section, Kind, String)>) {
+        let at = self.state.selected();
+        self.rows = self.rows_shown();
+        let row_of = |want: &dyn Fn(Section, &Entry) -> bool| {
+            self.rows.iter().position(|row| match *row {
+                Row::Source(section, i) => want(section, &self.entries[i]),
                 _ => false,
             })
+        };
+        let same = selected.and_then(|(section, kind, name)| {
+            row_of(&|s, e| s == section && e.kind == kind && e.name == name)
+                .or_else(|| row_of(&|_, e| e.kind == kind && e.name == name))
         });
         let place = || {
             let at = at?.min(self.rows.len().checked_sub(1)?);
@@ -254,11 +427,29 @@ impl Picker {
         self.state.select(selection);
     }
 
-    /// The rows for the entries and the filter, the first source
-    /// selected.
-    fn lay_out(&mut self) {
-        let mut rows = Vec::with_capacity(self.entries.len() + 2);
-        for kind in [Kind::Service, Kind::Container] {
+    /// The rows the filters let through: Needs attention, then each kind's
+    /// section; empty sections are left out (tui spec, "Sections").
+    fn rows_shown(&self) -> Vec<Row> {
+        let shown = |e: &Entry| self.filter.shows(e.kind) && name_matches(&e.shown, &self.query);
+        let mut rows = Vec::with_capacity(self.entries.len() + 4);
+        let mut attention: Vec<usize> = (0..self.entries.len())
+            .filter(|&i| shown(&self.entries[i]) && self.entries[i].status.attention)
+            .collect();
+        // A stable sort: a service and a container of one name keep the
+        // entries' order, the service first.
+        attention.sort_by(|&a, &b| self.entries[a].name.cmp(&self.entries[b].name));
+        if !attention.is_empty() {
+            rows.push(Row::Heading(Section::Attention));
+            rows.extend(
+                attention
+                    .into_iter()
+                    .map(|i| Row::Source(Section::Attention, i)),
+            );
+        }
+        for (section, kind) in [
+            (Section::Services, Kind::Service),
+            (Section::Containers, Kind::Container),
+        ] {
             if !self.filter.shows(kind) {
                 continue;
             }
@@ -267,23 +458,35 @@ impl Picker {
                 self.entries
                     .iter()
                     .enumerate()
-                    .filter(|(_, e)| e.kind == kind)
-                    .map(|(i, _)| Row::Source(i)),
+                    .filter(|(_, e)| e.kind == kind && shown(e))
+                    .map(|(i, _)| Row::Source(section, i)),
             );
-            if kind == Kind::Container && self.unreachable.is_some() {
-                rows.push(Row::Unreachable);
+            // A name filter hides the notice row too: it names no source.
+            if self.unavailable(kind).is_some() && self.query.is_empty() {
+                rows.push(Row::Unavailable(kind));
             }
             if rows.len() > start {
-                rows.insert(start, Row::Heading(kind));
+                rows.insert(start, Row::Heading(section));
             }
         }
-        self.rows = rows;
-        self.state.select(self.next_from(0, 1));
+        rows
     }
 
-    fn selected_entry(&self) -> Option<&Entry> {
+    /// Why `kind`'s list couldn't be read.
+    fn unavailable(&self, kind: Kind) -> Option<&str> {
+        match kind {
+            Kind::Service => self.no_services.as_deref(),
+            Kind::Container => self.unreachable.as_deref(),
+        }
+    }
+
+    /// The selected row's section, kind and name.
+    fn selected_key(&self) -> Option<(Section, Kind, String)> {
         match self.state.selected().and_then(|i| self.rows.get(i)) {
-            Some(Row::Source(i)) => self.entries.get(*i),
+            Some(&Row::Source(section, i)) => {
+                let entry = self.entries.get(i)?;
+                Some((section, entry.kind, entry.name.clone()))
+            }
             _ => None,
         }
     }
@@ -292,7 +495,7 @@ impl Picker {
     fn next_from(&self, at: usize, step: isize) -> Option<usize> {
         let mut i = isize::try_from(at).ok()?;
         while let Some(row) = usize::try_from(i).ok().and_then(|i| self.rows.get(i)) {
-            if matches!(row, Row::Source(_)) {
+            if matches!(row, Row::Source(..)) {
                 return usize::try_from(i).ok();
             }
             i += step;
@@ -319,36 +522,191 @@ impl Picker {
         self.state.select(Some(at));
     }
 
+    /// Choose the selected source, if a source is selected.
+    fn choose(&mut self) -> Flow {
+        let chosen = self.state.selected().and_then(|i| self.rows.get(i));
+        if let Some(&Row::Source(_, i)) = chosen {
+            self.chosen = Some(i);
+            return Flow::Quit;
+        }
+        Flow::Unchanged
+    }
+
+    /// The keys that move the selection, wherever the picker is.
+    fn movement(&mut self, code: KeyCode) -> bool {
+        let page = isize::try_from(usize::from(self.area.height).max(1)).unwrap_or(isize::MAX);
+        match code {
+            KeyCode::Up => self.move_by(-1),
+            KeyCode::Down => self.move_by(1),
+            KeyCode::PageUp => self.move_by(-page),
+            KeyCode::PageDown => self.move_by(page),
+            _ => return false,
+        }
+        true
+    }
+
+    fn next_filter(&mut self) {
+        self.filter = self.filter.next();
+        self.lay_out();
+    }
+
     fn key(&mut self, key: KeyEvent) -> Flow {
+        if self.editing.is_some() {
+            return self.edit_key(key);
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             return Flow::Unchanged;
         }
-        let page = isize::try_from(self.height.max(1)).unwrap_or(isize::MAX);
+        if self.movement(key.code) {
+            return Flow::Redraw;
+        }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
-            KeyCode::PageUp => self.move_by(-page),
-            KeyCode::PageDown => self.move_by(page),
+            KeyCode::Char('k') => self.move_by(-1),
+            KeyCode::Char('j') => self.move_by(1),
             KeyCode::Home => self.state.select(self.next_from(0, 1)),
             KeyCode::End => {
                 let last = self.rows.len().saturating_sub(1);
                 self.state.select(self.next_from(last, -1));
             }
-            KeyCode::Enter => {
-                let chosen = self.state.selected().and_then(|i| self.rows.get(i));
-                if let Some(&Row::Source(i)) = chosen {
-                    self.chosen = Some(i);
-                    return Flow::Quit;
-                }
-                return Flow::Unchanged;
+            KeyCode::Enter => return self.choose(),
+            KeyCode::Tab => self.next_filter(),
+            KeyCode::Char('/') => {
+                // The line opens on the filter in effect, the cursor at
+                // its end (ratatui-textarea's `TextArea::new` and
+                // `move_cursor`).
+                let mut line = TextArea::new(vec![self.query.clone()]);
+                line.move_cursor(CursorMove::End);
+                line.set_cursor_line_style(Style::default());
+                line.set_style(self.style(Role::Text));
+                self.editing = Some(line);
+            }
+            KeyCode::Esc if !self.query.is_empty() => {
+                self.query.clear();
+                self.lay_out();
             }
             KeyCode::Char('q') | KeyCode::Esc => return Flow::Quit,
             _ => return Flow::Unchanged,
         }
         Flow::Redraw
+    }
+
+    /// A key while the name filter's line is open: the list narrows as it
+    /// is typed; Enter keeps the filter, Esc clears it, the arrows and
+    /// the page keys still move and `Tab` still cycles the kinds. Every
+    /// other key is the line's (ratatui-textarea's `TextArea::input`,
+    /// which edits and moves the cursor). Enter and Ctrl-M, which the
+    /// line would take as a new line, end it, as ratatui-textarea's
+    /// single-line example does
+    /// (<https://github.com/ratatui/ratatui-textarea/blob/v0.9.3/examples/single_line.rs>).
+    fn edit_key(&mut self, key: KeyEvent) -> Flow {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.editing = None,
+            KeyCode::Char('m') if ctrl => self.editing = None,
+            KeyCode::Esc => {
+                self.editing = None;
+                self.query.clear();
+                self.lay_out();
+            }
+            KeyCode::Tab => self.next_filter(),
+            code if self.movement(code) => {}
+            _ => {
+                let Some(line) = self.editing.as_mut() else {
+                    return Flow::Unchanged;
+                };
+                if !line.input(key) {
+                    return Flow::Redraw;
+                }
+                self.query = line.lines().join("");
+                self.lay_out();
+            }
+        }
+        Flow::Redraw
+    }
+
+    fn mouse(&mut self, mouse: MouseEvent) -> Flow {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.move_by(-1),
+            MouseEventKind::ScrollDown => self.move_by(1),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let at = Position::new(mouse.column, mouse.row);
+                if !self.area.contains(at) {
+                    return Flow::Unchanged;
+                }
+                // The list has no border: its first row on the screen is
+                // the state's offset.
+                let row = self.state.offset() + usize::from(mouse.row - self.area.y);
+                if !matches!(self.rows.get(row), Some(Row::Source(..))) {
+                    return Flow::Unchanged;
+                }
+                if self.state.selected() == Some(row) {
+                    self.editing = None;
+                    return self.choose();
+                }
+                self.state.select(Some(row));
+            }
+            _ => return Flow::Unchanged,
+        }
+        Flow::Redraw
+    }
+
+    /// Start a read of the services, if the picker has a refresh and no
+    /// read is under way.
+    fn start_refresh(&mut self) {
+        let Some(refresh) = self.refresh.as_mut() else {
+            return;
+        };
+        if refresh.pending.is_some() {
+            return;
+        }
+        let (send, result) = oneshot::channel();
+        let read = (refresh.list)();
+        let waker = Arc::clone(&refresh.waker);
+        // Why a oneshot beside the `JoinHandle`, which carries a result
+        // too: the result is sent before the wake, so `wake` always finds
+        // it; the task's own result could still be pending at the wake.
+        let task = tokio::spawn(async move {
+            // The picker may be gone; its drop aborts this task first.
+            let _ = send.send(read.await);
+            waker.notify_one();
+        });
+        refresh.pending = Some(Pending { result, task });
+    }
+
+    /// The result of the services' read, if it has ended: `true` when it
+    /// changed what the picker shows.
+    fn refreshed(&mut self) -> bool {
+        let Some(refresh) = self.refresh.as_mut() else {
+            return false;
+        };
+        let Some(pending) = refresh.pending.as_mut() else {
+            return false;
+        };
+        let result = match pending.result.try_recv() {
+            Ok(result) => result,
+            Err(oneshot::error::TryRecvError::Empty) => return false,
+            // The task ended without a result (a panic): try again later.
+            Err(oneshot::error::TryRecvError::Closed) => {
+                refresh.pending = None;
+                return false;
+            }
+        };
+        refresh.pending = None;
+        match result {
+            Ok(services) => {
+                self.services_trouble = None;
+                self.services = services;
+                self.restate(Timestamp::now());
+            }
+            Err(cause) => {
+                tracing::warn!(error = %escape_controls(&cause), "service refresh failed");
+                self.services_trouble = Some(format!("couldn't refresh services: {cause}"));
+            }
+        }
+        true
     }
 
     fn style(&self, role: Role) -> Style {
@@ -359,7 +717,8 @@ impl Picker {
         self.entries.iter().filter(|e| e.kind == kind).count()
     }
 
-    /// The title row: the screen's name and the counts of what is shown.
+    /// The title row: the screen's name, the counts of the kinds shown,
+    /// and the name filter in effect.
     fn title(&self) -> TextLine<'static> {
         let shown = |e: &&Entry| self.filter.shows(e.kind);
         let problems = self
@@ -380,7 +739,7 @@ impl Picker {
             Span::raw("  "),
         ];
         let faint = self.style(Role::Faint);
-        if self.filter.shows(Kind::Service) {
+        if self.no_services.is_none() && self.filter.shows(Kind::Service) {
             let services = counted(self.count(Kind::Service), "service", "services");
             spans.push(Span::styled(services, self.style(Role::Service)));
             spans.push(Span::styled(" · ", faint));
@@ -395,6 +754,13 @@ impl Picker {
             1 => Span::styled("1 needs attention", self.style(Role::Problem)),
             n => Span::styled(format!("{n} need attention"), self.style(Role::Problem)),
         });
+        if !self.query.is_empty() && self.editing.is_none() {
+            spans.push(Span::raw("   "));
+            spans.push(Span::styled(
+                format!("filter \"{}\"", one_line(&self.query)),
+                self.style(Role::Highlight),
+            ));
+        }
         TextLine::from(spans)
     }
 
@@ -402,6 +768,30 @@ impl Picker {
     /// ratatui-core's `anstyle` conversion, as the foreground roles.
     fn bg(&self, role: Role) -> Style {
         Style::from(anstyle::Style::new().bg_color(self.theme.color(role)))
+    }
+
+    /// A section's heading: its word and count in its role, and its rule.
+    fn heading(&self, section: Section, rule_width: usize) -> ListItem<'static> {
+        let (word, word_role, rule_role) = match section {
+            Section::Attention => ("Needs attention", Role::Problem, Role::AttentionRule),
+            Section::Services => ("Services", Role::Service, Role::ServiceRule),
+            Section::Containers => ("Containers", Role::Container, Role::ContainerRule),
+        };
+        let rows = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row, Row::Source(s, _) if *s == section))
+            .count();
+        let title = if rows == 0 {
+            format!("{word} ")
+        } else {
+            format!("{word} ({rows}) ")
+        };
+        let rule = "─".repeat(rule_width.saturating_sub(Span::raw(&title).width()));
+        ListItem::new(TextLine::from(vec![
+            Span::styled(title, self.style(word_role)),
+            Span::styled(rule, self.style(rule_role)),
+        ]))
     }
 
     /// The list's items: each heading with its rule, then its rows.
@@ -414,13 +804,28 @@ impl Picker {
     /// with the rows (UNVERIFIED that no other ratatui-org crate has one;
     /// checked against ratatui-widgets, tui-popup and tui-scrollview).
     /// Widths are display widths (`Span::width`, unicode-width); names
-    /// line up across the sections.
+    /// line up across the sections. Needs attention mixes the kinds, so
+    /// its rows end with the kind's word (proto-logs' look): the words
+    /// tell them apart without colour.
     fn items(&self, width: u16) -> Vec<ListItem<'static>> {
+        let shown = |row: &&Row| match **row {
+            Row::Source(_, i) => Some(&self.entries[i]),
+            _ => None,
+        };
         let name_width = self
-            .entries
+            .rows
             .iter()
-            .filter(|e| self.filter.shows(e.kind))
+            .filter_map(|row| shown(&row))
             .map(|e| Span::raw(e.shown.as_str()).width())
+            .max()
+            .unwrap_or(0);
+        let status_text = |e: &Entry| format!("{} {}", e.status.symbol, e.status.text);
+        let status_width = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row, Row::Source(Section::Attention, _)))
+            .filter_map(|row| shown(&row))
+            .map(|e| Span::raw(status_text(e)).width())
             .max()
             .unwrap_or(0);
         // The rule runs to the right edge, less the selection's mark.
@@ -428,64 +833,84 @@ impl Picker {
         self.rows
             .iter()
             .map(|row| match *row {
-                Row::Heading(kind) => {
-                    let (word, rule_role) = match kind {
-                        Kind::Service => ("Services", Role::ServiceRule),
-                        Kind::Container => ("Containers", Role::ContainerRule),
-                    };
-                    let title = if self.unreachable.is_some() && kind == Kind::Container {
-                        format!("{word} ")
-                    } else {
-                        format!("{word} ({}) ", self.count(kind))
-                    };
-                    let rule = "─".repeat(rule_width.saturating_sub(Span::raw(&title).width()));
-                    ListItem::new(TextLine::from(vec![
-                        Span::styled(title, self.style(kind.role())),
-                        Span::styled(rule, self.style(rule_role)),
-                    ]))
-                }
-                Row::Source(i) => {
+                Row::Heading(section) => self.heading(section, rule_width),
+                Row::Source(section, i) => {
                     let entry = &self.entries[i];
                     let pad = name_width.saturating_sub(Span::raw(entry.shown.as_str()).width());
-                    let status = self.style(entry.status.role);
-                    ListItem::new(TextLine::from(vec![
+                    let status = status_text(entry);
+                    let mut spans = vec![
                         Span::styled(entry.shown.clone(), self.style(entry.kind.role())),
                         Span::raw(" ".repeat(pad + 2)),
-                        Span::styled(
-                            format!("{} {}", entry.status.symbol, entry.status.text),
-                            status,
-                        ),
-                    ]))
+                    ];
+                    if section == Section::Attention {
+                        let pad = status_width.saturating_sub(Span::raw(&status).width());
+                        spans.push(Span::styled(status, self.style(entry.status.role)));
+                        spans.push(Span::raw(" ".repeat(pad + 2)));
+                        spans.push(Span::styled(entry.kind.word(), self.style(Role::Muted)));
+                    } else {
+                        spans.push(Span::styled(status, self.style(entry.status.role)));
+                    }
+                    ListItem::new(TextLine::from(spans))
                 }
-                Row::Unreachable => ListItem::new(TextLine::styled(
-                    format!(
-                        "Docker unreachable: {}",
-                        self.unreachable.as_deref().unwrap_or_default()
-                    ),
-                    self.style(Role::Problem),
-                )),
+                Row::Unavailable(kind) => {
+                    let what = match kind {
+                        Kind::Service => "Services unavailable",
+                        Kind::Container => "Docker unreachable",
+                    };
+                    ListItem::new(TextLine::styled(
+                        format!("{what}: {}", self.unavailable(kind).unwrap_or_default()),
+                        self.style(Role::Problem),
+                    ))
+                }
             })
             .collect()
     }
 
-    /// The key hints, then why the containers may be out of date.
+    /// The list's one line when no row is shown.
+    fn nothing_shown(&self) -> String {
+        if !self.query.is_empty() {
+            return format!(
+                "Nothing matches \"{}\". Esc clears the filter.",
+                one_line(&self.query)
+            );
+        }
+        match self.filter {
+            Filter::All => "No matching systemd services or Docker containers found.",
+            Filter::Services => "No matching systemd services found.",
+            Filter::Containers => "No containers found.",
+        }
+        .to_owned()
+    }
+
+    /// Why the lists may be out of date, then the key hints: the trouble
+    /// first, so an 80-column terminal shows it whole.
     fn footer(&self) -> TextLine<'static> {
         let key = self.style(Role::Accent);
         let muted = self.style(Role::Muted);
         let mut spans = Vec::new();
-        for (i, (k, what)) in [("↑↓", "move"), ("Enter", "open"), ("q", "quit")]
+        for trouble in [&self.trouble, &self.services_trouble]
             .into_iter()
-            .enumerate()
+            .flatten()
         {
+            spans.push(Span::styled(one_line(trouble), self.style(Role::Warn)));
+            spans.push(Span::raw("   "));
+        }
+        let mut hints = vec![
+            ("↑↓", "move"),
+            ("Enter", "open"),
+            ("/", "filter"),
+            ("Tab", "kind"),
+        ];
+        if !self.query.is_empty() {
+            hints.push(("Esc", "clear filter"));
+        }
+        hints.push(("q", "quit"));
+        for (i, (k, what)) in hints.into_iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled(" · ", self.style(Role::Faint)));
             }
             spans.push(Span::styled(k, key));
             spans.push(Span::styled(format!(" {what}"), muted));
-        }
-        if let Some(trouble) = &self.trouble {
-            spans.push(Span::raw("   "));
-            spans.push(Span::styled(one_line(trouble), self.style(Role::Warn)));
         }
         TextLine::from(spans)
     }
@@ -505,24 +930,47 @@ impl App for Picker {
     fn input(&mut self, input: Input) -> Flow {
         match input {
             Input::Key(key) => self.key(key),
+            Input::Mouse(mouse) => self.mouse(mouse),
             _ => Flow::Unchanged,
         }
     }
 
-    /// A new container list or a change in the live updates' trouble.
-    fn wake(&mut self) -> Flow {
-        let Some(updates) = self.updates.as_mut() else {
-            return Flow::Unchanged;
-        };
-        if !updates.has_changed().unwrap_or(false) {
+    /// Every 5 s: the statuses as at now, and a read of the services.
+    fn tick(&mut self) -> Flow {
+        if self.restated.elapsed() < REFRESH {
             return Flow::Unchanged;
         }
-        let snapshot = updates.borrow_and_update().clone();
-        self.trouble = snapshot.trouble;
-        if let Some(rows) = snapshot.rows {
-            self.set_containers(&rows, Timestamp::now());
+        self.restated = Instant::now();
+        self.restate(Timestamp::now());
+        // Hidden services (the containers filter) aren't read again
+        // until `Tab` shows them.
+        if self.filter.shows(Kind::Service) {
+            self.start_refresh();
         }
         Flow::Redraw
+    }
+
+    /// A new container list, a change in the live updates' trouble, or
+    /// the services read again.
+    fn wake(&mut self) -> Flow {
+        let mut changed = self.refreshed();
+        if let Some(updates) = self.updates.as_mut()
+            && updates.has_changed().unwrap_or(false)
+        {
+            let snapshot = updates.borrow_and_update().clone();
+            self.trouble = snapshot.trouble;
+            if let Some(rows) = snapshot.rows {
+                self.containers = rows;
+                self.unreachable = None;
+                self.restate(Timestamp::now());
+            }
+            changed = true;
+        }
+        if changed {
+            Flow::Redraw
+        } else {
+            Flow::Unchanged
+        }
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -536,17 +984,49 @@ impl App for Picker {
         ])
         .areas(frame.area());
         frame.render_widget(Paragraph::new(self.title()), title);
-        self.height = usize::from(list.height);
-        // The selected row is one solid bar: the highlight style patches
-        // every span of it (proto-logs' `selected_row_is_one_uniform_bar`).
-        let selected = self
-            .style(Role::SelectedFg)
-            .patch(self.bg(Role::SelectedBg));
-        let widget = List::new(self.items(list.width))
-            .highlight_symbol(MARK)
-            .highlight_style(selected);
-        frame.render_stateful_widget(widget, list, &mut self.state);
-        frame.render_widget(Paragraph::new(self.footer()), footer);
+        self.area = list;
+        if self.rows.is_empty() {
+            frame.render_widget(
+                Paragraph::new(TextLine::styled(
+                    self.nothing_shown(),
+                    self.style(Role::Muted),
+                )),
+                list,
+            );
+        } else {
+            // The selected row is one solid bar: the highlight style
+            // patches every span of it (proto-logs'
+            // `selected_row_is_one_uniform_bar`).
+            let selected = self
+                .style(Role::SelectedFg)
+                .patch(self.bg(Role::SelectedBg));
+            let widget = List::new(self.items(list.width))
+                .highlight_symbol(MARK)
+                .highlight_style(selected);
+            frame.render_stateful_widget(widget, list, &mut self.state);
+        }
+        if let Some(line) = &self.editing {
+            let width = |text| u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
+            let [label_area, line_area, hint_area] = Layout::horizontal([
+                Constraint::Length(width(FILTER_LABEL)),
+                Constraint::Fill(1),
+                Constraint::Length(width(FILTER_HINT)),
+            ])
+            .areas(footer);
+            frame.render_widget(
+                Paragraph::new(Span::styled(FILTER_LABEL, self.style(Role::Accent))),
+                label_area,
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(FILTER_HINT, self.style(Role::Muted))),
+                hint_area,
+            );
+            // ratatui-textarea draws itself as a widget
+            // (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html#impl-Widget-for-%26TextArea%3C'_%3E>).
+            frame.render_widget(line, line_area);
+        } else {
+            frame.render_widget(Paragraph::new(self.footer()), footer);
+        }
     }
 }
 
