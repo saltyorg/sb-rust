@@ -387,14 +387,22 @@ impl Follow {
     fn rescan(&mut self, paths: &[PathBuf]) {
         let mut old = std::mem::take(&mut self.files);
         let unopened = std::mem::take(&mut self.unopened);
-        for p in paths {
-            // The name's own inode, not a symlink's target: a symlinked
-            // journal file is opened, and refused, as a page opens it
-            // (Difference 4).
-            let Ok(meta) = std::fs::symlink_metadata(p) else {
-                continue;
-            };
-            let inode = (meta.dev(), meta.ino());
+        // Each name's own inode, not a symlink's target: a symlinked
+        // journal file is opened, and refused, as a page opens it
+        // (Difference 4). Read once, so the inodes listed and the ones
+        // matched below are the same (a rename over a name between two
+        // reads would list one and match another).
+        let found: Vec<(&PathBuf, (u64, u64))> = paths
+            .iter()
+            .filter_map(|p| {
+                let meta = std::fs::symlink_metadata(p).ok()?;
+                Some((p, (meta.dev(), meta.ino())))
+            })
+            .collect();
+        // The inodes listed now: an open file still among them is no
+        // file's copy, whatever ids two files share.
+        let listed: HashSet<(u64, u64)> = found.iter().map(|&(_, inode)| inode).collect();
+        for (p, inode) in found {
             if let Some(i) = old.iter().position(|f| f.file.inode == inode) {
                 let mut f = old.swap_remove(i);
                 f.file.path.clone_from(p);
@@ -410,10 +418,17 @@ impl Follow {
                 // copy_file_atomic_at_full). The file id is in the copied
                 // header, and the offsets are the same, so its position
                 // carries over instead of the whole file being read again.
+                // Only from a file whose inode is no longer listed, as the
+                // copy replaced it: when both inodes are listed they are
+                // two files (a journal file copied with `cp`, or crafted
+                // files whose ids are zero), as sd-journal tells files
+                // apart by path and inode (`add_any_file`, systemd v255
+                // sd-journal.c).
                 Ok(file) => {
-                    let same = old
-                        .iter()
-                        .position(|f| f.file.header.file_id == file.header.file_id);
+                    let same = old.iter().position(|f| {
+                        f.file.header.file_id == file.header.file_id
+                            && !listed.contains(&f.file.inode)
+                    });
                     if let Some(i) = same {
                         let mut f = old.swap_remove(i);
                         f.file = file;
@@ -1960,6 +1975,36 @@ mod tests {
         f.rescan(&[]);
         assert!(f.poll(&[]).is_empty());
         assert!(f.errors.is_empty(), "{:?}", f.errors);
+    }
+
+    /// A new file with the id of a file still listed under its own inode
+    /// (a journal file copied into the directory, or crafted files that
+    /// all leave the id zero) is a file of its own, read from its start,
+    /// as journalctl reads it: sd-journal knows its files by path and
+    /// inode (`add_any_file`, systemd v255 sd-journal.c). Only a file whose
+    /// inode is gone carries its position over to a copy with its id. The
+    /// new file is listed first here, as `next.journal` is before
+    /// `system.journal`.
+    #[test]
+    fn a_new_file_with_a_listed_files_id_is_read_as_new() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("system.journal");
+        let b = dir.path().join("next.journal");
+        // a's second entry is written after the follow starts.
+        journal(&a, 1, &FOUR[..2], 1);
+        let mut f = T::of(std::slice::from_ref(&a));
+        journal(&b, 1, &FOUR[2..], 2);
+        let id = std::fs::read(&a).expect("read")[24..40].to_vec();
+        let mut bytes = std::fs::read(&b).expect("read");
+        bytes[24..40].copy_from_slice(&id);
+        std::fs::write(&b, &bytes).expect("write");
+        f.rescan(&[b.clone(), a.clone()]);
+        assert_eq!(seqnums(&f.poll(&[])), vec![3, 4]);
+        assert_eq!(f.files(), 2);
+        // a goes on from where it was: its next entry, once.
+        set_n(&a, 2);
+        assert_eq!(seqnums(&f.poll(&[])), vec![2]);
+        assert!(f.poll(&[]).is_empty());
     }
 
     /// A file appearing mid-follow in the other journal root (a flush,
