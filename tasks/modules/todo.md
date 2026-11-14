@@ -2128,12 +2128,12 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       `with_default` subscriber on another test thread, the cause of M10's
       flake. Fix it as M10's was: one global test subscriber with a
       per-thread buffer.
-- [ ] **sb-release's ETXTBSY in `a_binary_reporting_another_version_is_refused`**
+- [x] **sb-release's ETXTBSY in `a_binary_reporting_another_version_is_refused`**
       (lane 2). One full run failed with "Text file busy" (the fork race
       ADR-021 describes); five reruns passed. Write the stand-in, then
       run it, so that no other test's fork holds its write descriptor
       (the SPAWNS lock pattern).
-- [ ] **`--help` shows a flag's long help** (from M31, lane 2 with M70).
+- [x] **`--help` shows a flag's long help** (from M31, lane 2 with M70).
       sb's help renderer (cli-core's `flag_row`) shows only the short help,
       so `-e`'s long help (ansible spec, lines 75-77: "Each value reaches
       Ansible whole...") never reaches `sb install --help`. cli-core shows
