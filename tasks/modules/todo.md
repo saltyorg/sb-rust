@@ -288,21 +288,21 @@ cleanup: the `sources.list.d` entries move into a root-only
 jammy and DEB822 rules; atomic saves.
 
 **Acceptance criteria:**
-- [ ] The codename from `lsb_release -sc`'s stdout; any codename other
+- [x] The codename from `lsb_release -sc`'s stdout; any codename other
       than `jammy`, `noble` or `resolute` fails before anything changes.
-- [ ] A symlinked, foreign-owned or group- or world-writable directory is
+- [x] A symlinked, foreign-owned or group- or world-writable directory is
       refused before anything moves; entries move with `renameat`
       between handles (`EXDEV`: copy, sync, unlink); a subdirectory
       fails; names logged before they move; the backup directories made
       0700, the run's only when something moves.
-- [ ] jammy's `sources.list` append and rewrite, DEB822's
+- [x] jammy's `sources.list` append and rewrite, DEB822's
       `ubuntu-archive.sources` only when needed, files saved atomically
       under a name apt ignores (checked against apt's source).
 
 **Verification:**
-- [ ] `cargo test -p sb-host` on temporary roots (the root arguments are
+- [x] `cargo test -p sb-host` on temporary roots (the root arguments are
       test-only).
-- [ ] Review: code-reviewer, library-reviewer, security-auditor (root
+- [x] Review: code-reviewer, library-reviewer, security-auditor (root
       filesystem moves).
 
 **Dependencies:** M9
@@ -318,16 +318,16 @@ jammy and DEB822 rules; atomic saves.
 `remove_sources_mentioning(needle, backup)` on M10's fenced handles.
 
 **Acceptance criteria:**
-- [ ] The two queries' argv, timeouts, row parsing and error texts.
-- [ ] `remove_sources_mentioning` moves only regular files directly in
+- [x] The two queries' argv, timeouts, row parsing and error texts.
+- [x] `remove_sources_mentioning` moves only regular files directly in
       `sources.list.d` whose content holds the needle, into
       `/var/backups/sb/<backup>/<run id>/`, with M10's refusals and
       modes; subdirectories and symlinks are left alone.
-- [ ] It returns what it moved, and logs each name first.
+- [x] It returns what it moved, and logs each name first.
 
 **Verification:**
-- [ ] `cargo test -p sb-host` on temporary roots and stand-in programs.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor.
+- [x] `cargo test -p sb-host` on temporary roots and stand-in programs.
+- [x] Review: code-reviewer, library-reviewer, security-auditor.
 
 **Dependencies:** M10
 **Files:** `crates/host/src/{apt.rs,apt/sources.rs,testing.rs}`
