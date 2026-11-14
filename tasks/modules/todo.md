@@ -1644,14 +1644,14 @@ wrap, paging, follow, markers, `t`, the line format and the record cap
 with the small limits; Esc, `q`, Ctrl-C 130.
 
 **Acceptance criteria:**
-- [ ] Scrolling, paging and follow on a fake source, with TestBackend
+- [x] Scrolling, paging and follow on a fake source, with TestBackend
       snapshots.
-- [ ] Lines through `DisplayText` and ansi-to-tui; the record cap holds.
-- [ ] Ctrl-C ends with 130 and the terminal restored.
+- [x] Lines through `DisplayText` and ansi-to-tui; the record cap holds.
+- [x] Ctrl-C ends with 130 and the terminal restored.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui` with snapshots.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui` with snapshots.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M66
 **Files:** `crates/tui/src/{viewer.rs,line.rs,lib.rs}`
@@ -1666,15 +1666,15 @@ filter yet) on host's `services`, `sb logs`, `SB_JOURNAL_DIR`, the empty
 and failure cases, and the PTY smoke test on crafted journals.
 
 **Acceptance criteria:**
-- [ ] `sb logs` lists the services and opens the viewer on the chosen
+- [x] `sb logs` lists the services and opens the viewer on the chosen
       one.
-- [ ] No services, an unreadable journal and no terminal give the spec's
+- [x] No services, an unreadable journal and no terminal give the spec's
       texts.
-- [ ] Screenshots of the picker and the viewer (M67's look with this one).
+- [x] Screenshots of the picker and the viewer (M67's look with this one).
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb`; `crates/sb/tests/logs*.rs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui -p sb`; `crates/sb/tests/logs*.rs`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M67
 **Files:** `crates/tui/src/{picker.rs,lib.rs}`, `crates/sb/src/{main.rs,logs.rs}`, `crates/sb/Cargo.toml`, `crates/sb/tests/logs.rs`, `Cargo.lock`
@@ -1689,13 +1689,13 @@ restarts, the Containers section kept live by events, `sb docker logs`,
 the Docker-unreachable row.
 
 **Acceptance criteria:**
-- [ ] A container's logs page and follow across a restart on the fake.
-- [ ] The section reloads on events; picker rows use `picker_status`.
-- [ ] Screenshots of the Containers section and a container's log.
+- [x] A container's logs page and follow across a restart on the fake.
+- [x] The section reloads on events; picker rows use `picker_status`.
+- [x] Screenshots of the Containers section and a container's log.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb`; `crates/sb/tests/logs_docker.rs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui -p sb`; `crates/sb/tests/logs_docker.rs`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M68, M64
 **Files:** `crates/tui/src/{source/docker.rs,picker.rs}`, `crates/sb/src/docker_logs.rs`, `crates/sb/tests/logs_docker.rs`
