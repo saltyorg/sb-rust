@@ -159,22 +159,43 @@ fn flags_sb_go_lacks_are_reported() {
     );
 }
 
-/// `sb update-venv` is sb-go's, hidden, but for `-v` (python-env
-/// decision 9; success criterion 11).
+/// python-env's commands are sb-go's, `update-venv` hidden, but for `-v`
+/// (python-env decision 9; success criterion 11).
 #[test]
-fn update_venv_has_every_sb_go_flag_but_verbose() {
+fn python_env_commands_have_every_sb_go_flag_but_verbose() {
     let tree = sb_tree();
-    let missing: Vec<&str> = SB_GO_TREE
-        .lines()
-        .filter(|line| line.contains("\tsb update-venv\t"))
-        .filter(|line| !tree.iter().any(|ours| ours == line))
-        .collect();
-    assert_eq!(
-        missing,
-        ["flag\tsb update-venv\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output"]
-    );
-    assert!(tree.contains(
-        &"command\tsb update-venv\ttrue\tUpdate the Ansible virtual environment and saltbox.fact"
-            .to_string()
-    ));
+    for (name, hidden, about) in [
+        (
+            "update-venv",
+            true,
+            "Update the Ansible virtual environment and saltbox.fact",
+        ),
+        (
+            "reinstall-venv",
+            false,
+            "Reinstall the Ansible virtual environment",
+        ),
+        (
+            "reinstall-python",
+            false,
+            "Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv",
+        ),
+    ] {
+        let missing: Vec<&str> = SB_GO_TREE
+            .lines()
+            .filter(|line| line.contains(&format!("\tsb {name}\t")))
+            .filter(|line| !tree.iter().any(|ours| ours == line))
+            .collect();
+        assert_eq!(
+            missing,
+            [format!(
+                "flag\tsb {name}\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output"
+            )],
+            "{name}"
+        );
+        assert!(
+            tree.contains(&format!("command\tsb {name}\t{hidden}\t{about}")),
+            "{name}"
+        );
+    }
 }

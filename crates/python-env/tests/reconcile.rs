@@ -8,7 +8,7 @@ use std::path::Path;
 
 use sb_cli_core::cancel::Shutdown;
 use sb_python_env::testing::{COMMANDS, Tree};
-use sb_python_env::{Force, activate, reconcile_runtime, reconcile_venv};
+use sb_python_env::{Force, VenvOutcome, activate, reconcile_runtime, reconcile_venv};
 use sb_term_ui::{Labels, Options, Runner, Step, Target};
 
 /// Tests that write a stand-in program and run it hold this from writing
@@ -23,6 +23,11 @@ struct Ran {
 
 /// `body` in a step of a runner drawing to memory.
 async fn in_step(body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<()>) -> Ran {
+    in_step_with(async |step, _| body(step).await).await
+}
+
+/// [`in_step`], `body` getting the shutdown too, to signal Ctrl-C.
+async fn in_step_with(body: impl AsyncFnOnce(&mut Step, &Shutdown) -> anyhow::Result<()>) -> Ran {
     let term = indicatif::InMemoryTerm::new(80, 400);
     let options = Options {
         target: Target::InMemory {
@@ -39,7 +44,7 @@ async fn in_step(body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<()>) -> Ran
     );
     let _ = runner
         .step(labels, async |step| {
-            let result = body(step).await;
+            let result = body(step, &shutdown).await;
             error = result.as_ref().err().map(|err| format!("{err:#}"));
             result
         })
@@ -195,18 +200,48 @@ async fn libpq_dev_is_installed_when_missing() {
     assert!(apt[1].ends_with("install -y libpq-dev"), "{apt:?}");
 }
 
-/// Each way a venv is unhealthy reads "update required"; the rebuild
-/// itself comes with the build path.
+/// The generation the active link names.
+fn active_generation(tree: &Tree) -> std::path::PathBuf {
+    let venv = std::fs::read_link(&tree.layout.active_venv).expect("link");
+    venv.parent().expect("generation").to_path_buf()
+}
+
+/// The entries of `dir`, by name (none when it is missing).
+fn entries(dir: &Path) -> Vec<String> {
+    // A missing directory has none.
+    let mut names: Vec<String> = std::fs::read_dir(dir).map_or_default(|entries| {
+        entries
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    });
+    names.sort();
+    names
+}
+
+/// The uv calls made, without the uv path and `--no-config`.
+fn uv_calls(tree: &Tree) -> Vec<String> {
+    let uv = format!("{} --no-config ", tree.layout.uv.display());
+    tree.calls_made()
+        .into_iter()
+        .filter_map(|call| call.strip_prefix(&uv).map(str::to_string))
+        .collect()
+}
+
+/// Each way a venv is unhealthy reads "update required" and is rebuilt:
+/// a new generation, active, the old one cleaned away.
 #[tokio::test]
-async fn an_unhealthy_venv_needs_an_update() {
+async fn an_unhealthy_venv_is_rebuilt() {
     type Breaks = fn(&Tree, &sb_python_env::testing::Generation);
     let _spawns = SPAWNS.lock().await;
-    let breaks: [(&str, Breaks); 5] = [
+    let breaks: [(&str, Breaks); 4] = [
         ("lock", |tree, _| {
             std::fs::write(&tree.layout.lock, "changed\n").expect("lock");
-        }),
-        ("python pin", |tree, _| {
-            std::fs::write(&tree.layout.python_pin, "3.13.1\n").expect("pin");
         }),
         ("schema 2", |tree, active| {
             let manifest = sb_python_env::manifest::Manifest {
@@ -228,45 +263,72 @@ async fn an_unhealthy_venv_needs_an_update() {
         breaks(&tree, &active);
         let env = tree.env();
         let ran = in_step(async |step| {
-            reconcile_venv(step, &env, None, Force::None).await?;
+            let outcome = reconcile_venv(step, &env, None, Force::None).await?;
+            assert_eq!(outcome, VenvOutcome::Rebuilt);
             Ok(())
         })
         .await;
+        assert_eq!(ran.error, None, "{what}:\n{}", ran.screen);
         assert!(
             ran.screen
                 .contains("Ansible virtual environment update required"),
             "{what}:\n{}",
             ran.screen
         );
-        assert!(
-            ran.error
-                .as_deref()
-                .is_some_and(|e| e.contains("needs a rebuild")),
-            "{what}: {:?}",
-            ran.error
+        let generation = active_generation(&tree);
+        assert_ne!(generation, active.dir, "{what}");
+        let id = generation.file_name().expect("id").to_string_lossy();
+        assert_eq!(
+            entries(&tree.layout.ansible_releases),
+            [id.as_ref()],
+            "{what}"
         );
+        let written = sb_python_env::manifest::read(&generation)
+            .expect("manifest")
+            .expect("complete");
+        let lock = sb_python_env::toolchain::file_sha256(&tree.layout.lock).expect("lock");
+        assert_eq!(written.lock_sha256, lock, "{what}");
+        for name in &written.exported_commands {
+            assert!(tree.layout.wrappers.join(name).exists(), "{what}: {name}");
+        }
     }
 }
 
-/// A real directory at the active path is the legacy layout: unhealthy,
-/// left in place for activation to adopt.
+/// A changed `.python-version` needs a new Python release: the active
+/// one isn't reused, and the new generation runs on the new Python.
 #[tokio::test]
-async fn a_legacy_directory_is_unhealthy() {
+async fn a_changed_python_pin_installs_that_python() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
-    tree.venv(&tree.layout.active_venv);
+    let active = tree.healthy();
+    std::fs::write(&tree.layout.python_pin, "3.13.1\n").expect("pin");
+    // What the stand-in uv installs and puts into the venv.
+    tree.python(&tree.root.path().join("templates/python3"), "3.13.1");
     let env = tree.env();
     let ran = in_step(async |step| {
         reconcile_venv(step, &env, None, Force::None).await?;
         Ok(())
     })
     .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
     assert!(ran.screen.contains("update required"), "{}", ran.screen);
-    assert!(tree.layout.active_venv.join("bin/python3").exists());
+    assert!(
+        ran.screen.contains("Installing Python 3.13.1"),
+        "{}",
+        ran.screen
+    );
+    let written = sb_python_env::manifest::read(&active_generation(&tree))
+        .expect("manifest")
+        .expect("complete");
+    assert_eq!(written.python_version, "3.13.1");
+    assert!(!active.python_install.exists(), "the old Python is cleaned");
 }
 
+/// A forced rebuild of a healthy venv says so and builds: `Venv` on the
+/// active Python, `Python` on a new release with `--reinstall`; both
+/// without uv's cache.
 #[tokio::test]
-async fn a_forced_rebuild_says_so() {
+async fn a_forced_rebuild_says_so_and_builds() {
     let _spawns = SPAWNS.lock().await;
     for (force, label) in [
         (
@@ -279,24 +341,211 @@ async fn a_forced_rebuild_says_so() {
         ),
     ] {
         let tree = Tree::new();
-        let _ = tree.healthy();
+        let active = tree.healthy();
         let env = tree.env();
         let ran = in_step(async |step| {
             reconcile_venv(step, &env, None, force).await?;
             Ok(())
         })
         .await;
+        assert_eq!(ran.error, None, "{label}:\n{}", ran.screen);
         assert!(ran.screen.contains(label), "{label}:\n{}", ran.screen);
-        assert!(
-            ran.error
-                .as_deref()
-                .is_some_and(|e| e.contains("needs a rebuild")),
-            "{label}: {:?}",
-            ran.error
-        );
-        // Nothing of the healthy path ran: no wrapper, no cleanup.
-        assert!(!tree.layout.wrappers.join("ansible").exists());
+        assert_ne!(active_generation(&tree), active.dir, "{label}");
+        assert!(!active.dir.exists(), "{label}");
+        let calls = uv_calls(&tree);
+        let install: Vec<&String> = calls
+            .iter()
+            .filter(|call| call.starts_with("python install"))
+            .collect();
+        let sync = calls
+            .iter()
+            .find(|call| call.starts_with("pip sync"))
+            .expect("sync");
+        assert!(sync.contains(" --no-cache "), "{label}: {sync}");
+        let python = entries(&tree.layout.python_releases);
+        if force == Force::Venv {
+            assert!(install.is_empty(), "{install:?}");
+            assert_eq!(python, [sb_python_env::testing::PYTHON_RELEASE]);
+        } else {
+            assert_eq!(install.len(), 1, "{calls:?}");
+            assert!(
+                install[0].contains(" --reinstall --no-cache "),
+                "{install:?}"
+            );
+            assert_eq!(python.len(), 1, "{python:?}");
+            assert_ne!(python, [sb_python_env::testing::PYTHON_RELEASE]);
+        }
     }
+}
+
+/// A real directory at the active path is the legacy layout: unhealthy,
+/// adopted at activation and then cleaned away with the other old
+/// generations, as sb-go does.
+#[tokio::test]
+async fn a_legacy_directory_is_adopted_and_replaced() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    tree.venv(&tree.layout.active_venv);
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::None).await?;
+        Ok(())
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(ran.screen.contains("update required"), "{}", ran.screen);
+    let meta = std::fs::symlink_metadata(&tree.layout.active_venv).expect("active");
+    assert!(meta.file_type().is_symlink());
+    let generation = active_generation(&tree);
+    let id = generation.file_name().expect("id").to_string_lossy();
+    assert_eq!(entries(&tree.layout.ansible_releases), [id.as_ref()]);
+}
+
+/// The previous manifest's commands the new one lacks lose their
+/// wrappers, only those with sb's header: a user's own script stays.
+#[tokio::test]
+async fn stale_wrappers_go() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let active = tree.healthy();
+    let mut previous = active.manifest.clone();
+    previous.exported_commands.push("ansible-lint".to_string());
+    tree.manifest(&active.dir, &previous);
+    let managed: Vec<String> = COMMANDS.iter().map(ToString::to_string).collect();
+    sb_python_env::wrappers::write_all(&tree.layout, &managed).expect("wrappers");
+    let user_script = tree.layout.wrappers.join("ansible-lint");
+    std::fs::write(&user_script, "#!/bin/sh\necho mine\n").expect("user script");
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::Venv).await?;
+        Ok(())
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    // The stand-in sync exports ansible, apprise and certbot.
+    assert!(!tree.layout.wrappers.join("ansible-playbook").exists());
+    for kept in ["ansible", "apprise", "certbot"] {
+        assert!(tree.layout.wrappers.join(kept).exists(), "{kept}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&user_script).expect("kept"),
+        "#!/bin/sh\necho mine\n"
+    );
+}
+
+/// The state a failed or cancelled rebuild must leave as it found:
+/// the active link, the wrappers' bytes and both `releases/`.
+#[derive(Debug, PartialEq)]
+struct Kept {
+    link: std::path::PathBuf,
+    wrappers: Vec<(String, Vec<u8>)>,
+    generations: Vec<String>,
+    pythons: Vec<String>,
+}
+
+fn kept(tree: &Tree) -> Kept {
+    Kept {
+        link: std::fs::read_link(&tree.layout.active_venv).expect("link"),
+        wrappers: COMMANDS
+            .iter()
+            .map(|name| {
+                let bytes = std::fs::read(tree.layout.wrappers.join(name)).expect("wrapper");
+                ((*name).to_string(), bytes)
+            })
+            .collect(),
+        generations: entries(&tree.layout.ansible_releases),
+        pythons: entries(&tree.layout.python_releases),
+    }
+}
+
+/// A healthy tree with its wrappers written, so a rebuild can be seen to
+/// keep them.
+fn wrapped_tree() -> Tree {
+    let tree = Tree::new();
+    let _ = tree.healthy();
+    let managed: Vec<String> = COMMANDS.iter().map(ToString::to_string).collect();
+    sb_python_env::wrappers::write_all(&tree.layout, &managed).expect("wrappers");
+    tree
+}
+
+/// A rebuild failing at each build step leaves the previous generation
+/// active, the wrappers as they were, and nothing of the new build (spec,
+/// success criterion 5).
+#[tokio::test]
+async fn a_failed_rebuild_keeps_the_previous_generation() {
+    let _spawns = SPAWNS.lock().await;
+    for op in ["python-install", "venv---python", "pip-sync", "pip-check"] {
+        let tree = wrapped_tree();
+        let before = kept(&tree);
+        tree.fail(op);
+        let env = tree.env();
+        let ran = in_step(async |step| {
+            reconcile_venv(step, &env, None, Force::Python).await?;
+            Ok(())
+        })
+        .await;
+        assert!(ran.error.is_some(), "{op}:\n{}", ran.screen);
+        assert_eq!(kept(&tree), before, "{op}");
+    }
+}
+
+/// Wait for `path`, up to 20 s.
+async fn appears(path: &Path) {
+    for _ in 0..400 {
+        if path.exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{} never appeared", path.display());
+}
+
+/// Ctrl-C during the sync: the build goes, the previous generation stays
+/// active with its wrappers.
+#[tokio::test]
+async fn a_cancelled_rebuild_keeps_the_previous_generation() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = wrapped_tree();
+    let before = kept(&tree);
+    tree.hang("pip-sync");
+    let env = tree.env();
+    let started = tree.root.path().join("hang/started");
+    let ran = in_step_with(async |step, shutdown| {
+        let cancel = async {
+            appears(&started).await;
+            shutdown.signalled(2);
+        };
+        let (result, ()) = tokio::join!(reconcile_venv(step, &env, None, Force::Venv), cancel);
+        result?;
+        Ok(())
+    })
+    .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert_eq!(kept(&tree), before);
+}
+
+/// A rebuild gives the tree to the Saltbox user, as the healthy path does.
+#[tokio::test]
+async fn a_rebuilt_tree_is_given_to_the_saltbox_user() {
+    if !root() {
+        return;
+    }
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let _ = tree.healthy();
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, Some("nobody"), Force::Venv).await?;
+        Ok(())
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let venv = std::fs::read_link(&tree.layout.active_venv).expect("link");
+    let uid = std::fs::symlink_metadata(venv.join("bin/python3"))
+        .expect("stat")
+        .uid();
+    // nobody's uid on Ubuntu (base-passwd).
+    assert_eq!(uid, 65534);
 }
 
 /// The active venv as found: a dangling link and an incomplete manifest

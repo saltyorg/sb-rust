@@ -112,6 +112,16 @@ enum Command {
     /// List available Saltbox, Sandbox or Saltbox-mod tags
     #[command(long_about = LIST_LONG)]
     List(sb_ansible::ListArgs),
+    /// Reinstall the Ansible virtual environment
+    // No `--verbose/-v` (python-env decision 9).
+    #[command(long_about = "Reinstall the Ansible virtual environment")]
+    ReinstallVenv,
+    /// Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv
+    // No `--verbose/-v` (python-env decision 9).
+    #[command(
+        long_about = "Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv"
+    )]
+    ReinstallPython,
 }
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
@@ -273,6 +283,8 @@ impl Command {
             Command::Install(_) => "install",
             Command::UpdateVenv => "update-venv",
             Command::List(_) => "list",
+            Command::ReinstallVenv => "reinstall-venv",
+            Command::ReinstallPython => "reinstall-python",
         }
     }
 
@@ -292,7 +304,8 @@ impl Command {
             // assumption 5); playbooks run with `--become` from root's
             // Saltbox checkout (ansible spec, success criterion 9); list
             // writes that checkout's tag cache; the venv, its wrappers and
-            // apt, which `update-venv` changes (python-env assumption 5).
+            // apt, which `update-venv`, `reinstall-venv` and
+            // `reinstall-python` change (python-env assumption 5).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
@@ -303,7 +316,9 @@ impl Command {
             | Command::Diag
             | Command::Install(_)
             | Command::UpdateVenv
-            | Command::List(_) => true,
+            | Command::List(_)
+            | Command::ReinstallVenv
+            | Command::ReinstallPython => true,
         }
     }
 }
@@ -536,6 +551,8 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Edit { command } => edit::edit(command.file(), shutdown)?,
         Command::Motd(ref args) => motd::motd(args, shutdown)?,
         Command::UpdateVenv => python_env::update_venv(shutdown, log)?,
+        Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
+        Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
         Command::SelfUpdate { yes, force_update } => {
             self_update::self_update(yes, force_update, shutdown, log)?;
         }
@@ -984,9 +1001,15 @@ mod tests {
     }
 
     #[test]
-    fn update_venv_needs_root_and_logs_its_name() {
-        assert!(Command::UpdateVenv.needs_root());
-        assert_eq!(Command::UpdateVenv.name(), "update-venv");
+    fn python_env_commands_need_root_and_log_their_names() {
+        for (command, name) in [
+            (Command::UpdateVenv, "update-venv"),
+            (Command::ReinstallVenv, "reinstall-venv"),
+            (Command::ReinstallPython, "reinstall-python"),
+        ] {
+            assert!(command.needs_root(), "{name}");
+            assert_eq!(command.name(), name);
+        }
     }
 
     /// `list` writes the Saltbox checkout's tag cache, as root (ansible

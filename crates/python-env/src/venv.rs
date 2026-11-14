@@ -1,7 +1,8 @@
 //! The venv (python-env spec, "The venv reconcile"; sb-go's
 //! `python/venv.go`): the Python check and the environment check (step 4,
 //! each probe an isolated child captured within 30 s, difference 8), the
-//! reconcile, and the build into staging (steps 7-11 and 17).
+//! reconcile, the build into staging (steps 7-11 and 17) and its
+//! activation (steps 12-16).
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -15,7 +16,7 @@ use sb_host::apt::PackageQueryError;
 use sb_term_ui::{Labels, Step};
 use tokio_util::sync::CancellationToken;
 
-use crate::activate::{self, CleanupError};
+use crate::activate::{self, ActivateError, CleanupError};
 use crate::isolate::{IsolateError, Kind};
 use crate::manifest::{self, Manifest, ManifestError};
 use crate::toolchain::{self, Toolchain, ToolchainError};
@@ -178,6 +179,8 @@ pub enum Force {
 pub enum VenvOutcome {
     /// The active venv was healthy and kept; its wrappers were rewritten.
     UpToDate,
+    /// A new generation was built and activated.
+    Rebuilt,
 }
 
 /// The active venv as found (sb-go's `activeState`).
@@ -278,6 +281,11 @@ pub enum VenvError {
     Inspect(InspectError),
     #[error("refresh Ansible command wrappers: {0}")]
     Wrappers(WrapperError),
+    /// The new generation's wrappers couldn't be written.
+    #[error("install Ansible command wrappers: {0}")]
+    InstallWrappers(WrapperError),
+    #[error("remove stale Ansible command wrappers: {0}")]
+    StaleWrappers(WrapperError),
     #[error("clean old Ansible generations: {0}")]
     Cleanup(CleanupError),
     #[error(transparent)]
@@ -285,10 +293,21 @@ pub enum VenvError {
     /// The ownership walk's blocking task panicked or was cancelled.
     #[error("set ownership: {0}")]
     Join(tokio::task::JoinError),
-    /// The active venv needs a rebuild, which the build path (module
-    /// build M15 and M16) brings.
-    #[error("the Ansible virtual environment needs a rebuild, which this sb can't do yet")]
-    Rebuild,
+    /// The cleanup's blocking task panicked or was cancelled.
+    #[error("clean old Ansible generations: {0}")]
+    CleanupJoin(tokio::task::JoinError),
+    /// The build failed; what it made is gone. A nested step's quiet
+    /// exit stays in the chain (`transparent` forwards `source`).
+    #[error(transparent)]
+    Build(#[from] BuildError),
+    /// The new generation couldn't be activated; the active venv is as
+    /// it was.
+    #[error(transparent)]
+    Activate(ActivateError),
+    /// Ctrl-C came after the build, before activation: the build is
+    /// removed and the active venv kept (spec, step 17).
+    #[error("interrupted before activating the new Ansible virtual environment")]
+    Interrupted,
     /// A nested step failed or was interrupted; it says why itself.
     #[error("a step stopped the Ansible virtual environment's update")]
     Stopped(#[from] Exit),
@@ -308,10 +327,14 @@ pub(crate) fn status_label(healthy: bool, force: Force) -> &'static str {
 /// reconcile", sb-go's `Reconcile`): the toolchain; "Ensuring uv <v> is
 /// installed"; libpq-dev, installed when missing; the active venv
 /// inspected; "Checking Ansible virtual environment for updates" with
-/// sb-go's done label; on a healthy venv and no force, the wrappers
+/// sb-go's done label. On a healthy venv and no force, the wrappers
 /// rewritten, old generations cleaned and ownership given to `user`
-/// (skipped when `None`). So far that is all (module build M14): an
-/// unhealthy venv or a forced rebuild is [`VenvError::Rebuild`].
+/// (skipped when `None`). Otherwise a new generation is built into
+/// staging ([`build`]), its wrappers written, activated (a legacy
+/// directory adopted), the previous generation's stale wrappers removed,
+/// old generations cleaned and ownership given. A failure or Ctrl-C
+/// before activation removes the build and leaves the active venv as it
+/// was (spec, step 17).
 ///
 /// # Errors
 ///
@@ -339,20 +362,77 @@ pub async fn reconcile_venv(
     let checking = "Checking Ansible virtual environment for updates";
     let labels = Labels::new(checking, status_label(active.healthy, force));
     step.step(labels, async |_| anyhow::Ok(())).await?;
-    let Active {
+    if let Active {
         manifest: Some(manifest),
         healthy: true,
-    } = active
-    else {
-        return Err(VenvError::Rebuild);
-    };
-    if force != Force::None {
-        return Err(VenvError::Rebuild);
+    } = &active
+        && force == Force::None
+    {
+        wrappers::write_all(env.layout, &manifest.exported_commands)
+            .map_err(VenvError::Wrappers)?;
+        cleanup(env.layout).await?;
+        ensure_ownership(env.layout, user).await?;
+        return Ok(VenvOutcome::UpToDate);
     }
-    wrappers::write_all(env.layout, &manifest.exported_commands).map_err(VenvError::Wrappers)?;
-    activate::cleanup_generations(env.layout).map_err(VenvError::Cleanup)?;
+    let previous = active.manifest;
+    let staged = build(step, env, &toolchain, previous.as_ref(), force).await?;
+    let current = activate_staged(env, staged, &token).await?;
+    let stale = previous.map(|previous| previous.exported_commands);
+    wrappers::remove_stale(
+        env.layout,
+        stale.as_deref().unwrap_or_default(),
+        &current.exported_commands,
+    )
+    .map_err(VenvError::StaleWrappers)?;
+    cleanup(env.layout).await?;
     ensure_ownership(env.layout, user).await?;
-    Ok(VenvOutcome::UpToDate)
+    Ok(VenvOutcome::Rebuilt)
+}
+
+/// Old generations cleaned ([`activate::cleanup_generations`]) on a
+/// blocking thread: after a rebuild it removes a whole venv, thousands of
+/// files, and sb's runtime has one thread, which also draws the steps
+/// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
+async fn cleanup(layout: &Layout) -> Result<(), VenvError> {
+    let layout = layout.clone();
+    tokio::task::spawn_blocking(move || activate::cleanup_generations(&layout))
+        .await
+        .map_err(VenvError::CleanupJoin)?
+        .map_err(VenvError::Cleanup)
+}
+
+/// The staged generation's wrappers written, then the generation
+/// activated (spec, steps 12 and 13; sb-go's `installWrappers` and
+/// `activateGeneration`), unless Ctrl-C came first, which leaves both as
+/// they were. On any failure the
+/// build is removed and the active venv is as it was.
+async fn activate_staged(
+    env: &Env<'_>,
+    staged: Staged<'_>,
+    token: &CancellationToken,
+) -> Result<Manifest, VenvError> {
+    // The last moment a cancel can still keep the active venv and its
+    // wrappers: nothing below awaits.
+    let activated = if token.is_cancelled() {
+        Err(VenvError::Interrupted)
+    } else {
+        Ok(())
+    };
+    let activated = activated
+        .and_then(|()| {
+            wrappers::write_all(env.layout, &staged.manifest.exported_commands)
+                .map_err(VenvError::InstallWrappers)
+        })
+        .and_then(|()| {
+            activate::activate_generation(env.layout, &staged.venv).map_err(VenvError::Activate)
+        });
+    match activated {
+        Ok(()) => Ok(staged.keep()),
+        Err(err) => {
+            staged.discard().await;
+            Err(err)
+        }
+    }
 }
 
 /// libpq-dev, which psycopg's build needs (spec, step 3; sb-go's
@@ -566,6 +646,12 @@ impl Staged<'_> {
     pub fn keep(mut self) -> Manifest {
         self.leftovers.armed = false;
         self.manifest
+    }
+
+    /// Remove the build now, off the runtime's thread (dropping it removes
+    /// it on the caller's).
+    pub async fn discard(mut self) {
+        self.leftovers.remove().await;
     }
 }
 
@@ -850,7 +936,7 @@ async fn stage<'a>(
 
 /// A UTC time in Go's `20060102T150405.000000000` (generation and
 /// Python release names).
-fn stamp(at: jiff::Timestamp) -> String {
+pub(crate) fn stamp(at: jiff::Timestamp) -> String {
     at.strftime(STAMP).to_string()
 }
 
@@ -989,6 +1075,85 @@ mod tests {
         executable(&bin.join("ansible\nx"));
         let err = discover(dir.path()).expect_err("unsafe");
         assert_eq!(err.to_string(), "unsafe venv command name \"ansible\\nx\"");
+    }
+
+    /// A tree with an active `old` generation and a staged `new` one
+    /// exporting `ansible`.
+    fn staged_tree(layout: &Layout) -> (PathBuf, Staged<'_>) {
+        let old = layout.ansible_releases.join("old/venv");
+        let generation = layout.ansible_releases.join("new");
+        std::fs::create_dir_all(&old).expect("old");
+        std::fs::create_dir_all(generation.join("venv")).expect("new");
+        std::fs::create_dir_all(&layout.wrappers).expect("bin");
+        std::os::unix::fs::symlink(&old, &layout.active_venv).expect("link");
+        let staged = Staged {
+            leftovers: Leftovers {
+                layout,
+                generation: Some(generation.clone()),
+                python: None,
+                armed: true,
+            },
+            venv: generation.join("venv"),
+            generation: generation.clone(),
+            manifest: Manifest {
+                schema_version: manifest::SCHEMA,
+                generation_id: "new".to_string(),
+                python_version: "3.12.7".to_string(),
+                python_path: String::new(),
+                python_install: String::new(),
+                uv_version: "0.13.4".to_string(),
+                lock_sha256: String::new(),
+                saltbox_commit: String::new(),
+                created_at: String::new(),
+                exported_commands: vec!["ansible".to_string()],
+            },
+        };
+        (old, staged)
+    }
+
+    /// Ctrl-C after the build, before activation: the build goes, the
+    /// active link and the wrappers stay (spec, step 17).
+    #[tokio::test]
+    async fn a_cancel_before_activation_keeps_the_active_venv() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let layout = Layout::under(dir.path());
+        let (old, staged) = staged_tree(&layout);
+        let generation = staged.generation.clone();
+        let env = Env::new(&layout, "0.13.4");
+        let token = CancellationToken::new();
+        token.cancel();
+        let err = activate_staged(&env, staged, &token)
+            .await
+            .expect_err("cancelled");
+        assert!(matches!(err, VenvError::Interrupted), "{err}");
+        assert_eq!(std::fs::read_link(&layout.active_venv).expect("link"), old);
+        assert!(!generation.exists());
+        assert!(
+            !layout.wrappers.join("ansible").exists(),
+            "no wrapper written"
+        );
+    }
+
+    /// Wrappers that can't be written stop the activation: the build goes,
+    /// the active link stays.
+    #[tokio::test]
+    async fn a_failed_wrapper_keeps_the_active_venv() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let layout = Layout::under(dir.path());
+        let (old, staged) = staged_tree(&layout);
+        let generation = staged.generation.clone();
+        std::fs::remove_dir(&layout.wrappers).expect("rm bin");
+        let env = Env::new(&layout, "0.13.4");
+        let err = activate_staged(&env, staged, &CancellationToken::new())
+            .await
+            .expect_err("no bin");
+        assert!(
+            err.to_string()
+                .starts_with("install Ansible command wrappers: "),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_link(&layout.active_venv).expect("link"), old);
+        assert!(!generation.exists());
     }
 
     #[test]
