@@ -1,0 +1,64 @@
+---
+# A stand-in for Saltbox's saltbox.yml in sb's container check
+# (crates/ansible/tests/container.sh, ansible spec "Testing strategy"): one
+# play on the implicit localhost. `baseline` records the variable names of
+# a run without `-e`; `check` records, in /out/check.json, every variable
+# a run's `-e` values added, as Ansible parsed them; `slow` waits for
+# Ctrl-C. `always` and the two role-like tags make the --list-tags output
+# the fixture is recorded from.
+- name: Saltbox
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Settings, run with any tag
+      ansible.builtin.debug:
+        msg: always runs
+      tags: always
+
+    - name: Record the variable names of a run without -e
+      ansible.builtin.copy:
+        dest: /out/baseline.json
+        content: "{{ query('ansible.builtin.varnames', '.') | reject('match', '^check_') | sort | to_json }}\n"
+        mode: "0644"
+      tags: baseline
+
+    - name: Record the variables -e added
+      ansible.builtin.copy:
+        dest: /out/check.json
+        # json.dumps with sorted keys and raw UTF-8: the form container.sh
+        # compares with.
+        content: "{{ dict(check_added | zip(query('ansible.builtin.vars', *check_added))) | to_json(sort_keys=True, ensure_ascii=False) }}\n"
+        mode: "0644"
+      vars:
+        check_baseline: "{{ lookup('ansible.builtin.file', '/out/baseline.json') | from_json }}"
+        check_added: "{{ query('ansible.builtin.varnames', '.') | reject('match', '^check_') | difference(check_baseline) | sort }}"
+      tags: check
+
+    - name: Mark the slow task started
+      ansible.builtin.file:
+        path: /out/slow-started
+        state: touch
+        mode: "0644"
+      tags: slow
+
+    - name: Wait for Ctrl-C
+      ansible.builtin.command: sleep 300
+      changed_when: false
+      tags: slow
+
+    - name: Mark the slow task finished (never, after Ctrl-C)
+      ansible.builtin.file:
+        path: /out/slow-finished
+        state: touch
+        mode: "0644"
+      tags: slow
+
+    - name: A role's task
+      ansible.builtin.debug:
+        msg: plex
+      tags: plex
+
+    - name: Another role's task
+      ansible.builtin.debug:
+        msg: sonarr
+      tags: [sonarr, sonarr-config]

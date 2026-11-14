@@ -1,0 +1,15 @@
+---
+# A stand-in for Sandbox's sandbox.yml in sb's container check
+# (crates/ansible/tests/container.sh): the playbook that runs after
+# Saltbox's in `sb install slow,sandbox-after`, so its marker shows whether
+# a later playbook ran after Ctrl-C.
+- name: Sandbox
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Mark that Sandbox's playbook ran
+      ansible.builtin.file:
+        path: /out/sandbox-ran
+        state: touch
+        mode: "0644"
+      tags: after

@@ -440,7 +440,24 @@ for validate-config.
   from pip, a one-play playbook that prints its extra vars): the `-e`
   cases reach a real Ansible whole; Ctrl-C gives 99; a fixture of real
   `--list-tags` output under `force_color = True`, kept without host
-  details.
+  details. The check is `crates/ansible/tests/container.sh` (M35), with
+  stand-in Saltbox and Sandbox checkouts in
+  `crates/ansible/tests/fixtures/container/`. The play records the
+  variables each run's `-e` values added, and the script compares them
+  with what ansible-core's `load_extra_vars` makes of the whole value
+  (`greeting=hello big world` gives `greeting: hello` and `_raw_params:
+  big world`, and `--no-cache` gives `_raw_params: --no-cache`). A value
+  split or joined on the way would give something else. An empty value
+  is the exception: Ansible skips it, so only the masked `Executing...`
+  line shows that it was passed. `sb list` rebuilds both caches from the
+  real listing. Ctrl-C is a `^C` written to the PTY that `script(1)`
+  gives sb, which is the terminal's SIGINT to the foreground group. `sb install slow,sandbox-after` must
+  then exit 99, with the play stopped and Sandbox's playbook not run (a
+  run of `sandbox-after` alone shows that it would run otherwise). The
+  listing goes to `fixtures/list-tags-real.txt`, and the script checks
+  that it names none of the container's paths and not its host name.
+  Docker caps the container at 2 CPUs and 4 GiB, and apt and pip are its
+  only network use.
 - Coverage and mutation as CONSTRAINTS.md.
 
 ## Boundaries

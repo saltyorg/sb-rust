@@ -1,0 +1,4 @@
+---
+# The `-e @vars.yml` cases of crates/ansible/tests/container.sh: Ansible
+# reads it from the playbook's directory, sb never does.
+from_file: loaded
