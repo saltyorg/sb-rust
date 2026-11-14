@@ -10,6 +10,7 @@
 
 mod common;
 mod root_gate;
+mod tag_cache;
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -37,8 +38,9 @@ const IN_LXC: &str = concat!(
 );
 
 /// A test's world: a Saltbox root whose inventory puts the appdata root
-/// in the world (Sandbox and `saltbox_mod` under it), a log directory and
-/// the fake's record prefix.
+/// in the world (Sandbox and `saltbox_mod` under it), Saltbox and Sandbox
+/// checkouts with a tag cache valid for them (`tag_cache::seed`), a log
+/// directory and the fake's record prefix.
 struct World {
     dir: tempfile::TempDir,
 }
@@ -53,7 +55,8 @@ impl World {
             format!("server_appdata_path: {}\n", world.appdata().display()),
         )
         .expect("inventory");
-        std::fs::create_dir_all(world.appdata().join("sandbox")).expect("sandbox");
+        // Both checkouts, with a cache valid for them: no listing runs.
+        tag_cache::seed(&world.root(), &world.appdata().join("sandbox"));
         std::fs::create_dir_all(world.appdata().join("saltbox_mod")).expect("mod");
         std::fs::create_dir(world.logs()).expect("logs");
         world
@@ -329,6 +332,8 @@ fn install_runs_each_repo_in_sb_gos_order() {
         );
     }
     assert!(!out.contains("plex") && !out.contains("tautulli"), "{out}");
+    // A valid cache: no runner, no step.
+    assert_eq!(stderr(&output), "");
 }
 
 /// `-v` is counted and reaches every playbook as one `-v...` element of
@@ -634,15 +639,18 @@ fn force_disk_full_fails_with_hosts_text() {
     assert_eq!(world.runs(), Vec::<Vec<String>>::new());
 }
 
-/// `--no-cache` runs the playbook with no tag listing: one run, by tag.
+/// `--no-cache` runs the playbook with no tag listing and no validation:
+/// one run, by tag, a tag no repository has included (a role in
+/// development), with no cache at all.
 #[test]
 fn no_cache_runs_without_a_listing() {
     if !root_gate::requested() {
         return;
     }
     let world = World::new();
+    std::fs::remove_file(world.root().join("cache.json")).expect("no cache");
     let output = world
-        .sb(&["install", "plex", "--no-cache"])
+        .sb(&["install", "my-role", "--no-cache"])
         .output()
         .expect("run sb");
     assert!(output.status.success(), "{}", stderr(&output));
@@ -650,7 +658,195 @@ fn no_cache_runs_without_a_listing() {
     assert_eq!(runs.len(), 1);
     assert_eq!(
         args_of(&runs[0]),
+        ["saltbox.yml", "--become", "--tags", "my-role"]
+    );
+}
+
+/// A tag with a suggestion stops the run before anything runs: sb-go's
+/// layout on stderr, Saltbox's suggestions then Sandbox's, each sorted by
+/// the typed tag; exit 1. Mod tags aren't checked. The run log has the
+/// count, not the tags (decision 17).
+#[test]
+fn a_tag_with_a_suggestion_runs_nothing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .sb(&[
+            "install",
+            "plx,tautulli",
+            "sandbox-sonarr",
+            "kubernetes",
+            "mod-anything",
+            "sonarr",
+        ])
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+    let (err, log_file) = (stderr(&output), world.logs().join("sb.log"));
+    let (shown, pointer) = err.split_once("\n  details: ").expect("the log pointer");
+    assert!(
+        pointer.starts_with(&format!("{} (run ", log_file.display())),
+        "{pointer}"
+    );
+    assert_eq!(
+        format!("{shown}\n"),
+        "✗ Tag validation found some issues:\n\
+         \n  Tag: kubernetes not present in Saltbox or Sandbox\
+         \n  Add: --no-cache if developing your own role\n\
+         \n  Tag: plx not present in Saltbox\
+         \n  Did you mean: plex\n\
+         \n  Tag: tautulli not present in Saltbox\
+         \n  Try: sandbox-tautulli (from Sandbox)\n\
+         \n  Tag: sandbox-sonarr not present in Sandbox\
+         \n  Try: sonarr (from Saltbox)\n\n"
+    );
+    assert_eq!(stdout(&output), "");
+    let log = world.log();
+    assert!(log.contains("tag validation found some issues"), "{log}");
+    assert!(log.contains("count=4"), "{log}");
+    for tag in ["kubernetes", "plx", "tautulli"] {
+        assert!(!log.contains(tag), "{tag}: {log}");
+    }
+}
+
+/// No cache: each repository's tags are listed in a step of a runner
+/// titled `sb install`, Saltbox first, written, then the playbooks run.
+/// A valid cache shows nothing (the run-order test's empty stderr).
+#[test]
+fn a_missing_cache_is_rebuilt_as_steps_before_the_runs() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let sandbox = world.appdata().join("sandbox");
+    std::fs::remove_file(world.root().join("cache.json")).expect("no cache");
+    tag_cache::listing(&world.root(), &tag_cache::SALTBOX_TAGS);
+    tag_cache::listing(&sandbox, &tag_cache::SANDBOX_TAGS);
+    let output = world
+        .sb(&["install", "plex", "sandbox-b"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let runs = world.runs();
+    let listing = ["--become", "--list-tags", "--skip-tags=always"];
+    assert_eq!(args_of(&runs[0])[1..], listing);
+    assert_eq!(args_of(&runs[0])[0], "saltbox.yml");
+    assert_eq!(args_of(&runs[1])[1..], listing);
+    assert_eq!(args_of(&runs[1])[0], "sandbox.yml");
+    assert_eq!(
+        args_of(&runs[2]),
         ["saltbox.yml", "--become", "--tags", "plex"]
+    );
+    assert_eq!(
+        args_of(&runs[3]),
+        ["sandbox.yml", "--become", "--tags", "b"]
+    );
+    let err = stderr(&output);
+    assert!(err.starts_with("sb install\n"), "{err}");
+    let saltbox = err.find("Updating Saltbox tags cache");
+    let sandbox_step = err.find("Updating Sandbox tags cache");
+    assert!(saltbox.is_some() && saltbox < sandbox_step, "{err}");
+    let cache = std::fs::read_to_string(world.root().join("cache.json")).expect("written");
+    assert!(cache.contains("tautulli"), "{cache}");
+}
+
+/// Saltbox's tags that can't be had are fatal, with sb-go's text, and
+/// nothing runs: a HEAD that can't be read (repo's error below it), or a
+/// listing that fails (its step shows why).
+#[test]
+fn a_broken_saltbox_is_fatal() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    // An unborn branch: no HEAD. (Removing `.git` alone would leave git
+    // finding the repository the test's directory is in.)
+    std::fs::remove_dir_all(world.root().join(".git")).expect("no repository");
+    tag_cache::git(&world.root(), &["init", "--quiet"]);
+    let output = world.sb(&["install", "plex"]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains("✗ saltbox install appears broken: tags cache missing or empty"),
+        "{err}"
+    );
+    assert!(err.contains("caused by:"), "{err}");
+    assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+
+    let world = World::new();
+    std::fs::remove_file(world.root().join("cache.json")).expect("no cache");
+    tag_cache::listing(&world.root(), &tag_cache::SALTBOX_TAGS);
+    let output = world
+        .sb(&["install", "plex"])
+        .env("FAKE_ANSIBLE_EXIT", "4")
+        .env(
+            "FAKE_ANSIBLE_STDERR",
+            "ERROR! the playbook could not be parsed",
+        )
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(err.contains("✗ Updating Saltbox tags cache"), "{err}");
+    assert!(
+        err.contains("ERROR! the playbook could not be parsed"),
+        "{err}"
+    );
+    assert!(
+        err.contains("saltbox install appears broken: tags cache missing or empty"),
+        "{err}"
+    );
+    assert_eq!(world.runs().len(), 1, "only the listing ran");
+}
+
+/// No Sandbox checkout counts as no Sandbox tags: Saltbox's tags still
+/// run, and a Sandbox tag is then found nowhere.
+#[test]
+fn no_sandbox_counts_as_no_sandbox_tags() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::remove_dir_all(world.appdata().join("sandbox")).expect("no Sandbox");
+    let output = world.sb(&["install", "plex"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(world.runs().len(), 1);
+    assert!(
+        world
+            .log()
+            .contains("Sandbox tags unavailable; counted as none")
+    );
+    let output = world
+        .sb(&["install", "sandbox-b"])
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("Tag: sandbox-b not present in Saltbox or Sandbox"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(world.runs().len(), 1, "nothing more ran");
+}
+
+/// Mod tags alone read no cache: they run even when Saltbox's tags can't
+/// be had.
+#[test]
+fn mod_tags_alone_read_no_cache() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::remove_dir_all(world.root().join(".git")).expect("no repository");
+    tag_cache::git(&world.root(), &["init", "--quiet"]);
+    let output = world.sb(&["install", "mod-a"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        args_of(&world.runs()[0]),
+        ["saltbox_mod.yml", "--become", "--tags", "a"]
     );
 }
 

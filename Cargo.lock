@@ -3329,6 +3329,7 @@ dependencies = [
  "sb-term-ui",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

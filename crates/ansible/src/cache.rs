@@ -5,7 +5,9 @@
 //! missing or empty one is rebuilt from `ansible-playbook --list-tags`
 //! inside a term-ui step, and the whole file written atomically, 0644.
 
+use std::cell::LazyCell;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -14,7 +16,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use sb_cli_core::exit::Exit;
 use sb_exec::Cmd;
-use sb_term_ui::{DisplayText, Labels, Step};
+use sb_term_ui::{DisplayText, Labels, Runner, Step};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -162,15 +164,64 @@ impl TagCache {
         checkout: &sb_repo::Repo,
         parent: &mut Step,
     ) -> Result<Listed, CacheError> {
-        same_repo(repo, checkout);
-        let head = checkout.head(&parent.token()).await?;
-        if let Some(tags) = self.fresh(repo, &head) {
-            return Ok(Listed { tags, cached: true });
-        }
+        let head = match self.lookup(repo, checkout, &parent.token()).await? {
+            Lookup::Fresh(tags) => return Ok(Listed { tags, cached: true }),
+            Lookup::Stale(head) => head,
+        };
         let tags = self.rebuild(ansible, repo, head, parent).await?;
         Ok(Listed {
             tags,
             cached: false,
+        })
+    }
+
+    /// [`TagCache::tags`] for a command with no parent step (`install`,
+    /// `list`: sb-go has none there): a rebuild is a top-level step of
+    /// `runner`, which starts at the first one, so a valid cache prints
+    /// nothing (sb-go's texts; spec, difference 9).
+    ///
+    /// # Errors
+    ///
+    /// As [`TagCache::tags`].
+    pub async fn tags_on<F: FnOnce() -> Runner>(
+        &mut self,
+        ansible: &Ansible,
+        repo: &Repo,
+        checkout: &sb_repo::Repo,
+        runner: &mut LazyRunner<F>,
+    ) -> Result<Listed, CacheError> {
+        let head = match self.lookup(repo, checkout, &runner.token).await? {
+            Lookup::Fresh(tags) => return Ok(Listed { tags, cached: true }),
+            Lookup::Stale(head) => head,
+        };
+        let label = label(repo.kind());
+        let tags = runner
+            .runner()
+            .step(Labels::new(label.clone(), label), async |step| {
+                self.list_and_record(ansible, repo, head, &step.token())
+                    .await
+            })
+            .await
+            .map_err(CacheError::Step)?;
+        Ok(Listed {
+            tags,
+            cached: false,
+        })
+    }
+
+    /// `repo`'s cached tags if valid for its checkout's HEAD, else that
+    /// HEAD, for the rebuild.
+    async fn lookup(
+        &self,
+        repo: &Repo,
+        checkout: &sb_repo::Repo,
+        token: &CancellationToken,
+    ) -> Result<Lookup, CacheError> {
+        same_repo(repo, checkout);
+        let head = checkout.head(token).await?;
+        Ok(match self.fresh(repo, &head) {
+            Some(tags) => Lookup::Fresh(tags),
+            None => Lookup::Stale(head),
         })
     }
 
@@ -193,8 +244,7 @@ impl TagCache {
         self.rebuild(ansible, repo, head, parent).await
     }
 
-    /// The listing in its step, then the entry recorded and the file
-    /// written when it changed.
+    /// The listing in its sub-step of `parent`.
     async fn rebuild(
         &mut self,
         ansible: &Ansible,
@@ -205,13 +255,26 @@ impl TagCache {
         let label = label(repo.kind());
         parent
             .step(Labels::new(label.clone(), label), async |step| {
-                let tags = ansible.list_tags(repo, &step.token()).await?;
-                let entry = RepoTags { commit: head, tags };
-                self.record(repo, &entry)?;
-                Ok(entry.tags)
+                self.list_and_record(ansible, repo, head, &step.token())
+                    .await
             })
             .await
             .map_err(CacheError::Step)
+    }
+
+    /// A rebuild step's body: the listing, then the entry recorded and the
+    /// file written when it changed.
+    async fn list_and_record(
+        &mut self,
+        ansible: &Ansible,
+        repo: &Repo,
+        head: String,
+        token: &CancellationToken,
+    ) -> anyhow::Result<Vec<String>> {
+        let tags = ansible.list_tags(repo, token).await?;
+        let entry = RepoTags { commit: head, tags };
+        self.record(repo, &entry)?;
+        Ok(entry.tags)
     }
 
     /// Store `entry` for `repo` and write the file, unless the entry is
@@ -253,6 +316,60 @@ impl TagCache {
         file.as_file().sync_all().map_err(failed)?;
         file.persist(&self.path).map_err(|err| failed(err.error))?;
         Ok(())
+    }
+}
+
+/// What the cache holds for a repository at its HEAD.
+enum Lookup {
+    /// Valid tags.
+    Fresh(Vec<String>),
+    /// Nothing valid: the HEAD commit a rebuild records.
+    Stale(String),
+}
+
+/// A term-ui runner started by its first step, for a command whose
+/// rebuilds have no parent step (`install`, `list`; the M32 follow-up,
+/// settled in M33): sb-go prints nothing when the cache is valid, and a
+/// runner prints its title as it starts. `start` is the command's own
+/// [`Runner::start`] (its title, shutdown and run log), as sb-release's
+/// `self_update` takes one. Why not a runner started up front: its title
+/// would print on every run. The start is std's `LazyCell`
+/// (<https://doc.rust-lang.org/std/cell/struct.LazyCell.html#method.force_mut>).
+/// Dropping it ends the runner's drawing, if it started ([`Runner`]'s
+/// `Drop` does what its `finish` does): before an attached run (exec
+/// refuses one while a runner is live) or a command's output.
+pub struct LazyRunner<F> {
+    runner: LazyCell<Runner, F>,
+    token: CancellationToken,
+}
+
+impl<F: FnOnce() -> Runner> LazyRunner<F> {
+    /// Not started yet; `token` is the run's (the shutdown's), for what
+    /// runs before the first step (the HEAD read).
+    pub fn new(token: CancellationToken, start: F) -> Self {
+        Self {
+            runner: LazyCell::new(start),
+            token,
+        }
+    }
+
+    /// Whether a step has started it.
+    #[must_use]
+    pub fn started(&self) -> bool {
+        LazyCell::get(&self.runner).is_some()
+    }
+
+    /// The runner, started now if it wasn't.
+    fn runner(&mut self) -> &mut Runner {
+        LazyCell::force_mut(&mut self.runner)
+    }
+}
+
+impl<F: FnOnce() -> Runner> fmt::Debug for LazyRunner<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyRunner")
+            .field("started", &self.started())
+            .finish_non_exhaustive()
     }
 }
 

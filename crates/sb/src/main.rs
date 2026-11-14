@@ -527,7 +527,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             command: DockerCommand::Logs,
         } => docker_logs::docker_logs(shutdown)?,
         Command::Diag => ansible::diag(shutdown)?,
-        Command::Install(ref args) => ansible::install(args, shutdown)?,
+        Command::Install(ref args) => ansible::install(args, shutdown, log)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,

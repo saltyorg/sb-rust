@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sb_ansible::{Ansible, CacheError, Repo, TagCache};
+use sb_ansible::{Ansible, CacheError, LazyRunner, Repo, TagCache};
 use sb_cli_core::cancel::Shutdown;
 use sb_term_ui::{Labels, Options, Runner, Target};
 
@@ -360,4 +360,229 @@ async fn ctrl_c_during_a_listing_writes_nothing() {
         "the listing got SIGTERM"
     );
     assert_eq!(world.cache_text(), None);
+}
+
+/// Sandbox's tags in the colour fixture, Sandbox's own listing.
+const SANDBOX_LISTING: &str = include_str!("fixtures/list-tags-colour.txt");
+
+/// A Sandbox checkout under `world`'s appdata root (`<dir>/appdata`), one
+/// commit, listing `listing`.
+fn sandbox_checkout(world: &World, listing: &str) -> PathBuf {
+    let dir = world.dir.path().join("appdata/sandbox");
+    std::fs::create_dir_all(dir.join(".fake-ansible")).expect("sandbox");
+    git(&dir, &["init", "--quiet"]);
+    std::fs::write(dir.join("roles.txt"), "one").expect("write");
+    git(&dir, &["add", "roles.txt"]);
+    git(&dir, &["commit", "--quiet", "-m", "one"]);
+    std::fs::write(dir.join(".fake-ansible/FAKE_ANSIBLE_LISTING"), listing).expect("listing");
+    dir
+}
+
+/// `world`'s repositories: Saltbox at its root, the appdata root beside it.
+fn repos(world: &World) -> sb_ansible::Repos {
+    sb_ansible::Repos::new(&world.root(), &world.dir.path().join("appdata"))
+}
+
+/// What a call on a lazy runner left: its result, whether the runner
+/// started, and the screen.
+struct Lazy<T> {
+    result: T,
+    started: bool,
+    screen: String,
+}
+
+/// `body` with a lazy runner drawing to memory, finished after it.
+async fn lazily<T>(
+    body: impl AsyncFnOnce(&mut LazyRunner<Box<dyn FnOnce() -> Runner>>) -> T,
+) -> Lazy<T> {
+    let term = indicatif::InMemoryTerm::new(40, 300);
+    let shutdown = Shutdown::new();
+    let start: Box<dyn FnOnce() -> Runner> = {
+        let (term, shutdown) = (term.clone(), shutdown.clone());
+        Box::new(move || {
+            let options = Options {
+                target: Target::InMemory {
+                    term,
+                    colour: false,
+                },
+            };
+            Runner::start("sb install", &shutdown, None, options)
+        })
+    };
+    let mut runner = LazyRunner::new(shutdown.token(), start);
+    let result = body(&mut runner).await;
+    let started = runner.started();
+    // Dropping it ends the drawing.
+    drop(runner);
+    Lazy {
+        result,
+        started,
+        screen: term.contents(),
+    }
+}
+
+/// With no parent step (`install`, `list`): a valid cache starts no
+/// runner and prints nothing; a stale one starts it, the rebuild a
+/// top-level step under the command's title (the M32 follow-up).
+#[tokio::test]
+async fn tags_on_a_lazy_runner_start_it_only_to_rebuild() {
+    let world = World::new();
+    let ansible = Ansible::with_program(FAKE);
+    let (repo, checkout) = (world.repo(), world.checkout());
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        assert_eq!(format!("{runner:?}"), "LazyRunner { started: false, .. }");
+        let listed = cache
+            .tags_on(&ansible, &repo, &checkout, runner)
+            .await
+            .map(|listed| (listed.tags, listed.cached))
+            .map_err(|err| error_text(&err));
+        assert_eq!(format!("{runner:?}"), "LazyRunner { started: true, .. }");
+        listed
+    })
+    .await;
+    assert_eq!(ran.result, Ok((strings(&SALTBOX_TAGS), false)));
+    assert!(ran.started);
+    let lines: Vec<&str> = ran.screen.lines().map(str::trim_end).collect();
+    assert_eq!(lines[0], "sb install", "{}", ran.screen);
+    assert!(
+        lines[1].starts_with("╰── ✓ Updating Saltbox tags cache"),
+        "{}",
+        ran.screen
+    );
+
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        cache
+            .tags_on(&ansible, &repo, &checkout, runner)
+            .await
+            .map(|listed| (listed.tags, listed.cached))
+            .map_err(|err| error_text(&err))
+    })
+    .await;
+    assert_eq!(ran.result, Ok((strings(&SALTBOX_TAGS), true)));
+    assert!(!ran.started);
+    assert_eq!(ran.screen.trim(), "", "nothing drawn");
+    assert_eq!(world.runs().len(), 1, "no second listing");
+}
+
+/// `known_tags`: Saltbox's and Sandbox's tags, each rebuilt as a step
+/// when stale, Saltbox first.
+#[tokio::test]
+async fn known_tags_are_saltboxs_and_sandboxs() {
+    let world = World::new();
+    sandbox_checkout(&world, SANDBOX_LISTING);
+    let ansible = Ansible::with_program(FAKE);
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+    })
+    .await;
+    let known = ran.result.expect("known");
+    assert_eq!(known.saltbox, strings(&SALTBOX_TAGS));
+    assert_eq!(
+        known.sandbox,
+        strings(&["always", "autobrr", "bazarr", "overseerr", "tautulli"])
+    );
+    let saltbox = ran.screen.find("Updating Saltbox tags cache");
+    let sandbox = ran.screen.find("Updating Sandbox tags cache");
+    assert!(saltbox.is_some() && saltbox < sandbox, "{}", ran.screen);
+}
+
+/// Sandbox's tags that can't be had count as none: no checkout, or a
+/// failed listing (its step shows ✗, and validation goes on).
+#[tokio::test]
+async fn sandboxs_failure_counts_as_no_tags() {
+    let world = World::new();
+    let ansible = Ansible::with_program(FAKE);
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+    })
+    .await;
+    let known = ran.result.expect("no Sandbox is no tags");
+    assert_eq!(known.saltbox, strings(&SALTBOX_TAGS));
+    assert_eq!(known.sandbox, Vec::<String>::new());
+    assert!(!ran.screen.contains("Sandbox"), "{}", ran.screen);
+
+    let world = World::new();
+    sandbox_checkout(&world, "playbook: sandbox.yml\n");
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+    })
+    .await;
+    assert_eq!(ran.result.expect("lenient").sandbox, Vec::<String>::new());
+    assert!(
+        ran.screen.contains("✗ Updating Sandbox tags cache"),
+        "{}",
+        ran.screen
+    );
+}
+
+/// Saltbox's tags that can't be had, or none, are fatal, with sb-go's
+/// text: no checkout (repo's error the cause), an unreadable HEAD, a
+/// failed listing (its step shows why), an empty listing.
+#[tokio::test]
+async fn saltboxs_failure_or_no_tags_is_fatal() {
+    let ansible = Ansible::with_program(FAKE);
+    let fatal = "saltbox install appears broken: tags cache missing or empty";
+    let causes = |err: &sb_ansible::SaltboxBroken| -> Vec<String> {
+        sb_cli_core::exit::chain(err)
+            .skip(1)
+            .map(ToString::to_string)
+            .collect()
+    };
+
+    let world = World::new();
+    std::fs::remove_dir_all(world.root()).expect("no Saltbox");
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+    })
+    .await;
+    let err = ran.result.expect_err("fatal");
+    assert_eq!(err.to_string(), fatal);
+    assert_eq!(causes(&err).len(), 1, "repo's error");
+    assert!(!ran.started);
+
+    let world = World::new();
+    std::fs::remove_dir_all(world.root().join(".git")).expect("no repository");
+    git(&world.root(), &["init", "--quiet"]);
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+    })
+    .await;
+    let err = ran.result.expect_err("fatal");
+    assert_eq!(err.to_string(), fatal);
+    assert!(
+        causes(&err).first().is_some_and(|c| c.contains("HEAD")),
+        "{:?}",
+        causes(&err)
+    );
+
+    for (exit, listing) in [("4", LISTING), ("0", "      TASK TAGS: []\n")] {
+        let world = World::new();
+        sandbox_checkout(&world, SANDBOX_LISTING);
+        world.set("FAKE_ANSIBLE_EXIT", exit);
+        world.set("FAKE_ANSIBLE_LISTING", listing);
+        let mut cache = TagCache::load(&world.root());
+        let ran = lazily(async |runner| {
+            sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+        })
+        .await;
+        let err = ran.result.expect_err("fatal");
+        assert_eq!(err.to_string(), fatal, "{exit}");
+        assert_eq!(
+            causes(&err),
+            Vec::<String>::new(),
+            "the step showed why: {exit}"
+        );
+        assert!(
+            !ran.screen.contains("Sandbox"),
+            "Sandbox isn't read: {}",
+            ran.screen
+        );
+    }
 }

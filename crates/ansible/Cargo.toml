@@ -27,6 +27,9 @@ tokio-util.workspace = true
 tracing.workspace = true
 # The rebuild step's body result (term-ui's `Step::step`).
 anyhow.workspace = true
+# install's suggestions: Levenshtein distance per Unicode scalar, as
+# sb-go's agnivade/levenshtein (spec, step 5; plan decision 8).
+strsim.workspace = true
 
 [dev-dependencies]
 # A real Shutdown and runtime for the attached runs, with the fake

@@ -10,6 +10,7 @@
 
 mod common;
 mod root_gate;
+mod tag_cache;
 
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
@@ -57,10 +58,52 @@ fn start(dir: &Path, mode: &str, args: &[&str]) -> Group {
 
 /// [`start`], with the fake's exit code (also its code after a SIGTERM).
 fn start_with(dir: &Path, mode: &str, args: &[&str], exit: Option<&str>) -> Group {
+    start_in(dir, mode, args, exit, None)
+}
+
+/// Which repository's cache entry a test leaves stale, so `install` lists
+/// its tags.
+#[derive(Clone, Copy, PartialEq)]
+enum Stale {
+    /// No cache at all: Saltbox is listed first.
+    Saltbox,
+    /// Saltbox's entry valid, Sandbox's gone; the fake waits (in `mode`'s
+    /// place, which is empty) only in the Sandbox checkout.
+    Sandbox(&'static str),
+}
+
+/// [`start_with`], with one repository's cache entry `stale`.
+fn start_in(
+    dir: &Path,
+    mode: &str,
+    args: &[&str],
+    exit: Option<&str>,
+    stale: Option<Stale>,
+) -> Group {
     let root = dir.join("saltbox");
     std::fs::create_dir_all(root.join("inventories/host_vars")).expect("root");
     let appdata = dir.join("appdata");
-    std::fs::create_dir_all(appdata.join("sandbox")).expect("sandbox");
+    // Both checkouts, with a cache valid for them: no listing runs.
+    tag_cache::seed(&root, &appdata.join("sandbox"));
+    match stale {
+        None => {}
+        Some(Stale::Saltbox) => {
+            std::fs::remove_file(root.join("cache.json")).expect("no cache");
+            tag_cache::listing(&root, &tag_cache::SALTBOX_TAGS);
+        }
+        Some(Stale::Sandbox(mode)) => {
+            let sandbox = appdata.join("sandbox");
+            let path = root.join("cache.json");
+            let mut cache: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("cache"))
+                    .expect("JSON");
+            let key = sandbox.display().to_string();
+            cache.as_object_mut().expect("object").remove(&key);
+            std::fs::write(&path, cache.to_string()).expect("cache");
+            tag_cache::listing(&sandbox, &tag_cache::SANDBOX_TAGS);
+            std::fs::write(sandbox.join(".fake-ansible/FAKE_ANSIBLE_MODE"), mode).expect("mode");
+        }
+    }
     std::fs::write(
         root.join("inventories/host_vars/localhost.yml"),
         format!("server_appdata_path: {}\n", appdata.display()),
@@ -248,4 +291,86 @@ fn a_sigterm_between_playbooks_runs_no_more() {
         1,
         "{stdout}"
     );
+}
+
+/// Ctrl-C while `install` lists Saltbox's tags (a `capture` child in its
+/// own group, which the terminal's SIGINT doesn't reach): sb stops the
+/// listing with SIGTERM, the step ends interrupted, sb ends by SIGINT,
+/// and no playbook runs (spec, step 8).
+#[test]
+fn ctrl_c_during_the_tag_listing_runs_nothing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
+    let group = start_in(
+        dir.path(),
+        "wait",
+        &["install", "plex"],
+        None,
+        Some(Stale::Saltbox),
+    );
+    press_ctrl_c(&group);
+    let (status, stdout, stderr) = end(group);
+    assert_eq!(
+        status.signal(),
+        Some(Signal::INT.as_raw()),
+        "{status:?} {stderr}"
+    );
+    assert!(stderr.contains("Updating Saltbox tags cache"), "{stderr}");
+    assert!(stderr.contains("interrupted"), "{stderr}");
+    let listing = std::fs::read(dir.path().join("argv.0")).expect("the listing ran");
+    assert!(
+        String::from_utf8_lossy(&listing).contains("--list-tags"),
+        "the first run was the listing"
+    );
+    assert!(
+        dir.path().join("argv.term").exists(),
+        "the listing got SIGTERM"
+    );
+    assert!(!dir.path().join("argv.1").exists(), "no playbook ran");
+    assert!(!stdout.contains("Executing"), "{stdout}");
+    assert!(
+        !dir.path().join("saltbox/cache.json").exists(),
+        "nothing written"
+    );
+}
+
+/// Ctrl-C while `install` lists Sandbox's tags, Saltbox's cached: a
+/// Sandbox failure counts as no tags, but an interruption still ends the
+/// run, by SIGINT, with no playbook run (spec, step 8).
+#[test]
+fn ctrl_c_during_sandboxs_listing_runs_nothing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
+    let group = start_in(
+        dir.path(),
+        "",
+        &["install", "plex"],
+        None,
+        Some(Stale::Sandbox("wait")),
+    );
+    press_ctrl_c(&group);
+    let (status, stdout, stderr) = end(group);
+    assert_eq!(
+        status.signal(),
+        Some(Signal::INT.as_raw()),
+        "{status:?} {stderr}"
+    );
+    assert!(stderr.contains("Updating Sandbox tags cache"), "{stderr}");
+    assert!(
+        !stderr.contains("Updating Saltbox"),
+        "Saltbox's was cached: {stderr}"
+    );
+    let listing = std::fs::read(dir.path().join("argv.0")).expect("the listing ran");
+    let listing = String::from_utf8_lossy(&listing);
+    assert!(listing.contains("sandbox.yml") && listing.contains("--list-tags"));
+    assert!(
+        dir.path().join("argv.term").exists(),
+        "the listing got SIGTERM"
+    );
+    assert!(!dir.path().join("argv.1").exists(), "no playbook ran");
+    assert!(!stdout.contains("Executing"), "{stdout}");
 }

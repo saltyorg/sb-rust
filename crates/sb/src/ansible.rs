@@ -1,11 +1,16 @@
 //! `sb diag` (ansible spec; module build M30): Saltbox's `diag` tag in
-//! one attached playbook run, through sb-ansible; `sb install` without
-//! the tag cache (M31). `list`, and install's cache and validation, come
-//! with their tasks.
+//! one attached playbook run, through sb-ansible; `sb install` (M31),
+//! its tags validated against the tag cache (M32, M33). `list` comes
+//! with its task.
 
-use sb_ansible::{Ansible, InstallArgs, Repo, Repos, Routed, RunArgs, Tags};
+use std::io::Write as _;
+
+use sb_ansible::{Ansible, InstallArgs, LazyRunner, Repo, Repos, Routed, RunArgs, TagCache, Tags};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
+use sb_cli_core::exit::Exit;
+use sb_cli_core::log::RunLog;
+use sb_cli_core::theme;
 
 /// `ansible-playbook`: Saltbox's, or `SB_ANSIBLE_PLAYBOOK`'s program in its
 /// place (tests and debugging; empty means unset; sudo drops it, as
@@ -53,20 +58,25 @@ pub fn diag(shutdown: &Shutdown) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `sb install <tags>...` without the tag cache (ansible spec, `sb
-/// install`; module build M31): the LXC check, the tags, the disk check
-/// (or `--force-disk-full`'s failure), then each repository's run in
-/// sb-go's order, the first that fails passed on and the rest not run.
-/// Until the cache and validation land (M32, M33), every run goes ahead
-/// unvalidated, as `--no-cache` has it, whether or not it is given.
-/// exec's forced-exit hook is registered for the runs, as for `diag`.
+/// `sb install <tags>...` (ansible spec, `sb install`; module build M31,
+/// M33): the LXC check, the tags, the disk check (or `--force-disk-full`'s
+/// failure), the tags validated against the cache unless `--no-cache`,
+/// then each repository's run in sb-go's order, the first that fails
+/// passed on and the rest not run. exec's forced-exit hook is registered
+/// for the runs, as for `diag`.
 ///
 /// # Errors
 ///
 /// LXC, or the LXC check failing; no tags; under 2 GiB free on `/` or the
-/// appdata root, or `--force-disk-full`; a playbook that couldn't start,
-/// or the first that didn't exit 0 (cli-core's quiet exit with its code).
-pub fn install(args: &InstallArgs, shutdown: &Shutdown) -> anyhow::Result<()> {
+/// appdata root, or `--force-disk-full`; Saltbox's tags missing; a tag
+/// with a suggestion (shown, then a quiet exit 1); a playbook that
+/// couldn't start, or the first that didn't exit 0 (cli-core's quiet exit
+/// with its code).
+pub fn install(
+    args: &InstallArgs,
+    shutdown: &Shutdown,
+    log: Option<&RunLog>,
+) -> anyhow::Result<()> {
     let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
     let appdata = config::appdata_path(&config::inventory_path(&root));
     let repos = Repos::new(&root, &appdata);
@@ -87,6 +97,11 @@ pub fn install(args: &InstallArgs, shutdown: &Shutdown) -> anyhow::Result<()> {
         let paths = [std::path::PathBuf::from("/"), appdata.clone()];
         tokio::task::spawn_blocking(move || sb_host::check_disk_space(&paths)).await??;
         let routed = Routed::route(&tags);
+        // Mod tags alone are never validated, and read no cache (sb-go).
+        let validated = !routed.saltbox.is_empty() || !routed.sandbox.is_empty();
+        if !args.no_cache && validated {
+            check_tags(&routed, &root, &repos, &ansible, shutdown, log).await?;
+        }
         let run_args = args.run_args();
         for (repo, tags) in routed.runs(&repos) {
             let ran = ansible
@@ -102,4 +117,49 @@ pub fn install(args: &InstallArgs, shutdown: &Shutdown) -> anyhow::Result<()> {
         }
         Ok(())
     })?
+}
+
+/// install's step 5: Saltbox's and Sandbox's tags through the cache, a
+/// rebuild a step of a runner titled `sb install` that starts only then,
+/// ended before any playbook runs (decision 13); then the suggestions, if
+/// any, shown as one error on stderr and a quiet exit 1, nothing run.
+///
+/// # Errors
+///
+/// Saltbox's tags missing; an interruption during a rebuild (cli-core
+/// then shows it and ends sb by the signal); a suggestion.
+async fn check_tags(
+    routed: &Routed,
+    root: &std::path::Path,
+    repos: &Repos,
+    ansible: &Ansible,
+    shutdown: &Shutdown,
+    log: Option<&RunLog>,
+) -> anyhow::Result<()> {
+    let mut cache = TagCache::load(root);
+    let mut runner = LazyRunner::new(shutdown.token(), || {
+        sb_term_ui::Runner::start("sb install", shutdown, log, sb_term_ui::Options::default())
+    });
+    let known = sb_ansible::known_tags(&mut cache, ansible, repos, &mut runner).await;
+    // The runner's drawing ends before any playbook runs (decision 13).
+    drop(runner);
+    // A Ctrl-C during a rebuild ends the run, Sandbox's lenient failure
+    // included: nothing runs (spec, step 8).
+    if shutdown.token().is_cancelled() {
+        anyhow::bail!("interrupted");
+    }
+    let suggestions = sb_ansible::validate(routed, &known?);
+    if suggestions.is_empty() {
+        return Ok(());
+    }
+    // The run log has the count only: tags stay out of it (decision 17).
+    tracing::warn!(
+        count = suggestions.len(),
+        "tag validation found some issues"
+    );
+    let pointer = log.map(RunLog::pointer);
+    let text = sb_ansible::render_suggestions(&suggestions, theme::current(), pointer.as_deref());
+    // As cli-core's error block: nothing better to do if stderr fails.
+    let _ = anstream::stderr().write_all(text.as_bytes());
+    Err(Exit(1).into())
 }
