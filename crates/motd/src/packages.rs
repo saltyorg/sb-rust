@@ -1,11 +1,21 @@
-//! Reboot Status (motd spec, Sections): update-notifier's
-//! `/var/run/reboot-required` and `.pkgs`, then its
-//! `update-motd-reboot-required` script, as sb-go reads them
-//! (`motd/info.go:574-622`). Package Status joins it here with M39.
+//! Package Status and Reboot Status (motd spec, Sections), as sb-go
+//! reads them (`motd/info.go:372-622`):
+//! - Package Status: update-notifier's `updates-available` file, then its
+//!   `apt-check --human-readable --no-esm-messages`, then `apt list
+//!   --upgradable`;
+//! - Reboot Status: update-notifier's `/var/run/reboot-required` and
+//!   `.pkgs`, then its `update-motd-reboot-required` script.
+//!
+//! Every child runs through sb-exec's `Cmd` under sb-go's 5 s
+//! (`motd/utils.go`, `ExecCommand`), and its text through term-ui's
+//! `DisplayText`. The texts are update-notifier's own, so they are
+//! matched as sb-go matches them, not parsed: no crate reads them.
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use regex::Regex;
 use sb_exec::{Cmd, Ending};
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +30,12 @@ pub const CHILD_TIMEOUT: Duration = Duration::from_secs(5);
 /// temporary directory (motd spec, Testing, "Children").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paths {
+    /// The summary apt's daily update leaves for the MOTD.
+    pub updates_available: PathBuf,
+    /// update-notifier's counter, asked when the summary says nothing.
+    pub apt_check: PathBuf,
+    /// apt itself, the last source (found on `PATH`).
+    pub apt: PathBuf,
     /// Its flag that a reboot is needed.
     pub reboot_required: PathBuf,
     /// The packages that asked for it, one per line.
@@ -33,6 +49,9 @@ impl Paths {
     #[must_use]
     pub fn system() -> Self {
         Self {
+            updates_available: PathBuf::from("/var/lib/update-notifier/updates-available"),
+            apt_check: PathBuf::from("/usr/lib/update-notifier/apt-check"),
+            apt: PathBuf::from("apt"),
             reboot_required: PathBuf::from("/var/run/reboot-required"),
             reboot_packages: PathBuf::from("/var/run/reboot-required.pkgs"),
             motd_reboot_script: PathBuf::from(
@@ -54,7 +73,11 @@ pub async fn reboot(paths: &Paths, paint: &Paint) -> String {
     if paths.reboot_required.exists() {
         return paint.warning(&required(&paths.reboot_packages));
     }
-    let output = script_output(&paths.motd_reboot_script).await;
+    let output = child_output(
+        Cmd::new(paths.motd_reboot_script.as_os_str()),
+        "reboot script",
+    )
+    .await;
     if output.is_empty() || output.contains("No reboot") {
         return String::new();
     }
@@ -87,12 +110,13 @@ fn required(packages: &Path) -> String {
     }
 }
 
-/// The script's stdout, trimmed and made safe to draw, or empty when it
+/// The child's stdout, trimmed and made safe to draw, or empty when it
 /// can't start, fails or runs past [`CHILD_TIMEOUT`] (sb-go's `Not
-/// available`, which it then hides). It runs through sb-exec, in its
-/// own process group, ended at the timeout.
-async fn script_output(script: &Path) -> String {
-    let ran = Cmd::new(script.as_os_str())
+/// available`, which every caller treats as no answer). It runs through
+/// sb-exec, in its own process group, ended at the timeout; `what` names
+/// it in the run log.
+async fn child_output(cmd: Cmd, what: &str) -> String {
+    let ran = cmd
         .timeout(CHILD_TIMEOUT)
         .capture(&CancellationToken::new())
         .await;
@@ -101,14 +125,136 @@ async fn script_output(script: &Path) -> String {
             block(captured.stdout.as_bytes())
         }
         Ok(captured) => {
-            tracing::warn!("reboot script {}", captured.outcome.ending);
+            tracing::warn!(child = what, ending = %captured.outcome.ending, "motd child failed");
             String::new()
         }
         Err(err) => {
-            tracing::warn!("reboot script not run: {err}");
+            tracing::warn!(child = what, "motd child not run: {err}");
             String::new()
         }
     }
+}
+
+/// sb-go's last answer when no source says anything.
+const UNKNOWN: &str = "Update status unknown";
+
+/// Package Status: the first source that answers, as sb-go asks them.
+pub async fn packages(paths: &Paths, paint: &Paint) -> String {
+    if let Some(line) = from_summary(&paths.updates_available, paint) {
+        return line;
+    }
+    let checked = child_output(
+        Cmd::new(paths.apt_check.as_os_str())
+            .arg("--human-readable")
+            .arg("--no-esm-messages"),
+        "apt-check",
+    )
+    .await;
+    if let Some(line) = from_apt_check(&checked, paint) {
+        return line;
+    }
+    let listed = child_output(
+        Cmd::new(paths.apt.as_os_str())
+            .arg("list")
+            .arg("--upgradable"),
+        "apt list",
+    )
+    .await;
+    from_apt_list(&listed, paint).unwrap_or_else(|| UNKNOWN.to_string())
+}
+
+/// Whether a line speaks of ESM, which sb-go never shows.
+fn esm(line: &str) -> bool {
+    line.contains("ESM") || line.contains("esm")
+}
+
+/// `line` with its numbers in the value colour, as sb-go's
+/// `re.ReplaceAllString(line, ValueStyle.Render(first))` writes it: every
+/// run of digits becomes the line's first number. update-notifier's
+/// lines carry one number (`apt_check.py`'s `%i updates can be applied
+/// immediately.`), where that is the same as colouring each. Go's `\d`
+/// is ASCII only, hence `[0-9]`.
+fn coloured(line: &str, paint: &Paint) -> String {
+    static NUMBER: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new("[0-9]+").expect("a valid pattern"));
+    match NUMBER.find(line) {
+        Some(first) => {
+            let number = paint.value(first.as_str());
+            NUMBER
+                .replace_all(line, regex::NoExpand(&number))
+                .into_owned()
+        }
+        None => line.to_string(),
+    }
+}
+
+/// The `updates-available` file's answer: its first line that says
+/// updates `can be applied immediately` and isn't about ESM, cut after
+/// its first full stop, or `System is up to date` when a line says so;
+/// none when the file is missing, empty, unreadable or says neither.
+fn from_summary(path: &Path, paint: &Paint) -> Option<String> {
+    let text = match sb_cli_core::config::read_small(path) {
+        Ok(text) => text?,
+        Err(err) => {
+            tracing::warn!(file = %path.display(), "update summary not read: {err}");
+            return None;
+        }
+    };
+    if text.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = text
+        .split('\n')
+        .map(|line| one_line(line.as_bytes()))
+        .collect();
+    if let Some(line) = lines
+        .iter()
+        .find(|line| line.contains("can be applied immediately") && !esm(line))
+    {
+        let cut = line.find('.').map_or(line.as_str(), |stop| &line[..=stop]);
+        return Some(coloured(cut, paint));
+    }
+    lines
+        .iter()
+        .any(|line| line.contains("up to date") || line.contains("Up to date"))
+        .then(|| "System is up to date".to_string())
+}
+
+/// apt-check's answer: its `packages can be updated` line, or else its
+/// first line about an update or a package; none for ESM lines or no
+/// output.
+fn from_apt_check(output: &str, paint: &Paint) -> Option<String> {
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    lines
+        .iter()
+        .find(|line| line.contains("packages can be updated") && !esm(line))
+        .or_else(|| {
+            lines.iter().find(|line| {
+                !line.is_empty()
+                    && !esm(line)
+                    && (line.contains("update") || line.contains("package"))
+            })
+        })
+        .map(|line| coloured(line, paint))
+}
+
+/// apt's answer: the lines naming a package (`name/suite ...`, not
+/// `Listing...`) counted, when there are any.
+fn from_apt_list(output: &str, paint: &Paint) -> Option<String> {
+    let lines: Vec<&str> = output.split('\n').collect();
+    if lines.len() < 2 {
+        return None;
+    }
+    let count = lines
+        .iter()
+        .filter(|line| line.contains('/') && !line.contains("Listing"))
+        .count();
+    (count > 0).then(|| {
+        format!(
+            "{} updates can be applied immediately",
+            paint.value(&count.to_string())
+        )
+    })
 }
 
 #[cfg(test)]
@@ -125,6 +271,9 @@ pub(crate) mod tests {
     /// Paths in `dir`, none of them there yet.
     fn paths(dir: &Path) -> Paths {
         Paths {
+            updates_available: dir.join("updates-available"),
+            apt_check: dir.join("apt-check"),
+            apt: dir.join("apt"),
             reboot_required: dir.join("reboot-required"),
             reboot_packages: dir.join("reboot-required.pkgs"),
             motd_reboot_script: dir.join("update-motd-reboot-required"),
@@ -133,12 +282,13 @@ pub(crate) mod tests {
 
     /// A stand-in script printing `output` and exiting `code`.
     fn script(paths: &Paths, body: &str) {
-        std::fs::write(&paths.motd_reboot_script, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(
-            &paths.motd_reboot_script,
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        stand_in(&paths.motd_reboot_script, body);
+    }
+
+    /// A stand-in program at `path` running `body` under sh.
+    fn stand_in(path: &Path, body: &str) {
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn painted() -> Paint {
@@ -285,6 +435,215 @@ pub(crate) mod tests {
         script(&paths, "echo 'reboot required'; exec sleep 60");
         let start = std::time::Instant::now();
         assert_eq!(reboot(&paths, &Paint::plain()).await, "");
+        let took = start.elapsed();
+        assert!(took >= CHILD_TIMEOUT, "{took:?}");
+        assert!(took < Duration::from_secs(20), "{took:?}");
+    }
+
+    #[test]
+    fn the_system_package_sources_are_update_notifiers_and_apt() {
+        let system = Paths::system();
+        assert_eq!(
+            system.updates_available,
+            Path::new("/var/lib/update-notifier/updates-available")
+        );
+        assert_eq!(
+            system.apt_check,
+            Path::new("/usr/lib/update-notifier/apt-check")
+        );
+        assert_eq!(system.apt, Path::new("apt"));
+    }
+
+    /// update-notifier's summary as Ubuntu writes it: the count, cut
+    /// after its full stop, the ESM lines skipped. No child runs.
+    #[tokio::test]
+    async fn the_summary_file_answers_first() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        stand_in(&paths.apt_check, "echo '9 packages can be updated.'");
+        std::fs::write(
+            &paths.updates_available,
+            "\nExpanded Security Maintenance for Applications is not enabled.\n\n\
+             2 additional security updates can be applied with ESM Apps. They can be applied immediately.\n\
+             12 updates can be applied immediately. To see these additional updates run: apt list --upgradable\n",
+        )
+        .unwrap();
+        assert_eq!(
+            packages(&paths, &Paint::plain()).await,
+            "12 updates can be applied immediately."
+        );
+        let paint = painted();
+        assert_eq!(
+            packages(&paths, &paint).await,
+            format!("{} updates can be applied immediately.", paint.value("12"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_summary_without_a_full_stop_is_shown_whole() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        std::fs::write(
+            &paths.updates_available,
+            "  1 update can be applied immediately\x1b[2J  \n",
+        )
+        .unwrap();
+        assert_eq!(
+            packages(&paths, &Paint::plain()).await,
+            "1 update can be applied immediately"
+        );
+        std::fs::write(
+            &paths.updates_available,
+            "Updates can be applied immediately. Run apt.\n",
+        )
+        .unwrap();
+        assert_eq!(
+            packages(&paths, &painted()).await,
+            "Updates can be applied immediately."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_summary_saying_up_to_date_says_so() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        stand_in(&paths.apt_check, "echo '9 packages can be updated.'");
+        for text in ["Your system is up to date\n", "Up to date.\n"] {
+            std::fs::write(&paths.updates_available, text).unwrap();
+            assert_eq!(
+                packages(&paths, &Paint::plain()).await,
+                "System is up to date"
+            );
+        }
+    }
+
+    /// An empty summary, one saying nothing sb-go reads, or one that
+    /// isn't text: apt-check is asked, its older line first.
+    #[tokio::test]
+    async fn apt_check_answers_when_the_summary_says_nothing() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        stand_in(
+            &paths.apt_check,
+            "echo '1 additional security update can be applied with ESM Apps.'\n\
+             echo '  3 updates can be applied immediately.'\n\
+             echo '7 packages can be updated.'",
+        );
+        stand_in(&paths.apt, "exit 1");
+        assert_eq!(
+            packages(&paths, &Paint::plain()).await,
+            "7 packages can be updated."
+        );
+        for summary in [&b""[..], b"\n", b"nothing here\n", b"\xff\xfe"] {
+            std::fs::write(&paths.updates_available, summary).unwrap();
+            assert_eq!(
+                packages(&paths, &Paint::plain()).await,
+                "7 packages can be updated."
+            );
+        }
+        stand_in(
+            &paths.apt_check,
+            "echo; echo 'Learn more about ESM'; echo '  3 updates can be applied immediately.  '",
+        );
+        let paint = painted();
+        assert_eq!(
+            packages(&paths, &paint).await,
+            format!("{} updates can be applied immediately.", paint.value("3"))
+        );
+        stand_in(&paths.apt_check, "echo 'No package: all good'");
+        assert_eq!(packages(&paths, &paint).await, "No package: all good");
+    }
+
+    /// sb-go's colouring writes the line's first number for each number.
+    #[test]
+    fn every_number_takes_the_first_numbers_colour() {
+        let paint = painted();
+        assert_eq!(
+            coloured("4 of 10 updates", &paint),
+            format!("{0} of {0} updates", paint.value("4"))
+        );
+        assert_eq!(
+            coloured("4 of 10 updates", &Paint::plain()),
+            "4 of 4 updates"
+        );
+        assert_eq!(coloured("no number", &paint), "no number");
+    }
+
+    /// apt-check missing, failing, silent or only about ESM: apt counts.
+    #[tokio::test]
+    async fn apt_list_counts_when_apt_check_has_no_answer() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        stand_in(
+            &paths.apt,
+            "[ \"$1 $2\" = 'list --upgradable' ] || exit 3\n\
+             echo 'Listing... Done'\n\
+             echo 'curl/jammy-updates 7.81.0-1ubuntu1.20 amd64 [upgradable from: 7.81.0-1ubuntu1.18]'\n\
+             echo 'not a package line'\n\
+             echo 'tzdata/jammy-updates 2024a-0ubuntu0.22.04 all [upgradable from: 2023c]'",
+        );
+        let paint = painted();
+        let two = format!("{} updates can be applied immediately", paint.value("2"));
+        assert_eq!(packages(&paths, &paint).await, two);
+        for body in [
+            "echo '3 packages can be updated.'; exit 1",
+            "true",
+            "echo 'ESM updates: 4 packages'",
+            "echo 'nothing to say'",
+        ] {
+            stand_in(&paths.apt_check, body);
+            assert_eq!(packages(&paths, &paint).await, two, "{body}");
+        }
+    }
+
+    /// Nothing answers: sb-go's `Update status unknown`.
+    #[tokio::test]
+    async fn no_source_says_update_status_unknown() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        assert_eq!(packages(&paths, &Paint::plain()).await, UNKNOWN);
+        assert_eq!(UNKNOWN, "Update status unknown");
+        for body in [
+            "echo 'Listing... Done'",
+            "echo 'Listing...'; echo",
+            "echo 'Listing...'; echo 'WARNING: nothing to list'",
+            "exit 1",
+        ] {
+            stand_in(&paths.apt, body);
+            assert_eq!(packages(&paths, &Paint::plain()).await, UNKNOWN, "{body}");
+        }
+        // One package line alone is not counted: sb-go wants two lines.
+        stand_in(&paths.apt, "echo 'curl/jammy 1 amd64'");
+        assert_eq!(packages(&paths, &Paint::plain()).await, UNKNOWN);
+        stand_in(&paths.apt, "echo 'Listing...'; echo 'curl/jammy 1 amd64'");
+        assert_eq!(
+            packages(&paths, &Paint::plain()).await,
+            "1 updates can be applied immediately"
+        );
+    }
+
+    /// apt-check that hangs is ended at 5 s and apt is asked.
+    #[tokio::test]
+    async fn a_hanging_apt_check_is_ended_at_the_limit() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        stand_in(
+            &paths.apt_check,
+            "echo '3 packages can be updated.'; exec sleep 60",
+        );
+        stand_in(&paths.apt, "echo 'Listing...'; echo 'a/b 1 all'");
+        let start = std::time::Instant::now();
+        assert_eq!(
+            packages(&paths, &Paint::plain()).await,
+            "1 updates can be applied immediately"
+        );
         let took = start.elapsed();
         assert!(took >= CHILD_TIMEOUT, "{took:?}");
         assert!(took < Duration::from_secs(20), "{took:?}");

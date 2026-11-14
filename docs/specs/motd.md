@@ -384,10 +384,16 @@ Cargo.lock.
   bytes in a minimal production-profile build, and its names are those
   of its snapshot, not the host's. `pciids` 0.1.4 parses the file but
   has had no release since 2020-07-26
-  (https://docs.rs/crate/pciids/0.1.4). No maintained crate on docs.rs
-  parses the host's pci.ids at run time without embedding it (searched
-  2026-11-13: https://docs.rs/releases/search?query=pci.ids), so the
-  parser is sb's own, as domain logic (decision 2).
+  (https://docs.rs/crate/pciids/0.1.4). The search of 2026-11-13
+  (https://docs.rs/releases/search?query=pci.ids) missed
+  **pciid-parser** 0.8.1, which does read the host's file at run time
+  without embedding it (found by M39's library review, 2026-11-14). Its
+  `parse_db` ends at the first line it can't parse and takes invalid
+  UTF-8 as an I/O error, and its event parser is private
+  (https://docs.rs/crate/pciid-parser/0.8.1/source/src/parser.rs), so it
+  can't skip and count a malformed line or replace an invalid byte as
+  "GPU names" asks. The parser stays sb's own, as domain logic
+  (decision 2).
 
 **Binary size.** procfs's cost is measured on the production binary when
 it lands; the GPU parser is a few hundred lines of std. An ADR follows
@@ -641,8 +647,10 @@ Nothing touches a real host's state, and every fixture is synthetic.
    2026-11-13, given after the first E-Q8 answer's pci-ids measured
    +3,432,280 bytes). Reasons: pure Rust, no child process, almost no
    binary growth, and names that match lspci on that host, because lspci
-   reads the same file. The parser is domain logic: no maintained crate
-   parses the host's file at run time without embedding it (Tech Stack,
+   reads the same file. The parser is domain logic: the one maintained
+   crate that parses the host's file at run time, pciid-parser 0.8.1
+   (missed by the first search, found at M39), ends at the first line it
+   can't parse, where "GPU names" skips and counts it (Tech Stack,
    "Considered and not used"). Differences 21 and 22.
 3. **An invalid motd.yml prints one line and skips only the config
    sections** (decided.md E-Q2).

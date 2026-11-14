@@ -1,11 +1,13 @@
 //! `sb motd` (motd spec): the banner, then one aligned `Key:  value` line
 //! per selected section, collected in parallel. Built so far: the
-//! selection rules, the runner, the layout and the system sections
-//! (module build M36, M37); the other sections, motd.yml, the banner and
-//! `--share` come with their own tasks (M38-M47), and until then a
-//! selected section without its code shows no line.
+//! selection rules, the runner, the layout, the system sections, Disk
+//! Usage, Package Status and GPU (module build M36-M39); the other
+//! sections, motd.yml, the banner and `--share` come with their own tasks
+//! (M40-M47), and until then a selected section without its code shows
+//! no line.
 
 mod disk;
+pub mod gpu;
 mod layout;
 mod packages;
 pub mod run;
@@ -291,9 +293,11 @@ pub async fn report(options: &Options, colours: Colours<'_>) -> Result<String, E
 /// The section's collection, or none for a section whose task hasn't
 /// landed yet. The runtime is current-thread, so a job must not block:
 /// the cap can only fire at an await. The system sections read one small
-/// file each, or list /proc, and make no other call; Reboot Status awaits
-/// its child. A slow source uses async I/O or tokio's `spawn_blocking`
-/// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
+/// file each, or list /proc, and make no other call; Package Status reads
+/// update-notifier's small summary, then awaits its children, as Reboot
+/// Status does. A slow source uses async I/O or tokio's `spawn_blocking`
+/// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>), as
+/// Disk Usage and GPU do.
 fn job(section: Section, paint: &Paint) -> Option<run::Job> {
     let paint = paint.clone();
     let job: run::Job = match section {
@@ -303,7 +307,11 @@ fn job(section: Section, paint: &Paint) -> Option<run::Job> {
         Section::LoadAverages => Box::pin(async move { system::load_averages_here(&paint) }),
         Section::Processes => Box::pin(async move { system::processes_here(&paint) }),
         Section::Cpu => Box::pin(async move { system::cpu_here(&paint) }),
+        Section::Gpu => Box::pin(gpu::gpu_here()),
         Section::Memory => Box::pin(async move { system::memory_here(&paint) }),
+        Section::Packages => {
+            Box::pin(async move { packages::packages(&packages::Paths::system(), &paint).await })
+        }
         Section::Disk => Box::pin(async move { disk::disk_here(&paint).await }),
         Section::Reboot => {
             Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
@@ -460,7 +468,7 @@ mod tests {
             .collect();
         let keys: Vec<&str> = keys
             .into_iter()
-            .filter(|key| *key != "Reboot Status:")
+            .filter(|key| !["GPU:", "Reboot Status:"].contains(key))
             .collect();
         assert_eq!(
             keys,
@@ -472,12 +480,15 @@ mod tests {
                 "Processes:",
                 "CPU:",
                 "Memory Usage:",
+                "Package Status:",
                 "Disk Usage:",
             ]
         );
         assert!(text.ends_with("\n\n"));
         assert!(job(Section::Jellyfin, &Paint::plain()).is_none());
-        // Reboot Status's line may be hidden here; its job is there.
+        // GPU's and Reboot Status's lines may be hidden here; their jobs
+        // are there.
+        assert!(job(Section::Gpu, &Paint::plain()).is_some());
         assert!(job(Section::Reboot, &Paint::plain()).is_some());
     }
 
