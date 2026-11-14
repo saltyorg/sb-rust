@@ -2,19 +2,22 @@
 //! the tag listing and its cache (ansible spec). Every child is
 //! `ansible-playbook` through sb-exec: `attached` for the runs a user
 //! watches, so Ansible's prompts reach the terminal (spec, assumption 2).
-//! So far the first two slices: the playbook paths ([`Repo`], [`Repos`]),
-//! one attached run by tag ([`Ansible::run`], [`pass_through`]), and
-//! `sb install`'s arguments, tags and routing ([`InstallArgs`],
-//! [`parse_tags`], [`Routed`]).
+//! So far the first three slices: the playbook paths ([`Repo`],
+//! [`Repos`]), one attached run by tag ([`Ansible::run`],
+//! [`pass_through`]), `sb install`'s arguments, tags and routing
+//! ([`InstallArgs`], [`parse_tags`], [`Routed`]), and the tag cache
+//! ([`TagCache`]: `load`, `tags`, `refresh`; [`Ansible::list_tags`]).
 
 // sb's lines go to the writer a caller passes; `print!`/`eprint!` panic on a
 // closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod args;
+mod cache;
 mod run;
 
 pub use args::{InstallArgs, NoTags, Routed, parse_tags};
+pub use cache::{CacheError, FILE as CACHE_FILE, Listed, RepoTags, TagCache, label as cache_label};
 pub use run::{RunArgs, RunError, Tags, pass_through};
 
 use std::path::{Path, PathBuf};

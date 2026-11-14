@@ -1,0 +1,5 @@
+
+[0;32mplaybook: sandbox.yml[0m
+
+[0;32m  play #1 (localhost): Sandbox	TAGS: [][0m
+[0;32m      TASK TAGS: [always, autobrr, [1mbazarr[0m, overseerr, tautulli][0m

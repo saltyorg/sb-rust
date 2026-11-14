@@ -21,6 +21,10 @@
 #                        ansible-core's CLI does.
 #                        `self-kill`: it kills itself with SIGKILL, as the OOM
 #                        killer would, a signal sb never got.
+#   FAKE_ANSIBLE_LISTING printed to stdout when `--list-tags` is an argument
+#                        (`.fake-ansible/FAKE_ANSIBLE_LISTING` keeps its
+#                        escape codes and newlines, as a file)
+#   FAKE_ANSIBLE_STDERR  printed to stderr before it ends
 setting() {
   eval "value=\${$1-}"
   if [ -z "$value" ] && [ -f ".fake-ansible/$1" ]; then
@@ -35,6 +39,17 @@ code=$(setting FAKE_ANSIBLE_EXIT)
 n=0
 while [ -e "$log.$n" ]; do n=$((n + 1)); done
 printf '%s\0' "$PWD" "$0" "$@" > "$log.$n"
+for arg; do
+  if [ "$arg" = --list-tags ]; then
+    if [ -n "${FAKE_ANSIBLE_LISTING-}" ]; then
+      printf '%s\n' "$FAKE_ANSIBLE_LISTING"
+    elif [ -f .fake-ansible/FAKE_ANSIBLE_LISTING ]; then
+      cat .fake-ansible/FAKE_ANSIBLE_LISTING
+    fi
+  fi
+done
+stderr=$(setting FAKE_ANSIBLE_STDERR)
+if [ -n "$stderr" ]; then printf '%s\n' "$stderr" >&2; fi
 case "$mode" in
   wait|interrupt)
     trap 'echo term > "$log.term"; exit "${code:-143}"' TERM

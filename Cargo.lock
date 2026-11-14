@@ -3318,12 +3318,22 @@ dependencies = [
 name = "sb-ansible"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
+ "indicatif",
+ "regex",
  "sb-cli-core",
  "sb-exec",
+ "sb-repo",
+ "sb-term-ui",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

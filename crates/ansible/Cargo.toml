@@ -14,12 +14,29 @@ sb-exec.workspace = true
 thiserror.workspace = true
 # install's flags (`Count`, `Append`, `allow_hyphen_values`).
 clap.workspace = true
+# The tag cache (M32): the rebuild's step, the HEAD commit that validates
+# an entry (repo spec, `head`), sb-go's cache.json read and written whole
+# and atomically, the `TASK TAGS:` match.
+sb-term-ui.workspace = true
+sb-repo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+regex.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+# The rebuild step's body result (term-ui's `Step::step`).
+anyhow.workspace = true
 
 [dev-dependencies]
 # A real Shutdown and runtime for the attached runs, with the fake
 # playbook (tests/fixtures/fake-ansible-playbook).
-tokio = { workspace = true, features = ["macros"] }
-tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "time"] }
+# The rebuild's step on a runner drawing to memory, as sb-repo's tests.
+sb-term-ui = { workspace = true, features = ["testing"] }
+indicatif.workspace = true
+# The corrupt cache's log record, captured.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

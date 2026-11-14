@@ -1,0 +1,8 @@
+
+playbook: saltbox.yml
+
+  play #1 (localhost): Saltbox	TAGS: []
+      TASK TAGS: [always, authelia, docker, plex, sanity-check, sonarr, traefik]
+
+  play #2 (localhost): Saltbox post	TAGS: []
+      TASK TAGS: [never-first]
