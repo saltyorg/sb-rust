@@ -1710,13 +1710,13 @@ the Docker-unreachable row.
 the services' 5 s refresh.
 
 **Acceptance criteria:**
-- [ ] Rows with attention head the list.
-- [ ] The filters narrow the list; `Tab` moves between sections.
-- [ ] Screenshots of the filtered picker.
+- [x] Rows with attention head the list.
+- [x] The filters narrow the list; `Tab` moves between sections.
+- [x] Screenshots of the filtered picker.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui` with snapshots.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui` with snapshots.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M69
 **Files:** `crates/tui/{Cargo.toml,src/picker.rs}`, `Cargo.toml`, `Cargo.lock`
@@ -2120,6 +2120,19 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **sb-ansible's log test is flaky under load** (lane 4, with its next
+      task). `cache::tests::a_corrupt_or_unreadable_file_is_logged`
+      (crates/ansible/src/cache.rs) captured an empty log once, during the
+      instrumented coverage run on a loaded host; eight plain reruns
+      passed. Likely tracing's per-callsite interest cache racing a
+      `with_default` subscriber on another test thread, the cause of M10's
+      flake. Fix it as M10's was: one global test subscriber with a
+      per-thread buffer.
+- [ ] **sb-release's ETXTBSY in `a_binary_reporting_another_version_is_refused`**
+      (lane 2). One full run failed with "Text file busy" (the fork race
+      ADR-021 describes); five reruns passed. Write the stand-in, then
+      run it, so that no other test's fork holds its write descriptor
+      (the SPAWNS lock pattern).
 - [ ] **`--help` shows a flag's long help** (from M31, lane 2 with M70).
       sb's help renderer (cli-core's `flag_row`) shows only the short help,
       so `-e`'s long help (ansible spec, lines 75-77: "Each value reaches
