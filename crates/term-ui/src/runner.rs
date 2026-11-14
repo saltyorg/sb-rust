@@ -60,13 +60,13 @@ impl Labels {
     }
 
     /// A step shown only while it runs (the maintainer, 2026-11-14; term-ui
-    /// spec, decision 12): once it succeeds, its line and everything under
-    /// it leave the tree, and the run's title is printed only with the
-    /// first line that stays, so a run of transient steps alone leaves
-    /// nothing on the screen. Plain, a succeeding one prints nothing. Any
-    /// other ending (failed, interrupted, stopped) is drawn as any step's.
-    /// A step under a transient one never stays on its own: it goes or
-    /// stays with that step. Logged as every step is. Why not indicatif's
+    /// spec, decision 12). A run with transient steps holds each finished
+    /// step, and plain, each line, until it ends. Then, if every step
+    /// succeeded, the transient ones and everything under them leave the
+    /// tree, and the title is printed only with a line that stays, so a
+    /// run of transient steps leaves nothing on the screen; if any step
+    /// failed, was interrupted or was stopped, the whole tree is printed
+    /// as any run's. Logged as every step is. Why not indicatif's
     /// `ProgressBar::finish_and_clear` on a bar of its own: the live area
     /// is one bar holding the whole tree (the module doc), and a bar
     /// removed would shrink the area, which indicatif's cursor-moving
@@ -168,6 +168,10 @@ struct State {
     /// Set by the restore hook on a second Ctrl-C: no more drawing.
     stop: Arc<AtomicBool>,
     title: Title,
+    /// Plain lines held for the run's end once a transient step has
+    /// started: all are printed when a step failed, else only those of
+    /// the steps that aren't transient (`Labels::transient`).
+    waiting: Vec<Waiting>,
     tree: Tree,
     mode: Mode,
     sink: Sink,
@@ -176,13 +180,21 @@ struct State {
     ended: bool,
 }
 
-/// The run's title, held back until the first line that stays, so a run
-/// of transient steps alone leaves nothing (`Labels::transient`).
+/// A plain line held for the run's end (`State::waiting`).
+struct Waiting {
+    /// It is a transient step's, or a step's under one.
+    in_transient: bool,
+    line: String,
+}
+
+/// The run's title, held back until the first line that is printed, so a
+/// run of transient steps that all succeed leaves nothing
+/// (`Labels::transient`).
 enum Title {
     /// Not out yet; live, it heads the live area meanwhile.
     Held(String),
-    /// Live: a line that stays has come, so it is printed at the next
-    /// redraw.
+    /// Live: a step that isn't held has started, or the run ended
+    /// without a step, so it is printed at the next redraw.
     Due(String),
     /// Printed, or it never will be.
     Shown,
@@ -261,10 +273,9 @@ impl State {
         area.draw(&printed, &live);
     }
 
-    /// The held title goes out, before the line that stays: printed now
-    /// when plain, at the next redraw when live.
-    /// Plain, nothing is printed after the run's end, as no other plain
-    /// line is (`Ending::close`).
+    /// The held title goes out, before the first line printed: printed
+    /// now when plain, at the next redraw when live. Plain, nothing is
+    /// printed after the run's end, as no other plain line is.
     fn show_title(&mut self) {
         if let Title::Held(title) = &mut self.title {
             let title = std::mem::take(title);
@@ -280,6 +291,22 @@ impl State {
         }
     }
 
+    /// A plain line (plain mode only; none after the run's end): printed
+    /// now, after the title, or held for the run's end once a transient
+    /// step has started (`waiting`). `in_transient`: it is a transient
+    /// step's, or a step's under one.
+    fn plain(&mut self, in_transient: bool, line: String) {
+        if !matches!(self.mode, Mode::Plain) || self.ended {
+            return;
+        }
+        if self.tree.holding() {
+            self.waiting.push(Waiting { in_transient, line });
+            return;
+        }
+        self.show_title();
+        plain_line(&line);
+    }
+
     /// End the run once: the last lines printed, the live area cleared.
     /// While a panic unwinds, indicatif draws nothing (`MultiState::draw`
     /// and `draw_to_term` return early when `std::thread::panicking()`),
@@ -293,6 +320,17 @@ impl State {
         // were all transient and done leaves nothing.
         if self.tree.is_empty() {
             self.show_title();
+        }
+        // The plain lines held back, as the tree keeps its steps: all of
+        // them when a step failed. Plain lines go through anstream, so
+        // they print while a panic unwinds too; a panic counts as a
+        // failure, as live mode then keeps its last frame, every step on it.
+        let failed = self.tree.failed() || std::thread::panicking();
+        for Waiting { in_transient, line } in std::mem::take(&mut self.waiting) {
+            if failed || !in_transient {
+                self.show_title();
+                plain_line(&line);
+            }
         }
         if std::thread::panicking() {
             self.ended = true;
@@ -378,7 +416,7 @@ impl Runner {
         options: Options,
     ) -> Runner {
         let pointer = log.map(RunLog::pointer);
-        // The title is held back until the first line that stays
+        // The title is held back until the first line printed
         // (`State::title`). Live, it heads the live area meanwhile, so the
         // bar has drawn before the title is printed above it: a
         // `MultiProgress::println` before its bar first drew was lost
@@ -429,6 +467,7 @@ impl Runner {
         let shared = Arc::new(Mutex::new(State {
             stop: Arc::clone(&stop),
             title: Title::Held(title.to_string()),
+            waiting: Vec::new(),
             tree: {
                 let mut tree = Tree::default();
                 tree.set_pointer(pointer);
@@ -545,13 +584,12 @@ fn begin(
     let mut state = lock(&context.shared);
     let id = state.tree.add(parent, labels.clone(), started);
     tracing::info!(step = labels.running.as_str(), "step started");
-    // A transient step's lines (and its sub-steps') wait for its ending.
-    if !state.tree.held(id) {
+    // Once a transient step has started, lines wait for the run's end.
+    if !state.tree.holding() {
         state.show_title();
-        if matches!(state.mode, Mode::Plain) {
-            plain_line(&prefixed(prefix, &format!("- {}", labels.running)));
-        }
     }
+    let held = state.tree.held(id);
+    state.plain(held, prefixed(prefix, &format!("- {}", labels.running)));
     state.redraw();
     Some((id, started))
 }
@@ -695,24 +733,10 @@ impl Ending {
             state.tree.set_error(self.id, screen);
             state.tree.set_reason(self.id, reason.clone());
             state.tree.finish(self.id, status, Instant::now());
-            // A transient step that didn't succeed stays: the title goes
-            // out before it, and plain, its start line, held until now.
-            // Under a transient step, plain lines go to the log only, and
-            // a step there never stays on its own: its fate is that step's.
-            let held = state.tree.held(self.id);
-            let kept = self.labels.transient
-                && status != Status::Done
-                && !state.tree.under_transient(self.id);
-            if kept {
-                state.show_title();
-            }
             // Plain lines go through anstream, so they still print while a
             // panic unwinds; the live area doesn't (see `State::end`).
-            if matches!(state.mode, Mode::Plain) && !state.ended && (!held || kept) {
-                if kept {
-                    let start = format!("- {}", self.labels.running);
-                    plain_line(&prefixed(self.prefix.as_deref(), &start));
-                }
+            if matches!(state.mode, Mode::Plain) {
+                let held = state.tree.held(self.id);
                 let colour = state.sink.colour;
                 let elapsed = self.started.elapsed();
                 let line = end_line(
@@ -723,14 +747,14 @@ impl Ending {
                     elapsed,
                     colour,
                 );
-                plain_line(&prefixed(self.prefix.as_deref(), &line));
+                state.plain(held, prefixed(self.prefix.as_deref(), &line));
                 // The failure block, plainly: the error, then the pointer.
                 if let (Status::Failed, Some(failure)) = (status, &failure) {
                     for line in &failure.screen {
-                        plain_line(&format!("  {line}"));
+                        state.plain(held, format!("  {line}"));
                     }
-                    if let Some(pointer) = state.tree.pointer() {
-                        plain_line(&format!("  full output: {pointer}"));
+                    if let Some(pointer) = state.tree.pointer().map(str::to_owned) {
+                        state.plain(held, format!("  full output: {pointer}"));
                     }
                 }
             }
@@ -913,16 +937,17 @@ impl Step {
         if !state.tree.is_running(self.id) {
             return;
         }
-        let plain = matches!(state.mode, Mode::Plain) && !state.tree.held(self.id);
+        let held = state.tree.held(self.id);
         for text in line.on_screen(codes, terminal) {
-            if plain {
+            if matches!(state.mode, Mode::Plain) {
                 let (role, mark) = if warn {
                     (Role::Warn, "!")
                 } else {
                     (Role::Muted, "›")
                 };
                 let mark = paint(theme::current(), role, colour, mark);
-                plain_line(&prefixed(self.prefix.as_deref(), &format!("{mark} {text}")));
+                let line = prefixed(self.prefix.as_deref(), &format!("{mark} {text}"));
+                state.plain(held, line);
             }
             state.tree.notice(self.id, warn, text);
         }
@@ -958,11 +983,9 @@ impl Step {
         if !state.tree.is_running(self.id) {
             return;
         }
-        let plain = matches!(state.mode, Mode::Plain) && !state.tree.held(self.id);
+        let held = state.tree.held(self.id);
         for text in line.on_screen(codes, terminal) {
-            if plain {
-                plain_line(&prefixed(self.prefix.as_deref(), &text));
-            }
+            state.plain(held, prefixed(self.prefix.as_deref(), &text));
             state.tree.output(self.id, text);
         }
     }
@@ -1657,6 +1680,72 @@ mod tests {
         insta::assert_snapshot!(term.contents(), @r"
         sb list
         ╰── ✓ updated                                                 0s
+        ");
+    }
+
+    /// A run with transient steps holds every finished step until it ends
+    /// (the maintainer, 2026-11-14): when one fails, the whole tree is
+    /// printed as a run without transient steps prints it, the steps that
+    /// succeeded included.
+    #[tokio::test]
+    async fn a_failure_keeps_the_whole_tree() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        run.step(
+            Labels::new("Updating Saltbox", "Saltbox updated").transient(),
+            async |step| {
+                step.step(Labels::new("Inner", "inner done"), async |_| Ok(()))
+                    .await?;
+                Ok(())
+            },
+        )
+        .await
+        .expect("step");
+        let seen = term.contents();
+        let result: Result<(), Exit> = run
+            .step(
+                Labels::new("Updating Sandbox", "Sandbox updated").transient(),
+                async |_| anyhow::bail!("exit 4"),
+            )
+            .await;
+        assert!(matches!(result, Err(Exit(1))));
+        run.finish();
+        // Held while the run went on: drawn live, not printed for good.
+        assert!(seen.contains("✓ Saltbox updated"), "{seen}");
+        insta::assert_snapshot!(term.contents(), @r"
+        sb list
+        ├── ✓ Saltbox updated                                         0s
+        │   ╰── ✓ inner done                                          0s
+        ╰── ✗ Updating Sandbox                                        0s
+            exit 4
+        ");
+    }
+
+    /// A failure caught under a transient step still counts: the run
+    /// keeps its whole tree, as for any step that failed (decision 12).
+    #[tokio::test]
+    async fn a_caught_failure_keeps_the_whole_tree() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb list", &shutdown, None, options);
+        run.step(Labels::new("Listing", "listed").transient(), async |step| {
+            let retry = Labels::new("First try", "first try done");
+            let _ = step
+                .step(retry, async |_| -> anyhow::Result<()> {
+                    anyhow::bail!("refused")
+                })
+                .await;
+            Ok(())
+        })
+        .await
+        .expect("step");
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb list
+        ╰── ✓ listed                                                  0s
+            ╰── ✗ First try                                           0s
+                refused
         ");
     }
 

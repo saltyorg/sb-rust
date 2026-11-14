@@ -953,11 +953,11 @@ fn list_rebuilds_a_missing_cache_as_steps() {
     assert!(log.contains("Updating Sandbox tags cache"), "{log}");
 }
 
-/// A rebuild that fails stays under the `sb list` title with its cause,
-/// piped as on a terminal; a step that succeeded before it is gone, as
-/// any transient step that succeeds (decision 18).
+/// A rebuild that fails keeps the whole tree under the `sb list` title,
+/// the rebuild that succeeded before it included, piped as on a terminal
+/// (decision 18, the maintainer 2026-11-14).
 #[test]
-fn list_keeps_a_failed_rebuild_with_its_cause() {
+fn list_keeps_the_whole_tree_when_a_rebuild_fails() {
     if !root_gate::requested() {
         return;
     }
@@ -977,17 +977,17 @@ fn list_keeps_a_failed_rebuild_with_its_cause() {
     assert_eq!(stdout(&output), "Saltbox tags:\n\nalways  plex\n");
     let err = stderr(&output);
     assert!(
-        err.starts_with(
-            "sb list\n- Updating Sandbox tags cache\n\
-             ✗ Updating Sandbox tags cache   exit 4 · "
-        ),
+        err.starts_with("sb list\n- Updating Saltbox tags cache\n✓ Updating Saltbox tags cache   "),
+        "{err}"
+    );
+    assert!(
+        err.contains("\n- Updating Sandbox tags cache\n✗ Updating Sandbox tags cache   exit 4 · "),
         "{err}"
     );
     assert!(
         err.contains("ERROR! the playbook could not be found"),
         "{err}"
     );
-    assert!(!err.contains("Updating Saltbox"), "{err}");
 }
 
 /// `-m`: `saltbox_mod` listed fresh after the others, never cached; with

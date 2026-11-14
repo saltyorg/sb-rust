@@ -360,8 +360,9 @@ impl<F: FnOnce() -> Runner> LazyRunner<F> {
 
     /// Every step started on it is transient (term-ui's
     /// `Labels::transient`): [`TagCache::tags_on`]'s rebuilds and `sb
-    /// list -m`'s listing show while they run, are gone once they
-    /// succeed and stay with their cause otherwise. `sb list`'s runner
+    /// list -m`'s listing show while they run; when every step
+    /// succeeded they are gone, title included, and when one failed the
+    /// whole tree stays. `sb list`'s runner
     /// is, its output being the tags (spec, decision 18); `install`'s
     /// isn't, so its rebuild steps stay.
     #[must_use]

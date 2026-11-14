@@ -98,12 +98,12 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   ("Checking accounts.yml" → "accounts.yml checked"), and optionally a
   failure label, as proto-runner and sb-go's Running/Success/Failure.
 - **Transient steps** (decision 12): a step marked transient is drawn
-  like any step while it runs; once it succeeds, its line and everything
-  under it leave the tree. Any other ending (failed, interrupted,
-  stopped) keeps it, drawn as any step's. The run's title is held back
-  until the first line that stays (live, it heads the live area
-  meanwhile), so a run of transient steps that all succeed leaves
-  nothing on the screen.
+  like any step while it runs. A run with transient steps holds each
+  finished step until it ends (plain lines too): if every step
+  succeeded, the transient ones leave the tree, so a run of transient
+  steps leaves nothing on the screen, title included; if any step
+  failed, was interrupted or was stopped, the whole tree is printed as
+  any run's.
 - **Notices:** a step can add info and warning lines, which stay under it
   in the finished tree (sb-go's `Task.Info` and `Task.Warning`), drawn as
   bullets: `›` for info in the muted colour, an orange `!` for warnings
@@ -910,21 +910,27 @@ Choices behind it:
     marks a step shown only while it runs, for work that takes a while
     but whose result is the command's output (`sb list`'s steps, its
     cache rebuilds and `-m`'s `saltbox_mod` listing: "show listing
-    saltbox_mod but it should not be in the output once we print", and
-    the whole tree goes when everything succeeds). Once it succeeds, its
-    line and subtree leave the tree; failed, interrupted or stopped, it
-    stays as any step's, with its cause. A step under a transient step
-    (transient or not) never stays on its own: it goes or stays with
-    that step, so plain output never shows a sub-step without its
-    parent. A running transient sibling doesn't make an earlier step a middle branch, so no `├──` is left above a line that
-    goes. The run's title is held back until the first line that stays:
-    live, it heads the live area meanwhile (so the bar has drawn before
-    the title is printed above it), and a run whose steps were all
-    transient and succeeded leaves nothing; a run with no step still
-    prints its title. Plain (stderr not a terminal), a transient step
-    that succeeds prints nothing; one that doesn't prints its start line,
-    end line and failure block at its ending, and its output, notices and
-    sub-steps' lines go to the run log only. Every transient step is
-    logged as any step is. Why not indicatif's `finish_and_clear` on a
-    bar of its own: the live area is one bar already (decision 2), and a
-    failure must show as the runner's failure block does.
+    saltbox_mod but it should not be in the output once we print").
+    **A run with transient steps holds each finished step until it
+    ends:** once a transient step has started, nothing more is printed
+    for good; the live area keeps drawing every step meanwhile. At the
+    end, if every step succeeded, the transient steps and everything
+    under them leave the tree, and a run of transient steps leaves
+    nothing on the screen, its title included. If any step failed, was
+    interrupted or was stopped, the whole tree is printed as a run
+    without transient steps prints it, the steps that succeeded
+    included (the maintainer's choice, 2026-11-14, over keeping only the
+    failed step). A failure the command caught counts too: any step
+    that ended other than done keeps the tree. The run's title is held back until the first line
+    printed: live, it heads the live area meanwhile (so the bar has
+    drawn before the title is printed above it); a run with no step
+    still prints its title. Plain (stderr not a terminal) buffers
+    likewise: from the first transient step on, every plain line waits
+    for the run's end; a run whose steps all succeeded then prints only
+    the lines of the steps that aren't transient (nor under one), a
+    failed one prints every line, in order (a panic counts as a
+    failure). The run log is unchanged: every
+    step, transient or not, is logged as it runs. Why not indicatif's
+    `finish_and_clear` on a bar of its own: the live area is one bar
+    already (decision 2), and a failure must show as the runner's
+    failure block does.

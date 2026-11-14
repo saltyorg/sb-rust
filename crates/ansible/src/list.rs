@@ -123,8 +123,8 @@ const MOD_STEP: &str = "Listing Saltbox_mod tags";
 
 /// `saltbox_mod`'s tags, listed fresh in a top-level step of `runner`,
 /// transient when its steps are (`sb list`'s: ansible spec, decision
-/// 18): shown while the listing runs, gone once it succeeds, kept with
-/// its cause when it fails.
+/// 18): shown while the listing runs; gone at the end when every step
+/// succeeded, kept with the whole tree when one failed.
 async fn list_mod<F: FnOnce() -> Runner>(
     ansible: &Ansible,
     repo: &Repo,

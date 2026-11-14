@@ -4,9 +4,10 @@
 //! `--child-fail`, `--panic`, `--sibling-panic`,
 //! `--interrupt`, `--interrupt-twice`, `--terminate`,
 //! `--leave-foreground`, `--table` (a table instead of the run, which
-//! returns early: any output error is exit 1 there), `--transient` and
-//! `--transient-fail` (a run of one transient step instead, which
-//! succeeds or fails), `--child-colour` (a
+//! returns early: any output error is exit 1 there), `--transient`,
+//! `--transient-fail` and `--transient-mixed` (a run of transient steps
+//! instead, which succeeds, fails, or has other steps around them),
+//! `--child-colour` (a
 //! step's output line with its own colour codes), `--ascii` (the `ascii`
 //! profile's theme) and `--colour` / `--no-colour`. A binary
 //! rather than an example because `cargo test --tests` (the coverage run)
@@ -207,28 +208,40 @@ async fn demo(
     Ok(())
 }
 
-/// `--transient` and `--transient-fail`: a run of one transient step
-/// (decision 12) with an output line, a sub-step and a transient sub-step
-/// that fails and is caught; with `fail`, the step then fails itself.
-async fn transient(shutdown: &Shutdown, fail: bool) -> anyhow::Result<()> {
+/// `--transient` and `--transient-fail`: a run of two transient steps
+/// (decision 12), the first with an output line and a sub-step; with
+/// `fail`, the second fails. `--transient-mixed`: a step that isn't
+/// transient before them and another after them.
+async fn transient(shutdown: &Shutdown, fail: bool, mixed: bool) -> anyhow::Result<()> {
     let mut run = Runner::start("sb demo", shutdown, None, Options::default());
+    if mixed {
+        let preparing = Labels::new("Preparing", "prepared");
+        run.step(preparing, async |step| {
+            step.output("preparing output");
+            Ok(())
+        })
+        .await?;
+    }
     let listing = Labels::new("Listing tags", "tags listed").transient();
     run.step(listing, async |step| {
         step.output("TASK TAGS: [always]");
         step.step(Labels::new("Reading", "read"), async |_| Ok(()))
             .await?;
-        let inner = Labels::new("Retrying", "retried").transient();
-        let _ = step
-            .step(inner, async |_| -> anyhow::Result<()> {
-                anyhow::bail!("first try refused")
-            })
-            .await;
+        Ok(())
+    })
+    .await?;
+    let checking = Labels::new("Checking tags", "tags checked").transient();
+    run.step(checking, async |_| {
         if fail {
             anyhow::bail!("listing refused");
         }
         Ok(())
     })
     .await?;
+    if mixed {
+        let writing = Labels::new("Writing", "written");
+        run.step(writing, async |_| Ok(())).await?;
+    }
     run.finish();
     Ok(())
 }
@@ -302,10 +315,11 @@ fn main() -> RunEnd {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build();
-    let transient_run = arg("--transient") || arg("--transient-fail");
+    let transient_run = arg("--transient") || arg("--transient-fail") || arg("--transient-mixed");
     let result = match (shutdown.listen_for_signals(), runtime) {
         (Ok(()), Ok(runtime)) if transient_run => {
-            runtime.block_on(transient(&shutdown, arg("--transient-fail")))
+            let (fail, mixed) = (arg("--transient-fail"), arg("--transient-mixed"));
+            runtime.block_on(transient(&shutdown, fail, mixed))
         }
         (Ok(()), Ok(runtime)) => runtime.block_on(demo(&shutdown, fail, sensitive, log.as_ref())),
         (Err(err), _) | (_, Err(err)) => Err(err.into()),

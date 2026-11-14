@@ -70,8 +70,8 @@ struct Node {
     /// Why a failed step failed, short, before its time (a failed
     /// child's `exit 3`).
     reason: Option<String>,
-    /// A transient step that succeeded, or a step under one: out of the
-    /// tree (`Labels::transient`).
+    /// At the end of a run where every step succeeded: a transient step,
+    /// or a step under one, out of the tree (`Labels::transient`).
     gone: bool,
 }
 
@@ -107,6 +107,11 @@ pub(crate) struct Tree {
     /// a new step always lands after them.
     printed: usize,
     ended: bool,
+    /// A transient step has started: nothing more is printed until the
+    /// run ends (`Labels::transient`).
+    holding: bool,
+    /// A step ended other than done: at the end, the whole tree stays.
+    failed: bool,
     /// Where the run's log is (`RunLog::pointer`), for a failure's block.
     pointer: Option<String>,
     /// The furthest right the times have ended: later lines, printed or
@@ -153,6 +158,7 @@ impl Tree {
             None => self.order.len(),
         };
         self.order.insert(at, id);
+        self.holding |= labels.transient;
         self.nodes.push(Node {
             parent,
             labels,
@@ -227,10 +233,7 @@ impl Tree {
         self.nodes[id].status == Status::Running
     }
 
-    /// End step `id`, once: a later ending is ignored. A transient step
-    /// that succeeded leaves the tree with its subtree. None of them is
-    /// printed yet: a running step isn't, nor anything after it in tree
-    /// order (`take_printable` stops there).
+    /// End step `id`, once: a later ending is ignored.
     pub fn finish(&mut self, id: usize, status: Status, now: Instant) {
         let node = &mut self.nodes[id];
         if node.status != Status::Running {
@@ -238,28 +241,13 @@ impl Tree {
         }
         node.status = status;
         node.elapsed = Some(now.duration_since(node.started));
-        if status == Status::Done && node.labels.transient {
-            node.gone = true;
-            for below in id + 1..self.nodes.len() {
-                if self.descends(below, id) {
-                    self.nodes[below].gone = true;
-                }
-            }
-            let nodes = &self.nodes;
-            self.order.retain(|&n| !nodes[n].gone);
-        }
+        self.failed |= status != Status::Done;
     }
 
-    /// Whether step `id` or a step above it is transient: in plain mode,
-    /// its lines wait for its ending (`Labels::transient`).
+    /// Whether step `id` or a step above it is transient: a run whose
+    /// steps all succeed leaves none of its lines (`Labels::transient`).
     pub fn held(&self, id: usize) -> bool {
-        self.nodes[id].labels.transient || self.under_transient(id)
-    }
-
-    /// Whether a step above `id` is transient: then `id` never stays on
-    /// its own, its fate is that step's (`Labels::transient`).
-    pub fn under_transient(&self, id: usize) -> bool {
-        let mut at = self.nodes[id].parent;
+        let mut at = Some(id);
         while let Some(n) = at {
             if self.nodes[n].labels.transient {
                 return true;
@@ -269,26 +257,49 @@ impl Tree {
         false
     }
 
+    /// Whether a transient step has started: from then on, lines wait for
+    /// the run's end (`Labels::transient`).
+    pub fn holding(&self) -> bool {
+        self.holding
+    }
+
+    /// Whether a step ended other than done (failed, interrupted, stopped).
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+
     /// Whether no step has started.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
-    /// The run is over: the last top-level step's place is known.
+    /// The run is over: the last top-level step's place is known. When
+    /// every step succeeded, the transient ones leave the tree with their
+    /// subtrees; when one didn't, the whole tree stays.
     pub fn end(&mut self) {
         self.ended = true;
+        if self.failed {
+            return;
+        }
+        for id in 0..self.nodes.len() {
+            if self.held(id) {
+                self.nodes[id].gone = true;
+            }
+        }
+        let nodes = &self.nodes;
+        self.order.retain(|&n| !nodes[n].gone);
     }
 
     /// Whether `id` is its parent's last child, once known: a later sibling
-    /// says no; a finished parent (or the run's end, at the top) says yes.
-    /// A transient sibling counts only once it ended other than done (a
-    /// running one may yet leave the tree; a done one has).
+    /// says no (one gone at the run's end doesn't count); a finished
+    /// parent (or the run's end, at the top) says yes. While a run holds
+    /// its steps, nothing is printed, so a transient sibling that may yet
+    /// go only shapes the live area.
     fn last(&self, id: usize) -> Option<bool> {
         let parent = self.nodes[id].parent;
-        let stays = |n: &Node| !(n.gone || (n.labels.transient && n.status == Status::Running));
         if self.nodes[id + 1..]
             .iter()
-            .any(|n| n.parent == parent && stays(n))
+            .any(|n| n.parent == parent && !n.gone)
         {
             return Some(false);
         }
@@ -551,9 +562,13 @@ impl Tree {
 
     /// Take the lines that can be printed for good, in tree order: each
     /// step whose subtree has ended and whose place (middle or last) is
-    /// known (decision 3).
+    /// known (decision 3). Once a transient step has started, none until
+    /// the run's end, when it is known which steps stay.
     pub fn take_printable(&mut self, d: &Draw) -> Vec<String> {
         let mut out = Vec::new();
+        if self.holding && !self.ended {
+            return out;
+        }
         let column = self.column(d);
         let mut printed = self.printed;
         // A bounded loop over the steps not yet printed.

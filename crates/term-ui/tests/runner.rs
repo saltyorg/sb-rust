@@ -137,12 +137,10 @@ fn piped_output_is_plain() {
     );
 }
 
-/// Piped, a transient step that succeeds prints nothing, nor the run's
-/// title, though a sub-step ran and a transient sub-step failed and was
-/// caught under it (decision 12: a step under a transient one is never
-/// kept on its own).
+/// Piped, a run whose transient steps all succeed prints nothing, nor its
+/// title, though a step had output and a sub-step (decision 12).
 #[test]
-fn piped_a_transient_step_that_succeeds_prints_nothing() {
+fn piped_a_run_of_transient_steps_that_succeeds_prints_nothing() {
     let out = Command::new(demo())
         .arg("--transient")
         .env_remove("CLICOLOR_FORCE")
@@ -152,11 +150,12 @@ fn piped_a_transient_step_that_succeeds_prints_nothing() {
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 }
 
-/// Piped, a transient step that fails prints its title, start line, end
-/// line and failure block at its ending; its output and its sub-steps'
-/// lines go to the run log only (decision 12).
+/// Piped, a run with transient steps holds every line until it ends; when
+/// a step fails, all of them are printed, in order, the steps that
+/// succeeded included, as a run without transient steps prints them
+/// (decision 12).
 #[test]
-fn piped_a_failed_transient_step_prints_its_lines_at_its_end() {
+fn piped_a_failed_transient_run_prints_every_line_at_its_end() {
     let out = Command::new(demo())
         .arg("--transient-fail")
         .env_remove("CLICOLOR_FORCE")
@@ -165,13 +164,35 @@ fn piped_a_failed_transient_step_prints_its_lines_at_its_end() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(
-        text.starts_with("sb demo\n- Listing tags\n✗ Listing tags   "),
+        text.starts_with("sb demo\n- Listing tags\nTASK TAGS: [always]\n- Reading\n✓ read   "),
+        "{text:?}"
+    );
+    assert!(text.contains("\n✓ tags listed   "), "{text:?}");
+    assert!(
+        text.contains("\n- Checking tags\n✗ Checking tags   "),
         "{text:?}"
     );
     assert!(text.contains("\n  listing refused\n"), "{text:?}");
-    for hidden in ["TASK TAGS", "Reading", "read ", "Retrying", "first try"] {
-        assert!(!text.contains(hidden), "{hidden}: {text:?}");
-    }
+}
+
+/// Piped, a run that succeeds with transient steps among others prints
+/// the others' lines, in order and after the title, and nothing of the
+/// transient steps or what ran under them (decision 12).
+#[test]
+fn piped_a_mixed_run_that_succeeds_prints_only_the_other_steps() {
+    let out = Command::new(demo())
+        .arg("--transient-mixed")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("run demo");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 6, "{text:?}");
+    assert_eq!(lines[..3], ["sb demo", "- Preparing", "preparing output"]);
+    assert!(lines[3].starts_with("✓ prepared   "), "{text:?}");
+    assert_eq!(lines[4], "- Writing", "{text:?}");
+    assert!(lines[5].starts_with("✓ written   "), "{text:?}");
 }
 
 /// The SGR sequences in `text` (`ESC [ params m`), resets included.
