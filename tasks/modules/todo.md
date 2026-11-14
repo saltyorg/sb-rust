@@ -2189,7 +2189,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       (the pinned URL and the digest already hold, and remote tags reach
       messages cleaned).
 
-- [ ] **docker's poll-tolerance test times out under load** (lane 4, with
+- [x] **docker's poll-tolerance test times out under load** (lane 4, with
       its next docker change). `control::client::tests::a_few_failed_polls_in_a_row_are_tolerated`
       (crates/docker/src/control/client.rs:641) timed out once in four
       runs under load in M64's review and passed on a rerun. Give it a
@@ -2259,7 +2259,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       may stay as a lower bound or go. The test's timeout can then be a
       fixed small value again.
 
-- [ ] **The follow may miss a journal file with an unusual name** (lane 4;
+- [x] **The follow may miss a journal file with an unusual name** (lane 4;
       sb-journal's follow). In M68's end-to-end test a crafted second file
       named `next.journal` was not picked up while following, where the
       same file named `user-1000.journal` was (crafted files only, not
