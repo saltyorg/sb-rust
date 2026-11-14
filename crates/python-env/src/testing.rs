@@ -139,8 +139,8 @@ impl Tree {
     /// `cpython/bin/python3.12`), `python find` (that path, or
     /// [`Tree::find_answer`]'s), `venv` (the template Python as
     /// `bin/python3`) and `pip sync` (the template entry points into the
-    /// venv's `bin`); [`Tree::fail`] and [`Tree::hang`] change one of
-    /// them.
+    /// venv's `bin`); [`Tree::fail`], [`Tree::fail_once`] and
+    /// [`Tree::hang`] change one of them.
     ///
     /// # Panics
     ///
@@ -156,6 +156,8 @@ impl Tree {
             "{calls}\n\
              op=\"$2-$3\"\n\
              [ -e '{root}/fail/'\"$op\" ] && {{ echo \"uv: $op failed (stand-in)\" >&2; exit 1; }}\n\
+             [ -e '{root}/fail-once/'\"$op\" ] && {{ rm -f '{root}/fail-once/'\"$op\"; \
+             echo \"uv: $op failed once (stand-in)\" >&2; exit 1; }}\n\
              [ -e '{root}/hang/'\"$op\" ] && {{ : > '{root}/hang/started'; exec sleep 600; }}\n\
              prev=; last=; dir=; py=\n\
              for a; do\n\
@@ -333,6 +335,15 @@ impl Tree {
     /// When the marker can't be written.
     pub fn fail(&self, op: &str) {
         self.mark("fail", op);
+    }
+
+    /// Make uv's `op` fail on its next call only.
+    ///
+    /// # Panics
+    ///
+    /// When the marker can't be written.
+    pub fn fail_once(&self, op: &str) {
+        self.mark("fail-once", op);
     }
 
     /// Make uv's `op` hang, after it touches `hang/started` under the root.

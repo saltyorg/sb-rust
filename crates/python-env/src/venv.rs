@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context as _;
-use sb_cli_core::exit::Exit;
+use sb_cli_core::exit::{Exit, shown_chain};
 use sb_host::OwnerError;
 use sb_host::apt::PackageQueryError;
 use sb_term_ui::{Labels, Step};
@@ -181,6 +181,9 @@ pub enum VenvOutcome {
     UpToDate,
     /// A new generation was built and activated.
     Rebuilt,
+    /// The first build failed; the clean retry's generation was built and
+    /// activated (spec, decision 3). A rebuild as well.
+    Retried,
 }
 
 /// The active venv as found (sb-go's `activeState`).
@@ -330,8 +333,10 @@ pub(crate) fn status_label(healthy: bool, force: Force) -> &'static str {
 /// sb-go's done label. On a healthy venv and no force, the wrappers
 /// rewritten, old generations cleaned and ownership given to `user`
 /// (skipped when `None`). Otherwise a new generation is built into
-/// staging ([`build`]), its wrappers written, activated (a legacy
-/// directory adopted), the previous generation's stale wrappers removed,
+/// staging ([`build`]; a failed build on the normal path is retried
+/// once as a `Python` force, a fresh Python and no uv cache), its
+/// wrappers written, activated (a legacy directory adopted), the
+/// previous generation's stale wrappers removed,
 /// old generations cleaned and ownership given. A failure or Ctrl-C
 /// before activation removes the build and leaves the active venv as it
 /// was (spec, step 17).
@@ -375,7 +380,21 @@ pub async fn reconcile_venv(
         return Ok(VenvOutcome::UpToDate);
     }
     let previous = active.manifest;
-    let staged = build(step, env, &toolchain, previous.as_ref(), force).await?;
+    let (staged, outcome) = match build(step, env, &toolchain, previous.as_ref(), force).await {
+        Ok(staged) => (staged, VenvOutcome::Rebuilt),
+        Err(err) if retries(force, token.is_cancelled()) => {
+            // The run log keeps the first cause: in this line, and in the
+            // failed step's record when a nested step failed. A second
+            // failure fails the step with its own cause.
+            step.info(format!(
+                "Retrying with a fresh Python and no uv cache after: {}",
+                err.cause()
+            ));
+            let staged = build(step, env, &toolchain, previous.as_ref(), Force::Python).await?;
+            (staged, VenvOutcome::Retried)
+        }
+        Err(err) => return Err(err.into()),
+    };
     let current = activate_staged(env, staged, &token).await?;
     let stale = previous.map(|previous| previous.exported_commands);
     wrappers::remove_stale(
@@ -386,7 +405,15 @@ pub async fn reconcile_venv(
     .map_err(VenvError::StaleWrappers)?;
     cleanup(env.layout).await?;
     ensure_ownership(env.layout, user).await?;
-    Ok(VenvOutcome::Rebuilt)
+    Ok(outcome)
+}
+
+/// Whether a failed build is retried (spec, "Self-healing on the normal
+/// path"; decision 3): once, on the normal path only, never after a
+/// cancel. Only the build (steps 7-11) gets here: the toolchain, uv, apt
+/// and activation fail the reconcile before or after it.
+fn retries(force: Force, cancelled: bool) -> bool {
+    force == Force::None && !cancelled
 }
 
 /// Old generations cleaned ([`activate::cleanup_generations`]) on a
@@ -539,9 +566,48 @@ pub enum BuildError {
     Staged(CheckError),
     #[error(transparent)]
     Manifest(#[from] manifest::WriteError),
-    /// A nested step failed or was interrupted; it says why itself.
+    /// A nested step failed or was interrupted; it says why itself, and
+    /// `cause` keeps its error's text for the retry's info line.
     #[error("a step stopped the Ansible virtual environment's build")]
-    Stopped(#[from] Exit),
+    Stopped {
+        #[source]
+        exit: Exit,
+        cause: Option<String>,
+    },
+}
+
+impl BuildError {
+    /// Why the build failed, in one line: a nested step's own error, else
+    /// this error's text.
+    #[must_use]
+    pub(crate) fn cause(&self) -> String {
+        match self {
+            Self::Stopped {
+                cause: Some(cause), ..
+            } => cause.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// A build's nested step: `body` under `labels`, its failure's text kept
+/// in [`BuildError::Stopped`] (the step shows it; the `Exit` it ends with
+/// says only that it failed), withheld past a sensitive cause as the
+/// step's own record is (cli-core's `shown_chain`).
+async fn nested<T>(
+    step: &mut Step,
+    labels: Labels,
+    body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<T>,
+) -> Result<T, BuildError> {
+    let mut cause = None;
+    let ran = step
+        .step(labels, async |step| {
+            body(step)
+                .await
+                .inspect_err(|err| cause = Some(shown_chain(err.as_ref()).join(": ")))
+        })
+        .await;
+    ran.map_err(|exit| BuildError::Stopped { exit, cause })
 }
 
 /// What a build has made so far (sb-go's deferred cleanup, venv.go:163-171
@@ -723,7 +789,7 @@ async fn install_python<'a>(
     leftovers.python = Some(dir.clone());
     let dir_arg = dir.to_string_lossy().into_owned();
     let installing = format!("Installing Python {version}");
-    step.step(Labels::new(&installing, &installing), async |step| {
+    nested(step, Labels::new(&installing, &installing), async |step| {
         let install = env
             .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
             .map(|cmd| {
@@ -865,7 +931,7 @@ async fn stage<'a>(
     leftovers.generation = Some(generation.clone());
     let venv = generation.join("venv");
     let creating = "Creating Ansible virtual environment";
-    step.step(Labels::new(creating, creating), async |step| {
+    nested(step, Labels::new(creating, creating), async |step| {
         let create = env
             .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
             .map(|cmd| {
@@ -886,7 +952,7 @@ async fn stage<'a>(
     })
     .await?;
     let syncing = "Syncing hashed Saltbox requirements";
-    step.step(Labels::new(syncing, syncing), async |step| {
+    nested(step, Labels::new(syncing, syncing), async |step| {
         let python = venv.join("bin/python3");
         let sync = env
             .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
@@ -1154,6 +1220,40 @@ mod tests {
         );
         assert_eq!(std::fs::read_link(&layout.active_venv).expect("link"), old);
         assert!(!generation.exists());
+    }
+
+    /// The retry rule (spec, Testing Strategy): the normal path only,
+    /// never after a cancel.
+    #[test]
+    fn only_the_normal_path_retries_and_never_after_a_cancel() {
+        assert!(retries(Force::None, false));
+        assert!(!retries(Force::None, true));
+        for force in [Force::Venv, Force::Python] {
+            assert!(!retries(force, false), "{force:?}");
+            assert!(!retries(force, true), "{force:?}");
+        }
+    }
+
+    /// The retry's cause: a nested step's own error, else the build's.
+    #[test]
+    fn a_builds_cause_is_its_steps_error() {
+        let stopped = BuildError::Stopped {
+            exit: Exit(1),
+            cause: Some("error syncing requirements: exit 1".to_string()),
+        };
+        assert_eq!(stopped.cause(), "error syncing requirements: exit 1");
+        let quiet = BuildError::Stopped {
+            exit: Exit(1),
+            cause: None,
+        };
+        assert_eq!(
+            quiet.cause(),
+            "a step stopped the Ansible virtual environment's build"
+        );
+        assert_eq!(
+            BuildError::Missing("certbot").cause(),
+            "required command certbot is missing from staged venv"
+        );
     }
 
     #[test]
