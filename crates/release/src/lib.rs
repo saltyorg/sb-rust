@@ -30,7 +30,7 @@ use std::time::Duration;
 use reqwest::Url;
 
 pub use activate::{ElfError, activate, check_elf};
-pub use asset::Asset;
+pub use asset::{Asset, sha256_file};
 pub use download::{Stage, Staged};
 pub use lookup::{Failure, Query, Release};
 pub use self_update::{Outcome, SelfUpdate, asset_name, self_update};
@@ -62,6 +62,25 @@ impl Arch {
     /// [`Error::Arch`] for any other: `unsupported architecture <a>`.
     pub fn current() -> Result<Self, Error> {
         Self::named(std::env::consts::ARCH)
+    }
+
+    /// The name Go gives it, in sb's and the fact's asset names:
+    /// `amd64`, `arm64`.
+    #[must_use]
+    pub fn go_name(self) -> &'static str {
+        match self {
+            Self::Amd64 => "amd64",
+            Self::Arm64 => "arm64",
+        }
+    }
+
+    /// The name Rust gives it, in uv's asset names: `x86_64`, `aarch64`.
+    #[must_use]
+    pub fn rust_name(self) -> &'static str {
+        match self {
+            Self::Amd64 => "x86_64",
+            Self::Arm64 => "aarch64",
+        }
     }
 
     /// The architecture `std::env::consts::ARCH` calls `arch`.
@@ -257,6 +276,14 @@ mod tests {
             Arch::named("riscv64").expect_err("none").to_string(),
             "unsupported architecture riscv64"
         );
+    }
+
+    #[test]
+    fn each_architecture_has_go_s_and_rust_s_names() {
+        assert_eq!(Arch::Amd64.go_name(), "amd64");
+        assert_eq!(Arch::Arm64.go_name(), "arm64");
+        assert_eq!(Arch::Amd64.rust_name(), "x86_64");
+        assert_eq!(Arch::Arm64.rust_name(), "aarch64");
     }
 
     #[cfg(target_arch = "x86_64")]
