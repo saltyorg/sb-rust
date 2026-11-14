@@ -367,6 +367,10 @@ Cargo.lock.
 - `utmp-rs` is stale, and utmp is going away.
 - `dxr`, `qbit-rs`, starr-like crates: map policy 3.
 - figlet-rs: decision 1.
+- rs-release 0.1.12 for os-release: it fails the whole file on a line
+  without `=` and undoes no backslash escapes
+  (https://docs.rs/rs-release/0.1.12/src/rs_release/lib.rs.html); sb's
+  parser follows freedesktop's syntax and still shows a damaged file.
 - **pci-ids** 0.2.6 vendors the PCI ID database into the binary ("this
   crate vendors the PCI ID database",
   https://docs.rs/pci-ids/0.2.6/pci_ids/), which measured +3,432,280
@@ -774,6 +778,44 @@ Nothing touches a real host's state, and every fixture is synthetic.
   by up to 30 s (decision 26).
 - **Errors inside host's service list** are shown through motd's
   redaction, but systemctl's own texts aren't secret-bearing.
+
+## Verification notes
+
+- **Uptime's forms (M37, 2026-11-14).** Ubuntu 22.04 ships procps-ng
+  3.3.17, and 24.04 and 26.04 ship 4.0.4 (Launchpad: `2:3.3.17-6ubuntu2.1`,
+  `2:4.0.4-4ubuntu3.3`, `2:4.0.4-9ubuntu1`). Their `uptime -p` differ:
+  3.3.17 takes each unit modulo the next (`proc/whattime.c`), while 4.0.4
+  takes each unit out of what is left, only when strictly more is left,
+  and so prints `0 minutes` after a whole hour, day or week
+  (`library/uptime.c`). Ubuntu's one patch there (`library_0_days_users`)
+  changes nothing the short form prints. sb picks the form from
+  os-release's `VERSION_ID`: 3.3.17's up to 22.04, 4.0.4's after it and
+  when the release is unknown. The unit test's 27 cases are the output of
+  both versions' own code, copied into a C program fed those uptimes. The
+  container matrix (M40) is to check them on each release. procps 4.0.6
+  (Ubuntu 26.10) prints `0 minutes` at exactly 60.00 s where 4.0.4 prints
+  nothing; a release shipping it needs a third form when it is supported.
+- **CPU and Memory Usage (M37).** The fixtures' expected lines are those of
+  sb-go's `GetCpuInfo` and `GetMemoryInfo`, copied into a Go program that
+  reads the same fixtures. procfs's `Meminfo` needs the kernel's usual
+  fields (MemTotal, MemFree, Buffers, Cached and the others it requires),
+  so a file missing one reads `Not available`, where sb-go took a missing
+  `Buffers` or `Cached` as zero. Every kernel sb supports writes them.
+  procfs's `CpuInfo` ends a value at its second `:`, where sb-go kept the
+  rest; no known x86 or KVM model name has one.
+- **Reboot Status (M37)** lives in `packages.rs`, beside Package Status
+  (Project Structure), with update-notifier's paths in a `Paths` value.
+- **Fast-path baseline (M37, 2026-11-14).** `sb motd --distro --kernel
+  --uptime --cpu --processes --cpu-info --memory --reboot`, sb's local
+  production build against sb-go's HEAD built with `-ldflags="-s -w"`,
+  `hyperfine --warmup 3 --runs 30` on one machine under heavy load, stdout
+  piped, no motd.yml: median 17.0 ms for sb, 108.4 ms for sb-go. Both
+  printed the same values; sb-go's children (`lsb_release`, `uname`,
+  `uptime`) are most of its time.
+- **procfs's size (M37):** the production glibc binary (cross, ADR-020)
+  went from 12,332,552 bytes at M36 to 12,453,032 bytes with procfs and
+  the system sections linked: 120,480 bytes (1.0%), within the ratchet's
+  5% per change.
 
 ## Open questions
 

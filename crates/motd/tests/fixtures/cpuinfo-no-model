@@ -1,0 +1,16 @@
+processor	: 0
+vendor_id	: SyntheticVendor
+cpu family	: 23
+cpu MHz		: 3600.000
+BogoMIPS	: 108.00
+flags		: fpu vme de pse
+
+processor	: 1
+vendor_id	: SyntheticVendor
+cpu family	: 23
+cpu MHz		: 3600.000
+BogoMIPS	: 108.00
+flags		: fpu vme de pse
+
+Hardware	: Synthetic Board
+Revision	: 0001

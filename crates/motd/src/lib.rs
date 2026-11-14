@@ -1,11 +1,12 @@
 //! `sb motd` (motd spec): the banner, then one aligned `Key:  value` line
-//! per selected section, collected in parallel. This first slice (module
-//! build M36) has the selection rules, the runner, the layout and the
-//! Distribution and Kernel sections; the other sections, motd.yml, the
-//! banner and `--share` come with their own tasks (M37-M47), and until
-//! then a selected section without its code shows no line.
+//! per selected section, collected in parallel. Built so far: the
+//! selection rules, the runner, the layout and the system sections
+//! (module build M36, M37); the other sections, motd.yml, the banner and
+//! `--share` come with their own tasks (M38-M47), and until then a
+//! selected section without its code shows no line.
 
 mod layout;
+mod packages;
 pub mod run;
 mod system;
 mod text;
@@ -192,6 +193,47 @@ impl Colours<'_> {
     }
 }
 
+/// The colours a section paints its value in, owned so that each
+/// section's task can hold its own: sb-go's `ValueStyle` is the Text
+/// role and its `WarningStyle` the Warn role, the roles sb's palette
+/// gives `text.value` and `status.warning` (motd decision 5; motd.yml's
+/// colours come with M42). sb-go's `DefaultStyle` sets no colour, and
+/// neither does sb.
+#[derive(Clone, Debug)]
+pub struct Paint {
+    theme: Theme,
+    on: bool,
+}
+
+impl Paint {
+    /// `theme`'s colours, drawn only when `on`.
+    #[must_use]
+    pub fn new(theme: &Theme, on: bool) -> Self {
+        Self {
+            theme: theme.clone(),
+            on,
+        }
+    }
+
+    /// No colour at all.
+    #[must_use]
+    pub fn plain() -> Self {
+        Self::new(&Theme::plain(), false)
+    }
+
+    /// `text` in the value colour.
+    #[must_use]
+    pub fn value(&self, text: &str) -> String {
+        sb_term_ui::style::paint(&self.theme, Role::Text, self.on, text)
+    }
+
+    /// `text` in the warning colour.
+    #[must_use]
+    pub fn warning(&self, text: &str) -> String {
+        sb_term_ui::style::paint(&self.theme, Role::Warn, self.on, text)
+    }
+}
+
 /// `sb motd`'s output for `options`: the chosen sections collected in
 /// parallel under the runner's cap, then laid out. The run log gets the
 /// sections chosen and each one's time and outcome (criterion 12).
@@ -203,9 +245,10 @@ pub async fn report(options: &Options, colours: Colours<'_>) -> Result<String, E
     let chosen = options.chosen()?;
     let names: Vec<&str> = chosen.iter().map(|s| s.flag()).collect();
     tracing::info!(sections = names.join(","), "motd sections chosen");
+    let paint = Paint::new(colours.theme, colours.on);
     let jobs = chosen
         .into_iter()
-        .filter_map(|section| job(section).map(|job| (section, job)))
+        .filter_map(|section| job(section, &paint).map(|job| (section, job)))
         .collect();
     let results = run::collect(jobs, run::CAP).await;
     Ok(layout::render(&results, |key| colours.label(key)))
@@ -213,16 +256,26 @@ pub async fn report(options: &Options, colours: Colours<'_>) -> Result<String, E
 
 /// The section's collection, or none for a section whose task hasn't
 /// landed yet. The runtime is current-thread, so a job must not block:
-/// the cap can only fire at an await. These two read one small file and
-/// make one syscall; a slow source uses async I/O or tokio's
-/// `spawn_blocking`
+/// the cap can only fire at an await. The system sections read one small
+/// file each, or list /proc, and make no other call; Reboot Status awaits
+/// its child. A slow source uses async I/O or tokio's `spawn_blocking`
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
-fn job(section: Section) -> Option<run::Job> {
-    match section {
-        Section::Distribution => Some(Box::pin(async { system::distribution_here() })),
-        Section::Kernel => Some(Box::pin(async { system::kernel_here() })),
-        _ => None,
-    }
+fn job(section: Section, paint: &Paint) -> Option<run::Job> {
+    let paint = paint.clone();
+    let job: run::Job = match section {
+        Section::Distribution => Box::pin(async { system::distribution_here() }),
+        Section::Kernel => Box::pin(async { system::kernel_here() }),
+        Section::Uptime => Box::pin(async move { system::uptime_here(&paint) }),
+        Section::LoadAverages => Box::pin(async move { system::load_averages_here(&paint) }),
+        Section::Processes => Box::pin(async move { system::processes_here(&paint) }),
+        Section::Cpu => Box::pin(async move { system::cpu_here(&paint) }),
+        Section::Memory => Box::pin(async move { system::memory_here(&paint) }),
+        Section::Reboot => {
+            Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
+        }
+        _ => return None,
+    };
+    Some(job)
 }
 
 #[cfg(test)]
@@ -348,9 +401,13 @@ mod tests {
         assert_eq!(off.label("Kernel:"), "Kernel:");
     }
 
-    /// Distribution and Kernel are built; the rest show nothing yet.
+    /// The built sections show, in order; the rest show nothing yet.
+    /// Reboot Status shows only when the host needs a reboot.
     #[tokio::test]
     async fn the_report_shows_the_built_sections_in_order() {
+        // Reboot Status starts a child: no stand-in script may be open
+        // for writing in this process meanwhile.
+        let _spawns = packages::tests::SPAWNS.lock().await;
         let theme = Theme::plain();
         let options = Options {
             all: true,
@@ -366,9 +423,45 @@ mod tests {
             .filter(|line| !line.starts_with(' ') && !line.is_empty())
             .map(|line| line.split("  ").next().unwrap())
             .collect();
-        assert_eq!(keys, ["Distribution:", "Kernel:"]);
+        let keys: Vec<&str> = keys
+            .into_iter()
+            .filter(|key| *key != "Reboot Status:")
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "Distribution:",
+                "Kernel:",
+                "Uptime:",
+                "Load Averages:",
+                "Processes:",
+                "CPU:",
+                "Memory Usage:",
+            ]
+        );
         assert!(text.ends_with("\n\n"));
-        assert!(job(Section::Jellyfin).is_none());
+        assert!(job(Section::Jellyfin, &Paint::plain()).is_none());
+        // Reboot Status's line may be hidden here; its job is there.
+        assert!(job(Section::Reboot, &Paint::plain()).is_some());
+    }
+
+    #[test]
+    fn paint_colours_values_and_warnings_only_with_colour_on() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let on = Paint::new(&theme, true);
+        assert_eq!(
+            on.value("1"),
+            sb_term_ui::style::paint(&theme, Role::Text, true, "1")
+        );
+        assert_eq!(
+            on.warning("w"),
+            sb_term_ui::style::paint(&theme, Role::Warn, true, "w")
+        );
+        assert!(on.value("1").starts_with("\x1b["));
+        assert_ne!(on.value("x"), on.warning("x"));
+        let off = Paint::new(&theme, false);
+        assert_eq!((off.value("1"), off.warning("w")), ("1".into(), "w".into()));
+        assert_eq!(Paint::plain().value("1"), "1");
     }
 
     #[tokio::test]

@@ -1,0 +1,36 @@
+processor	: 0
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Synthetic CPU 8-Core Processor at 3.0GHz
+cpu MHz		: 3600.000
+physical id	: 0
+core id		: 0
+flags		: fpu vme de pse
+
+processor	: 1
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Synthetic CPU 8-Core Processor at 3.0GHz
+cpu MHz		: 3600.000
+physical id	: 0
+core id		: 0
+flags		: fpu vme de pse
+
+processor	: 2
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Synthetic CPU 8-Core Processor at 3.0GHz
+cpu MHz		: 3600.000
+physical id	: 0
+core id		: 1
+flags		: fpu vme de pse
+
+processor	: 3
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Synthetic CPU 8-Core Processor at 3.0GHz
+cpu MHz		: 3600.000
+physical id	: 0
+core id		: 1
+flags		: fpu vme de pse
+

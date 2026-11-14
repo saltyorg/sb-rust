@@ -14,6 +14,17 @@ pub(crate) fn one_line(bytes: &[u8]) -> String {
         .to_string()
 }
 
+/// `bytes` as lines safe to draw (colour dropped), the whole text
+/// trimmed first, as sb-go trims a child's output
+/// (`motd/utils.go`, `ExecCommand`).
+#[must_use]
+pub(crate) fn block(bytes: &[u8]) -> String {
+    DisplayText::from_bytes(bytes.trim_ascii(), false)
+        .as_str()
+        .trim()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,5 +35,11 @@ mod tests {
         assert_eq!(one_line(b"  a\tb \nsecond"), "a     b");
         assert_eq!(one_line(b"\x1b]0;title\x07x\x1b[31my"), "xy");
         assert_eq!(one_line(b""), "");
+    }
+
+    #[test]
+    fn block_keeps_every_line_and_trims_the_whole() {
+        assert_eq!(block(b"\n  first\x1b[2J\nsecond  \n\n"), "first\nsecond");
+        assert_eq!(block(b" \x1b]0;t\x07 "), "");
     }
 }

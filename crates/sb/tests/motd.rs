@@ -1,10 +1,10 @@
 //! `sb motd` through the built binary (motd spec, Testing strategy, "End
-//! to end"; module build M36): the layout of Distribution and Kernel,
+//! to end"; module build M36, M37): the layout of the system sections,
 //! colour under Saltbox's `CLICOLOR_FORCE=1` with stdout piped, the
 //! selection error and `-v`'s parse error. Root runs (`SB_TEST_ROOT=1`),
 //! each with its own log directory; a run as another user would relaunch
-//! through sudo. Distribution and Kernel read the host's os-release and
-//! `uname(2)`, read-only; nothing here contacts a service.
+//! through sudo. The system sections read the host's os-release, /proc
+//! and `uname(2)`, read-only; nothing here contacts a service.
 
 mod common;
 mod root_gate;
@@ -82,6 +82,54 @@ fn clicolor_force_colours_piped_output_and_never_wins() {
     );
     assert_eq!(never.status.code(), Some(0));
     assert!(!never.stdout.contains(&0x1b), "{:?}", text(&never.stdout));
+}
+
+/// Five of the /proc sections, in sb-go's order and padding, plain when
+/// piped; with `CLICOLOR_FORCE=1` their values are coloured too
+/// (criterion 8).
+#[test]
+fn system_sections_show_in_order_plain_unless_forced() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let flags = ["--memory", "--cpu-info", "--processes", "--cpu", "--uptime"];
+    let out = motd(&flags, logs.path(), &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(
+        !out.stdout.contains(&0x1b),
+        "piped output is plain: {stdout:?}"
+    );
+    let keys: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with(' '))
+        .map(|line| line.get(..16).unwrap_or(line))
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "Uptime:         ",
+            "Load Averages:  ",
+            "Processes:      ",
+            "CPU:            ",
+            "Memory Usage:   ",
+        ],
+        "{stdout:?}"
+    );
+    assert!(stdout.contains(" running processes\n"), "{stdout:?}");
+    assert!(stdout.contains("1 min: "), "{stdout:?}");
+    assert!(stdout.ends_with("\n\n"), "{stdout:?}");
+
+    let forced = motd(&flags, logs.path(), &[("CLICOLOR_FORCE", "1")]);
+    assert_eq!(forced.status.code(), Some(0));
+    let forced = text(&forced.stdout);
+    let processes = forced
+        .lines()
+        .find(|line| line.contains("running processes"))
+        .expect("a Processes line");
+    // The key and the count are each painted.
+    assert!(processes.matches("\x1b[").count() >= 4, "{processes:?}");
 }
 
 /// With no section chosen, sb-go's text and exit 1; nothing on stdout.

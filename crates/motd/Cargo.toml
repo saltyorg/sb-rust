@@ -12,16 +12,25 @@ publish.workspace = true
 sb-cli-core.workspace = true
 # `paint` for the keys and `DisplayText` for text sb didn't write.
 sb-term-ui.workspace = true
+# /proc's uptime, loadavg, cpuinfo, meminfo and process list (motd spec,
+# Tech Stack; decision 16).
+procfs.workspace = true
+# CPU's model without sb-go's ` N-Core` tail (sb-go's own pattern).
+regex.workspace = true
 # `uname(2)` for Kernel (motd spec, Sections; decision 16).
 rustix = { workspace = true, features = ["system"] }
+# Every child: Reboot Status's update-notifier script (CONSTRAINTS.md).
+sb-exec.workspace = true
 thiserror.workspace = true
 # The sections' tasks and the 30 s cap (motd decision 11).
 tokio = { workspace = true, features = ["rt", "time"] }
+# The token sb-exec's `capture` takes.
+tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 # The runner's tests on tokio's paused clock (motd spec, Testing).
-tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 

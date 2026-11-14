@@ -1,0 +1,176 @@
+processor	: 0
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 0
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 1
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 1
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 2
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 2
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 3
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 3
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 4
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 0
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 5
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 1
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 6
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 2
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 7
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 8
+core id		: 3
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 8
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 0
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 9
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 1
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 10
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 2
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 11
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 3
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 12
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 0
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 13
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 1
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 14
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 2
+cpu cores	: 4
+flags		: fpu vme de pse
+
+processor	: 15
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+cpu MHz		: 3600.000
+physical id	: 1
+siblings	: 8
+core id		: 3
+cpu cores	: 4
+flags		: fpu vme de pse
+

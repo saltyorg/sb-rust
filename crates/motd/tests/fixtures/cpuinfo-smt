@@ -1,0 +1,132 @@
+processor	: 0
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 0
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 1
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 1
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 2
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 2
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 3
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 3
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 4
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 4
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 5
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 5
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 6
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 0
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 7
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 1
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 8
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 2
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 9
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 3
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 10
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 4
+cpu cores	: 6
+flags		: fpu vme de pse
+
+processor	: 11
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: AMD Ryzen 5 3600 6-Core Processor
+cpu MHz		: 3600.000
+physical id	: 0
+siblings	: 12
+core id		: 5
+cpu cores	: 6
+flags		: fpu vme de pse
+

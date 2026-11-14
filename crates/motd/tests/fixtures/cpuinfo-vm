@@ -1,0 +1,28 @@
+processor	: 0
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: QEMU Virtual CPU version 2.5+
+cpu MHz		: 3600.000
+flags		: fpu vme de pse
+
+processor	: 1
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: QEMU Virtual CPU version 2.5+
+cpu MHz		: 3600.000
+flags		: fpu vme de pse
+
+processor	: 2
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: QEMU Virtual CPU version 2.5+
+cpu MHz		: 3600.000
+flags		: fpu vme de pse
+
+processor	: 3
+vendor_id	: SyntheticVendor
+cpu family	: 23
+model name	: QEMU Virtual CPU version 2.5+
+cpu MHz		: 3600.000
+flags		: fpu vme de pse
+
