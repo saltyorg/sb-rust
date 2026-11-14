@@ -1,0 +1,3 @@
+#!/bin/sh
+# systemd-detect-virt -c in an LXC container (sb install tests).
+echo lxc

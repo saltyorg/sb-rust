@@ -102,6 +102,9 @@ enum Command {
     /// Runs Saltbox diagnostics role
     #[command(long_about = "Runs Saltbox diagnostics role")]
     Diag,
+    /// Runs Ansible playbooks with specified tags
+    #[command(long_about = "Runs Ansible playbooks with specified tags")]
+    Install(sb_ansible::InstallArgs),
 }
 
 /// `--force-update`, sb-go's flag in builds with self-update disabled
@@ -246,6 +249,7 @@ impl Command {
             Command::SelfUpdate { .. } => "self-update",
             Command::Logs => "logs",
             Command::Diag => "diag",
+            Command::Install(_) => "install",
         }
     }
 
@@ -271,7 +275,8 @@ impl Command {
             | Command::Motd(_)
             | Command::SelfUpdate { .. }
             | Command::Logs
-            | Command::Diag => true,
+            | Command::Diag
+            | Command::Install(_) => true,
         }
     }
 }
@@ -511,6 +516,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             command: DockerCommand::Logs,
         } => docker_logs::docker_logs(shutdown)?,
         Command::Diag => ansible::diag(shutdown)?,
+        Command::Install(ref args) => ansible::install(args, shutdown)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -900,6 +906,17 @@ mod tests {
     fn diag_needs_root() {
         assert!(Command::Diag.needs_root());
         assert_eq!(Command::Diag.name(), "diag");
+    }
+
+    /// `install` runs playbooks as root, and its log name is the
+    /// command's alone (the run log itself: tests/ansible.rs).
+    #[test]
+    fn install_needs_root_and_is_named_without_its_arguments() {
+        let install = Cli::try_parse_from(["sb", "install", "plex", "-e", "token=x"])
+            .expect("parses")
+            .command;
+        assert!(install.needs_root());
+        assert_eq!(install.name(), "install");
     }
 
     /// `docker ps` needs root (cli-core decision 3).

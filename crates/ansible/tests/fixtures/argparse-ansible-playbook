@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""A stand-in for ansible-playbook that parses its arguments as ansible-core does.
+
+sb's tests (ansible spec, Testing strategy) run it in place of
+ansible-playbook. It never runs Ansible: it declares the options sb passes
+with ansible-core's own definitions (lib/ansible/cli/arguments/
+option_helpers.py, stable-2.17: `-e/--extra-vars` with action="append" and
+maybe_unfrack_path('@'), `-v/--verbose` with action="count", `-t/--tags`
+and `--skip-tags` with action="append", `-b/--become`), parses them with
+Python's argparse, as ansible-core's CLI does, and writes what it parsed as
+JSON to `$FAKE_ANSIBLE_LOG.<n>.json` (n = 0, 1, ... in run order;
+`.fake-ansible/argv` in its working directory when unset, as the shell
+fake). A value
+argparse refuses (`--extra-vars -x=1` as two elements) ends it with
+argparse's usage error, exit 2, as Ansible would.
+"""
+
+import argparse
+import json
+import os
+import sys
+from collections.abc import Callable
+
+
+def maybe_unfrack_path(beacon: str) -> Callable[[str], str]:
+    """ansible-core's `maybe_unfrack_path`: an `@file` resolved to its path.
+
+    Resolved against the working directory, as ansible-core's `unfrackpath`
+    resolves a relative path (variables and `~` expanded, then made real).
+    """
+
+    def inner(value: str) -> str:
+        if value.startswith(beacon):
+            path = os.path.expanduser(os.path.expandvars(value[1:]))
+            return beacon + os.path.normpath(os.path.realpath(path))
+        return value
+
+    return inner
+
+
+def parser() -> argparse.ArgumentParser:
+    """The options sb passes, defined as ansible-core defines them."""
+    parser = argparse.ArgumentParser(prog="ansible-playbook")
+    parser.add_argument("args", metavar="playbook", nargs="+")
+    parser.add_argument(
+        "-e",
+        "--extra-vars",
+        dest="extra_vars",
+        action="append",
+        type=maybe_unfrack_path("@"),
+        default=[],
+    )
+    parser.add_argument("-v", "--verbose", dest="verbosity", default=0, action="count")
+    parser.add_argument("-t", "--tags", dest="tags", default=[], action="append")
+    parser.add_argument("--skip-tags", dest="skip_tags", default=[], action="append")
+    parser.add_argument(
+        "-b", "--become", default=False, action="store_true", dest="become"
+    )
+    parser.add_argument("--list-tags", dest="listtags", action="store_true")
+    return parser
+
+
+def main() -> int:
+    """Parse sys.argv, record it, exit 0."""
+    log = os.environ.get("FAKE_ANSIBLE_LOG") or ".fake-ansible/argv"
+    parsed = parser().parse_args(sys.argv[1:])
+    os.makedirs(os.path.dirname(log) or ".", exist_ok=True)
+    n = 0
+    while os.path.exists(f"{log}.{n}.json"):
+        n += 1
+    with open(f"{log}.{n}.json", "w", encoding="utf-8") as out:
+        json.dump(vars(parsed), out, ensure_ascii=False)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

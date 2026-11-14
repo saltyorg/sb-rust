@@ -286,3 +286,33 @@ async fn an_unwritable_output_is_an_output_error() {
     assert_eq!(sb_cli_core::exit::quiet_exit(&err), Some(141));
     assert_eq!(world.runs(), Vec::<Vec<String>>::new());
 }
+
+/// The argparse fixture parses as ansible-core does: sb-go's two-element
+/// `--extra-vars -x=1` is refused (argparse's usage error, exit 2), the
+/// one-element form sb sends is taken whole (spec, assumption 6).
+#[test]
+fn the_argparse_fixture_refuses_what_ansible_refuses() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/argparse-ansible-playbook"
+    );
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("temp dir");
+    let log = dir.path().join("argv");
+    let run = |args: &[&str]| {
+        std::process::Command::new(fixture)
+            .args(args)
+            .env("FAKE_ANSIBLE_LOG", &log)
+            .output()
+            .expect("python3")
+    };
+    let refused = run(&["saltbox.yml", "--extra-vars", "-x=1"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("expected one argument"),
+        "{refused:?}"
+    );
+    let taken = run(&["saltbox.yml", "--extra-vars=-x=1"]);
+    assert!(taken.status.success(), "{taken:?}");
+    let parsed: String = std::fs::read_to_string(dir.path().join("argv.0.json")).expect("record");
+    assert!(parsed.contains(r#""extra_vars": ["-x=1"]"#), "{parsed}");
+}

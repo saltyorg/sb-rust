@@ -3318,6 +3318,7 @@ dependencies = [
 name = "sb-ansible"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "sb-cli-core",
  "sb-exec",
  "tempfile",

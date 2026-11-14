@@ -1,8 +1,11 @@
-//! `sb diag` through the binary with the fake `ansible-playbook`
-//! (ansible spec, Testing strategy; module build M30): the argv it got,
-//! element by element, its working directory, sb's lines, the run log,
-//! and each ending passed on. `SB_ANSIBLE_PLAYBOOK` points at the fake
-//! (crates/ansible/tests/fixtures/fake-ansible-playbook); no Ansible runs.
+//! `sb diag` and `sb install` through the binary with the fake
+//! `ansible-playbook` (ansible spec, Testing strategy; module build M30,
+//! M31): the argv it got, element by element, its working directory, sb's
+//! lines, the run log, and each ending passed on. `SB_ANSIBLE_PLAYBOOK`
+//! points at the fake (crates/ansible/tests/fixtures/fake-ansible-playbook)
+//! or at the argparse fixture beside it, which parses its arguments with
+//! ansible-core's own definitions; no Ansible runs. `systemd-detect-virt`
+//! is a checked-in stand-in (tests/fixtures/detect-virt) first on `PATH`.
 //! Root runs (`SB_TEST_ROOT=1`): sb logs, and needs root for the command.
 
 mod common;
@@ -16,8 +19,26 @@ const FAKE: &str = concat!(
     "/../ansible/tests/fixtures/fake-ansible-playbook"
 );
 
-/// A test's world: a Saltbox root, a log directory and the fake's record
-/// prefix.
+/// The python3 fixture with ansible-core's `-e`, `-v`, `--tags`,
+/// `--skip-tags` and `--become` definitions.
+const ARGPARSE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../ansible/tests/fixtures/argparse-ansible-playbook"
+);
+
+/// `systemd-detect-virt -c` outside a container, and in LXC.
+const NOT_LXC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/detect-virt/none"
+);
+const IN_LXC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/detect-virt/lxc"
+);
+
+/// A test's world: a Saltbox root whose inventory puts the appdata root
+/// in the world (Sandbox and `saltbox_mod` under it), a log directory and
+/// the fake's record prefix.
 struct World {
     dir: tempfile::TempDir,
 }
@@ -25,13 +46,25 @@ struct World {
 impl World {
     fn new() -> Self {
         let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("temp dir");
-        std::fs::create_dir(dir.path().join("saltbox")).expect("root");
-        std::fs::create_dir(dir.path().join("logs")).expect("logs");
-        Self { dir }
+        let world = Self { dir };
+        std::fs::create_dir_all(world.root().join("inventories/host_vars")).expect("root");
+        std::fs::write(
+            world.root().join("inventories/host_vars/localhost.yml"),
+            format!("server_appdata_path: {}\n", world.appdata().display()),
+        )
+        .expect("inventory");
+        std::fs::create_dir_all(world.appdata().join("sandbox")).expect("sandbox");
+        std::fs::create_dir_all(world.appdata().join("saltbox_mod")).expect("mod");
+        std::fs::create_dir(world.logs()).expect("logs");
+        world
     }
 
     fn root(&self) -> PathBuf {
         self.dir.path().join("saltbox")
+    }
+
+    fn appdata(&self) -> PathBuf {
+        self.dir.path().join("appdata")
     }
 
     fn logs(&self) -> PathBuf {
@@ -51,8 +84,22 @@ impl World {
             .env("SB_ANSIBLE_PLAYBOOK", FAKE)
             .env("FAKE_ANSIBLE_LOG", self.record())
             .env_remove("FAKE_ANSIBLE_EXIT")
-            .env_remove("FAKE_ANSIBLE_MODE");
+            .env_remove("FAKE_ANSIBLE_MODE")
+            .env("PATH", path_with(NOT_LXC));
         cmd
+    }
+
+    /// What the argparse fixture parsed, run by run.
+    fn parsed(&self) -> Vec<serde_json::Value> {
+        let mut runs = Vec::new();
+        for n in 0.. {
+            let path = PathBuf::from(format!("{}.{n}.json", self.record().display()));
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                break;
+            };
+            runs.push(serde_json::from_str(&text).expect("JSON"));
+        }
+        runs
     }
 
     /// Each run's record: its working directory, `$0`, its arguments.
@@ -74,6 +121,20 @@ impl World {
     fn log(&self) -> String {
         std::fs::read_to_string(self.logs().join("sb.log")).unwrap_or_default()
     }
+}
+
+/// `dir`, then the test's own `PATH` (sh, sleep and python3 for the
+/// fixtures), joined as std joins a `PATH`
+/// (<https://doc.rust-lang.org/std/env/fn.join_paths.html>).
+fn path_with(dir: &str) -> std::ffi::OsString {
+    let own = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(PathBuf::from(dir)).chain(std::env::split_paths(&own)))
+        .expect("a PATH")
+}
+
+/// A run's arguments after its working directory and `$0`.
+fn args_of(run: &[String]) -> Vec<&str> {
+    run[2..].iter().map(String::as_str).collect()
 }
 
 fn stdout(output: &Output) -> String {
@@ -213,4 +274,405 @@ fn diag_takes_no_arguments() {
     let output = world.sb(&["diag", "extra"]).output().expect("run sb");
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+}
+
+/// `sb install`: the tags joined, split and trimmed, routed by prefix,
+/// and run Saltbox, then `saltbox_mod`, then Sandbox, each in its own
+/// directory with its own playbook, the tags joined with `,` in one
+/// element; each run's `Executing...` line masks the tags (decision 17).
+#[test]
+fn install_runs_each_repo_in_sb_gos_order() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .sb(&["install", "plex,sandbox-tautulli", "mod-jf", " sonarr ,"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let runs = world.runs();
+    let dirs: Vec<&str> = runs.iter().map(|run| run[0].as_str()).collect();
+    let saltbox = world.root().display().to_string();
+    let modded = world.appdata().join("saltbox_mod").display().to_string();
+    let sandbox = world.appdata().join("sandbox").display().to_string();
+    assert_eq!(dirs, [&saltbox, &modded, &sandbox]);
+    assert_eq!(
+        args_of(&runs[0]),
+        ["saltbox.yml", "--become", "--tags", "plex,sonarr"]
+    );
+    assert_eq!(
+        args_of(&runs[1]),
+        ["saltbox_mod.yml", "--become", "--tags", "jf"]
+    );
+    assert_eq!(
+        args_of(&runs[2]),
+        ["sandbox.yml", "--become", "--tags", "tautulli"]
+    );
+    let out = stdout(&output);
+    for playbook in ["saltbox.yml", "saltbox_mod.yml", "sandbox.yml"] {
+        assert!(
+            out.contains(&format!(
+                "Executing Ansible playbook with command: {FAKE} {playbook} --become --tags [ARG]\n"
+            )),
+            "{out}"
+        );
+    }
+    for path in [
+        format!("{saltbox}/saltbox.yml"),
+        format!("{modded}/saltbox_mod.yml"),
+        format!("{sandbox}/sandbox.yml"),
+    ] {
+        assert!(
+            out.contains(&format!("\nPlaybook {path} executed successfully.\n")),
+            "{out}"
+        );
+    }
+    assert!(!out.contains("plex") && !out.contains("tautulli"), "{out}");
+}
+
+/// `-v` is counted and reaches every playbook as one `-v...` element of
+/// the same count, past Ansible's 6 too; none gives no element
+/// (capability map, open items; spec success criterion 1).
+#[test]
+fn verbosity_reaches_every_playbook_as_one_element() {
+    if !root_gate::requested() {
+        return;
+    }
+    let cases: [(&[&str], Option<&str>); 9] = [
+        (&[], None),
+        (&["-v"], Some("-v")),
+        (&["-vv"], Some("-vv")),
+        (&["-vvv"], Some("-vvv")),
+        (&["-vvvv"], Some("-vvvv")),
+        (&["-v", "-v"], Some("-vv")),
+        (&["--verbose", "--verbose", "--verbose"], Some("-vvv")),
+        (&["-vvvvvvv"], Some("-vvvvvvv")),
+        (&["-v", "--verbose", "-vv"], Some("-vvvv")),
+    ];
+    for (flags, expected) in cases {
+        let world = World::new();
+        let mut args = vec!["install", "plex", "mod-a", "sandbox-b"];
+        args.extend_from_slice(flags);
+        let output = world.sb(&args).output().expect("run sb");
+        assert!(output.status.success(), "{flags:?}: {}", stderr(&output));
+        let runs = world.runs();
+        assert_eq!(runs.len(), 3, "{flags:?}");
+        for run in &runs {
+            let verbose: Vec<&str> = args_of(run)
+                .into_iter()
+                .filter(|arg| arg.starts_with("-v"))
+                .collect();
+            assert_eq!(
+                verbose,
+                expected.into_iter().collect::<Vec<_>>(),
+                "{flags:?}"
+            );
+            if let Some(expected) = expected {
+                assert_eq!(args_of(run).last(), Some(&expected), "{flags:?}: last");
+            }
+        }
+    }
+}
+
+/// The `-e` cases of the spec: each value reaches the fake as one
+/// `--extra-vars=<value>` element, byte for byte and in order, never split
+/// on commas, joined or passed through a shell; `--skip-tags` joined into
+/// one element; every playbook gets the same (capability map, open
+/// items; spec success criterion 2).
+#[test]
+fn every_extra_vars_value_reaches_ansible_whole() {
+    if !root_gate::requested() {
+        return;
+    }
+    let values = [
+        r#"{"a": 1, "b": [2, 3]}"#,
+        r#"{"msg": "say \"hi\", ok", "q": "it's"}"#,
+        r#"{"name": "Zoë 名前 🚀"}"#,
+        "-x=1",
+        "--no-cache",
+        "@vars.yml",
+        "greeting=hello world",
+        "",
+        "a=1,b=2",
+        "line\nbreak=$HOME `id` ;|&",
+    ];
+    let world = World::new();
+    let mut args = vec!["install", "plex", "sandbox-b"];
+    for value in values {
+        args.extend(["-e", value]);
+    }
+    args.extend(["-s", "x,y", "--skip-tags", "z"]);
+    let output = world.sb(&args).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let expected: Vec<String> = values
+        .iter()
+        .map(|value| format!("--extra-vars={value}"))
+        .chain(["--skip-tags=x,y,z".to_string()])
+        .collect();
+    let runs = world.runs();
+    assert_eq!(runs.len(), 2);
+    for run in &runs {
+        assert_eq!(args_of(run)[4..], expected, "{run:?}");
+    }
+    // The `Executing...` line shows each as `--extra-vars=[ARG]`.
+    let masked = format!(
+        "--tags [ARG]{} --skip-tags=[ARG]\n",
+        " --extra-vars=[ARG]".repeat(values.len())
+    );
+    assert!(stdout(&output).contains(&masked), "{}", stdout(&output));
+}
+
+/// Several `-e` keep their order: `-e a=1 -e '{"b": 2}' -e @f.yml` are
+/// three elements in that order.
+#[test]
+fn several_extra_vars_keep_their_order() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .sb(&[
+            "install",
+            "plex",
+            "-e",
+            "a=1",
+            "-e",
+            r#"{"b": 2}"#,
+            "-e",
+            "@f.yml",
+        ])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        args_of(&world.runs()[0])[4..],
+        [
+            "--extra-vars=a=1",
+            r#"--extra-vars={"b": 2}"#,
+            "--extra-vars=@f.yml"
+        ]
+    );
+}
+
+/// The same values through ansible-core's own argparse definitions: each
+/// arrives whole, a leading `-` included, `@file` resolved in the
+/// repository the playbook runs in; `-v` counted; the tags one value.
+#[test]
+fn ansibles_argparse_receives_each_value_whole() {
+    if !root_gate::requested() {
+        return;
+    }
+    let values = [
+        r#"{"a": 1, "b": [2, 3]}"#,
+        r#"{"msg": "say \"hi\", ok", "q": "it's"}"#,
+        r#"{"name": "Zoë 名前 🚀"}"#,
+        "-x=1",
+        "--no-cache",
+        "greeting=hello world",
+        "",
+        "@vars.yml",
+    ];
+    let world = World::new();
+    let mut args = vec!["install", "plex,sonarr", "sandbox-b", "-vvv", "-s", "x,y"];
+    for value in values {
+        args.extend(["-e", value]);
+    }
+    let output = world
+        .sb(&args)
+        .env("SB_ANSIBLE_PLAYBOOK", ARGPARSE)
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let parsed = world.parsed();
+    assert_eq!(parsed.len(), 2);
+    for (run, (playbook, dir, tags)) in parsed.iter().zip([
+        ("saltbox.yml", world.root(), "plex,sonarr"),
+        ("sandbox.yml", world.appdata().join("sandbox"), "b"),
+    ]) {
+        let mut expected: Vec<String> = values[..values.len() - 1]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        // The fixture resolves it as Ansible does, symlinks followed.
+        let dir = dir.canonicalize().expect("the repository");
+        expected.push(format!("@{}", dir.join("vars.yml").display()));
+        assert_eq!(run["extra_vars"], serde_json::json!(expected), "{run}");
+        assert_eq!(run["args"], serde_json::json!([playbook]), "{run}");
+        assert_eq!(run["tags"], serde_json::json!([tags]), "{run}");
+        assert_eq!(run["skip_tags"], serde_json::json!(["x,y"]), "{run}");
+        assert_eq!(run["verbosity"], 3, "{run}");
+        assert_eq!(run["become"], true, "{run}");
+    }
+}
+
+/// A token inside an `-e` value is in neither the `Executing...` line,
+/// the run log, nor the failure block (spec success criterion 5).
+#[test]
+fn an_extra_vars_secret_is_never_shown_or_logged() {
+    if !root_gate::requested() {
+        return;
+    }
+    let token = "tok-6b1c9e0d-not-real";
+    let world = World::new();
+    let value = format!(r#"{{"api_token": "{token}"}}"#);
+    let output = world
+        .sb(&["install", "plex", "-e", &value, "-e", &format!("t={token}")])
+        .env("FAKE_ANSIBLE_EXIT", "2")
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    // It reached Ansible, whole.
+    assert!(args_of(&world.runs()[0]).contains(&format!("--extra-vars={value}").as_str()));
+    let (out, err, log) = (stdout(&output), stderr(&output), world.log());
+    assert!(
+        out.contains("--extra-vars=[ARG] --extra-vars=[ARG]"),
+        "{out}"
+    );
+    assert!(err.contains("exited with code 2"), "{err}");
+    assert!(log.contains("child started"), "{log}");
+    for text in [&out, &err, &log] {
+        assert!(!text.contains(token), "{text}");
+    }
+}
+
+/// A failed playbook stops the rest: sb exits with its code, and the later
+/// playbooks don't run.
+#[test]
+fn a_failed_playbook_stops_the_later_ones() {
+    if !root_gate::requested() {
+        return;
+    }
+    for code in [2, 4, 250] {
+        let world = World::new();
+        let output = world
+            .sb(&["install", "plex", "mod-a", "sandbox-b"])
+            .env("FAKE_ANSIBLE_EXIT", code.to_string())
+            .output()
+            .expect("run sb");
+        assert_eq!(output.status.code(), Some(code), "{}", stderr(&output));
+        let runs = world.runs();
+        assert_eq!(runs.len(), 1, "{code}: only Saltbox ran");
+        assert_eq!(args_of(&runs[0])[0], "saltbox.yml");
+        assert!(
+            stderr(&output)
+                .trim_end()
+                .ends_with("Scroll up to the failed task to review."),
+            "{}",
+            stderr(&output)
+        );
+    }
+}
+
+/// In an LXC container nothing runs: host's text, exit 1. The check comes
+/// before the tags are read, as sb-go's does.
+#[test]
+fn lxc_refuses_before_anything_runs() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    for tags in ["plex", ","] {
+        let output = world
+            .sb(&["install", tags])
+            .env("PATH", path_with(IN_LXC))
+            .output()
+            .expect("run sb");
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains(
+                "UNSUPPORTED VIRTUALIZATION - Install cancelled: Running in an LXC container is not supported"
+            ),
+            "{}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+}
+
+/// Tags that leave nothing are sb-go's `no tags provided`, exit 1; no
+/// argument at all is clap's usage error, exit 2.
+#[test]
+fn no_tags_is_an_error() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world.sb(&["install", " , ", ""]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("no tags provided"),
+        "{}",
+        stderr(&output)
+    );
+    let output = world.sb(&["install"]).output().expect("run sb");
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+}
+
+/// `--force-disk-full` fails at once with host's text for the appdata
+/// root, exit 1; nothing runs.
+#[test]
+fn force_disk_full_fails_with_hosts_text() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .sb(&["install", "plex", "--force-disk-full"])
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains(&format!(
+            "INSUFFICIENT DISK SPACE - Install cancelled: {} is 100.0% full",
+            world.appdata().display()
+        )),
+        "{err}"
+    );
+    assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+}
+
+/// `--no-cache` runs the playbook with no tag listing: one run, by tag.
+#[test]
+fn no_cache_runs_without_a_listing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .sb(&["install", "plex", "--no-cache"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let runs = world.runs();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        args_of(&runs[0]),
+        ["saltbox.yml", "--become", "--tags", "plex"]
+    );
+}
+
+/// `sb install --help` lists sb-go's flags with their short help and
+/// hides `--force-disk-full`. (sb's help shows each flag's short help
+/// only, so `-e`'s long help is checked on clap's definition, in
+/// sb-ansible's unit tests.)
+#[test]
+fn install_help_lists_sb_gos_flags() {
+    let output = common::sb()
+        .args(["install", "--help"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success());
+    let text = console::strip_ansi_codes(&stdout(&output)).into_owned();
+    for line in [
+        "Extra variables to pass to Ansible",
+        "Tags to skip during Ansible playbook execution",
+        "Increase verbosity level (can be used multiple times, e.g. -vvv)",
+        "Skip cache validation and always perform tag checks",
+    ] {
+        assert!(text.contains(line), "{text}");
+    }
+    assert!(!text.contains("force-disk-full"), "{text}");
 }

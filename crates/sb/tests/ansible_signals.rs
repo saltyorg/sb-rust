@@ -1,5 +1,6 @@
-//! `sb diag` interrupted (ansible spec, steps 7 and 8, success criterion
-//! 4; module build M30): Ctrl-C while the fake playbook runs attached.
+//! `sb diag` and `sb install` interrupted (ansible spec, steps 7 and 8,
+//! success criterion 4; module build M30, M31): Ctrl-C while the fake
+//! playbook runs attached.
 //! sb runs in a process group of its own, as a shell's foreground job, and
 //! the terminal's Ctrl-C is SIGINT to that group, which is what these
 //! tests send, as exec's own attached tests do (why not through a PTY: the
@@ -22,6 +23,12 @@ const FAKE: &str = concat!(
     "/../ansible/tests/fixtures/fake-ansible-playbook"
 );
 
+/// `systemd-detect-virt -c` outside a container.
+const NOT_LXC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/detect-virt/none"
+);
+
 /// sb's group, killed with SIGKILL if a test fails before sb ends (the fake is in
 /// it too).
 struct Group {
@@ -42,21 +49,42 @@ fn pid(raw: u32) -> Option<Pid> {
     i32::try_from(raw).ok().and_then(Pid::from_raw)
 }
 
-/// `sb diag` in a group of its own with the fake in `mode`, waiting until
+/// `sb <args>` in a group of its own with the fake in `mode`, waiting until
 /// the fake has written its pid.
-fn start(dir: &Path, mode: &str) -> Group {
+fn start(dir: &Path, mode: &str, args: &[&str]) -> Group {
+    start_with(dir, mode, args, None)
+}
+
+/// [`start`], with the fake's exit code (also its code after a SIGTERM).
+fn start_with(dir: &Path, mode: &str, args: &[&str], exit: Option<&str>) -> Group {
     let root = dir.join("saltbox");
-    std::fs::create_dir_all(&root).expect("root");
+    std::fs::create_dir_all(root.join("inventories/host_vars")).expect("root");
+    let appdata = dir.join("appdata");
+    std::fs::create_dir_all(appdata.join("sandbox")).expect("sandbox");
+    std::fs::write(
+        root.join("inventories/host_vars/localhost.yml"),
+        format!("server_appdata_path: {}\n", appdata.display()),
+    )
+    .expect("inventory");
     let logs = dir.join("logs");
     std::fs::create_dir_all(&logs).expect("logs");
     let mut cmd = common::sb();
-    cmd.arg("diag")
+    cmd.args(args)
+        // install's LXC check: not in a container.
+        .env("PATH", {
+            let own = std::env::var_os("PATH").unwrap_or_default();
+            std::env::join_paths(
+                std::iter::once(std::path::PathBuf::from(NOT_LXC))
+                    .chain(std::env::split_paths(&own)),
+            )
+            .expect("a PATH")
+        })
         .env("SB_SALTBOX_DIR", &root)
         .env("SB_LOG_DIR", &logs)
         .env("SB_ANSIBLE_PLAYBOOK", FAKE)
         .env("FAKE_ANSIBLE_LOG", dir.join("argv"))
         .env("FAKE_ANSIBLE_MODE", mode)
-        .env_remove("FAKE_ANSIBLE_EXIT")
+        .env("FAKE_ANSIBLE_EXIT", exit.unwrap_or_default())
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -111,7 +139,7 @@ fn ctrl_c_passes_ansibles_99_through() {
         return;
     }
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
-    let group = start(dir.path(), "interrupt");
+    let group = start(dir.path(), "interrupt", &["diag"]);
     press_ctrl_c(&group);
     let (status, stdout, stderr) = end(group);
     assert_eq!(status.code(), Some(99), "{status:?} {stderr}");
@@ -132,7 +160,7 @@ fn ctrl_c_a_playbook_dies_of_ends_sb_by_sigint() {
         return;
     }
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
-    let group = start(dir.path(), "wait");
+    let group = start(dir.path(), "wait", &["diag"]);
     press_ctrl_c(&group);
     let (status, _, stderr) = end(group);
     assert_eq!(
@@ -154,7 +182,7 @@ fn a_sigterm_to_sb_reaches_the_playbook() {
         return;
     }
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
-    let group = start(dir.path(), "wait");
+    let group = start(dir.path(), "wait", &["diag"]);
     kill_process(group.pid, Signal::TERM).expect("SIGTERM");
     let (status, _, stderr) = end(group);
     assert_eq!(
@@ -165,5 +193,59 @@ fn a_sigterm_to_sb_reaches_the_playbook() {
     assert!(
         dir.path().join("argv.term").exists(),
         "the playbook got SIGTERM"
+    );
+}
+
+/// Ctrl-C during `sb install`'s first playbook: Ansible's 99 passes
+/// through and the later playbooks don't run (spec, step 7).
+#[test]
+fn ctrl_c_during_install_stops_the_later_playbooks() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
+    let group = start(dir.path(), "interrupt", &["install", "plex", "sandbox-b"]);
+    press_ctrl_c(&group);
+    let (status, _, stderr) = end(group);
+    assert_eq!(status.code(), Some(99), "{status:?} {stderr}");
+    assert!(
+        stderr.trim_end().ends_with("Ansible was interrupted."),
+        "{stderr}"
+    );
+    assert!(dir.path().join("argv.0").exists(), "Saltbox ran");
+    assert!(!dir.path().join("argv.1").exists(), "Sandbox didn't");
+}
+
+/// A SIGTERM to sb that the playbook survives with exit 0: exec counts the
+/// run as interrupted whatever its code, so sb runs no later playbook,
+/// prints no `Executing...` line for it, and ends by its signal.
+#[test]
+fn a_sigterm_between_playbooks_runs_no_more() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
+    let group = start_with(
+        dir.path(),
+        "wait",
+        &["install", "plex", "sandbox-b"],
+        Some("0"),
+    );
+    kill_process(group.pid, Signal::TERM).expect("SIGTERM");
+    let (status, stdout, stderr) = end(group);
+    assert_eq!(
+        status.signal(),
+        Some(Signal::TERM.as_raw()),
+        "{status:?} {stderr}"
+    );
+    assert!(
+        dir.path().join("argv.term").exists(),
+        "the playbook got SIGTERM"
+    );
+    assert!(!dir.path().join("argv.1").exists(), "Sandbox didn't run");
+    assert_eq!(
+        stdout.matches("Executing Ansible playbook").count(),
+        1,
+        "{stdout}"
     );
 }

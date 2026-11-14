@@ -2,15 +2,19 @@
 //! the tag listing and its cache (ansible spec). Every child is
 //! `ansible-playbook` through sb-exec: `attached` for the runs a user
 //! watches, so Ansible's prompts reach the terminal (spec, assumption 2).
-//! So far the first slice: the playbook paths ([`Repo`]) and one attached
-//! run by tag ([`Ansible::run`], [`pass_through`]).
+//! So far the first two slices: the playbook paths ([`Repo`], [`Repos`]),
+//! one attached run by tag ([`Ansible::run`], [`pass_through`]), and
+//! `sb install`'s arguments, tags and routing ([`InstallArgs`],
+//! [`parse_tags`], [`Routed`]).
 
 // sb's lines go to the writer a caller passes; `print!`/`eprint!` panic on a
 // closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+mod args;
 mod run;
 
+pub use args::{InstallArgs, NoTags, Routed, parse_tags};
 pub use run::{RunArgs, RunError, Tags, pass_through};
 
 use std::path::{Path, PathBuf};
@@ -99,6 +103,30 @@ impl Repo {
     }
 }
 
+/// The three playbook repositories of one host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Repos {
+    /// At the Saltbox root.
+    pub saltbox: Repo,
+    /// At `<appdata>/sandbox`.
+    pub sandbox: Repo,
+    /// At `<appdata>/saltbox_mod`.
+    pub saltbox_mod: Repo,
+}
+
+impl Repos {
+    /// Saltbox at the Saltbox `root`, Sandbox and `saltbox_mod` under the
+    /// `appdata` root (spec, assumption 3).
+    #[must_use]
+    pub fn new(root: &Path, appdata: &Path) -> Self {
+        Self {
+            saltbox: Repo::saltbox(root),
+            sandbox: Repo::sandbox(appdata),
+            saltbox_mod: Repo::saltbox_mod(appdata),
+        }
+    }
+}
+
 /// `ansible-playbook`: [`PROGRAM`], or another program in its place (tests
 /// and debugging: the binary's `SB_ANSIBLE_PLAYBOOK`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,6 +183,14 @@ mod tests {
             modded.playbook_path(),
             Path::new("/opt/saltbox_mod/saltbox_mod.yml")
         );
+    }
+
+    #[test]
+    fn repos_are_found_under_the_root_and_appdata() {
+        let repos = Repos::new(Path::new("/srv/git/saltbox"), Path::new("/data"));
+        assert_eq!(repos.saltbox, Repo::saltbox(Path::new("/srv/git/saltbox")));
+        assert_eq!(repos.sandbox.dir(), Path::new("/data/sandbox"));
+        assert_eq!(repos.saltbox_mod.dir(), Path::new("/data/saltbox_mod"));
     }
 
     #[test]

@@ -1,0 +1,4 @@
+#!/bin/sh
+# systemd-detect-virt -c outside any container (sb install tests).
+echo none
+exit 1

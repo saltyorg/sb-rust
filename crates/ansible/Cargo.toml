@@ -12,6 +12,8 @@ sb-cli-core.workspace = true
 # Every playbook run (ansible spec, assumption 2).
 sb-exec.workspace = true
 thiserror.workspace = true
+# install's flags (`Count`, `Append`, `allow_hyphen_values`).
+clap.workspace = true
 
 [dev-dependencies]
 # A real Shutdown and runtime for the attached runs, with the fake

@@ -15,7 +15,7 @@
 #   FAKE_ANSIBLE_MODE    `wait`: write the pid to `$FAKE_ANSIBLE_LOG.pid` and
 #                        wait, with the signals at their defaults (a SIGINT
 #                        kills it); a SIGTERM writes `$FAKE_ANSIBLE_LOG.term`
-#                        and exits 143.
+#                        and exits with FAKE_ANSIBLE_EXIT (143 when unset).
 #                        `interrupt`: as `wait`, but a SIGINT prints Ansible's
 #                        "User interrupted execution" and exits 99, as
 #                        ansible-core's CLI does.
@@ -37,7 +37,7 @@ while [ -e "$log.$n" ]; do n=$((n + 1)); done
 printf '%s\0' "$PWD" "$0" "$@" > "$log.$n"
 case "$mode" in
   wait|interrupt)
-    trap 'echo term > "$log.term"; exit 143' TERM
+    trap 'echo term > "$log.term"; exit "${code:-143}"' TERM
     if [ "$mode" = interrupt ]; then
       trap 'echo "User interrupted execution" >&2; exit 99' INT
     fi
