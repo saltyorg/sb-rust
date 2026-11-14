@@ -329,7 +329,10 @@ docs/community/support.md:34) and sb-go's screens can't give.
   listed, each source opened (kind and name), each page (direction,
   count, `more_*`, time taken), follow start and stop, every error and
   notice, saves (path and line count), and the exit. Never log content
-  (capability map decision 11, "Never logged"): it can hold tokens.
+  (capability map decision 11, "Never logged"): it can hold tokens. The
+  picker's 5 s service refresh logs only a failed read and each service
+  whose state changed, was added or went (maintainer, 2026-11-14;
+  "Verification notes").
 
 ### Help texts
 
@@ -1441,6 +1444,34 @@ the test's directory.
     with the Containers section's one row: the containers weren't
     seen, so `No matching ... found.` would not be true.
   - `sb docker logs` lists the containers only until `Tab` comes (M70).
+
+- **The refresh's run log (maintainer, 2026-11-14):** the picker's 5 s
+  read of the services runs with no tracing subscriber (tracing's
+  `WithSubscriber::with_subscriber` with a `NoSubscriber`), so a refresh
+  that changes nothing writes nothing: none of sb-exec's child records
+  and none of sb-host's list records. The picker logs a failed read
+  (`service refresh failed`) and each service whose state changed
+  (`service state changed`, with all four: systemd's active state,
+  sub-state, unit file state and state-change time), was added (`service
+  listed`) or went (`service no longer listed`), outside the silenced
+  read. A state-change time one of the two reads couldn't get (a failed
+  or timed-out `systemctl show`) counts as unknown, not as a change, so
+  one failed `show` doesn't log every service. The silence is a
+  registered `Dispatch` of a `NoSubscriber`, built once, not
+  `Dispatch::none()`, which would cache a callsite first hit inside the
+  read as never enabled for the whole run. No sb-exec or sb-host API was
+  added for it. Two consequences, accepted:
+  - a refresh that succeeds drops its read's partial-read records
+    (`systemd timers not read`, `systemd service times not read`); the
+    first load before the screen is logged in full, so they appear once
+    per run;
+  - a task the read spawned wouldn't inherit the silence (tracing's
+    default subscriber is per thread and per future); sb-host's list
+    spawns none today. Nor does a record written while the read is
+    dropped: the picker quit mid-read, sb-exec's group-kill record.
+  `crates/tui/tests/refresh_log.rs` tests both directions, and
+  `crates/sb/tests/logs.rs` counts the real read's records end to end.
+  A read that keeps failing still logs each failure, every 5 s.
 
 ## Open questions
 

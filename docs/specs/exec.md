@@ -276,7 +276,10 @@ count of masked ones, changed variable names, working directory, the way
 it runs) and when it ends (outcome, elapsed). `stream` and `pty` lines are
 logged by term-ui as the step's output, secrets taken out; `capture`
 output is logged only if the caller shows it; `attached` output never
-reaches the log.
+reaches the log. A caller may run a read with tracing silenced, and its
+children's records then go unwritten: the log picker's 5 s service
+refresh does (tui spec, "Verification notes": the refresh's run log;
+maintainer, 2026-11-14).
 
 ### Differences from sb-go (the complete list)
 

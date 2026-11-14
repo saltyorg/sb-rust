@@ -368,7 +368,8 @@ fn a_dotted_service_name_opens_its_log() {
 }
 
 /// A service's change shows within 6 s, without input: the picker reads
-/// the services again every 5 s (tui spec, success criterion 4).
+/// the services again every 5 s (tui spec, success criterion 4), and the
+/// run log has the change but none of the refresh's own records.
 #[test]
 fn a_service_change_shows_within_six_seconds() {
     let world = World::new(UNITS, UNIT_FILES);
@@ -394,4 +395,22 @@ fn a_service_change_shows_within_six_seconds() {
     );
     pty.send(b"q");
     assert!(pty.exit().success());
+    // The refresh that saw it wrote none of its read's records (tui spec,
+    // "Verification notes": the refresh's run log): the systemctl
+    // children logged are the first load's four, and the change is
+    // logged.
+    let log = world.log();
+    let children = log
+        .lines()
+        .filter(|line| line.contains("child started") && line.contains("systemctl"))
+        .count();
+    assert_eq!(children, 4, "{log}");
+    assert_eq!(log.matches("systemd services listed").count(), 1, "{log}");
+    assert!(
+        log.lines()
+            .any(|line| line.contains("service state changed")
+                && line.contains("saltbox_managed_backup")
+                && line.contains("active=active")),
+        "{log}"
+    );
 }

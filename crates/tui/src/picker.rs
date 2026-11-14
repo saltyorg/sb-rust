@@ -55,6 +55,9 @@ use sb_term_ui::DisplayText;
 use tokio::sync::{Notify, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use tracing::Dispatch;
+use tracing::instrument::WithSubscriber as _;
+use tracing::subscriber::NoSubscriber;
 
 use crate::source::docker::{Container, Snapshot};
 use crate::status::{Status, service_status};
@@ -122,7 +125,8 @@ pub enum Choice {
 }
 
 /// Reads the service list again for the 5 s refresh: the cause as text
-/// when it fails.
+/// when it fails. Its records belong in the future it returns, which runs
+/// silenced; the call itself isn't.
 pub type ListServices =
     Box<dyn Fn() -> BoxFuture<'static, Result<Vec<Service>, String>> + Send + Sync>;
 
@@ -175,6 +179,8 @@ struct Refresh {
     list: ListServices,
     /// What wakes the screen when a read ends ([`crate::Tui::waker`]).
     waker: Arc<Notify>,
+    /// The subscriber the reads run under: none at all.
+    silence: Dispatch,
     /// The read under way, if any.
     pending: Option<Pending>,
 }
@@ -336,6 +342,14 @@ impl Picker {
         self.refresh = Some(Refresh {
             list,
             waker,
+            // Why a registered `Dispatch` of a `NoSubscriber`, not
+            // `Dispatch::none()`: `none()` doesn't register with
+            // tracing's callsites, so a callsite first hit inside a read
+            // would be cached as never enabled for the whole process, its
+            // records lost after the read too (tracing-core 0.1.36
+            // `callsite.rs`, `Rebuilder::JustOne`). Built once: each new
+            // `Dispatch` rebuilds every callsite's interest.
+            silence: Dispatch::new(NoSubscriber::new()),
             pending: None,
         });
         self
@@ -663,7 +677,17 @@ impl Picker {
             return;
         }
         let (send, result) = oneshot::channel();
-        let read = (refresh.list)();
+        // The read runs with no subscriber (tracing's
+        // `WithSubscriber::with_subscriber` with a `NoSubscriber`,
+        // <https://docs.rs/tracing/0.1.44/tracing/instrument/trait.WithSubscriber.html#method.with_subscriber>,
+        // <https://docs.rs/tracing/0.1.44/tracing/subscriber/struct.NoSubscriber.html>),
+        // so a refresh writes none of its read's records, sb-exec's and
+        // sb-host's alike; the picker logs a failure and each change
+        // itself (tui spec, "Verification notes": the refresh's run log).
+        // The first load before the screen is logged in full. A task the
+        // read spawned wouldn't inherit the silence; sb-host's list spawns
+        // none.
+        let read = (refresh.list)().with_subscriber(refresh.silence.clone());
         let waker = Arc::clone(&refresh.waker);
         // Why a oneshot beside the `JoinHandle`, which carries a result
         // too: the result is sent before the wake, so `wake` always finds
@@ -698,6 +722,7 @@ impl Picker {
         match result {
             Ok(services) => {
                 self.services_trouble = None;
+                log_changes(&self.services, &services);
                 self.services = services;
                 self.restate(Timestamp::now());
             }
@@ -913,6 +938,46 @@ impl Picker {
             spans.push(Span::styled(format!(" {what}"), muted));
         }
         TextLine::from(spans)
+    }
+}
+
+/// Whether a service's state changed between two reads, as the run log
+/// tells: what systemd says, not the times the screen works out from it.
+/// A state-change time that one of the reads couldn't get (sb-host's
+/// `show` failed or timed out, leaving it `None`) is unknown, not a
+/// change, so one failed `show` doesn't log every service twice.
+fn changed(before: &Service, after: &Service) -> bool {
+    let times_differ = match (before.state_change, after.state_change) {
+        (Some(before), Some(after)) => before != after,
+        _ => false,
+    };
+    before.active != after.active
+        || before.sub != after.sub
+        || before.unit_file_state != after.unit_file_state
+        || times_differ
+}
+
+/// The run-log records of a refresh: each service whose state changed,
+/// was added or went (nothing when none did).
+fn log_changes(before: &[Service], after: &[Service]) {
+    for service in after {
+        match before.iter().find(|old| old.name == service.name) {
+            Some(old) if !changed(old, service) => {}
+            Some(_) => tracing::info!(
+                service = %escape_controls(&service.name),
+                active = %escape_controls(&service.active),
+                sub = %escape_controls(&service.sub),
+                unit_file_state = %escape_controls(service.unit_file_state.as_deref().unwrap_or("-")),
+                since = %service.state_change.map_or_else(|| "-".to_owned(), |at| at.to_string()),
+                "service state changed"
+            ),
+            None => tracing::info!(service = %escape_controls(&service.name), "service listed"),
+        }
+    }
+    for old in before {
+        if !after.iter().any(|service| service.name == old.name) {
+            tracing::info!(service = %escape_controls(&old.name), "service no longer listed");
+        }
     }
 }
 

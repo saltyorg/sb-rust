@@ -66,6 +66,8 @@ vt100.workspace = true
 rustix.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+# The refresh's run-log test reads tracing's records back (as sb-exec's).
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
