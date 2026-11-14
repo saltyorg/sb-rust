@@ -21,6 +21,7 @@ sb-repo = { path = "crates/repo" }
 sb-tui = { path = "crates/tui" }
 sb-release = { path = "crates/release" }
 sb-motd = { path = "crates/motd" }
+sb-ansible = { path = "crates/ansible" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"

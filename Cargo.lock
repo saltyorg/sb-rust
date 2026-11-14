@@ -3294,6 +3294,7 @@ dependencies = [
  "portable-pty",
  "predicates",
  "rustix",
+ "sb-ansible",
  "sb-cli-core",
  "sb-config",
  "sb-docker",
@@ -3311,6 +3312,17 @@ dependencies = [
  "tokio",
  "tracing",
  "vt100",
+]
+
+[[package]]
+name = "sb-ansible"
+version = "0.1.0"
+dependencies = [
+ "sb-cli-core",
+ "sb-exec",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

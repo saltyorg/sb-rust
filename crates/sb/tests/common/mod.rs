@@ -57,6 +57,12 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     // Nor the host's journal: a directory that doesn't exist, unless a
     // test points `SB_JOURNAL_DIR` at its own crafted files.
     cmd.env("SB_JOURNAL_DIR", test_log_dir().join("no-journal"));
+    // Nor Ansible: a playbook program that doesn't exist, unless a test
+    // points it at its fake.
+    cmd.env(
+        "SB_ANSIBLE_PLAYBOOK",
+        test_log_dir().join("no-ansible-playbook"),
+    );
     // Nor the developer's colour profile (an `ascii` one would turn colour
     // off on a terminal); tests that want one set it.
     cmd.env_remove("SB_COLOR_PROFILE");

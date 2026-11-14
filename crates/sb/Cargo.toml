@@ -19,6 +19,8 @@ sb-repo.workspace = true
 sb-exec.workspace = true
 # `sb motd` (motd spec).
 sb-motd.workspace = true
+# `sb diag` (and later `install` and `list`): playbooks by tag (ansible spec).
+sb-ansible.workspace = true
 shlex.workspace = true
 # `sb self-update` (release spec).
 sb-release.workspace = true

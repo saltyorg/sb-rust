@@ -1,0 +1,51 @@
+#!/bin/sh
+# A stand-in for ansible-playbook in sb's tests (ansible spec, Testing
+# strategy): it never runs Ansible. Each run writes one record,
+# `$FAKE_ANSIBLE_LOG.<n>` (n = 0, 1, ... in run order): its working
+# directory, then its $0 and each argument, every element followed by a
+# NUL, so an element holding spaces, newlines or quotes is compared whole.
+#
+# Each setting comes from the environment, else from a file of that name in
+# `.fake-ansible/` under its working directory (the repository it runs
+# in): tests running in one process, whose environment their threads share,
+# set it there, without writing a program to run.
+#
+#   FAKE_ANSIBLE_LOG     the record's prefix (`.fake-ansible/argv` when unset)
+#   FAKE_ANSIBLE_EXIT    the exit code (0 when unset)
+#   FAKE_ANSIBLE_MODE    `wait`: write the pid to `$FAKE_ANSIBLE_LOG.pid` and
+#                        wait, with the signals at their defaults (a SIGINT
+#                        kills it); a SIGTERM writes `$FAKE_ANSIBLE_LOG.term`
+#                        and exits 143.
+#                        `interrupt`: as `wait`, but a SIGINT prints Ansible's
+#                        "User interrupted execution" and exits 99, as
+#                        ansible-core's CLI does.
+#                        `self-kill`: it kills itself with SIGKILL, as the OOM
+#                        killer would, a signal sb never got.
+setting() {
+  eval "value=\${$1-}"
+  if [ -z "$value" ] && [ -f ".fake-ansible/$1" ]; then
+    value=$(cat ".fake-ansible/$1")
+  fi
+  printf '%s' "$value"
+}
+log=$(setting FAKE_ANSIBLE_LOG)
+log=${log:-.fake-ansible/argv}
+mode=$(setting FAKE_ANSIBLE_MODE)
+code=$(setting FAKE_ANSIBLE_EXIT)
+n=0
+while [ -e "$log.$n" ]; do n=$((n + 1)); done
+printf '%s\0' "$PWD" "$0" "$@" > "$log.$n"
+case "$mode" in
+  wait|interrupt)
+    trap 'echo term > "$log.term"; exit 143' TERM
+    if [ "$mode" = interrupt ]; then
+      trap 'echo "User interrupted execution" >&2; exit 99' INT
+    fi
+    echo $$ > "$log.pid.tmp" && mv "$log.pid.tmp" "$log.pid"
+    while :; do sleep 0.05; done
+    ;;
+  self-kill)
+    kill -KILL $$
+    ;;
+esac
+exit "${code:-0}"

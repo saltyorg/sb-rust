@@ -99,6 +99,9 @@ enum Command {
         #[arg(skip)]
         force_update: bool,
     },
+    /// Runs Saltbox diagnostics role
+    #[command(long_about = "Runs Saltbox diagnostics role")]
+    Diag,
 }
 
 /// `--force-update`, sb-go's flag in builds with self-update disabled
@@ -242,6 +245,7 @@ impl Command {
             Command::Motd(_) => "motd",
             Command::SelfUpdate { .. } => "self-update",
             Command::Logs => "logs",
+            Command::Diag => "diag",
         }
     }
 
@@ -257,15 +261,17 @@ impl Command {
             // `edit` opens (tui spec, editors, assumption 2); the journal
             // files are root's to read (tui assumption 2); motd as every
             // command (motd decision 20: pam_motd already runs it as root);
-            // and sb's own file, which `self-update` replaces (release spec,
-            // assumption 5).
+            // sb's own file, which `self-update` replaces (release spec,
+            // assumption 5); playbooks run with `--become` from root's
+            // Saltbox checkout (ansible spec, success criterion 9).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
             | Command::Edit { .. }
             | Command::Motd(_)
             | Command::SelfUpdate { .. }
-            | Command::Logs => true,
+            | Command::Logs
+            | Command::Diag => true,
         }
     }
 }
@@ -504,6 +510,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Docker {
             command: DockerCommand::Logs,
         } => docker_logs::docker_logs(shutdown)?,
+        Command::Diag => ansible::diag(shutdown)?,
         Command::Docker {
             command: DockerCommand::Ps { json },
         } => docker_ps(json, shutdown)?,
@@ -715,6 +722,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
     Ok(output)
 }
 
+mod ansible;
 mod branch;
 mod docker_logs;
 mod edit;
@@ -885,6 +893,13 @@ mod tests {
     fn logs_needs_root() {
         assert!(Command::Logs.needs_root());
         assert_eq!(Command::Logs.name(), "logs");
+    }
+
+    /// `diag` runs a playbook as root and logs under its name.
+    #[test]
+    fn diag_needs_root() {
+        assert!(Command::Diag.needs_root());
+        assert_eq!(Command::Diag.name(), "diag");
     }
 
     /// `docker ps` needs root (cli-core decision 3).

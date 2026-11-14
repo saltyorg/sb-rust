@@ -1,0 +1,23 @@
+[package]
+name = "sb-ansible"
+version = "0.1.0"
+description = "Playbook runs by tag, the tag listing and its cache: sb install, list and diag (capability map, ansible)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sb-cli-core.workspace = true
+# Every playbook run (ansible spec, assumption 2).
+sb-exec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# A real Shutdown and runtime for the attached runs, with the fake
+# playbook (tests/fixtures/fake-ansible-playbook).
+tokio = { workspace = true, features = ["macros"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
