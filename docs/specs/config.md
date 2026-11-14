@@ -214,7 +214,10 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   where an object with `properties` or `additionalProperties` belongs is
   an issue at the list, `must be an object, got a list` (a credential
   section keeps its own structure issue; *amended by hardening Task
-  60*, a difference, below); empty non-required values are
+  60*, a difference, below). Where the object's `instances` is a list
+  (motd.yml's sections), the issue adds where the list goes, and in
+  motd.yml that the `motd-generate-config` tag rewrites the file (motd
+  spec, decision 4; maintainer, 2026-11-14); empty non-required values are
   skipped; `required: true` with a null value passes unless another rule
   rejects null; `required_with` fires only for a present-but-empty key;
   array items look up `required_when_true` and the like on the array's

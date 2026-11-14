@@ -8,6 +8,8 @@
 //! else at the value.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
+use std::path::Path;
 use std::sync::LazyLock;
 
 use crate::issue::Issue;
@@ -222,6 +224,34 @@ fn join(path: &str, key: &str) -> String {
     }
 }
 
+/// The issue for a list where `rule` describes an object. An object
+/// whose `instances` is a list is motd.yml's newer form of a bare list of
+/// instances (Saltbox's schema declared every instance section a list,
+/// and its template wrote lidarr, plex, radarr and sonarr that way, until
+/// December 2025; motd spec, decision 4), so the issue says where the
+/// list goes, and in motd.yml that Saltbox's `motd-generate-config` tag
+/// regenerates the file in that form.
+fn list_for_object(file: &str, path: &str, rule: &Rule) -> String {
+    let base = "must be an object, got a list";
+    let Some(properties) = &rule.properties else {
+        return base.to_string();
+    };
+    if properties.get("instances").and_then(|r| r.kind) != Some(Kind::Array) {
+        return base.to_string();
+    }
+    let beside = if properties.contains_key("enabled") {
+        format!(", with an optional {path}.enabled")
+    } else {
+        String::new()
+    };
+    let rewrite = if Path::new(file).file_name() == Some(OsStr::new("motd.yml")) {
+        " (sb install motd-generate-config regenerates motd.yml in that form, replacing its contents)"
+    } else {
+        ""
+    };
+    format!("{base}; the list of instances now goes under {path}.instances{beside}{rewrite}")
+}
+
 struct Walk<'a> {
     file: &'a str,
     validators: &'a dyn Validators,
@@ -349,11 +379,8 @@ impl Walk<'_> {
                     && (rule.properties.is_some() || rule.additional_properties.is_some())
                     && credential(rule).is_none() =>
             {
-                self.issue(
-                    (value.line, value.column),
-                    path,
-                    "must be an object, got a list".to_string(),
-                );
+                let message = list_for_object(self.file, path, rule);
+                self.issue((value.line, value.column), path, message);
             }
             (Some(Kind::Array), Data::Sequence(items)) => {
                 if let Some(item_rule) = &rule.items {
@@ -744,10 +771,15 @@ mod tests {
 
     /// The report for `config` under `schema_text`, with `fake`.
     fn run_with(schema_text: &str, config: &str, fake: &Fake) -> Report {
+        run_in("c.yml", schema_text, config, fake)
+    }
+
+    /// The report for `config`, named `file`, under `schema_text`.
+    fn run_in(file: &str, schema_text: &str, config: &str, fake: &Fake) -> Report {
         let rules = schema::parse("s.schema.yml", schema_text).expect("schema");
-        let root = crate::parse::parse("c.yml", config).expect("parses");
-        let tree = crate::tree::build("c.yml", &root, &|_| false).expect("builds");
-        validate("c.yml", &tree, &rules, fake)
+        let root = crate::parse::parse(file, config).expect("parses");
+        let tree = crate::tree::build(file, &root, &|_| false).expect("builds");
+        validate(file, &tree, &rules, fake)
     }
 
     /// The issues for `config` under `schema_text`, as shown.
@@ -1069,6 +1101,67 @@ mod tests {
         );
         clean(schema, "user: x\n");
         clean("o: {type: object}\n", "o: [1]\n");
+    }
+
+    /// motd.yml's older form, a bare list of instances (Saltbox's schema
+    /// declared every instance section a list until it moved the list
+    /// under `instances`), is still an issue (motd decision 4), and says
+    /// how to move to the new form; in motd.yml, how to have Saltbox
+    /// regenerate it.
+    #[test]
+    fn an_older_list_of_instances_says_where_the_list_goes() {
+        let schema = "plex:\n  type: object\n  properties:\n    enabled: {type: boolean}\n    instances:\n      type: array\n      items:\n        type: object\n        properties:\n          name: {type: string, required: true}\n";
+        let config = "plex:\n  - name: a\n";
+        assert_eq!(
+            issues(schema, config),
+            [
+                "c.yml:2:3: plex: must be an object, got a list; the list of instances now goes under plex.instances, with an optional plex.enabled"
+            ]
+        );
+        let shown: Vec<String> = run_in("motd.yml", schema, config, &Fake::default())
+            .issues
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "motd.yml:2:3: plex: must be an object, got a list; the list of instances now goes under plex.instances, with an optional plex.enabled (sb install motd-generate-config regenerates motd.yml in that form, replacing its contents)"
+            ]
+        );
+        clean(
+            schema,
+            "plex:\n  enabled: true\n  instances:\n    - name: a\n",
+        );
+        // Without `enabled` there is nothing to put beside the list; an
+        // `instances` that isn't a list gives no hint.
+        let bare = schema.replace("    enabled: {type: boolean}\n", "");
+        assert_eq!(
+            issues(&bare, config),
+            [
+                "c.yml:2:3: plex: must be an object, got a list; the list of instances now goes under plex.instances"
+            ]
+        );
+        let not_a_list = schema.replace("      type: array\n", "      type: string\n");
+        assert_eq!(
+            issues(&not_a_list, config),
+            ["c.yml:2:3: plex: must be an object, got a list"]
+        );
+        // Saltbox's motd schema, as pinned: the same hint for each section.
+        let motd = include_str!("../tests/fixtures/saltbox-schemas/motd.schema.yml");
+        let older = "plex:\n  - name: p\n    url: https://p.example.invalid\n    token: t\nsonarr:\n  - name: s\n    url: https://s.example.invalid\n    apikey: k\n";
+        let shown: Vec<String> = run_in("motd.yml", motd, older, &Fake::default())
+            .issues
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "motd.yml:2:3: plex: must be an object, got a list; the list of instances now goes under plex.instances, with an optional plex.enabled (sb install motd-generate-config regenerates motd.yml in that form, replacing its contents)",
+                "motd.yml:6:3: sonarr: must be an object, got a list; the list of instances now goes under sonarr.instances, with an optional sonarr.enabled (sb install motd-generate-config regenerates motd.yml in that form, replacing its contents)",
+            ]
+        );
     }
 
     /// Items get the rules of `items`; sb-go hands them the array's parent.

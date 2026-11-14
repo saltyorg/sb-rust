@@ -261,8 +261,9 @@ never reach stdout, stderr or the run log.
    sections, the colours, and Services' additions (decision 3). sb-go hid
    every config section silently, and treated valid files it couldn't
    decode the same way (`timeout: 1.5`).
-3. **The legacy bare-list form** (`sonarr: [ {...} ]`) is an issue under
-   difference 2 (decision 4). sb-go accepted it.
+3. **The older bare-list form** (`sonarr: [ {...} ]`) is an issue under
+   difference 2 (decision 4), and says where the list goes now. sb-go
+   accepted it.
 4. **Without motd.yml, or with a colour key absent,** sb's palette applies
    (decision 5). sb-go used its charmtone defaults. Saltbox always writes
    the colour block, so most hosts look the same in both.
@@ -638,7 +639,22 @@ Nothing touches a real host's state, and every fixture is synthetic.
      with its own wording.
    - Services keeps its default filters and drops only motd.yml's
      additions, because the section exists without the file.
-4. **The legacy bare-list form is dropped** (decided.md E-Q3).
+4. **The older bare-list form is dropped** (decided.md E-Q3; its
+   reasoning corrected by the maintainer, 2026-11-14). It is motd.yml's
+   own earlier form. Saltbox's schema declared every instance section a
+   list (commit 0d39510ad7 still has `type: array`) until 10916e7a moved
+   them under `{enabled, instances}`, and its template wrote `lidarr`,
+   `plex`, `radarr` and `sonarr` as lists, or `name: []` for an app not
+   installed, until 96110b80. Nothing migrates an existing file. The
+   research behind E-Q3 said Saltbox never wrote it, which was wrong.
+   The maintainer still chose to drop it, with an issue that says what
+   to do: validate-config reports `plex: must be an object, got a list;
+   the list of instances now goes under plex.instances, with an optional
+   plex.enabled (sb install motd-generate-config regenerates motd.yml in
+   that form, replacing its contents)`. That tag overwrites motd.yml from
+   Saltbox's template (roles/motd/tasks/cli_motd.yml). An empty list
+   (`radarr: []`) passes validate-config, as in sb-go, and motd reads it
+   as an absent section.
 5. **motd.yml's colours are honoured over sb's palette** (decided.md
    E-Q4).
    - Nine slots: text.label/value/app_name, status.warning/success/error,
