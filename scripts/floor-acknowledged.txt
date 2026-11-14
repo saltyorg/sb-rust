@@ -270,3 +270,4 @@ wrappers-widened	deny.toml	sb-term-ui: sb-python-env added	the capability map ha
 wrappers-widened	deny.toml	sb-exec: sb-python-env added	every uv, Python and entry-point child goes through exec (python-env spec, assumption 4 and decision 11; capability map python-env row; module build M13)
 wrappers-widened	deny.toml	sb-host: sb-python-env added	python-env calls host for apt, ownership and the release check (host spec amendment H1; python-env spec, Project Structure; module build M13)
 wrappers-widened	deny.toml	sb-release: sb-python-env added	python-env downloads uv and the fact through release (python-env spec, decision 12 and Project Structure; added ahead of use as module build M13 asks, M29 relies on it)
+wrappers-widened	deny.toml	sb-cli-core: sb-python-env added	python-env passes a nested step's quiet Exit up and its tests start a term-ui runner with cli-core's Shutdown (the deny entry comment: every module builds on cli-core; module build M14)

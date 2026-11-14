@@ -26,6 +26,8 @@ shlex.workspace = true
 sb-release.workspace = true
 # `sb logs`: the picker and the viewer (tui spec; ADR-023).
 sb-tui.workspace = true
+# `sb update-venv` (python-env spec).
+sb-python-env.workspace = true
 anyhow.workspace = true
 # `net` for the I/O driver bollard's sockets need (enable_all turns on
 # only what is compiled in).
@@ -42,6 +44,10 @@ sb-config = { workspace = true, features = ["testing"] }
 # a release or production build: scripts/check.sh checks sb's normal
 # tree has no `testing` feature of sb-release).
 sb-release = { workspace = true, features = ["testing"] }
+# The stand-in Saltbox tree and the test build's `SB_TEST_PYTHON_ENV_ROOT`
+# (never in a release or production build: the same check as
+# sb-release's).
+sb-python-env = { workspace = true, features = ["testing"] }
 insta.workspace = true
 serde_json.workspace = true
 console.workspace = true

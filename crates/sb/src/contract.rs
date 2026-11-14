@@ -158,3 +158,23 @@ fn flags_sb_go_lacks_are_reported() {
         vec!["flag\tsb\tlocal\t\tv\tswitch\tfalse\t".to_string()]
     );
 }
+
+/// `sb update-venv` is sb-go's, hidden, but for `-v` (python-env
+/// decision 9; success criterion 11).
+#[test]
+fn update_venv_has_every_sb_go_flag_but_verbose() {
+    let tree = sb_tree();
+    let missing: Vec<&str> = SB_GO_TREE
+        .lines()
+        .filter(|line| line.contains("\tsb update-venv\t"))
+        .filter(|line| !tree.iter().any(|ours| ours == line))
+        .collect();
+    assert_eq!(
+        missing,
+        ["flag\tsb update-venv\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output"]
+    );
+    assert!(tree.contains(
+        &"command\tsb update-venv\ttrue\tUpdate the Ansible virtual environment and saltbox.fact"
+            .to_string()
+    ));
+}

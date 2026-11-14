@@ -3,12 +3,11 @@
 //! `.uv-version` as a minimum against the uv this sb provides, the hashed
 //! lock's sha256 and the checkout's commit.
 
-use std::io::{self, Read as _};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sb_exec::Cmd;
-use sha2::{Digest as _, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::Env;
@@ -118,27 +117,14 @@ pub fn check_uv_minimum(minimum: &str, provided: &str) -> Result<(), ToolchainEr
     Ok(())
 }
 
-/// The sha256 of the file at `path`, lower-case hex, read in blocks
-/// (sha2's `Digest`, <https://docs.rs/sha2/0.11.1/sha2/>; digest 0.11 has
-/// no `io::Write`, so the blocks are fed by hand). A stand-in for
-/// release's streaming `sha256_file` (release spec amendment R8, module
-/// build M29): python-env switches to it when it lands.
+/// The sha256 of the file at `path`, lower-case hex: release's streaming
+/// `sha256_file` (release spec amendment R8) in hex.
 ///
 /// # Errors
 ///
 /// The file's read error.
 pub fn file_sha256(path: &Path) -> io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut block = vec![0; 64 * 1024];
-    loop {
-        let read = file.read(&mut block)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&block[..read]);
-    }
-    Ok(hex::encode(hasher.finalize()))
+    sb_release::sha256_file(path).map(hex::encode)
 }
 
 /// The checkout's pins (sb-go's `Reconcile`, its first lines): both pin
@@ -185,6 +171,8 @@ async fn commit(env: &Env<'_>, token: &CancellationToken) -> Result<String, Tool
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest as _, Sha256};
+
     use super::*;
 
     #[test]

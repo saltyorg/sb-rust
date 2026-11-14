@@ -11,21 +11,28 @@
 // Output goes through steps; `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+pub mod activate;
 mod isolate;
+pub mod manifest;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod toolchain;
 pub mod uv;
 pub mod venv;
+pub mod wrappers;
 
 pub use isolate::IsolateError;
 pub use toolchain::{Toolchain, ToolchainError};
 pub use uv::UvError;
-pub use venv::CheckError;
+pub use venv::{CheckError, Force, VenvError, VenvOutcome, reconcile_venv};
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
+use sb_cli_core::exit::Exit;
 use sb_exec::Cmd;
+use sb_host::apt::Apt;
+use sb_term_ui::{Labels, Step};
 use tokio_util::sync::CancellationToken;
 
 /// Every path python-env reads or writes (spec, "Fixed layout"; sb-go's
@@ -76,6 +83,18 @@ impl Layout {
         Self::under(Path::new("/"))
     }
 
+    /// The layout `sb` runs on: [`Layout::saltbox`]; in a build with the
+    /// `testing` feature (the sb `cargo test` runs), the stand-in tree
+    /// under [`testing::ROOT_VAR`] when that is set.
+    #[must_use]
+    pub fn for_sb() -> Self {
+        #[cfg(feature = "testing")]
+        if let Some(root) = testing::root() {
+            return Self::under(&root);
+        }
+        Self::saltbox()
+    }
+
     /// sb-go's paths, each under `root` in place of `/` (tests; `/` gives
     /// [`Layout::saltbox`]).
     #[must_use]
@@ -116,18 +135,92 @@ pub struct Env<'a> {
     pub uv_version: &'a str,
     /// git, for the checkout's commit (`git` from `PATH`).
     pub git: PathBuf,
+    /// apt and dpkg, for libpq-dev (spec, step 3).
+    pub apt: Apt,
 }
 
 impl<'a> Env<'a> {
-    /// `layout` with `uv_version`, git from `PATH`.
+    /// `layout` with `uv_version`, git, apt and dpkg from `PATH`.
     #[must_use]
     pub fn new(layout: &'a Layout, uv_version: &'a str) -> Self {
         Self {
             layout,
             uv_version,
             git: PathBuf::from("git"),
+            apt: Apt::new(),
         }
     }
+
+    /// The `Env` `sb` runs with: [`Env::new`]; in a build with the
+    /// `testing` feature, the stand-in tree's git, dpkg-query and apt-get
+    /// when [`testing::ROOT_VAR`] is set.
+    #[must_use]
+    pub fn for_sb(layout: &'a Layout, uv_version: &'a str) -> Self {
+        let env = Self::new(layout, uv_version);
+        #[cfg(feature = "testing")]
+        if let Some(root) = testing::root() {
+            return testing::with_stand_ins(env, &root);
+        }
+        env
+    }
+}
+
+/// Why the Saltbox runtime's update stopped: one of its steps failed or
+/// was interrupted, and says why itself.
+#[derive(Debug, thiserror::Error)]
+#[error("a step stopped the Saltbox runtime's update")]
+pub struct RuntimeError(#[from] Exit);
+
+/// The Saltbox runtime brought in line (spec, `reconcile_runtime`; sb-go's
+/// `reconcileSaltboxRuntimeWith`, cmd/update.go:204-249), shared by `sb
+/// update` and `sb update-venv`: three nested steps in sb-go's order and
+/// words, the old deadsnakes packages, the venv ([`reconcile_venv`] with
+/// no force) and `saltbox.fact`.
+///
+/// So far (module build M14) the deadsnakes cleanup (M20) and the fact
+/// (M19) have nothing to do: their steps pass as they do on a host where
+/// neither needs work.
+///
+/// # Errors
+///
+/// [`RuntimeError`] when a step fails; the step shows sb-go's error.
+pub async fn reconcile_runtime(
+    step: &mut Step,
+    env: &Env<'_>,
+    user: Option<&str>,
+) -> Result<(), RuntimeError> {
+    let deadsnakes = "Checking for old deadsnakes Python packages";
+    step.step(Labels::new(deadsnakes, deadsnakes), async |_| {
+        // Nothing removed until the cleanup lands (module build M20): its
+        // error then reads "error cleaning up deadsnakes packages: <cause>"
+        // and a removal adds "Removed old deadsnakes Python packages".
+        tracing::info!("the deadsnakes cleanup isn't built yet: nothing checked");
+        anyhow::Ok(())
+    })
+    .await?;
+    let venv = Labels::new(
+        "Preparing Ansible virtual environment",
+        "Ansible virtual environment ready",
+    )
+    .failure("Ansible virtual environment");
+    step.step(venv, async |step| {
+        reconcile_venv(step, env, user, Force::None)
+            .await
+            .context("error managing Ansible venv")?;
+        anyhow::Ok(())
+    })
+    .await?;
+    let fact = Labels::new("Checking saltbox.fact", "saltbox.fact is ready")
+        .failure("saltbox.fact update");
+    step.step(fact, async |_| {
+        // Nothing to install until the fact lands (module build M19): its
+        // error then reads "error downloading and installing saltbox fact:
+        // <cause>".
+        tracing::info!("the saltbox.fact check isn't built yet: nothing checked");
+        anyhow::Ok(())
+    })
+    .await?;
+    Ok(())
 }
 
 /// `cmd` captured to its end: its stdout and stderr read as one (sb-go

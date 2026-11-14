@@ -3301,6 +3301,7 @@ dependencies = [
  "sb-exec",
  "sb-host",
  "sb-motd",
+ "sb-python-env",
  "sb-release",
  "sb-repo",
  "sb-term-ui",
@@ -3504,16 +3505,24 @@ dependencies = [
 name = "sb-python-env"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "hex",
+ "indicatif",
+ "sb-cli-core",
  "sb-exec",
  "sb-host",
  "sb-python-env",
+ "sb-release",
+ "sb-term-ui",
  "semver",
+ "serde",
+ "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

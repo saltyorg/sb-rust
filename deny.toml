@@ -57,7 +57,7 @@ features = [
 # "Depends on" column. Added with each crate.
 deny = [
     # cli-core: every module builds on it.
-    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible"] },
+    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates; host's apt streams into its steps.
     { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },

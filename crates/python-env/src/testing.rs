@@ -9,6 +9,50 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use crate::Layout;
+use crate::manifest::Manifest;
+
+/// The variable naming the tree's root to the sb `cargo test` builds
+/// ([`Layout::for_sb`], [`Env::for_sb`](crate::Env::for_sb)).
+pub const ROOT_VAR: &str = "SB_TEST_PYTHON_ENV_ROOT";
+
+/// The commands a generation's manifest exports.
+pub const COMMANDS: [&str; 4] = ["ansible", "ansible-playbook", "apprise", "certbot"];
+
+/// The healthy tree's generation and Python release.
+pub const GENERATION: &str = "20261113T120000.000000000-0123456789ab";
+pub const PYTHON_RELEASE: &str = "python-3-12-7-20261113T120000.000000000";
+
+/// [`ROOT_VAR`]'s root, when set and not empty.
+#[must_use]
+pub fn root() -> Option<PathBuf> {
+    std::env::var_os(ROOT_VAR)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+}
+
+/// `env` running the stand-in git, dpkg-query and apt-get of the tree at
+/// `root`, apt's update retries cut short.
+#[must_use]
+pub fn with_stand_ins<'a>(mut env: crate::Env<'a>, root: &Path) -> crate::Env<'a> {
+    let dir = root.join("stand-ins");
+    let short = std::time::Duration::from_millis(50);
+    env.git = dir.join("git");
+    env.apt = sb_host::apt::Apt::new()
+        .with_dpkg_query(dir.join("dpkg-query"))
+        .with_apt_get(dir.join("apt-get"))
+        .with_update_timing(std::time::Duration::from_secs(10), short, short, short);
+    env
+}
+
+/// A generation on the tree: its directory, venv, Python release and
+/// manifest.
+#[derive(Debug, Clone)]
+pub struct Generation {
+    pub dir: PathBuf,
+    pub venv: PathBuf,
+    pub python_install: PathBuf,
+    pub manifest: Manifest,
+}
 
 /// The commit the stand-in git reports.
 pub const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -81,6 +125,8 @@ impl Tree {
         );
         let tree = Self { root, layout, git };
         tree.uv(UV, UV);
+        tree.libpq(true);
+        let _ = stand_in(&tree.stand_ins(), "apt-get", &tree.calls_line());
         tree
     }
 
@@ -108,18 +154,100 @@ impl Tree {
         self.root.path().join("calls.log")
     }
 
-    /// The calls so far, one per line.
+    /// The calls so far, one per line (none when the log can't be read).
+    #[must_use]
+    pub fn calls_made(&self) -> Vec<String> {
+        // No log yet is no call yet.
+        let text = std::fs::read_to_string(self.calls()).unwrap_or_default();
+        text.lines().map(str::to_string).collect()
+    }
+
+    /// The directory of the stand-in git, dpkg-query and apt-get.
+    #[must_use]
+    pub fn stand_ins(&self) -> PathBuf {
+        self.root.path().join("stand-ins")
+    }
+
+    /// A dpkg-query that has libpq-dev installed (`ii`), or knows no such
+    /// package (exit 1, as dpkg-query for an unknown one).
     ///
     /// # Panics
     ///
-    /// When the log is there but can't be read.
+    /// When it can't be written.
+    pub fn libpq(&self, installed: bool) {
+        let answer = if installed { "printf 'ii '" } else { "exit 1" };
+        let script = format!("{}\n{answer}", self.calls_line());
+        let _ = stand_in(&self.stand_ins(), "dpkg-query", &script);
+    }
+
+    /// A generation `id` with a healthy venv on the Python release
+    /// `python_id`, its manifest matching the tree's pins; not active.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
     #[must_use]
-    pub fn calls_made(&self) -> Vec<String> {
-        match std::fs::read_to_string(self.calls()) {
-            Ok(text) => text.lines().map(str::to_string).collect(),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(err) => panic!("read calls: {err}"),
+    pub fn generation(&self, id: &str, python_id: &str) -> Generation {
+        let python_install = self.layout.python_releases.join(python_id);
+        let python = python_install.join("bin/python3.12");
+        self.python(&python, PYTHON);
+        let dir = self.layout.ansible_releases.join(id);
+        let venv = dir.join("venv");
+        self.venv(&venv);
+        let manifest = Manifest {
+            schema_version: crate::manifest::SCHEMA,
+            generation_id: id.to_string(),
+            python_version: PYTHON.to_string(),
+            python_path: python.display().to_string(),
+            python_install: python_install.display().to_string(),
+            uv_version: UV.to_string(),
+            lock_sha256: crate::toolchain::file_sha256(&self.layout.lock).expect("lock"),
+            saltbox_commit: COMMIT.to_string(),
+            created_at: "2026-11-13T12:00:00Z".to_string(),
+            exported_commands: COMMANDS.iter().map(ToString::to_string).collect(),
+        };
+        self.manifest(&dir, &manifest);
+        Generation {
+            dir,
+            venv,
+            python_install,
+            manifest,
         }
+    }
+
+    /// `manifest` written into `dir` as sb-go writes it.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    pub fn manifest(&self, dir: &Path, manifest: &Manifest) {
+        let mut text = serde_json::to_string_pretty(manifest).expect("json");
+        text.push('\n');
+        std::fs::write(dir.join(crate::manifest::FILE), text).expect("manifest");
+    }
+
+    /// The active link pointed at `venv`.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be made.
+    pub fn activate(&self, venv: &Path) {
+        let link = &self.layout.active_venv;
+        std::fs::create_dir_all(link.parent().expect("parent")).expect("ansible dir");
+        let _ = std::fs::remove_file(link);
+        std::os::unix::fs::symlink(venv, link).expect("link");
+    }
+
+    /// A healthy tree: one generation, active.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    #[must_use]
+    pub fn healthy(&self) -> Generation {
+        let generation = self.generation(GENERATION, PYTHON_RELEASE);
+        self.activate(&generation.venv);
+        generation
     }
 
     /// Where the venv's entry points record their Ansible config.
@@ -179,9 +307,7 @@ impl Tree {
     /// An [`Env`](crate::Env) on this tree with its git.
     #[must_use]
     pub fn env(&self) -> crate::Env<'_> {
-        let mut env = crate::Env::new(&self.layout, UV);
-        env.git.clone_from(&self.git);
-        env
+        with_stand_ins(crate::Env::new(&self.layout, UV), self.root.path())
     }
 }
 

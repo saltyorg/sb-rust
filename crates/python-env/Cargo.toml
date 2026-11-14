@@ -13,7 +13,7 @@ publish.workspace = true
 # end-to-end tests: built into the sb that `cargo test` runs (resolver 3
 # unifies dev-dependency features only for test builds), never into a
 # release or production build.
-testing = []
+testing = ["sb-host/testing"]
 
 [dependencies]
 # Every uv, Python, entry-point and git child (python-env spec,
@@ -22,10 +22,23 @@ sb-exec.workspace = true
 # A failed child's one-line text (sb-host's `child_failure`); later its
 # apt and ownership calls (spec, steps 3 and 16).
 sb-host.workspace = true
+# The caller's steps the reconcile runs in (spec, assumption 4).
+sb-term-ui.workspace = true
+# A nested step's quiet exit (`Exit`), passed up.
+sb-cli-core.workspace = true
+# The streamed lock digest (release spec amendment R8).
+sb-release.workspace = true
+# The manifest (spec, step 11; decision 7).
+serde.workspace = true
+serde_json.workspace = true
+# Step bodies' errors, with sb-go's texts as context.
+anyhow.workspace = true
+# The run log's records (why a venv is unhealthy).
+tracing.workspace = true
+# `spawn_blocking` for the ownership walk.
+tokio.workspace = true
 # The uv minimum (decision 14).
 semver.workspace = true
-# The lock's digest (spec, "The toolchain").
-sha2.workspace = true
 hex.workspace = true
 # The scratch TMPDIR of each child (spec, "Child isolation").
 tempfile.workspace = true
@@ -37,6 +50,11 @@ tokio-util.workspace = true
 # sb-repo's tests take its own `testing`).
 sb-python-env = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "sync"] }
+# The steps drawn to memory, and the runner's shutdown.
+sb-term-ui = { workspace = true, features = ["testing"] }
+indicatif.workspace = true
+# The lock digest's test compares with sha2's own.
+sha2.workspace = true
 
 [lints]
 workspace = true

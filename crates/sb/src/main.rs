@@ -105,7 +105,14 @@ enum Command {
     /// Runs Ansible playbooks with specified tags
     #[command(long_about = "Runs Ansible playbooks with specified tags")]
     Install(sb_ansible::InstallArgs),
+    /// Update the Ansible virtual environment and saltbox.fact
+    // Hidden, as sb-go's. No `--verbose/-v` (python-env decision 9).
+    #[command(long_about = UPDATE_VENV_ABOUT, hide = true)]
+    UpdateVenv,
 }
+
+/// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
+const UPDATE_VENV_ABOUT: &str = "Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git repositories";
 
 /// `--force-update`, sb-go's flag in builds with self-update disabled
 /// (cmd/selfUpdate.go): added to the parsed tree only in such builds, so
@@ -250,6 +257,7 @@ impl Command {
             Command::Logs => "logs",
             Command::Diag => "diag",
             Command::Install(_) => "install",
+            Command::UpdateVenv => "update-venv",
         }
     }
 
@@ -267,7 +275,8 @@ impl Command {
             // command (motd decision 20: pam_motd already runs it as root);
             // sb's own file, which `self-update` replaces (release spec,
             // assumption 5); playbooks run with `--become` from root's
-            // Saltbox checkout (ansible spec, success criterion 9).
+            // Saltbox checkout (ansible spec, success criterion 9); the venv, its wrappers
+            // and apt, which `update-venv` changes (python-env assumption 5).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
@@ -276,7 +285,8 @@ impl Command {
             | Command::SelfUpdate { .. }
             | Command::Logs
             | Command::Diag
-            | Command::Install(_) => true,
+            | Command::Install(_)
+            | Command::UpdateVenv => true,
         }
     }
 }
@@ -508,6 +518,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::BranchSandbox { ref name } => branch::branch_sandbox(name, shutdown, log)?,
         Command::Edit { command } => edit::edit(command.file(), shutdown)?,
         Command::Motd(ref args) => motd::motd(args, shutdown)?,
+        Command::UpdateVenv => python_env::update_venv(shutdown, log)?,
         Command::SelfUpdate { yes, force_update } => {
             self_update::self_update(yes, force_update, shutdown, log)?;
         }
@@ -734,6 +745,7 @@ mod docker_logs;
 mod edit;
 mod logs;
 mod motd;
+mod python_env;
 mod self_update;
 
 #[cfg(test)]
@@ -917,6 +929,12 @@ mod tests {
             .command;
         assert!(install.needs_root());
         assert_eq!(install.name(), "install");
+    }
+
+    #[test]
+    fn update_venv_needs_root_and_logs_its_name() {
+        assert!(Command::UpdateVenv.needs_root());
+        assert_eq!(Command::UpdateVenv.name(), "update-venv");
     }
 
     /// `docker ps` needs root (cli-core decision 3).
