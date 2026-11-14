@@ -25,6 +25,20 @@
 //! - **Follow:** the source follows; scrolling up pauses the view (it
 //!   stays put while lines come), and End, `G`, `f` or reaching the bottom
 //!   resumes it. `f` while following at the bottom stops the follow.
+//! - **Search** (tui spec, "Search"): `/` opens a ratatui-textarea line
+//!   (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html>),
+//!   as the picker's filter does; Enter searches the loaded buffer,
+//!   smart-case substring over each message as the screen shows it
+//!   (`search`, `line::searched`), every match lit in the `SearchHit` role.
+//!   A search while following starts at the newest match, else at the
+//!   first from the window's top; the view moves to it only when it isn't
+//!   in sight. `n` and `N` jump to the next and previous match (no wrap at
+//!   either end), the match's row at the window's top, and pause
+//!   following. The header shows `/query 3/17`. Esc clears the search; a
+//!   new source opens a new viewer, so the query resets.
+//! - **Sideways** (wrap off): ←/→, Shift+wheel and a horizontal wheel
+//!   scroll 8 columns (`Paragraph::scroll`'s x offset), with no right-hand
+//!   stop, as proto-logs; the header shows the column; `w` resets it.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -34,8 +48,10 @@ use crossterm::event::{
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line as TextLine, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
+use ratatui_textarea::{CursorMove, TextArea};
 use sb_cli_core::theme::Role;
 use sb_term_ui::DisplayText;
 use tokio::sync::{Notify, mpsc};
@@ -48,6 +64,13 @@ use crate::term::{App, Flow};
 
 /// Rows the wheel scrolls (tui spec, "Scrolling").
 const WHEEL_ROWS: usize = 3;
+
+/// Columns a sideways step scrolls with wrap off (tui spec, "Scrolling").
+const COLUMN_STEP: u16 = 8;
+
+/// The search line's label and hint (the picker's filter line's layout).
+const SEARCH_LABEL: &str = " Search: ";
+const SEARCH_HINT: &str = "Enter searches · Esc clears ";
 
 /// The buffer's caps (tui decision 12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,7 +129,8 @@ pub enum Leave {
 /// One entry of the buffer.
 #[derive(Clone, Debug)]
 enum Entry {
-    Line(Line),
+    /// A log line and the matches of the search in effect in it.
+    Line(Line, usize),
     /// A source notice, drawn as its own row (tui spec, "Viewer notices").
     Notice(Notice),
 }
@@ -169,6 +193,16 @@ pub struct Viewer {
     /// The last page's kind: a notice after an older page goes at the top.
     last_page: Option<PageKind>,
     leave: Option<Leave>,
+    /// The first column shown with wrap off.
+    column: u16,
+    /// The search line while it is open (`/`).
+    searching: Option<TextArea<'static>>,
+    /// The search in effect (empty for none), its matches in the buffer,
+    /// and the one `n` and `N` move from: an entry's index and the match
+    /// within it.
+    query: String,
+    total: usize,
+    current: Option<(usize, usize)>,
 }
 
 impl Viewer {
@@ -225,6 +259,11 @@ impl Viewer {
             height: 0,
             last_page: None,
             leave: None,
+            column: 0,
+            searching: None,
+            query: String::new(),
+            total: 0,
+            current: None,
         }
     }
 
@@ -269,6 +308,7 @@ impl Viewer {
                 if self.last_page == Some(PageKind::Older) && !of_follow {
                     self.entries.push_front(entry);
                     self.anchor.item += 1;
+                    self.shift_current(1);
                 } else {
                     self.entries.push_back(entry);
                 }
@@ -291,6 +331,8 @@ impl Viewer {
             PageKind::Tail => {
                 self.entries.clear();
                 self.bytes = 0;
+                self.total = 0;
+                self.current = None;
                 self.older = Edge {
                     position: oldest,
                     more: more_older,
@@ -303,6 +345,11 @@ impl Viewer {
                 };
                 self.loaded = true;
                 self.append(lines);
+                // The buffer is new: a search starts again at the newest
+                // match, as a search while following does.
+                if !self.query.is_empty() {
+                    self.current = self.hit_before(self.entries.len());
+                }
                 if !self.stuck() {
                     self.anchor = Anchor { item: 0, skip: 0 };
                 }
@@ -316,10 +363,11 @@ impl Viewer {
                 }
                 let k = lines.len();
                 for line in lines.into_iter().rev() {
-                    self.bytes += line.message.len();
-                    self.entries.push_front(Entry::Line(line));
+                    let entry = self.line_entry(line);
+                    self.entries.push_front(entry);
                 }
                 self.anchor.item += isize::try_from(k).unwrap_or(isize::MAX);
+                self.shift_current(k);
             }
             PageKind::Newer => {
                 self.newer.asked = false;
@@ -334,8 +382,27 @@ impl Viewer {
 
     fn append(&mut self, lines: Vec<Line>) {
         for line in lines {
-            self.bytes += line.message.len();
-            self.entries.push_back(Entry::Line(line));
+            let entry = self.line_entry(line);
+            self.entries.push_back(entry);
+        }
+    }
+
+    /// `line` as an entry, counted in the bytes and the search's matches.
+    fn line_entry(&mut self, line: Line) -> Entry {
+        self.bytes += line.message.len();
+        let hits = if self.query.is_empty() {
+            0
+        } else {
+            line::hits(&line, &self.format, &self.query)
+        };
+        self.total += hits;
+        Entry::Line(line, hits)
+    }
+
+    /// `n` entries went in before the current match.
+    fn shift_current(&mut self, n: usize) {
+        if let Some((entry, _)) = &mut self.current {
+            *entry += n;
         }
     }
 
@@ -351,9 +418,16 @@ impl Viewer {
             } else {
                 self.entries.pop_back()
             };
-            if let Some(Entry::Line(line)) = &gone {
+            if let Some(Entry::Line(line, hits)) = &gone {
                 self.bytes -= line.message.len();
+                self.total -= hits;
             }
+            self.current = match self.current {
+                Some((0, _)) if drop_front => None,
+                Some((entry, k)) if drop_front => Some((entry - 1, k)),
+                Some((entry, _)) if entry >= self.entries.len() => None,
+                current => current,
+            };
             if drop_front {
                 self.older.more = true;
                 self.older.position = self.edge_line(true);
@@ -374,7 +448,7 @@ impl Viewer {
     /// The position of the oldest (or newest) line held.
     fn edge_line(&self, oldest: bool) -> Option<Position> {
         let position = |e: &Entry| match e {
-            Entry::Line(line) => Some(line.position.clone()),
+            Entry::Line(line, _) => Some(line.position.clone()),
             Entry::Notice(_) => None,
         };
         if oldest {
@@ -423,7 +497,12 @@ impl Viewer {
             return Text::from(TextLine::styled("--- start of log ---", muted));
         }
         match usize::try_from(item).ok().and_then(|i| self.entries.get(i)) {
-            Some(Entry::Line(line)) => line::text(line, &self.format),
+            Some(Entry::Line(line, _)) => line::searched(
+                line,
+                &self.format,
+                &self.query,
+                self.format.bg(Role::SearchHit),
+            ),
             Some(Entry::Notice(notice)) => {
                 let shown = DisplayText::from_bytes(notice.to_string().as_bytes(), false);
                 let role = if notice.is_error() {
@@ -619,7 +698,232 @@ impl Viewer {
         }
     }
 
+    // --- search ---
+
+    /// Search the loaded buffer for `query` (Enter in the search line): a
+    /// search while following at the bottom starts at the newest match
+    /// (paused, the view is where the user scrolled), else at the
+    /// first from the window's top (or the last above it), shown only when
+    /// it isn't in sight.
+    fn search(&mut self, query: String) {
+        self.query = query;
+        self.total = 0;
+        let (format, query) = (&self.format, &self.query);
+        for entry in &mut self.entries {
+            if let Entry::Line(line, hits) = entry {
+                *hits = line::hits(line, format, query);
+                self.total += *hits;
+            }
+        }
+        let top = self.top_entry();
+        self.current = if self.stuck() {
+            self.hit_before(self.entries.len())
+        } else {
+            self.hit_from(top).or_else(|| self.hit_before(top))
+        };
+        self.show_current(false);
+    }
+
+    fn clear_search(&mut self) {
+        self.query.clear();
+        self.total = 0;
+        self.current = None;
+        for entry in &mut self.entries {
+            if let Entry::Line(_, hits) = entry {
+                *hits = 0;
+            }
+        }
+    }
+
+    fn hits_in(&self, entry: usize) -> usize {
+        match self.entries.get(entry) {
+            Some(Entry::Line(_, hits)) => *hits,
+            _ => 0,
+        }
+    }
+
+    /// The buffer's entry at the window's top (the start marker counts as
+    /// the first).
+    fn top_entry(&self) -> usize {
+        usize::try_from(self.top().item).unwrap_or(0)
+    }
+
+    /// The first match in entry `from` or after it.
+    fn hit_from(&self, from: usize) -> Option<(usize, usize)> {
+        (from..self.entries.len())
+            .find(|&e| self.hits_in(e) > 0)
+            .map(|e| (e, 0))
+    }
+
+    /// The last match before entry `to`.
+    fn hit_before(&self, to: usize) -> Option<(usize, usize)> {
+        (0..to.min(self.entries.len()))
+            .rev()
+            .find(|&e| self.hits_in(e) > 0)
+            .map(|e| (e, self.hits_in(e) - 1))
+    }
+
+    /// `n` (`forward`) and `N`: the next or previous match, from the
+    /// current one, else from the window's top; none past either end.
+    fn jump(&mut self, forward: bool) {
+        if self.query.is_empty() {
+            return;
+        }
+        let next = match (self.current, forward) {
+            (Some((e, k)), true) if k + 1 < self.hits_in(e) => Some((e, k + 1)),
+            (Some((e, _)), true) => self.hit_from(e + 1),
+            (Some((e, k)), false) if k > 0 => Some((e, k - 1)),
+            (Some((e, _)), false) => self.hit_before(e),
+            (None, true) => self.hit_from(self.top_entry()),
+            (None, false) => self.hit_before(self.top_entry() + 1),
+        };
+        if next.is_some() {
+            // While following, the window's top is worked out from the
+            // bottom: pin it first, so a match already on the top row
+            // leaves the view where it is when following pauses.
+            if self.stuck() {
+                self.anchor = self.bottom_anchor();
+            }
+            self.current = next;
+            self.show_current(true);
+            self.unstick();
+        }
+    }
+
+    /// Move the view to the current match, its row at the window's top:
+    /// always for `n` and `N` (`jump`), else only when it is out of sight.
+    /// With wrap off, the column moves too when the match is off to a side.
+    ///
+    /// The match's row in a wrapped entry is the height of the text drawn
+    /// up to the end of the word the match starts in, less the rows that
+    /// word's rest takes, measured with `Paragraph::line_count` (ADR-001),
+    /// as the entries' heights are. UNVERIFIED: ratatui has no API that
+    /// gives the row a character lands on; checked against ratatui's word
+    /// wrap in the viewer's tests (a match at a row's start, inside a
+    /// wrapped entry). A word wider than the window, which the wrap breaks
+    /// anywhere, can put the match a row off.
+    fn show_current(&mut self, jump: bool) {
+        let Some((entry, k)) = self.current else {
+            return;
+        };
+        let Some(Entry::Line(line, _)) = self.entries.get(entry) else {
+            return;
+        };
+        let Some((screen_line, lead, word)) = line::hit_lead(line, &self.format, &self.query, k)
+        else {
+            return;
+        };
+        let item = isize::try_from(entry).unwrap_or(isize::MAX);
+        let width = self.width.max(1);
+        let skip = if self.wrap {
+            let text = self.item_text(item);
+            let above = Paragraph::new(Text::from(text.lines[..screen_line].to_vec()))
+                .wrap(Wrap { trim: false })
+                .line_count(width);
+            // The rows up to the end of the match's word, less the rows
+            // the rest of the word takes.
+            let through = Paragraph::new(format!("{lead}{word}"))
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1);
+            let word_rows = Span::raw(word.as_str())
+                .width()
+                .div_ceil(usize::from(width))
+                .max(1);
+            above + through.saturating_sub(word_rows)
+        } else {
+            screen_line
+        };
+        if !self.wrap {
+            // Off to a side, the match goes to the window's middle (in
+            // steps of 8), so the text around it shows too.
+            let at = u16::try_from(Span::raw(lead.as_str()).width()).unwrap_or(u16::MAX);
+            if at < self.column || at >= self.column.saturating_add(width) {
+                let left = at.saturating_sub(width / 2);
+                self.column = left - left % COLUMN_STEP;
+            }
+        }
+        let at = Anchor { item, skip };
+        if jump || !self.in_sight(at) {
+            self.move_to(at);
+        }
+    }
+
+    /// Whether the row `at` is in the window.
+    fn in_sight(&self, at: Anchor) -> bool {
+        let top = self.top();
+        if (at.item, at.skip) < (top.item, top.skip) {
+            return false;
+        }
+        let mut rows = 0;
+        let mut item = top.item;
+        let mut skip = top.skip;
+        while item < at.item {
+            rows += self.rows(item).saturating_sub(skip);
+            skip = 0;
+            item += 1;
+            if rows >= self.height {
+                return false;
+            }
+        }
+        rows + at.skip.saturating_sub(skip) < self.height
+    }
+
+    /// The search line open: Enter searches (an empty line clears the
+    /// search), Esc closes it and clears the search, and every other key
+    /// is the line's (ratatui-textarea's `TextArea::input`). Enter and
+    /// Ctrl-M, which the line would take as a new line, end it, as
+    /// ratatui-textarea's single-line example does
+    /// (<https://github.com/ratatui/ratatui-textarea/blob/v0.9.3/examples/single_line.rs>).
+    fn search_key(&mut self, key: KeyEvent) -> Flow {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.end_search_line(),
+            KeyCode::Char('m') if ctrl => self.end_search_line(),
+            KeyCode::Esc => {
+                self.searching = None;
+                self.clear_search();
+            }
+            _ => {
+                let Some(line) = self.searching.as_mut() else {
+                    return Flow::Unchanged;
+                };
+                line.input(key);
+            }
+        }
+        self.prefetch();
+        Flow::Redraw
+    }
+
+    fn end_search_line(&mut self) {
+        let query = self
+            .searching
+            .take()
+            .map_or_default(|line| line.lines().join(""));
+        if query.is_empty() {
+            self.clear_search();
+        } else {
+            self.search(query);
+        }
+    }
+
+    /// One sideways step with wrap off; nothing with wrap on.
+    fn sideways(&mut self, right: bool) -> bool {
+        if self.wrap {
+            return false;
+        }
+        self.column = if right {
+            self.column.saturating_add(COLUMN_STEP)
+        } else {
+            self.column.saturating_sub(COLUMN_STEP)
+        };
+        true
+    }
+
     fn key(&mut self, key: KeyEvent) -> Flow {
+        if self.searching.is_some() {
+            return self.search_key(key);
+        }
         // The viewer's keys are plain (Shift only for `G`): Ctrl and Alt
         // combinations are left for later bindings.
         if key
@@ -651,11 +955,30 @@ impl Viewer {
             KeyCode::Char('w') => {
                 let top = self.top();
                 self.wrap = !self.wrap;
+                self.column = 0;
                 self.anchor = Anchor {
                     item: top.item,
                     skip: 0,
                 };
             }
+            KeyCode::Left | KeyCode::Right => {
+                if !self.sideways(key.code == KeyCode::Right) {
+                    return Flow::Unchanged;
+                }
+            }
+            KeyCode::Char('/') => {
+                // The line opens on the search in effect, the cursor at
+                // its end (ratatui-textarea's `TextArea::new` and
+                // `move_cursor`), as the picker's filter line does.
+                let mut line = TextArea::new(vec![self.query.clone()]);
+                line.move_cursor(CursorMove::End);
+                line.set_cursor_line_style(Style::default());
+                line.set_style(self.format.style(Role::Text));
+                self.searching = Some(line);
+            }
+            KeyCode::Char('n') => self.jump(true),
+            KeyCode::Char('N') => self.jump(false),
+            KeyCode::Esc if !self.query.is_empty() => self.clear_search(),
             KeyCode::Char('t') => {
                 self.format.meta = !self.format.meta;
                 self.clamp_anchor();
@@ -677,12 +1000,25 @@ impl Viewer {
     /// The wheel scrolls as ↑ and ↓ do, 3 rows at a time (crossterm's
     /// `MouseEventKind::ScrollUp`/`ScrollDown`,
     /// <https://docs.rs/crossterm/0.29.0/crossterm/event/enum.MouseEventKind.html>).
-    /// Shift+wheel and the horizontal wheel come with sideways scrolling
-    /// (the tui spec's slice 4).
+    /// With wrap off, Shift+wheel and the horizontal wheel
+    /// (`ScrollLeft`/`ScrollRight`) step sideways, as ←/→ do (proto-logs).
     fn mouse(&mut self, mouse: MouseEvent) -> Flow {
-        match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll_up(WHEEL_ROWS),
-            MouseEventKind::ScrollDown => self.scroll_down(WHEEL_ROWS),
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let sideways = match mouse.kind {
+            MouseEventKind::ScrollLeft => Some(false),
+            MouseEventKind::ScrollRight => Some(true),
+            MouseEventKind::ScrollUp if shift && !self.wrap => Some(false),
+            MouseEventKind::ScrollDown if shift && !self.wrap => Some(true),
+            _ => None,
+        };
+        match (sideways, mouse.kind) {
+            (Some(right), _) => {
+                if !self.sideways(right) {
+                    return Flow::Unchanged;
+                }
+            }
+            (None, MouseEventKind::ScrollUp) => self.scroll_up(WHEEL_ROWS),
+            (None, MouseEventKind::ScrollDown) => self.scroll_down(WHEEL_ROWS),
             _ => return Flow::Unchanged,
         }
         self.prefetch();
@@ -696,13 +1032,45 @@ impl Viewer {
             Follow::Stuck => "  following",
             Follow::Paused => "  following, paused",
         };
-        let wrap = if self.wrap { "" } else { "  wrap off" };
+        let wrap = if self.wrap {
+            String::new()
+        } else {
+            format!("  wrap off · col {}", u32::from(self.column) + 1)
+        };
+        // The search's keys lead the hints while a search is in effect.
+        let keys = if self.query.is_empty() {
+            "/ search · f follow · w wrap · t time · Esc back · q quit"
+        } else {
+            "n/N next · Esc clear · f follow · w wrap · t time · q quit"
+        };
         TextLine::from(vec![
             Span::styled(self.name.clone(), self.format.style(self.kind.role())),
             Span::styled(format!("  {}", self.kind.word()), muted),
             Span::styled(format!("{state}{wrap}"), self.format.style(Role::Accent)),
-            Span::styled("   f follow · w wrap · t time · Esc back · q quit", muted),
+            Span::styled(self.search_state(), self.format.style(Role::Highlight)),
+            Span::styled(format!("   {keys}"), muted),
         ])
+    }
+
+    /// The header's search part: `  /query 3/17`, `-/17` when the current
+    /// match was dropped from the buffer, `no matches`; nothing without a
+    /// search. The query is the user's, through `DisplayText` all the same.
+    fn search_state(&self) -> String {
+        if self.query.is_empty() {
+            return String::new();
+        }
+        let query = DisplayText::from_bytes(self.query.as_bytes(), false);
+        let query = query.lines().next().unwrap_or_default();
+        if self.total == 0 {
+            return format!("  /{query} no matches");
+        }
+        match self.current {
+            Some((entry, k)) => {
+                let before: usize = (0..entry).map(|e| self.hits_in(e)).sum();
+                format!("  /{query} {}/{}", before + k + 1, self.total)
+            }
+            None => format!("  /{query} -/{}", self.total),
+        }
     }
 }
 
@@ -740,9 +1108,34 @@ impl App for Viewer {
         }
         // ratatui's layout: the header row, then the log
         // (<https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.vertical>).
-        let [header, log] =
-            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        let search_rows = u16::from(self.searching.is_some());
+        let [header, log, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(search_rows),
+        ])
+        .areas(area);
         frame.render_widget(Paragraph::new(self.header()), header);
+        if let Some(line) = &self.searching {
+            let width = |text| u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
+            let [label_area, line_area, hint_area] = Layout::horizontal([
+                Constraint::Length(width(SEARCH_LABEL)),
+                Constraint::Fill(1),
+                Constraint::Length(width(SEARCH_HINT)),
+            ])
+            .areas(footer);
+            frame.render_widget(
+                Paragraph::new(Span::styled(SEARCH_LABEL, self.format.style(Role::Accent))),
+                label_area,
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(SEARCH_HINT, self.format.style(Role::Muted))),
+                hint_area,
+            );
+            // ratatui-textarea draws itself as a widget
+            // (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html#impl-Widget-for-%26TextArea%3C'_%3E>).
+            frame.render_widget(line, line_area);
+        }
         let resized = log.width != self.width || usize::from(log.height) != self.height;
         self.width = log.width;
         self.height = usize::from(log.height);
@@ -758,7 +1151,10 @@ impl App for Viewer {
                 .unwrap_or(u16::MAX)
                 .min(log.height - y);
             let skip = u16::try_from(at.skip).unwrap_or(u16::MAX);
-            let paragraph = self.paragraph(at.item).scroll((skip, 0));
+            // With wrap off, the x offset is the sideways column
+            // (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html#method.scroll>).
+            let column = if self.wrap { 0 } else { self.column };
+            let paragraph = self.paragraph(at.item).scroll((skip, column));
             frame.render_widget(
                 paragraph,
                 Rect {

@@ -11,6 +11,7 @@
 
 pub mod line;
 pub mod picker;
+mod search;
 pub mod source;
 pub mod status;
 mod term;

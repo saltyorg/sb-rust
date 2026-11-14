@@ -1482,6 +1482,42 @@ the test's directory.
   (`failed_reads`), across cause changes. The footer still shows the
   newest cause on every failed read. `crates/tui/tests/refresh_log.rs`
   tests repeated failures, a changed cause and the recovery's count.
+- **Search and sideways scrolling as built (M71, 2026-11-14):**
+  - Search reads each message as the screen shows it with colour off,
+    cut at the record cap, not the time and origin before it, nor the
+    cut notice or the viewer's notices: journalctl's `--grep` matches the
+    message alone. So `t` doesn't change what matches.
+  - Smart case lowers with std's `char::to_lowercase`, each lowered byte
+    mapped back to its character, so a match is a range of the shown
+    text. A match across the log's colour spans is lit whole: the spans
+    are split at its edges and patched with `SearchHit` as a background
+    (ratatui patches whole spans only). Under `ascii` and `NO_COLOR` the
+    role has no colour, so matches aren't lit; the header's count and the
+    jump show them.
+  - `/` opens the line on the search in effect, as the picker's filter
+    does. Enter with an empty line clears the search; Esc in the line
+    clears it; Esc outside it clears a search in effect first, then goes
+    back to the picker.
+  - "A search while following" is the view at the bottom: it starts at
+    the newest match. Otherwise a search starts at the first match from
+    the window's top, else the last above it. Enter moves the view only
+    when the match is out of sight, so a search at the bottom keeps
+    following; `n` and `N` always put the match's row at the window's top
+    and pause following, and stop at either end (no wrap). A tail page
+    (End, `G` or `f` with newer lines not loaded) reloads the buffer, and
+    the search starts again at the newest match.
+  - The header shows `/query 3/17`, `/query no matches`, or `/query
+    -/17` once the current match has been dropped with its entry (the
+    buffer's caps). The hints become `n/N next · Esc clear · ...` while a
+    search is in effect; at 80 columns the hint row is cut at its end.
+  - With wrap off, ←/→, Shift+wheel and a horizontal wheel step 8
+    columns, with no right-hand stop (proto-logs); the header shows
+    `wrap off · col N`; `w` resets the column. A jump to a match off to
+    a side moves the column so the match sits near the window's middle,
+    in steps of 8.
+  - A match's row inside a wrapped entry is measured with
+    `Paragraph::line_count` up to the end of its word (ADR-001); a word
+    wider than the window can put it a row off (UNVERIFIED in the code).
 
 ## Open questions
 

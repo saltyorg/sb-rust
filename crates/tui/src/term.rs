@@ -589,7 +589,7 @@ mod tests {
         let ending = run_loop(&mut terminal, &mut rx, &mut viewer, &token, &wake).await;
         assert_eq!(ending.expect("ends"), Ending::Interrupted);
         terminal.backend().assert_buffer_lines([
-            "app  service  following   f fo",
+            "app  service  following   / se",
             "--- start of log ---          ",
             "hello                         ",
             "--- following ---             ",

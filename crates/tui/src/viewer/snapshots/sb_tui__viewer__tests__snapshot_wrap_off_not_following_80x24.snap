@@ -2,7 +2,7 @@
 source: crates/tui/src/viewer/tests.rs
 expression: h.terminal.backend()
 ---
-"app  service  wrap off   f follow · w wrap · t time · Esc back · q quit         "
+"app  service  wrap off · col 1   / search · f follow · w wrap · t time · Esc bac"
 "--- start of log ---                                                            "
 "2026-11-13T09:04:05+0000 app[7]: starting app                                   "
 "2026-11-13T09:04:06+0000 app[7]: listening on port 8080                         "

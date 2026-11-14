@@ -766,3 +766,472 @@ fn snapshot_paused_120x40() {
     h.key(KeyCode::PageUp);
     assert_snapshot!(h.terminal.backend());
 }
+
+// --- search (tui spec, "Search") and sideways scrolling ---
+
+impl Harness {
+    /// `/`, the line emptied (it opens on the search in effect), then
+    /// `query` typed into it, then Enter.
+    fn search(&mut self, query: &str) {
+        self.key(KeyCode::Char('/'));
+        for _ in 0..self.viewer.query.chars().count() {
+            self.key(KeyCode::Backspace);
+        }
+        for c in query.chars() {
+            self.key(KeyCode::Char(c));
+        }
+        self.key(KeyCode::Enter);
+    }
+
+    fn header(&self) -> String {
+        self.screen()[0].clone()
+    }
+
+    fn mouse_with(&mut self, kind: MouseEventKind, modifiers: KeyModifiers) -> Flow {
+        let flow = self.viewer.input(Input::Mouse(MouseEvent {
+            kind,
+            column: 3,
+            row: 3,
+            modifiers,
+        }));
+        self.draw();
+        flow
+    }
+}
+
+/// While following, a search starts at the newest match; in sight at the
+/// bottom, the view stays and keeps following.
+#[test]
+fn a_search_while_following_starts_at_the_newest_match() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(0..50, false));
+    h.search("m4");
+    assert!(h.header().contains("/m4 11/11"), "{}", h.header());
+    assert!(h.header().contains("following"), "{}", h.header());
+    assert!(!h.header().contains("paused"), "{}", h.header());
+    assert_eq!(
+        h.log().last().map(String::as_str),
+        Some("--- following ---")
+    );
+    assert!(h.viewer.searching.is_none(), "Enter closes the line");
+}
+
+/// `n` and `N` move to the next and previous match, its row at the top,
+/// and pause following; neither goes past an end.
+#[test]
+fn n_and_shift_n_jump_and_pause_following() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(0..50, false));
+    h.search("m4");
+    h.key(KeyCode::Char('N'));
+    assert!(h.header().contains("/m4 10/11"), "{}", h.header());
+    assert!(h.header().contains("following, paused"), "{}", h.header());
+    assert_eq!(h.log()[0], "m48");
+    h.key(KeyCode::Char('N'));
+    assert_eq!(h.log()[0], "m47");
+    h.key(KeyCode::Char('n'));
+    h.key(KeyCode::Char('n'));
+    assert!(h.header().contains("/m4 11/11"), "{}", h.header());
+    assert_eq!(h.log()[0], "m49");
+    h.key(KeyCode::Char('n'));
+    assert!(
+        h.header().contains("11/11"),
+        "the last stays: {}",
+        h.header()
+    );
+    for _ in 0..12 {
+        h.key(KeyCode::Char('N'));
+    }
+    assert!(h.header().contains("/m4 1/11"), "{}", h.header());
+    assert_eq!(h.log()[0], "m4");
+}
+
+/// Not following, a search starts at the first match from the window's
+/// top, and a match in sight doesn't move the view.
+#[test]
+fn a_search_not_following_starts_from_the_top_in_sight() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(0..50, false));
+    h.key(KeyCode::Home);
+    let before = h.log();
+    h.search("m3");
+    assert!(h.header().contains("/m3 1/11"), "{}", h.header());
+    assert_eq!(h.log(), before, "m3 is in sight");
+    h.key(KeyCode::Char('n'));
+    assert_eq!(h.log()[0], "m30");
+    // Out of sight, the view moves to the first match below the top.
+    h.key(KeyCode::Home);
+    h.search("m2");
+    assert!(h.header().contains("/m2 1/11"), "{}", h.header());
+    // With nothing at or below the top, the last match above it.
+    h.key(KeyCode::End);
+    h.key(KeyCode::Char('f'));
+    h.key(KeyCode::PageUp);
+    h.key(KeyCode::PageUp);
+    h.search("m1");
+    // m1 and m10 to m19 are all above the window: the last of them.
+    assert!(h.header().contains("/m1 11/11"), "{}", h.header());
+    assert_eq!(h.log()[0], "m19");
+}
+
+#[test]
+fn smart_case_counts_in_the_viewer_and_no_match_says_so() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(2)),
+        lines: vec![
+            line(0, "Error: one"),
+            line(1, "error: two"),
+            line(2, "ERROR"),
+        ],
+        more_older: false,
+        more_newer: false,
+    });
+    h.search("error");
+    assert!(h.header().contains("/error 3/3"), "{}", h.header());
+    h.search("Error");
+    assert!(h.header().contains("/Error 1/1"), "{}", h.header());
+    h.search("zzz");
+    assert!(h.header().contains("/zzz no matches"), "{}", h.header());
+}
+
+/// Esc clears a search, then leaves; Esc in the line clears it too, and an
+/// empty line's Enter clears it.
+#[test]
+fn esc_clears_the_search_then_goes_back() {
+    let mut h = open(100, 8, Limits::default());
+    h.requests();
+    h.send(tail(0..10, false));
+    h.search("m1");
+    assert!(h.header().contains("Esc clear"), "{}", h.header());
+    assert_eq!(h.key(KeyCode::Esc), Flow::Redraw);
+    assert!(!h.header().contains("/m1"), "{}", h.header());
+    assert_eq!(h.viewer.leave(), None);
+    h.search("m1");
+    h.key(KeyCode::Char('/'));
+    assert!(h.screen().iter().any(|r| r.contains("Search: m1")));
+    h.key(KeyCode::Esc);
+    assert!(!h.header().contains("/m1"), "{}", h.header());
+    assert!(h.viewer.searching.is_none());
+    h.search("m1");
+    h.key(KeyCode::Char('/'));
+    h.key(KeyCode::Backspace);
+    h.key(KeyCode::Backspace);
+    h.key(KeyCode::Enter);
+    assert!(!h.header().contains("/m"), "{}", h.header());
+    assert_eq!(h.key(KeyCode::Esc), Flow::Quit);
+    assert_eq!(h.viewer.leave(), Some(Leave::Back));
+}
+
+/// The line takes every key while open: `q` is a letter there, and Ctrl-M
+/// ends it as Enter does.
+#[test]
+fn the_search_line_takes_every_key() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(1)),
+        lines: vec![line(0, "quit"), line(1, "other")],
+        more_older: false,
+        more_newer: false,
+    });
+    h.key(KeyCode::Char('/'));
+    assert_eq!(h.key(KeyCode::Char('q')), Flow::Redraw);
+    h.viewer.input(Input::Key(KeyEvent::new(
+        KeyCode::Char('m'),
+        KeyModifiers::CONTROL,
+    )));
+    h.draw();
+    assert!(h.header().contains("/q 1/1"), "{}", h.header());
+}
+
+/// Lines that come in are counted: older pages before the current match,
+/// followed lines after it; a match dropped with its entry shows `-`.
+#[test]
+fn matches_are_counted_as_lines_come_and_go() {
+    let mut h = open(
+        60,
+        8,
+        Limits {
+            entries: 12,
+            bytes: 1 << 20,
+        },
+    );
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m4");
+    assert!(h.header().contains("/m4 10/10"), "{}", h.header());
+    h.send(Event::Followed(lines(50..52)));
+    assert!(h.header().contains("/m4 10/10"), "{}", h.header());
+    h.search("m");
+    assert!(h.header().contains("/m 12/12"), "{}", h.header());
+    // Paging back drops the newest end, the current match with it.
+    h.key(KeyCode::Char('g'));
+    h.send(older(30..40, true));
+    assert!(h.header().contains("/m -/12"), "{}", h.header());
+}
+
+/// The current match keeps its place when an older page goes in before
+/// it.
+#[test]
+fn an_older_page_moves_the_current_match_along() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m4");
+    h.key(KeyCode::Char('N'));
+    assert!(h.header().contains("/m4 9/10"), "{}", h.header());
+    h.send(older(0..40, false));
+    assert!(h.header().contains("/m4 10/11"), "{}", h.header());
+    h.key(KeyCode::Char('n'));
+    assert_eq!(h.log()[0], "m49");
+}
+
+/// Every match is lit in the `SearchHit` role, a match across the log's
+/// own colours whole.
+#[test]
+fn matches_are_lit_in_the_search_hit_role() {
+    let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+    let hit = theme.color(Role::SearchHit).map(|c| {
+        let style = Style::from(anstyle::Style::new().bg_color(Some(c)));
+        style.bg.expect("a background")
+    });
+    let mut h = open_with(60, 8, Limits::default(), Format::new(TimeZone::UTC, theme));
+    h.requests();
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(0)),
+        lines: vec![line(0, "\x1b[32m[Info]\x1b[0m Housekeeping")],
+        more_older: false,
+        more_newer: false,
+    });
+    h.search("info] house");
+    let buffer = h.terminal.backend().buffer();
+    let row = (0..buffer.area.height)
+        .find(|&y| buffer[(0, y)].symbol() == "[")
+        .expect("the line");
+    let lit: String = (0..buffer.area.width)
+        .filter(|&x| buffer[(x, row)].bg == hit.expect("a colour"))
+        .map(|x| buffer[(x, row)].symbol().to_owned())
+        .collect();
+    assert_eq!(lit, "Info] House");
+}
+
+/// With wrap off, ←/→, Shift+wheel and the horizontal wheel step 8
+/// columns and the header shows the column; with wrap on they don't.
+#[test]
+fn sideways_steps_with_wrap_off() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    let wide = "0123456789abcdefghijklmnopqrstuvwxyz".repeat(3);
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(0)),
+        lines: vec![line(0, &wide)],
+        more_older: false,
+        more_newer: false,
+    });
+    assert_eq!(h.key(KeyCode::Right), Flow::Unchanged, "wrap on");
+    assert_eq!(
+        h.mouse(MouseEventKind::ScrollRight),
+        Flow::Unchanged,
+        "wrap on"
+    );
+    h.key(KeyCode::Char('w'));
+    assert!(h.header().contains("col 1"), "{}", h.header());
+    h.key(KeyCode::Right);
+    assert!(h.header().contains("col 9"), "{}", h.header());
+    assert!(
+        h.log().iter().any(|r| r.starts_with("89abcdefghij")),
+        "{:?}",
+        h.log()
+    );
+    h.mouse(MouseEventKind::ScrollRight);
+    h.mouse_with(MouseEventKind::ScrollDown, KeyModifiers::SHIFT);
+    assert!(h.header().contains("col 25"), "{}", h.header());
+    h.mouse(MouseEventKind::ScrollLeft);
+    h.mouse_with(MouseEventKind::ScrollUp, KeyModifiers::SHIFT);
+    h.key(KeyCode::Left);
+    assert!(h.header().contains("col 1"), "{}", h.header());
+    h.key(KeyCode::Left);
+    assert!(h.header().contains("col 1"), "no further left");
+    h.key(KeyCode::Right);
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::Char('w'));
+    assert!(h.header().contains("col 1"), "w resets it: {}", h.header());
+}
+
+/// With wrap off, a jump brings a match off to the right into view.
+#[test]
+fn a_jump_with_wrap_off_scrolls_to_the_match() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    let long = format!("{}needle", "x".repeat(100));
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(1)),
+        lines: vec![line(0, &long), line(1, "needle at the start")],
+        more_older: false,
+        more_newer: false,
+    });
+    h.key(KeyCode::Char('w'));
+    h.search("needle");
+    h.key(KeyCode::Char('N'));
+    // The match at column 101 goes to the window's middle: 101 - 30,
+    // down to a step of 8, is 64, shown as column 65.
+    assert!(h.header().contains("col 65"), "{}", h.header());
+    assert!(
+        h.log().iter().any(|r| r.ends_with("xxxxneedle")),
+        "{:?}",
+        h.log()
+    );
+    h.key(KeyCode::Char('n'));
+    assert!(h.header().contains("col 1"), "{}", h.header());
+}
+
+/// With wrap on, a jump puts the match's row at the window's top, also
+/// inside a long wrapped entry.
+#[test]
+fn a_jump_finds_its_row_inside_a_wrapped_entry() {
+    let mut h = open(20, 6, Limits::default());
+    h.requests();
+    let long = format!("{} needle", "word ".repeat(20).trim_end());
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(1)),
+        lines: vec![line(0, &long), line(1, "last")],
+        more_older: false,
+        more_newer: false,
+    });
+    h.key(KeyCode::Home);
+    h.search("needle");
+    h.key(KeyCode::Char('N'));
+    h.key(KeyCode::Char('n'));
+    assert!(h.log()[0].contains("needle"), "{:?}", h.log());
+}
+
+#[test]
+fn snapshot_search_hits_120x40() {
+    let mut h = sample(120, 40);
+    h.search("app");
+    assert_snapshot!(h.terminal.backend());
+}
+
+#[test]
+fn snapshot_search_line_open_80x24() {
+    let mut h = sample(80, 24);
+    h.key(KeyCode::Char('/'));
+    for c in "lines".chars() {
+        h.key(KeyCode::Char(c));
+    }
+    assert_snapshot!(h.terminal.backend());
+}
+
+/// `N` while following, to a match already on the window's top row: the
+/// view stays where it is, paused (it once jumped to a stale anchor).
+#[test]
+fn a_jump_while_following_to_the_top_row_keeps_the_view() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    let ls: Vec<Line> = (0..50)
+        .map(|n| line(n, if n == 44 || n == 49 { "hit" } else { "x" }))
+        .collect();
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(49)),
+        lines: ls,
+        more_older: false,
+        more_newer: false,
+    });
+    h.search("hit");
+    assert!(h.header().contains("/hit 2/2"), "{}", h.header());
+    let before = h.log();
+    assert_eq!(before[0], "hit");
+    h.key(KeyCode::Char('N'));
+    assert!(h.header().contains("/hit 1/2"), "{}", h.header());
+    assert!(h.header().contains("paused"), "{}", h.header());
+    assert_eq!(h.log(), before);
+}
+
+/// Several matches in one entry: `n` and `N` step through them.
+#[test]
+fn n_steps_through_the_matches_of_one_entry() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: Some(position(0)),
+        newest: Some(position(1)),
+        lines: vec![line(0, "ab ab ab"), line(1, "none")],
+        more_older: false,
+        more_newer: false,
+    });
+    h.search("ab");
+    assert!(h.header().contains("/ab 3/3"), "{}", h.header());
+    h.key(KeyCode::Char('N'));
+    h.key(KeyCode::Char('N'));
+    assert!(h.header().contains("/ab 1/3"), "{}", h.header());
+    h.key(KeyCode::Char('n'));
+    assert!(h.header().contains("/ab 2/3"), "{}", h.header());
+}
+
+/// Entries dropped from the front move the current match back, and it
+/// goes with its entry; a notice put in front moves it along.
+#[test]
+fn the_current_match_follows_the_fronts_changes() {
+    let cap = Limits {
+        entries: 12,
+        bytes: 1 << 20,
+    };
+    let mut h = open(60, 8, cap);
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m4");
+    assert!(h.header().contains("/m4 10/10"), "{}", h.header());
+    h.send(Event::Followed(lines(50..53)));
+    assert!(h.header().contains("/m4 9/9"), "{}", h.header());
+    assert_eq!(h.viewer.current, Some((8, 0)));
+    h.send(Event::Followed(lines(53..55)));
+    assert!(h.header().contains("/m4 7/7"), "{}", h.header());
+    assert_eq!(h.viewer.current, Some((6, 0)));
+    h.send(Event::Followed(lines(55..62)));
+    assert_eq!(h.viewer.current, None, "gone with its entry");
+    assert!(h.header().contains("/m4 no matches"), "{}", h.header());
+
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Char('g'));
+    h.search("m45");
+    assert_eq!(h.viewer.current, Some((5, 0)));
+    h.send(older(30..40, true));
+    assert_eq!(h.viewer.current, Some((15, 0)));
+    h.send(Event::Notice(Notice::ReadFailed("gone".into())));
+    assert_eq!(h.viewer.current, Some((16, 0)), "a notice in front");
+    assert!(h.header().contains("/m45 1/1"), "{}", h.header());
+}
+
+/// A tail page (End with newer lines unloaded) reloads the buffer; the
+/// search starts again at the newest match.
+#[test]
+fn a_tail_page_picks_the_newest_match_again() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, false));
+    h.search("m4");
+    h.send(tail(40..48, false));
+    assert!(h.header().contains("/m4 8/8"), "{}", h.header());
+}

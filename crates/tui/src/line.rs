@@ -27,6 +27,7 @@ use ratatui::text::{Line as TextLine, Span, Text};
 use sb_cli_core::theme::{Profile, Role, Theme};
 use sb_term_ui::DisplayText;
 
+use crate::search;
 use crate::source::Line;
 
 /// The record cap: a message's bytes past it aren't shown (tui decision
@@ -78,6 +79,11 @@ impl Format {
         Style::from(self.theme.style(role))
     }
 
+    /// `role`'s colour as a background (`SearchHit`), none under `ascii`.
+    pub(crate) fn bg(&self, role: Role) -> Style {
+        Style::from(anstyle::Style::new().bg_color(self.theme.color(role)))
+    }
+
     fn colour(&self) -> bool {
         self.theme.profile() != Profile::Ascii
     }
@@ -87,10 +93,73 @@ impl Format {
 /// time and origin before the first, the cut notice after the last.
 #[must_use]
 pub fn text(line: &Line, format: &Format) -> Text<'static> {
+    searched(line, format, "", Style::new())
+}
+
+/// The message's bytes shown: cut at the record cap, and how many went.
+fn shown<'a>(line: &'a Line, format: &Format) -> (&'a [u8], usize) {
     // A byte cut: it can split a character (one U+FFFD before the notice)
     // or an SGR (dropped by `DisplayText`), both harmless.
     let cut = line.message.len().saturating_sub(format.record_cap);
-    let shown = &line.message[..line.message.len() - cut];
+    (&line.message[..line.message.len() - cut], cut)
+}
+
+/// What search reads of `line` (tui spec, "Search"): the message's screen
+/// lines as the screen shows them with colour off (`DisplayText`, research
+/// decision 10), cut at the record cap. The time and origin aren't
+/// searched, as journalctl's `--grep` matches the message alone
+/// (<https://www.freedesktop.org/software/systemd/man/latest/journalctl.html#-g>).
+fn searchable(line: &Line, format: &Format) -> DisplayText {
+    DisplayText::from_bytes(shown(line, format).0, false)
+}
+
+/// The matches of `query` in `line`'s message ([`search::matches`]).
+pub(crate) fn hits(line: &Line, format: &Format, query: &str) -> usize {
+    searchable(line, format)
+        .lines()
+        .map(|l| search::matches(l, query).len())
+        .sum()
+}
+
+/// Where the `nth` match of `query` in `line` starts on screen: the
+/// screen line of the entry it is on, the text drawn before it on that
+/// line (the time and origin too, on the first), and the rest of the word
+/// it starts in (a word wrap moves a word whole).
+pub(crate) fn hit_lead(
+    line: &Line,
+    format: &Format,
+    query: &str,
+    nth: usize,
+) -> Option<(usize, String, String)> {
+    let plain = searchable(line, format);
+    let (row, text, at) = plain
+        .lines()
+        .enumerate()
+        .flat_map(|(row, text)| {
+            search::matches(text, query)
+                .into_iter()
+                .map(move |m| (row, text, m.start))
+        })
+        .nth(nth)?;
+    let mut lead = if row == 0 && format.meta {
+        meta(line, format)
+    } else {
+        String::new()
+    };
+    lead.push_str(&text[..at]);
+    let word = text[at..]
+        .split(char::is_whitespace)
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    Some((row, lead, word))
+}
+
+/// [`text`] with every match of `query` in the message patched with `hit`
+/// (the `SearchHit` role); the time, origin and cut notice aren't
+/// searched.
+pub(crate) fn searched(line: &Line, format: &Format, query: &str, hit: Style) -> Text<'static> {
+    let (shown, cut) = shown(line, format);
     let colour = format.colour();
     let display = DisplayText::from_bytes(shown, colour);
     let mut text = if colour {
@@ -107,6 +176,12 @@ pub fn text(line: &Line, format: &Format) -> Text<'static> {
     // the screen's.
     while text.lines.len() < display.lines().len() {
         text.lines.push(TextLine::default());
+    }
+    // Under `ascii` the hit has no style: nothing to split for.
+    if !query.is_empty() && hit != Style::new() {
+        for screen_line in &mut text.lines {
+            search::highlight(screen_line, query, hit);
+        }
     }
     if format.meta {
         let prefix = meta(line, format);
@@ -380,5 +455,88 @@ mod tests {
         f.record_cap = 8;
         let text = text(&service_line(COLOURED), &f);
         assert_eq!(colours(&text), []);
+    }
+
+    fn hit() -> Style {
+        Style::new().bg(Color::Yellow)
+    }
+
+    /// Search reads the message only: not the time, the origin or the cut
+    /// notice, and nothing past the record cap.
+    #[test]
+    fn search_reads_the_message_only() {
+        let mut f = format(Profile::Ascii);
+        f.record_cap = 16;
+        let line = service_line(b"started app\napp again, app past the cap");
+        assert_eq!(hits(&line, &f, "app"), 2, "app[7] isn't searched");
+        assert_eq!(hits(&line, &f, "cap"), 0);
+        assert_eq!(hits(&line, &f, "bytes"), 0, "nor the notice");
+        assert_eq!(hits(&line, &f, ""), 0);
+        let text = searched(&line, &f, "app", hit());
+        let lit: Vec<String> = text
+            .lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| s.style == hit())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(lit, ["app", "app"]);
+    }
+
+    /// With colour, a match across the log's own colour spans is lit
+    /// whole, each piece keeping its colour beneath.
+    #[test]
+    fn a_match_across_the_logs_colours_is_lit_whole() {
+        let line = service_line(b"\x1b[32m[Info]\x1b[0m Housekeeping");
+        let text = searched(&line, &format(Profile::TrueColor), "info] house", hit());
+        let lit: Vec<(String, Option<Color>)> = text.lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(Color::Yellow))
+            .map(|s| (s.content.to_string(), s.style.fg))
+            .collect();
+        assert_eq!(
+            lit,
+            [
+                ("Info]".to_string(), Some(Color::Green)),
+                (" House".to_string(), Some(Color::Reset))
+            ]
+        );
+        // No query, no highlight: `text` is the search with none.
+        assert_eq!(
+            strings(&super::text(&line, &format(Profile::TrueColor))),
+            strings(&text)
+        );
+    }
+
+    /// Where a match starts: its screen line in the entry, and what is
+    /// drawn before it there (the time and origin on the first line,
+    /// when shown).
+    #[test]
+    fn a_hits_lead_is_what_comes_before_it_on_its_line() {
+        let mut f = format(Profile::Ascii);
+        let line = service_line(b"two\none two");
+        let place = |row, lead: &str, word: &str| Some((row, lead.to_owned(), word.to_owned()));
+        assert_eq!(
+            hit_lead(&line, &f, "two", 0),
+            place(0, "2026-11-13T09:04:05+0000 app[7]: ", "two")
+        );
+        assert_eq!(hit_lead(&line, &f, "two", 1), place(1, "one ", "two"));
+        assert_eq!(hit_lead(&line, &f, "two", 2), None);
+        f.meta = false;
+        assert_eq!(hit_lead(&line, &f, "two", 0), place(0, "", "two"));
+        let inside = service_line(b"a xxneedle-yy b");
+        assert_eq!(
+            hit_lead(&inside, &f, "needle", 0),
+            place(0, "a xx", "needle-yy")
+        );
+    }
+
+    #[test]
+    fn a_hit_is_the_themes_search_hit_background() {
+        let f = format(Profile::TrueColor);
+        assert!(f.bg(Role::SearchHit).bg.is_some());
+        assert_eq!(f.bg(Role::SearchHit).fg, None);
+        assert_eq!(format(Profile::Ascii).bg(Role::SearchHit), Style::new());
     }
 }
