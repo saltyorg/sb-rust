@@ -132,6 +132,28 @@ fn system_sections_show_in_order_plain_unless_forced() {
     assert!(processes.matches("\x1b[").count() >= 4, "{processes:?}");
 }
 
+/// Disk Usage: a line per file system and its bar, or sb-go's text for
+/// none; plain when piped.
+#[test]
+fn disk_usage_shows_in_sb_gos_layout() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let out = motd(&["--disk"], logs.path(), &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("Disk Usage:  "), "{stdout:?}");
+    assert!(!out.stdout.contains(&0x1b), "{stdout:?}");
+    assert!(
+        stdout.contains("No valid disk partitions found")
+            || (stdout.contains("% used out of ")
+                && (stdout.contains('█') || stdout.contains('░'))),
+        "{stdout:?}"
+    );
+    assert!(stdout.ends_with("\n\n"), "{stdout:?}");
+}
+
 /// With no section chosen, sb-go's text and exit 1; nothing on stdout.
 #[test]
 fn nothing_selected_is_sb_gos_error() {

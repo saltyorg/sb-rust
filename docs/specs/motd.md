@@ -326,6 +326,13 @@ never reach stdout, stderr or the run log.
     generated from pci.ids, so this matters only where the hwdb is newer
     than the host's file; such a device reads `<vendor> Device <dddd>` in
     sb where lspci names it.
+23. **A mount point with a space shows** in Disk Usage (the maintainer,
+    2026-11-14). sb-go split df's line with `strings.Fields`, so such a
+    row failed its percent parse and was left out.
+24. **A file system whose `statvfs` fails is left out on its own**, and
+    logged unless the error is EACCES or ENOENT (the maintainer,
+    2026-11-14). df's error exit made sb-go show `Not available` for the
+    whole section.
 
 ### Scope
 
@@ -816,6 +823,20 @@ Nothing touches a real host's state, and every fixture is synthetic.
   went from 12,332,552 bytes at M36 to 12,453,032 bytes with procfs and
   the system sections linked: 120,480 bytes (1.0%), within the ratchet's
   5% per change.
+- **Disk Usage (M38, 2026-11-14).** df's rules are ported from coreutils
+  `src/df.c` v9.4 (Ubuntu 24.04; 26.04's `df` is GNU 9.7, the same rules)
+  and gnulib at its pin (`mountlist.c`, `human.c`): the dummy and remote
+  types, one entry per device with 9.4's latest-entry comparison (22.04's
+  8.32 compares with the first, which differs only for a device with three
+  or more entries), the percent and `-H`'s sizes rounded up. The fixture's
+  rows were worked by hand; a stand-in container's rows equalled its
+  `df`'s. mountinfo is read as bytes and each line parsed by procfs on its
+  own, because procfs's `mountinfo()` fails whole on one non-UTF-8 line.
+  The bar fills bubbles' `math.Round` cells; indicatif rounds down
+  (`format_bar`), one more reason under decision 8.
+- **Disk Usage beside sb-go (M38):** decided by the maintainer,
+  2026-11-14: Differences 23 and 24. Control characters in a mount point are dropped by
+  `DisplayText` (decision 24), where df writes `?`.
 
 ## Open questions
 

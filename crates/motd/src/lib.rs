@@ -5,6 +5,7 @@
 //! `--share` come with their own tasks (M38-M47), and until then a
 //! selected section without its code shows no line.
 
+mod disk;
 mod layout;
 mod packages;
 pub mod run;
@@ -232,6 +233,39 @@ impl Paint {
     pub fn warning(&self, text: &str) -> String {
         sb_term_ui::style::paint(&self.theme, Role::Warn, self.on, text)
     }
+
+    /// `text` in the error colour (`status.error`, sb's Problem).
+    #[must_use]
+    pub fn error(&self, text: &str) -> String {
+        sb_term_ui::style::paint(&self.theme, Role::Problem, self.on, text)
+    }
+
+    /// term-ui's usage bar, `percent` of `width` cells filled in the
+    /// level's `progress_bar` colour: low, high and critical are sb's Ok,
+    /// Warn and Problem.
+    #[must_use]
+    pub fn bar(&self, level: Level, percent: u8, width: usize) -> String {
+        let role = match level {
+            Level::Low => Role::Ok,
+            Level::High => Role::Warn,
+            Level::Critical => Role::Problem,
+        };
+        sb_term_ui::style::bar(
+            &self.theme,
+            role,
+            self.on,
+            f64::from(percent) / 100.0,
+            width,
+        )
+    }
+}
+
+/// motd.yml's three `progress_bar` levels (motd decision 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Low,
+    High,
+    Critical,
 }
 
 /// `sb motd`'s output for `options`: the chosen sections collected in
@@ -270,6 +304,7 @@ fn job(section: Section, paint: &Paint) -> Option<run::Job> {
         Section::Processes => Box::pin(async move { system::processes_here(&paint) }),
         Section::Cpu => Box::pin(async move { system::cpu_here(&paint) }),
         Section::Memory => Box::pin(async move { system::memory_here(&paint) }),
+        Section::Disk => Box::pin(async move { disk::disk_here(&paint).await }),
         Section::Reboot => {
             Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
         }
@@ -437,6 +472,7 @@ mod tests {
                 "Processes:",
                 "CPU:",
                 "Memory Usage:",
+                "Disk Usage:",
             ]
         );
         assert!(text.ends_with("\n\n"));
@@ -457,6 +493,20 @@ mod tests {
             on.warning("w"),
             sb_term_ui::style::paint(&theme, Role::Warn, true, "w")
         );
+        assert_eq!(
+            on.error("e"),
+            sb_term_ui::style::paint(&theme, Role::Problem, true, "e")
+        );
+        for (level, role) in [
+            (Level::Low, Role::Ok),
+            (Level::High, Role::Warn),
+            (Level::Critical, Role::Problem),
+        ] {
+            assert_eq!(
+                on.bar(level, 30, 10),
+                sb_term_ui::style::bar(&theme, role, true, 0.3, 10)
+            );
+        }
         assert!(on.value("1").starts_with("\x1b["));
         assert_ne!(on.value("x"), on.warning("x"));
         let off = Paint::new(&theme, false);

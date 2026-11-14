@@ -17,8 +17,9 @@ sb-term-ui.workspace = true
 procfs.workspace = true
 # CPU's model without sb-go's ` N-Core` tail (sb-go's own pattern).
 regex.workspace = true
-# `uname(2)` for Kernel (motd spec, Sections; decision 16).
-rustix = { workspace = true, features = ["system"] }
+# `uname(2)` for Kernel, `statvfs(3)` and `stat(2)` for Disk Usage (motd
+# spec, Sections; decision 16).
+rustix = { workspace = true, features = ["fs", "system"] }
 # Every child: Reboot Status's update-notifier script (CONSTRAINTS.md).
 sb-exec.workspace = true
 thiserror.workspace = true

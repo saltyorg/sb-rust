@@ -41,6 +41,45 @@ pub fn table_colour(theme: &Theme, role: Role, on: bool) -> Option<tabled::setti
     })
 }
 
+/// A one-line usage bar (term-ui spec, adapters, the motd amendment):
+/// `█` for the filled part, `round(width × ratio)` cells in `role`, and
+/// `░` for the rest in Faint, each through [`paint`]. The rounding is
+/// bubbles' `ViewAs` (`math.Round`, half away from zero, the ratio
+/// clamped to 0..=1), so sb-go's MOTD bars and these fill the same
+/// cells
+/// (<https://github.com/charmbracelet/bubbles/blob/v2.2.1/progress/progress.go>).
+///
+/// Why not indicatif: it renders a bar only through a draw target
+/// (`ProgressStyle::format_state` is `pub(crate)`, indicatif 0.18.6
+/// `src/style.rs:214`), and its stdout target draws nothing when stdout
+/// isn't a terminal (`src/draw_target.rs:80`), which is the login's
+/// case under `pam_motd`; and it rounds the fill down (`format_bar`,
+/// `src/style.rs:174-176`), one cell short of sb-go's at a half
+/// (<https://github.com/console-rs/indicatif/blob/0.18.6/src/style.rs>).
+/// Why not ratatui's `LineGauge`: ratatui isn't a term-ui dependency, its
+/// inline viewport asks the terminal for the cursor (ratatui-core 0.1.2
+/// `src/terminal/inline.rs:396`), which a pipe can't answer, and
+/// rendering into a `Buffer` and turning cells into SGR text would be
+/// rendering code of our own (motd decision 8).
+#[must_use]
+pub fn bar(theme: &Theme, role: Role, on: bool, ratio: f64, width: usize) -> String {
+    let filled = filled_cells(ratio, width);
+    let mut out = paint(theme, role, on, &"█".repeat(filled));
+    out.push_str(&paint(theme, Role::Faint, on, &"░".repeat(width - filled)));
+    out
+}
+
+/// `round(width × ratio)`, half away from zero, within 0..=width: the
+/// cells `k` from 1 with `k - 0.5 <= width × ratio`, which is exact in
+/// `f64` and needs no float-to-integer cast.
+fn filled_cells(ratio: f64, width: usize) -> usize {
+    let cells = u32::try_from(width).unwrap_or(u32::MAX);
+    let target = f64::from(cells) * ratio;
+    (1..=cells)
+        .take_while(|&k| f64::from(k) - 0.5 <= target)
+        .count()
+}
+
 #[cfg(test)]
 pub(crate) mod sgr {
     //! Reading the colour codes text carries, for the profile guard tests.
@@ -91,6 +130,44 @@ mod tests {
             let _ = write!(out, "{}{table}", paint(&theme, role, true, "x"));
             out
         })
+    }
+
+    /// bubbles' rounding: half away from zero, clamped to the width.
+    #[test]
+    fn bar_fills_round_width_times_ratio_cells() {
+        let cells = |ratio: f64, width| filled_cells(ratio, width);
+        assert_eq!(cells(0.0, 50), 0);
+        assert_eq!(cells(1.0, 50), 50);
+        assert_eq!(cells(0.5, 50), 25);
+        // 50 × 0.01 is 0.5 in f64, which rounds up, as Go's math.Round.
+        assert_eq!(cells(f64::from(1_u8) / 100.0, 50), 1);
+        assert_eq!(cells(f64::from(3_u8) / 100.0, 50), 2); // 1.5
+        assert_eq!(cells(0.029, 50), 1); // 1.45
+        assert_eq!(cells(0.99, 50), 50); // 49.5
+        assert_eq!(cells(0.98, 50), 49);
+        assert_eq!(cells(1.5, 10), 10);
+        assert_eq!(cells(-0.5, 10), 0);
+        assert_eq!(cells(f64::NAN, 10), 0);
+        assert_eq!(cells(0.5, 0), 0);
+    }
+
+    #[test]
+    fn bar_draws_filled_cells_in_the_role_and_the_rest_in_faint() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        assert_eq!(
+            bar(&theme, Role::Ok, true, 0.4, 10),
+            format!(
+                "{}{}",
+                paint(&theme, Role::Ok, true, "████"),
+                paint(&theme, Role::Faint, true, "░░░░░░")
+            )
+        );
+        assert_ne!(
+            paint(&theme, Role::Ok, true, "█"),
+            paint(&theme, Role::Faint, true, "█")
+        );
+        assert_eq!(bar(&theme, Role::Problem, false, 0.25, 4), "█░░░");
+        assert_eq!(bar(&Theme::plain(), Role::Ok, true, 1.0, 3), "███");
     }
 
     #[test]
