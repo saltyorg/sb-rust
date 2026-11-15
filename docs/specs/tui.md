@@ -1582,9 +1582,27 @@ the test's directory.
     and `kept_texts_draw_what_new_ones_do` check the cache, and
     `line.rs`'s `a_window_draws_within_as_the_whole_text` and
     `screen_lines_are_the_texts_lines` the cut text and the count.
-    Far to the right a wrap-off frame still costs more (ratatui's
+    Far to the right a wrap-off frame cost more (ratatui's
     `Paragraph::scroll` walks every character left of the column):
-    4.9 ms at column 1,000, 14.2 ms at 4,000.
+    4.9 ms at column 1,000, 14.2 ms at 4,000. Closed (the maintainer,
+    2026-11-15): each screen line in view is handed to ratatui cut at
+    the column (`columns.rs`), from marks kept with the text (each
+    span's start, and a grapheme every 64 columns, or 64 graphemes of
+    no width, outside printable ASCII), so a cut walks at most that far;
+    a text that is the
+    whole message is kept for every column. A step sideways or a row up
+    takes 1.4 to 2.0 ms at columns 0, 1,000 and 4,000 alike.
+    `a_frames_cost_doesnt_grow_with_the_buffer` times those columns and
+    checks the texts built there match the first column's and that no
+    line handed to ratatui is wider than the window and 64 columns;
+    `columns.rs`'s `a_cut_draws_as_the_scrolled_line` checks the cut
+    against `Paragraph::scroll` cell by cell. A frame that builds every
+    text in view far right (a jump there, or a search, theme or `t`
+    change there; a resize there makes the marks again) still grows
+    with the column, since the message left
+    of it is parsed for its styles: 5.7 to 5.8 ms at 4,000 on these
+    records (17.8 before), more on CJK or colour-per-word text
+    ([ADR-023](../decisions/ADR-023-tui-binary-size.md)).
   - Lines hold their caps (M73's security pass): an adapter builds each
     line with `Line::new`, which copies at most 64 KiB of the message
     and 256 bytes of the origin and counts the rest in `Line::cut` for

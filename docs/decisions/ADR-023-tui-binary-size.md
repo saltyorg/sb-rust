@@ -89,6 +89,35 @@ took 9.3 ms before and 4.9 ms now, at 4,000 18.7 ms before and 14.2 ms
 now: within one 60 fps frame up to about column 2,000, and above it
 past that.
 
+The maintainer asked for those frames to be fast too (2026-11-15),
+and the far-right cost is closed: with wrap off, each screen line in
+view is now handed to ratatui cut at the column (`columns.rs`, styles
+that began left of it kept), from marks kept with the text: each
+span's start, and outside printable ASCII a grapheme every 64 columns
+(or 64 graphemes of no width). A cut walks at most that far, wherever
+the column is. A text
+that is the whole message is also kept for every column, so a step
+past a screen to the right no longer builds it again. The frame-cost
+test now times wrap off at columns 0, 1,000 and 4,000 (2,000 records,
+240x70, release, three runs): a step right, a row up and a step left
+take 1.4 to 2.0 ms at each (4.7 to 4.8 ms at 1,000 and 13.6 to
+14.1 ms at 4,000 before), and it checks that no screen line handed to
+ratatui there is wider than the window and 64 columns. By hand, on
+records of CJK text and of words each in its own colour, the same
+steps take 1.4 to 1.9 ms at 4,000 (12.3 and 17.4 ms before).
+
+A frame that builds every text in view far to the right (a jump there,
+or a search, theme or `t` change while there; a resize there makes the
+marks again too) still costs more, and
+more the further right: the message to the left of the column has to
+be parsed for its styles (`DisplayText` and ansi-to-tui, which have no
+way to resume a parse). On the frame-cost test's records it takes 4.4
+to 5.6 ms at 1,000 and 5.7 to 5.8 ms at 4,000 (7.4 and 17.8 ms
+before); on CJK records 8.8 to 9.0 and 19.2 to 19.4 ms (9.2 and
+22.7 before), on colour-per-word records 7.3 and 18.3 to 19.2 ms
+(14.8 and 33.8 before). Such frames come once per jump or change, not
+per step.
+
 ## Decision
 
 Accept ratatui `=0.30.2` (default features off: `crossterm_0_29`,

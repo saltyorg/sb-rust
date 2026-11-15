@@ -179,7 +179,9 @@ pub(crate) fn searched(line: &Line, format: &Format, query: &str, hit: Style) ->
 
 /// [`searched`] as a window with wrap off shows it: its first `rows`
 /// screen lines, each right through column `columns` (the time and
-/// origin counted), and maybe some of what follows. Only as much of the
+/// origin counted), and maybe some of what follows; with whether that is
+/// the whole message's text, so that no window needs it built again.
+/// Only as much of the
 /// message as that needs is built, the work of a frame with wrap off
 /// (M73's follow-up: building every record in view whole, `DisplayText`
 /// over 5,000+ bytes each, cost a frame of 70 of them 5 to 10 ms at
@@ -208,14 +210,14 @@ pub(crate) fn within(
     hit: Style,
     rows: usize,
     columns: usize,
-) -> Text<'static> {
+) -> (Text<'static>, bool) {
     let (shown, cut) = shown(line, format);
     let rows = rows.max(1);
     let columns = columns + 2 * query.to_lowercase().chars().count() + 2;
     let mut end = columns.saturating_mul(2);
     loop {
         if end >= shown.len() || takes_back(shown, end) {
-            return build(line, format, shown, cut, query, hit);
+            return (build(line, format, shown, cut, query, hit), true);
         }
         let text = build(line, format, &shown[..end], 0, query, hit);
         let filled = match text.lines.len().cmp(&rows) {
@@ -224,7 +226,7 @@ pub(crate) fn within(
             std::cmp::Ordering::Less => false,
         };
         if filled {
-            return text;
+            return (text, false);
         }
         end = end.saturating_mul(2);
     }
@@ -897,7 +899,8 @@ mod tests {
                                 hit(),
                                 usize::from(rows),
                                 usize::from(column + width),
-                            );
+                            )
+                            .0;
                             assert_eq!(
                                 window(part, rows, column, width),
                                 window(whole.clone(), rows, column, width),
@@ -920,14 +923,17 @@ mod tests {
         let width = |text: &Text<'_>| text.lines.iter().map(TextLine::width).max();
         let long = service_line(format!("m7 {}", "lorem ipsum ".repeat(420)).as_bytes());
         let whole = width(&text(&long, &f)).expect("a line");
-        let part = width(&within(&long, &f, "", hit(), 1, 240)).expect("a line");
+        let (part, whole_built) = within(&long, &f, "", hit(), 1, 240);
+        assert!(!whole_built);
+        let part = width(&part).expect("a line");
         assert!((242..1000).contains(&part), "{part} of {whole}");
-        let searched_part = width(&within(&long, &f, "ipsum", hit(), 1, 240)).expect("a line");
+        let searched_part = width(&within(&long, &f, "ipsum", hit(), 1, 240).0).expect("a line");
         assert!(searched_part >= 240 + 12, "{searched_part}");
-        assert_eq!(width(&within(&long, &f, "", hit(), 1, 6000)), Some(whole));
+        let (all, whole_built) = within(&long, &f, "", hit(), 1, 6000);
+        assert_eq!((width(&all), whole_built), (Some(whole), true));
         let back = service_line(&[vec![b'x'; 3000], b"\rtaken back".to_vec()].concat());
         assert_eq!(
-            strings(&within(&back, &f, "", hit(), 1, 240)),
+            strings(&within(&back, &f, "", hit(), 1, 240).0),
             strings(&text(&back, &f))
         );
         // The prefix's end right after a carriage return, text after it.
@@ -936,7 +942,7 @@ mod tests {
         let end = 2 * (240 + 2);
         let at_end = service_line(&[vec![b'x'; end - 1], b"\ryyyy".to_vec()].concat());
         assert_eq!(
-            strings(&within(&at_end, &bare, "", hit(), 1, 240)),
+            strings(&within(&at_end, &bare, "", hit(), 1, 240).0),
             ["yyyy"]
         );
         // A carriage return still pending where the prefix ends: only a
@@ -960,15 +966,15 @@ mod tests {
             .concat();
             let line = service_line(&message);
             assert_eq!(
-                window(within(&line, &f, "", hit(), 1, 480), 1, 0, 240),
+                window(within(&line, &f, "", hit(), 1, 480).0, 1, 0, 240),
                 window(text(&line, &f), 1, 0, 240),
                 "{tail:?}"
             );
         }
         let crlf = service_line("crlf line\r\n".repeat(400).as_bytes());
-        assert!(within(&crlf, &f, "", hit(), 2, 240).lines.len() < 100);
+        assert!(within(&crlf, &f, "", hit(), 2, 240).0.lines.len() < 100);
         let lines = service_line("short\n".repeat(400).as_bytes());
-        let five = within(&lines, &f, "", hit(), 5, 240).lines.len();
+        let five = within(&lines, &f, "", hit(), 5, 240).0.lines.len();
         assert!((6..100).contains(&five), "{five}");
     }
 
@@ -988,7 +994,7 @@ mod tests {
                     message.push(c);
                 }
                 let line = service_line(message.as_bytes());
-                let part = within(&line, &f, "needle", hit(), 1, usize::from(width));
+                let part = within(&line, &f, "needle", hit(), 1, usize::from(width)).0;
                 assert_eq!(
                     window(part, 1, 0, width),
                     window(searched(&line, &f, "needle", hit()), 1, 0, width),

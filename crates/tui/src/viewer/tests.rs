@@ -1554,6 +1554,45 @@ fn frame_costs(n: u64) -> Vec<(usize, usize, std::time::Duration)> {
         .collect()
 }
 
+/// What frames cost with wrap off at `column`, on 2,000 long records at
+/// 240×70: a step right onto the column, a row up, a step left, and a
+/// frame that builds every text in view again (as a jump there does).
+/// For each, the texts built, the widest screen line handed to ratatui,
+/// and the time taken.
+fn far_right_costs(column: u16) -> Vec<(usize, usize, std::time::Duration)> {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(2_000));
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::PageUp);
+    h.viewer.column = column.saturating_sub(COLUMN_STEP);
+    h.draw();
+    let cost = |h: &mut Harness, frame: &dyn Fn(&mut Harness)| {
+        h.viewer.built.set(0);
+        h.viewer.widest.set(0);
+        let started = std::time::Instant::now();
+        frame(h);
+        let elapsed = started.elapsed();
+        (h.viewer.built.get(), h.viewer.widest.get(), elapsed)
+    };
+    let mut costs: Vec<_> = [KeyCode::Right, KeyCode::Char('k'), KeyCode::Left]
+        .iter()
+        .map(|&key| {
+            cost(&mut h, &|h| {
+                h.key(key);
+            })
+        })
+        .collect();
+    costs.push(cost(&mut h, &|h| {
+        h.viewer.drawn = Drawn::default();
+        h.draw();
+    }));
+    costs
+}
+
 /// The frame cost (tui spec, Testing Strategy, "Frame cost"; proto-logs'
 /// "frame-time budget check"): the log lines measured and the texts built
 /// per frame don't grow with the buffer, here 2,000 against 20,000
@@ -1595,6 +1634,24 @@ fn a_frames_cost_doesnt_grow_with_the_buffer() {
         times[times.len() / 2],
         times[times.len() - 1]
     );
+    // Far to the right with wrap off (the follow-up "Far-right wrap-off
+    // frames are fast too"): the same texts built as at the first column,
+    // and each screen line handed to ratatui cut to about the window, so
+    // that a frame's cost doesn't grow with the column.
+    let near = far_right_costs(0);
+    for column in [1_000, 4_000] {
+        let far = far_right_costs(column);
+        let built = |costs: &[(usize, usize, std::time::Duration)]| {
+            costs.iter().map(|(built, _, _)| *built).collect::<Vec<_>>()
+        };
+        assert_eq!(built(&far), built(&near), "column {column}: {far:?}");
+        assert!(
+            far.iter().all(|&(_, widest, _)| widest <= 240 + 64),
+            "column {column}: {far:?}"
+        );
+        eprintln!("wrap off at column {column}, right, up, left, all built: {far:?}");
+    }
+    eprintln!("wrap off at column 0, right, up, left, all built: {near:?}");
 }
 
 /// Heights are kept with their entries: a frame with nothing new measures
@@ -1772,4 +1829,144 @@ fn kept_texts_stay_within_their_bytes() {
     h.draw();
     assert!(h.viewer.built.get() > 0);
     assert_eq!(&screen, h.terminal.backend().buffer());
+}
+
+/// A kept text's size counts its marks once a frame has cut it.
+#[test]
+fn a_kept_texts_size_counts_its_marks() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(200));
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::PageUp);
+    h.key(KeyCode::Right);
+    let kept = &h.viewer.drawn.texts;
+    assert!(kept.len() > 60, "{}", kept.len());
+    for built in kept {
+        let marks = built.marks.as_ref().expect("cut at column 9");
+        let bare = Built {
+            id: built.id,
+            text: built.text.clone(),
+            rows: built.rows,
+            columns: built.columns,
+            marks: None,
+        };
+        assert!(marks.size() > 0);
+        assert_eq!(built.size(), bare.size() + marks.size());
+    }
+}
+
+/// With wrap off, a text built whole is kept for every column: steps
+/// right past a screen and more build nothing, and draw what texts
+/// built afresh do.
+#[test]
+fn a_whole_text_is_kept_for_every_column() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    let words = "lorem ipsum ".repeat(50);
+    let ls: Vec<Line> = (0..400)
+        .map(|i| line(i, &format!("m{i} {words}")))
+        .collect();
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: false,
+        more_newer: false,
+    });
+    h.key(KeyCode::Char('w'));
+    // Records that come into view with wrap off are built for it.
+    h.key(KeyCode::PageUp);
+    h.viewer.built.set(0);
+    for _ in 0..40 {
+        h.key(KeyCode::Right);
+    }
+    assert_eq!(h.viewer.built.get(), 0);
+    let kept = h.terminal.backend().buffer().clone();
+    h.viewer.drawn = Drawn::default();
+    h.draw();
+    assert_eq!(&kept, h.terminal.backend().buffer());
+}
+
+/// A text's marks are made again for another window width: they count a
+/// grapheme wider than the window as none.
+#[test]
+fn marks_follow_the_window_width() {
+    let mut built = Built {
+        id: 0,
+        text: Text::from("日本語".repeat(100)),
+        rows: usize::MAX,
+        columns: usize::MAX,
+        marks: None,
+    };
+    let _ = built.window(0, 1, 8, 40);
+    assert_eq!(built.marks.as_ref().map(Marks::width), Some(40));
+    let _ = built.window(0, 1, 8, 40);
+    assert_eq!(built.marks.as_ref().map(Marks::width), Some(40));
+    let one: Vec<String> = built
+        .window(0, 1, 8, 1)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(built.marks.as_ref().map(Marks::width), Some(1));
+    // In one column no character fits: ratatui skips each and draws
+    // nothing, and the cut, with marks for that width, is empty (with
+    // the 40-column marks it would hold the characters from column 8).
+    assert_eq!(one, [""]);
+}
+
+/// With wrap off and scrolled sideways, a tall record partly above the
+/// window draws as ratatui's `Paragraph::scroll` draws its whole text.
+#[test]
+fn a_tall_record_scrolled_sideways_draws_as_paragraph_scroll() {
+    use ratatui::widgets::Widget as _;
+    let mut h = open(40, 12, Limits::default());
+    let row = "abcdefghij".repeat(10);
+    let tall = (0..60).fold(String::new(), |mut tall, i| {
+        use std::fmt::Write as _;
+        let _ = writeln!(tall, "r{i:02} {row}");
+        tall
+    });
+    let mut ls: Vec<Line> = (0..5).map(|i| line(i, &format!("short {i}"))).collect();
+    ls.push(line(5, &tall));
+    ls.extend((6..9).map(|i| line(i, &format!("short {i}"))));
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: false,
+        more_newer: false,
+    });
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::Home);
+    for _ in 0..3 {
+        h.key(KeyCode::Right);
+    }
+    for _ in 0..9 {
+        h.key(KeyCode::Char('j'));
+    }
+    let top = h.viewer.top();
+    assert_eq!(top.item, 5, "{top:?}");
+    assert!(top.skip > 0, "{top:?}");
+    let rows = u16::try_from(h.viewer.height).expect("a small window");
+    let area = Rect::new(0, 0, 40, rows);
+    let mut expected = ratatui::buffer::Buffer::empty(area);
+    Paragraph::new(h.viewer.item_text(top.item))
+        .scroll((u16::try_from(top.skip).expect("a few rows"), 24))
+        .render(area, &mut expected);
+    let screen = h.terminal.backend().buffer();
+    for y in 0..rows {
+        for x in 0..40 {
+            assert_eq!(screen[(x, y + 1)], expected[(x, y)], "at {x},{y}");
+        }
+    }
 }

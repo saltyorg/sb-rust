@@ -39,8 +39,10 @@
 //!   following. The header shows `/query 3/17`. Esc clears the search; a
 //!   new source opens a new viewer, so the query resets.
 //! - **Sideways** (wrap off): ←/→, Shift+wheel and a horizontal wheel
-//!   scroll 8 columns (`Paragraph::scroll`'s x offset), with no right-hand
-//!   stop, as proto-logs; the header shows the column; `w` resets it.
+//!   scroll 8 columns, with no right-hand stop, as proto-logs; the header
+//!   shows the column; `w` resets it. A log line is drawn cut at the
+//!   column ([`columns`]), so a frame doesn't walk what lies left of it;
+//!   markers and notices with `Paragraph::scroll`'s x offset.
 //! - **Pasteable output** (tui spec, "Pasteable output"): `s` saves the
 //!   loaded lines as plain text to a new file in the run log's directory
 //!   (`save`) and shows where in the footer, with the review line, until
@@ -67,6 +69,7 @@ use sb_cli_core::theme::Role;
 use sb_term_ui::DisplayText;
 use tokio::sync::{Notify, mpsc};
 
+use crate::columns::{self, Marks};
 use crate::line::{self, Format};
 use crate::save;
 use crate::source::{
@@ -194,8 +197,8 @@ const DRAWN_BYTES: usize = 4 << 20;
 /// was built with (the theme, the zone and `t`; the query, whose matches
 /// are lit), so a change of either drops them all; a text built for
 /// fewer rows or columns than a frame shows (wrap off) is built again;
-/// the sideways column needs nothing more, as `Paragraph::scroll` applies
-/// it when drawing.
+/// within those, the sideways column is a cut of the text at drawing
+/// ([`columns`], with the text's marks kept beside it).
 ///
 /// Bounded to what is on screen, not counted toward the buffer's 32 MiB:
 /// each frame keeps only the texts it drew, one per entry in view, so at
@@ -218,21 +221,26 @@ struct Drawn {
     texts: Vec<Built>,
 }
 
-/// A log line's text as [`Drawn`] keeps it: whose (its [`Kept`] id), and
-/// the screen lines and columns it holds right (`usize::MAX`: all).
+/// A log line's text as [`Drawn`] keeps it: whose (its [`Kept`] id), the
+/// screen lines and columns it holds right (`usize::MAX`: all), and
+/// where to cut it with wrap off away from the first column, once a frame
+/// has needed that.
 #[derive(Debug)]
 struct Built {
     id: u64,
     text: Text<'static>,
     rows: usize,
     columns: usize,
+    marks: Option<Marks>,
 }
 
 impl Built {
     /// The text's bytes, counted as its lines, their spans and the
-    /// spans' contents: what keeping it costs, less the allocator's own.
+    /// spans' contents, and its marks: what keeping it costs, less the
+    /// allocator's own.
     fn size(&self) -> usize {
-        self.text
+        let text: usize = self
+            .text
             .lines
             .iter()
             .map(|line| {
@@ -243,7 +251,42 @@ impl Built {
                     .sum();
                 size_of::<TextLine<'_>>() + spans
             })
-            .sum()
+            .sum();
+        text + self.marks.as_ref().map_or(0, Marks::size)
+    }
+
+    /// With wrap off, the `rows` screen lines from line `skip` that a
+    /// window `width` wide scrolled to `column` shows, each cut at the
+    /// column ([`columns`]): ratatui then walks only what it draws, not
+    /// the columns to the left (`Paragraph::scroll`'s x offset walks
+    /// them all on each draw). The marks are made the first time a frame
+    /// needs a cut, and again for another width, through the columns the
+    /// text holds right: a window that needs more builds a new text.
+    fn window(&mut self, skip: usize, rows: usize, column: u16, width: u16) -> Text<'_> {
+        debug_assert!(
+            usize::from(column) + usize::from(width) <= self.columns,
+            "a window past the columns built"
+        );
+        let end = self.text.lines.len().min(skip.saturating_add(rows));
+        let shown = skip.min(end)..end;
+        let lines = if column == 0 {
+            self.text.lines[shown].iter().map(columns::whole).collect()
+        } else {
+            if self.marks.as_ref().map(Marks::width) != Some(width) {
+                self.marks = None;
+            }
+            let marks = self
+                .marks
+                .get_or_insert_with(|| Marks::new(&self.text, width, self.columns));
+            shown
+                .map(|row| marks.cut(&self.text, row, usize::from(column)))
+                .collect()
+        };
+        Text {
+            lines,
+            style: self.text.style,
+            alignment: self.text.alignment,
+        }
     }
 }
 
@@ -335,6 +378,10 @@ pub struct Viewer {
     /// last taken.
     #[cfg(test)]
     built: Cell<usize>,
+    /// The widest screen line handed to ratatui with wrap off since the
+    /// count was last taken, in columns.
+    #[cfg(test)]
+    widest: Cell<usize>,
 }
 
 impl Viewer {
@@ -405,6 +452,8 @@ impl Viewer {
             measured: Cell::new(0),
             #[cfg(test)]
             built: Cell::new(0),
+            #[cfg(test)]
+            widest: Cell::new(0),
         }
     }
 
@@ -763,20 +812,24 @@ impl Viewer {
         #[cfg(test)]
         self.built.set(self.built.get() + 1);
         let hit = self.format.hit();
-        let (text, columns) = if self.wrap {
+        let (text, rows, columns) = if self.wrap {
             let text = line::searched(line, &self.format, &self.query, hit);
-            (text, needed)
+            (text, rows, needed)
         } else {
-            // A screen more to the right: the columns built for.
+            // A screen more to the right: the columns built for, unless
+            // that is the whole message, which every window can show.
             let reach = needed + width;
-            let text = line::within(line, &self.format, &self.query, hit, rows, reach);
-            (text, reach)
+            match line::within(line, &self.format, &self.query, hit, rows, reach) {
+                (text, true) => (text, usize::MAX, usize::MAX),
+                (text, false) => (text, rows, reach),
+            }
         };
         Some(Built {
             id: kept.id,
             text,
             rows,
             columns,
+            marks: None,
         })
     }
 
@@ -1348,31 +1401,42 @@ impl Viewer {
             let shown = u16::try_from(rows.saturating_sub(at.skip))
                 .unwrap_or(u16::MAX)
                 .min(log.height - y);
-            let skip = u16::try_from(at.skip).unwrap_or(u16::MAX);
-            // With wrap off, the x offset is the sideways column
-            // (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html#method.scroll>).
-            let column = if self.wrap { 0 } else { self.column };
-            let paragraph = match self.text_of(at.item, at.skip + usize::from(shown), &mut last) {
-                Some(built) => {
+            let area = Rect {
+                y: log.y + y,
+                height: shown,
+                ..log
+            };
+            if let Some(mut built) = self.text_of(at.item, at.skip + usize::from(shown), &mut last)
+            {
+                if self.wrap {
+                    let skip = u16::try_from(at.skip).unwrap_or(u16::MAX);
                     let paragraph = self.wrapped(Paragraph::new(built.text.clone()));
-                    let size = built.size();
-                    if kept + size <= self.drawn_bytes {
-                        kept += size;
-                        drawn.texts.push(built);
+                    frame.render_widget(paragraph.scroll((skip, 0)), area);
+                } else {
+                    // With wrap off, the window's rows of the text, cut
+                    // at the sideways column.
+                    let rows = usize::from(shown);
+                    let text = built.window(at.skip, rows, self.column, log.width);
+                    #[cfg(test)]
+                    {
+                        let widest = text.lines.iter().map(TextLine::width).max();
+                        self.widest.set(self.widest.get().max(widest.unwrap_or(0)));
                     }
-                    paragraph
+                    frame.render_widget(Paragraph::new(text), area);
                 }
-                None => self.paragraph(at.item),
+                let size = built.size();
+                if kept + size <= self.drawn_bytes {
+                    kept += size;
+                    drawn.texts.push(built);
+                }
+            } else {
+                // A marker or a notice, a row: with wrap off, the x
+                // offset is the sideways column
+                // (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html#method.scroll>).
+                let skip = u16::try_from(at.skip).unwrap_or(u16::MAX);
+                let column = if self.wrap { 0 } else { self.column };
+                frame.render_widget(self.paragraph(at.item).scroll((skip, column)), area);
             }
-            .scroll((skip, column));
-            frame.render_widget(
-                paragraph,
-                Rect {
-                    y: log.y + y,
-                    height: shown,
-                    ..log
-                },
-            );
             y += shown;
             at = Anchor {
                 item: at.item + 1,

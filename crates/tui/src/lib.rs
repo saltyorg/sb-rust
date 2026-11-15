@@ -10,6 +10,7 @@
 //! the picker ([`picker`]) and `sb logs`' screens ([`logs`]), with the
 //! inline fallback when stdout isn't a terminal ([`inline`]).
 
+mod columns;
 pub mod line;
 pub mod picker;
 mod save;
