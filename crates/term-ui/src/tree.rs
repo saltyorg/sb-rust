@@ -14,11 +14,13 @@ use crate::runner::Labels;
 use crate::style::paint;
 use crate::text::wrap_line;
 
-/// The column times end in at least (proto-runner's reviewed layout);
-/// further right when a line needs it, never past the screen.
-const COLUMN: usize = 64;
+/// The column times end in at least: proto-runner's reviewed layout, 64,
+/// and two more since times show tenths (decision 13), so `59.9s` leaves a
+/// label the room `59s` did; further right when a line needs it, never
+/// past the screen.
+const COLUMN: usize = 66;
 /// The least space between a label and its time, so an ending's reason
-/// (`interrupted · 12s`) never reads as part of the label (the
+/// (`interrupted · 12.0s`) never reads as part of the label (the
 /// maintainer, 2026-11-04, trying decision 11's first version); fewer
 /// on a screen too narrow for three. Plain end lines use it too, always
 /// in full (`runner::end_line`).
@@ -137,11 +139,43 @@ struct Parts {
 }
 
 /// A failed step's time column: its reason first, if it has one (`exit 3
-/// · 2s`), for the live tree and plain end lines alike.
-pub(crate) fn failed_time(reason: Option<&str>, secs: u64) -> String {
+/// · 2.0s`), for the live tree and plain end lines alike.
+pub(crate) fn failed_time(reason: Option<&str>, elapsed: Duration) -> String {
     match reason {
-        Some(reason) => format!("{reason} · {secs}s"),
-        None => format!("{secs}s"),
+        Some(reason) => format!("{reason} · {}", time(elapsed)),
+        None => time(elapsed),
+    }
+}
+
+/// A step's time, live and finished (decision 13): under a minute in
+/// tenths of a second (`0.3s`, `59.9s`), cut rather than rounded so a time
+/// under a minute never reads `60.0s`; from a minute on, sb-go's
+/// `FormatDuration` (`1m 2s`, `1h 3m`, `1d 2h`: whole units, a zero minor
+/// unit left out). Why not sb-host's `format_duration`, which is that
+/// form: term-ui doesn't depend on sb-host (the capability map), and the
+/// tenths are term-ui's own. Why not indicatif's `HumanDuration`
+/// (<https://docs.rs/indicatif/0.18.6/indicatif/struct.HumanDuration.html>):
+/// one unit, rounded, no tenths; jiff's friendly `SpanPrinter`
+/// (<https://docs.rs/jiff/0.2.38/jiff/fmt/friendly/struct.SpanPrinter.html>):
+/// every unit up to hours (`1h 3m 5s`), and not a term-ui dependency;
+/// std's `{:.1?}`: it rounds (`60.0s`) and has no minutes.
+pub(crate) fn time(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let (minute, hour, day) = (60, 60 * 60, 24 * 60 * 60);
+    if secs < minute {
+        return format!("{secs}.{}s", elapsed.subsec_millis() / 100);
+    }
+    let (major, minor, units) = if secs < hour {
+        (secs / minute, secs % minute, ("m", "s"))
+    } else if secs < day {
+        (secs / hour, secs / minute % 60, ("h", "m"))
+    } else {
+        (secs / day, secs / hour % 24, ("d", "h"))
+    };
+    if minor > 0 {
+        format!("{major}{} {minor}{}", units.0, units.1)
+    } else {
+        format!("{major}{}", units.0)
     }
 }
 
@@ -341,41 +375,37 @@ impl Tree {
             _ => GLYPHS.middle_item,
         };
         let lead = format!("{}{item}{}", self.indent(id), GLYPHS.item_indent);
-        let secs = node
+        let elapsed = node
             .elapsed
-            .unwrap_or_else(|| d.now.duration_since(node.started))
-            .as_secs();
+            .unwrap_or_else(|| d.now.duration_since(node.started));
+        let shown = time(elapsed);
         let running = &node.labels.running;
         let (role, left, right) = match node.status {
             Status::Running => (
                 Role::Accent,
                 format!("{} {running}", SPINNER[d.frame % SPINNER.len()]),
-                format!("{secs}s"),
+                shown,
             ),
-            Status::Done => (
-                Role::Ok,
-                format!("✓ {}", node.labels.done),
-                format!("{secs}s"),
-            ),
+            Status::Done => (Role::Ok, format!("✓ {}", node.labels.done), shown),
             Status::Failed => (
                 Role::Problem,
                 format!("✗ {}", node.labels.failure.as_deref().unwrap_or(running)),
-                failed_time(node.reason.as_deref(), secs),
+                failed_time(node.reason.as_deref(), elapsed),
             ),
             Status::Interrupted => (
                 Role::Warn,
                 format!("✗ {running}"),
-                format!("interrupted · {secs}s"),
+                format!("interrupted · {shown}"),
             ),
             Status::Stopped => (
                 Role::Warn,
                 format!("✗ {running}"),
-                format!("stopped · {secs}s"),
+                format!("stopped · {shown}"),
             ),
             Status::SubStepFailed => (
                 Role::Warn,
                 format!("✗ {running}"),
-                format!("sub-step failed · {secs}s"),
+                format!("sub-step failed · {shown}"),
             ),
         };
         let right_role = match node.status {
@@ -719,7 +749,34 @@ fn width(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use sb_cli_core::theme::{Palette, Profile};
+
+    /// A step's time: tenths under a minute, cut rather than rounded, so
+    /// it never reads `60.0s`; from a minute, whole units as sb-go's
+    /// `FormatDuration` (term-ui decision 13).
+    #[test]
+    fn times_show_tenths_under_a_minute() {
+        let cases = [
+            (Duration::ZERO, "0.0s"),
+            (Duration::from_millis(99), "0.0s"),
+            (Duration::from_millis(300), "0.3s"),
+            (Duration::from_millis(4_790), "4.7s"),
+            (Duration::from_millis(59_999), "59.9s"),
+            (Duration::from_secs(60), "1m"),
+            (Duration::from_millis(62_900), "1m 2s"),
+            (Duration::from_secs(3_599), "59m 59s"),
+            (Duration::from_hours(1), "1h"),
+            (Duration::from_mins(63), "1h 3m"),
+            (Duration::from_secs(86_399), "23h 59m"),
+            (Duration::from_hours(24), "1d"),
+            (Duration::from_hours(26), "1d 2h"),
+            (Duration::from_hours(72), "3d"),
+        ];
+        for (elapsed, shown) in cases {
+            assert_eq!(time(elapsed), shown, "{elapsed:?}");
+        }
+    }
 
     fn plain() -> Theme {
         Theme::resolve(&Palette::default(), Profile::Ascii)
@@ -791,10 +848,10 @@ mod tests {
         let d = draw(&theme, secs(t0, 13));
         let printed = tree.take_printable(&d).join("\n");
         insta::assert_snapshot!(printed, @r"
-        ╰── ✗ Validating Saltbox configuration                interrupted · 12s
-            ╰── ✗ Validating accounts.yml                     interrupted · 12s
-                ├── ✗ Validating Cloudflare API credentials   interrupted · 12s
-                ╰── ✓ Docker Hub credentials validated                       0s
+        ╰── ✗ Validating Saltbox configuration                interrupted · 12.0s
+            ╰── ✗ Validating accounts.yml                     interrupted · 12.0s
+                ├── ✗ Validating Cloudflare API credentials   interrupted · 12.0s
+                ╰── ✓ Docker Hub credentials validated                       0.0s
         ");
         assert!(!printed.contains('…'), "{printed}");
         let ends: Vec<usize> = printed.lines().map(width).collect();
@@ -920,14 +977,14 @@ mod tests {
         let d = draw(&theme, secs(t0, 3));
         let printed = tree.take_printable(&d).join("\n");
         insta::assert_snapshot!(printed, @r"
-        ├── ✓ accounts.yml read                                       1s
+        ├── ✓ accounts.yml read                                       1.0s
         │   › 3 accounts
-        ├── ✓ settings.yml checked                                    1s
+        ├── ✓ settings.yml checked                                    1.0s
         │   ! unknown key: downloads.extra
-        ├── ✓ credentials valid                                       2s
-        │   ├── ✓ Cloudflare token valid                              2s
-        │   ╰── ✓ Docker Hub login valid                              1s
-        ╰── ✓ report written                                          0s
+        ├── ✓ credentials valid                                       2.0s
+        │   ├── ✓ Cloudflare token valid                              2.0s
+        │   ╰── ✓ Docker Hub login valid                              1.0s
+        ╰── ✓ report written                                          0.0s
         ");
         assert_eq!(tree.live(&d), [] as [String; 0]);
     }
@@ -958,9 +1015,9 @@ mod tests {
         tree.output(check, "checking item 2 of 11");
         let d = draw(&theme, secs(t0, 2));
         let printed = tree.take_printable(&d).join("\n");
-        insta::assert_snapshot!(printed, @"├── ✓ accounts.yml read                                       1s");
+        insta::assert_snapshot!(printed, @"├── ✓ accounts.yml read                                       1.0s");
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Checking settings.yml                                   2s
+        ├── ⠋ Checking settings.yml                                   2.0s
         │   checking item 1 of 11
         │   checking item 2 of 11
         ");
@@ -987,11 +1044,11 @@ mod tests {
         tree.end();
         let printed = tree.take_printable(&draw(&theme, secs(t0, 5))).join("\n");
         insta::assert_snapshot!(printed, @r"
-        ├── ✗ pull failed                                             4s
+        ├── ✗ pull failed                                             4.0s
         │   error: timeout
-        ├── ✗ Starting                                  interrupted · 1s
-        ├── ✗ Starting                                      stopped · 1s
-        ╰── ✗ Starting                              sub-step failed · 1s
+        ├── ✗ Starting                                  interrupted · 1.0s
+        ├── ✗ Starting                                      stopped · 1.0s
+        ╰── ✗ Starting                              sub-step failed · 1.0s
         ");
     }
 
@@ -1059,7 +1116,7 @@ mod tests {
     }
 
     /// A failed child's reason comes before the step's time (`exit 3 ·
-    /// 3s`), in the time column like "interrupted".
+    /// 3.0s`), in the time column like "interrupted".
     #[test]
     fn a_failed_childs_reason_comes_before_its_time() {
         let theme = plain();
@@ -1075,7 +1132,7 @@ mod tests {
         tree.end();
         let printed = tree.take_printable(&draw(&theme, secs(t0, 3))).join("\n");
         insta::assert_snapshot!(printed, @r"
-        ╰── ✗ Checking                                       exit 3 · 3s
+        ╰── ✗ Checking                                       exit 3 · 3.0s
             systemctl is-active [ARG] exited with code 3
         ");
     }
@@ -1102,7 +1159,7 @@ mod tests {
         tree.end();
         let printed = tree.take_printable(&draw(&theme, secs(t0, 3))).join("\n");
         insta::assert_snapshot!(printed, @r"
-        ╰── ✗ pull failed                                             3s
+        ╰── ✗ pull failed                                             3.0s
             pull failed: timeout
             after 30s
             line 2
@@ -1198,13 +1255,13 @@ mod tests {
         let printed = tree.take_printable(&d);
         assert!(printed.iter().all(|l| width(l) <= 80), "{printed:#?}");
         insta::assert_snapshot!(printed.join("\n"), @r#"
-        ╰── ✗ Setting up                            sub-step failed · 0s
-            ├── ✓ checked                                             0s
+        ╰── ✗ Setting up                            sub-step failed · 0.0s
+            ├── ✓ checked                                             0.0s
             │   › downloads.path is /mnt/unionfs/downloads, which is on the merged mount
             │     rather than a local disk
             │   ! unknown key: downloads.extra_options_for_the_torrent_client (ignored;
             │     see the settings reference)
-            ╰── ✗ pull failed                                         0s
+            ╰── ✗ pull failed                                         0.0s
                 docker pull ghcr.io/hotio/plex:release exited with code 1 after three
                 attempts to reach the registry
                 Pulling ghcr.io/hotio/plex:release
@@ -1299,6 +1356,30 @@ mod tests {
         assert_eq!(printed.last().map(String::as_str), Some("    layer 3 of 7"));
     }
 
+    /// The running step's live time follows the same rule, and `59.9s`,
+    /// the widest time under a minute, ends in the same column as `0.3s`,
+    /// beside a label as long as one that fit beside `59s` at column 64
+    /// (54 columns, the spinner and its space included).
+    #[test]
+    fn a_live_time_shows_tenths_in_its_column() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let running = "x".repeat(52);
+        let _id = tree.add(None, Labels::new(running.as_str(), "done"), t0);
+        let at = |millis| draw(&theme, t0 + Duration::from_millis(millis));
+        let [early] = &tree.live(&at(300))[..] else {
+            panic!("one live row");
+        };
+        let [late] = &tree.live(&at(59_990))[..] else {
+            panic!("one live row");
+        };
+        assert_eq!(early, &format!("├── ⠋ {running}    0.3s"));
+        assert_eq!(late, &format!("├── ⠋ {running}   59.9s"));
+        assert_eq!(width(early), COLUMN);
+        assert_eq!(width(late), COLUMN);
+    }
+
     /// A step ends once: a later ending doesn't change it.
     #[test]
     fn a_step_ends_once() {
@@ -1310,7 +1391,7 @@ mod tests {
         tree.finish(id, Status::Failed, secs(t0, 9));
         tree.end();
         let printed = tree.take_printable(&draw(&theme, secs(t0, 9)));
-        assert_eq!(printed[0], format!("╰── ✓ a{}1s", " ".repeat(55)));
+        assert_eq!(printed[0], format!("╰── ✓ a{}1.0s", " ".repeat(55)));
     }
 
     /// A label that exactly fills the room before the time isn't cut.
@@ -1319,13 +1400,13 @@ mod tests {
         let theme = plain();
         let t0 = Instant::now();
         let mut tree = Tree::default();
-        // 64 columns: the branch (4), the label, the gap (3) and "1s" (2).
+        // 66 columns: the branch (4), the label, the gap (3) and "1.0s" (4).
         let label = format!("✓ {}", "x".repeat(53));
         let id = tree.add(None, Labels::new("x", &label[4..]), t0);
         tree.finish(id, Status::Done, secs(t0, 1));
         tree.end();
         let printed = tree.take_printable(&draw(&theme, secs(t0, 1)));
-        assert_eq!(printed[0], format!("╰── {label}   1s"));
+        assert_eq!(printed[0], format!("╰── {label}   1.0s"));
         assert_eq!(width(&printed[0]), COLUMN);
     }
 
@@ -1371,7 +1452,7 @@ mod tests {
             ..draw(&theme, secs(t0, 1))
         };
         let printed = tree.take_printable(&d);
-        assert_eq!(printed[0], format!("╰── ✓ {}…   1s", "x".repeat(52)));
+        assert_eq!(printed[0], format!("╰── ✓ {}…   1.0s", "x".repeat(52)));
         assert_eq!(width(&printed[0]), COLUMN);
     }
 
@@ -1385,15 +1466,15 @@ mod tests {
         let id = tree.add(None, Labels::new("Pulling images", "images pulled"), t0);
         tree.finish(id, Status::Interrupted, secs(t0, 12));
         tree.end();
-        // The branch (4) and "interrupted · 12s" (17) leave one column:
+        // The branch (4) and "interrupted · 12.0s" (19) leave one column:
         // a one-space gap, no label.
         let d = Draw {
-            width: 22,
+            width: 24,
             ..draw(&theme, secs(t0, 12))
         };
         let printed = tree.take_printable(&d);
-        assert_eq!(printed[0], "╰──  interrupted · 12s");
-        assert_eq!(width(&printed[0]), 22);
+        assert_eq!(printed[0], "╰──  interrupted · 12.0s");
+        assert_eq!(width(&printed[0]), 24);
     }
 
     /// A step that ended while a sub-step still runs stays live, even once
@@ -1429,7 +1510,7 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 1));
         d.width = 40;
         let printed = tree.take_printable(&d);
-        assert_eq!(printed[0], "╰── ✓ a very long done label a ver…   1s");
+        assert_eq!(printed[0], "╰── ✓ a very long done label a v…   1.0s");
         assert_eq!(width(&printed[0]), 40);
     }
 
@@ -1527,7 +1608,7 @@ mod tests {
             "{live:?}"
         );
         assert!(
-            live.contains(&paint(&theme, Role::Muted, true, "0s")),
+            live.contains(&paint(&theme, Role::Muted, true, "0.0s")),
             "{live:?}"
         );
         tree.finish(id, Status::Done, t0);
@@ -1553,10 +1634,10 @@ mod tests {
         let leaf = tree.add(Some(inner), Labels::new("Leaf", "leaf done"), t0);
         let d = draw(&theme, secs(t0, 1));
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Checking                                                1s
-        │   ├── ⠋ Inner                                               1s
-        │   │   ├── ⠋ Leaf                                            1s
-        │   ├── ⠋ Outer                                               1s
+        ├── ⠋ Checking                                                1.0s
+        │   ├── ⠋ Inner                                               1.0s
+        │   │   ├── ⠋ Leaf                                            1.0s
+        │   ├── ⠋ Outer                                               1.0s
         ");
         tree.finish(leaf, Status::Done, secs(t0, 1));
         tree.finish(inner, Status::Done, secs(t0, 1));
@@ -1564,10 +1645,10 @@ mod tests {
         tree.finish(check, Status::Done, secs(t0, 1));
         tree.end();
         insta::assert_snapshot!(tree.take_printable(&d).join("\n"), @r"
-        ╰── ✓ checked                                                 1s
-            ├── ✓ inner done                                          1s
-            │   ╰── ✓ leaf done                                       1s
-            ╰── ✓ outer done                                          1s
+        ╰── ✓ checked                                                 1.0s
+            ├── ✓ inner done                                          1.0s
+            │   ╰── ✓ leaf done                                       1.0s
+            ╰── ✓ outer done                                          1.0s
         ");
     }
 
@@ -1604,15 +1685,15 @@ mod tests {
         d.width = 80;
         d.rows = 12;
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Starting containers                                     2s
+        ├── ⠋ Starting containers                                     2.0s
         │   ├── … 24 finished
-        │   ├── ✓ app24 started                                       1s
-        │   ├── ✓ app25 started                                       1s
-        │   ├── ✓ app26 started                                       1s
-        │   ├── ✓ app27 started                                       1s
-        │   ├── ✓ app28 started                                       1s
-        │   ├── ✓ app29 started                                       1s
-        │   ├── ⠋ Starting plex                                       2s
+        │   ├── ✓ app24 started                                       1.0s
+        │   ├── ✓ app25 started                                       1.0s
+        │   ├── ✓ app26 started                                       1.0s
+        │   ├── ✓ app27 started                                       1.0s
+        │   ├── ✓ app28 started                                       1.0s
+        │   ├── ✓ app29 started                                       1.0s
+        │   ├── ⠋ Starting plex                                       2.0s
         │   │   plex: waiting 0
         │   │   plex: waiting 1
         │   │   plex: waiting 2
@@ -1719,9 +1800,9 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 1));
         d.rows = 6;
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Validating                                              1s
+        ├── ⠋ Validating                                              1.0s
         │   ├── … 6 finished, 3 failed
-        │   ├── ⠋ File 3                                              1s
+        │   ├── ⠋ File 3                                              1.0s
         ");
         assert!(tree.is_running(last));
         // In the warning role, where a run without a failure is muted
@@ -1766,14 +1847,14 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 1));
         d.rows = 8;
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Starting                                                1s
+        ├── ⠋ Starting                                                1.0s
         │   ├── … 10 finished
-        │   ├── ⠋ Inner                                               1s
+        │   ├── ⠋ Inner                                               1.0s
         │   │   ├── … 7 finished
-        │   │   ├── ✓ b7 done                                         0s
-        │   │   ├── ✓ b8 done                                         0s
-        │   │   ├── ✓ b9 done                                         0s
-        │   │   ├── ⠋ Last                                            1s
+        │   │   ├── ✓ b7 done                                         0.0s
+        │   │   ├── ✓ b8 done                                         0.0s
+        │   │   ├── ✓ b9 done                                         0.0s
+        │   │   ├── ⠋ Last                                            1.0s
         ");
     }
 
@@ -1788,9 +1869,9 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 2));
         d.rows = 3;
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Starting containers                                     2s
+        ├── ⠋ Starting containers                                     2.0s
         │   ├── … 30 finished
-        │   ├── ⠋ Starting plex                                       2s
+        │   ├── ⠋ Starting plex                                       2.0s
         │   │   plex: waiting 2
         ");
     }
@@ -1820,12 +1901,12 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 1));
         d.rows = 6;
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Starting                                                1s
+        ├── ⠋ Starting                                                1.0s
         │   ├── … 5 finished
-        │   ├── ⠋ B                                                   1s
+        │   ├── ⠋ B                                                   1.0s
         │   ├── … 4 finished
-        │   ├── ✓ c4 done                                             0s
-        │   ├── ⠋ D                                                   1s
+        │   ├── ✓ c4 done                                             0.0s
+        │   ├── ⠋ D                                                   1.0s
         ");
     }
 
@@ -1859,12 +1940,12 @@ mod tests {
         let mut d = draw(&theme, secs(t0, 1));
         d.rows = 6;
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
-        ├── ⠋ Starting                                                1s
+        ├── ⠋ Starting                                                1.0s
         │   ├── … 5 finished, 1 failed
-        │   ├── ⠋ B                                                   1s
+        │   ├── ⠋ B                                                   1.0s
         │   ├── … 4 finished
-        │   ├── ✓ c4 done                                             0s
-        │   ├── ⠋ D                                                   1s
+        │   ├── ✓ c4 done                                             0.0s
+        │   ├── ⠋ D                                                   1.0s
         ");
     }
 }

@@ -1,6 +1,6 @@
 //! A child process that failed, as a step's error (exec spec, decision 5;
 //! term-ui's endings table): exec's `Failed` is this type, so term-ui can
-//! show how the child ended in the times column (`exit 3 · 2s`) without
+//! show how the child ended in the times column (`exit 3 · 2.0s`) without
 //! depending on exec.
 
 /// A failed child: its message (the command, arguments masked as in the

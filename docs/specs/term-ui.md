@@ -82,8 +82,8 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
 
 - **Look (proto-runner, reviewed):** a root line, then one branch per step
   (`├──`, the last `╰──`), times and exit codes ending in one column
-  (at least column 64, further right as far as the longest line not yet
-  printed needs, never past the screen: decision 11). The
+  (at least column 66, further right as far as the longest line not yet
+  printed needs, never past the screen: decisions 11 and 13). The
   running step is a branch with its running label, spinner and label in
   the `Accent` role, and a live tail of its newest output lines under it:
   each running step's tail at most sb-go's 8 lines, all running tails
@@ -145,8 +145,8 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   start line (`- <running label>`), its output lines (colour codes
   stripped when colour is off or under `ascii`, other escapes always:
   "Escape handling"), notices, and an end line
-  (`✓ <done label>   2s`, or ✗ with the reason,
-  `✗ <label>   interrupted · 2s`, and for a failure the error and the
+  (`✓ <done label>   2.0s`, or ✗ with the reason,
+  `✗ <label>   interrupted · 2.0s`, and for a failure the error and the
   pointer; three spaces before the time as in the live tree, decision
   11), flat as in sb-go's plain mode
   when not interactive. Lines from concurrent steps are prefixed
@@ -675,7 +675,7 @@ logged with the outcome, never shown.
 | returns `Err` after the command's own `Shutdown::request` | "stopped" | nothing (cli-core exits quietly with the requested code) | `Exit(1)` |
 | returns `Err` after a sibling failed | "stopped" | nothing | `Exit(1)` |
 | returns `Err` carrying a quiet exit (`quiet_exit` is `Some`: a sub-step's `Exit`, exec's child code later, a broken pipe) | "sub-step failed" (✗ for a broken pipe) | nothing more | the same `Exit(code)` |
-| returns `Err` carrying a failed child (`ChildFailure`, exec's `Failed`, anywhere in the chain) | ✗ failure label, how the child ended before the time (`exit 3 · 2s`, `SIGTERM · 2s`) | as the next row, the child's last lines (capture's stderr) after the error | `Exit(1)` |
+| returns `Err` carrying a failed child (`ChildFailure`, exec's `Failed`, anywhere in the chain) | ✗ failure label, how the child ended before the time (`exit 3 · 2.0s`, `SIGTERM · 2.0s`) | as the next row, the child's last lines (capture's stderr) after the error | `Exit(1)` |
 | returns `Err` | ✗ failure label | the error's every line, the last 10 output lines, the log pointer; logged with its causes | `Exit(1)` |
 
 In use, `validate-config` (illustration):
@@ -899,7 +899,8 @@ Choices behind it:
     table). `sb validate-config` checks every file this way.
 11. **The time column fits the tree (maintainer, 2026-11-04, the config
     plan's Checkpoint B):** a label is never cut while the screen has
-    room. The time column starts at 64 (proto-runner's reviewed layout)
+    room. The time column starts at 64 (proto-runner's reviewed layout;
+    66 since decision 13)
     and moves right as far as the longest line not yet printed needs, an
     ending's reason (`interrupted · 12s`) included, with at least three
     spaces before the time so a reason never reads as part of the label
@@ -944,3 +945,20 @@ Choices behind it:
     `finish_and_clear` on a bar of its own: the live area is one bar
     already (decision 2), and a failure must show as the runner's
     failure block does.
+13. **Step times show tenths under a minute (the maintainer,
+    2026-11-15):** a step's time, live and finished, in the tree and on
+    plain end lines, reads in tenths of a second under a minute
+    (`0.3s`, `4.7s`, `59.9s`), cut rather than rounded so it never reads
+    `60.0s`; from a minute on, whole units as sb-go's `FormatDuration`
+    (`1m 2s`, `1h 3m`, `1d 2h`, a zero minor unit left out). The running
+    spinner's time follows the same rule. The time column's least end
+    moves from 64 to 66, so `59.9s` leaves a label the room `59s` did.
+    **Difference from sb-go:** sb-go's runner shows no step times at
+    all (`terminal/runner.go` draws the mark and the message); the time
+    column and its tenths are sb-rust's own, and only the form from a
+    minute on is sb-go's `FormatDuration` (which it uses for systemd's
+    and the motd's times, and which cuts rather than rounds). Before
+    this, sb-rust's tree showed whole seconds, past a minute too
+    (`125s`). The snapshot tests'
+    in-memory screen has a clock that stands still (`Clock::Frozen`), so
+    their times read `0.0s` on any machine.

@@ -101,7 +101,7 @@ async fn a_failed_childs_lines_show_as_the_steps_output() {
         .await;
     run.finish();
     let screen = term.contents();
-    assert!(screen.contains("exit 3 · 0s"), "{screen}");
+    assert!(screen.contains("exit 3 · 0.0s"), "{screen}");
     for line in ["one", "two", "three"] {
         assert!(screen.lines().any(|l| l.trim() == line), "{line}: {screen}");
     }

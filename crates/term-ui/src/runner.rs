@@ -176,6 +176,7 @@ struct State {
     mode: Mode,
     sink: Sink,
     size: Size,
+    clock: Clock,
     frame: usize,
     ended: bool,
 }
@@ -211,6 +212,31 @@ struct Sink {
     /// Whether the target is a terminal: shown sensitive text shows only
     /// there (anywhere else stderr is a log; decision 8).
     terminal: bool,
+}
+
+/// Where the runner's times come from: the system's clock, or, on the
+/// in-memory screen of the snapshot tests, a clock that stands still at
+/// the runner's start, so every time reads `0.0s` however loaded the
+/// machine is (times show tenths, decision 13). The smallest injection
+/// that serves: the tree's own tests pass their instants in. Why not
+/// tokio's paused clock: it moves std's `Instant` not at all and its own
+/// on whenever the runtime idles, so times beside real child processes
+/// (exec's tests) would vary; indicatif takes no clock.
+#[derive(Clone, Copy)]
+enum Clock {
+    System,
+    #[cfg(any(test, feature = "testing"))]
+    Frozen(Instant),
+}
+
+impl Clock {
+    fn now(self) -> Instant {
+        match self {
+            Clock::System => Instant::now(),
+            #[cfg(any(test, feature = "testing"))]
+            Clock::Frozen(at) => at,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -258,7 +284,7 @@ impl State {
             // A title not yet printed takes the live area's first row.
             rows: rows.saturating_sub(usize::from(!matches!(self.title, Title::Shown))),
             frame: self.frame,
-            now: Instant::now(),
+            now: self.clock.now(),
         };
         let mut printed = self.tree.take_printable(&d);
         let mut live = self.tree.live(&d);
@@ -423,7 +449,7 @@ impl Runner {
         // (seen on indicatif's in-memory terminal).
         let Options { target } = options;
         let on_stderr = matches!(target, Target::Stderr);
-        let (mode, colour, size, terminal) = match target {
+        let (mode, colour, size, clock, terminal) = match target {
             Target::Stderr => {
                 // indicatif hides its stderr target when stderr isn't a
                 // terminal or `TERM` is dumb or unset (draw_target.rs,
@@ -440,6 +466,7 @@ impl Runner {
                     mode,
                     crate::colour_on(crate::Stream::Stderr),
                     Size::Stderr,
+                    Clock::System,
                     terminal,
                 )
             }
@@ -452,7 +479,8 @@ impl Runner {
                 };
                 // No refresh limit, so every redraw reaches the screen.
                 let target = ProgressDrawTarget::term_like_with_hz(Box::new(term), u8::MAX);
-                (Mode::Live(Area::new(target)), colour, size, true)
+                let clock = Clock::Frozen(Instant::now());
+                (Mode::Live(Area::new(target)), colour, size, clock, true)
             }
         };
         let plain = matches!(mode, Mode::Plain);
@@ -480,6 +508,7 @@ impl Runner {
                 terminal,
             },
             size,
+            clock,
             frame: 0,
             ended: false,
         }));
@@ -580,8 +609,8 @@ fn begin(
         tracing::info!(step = labels.running.as_str(), "step skipped (cancelled)");
         return None;
     }
-    let started = Instant::now();
     let mut state = lock(&context.shared);
+    let started = state.clock.now();
     let id = state.tree.add(parent, labels.clone(), started);
     tracing::info!(step = labels.running.as_str(), "step started");
     // Once a transient step has started, lines wait for the run's end.
@@ -726,19 +755,21 @@ impl Ending {
     /// run's end (a late close), only the tree and the log hear of it.
     fn close(&mut self, status: Status, failure: Option<Failure>) {
         self.open = false;
+        let now;
         {
             let mut state = lock(&self.shared);
+            now = state.clock.now();
             let screen = failure.as_ref().map_or_default(|f| f.screen.clone());
             let reason = failure.as_ref().and_then(|f| f.reason.clone());
             state.tree.set_error(self.id, screen);
             state.tree.set_reason(self.id, reason.clone());
-            state.tree.finish(self.id, status, Instant::now());
+            state.tree.finish(self.id, status, now);
             // Plain lines go through anstream, so they still print while a
             // panic unwinds; the live area doesn't (see `State::end`).
             if matches!(state.mode, Mode::Plain) {
                 let held = state.tree.held(self.id);
                 let colour = state.sink.colour;
-                let elapsed = self.started.elapsed();
+                let elapsed = now.duration_since(self.started);
                 let line = end_line(
                     theme::current(),
                     &self.labels,
@@ -763,7 +794,9 @@ impl Ending {
             }
         }
         // Logged outside the lock: the log write blocks on the file.
-        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // The same instant as the screen's time.
+        let elapsed_ms =
+            u64::try_from(now.duration_since(self.started).as_millis()).unwrap_or(u64::MAX);
         let step = self.labels.running.as_str();
         let outcome = outcome(status);
         match (status, failure) {
@@ -1401,9 +1434,9 @@ fn plain_line(line: &str) {
     let _ = writeln!(anstream::stderr(), "{line}");
 }
 
-/// A plain-mode end line: `✓ <done label>   2s`, or ✗ with the label and
-/// why (`interrupted · 2s`); the time three spaces after the label, as in
-/// the live tree (decision 11).
+/// A plain-mode end line: `✓ <done label>   2.0s`, or ✗ with the label and
+/// why (`interrupted · 2.0s`); the time three spaces after the label, as in
+/// the live tree (decision 11), in the tree's form (decision 13).
 fn end_line(
     theme: &theme::Theme,
     labels: &Labels,
@@ -1412,30 +1445,30 @@ fn end_line(
     elapsed: Duration,
     colour: bool,
 ) -> String {
-    let secs = elapsed.as_secs();
+    let shown = crate::tree::time(elapsed);
     let gap = " ".repeat(crate::tree::GAP);
     let (role, text) = match status {
         // A step is never still running when its end line is written.
-        Status::Running | Status::Done => (Role::Ok, format!("✓ {}{gap}{secs}s", labels.done)),
+        Status::Running | Status::Done => (Role::Ok, format!("✓ {}{gap}{shown}", labels.done)),
         Status::Failed => (
             Role::Problem,
             format!(
                 "✗ {}{gap}{}",
                 labels.failure.as_deref().unwrap_or(&labels.running),
-                crate::tree::failed_time(reason, secs)
+                crate::tree::failed_time(reason, elapsed)
             ),
         ),
         Status::Interrupted => (
             Role::Warn,
-            format!("✗ {}{gap}interrupted · {secs}s", labels.running),
+            format!("✗ {}{gap}interrupted · {shown}", labels.running),
         ),
         Status::Stopped => (
             Role::Warn,
-            format!("✗ {}{gap}stopped · {secs}s", labels.running),
+            format!("✗ {}{gap}stopped · {shown}", labels.running),
         ),
         Status::SubStepFailed => (
             Role::Warn,
-            format!("✗ {}{gap}sub-step failed · {secs}s", labels.running),
+            format!("✗ {}{gap}sub-step failed · {shown}", labels.running),
         ),
     };
     paint(theme, role, colour, &text)
@@ -1587,9 +1620,9 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ├── ✓ accounts.yml read                                       0s
+        ├── ✓ accounts.yml read                                       0.0s
         │   › 3 accounts
-        ╰── ✓ settings.yml checked                                    0s
+        ╰── ✓ settings.yml checked                                    0.0s
             ! unknown key: downloads.extra
         ");
     }
@@ -1636,7 +1669,7 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb list
-        ╰── ✗ Listing Saltbox_mod tags                                0s
+        ╰── ✗ Listing Saltbox_mod tags                                0.0s
             ansible-playbook exited with code 4
         ");
 
@@ -1653,7 +1686,7 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb list
-        ╰── ✓ updated                                                 0s
+        ╰── ✓ updated                                                 0.0s
         ");
     }
 
@@ -1679,7 +1712,7 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb list
-        ╰── ✓ updated                                                 0s
+        ╰── ✓ updated                                                 0.0s
         ");
     }
 
@@ -1715,9 +1748,9 @@ mod tests {
         assert!(seen.contains("✓ Saltbox updated"), "{seen}");
         insta::assert_snapshot!(term.contents(), @r"
         sb list
-        ├── ✓ Saltbox updated                                         0s
-        │   ╰── ✓ inner done                                          0s
-        ╰── ✗ Updating Sandbox                                        0s
+        ├── ✓ Saltbox updated                                         0.0s
+        │   ╰── ✓ inner done                                          0.0s
+        ╰── ✗ Updating Sandbox                                        0.0s
             exit 4
         ");
     }
@@ -1743,8 +1776,8 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb list
-        ╰── ✓ listed                                                  0s
-            ╰── ✗ First try                                           0s
+        ╰── ✓ listed                                                  0.0s
+            ╰── ✗ First try                                           0.0s
                 refused
         ");
     }
@@ -1775,7 +1808,7 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb list
-        ╰── ✗ Listing                                   interrupted · 0s
+        ╰── ✗ Listing                                   interrupted · 0.0s
         ");
     }
 
@@ -1798,7 +1831,7 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb list
-        ╰── ✗ Listing                                       stopped · 0s
+        ╰── ✗ Listing                                       stopped · 0.0s
         ");
     }
 
@@ -1822,13 +1855,13 @@ mod tests {
             .expect("step");
         insta::assert_snapshot!(seen, @r"
         sb demo
-        ├── ⠙ Pulling images                                          0s
+        ├── ⠙ Pulling images                                          0.0s
         │   pulling sonarr
         ");
         drop(run);
         assert!(
             term.contents()
-                .ends_with("╰── ✓ images pulled                                           0s")
+                .ends_with("╰── ✓ images pulled                                           0.0s")
         );
     }
 
@@ -1927,7 +1960,7 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ╰── ✗ Checking                                       exit 3 · 0s
+        ╰── ✗ Checking                                       exit 3 · 0.0s
             checking the controller
             systemctl is-active [ARG] exited with code 3
             inactive
@@ -1939,7 +1972,10 @@ mod tests {
     /// reason and no block.
     #[tokio::test]
     async fn other_endings_win_over_a_failed_child() {
-        for (how, why) in [("signal", "interrupted · 0s"), ("request", "stopped · 0s")] {
+        for (how, why) in [
+            ("signal", "interrupted · 0.0s"),
+            ("request", "stopped · 0.0s"),
+        ] {
             let (term, options) = screen();
             let shutdown = Shutdown::new();
             let mut run = Runner::start("sb demo", &shutdown, None, options);
@@ -1995,7 +2031,7 @@ mod tests {
             .await;
         run.finish();
         let screen = term.contents();
-        assert!(screen.contains("exit 3 · 0s"), "{screen}");
+        assert!(screen.contains("exit 3 · 0.0s"), "{screen}");
         assert!(screen.contains("    inactive"), "{screen}");
     }
 
@@ -2035,7 +2071,7 @@ mod tests {
         assert!(matches!(result, Err(Exit(7))));
         run.finish();
         assert!(
-            term.contents().contains("sub-step failed · 0s"),
+            term.contents().contains("sub-step failed · 0.0s"),
             "{}",
             term.contents()
         );
@@ -2045,7 +2081,7 @@ mod tests {
     /// command's own request it reads "stopped".
     #[tokio::test]
     async fn cancelled_steps_say_why() {
-        for (signal, why) in [(true, "interrupted · 0s"), (false, "stopped · 0s")] {
+        for (signal, why) in [(true, "interrupted · 0.0s"), (false, "stopped · 0.0s")] {
             let (term, options) = screen();
             let shutdown = Shutdown::new();
             let mut run = Runner::start("sb demo", &shutdown, None, options);
@@ -2108,8 +2144,8 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ├── ✗ Slow                                          stopped · 0s
-        ╰── ✓ next done                                               0s
+        ├── ✗ Slow                                          stopped · 0.0s
+        ╰── ✓ next done                                               0.0s
         ");
     }
 
@@ -2184,8 +2220,8 @@ mod tests {
         assert!(!during.contains("tail line"), "{during}");
         insta::assert_snapshot!(during, @r"
         sb demo
-        ├── ✓ long done                                               0s
-        ├── ⠙ Short                                                   0s
+        ├── ✓ long done                                               0.0s
+        ├── ⠙ Short                                                   0.0s
         │
         ");
         run.finish();
@@ -2428,9 +2464,9 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ╰── ✓ checked                                                 0s
-            ├── ✓ read                                                0s
-            ╰── ✓ parsed                                              0s
+        ╰── ✓ checked                                                 0.0s
+            ├── ✓ read                                                0.0s
+            ╰── ✓ parsed                                              0.0s
         ");
     }
 
@@ -2457,9 +2493,9 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ╰── ✓ checked                                                 0s
-            ├── ✓ slow done                                           0s
-            ╰── ✓ fast done                                           0s
+        ╰── ✓ checked                                                 0.0s
+            ├── ✓ slow done                                           0.0s
+            ╰── ✓ fast done                                           0.0s
         ");
     }
 
@@ -2498,9 +2534,9 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ╰── ✗ Checking                              sub-step failed · 0s
-            ├── ✗ Waiting                                   stopped · 0s
-            ╰── ✗ failed                                              0s
+        ╰── ✗ Checking                              sub-step failed · 0.0s
+            ├── ✗ Waiting                                   stopped · 0.0s
+            ╰── ✗ failed                                              0.0s
                 refused
         ");
     }
@@ -2536,8 +2572,8 @@ mod tests {
             .await;
         run.finish();
         let screen = term.contents();
-        // (Times read 0s: tokio's paused clock doesn't move std's Instant.)
-        assert_eq!(screen.matches("interrupted · 0s").count(), 3, "{screen}");
+        // (Times read 0.0s: the in-memory screen's clock stands still.)
+        assert_eq!(screen.matches("interrupted · 0.0s").count(), 3, "{screen}");
     }
 
     /// A group dropped without `join` (a `?` before it) stops its steps at
@@ -2565,9 +2601,9 @@ mod tests {
         let at_end = term.contents();
         insta::assert_snapshot!(at_end, @r"
         sb demo
-        ╰── ✗ Checking                                                0s
+        ╰── ✗ Checking                                                0.0s
             gave up
-            ╰── ✗ Waiting                                   stopped · 0s
+            ╰── ✗ Waiting                                   stopped · 0.0s
         ");
         // The aborted task's late drop draws nothing more.
         for _ in 0..5 {
@@ -2762,7 +2798,7 @@ mod tests {
             screen.contains("✗ Inner") && !screen.contains("cancelled"),
             "{screen}"
         );
-        assert_eq!(screen.matches("stopped · 0s").count(), 2, "{screen}");
+        assert_eq!(screen.matches("stopped · 0.0s").count(), 2, "{screen}");
         assert_eq!(screen.matches("refused").count(), 1, "{screen}");
     }
 
@@ -2821,7 +2857,7 @@ mod tests {
             .await;
         run.finish();
         let screen = term.contents();
-        assert_eq!(screen.matches("stopped · 0s").count(), 2, "{screen}");
+        assert_eq!(screen.matches("stopped · 0.0s").count(), 2, "{screen}");
         assert!(!screen.contains("interrupted"), "{screen}");
     }
 
@@ -2907,11 +2943,11 @@ mod tests {
         run.finish();
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ╰── ✗ Checking                              sub-step failed · 0s
-            ├── ✗ failed                                              0s
+        ╰── ✗ Checking                              sub-step failed · 0.0s
+            ├── ✗ failed                                              0.0s
             │   refused
-            ├── ✓ waited                                              0s
-            ╰── ✓ quick                                               0s
+            ├── ✓ waited                                              0.0s
+            ╰── ✓ quick                                               0.0s
         ");
     }
 
@@ -2960,10 +2996,10 @@ mod tests {
         // created it after Bad.
         insta::assert_snapshot!(term.contents(), @r"
         sb demo
-        ╰── ✗ Checking                              sub-step failed · 0s
-            ├── ✗ Inner                                     stopped · 0s
-            │   ╰── ✗ Leaf                                  stopped · 0s
-            ╰── ✗ bad failed                                          0s
+        ╰── ✗ Checking                              sub-step failed · 0.0s
+            ├── ✗ Inner                                     stopped · 0.0s
+            │   ╰── ✗ Leaf                                  stopped · 0.0s
+            ╰── ✗ bad failed                                          0.0s
                 refused
         ");
         // The statuses, in start order (Checking, Inner, Bad, Leaf).
@@ -3061,7 +3097,7 @@ mod tests {
             .await;
         run.finish();
         let screen = term.contents();
-        assert_eq!(screen.matches("interrupted · 0s").count(), 3, "{screen}");
+        assert_eq!(screen.matches("interrupted · 0.0s").count(), 3, "{screen}");
     }
 
     /// Each ending's word in the run log.
@@ -3089,11 +3125,11 @@ mod tests {
         let two = Duration::from_secs(2);
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::Done, None, two, false),
-            "✓ pulled   2s"
+            "✓ pulled   2.0s"
         );
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::Failed, None, two, false),
-            "✗ pull failed   2s"
+            "✗ pull failed   2.0s"
         );
         assert_eq!(
             end_line(
@@ -3104,11 +3140,11 @@ mod tests {
                 two,
                 false
             ),
-            "✗ Pulling   interrupted · 2s"
+            "✗ Pulling   interrupted · 2.0s"
         );
         assert_eq!(
             end_line(&plain_theme(), &labels, Status::Stopped, None, two, false),
-            "✗ Pulling   stopped · 2s"
+            "✗ Pulling   stopped · 2.0s"
         );
         assert_eq!(
             end_line(
@@ -3119,7 +3155,7 @@ mod tests {
                 two,
                 false
             ),
-            "✗ Pulling   sub-step failed · 2s"
+            "✗ Pulling   sub-step failed · 2.0s"
         );
         // A failed child's reason, as in the live tree.
         assert_eq!(
@@ -3131,7 +3167,7 @@ mod tests {
                 two,
                 false
             ),
-            "✗ pull failed   SIGTERM · 2s"
+            "✗ pull failed   SIGTERM · 2.0s"
         );
     }
 }
