@@ -1750,13 +1750,13 @@ n/N, horizontal scrolling with wrap off.
 plain stream when stdout isn't a terminal; the no-terminal error.
 
 **Acceptance criteria:**
-- [ ] `s` saves and `p` prints as the spec says.
-- [ ] Piped `sb logs` picks on `/dev/tty` and streams plain lines.
-- [ ] Screenshots of the inline picker and of a saved file's head.
+- [x] `s` saves and `p` prints as the spec says.
+- [x] Piped `sb logs` picks on `/dev/tty` and streams plain lines.
+- [x] Screenshots of the inline picker and of a saved file's head.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M71
 **Files:** `crates/tui/src/{save.rs,lib.rs}`, `crates/sb/tests/logs.rs`
