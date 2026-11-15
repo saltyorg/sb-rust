@@ -36,8 +36,9 @@ if [[ "$(id -u)" == 0 ]]; then
 fi
 # Test the build under test, and never the host's Docker daemon: a
 # leftover override of the sb binary or the live opt-in would change what
-# every stage checks (docker plan Task 9).
-unset SB_TEST_BINARY SB_LIVE_DOCKER
+# every stage checks (docker plan Task 9), and python-env's live opt-in
+# would start containers from every test run (module build M21).
+unset SB_TEST_BINARY SB_LIVE_DOCKER SB_LIVE_PYTHON
 # The mutation passes' nextest runs read their settings from
 # .config/nextest.toml's `mutants` profile alone: an inherited NEXTEST_*
 # variable (a profile, retries, a test-thread count, another config file)

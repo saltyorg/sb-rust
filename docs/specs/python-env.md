@@ -505,8 +505,12 @@ Saltbox CI tests). A `tar` child is rejected for the pure-Rust preference.
 ```
 Check:   scripts/check.sh fast | task | full
 Test:    cargo test -p sb-python-env -p sb
-Live:    SB_LIVE_PYTHON=1 SB_LOG_DIR=<scratch> systemd-run --scope -p MemoryMax=4G -p CPUQuota=200% \
+Live:    SB_LIVE_PYTHON=1 SBP_SB=<sb, no testing feature> SBP_SBGO=<sb-go> SBP_SALTBOX=<toolchain files> \
+           SB_LOG_DIR=<scratch> systemd-run --scope -p MemoryMax=4G -p CPUQuota=200% \
            cargo test -p sb-python-env --test live -- --test-threads=1
+         (or crates/python-env/tests/live.sh [RELEASE]...). The scope caps the build;
+         Docker caps each container itself (--cpus 4 --memory 4g; pin its cores with
+         SBP_DOCKER_OPTS=--cpuset-cpus=...), as a systemd scope can't reach it
 Try:     the production build of sb, as root, with SB_LOG_DIR set, inside a container only
 ```
 
@@ -527,7 +531,7 @@ crates/python-env/src/activate.rs   symlink swap, legacy adoption, cleanup
 crates/python-env/src/deadsnakes.rs dpkg/apt-cache parsing and the cleanup
 crates/python-env/src/fact.rs       version probe, decision, install
 crates/python-env/src/testing.rs    stand-in uv/python/fact programs, fixtures (`testing` feature)
-crates/python-env/tests/            stand-in end-to-end tests; live.rs (opt-in)
+crates/python-env/tests/            stand-in end-to-end tests; live.rs (opt-in) and live.sh
 crates/python-env/tests/fixtures/   sb-go manifests, apt-cache policy and dpkg-query outputs
 crates/sb/src/main.rs               the four commands
 ```
@@ -771,6 +775,55 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
 - **No lock between concurrent sb runs** (sb-go has none).
 - **A broken published fact release** is installed and kept; the fix is a
   new release.
+
+## Verification notes
+
+- **Live acceptance (M21, 2026-11-15).** `crates/python-env/tests/live.sh`
+  in throwaway containers of each supported release, one at a time: sb
+  from this repository (a release build, without the `testing`
+  feature), sb-go at 35a7acc, Saltbox's master toolchain files of
+  2026-11-10 (`.uv-version` 0.13.4, `.python-version` 3.12.15, the
+  hashed lock), saltbox.fact 1.1.0 from its latest release, ansible-core
+  2.21.2 from the lock. The release metadata came through the proxy.
+  Passed on 22.04.5, 24.04.5 and 26.04.1, each with the same results:
+  - `sb update-venv` from nothing, from sb-go's hostile caller (uv, pip
+    and Python variables and config files pointing elsewhere): uv and
+    uvx 0.13.4 installed, libpq-dev installed through apt, Python 3.12.13
+    (the start pin), the venv synced from the lock, saltbox.fact installed
+    ("saltbox.fact not found. Proceeding with update."), one generation
+    and one Python release kept, the trees the Saltbox user's, the
+    `ansible` wrapper running, no scratch directory left;
+  - run again: "Ansible virtual environment was already up to date" and
+    "saltbox.fact is up to date", nothing changed (the link, the entries
+    of both release trees, the manifest, the wrappers' bytes, the fact's
+    bytes; owners and modes aren't compared);
+  - sb-go's `update-venv` on that tree: up to date, nothing changed;
+  - the pin bumped to 3.12.15: "Ansible virtual environment update
+    required", a new generation on the new Python;
+  - the fact changed by one byte: the digest warning, reinstalled with
+    the release's bytes, nothing else changed;
+  - `reinstall-venv` (a new generation on the same Python),
+    `reinstall-python` (a new Python release) and `reinstall-facts`
+    (the same bytes);
+  - sb-go's `reinstall-venv`, then `sb update-venv`: sb-go's generation
+    kept unchanged and up to date, and sb-go's `update-venv` after it
+    kept it too.
+
+  On 22.04 the first run also found what the old sb and pre-uv sb-go left
+  (sb-go's deadsnakes script): deadsnakes' PPA added, its python3.12,
+  -dev and -venv (3.12.16-1+jammy1) installed from it, and a venv on that
+  Python as the active venv directory. The packages were removed, the
+  PPA's source file moved into a 0700
+  `/var/backups/sb/deadsnakes/<run id>/`, "Removed old deadsnakes Python
+  packages" shown, and the legacy directory replaced by a generation
+  link.
+
+  The first run found that sb didn't make a missing `ansible_facts.d`, as
+  sb-go does; fixed (fact install, step 3) before these results. The container's root git has the checkout in its
+  `safe.directory`, as Saltbox's pre_tasks set it (repo spec, assumption
+  2): without it, root's git refuses the checkout once the Saltbox user
+  owns it, and the second run failed reading the commit (sb-go reads it
+  with the same `git rev-parse HEAD`).
 
 ## Open questions
 
