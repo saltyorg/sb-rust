@@ -665,8 +665,8 @@ for validate-config.
   `TASK TAGS:` line. sb still drops escape codes before the match
   ("Rebuild"), which changes nothing on plain text, and
   `list-tags-colour.txt` keeps that path tested.
-- **By hand (2026-11-15).** Real ansible-core on a Saltbox host, sb
-  24675b8, through a debug-only saltbox_mod role: `sb install
+- **By hand (2026-11-15).** Real ansible-core 2.21.2 on a Saltbox host
+  (Ubuntu 22.04.5), sb 24675b8, through a debug-only saltbox_mod role: `sb install
   mod-<role> -e ...`. Each value reached the play exactly as given, and
   every run ended `changed=0`:
   - `key=value` and `'a=1 b=2'`;

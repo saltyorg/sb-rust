@@ -916,8 +916,8 @@ cases and Ctrl-C; the `--list-tags` fixture recorded from it.
 **Scope:** S
 
 ## Checkpoint A: ansible
-- [ ] M30-M35 merged; `check.sh full`.
-- [ ] Look: `sb list`'s columns and search table (M34).
+- [x] M30-M35 merged; `check.sh full`.
+- [x] Look: `sb list`'s columns and search table (M34).
 
 ## Task M36: motd: crate, flags, runner, layout, distro and kernel
 
