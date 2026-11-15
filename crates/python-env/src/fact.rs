@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 use std::io;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -366,6 +366,23 @@ async fn install(step: &mut Step, env: &Env<'_>, release: &Release) -> anyhow::R
         prefix: STAGE_PREFIX,
         max_size: MAX_FACT,
     };
+    // Saltbox's checkout tracks no `ansible_facts.d` (only the fact, which
+    // it ignores), so a fresh one has none: made 0755 as sb-go's
+    // `DownloadVerified` makes its staging directory (release/asset.go,
+    // `os.MkdirAll(dir, 0755)`), with its text, through std's
+    // `DirBuilderExt::mode`
+    // (https://doc.rust-lang.org/std/os/unix/fs/trait.DirBuilderExt.html).
+    // Made before the request, where sb-go makes it after the response's
+    // 200: a failed download may leave the empty directory, which the
+    // next run fills. Why not in sb-release's `stage`: its caller owns the
+    // directory (release spec, "in the caller's directory"), and its other
+    // callers stage into directories that exist.
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(dir)
+        .context("create release asset staging directory")
+        .context("error downloading saltbox.fact")?;
     let staged = env
         .release
         .download(&release.asset, stage, step)

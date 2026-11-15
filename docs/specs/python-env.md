@@ -308,7 +308,11 @@ On failure the error carries exec's stderr tail, as sb-go's
 3. **Install** in a step `Updating saltbox.fact to version <v>` (Reinstall
    and a digest mismatch: `Reinstalling saltbox.fact with version <v>`):
    - verified download (release's, 32 MiB cap) into the fact's own
-     directory, prefix `.saltbox.fact-`;
+     directory, prefix `.saltbox.fact-`; the directory is made first,
+     0755, when missing, as sb-go's `DownloadVerified` makes it (Saltbox
+     tracks no `ansible_facts.d`, so a fresh checkout has none; error
+     `create release asset staging directory: <cause>`). *Amended
+     2026-11-15 (module build M21, found by the live acceptance).*
    - nested step **"Validating downloaded saltbox.fact"**: size equals the
      API size, then release's `check_elf` for the build's architecture
      (64-bit, `EM_X86_64` or `EM_AARCH64`; sb-go's texts `file is not a

@@ -230,6 +230,52 @@ async fn a_missing_fact_is_installed() {
     assert_eq!(std::fs::read(&tree.layout.fact).expect("fact"), body);
 }
 
+/// A checkout without `ansible_facts.d` (Saltbox tracks none, it holds
+/// only the ignored fact): the directory is made, 0755, as sb-go's
+/// `DownloadVerified` makes it, and the fact installed (found by the live
+/// acceptance, module build M21).
+#[tokio::test]
+async fn a_missing_facts_directory_is_created() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let body = fact_binary("1.4.0");
+    tree.serve_fact(arch(), FACT_TAG, &body);
+    let dir = tree.layout.fact.parent().expect("dir").to_owned();
+    assert!(!dir.exists(), "the tree has no facts directory");
+    let ran = install(&tree.env(), FactMode::Update).await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(std::fs::read(&tree.layout.fact).expect("fact"), body);
+    // DirBuilder's mode passes through the umask, as Go's MkdirAll does:
+    // check.sh runs under root's usual 022.
+    let mode = std::fs::metadata(&dir).expect("dir").permissions().mode();
+    assert_eq!(mode & 0o7777, 0o755);
+}
+
+/// A facts directory that can't be made (a dangling link in its place:
+/// the fact reads as missing, the directory can't be made) is named with
+/// sb-go's text, and nothing is downloaded.
+#[tokio::test]
+async fn a_facts_directory_that_cant_be_made_is_named() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let body = fact_binary("1.4.0");
+    tree.serve_fact(arch(), FACT_TAG, &body);
+    let dir = tree.layout.fact.parent().expect("dir");
+    std::fs::create_dir_all(dir.parent().expect("checkout")).expect("checkout");
+    std::os::unix::fs::symlink(dir.with_extension("gone"), dir).expect("link");
+    let ran = install(&tree.env(), FactMode::Update).await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    // The install step's error block: each context on its line, then
+    // the cause.
+    for line in [
+        "error downloading saltbox.fact",
+        "create release asset staging directory",
+    ] {
+        assert!(ran.screen.contains(line), "{line}:\n{}", ran.screen);
+    }
+    assert!(!asked(&tree).contains(&download(FACT_TAG, arch())));
+}
+
 /// A fact whose `--version` fails, or prints nothing it can read, is
 /// replaced with sb-go's warning; it is never run bare.
 #[tokio::test]
