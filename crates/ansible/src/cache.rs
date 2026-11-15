@@ -438,8 +438,9 @@ fn key(repo: &Repo) -> String {
 }
 
 /// The tags of `--list-tags` output (sb-go `PrepareAnsibleListTags`): the
-/// first `TASK TAGS: [...]` after escape sequences are dropped (Saltbox's
-/// `ansible.cfg` sets `force_color`; term-ui's `DisplayText`), split on
+/// first `TASK TAGS: [...]` after escape sequences are dropped (term-ui's
+/// `DisplayText`; defensive: ansible-core 2.21.3 prints it plain even
+/// under Saltbox's `force_color`, spec "Verification notes"), split on
 /// `,` and each trimmed; `[]` is none.
 fn parse_list_tags(stdout: &str, playbook: &str) -> Result<Vec<String>, RebuildError> {
     let plain = DisplayText::from_bytes(stdout.as_bytes(), false);
@@ -490,6 +491,7 @@ mod tests {
 
     const LISTING: &str = include_str!("../tests/fixtures/list-tags.txt");
     const COLOUR: &str = include_str!("../tests/fixtures/list-tags-colour.txt");
+    const REAL: &str = include_str!("../tests/fixtures/list-tags-real.txt");
     const SB_GO: &str = include_str!("../tests/fixtures/cache-sb-go.json");
 
     fn strings(items: &[&str]) -> Vec<String> {
@@ -506,7 +508,7 @@ mod tests {
     }
 
     /// The first `TASK TAGS:` line, in Ansible's order; with colour codes
-    /// dropped first (Saltbox's `force_color`); `[]` is none; no line is
+    /// dropped first (defensive, see `parse_list_tags`); `[]` is none; no line is
     /// an error naming the playbook (sb-go's text).
     #[test]
     fn list_tags_output_parses_as_sb_go_parses_it() {
@@ -538,6 +540,24 @@ mod tests {
         assert_eq!(
             missing.to_string(),
             "error: 'TASK TAGS:' not found in the ansible-playbook output. Please make sure 'saltbox.yml' is formatted correctly"
+        );
+    }
+
+    /// The listing of a real ansible-core (container.sh, M35; ansible
+    /// spec, "Verification notes"): ansible-core 2.21.3's, plain, with
+    /// its blank first line and the play line's tab.
+    #[test]
+    fn a_real_ansible_listing_parses() {
+        assert_eq!(
+            parse_list_tags(REAL, "saltbox.yml").expect("tags"),
+            strings(&[
+                "baseline",
+                "check",
+                "plex",
+                "slow",
+                "sonarr",
+                "sonarr-config"
+            ])
         );
     }
 

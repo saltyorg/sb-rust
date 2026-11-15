@@ -234,8 +234,9 @@ nothing from ops, so it lands here.
   --skip-tags=always`, `capture`, in the repo directory, inside a term-ui
   step labelled `Updating <Saltbox|Sandbox> tags cache`, sb-go's label
 (cmd/update.go:300, cmd/branch.go:95), the same in every command. Its stdout,
-  after term-ui's escape stripping (Saltbox's `ansible.cfg` sets
-  `force_color = True`), is matched with `TASK TAGS:\s*\[(.*?)]`; the first
+  after term-ui's escape stripping (defensive: Saltbox's `ansible.cfg`
+  sets `force_color = True`, but ansible-core 2.21.3 prints the listing
+  plain; Verification notes), is matched with `TASK TAGS:\s*\[(.*?)]`; the first
   match, split on `,` and trimmed, in Ansible's order, is the list. No
   match: an error naming the playbook. A failure ends the step ✗ with
   stderr's last lines (exec's `Failed`). Every writer uses this one
@@ -633,6 +634,57 @@ for validate-config.
 - A secret given in an `-e` value is on the screen and in the run log
   (decision 17); `@file` keeps it out.
 - Mod tags are runnable but not validated or completed (sb-go).
+
+## Verification notes
+
+- **The container check (M35, 2026-11-15).**
+  `crates/ansible/tests/container.sh`, under the cap, in a throwaway
+  ubuntu:24.04 (24.04.5, Python 3.12.3) with ansible-core 2.21.3 from
+  pip and sb at f4ff61c (a debug build). Every check passed:
+  - the eleven `-e` cases (multi-key JSON, nested quotes, unicode,
+    `-x=1`, `--no-cache` as a value, `@vars.yml`, `greeting=hello big
+    world`, `list=a,b`, an empty value, three different values passed in
+    order, and two values for one key, where the later wins) reached the play as
+    ansible-core's `load_extra_vars` makes them of the whole value; the
+    `Executing...` line showed each as given, and the run log had each;
+  - `sb list` rebuilt both caches from the real listing, and `sb install
+    sandbox-after` ran Sandbox's playbook;
+  - Ctrl-C on the PTY during `sb install slow,sandbox-after`: Ansible's
+    "User interrupted execution", exec's block naming exit 99, `Ansible
+    was interrupted.` and sb's exit 99, with the play stopped and
+    Sandbox's playbook not run;
+  - the listing names none of the container's paths or its host name. It
+    is `tests/fixtures/list-tags-real.txt`, and cache.rs's
+    `a_real_ansible_listing_parses` reads `[baseline, check, plex, slow,
+    sonarr, sonarr-config]` from it.
+- **The real listing is plain.** The first run failed the script's own
+  check that the listing had escape codes. Under `force_color`,
+  ansible-core 2.21.3 colours its warnings but prints the `--list-tags`
+  listing with a plain `display.display(msg)`
+  (`lib/ansible/cli/playbook.py`). The check now asks only for the
+  `TASK TAGS:` line. sb still drops escape codes before the match
+  ("Rebuild"), which changes nothing on plain text, and
+  `list-tags-colour.txt` keeps that path tested.
+- **By hand (2026-11-15).** Real ansible-core on a Saltbox host, sb
+  24675b8, through a debug-only saltbox_mod role: `sb install
+  mod-<role> -e ...`. Each value reached the play exactly as given, and
+  every run ended `changed=0`:
+  - `key=value` and `'a=1 b=2'`;
+  - JSON with a list, typed as a list;
+  - `@relative.yml` and `@/absolute.yml`;
+  - two `-e` flags, where the later one wins;
+  - nested JSON: dict to list to dict, a list of dicts, six levels deep,
+    empty `[]` and `{}`, and lists of lists;
+  - strings with commas, quotes, a backslash and unicode; `""`, `null`,
+    `true`, `1.5`, `-7` and a 20-digit integer;
+  - YAML flow syntax, parsed as YAML;
+  - multi-line JSON;
+  - a value starting with `-x=1 --not-a-flag`, received as a string;
+  - a nested YAML `@file`.
+
+  The `Executing...` line showed every value as typed; multi-line JSON
+  shows its newlines escaped as `\n` on screen. Ctrl-C, confirmed by the
+  maintainer earlier: exit 99 and `Ansible was interrupted.`.
 
 ## Open questions
 

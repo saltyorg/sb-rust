@@ -1,0 +1,5 @@
+
+playbook: saltbox.yml
+
+  play #1 (localhost): Saltbox	TAGS: []
+      TASK TAGS: [baseline, check, plex, slow, sonarr, sonarr-config]

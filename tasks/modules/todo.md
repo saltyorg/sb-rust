@@ -902,14 +902,14 @@ term-ui amendment `Table::spanning_row`, error collection.
 cases and Ctrl-C; the `--list-tags` fixture recorded from it.
 
 **Acceptance criteria:**
-- [ ] Every `-e` case reaches the play intact.
-- [ ] Ctrl-C stops the play, and sb exits 99 (Ansible catches the interrupt and exits 99; ansible spec step 7, difference 6, decision 7).
-- [ ] The fixture is the real `--list-tags` output, with no environment
+- [x] Every `-e` case reaches the play intact.
+- [x] Ctrl-C stops the play, and sb exits 99 (Ansible catches the interrupt and exits 99; ansible spec step 7, difference 6, decision 7).
+- [x] The fixture is the real `--list-tags` output, with no environment
       details.
 
 **Verification:**
-- [ ] The container run under the cap.
-- [ ] Review: code-reviewer.
+- [x] The container run under the cap.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M34
 **Files:** `crates/ansible/tests/fixtures/`, the spec's verification notes

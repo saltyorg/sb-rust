@@ -134,7 +134,7 @@ done
 
 # sb's own listing against real Ansible: `sb list` finds no cache, so it
 # rebuilds Saltbox's and Sandbox's entries with `--list-tags`, parses
-# Ansible's coloured output and writes cache.json.
+# Ansible's listing and writes cache.json.
 code=0
 sb list >/out/list.out 2>&1 || code=$?
 if [ "$code" -ne 0 ]; then
@@ -208,15 +208,19 @@ else
 fi
 
 # The --list-tags fixture: the listing sb's cache rebuild runs, in the
-# Saltbox stand-in, colour forced by its ansible.cfg. It must hold no
-# path or name of this container.
+# Saltbox stand-in, with its ansible.cfg's force_color. That colours
+# Ansible's warnings but not the listing, which ansible-core prints with
+# a plain display.display(msg) (checked at 2.21.3):
+# https://github.com/ansible/ansible/blob/v2.21.3/lib/ansible/cli/playbook.py
+# sb strips escape codes all the same. It must hold no path or name of
+# this container.
 code=0
 (cd /work/saltbox && ansible-playbook saltbox.yml --become --list-tags --skip-tags=always) \
   >/out/list-tags.txt 2>/out/list-tags.err || code=$?
 if [ "$code" -ne 0 ]; then
   fail "--list-tags: exit $code, see /out/list-tags.err"
-elif ! grep -q 'TASK TAGS: \[' /out/list-tags.txt || ! grep -q $'\x1b\\[' /out/list-tags.txt; then
-  fail "--list-tags: no coloured TASK TAGS line in /out/list-tags.txt"
+elif ! grep -q 'TASK TAGS: \[' /out/list-tags.txt; then
+  fail "--list-tags: no TASK TAGS line in /out/list-tags.txt"
 elif grep -q -F -e /work -e /out -e /opt -e /root -e "$HOSTNAME" /out/list-tags.txt; then
   fail "--list-tags: the output names this container's paths or host name"
 else
