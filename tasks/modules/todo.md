@@ -559,15 +559,15 @@ aside through `remove_sources_mentioning`. update-venv is complete.
 both directions with sb-go (sb-go's tree read by sb, sb's read by sb-go).
 
 **Acceptance criteria:**
-- [ ] `update-venv`, the `reinstall-*` commands and the fact pass in each
+- [x] `update-venv`, the `reinstall-*` commands and the fact pass in each
       container.
-- [ ] sb adopts an sb-go-built tree, and sb-go accepts an sb-built one.
-- [ ] Results go in the spec's verification items without environment
+- [x] sb adopts an sb-go-built tree, and sb-go accepts an sb-built one.
+- [x] Results go in the spec's verification items without environment
       details.
 
 **Verification:**
-- [ ] The container script under the cap, lane-prefixed containers.
-- [ ] Review: code-reviewer.
+- [x] The container script under the cap, lane-prefixed containers.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M20
 **Files:** `crates/python-env/tests/live.rs` (and its script)
