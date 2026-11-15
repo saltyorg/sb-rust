@@ -7,10 +7,34 @@ use std::fmt;
 use crate::{Repo, Repos, RunArgs};
 
 /// `-e`'s long help: sb-go's short help, then how each value is passed
-/// (spec, `sb install`; decision 3).
+/// (spec, `sb install`; decision 3) and its forms by example (the
+/// maintainer, 2026-11-15). The forms are Ansible's
+/// (<https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html#defining-variables-at-runtime>):
+/// key=value pairs, whose values are strings ("use the JSON format if you
+/// need to pass non-string values", said for users as text, a number or a
+/// list; the maintainer, 2026-11-15, kept booleans out, since Ansible
+/// reads truthy strings), a JSON or YAML string, and `@` before a JSON or
+/// YAML file. Two points that page doesn't state are from
+/// ansible-core's source (devel, 2026-11-15): a relative `@` path is
+/// joined to the loader's base directory, which is the working directory
+/// when extra vars load (`DataLoader` starts at `os.path.abspath('.')`,
+/// `path_dwim`; ansible-playbook sets no base directory first), and sb
+/// runs ansible-playbook in the repository (`run.rs`, `cwd(repo.dir())`);
+/// each value is combined over the ones before it, so later ones win
+/// (`utils/vars.py`, `load_extra_vars`, `combine_vars`). The example
+/// lines are indented and their notes set after a gap of two or more
+/// spaces, so the help's wrap keeps each command whole and hangs a note
+/// under itself; an example's command holds no such gap.
 const EXTRA_VARS_LONG: &str = "Extra variables to pass to Ansible
 
-Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the repository the playbook runs in).";
+Each value reaches Ansible whole, as one --extra-vars:
+  -e my_var=value
+  -e 'my_var=value other_var=value'
+  -e '{\"my_list\": [1, 2]}'
+  -e @vars.yml         a YAML/JSON file, relative to the repository the playbook runs in
+  -e @/root/vars.yml   or an absolute path
+A key=value value is passed as text; use the JSON form to pass a number or a list.
+Repeat -e for more; later values win.";
 
 /// `sb install`'s arguments. Its `Debug` shows counts only: the tags and
 /// `-e` values are shown and logged once, in the playbook's command
@@ -316,7 +340,11 @@ mod tests {
             Some("Extra variables to pass to Ansible")
         );
         let long = arg.get_long_help().map_or_default(ToString::to_string);
-        assert!(long.ends_with("Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the repository the playbook runs in)."), "{long}");
+        assert!(
+            long.ends_with("Repeat -e for more; later values win."),
+            "{long}"
+        );
+        assert!(long.contains("\n  -e @vars.yml         a YAML/JSON file, relative to the repository the playbook runs in\n"), "{long}");
         let hidden = cmd
             .get_arguments()
             .find(|arg| arg.get_id() == "force_disk_full")

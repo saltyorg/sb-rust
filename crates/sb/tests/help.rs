@@ -185,14 +185,14 @@ fn help_wraps_at_the_width_capped_at_120() {
     let at_80 = install_help(Some("80"));
     assert!(widest(&at_80) <= 80, "{at_80}");
     assert!(
-        at_80.contains("\n                     Each value reaches Ansible whole: key=value, YAML or JSON,\n                     or @file (a path relative to the repository the playbook\n                     runs in).\n"),
+        at_80.contains(&format!("\n                       -e @vars.yml         a YAML/JSON file, relative to the\n{}repository the playbook runs in\n", " ".repeat(44))),
         "{at_80}"
     );
     let at_120 = install_help(Some("120"));
     assert!(widest(&at_120) <= 120, "{at_120}");
     assert!(widest(&at_120) > 80, "{at_120}");
     assert!(
-        at_120.contains("\n                     Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the\n                     repository the playbook runs in).\n"),
+        at_120.contains("\n                       -e @vars.yml         a YAML/JSON file, relative to the repository the playbook runs in\n"),
         "{at_120}"
     );
     assert_eq!(install_help(Some("200")), at_120);
@@ -201,7 +201,7 @@ fn help_wraps_at_the_width_capped_at_120() {
     let narrow = install_help(Some("20"));
     assert!(
         narrow.contains(
-            "\n                     Each value reaches\n                     Ansible whole:\n"
+            "\n                     Each value reaches\n                     Ansible whole, as\n"
         ),
         "{narrow}"
     );
@@ -226,9 +226,60 @@ fn a_terminals_width_wins_over_columns() {
     assert!(widest(&text) <= 90, "{text}");
     assert!(widest(&text) > 80, "{text}");
     assert!(
-        text.contains("JSON, or @file\n                     (a path relative"),
+        text.contains(&format!(
+            "relative to the repository\n{}the playbook runs in\n",
+            " ".repeat(44)
+        )),
         "{text}"
     );
+}
+
+/// `-e`'s examples (the maintainer, 2026-11-15), each line as written,
+/// under the help column and its own two-space indent.
+const EXAMPLES: [&str; 8] = [
+    "Each value reaches Ansible whole, as one --extra-vars:",
+    "  -e my_var=value",
+    "  -e 'my_var=value other_var=value'",
+    "  -e '{\"my_list\": [1, 2]}'",
+    "  -e @vars.yml         a YAML/JSON file, relative to",
+    "  -e @/root/vars.yml   or an absolute path",
+    "A key=value value is passed as text;",
+    "Repeat -e for more; later values win.",
+];
+
+/// `sb install --help` shows `-e`'s examples in order at 80, 120 and 200
+/// columns, each example's command whole on its line; `-h` shows the
+/// hint that `--help` shows more, and no example.
+#[test]
+fn install_help_shows_the_extra_vars_examples() {
+    let column = " ".repeat(21);
+    for columns in ["80", "120", "200"] {
+        let help = install_help(Some(columns));
+        let lines: Vec<&str> = help.lines().collect();
+        let mut at = 0;
+        for example in EXAMPLES {
+            let found = lines[at..]
+                .iter()
+                .position(|l| l.starts_with(&format!("{column}{example}")))
+                .unwrap_or_else(|| panic!("COLUMNS={columns}: {example:?} in order\n{help}"));
+            at += found + 1;
+        }
+        assert!(
+            help.contains("    -h --help        Help for install (--help shows more details)\n"),
+            "COLUMNS={columns}: {help}"
+        );
+    }
+    let short = sb()
+        .args(["install", "-h", "--color=never"])
+        .assert()
+        .success();
+    let short = String::from_utf8(short.get_output().stdout.clone()).expect("utf-8");
+    assert!(
+        short.contains("    -h --help        Help for install (--help shows more details)\n"),
+        "{short}"
+    );
+    assert!(!short.contains("my_var"), "{short}");
+    assert!(!short.contains("Each value"), "{short}");
 }
 
 /// The flag list has no blank line (maintainer, 2026-11-14): `-e`'s long

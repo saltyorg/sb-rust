@@ -930,7 +930,7 @@ fn install_long_help_is_on_help_only() {
     let long = help("--help");
     // Wrapped at 120 columns, under the help column (cli-core spec, Help).
     assert!(
-        long.contains("\n                     Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the\n                     repository the playbook runs in).\n"),
+        long.contains("\n                     Each value reaches Ansible whole, as one --extra-vars:\n                       -e my_var=value\n"),
         "{long}"
     );
     assert!(

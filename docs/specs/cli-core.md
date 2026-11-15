@@ -254,6 +254,16 @@ columns in a command or flag row: a sb-go text that would wrap there is
 reworded, as a difference in the spec that owns the command, and the
 contract test's `REWORDED` list pairs sb-go's line with sb's
 (maintainer, 2026-11-14); a test checks every row of every `-h` at 120.
+A command with a long help ends its `-h --help` row with ` (--help shows
+more details)`, in `-h` and `--help` alike; one without keeps sb-go's
+`Help for <name>` (maintainer, 2026-11-15; fang has one help text, so
+sb-go has no hint; the contract test doesn't list the help flag). A
+row's indented line that wraps goes on under its own indent, or, when
+it has a note after a gap of two or more spaces, under the note, so an
+example's command stays whole (`-e`'s examples, ansible spec). The
+note's hang is tried first, then the indent's, each only while it
+leaves 20 columns; else the line goes on under the help column, as an
+unindented line always does.
 Parse errors (unknown command or flag, bad value) follow sb-go's layout
 in sb's palette
 (maintainer, 2026-11-01, look H1 from proto-help): an `ERROR` badge, clap's message with

@@ -90,6 +90,11 @@ const ABOUT_INDENT: usize = 2;
 /// than one or two characters a row.
 const MIN_TEXT_WIDTH: usize = 20;
 
+/// After a command's "Help for <name>" when it has a long help, which
+/// `--help` shows and `-h` doesn't (the maintainer, 2026-11-15; fang has
+/// one help text, so sb-go has no such hint).
+const LONG_HELP_HINT: &str = " (--help shows more details)";
+
 /// The width help is laid out for: stdout's terminal width, else
 /// `COLUMNS`, in clap's order (`clap_builder` 4.6.7
 /// `src/output/help_template.rs`, `dimensions`: the terminal first, the
@@ -327,12 +332,42 @@ fn write_row(out: &mut String, lead: &str, help: &str, column: usize, width: usi
         if line.trim().is_empty() && !first {
             continue;
         }
-        for piece in wrapped(line, avail) {
+        let (head, body) = hang(line, avail);
+        let pad = " ".repeat(head.width());
+        for (i, piece) in wrapped(body, avail - head.width()).iter().enumerate() {
             let lead = if first { lead } else { indent.as_str() };
-            let _ = writeln!(out, "{lead}{style}{piece}{style:#}");
+            let start = if i == 0 { head } else { pad.as_str() };
+            let _ = writeln!(out, "{lead}{style}{start}{piece}{style:#}");
             first = false;
         }
     }
+}
+
+/// `line` split where its later pieces hang when it doesn't fit in
+/// `avail` columns, the first of these that leaves at least
+/// [`MIN_TEXT_WIDTH`] columns: for an indented line, after its first gap
+/// of two or more spaces past the indent (an example's command, then its
+/// note: the command stays whole), then after its indent; else not at
+/// all (the help column). A line that fits isn't
+/// split. Custom: tabled's `Wrap` has no hanging indent, and textwrap's
+/// `subsequent_indent` isn't a dependency (the maintainer kept tabled,
+/// 2026-11-14).
+fn hang(line: &str, avail: usize) -> (&str, &str) {
+    if line.width() <= avail {
+        return ("", line);
+    }
+    let text = line.trim_start_matches(' ');
+    let indent = line.len() - text.len();
+    // Only an indented line is an example; a gap in a sentence isn't.
+    let note = (indent > 0)
+        .then(|| text.find("  "))
+        .flatten()
+        .map(|gap| line.len() - text[gap..].trim_start_matches(' ').len());
+    note.into_iter()
+        .chain([indent])
+        .map(|at| line.split_at(at))
+        .find(|(head, _)| avail.saturating_sub(head.width()) >= MIN_TEXT_WIDTH)
+        .unwrap_or(("", line))
 }
 
 /// The help text for `cmd`, reached through `path` (`sb install`), with
@@ -364,10 +399,13 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], look: &Look<'_>, long: 
         .map(|arg| flag_row(arg, long))
         .collect();
     if !cmd.is_disable_help_flag_set() {
+        // A command with a long help says so on `-h` and `--help` alike.
+        let more = shown_flags(cmd, inherited).any(|a| a.get_long_help().is_some());
+        let more = if more { LONG_HELP_HINT } else { "" };
         flags.push((
             "help".into(),
             "-h --help".into(),
-            format!("Help for {}", cmd.get_name()),
+            format!("Help for {}{more}", cmd.get_name()),
         ));
     }
     flags.sort();
@@ -781,6 +819,78 @@ mod tests {
                 ""
             ),
             short
+        );
+    }
+
+    /// A command with a long help hints at it in its help row, in `-h`
+    /// and `--help` alike (the maintainer, 2026-11-15); one without keeps
+    /// sb-go's row.
+    #[test]
+    fn the_help_row_hints_at_the_long_help() {
+        let hint = "    -h --help        Help for install (--help shows more details)\n";
+        for args in [["sb", "install", "-h"], ["sb", "install", "--help"]] {
+            let help = shown(with_long_help(), &args);
+            assert!(help.contains(hint), "{args:?}: {help}");
+        }
+        let root = shown(with_long_help(), &["sb", "--help"]);
+        assert!(root.contains("Help for sb\n"), "{root}");
+        assert!(!root.contains("shows more"), "{root}");
+        let plain = shown(sb(), &["sb", "install", "--help"]);
+        assert!(plain.contains("Help for install\n"), "{plain}");
+    }
+
+    /// A row's indented line wraps under its own indent, and one with a
+    /// note after a gap of spaces under the note, so an example's command
+    /// stays whole; a line that fits is untouched, and one whose hang
+    /// would leave too few columns wraps under the help column.
+    #[test]
+    fn an_indented_line_hangs_under_its_indent_or_note() {
+        let rows = |help: &str, width: usize| {
+            let mut out = String::new();
+            write_row(&mut out, "    -e  ", help, 8, width, Style::new());
+            out
+        };
+        let help = "Intro\n  -e one two three four five six seven eight nine ten\n  -e @f.yml   a file relative to the repository it runs in\n  -e fits";
+        assert_eq!(
+            rows(help, 48),
+            concat!(
+                "    -e  Intro\n",
+                "          -e one two three four five six seven\n",
+                "          eight nine ten\n",
+                "          -e @f.yml   a file relative to the\n",
+                "                      repository it runs in\n",
+                "          -e fits\n",
+            )
+        );
+        // 30 columns: the note's hang leaves fewer than 20, the indent's
+        // more.
+        assert_eq!(
+            rows("  -e @f.yml   a file relative to the repository", 38),
+            concat!(
+                "    -e    -e @f.yml   a file relative\n",
+                "          to the repository\n",
+            )
+        );
+        // An unindented line with a gap (two spaces between sentences)
+        // isn't an example: it wraps under the help column.
+        assert_eq!(
+            rows(
+                "One sentence ends.  Another one follows it here and more",
+                48
+            ),
+            concat!(
+                "    -e  One sentence ends.  Another one follows\n",
+                "        it here and more\n",
+            )
+        );
+        // 21 columns: neither hang leaves 20; the help column's text.
+        assert_eq!(
+            rows("  -e @f.yml   a file relative to the repository", 29),
+            concat!(
+                "    -e    -e @f.yml   a file\n",
+                "        relative to the\n",
+                "        repository\n",
+            )
         );
     }
 
@@ -1242,7 +1352,7 @@ mod tests {
     fn rows_wrap_under_the_help_column() {
         assert_eq!(
             shown_at(with_long_help(), &["sb", "install", "--help"], 50),
-            "\n  Runs Ansible playbooks.\n\n  Tags select what runs.\n\n  USAGE\n\n    sb install [tags] [--flags]\n\n  FLAGS\n\n    --color          Controls when to use color\n                     (auto)\n    -e --extra-vars  Extra variables\n                     Each value reaches Ansible\n                     whole.\n    -h --help        Help for install\n    -s --skip-tags   Tags to skip\n"
+            "\n  Runs Ansible playbooks.\n\n  Tags select what runs.\n\n  USAGE\n\n    sb install [tags] [--flags]\n\n  FLAGS\n\n    --color          Controls when to use color\n                     (auto)\n    -e --extra-vars  Extra variables\n                     Each value reaches Ansible\n                     whole.\n    -h --help        Help for install (--help\n                     shows more details)\n    -s --skip-tags   Tags to skip\n"
         );
         let root = shown_at(sb(), &["sb", "--help"], 60);
         assert!(

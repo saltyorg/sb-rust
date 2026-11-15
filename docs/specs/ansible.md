@@ -73,8 +73,27 @@ checks them):
 | `--force-disk-full` (hidden) | `SetTrue` | nothing: fails with host's `disk_space_error` |
 
 `-e`'s long help (`--help`, not the short help the contract compares)
-adds: "Each value reaches Ansible whole: key=value, YAML or JSON, or
-@file (a path relative to the repository the playbook runs in)."
+adds how each value is passed and Ansible's forms by example (the
+maintainer, 2026-11-15; difference 15):
+
+```
+Each value reaches Ansible whole, as one --extra-vars:
+  -e my_var=value
+  -e 'my_var=value other_var=value'
+  -e '{"my_list": [1, 2]}'
+  -e @vars.yml         a YAML/JSON file, relative to the repository the playbook runs in
+  -e @/root/vars.yml   or an absolute path
+A key=value value is passed as text; use the JSON form to pass a number or a list.
+Repeat -e for more; later values win.
+```
+
+The forms are Ansible's "Defining variables at runtime"
+(https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html#defining-variables-at-runtime).
+A relative `@` path is relative to ansible-playbook's working directory
+(ansible-core's `DataLoader` starts there and the playbook CLI sets no
+other base before extra vars load), which is the repository sb runs the
+playbook in; later values win because each is combined over the ones
+before it (`load_extra_vars`, `combine_vars`).
 
 Steps, in sb-go's order (cmd/install.go:60-210):
 
@@ -282,6 +301,10 @@ nothing from ops, so it lands here.
     when all succeeded, and all kept, with the failure's cause, when one
     failed (sb-go: nothing while listing or rebuilding; a failure shows
     only in its closing error).
+15. **`sb install --help` explains `-e` with examples** (the maintainer,
+    2026-11-15; the text above), and its `-h --help` row reads `Help for
+    install (--help shows more details)` in `-h` and `--help` (cli-core
+    spec, Help). sb-go has one help text and neither.
 
 ### Scope
 
