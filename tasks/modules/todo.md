@@ -2139,7 +2139,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       maintainer, 2026-11-15). python-env's children log sb's own paths
       as `[ARG]` (`uv pip sync --python [ARG] ... [ARG]`); show every value
       sb computes with exec's `shown_value`, and mask only real secrets.
-- [ ] **Mutation passes run in a sandbox** (the gate; the maintainer,
+- [x] **Mutation passes run in a sandbox** (the gate; the maintainer,
       2026-11-15). The passes run tests as root, so a mutant that bends a
       path or drops a safety flag writes on the host: on 2026-11-15 a
       mutant of the motd.yml migration's write wrote /nonexistent through
