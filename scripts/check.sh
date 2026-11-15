@@ -379,14 +379,14 @@ mutation_sweeper_pid=
 # https://man7.org/linux/man-pages/man2/prctl.2.html,
 # PR_SET_CHILD_SUBREAPER, for the adopting process); a test's live sb
 # still has its parent (the test, or `script`), so it is never touched.
-# The loop ends by itself once DIR is gone or check.sh is (a check.sh
-# killed with SIGKILL runs no trap). Only an orphan that has run for at
-# least 120 s is killed (SB_MUTATION_ORPHAN_AGE overrides it, for the
-# floor guard's tests): some tests orphan sb on purpose (a hangup kills
-# its parent shell, and sb must still take its grace and log its ending),
-# and nextest ends any test after 60 s (.config/nextest.toml), so a test's
-# own orphan never lives that long, where the leaked mutants ran for
-# hours. The age is now minus the process's start time (proc(5):
+# The loop ends by itself once DIR is gone or check.sh is; in the second
+# case it then sweeps DIR and removes it (a check.sh killed with SIGKILL
+# runs no trap). Only an orphan that has run for at least 120 s is killed
+# (SB_MUTATION_ORPHAN_AGE overrides it, for the floor guard's tests):
+# some tests orphan sb on purpose (a hangup kills its parent shell, and sb
+# must still take its grace and log its ending), and nextest ends any test
+# after 60 s (.config/nextest.toml), so a test's own orphan never lives
+# that long, where the leaked mutants ran for hours. The age is now minus the process's start time (proc(5):
 # /proc/PID/stat field 22, in clock ticks since boot; /proc/uptime, in
 # seconds).
 mutation_sweeper() {
@@ -414,6 +414,15 @@ mutation_sweeper() {
       done < <(mutation_pids "$dir")
       if ((count)); then echo "mutants: killed $count orphaned process(es) during the pass"; fi
     done
+    # check.sh ended without its EXIT trap (SIGKILL): cargo-mutants, adopted
+    # by init, goes on through the rest of the pass, and nothing else would
+    # sweep what its mutants leave (seen 2026-11-15). So the cleanup on exit
+    # is done here: every process of the pass goes, and its copies, without
+    # which cargo-mutants' next build and test fail at once. Up to three
+    # times: cargo-mutants can start a build in a copy while it goes.
+    if [[ -d $dir ]] && ! kill -0 "$parent" 2>/dev/null; then
+      for _ in 1 2 3; do mutation_sweep "$dir" && mutation_remove "$dir" && break; done
+    fi
   ) &
   mutation_sweeper_pid=$!
 }
@@ -429,11 +438,60 @@ mutation_sweeper_stop() {
   fi
 }
 
+# mutation_remove DIR: removes a pass directory, its check-sh.pid last, so
+# that a removal cut short (a SIGKILL, a copy written to while it goes)
+# leaves a directory the next run's sweep still finds (mutation_sweep_stale).
+mutation_remove() {
+  find "$1" -mindepth 1 -maxdepth 1 ! -name check-sh.pid -exec rm -rf {} + && rm -rf "$1"
+}
+
+# proc_start PID: PID's start time, in clock ticks since boot (proc(5):
+# /proc/PID/stat field 22, the 20th after the parenthesised command name).
+# With the pid it names one process: a pid is reused, a start time with it
+# is not. Fails once PID has ended.
+proc_start() {
+  local stat fields
+  stat=$(<"/proc/$1/stat") || return 1
+  read -r -a fields <<<"${stat##*) }"
+  echo "${fields[19]}"
+}
+
+# mutation_sweep_stale: sweeps, then removes, each pass directory under the
+# temp directory whose check.sh has ended (its pid gone, or now another
+# process's). A run killed during a pass with its sweeper runs no EXIT
+# trap, and what the pass left runs on, as 185 of exec's helper shells
+# from five passes did (2026-11-14). A supervising tool stops a command
+# with SIGTERM, then SIGKILL about a second later, to each descendant: the
+# sweeper goes with check.sh, and so does the trap's sweep if it takes
+# longer; orphans init adopted earlier are no descendants. So the next run
+# sweeps them. A directory that names no check.sh (one made before pass
+# directories named theirs, or by another kind of run), a symbolic link,
+# and another user's directory are left alone; so is one whose check.sh
+# still runs.
+mutation_sweep_stale() {
+  local d pid start
+  for d in "${TMPDIR:-/tmp}"/sb-mutants-*/; do
+    [[ ! -L ${d%/} && -O $d && -f $d/check-sh.pid ]] || continue
+    read -r pid start <"$d/check-sh.pid" || continue
+    [[ $pid =~ ^[1-9][0-9]*$ && $start =~ ^[0-9]+$ ]] || continue
+    if [[ $(proc_start "$pid" 2>/dev/null) == "$start" ]]; then continue; fi
+    # The physical path, as the processes' links name it. Another run's
+    # sweep may have removed it since. This is housekeeping: a directory
+    # it can't sweep or remove is reported, and the stage goes on.
+    d=$(cd "$d" 2>/dev/null && pwd -P) || continue
+    if mutation_sweep "$d" && mutation_remove "$d"; then
+      echo "mutants: swept $d, left by a run that ended during its pass"
+    else
+      echo "check: could not sweep or remove $d, left by a run that ended during its pass" >&2
+    fi
+  done
+}
+
 # On exit during a pass: its sweeper stops, its leftovers go, and its
 # copies if they could.
 mutation_cleanup() {
   mutation_sweeper_stop
-  if [[ -n $mutation_tmp ]] && mutation_sweep "$mutation_tmp"; then rm -rf "$mutation_tmp"; fi
+  if [[ -n $mutation_tmp ]] && mutation_sweep "$mutation_tmp"; then mutation_remove "$mutation_tmp"; fi
 }
 trap mutation_cleanup EXIT
 
@@ -476,6 +534,9 @@ mutation_pass() {
   # sudo, and the copy's sb, as `nobody`, which must be able to enter it:
   # 0755, searchable by everyone as /tmp is, but writable by root only.
   chmod 755 "$mutation_tmp"
+  # It names this check.sh, so that a later run can tell the directory of
+  # a run killed during its pass from a live one (mutation_sweep_stale).
+  echo "$$ $(proc_start $$)" >"$mutation_tmp/check-sh.pid"
   # The whole mutant's 300 s timeout stays as the backstop behind
   # nextest's per-test one.
   mutation_sweeper "$mutation_tmp"
@@ -483,11 +544,13 @@ mutation_pass() {
     --timeout 300 || rc=$?
   mutation_sweeper_stop
   if ! mutation_sweep "$mutation_tmp"; then
-    # Kept for a look, and not swept again on exit.
+    # Kept for a look, and not swept again on exit, nor by a later run:
+    # it names no check.sh now.
+    rm -f "$mutation_tmp/check-sh.pid"
     mutation_tmp=
     exit 2
   fi
-  rm -rf "$mutation_tmp"
+  mutation_remove "$mutation_tmp"
   mutation_tmp=
   # 0 all caught, 2 some missed, 3 some timed out: the score decides. Any
   # other status (4: the unmutated baseline failed, so nothing was tested)
@@ -705,5 +768,7 @@ if [[ $stage == full ]]; then tools+=(cargo-deny); fi
 if [[ $stage == full && $arch == x86_64 ]]; then tools+=(cross docker); fi
 check_tools "${tools[@]}"
 
+# What a killed run's mutation pass left, at the start of every stage.
+mutation_sweep_stale
 "$stage"
 printf '\n\033[1mcheck %s: all passed\033[0m\n' "$stage"

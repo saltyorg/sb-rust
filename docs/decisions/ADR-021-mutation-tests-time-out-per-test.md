@@ -234,3 +234,38 @@ and sb-host's tests) under this profile:
   executable only, hundreds outlived their passes, each holding its gate
   run's systemd scope open. The floor guard's tests add such a shell to
   both cases.
+- A gate run killed during a pass no longer leaves the pass running
+  (2026-11-15, after 185 of exec's helper shells, from five
+  passes, were found running with their working directory in deleted
+  copies). Reproduced on sb-exec: a whole pass left nothing, and a stop
+  of the run as a supervising tool stops a command (SIGTERM to each
+  descendant, SIGKILL about a second later) let the EXIT trap's sweep
+  finish there. A check.sh killed with SIGKILL alone runs no trap, and
+  cargo-mutants, adopted by init, went on through the rest of the pass
+  with no sweeper; at its end it removed its copy and left the pass's
+  directory, so what its mutants left ran on from a deleted copy. The
+  sweeps had missed no process of a pass whose check.sh still ran. Two
+  changes:
+  - The sweeper, finding check.sh gone, does the cleanup on exit
+    itself: it sweeps the pass's directory and removes it, after which
+    cargo-mutants' builds and tests fail at once.
+  - Each pass's directory names its check.sh (`check-sh.pid`: the pid
+    and its start time, proc(5)'s stat field 22, so a reused pid isn't
+    taken for it). Every check.sh stage starts by sweeping and removing
+    each `sb-mutants-*` directory under the temp directory that names a
+    check.sh that has ended, for a run whose sweeper was killed too, or
+    whose trap was cut short. A directory whose check.sh still runs, one
+    that names none (made before this, or by another kind of run), a
+    symbolic link and another user's are left alone, and so is one kept
+    for a look: it stops naming its check.sh. A pass's directory is
+    removed with its `check-sh.pid` last, so that a removal cut short
+    leaves one the next run still finds. The start-of-stage sweep
+    reports a directory it can't sweep or remove and goes on.
+
+  A leak of a run killed so lives until its sweeper sees it, within
+  3 s, or until the next gate run. The floor guard's tests kill check.sh
+  alone during a stubbed pass, kill it with its sweeper and run the next
+  stage, check that live, unmarked, linked, reused-pid and ended
+  directories are told apart, and that a directory kept for a look names
+  no check.sh. Their stubbed passes make their directories in each run's
+  own temp directory, never the host's.

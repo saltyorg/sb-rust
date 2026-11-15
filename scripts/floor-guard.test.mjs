@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync, symlinkSync } from 'node:fs';
 // For the mutation pass's directory (ADR-021).
 import { existsSync } from 'node:fs';
+// For the processes a killed run's pass left (ADR-021).
+import { spawn } from 'node:child_process';
 
 const guard = join(dirname(fileURLToPath(import.meta.url)), 'floor-guard.mjs');
 
@@ -1272,6 +1274,51 @@ const stubs = (versions, arch) => {
     + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
     + '  exit 0\n'
     + 'fi\n';
+  // With LEAK_KILLED set, the same mutant's run leaves a helper shell's
+  // stand-in (in its own session, ignoring SIGHUP, SIGINT and SIGTERM, its
+  // working directory in the run's temp copy) and then SIGKILLs check.sh,
+  // its parent, so that no EXIT trap runs. With LEAK_KILL_SWEEPER (pgrep)
+  // set, check.sh's other children (the pass's sweeper) go first, as when
+  // a gate run's whole tree is killed. Then, as cargo-mutants runs on
+  // after check.sh, it waits (but for LEAK_KILL_SWEEPER, which leaves
+  // nothing to wait for) up to 20 s for the stand-in and the copy to go
+  // and writes what is still there (shell, copy) to LEAK_KILLED.result.
+  // The stand-in's pid goes to LEAK_KILLED, the TMPDIR to
+  // LEAK_KILLED.tmpdir.
+  out.cargo += 'if [ "$1" = mutants ] && [ -n "${LEAK_KILLED:-}" ]; then\n'
+    + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
+    + '  echo "${TMPDIR-unset}" >"$LEAK_KILLED.tmpdir"\n'
+    + '  copy="${TMPDIR:-/tmp}/cargo-mutants-repo-stub.tmp"; $LEAK_MKDIR -p "$copy"\n'
+    + '  ( cd "$copy" && $LEAK_SETSID /bin/sh -c \'trap "" HUP INT TERM; echo $$ >>"$1"; exec "$0" 600\' "$LEAK_SLEEP" "$LEAK_KILLED" </dev/null >/dev/null 2>&1 & )\n'
+    + '  n=0; while [ "$($LEAK_WC -l <"$LEAK_KILLED")" -lt 1 ] && [ $((n += 1)) -lt 100 ]; do $LEAK_SLEEP 0.05; done\n'
+    + '  if [ -n "${LEAK_KILL_SWEEPER:-}" ]; then for p in $($LEAK_KILL_SWEEPER -P "$PPID"); do [ "$p" = $$ ] || kill -KILL "$p"; done; fi\n'
+    + '  kill -KILL "$PPID"\n'
+    + '  read -r shell <"$LEAK_KILLED"\n'
+    + '  n=0; [ -n "${LEAK_KILL_SWEEPER:-}" ] && n=200\n'
+    + '  while { $LEAK_READLINK "/proc/$shell/exe" >/dev/null 2>&1 || [ -d "$copy" ]; } && [ $((n += 1)) -lt 200 ]; do $LEAK_SLEEP 0.1; done\n'
+    + '  if $LEAK_READLINK "/proc/$shell/exe" >/dev/null 2>&1; then echo shell >>"$LEAK_KILLED.result"; fi\n'
+    + '  if [ -d "$copy" ]; then echo copy >>"$LEAK_KILLED.result"; fi\n'
+    + '  exit 0\n'
+    + 'fi\n';
+  // With LEAK_STUCK set, the same mutant's run starts a spawner outside
+  // the copy that, for up to a minute, starts a process in the copy every
+  // 50 ms, so that check.sh's sweep after the pass can't end them all in
+  // its 10 s. The spawner's pid, then each process's, go to LEAK_STUCK,
+  // the TMPDIR to LEAK_STUCK.tmpdir.
+  out.cargo += 'if [ "$1" = mutants ] && [ -n "${LEAK_STUCK:-}" ]; then\n'
+    + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
+    + '  echo "${TMPDIR-unset}" >"$LEAK_STUCK.tmpdir"\n'
+    + '  copy="${TMPDIR:-/tmp}/cargo-mutants-repo-stub.tmp"; $LEAK_MKDIR -p "$copy"\n'
+    + '  ( i=0; while [ $((i += 1)) -le 1200 ]; do\n'
+    + '      ( cd "$copy" && exec /bin/sh -c \'echo $$ >>"$1"; exec "$0" 600\' "$LEAK_SLEEP" "$LEAK_STUCK" ) </dev/null >/dev/null 2>&1 &\n'
+    + '      $LEAK_SLEEP 0.05\n'
+    + '    done ) </dev/null >/dev/null 2>&1 &\n'
+    + '  echo $! >>"$LEAK_STUCK"\n'
+    + '  while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+    + '  $LEAK_MKDIR -p "$out/mutants.out"\n'
+    + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
+    + '  exit 0\n'
+    + 'fi\n';
   // `docker run`: sb version, unless the container is of the release in
   // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
   // fails itself, with its own status 125.
@@ -1310,7 +1357,12 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     mkdirSync(sys);
     for (const t of SYSTEM_TOOLS) symlinkSync(execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim(), join(sys, t));
     writeFileSync(logFile, '');
-    const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir, PATH: bin + ':' + sys, STUB_LOG: logFile, ...extra };
+    // TMPDIR is the run's own, unless a test names one: check.sh sweeps
+    // the pass directories it finds there, and a stubbed pass makes its
+    // own there.
+    const tmp = join(dir, 'tmp');
+    mkdirSync(tmp);
+    const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir, PATH: bin + ':' + sys, STUB_LOG: logFile, TMPDIR: tmp, ...extra };
     const git = (...args) => execFileSync('git', args, { cwd: repo, env: scratch, stdio: 'pipe' });
     mkdirSync(join(repo, 'target'), { recursive: true });
     git('init', '-q');
@@ -1335,7 +1387,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     });
     const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return null; } };
     return {
-      status: r.status, output: r.stdout + r.stderr, calls, root: repo,
+      status: r.status, signal: r.signal, output: r.stdout + r.stderr, calls, root: repo,
       gitleaksInput: read(logFile + '.gitleaks'), changesDiff: read(join(repo, 'target/changes.diff')),
       crossOpts: read(logFile + '.cross-opts'), nextestEnv: read(logFile + '.nextest-env'),
     };
@@ -1605,6 +1657,159 @@ test('check.sh: a young orphan of a mutation pass is left running during it by d
 test('check.sh: an orphan age that is not a whole number of seconds is refused', () => {
   for (const age of ['2m', '08', '-1']) {
     refuses(checkRun('fast', { env: { SB_MUTATION_ORPHAN_AGE: age } }), 2, /SB_MUTATION_ORPHAN_AGE must be a whole number/);
+  }
+});
+
+// A gate run killed during a mutation pass runs no EXIT trap, so nothing
+// sweeps what the pass leaves (2026-11-14: 185 of exec's helper shells,
+// from five passes, ran on for hours). A supervising tool stops a command
+// so: SIGTERM, then SIGKILL about a second later, to every descendant,
+// before check.sh's own sweep can finish; orphans already adopted by init
+// are no descendants and get neither. Each pass directory names the
+// check.sh that made it (its pid and start time), and the next run sweeps
+// the pass directories whose check.sh has ended, then removes them
+// (ADR-021).
+test('check.sh: what the mutation pass of a killed run left is swept by the next run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'leak-'));
+  const pids = join(dir, 'pids');
+  writeFileSync(pids, '');
+  const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+  const alive = (pid) => {
+    try { return !/^\d+ \(.*\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8')); } catch { return false; }
+  };
+  let started = [];
+  try {
+    const killed = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      env: { LEAK_KILLED: pids, LEAK_KILL_SWEEPER: tool('pgrep'), LEAK_MKDIR: tool('mkdir'), LEAK_READLINK: tool('readlink'),
+        LEAK_SETSID: tool('setsid'), LEAK_SLEEP: tool('sleep'), LEAK_WC: tool('wc'), TMPDIR: dir },
+    });
+    started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
+    assert.equal(killed.signal, 'SIGKILL', killed.output);
+    assert.equal(started.length, 1, killed.output);
+    const passTmp = readFileSync(pids + '.tmpdir', 'utf8').trim();
+    assert.ok(alive(started[0]) && existsSync(passTmp), 'the killed run left nothing to sweep:\n' + killed.output);
+    const next = checkRun('fast', { env: { TMPDIR: dir } });
+    passes(next, 'fast');
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (let i = 0; i < 50 && alive(started[0]); i++) Atomics.wait(pause, 0, 0, 100);
+    assert.ok(!alive(started[0]), 'the leaked shell ' + started[0] + ' is still running:\n' + next.output);
+    assert.ok(!existsSync(passTmp), 'the pass directory is left: ' + passTmp);
+    assert.match(next.output, /mutants: killed 1 process\(es\) the pass left running/, next.output);
+    assert.ok(next.output.includes('mutants: swept ' + passTmp + ', left by a run that ended during its pass'), next.output);
+  } finally {
+    for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// check.sh SIGKILLed alone (its sweeper still running) leaves cargo-mutants
+// running: init adopts it, and it goes on through the rest of the pass,
+// building and testing mutants with nothing to sweep what they leave
+// (seen 2026-11-15). The sweeper, finding check.sh gone, does the cleanup
+// on exit itself: every process of the pass goes, and the copies with
+// them (ADR-021).
+test('check.sh: a run killed alone during a mutation pass is cleaned up by its sweeper', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'leak-'));
+  const pids = join(dir, 'pids');
+  writeFileSync(pids, '');
+  const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+  let started = [];
+  try {
+    const r = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      env: { LEAK_KILLED: pids, LEAK_MKDIR: tool('mkdir'), LEAK_READLINK: tool('readlink'), LEAK_SETSID: tool('setsid'),
+        LEAK_SLEEP: tool('sleep'), LEAK_WC: tool('wc'), TMPDIR: dir },
+    });
+    started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
+    assert.equal(r.signal, 'SIGKILL', r.output);
+    assert.equal(started.length, 1, r.output);
+    const left = existsSync(pids + '.result') ? readFileSync(pids + '.result', 'utf8') : '';
+    assert.doesNotMatch(left, /shell/, 'the leaked shell ran on after check.sh was killed:\n' + r.output);
+    assert.doesNotMatch(left, /copy/, 'the pass\'s copy is left after check.sh was killed:\n' + r.output);
+    assert.ok(!existsSync(readFileSync(pids + '.tmpdir', 'utf8').trim()), 'the pass directory is left');
+  } finally {
+    for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The sweep at the start never touches another run's pass: one whose
+// check.sh still runs, one that names no check.sh (made before pass
+// directories named theirs, or another check.sh's), or a symbolic link is
+// left as it is. A pid that now belongs to another process (its start
+// time differs) is a check.sh that has ended.
+test('check.sh: a pass directory whose check.sh still runs, that names none, or a link is left alone', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'leak-'));
+  const startOf = (pid) => readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ').pop().split(' ')[19];
+  const alive = (pid) => {
+    try { return !/^\d+ \(.*\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8')); } catch { return false; }
+  };
+  const ended = spawnSync('true').pid;
+  const cases = {
+    live: process.pid + ' ' + startOf(process.pid) + '\n',
+    unmarked: null,
+    reused: process.pid + ' ' + (Number(startOf(process.pid)) + 1) + '\n',
+    ended: ended + ' 1\n',
+    // A link to a directory that would be swept: the link is left alone.
+    link: ended + ' 1\n',
+  };
+  const children = {};
+  try {
+    for (const [name, owner] of Object.entries(cases)) {
+      const pass = join(dir, name === 'link' ? 'linked' : 'sb-mutants-0.' + name);
+      mkdirSync(join(pass, 'copy'), { recursive: true });
+      if (name === 'link') symlinkSync(pass, join(dir, 'sb-mutants-0.link'));
+      if (owner !== null) writeFileSync(join(pass, 'check-sh.pid'), owner);
+      // A process of that pass: its working directory in the pass's copy.
+      const child = spawn('sleep', ['600'], { cwd: join(pass, 'copy'), detached: true, stdio: 'ignore' });
+      child.unref();
+      children[name] = child.pid;
+    }
+    const r = checkRun('fast', { env: { TMPDIR: dir } });
+    passes(r, 'fast');
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (let i = 0; i < 50 && (alive(children.reused) || alive(children.ended)); i++) Atomics.wait(pause, 0, 0, 100);
+    for (const name of ['live', 'unmarked', 'link']) {
+      assert.ok(alive(children[name]), 'the ' + name + ' pass\'s process was killed:\n' + r.output);
+      assert.ok(existsSync(join(dir, 'sb-mutants-0.' + name)), 'the ' + name + ' pass directory was removed');
+    }
+    assert.ok(existsSync(join(dir, 'linked')), 'the directory the link names was removed');
+    for (const name of ['reused', 'ended']) {
+      assert.ok(!alive(children[name]), 'the ' + name + ' pass\'s process is still running:\n' + r.output);
+      assert.ok(!existsSync(join(dir, 'sb-mutants-0.' + name)), 'the ' + name + ' pass directory is left');
+    }
+  } finally {
+    for (const pid of Object.values(children)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A pass directory whose leftovers the sweep after the pass could not end
+// is kept for a look, and check.sh exits 2. It names no check.sh then, so
+// the next run's sweep leaves it, and a shell opened in it, alone.
+test('check.sh: a pass directory kept for a look names no check.sh', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'leak-'));
+  const pids = join(dir, 'pids');
+  writeFileSync(pids, '');
+  const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+  const read = () => readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
+  try {
+    const r = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      env: { LEAK_STUCK: pids, LEAK_MKDIR: tool('mkdir'), LEAK_SLEEP: tool('sleep'), TMPDIR: dir },
+    });
+    refuses(r, 2, /check: processes left under /);
+    const passTmp = readFileSync(pids + '.tmpdir', 'utf8').trim();
+    assert.ok(existsSync(passTmp), 'the pass directory was not kept: ' + passTmp);
+    assert.ok(!existsSync(join(passTmp, 'check-sh.pid')), 'the kept pass directory still names its check.sh');
+  } finally {
+    // The spawner first, then everything it started.
+    for (const pid of read()) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(pause, 0, 0, 500);
+    for (const pid of read()) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

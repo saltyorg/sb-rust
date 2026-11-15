@@ -2120,7 +2120,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
-- [ ] **Leaked exec helper shells after 517de92** (the gate). On
+- [x] **Leaked exec helper shells after 517de92** (the gate). On
       2026-11-14, 185 orphaned `dash` helper shells (exec's tests' `sh -c
       'trap ... exit'`) were found with their working directory in five
       deleted mutation-pass copies of one lane's worktree, though both
