@@ -495,6 +495,80 @@ mutation_cleanup() {
 }
 trap mutation_cleanup EXIT
 
+# mutation_sandbox DIR... -- CMD...: CMD in private mount and network
+# namespaces where every mount is read-only but /tmp and the DIRs, so a
+# mutant that bends a path or drops a safety flag can't write on the host
+# as root, nor reach its daemons (two wrote files, 2026-11-15; ADR-021):
+# - /tmp holds the pass's copies and the tests' temp roots;
+# - /proc, /sys and /dev stay as they are (kernel interfaces and devices);
+# - /run is an empty read-only tmpfs, so no host daemon's socket (Docker,
+#   systemd, D-Bus) is reachable, and the network namespace has only its
+#   own loopback, so neither is a daemon on the host's (the tests' fakes
+#   listen on the namespace's).
+# unshare(1), mount(8) and ip(8):
+# https://man7.org/linux/man-pages/man1/unshare.1.html,
+# https://man7.org/linux/man-pages/man8/mount.8.html,
+# https://man7.org/linux/man-pages/man8/ip-link.8.html. Root only: mount(8)
+# refuses a user namespace's mapped user (util-linux 2.37). Not root, the
+# pass runs as before, with no sandbox: a mutant then writes only what
+# that user may.
+mutation_sandbox() {
+  local dirs=()
+  while [[ $1 != -- ]]; do dirs+=("$1"); shift; done
+  shift
+  if [[ $(id -u) == 0 ]]; then
+    unshare --mount --net --propagation private \
+      bash -c "$(declare -f mutation_sandbox_inner)"'; mutation_sandbox_inner "$@"' \
+      mutation-sandbox "$((${#dirs[@]} + 1))" /tmp "${dirs[@]}" "$@"
+  else
+    echo "mutants: not root: the pass runs without the sandbox"
+    "$@"
+  fi
+}
+
+# mutation_sandbox_inner N DIR... CMD...: inside the namespaces, the N
+# DIRs (/tmp first, physical paths) bound to themselves first, so that each
+# keeps its own read-write flag; every other mount but /proc, /sys and /dev
+# remounted read-only; an empty read-only tmpfs on /run; loopback up; then
+# CMD. Each step that fails stops the pass (status 125), and so does any
+# mount left writable: no pass runs on a writable host.
+mutation_sandbox_inner() {
+  local n=$1 d mp keep fields opts points=()
+  shift
+  local dirs=("${@:1:n}")
+  shift "$n"
+  fail() { echo "check: the mutation sandbox $*" >&2; exit 125; }
+  for d in "${dirs[@]}"; do mount --bind "$d" "$d" || fail "could not bind $d"; done
+  # Whether a mount point stays as it is: a DIR or under one, or a kernel
+  # interface or device tree.
+  kept() {
+    local d hit=1
+    for d in "${dirs[@]}" /proc /sys /dev; do
+      if [[ $1 == "$d" || $1 == "$d"/* ]]; then hit=0; fi
+    done
+    ((hit == 0))
+  }
+  # Field 5 of mountinfo is the mount point, field 6 its options. A
+  # backslash starts a three-digit octal escape (space, tab, newline,
+  # backslash; proc(5)); printf's %b reads \0NNN, so each gets its 0.
+  while read -r _ _ _ _ mp _; do points+=("$(printf '%b' "${mp//\\/\\0}")"); done </proc/self/mountinfo
+  for mp in "${points[@]}"; do
+    kept "$mp" || mount -o remount,bind,ro "$mp" || fail "could not make $mp read-only"
+  done
+  mount -t tmpfs -o ro,nosuid,nodev,noexec,size=4k sb-mutants /run || fail "could not cover /run"
+  ip link set lo up || fail "could not bring up loopback"
+  while read -r -a fields; do
+    mp=$(printf '%b' "${fields[4]//\\/\\0}")
+    opts=,${fields[5]},
+    if ! kept "$mp" && [[ $opts != *,ro,* ]]; then fail "left $mp writable"; fi
+  done </proc/self/mountinfo
+  # The working directory still names the mount it was entered through,
+  # read-only now for a directory under /tmp: entered again by its path, it
+  # is on the new bind mounts.
+  cd "$PWD" || fail "could not enter $PWD again"
+  exec "$@"
+}
+
 # mutation_pass N ARGS...: one cargo-mutants pass over the changed code with
 # the given package arguments; appends its outcomes file to `outcomes`.
 mutation_pass() {
@@ -540,8 +614,14 @@ mutation_pass() {
   # The whole mutant's 300 s timeout stays as the backstop behind
   # nextest's per-test one.
   mutation_sweeper "$mutation_tmp"
-  TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" "${mutants[@]}" -o "target/mutants-run-$n" \
-    --timeout 300 || rc=$?
+  # In the sandbox: the host read-only but /tmp (the pass's directory is
+  # under it), the pass's output and the tests' log directory.
+  # Physical paths, as mountinfo names them; the pass's directory too, in
+  # case TMPDIR is outside /tmp.
+  mkdir -p "target/mutants-run-$n" "$SB_LOG_DIR"
+  TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" \
+    mutation_sandbox "$mutation_tmp" "$(cd "target/mutants-run-$n" && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
+    "${mutants[@]}" -o "target/mutants-run-$n" --timeout 300 || rc=$?
   mutation_sweeper_stop
   if ! mutation_sweep "$mutation_tmp"; then
     # Kept for a look, and not swept again on exit, nor by a later run:
@@ -557,6 +637,10 @@ mutation_pass() {
   # means no verdict (https://mutants.rs/exit-codes.html).
   case $rc in
   0 | 2 | 3) ;;
+  125)
+    echo "check: the mutation sandbox could not be set up for: $*" >&2
+    exit 2
+    ;;
   *)
     echo "check: cargo-mutants exited $rc for: $*" >&2
     exit 2
@@ -573,6 +657,12 @@ mutation_check() {
   step "mutation score on changed code >= ${MUTATION_MIN}%"
   need cargo-mutants
   need cargo-nextest
+  # The sandbox's tools (util-linux, iproute2), as root (mutation_sandbox).
+  if [[ $(id -u) == 0 ]]; then
+    need unshare
+    need mount
+    need ip
+  fi
   local c t key testers=() outcomes=()
   # A key or tester that names no crate would silently change the scope.
   for key in "${!MUTATION_TESTERS[@]}"; do

@@ -1173,7 +1173,7 @@ const CRATES = {
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
 const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'getconf', 'git', 'grep', 'id', 'mkdir',
-  'mktemp', 'rm', 'sed', 'sleep', 'sort', 'stat', 'xargs'];
+  'ip', 'mktemp', 'mount', 'rm', 'sed', 'sleep', 'sort', 'stat', 'unshare', 'xargs'];
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
@@ -1316,6 +1316,25 @@ const stubs = (versions, arch) => {
     + '  echo $! >>"$LEAK_STUCK"\n'
     + '  while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
     + '  $LEAK_MKDIR -p "$out/mutants.out"\n'
+    + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
+    + '  exit 0\n'
+    + 'fi\n';
+  // With SANDBOX_PROBE set (a directory outside /tmp, on the host), the
+  // same mutant's run writes as a mutant that bends a path would: a file
+  // in SANDBOX_PROBE, then one in its TMPDIR and one in its output
+  // directory, as the pass itself does. Each write's result (`host ok` or
+  // `host refused`, and so on) goes to SANDBOX_RESULT; its mount table,
+  // its network namespace and what /run holds go beside it.
+  out.cargo += 'if [ "$1" = mutants ] && [ -n "${SANDBOX_PROBE:-}" ]; then\n'
+    + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
+    + '  while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+    + '  $SANDBOX_MKDIR -p "$out/mutants.out"\n'
+    + '  for w in "host $SANDBOX_PROBE/written" "tmpdir ${TMPDIR:-/tmp}/written" "output $out/mutants.out/written"; do\n'
+    + '    if (echo mutant >"${w#* }") 2>/dev/null; then echo "${w%% *} ok"; else echo "${w%% *} refused"; fi >>"$SANDBOX_RESULT"\n'
+    + '  done\n'
+    + '  cat /proc/self/mountinfo >"$SANDBOX_RESULT.mountinfo"\n'
+    + '  $SANDBOX_READLINK /proc/self/ns/net >"$SANDBOX_RESULT.net"\n'
+    + '  $SANDBOX_LS -A /run >"$SANDBOX_RESULT.run"\n'
     + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
     + '  exit 0\n'
     + 'fi\n';
@@ -2080,4 +2099,48 @@ test('check.sh task: each prototype is named, wherever its [package] section sit
   const r = checkRun('task', { files, work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
   passes(r, 'task');
   assert.ok(r.calls.some((c) => c.tool === 'cargo' && c.args === 'test --locked --quiet -p proto-a -p proto-b'), r.output);
+});
+
+// The passes run tests as root, and a mutant that bends a path or drops a
+// safety flag writes wherever the bent path points: on 2026-11-15 two
+// mutants of the motd.yml migration wrote /nonexistent and
+// /opt/saltbox/backups on the host. Each pass runs in private mount and
+// network namespaces where every mount is read-only but /tmp (the pass's
+// copies and the tests' temp roots), the pass's output and /proc, /sys and
+// /dev, /run is empty and only the namespace's loopback is up (ADR-021).
+// A stub mutant's write to the host fails; the pass's own writes work.
+// The repository is outside /tmp (its target/ holds the probe), as the
+// gate runs it; under /tmp the probe would be writable.
+test("check.sh: a mutant can't write a host file or reach a host daemon, the pass's own writes work", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sandbox-'));
+  // On the host, outside /tmp: under the repository's target directory.
+  mkdirSync(join(SCRIPTS, '..', 'target'), { recursive: true });
+  const probe = mkdtempSync(join(SCRIPTS, '..', 'target', 'sandbox-probe-'));
+  const result = join(dir, 'result');
+  const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+  try {
+    writeFileSync(join(probe, 'before'), 'writable outside the pass');
+    const r = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      env: { SANDBOX_PROBE: probe, SANDBOX_RESULT: result, SANDBOX_MKDIR: tool('mkdir'), SANDBOX_READLINK: tool('readlink'),
+        SANDBOX_LS: tool('ls') },
+    });
+    passes(r, 'task');
+    assert.equal(readFileSync(result, 'utf8'), 'host refused\ntmpdir ok\noutput ok\n', r.output);
+    assert.ok(!existsSync(join(probe, 'written')), 'the mutant wrote on the host');
+    // Every mount is read-only but /tmp's, and /proc's, /sys's and /dev's
+    // (proc(5): field 5 the mount point, octal escapes; field 6 its options).
+    const unescape = (p) => p.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
+    const writable = readFileSync(result + '.mountinfo', 'utf8').split('\n').filter(Boolean).map((l) => l.split(' '))
+      .filter((f) => !f[5].split(',').includes('ro')).map((f) => unescape(f[4]))
+      .filter((m) => !/^\/(tmp|proc|sys|dev)(\/|$)/.test(m));
+    assert.deepEqual(writable, [], r.output);
+    // No host daemon is reachable: an empty /run, a network namespace of
+    // its own.
+    assert.equal(readFileSync(result + '.run', 'utf8'), '', r.output);
+    assert.notEqual(readFileSync(result + '.net', 'utf8').trim(), execFileSync('readlink', ['/proc/self/ns/net'], { encoding: 'utf8' }).trim());
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

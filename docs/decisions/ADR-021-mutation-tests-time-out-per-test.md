@@ -269,3 +269,41 @@ and sb-host's tests) under this profile:
   directories are told apart, and that a directory kept for a look names
   no check.sh. Their stubbed passes make their directories in each run's
   own temp directory, never the host's.
+- Each pass runs in a sandbox (the maintainer, 2026-11-15, after two
+  mutants of the motd.yml migration wrote on the host as root: one wrote
+  `/nonexistent` through a test's planted link, one left a root-owned
+  `/opt/saltbox/backups` and two test backups). The passes run tests as
+  root, so a mutant that bends a path or drops a safety flag (`O_EXCL`,
+  `O_NOFOLLOW`) writes wherever the bent path points, and one that drops
+  an override (a test's controller URL, `DOCKER_HOST`) reaches the
+  host's real daemons. check.sh runs cargo-mutants in private mount and
+  network namespaces (`unshare --mount --net`):
+  - every mount is remounted read-only but `/tmp` (the pass's directory
+    and copies, and the tests' temp roots), the pass's output
+    (`target/mutants-run-N`) and the tests' log directory (`SB_LOG_DIR`),
+    each bound to itself first, by its physical path, so that it keeps
+    its read-write flag;
+  - `/proc`, `/sys` and `/dev` stay as they are: kernel interfaces and
+    devices. A mutant could still write a `/proc/sys` setting, the cgroup
+    or BPF trees, `/dev/shm`, or replace a device node as root; and `/tmp`
+    itself is the host's directory (a mutant could chmod it);
+  - `/run` is an empty read-only tmpfs, so no daemon's socket (Docker,
+    systemd, D-Bus) is reachable, and the network namespace has only its
+    own loopback, up, so the tests' fake servers work and no daemon
+    listening on the host's loopback (the Saltbox docker controller) is
+    reachable.
+
+  The working directory is entered again by its path inside, since it
+  still names the mount it was entered through. Each step that fails, and
+  a mount still writable after them (read back from mountinfo), stops the
+  pass with no verdict (exit 2) rather than run it on a writable host.
+  Cargo builds with its home read-only. The namespaces end with the pass;
+  the sweeps still see its processes, which share the host's process
+  namespace. Root only: util-linux's mount (2.37) refuses a user
+  namespace's mapped user, so a pass not run as root runs as before,
+  unsandboxed, and says so; such a mutant writes only what that user may.
+  The floor guard's tests run a stubbed pass whose mutant writes to a
+  directory on the host outside `/tmp` and to its own `TMPDIR` and
+  output (the first fails, the others work), and read back its mount
+  table (every other mount read-only), its `/run` (empty) and its network
+  namespace (its own).
