@@ -680,8 +680,10 @@ pub(crate) fn go_type(value: &Node) -> &'static str {
 /// `internal/strconv/ftoa.go`, `fmtEFG`: `eprec = 6` when shortest), with
 /// a sign and at least two exponent digits; `NaN`, `+Inf`, `-Inf`. No
 /// crate reproduces Go's `%g` (ryu has its own cutoffs); Rust's `{:e}`
-/// gives the same shortest digits.
-pub(crate) fn go_float(f: f64) -> String {
+/// gives the same shortest digits. Also motd's `--generate-config`'s, for
+/// a schema example.
+#[must_use]
+pub fn go_float(f: f64) -> String {
     if f.is_nan() {
         return "NaN".to_string();
     }

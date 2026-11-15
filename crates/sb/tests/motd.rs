@@ -19,6 +19,7 @@ fn motd(args: &[&str], logs: &Path, env: &[(&str, &str)]) -> Output {
         .args(args)
         .env("SB_LOG_DIR", logs)
         .env_remove("NO_COLOR")
+        .env_remove("SB_COLOR_PROFILE")
         .env_remove("CLICOLOR")
         .env_remove("CLICOLOR_FORCE");
     for (name, value) in env {
@@ -172,27 +173,23 @@ fn nothing_selected_is_sb_gos_error() {
     );
 }
 
-/// `--share` and `--generate-config` are refused until their tasks land
-/// (M47, M42): never a run that ignores them. Exit 1, nothing on stdout.
+/// `--share` is refused until its task lands (M47): never a run that
+/// ignores it. Exit 1, nothing on stdout.
 #[test]
-fn unbuilt_share_and_generate_config_are_refused() {
+fn unbuilt_share_is_refused() {
     if !root_gate::requested() {
         return;
     }
     let logs = temp();
-    for (args, flag) in [
-        (&["--all", "--share"][..], "--share"),
-        (&["--generate-config"], "--generate-config"),
-    ] {
-        let out = motd(args, logs.path(), &[]);
-        assert_eq!(out.status.code(), Some(1), "{args:?}");
-        assert_eq!(text(&out.stdout), "", "{args:?}");
-        assert!(
-            text(&out.stderr).contains(&format!("sb motd {flag} is not available")),
-            "{}",
-            text(&out.stderr)
-        );
-    }
+    let (args, flag) = (&["--all", "--share"][..], "--share");
+    let out = motd(args, logs.path(), &[]);
+    assert_eq!(out.status.code(), Some(1), "{args:?}");
+    assert_eq!(text(&out.stdout), "", "{args:?}");
+    assert!(
+        text(&out.stderr).contains(&format!("sb motd {flag} is not available")),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 /// `-v` is clap's parse error, exit 2 (motd decision 9), as is an
@@ -227,4 +224,157 @@ fn the_run_log_records_the_sections() {
     assert!(log.contains("sections=\"distro,kernel\""), "{log}");
     assert!(log.contains("section=\"distro\""), "{log}");
     assert!(log.contains("section=\"kernel\""), "{log}");
+}
+
+/// A Saltbox root holding the pinned motd schema and, if given, motd.yml.
+fn saltbox(motd: Option<&str>) -> tempfile::TempDir {
+    let root = temp();
+    std::fs::create_dir(root.path().join("schema")).expect("schema dir");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../config/tests/fixtures/saltbox-schemas/motd.schema.yml"),
+        root.path().join("schema/motd.schema.yml"),
+    )
+    .expect("schema");
+    if let Some(motd) = motd {
+        std::fs::write(root.path().join("motd.yml"), motd).expect("motd.yml");
+    }
+    root
+}
+
+fn root_env(root: &tempfile::TempDir) -> (&'static str, &str) {
+    ("SB_SALTBOX_DIR", root.path().to_str().expect("UTF-8 path"))
+}
+
+/// `--generate-config` prints sb-go's example from the root's schema,
+/// byte for byte, whatever else is given (criterion 5).
+#[test]
+fn generate_config_prints_sb_gos_example() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let root = saltbox(None);
+    let golden = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../motd/tests/fixtures/generate-config.golden"),
+    )
+    .expect("golden");
+    for args in [
+        &["--generate-config"][..],
+        &["--generate-config", "--all", "--share"],
+    ] {
+        let out = motd(args, logs.path(), &[root_env(&root)]);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), golden, "{args:?}");
+        assert_eq!(text(&out.stderr), "");
+    }
+}
+
+/// A schema that won't load is sb-go's error with the file and the
+/// cause, exit 1.
+#[test]
+fn generate_config_without_a_schema_fails() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let out = motd(&["--generate-config"], logs.path(), &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(text(&out.stdout), "");
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("failed to generate example config: failed to load schema: schema "),
+        "{stderr}"
+    );
+    assert!(stderr.contains("motd.schema.yml doesn't exist"), "{stderr}");
+}
+
+/// motd.yml's label colour paints the keys as truecolor under
+/// `CLICOLOR_FORCE=1` (criterion 8), and no `Config:` line shows.
+#[test]
+fn motd_yml_colours_paint_the_keys() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let root = saltbox(Some("colors:\n  text:\n    label: '#f7c'\n"));
+    let out = motd(
+        &["--kernel"],
+        logs.path(),
+        &[root_env(&root), ("CLICOLOR_FORCE", "1")],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.starts_with("\x1b[38;2;255;119;204mKernel:"),
+        "{stdout:?}"
+    );
+    assert!(!stdout.contains("Config:"), "{stdout:?}");
+    // The whole run opened motd.yml once (criterion 5).
+    let mut log = String::new();
+    for entry in std::fs::read_dir(logs.path()).expect("log dir") {
+        log.push_str(&std::fs::read_to_string(entry.expect("entry").path()).expect("log"));
+    }
+    assert_eq!(log.matches("config file checked").count(), 1, "{log}");
+    // Under ansi256 the file's colour is converted (criterion 8).
+    let out = motd(
+        &["--kernel"],
+        logs.path(),
+        &[
+            root_env(&root),
+            ("CLICOLOR_FORCE", "1"),
+            ("SB_COLOR_PROFILE", "ansi256"),
+        ],
+    );
+    assert!(
+        text(&out.stdout).starts_with("\x1b[38;5;"),
+        "{:?}",
+        text(&out.stdout)
+    );
+}
+
+/// An invalid motd.yml (the older bare list among them, decision 4) or
+/// an unloadable schema shows the one `Config:` line first, and the
+/// system sections still show (criterion 5); without motd.yml there is
+/// none.
+#[test]
+fn an_invalid_motd_yml_shows_the_config_line() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let bare = saltbox(Some(
+        "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: t\ncolors:\n  text:\n    label: pink\n",
+    ));
+    let out = motd(&["--kernel"], logs.path(), &[root_env(&bare)]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[0], "Config:  motd.yml has 2 issues; run sb validate-config",
+        "{stdout:?}"
+    );
+    assert!(lines[1].starts_with("Kernel:  "), "{stdout:?}");
+
+    let unloadable = saltbox(Some("colors: {}\n"));
+    std::fs::write(
+        unloadable.path().join("schema/motd.schema.yml"),
+        "colors:\n  kind: object\n",
+    )
+    .expect("schema");
+    let out = motd(&["--kernel"], logs.path(), &[root_env(&unloadable)]);
+    assert!(
+        text(&out.stdout)
+            .starts_with("Config:  motd.yml's schema can't be loaded; run sb validate-config\n"),
+        "{:?}",
+        text(&out.stdout)
+    );
+
+    let none = saltbox(None);
+    let out = motd(&["--kernel"], logs.path(), &[root_env(&none)]);
+    assert!(
+        text(&out.stdout).starts_with("Kernel:  "),
+        "{:?}",
+        text(&out.stdout)
+    );
 }

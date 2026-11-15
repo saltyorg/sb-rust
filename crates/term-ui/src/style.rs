@@ -11,17 +11,25 @@
 //! escape codes stripped (`console::measure_text_width`), so styled text
 //! is drawn as is.
 
+use anstyle::{Color, Style};
 use sb_cli_core::theme::{Role, Theme};
 
 /// `text` in `role`'s colour, or `text` unchanged with colour off (`on`
-/// is the destination stream's choice) or under `ascii`. anstyle's own
-/// pattern (<https://docs.rs/anstyle/1.0.14/anstyle/struct.Style.html>).
+/// is the destination stream's choice) or under `ascii`.
 #[must_use]
 pub fn paint(theme: &Theme, role: Role, on: bool, text: &str) -> String {
-    // A role without a colour gives an empty style, which renders as
-    // nothing (`Theme::style` sets only the colour), so this agrees with
-    // `table_colour`'s check.
-    let style = theme.style(role);
+    paint_colour(theme.color(role), on, text)
+}
+
+/// `text` in `colour`, one its caller resolved for the run's profile
+/// with cli-core's `Profile::resolve` (motd.yml's own colours, motd
+/// decision 5), or `text` unchanged with colour off or no colour. anstyle's
+/// own pattern (<https://docs.rs/anstyle/1.0.14/anstyle/struct.Style.html>).
+#[must_use]
+pub fn paint_colour(colour: Option<Color>, on: bool, text: &str) -> String {
+    // No colour gives an empty style, which renders as nothing, so this
+    // agrees with `table_colour`'s check.
+    let style = Style::new().fg_color(colour);
     if on {
         format!("{style}{text}{style:#}")
     } else {
@@ -63,8 +71,22 @@ pub fn table_colour(theme: &Theme, role: Role, on: bool) -> Option<tabled::setti
 /// rendering code of our own (motd decision 8).
 #[must_use]
 pub fn bar(theme: &Theme, role: Role, on: bool, ratio: f64, width: usize) -> String {
+    bar_colour(theme, theme.color(role), on, ratio, width)
+}
+
+/// [`bar`] with the filled part in `colour`, one its caller resolved
+/// (motd.yml's `progress_bar` colours, motd decision 5); the rest stays
+/// `theme`'s Faint.
+#[must_use]
+pub fn bar_colour(
+    theme: &Theme,
+    colour: Option<Color>,
+    on: bool,
+    ratio: f64,
+    width: usize,
+) -> String {
     let filled = filled_cells(ratio, width);
-    let mut out = paint(theme, role, on, &"█".repeat(filled));
+    let mut out = paint_colour(colour, on, &"█".repeat(filled));
     out.push_str(&paint(theme, Role::Faint, on, &"░".repeat(width - filled)));
     out
 }
@@ -168,6 +190,33 @@ mod tests {
         );
         assert_eq!(bar(&theme, Role::Problem, false, 0.25, 4), "█░░░");
         assert_eq!(bar(&Theme::plain(), Role::Ok, true, 1.0, 3), "███");
+    }
+
+    /// A colour of the caller's own paints as a role's does; none, or
+    /// colour off, leaves the text as it is.
+    #[test]
+    fn a_resolved_colour_paints_as_a_roles_does() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let pink = Some(Color::Rgb(anstyle::RgbColor(0xFF, 0x79, 0xD0)));
+        assert_eq!(
+            paint_colour(pink, true, "k"),
+            "\x1b[38;2;255;121;208mk\x1b[0m"
+        );
+        assert_eq!(
+            paint_colour(theme.color(Role::Ok), true, "k"),
+            paint(&theme, Role::Ok, true, "k")
+        );
+        assert_eq!(paint_colour(pink, false, "k"), "k");
+        assert_eq!(paint_colour(None, true, "k"), "k");
+        assert_eq!(
+            bar_colour(&theme, pink, true, 0.5, 4),
+            format!(
+                "{}{}",
+                paint_colour(pink, true, "██"),
+                paint(&theme, Role::Faint, true, "░░")
+            )
+        );
+        assert_eq!(bar_colour(&theme, pink, false, 0.5, 4), "██░░");
     }
 
     #[test]

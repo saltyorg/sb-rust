@@ -62,7 +62,11 @@ fn the_sections_chosen_and_each_outcome_are_logged() {
         theme: &theme,
         on: false,
     };
-    let (report, text) = logged(sb_motd::report(&options, colours));
+    let (report, text) = logged(sb_motd::report(
+        &options,
+        colours,
+        sb_motd::config::Loaded::default,
+    ));
     assert!(report.is_ok());
     assert!(
         text.contains("motd sections chosen sections=\"distro,kernel\""),
@@ -102,4 +106,53 @@ fn a_timeout_a_panic_and_an_empty_value_are_logged_as_such() {
     assert!(line("distro").contains("outcome=\"timed out\" elapsed_ms=30000"));
     assert!(line("kernel").contains("outcome=\"panicked\""));
     assert!(line("uptime").contains("outcome=\"empty\""));
+}
+
+/// motd.yml is opened once per run, its issues logged with their
+/// positions in sb-config's wording, and no credential's value with them
+/// (criteria 5 and 12).
+#[test]
+fn motd_yml_is_checked_once_and_its_issues_logged() {
+    let root = tempfile::tempdir().expect("root");
+    std::fs::create_dir(root.path().join("schema")).expect("schema dir");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../config/tests/fixtures/saltbox-schemas/motd.schema.yml"),
+        root.path().join("schema/motd.schema.yml"),
+    )
+    .expect("schema");
+    std::fs::write(
+        root.path().join("motd.yml"),
+        "colors:\n  text:\n    label: pink\nsonarr:\n  instances:\n    - name: Sonarr\n      url: not a url\n      apikey: canary-apikey-zz\n",
+    )
+    .expect("motd.yml");
+    let settings = sb_config::run::Settings {
+        root: root.path().to_path_buf(),
+        zoneinfo: Vec::new(),
+        http: sb_config::http::Http::new(&sb_config::http::Proxy::Off, Duration::from_secs(1))
+            .expect("client"),
+        cloudflare_url: String::new(),
+        dockerhub_url: String::new(),
+        backoff: sb_config::cloudflare::backoff,
+    };
+    let (loaded, text) = logged(async { sb_motd::config::load(&settings) });
+    assert_eq!(
+        loaded.line.as_deref(),
+        Some("motd.yml has 2 issues; run sb validate-config")
+    );
+    assert_eq!(
+        text.matches("config file checked").count(),
+        1,
+        "opened once: {text}"
+    );
+    assert!(text.contains("file=\"motd.yml\" issues=2"), "{text}");
+    assert!(
+        text.contains("motd.yml issue issue=motd.yml:3:12: colors.text.label: "),
+        "{text}"
+    );
+    assert!(
+        text.contains("motd.yml:7:12: sonarr.instances[0].url: "),
+        "{text}"
+    );
+    assert!(!text.contains("canary-apikey-zz"), "{text}");
 }

@@ -2,10 +2,12 @@
 //! per selected section, collected in parallel. Built so far: the
 //! selection rules, the runner, the layout, the system sections, Disk
 //! Usage, Package Status, GPU, User Sessions, Last login, Docker and
-//! Traefik (module build M36-M41); the other sections, motd.yml, the
-//! banner and `--share` come with their own tasks (M42-M47), and until
+//! Traefik, and motd.yml with its colours, its `Config:` line and
+//! `--generate-config` (module build M36-M42); the other sections, the
+//! banner and `--share` come with their own tasks (M43-M47), and until
 //! then a selected section without its code shows no line.
 
+pub mod config;
 mod disk;
 mod docker;
 pub mod gpu;
@@ -18,7 +20,10 @@ mod text;
 
 use std::sync::Arc;
 
-use sb_cli_core::theme::{Role, Theme};
+use anstyle::Color;
+use sb_cli_core::theme::Theme;
+
+use crate::config::Slot;
 
 /// One of sb-go's 24 sections, in its fixed display order
 /// (`cmd/motd.go:202-339`, `displayMotd`'s `sources`).
@@ -191,34 +196,36 @@ pub struct Colours<'a> {
     pub on: bool,
 }
 
-impl Colours<'_> {
-    /// `text` in the label colour: sb's Accent until motd.yml's colours
-    /// come (motd decision 5, M42).
-    #[must_use]
-    pub fn label(&self, text: &str) -> String {
-        sb_term_ui::style::paint(self.theme, Role::Accent, self.on, text)
-    }
-}
-
-/// The colours a section paints its value in, owned so that each
-/// section's task can hold its own: sb-go's `ValueStyle` is the Text
-/// role and its `WarningStyle` the Warn role, the roles sb's palette
-/// gives `text.value` and `status.warning` (motd decision 5; motd.yml's
-/// colours come with M42). sb-go's `DefaultStyle` sets no colour, and
-/// neither does sb.
+/// The colours the keys and values are painted in, owned so that each
+/// section's task can hold its own: motd.yml's nine colours, each
+/// resolved for the run's colour profile with cli-core's
+/// `Profile::resolve`, and sb's palette role for a colour motd.yml
+/// doesn't set (motd decision 5; Difference 4). sb-go's `DefaultStyle`
+/// sets no colour, and neither does sb.
 #[derive(Clone, Debug)]
 pub struct Paint {
     theme: Theme,
     on: bool,
+    colours: [Option<Color>; 9],
 }
 
 impl Paint {
     /// `theme`'s colours, drawn only when `on`.
     #[must_use]
     pub fn new(theme: &Theme, on: bool) -> Self {
+        Self::with(theme, on, &config::SlotColours::default())
+    }
+
+    /// motd.yml's `colours` over `theme`'s, drawn only when `on`.
+    #[must_use]
+    pub fn with(theme: &Theme, on: bool, colours: &config::SlotColours) -> Self {
         Self {
             theme: theme.clone(),
             on,
+            colours: Slot::ALL.map(|slot| match colours.get(slot) {
+                Some(colour) => theme.profile().resolve(colour),
+                None => theme.color(slot.role()),
+            }),
         }
     }
 
@@ -228,37 +235,62 @@ impl Paint {
         Self::new(&Theme::plain(), false)
     }
 
-    /// `text` in the value colour.
+    fn colour(&self, slot: Slot) -> Option<Color> {
+        self.colours[slot.index()]
+    }
+
+    fn paint(&self, slot: Slot, text: &str) -> String {
+        sb_term_ui::style::paint_colour(self.colour(slot), self.on, text)
+    }
+
+    /// `text` in the label colour (`text.label`), the keys'.
+    #[must_use]
+    pub fn label(&self, text: &str) -> String {
+        self.paint(Slot::Label, text)
+    }
+
+    /// `text` in the value colour (`text.value`).
     #[must_use]
     pub fn value(&self, text: &str) -> String {
-        sb_term_ui::style::paint(&self.theme, Role::Text, self.on, text)
+        self.paint(Slot::Value, text)
     }
 
-    /// `text` in the warning colour.
+    /// `text` in the app name colour (`text.app_name`).
+    #[must_use]
+    pub fn app_name(&self, text: &str) -> String {
+        self.paint(Slot::AppName, text)
+    }
+
+    /// `text` in the warning colour (`status.warning`).
     #[must_use]
     pub fn warning(&self, text: &str) -> String {
-        sb_term_ui::style::paint(&self.theme, Role::Warn, self.on, text)
+        self.paint(Slot::Warning, text)
     }
 
-    /// `text` in the error colour (`status.error`, sb's Problem).
+    /// `text` in the success colour (`status.success`).
+    #[must_use]
+    pub fn success(&self, text: &str) -> String {
+        self.paint(Slot::Success, text)
+    }
+
+    /// `text` in the error colour (`status.error`).
     #[must_use]
     pub fn error(&self, text: &str) -> String {
-        sb_term_ui::style::paint(&self.theme, Role::Problem, self.on, text)
+        self.paint(Slot::Error, text)
     }
 
     /// term-ui's usage bar, `percent` of `width` cells filled in the
-    /// level's `progress_bar` colour: low, high and critical are sb's Ok,
-    /// Warn and Problem.
+    /// level's `progress_bar` colour, the rest in the theme's Faint.
     #[must_use]
     pub fn bar(&self, level: Level, percent: u8, width: usize) -> String {
-        let role = match level {
-            Level::Low => Role::Ok,
-            Level::High => Role::Warn,
-            Level::Critical => Role::Problem,
+        let slot = match level {
+            Level::Low => Slot::Low,
+            Level::High => Slot::High,
+            Level::Critical => Slot::Critical,
         };
-        sb_term_ui::style::bar(
+        sb_term_ui::style::bar_colour(
             &self.theme,
-            role,
+            self.colour(slot),
             self.on,
             f64::from(percent) / 100.0,
             width,
@@ -274,35 +306,56 @@ pub enum Level {
     Critical,
 }
 
-/// `sb motd`'s output for `options`: the chosen sections collected in
-/// parallel under the runner's cap, then laid out. The run log gets the
-/// sections chosen and each one's time and outcome (criterion 12).
+/// `sb motd`'s output for `options`: motd.yml read and checked once by
+/// `load` (sb's run: [`config::load_here`]) after the selection, then
+/// the chosen sections collected in parallel under the runner's cap, and
+/// laid out, the `Config:` line first when motd.yml has issues (decision
+/// 3). The run log gets the sections chosen and each one's time and
+/// outcome (criterion 12).
 ///
 /// # Errors
 ///
 /// [`Error::NothingSelected`] when no section is chosen.
-pub async fn report(options: &Options, colours: Colours<'_>) -> Result<String, Error> {
-    report_with(options, colours, docker::Settings::from_env()).await
-}
-
-/// [`report`] with Docker's and Traefik's settings given, not read from
-/// the environment (the tests' fakes).
-async fn report_with(
+pub async fn report(
     options: &Options,
     colours: Colours<'_>,
-    settings: docker::Settings,
+    load: impl FnOnce() -> config::Loaded,
 ) -> Result<String, Error> {
     let chosen = options.chosen()?;
+    report_with(chosen, colours, docker::Settings::from_env(), load()).await
+}
+
+/// The `Config:` line's key (Difference 2).
+const CONFIG_KEY: &str = "Config:";
+
+/// [`report`] with the sections chosen, Docker's and Traefik's settings
+/// and motd.yml given, not read from the environment (the tests' fakes).
+async fn report_with(
+    chosen: Vec<Section>,
+    colours: Colours<'_>,
+    settings: docker::Settings,
+    loaded: config::Loaded,
+) -> Result<String, Error> {
     let names: Vec<&str> = chosen.iter().map(|s| s.flag()).collect();
     tracing::info!(sections = names.join(","), "motd sections chosen");
-    let paint = Paint::new(colours.theme, colours.on);
+    let motd_colours = loaded.motd.as_ref().map_or_default(|motd| motd.colours);
+    let paint = Paint::with(colours.theme, colours.on, &motd_colours);
     let containers = docker::Containers::new(settings);
     let jobs = chosen
         .into_iter()
         .filter_map(|section| job(section, &paint, &containers).map(|job| (section, job)))
         .collect();
     let results = run::collect(jobs, run::CAP).await;
-    Ok(layout::render(&results, |key| colours.label(key)))
+    let config = loaded.line.map(|line| (CONFIG_KEY, paint.warning(&line)));
+    let lines: Vec<(&str, String)> = config
+        .into_iter()
+        .chain(
+            results
+                .into_iter()
+                .map(|(section, value)| (section.key(), value)),
+        )
+        .collect();
+    Ok(layout::render(&lines, |key| paint.label(key)))
 }
 
 /// The section's collection, or none for a section whose task hasn't
@@ -350,7 +403,8 @@ fn job(section: Section, paint: &Paint, containers: &Arc<docker::Containers>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sb_cli_core::theme::{Palette, Profile};
+    use anstyle::RgbColor;
+    use sb_cli_core::theme::{Palette, Profile, Role};
 
     #[test]
     fn nothing_selected_is_sb_gos_error() {
@@ -457,17 +511,15 @@ mod tests {
     #[test]
     fn labels_are_painted_only_with_colour_on() {
         let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
-        let on = Colours {
-            theme: &theme,
-            on: true,
-        };
+        let on = Paint::new(&theme, true);
         assert!(on.label("Kernel:").starts_with("\x1b["));
         assert!(on.label("Kernel:").contains("Kernel:"));
-        let off = Colours {
-            theme: &theme,
-            on: false,
-        };
+        let off = Paint::new(&theme, false);
         assert_eq!(off.label("Kernel:"), "Kernel:");
+        assert_eq!(
+            on.label("Kernel:"),
+            sb_term_ui::style::paint(&theme, Role::Accent, true, "Kernel:")
+        );
     }
 
     /// The built sections show, in order; the rest show nothing yet.
@@ -493,7 +545,14 @@ mod tests {
             docker_host: Some(format!("unix://{}", dir.path().join("none.sock").display())),
             ..docker::Settings::default()
         };
-        let text = report_with(&options, colours, settings).await.unwrap();
+        let text = report_with(
+            options.chosen().unwrap(),
+            colours,
+            settings,
+            config::Loaded::default(),
+        )
+        .await
+        .unwrap();
         let keys: Vec<&str> = text
             .lines()
             .filter(|line| !line.starts_with(' ') && !line.is_empty())
@@ -563,6 +622,141 @@ mod tests {
         assert_eq!(Paint::plain().value("1"), "1");
     }
 
+    /// motd.yml's colours over sb's palette, each resolved for the
+    /// profile; a slot it doesn't set keeps its role's colour (decision
+    /// 5); colour off or `ascii` paints nothing.
+    #[test]
+    fn motd_yml_colours_are_resolved_for_the_profile() {
+        let root = sb_config::tree::Node {
+            line: 1,
+            column: 1,
+            data: sb_config::tree::Data::Mapping(Vec::new()),
+        };
+        assert_eq!(
+            config::Motd::from_tree(&root).colours,
+            config::SlotColours::default()
+        );
+        let file = "colors:\n  text:\n    label: '#ff79d0'\n    app_name: '#bf976f'\n  status:\n    warning: '#f5ef34'\n    success: '#12c78f'\n  progress_bar:\n    low: '#a8cc8c'\n    high: '#dbab79'\n";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("schema")).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../config/tests/fixtures/saltbox-schemas/motd.schema.yml"),
+            dir.path().join("schema/motd.schema.yml"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("motd.yml"), file).unwrap();
+        let settings = sb_config::run::Settings {
+            root: dir.path().to_path_buf(),
+            zoneinfo: Vec::new(),
+            http: sb_config::http::Http::new(
+                &sb_config::http::Proxy::Off,
+                std::time::Duration::from_secs(1),
+            )
+            .unwrap(),
+            cloudflare_url: String::new(),
+            dockerhub_url: String::new(),
+            backoff: sb_config::cloudflare::backoff,
+        };
+        let motd = config::load(&settings).motd.expect("a model");
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let paint = Paint::with(&theme, true, &motd.colours);
+        let rgb = |r, g, b| Some(Color::Rgb(RgbColor(r, g, b)));
+        let painted = |colour| sb_term_ui::style::paint_colour(colour, true, "x");
+        assert_eq!(paint.label("x"), painted(rgb(0xFF, 0x79, 0xD0)));
+        assert_eq!(paint.app_name("x"), painted(rgb(0xBF, 0x97, 0x6F)));
+        assert_eq!(paint.warning("x"), painted(rgb(0xF5, 0xEF, 0x34)));
+        assert_eq!(paint.success("x"), painted(rgb(0x12, 0xC7, 0x8F)));
+        // Not in the file: sb's palette.
+        assert_eq!(
+            paint.value("x"),
+            sb_term_ui::style::paint(&theme, Role::Text, true, "x")
+        );
+        assert_eq!(
+            paint.error("x"),
+            sb_term_ui::style::paint(&theme, Role::Problem, true, "x")
+        );
+        assert_eq!(
+            paint.bar(Level::Low, 50, 4),
+            sb_term_ui::style::bar_colour(&theme, rgb(0xA8, 0xCC, 0x8C), true, 0.5, 4)
+        );
+        assert_eq!(
+            paint.bar(Level::High, 50, 4),
+            sb_term_ui::style::bar_colour(&theme, rgb(0xDB, 0xAB, 0x79), true, 0.5, 4)
+        );
+        assert_eq!(
+            paint.bar(Level::Critical, 50, 4),
+            sb_term_ui::style::bar(&theme, Role::Problem, true, 0.5, 4)
+        );
+        // Under ansi256 the file's colour is converted (cli-core's
+        // `Profile::resolve`).
+        let ansi256 = Theme::resolve(&Palette::default(), Profile::Ansi256);
+        assert_eq!(
+            Paint::with(&ansi256, true, &motd.colours).label("x"),
+            painted(Profile::Ansi256.resolve(RgbColor(0xFF, 0x79, 0xD0)))
+        );
+        assert_eq!(
+            Paint::with(&Theme::plain(), true, &motd.colours).label("x"),
+            "x"
+        );
+        assert_eq!(Paint::with(&theme, false, &motd.colours).label("x"), "x");
+    }
+
+    /// A file with issues: the `Config:` line first, its key padded with
+    /// the others, its text in the warning colour; the sections still show.
+    #[tokio::test]
+    async fn the_config_line_comes_first() {
+        let theme = Theme::plain();
+        let colours = Colours {
+            theme: &theme,
+            on: false,
+        };
+        let loaded = config::Loaded {
+            motd: None,
+            line: Some("motd.yml has 2 issues; run sb validate-config".to_string()),
+        };
+        let text = report_with(
+            vec![Section::Kernel],
+            colours,
+            docker::Settings::default(),
+            loaded,
+        )
+        .await
+        .unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[0],
+            "Config:  motd.yml has 2 issues; run sb validate-config"
+        );
+        assert!(lines[1].starts_with("Kernel:  "), "{text}");
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let colours = Colours {
+            theme: &theme,
+            on: true,
+        };
+        let loaded = config::Loaded {
+            motd: None,
+            line: Some("x".to_string()),
+        };
+        let text = report_with(
+            vec![Section::Kernel],
+            colours,
+            docker::Settings::default(),
+            loaded,
+        )
+        .await
+        .unwrap();
+        let paint = Paint::new(&theme, true);
+        assert!(
+            text.starts_with(&format!(
+                "{}  {}\n",
+                paint.label("Config:"),
+                paint.warning("x")
+            )),
+            "{text:?}"
+        );
+    }
+
     #[tokio::test]
     async fn the_report_refuses_an_empty_selection() {
         let theme = Theme::plain();
@@ -571,7 +765,7 @@ mod tests {
             on: false,
         };
         assert_eq!(
-            report(&Options::default(), colours).await,
+            report(&Options::default(), colours, || unreachable!()).await,
             Err(Error::NothingSelected)
         );
     }

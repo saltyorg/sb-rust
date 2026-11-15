@@ -8,15 +8,14 @@
 //! every cell its column's width and its own separators, so the bytes
 //! would no longer be sb-go's.
 
-use crate::Section;
-
-/// The lines for `results` (in display order), keys painted by `label`.
+/// The lines for `results` (keys and values, in display order), keys
+/// painted by `label`.
 #[must_use]
-pub fn render(results: &[(Section, String)], label: impl Fn(&str) -> String) -> String {
+pub fn render(results: &[(&str, String)], label: impl Fn(&str) -> String) -> String {
     let shown: Vec<(&str, &str)> = results
         .iter()
         .filter(|(_, value)| !value.is_empty())
-        .map(|(section, value)| (section.key(), value.as_str()))
+        .map(|(key, value)| (*key, value.as_str()))
         .collect();
     let width = shown.iter().map(|(key, _)| key.len()).max().unwrap_or(0) + 2;
     let mut out = String::new();
@@ -40,6 +39,7 @@ pub fn render(results: &[(Section, String)], label: impl Fn(&str) -> String) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Section;
 
     fn plain(key: &str) -> String {
         key.to_string()
@@ -49,10 +49,10 @@ mod tests {
     fn keys_are_padded_to_the_longest_shown_key_plus_two() {
         let results = [
             (
-                Section::Distribution,
+                Section::Distribution.key(),
                 "Ubuntu 24.04 LTS (noble)".to_string(),
             ),
-            (Section::Kernel, "6.8.0-1-generic".to_string()),
+            (Section::Kernel.key(), "6.8.0-1-generic".to_string()),
         ];
         assert_eq!(
             render(&results, plain),
@@ -66,9 +66,9 @@ mod tests {
     #[test]
     fn empty_values_are_hidden_and_not_measured() {
         let results = [
-            (Section::Kernel, "k".to_string()),
-            (Section::Queues, String::new()),
-            (Section::Plex, "p".to_string()),
+            (Section::Kernel.key(), "k".to_string()),
+            (Section::Queues.key(), String::new()),
+            (Section::Plex.key(), "p".to_string()),
         ];
         assert_eq!(render(&results, plain), "Kernel:  k\nPlex:    p\n\n");
     }
@@ -76,8 +76,8 @@ mod tests {
     #[test]
     fn continuation_lines_start_at_the_value_column() {
         let results = [
-            (Section::Kernel, "k".to_string()),
-            (Section::Disk, "/   10%\n[bar]".to_string()),
+            (Section::Kernel.key(), "k".to_string()),
+            (Section::Disk.key(), "/   10%\n[bar]".to_string()),
         ];
         assert_eq!(
             render(&results, plain),
@@ -89,8 +89,8 @@ mod tests {
     #[test]
     fn colour_codes_around_a_key_do_not_change_the_padding() {
         let results = [
-            (Section::Distribution, "d".to_string()),
-            (Section::Kernel, "k".to_string()),
+            (Section::Distribution.key(), "d".to_string()),
+            (Section::Kernel.key(), "k".to_string()),
         ];
         let text = render(&results, |key| format!("\x1b[35m{key}\x1b[0m"));
         assert_eq!(
@@ -101,7 +101,10 @@ mod tests {
 
     #[test]
     fn nothing_shown_is_the_blank_line_alone() {
-        assert_eq!(render(&[(Section::Kernel, String::new())], plain), "\n");
+        assert_eq!(
+            render(&[(Section::Kernel.key(), String::new())], plain),
+            "\n"
+        );
         assert_eq!(render(&[], plain), "\n");
     }
 }

@@ -1,0 +1,137 @@
+# Saltbox MOTD Configuration
+# All sections are disabled by default. Set enabled: true and fill in the values to use.
+
+# Custom color scheme (all values are hex colors)
+# These are the default values
+colors:
+  text:
+    label: "#FF79D0"
+    value: "#12C78F"
+    app_name: "#BF976F"
+  status:
+    warning: "#F5EF34"
+    success: "#12C78F"
+    error: "#EB4268"
+  progress_bar:
+    low: "#A8CC8C"
+    high: "#DBAB79"
+    critical: "#E88388"
+
+# Emby instances for streaming information
+emby:
+  enabled: false
+  instances:
+    - name: "Emby"
+      url: "http://localhost:8096"
+      token: "your-api-token-here"
+      timeout: 0
+      enabled: false
+
+# Jellyfin instances for streaming information
+jellyfin:
+  enabled: false
+  instances:
+    - name: "Jellyfin"
+      url: "http://localhost:8096"
+      token: "your-api-token-here"
+      timeout: 0
+      enabled: false
+
+# Lidarr instances for download queue information
+lidarr:
+  enabled: false
+  instances:
+    - name: "Lidarr"
+      url: "http://localhost:8686"
+      apikey: "your-api-key-here"
+      timeout: 0
+      enabled: false
+
+# NZBGet instances for download information
+nzbget:
+  enabled: false
+  instances:
+    - name: "NZBGet"
+      url: "http://localhost:6789"
+      user: "your-username"
+      password: "your-password"
+      timeout: 0
+      enabled: false
+
+# Plex instances for streaming information
+plex:
+  enabled: false
+  instances:
+    - name: "Plex"
+      url: "http://localhost:32400"
+      token: "your-plex-token-here"
+      timeout: 0
+      enabled: false
+
+# qBittorrent instances for torrent information
+qbittorrent:
+  enabled: false
+  instances:
+    - name: "qBittorrent"
+      url: "http://localhost:8080"
+      user: "your-username"
+      password: "your-password"
+      timeout: 0
+      enabled: false
+
+# Radarr instances for download queue information
+radarr:
+  enabled: false
+  instances:
+    - name: "Radarr"
+      url: "http://localhost:7878"
+      apikey: "your-api-key-here"
+      timeout: 0
+      enabled: false
+
+# Readarr instances for download queue information
+readarr:
+  enabled: false
+  instances:
+    - name: "Readarr"
+      url: "http://localhost:8787"
+      apikey: "your-api-key-here"
+      timeout: 0
+      enabled: false
+
+# rTorrent instances for torrent information
+rtorrent:
+  enabled: false
+  instances:
+    - name: "rTorrent"
+      url: "http://localhost:8080"
+      user: "your-username"
+      password: "your-password"
+      timeout: 0
+      enabled: false
+
+# SABnzbd instances for download information
+sabnzbd:
+  enabled: false
+  instances:
+    - name: "SABnzbd"
+      url: "http://localhost:8080"
+      apikey: "your-api-key-here"
+      timeout: 0
+      enabled: false
+
+# Sonarr instances for download queue information
+sonarr:
+  enabled: false
+  instances:
+    - name: "Sonarr"
+      url: "http://localhost:8989"
+      apikey: "your-api-key-here"
+      timeout: 0
+      enabled: false
+
+# Systemd services monitoring
+systemd:
+  enabled: false
+  additional_services: []
+  display_names: {}

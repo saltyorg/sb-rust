@@ -47,10 +47,13 @@ pub struct Rule {
     pub items: Option<Box<Rule>>,
     #[serde(rename = "additionalProperties")]
     pub additional_properties: Option<Additional>,
-    /// For sb-go's example generation; accepted, not used.
+    /// For the example a file's generator writes (`sb motd
+    /// --generate-config`, motd decision 18); no check reads it.
     pub description: Option<String>,
-    /// For sb-go's example generation; accepted, not used.
-    pub example: Option<de::IgnoredAny>,
+    /// The example value, as written (any YAML value with string keys);
+    /// for the generator, as `description`. A `null` reads as none, as
+    /// yaml.v3's `nil` does for sb-go.
+    pub example: Option<serde_json::Value>,
 }
 
 /// A rule's `type`: sb-go's plain types and its type validators.
@@ -340,6 +343,45 @@ mod tests {
         ));
         let items = props["list"].items.as_ref().expect("items");
         assert_eq!(items.kind, Some(Kind::Number));
+        assert_eq!(user.description.as_deref(), Some("the user"));
+        assert_eq!(email.example, Some("me@example.com".into()));
+    }
+
+    /// motd's schema writes its examples as booleans, numbers, strings
+    /// and empty collections; each is kept as written, and `null` is none.
+    #[test]
+    fn examples_keep_their_values() {
+        let rules = parse(
+            "examples.schema.yml",
+            "a:
+  example: false
+b:
+  example: 0
+c:
+  example: 1.5
+d:
+  example: \"x\"
+\
+             e:
+  example: []
+f:
+  example: {}
+g:
+  example: null
+h:
+  example: [1, {k: v}]
+",
+        )
+        .expect("loads");
+        let example = |key: &str| rules[key].example.clone();
+        assert_eq!(example("a"), Some(false.into()));
+        assert_eq!(example("b"), Some(0.into()));
+        assert_eq!(example("c"), Some(1.5.into()));
+        assert_eq!(example("d"), Some("x".into()));
+        assert_eq!(example("e"), Some(serde_json::json!([])));
+        assert_eq!(example("f"), Some(serde_json::json!({})));
+        assert_eq!(example("g"), None);
+        assert_eq!(example("h"), Some(serde_json::json!([1, {"k": "v"}])));
     }
 
     #[test]

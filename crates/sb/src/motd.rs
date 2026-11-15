@@ -1,8 +1,8 @@
 //! `sb motd` (motd spec): sb-go's 32 flags (`cmd/motd.go:68-100`, without
 //! `-v`, motd decision 9) and the run on a current-thread runtime built
-//! after parsing. The banner, motd.yml, `--share` and `--generate-config`
-//! are read by their tasks (M42, M46, M47); this slice (module build M36)
-//! shows the chosen sections.
+//! after parsing: the chosen sections with motd.yml's colours and its
+//! `Config:` line, and `--generate-config` (module build M36-M42). The
+//! banner and `--share` are read by their tasks (M46, M47).
 
 use std::io::Write;
 
@@ -57,18 +57,11 @@ pub struct Args {
 
 impl Args {
     /// A flag whose behaviour isn't built yet: refused rather than
-    /// ignored, so `--share` never shows an unmasked line and
-    /// `--generate-config` never prints the MOTD instead of a file. Each
-    /// leaves this list with its task (`--generate-config` M42, `--share`
-    /// M47).
+    /// ignored, so `--share` never shows an unmasked line. It leaves this
+    /// list with its task (M47). `--generate-config` is read before it,
+    /// as it ignores every other flag.
     fn not_built_yet(&self) -> Option<&'static str> {
-        if self.generate_config {
-            Some("--generate-config")
-        } else if self.share {
-            Some("--share")
-        } else {
-            None
-        }
+        self.share.then_some("--share")
     }
 
     /// The library's options: `--all` and the section flags given.
@@ -161,9 +154,13 @@ fn help(section: Section) -> &'static str {
 ///
 /// # Errors
 ///
-/// `--generate-config` or `--share` given before their tasks land, no
-/// section chosen (sb-go's text, exit 1), the runtime, or stdout.
+/// `--generate-config`'s schema doesn't load, `--share` given before its
+/// task lands, no section chosen (sb-go's text, exit 1), the runtime, or
+/// stdout.
 pub fn motd(args: &Args, shutdown: &Shutdown) -> anyhow::Result<()> {
+    if args.generate_config {
+        return generate_config();
+    }
     if let Some(flag) = args.not_built_yet() {
         anyhow::bail!("sb motd {flag} is not available in this build yet");
     }
@@ -172,16 +169,31 @@ pub fn motd(args: &Args, shutdown: &Shutdown) -> anyhow::Result<()> {
         theme: theme::current(),
         on: sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
     };
-    let report = super::block_on(
-        shutdown
-            .token()
-            .run_until_cancelled(sb_motd::report(&options, colours)),
-    )?;
+    let report = super::block_on(shutdown.token().run_until_cancelled(sb_motd::report(
+        &options,
+        colours,
+        sb_motd::config::load_here,
+    )))?;
     let Some(report) = report else {
         anyhow::bail!("interrupted");
     };
     let mut out = std::io::stdout().lock();
     out.write_all(report?.as_bytes())
+        .map_err(exit::output_error)?;
+    out.flush().map_err(exit::output_error)?;
+    Ok(())
+}
+
+/// `--generate-config`: sb-go's example motd.yml from the Saltbox root's
+/// schema on stdout (motd spec, Command flow step 1), or sb-go's error
+/// with sb-config's cause, exit 1.
+fn generate_config() -> anyhow::Result<()> {
+    let root = sb_cli_core::config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
+    let example = sb_motd::config::generate(&root).map_err(|err| {
+        anyhow::anyhow!("failed to generate example config: failed to load schema: {err}")
+    })?;
+    let mut out = std::io::stdout().lock();
+    out.write_all(example.as_bytes())
         .map_err(exit::output_error)?;
     out.flush().map_err(exit::output_error)?;
     Ok(())
@@ -305,8 +317,8 @@ mod tests {
         );
     }
 
-    /// `--generate-config` and `--share` are refused until built, never
-    /// ignored; the banner's flags are taken and unused until M46.
+    /// `--share` is refused until built, never ignored; the banner's flags
+    /// are taken and unused until M46.
     #[test]
     fn unbuilt_behaviour_flags_are_named() {
         assert_eq!(parse(&["--all"]).unwrap().not_built_yet(), None);
@@ -314,12 +326,9 @@ mod tests {
             parse(&["--all", "--share"]).unwrap().not_built_yet(),
             Some("--share")
         );
-        assert_eq!(
-            parse(&["--generate-config", "--share"])
-                .unwrap()
-                .not_built_yet(),
-            Some("--generate-config")
-        );
+        // `--generate-config` is built (M42), and ignores every other flag
+        // before this check.
+        assert_eq!(parse(&["--generate-config"]).unwrap().not_built_yet(), None);
         assert_eq!(
             parse(&["--all", "--title", "x", "--type", "none"])
                 .unwrap()

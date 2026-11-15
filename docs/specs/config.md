@@ -206,8 +206,11 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   `required`, `required_when_true`, `validate_when_true`, `required_with`,
   `not_equals`, `format` (email, hostname, url), `min_length` /
   `max_length` (bytes), `properties`, `items`, `custom_validator`;
-  `description` and `example` are accepted and ignored (sb-go uses them
-  to generate examples); plus `pattern` and `additionalProperties`.
+  `description` and `example` are accepted, and no check reads them
+  (sb-go uses them to generate examples; so does `sb motd
+  --generate-config`, which reads them since motd's M42: `example` is
+  kept as written, any YAML value with string keys); plus `pattern` and
+  `additionalProperties`.
   Semantics as sb-go, including its quirks, each pinned by a test:
   unknown config keys are errors; `string`, `boolean`, `array` and
   `object` values aren't type-checked, except that a list with items

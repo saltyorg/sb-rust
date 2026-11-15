@@ -913,6 +913,48 @@ Nothing touches a real host's state, and every fixture is synthetic.
   reqwest's reading of the proxy variables in a run (sb-config's
   `Proxy::System`) and none in the tests. The tests set Traefik's base
   through the settings, which a run reads from `SB_MOTD_TRAEFIK_URL`.
+- **motd.yml (M42, 2026-11-15).** The file is read and checked once by
+  config's `check_file` after the selection, before collection; its
+  settings carry the run's HTTP client (the system's proxy, 1 s), which
+  the check doesn't use (no proxy setting read; the HTTP sections get
+  their own client with M44). The `Config:` line's texts:
+  - `motd.yml has 1 issue; run sb validate-config`, or `N issues`;
+  - `motd.yml can't be read; run sb validate-config` for a file that
+    can't be read (over the cap included);
+  - `motd.yml's schema can't be loaded; run sb validate-config`.
+
+  The text is in the warning colour, which is sb's Warn there, as the
+  file's colours are skipped. Each issue, with its position, and each
+  cause go to the run log in sb-config's wording, which never shows a
+  credential's value. Without the file there is no line and sb's
+  palette applies. motd.yml's colours reach term-ui's `paint_colour` and
+  `bar_colour` resolved by cli-core's `Profile::resolve` (amendment 3).
+  sb-config's schema now keeps each rule's `example` (as
+  `serde_json::Value`) and `description` for the generator. The
+  `--generate-config` golden is sb-go's `GenerateExampleConfig` copied
+  into a Go 1.27 program, built against sb-go's own module graph
+  (charmtone v0.1.0 for the colours), and run on the pinned schema. Go's
+  `strconv.Quote` and `%v` are reproduced and checked against Go 1.27's
+  output; `unicode.IsPrint` beyond ASCII is approximated (marked
+  UNVERIFIED in the code), as Saltbox's examples are ASCII.
+- **`timeout: 1.5` against the schema (found at M42).** Saltbox's schema
+  types `timeout` as `number`, and sb-config's `number` takes whole
+  numbers only, as sb-go's `validateNumberValue` does (`must be a whole
+  number (integer), got: 1.5`). So a fractional timeout is an issue: it
+  shows the `Config:` line and skips the HTTP sections, and Difference
+  19's fractions can't be reached through `check_file` (decision 17).
+  The model keeps fractions for when the schema allows them. Raised with
+  the maintainer.
+- **An unquoted credential that looks like a number (found at M42's
+  review; for M44).** The model reads a field's text from sb-config's
+  resolved scalar, so `password: 0123` reads `83` (yaml.v3's base-0
+  octal), `0x1F` reads `31`, and `password: 1.50` or `apikey: true`
+  reads as absent. sb-go's fields are Go strings, which yaml.v3 fills
+  with the scalar's source text (`0123`). The schema's credential fields
+  have no format, length or pattern, so the file checks clean. No
+  provider reads the model before M44, which takes the source text from
+  sb-config's tree (a source string kept on plain scalars) before the
+  providers send any credential; a unit test pins today's reading.
 - **Disk Usage beside sb-go (M38):** decided by the maintainer,
   2026-11-14: Differences 23 and 24. Control characters in a mount point are dropped by
   `DisplayText` (decision 24), where df writes `?`.
@@ -959,6 +1001,12 @@ maintainer's answer).
    > `░` for the rest in Faint, through `paint`. Its first user is motd's
    > Disk Usage (motd decision 8, with the "why not indicatif or ratatui"
    > evidence).
+
+   And with M42 (2026-11-15), for a colour the caller resolved itself
+   (motd.yml's, decision 5): `paint_colour(colour, on, text)`, which
+   `paint` calls with the role's colour, and `bar_colour(theme, colour,
+   on, ratio, width)`, which `bar` calls, the rest still in `theme`'s
+   Faint.
 
 4. **Capability map**:
    - The `motd` row: "System facts (/proc, sysfs, syscalls), packages,
