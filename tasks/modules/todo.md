@@ -1730,13 +1730,13 @@ the services' 5 s refresh.
 n/N, horizontal scrolling with wrap off.
 
 **Acceptance criteria:**
-- [ ] Smart case: lowercase matches any case, capitals match exactly.
-- [ ] A match spanning styled spans highlights whole.
-- [ ] Screenshots of a search with matches.
+- [x] Smart case: lowercase matches any case, capitals match exactly.
+- [x] A match spanning styled spans highlights whole.
+- [x] Screenshots of a search with matches.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M70
 **Files:** `crates/tui/src/{search.rs,viewer.rs}`
