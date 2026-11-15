@@ -254,6 +254,26 @@ impl Apt {
         sources::remove_mentioning(&self.sources, needle, backup, run_id)
     }
 
+    /// The apt sources that still mention `needle`, read-only.
+    ///
+    /// Each regular file directly in `/etc/apt/sources.list.d`, and each
+    /// symlink there, that [`Apt::remove_sources_mentioning`] would move,
+    /// by the same rule and checks, as its path there, in name order:
+    /// python-env's re-check after its deadsnakes cleanup (host spec,
+    /// "apt", `sources_mentioning`, amended 2026-11-15). Nothing is
+    /// created or moved; an empty `needle` and a missing directory name
+    /// nothing. The paths hold the names as they are: escape them to show
+    /// them. The files are a few small ones, so the work runs on the
+    /// caller's thread.
+    ///
+    /// # Errors
+    ///
+    /// [`SourcesError`]: a refused `sources.list.d`, or an entry (or a
+    /// link's target) that couldn't be read.
+    pub fn sources_mentioning(&self, needle: &'static str) -> Result<Vec<PathBuf>, SourcesError> {
+        sources::sources_mentioning(&self.sources, needle)
+    }
+
     /// Saltbox's apt repositories for this release (host spec, "apt",
     /// `add_repositories`): the codename from `lsb_release -sc`'s stdout
     /// (5 s), then [`sources`]' rules, with the moved entries' count and
@@ -1050,6 +1070,31 @@ printf 'python3.12:\n  Installed: 3.12.1-1+jammy1\n *** 3.12.1-1+jammy1 100\n'"#
             .expect("remove");
         assert_eq!(moved, [var_backups.join("sb/deadsnakes/0a1b/ppa.list")]);
         assert!(sources_d.join("docker.list").exists());
+    }
+
+    #[test]
+    fn sources_mentioning_names_what_is_still_there() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let etc_apt = dir.path().join("etc/apt");
+        let sources_d = etc_apt.join("sources.list.d");
+        std::fs::create_dir_all(&sources_d).expect("mkdir");
+        std::fs::set_permissions(
+            &sources_d,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("chmod");
+        std::fs::write(sources_d.join("ppa.list"), "deadsnakes/ppa\n").expect("write");
+        std::fs::write(sources_d.join("docker.list"), "docker\n").expect("write");
+        let apt = Apt::new().with_sources_roots(
+            &etc_apt,
+            dir.path().join("var/backups"),
+            rustix::process::geteuid().as_raw(),
+        );
+        assert_eq!(
+            apt.sources_mentioning("deadsnakes").expect("query"),
+            [sources_d.join("ppa.list")]
+        );
+        assert!(sources_d.join("ppa.list").exists());
     }
 
     #[tokio::test]

@@ -209,16 +209,10 @@ pub(crate) fn remove_mentioning(
     run_id: &str,
 ) -> Result<Vec<PathBuf>, SourcesError> {
     check_names(roots, folder, run_id)?;
-    if needle.is_empty() {
-        return Ok(Vec::new());
-    }
     let sources_d = roots.etc_apt.join(SOURCES_D);
-    let dir = match open_dir(&sources_d, roots.owner) {
-        Ok(dir) => dir,
-        Err(Opened::Missing) => return Ok(Vec::new()),
-        Err(failed) => return Err(failed.error(&sources_d)),
+    let Some((dir, names)) = candidates(roots, &sources_d, needle)? else {
+        return Ok(Vec::new());
     };
-    let names = mentioning(&dir, &sources_d, needle.as_bytes())?;
     let mut report = Report::default();
     move_aside(roots, &dir, &sources_d, folder, run_id, &names, &mut report)?;
     // Built from the raw names, so a name that isn't UTF-8 is exact.
@@ -227,6 +221,47 @@ pub(crate) fn remove_mentioning(
         .iter()
         .map(|(raw, _)| backup.join(OsStr::from_bytes(raw.to_bytes())))
         .collect())
+}
+
+/// python-env's re-check after its cleanup (host spec, "apt",
+/// `sources_mentioning`, amended 2026-11-15): the entries
+/// [`remove_mentioning`] would move, by the same rule and through the same
+/// checked handle, as their paths in `sources.list.d`, in name order.
+/// Read-only: nothing is created or moved.
+pub(crate) fn sources_mentioning(
+    roots: &Roots,
+    needle: &'static str,
+) -> Result<Vec<PathBuf>, SourcesError> {
+    let sources_d = roots.etc_apt.join(SOURCES_D);
+    let names = candidates(roots, &sources_d, needle)?.map_or_default(|(_, names)| names);
+    // Built from the raw names, so a name that isn't UTF-8 is exact.
+    Ok(names
+        .iter()
+        .map(|(raw, _)| sources_d.join(OsStr::from_bytes(raw.to_bytes())))
+        .collect())
+}
+
+/// Entries of a directory: each raw name and its lossy text.
+type Names = Vec<(CString, String)>;
+
+/// `sources_d` opened and checked, and its entries that mention `needle`
+/// ([`mentioning`]); `None` for an empty `needle` or a missing directory,
+/// which hold nothing.
+fn candidates(
+    roots: &Roots,
+    sources_d: &Path,
+    needle: &'static str,
+) -> Result<Option<(OwnedFd, Names)>, SourcesError> {
+    if needle.is_empty() {
+        return Ok(None);
+    }
+    let dir = match open_dir(sources_d, roots.owner) {
+        Ok(dir) => dir,
+        Err(Opened::Missing) => return Ok(None),
+        Err(failed) => return Err(failed.error(sources_d)),
+    };
+    let names = mentioning(&dir, sources_d, needle.as_bytes())?;
+    Ok(Some((dir, names)))
 }
 
 /// A run id is letters and digits; a folder is a single plain name.
@@ -331,11 +366,7 @@ fn sync_dir(dir: &OwnedFd, path: &Path) -> Result<(), SourcesError> {
 /// The entries to move, in name order, each `lstat`ed through the handle:
 /// a regular file or a symlink; a subdirectory or anything else fails
 /// before anything moves.
-fn entries(
-    dir: &OwnedFd,
-    path: &Path,
-    release: Release,
-) -> Result<Vec<(CString, String)>, SourcesError> {
+fn entries(dir: &OwnedFd, path: &Path, release: Release) -> Result<Names, SourcesError> {
     let read = |cause: rustix::io::Errno| SourcesError::Read {
         path: path.to_path_buf(),
         cause: cause.into(),
@@ -374,11 +405,7 @@ fn entries(
 /// file, read through the handle without following a link or waiting on
 /// a FIFO (the type checked again on the opened file); or a symlink whose
 /// target is one ([`link_target`]). Anything else is left alone.
-fn mentioning(
-    dir: &OwnedFd,
-    path: &Path,
-    needle: &[u8],
-) -> Result<Vec<(CString, String)>, SourcesError> {
+fn mentioning(dir: &OwnedFd, path: &Path, needle: &[u8]) -> Result<Names, SourcesError> {
     let failed = |path: PathBuf, cause: io::Error| SourcesError::Read { path, cause };
     let mut names = Vec::new();
     for entry in rustix::fs::Dir::read_from(dir).map_err(|err| failed(path.into(), err.into()))? {

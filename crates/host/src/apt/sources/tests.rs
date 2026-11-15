@@ -1201,3 +1201,122 @@ fn a_linked_target_over_the_cap_fails_before_anything_moves() {
         Vec::<PathBuf>::new()
     );
 }
+
+// `sources_mentioning` (host spec, "apt", amended 2026-11-15):
+// python-env's re-check after the cleanup, read-only, by the same rule.
+
+/// [`sources_mentioning`] of `deadsnakes`.
+fn mentioned(roots: &Roots) -> Result<Vec<PathBuf>, SourcesError> {
+    sources_mentioning(roots, "deadsnakes")
+}
+
+#[test]
+fn the_query_names_what_the_removal_would_move_and_changes_nothing() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("b-ppa.list"), PPA);
+    write(&fixture.sources_d().join("docker.list"), "docker\n");
+    let target = fixture.dir.path().join("target.list");
+    write(&target, PPA);
+    link(&fixture, &target, "a-link.list");
+    link(
+        &fixture,
+        &fixture.dir.path().join("missing"),
+        "dangling.list",
+    );
+    std::fs::create_dir(fixture.sources_d().join("nested")).expect("mkdir");
+    write(&fixture.sources_d().join("nested/inner.list"), PPA);
+    fifo(&fixture.sources_d(), "pipe.list");
+    let before = fixture.tree();
+    let found = mentioned(&fixture.roots).expect("query");
+    assert_eq!(
+        found,
+        ["a-link.list", "b-ppa.list"].map(|name| fixture.sources_d().join(name))
+    );
+    assert_eq!(fixture.tree(), before);
+    assert!(!fixture.roots.var_backups.join("sb").exists());
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    let names = |paths: &[PathBuf]| -> Vec<std::ffi::OsString> {
+        paths
+            .iter()
+            .map(|path| path.file_name().expect("name").to_owned())
+            .collect()
+    };
+    assert_eq!(names(&moved), names(&found));
+    assert_eq!(
+        mentioned(&fixture.roots).expect("query"),
+        Vec::<PathBuf>::new()
+    );
+}
+
+#[test]
+fn the_query_returns_a_name_that_is_not_utf8_as_it_is() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let fixture = Fixture::new();
+    let name = OsStr::from_bytes(b"caf\xe9.list");
+    write(&fixture.sources_d().join(name), PPA);
+    assert_eq!(
+        mentioned(&fixture.roots).expect("query"),
+        [fixture.sources_d().join(name)]
+    );
+}
+
+#[test]
+fn the_query_finds_nothing_for_an_empty_needle_or_a_missing_directory() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    assert_eq!(
+        sources_mentioning(&fixture.roots, "").expect("query"),
+        Vec::<PathBuf>::new()
+    );
+    std::fs::remove_file(fixture.sources_d().join("ppa.list")).expect("unlink");
+    std::fs::remove_dir(fixture.sources_d()).expect("rmdir");
+    assert_eq!(
+        mentioned(&fixture.roots).expect("query"),
+        Vec::<PathBuf>::new()
+    );
+}
+
+/// The directory is checked as for the removal: a symlinked, writable or
+/// foreign `sources.list.d` is refused, not read.
+#[test]
+fn the_query_refuses_a_directory_the_removal_refuses() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    let refused = |roots: &Roots, reason: &str| {
+        let error = mentioned(roots).expect_err("refused");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "refusing to clean {}: {reason}",
+                fixture.sources_d().display()
+            )
+        );
+    };
+    std::fs::set_permissions(fixture.sources_d(), std::fs::Permissions::from_mode(0o775))
+        .expect("chmod");
+    refused(&fixture.roots, "writable by group or others");
+    std::fs::set_permissions(fixture.sources_d(), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let mut foreign = fixture.roots.clone();
+    foreign.owner += 1;
+    refused(&foreign, "not owned by root");
+    let elsewhere = fixture.dir.path().join("elsewhere");
+    std::fs::rename(fixture.sources_d(), &elsewhere).expect("rename");
+    std::os::unix::fs::symlink(&elsewhere, fixture.sources_d()).expect("symlink");
+    refused(&fixture.roots, "it is a symlink");
+}
+
+#[test]
+fn the_query_fails_on_a_target_it_cannot_look_at() {
+    let fixture = Fixture::new();
+    let long = fixture.dir.path().join("x".repeat(300));
+    link(&fixture, &long, "long.list");
+    let error = mentioned(&fixture.roots).expect_err("failed");
+    assert!(
+        error.to_string().starts_with(&format!(
+            "error reading {}",
+            fixture.sources_d().join("long.list").display()
+        )),
+        "{error}"
+    );
+}

@@ -217,6 +217,19 @@ filesystems (`EXDEV`) copied with its bytes and mode, synced, then
 unlinked through the handle. Each name is logged before it moves
 (difference 14).
 
+**`sources_mentioning(needle) -> Result<Vec<PathBuf>, SourcesError>`.**
+*Added 2026-11-15 (maintainer, module build follow-up "Before M20").*
+Read-only: the entries `remove_sources_mentioning` would move, by the
+same rule (regular files and symlinks, the same one-link reading of a
+target) through the same checked `sources.list.d` handle, returned as
+their paths in `sources.list.d`, in name order. Nothing is created or
+moved. An empty `needle` and a missing `sources.list.d` name nothing; a
+refused directory gives `refusing to clean <dir>: <reason>`, and an
+entry that can't be read `error reading <path>: <cause>`. python-env
+re-checks with it after its cleanup and `update_lists` (a second
+`remove_sources_mentioning` under the same run id would be refused,
+the run's backup directory already existing).
+
 **`update_lists(step)`.** Runs `update` with retries.
 - **Attempts:** up to 3, each with a 2 min timeout.
 - **Retry when** the attempt timed out, or its stderr (`Streamed`'s
