@@ -489,16 +489,16 @@ clean retry on the normal path, through `reconcile_runtime`, which
 apt steps (M9's `install` and `update_lists`, their first use).
 
 **Acceptance criteria:**
-- [ ] uv comes from `astral-sh`'s release through `Releases`, verified,
+- [x] uv comes from `astral-sh`'s release through `Releases`, verified,
       extracted with tar and flate2 (size-capped), checked with a staged
       `--version`, then activated.
-- [ ] A missing libpq-dev is installed through host's apt steps.
-- [ ] The binary-size cost of tar and flate2 is measured on the
+- [x] A missing libpq-dev is installed through host's apt steps.
+- [x] The binary-size cost of tar and flate2 is measured on the
       production build.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env` with release's `testing` fake server.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor (a
+- [x] `cargo test -p sb-python-env` with release's `testing` fake server.
+- [x] Review: code-reviewer, library-reviewer, security-auditor (a
       download run as root).
 
 **Dependencies:** M9, M17, M29 (release's interface)
@@ -514,15 +514,15 @@ the digest rule, download, the ELF check and staged `--version`,
 activation; `sb reinstall-facts` and update-venv's real fact step.
 
 **Acceptance criteria:**
-- [ ] The decision follows the spec (decisions 2, 6, 8), including the
+- [x] The decision follows the spec (decisions 2, 6, 8), including the
       digest rule.
-- [ ] `check_elf` and `sha256_file` (R7, R8) come from release, with
+- [x] `check_elf` and `sha256_file` (R7, R8) come from release, with
       sb-go's fact texts for the two ELF errors.
-- [ ] `sb reinstall-facts` forces it; `update-venv` no longer stubs it.
+- [x] `sb reinstall-facts` forces it; `update-venv` no longer stubs it.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env`; sb tests through the binary.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor.
+- [x] `cargo test -p sb-python-env`; sb tests through the binary.
+- [x] Review: code-reviewer, library-reviewer, security-auditor.
 
 **Dependencies:** M18, M28
 **Files:** `crates/python-env/src/{fact.rs,lib.rs}`, `crates/sb/src/python_env.rs`, `crates/sb/tests/python_env.rs`
