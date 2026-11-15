@@ -2120,13 +2120,18 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
-- [ ] **The viewer's wrap-off frame meets 5 ms** (the maintainer,
+- [x] **The viewer's wrap-off frame meets 5 ms** (the maintainer,
       2026-11-15). M73 measured a wrap-off frame at about 5.6 ms (9.9 ms
       for the frame that switches wrap off) at 240x70 on the spec's
       worst-case records, against the tui spec's 5 ms (success criterion
       8); wrap-on frames take 2-4 ms. The cost is building the coloured
       text of the ~70 long lines on screen each frame: cache it per line,
       as M73 cached the wrapped height, within the 32 MiB buffer cap.
+      Done: wrap-off heights counted from the bytes, texts built only as
+      far as the window reaches, and each frame's texts kept for the next
+      (bounded to the entries in view); the switch frame 3.1 ms, other
+      wrap-off frames 1.3-1.8 ms (ADR-023, the tui spec's "Hardening as
+      built"). Far right stays over 5 ms past about column 1,000.
 - [x] **exec's remaining fixed bounds in groups.rs** (found reviewing
       3f9e8f9). `took < GRACE` at crates/exec/tests/groups.rs:264, :322
       and :348, `start.elapsed() < GRACE` at :363 and :454, and `< BOUND`

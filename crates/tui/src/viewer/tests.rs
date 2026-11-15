@@ -1509,9 +1509,9 @@ fn long_tail(n: u64) -> Event {
 }
 
 /// What each of a run of frames costs on a buffer of `n` long records at
-/// 240×70: the entries measured, and the time taken (a key's handling,
-/// paging requests included, and its frame).
-fn frame_costs(n: u64) -> Vec<(usize, std::time::Duration)> {
+/// 240×70: the entries measured, the texts built, and the time taken (a
+/// key's handling, paging requests included, and its frame).
+fn frame_costs(n: u64) -> Vec<(usize, usize, std::time::Duration)> {
     // Room for every record: the cap by bytes would drop most of them.
     let limits = Limits {
         entries: 20_000,
@@ -1529,36 +1529,56 @@ fn frame_costs(n: u64) -> Vec<(usize, std::time::Duration)> {
         KeyCode::Char('k'),
         KeyCode::Home,
         KeyCode::PageDown,
-        // Wrap off, then on again at the bottom.
+        // Wrap off (the switch frame), scrolled and sideways, then on
+        // again at the bottom.
         KeyCode::Char('w'),
         KeyCode::PageUp,
+        KeyCode::Char('k'),
+        KeyCode::Right,
+        KeyCode::Left,
         KeyCode::Char('w'),
         KeyCode::End,
     ];
     keys.iter()
         .map(|&key| {
             h.viewer.measured.set(0);
+            h.viewer.built.set(0);
             let started = std::time::Instant::now();
             h.key(key);
-            (h.viewer.measured.get(), started.elapsed())
+            (
+                h.viewer.measured.get(),
+                h.viewer.built.get(),
+                started.elapsed(),
+            )
         })
         .collect()
 }
 
 /// The frame cost (tui spec, Testing Strategy, "Frame cost"; proto-logs'
-/// "frame-time budget check"): the log lines measured per frame don't grow
-/// with the buffer, here 2,000 against 20,000 records of 5,000+
-/// characters, and stay within a few screens of entries. The time is
-/// printed, for the by-hand release timing (`cargo test --release`, the
-/// size ADR).
+/// "frame-time budget check"): the log lines measured and the texts built
+/// per frame don't grow with the buffer, here 2,000 against 20,000
+/// records of 5,000+ characters; the lines measured stay within a few
+/// screens of entries, and the texts built within the window, with wrap
+/// on and off and for the frame that turns wrap off. The time of each
+/// frame is printed, for the by-hand release timing (`cargo test
+/// --release`, the size ADR).
 #[test]
 fn a_frames_cost_doesnt_grow_with_the_buffer() {
     let small = frame_costs(2_000);
     let big = frame_costs(20_000);
-    let counts = |costs: &[(usize, std::time::Duration)]| {
-        costs.iter().map(|(count, _)| *count).collect::<Vec<_>>()
+    let counts = |costs: &[(usize, usize, std::time::Duration)]| {
+        costs.iter().map(|(count, _, _)| *count).collect::<Vec<_>>()
+    };
+    let builds = |costs: &[(usize, usize, std::time::Duration)]| {
+        costs.iter().map(|(_, built, _)| *built).collect::<Vec<_>>()
     };
     assert_eq!(counts(&small), counts(&big));
+    assert_eq!(builds(&small), builds(&big));
+    // At most one text a row of the window: 69 rows of log at 70.
+    assert!(builds(&big).iter().all(|&b| b <= 69), "{big:?}");
+    // With wrap off, a row up builds the one line it brings in, and the
+    // steps sideways nothing: the texts drawn are kept.
+    assert!(builds(&big)[9..12].iter().all(|&b| b <= 1), "{big:?}");
     // Each frame measures at most the window and the paging edges' five
     // screens each way, in entries: a few hundred at 70 rows, not 20,000.
     assert!(counts(&big).iter().all(|&c| c < 2_000), "{big:?}");
@@ -1567,7 +1587,8 @@ fn a_frames_cost_doesnt_grow_with_the_buffer() {
     // the paging edge's five screens: the entries alone tell that the
     // oldest is far.
     assert!(counts(&big)[..2].iter().all(|&c| c <= 5), "{big:?}");
-    let mut times: Vec<_> = big.iter().map(|(_, time)| *time).collect();
+    let mut times: Vec<_> = big.iter().map(|(_, _, time)| *time).collect();
+    eprintln!("frame cost at 240x70, 20,000 records, by key: {times:?}");
     times.sort();
     eprintln!(
         "frame cost at 240x70, 20,000 records: median {:?}, slowest {:?}",
@@ -1606,4 +1627,149 @@ fn a_frame_measures_only_lines_it_hasnt_measured() {
     h.terminal.backend_mut().resize(100, 70);
     h.draw();
     assert!(measured(&mut h) > 0);
+}
+
+/// The texts drawn are kept for the next frame: a frame with nothing new
+/// builds none, a followed line only its own, the frame that turns wrap
+/// off only those it didn't draw already, a step sideways none while
+/// the texts reach that far; a change of the search, the theme or `t`
+/// builds them all again.
+#[test]
+fn a_frame_builds_only_texts_it_hasnt_drawn() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(200));
+    let built = |h: &mut Harness| h.viewer.built.replace(0);
+    built(&mut h);
+    h.draw();
+    assert_eq!(built(&mut h), 0);
+    // With wrap on, measured (a wrap of the whole text) and drawn.
+    h.send(Event::Followed(vec![line(200, "new")]));
+    assert_eq!(built(&mut h), 2);
+    // Wrap off: the records' whole texts are kept, the others built.
+    h.key(KeyCode::Char('w'));
+    let switched = built(&mut h);
+    assert!((60..=69).contains(&switched), "{switched}");
+    h.draw();
+    assert_eq!(built(&mut h), 0);
+    // A screen more to the right is built: 30 steps of 8 columns.
+    for _ in 0..30 {
+        h.key(KeyCode::Right);
+    }
+    assert_eq!(built(&mut h), 0);
+    h.key(KeyCode::Right);
+    assert!(built(&mut h) > 60);
+    h.search("ipsum");
+    assert!(built(&mut h) > 60);
+    h.viewer.format.theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+    h.draw();
+    assert!(built(&mut h) > 60);
+    h.key(KeyCode::Char('t'));
+    assert!(built(&mut h) > 60);
+}
+
+/// A frame drawn from the kept texts is the frame built afresh: every
+/// cell and style, with colour, a search, wrap on and off and sideways.
+#[test]
+fn kept_texts_draw_what_new_ones_do() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let truecolor = Format::new(
+        TimeZone::UTC,
+        Theme::resolve(&Palette::default(), Profile::TrueColor),
+    );
+    let mut h = open_with(120, 30, limits, truecolor);
+    let mut words = String::new();
+    for i in 0..300 {
+        let colour = i % 8;
+        words.push_str("\x1b[3");
+        words.push_str(&colour.to_string());
+        words.push_str("mword");
+        words.push_str(&i.to_string());
+        words.push_str("\x1b[0m ");
+    }
+    let mut ls: Vec<Line> = (0..100)
+        .map(|i| line(i, &format!("m{i} {words}")))
+        .collect();
+    ls.push(line(100, &format!("{}\n", "x".repeat(100)).repeat(60)));
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: false,
+        more_newer: false,
+    });
+    let fresh = |h: &mut Harness| {
+        let kept = h.terminal.backend().buffer().clone();
+        h.viewer.drawn = Drawn::default();
+        h.draw();
+        assert_eq!(&kept, h.terminal.backend().buffer());
+    };
+    fresh(&mut h);
+    h.search("word1");
+    fresh(&mut h);
+    h.key(KeyCode::Char('k'));
+    fresh(&mut h);
+    h.key(KeyCode::Char('w'));
+    fresh(&mut h);
+    for _ in 0..20 {
+        h.key(KeyCode::Right);
+        h.key(KeyCode::Char('k'));
+        fresh(&mut h);
+    }
+    // A larger window needs more rows and columns than the texts kept.
+    h.terminal.backend_mut().resize(200, 40);
+    h.draw();
+    fresh(&mut h);
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::PageUp);
+    fresh(&mut h);
+    // Wrap off, a record of 60 screen lines comes into view a row at a
+    // time from below.
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::End);
+    for _ in 0..3 {
+        h.key(KeyCode::PageUp);
+    }
+    for _ in 0..40 {
+        h.key(KeyCode::Char('j'));
+        fresh(&mut h);
+    }
+}
+
+/// The kept texts hold at most the viewer's budget of bytes between
+/// them: past it, a frame keeps what fits and draws the rest as before,
+/// built again the next frame.
+#[test]
+fn kept_texts_stay_within_their_bytes() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(200));
+    h.key(KeyCode::Char('w'));
+    let screen = h.terminal.backend().buffer().clone();
+    let sizes: Vec<usize> = h.viewer.drawn.texts.iter().map(Built::size).collect();
+    assert!(sizes.len() > 60, "{}", sizes.len());
+    // Each text a line of text at least: its spans and contents.
+    assert!(sizes.iter().all(|&size| size > 240), "{sizes:?}");
+    let budget = sizes.iter().sum::<usize>() / 2;
+    h.viewer.drawn_bytes = budget;
+    h.viewer.drawn = Drawn::default();
+    h.draw();
+    let kept: Vec<usize> = h.viewer.drawn.texts.iter().map(Built::size).collect();
+    assert!(!kept.is_empty() && kept.len() < sizes.len(), "{kept:?}");
+    assert!(kept.iter().sum::<usize>() <= budget, "{kept:?}");
+    assert_eq!(&screen, h.terminal.backend().buffer());
+    h.viewer.built.set(0);
+    h.draw();
+    assert!(h.viewer.built.get() > 0);
+    assert_eq!(&screen, h.terminal.backend().buffer());
 }

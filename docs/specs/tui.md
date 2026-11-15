@@ -1556,14 +1556,32 @@ the test's directory.
     row at least, so five screens of them far from an end need no
     heights.
   - Success criterion 8 as measured ([ADR-023](../decisions/ADR-023-tui-binary-size.md)):
-    with wrap on (the default) every frame is within 5 ms, about 3 ms
-    at the median. With wrap off, a window of 70 such records drawn
-    sideways takes 5.6 ms a frame, and the frame that turns wrap off
-    9.9 ms: each frame builds the styled text of every record in view
-    (`DisplayText` and ansi-to-tui over 5,000+ bytes each), which a
-    height cache doesn't save. Both are within one 60 fps frame; meeting
-    5 ms there would mean keeping the built text of the lines in view.
-    Open for the maintainer.
+    every frame of the timing is within 5 ms, wrap on and off. M73
+    left wrap off open: 5.6 ms a frame and 9.9 ms for the frame that
+    turns it off, each building the styled text of every record in view
+    (`DisplayText` over 5,000+ bytes each), the switch twice. The
+    maintainer asked for 5 ms there too (2026-11-15, the follow-up
+    "The viewer's wrap-off frame meets 5 ms"). Now, with wrap off, a
+    line's height is its newlines counted from the bytes
+    (`line::screen_lines`, `DisplayText` only when a string sequence or
+    a C1 code could hide one); its text is built from only as much of
+    the message as the window reaches, a screen more to the right
+    (`line::within`); and each frame keeps the texts it drew for the
+    next (`viewer.rs`'s `Drawn`), dropped when the format (theme, zone,
+    `t`) or the search changes and built again for more rows or
+    columns. The kept texts are bounded to what is on screen: one per
+    entry in view, at most 4 MiB between them, outside the buffer's
+    32 MiB. The frame that turns wrap off takes 3.1 ms, the other wrap-off
+    frames 1.3 to 1.8 ms. `a_frames_cost_doesnt_grow_with_the_buffer`
+    counts the texts built per frame too (the same on 2,000 and 20,000
+    records, at most a row's worth each, and one or none for a row up
+    and the steps sideways); `a_frame_builds_only_texts_it_hasnt_drawn`
+    and `kept_texts_draw_what_new_ones_do` check the cache, and
+    `line.rs`'s `a_window_draws_within_as_the_whole_text` and
+    `screen_lines_are_the_texts_lines` the cut text and the count.
+    Far to the right a wrap-off frame still costs more (ratatui's
+    `Paragraph::scroll` walks every character left of the column):
+    4.9 ms at column 1,000, 14.2 ms at 4,000.
   - Lines hold their caps (M73's security pass): an adapter builds each
     line with `Line::new`, which copies at most 64 KiB of the message
     and 256 bytes of the origin and counts the rest in `Line::cut` for

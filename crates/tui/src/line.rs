@@ -51,7 +51,7 @@ fn zone_from(data: Option<&[u8]>) -> TimeZone {
 }
 
 /// How lines are drawn.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Format {
     /// Time and origin shown (`t`).
     pub meta: bool,
@@ -174,6 +174,123 @@ pub(crate) fn hit_lead(
 /// ([`Format::hit`]); the time, origin and cut notice aren't searched.
 pub(crate) fn searched(line: &Line, format: &Format, query: &str, hit: Style) -> Text<'static> {
     let (shown, cut) = shown(line, format);
+    build(line, format, shown, cut, query, hit)
+}
+
+/// [`searched`] as a window with wrap off shows it: its first `rows`
+/// screen lines, each right through column `columns` (the time and
+/// origin counted), and maybe some of what follows. Only as much of the
+/// message as that needs is built, the work of a frame with wrap off
+/// (M73's follow-up: building every record in view whole, `DisplayText`
+/// over 5,000+ bytes each, cost a frame of 70 of them 5 to 10 ms at
+/// 240×70).
+///
+/// The text of a prefix of the message is that of the whole message up
+/// to the prefix's end: `DisplayText` and ansi-to-tui read in order,
+/// and the end can only split a character (one U+FFFD) or drop an
+/// unfinished escape sequence. The exceptions are handled: a carriage
+/// return with text after it, which takes back what came before it on
+/// its line, on the line the prefix ends on or after it, means the
+/// whole message is built ([`takes_back`]); a match that starts in the
+/// window must be in the prefix whole, so the prefix reaches past
+/// `columns` by twice the query's characters (at most two columns
+/// each), and by two more for a character the end splits. The cut
+/// notice is past the window and left out. The prefix starts at twice
+/// the columns in bytes and doubles until it fills the window.
+/// UNVERIFIED for ansi-to-tui, whose docs say nothing of a prefix: checked
+/// by drawing both texts in `a_window_draws_within_as_the_whole_text`
+/// (colour across the end, tabs, wide, combining and split characters,
+/// carriage returns, searches).
+pub(crate) fn within(
+    line: &Line,
+    format: &Format,
+    query: &str,
+    hit: Style,
+    rows: usize,
+    columns: usize,
+) -> Text<'static> {
+    let (shown, cut) = shown(line, format);
+    let rows = rows.max(1);
+    let columns = columns + 2 * query.to_lowercase().chars().count() + 2;
+    let mut end = columns.saturating_mul(2);
+    loop {
+        if end >= shown.len() || takes_back(shown, end) {
+            return build(line, format, shown, cut, query, hit);
+        }
+        let text = build(line, format, &shown[..end], 0, query, hit);
+        let filled = match text.lines.len().cmp(&rows) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Equal => text.lines[rows - 1].width() >= columns,
+            std::cmp::Ordering::Less => false,
+        };
+        if filled {
+            return text;
+        }
+        end = end.saturating_mul(2);
+    }
+}
+
+/// Whether a carriage return on the line the prefix `..end` of `bytes`
+/// ends on, or after it, is followed by something other than another
+/// carriage return or a newline: `DisplayText` may then drop what came
+/// before it on its line, which the prefix's text still shows. The scan
+/// starts at that line's start, not at the prefix's end: a carriage
+/// return stays pending across bytes that print nothing (a C1 code,
+/// the rest of an escape sequence), so what takes its line back can
+/// come after the end though the return came before it.
+fn takes_back(bytes: &[u8], end: usize) -> bool {
+    let from = bytes[..end]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |at| at + 1);
+    bytes[from..]
+        .windows(2)
+        .any(|pair| pair[0] == b'\r' && !matches!(pair[1], b'\r' | b'\n'))
+}
+
+/// How many screen lines `line` takes with wrap off: [`text`]'s lines,
+/// counted without building it. A newline ends a screen line, a final
+/// one adds none, and an empty message is one line (`DisplayText`), so
+/// the count is the newlines', from the bytes, unless a newline can be
+/// inside a string sequence (OSC, DCS, SOS, PM, APC: `ESC` and `]`, `P`,
+/// `X`, `^` or `_`), whose payload the DEC parser swallows newlines and
+/// all, or the message holds a C1 code (UTF-8 `C2 80` to `C2 9F`), which
+/// starts one or which `DisplayText` drops; then `DisplayText` counts
+/// them. Everywhere else the parser executes a newline, in an escape or
+/// control sequence too (<https://vt100.net/emu/dec_ansi_parser>, the
+/// `execute` action of every state but the string ones; anstyle-parse
+/// 1.0.0's table). Why not anstyle-parse's `Parser` with a `Perform`
+/// that counts `execute(b'\n')`
+/// (<https://docs.rs/anstyle-parse/1.0.0/anstyle_parse/trait.Perform.html>),
+/// which follows the table itself: on a 5,000-byte record it took 17 µs
+/// against the scan's 5 µs (release, by hand), about 1.2 ms against
+/// 0.35 ms for the 70 records a switch to wrap off measures, and it
+/// would make anstyle-parse a direct dependency of this crate; the
+/// tests pin the scan to `DisplayText`'s count either way.
+pub(crate) fn screen_lines(line: &Line, format: &Format) -> usize {
+    let shown = shown(line, format).0;
+    let hidden = shown.windows(2).any(|pair| {
+        matches!(
+            pair,
+            [0x1b, b']' | b'P' | b'X' | b'^' | b'_'] | [0xc2, 0x80..=0x9f]
+        )
+    });
+    if hidden {
+        return searchable(line, format).lines().len();
+    }
+    shown.split(|&b| b == b'\n').count() - usize::from(shown.last() == Some(&b'\n'))
+}
+
+/// [`searched`] of `shown`, the message's bytes to show, with the cut
+/// notice for `cut` bytes not shown.
+fn build(
+    line: &Line,
+    format: &Format,
+    shown: &[u8],
+    cut: usize,
+    query: &str,
+    hit: Style,
+) -> Text<'static> {
     let colour = format.colour();
     let display = DisplayText::from_bytes(shown, colour);
     let mut text = if colour {
@@ -680,5 +797,204 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(lit, ["one", "one"]);
+    }
+
+    /// Messages whose wrap-off text has a trap: colour across the
+    /// prefix's end, tabs, wide and combining characters, a split
+    /// character, newlines inside string sequences, C1 codes, carriage
+    /// returns that take a line back or end it.
+    fn tricky() -> Vec<Vec<u8>> {
+        let mut colours = Vec::new();
+        for i in 0..600 {
+            colours.extend_from_slice(format!("\x1b[3{}mword{i}\x1b[0m ", i % 8).as_bytes());
+        }
+        let mut lines = Vec::new();
+        for i in 0..30 {
+            lines.extend_from_slice(format!("{i:02} {}\n", "x".repeat(300)).as_bytes());
+        }
+        vec![
+            format!("m7 {}", "lorem ipsum ".repeat(420)).into_bytes(),
+            colours,
+            lines,
+            [vec![b'x'; 3000], b"\rtaken back".to_vec()].concat(),
+            [vec![b'x'; 3000], b"\r\r".to_vec(), vec![b'y'; 50]].concat(),
+            "crlf line\r\n".repeat(400).into_bytes(),
+            "a\tbb\tccc\t".repeat(400).into_bytes(),
+            "日本語テキスト ".repeat(300).into_bytes(),
+            "e\u{301}".repeat(2000).into_bytes(),
+            "é".repeat(2500).into_bytes(),
+            b"osc \x1b]0;a\nb\x07 after\nnext".to_vec(),
+            b"dcs \x1bPq\nx\x1b\\ after".to_vec(),
+            b"sos \x1bX\n\x1b\\ pm \x1b^\n\x1b\\ apc \x1b_\n\x1b\\ end".to_vec(),
+            "c1 osc \u{9d}0;t\nt\u{7} after".into(),
+            "nel at the end\n\u{85}".into(),
+            b"csi \x1b[3\n1m split\n".to_vec(),
+            b"bell after\n\x07".to_vec(),
+            b"\n".to_vec(),
+            Vec::new(),
+            b"a\n\nb\n\n".to_vec(),
+        ]
+    }
+
+    /// Without building the text, the wrap-off count of screen lines is
+    /// the text's, colour on and off, cut at the record cap too.
+    #[test]
+    fn screen_lines_are_the_texts_lines() {
+        for profile in [Profile::Ascii, Profile::TrueColor] {
+            let mut f = format(profile);
+            for cap in [RECORD_CAP, 7] {
+                f.record_cap = cap;
+                for message in tricky() {
+                    let line = service_line(&message);
+                    assert_eq!(
+                        screen_lines(&line, &f),
+                        text(&line, &f).lines.len(),
+                        "{profile:?} cap {cap}: {:?}",
+                        String::from_utf8_lossy(&message)
+                    );
+                }
+            }
+        }
+    }
+
+    /// `rows` rows of `text` from column `column`, `width` wide, as a
+    /// window with wrap off draws them.
+    fn window(text: Text<'static>, rows: u16, column: u16, width: u16) -> ratatui::buffer::Buffer {
+        use ratatui::widgets::Widget as _;
+        let area = ratatui::layout::Rect::new(0, 0, width, rows);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Paragraph::new(text)
+            .scroll((0, column))
+            .render(area, &mut buffer);
+        buffer
+    }
+
+    /// A window with wrap off draws `within`'s text as it draws the
+    /// whole text: every row, column and style, with a search lit, at
+    /// the left, inside and at the far end of the lines.
+    #[test]
+    fn a_window_draws_within_as_the_whole_text() {
+        let windows = [
+            (1, 0, 240),
+            (5, 7, 40),
+            (70, 200, 240),
+            (3, 1000, 80),
+            (1, 4990, 240),
+        ];
+        for profile in [Profile::Ascii, Profile::TrueColor] {
+            let mut f = format(profile);
+            for meta in [true, false] {
+                f.meta = meta;
+                for message in tricky() {
+                    let line = service_line(&message);
+                    for query in ["", "ipsum", "word1"] {
+                        let whole = searched(&line, &f, query, hit());
+                        for (rows, column, width) in windows {
+                            let part = within(
+                                &line,
+                                &f,
+                                query,
+                                hit(),
+                                usize::from(rows),
+                                usize::from(column + width),
+                            );
+                            assert_eq!(
+                                window(part, rows, column, width),
+                                window(whole.clone(), rows, column, width),
+                                "{profile:?} meta {meta} {query:?} {rows}x{width} at {column}: {:?}",
+                                String::from_utf8_lossy(&message)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `within` builds a long line only as far as the window reaches,
+    /// further for a search, and whole when a carriage return could take
+    /// the window's text back or the window reaches the end.
+    #[test]
+    fn within_builds_only_what_the_window_reaches() {
+        let f = format(Profile::Ascii);
+        let width = |text: &Text<'_>| text.lines.iter().map(TextLine::width).max();
+        let long = service_line(format!("m7 {}", "lorem ipsum ".repeat(420)).as_bytes());
+        let whole = width(&text(&long, &f)).expect("a line");
+        let part = width(&within(&long, &f, "", hit(), 1, 240)).expect("a line");
+        assert!((242..1000).contains(&part), "{part} of {whole}");
+        let searched_part = width(&within(&long, &f, "ipsum", hit(), 1, 240)).expect("a line");
+        assert!(searched_part >= 240 + 12, "{searched_part}");
+        assert_eq!(width(&within(&long, &f, "", hit(), 1, 6000)), Some(whole));
+        let back = service_line(&[vec![b'x'; 3000], b"\rtaken back".to_vec()].concat());
+        assert_eq!(
+            strings(&within(&back, &f, "", hit(), 1, 240)),
+            strings(&text(&back, &f))
+        );
+        // The prefix's end right after a carriage return, text after it.
+        let mut bare = format(Profile::Ascii);
+        bare.meta = false;
+        let end = 2 * (240 + 2);
+        let at_end = service_line(&[vec![b'x'; end - 1], b"\ryyyy".to_vec()].concat());
+        assert_eq!(
+            strings(&within(&at_end, &bare, "", hit(), 1, 240)),
+            ["yyyy"]
+        );
+        // A carriage return still pending where the prefix ends: only a
+        // C1 code (dropped before parsing) or the rest of an escape
+        // sequence came after it, and the text after the end takes the
+        // line back.
+        let pending: [(&[u8], Profile); 3] = [
+            (b"\r\xc2\x85", Profile::Ascii),
+            (b"\x1b\r(B", Profile::Ascii),
+            (b"\x1b[\r1m", Profile::TrueColor),
+        ];
+        for (tail, profile) in pending {
+            let mut f = format(profile);
+            f.meta = false;
+            let end = 2 * (480 + 2);
+            let message = [
+                vec![b'a'; end - tail.len()],
+                tail.to_vec(),
+                vec![b'z'; 2000],
+            ]
+            .concat();
+            let line = service_line(&message);
+            assert_eq!(
+                window(within(&line, &f, "", hit(), 1, 480), 1, 0, 240),
+                window(text(&line, &f), 1, 0, 240),
+                "{tail:?}"
+            );
+        }
+        let crlf = service_line("crlf line\r\n".repeat(400).as_bytes());
+        assert!(within(&crlf, &f, "", hit(), 2, 240).lines.len() < 100);
+        let lines = service_line("short\n".repeat(400).as_bytes());
+        let five = within(&lines, &f, "", hit(), 5, 240).lines.len();
+        assert!((6..100).contains(&five), "{five}");
+    }
+
+    /// A match that starts at the window's right edge is lit there as in
+    /// the whole text, where each character costs many bytes (its own
+    /// colour), so the prefix's end is close to the window's.
+    #[test]
+    fn a_match_at_the_windows_edge_is_lit_whole() {
+        let mut f = format(Profile::Ascii);
+        f.meta = false;
+        for width in 6..40_u16 {
+            for before in usize::from(width) - 5..usize::from(width) {
+                let plain = format!("{}needle{}", "a".repeat(before), "b".repeat(50));
+                let mut message = String::new();
+                for c in plain.chars() {
+                    message.push_str("\x1b[31m");
+                    message.push(c);
+                }
+                let line = service_line(message.as_bytes());
+                let part = within(&line, &f, "needle", hit(), 1, usize::from(width));
+                assert_eq!(
+                    window(part, 1, 0, width),
+                    window(searched(&line, &f, "needle", hit()), 1, 0, width),
+                    "{width} wide, the match at {before}"
+                );
+            }
+        }
     }
 }

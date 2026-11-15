@@ -140,24 +140,35 @@ pub enum Leave {
     Print,
 }
 
-/// One entry of the buffer.
-#[derive(Clone, Debug)]
+/// One entry of the buffer. Not `Clone`: a copy would share its log
+/// line's [`Kept`] id, and so the other's kept text.
+#[derive(Debug)]
 enum Entry {
-    /// A log line, the matches of the search in effect in it, and its
-    /// height as last measured.
-    Line(Line, usize, Cell<Option<Height>>),
+    /// A log line, the matches of the search in effect in it, and what
+    /// is kept with it.
+    Line(Line, usize, Kept),
     /// A source notice, drawn as its own row (tui spec, "Viewer notices").
     Notice(Notice),
 }
 
+/// What a log line keeps: its id in the viewer, which [`Drawn`] knows it
+/// by (an index moves as pages come and go), and its height as last
+/// measured.
+#[derive(Debug)]
+struct Kept {
+    id: u64,
+    height: Cell<Option<Height>>,
+}
+
 /// A log line's height on screen and the layout it was measured at: the
 /// log area's width, wrap and `t`. Kept with its entry, so a frame
-/// measures only lines it hasn't measured at this layout: measuring is
-/// `Paragraph::line_count`, a wrap of the whole record (up to 64 KiB),
-/// which made a frame of long records cost about twice the spec's 5 ms
-/// at 240×70 when every frame measured its window again (M73's frame-cost
-/// timing). A search's highlight splits spans but not the text, so it
-/// keeps the height. Why not ratatui's own cache: its `layout-cache`
+/// measures only lines it hasn't measured at this layout: measuring with
+/// wrap on is `Paragraph::line_count`, a wrap of the whole record (up to
+/// 64 KiB), which made a frame of long records cost about twice the
+/// spec's 5 ms at 240×70 when every frame measured its window again
+/// (M73's frame-cost timing); with wrap off it is
+/// [`line::screen_lines`]. A search's highlight splits spans but not the
+/// text, so it keeps the height. Why not ratatui's own cache: its `layout-cache`
 /// feature keeps `Layout::split`'s results
 /// (<https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.init_cache>),
 /// not a paragraph's wrapped height, and ratatui has none for that.
@@ -167,6 +178,73 @@ struct Height {
     wrap: bool,
     meta: bool,
     rows: usize,
+}
+
+/// The bytes of text [`Drawn`] keeps, at most ([`Built::size`]). A
+/// frame's texts are far less as a rule: with wrap off about the
+/// window's width and a screen more for each row, with wrap on the few
+/// records in view. 4 MiB leaves room for logs coloured word by word (a
+/// span a word) and is an eighth of the buffer's 32 MiB.
+const DRAWN_BYTES: usize = 4 << 20;
+
+/// The texts of the log lines the last frame drew, for the next frame
+/// to draw again without building them (M73's follow-up: building the
+/// text of each record in view, `DisplayText` over up to 64 KiB, was
+/// most of a frame with wrap off). Each is for the format and search it
+/// was built with (the theme, the zone and `t`; the query, whose matches
+/// are lit), so a change of either drops them all; a text built for
+/// fewer rows or columns than a frame shows (wrap off) is built again;
+/// the sideways column needs nothing more, as `Paragraph::scroll` applies
+/// it when drawing.
+///
+/// Bounded to what is on screen, not counted toward the buffer's 32 MiB:
+/// each frame keeps only the texts it drew, one per entry in view, so at
+/// most the window's rows of them, and at most [`DRAWN_BYTES`] between
+/// them (`Viewer::drawn_bytes`; a text past that is drawn and dropped,
+/// as before). That is the
+/// simpler design: counting them toward the cap would make the cap's
+/// dropping of entries, which runs as lines come, also run as frames
+/// draw, and drop log lines for texts that can be built again. Why not a
+/// ratatui cache: ratatui keeps no widget's text between frames (its
+/// `layout-cache` holds `Layout::split`'s results,
+/// <https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.init_cache>).
+/// With wrap off each text is about the
+/// window's columns of the rows it shows ([`line::within`]); with wrap on
+/// it is the whole record, and every record in view but the first and
+/// the last fits in the window.
+#[derive(Debug, Default)]
+struct Drawn {
+    built_for: Option<(Format, String)>,
+    texts: Vec<Built>,
+}
+
+/// A log line's text as [`Drawn`] keeps it: whose (its [`Kept`] id), and
+/// the screen lines and columns it holds right (`usize::MAX`: all).
+#[derive(Debug)]
+struct Built {
+    id: u64,
+    text: Text<'static>,
+    rows: usize,
+    columns: usize,
+}
+
+impl Built {
+    /// The text's bytes, counted as its lines, their spans and the
+    /// spans' contents: what keeping it costs, less the allocator's own.
+    fn size(&self) -> usize {
+        self.text
+            .lines
+            .iter()
+            .map(|line| {
+                let spans: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| size_of::<Span<'_>>() + span.content.len())
+                    .sum();
+                size_of::<TextLine<'_>>() + spans
+            })
+            .sum()
+    }
 }
 
 /// One end of the buffer: where the next page there starts, whether
@@ -210,6 +288,12 @@ pub struct Viewer {
     limits: Limits,
     entries: VecDeque<Entry>,
     bytes: usize,
+    /// The next log line's [`Kept`] id.
+    next_id: u64,
+    /// The texts the last frame drew, and the most bytes of them kept
+    /// ([`DRAWN_BYTES`]; smaller in tests).
+    drawn: Drawn,
+    drawn_bytes: usize,
     /// The page edges to ask from (`Event::Page`'s `oldest` and `newest`,
     /// or the edge line's after a drop or a follow).
     older: Edge,
@@ -247,6 +331,10 @@ pub struct Viewer {
     /// test's (tui spec, Testing Strategy, "Frame cost").
     #[cfg(test)]
     measured: Cell<usize>,
+    /// Log line texts built, to measure or to draw, since the count was
+    /// last taken.
+    #[cfg(test)]
+    built: Cell<usize>,
 }
 
 impl Viewer {
@@ -293,6 +381,9 @@ impl Viewer {
             limits,
             entries: VecDeque::new(),
             bytes: 0,
+            next_id: 0,
+            drawn: Drawn::default(),
+            drawn_bytes: DRAWN_BYTES,
             older: Edge::default(),
             newer: Edge::default(),
             loaded: false,
@@ -312,6 +403,8 @@ impl Viewer {
             saved: None,
             #[cfg(test)]
             measured: Cell::new(0),
+            #[cfg(test)]
+            built: Cell::new(0),
         }
     }
 
@@ -495,7 +588,16 @@ impl Viewer {
             line::hits(&line, &self.format, &self.query)
         };
         self.total += hits;
-        Entry::Line(line, hits, Cell::new(None))
+        let id = self.next_id;
+        self.next_id += 1;
+        Entry::Line(
+            line,
+            hits,
+            Kept {
+                id,
+                height: Cell::new(None),
+            },
+        )
     }
 
     /// `n` entries went in before the current match.
@@ -597,6 +699,8 @@ impl Viewer {
         }
         match usize::try_from(item).ok().and_then(|i| self.entries.get(i)) {
             Some(Entry::Line(line, _, _)) => {
+                #[cfg(test)]
+                self.built.set(self.built.get() + 1);
                 line::searched(line, &self.format, &self.query, self.format.hit())
             }
             Some(Entry::Notice(notice)) => {
@@ -619,7 +723,11 @@ impl Viewer {
     }
 
     fn paragraph(&self, item: isize) -> Paragraph<'static> {
-        let paragraph = Paragraph::new(self.item_text(item));
+        self.wrapped(Paragraph::new(self.item_text(item)))
+    }
+
+    /// `paragraph` wrapped when wrap is on.
+    fn wrapped(&self, paragraph: Paragraph<'static>) -> Paragraph<'static> {
         if self.wrap {
             paragraph.wrap(Wrap { trim: false })
         } else {
@@ -627,22 +735,74 @@ impl Viewer {
         }
     }
 
+    /// The text to draw item `item` with when it is a log line, its first
+    /// `rows` screen lines shown: the last frame's from `last` when that
+    /// holds as much, else built, whole with wrap on, and with wrap off
+    /// as much as the window shows and a screen more to the right, so
+    /// sideways steps within it build nothing ([`line::within`]).
+    fn text_of(&self, item: isize, rows: usize, last: &mut Drawn) -> Option<Built> {
+        let Some(Entry::Line(line, _, kept)) =
+            usize::try_from(item).ok().and_then(|i| self.entries.get(i))
+        else {
+            return None;
+        };
+        let width = usize::from(self.width);
+        // The columns the window needs right, through its right edge.
+        let (rows, needed) = if self.wrap {
+            (usize::MAX, usize::MAX)
+        } else {
+            (rows, usize::from(self.column) + width)
+        };
+        if let Some(at) = last
+            .texts
+            .iter()
+            .position(|b| b.id == kept.id && b.rows >= rows && b.columns >= needed)
+        {
+            return Some(last.texts.swap_remove(at));
+        }
+        #[cfg(test)]
+        self.built.set(self.built.get() + 1);
+        let hit = self.format.hit();
+        let (text, columns) = if self.wrap {
+            let text = line::searched(line, &self.format, &self.query, hit);
+            (text, needed)
+        } else {
+            // A screen more to the right: the columns built for.
+            let reach = needed + width;
+            let text = line::within(line, &self.format, &self.query, hit, rows, reach);
+            (text, reach)
+        };
+        Some(Built {
+            id: kept.id,
+            text,
+            rows,
+            columns,
+        })
+    }
+
     /// Item `item`'s height on screen, at least one row: a log line's
     /// kept [`Height`] when it was measured at this layout. Markers and
     /// notices are one short line, measured each time.
     fn rows(&self, item: isize) -> usize {
-        let kept = match usize::try_from(item).ok().and_then(|i| self.entries.get(i)) {
-            Some(Entry::Line(_, _, kept)) => Some(kept),
+        let line = match usize::try_from(item).ok().and_then(|i| self.entries.get(i)) {
+            Some(Entry::Line(line, _, kept)) => Some((line, &kept.height)),
             _ => None,
         };
-        if let Some(height) = kept.and_then(Cell::get)
+        if let Some(height) = line.and_then(|(_, kept)| kept.get())
             && (height.width, height.wrap, height.meta) == (self.width, self.wrap, self.format.meta)
         {
             return height.rows;
         }
-        // ADR-001: `line_count` is ratatui's unstable rendered-line info.
-        let rows = self.paragraph(item).line_count(self.width.max(1)).max(1);
-        if let Some(kept) = kept {
+        let rows = match line {
+            // With wrap off, a line's screen lines, counted without
+            // building its text (the text's lines, `line_count` without
+            // a wrap).
+            Some((line, _)) if !self.wrap => line::screen_lines(line, &self.format),
+            // ADR-001: `line_count` is ratatui's unstable rendered-line info.
+            _ => self.paragraph(item).line_count(self.width.max(1)),
+        }
+        .max(1);
+        if let Some((_, kept)) = line {
             #[cfg(test)]
             self.measured.set(self.measured.get() + 1);
             kept.set(Some(Height {
@@ -1161,6 +1321,67 @@ impl Viewer {
         Flow::Redraw
     }
 
+    /// The log area: each item from the window's top down, log lines
+    /// from the last frame's texts where it kept them ([`Drawn`]).
+    fn draw_log(&mut self, frame: &mut Frame<'_>, log: Rect) {
+        let resized = log.width != self.width || usize::from(log.height) != self.height;
+        self.width = log.width;
+        self.height = usize::from(log.height);
+        if resized {
+            self.clamp_anchor();
+            self.prefetch();
+        }
+        let mut last = std::mem::take(&mut self.drawn);
+        let built_for = (self.format.clone(), self.query.clone());
+        if last.built_for.as_ref() != Some(&built_for) {
+            last.texts.clear();
+        }
+        let mut drawn = Drawn {
+            built_for: Some(built_for),
+            texts: Vec::new(),
+        };
+        let mut kept = 0;
+        let mut at = self.top();
+        let mut y = 0;
+        while y < log.height && at.item < self.end_item() {
+            let rows = self.rows(at.item);
+            let shown = u16::try_from(rows.saturating_sub(at.skip))
+                .unwrap_or(u16::MAX)
+                .min(log.height - y);
+            let skip = u16::try_from(at.skip).unwrap_or(u16::MAX);
+            // With wrap off, the x offset is the sideways column
+            // (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html#method.scroll>).
+            let column = if self.wrap { 0 } else { self.column };
+            let paragraph = match self.text_of(at.item, at.skip + usize::from(shown), &mut last) {
+                Some(built) => {
+                    let paragraph = self.wrapped(Paragraph::new(built.text.clone()));
+                    let size = built.size();
+                    if kept + size <= self.drawn_bytes {
+                        kept += size;
+                        drawn.texts.push(built);
+                    }
+                    paragraph
+                }
+                None => self.paragraph(at.item),
+            }
+            .scroll((skip, column));
+            frame.render_widget(
+                paragraph,
+                Rect {
+                    y: log.y + y,
+                    height: shown,
+                    ..log
+                },
+            );
+            y += shown;
+            at = Anchor {
+                item: at.item + 1,
+                skip: 0,
+            };
+        }
+        self.drawn = drawn;
+    }
+
     fn header(&self) -> TextLine<'static> {
         let muted = self.format.style(Role::Muted);
         let state = match self.follow {
@@ -1300,39 +1521,7 @@ impl App for Viewer {
             // (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html#impl-Widget-for-%26TextArea%3C'_%3E>).
             frame.render_widget(line, line_area);
         }
-        let resized = log.width != self.width || usize::from(log.height) != self.height;
-        self.width = log.width;
-        self.height = usize::from(log.height);
-        if resized {
-            self.clamp_anchor();
-            self.prefetch();
-        }
-        let mut at = self.top();
-        let mut y = 0;
-        while y < log.height && at.item < self.end_item() {
-            let rows = self.rows(at.item);
-            let shown = u16::try_from(rows.saturating_sub(at.skip))
-                .unwrap_or(u16::MAX)
-                .min(log.height - y);
-            let skip = u16::try_from(at.skip).unwrap_or(u16::MAX);
-            // With wrap off, the x offset is the sideways column
-            // (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html#method.scroll>).
-            let column = if self.wrap { 0 } else { self.column };
-            let paragraph = self.paragraph(at.item).scroll((skip, column));
-            frame.render_widget(
-                paragraph,
-                Rect {
-                    y: log.y + y,
-                    height: shown,
-                    ..log
-                },
-            );
-            y += shown;
-            at = Anchor {
-                item: at.item + 1,
-                skip: 0,
-            };
-        }
+        self.draw_log(frame, log);
     }
 }
 

@@ -63,11 +63,31 @@ its window again, at about 0.3 ms a record, and the median frame took
 9.1 to 9.6 ms. With each line's height kept for its layout, and the
 paging check counting entries before it measures, the median is 2.8 to
 2.9 ms. With wrap on (the default), every frame takes 1.9 to 3.7 ms, `t`
-included. With wrap off, a frame takes 5.6 ms and the frame that turns
-wrap off 9.9 ms: each builds the styled text of the 70 records in view.
-Both are within one 60 fps frame (16.7 ms); they are above the spec's
-5 ms budget, which the tui spec's verification notes leave open for the
-maintainer.
+included. With wrap off, a frame took 5.6 ms and the frame that turns
+wrap off 9.9 ms: each built the styled text of the 70 records in view,
+and the switch built each twice (to measure, then to draw).
+
+The maintainer asked for wrap off to meet 5 ms too (2026-11-15). With
+wrap off a line's height is now its newlines, counted from the bytes
+(`line::screen_lines`); its text is built only as far as the window
+reaches (`line::within`); and each frame keeps the texts it drew for
+the next (`Drawn`, bounded to the entries in view and 4 MiB). The same
+timing, now with three more wrap-off frames (a row up, a step right
+and back), three runs: the frame that turns wrap off takes 3.1 ms
+(9.8 before, timed the same way), the other wrap-off frames 1.3 to
+1.8 ms (5.3 to 5.8 before), and the wrap-on frames as before, 1.6 to
+3.5 ms; the slowest frame of a run is 3.5 ms, 4.6 ms in a run under
+heavier load. Every frame of the timing is within the 5 ms budget.
+
+Far to the right with wrap off, a frame still costs more: ratatui's
+`Paragraph::scroll` x offset walks every character to the left of the
+column on each draw, about 0.2 ms a line at column 4,000. Measured by
+hand on the same buffer (2,000 such records, wrap off, the column set
+just short of 1,000, 2,000 and 4,000, then a step right and a row up
+timed, release build), a step sideways or a row up at column 1,000
+took 9.3 ms before and 4.9 ms now, at 4,000 18.7 ms before and 14.2 ms
+now: within one 60 fps frame up to about column 2,000, and above it
+past that.
 
 ## Decision
 
