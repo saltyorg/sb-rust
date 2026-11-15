@@ -2120,6 +2120,18 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **Mutation passes run in a sandbox** (the gate; the maintainer,
+      2026-11-15). The passes run tests as root, so a mutant that bends a
+      path or drops a safety flag writes on the host: on 2026-11-15 a
+      mutant of the motd.yml migration's write wrote /nonexistent through
+      a test's planted link, and a mutant of its backups lookup left two
+      test backups and a root-owned /opt/saltbox/backups (all removed with
+      the maintainer's approval). Run cargo-mutants in a private mount
+      namespace where the host is read-only except the pass's own
+      directory and /tmp (unshare, / bind-mounted read-only), so root
+      tests keep their temp roots and nothing else can change. Record it
+      in ADR-021; floor-guard tests show a mutant's write to a host path
+      fails inside the pass.
 - [x] **The viewer's wrap-off frame meets 5 ms** (the maintainer,
       2026-11-15). M73 measured a wrap-off frame at about 5.6 ms (9.9 ms
       for the frame that switches wrap off) at 240x70 on the spec's
