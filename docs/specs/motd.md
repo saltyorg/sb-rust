@@ -160,7 +160,7 @@ mount points.
 | Memory Usage | `procfs::Meminfo`: MemAvailable, or else Free+Cached+Buffers; sb-go's `xG used, free, cached, available, total` | `/proc/meminfo` |
 | Package Status | update-notifier's `updates-available` file, then `/usr/lib/update-notifier/apt-check --human-readable --no-esm-messages`, then `apt list --upgradable` (children, 5 s each; `motd/info.go:372-570`) | same |
 | Reboot Status | `/var/run/reboot-required` and `.pkgs`, then `/usr/lib/update-notifier/update-motd-reboot-required` | same |
-| User Sessions | `loginctl list-sessions --output=json` up to 24.04, `--json=short` after, counting user sessions (decision 6) | `who` |
+| User Sessions | `loginctl list-sessions --output=json` up to 24.04, `--json=short` after, counting user sessions, then one `loginctl show-session -p Id -p State <ids>` to leave out the closing ones (decision 6, Difference 7) | `who` |
 | Last login | `last -w -n 5` (decision 6), with sb-go's text `user at Day Mon D HH:MM until HH:MM (dur) from IP` | `last -n 5`, then `lastlog -u root`, then `who -u` |
 | Disk Usage | `procfs` mountinfo plus `rustix::fs::statvfs`, with df's rules (below) and the bar of decision 8 | `df -H -x … --output=target,pcent,size` |
 | Services | `sb_host::services(filters)` with motd.yml's `systemd` additions and display names (`motd/systemd.go`) | `host.GetFilteredServices` |
@@ -224,13 +224,15 @@ through a small parser of sb's own (`gpu.rs`):
   for unknown IDs (`names.c`, `format_name_pair`, names.c:108-113).
 - A missing or unreadable file is not an error: every device reads in
   those unknown-ID forms, and the run log records why the file wasn't
-  read. lspci without the file shows the same numbers.
+  read. lspci without the file names the devices from udev's hwdb, which
+  Ubuntu hosts have; without the hwdb too, it writes `Class 0300: Device
+  vvvv:dddd`, which sb-go's class match leaves out (Difference 25).
 - ` (rev xx)` is appended when the sysfs `revision` is not zero, as lspci
   does. Devices are ordered by PCI address, as lspci orders them.
 - Names go through `DisplayText`, like any text sb didn't write.
 
 So the names match lspci's on that host (difference 21), except where
-lspci asks udev's hwdb (difference 22).
+lspci asks udev's hwdb (differences 22 and 25).
 
 **Secrets** (decision 12). motd.yml's `token`, `apikey` and `password`
 (typed `string` in the schema), and SABnzbd's `apikey` query parameter,
@@ -276,13 +278,22 @@ never reach stdout, stderr or the run log.
 7. **User Sessions comes from logind** (decision 6). sb-go read `who`,
    which reads utmp, and utmp is gone on newer Ubuntu. Sessions of the
    classes `manager`, `manager-early` and `background` are not counted
-   where `loginctl` reports a class. Found by the M40 matrix and raised
-   with the maintainer: logind also counts what utmp never held, so the
-   count can be higher than sb-go's. That is a command run over SSH
-   without a terminal (rsync, scp, sftp, Ansible), a session whose user
-   has logged out but left a process running (`closing`), and, under
-   pam_motd on 22.04 and 24.04, the login being made, which utmp gets
-   only after pam_motd has run (the platform note).
+   where `loginctl` reports a class.
+   - **Closing sessions are not counted** (the maintainer, 2026-11-15).
+     A session whose user has logged out but left a process running
+     stays in logind as `closing`; utmp dropped it at the logout, so sb
+     drops it too, on every release. Not every release's list carries
+     the state (249 and 259 have no `state` field), so one `loginctl
+     show-session -p Id -p State <ids>` child reads the counted
+     sessions' states. If that child fails (a session gone between the
+     two calls stops it), the listed sessions count.
+   - **What can still count above sb-go's** (found by the M40 matrix and
+     raised with the maintainer): a command run over SSH without a
+     terminal (rsync, scp, sftp, Ansible), which logind lists and utmp
+     never held, counts, because 26.04 can't tell it from a login (no
+     `tty` for either); and, under pam_motd on 22.04 and 24.04, the login
+     being made, which utmp gets only after pam_motd has run (the
+     platform note).
 8. **Last login comes from `last` alone.** The `lastlog` and `who -u`
    fallbacks are dropped (decision 6), and a failure reads `No recent
    logins`. It runs `last -w -n 5`: a long user or an IPv6 source shows
@@ -303,7 +314,8 @@ never reach stdout, stderr or the run log.
       reads `Error: <cause>` in the error colour.
     - A container whose inspect failed (other than removed since the
       list) needs attention, listed by its short ID as `inspect failed`
-      (M41; sb-go ran no inspect, and raised with the maintainer).
+      (M41; sb-go ran no inspect, and raised with the maintainer). It
+      stays as listed (2026-11-15).
 11. **Traefik:** a non-JSON answer reads `Error: unexpected answer from
     Traefik (HTTP <code>)`. sb-go's `curl -s` hid connection errors and
     showed "Failed to parse".
@@ -343,6 +355,13 @@ never reach stdout, stderr or the run log.
     logged unless the error is EACCES or ENOENT (the maintainer,
     2026-11-14). df's error exit made sb-go show `Not available` for the
     whole section.
+25. **A GPU that pci.ids doesn't name shows as `Device vvvv:dddd`** (2026-11-15): its vendor isn't in the host's file, or
+    the file is missing or unreadable. lspci would name it from udev's
+    hwdb (Difference 22), and sb-go would show that name. Where the file
+    is missing and the hwdb doesn't name it either, lspci writes `Class
+    0300: Device vvvv:dddd` (checked with pciutils 3.7.0 on 22.04, the
+    file moved away, with and without udev's `hwdb.bin`), which sb-go's
+    match on the class name leaves out; sb still lists the device.
 
 ### Scope
 
@@ -667,7 +686,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
    crate that parses the host's file at run time, pciid-parser 0.8.1
    (missed by the first search, found at M39), ends at the first line it
    can't parse, where "GPU names" skips and counts it (Tech Stack,
-   "Considered and not used"). Differences 21 and 22.
+   "Considered and not used"). sb's own parser was kept for that reason
+   after the library review (2026-11-15). Differences 21,
+   22 and 25.
 3. **An invalid motd.yml prints one line and skips only the config
    sections** (decided.md E-Q2).
    - An unreadable file or an unloadable schema is treated the same,
@@ -875,6 +896,10 @@ Nothing touches a real host's state, and every fixture is synthetic.
   logind already lists the login being made on every release, where
   utmp doesn't yet on 22.04 and 24.04; logind also lists a command run
   over SSH without a terminal, which utmp never holds (Difference 7).
+  The rerun of 2026-11-15 added a login that logged out with a process
+  left running: logind kept it as `closing` on every release, `loginctl
+  show-session -p Id -p State` gave its state on all three, and sb's
+  count, without it, equalled who's (26.04: logind's open `user` rows).
 - **Docker and Traefik (M41, 2026-11-15).** One sb-docker listing serves
   both sections. It is limited to sb-go's 5 s for its `docker ps` child
   (decision 11's 5 s per child; a daemon that takes the connection and

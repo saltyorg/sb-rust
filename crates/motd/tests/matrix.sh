@@ -9,16 +9,19 @@
 # Default: 22.04 24.04 26.04. SBM_BIN is an sb built on the oldest
 # release (default target/debug/sb). Each container (sbm-<release>, or
 # $SBM_PREFIX-<release>) boots systemd, starts sshd, and a synthetic user
-# logs in over SSH twice, once logged out and once still logged in; an
-# update-motd.d script records what sb, who and last say under pam_motd
-# during each login (notes, not checks). Then
+# logs in over SSH three times: once logged out, once logged out with a
+# process left running (logind keeps that session as closing), and once
+# still logged in; an update-motd.d script records what sb, who and last
+# say under pam_motd during each login (notes, not checks). Then
 # sb's lines are compared with lsb_release -ds/-cs, uname -r, uptime -p,
-# who's count (logind's own count where utmp is gone), last -w -n 5,
+# who's count (logind's own open user sessions where utmp is gone),
+# last -w -n 5,
 # df -H with sb-go's filters (a tmpfs, an anonymous volume and a bind
 # mount of it added), and
 # lspci's display controllers (sb-go's BMC exclusions applied).
-# SBM_FIXTURES gets each release's last and loginctl output for the unit
-# tests, the kernel release replaced by a placeholder.
+# SBM_FIXTURES gets each release's last and loginctl output (the list,
+# and show-session's states) for the unit tests, the kernel release
+# replaced by a placeholder.
 #
 # The container is not privileged: it gets CAP_SYS_ADMIN and no AppArmor
 # profile only so that its systemd can remount its own cgroup (private
@@ -85,7 +88,8 @@ n=$(ls /var/tmp/sbm-at-login.* 2>/dev/null | wc -l)
 EOM
 chmod 755 /etc/update-motd.d/99-sbm
 
-# Two logins over SSH: one logged out, one still logged in.
+# Three logins over SSH: one logged out, one logged out with a process
+# left running (its session stays, closing), one still logged in.
 useradd -m -s /bin/bash sbuser
 home=$(getent passwd sbuser | cut -d: -f6)
 mkdir -p /root/.ssh "$home/.ssh"
@@ -99,10 +103,12 @@ o="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
 # shellcheck disable=SC2086
 ssh -tt $o sbuser@127.0.0.1 "sleep 1" </dev/null >/dev/null 2>&1
 # shellcheck disable=SC2086
+ssh -tt $o sbuser@127.0.0.1 "nohup sleep 600 >/dev/null 2>&1 & sleep 1" </dev/null >/dev/null 2>&1
+# shellcheck disable=SC2086
 (setsid ssh -tt $o sbuser@127.0.0.1 "sleep 600" </dev/null >/dev/null 2>&1 &)
-for _ in $(seq 1 20); do [ -s /var/tmp/sbm-at-login.1 ] && break; sleep 0.5; done
+for _ in $(seq 1 20); do [ -s /var/tmp/sbm-at-login.2 ] && break; sleep 0.5; done
 sleep 1
-for n in 0 1; do
+for n in 0 1 2; do
   sed "s/^/  note  at login $((n + 1)) under pam_motd: /" "/var/tmp/sbm-at-login.$n" 2>/dev/null \
     || echo "  note  at login $((n + 1)): pam_motd ran no update-motd.d script"
 done
@@ -119,11 +125,20 @@ up_sb=$(sb uptime); up_tool=$(uptime -p | sed 's/^up //')
 [ "$up_sb" = "$up_tool" ] || { up_sb=$(sb uptime); up_tool=$(uptime -p | sed 's/^up //'); }
 check uptime "$up_sb" "$up_tool"
 
+# Each session's State, one show-session per session.
+states() {
+  for id in $(loginctl list-sessions --no-legend | awk '{print $1}'); do
+    loginctl show-session -p State --value "$id"
+  done
+}
+[ "$(states | grep -c '^closing$')" -ge 1 ] || { echo "  FAIL  sessions: no closing session to leave out"; fail=1; }
 # who reads utmp, which 26.04 no longer writes: there logind's own table,
-# its login classes, is the reference.
+# its login classes, and each session's State are the reference.
 who_count=$(who | grep -c .)
 if [ "$who_count" -eq 0 ]; then
-  who_count=$(loginctl list-sessions --no-legend | awk '$6 == "user"' | grep -c .)
+  for id in $(loginctl list-sessions --no-legend | awk '$6 == "user" {print $1}'); do
+    [ "$(loginctl show-session -p State --value "$id")" = closing ] || who_count=$((who_count + 1))
+  done
 fi
 case $who_count in
   0) sessions="No active sessions" ;;
@@ -167,12 +182,16 @@ if [ -n "${SBM_FIXTURES_IN:-}" ]; then
     22.04 | 24.04) loginctl list-sessions --output=json ;;
     *) loginctl list-sessions --json=short ;;
   esac >"$SBM_FIXTURES_IN/loginctl.json"
+  # shellcheck disable=SC2046 # one argument per session ID
+  loginctl show-session -p Id -p State $(loginctl list-sessions --no-legend | awk '{print $1}') \
+    >"$SBM_FIXTURES_IN/show-session"
 fi
 # A command over SSH without a terminal: logind lists it, utmp doesn't
 # (a note for the platform note, not a check).
+before=$(loginctl list-sessions --no-legend | grep -c sbuser)
 # shellcheck disable=SC2086
 (setsid ssh $o sbuser@127.0.0.1 "sleep 600" </dev/null >/dev/null 2>&1 &)
-for _ in $(seq 1 20); do [ "$(loginctl list-sessions --no-legend | grep -c sbuser)" -ge 3 ] && break; sleep 0.5; done
+for _ in $(seq 1 20); do [ "$(loginctl list-sessions --no-legend | grep -c sbuser)" -gt "$before" ] && break; sleep 0.5; done
 echo "  note  with a command-only SSH session: who $(who | grep -c .), sb: $(sb sessions)"
 exit $fail
 EOS

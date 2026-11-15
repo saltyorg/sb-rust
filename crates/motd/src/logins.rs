@@ -16,12 +16,18 @@
 //!   keeps a long user or host (an IPv6 address) whole where the default
 //!   cuts it at 8 and 16 columns.
 //!
-//! Both children run through sb-exec's `Cmd` under sb-go's 5 s, their
-//! text through term-ui's `DisplayText`; the JSON through `serde_json`.
+//! - A session in `closing` (its user logged out and left a process
+//!   running) isn't counted (the maintainer, 2026-11-15; Difference 7):
+//!   one `loginctl show-session -p Id -p State <ids>` reads the listed
+//!   sessions' states, on every release.
+//!
+//! Every child runs through sb-exec's `Cmd` under sb-go's 5 s, its text
+//! through term-ui's `DisplayText`; the JSON through `serde_json`.
 //! `last`'s columns are sb-go's field rules, as no crate reads them
 //! (why not utmp-rs: stale, and wtmpdb's database is no utmp file; motd
 //! spec, Tech Stack, "Considered and not used").
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use sb_exec::Cmd;
@@ -71,26 +77,59 @@ fn json_option(version_id: Option<&str>) -> &'static str {
 }
 
 /// User Sessions: logind's sessions counted, `N active session(s)` with
-/// the count in the value colour, or `No active sessions`.
+/// the count in the value colour, or `No active sessions`. A session in
+/// `closing`, a user who logged out and left a process running, is not
+/// counted (the maintainer, 2026-11-15; Difference 7): not every
+/// release's list carries the state (only 255's JSON has it), so one
+/// `show-session` child reads every counted session's `State`, as
+/// loginctl documents for parsable output
+/// (<https://www.freedesktop.org/software/systemd/man/latest/loginctl.html>,
+/// `show-session`; the states:
+/// <https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html>).
 pub async fn sessions(tools: &Tools, version_id: Option<&str>, paint: &Paint) -> String {
-    let output = child_output(
+    let listed = child_output(
         Cmd::new(tools.loginctl.as_os_str())
             .arg("list-sessions")
             .arg(json_option(version_id)),
         "loginctl",
     )
     .await;
-    match count_sessions(&output) {
-        Some(0) | None => NO_SESSIONS.to_string(),
-        Some(1) => format!("{} active session", paint.value("1")),
-        Some(count) => format!("{} active sessions", paint.value(&count.to_string())),
+    let Some(ids) = login_sessions(&listed) else {
+        return NO_SESSIONS.to_string();
+    };
+    let asked: Vec<&str> = ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !id.is_empty())
+        .collect();
+    let states = if asked.is_empty() {
+        String::new()
+    } else {
+        // `-p Id` keeps each answer with its session. loginctl stops at a
+        // session that has gone since the list (exit 1, the matrix): then
+        // no state is read and the listed sessions count.
+        let mut cmd = Cmd::new(tools.loginctl.as_os_str())
+            .arg("show-session")
+            .arg("-p")
+            .arg("Id")
+            .arg("-p")
+            .arg("State");
+        for id in asked {
+            cmd = cmd.value(id);
+        }
+        child_output(cmd, "loginctl show-session").await
+    };
+    match count_open(&ids, &states) {
+        0 => NO_SESSIONS.to_string(),
+        1 => format!("{} active session", paint.value("1")),
+        count => format!("{} active sessions", paint.value(&count.to_string())),
     }
 }
 
-/// The sessions in loginctl's JSON whose class, where it has one, is a
-/// login's; none when the output isn't a JSON array (a failed or older
-/// loginctl, logged).
-fn count_sessions(output: &str) -> Option<usize> {
+/// The IDs of the sessions in loginctl's JSON whose class, where it has
+/// one, is a login's (empty where a session has no ID); none when the
+/// output isn't a JSON array (a failed or older loginctl, logged).
+fn login_sessions(output: &str) -> Option<Vec<String>> {
     if output.is_empty() {
         return None;
     }
@@ -110,8 +149,53 @@ fn count_sessions(output: &str) -> Option<usize> {
                     .and_then(serde_json::Value::as_str)
                     .is_none_or(|class| !NOT_LOGINS.contains(&class))
             })
-            .count(),
+            .map(|session| {
+                session
+                    .get("session")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect(),
     )
+}
+
+/// The IDs `show-session -p Id -p State` reports as `closing`: one block
+/// per session, blocks apart by an empty line. Why by hand: loginctl has
+/// no JSON for `show-session` (its `--json=` covers the `list-*` verbs
+/// only, loginctl(1)), and no crate in the tree reads systemd's
+/// `KEY=VALUE` text (sb-host's `parse_show` reads systemctl's the same
+/// way). The empty line between blocks and the stop at the first unknown
+/// ID are loginctl's code, not its manual: `show_properties` in v249 and
+/// `show_session` in v259
+/// (<https://github.com/systemd/systemd/blob/v249/src/login/loginctl.c>,
+/// <https://github.com/systemd/systemd/blob/v259/src/login/loginctl.c>),
+/// and the container matrix saw both on 22.04, 24.04 and 26.04.
+fn closing_sessions(output: &str) -> HashSet<&str> {
+    let mut closing = HashSet::new();
+    for block in output.split("\n\n") {
+        let mut id = None;
+        let mut state = None;
+        for line in block.lines() {
+            match line.split_once('=') {
+                Some(("Id", value)) => id = Some(value),
+                Some(("State", value)) => state = Some(value),
+                _ => {}
+            }
+        }
+        if let (Some(id), Some("closing")) = (id, state) {
+            closing.insert(id);
+        }
+    }
+    closing
+}
+
+/// The listed sessions that `states` doesn't report as closing.
+fn count_open(ids: &[String], states: &str) -> usize {
+    let closing = closing_sessions(states);
+    ids.iter()
+        .filter(|id| !closing.contains(id.as_str()))
+        .count()
 }
 
 /// Last login: the first entry of `last -w -n 5` that is a login, in
@@ -251,14 +335,42 @@ mod tests {
         assert_eq!(json_option(None), "--json=short");
     }
 
-    /// Each release's session list counts the one SSH login; 26.04's
-    /// service manager session is not a login.
+    /// Each release's session list, beside show-session's states: the
+    /// logged-out login with a process left running is closing and isn't
+    /// counted, so the one open SSH login is; 26.04's service manager
+    /// session is not a login.
     #[test]
-    fn each_releases_sessions_count_the_login() {
+    fn each_releases_sessions_count_the_open_login() {
         for release in ["22.04", "24.04", "26.04"] {
-            let json = fixture(release, "loginctl.json");
-            assert_eq!(count_sessions(&json), Some(1), "{release}");
+            let ids = login_sessions(&fixture(release, "loginctl.json")).unwrap();
+            assert_eq!(ids.len(), 2, "{release}");
+            let states = fixture(release, "show-session");
+            assert_eq!(closing_sessions(&states).len(), 1, "{release}");
+            assert_eq!(count_open(&ids, &states), 1, "{release}");
         }
+    }
+
+    /// show-session's blocks: the closing sessions' IDs, whatever the
+    /// order of a block's lines; a block without an ID names none.
+    #[test]
+    fn show_sessions_closing_sessions_are_found() {
+        let states = "Id=c2\nState=active\n\nId=c3\nState=closing\n\n\
+                      State=closing\nId=c4\n\nState=closing\n\nId=c6\nState=online\n";
+        let closing = closing_sessions(states);
+        assert_eq!(closing.len(), 2);
+        assert!(closing.contains("c3") && closing.contains("c4"));
+        assert!(closing_sessions("").is_empty());
+    }
+
+    /// The leftovers of logged-out users are dropped; a session
+    /// show-session didn't answer for still counts.
+    #[test]
+    fn closing_sessions_are_not_counted() {
+        let ids = ["c3", "c4", "c5", ""].map(String::from);
+        let states = "Id=c3\nState=closing\n\nId=c4\nState=active\n";
+        assert_eq!(count_open(&ids, states), 3);
+        assert_eq!(count_open(&ids, ""), 4);
+        assert_eq!(count_open(&[], states), 0);
     }
 
     #[test]
@@ -266,22 +378,28 @@ mod tests {
         let json = r#"[{"class":"user"},{"class":"user"},{"class":"manager"},
             {"class":"manager-early"},{"class":"background"},{"class":"user-early"},
             {"class":"greeter"},{},{"class":7}]"#;
-        assert_eq!(count_sessions(json), Some(6));
+        assert_eq!(login_sessions(json).map(|ids| ids.len()), Some(6));
         // Only the service manager's: no login.
-        assert_eq!(count_sessions(r#"[{"class":"manager"}]"#), Some(0));
-        assert_eq!(count_sessions("[]"), Some(0));
+        assert_eq!(
+            login_sessions(r#"[{"class":"manager"}]"#).map(|ids| ids.len()),
+            Some(0)
+        );
+        assert_eq!(login_sessions("[]").map(|ids| ids.len()), Some(0));
     }
 
     /// No output (the child failed), loginctl's table, or JSON that isn't
     /// a list: nothing to count.
     #[test]
     fn output_that_is_no_session_list_counts_nothing() {
-        assert_eq!(count_sessions(""), None);
+        assert_eq!(login_sessions("").map(|ids| ids.len()), None);
         assert_eq!(
-            count_sessions("SESSION  UID USER\n     c3 1001 sbuser"),
+            login_sessions("SESSION  UID USER\n     c3 1001 sbuser").map(|ids| ids.len()),
             None
         );
-        assert_eq!(count_sessions(r#"{"session":"c3"}"#), None);
+        assert_eq!(
+            login_sessions(r#"{"session":"c3"}"#).map(|ids| ids.len()),
+            None
+        );
     }
 
     #[tokio::test]
@@ -311,6 +429,72 @@ mod tests {
         );
         stand_in(&tools.loginctl, "echo '[]'");
         assert_eq!(sessions(&tools, None, &paint).await, "No active sessions");
+    }
+
+    /// One show-session child asks for the counted sessions' states, and
+    /// a closing one is dropped (the maintainer, 2026-11-15; Difference
+    /// 7); the service manager's isn't asked for.
+    #[tokio::test]
+    async fn sessions_drop_the_closing_ones() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tools(dir.path());
+        let paint = painted();
+        stand_in(
+            &tools.loginctl,
+            "case \"$*\" in\n\
+             'list-sessions --json=short') echo '[{\"session\":\"c2\",\"class\":\"manager\"},\
+             {\"session\":\"c3\",\"class\":\"user\"},{\"session\":\"c4\",\"class\":\"user\"},\
+             {\"session\":\"c5\",\"class\":\"user\"}]' ;;\n\
+             'show-session -p Id -p State c3 c4 c5') printf 'Id=c3\\nState=closing\\n\\nId=c4\\nState=active\\n\\nId=c5\\nState=active\\n' ;;\n\
+             *) exit 1 ;;\n\
+             esac",
+        );
+        assert_eq!(
+            sessions(&tools, Some("26.04"), &paint).await,
+            format!("{} active sessions", paint.value("2"))
+        );
+        // Every counted session closing: none.
+        stand_in(
+            &tools.loginctl,
+            "case \"$1\" in\n\
+             list-sessions) echo '[{\"session\":\"24911\"}]' ;;\n\
+             show-session) printf 'Id=24911\\nState=closing\\n' ;;\n\
+             esac",
+        );
+        assert_eq!(sessions(&tools, Some("22.04"), &paint).await, NO_SESSIONS);
+        // show-session failing (a session gone between the two calls):
+        // the listed sessions count, as before the states were read.
+        stand_in(
+            &tools.loginctl,
+            "case \"$1\" in\n\
+             list-sessions) echo '[{\"session\":\"24911\"},{\"session\":\"24912\"}]' ;;\n\
+             show-session) printf 'Id=24911\\nState=closing\\n'; exit 1 ;;\n\
+             esac",
+        );
+        assert_eq!(
+            sessions(&tools, Some("24.04"), &paint).await,
+            format!("{} active sessions", paint.value("2"))
+        );
+    }
+
+    /// No session to count: show-session isn't run.
+    #[tokio::test]
+    async fn no_session_runs_no_show_session() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tools(dir.path());
+        let ran = dir.path().join("ran");
+        stand_in(
+            &tools.loginctl,
+            &format!(
+                "case \"$1\" in\nlist-sessions) echo '[{{\"session\":\"c2\",\"class\":\"manager\"}}]' ;;\n\
+                 *) touch '{}' ;;\nesac",
+                ran.display()
+            ),
+        );
+        assert_eq!(sessions(&tools, None, &Paint::plain()).await, NO_SESSIONS);
+        assert!(!ran.exists());
     }
 
     /// loginctl missing, failing or hanging: sb-go's text for no session.
