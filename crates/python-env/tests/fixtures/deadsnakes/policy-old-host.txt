@@ -1,0 +1,7 @@
+python3.12:
+  Installed: 3.12.12-1+jammy1
+  Candidate: 3.12.12-1+jammy1
+  Version table:
+ *** 3.12.12-1+jammy1 500
+        500 http://ppa.launchpad.net/deadsnakes/ppa/ubuntu jammy/main amd64 Packages
+        100 /var/lib/dpkg/status

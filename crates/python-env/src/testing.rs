@@ -34,17 +34,42 @@ pub fn root() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// `env` running the stand-in git, dpkg-query and apt-get of the tree at
-/// `root`, apt's update retries cut short.
+/// The file under the root naming the tree's Ubuntu release (`VERSION_ID`),
+/// [`DEFAULT_RELEASE`] when there is none.
+const RELEASE_FILE: &str = "os-release-version";
+
+/// The tree's release unless [`Tree::release`] names another: one the
+/// deadsnakes cleanup doesn't run on, whatever the host runs.
+pub const DEFAULT_RELEASE: &str = "24.04";
+
+/// `env` running the stand-in git, dpkg-query, apt-get and apt-cache of
+/// the tree at `root`, apt's update retries cut short, its apt sources and
+/// backups under the root (owned by the root's owner in place of root's),
+/// and the tree's release in place of the host's.
 #[must_use]
 pub fn with_stand_ins<'a>(mut env: crate::Env<'a>, root: &Path) -> crate::Env<'a> {
+    use std::os::unix::fs::MetadataExt as _;
     let dir = root.join("stand-ins");
     let short = std::time::Duration::from_millis(50);
+    let owner = std::fs::metadata(root).map_or(0, |meta| meta.uid());
     env.git = dir.join("git");
     env.apt = sb_host::apt::Apt::new()
         .with_dpkg_query(dir.join("dpkg-query"))
         .with_apt_get(dir.join("apt-get"))
-        .with_update_timing(std::time::Duration::from_secs(10), short, short, short);
+        .with_apt_cache(dir.join("apt-cache"))
+        .with_update_timing(std::time::Duration::from_secs(10), short, short, short)
+        .with_sources_roots(root.join("etc/apt"), root.join("var/backups"), owner);
+    // No file yet is the default release.
+    let release = std::fs::read_to_string(root.join(RELEASE_FILE)).unwrap_or_default();
+    let release = release.trim();
+    env.ubuntu_release = Some(
+        if release.is_empty() {
+            DEFAULT_RELEASE
+        } else {
+            release
+        }
+        .to_owned(),
+    );
     env
 }
 
@@ -182,8 +207,105 @@ impl Tree {
         tree.entry_points(&templates.join("bin"));
         tree.uv(UV, UV);
         tree.libpq(true);
-        let _ = stand_in(&tree.stand_ins(), "apt-get", &tree.calls_line());
+        let _ = stand_in(&tree.stand_ins(), "apt-get", &tree.apt_get_script());
+        let policies = tree.root.path().join("policy");
+        let _ = stand_in(
+            &tree.stand_ins(),
+            "apt-cache",
+            &format!("{}\ncat '{}/'\"$3\"", tree.calls_line(), policies.display()),
+        );
         tree
+    }
+
+    /// The stand-in apt-get's script: records its call; its operation
+    /// (the first argument that is neither an option nor `-o`'s value)
+    /// fails when [`Tree::fail`] names `apt-get-<op>`; `remove` makes the
+    /// rows of [`Tree::rows_after_remove`] dpkg's; `update` runs the
+    /// script of [`Tree::on_update`].
+    fn apt_get_script(&self) -> String {
+        let root = self.root.path().display().to_string();
+        let script = r#"prev=; op=
+for a; do
+  if [ -z "$op" ] && [ "$prev" != -o ] && [ "${a#-}" = "$a" ]; then op=$a; fi
+  prev=$a
+done
+[ -e 'ROOT/fail/apt-get-'"$op" ] && { echo "E: apt-get $op failed (stand-in)" >&2; exit 100; }
+if [ "$op" = remove ] && [ -e 'ROOT/rows-after-remove' ]; then
+  cp 'ROOT/rows-after-remove' 'ROOT/dpkg-rows'
+fi
+if [ "$op" = update ] && [ -e 'ROOT/on-update' ]; then sh 'ROOT/on-update'; fi
+exit 0"#;
+        format!("{}\n{}", self.calls_line(), script.replace("ROOT", &root))
+    }
+
+    /// The tree's Ubuntu release: `version_id` in place of
+    /// [`DEFAULT_RELEASE`].
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    pub fn release(&self, version_id: &str) {
+        std::fs::write(self.root.path().join(RELEASE_FILE), version_id).expect("release");
+    }
+
+    /// The tree's `etc/apt/sources.list.d`, made 0755 with `var/backups`
+    /// (the checks sb-host makes of the real ones) when missing.
+    ///
+    /// # Panics
+    ///
+    /// When they can't be made.
+    #[must_use]
+    pub fn sources_d(&self) -> PathBuf {
+        let sources_d = self.root.path().join("etc/apt/sources.list.d");
+        for dir in [&sources_d, &self.backups()] {
+            std::fs::create_dir_all(dir).expect("dir");
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        sources_d
+    }
+
+    /// The tree's `var/backups`.
+    #[must_use]
+    pub fn backups(&self) -> PathBuf {
+        self.root.path().join("var/backups")
+    }
+
+    /// dpkg-query's package rows (`package_list`'s format, one per line).
+    ///
+    /// # Panics
+    ///
+    /// When they can't be written.
+    pub fn rows(&self, rows: &str) {
+        std::fs::write(self.root.path().join("dpkg-rows"), rows).expect("rows");
+    }
+
+    /// The rows dpkg-query gives once apt-get has run `remove`.
+    ///
+    /// # Panics
+    ///
+    /// When they can't be written.
+    pub fn rows_after_remove(&self, rows: &str) {
+        std::fs::write(self.root.path().join("rows-after-remove"), rows).expect("rows");
+    }
+
+    /// apt-cache's `policy` answer for `name`.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    pub fn policy(&self, name: &str, text: &str) {
+        let dir = self.root.path().join("policy");
+        std::fs::create_dir_all(&dir).expect("policy dir");
+        std::fs::write(dir.join(name), text).expect("policy");
+    }
+
+    /// A shell script apt-get runs on `update`.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    pub fn on_update(&self, script: &str) {
+        std::fs::write(self.root.path().join("on-update"), script).expect("on-update");
     }
 
     /// The uv and uvx stand-ins, reporting `uv` and `uvx` as their
@@ -325,14 +447,21 @@ impl Tree {
     }
 
     /// A dpkg-query that has libpq-dev installed (`ii`), or knows no such
-    /// package (exit 1, as dpkg-query for an unknown one).
+    /// package (exit 1, as dpkg-query for an unknown one); its package
+    /// list is [`Tree::rows`]' (none by default).
     ///
     /// # Panics
     ///
     /// When it can't be written.
     pub fn libpq(&self, installed: bool) {
         let answer = if installed { "printf 'ii '" } else { "exit 1" };
-        let script = format!("{}\n{answer}", self.calls_line());
+        let rows = self.root.path().join("dpkg-rows");
+        let script = format!(
+            "{}\ncase \"$2\" in\n'-f=${{db:Status-Abbrev}}') {answer} ;;\n\
+             *) cat '{}' 2>/dev/null; exit 0 ;;\nesac",
+            self.calls_line(),
+            rows.display()
+        );
         let _ = stand_in(&self.stand_ins(), "dpkg-query", &script);
     }
 

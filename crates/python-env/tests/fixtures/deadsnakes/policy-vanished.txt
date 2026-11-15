@@ -1,0 +1,6 @@
+python3.12:
+  Installed: 3.12.12-1+jammy1
+  Candidate: 3.12.12-1+jammy1
+  Version table:
+ *** 3.12.12-1+jammy1 100
+        100 /var/lib/dpkg/status

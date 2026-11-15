@@ -229,7 +229,7 @@ impl Apt {
     /// content does, goes into `/var/backups/sb/<backup>/<run id>/`, and
     /// the result says where each now is (host spec, "apt",
     /// `remove_sources_mentioning`, amendment H3; python-env passes
-    /// `deadsnakes` for both). A link moves as a link: its target is read
+    /// `/deadsnakes/ppa` and `deadsnakes`). A link moves as a link: its target is read
     /// through no other link, at most 1 MiB of it, and never written or
     /// moved. `needle` and `backup` are written in sb's code, never input;
     /// `run_id` is the run log's, as for [`Apt::add_repositories`].

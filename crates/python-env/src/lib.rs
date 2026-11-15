@@ -1,8 +1,9 @@
 //! `sb-python-env`: the uv-managed Python, the Ansible venv Saltbox runs,
 //! the 22.04 deadsnakes cleanup and `saltbox.fact` (python-env spec). So
-//! far slices 1 to 5: the fixed [`Layout`], the toolchain
+//! far slices 1 to 6: the fixed [`Layout`], the toolchain
 //! ([`toolchain`]), the isolated child builder (`isolate`), the uv probe
-//! and install ([`uv`]), `saltbox.fact` ([`fact`]), the venv's checks,
+//! and install ([`uv`]), `saltbox.fact` ([`fact`]), the 22.04 deadsnakes
+//! cleanup ([`deadsnakes`]), the venv's checks,
 //! its reconcile with the clean retry and the build into staging
 //! ([`venv`]), the manifest, the
 //! wrappers, activation and the generation cleanup ([`activate`]), and
@@ -15,6 +16,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod activate;
+pub mod deadsnakes;
 pub mod fact;
 mod isolate;
 pub mod manifest;
@@ -25,6 +27,7 @@ pub mod uv;
 pub mod venv;
 pub mod wrappers;
 
+pub use deadsnakes::{DeadsnakesError, RepositoriesError, cleanup_deadsnakes};
 pub use fact::{FactError, FactMode, FactOutcome, install_fact};
 pub use isolate::IsolateError;
 pub use toolchain::{Toolchain, ToolchainError};
@@ -145,8 +148,18 @@ pub struct Env<'a> {
     pub arch: sb_release::Arch,
     /// git, for the checkout's commit (`git` from `PATH`).
     pub git: PathBuf,
-    /// apt and dpkg, for libpq-dev (spec, step 3).
+    /// apt and dpkg, for libpq-dev (spec, step 3) and the deadsnakes
+    /// cleanup.
     pub apt: Apt,
+    /// The Ubuntu release (os-release's `VERSION_ID`) the deadsnakes
+    /// cleanup takes the host for; `None` reads the host's
+    /// (`sb_host::ubuntu_release`).
+    pub ubuntu_release: Option<String>,
+    /// The run id naming the deadsnakes backup directory: the run log's
+    /// (cli-core's `RunLog::id()`, which `sb` sets). Without a run log,
+    /// the run's start in UTC, `YYYYmmddTHHMMSSnnnnnnnnn`, letters and
+    /// digits as a run id must be.
+    pub run_id: String,
 }
 
 impl<'a> Env<'a> {
@@ -166,6 +179,12 @@ impl<'a> Env<'a> {
             arch,
             git: PathBuf::from("git"),
             apt: Apt::new(),
+            ubuntu_release: None,
+            // `%N` is `%9f`, nine digits (jiff's strtime docs:
+            // <https://docs.rs/jiff/0.2.38/jiff/fmt/strtime/index.html>).
+            run_id: jiff::Timestamp::now()
+                .strftime("%Y%m%dT%H%M%S%N")
+                .to_string(),
         }
     }
 
@@ -200,9 +219,6 @@ pub struct RuntimeError(#[from] Exit);
 /// words, the old deadsnakes packages, the venv ([`reconcile_venv`] with
 /// no force) and `saltbox.fact`.
 ///
-/// So far the deadsnakes cleanup (module build M20) has nothing to do:
-/// its step passes as it does on a host that needs no cleanup.
-///
 /// # Errors
 ///
 /// [`RuntimeError`] when a step fails; the step shows sb-go's error.
@@ -212,11 +228,13 @@ pub async fn reconcile_runtime(
     user: Option<&str>,
 ) -> Result<(), RuntimeError> {
     let deadsnakes = "Checking for old deadsnakes Python packages";
-    step.step(Labels::new(deadsnakes, deadsnakes), async |_| {
-        // Nothing removed until the cleanup lands (module build M20): its
-        // error then reads "error cleaning up deadsnakes packages: <cause>"
-        // and a removal adds "Removed old deadsnakes Python packages".
-        tracing::info!("the deadsnakes cleanup isn't built yet: nothing checked");
+    step.step(Labels::new(deadsnakes, deadsnakes), async |step| {
+        let cleaned = cleanup_deadsnakes(step, env)
+            .await
+            .context("error cleaning up deadsnakes packages")?;
+        if cleaned {
+            step.info("Removed old deadsnakes Python packages");
+        }
         anyhow::Ok(())
     })
     .await?;

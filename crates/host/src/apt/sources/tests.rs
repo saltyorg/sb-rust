@@ -1320,3 +1320,21 @@ fn the_query_fails_on_a_target_it_cannot_look_at() {
         "{error}"
     );
 }
+
+/// The needle is matched whatever its ASCII case, as sb-go lowercases a
+/// source's text (python/cleanup.go, `containsDeadsnakesRepository`).
+#[test]
+fn the_needle_is_found_whatever_its_case() {
+    let fixture = Fixture::new();
+    let upper = "URIs: https://ppa.launchpadcontent.net/DEADSNAKES/ppa/ubuntu\n";
+    write(&fixture.sources_d().join("upper.sources"), upper);
+    write(&fixture.sources_d().join("mixed.list"), "# DeadSnakes\n");
+    write(&fixture.sources_d().join("near.list"), "# dead snakes\n");
+    let found = mentioned(&fixture.roots).expect("query");
+    assert_eq!(
+        found,
+        ["mixed.list", "upper.sources"].map(|name| fixture.sources_d().join(name))
+    );
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(moved.len(), 2, "{moved:?}");
+}

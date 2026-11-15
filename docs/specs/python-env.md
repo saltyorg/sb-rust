@@ -231,12 +231,24 @@ On failure the error carries exec's stderr tail, as sb-go's
   `+focal<N>` or `+jammy<N>` suffix. Any other origin keeps the package.
 - Then `host::remove(pkgs)` and `host::autoremove()`, and the query again.
   Leftovers: `deadsnakes Python packages remain after cleanup: <pkgs>`.
-- Every file in `/etc/apt/sources.list.d` that mentions `deadsnakes` is
-  moved aside into a root-only `/var/backups/sb/deadsnakes/<run id>/`, the
+- Every file in `/etc/apt/sources.list.d` that mentions `/deadsnakes/ppa`
+  (the path both PPA hostnames share; *amended 2026-11-15 from
+  `deadsnakes`*) is moved aside into a root-only `/var/backups/sb/deadsnakes/<run id>/`, the
   run id being the run log's (`host::remove_sources_mentioning`, amendment
   H3; decision 22), then `host::update_lists()`, then the directory is
-  checked again. Leftovers: `deadsnakes repository files remain after
-  cleanup: <files>`. The move is fenced as ops' setup moves its apt
+  checked again with the read-only `host::sources_mentioning` (host spec,
+  added 2026-11-15), by the same rule. Leftovers: `deadsnakes repository
+  files remain after cleanup: <files>`, each path escaped as sb-host logs
+  a moved name. "Mentions" ignores ASCII case, as sb-go lowercases the
+  text; a symlink whose target mentions it moves as a link (host spec,
+  H3 as amended 2026-11-15). The needle is the PPA's path, not
+  `deadsnakes` alone, so the file rule is the package rule (the origins
+  above): a `deadsnakes-snapshot` source, whose package is kept, stays.
+  Moving it would leave that package with no source left on the next
+  run, where its `+jammy<N>` suffix would read as deadsnakes' and it
+  would be removed, which sb-go never does. *Amended 2026-11-15 (module
+  build M20, from its review).*
+  The move is fenced as ops' setup moves its apt
   sources (ops spec decisions 5 and 28): fixed paths, the directories
   opened `O_DIRECTORY | O_NOFOLLOW` and refused when a symlink, not
   root's, or group- or world-writable (`/var/backups/sb` and `deadsnakes`
@@ -248,6 +260,23 @@ On failure the error carries exec's stderr tail, as sb-go's
   it moves. The step adds the info `Moved <n> deadsnakes repository files
   to /var/backups/sb/deadsnakes/<run id>`. Old copies stay until the user
   removes them.
+- **The run id** is the run log's, which `sb` puts in `Env::run_id`. A
+  run without a log (cli-core's "no run log this time" warning) names
+  the directory by the run's start in UTC, `YYYYmmddTHHMMSSnnnnnnnnn`,
+  letters and digits as a run id must be. *Added 2026-11-15 (module
+  build M20): the spec named only the log's id.*
+- **sb-go's texts** for the rest (cleanup.go): `parse installed packages:
+  line <n>: package name is empty` and `... installed package version is
+  empty`, `apt policy for <pkg> does not describe installed version <v>`,
+  `remove deadsnakes Python packages: <cause>`, `autoremove deadsnakes
+  Python dependencies: <cause>`, `verify deadsnakes package removal:
+  <cause>`, and, under `remove deadsnakes repositories: <cause>`, `update
+  apt package lists after removing deadsnakes repositories: <cause>` and
+  `verify deadsnakes repository removal: <cause>`. The package list and
+  policy errors are host's (`list packages: <cause>`, `query package
+  policy <name>: <cause>`). The release is read through `Env`'s
+  `ubuntu_release` (`None`: `host::ubuntu_release()`); one that can't be
+  read is not 22.04. Packages are queried again only after a removal.
 
 ### saltbox.fact (saltbox/fact.go; decisions 2, 6, 8)
 
@@ -311,8 +340,9 @@ error block), 130 on Ctrl-C.
 **`reconcile_runtime(step, env, user)`** (cmd/update.go:204-249), shared by
 `update` and `update-venv`, runs three nested steps in this order:
 1. "Checking for old deadsnakes Python packages"; error `error cleaning up
-   deadsnakes packages: <cause>`. A removal adds the info `Removed old
-   deadsnakes Python packages`.
+   deadsnakes packages: <cause>`. A removal or a move of source files adds
+   the info `Removed old deadsnakes Python packages` (sb-go's
+   `cleanedUp || repositoriesRemoved`).
 2. "Preparing Ansible virtual environment" (done "Ansible virtual
    environment ready", failure "Ansible virtual environment"):
    `reconcile_venv(None)`; error `error managing Ansible venv: <cause>`.
@@ -355,7 +385,8 @@ newer local fact).
 ```rust
 pub struct Layout { /* the paths above; Layout::saltbox() gives defaults */ }
 pub struct Env<'a> { pub layout: &'a Layout, pub release: &'a sb_release::Releases,
-                     pub uv_version: &'a str, pub arch: sb_release::Arch, /* program paths */ }
+                     pub uv_version: &'a str, pub arch: sb_release::Arch, /* program paths */
+                     pub ubuntu_release: Option<String>, pub run_id: String }
 pub enum Force { None, Venv, Python }
 pub enum FactMode { Update, Reinstall }
 
@@ -402,7 +433,15 @@ moved), so `ops` callers and the tests can read them.
     calls.
 12. **The deadsnakes source files are moved aside** into a root-only
     `/var/backups/sb/deadsnakes/<run id>/` through fenced directory
-    handles, not deleted (decision 22). sb-go deleted them by path.
+    handles, not deleted (decision 22). sb-go deleted them by path. A
+    file is moved when it mentions `/deadsnakes/ppa` in any ASCII case;
+    sb-go looks for the two hostnames before it
+    (`ppa.launchpadcontent.net/deadsnakes/ppa`,
+    `ppa.launchpad.net/deadsnakes/ppa`), so only a source naming that
+    path on another host would differ. A link sb-host leaves alone
+    (dangling, chained, to a directory or a FIFO; host spec difference
+    14) is neither moved nor reported by the re-check, where sb-go fails
+    or waits on it. *Amended 2026-11-15 (module build M20).*
 13. **`reinstall-python` reads the Saltbox user before its runner
     starts** (M16), as this spec's table says. sb-go read it inside the
     outer step, so there a missing user showed as a failed "Python and

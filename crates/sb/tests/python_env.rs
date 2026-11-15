@@ -93,6 +93,57 @@ fn a_missing_user_is_sb_gos_error() {
     assert!(!tree.layout.wrappers.join("ansible-playbook").exists());
 }
 
+/// On 22.04 `sb update-venv` runs the deadsnakes cleanup (module build
+/// M20): the package removed, the PPA's source file moved into a backup
+/// directory named by the run log's id (cli-core's 16 hex digits), both
+/// lines shown.
+#[test]
+fn update_venv_cleans_up_deadsnakes_on_jammy() {
+    if !root_gate::requested() {
+        return;
+    }
+    let tree = tree("nobody");
+    let _ = tree.healthy();
+    tree.release("22.04");
+    tree.rows("python3.12\tpython3.12\tii \t3.12.12-1+jammy1\n");
+    tree.rows_after_remove("");
+    tree.policy(
+        "python3.12",
+        " *** 3.12.12-1+jammy1 500\n        500 https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy/main amd64 Packages\n",
+    );
+    let ppa = "deb https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main\n";
+    std::fs::write(tree.sources_d().join("ppa.list"), ppa).expect("source");
+    run(&tree, "update-venv").success().stderr(
+        predicate::str::contains("Removed old deadsnakes Python packages")
+            .and(predicate::str::contains(
+                "Moved 1 deadsnakes repository files to ",
+            ))
+            .and(predicate::str::contains(
+                "Ansible virtual environment and saltbox.fact are ready",
+            )),
+    );
+    let runs: Vec<_> = std::fs::read_dir(tree.backups().join("sb/deadsnakes"))
+        .expect("backups")
+        .map(|entry| entry.expect("entry").path())
+        .collect();
+    let [run] = runs.as_slice() else {
+        panic!("one run directory: {runs:?}");
+    };
+    let id = run
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{id}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(run.join("ppa.list")).expect("moved"),
+        ppa
+    );
+}
+
 /// Both reinstall commands are listed, with sb-go's help, and take no
 /// arguments and no `-v` (python-env decision 9).
 #[test]

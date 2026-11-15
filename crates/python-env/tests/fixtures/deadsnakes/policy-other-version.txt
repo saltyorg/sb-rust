@@ -1,0 +1,8 @@
+python3.12:
+  Installed: 3.12.12-1+jammy1
+  Version table:
+ *** 3.12.12-1+jammy1 500
+        500 https://packages.example.invalid/python jammy/main amd64 Packages
+        100 /var/lib/dpkg/status
+     3.12.11-1+jammy1 500
+        500 https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy/main amd64 Packages

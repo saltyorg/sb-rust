@@ -1,0 +1,11 @@
+python3.12	python3.12	ii 	3.12.12-1+jammy1
+python3.12-venv	python3.12	rc 	3.12.12-1+jammy1
+python3.12-distutils	python3-stdlib-extensions	ii 	3.12.12-1+jammy1
+libpython3.12-stdlib:amd64	python3.12	ii 	3.12.12-1+jammy1
+libpython3.12t64:amd64	python3.12	ii 	3.12.12-1+jammy1
+idle-python3.12	python3.12	ii 	3.12.12-1+jammy1
+2to3.12	python3.12	ii 	3.12.12-1+jammy1
+python3.13	python3.13	ii 	3.13.7-1
+libpython3.13-stdlib:amd64	python3.13	ii 	3.13.7-1
+libc6:amd64	glibc	ii 	2.35-0ubuntu3.8
+python3.12-dev	python3.12	un 	

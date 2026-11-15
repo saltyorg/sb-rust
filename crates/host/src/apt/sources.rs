@@ -427,7 +427,7 @@ fn mentioning(dir: &OwnedFd, path: &Path, needle: &[u8]) -> Result<Names, Source
             _ => Ok(None),
         }
         .map_err(|cause| failed(path.join(&name), cause))?;
-        if bytes.is_some_and(|bytes| contains(&bytes, needle)) {
+        if bytes.is_some_and(|bytes| contains_ignoring_case(&bytes, needle)) {
             names.push((raw, name));
         }
     }
@@ -799,6 +799,18 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
+}
+
+/// [`contains`] with ASCII case ignored: sb-go lowercases a source's text
+/// before it looks for deadsnakes (python/cleanup.go,
+/// `containsDeadsnakesRepository`), so `DEADSNAKES` is found too. Why not
+/// aho-corasick's `ascii_case_insensitive`: as memchr for [`contains`], it
+/// would become sb-host's own dependency (host spec, Boundaries, "ask
+/// first") for a scan of a few small files.
+fn contains_ignoring_case(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 /// sb-go's `buildUbuntuArchiveSourcesContent`, exactly.

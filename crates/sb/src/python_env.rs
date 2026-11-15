@@ -56,7 +56,12 @@ fn run_without_user(
     // uv's release (and the fact's) through the proxy or GitHub, as `sb
     // self-update` reaches sb's; in a test build, the fake GitHub only.
     let releases = Releases::for_sb(&format!("sb/{}", build.version))?;
-    let env = Env::for_sb(&layout, &releases, UV_VERSION, Arch::current()?);
+    let mut env = Env::for_sb(&layout, &releases, UV_VERSION, Arch::current()?);
+    // The deadsnakes backup is named by the run log's id (python-env spec,
+    // "Deadsnakes cleanup"); without a log, `Env`'s own.
+    if let Some(log) = log {
+        log.id().clone_into(&mut env.run_id);
+    }
     super::block_on(async {
         let mut runner = Runner::start(name, shutdown, log, Options::default());
         let result = runner

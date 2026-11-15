@@ -189,7 +189,9 @@ count and the directory for its step line. `backup` is a `&'static str`
 folder name, never input (python-env passes `deadsnakes`); `run_id` is
 the run log's (cli-core's `RunLog::id()`, which host can't reach, as for
 `add_repositories`), letters and digits. An empty `needle` and a missing
-`sources.list.d` move nothing. A symlink is moved, as a link, when
+`sources.list.d` move nothing. "Contains" ignores ASCII case, as
+sb-go lowercases a source's text (*amended 2026-11-15, module build
+M20*). A symlink is moved, as a link, when
 its target's content contains `needle`: apt reads the target, so a
 symlinked list left in place would stay active. The link is read with
 `readlinkat` through the handle; its target (a relative one resolved
