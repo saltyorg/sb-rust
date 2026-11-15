@@ -1,14 +1,15 @@
 //! `sb motd` (motd spec): the banner, then one aligned `Key:  value` line
 //! per selected section, collected in parallel. Built so far: the
 //! selection rules, the runner, the layout, the system sections, Disk
-//! Usage, Package Status and GPU (module build M36-M39); the other
-//! sections, motd.yml, the banner and `--share` come with their own tasks
-//! (M40-M47), and until then a selected section without its code shows
-//! no line.
+//! Usage, Package Status, GPU, User Sessions and Last login (module build
+//! M36-M40); the other sections, motd.yml, the banner and `--share` come
+//! with their own tasks (M41-M47), and until then a selected section
+//! without its code shows no line.
 
 mod disk;
 pub mod gpu;
 mod layout;
+mod logins;
 mod packages;
 pub mod run;
 mod system;
@@ -295,7 +296,8 @@ pub async fn report(options: &Options, colours: Colours<'_>) -> Result<String, E
 /// the cap can only fire at an await. The system sections read one small
 /// file each, or list /proc, and make no other call; Package Status reads
 /// update-notifier's small summary, then awaits its children, as Reboot
-/// Status does. A slow source uses async I/O or tokio's `spawn_blocking`
+/// Status, User Sessions and Last login do. A slow source uses async I/O
+/// or tokio's `spawn_blocking`
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>), as
 /// Disk Usage and GPU do.
 fn job(section: Section, paint: &Paint) -> Option<run::Job> {
@@ -313,6 +315,13 @@ fn job(section: Section, paint: &Paint) -> Option<run::Job> {
             Box::pin(async move { packages::packages(&packages::Paths::system(), &paint).await })
         }
         Section::Disk => Box::pin(async move { disk::disk_here(&paint).await }),
+        Section::Sessions => Box::pin(async move {
+            let release = system::version_id_here();
+            logins::sessions(&logins::Tools::system(), release.as_deref(), &paint).await
+        }),
+        Section::LastLogin => {
+            Box::pin(async move { logins::last_login(&logins::Tools::system(), &paint).await })
+        }
         Section::Reboot => {
             Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
         }
@@ -481,6 +490,8 @@ mod tests {
                 "CPU:",
                 "Memory Usage:",
                 "Package Status:",
+                "User Sessions:",
+                "Last login:",
                 "Disk Usage:",
             ]
         );

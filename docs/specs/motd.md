@@ -160,8 +160,8 @@ mount points.
 | Memory Usage | `procfs::Meminfo`: MemAvailable, or else Free+Cached+Buffers; sb-go's `xG used, free, cached, available, total` | `/proc/meminfo` |
 | Package Status | update-notifier's `updates-available` file, then `/usr/lib/update-notifier/apt-check --human-readable --no-esm-messages`, then `apt list --upgradable` (children, 5 s each; `motd/info.go:372-570`) | same |
 | Reboot Status | `/var/run/reboot-required` and `.pkgs`, then `/usr/lib/update-notifier/update-motd-reboot-required` | same |
-| User Sessions | `loginctl list-sessions --output=json`, counting user sessions (decision 6) | `who` |
-| Last login | `last` (decision 6), with sb-go's text `user at Day Mon D HH:MM until HH:MM (dur) from IP` | `last -n 5`, then `lastlog -u root`, then `who -u` |
+| User Sessions | `loginctl list-sessions --output=json` up to 24.04, `--json=short` after, counting user sessions (decision 6) | `who` |
+| Last login | `last -w -n 5` (decision 6), with sb-go's text `user at Day Mon D HH:MM until HH:MM (dur) from IP` | `last -n 5`, then `lastlog -u root`, then `who -u` |
 | Disk Usage | `procfs` mountinfo plus `rustix::fs::statvfs`, with df's rules (below) and the bar of decision 8 | `df -H -x … --output=target,pcent,size` |
 | Services | `sb_host::services(filters)` with motd.yml's `systemd` additions and display names (`motd/systemd.go`) | `host.GetFilteredServices` |
 | Docker | sb-docker's `connect::list` rows (decision 13) | `systemctl is-active docker`, `docker ps -a` |
@@ -276,10 +276,17 @@ never reach stdout, stderr or the run log.
 7. **User Sessions comes from logind** (decision 6). sb-go read `who`,
    which reads utmp, and utmp is gone on newer Ubuntu. Sessions of the
    classes `manager`, `manager-early` and `background` are not counted
-   where `loginctl` reports a class.
+   where `loginctl` reports a class. Found by the M40 matrix and raised
+   with the maintainer: logind also counts what utmp never held, so the
+   count can be higher than sb-go's. That is a command run over SSH
+   without a terminal (rsync, scp, sftp, Ansible), a session whose user
+   has logged out but left a process running (`closing`), and, under
+   pam_motd on 22.04 and 24.04, the login being made, which utmp gets
+   only after pam_motd has run (the platform note).
 8. **Last login comes from `last` alone.** The `lastlog` and `who -u`
    fallbacks are dropped (decision 6), and a failure reads `No recent
-   logins`.
+   logins`. It runs `last -w -n 5`: a long user or an IPv6 source shows
+   whole, where sb-go's `last -n 5` cut them at 8 and 16 columns.
 9. **Distribution, Kernel, Uptime, Load Averages, Processes and Disk
    Usage run no children** (decision 16). They show the same text, which
    the container matrix checks against the tools on each release.
@@ -361,7 +368,7 @@ Cargo.lock.
 | rustix (`system`, `fs`) | 1.1.6 | `uname`, `statvfs` | https://docs.rs/rustix/1.1.6/rustix/system/fn.uname.html, https://docs.rs/rustix/1.1.6/rustix/fs/fn.statvfs.html | yes, in sb |
 | shlex | 2.0.1 | `--banner-file-toilet` args | https://docs.rs/shlex/2.0.1/shlex/fn.split.html | yes |
 | regex | 1.13.1 | `--share`'s candidates for IP addresses, each confirmed by `std::net::IpAddr`'s parser | https://docs.rs/regex/1.13.1/regex/ | yes, in sb |
-| jiff | 0.2.38 | last-login times | https://docs.rs/jiff/0.2.38/jiff/ | yes, in sb |
+| jiff | 0.2.38 | last-login times, if a later task needs them (M40 passes `last`'s date through as text, as sb-go does) | https://docs.rs/jiff/0.2.38/jiff/ | yes, in sb |
 | tokio, tokio-util, futures-util | workspace | tasks, `CancellationToken`, timeouts | https://docs.rs/tokio/latest/tokio/time/fn.timeout.html | yes |
 | sb-cli-core, sb-term-ui, sb-exec, sb-host, sb-config, sb-docker | workspace | startup and run log, paint/`DisplayText`/bar, children, services, motd.yml and HTTP, containers | — | yes |
 | insta, assert_cmd, `sb_config::testing::Fake`, sb-docker's `testing` | workspace | tests only | — | yes |
@@ -371,6 +378,12 @@ Cargo.lock.
   (sysinfo-0.40.0 `src/unix/linux/system.rs:614-624`). It stays for
   host's release check.
 - sysinfo `disk` gives no `f_bfree`, so it can't reproduce df's percent.
+- logind over D-Bus (zbus) or sd-login (the `systemd` and `libsystemd`
+  crates) for User Sessions: sb has no D-Bus dependency (tui spec) and
+  links nothing from libsystemd (ADR-020); `loginctl` is decision 6's
+  source.
+- utmp-rs for Last login: stale, and 26.04's `last` is wtmpdb's, whose
+  records are no utmp file (M40).
 - `utmp-rs` is stale, and utmp is going away.
 - `dxr`, `qbit-rs`, starr-like crates: map policy 3.
 - figlet-rs: decision 1.
@@ -685,8 +698,8 @@ Nothing touches a real host's state, and every fixture is synthetic.
 6. **Sessions come from logind's JSON and last login from `last`, each
    checked in 22.04, 24.04 and 26.04 containers** (decided.md E-Q5).
    - The arguments (for example `-w`, `--time-format iso`) and the
-     parsing are fixed per release by that check. Until then the parsing
-     is marked UNVERIFIED.
+     parsing are fixed per release by that check (done at M40: the
+     verification notes).
    - The first entry that isn't a reboot, shutdown or wtmp line is shown,
      as in sb-go.
 7. **`--share` masks IPs and hosts everywhere** (decided.md E-Q6, with
@@ -784,9 +797,11 @@ Nothing touches a real host's state, and every fixture is synthetic.
 
 ## Known limits
 
-- **The first `last` entry is often the current login** ("still logged
-  in"), because sshd records it before pam_motd runs. sb-go behaves the
-  same. Which entry wins is pinned by the matrix, not changed.
+- **Which `last` entry a login sees depends on the release.** Under
+  pam_motd, 26.04's pam_wtmpdb has already recorded the login being
+  made, so Last login shows it ("still logged in"); on 22.04 and 24.04
+  sshd writes wtmp after pam_motd, so the previous login shows (the
+  M40 matrix). sb-go behaves the same; sb doesn't change it.
 - **GPU names are as current as the host's pci.ids**, as lspci's are;
   `update-pciids` or a newer `pci.ids` package refreshes both.
 - **The 30 s cap is sb-go's.** A source that hangs still delays the login
@@ -807,7 +822,8 @@ Nothing touches a real host's state, and every fixture is synthetic.
   os-release's `VERSION_ID`: 3.3.17's up to 22.04, 4.0.4's after it and
   when the release is unknown. The unit test's 27 cases are the output of
   both versions' own code, copied into a C program fed those uptimes. The
-  container matrix (M40) is to check them on each release. procps 4.0.6
+  container matrix (M40) found sb's line equal to `uptime -p`'s on each
+  release, at the containers' one uptime. procps 4.0.6
   (Ubuntu 26.10) prints `0 minutes` at exactly 60.00 s where 4.0.4 prints
   nothing; a release shipping it needs a third form when it is supported.
 - **CPU and Memory Usage (M37).** The fixtures' expected lines are those of
@@ -842,6 +858,20 @@ Nothing touches a real host's state, and every fixture is synthetic.
   own, because procfs's `mountinfo()` fails whole on one non-UTF-8 line.
   The bar fills bubbles' `math.Round` cells; indicatif rounds down
   (`format_bar`), one more reason under decision 8.
+- **Sessions and Last login (M40, 2026-11-14).** The container matrix
+  (`crates/motd/tests/matrix.sh`, the platform note
+  `docs/platform-notes/motd-sources.md`) fixed decision 6's arguments:
+  `loginctl list-sessions --output=json` up to 24.04 (systemd 249, 255)
+  and `--json=short` after (259 ignores `--output=json` and writes its
+  table), picked by os-release's `VERSION_ID`; and `last -w -n 5` on
+  every release (util-linux on 22.04 and 24.04, wtmpdb on 26.04, whose
+  base image lacks it). `-w` keeps a long user or an IPv6 source whole,
+  where sb-go's `last -n 5` cut them at 8 and 16 columns. wtmpdb's
+  trailer, `wtmpdb begins`, is passed over with util-linux's `wtmp
+  begins`. Under pam_motd (an update-motd.d script in the matrix),
+  logind already lists the login being made on every release, where
+  utmp doesn't yet on 22.04 and 24.04; logind also lists a command run
+  over SSH without a terminal, which utmp never holds (Difference 7).
 - **Disk Usage beside sb-go (M38):** decided by the maintainer,
   2026-11-14: Differences 23 and 24. Control characters in a mount point are dropped by
   `DisplayText` (decision 24), where df writes `?`.

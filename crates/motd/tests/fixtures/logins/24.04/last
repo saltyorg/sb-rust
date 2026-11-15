@@ -1,0 +1,5 @@
+sbuser   pts/0        127.0.0.1        Sun Nov 15 09:00   still logged in
+sbuser   pts/0        127.0.0.1        Sun Nov 15 09:00 - 09:00  (00:00)
+reboot   system boot  6.8.0-1-generic Sat Nov 14 23:00   still running
+
+wtmp begins Sat Nov 14 23:00:00 2026

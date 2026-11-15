@@ -115,7 +115,7 @@ fn required(packages: &Path) -> String {
 /// available`, which every caller treats as no answer). It runs through
 /// sb-exec, in its own process group, ended at the timeout; `what` names
 /// it in the run log.
-async fn child_output(cmd: Cmd, what: &str) -> String {
+pub(crate) async fn child_output(cmd: Cmd, what: &str) -> String {
     let ran = cmd
         .timeout(CHILD_TIMEOUT)
         .capture(&CancellationToken::new())
@@ -286,7 +286,7 @@ pub(crate) mod tests {
     }
 
     /// A stand-in program at `path` running `body` under sh.
-    fn stand_in(path: &Path, body: &str) {
+    pub(crate) fn stand_in(path: &Path, body: &str) {
         std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }

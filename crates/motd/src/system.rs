@@ -268,14 +268,19 @@ pub fn uptime(uptime: Option<Duration>, form: Procps, paint: &Paint) -> String {
     paint.value(line.strip_prefix("up ").unwrap_or(line))
 }
 
+/// This host's os-release `VERSION_ID`, which picks Uptime's form and
+/// loginctl's JSON option.
+#[must_use]
+pub fn version_id_here() -> Option<String> {
+    read_os_release(&OS_RELEASE.map(Path::new))
+        .as_deref()
+        .and_then(|text| os_release_value(text, "VERSION_ID"))
+}
+
 /// Uptime on this host: /proc/uptime, in the form of the host's release.
 #[must_use]
 pub fn uptime_here(paint: &Paint) -> String {
-    let text = read_os_release(&OS_RELEASE.map(Path::new));
-    let version = text
-        .as_deref()
-        .and_then(|text| os_release_value(text, "VERSION_ID"));
-    let form = Procps::for_release(version.as_deref());
+    let form = Procps::for_release(version_id_here().as_deref());
     let now = current::<Uptime>("uptime").map(|up| up.uptime_duration());
     uptime(now, form, paint)
 }

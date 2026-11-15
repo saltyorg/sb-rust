@@ -20,7 +20,10 @@ regex.workspace = true
 # `uname(2)` for Kernel, `statvfs(3)` and `stat(2)` for Disk Usage (motd
 # spec, Sections; decision 16).
 rustix = { workspace = true, features = ["fs", "system"] }
-# Every child: Reboot Status's update-notifier script (CONSTRAINTS.md).
+# loginctl's session list (motd spec, Tech Stack).
+serde_json.workspace = true
+# Every child: update-notifier's scripts, apt, loginctl and last
+# (CONSTRAINTS.md).
 sb-exec.workspace = true
 thiserror.workspace = true
 # The sections' tasks and the 30 s cap (motd decision 11).
