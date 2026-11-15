@@ -149,8 +149,8 @@ fn stderr(output: &Output) -> String {
 }
 
 /// `sb diag`: `<program> saltbox.yml --become --tags diag` in the Saltbox
-/// root, attached, with sb-go's lines on stdout and the masked command in
-/// the run log.
+/// root, attached, with sb-go's lines on stdout and the command in the
+/// run log.
 #[test]
 fn diag_runs_the_diag_tag_in_the_saltbox_repo() {
     if !root_gate::requested() {
@@ -282,7 +282,7 @@ fn diag_takes_no_arguments() {
 /// `sb install`: the tags joined, split and trimmed, routed by prefix,
 /// and run Saltbox, then `saltbox_mod`, then Sandbox, each in its own
 /// directory with its own playbook, the tags joined with `,` in one
-/// element; each run's `Executing...` line masks the tags (decision 17).
+/// element; each run's `Executing...` line shows its tags (decision 17).
 #[test]
 fn install_runs_each_repo_in_sb_gos_order() {
     if !root_gate::requested() {
@@ -313,10 +313,14 @@ fn install_runs_each_repo_in_sb_gos_order() {
         ["sandbox.yml", "--become", "--tags", "tautulli"]
     );
     let out = stdout(&output);
-    for playbook in ["saltbox.yml", "saltbox_mod.yml", "sandbox.yml"] {
+    for (playbook, tags) in [
+        ("saltbox.yml", "plex,sonarr"),
+        ("saltbox_mod.yml", "jf"),
+        ("sandbox.yml", "tautulli"),
+    ] {
         assert!(
             out.contains(&format!(
-                "Executing Ansible playbook with command: {FAKE} {playbook} --become --tags [ARG]\n"
+                "Executing Ansible playbook with command: {FAKE} {playbook} --become --tags {tags}\n"
             )),
             "{out}"
         );
@@ -331,7 +335,6 @@ fn install_runs_each_repo_in_sb_gos_order() {
             "{out}"
         );
     }
-    assert!(!out.contains("plex") && !out.contains("tautulli"), "{out}");
     // A valid cache: no runner, no step.
     assert_eq!(stderr(&output), "");
 }
@@ -420,12 +423,13 @@ fn every_extra_vars_value_reaches_ansible_whole() {
     for run in &runs {
         assert_eq!(args_of(run)[4..], expected, "{run:?}");
     }
-    // The `Executing...` line shows each as `--extra-vars=[ARG]`.
-    let masked = format!(
-        "--tags [ARG]{} --skip-tags=[ARG]\n",
-        " --extra-vars=[ARG]".repeat(values.len())
+    // The `Executing...` line shows each as given, escaped as sb's
+    // screen text is (the newline as `\n`).
+    let shown = format!(
+        "--tags plex {} --skip-tags=x,y,z\n",
+        expected[..values.len()].join(" ").replace('\n', "\\n")
     );
-    assert!(stdout(&output).contains(&masked), "{}", stdout(&output));
+    assert!(stdout(&output).contains(&shown), "{}", stdout(&output));
 }
 
 /// Several `-e` keep their order: `-e a=1 -e '{"b": 2}' -e @f.yml` are
@@ -511,10 +515,46 @@ fn ansibles_argparse_receives_each_value_whole() {
     }
 }
 
-/// A token inside an `-e` value is in neither the `Executing...` line,
-/// the run log, nor the failure block (spec success criterion 5).
+/// `sb install x -e '{"a": 1, "b": [2, 3]}'` shows the JSON whole, as
+/// sb-go does, in the `Executing...` line and in the run log's start
+/// record, which quotes its fields as tracing's `Debug` does (spec success
+/// criterion 5; the maintainer, 2026-11-14).
 #[test]
-fn an_extra_vars_secret_is_never_shown_or_logged() {
+fn an_extra_vars_json_is_shown_and_logged_whole() {
+    if !root_gate::requested() {
+        return;
+    }
+    let json = r#"{"a": 1, "b": [2, 3]}"#;
+    let world = World::new();
+    let output = world
+        // `x` isn't in the seeded cache: `--no-cache` skips the validation.
+        .sb(&["install", "x", "--no-cache", "-e", json])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let command = format!("{FAKE} saltbox.yml --become --tags x --extra-vars={json}");
+    assert!(
+        stdout(&output).contains(&format!(
+            "Executing Ansible playbook with command: {command}\n"
+        )),
+        "{}",
+        stdout(&output)
+    );
+    let log = world.log();
+    let logged = format!("command={command:?} masked=0 ");
+    assert!(
+        log.lines()
+            .any(|line| line.contains("child started") && line.contains(&logged)),
+        "{log}"
+    );
+}
+
+/// Every `-e` value is shown and logged as given, in the `Executing...`
+/// line, the run log and exec's failure block: a value to keep out of
+/// them goes in an `@file` (spec success criterion 5; the maintainer,
+/// 2026-11-14).
+#[test]
+fn an_extra_vars_value_is_in_the_line_the_log_and_the_failure() {
     if !root_gate::requested() {
         return;
     }
@@ -530,15 +570,15 @@ fn an_extra_vars_secret_is_never_shown_or_logged() {
     // It reached Ansible, whole.
     assert!(args_of(&world.runs()[0]).contains(&format!("--extra-vars={value}").as_str()));
     let (out, err, log) = (stdout(&output), stderr(&output), world.log());
+    let shown = format!("--tags plex --extra-vars={value} --extra-vars=t={token}");
+    assert!(out.contains(&shown), "{out}");
+    let err = console::strip_ansi_codes(&err).into_owned();
     assert!(
-        out.contains("--extra-vars=[ARG] --extra-vars=[ARG]"),
-        "{out}"
+        err.contains(&format!("{shown} exited with code 2")),
+        "{err}"
     );
-    assert!(err.contains("exited with code 2"), "{err}");
     assert!(log.contains("child started"), "{log}");
-    for text in [&out, &err, &log] {
-        assert!(!text.contains(token), "{text}");
-    }
+    assert!(log.contains(&format!("--extra-vars=t={token}")), "{log}");
 }
 
 /// A failed playbook stops the rest: sb exits with its code, and the later

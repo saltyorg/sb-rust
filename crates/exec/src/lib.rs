@@ -39,7 +39,7 @@ const VALUE: &str = "[ARG]";
 
 /// A child process to run (spec, "A command"). Named apart from std's and
 /// tokio's `Command`. Its `Debug` shows what the log shows (no secret, no
-/// value), so a `?cmd` field or a `dbg!` can't print one.
+/// masked value), so a `?cmd` field or a `dbg!` can't print one.
 pub struct Cmd {
     program: OsString,
     args: Vec<Arg>,
@@ -57,6 +57,8 @@ const GRACE: Duration = Duration::from_secs(5);
 enum Arg {
     Literal(&'static str),
     Value(String),
+    /// A value the caller chose to show as given (`shown_value`).
+    Shown(String),
     Secret(String),
     /// A literal option and a value in one element: `joined` is the two
     /// together, as the child gets them.
@@ -71,7 +73,10 @@ impl Arg {
     fn text(&self) -> &str {
         match self {
             Self::Literal(literal) => literal,
-            Self::Value(text) | Self::Secret(text) | Self::Joined { joined: text, .. } => text,
+            Self::Value(text)
+            | Self::Shown(text)
+            | Self::Secret(text)
+            | Self::Joined { joined: text, .. } => text,
         }
     }
 }
@@ -161,11 +166,22 @@ impl Cmd {
         self
     }
 
-    /// A literal option joined to a value in one argument
-    /// (`--extra-vars=<value>`, for a tool that refuses the value as a
-    /// separate argument when it starts with `-`): the child gets the two
-    /// together, the log and errors show the literal and `[ARG]`
-    /// (`--extra-vars=[ARG]`). Nothing goes between the two: `option`
+    /// A value the log and errors show as given.
+    ///
+    /// For a caller whose spec decided its values are shown
+    /// (ansible-playbook's arguments: the maintainer, 2026-11-14). A value
+    /// that must stay out of the log goes through [`Cmd::value`] or
+    /// [`Cmd::secret`] instead.
+    #[must_use]
+    pub fn shown_value(mut self, value: impl Into<String>) -> Self {
+        self.args.push(Arg::Shown(value.into()));
+        self
+    }
+
+    /// A literal option joined to a value in one argument (`--opt=<value>`,
+    /// for a tool that refuses the value as a separate argument when it
+    /// starts with `-`): the child gets the two together, the log and
+    /// errors show the literal and `[ARG]` (`--opt=[ARG]`). Nothing goes between the two: `option`
     /// carries its own `=`.
     #[must_use]
     pub fn option_value(mut self, option: &'static str, value: impl Into<String>) -> Self {
@@ -298,9 +314,13 @@ impl Cmd {
     }
 
     /// The command as the log and errors show it, for a caller that prints
-    /// it (ansible's `Executing...` line): the program, literals in place,
-    /// `[ARG]` for each value, `[REDACTED]` for each secret, and a joined
-    /// option's literal followed by `[ARG]` (`--extra-vars=[ARG]`).
+    /// it (ansible's `Executing...` line): the program, literals and shown
+    /// values in place, `[ARG]` for each value, `[REDACTED]` for each
+    /// secret, and a joined option's literal followed by `[ARG]`
+    /// (`--opt=[ARG]`). The arguments are joined with spaces, unquoted, as
+    /// sb-go prints its command (`strings.Join(command, " ")`). Why not
+    /// `shell_words::join` or `shlex`: they quote, and the line would then
+    /// differ from sb-go's.
     #[must_use]
     pub fn shown(&self) -> String {
         let mut shown = self.program.to_string_lossy().into_owned();
@@ -308,6 +328,7 @@ impl Cmd {
             shown.push(' ');
             match arg {
                 Arg::Literal(literal) => shown.push_str(literal),
+                Arg::Shown(value) => shown.push_str(value),
                 Arg::Value(_) => shown.push_str(VALUE),
                 Arg::Secret(_) => shown.push_str(WITHHELD),
                 Arg::Joined { option, .. } => {
@@ -323,7 +344,7 @@ impl Cmd {
     fn masked(&self) -> usize {
         self.args
             .iter()
-            .filter(|arg| !matches!(arg, Arg::Literal(_)))
+            .filter(|arg| !matches!(arg, Arg::Literal(_) | Arg::Shown(_)))
             .count()
     }
 
@@ -331,7 +352,7 @@ impl Cmd {
     pub(crate) fn mask(&self) -> mask::Mask {
         let args = self.args.iter().filter_map(|arg| match arg {
             Arg::Secret(secret) => Some(secret.as_str()),
-            Arg::Literal(_) | Arg::Value(_) | Arg::Joined { .. } => None,
+            Arg::Literal(_) | Arg::Value(_) | Arg::Shown(_) | Arg::Joined { .. } => None,
         });
         let vars = self.env.values().filter_map(|var| match var {
             Var::Secret(secret) => Some(secret.as_str()),
@@ -631,6 +652,33 @@ mod tests {
         let argv: Vec<&str> = cmd.args.iter().map(Arg::text).collect();
         assert_eq!(argv, ["--become", r#"--extra-vars={"k": "v"}"#]);
         assert!(!format!("{cmd:?}").contains("\"k\""));
+    }
+
+    /// A shown value is in the rendering as given and isn't counted as
+    /// masked; it's in no secret mask, and the child gets it as it is.
+    #[test]
+    fn a_shown_value_is_shown_as_given() {
+        let cmd = Cmd::new("ansible-playbook")
+            .arg("--tags")
+            .shown_value("plex,sonarr")
+            .shown_value(r#"--extra-vars={"a": 1}"#)
+            .value("some/path");
+        assert_eq!(
+            cmd.shown(),
+            r#"ansible-playbook --tags plex,sonarr --extra-vars={"a": 1} [ARG]"#
+        );
+        assert_eq!(cmd.masked(), 1);
+        let argv: Vec<&str> = cmd.args.iter().map(Arg::text).collect();
+        assert_eq!(
+            argv,
+            [
+                "--tags",
+                "plex,sonarr",
+                r#"--extra-vars={"a": 1}"#,
+                "some/path"
+            ]
+        );
+        assert_eq!(cmd.mask().longest(), 0);
     }
 
     #[test]

@@ -62,19 +62,26 @@ group, within the grace period plus one second.
 
 - **Arguments, fail closed for the log:** `arg(&'static str)` for
   literals written in sb's code, which the log shows; `value(String)` for
-  anything else (paths, names, a user's pass-through `-e`), logged as
+  anything else (paths, names, a user's pass-through argument), logged as
   `[ARG]`; `secret(String)` for credentials, `[REDACTED]` in the log and
   also taken out of the child's output and of errors. The run log shows
   the program, the literals in place and the count of masked arguments.
   argv is readable in `/proc/<pid>/cmdline` by other users, so a caller
   passes a secret through the environment or stdin where the tool allows.
 - **A joined option:** `option_value(&'static str, String)` for a literal
-  option joined to a user value in one element (`--extra-vars=<value>`):
-  the child gets the two joined, the log and errors show the literal and
-  `[ARG]` (`--extra-vars=[ARG]`). `Cmd::shown()` is public: the masked
+  option joined to a user value in one element (`--opt=<value>`): the
+  child gets the two joined, the log and errors show the literal and
+  `[ARG]` (`--opt=[ARG]`; ansible's `--extra-vars=` moved to
+  `shown_value`, its decision 17). `Cmd::shown()` is public: the masked
   rendering the log and errors use, for a caller that prints the command
   (ansible's `Executing...` line). *Amended 2026-11-13 by the ansible
   spec.*
+- **A shown value:** `shown_value(String)` for a value the caller decided
+  the log and errors show as given: the rendering has it in place, and it
+  isn't counted as masked. Only ansible's playbook arguments use it (its
+  decision 17: the maintainer, 2026-11-14: nothing is masked, and a
+  user keeps a value out of the logs with an @file); every other value
+  stays `value`. *Amended 2026-11-14 by the ansible spec.*
 - **Environment:** inherited; `env(name, value)`,
   `secret_env(name, value)` (taken out of output too), `env_remove(name)`,
   or `env_clear()` (sb-go's `WithEnv`). The log names changed variables,
@@ -290,8 +297,9 @@ maintainer, 2026-11-14).
   its context, which kills the child).
 - A PTY child gets sb's terminal size (sb-go: always 24×120).
 - Arguments are masked in logs and errors unless they are literals in
-  sb's code; secrets are taken out of output too (sb-go: callers mask by
-  hand, where they do).
+  sb's code or a caller's shown values (ansible's playbook arguments,
+  shown as sb-go shows them); secrets are taken out of output too
+  (sb-go: callers mask by hand, where they do).
 - Combined and Discard aren't separate ways: `capture` returns both
   streams.
 - Output is capped in memory (sb-go: unbounded); `stream` keeps stderr's
@@ -403,7 +411,8 @@ let outcome = Cmd::new("systemctl")
 
 - **Always:** library calls for processes, groups and the PTY; every
   piped and PTY child killed with its group on cancel or timeout; secrets
-  marked where they enter; arguments masked unless literal.
+  marked where they enter; arguments masked unless literal or shown
+  values a caller's spec decided on.
 - **Ask first:** a dependency beyond those named; a fifth way to run;
   further changes to cli-core's cancellation or term-ui's `Step` API.
 - **Never:** build a command line from strings for a shell; log a masked

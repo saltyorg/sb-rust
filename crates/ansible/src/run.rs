@@ -37,7 +37,8 @@ pub enum Tags<'a> {
     /// literal (exec spec, "A command").
     Literal(&'static str),
     /// Anyone else's (the user's, an announcement's), joined with `,`:
-    /// `[ARG]` in the log and on the `Executing...` line (decision 17).
+    /// shown as given in the log and on the `Executing...` line (decision
+    /// 17).
     Given(&'a [String]),
 }
 
@@ -45,15 +46,16 @@ impl fmt::Debug for Tags<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Literal(tag) => f.debug_tuple("Literal").field(tag).finish(),
-            // Masked as the log masks them.
+            // Counts only, as `RunArgs`.
             Self::Given(tags) => write!(f, "Given({} tags)", tags.len()),
         }
     }
 }
 
 /// What reaches every playbook of a run besides its tags (spec, `sb
-/// install`'s flags). Its `Debug` shows counts only: an `-e` value can hold
-/// a secret, and is never printed or logged.
+/// install`'s flags). Its `Debug` shows counts only: the values are shown
+/// and logged once, in the command (decision 17), not in every record that
+/// carries them.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct RunArgs {
     /// Each `-e` value, whole, in the order given.
@@ -91,8 +93,11 @@ impl Ansible {
     /// The command for one run: `<program> <playbook> --become --tags
     /// <tags> [--extra-vars=<v>]... [--skip-tags=<x,y>] [-v...]` in the
     /// repository's directory (spec, step 6). Every user value is one
-    /// element, through `value` or `option_value`: never split, joined
-    /// with another, or passed through a shell.
+    /// element, through `shown_value`: never split, joined with another,
+    /// or passed through a shell, and shown as given on the `Executing...`
+    /// line, in exec's failure block and in the run log, as sb-go prints
+    /// them (decision 17: the maintainer, 2026-11-14; an `@file` keeps a
+    /// value out).
     #[must_use]
     pub fn command(&self, repo: &Repo, tags: Tags<'_>, args: &RunArgs) -> Cmd {
         let cmd = Cmd::new(self.program())
@@ -103,15 +108,15 @@ impl Ansible {
             .arg("--tags");
         let mut cmd = match tags {
             Tags::Literal(tags) => cmd.arg(tags),
-            Tags::Given(tags) => cmd.value(tags.join(",")),
+            Tags::Given(tags) => cmd.shown_value(tags.join(",")),
         };
         for value in &args.extra_vars {
             // One argv element: argparse refuses `--extra-vars -x=1`
             // (assumption 6; difference 1).
-            cmd = cmd.option_value("--extra-vars=", value.clone());
+            cmd = cmd.shown_value(format!("--extra-vars={value}"));
         }
         if !args.skip_tags.is_empty() {
-            cmd = cmd.option_value("--skip-tags=", args.skip_tags.join(","));
+            cmd = cmd.shown_value(format!("--skip-tags={}", args.skip_tags.join(",")));
         }
         if args.verbose > 0 {
             cmd = cmd.arg(&VERBOSE[..=usize::from(args.verbose)]);
@@ -121,7 +126,8 @@ impl Ansible {
 
     /// One attached run of `repo`'s playbook with `tags` (spec, step 6):
     /// `Executing Ansible playbook with command: <command>` on `out`, the
-    /// command as exec masks it (decision 4); the run, on sb's terminal;
+    /// command as exec shows it, every argument as given (decisions 4 and
+    /// 17); the run, on sb's terminal;
     /// after exit 0, sb-go's `Playbook <path> executed successfully.`
     /// after a blank line. How it ended is the caller's: [`pass_through`]
     /// for `sb install` and `sb diag`.
@@ -157,7 +163,7 @@ impl Ansible {
 
 /// A run's ending passed on (spec, step 6 and decision 6): `Ok` for exit 0;
 /// otherwise exec's pass-through (one error block on `out` naming the
-/// command, masked, and its ending; the child's own code, or 128 plus a
+/// command, as shown, and its ending; the child's own code, or 128 plus a
 /// signal's number), then sb-go's hint, `Scroll up to the failed task to
 /// review.`, or `Ansible was interrupted.` for Ansible's Ctrl-C code (99,
 /// step 7). A run sb's own signal ended prints nothing: cli-core shows the
@@ -208,9 +214,10 @@ mod tests {
     }
 
     /// Given tags, `-e`, `--skip-tags` and `-v` in sb-go's order, every
-    /// value masked, the option forms kept (spec, step 6; decision 17).
+    /// value shown as given, as sb-go prints them (spec, step 6; decision
+    /// 17).
     #[test]
-    fn a_full_command_masks_every_value() {
+    fn a_full_command_shows_every_value() {
         let tags = ["plex".to_string(), "sonarr".to_string()];
         let args = RunArgs {
             extra_vars: vec![r#"{"a": 1, "b": [2, 3]}"#.into(), "k=v".into()],
@@ -218,16 +225,9 @@ mod tests {
             verbose: 3,
         };
         let cmd = ansible().command(&saltbox(), Tags::Given(&tags), &args);
-        assert_eq!(
-            cmd.shown(),
-            "/usr/local/bin/ansible-playbook saltbox.yml --become --tags [ARG] \
-             --extra-vars=[ARG] --extra-vars=[ARG] --skip-tags=[ARG] -vvv"
-        );
-        let debug = format!("{cmd:?}");
-        assert!(
-            !debug.contains("plex") && !debug.contains("\"a\""),
-            "{debug}"
-        );
+        let shown = "/usr/local/bin/ansible-playbook saltbox.yml --become --tags plex,sonarr \
+             --extra-vars={\"a\": 1, \"b\": [2, 3]} --extra-vars=k=v --skip-tags=x,y -vvv";
+        assert_eq!(cmd.shown(), shown);
     }
 
     /// No `-v` element at 0, and the count's `v`s up to clap's 255.

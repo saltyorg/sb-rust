@@ -12,8 +12,9 @@ const EXTRA_VARS_LONG: &str = "Extra variables to pass to Ansible
 
 Each value reaches Ansible whole: key=value, YAML or JSON, or @file (a path relative to the repository the playbook runs in).";
 
-/// `sb install`'s arguments. Its `Debug` shows counts only: a tag or an
-/// `-e` value is never printed or logged.
+/// `sb install`'s arguments. Its `Debug` shows counts only: the tags and
+/// `-e` values are shown and logged once, in the playbook's command
+/// (decision 17), not in every record that carries them.
 #[derive(clap::Args, Clone, Default, PartialEq, Eq)]
 pub struct InstallArgs {
     /// The tags to run: words, comma lists, or both.

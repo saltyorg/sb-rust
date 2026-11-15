@@ -72,17 +72,20 @@ fi
 # that reached it whole parses as WANT, and a value split or rejoined on
 # the way wouldn't (`hello big world` split on spaces would leave
 # `_raw_params: world`). An empty value is the exception: Ansible skips
-# it, so only the masked count shows it was passed. sb's `Executing...`
-# line shows each value as `--extra-vars=[ARG]`, all on that one line.
+# it, so only the `Executing...` line shows it was passed. That line
+# shows each value as given, `--extra-vars=<value>`, all on that one
+# line, as sb-go's does (ansible spec, decision 17).
 values=()
 e_case() {
   local name=$1 want=$2 value code=0 got
   shift 2
-  local args=()
+  local args=() shown="--tags check"
   for value; do
     args+=(-e "$value")
     values+=("$value")
+    shown+=" --extra-vars=$value"
   done
+  shown="Executing Ansible playbook with command: /usr/local/bin/ansible-playbook saltbox.yml --become $shown"
   rm -f /out/check.json
   sb install check --no-cache "${args[@]}" >"/out/e-$name.out" 2>&1 || code=$?
   if [ "$code" -ne 0 ]; then
@@ -96,8 +99,8 @@ e_case() {
   mv /out/check.json "/out/e-$name.json"
   if [ "$got" != "$want" ]; then
     fail "-e $name: Ansible got $got, want $want"
-  elif [ "$(grep '^Executing' "/out/e-$name.out" | grep -o -F -- '--extra-vars=[ARG]' | wc -l)" -ne $# ]; then
-    fail "-e $name: the Executing line doesn't show $# masked --extra-vars, see /out/e-$name.out"
+  elif ! grep -q -x -F -e "$shown" "/out/e-$name.out"; then
+    fail "-e $name: the Executing line doesn't show the values as given, see /out/e-$name.out"
   else
     ok "-e $name"
   fi
@@ -116,17 +119,18 @@ e_case empty '{}' ''
 e_case several '{"a": "1", "b": 2, "from_file": "loaded"}' 'a=1' '{"b": 2}' '@vars.yml'
 e_case in-order '{"k": "second"}' 'k=first' 'k=second'
 
-# No -e value in sb's output or its run log (Ansible's own output names
-# none of them). The short ones would match unrelated text.
-leaked=0
+# Every -e value in sb's run log too, in its start record's command,
+# which the log quotes as tracing's Debug does (`\` and `"` escaped).
+missing=0
 for value in "${values[@]}"; do
-  [ ${#value} -ge 4 ] || continue
-  if grep -r -q -F -- "$value" /out/e-*.out "$SB_LOG_DIR"; then
-    fail "the -e value $value is in sb's output or its run log"
-    leaked=1
+  quoted=${value//\\/\\\\}
+  quoted=${quoted//\"/\\\"}
+  if ! grep -r -q -F -e "--extra-vars=$quoted" "$SB_LOG_DIR"; then
+    fail "the -e value $value isn't in sb's run log as given"
+    missing=1
   fi
 done
-[ "$leaked" -eq 1 ] || ok "no -e value printed or logged"
+[ "$missing" -eq 1 ] || ok "every -e value logged as given"
 
 # sb's own listing against real Ansible: `sb list` finds no cache, so it
 # rebuilds Saltbox's and Sandbox's entries with `--list-tags`, parses

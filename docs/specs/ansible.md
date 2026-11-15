@@ -124,16 +124,18 @@ Steps, in sb-go's order (cmd/install.go:60-210):
    colour profile, exec decision 3). `<playbook>` is the file name
    (`saltbox.yml`), a literal, since the run is in its directory.
    - Before each: `Executing Ansible playbook with command: <command>`,
-     where `<command>` is exec's masked rendering (decided.md B-a): the
-     program, the literals in place (`saltbox.yml`, `--become`, `--tags`,
-     `-vvv`), `[ARG]` for each value, the tags included (decision 17),
-     `--extra-vars=[ARG]` and `--skip-tags=[ARG]` for the option forms
-     (amendment 1). The run log
-     has the same rendering (exec's start record).
+     where `<command>` is exec's rendering with every argument as given,
+     as sb-go prints it (decision 17): the program, the literals
+     (`saltbox.yml`, `--become`, `--tags`, `-vvv`), the tags,
+     `--extra-vars=<value>` and `--skip-tags=<x,y>`, each user value
+     through exec's `shown_value` (amendment 5). The run log has the same
+     rendering (exec's start record), and so has exec's failure block. A
+     value the user wants kept off the screen and out of the log goes in
+     an `@file` (`-e @vars.yml`): only the file's name is shown.
    - After a success: `Playbook <absolute playbook path> executed
      successfully.` (sb-go's line), then the next playbook.
    - A failure stops the rest: exec's `Ran::pass_through` (exec decision
-     5) prints one error block naming the command (masked) and its ending,
+     5) prints one error block naming the command (as shown) and its ending,
      then sb prints `Scroll up to the failed task to review.` (sb-go's
      hint) and exits with Ansible's own code: 2 for a failed host, 4, 5,
      250 and so on; 128 plus the signal for a playbook killed by a signal
@@ -245,10 +247,11 @@ nothing from ops, so it lands here.
    elements), for the same reason.
 3. The playbook is named by its file name in the repo directory sb runs
    in (sb-go: its absolute path). The same file runs.
-4. `Executing Ansible playbook with command:` prints exec's masked
-   rendering: values as `[ARG]`, the tags and skip-tags included, `-e` as
-   `--extra-vars=[ARG]` (sb-go: the full argv, `-e` values as typed).
-   (decided.md B-a; decision 17.)
+4. `Executing Ansible playbook with command:` prints the full argv as
+   sb-go does, the tags, skip-tags and `-e` values included, as typed; the
+   line differs from sb-go's only as 1-3 change the argv. The run log and
+   exec's failure block show the same. `@file` keeps a value off the
+   screen and out of the log. (Decision 17, amended 2026-11-14.)
 5. A failed playbook exits with Ansible's own code (sb-go: 1), with exec's
    error block and sb-go's hint line (sb-go: `playbook <path> run failed,
    scroll up to the failed task to review.\nExit code: N`).
@@ -368,10 +371,13 @@ let mut cmd = Cmd::new(self.program.clone())
     .arg(repo.playbook) // "saltbox.yml": the run is in its directory
     .arg("--become")
     .arg("--tags")
-    .value(tags.join(","));
+    .shown_value(tags.join(","));
 for value in &args.extra_vars {
     // One argv element: argparse refuses `--extra-vars -x=1` (assumption 6).
-    cmd = cmd.option_value("--extra-vars=", value.clone());
+    cmd = cmd.shown_value(format!("--extra-vars={value}"));
+}
+if !args.skip_tags.is_empty() {
+    cmd = cmd.shown_value(format!("--skip-tags={}", args.skip_tags.join(",")));
 }
 if args.verbose > 0 {
     cmd = cmd.arg(&VERBOSE[..=usize::from(args.verbose)]);
@@ -409,8 +415,10 @@ for validate-config.
     JSON: each value arrives whole, a leading `-` included. (Python 3 is
     in every supported Ubuntu. The fixture follows the user's Python
     validation: ruff check and format, mypy, Bandit.)
-  - A known-secret test: a token inside a `-e` value is in neither the
-    `Executing...` line, the run log, nor the failure block.
+  - A shown-value test: a token inside a `-e` value is in the
+    `Executing...` line, the run log and the failure block, as given; and
+    `sb install x -e '{"a": 1, "b": [2, 3]}'` shows the JSON whole in the
+    line and the run log (decision 17).
 - **Unit tests:** tag parsing (spaces, commas, empties, `no tags
   provided`); routing (`mod-sandbox-x` goes to mod); suggestions, each
   kind, ties (first lowest in cache order), sorting, Saltbox-empty fatal,
@@ -448,8 +456,10 @@ for validate-config.
   (`greeting=hello big world` gives `greeting: hello` and `_raw_params:
   big world`, and `--no-cache` gives `_raw_params: --no-cache`). A value
   split or joined on the way would give something else. An empty value
-  is the exception: Ansible skips it, so only the masked `Executing...`
-  line shows that it was passed. `sb list` rebuilds both caches from the
+  is the exception: Ansible skips it, so only the `Executing...` line
+  (`--extra-vars=` with nothing after) shows that it was passed. The
+  script also checks that the line shows every value as given and that
+  the run log has each one. `sb list` rebuilds both caches from the
   real listing. Ctrl-C is a `^C` written to the PTY that `script(1)`
   gives sb, which is the terminal's SIGINT to the foreground group. `sb install slow,sandbox-after` must
   then exit 99, with the play stopped and Sandbox's playbook not run (a
@@ -463,14 +473,14 @@ for validate-config.
 ## Boundaries
 
 - **Always:** argv built element by element through exec; every
-  user-given value through `value` or `option_value`, never `arg`; the
+  user-given value through `shown_value`, never `arg`; the
   runner ended before an attached run; the cache written atomically with
   0644; sb-go's texts kept unless a difference above changes them.
 - **Ask first:** a dependency beyond those named; validating or caching
   mod tags; parallel rebuilds; a cache format change (sb-go and sb-rust
   may alternate on a host).
 - **Never:** a shell, or a string split into argv; split, join or rewrite
-  an `-e` value; print or log an `-e` value; read an `@file` ourselves;
+  an `-e` value; read an `@file` ourselves;
   run Ansible, or write under `/srv`, in tests.
 
 ## Success Criteria
@@ -486,8 +496,9 @@ for validate-config.
 4. A failed playbook's code is sb's exit code; Ctrl-C during a playbook
    gives 99 with later playbooks not run; Ctrl-C during a rebuild ends sb
    by SIGINT.
-5. The `Executing...` line, the run log and every error show `-e` only as
-   `--extra-vars=[ARG]`; the known-secret test passes.
+5. The `Executing...` line, the run log and exec's failure block show
+   every argument as given, `-e` values included (sb-go's line); the
+   shown-value tests pass.
 6. `cache.json` written by sb-go is read by sb, and sb's file by sb-go's
    reader (the same JSON shape; a fixture round trip); it is 0644 after a
    write under any umask; a corrupt file is rebuilt.
@@ -513,9 +524,9 @@ for validate-config.
 3. **`@file` stays as given**, resolved by Ansible in the repo directory;
    the long help says so. Source: the same requirement ("exactly as
    given").
-4. **`Executing Ansible playbook with command:` prints exec's masked
-   rendering.** Source: decided.md B-a (secrets never reach logs or
-   output).
+4. **`Executing Ansible playbook with command:` prints exec's
+   rendering**, which decision 17 makes every argument as given. Source:
+   decided.md B-a, amended by the maintainer on 2026-11-14 (decision 17).
 5. **Playbooks run `attached` in their repo directory** (stdin for
    Ansible prompts; Ansible's own `log_path` has the output, which sb's
    run log doesn't). Source: exec spec ("Ways to run"; decision 4's first
@@ -547,14 +558,24 @@ for validate-config.
 16. **`list`'s columns through `uutils_term_grid`.** Source: capability
     map library policy 2 (don't own terminal layout) and CLAUDE.md's
     Library first.
-17. **The tags in the `Executing...` line are masked** as `[ARG]`, like
-    every other non-literal argument. Reason: exec's fail-closed rule
-    (every user value is masked unless it is a literal), so no second
-    exception is added to it and tag values stay out of the run log as
-    cli-core's run record keeps argument values out. The user typed the
-    tags on the same command line, and the line still names the
-    playbook and each option. Decided from recorded
-    rules, 2026-11-13.
+17. **Every argument sb passes to `ansible-playbook` is shown as given**,
+    in the `Executing...` line, in exec's failure block and in the run
+    log: the tags, `--skip-tags`, every `--extra-vars=<value>` and
+    `-v...`, for every playbook run sb-ansible starts (`install`, `diag`,
+    the tag listing). The line matches sb-go's, `-e` values included. A
+    value to keep off the screen and out of the log goes in an `@file`:
+    only `--extra-vars=@<file>` is shown, and Ansible reads the file. The
+    user values go through exec's `shown_value` (amendment 5); exec's
+    masking stays for every other crate's commands. `-e` values are the
+    user's own input, not secrets sb holds, so CONSTRAINTS.md's Logging
+    row ("logs never contain secret values") is kept: a secret goes in an
+    `@file`, and the run log stays root's only (0700). Source: the
+    maintainer, 2026-11-14 (`sb install portainer` printed `--tags [ARG]`
+    where sb-go printed `--tags portainer`): nothing is masked,
+    and a user keeps a value out of the logs with
+    an @file. *Amended 2026-11-14; it replaces the
+    decision of 2026-11-13, which masked the tags as
+    `[ARG]` under exec's fail-closed rule.*
 18. **Every step of `sb list` is transient** (term-ui's
     `Labels::transient`, its decision 12). `saltbox_mod`'s listing in
     `sb list -m` shows as `Listing Saltbox_mod tags`: `--list-tags` takes
@@ -584,14 +605,17 @@ for validate-config.
   non-UTF-8 value is a usage error, exit 2.
 - Ansible's output isn't in sb's run log (exec, "Logging"); Ansible's own
   `log_path` has it.
-- With a value masked, the `Executing...` line can't be pasted back as a
-  command.
+- The `Executing...` line isn't shell-quoted (sb-go's isn't either): a
+  value with spaces or quotes can't be pasted back as it is.
+- A secret given in an `-e` value is on the screen and in the run log
+  (decision 17); `@file` keeps it out.
 - Mod tags are runnable but not validated or completed (sb-go).
 
 ## Open questions
 
 None. The one raised in research (tags on the `Executing...` line) was decided on
-2026-11-13 from recorded rules: decision 17.
+2026-11-13 from recorded rules, then by the maintainer on 2026-11-14:
+decision 17.
 
 ## Amendments to other specs
 
@@ -612,6 +636,9 @@ None. The one raised in research (tags on the `Executing...` line) was decided o
 4. **capability map**, `ansible` row's "Depends on": "exec, host, repo,
    term-ui, cli-core" (host's LXC and disk checks); `diag`'s Commands row:
    "ansible". deny.toml's wrappers follow.
+5. **exec** ("A command"), after the joined option: "`shown_value(String)`
+   for a value the caller decided the log and errors show as given."
+   (2026-11-14, decision 17.)
 
 ## Suggested slices for the plan
 

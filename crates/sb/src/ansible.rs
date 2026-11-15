@@ -153,7 +153,7 @@ async fn check_tags(
     if suggestions.is_empty() {
         return Ok(());
     }
-    // The run log has the count only: tags stay out of it (decision 17).
+    // The run log has the count; the suggestions themselves go to stderr.
     tracing::warn!(
         count = suggestions.len(),
         "tag validation found some issues"

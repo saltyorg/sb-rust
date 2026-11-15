@@ -113,7 +113,7 @@ async fn diag_runs_in_the_repo_with_its_lines() {
 }
 
 /// Given tags and every pass-through argument reach the child whole, in
-/// order; the `Executing...` line shows them masked.
+/// order; the `Executing...` line shows them as given (decision 17).
 #[tokio::test]
 async fn every_value_reaches_the_child_whole() {
     let world = World::new();
@@ -151,12 +151,12 @@ async fn every_value_reaches_the_child_whole() {
     let first = out.lines().next().expect("a line");
     assert!(
         first.ends_with(
-            " saltbox.yml --become --tags [ARG] --extra-vars=[ARG] --extra-vars=[ARG] \
-             --extra-vars=[ARG] --extra-vars=[ARG] --extra-vars=[ARG] --skip-tags=[ARG] -vv"
+            " saltbox.yml --become --tags plex,sonarr --extra-vars={\"a\": 1, \"b\": [2, 3]} \
+             --extra-vars=-x=1 --extra-vars=greeting=hello world --extra-vars=@vars.yml \
+             --extra-vars= --skip-tags=x,y -vv"
         ),
         "{first}"
     );
-    assert!(!out.contains("plex") && !out.contains("hello"), "{out}");
 }
 
 /// A failed playbook: no success line, exec's block naming the command
