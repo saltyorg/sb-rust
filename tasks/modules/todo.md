@@ -1772,13 +1772,13 @@ follow-L4, the security-auditor pass (journal files and container output
 are untrusted).
 
 **Acceptance criteria:**
-- [ ] The frame-cost test bounds a frame's time as the spec says.
-- [ ] Log spans step down with the colour profile.
-- [ ] follow-L1 and follow-L4 fixed test-first.
+- [x] The frame-cost test bounds a frame's time as the spec says.
+- [x] Log spans step down with the colour profile.
+- [x] follow-L1 and follow-L4 fixed test-first.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb`.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor.
+- [x] `cargo test -p sb-tui -p sb`.
+- [x] Review: code-reviewer, library-reviewer, security-auditor.
 
 **Dependencies:** M72
 **Files:** `crates/tui/src/{line.rs,term.rs,source/journal.rs}`, `crates/tui/tests/`
@@ -2120,6 +2120,18 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **The viewer's wrap-off frame meets 5 ms** (the maintainer,
+      2026-11-15). M73 measured a wrap-off frame at about 5.6 ms (9.9 ms
+      for the frame that switches wrap off) at 240x70 on the spec's
+      worst-case records, against the tui spec's 5 ms (success criterion
+      8); wrap-on frames take 2-4 ms. The cost is building the coloured
+      text of the ~70 long lines on screen each frame: cache it per line,
+      as M73 cached the wrapped height, within the 32 MiB buffer cap.
+- [ ] **exec's remaining fixed bounds in groups.rs** (found reviewing
+      3f9e8f9). `took < GRACE` at crates/exec/tests/groups.rs:264, :322
+      and :348, `start.elapsed() < GRACE` at :363 and :454, and `< BOUND`
+      at :233, :277 and :301 are fixed wall-clock bounds of the kind
+      3f9e8f9 replaced; give them baseline-derived bounds the same way.
 - [x] **Leaked exec helper shells after 517de92** (the gate). On
       2026-11-14, 185 orphaned `dash` helper shells (exec's tests' `sh -c
       'trap ... exit'`) were found with their working directory in five
