@@ -539,9 +539,11 @@ required (`cobra.ExactArgs(1)`, cmd/branch.go:24).
 10. **Announcements after**, the diff, then the announcements shown and
     the migrations (below).
 11. **"Validating Saltbox configuration"**: validate-config's checks, as
-    one step group, each file through config's `validate_file(step,
-    settings, file, Checks::Run)` (the config amendment the tui spec
-    proposes).
+    one step group, each file through config's
+    `validate_file_migrating(step, settings, file, Checks::Run, backups)`
+    (the config amendment the tui spec proposes, with motd.yml's
+    migration from its older format first, its backup in
+    `/opt/saltbox/backups`: motd spec, decision 4).
 12. **Completion refresh** (completion's `refresh(step)`): a failure is a warning
     (cmd/completion.go:160-179). Left out until `completion` exists.
 

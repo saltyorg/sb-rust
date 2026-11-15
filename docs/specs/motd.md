@@ -263,9 +263,10 @@ never reach stdout, stderr or the run log.
    sections, the colours, and Services' additions (decision 3). sb-go hid
    every config section silently, and treated valid files it couldn't
    decode the same way (`timeout: 1.5`).
-3. **The older bare-list form** (`sonarr: [ {...} ]`) is an issue under
-   difference 2 (decision 4), and says where the list goes now. sb-go
-   accepted it.
+3. **The older bare-list form** (`sonarr: [ {...} ]`) is migrated by
+   validate-config and `sb update` to the current form (decision 4),
+   with a backup of the original; motd itself reads it as an issue under
+   difference 2 until then. sb-go's motd read it as it was.
 4. **Without motd.yml, or with a colour key absent,** sb's palette applies
    (decision 5). sb-go used its charmtone defaults. Saltbox always writes
    the colour block, so most hosts look the same in both.
@@ -695,22 +696,52 @@ Nothing touches a real host's state, and every fixture is synthetic.
      with its own wording.
    - Services keeps its default filters and drops only motd.yml's
      additions, because the section exists without the file.
-4. **The older bare-list form is dropped** (decided.md E-Q3; its
-   reasoning corrected by the maintainer, 2026-11-14). It is motd.yml's
-   own earlier form. Saltbox's schema declared every instance section a
-   list (commit 0d39510ad7 still has `type: array`) until 10916e7a moved
-   them under `{enabled, instances}`, and its template wrote `lidarr`,
-   `plex`, `radarr` and `sonarr` as lists, or `name: []` for an app not
-   installed, until 96110b80. Nothing migrates an existing file. The
-   research behind E-Q3 said Saltbox never wrote it, which was wrong.
-   The maintainer still chose to drop it, with an issue that says what
-   to do: validate-config reports `plex: must be an object, got a list;
-   the list of instances now goes under plex.instances, with an optional
-   plex.enabled (sb install motd-generate-config regenerates motd.yml in
-   that form, replacing its contents)`. That tag overwrites motd.yml from
-   Saltbox's template (roles/motd/tasks/cli_motd.yml). An empty list
-   (`radarr: []`) passes validate-config, as in sb-go, and motd reads it
-   as an absent section.
+4. **An old-format motd.yml is migrated** (the
+   maintainer, 2026-11-15, replacing decided.md E-Q3's drop with its
+   fix-it issue). Saltbox's schema kept each app section a bare list
+   from 742b8772 (2025-09-28) to d7eb9712 (2025-12-04, "V4"), and its
+   template wrote `lidarr`, `plex`, `radarr`, `readarr` and `sonarr` as
+   lists (`name: []` for an app not installed); 10916e7a moved each list
+   under `{enabled, instances}`, the items unchanged. Nothing in Saltbox
+   migrates an existing file, so validate-config and the validation in
+   `sb update` do (sb-config's `run::validate_file_migrating`):
+   - **Old format:** any of the eleven app keys (sonarr, radarr,
+     lidarr, readarr, plex, jellyfin, emby, sabnzbd, nzbget,
+     qbittorrent, rtorrent) holds a non-empty list.
+   - **Checks:** the file must pass V4's schema (kept in sb, as
+     Saltbox's checkout has only the current one), and the rewrite must
+     pass the current schema with the same values. If either fails,
+     nothing changes and the file's issues show as today (a list where
+     an object belongs: `must be an object, got a list`).
+   - **Rewrite:** each such list becomes `{instances: <list>}`, `enabled`
+     absent (on): a new `instances:` line under the key and the list's
+     lines indented under it; comments, order and spacing elsewhere
+     stay. `rutorrent:` and `systemd.strip_prefixes` are left alone (a
+     file with either fails V4, so it isn't migrated).
+   - A half-migrated file (some sections already `{instances: …}`) is
+     finished: V4, as sb-go's validator, doesn't flag a mapping where it
+     declares a list, and the rewrite passes the current schema.
+   - **Write:** the original is copied to
+     `/opt/saltbox/backups/motd.yml.<UTC stamp>` (`SB_BACKUPS_DIR` in
+     tests), as a new file (never through a link) with the original's
+     owner and permission bits (no set-id or sticky bit); the folder is
+     made if missing (0755, owned as motd.yml is, its missing parents
+     root's), and one that is there must be a folder, not a link, owned by
+     root or motd.yml's owner and writable by no one else. Then the new
+     text replaces motd.yml atomically (a temporary file beside it,
+     renamed over it) with the original's owner and mode, unless the file
+     changed since it was read; the folders are synced. Root does every
+     step through handles on the Saltbox root and the backups folder,
+     opened with no link anywhere on their paths, as the Saltbox user owns
+     some of those folders: a root, a backups folder or a motd.yml that is
+     a link or has one on its path, or a motd.yml with a second name,
+     isn't migrated. The file's step shows `Migrated motd.yml to the current
+     format (backup: <path>)`, and the check then passes. A failed copy
+     or write is a warning, the original unchanged.
+   - motd itself doesn't migrate: an old-format file is its `Config:`
+     line until validate-config or `sb update` runs. An empty list
+     (`radarr: []`) passes validate-config, as in sb-go, and motd reads it
+     as an absent section.
 5. **motd.yml's colours are honoured over sb's palette** (decided.md
    E-Q4).
    - Nine slots: text.label/value/app_name, status.warning/success/error,
@@ -964,6 +995,20 @@ Nothing touches a real host's state, and every fixture is synthetic.
   when its run is dropped, and the token is for a caller that waits on
   it. Display names and states go through `DisplayText`, and names are
   padded by bytes, as sb-go's `len` does.
+- **motd.yml's migration (2026-11-15; decision 4).** The format history
+  was read from Saltbox's public history: V1 742b8772 (2025-09-28, eleven
+  app lists), V2 0d39510a (colours; `enabled` on items; url and
+  credential required), V3 cf639f83 (`systemd` with `strip_prefixes`),
+  V4 d7eb9712 (`strip_prefixes` became `display_names`), V5 10916e7a
+  (each app `{enabled, instances}`; today's, with examples changed at
+  15fd6785). V4 is pinned in `crates/config/schemas/`. The rewrite is
+  line-based on the parsed tree's positions (no YAML emitter keeps
+  comments), and both checks plus a value-by-value comparison of the
+  two trees guard it. Tests: a list-era file with comments and `[]`
+  sections; lists at the key's column, in flow style, with CRLF, deeper
+  indented; an item without its url (V4 fails, nothing changes); a
+  current file untouched; the backup's owner, mode and path; the
+  atomic write (a new inode, no temporary left); the step's notice.
 - **Disk Usage beside sb-go (M38):** decided by the maintainer,
   2026-11-14: Differences 23 and 24. Control characters in a mount point are dropped by
   `DisplayText` (decision 24), where df writes `?`.

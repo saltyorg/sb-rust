@@ -34,8 +34,11 @@ saphyr.workspace = true
 saphyr-parser.workspace = true
 thiserror.workspace = true
 # The facts directory, pinned as an fd: openat, statat, flock, renameat,
-# fchown, fchmod, fsync (tui spec, Editors).
-rustix = { workspace = true, features = ["fs"] }
+# fchown, fchmod, fsync (tui spec, Editors); and motd.yml's migration:
+# the Saltbox root and the backups folder opened with no link on their
+# paths, every read, write and rename made through their handles
+# (`process` for the euid check).
+rustix = { workspace = true, features = ["fs", "process"] }
 # The facts save's temp file names (tempfile's own generator).
 fastrand.workspace = true
 

@@ -51,6 +51,9 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     // theme file would be `/opt/sb/config.toml`: `SB_CONFIG` above keeps
     // it off the host, not this.)
     cmd.env("SB_SALTBOX_DIR", test_log_dir().join("no-saltbox"));
+    // Nor the host's backups: motd.yml's migration copies the original
+    // under the test's directory; tests that read the copy set their own.
+    cmd.env("SB_BACKUPS_DIR", test_log_dir().join("backups"));
     // Nor the host's venv, wrappers, uv or apt: the test build's python-env
     // layout (its `testing` feature) under an empty root; tests that want
     // a stand-in tree point it at their own.

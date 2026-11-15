@@ -3,7 +3,7 @@
 //! checks, drawn as term-ui steps. sb's command builds the runner and the
 //! settings and calls `run`; nothing is decided twice.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sb_cli_core::config::{read_inventory, read_small, yaml};
@@ -202,14 +202,16 @@ impl Issues {
     }
 }
 
-/// Validate every file under `runner`: `Exit(1)` when any failed (each
-/// failed file and check has shown its block).
+/// Validate every file under `runner`, motd.yml migrated first from its
+/// older format with its backup in `backups` ([`validate_file_migrating`]):
+/// `Exit(1)` when any failed (each failed file and check has shown its
+/// block).
 ///
 /// # Errors
 ///
 /// `Exit(1)` when a file or credential check failed, or the run was
 /// interrupted or stopped.
-pub async fn run(runner: &mut Runner, settings: &Settings) -> Result<(), Exit> {
+pub async fn run(runner: &mut Runner, settings: &Settings, backups: &Path) -> Result<(), Exit> {
     let labels = Labels::new(
         "Validating Saltbox configuration",
         "Saltbox configuration validated",
@@ -220,7 +222,7 @@ pub async fn run(runner: &mut Runner, settings: &Settings) -> Result<(), Exit> {
             for file in FILES {
                 let result = step
                     .step(file_labels(file), async |step| {
-                        validate_file(step, settings, file, Checks::Run).await
+                        validate_file_migrating(step, settings, file, Checks::Run, backups).await
                     })
                     .await;
                 failed |= result.is_err();
@@ -312,7 +314,7 @@ pub fn check_file(settings: &Settings, file: File) -> Result<Checked, FileError>
 /// `text`, `file`'s, parsed and checked against `rules` (none: duplicate
 /// keys only). Its tree is loaded and checked where its depth fits, and
 /// handed back as a [`Tree`], which any stack can drop.
-fn parse_and_check(
+pub(crate) fn parse_and_check(
     settings: &Settings,
     file: File,
     text: &str,
@@ -403,6 +405,39 @@ pub async fn validate_file(
         return Err(Exit(1).into());
     }
     Ok(())
+}
+
+/// [`validate_file`], with motd.yml first migrated from its older format
+/// when it is in it and both its checks pass (`migrate::motd`), the
+/// original copied into `backups`: validate-config's and `sb update`'s
+/// way (motd spec, decision 4). A migration shows one notice under the
+/// file's step; a failed write a warning, the file then checked as it
+/// is.
+///
+/// # Errors
+///
+/// As [`validate_file`].
+pub async fn validate_file_migrating(
+    step: &mut Step,
+    settings: &Settings,
+    file: File,
+    checks: Checks,
+    backups: &Path,
+) -> anyhow::Result<()> {
+    if file.path == crate::migrate::MOTD.path {
+        match crate::migrate::motd(settings, backups) {
+            Ok(Some(backup)) => step.info(format!(
+                "Migrated motd.yml to the current format (backup: {})",
+                escape_controls(&backup.display().to_string())
+            )),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, "motd.yml not migrated");
+                step.warn(format!("motd.yml not migrated: {err}"));
+            }
+        }
+    }
+    validate_file(step, settings, file, checks).await
 }
 
 /// A check under `step`, ended early when the step is cancelled (Ctrl-C,
@@ -528,7 +563,7 @@ mod tests {
             dockerhub_url: format!("{}/v2/users/login/", fake.url()),
             backoff: no_wait,
         };
-        let result = run(&mut runner, &settings).await;
+        let result = run(&mut runner, &settings, &root.join("backups")).await;
         runner.finish();
         (result, term.contents())
     }
@@ -592,6 +627,67 @@ mod tests {
             serde_json::json!({"username": "seed", "password": "not-a-real-token"})
         );
         assert_eq!(seen.len(), 3);
+    }
+
+    /// An old-format motd.yml is migrated before it is checked: one
+    /// notice under its step naming the backup, then it validates (motd
+    /// decision 4).
+    #[tokio::test]
+    async fn an_old_motd_yml_is_migrated_then_validated() {
+        let root = saltbox_root("valid").expect("root");
+        let old = "# my motd\nplex:\n  - name: Plex\n    url: http://plex:32400\n    token: plex-token-zz\n";
+        write(root.path(), "motd.yml", old);
+        let fake = healthy();
+        let (result, screen) = run_on(root.path(), &fake).await;
+        assert!(result.is_ok(), "{screen}");
+        let notice = format!(
+            "› Migrated motd.yml to the current format (backup: {}/backups/motd.yml.",
+            root.path().display()
+        );
+        assert!(screen.contains(&notice), "{screen}");
+        assert!(screen.contains("✓ Validated motd.yml"), "{screen}");
+        let new = std::fs::read_to_string(root.path().join("motd.yml")).expect("read");
+        assert_eq!(
+            new,
+            "# my motd\nplex:\n  instances:\n    - name: Plex\n      url: http://plex:32400\n      token: plex-token-zz\n"
+        );
+        // A file that can't be migrated is checked as it is: its issues as
+        // today, nothing written, no backup.
+        let root = saltbox_root("valid").expect("root");
+        let urlless = "plex:\n  - name: Plex\n    token: plex-token-zz\n";
+        write(root.path(), "motd.yml", urlless);
+        let (result, screen) = run_on(root.path(), &fake).await;
+        assert!(result.is_err(), "{screen}");
+        assert!(
+            screen.contains("plex: must be an object, got a list"),
+            "{screen}"
+        );
+        assert!(!screen.contains("Migrated"), "{screen}");
+        assert!(!screen.contains("plex-token-zz"), "{screen}");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("motd.yml")).expect("read"),
+            urlless
+        );
+        assert!(!root.path().join("backups").exists());
+    }
+
+    /// A migration that can't write its backup is a warning; the file is
+    /// then checked as it is.
+    #[tokio::test]
+    async fn a_failed_migration_is_a_warning() {
+        let root = saltbox_root("valid").expect("root");
+        let old = "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: plex-token-zz\n";
+        write(root.path(), "motd.yml", old);
+        // A file where the backups folder belongs.
+        write(root.path(), "backups", "");
+        let fake = healthy();
+        let (result, screen) = run_on(root.path(), &fake).await;
+        assert!(result.is_err(), "{screen}");
+        assert!(screen.contains("motd.yml not migrated: "), "{screen}");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("motd.yml")).expect("read"),
+            old
+        );
     }
 
     /// A global key: `/user` first, with the key and email in their

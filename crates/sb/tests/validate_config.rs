@@ -94,6 +94,47 @@ fn a_valid_set_passes() {
     assert_eq!(targets.len(), 3);
 }
 
+/// An old-format motd.yml is migrated, its original copied into
+/// `SB_BACKUPS_DIR`, and the run passes (motd decision 4).
+#[test]
+fn an_old_motd_yml_is_migrated() {
+    if !root_gate::requested() {
+        return;
+    }
+    let root = saltbox_root("valid").expect("root");
+    let old = "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: plex-token-zz\n";
+    std::fs::write(root.path().join("motd.yml"), old).expect("motd.yml");
+    let backups = root.path().join("backups");
+    let fake = healthy();
+    let out = common::sb()
+        .arg("validate-config")
+        .env("SB_SALTBOX_DIR", root.path())
+        .env("SB_BACKUPS_DIR", &backups)
+        .env("CLOUDFLARE_BASE_URL", format!("{}/client/v4/", fake.url()))
+        .env(
+            "SB_DOCKERHUB_URL",
+            format!("{}/v2/users/login/", fake.url()),
+        )
+        .output()
+        .expect("run sb");
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let notice = format!(
+        "Migrated motd.yml to the current format (backup: {}/motd.yml.",
+        backups.display()
+    );
+    assert!(text.contains(&notice), "{text}");
+    let copies: Vec<_> = std::fs::read_dir(&backups).expect("backups").collect();
+    assert_eq!(copies.len(), 1);
+    let copy = copies[0].as_ref().expect("entry").path();
+    assert_eq!(std::fs::read_to_string(copy).expect("copy"), old);
+    assert!(
+        std::fs::read_to_string(root.path().join("motd.yml"))
+            .expect("motd.yml")
+            .contains("  instances:\n")
+    );
+}
+
 /// A broken set: the issue in its file's block, exit 1, no secret shown.
 #[test]
 fn a_broken_set_fails_with_its_issues() {

@@ -6,6 +6,7 @@ pub mod dockerhub;
 pub mod facts;
 pub mod http;
 pub mod issue;
+pub mod migrate;
 pub mod parse;
 pub mod rules;
 pub mod run;

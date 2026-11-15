@@ -217,10 +217,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   where an object with `properties` or `additionalProperties` belongs is
   an issue at the list, `must be an object, got a list` (a credential
   section keeps its own structure issue; *amended by hardening Task
-  60*, a difference, below). Where the object's `instances` is a list
-  (motd.yml's sections), the issue adds where the list goes, and in
-  motd.yml that the `motd-generate-config` tag rewrites the file (motd
-  spec, decision 4; maintainer, 2026-11-14); empty non-required values are
+  60*, a difference, below). motd.yml's older bare lists of instances
+  are migrated to the current form before its check, when the file
+  passes Saltbox's last list-form schema and the rewrite passes the
+  current one, with a backup (`run::validate_file_migrating`, motd spec,
+  decision 4; the maintainer, 2026-11-15); one left is the same plain
+  issue; empty non-required values are
   skipped; `required: true` with a null value passes unless another rule
   rejects null; `required_with` fires only for a present-but-empty key;
   array items look up `required_when_true` and the like on the array's
@@ -363,8 +365,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   characters in echoed values and remote text escaped.
 - Cloudflare failures show the HTTP status and Cloudflare's own messages
   (sb-go: cloudflare-go's error text) before sb-go's guidance.
-- `SB_SALTBOX_DIR` and `SB_DOCKERHUB_URL` (tests and debugging; sb-go
-  hard-codes both).
+- `SB_SALTBOX_DIR`, `SB_DOCKERHUB_URL` and `SB_BACKUPS_DIR` (motd.yml's
+  migration backups; tests and debugging; sb-go hard-codes the first
+  two and has no migration; sudo's relaunch drops them).
+- An old-format motd.yml is migrated before its check (motd spec,
+  decision 4); sb-go's validate-config skipped a list where an object
+  belongs.
 - Docker Hub's login body properly encoded; `CLOUDFLARE_CUSTOM_HEADERS`
   and cloudflare-go's other environment variables not read.
 - `required_with`'s list printed as `a, b`.

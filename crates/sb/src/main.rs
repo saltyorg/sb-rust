@@ -731,7 +731,10 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
 /// (reqwest's sockets, the checks' timeouts and backoff). Exit 1 when
 /// anything failed: the run has shown every block, so it returns a quiet
 /// exit. An HTTP client that can't be built (TLS or proxy setup) fails
-/// before the runner starts, as sb's plain error block.
+/// before the runner starts, as sb's plain error block. An old-format
+/// motd.yml is migrated first, its original copied to `SB_BACKUPS_DIR`,
+/// or sb-config's default, `/opt/saltbox/backups` (motd decision 4; a
+/// temporary folder in sb's test build).
 fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     use sb_config::{cloudflare, dockerhub, http, run, validators};
     // Empty means unset, as for `SB_SALTBOX_DIR`. A test or debugging URL
@@ -763,7 +766,13 @@ fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<
     block_on(async {
         let options = sb_term_ui::Options::default();
         let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
-        let result = run::run(&mut runner, &settings).await;
+        let backups = std::env::var_os("SB_BACKUPS_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(
+                sb_config::migrate::default_backups,
+                std::path::PathBuf::from,
+            );
+        let result = run::run(&mut runner, &settings, &backups).await;
         runner.finish();
         result.map_err(anyhow::Error::from)
     })?
