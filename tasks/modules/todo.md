@@ -1270,14 +1270,14 @@ line-preserving parser and writer, with the ported round-trip corpus
 and the property test.
 
 **Acceptance criteria:**
-- [ ] Every corpus file round-trips byte for byte (CRLF, continuations,
+- [x] Every corpus file round-trips byte for byte (CRLF, continuations,
       comments).
-- [ ] The property test holds over generated documents.
-- [ ] Edits change only the lines they touch.
+- [x] The property test holds over generated documents.
+- [x] Edits change only the lines they touch.
 
 **Verification:**
-- [ ] `cargo test -p sb-config`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-config`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M50
 **Files:** `crates/config/src/facts/{mod.rs,document.rs}`, `crates/config/tests/fixtures/facts/`, `crates/config/src/lib.rs`
@@ -1293,14 +1293,14 @@ prepare and commit with owner and mode (a temp file on the pinned
 directory fd, `O_EXCL`), the outcomes, `is_secret_key`.
 
 **Acceptance criteria:**
-- [ ] A save writes through the pinned fd and keeps owner and mode.
-- [ ] A held role lock waits or refuses as the spec says; drift is
+- [x] A save writes through the pinned fd and keeps owner and mode.
+- [x] A held role lock waits or refuses as the spec says; drift is
       detected before commit.
-- [ ] Each outcome is reported as the spec names it.
+- [x] Each outcome is reported as the spec names it.
 
 **Verification:**
-- [ ] `cargo test -p sb-config` on temporary roots.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor (root
+- [x] `cargo test -p sb-config` on temporary roots.
+- [x] Review: code-reviewer, library-reviewer, security-auditor (root
       writes to Saltbox files, locks).
 
 **Dependencies:** M51
@@ -2120,6 +2120,16 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **The viewer's far-right rebuild frame meets 5 ms** (lane 2; the
+      maintainer, 2026-11-15). With wrap off far to the right, a frame that
+      rebuilds every line in view (a jump there, a search, a theme or `t`
+      change, a resize) still grows with the column: about 6 ms on plain
+      records and 19 ms on CJK or colour-per-word records at column 4,000
+      (ADR-023, tui.md). The text left of the column has to be parsed for
+      its colours, and neither sb's text parser nor ansi-to-tui can resume
+      mid-line: make the colour parse resumable (checkpoints of the SGR
+      state every N columns, cached per line) so the rebuild starts near
+      the column.
 - [ ] **Every run log line carries the run id** (lane 4; the maintainer,
       2026-11-15). sb-host's ownership lines (`sb_host::owner: ownership
       ...`, `recursive ownership ...`) are written outside the run's span,
