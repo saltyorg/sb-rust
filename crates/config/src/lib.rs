@@ -3,6 +3,7 @@
 
 pub mod cloudflare;
 pub mod dockerhub;
+pub mod facts;
 pub mod http;
 pub mod issue;
 pub mod parse;

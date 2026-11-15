@@ -37,6 +37,8 @@ thiserror.workspace = true
 [dev-dependencies]
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
+# The facts property test's generator, seeded per case (already in the tree).
+fastrand.workspace = true
 tracing-subscriber.workspace = true
 tempfile.workspace = true
 axum.workspace = true
