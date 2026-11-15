@@ -29,6 +29,11 @@ const GRACE: Duration = Duration::from_millis(800);
 /// What "within the grace plus one second" allows for.
 const BOUND: Duration = Duration::from_millis(800 + 1000);
 
+/// After SIGKILL, how long a stop gives the group's members before it
+/// ends regardless (exec spec, "Reading after a stop"; exec's own
+/// constant is private).
+const LAST_CHECK: Duration = Duration::from_secs(1);
+
 fn subreaper() {
     static SET: OnceLock<()> = OnceLock::new();
     SET.get_or_init(|| set_child_subreaper(Some(getpid())).expect("subreaper"));
@@ -150,19 +155,48 @@ fn no_zombie(leader: i32) {
     assert!(matches!(peek, Ok(None) | Err(Errno::CHILD)), "{peek:?}");
 }
 
+/// How long a stop takes here and now when the child goes on SIGTERM: a
+/// measure of how slow the host is at the moment (near nothing when idle,
+/// up to a second under the heaviest load measured). It doesn't run the
+/// zombie stop's two timed wake-ups, so it adds to the slack below, not
+/// replaces it.
+async fn a_stop_on_sigterm() -> Duration {
+    let (_dir, file) = pid_file();
+    let cmd = script("echo $$ > \"$1\"; exec sleep 30", &file);
+    let (done, _, took) = cancelled(cmd, &file).await;
+    assert_eq!(done.outcome.ending, Ending::Interrupted);
+    took
+}
+
 /// A member nobody reaps (here: adopted by this subreaper and left) looks
 /// alive to the group check (kill(-pgid, 0) succeeds on a zombie), so a
-/// stop waits for it until a second after SIGKILL, then ends regardless.
+/// stop waits for it until a second after SIGKILL, then ends regardless:
+/// within that, plus a stop on SIGTERM timed here and now, plus one and a
+/// half seconds of slack for a loaded host. The zombie never goes, so a
+/// stop that waited for it never ends; the 20 s limit fails that. The
+/// slack is kept clear of a whole second on purpose: this bound doesn't
+/// tell a last check of one second from one of two (a bound on that line
+/// caught it only when the host was idle); the lower bound holds the
+/// second.
 async fn a_zombie_member_is_waited_for_a_second(body: &'static str) {
     subreaper();
+    let quick = a_stop_on_sigterm().await;
     let (_dir, file) = pid_file();
-    let (done, pids, took) = cancelled(script(body, &file), &file).await;
+    let (done, pids, took) = tokio::time::timeout(
+        Duration::from_secs(20),
+        cancelled(script(body, &file), &file),
+    )
+    .await
+    .expect("the stop ended");
     assert_eq!(done.outcome.ending, Ending::Interrupted);
-    let last = GRACE + Duration::from_secs(1);
+    let last = GRACE + LAST_CHECK;
     assert!(
-        took >= last.checked_sub(Duration::from_millis(100)).unwrap()
-            && took < last + Duration::from_millis(700),
+        took >= last.checked_sub(Duration::from_millis(100)).unwrap(),
         "{took:?}"
+    );
+    assert!(
+        took < last + quick + LAST_CHECK * 3 / 2,
+        "{took:?} against {quick:?} for a stop on SIGTERM"
     );
     assert_eq!(reap(pids[1]).join().expect("reaper"), Some(9), "SIGKILL");
 }

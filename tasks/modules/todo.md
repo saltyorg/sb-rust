@@ -2213,7 +2213,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       libyaml ends the scalar there. No Saltbox file has a top-level block
       scalar; add the corpus case and match libyaml.
 
-- [ ] **exec's other fixed timing bounds** (lane 2, with its next exec
+- [x] **exec's other fixed timing bounds** (lane 2, with its next exec
       change). `crates/exec/tests/stream.rs:203`, `:287` and
       `groups.rs:163-164` use fixed wall-clock bounds of the kind c06f497
       replaced; give them the same baseline-derived bounds.

@@ -43,6 +43,20 @@ async fn within(cmd: Cmd) -> (Result<Streamed, sb_exec::SpawnError>, String) {
         .expect("ended")
 }
 
+/// How long output is read after the child exits (exec spec, "After the
+/// child exits"; exec's own constant is private).
+const DRAIN: Duration = Duration::from_secs(2);
+
+/// How long `cmd` takes streamed here and now: the baseline a timing
+/// bound is measured against, so a loaded host's spawn and scheduling
+/// costs are in both sides of the comparison.
+async fn baseline(cmd: Cmd) -> Duration {
+    let start = Instant::now();
+    let (done, _) = within(cmd).await;
+    assert_eq!(done.expect("ran").outcome.ending, Ending::Exited(0));
+    start.elapsed()
+}
+
 #[tokio::test]
 async fn a_child_that_succeeds_ends_its_step_done() {
     let (done, screen) = within(sh("echo out; echo err >&2; printf 'last'")).await;
@@ -192,16 +206,20 @@ async fn secrets_are_taken_out_of_the_lines() {
 }
 
 /// A background grandchild holding stdout: the run returns after the 2 s
-/// read past the child's exit.
+/// read past the child's exit. It holds stdout for 10 s, so any bound well
+/// under that proves the run didn't wait for it: the same run without it,
+/// plus the drain, plus one more drain of slack for a loaded host.
 #[tokio::test]
 async fn a_grandchild_holding_stdout_is_left_after_the_drain() {
+    let alone = baseline(sh("echo ok")).await;
     let start = Instant::now();
-    let (done, _) = within(sh("sleep 3 & echo ok")).await;
+    let (done, _) = within(sh("sleep 10 & echo ok")).await;
     assert_eq!(done.expect("ran").outcome.ending, Ending::Exited(0));
     let waited = start.elapsed();
+    assert!(waited >= DRAIN, "{waited:?}");
     assert!(
-        waited >= Duration::from_secs(2) && waited < Duration::from_secs(3),
-        "{waited:?}"
+        waited < alone + DRAIN * 2,
+        "{waited:?} against {alone:?} alone"
     );
 }
 
@@ -255,8 +273,17 @@ async fn a_line_cut_off_by_the_drain_is_kept_once() {
 }
 
 /// The step's token (Ctrl-C, a failing sibling) stops the child's group.
+/// `sleep` dies of the stop's SIGTERM, so the run ends well before the
+/// grace runs out: within half of it after the stop, measured against a
+/// run of `true` here and now, so a loaded host's costs are on both
+/// sides. A stop that waited for the grace's SIGKILL would take the whole
+/// grace and more.
 #[tokio::test]
 async fn the_steps_token_stops_the_child() {
+    const STOP_AFTER: Duration = Duration::from_millis(200);
+    const GRACE: Duration = Duration::from_secs(4);
+    let alone = baseline(Cmd::new("true")).await;
+    let bound = alone + STOP_AFTER + GRACE / 2;
     let term = InMemoryTerm::new(40, 120);
     let options = Options {
         target: Target::InMemory {
@@ -270,11 +297,9 @@ async fn the_steps_token_stops_the_child() {
     let mut ending = None;
     let _ = run
         .step(Labels::new("Running", "ran"), async |step| {
-            let cmd = Cmd::new("sleep")
-                .arg("30")
-                .grace(Duration::from_millis(500));
+            let cmd = Cmd::new("sleep").arg("30").grace(GRACE);
             let (done, ()) = tokio::join!(cmd.stream(step), async {
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(STOP_AFTER).await;
                 shutdown.signalled(2);
             });
             ending = Some(done.expect("ran").outcome.ending);
@@ -283,11 +308,8 @@ async fn the_steps_token_stops_the_child() {
         .await;
     run.finish();
     assert_eq!(ending, Some(Ending::Interrupted));
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
-    );
+    let took = start.elapsed();
+    assert!(took < bound, "{took:?} against {bound:?}");
     assert!(
         term.contents().contains("interrupted"),
         "{}",
