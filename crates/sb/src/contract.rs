@@ -23,9 +23,14 @@ use crate::Cli;
 const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv");
 
 /// What sb has that sb-go doesn't, on purpose: `--color`, the one new
-/// global flag, and `sb docker ps --json` (cli-core spec, command tree;
-/// docker spec decision 2).
-const EXTENSIONS: &[&str] = &["flag\tsb\tglobal\tcolor", "flag\tsb docker ps\tlocal\tjson"];
+/// global flag, `sb docker ps --json` (cli-core spec, command tree;
+/// docker spec decision 2) and `sb edit --no-edit-again` (tui spec,
+/// editors, difference 22).
+const EXTENSIONS: &[&str] = &[
+    "flag\tsb\tglobal\tcolor",
+    "flag\tsb docker ps\tlocal\tjson",
+    "flag\tsb edit\tglobal\tno-edit-again",
+];
 
 /// sb-go's lines sb words differently on purpose, with sb's line for each:
 /// a short help that wrapped in `sb --help` at fang's 120 columns

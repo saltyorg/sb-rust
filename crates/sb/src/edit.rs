@@ -1,6 +1,7 @@
 //! `sb edit <file>` (tui spec, "Editors": `sb edit` and `sb edit <file>`;
-//! module build M49): the target checks, the editor choice and the run.
-//! The validation after the edit (M50) and the picker (M53) come later.
+//! module build M49, M50): the target checks, the editor choice and the
+//! run, then the file validated as validate-config validates it and, with
+//! issues, "Edit <file> again?". The picker (M53) comes later.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
+use sb_cli_core::exit::Exit;
+use sb_cli_core::log::RunLog;
+use sb_config::run::{self, Checks, FileError, Issues};
 use sb_exec::{Cmd, Ending, SpawnCause, SpawnError};
+use sb_term_ui::PromptError;
 
 /// One of the six files `sb edit` opens (sb-go layout/layout.go:13-21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +47,29 @@ impl File {
             other => root.join(other.shown()),
         }
     }
+
+    /// Its entry in validate-config's files (sb-config's `run::FILES`,
+    /// in sb-go's order), so it is checked exactly as validate-config
+    /// checks it.
+    fn checked_as(self) -> run::File {
+        let [
+            accounts,
+            adv_settings,
+            backup_config,
+            hetzner_vlan,
+            settings,
+            _motd,
+            inventory,
+        ] = run::FILES;
+        match self {
+            Self::Accounts => accounts,
+            Self::Settings => settings,
+            Self::AdvSettings => adv_settings,
+            Self::BackupConfig => backup_config,
+            Self::HetznerVlan => hetzner_vlan,
+            Self::Inventory => inventory,
+        }
+    }
 }
 
 /// The editors tried, in order, when neither `VISUAL` nor `EDITOR` names
@@ -50,16 +78,28 @@ const FALLBACK: [&str; 4] = ["sensible-editor", "editor", "nano", "vi"];
 
 /// `sb edit <file>`: `file` under `SB_SALTBOX_DIR`'s root (cli-core's
 /// `saltbox_dir`) checked, then opened in the chosen editor, attached to
-/// sb's terminal (exec's `attached`), and its ending logged with whether
-/// the file's bytes changed.
+/// sb's terminal (exec's `attached`), its ending logged with whether the
+/// file's bytes changed, then the file validated under term-ui's runner
+/// ([`validate`]). With issues, term-ui's confirm asks `Edit <file>
+/// again?` (default no; `no_edit_again` answers no without asking): yes
+/// runs the editor and the validation again, as often as the user says
+/// yes. The file stays as the editor saved it either way.
 ///
 /// # Errors
 ///
 /// The target isn't an existing regular file, `VISUAL` or `EDITOR` doesn't
 /// split, no editor starts, or the editor didn't exit 0 (`error opening
-/// editor`); "interrupted" when a signal ended the run (cli-core's
-/// `finish_run` shows it and ends sb by the signal).
-pub fn edit(file: File, shutdown: &Shutdown) -> anyhow::Result<()> {
+/// editor`, no validation); "interrupted" when a signal ended the run
+/// (cli-core's `finish_run` shows it and ends sb by the signal); the
+/// file's failed step (`Exit(1)`, its block shown) when it has issues
+/// and the answer is no, or it couldn't be checked; the confirm's error
+/// (no terminal and no flag: it names `--no-edit-again`).
+pub fn edit(
+    file: File,
+    no_edit_again: bool,
+    shutdown: &Shutdown,
+    log: Option<&RunLog>,
+) -> anyhow::Result<()> {
     let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
     let path = file.path(&root);
     check_target(&path)?;
@@ -75,19 +115,151 @@ pub fn edit(file: File, shutdown: &Shutdown) -> anyhow::Result<()> {
             path.to_string_lossy()
         );
     };
-    let before = snapshot(&path);
-    let (program, ending) = super::block_on(run_editor(chosen, shown_path, shutdown))??;
-    tracing::info!(
-        file = file.shown(),
-        editor = %config::escape_controls(&program),
-        ending = %ending.reason(),
-        changed = changed(before.as_deref(), snapshot(&path).as_deref()),
-        "editor ended"
-    );
-    match ending {
-        Ending::Exited(0) => Ok(()),
-        Ending::Interrupted => bail!("interrupted"),
-        ending => bail!("error opening editor: {ending}"),
+    // Before the editor runs, so a client that can't be built fails
+    // before the edit, not after it.
+    let settings = settings(root)?;
+    let question = format!("Edit {} again?", file.shown());
+    loop {
+        let before = snapshot(&path);
+        let (program, ending) =
+            super::block_on(run_editor(chosen.as_ref(), shown_path, shutdown))??;
+        tracing::info!(
+            file = file.shown(),
+            editor = %config::escape_controls(&program),
+            ending = %ending.reason(),
+            changed = changed(before.as_deref(), snapshot(&path).as_deref()),
+            "editor ended"
+        );
+        match ending {
+            Ending::Exited(0) => {}
+            Ending::Interrupted => bail!("interrupted"),
+            ending => bail!("error opening editor: {ending}"),
+        }
+        let failed = match super::block_on(validate(file, &settings, shutdown, log))?? {
+            Validated::Clean => return Ok(()),
+            Validated::Issues(failed) => failed,
+        };
+        // A signal during the validation ends the run, unasked.
+        if shutdown.token().is_cancelled() {
+            bail!("interrupted");
+        }
+        if !ask_again(&question, no_edit_again, shutdown)? {
+            return Err(failed.into());
+        }
+    }
+}
+
+/// term-ui's confirm for `question`, `no_edit_again` answering no.
+///
+/// # Errors
+///
+/// The confirm's error; "interrupted" on Ctrl-C once sb's signals thread
+/// has recorded the signal (or [`SETTLE`] has passed). console raises
+/// SIGINT for Ctrl-C and returns at once (console 0.16.6
+/// `src/unix_term.rs`, `read_single_key`), and the thread records it a
+/// moment later: without the wait, the run could end with exit 1 rather
+/// than by the signal. The wait is tokio's timeout on the token's
+/// cancellation
+/// (<https://docs.rs/tokio/1.54.1/tokio/time/fn.timeout.html>,
+/// <https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.cancelled>).
+fn ask_again(question: &str, no_edit_again: bool, shutdown: &Shutdown) -> anyhow::Result<bool> {
+    match sb_term_ui::confirm(question, no_edit_again.then_some(false), "--no-edit-again") {
+        Err(PromptError::Interrupted) => {
+            let recorded = shutdown.token();
+            let _ = super::block_on(async {
+                tokio::time::timeout(SETTLE, recorded.cancelled()).await
+            })?;
+            bail!("interrupted")
+        }
+        answer => Ok(answer?),
+    }
+}
+
+/// How long an interrupted question waits for sb's signals thread to
+/// record the SIGINT console raised: it reads within microseconds.
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The settings validate-config checks a file with
+/// (`sb_config::run::Settings`), for a run with [`Checks::Skip`]: the
+/// Saltbox root, the zoneinfo places as validate-config finds them
+/// (`ZONEINFO`), and a client and service URLs that are never used (no
+/// credential check runs, so no proxy is read and no override variable
+/// is either).
+fn settings(root: PathBuf) -> anyhow::Result<run::Settings> {
+    use sb_config::{cloudflare, dockerhub, http, validators};
+    Ok(run::Settings {
+        root,
+        zoneinfo: validators::Saltbox::zoneinfo_places(std::env::var_os("ZONEINFO")),
+        http: http::Http::new(&http::Proxy::Off, http::TIMEOUT).map_err(anyhow::Error::msg)?,
+        cloudflare_url: cloudflare::BASE_URL.to_string(),
+        dockerhub_url: dockerhub::LOGIN_URL.to_string(),
+        backoff: cloudflare::backoff,
+    })
+}
+
+/// The issue count of a failed check that another edit can fix: the
+/// file's issues, or the file itself unreadable or gone (not UTF-8, over
+/// the cap, removed), which validate-config reports as the file's one
+/// issue; `None` when its schema couldn't be loaded.
+fn fixable(err: &anyhow::Error) -> Option<usize> {
+    if let Some(issues) = err.downcast_ref::<Issues>() {
+        return Some(issues.count());
+    }
+    match err.downcast_ref::<FileError>() {
+        Some(FileError::Read(_) | FileError::Missing(_)) => Some(1),
+        _ => None,
+    }
+}
+
+/// How an edited file came through its validation.
+#[derive(Debug)]
+enum Validated {
+    Clean,
+    /// With issues, which another edit can fix: the step's failure.
+    Issues(Exit),
+}
+
+/// `file` validated under term-ui's runner, titled `sb edit`, as
+/// validate-config's step for that file (sb-config's `validate_file`,
+/// credential checks skipped), started only now the editor has exited
+/// (exec refuses `attached` while a runner draws) and finished before
+/// any question (term-ui's prompts refuse while one draws). The issue
+/// count reaches the log; the issues themselves only the step's record,
+/// as validate-config's do (a secret's value never: sb-config's rules).
+///
+/// # Errors
+///
+/// The step's failure when the file couldn't be checked (its schema
+/// missing or broken: no edit of the file can fix that) or the run was
+/// interrupted.
+async fn validate(
+    file: File,
+    settings: &run::Settings,
+    shutdown: &Shutdown,
+    log: Option<&RunLog>,
+) -> Result<Validated, Exit> {
+    let checked = file.checked_as();
+    let mut runner =
+        sb_term_ui::Runner::start("sb edit", shutdown, log, sb_term_ui::Options::default());
+    let mut issues = None;
+    let result = runner
+        .step(run::file_labels(checked), async |step| {
+            let result = run::validate_file(step, settings, checked, Checks::Skip).await;
+            issues = match &result {
+                Ok(()) => Some(0),
+                Err(err) => fixable(err),
+            };
+            result
+        })
+        .await;
+    runner.finish();
+    if let Some(issues) = issues {
+        tracing::info!(file = file.shown(), issues, "edited file validated");
+    }
+    match (result, issues) {
+        (Ok(()), _) => Ok(Validated::Clean),
+        (Err(failed), Some(_)) => Ok(Validated::Issues(failed)),
+        (Err(failed), None) => Err(failed),
     }
 }
 
@@ -160,22 +332,19 @@ struct Editor {
 /// A named editor that doesn't start (`find editor "<program>": <cause>`,
 /// sb-go faf9887's wording), or none of the fallback list found.
 async fn run_editor(
-    chosen: Option<Editor>,
+    chosen: Option<&Editor>,
     path: &str,
     shutdown: &Shutdown,
 ) -> anyhow::Result<(String, Ending)> {
     let not_started =
         |program: &str, err: &SpawnError| anyhow!("find editor {program:?}: {}", err.cause());
     if let Some(Editor { program, args }) = chosen {
-        let cmd = args
-            .into_iter()
-            .fold(Cmd::new(&program), Cmd::value)
-            .value(path);
+        let cmd = args.iter().fold(Cmd::new(program), Cmd::value).value(path);
         let ran = cmd
             .attached(shutdown)
             .await
-            .map_err(|err| not_started(&program, &err))?;
-        return Ok((program, ran.outcome.ending));
+            .map_err(|err| not_started(program, &err))?;
+        return Ok((program.clone(), ran.outcome.ending));
     }
     for program in FALLBACK {
         match Cmd::new(program).value(path).attached(shutdown).await {
@@ -291,6 +460,27 @@ mod tests {
             File::Inventory.path(root),
             root.join("inventories/host_vars/localhost.yml")
         );
+    }
+
+    /// Each file is checked as validate-config checks the file at its
+    /// path.
+    #[test]
+    fn each_file_is_checked_as_validate_config_checks_it() {
+        let root = Path::new("/saltbox");
+        for file in [
+            File::Accounts,
+            File::Settings,
+            File::AdvSettings,
+            File::BackupConfig,
+            File::HetznerVlan,
+            File::Inventory,
+        ] {
+            assert_eq!(
+                root.join(file.checked_as().path),
+                file.path(root),
+                "{file:?}"
+            );
+        }
     }
 
     /// `changed` compares bytes; a file that couldn't be read is unknown.

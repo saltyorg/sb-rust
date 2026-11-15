@@ -74,6 +74,12 @@ enum Command {
         disable_help_subcommand = true
     )]
     Edit {
+        /// Don't offer to edit the file again when it has issues
+        // On `edit` and each subcommand (tui spec, editors): a global
+        // flag reaches the subcommands
+        // (<https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.global>).
+        #[arg(long, global = true)]
+        no_edit_again: bool,
         #[command(subcommand)]
         command: EditCommand,
     },
@@ -183,7 +189,11 @@ expansion, substitutions, and ~ expansion are not supported. GUI clients may
 need a wait option and a working root GUI session.
 
 Configuration targets must already exist and be regular files. Symlinks to
-regular files are supported.";
+regular files are supported.
+
+After the editor exits, the file is checked as sb validate-config checks it,
+without the credential checks. If it has issues, sb offers to edit it again;
+--no-edit-again answers no.";
 
 /// `sb edit`'s subcommands, one per file (tui spec, editors; sb-go's
 /// names, underscores kept).
@@ -274,7 +284,7 @@ impl Command {
             },
             Command::ValidateConfig => "validate-config",
             Command::BranchSandbox { .. } => "branch-sandbox",
-            Command::Edit { command } => match command {
+            Command::Edit { command, .. } => match command {
                 EditCommand::Accounts => "edit accounts",
                 EditCommand::AdvSettings => "edit adv_settings",
                 EditCommand::BackupConfig => "edit backup_config",
@@ -557,7 +567,10 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
     match *command {
         Command::ValidateConfig => validate_config(shutdown, log)?,
         Command::BranchSandbox { ref name } => branch::branch_sandbox(name, shutdown, log)?,
-        Command::Edit { command } => edit::edit(command.file(), shutdown)?,
+        Command::Edit {
+            command,
+            no_edit_again,
+        } => edit::edit(command.file(), no_edit_again, shutdown, log)?,
         Command::Motd(ref args) => motd::motd(args, shutdown)?,
         Command::UpdateVenv => python_env::update_venv(shutdown, log)?,
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
@@ -971,7 +984,10 @@ mod tests {
     /// `edit` needs root and logs each subcommand under its sb-go name.
     #[test]
     fn edit_needs_root_and_logs_its_file() {
-        let edit = |command| Command::Edit { command };
+        let edit = |command| Command::Edit {
+            command,
+            no_edit_again: false,
+        };
         assert!(edit(EditCommand::Settings).needs_root());
         assert_eq!(edit(EditCommand::AdvSettings).name(), "edit adv_settings");
         assert_eq!(edit(EditCommand::Inventory).name(), "edit inventory");
