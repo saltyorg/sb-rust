@@ -33,13 +33,20 @@ const EXTENSIONS: &[&str] = &[
 ];
 
 /// sb-go's lines sb words differently on purpose, with sb's line for each:
-/// a short help that wrapped in `sb --help` at fang's 120 columns
-/// (the maintainer, 2026-11-14). Each is a difference in the spec that
-/// owns the command's help (python-env difference 15).
-const REWORDED: &[(&str, &str)] = &[(
-    "command\tsb reinstall-python\tfalse\tReinstall the Python version used by Saltbox and related Ansible virtual environment using uv",
-    "command\tsb reinstall-python\tfalse\tReinstall Saltbox's Python and its Ansible virtual environment using uv",
-)];
+/// a short help that wrapped in `sb --help` at fang's 120 columns (the
+/// maintainer, 2026-11-14), and a command sb shows that sb-go hid (the
+/// maintainer, 2026-11-15). Each is a difference in the spec that owns
+/// the command (python-env difference 15, ops difference 31).
+const REWORDED: &[(&str, &str)] = &[
+    (
+        "command\tsb reinstall-python\tfalse\tReinstall the Python version used by Saltbox and related Ansible virtual environment using uv",
+        "command\tsb reinstall-python\tfalse\tReinstall Saltbox's Python and its Ansible virtual environment using uv",
+    ),
+    (
+        "command\tsb announcements\ttrue\tDisplay announcements from announcement files",
+        "command\tsb announcements\tfalse\tDisplay announcements from announcement files",
+    ),
+];
 
 /// sb's commands and flags in the fixture's line format.
 fn sb_tree() -> Vec<String> {
@@ -172,6 +179,28 @@ fn motd_has_every_sb_go_flag_but_verbose() {
             "flag\tsb motd\tlocal\tverbose\tv\tswitch\tfalse\tIncrease verbosity level (can be used multiple times, e.g. -vvv)"
         ]
     );
+}
+
+/// `sb announcements` has every flag of sb-go's (cmd/announcements.go)
+/// but `-v` (ops decision 18), each as sb-go has it: names, short flag,
+/// scope, shape and help.
+#[test]
+fn announcements_has_every_sb_go_flag_but_verbose() {
+    let tree = sb_tree();
+    let missing: Vec<&str> = SB_GO_TREE
+        .lines()
+        .filter(|line| line.starts_with("flag\tsb announcements\t"))
+        .filter(|line| !tree.iter().any(|ours| ours == line))
+        .collect();
+    assert_eq!(
+        missing,
+        ["flag\tsb announcements\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output"]
+    );
+    let ours = tree
+        .iter()
+        .filter(|line| line.starts_with("flag\tsb announcements\t"))
+        .count();
+    assert_eq!(ours, 3, "--after, --before and --repo");
 }
 
 /// A flag with only a short name, or one sb-go lacks, is reported, not

@@ -34,6 +34,9 @@ ratatui-core.workspace = true
 crossterm.workspace = true
 # SGR in log text (M67), likewise.
 ansi-to-tui.workspace = true
+# Announcements' Markdown, the inline form (tui spec, Scope; ops spec,
+# "Shown"), with syntect's code highlighting (CONSTRAINTS.md E1).
+tui-markdown.workspace = true
 # The picker's name filter line (tui spec, "The picker", Keys).
 ratatui-textarea.workspace = true
 # `DisplayText`, the one way untrusted bytes reach the screen (journal

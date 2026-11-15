@@ -57,10 +57,10 @@ features = [
 # "Depends on" column. Added with each crate.
 deny = [
     # cli-core: every module builds on it.
-    { crate = "sb-cli-core", wrappers = ["sb", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
+    { crate = "sb-cli-core", wrappers = ["sb", "sb-ops", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates; host's apt streams into its steps.
-    { crate = "sb-term-ui", wrappers = ["sb", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
+    { crate = "sb-term-ui", wrappers = ["sb", "sb-ops", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
     # exec: child processes; its first user is sb-docker's start, stop and
     # restart (exec spec, decision 4); sb-host's systemctl calls; the
     # binary's `sb edit`, which runs the editor attached (tui spec,
@@ -82,11 +82,12 @@ deny = [
     # turns `testing` on for its tests (as sb-journal's).
     { crate = "sb-repo", wrappers = ["sb", "sb-repo", "sb-ansible"] },
     # config: sb validate-config's schemas and checks, used by the binary.
-    { crate = "sb-config", wrappers = ["sb", "sb-motd"] },
+    { crate = "sb-config", wrappers = ["sb", "sb-motd", "sb-ops"] },
     # tui: sb's full-screen screens (the log picker and viewer, the
     # editors) over docker, host, term-ui and cli-core, used by the binary
-    # (tui spec, "Gate bookkeeping").
-    { crate = "sb-tui", wrappers = ["sb"] },
+    # (tui spec, "Gate bookkeeping"), and by ops for the announcements'
+    # inline form (ops spec, assumption 4).
+    { crate = "sb-tui", wrappers = ["sb", "sb-ops"] },
     # release: GitHub release lookup, verified downloads and sb
     # self-update, used by the binary (and later python-env and ops). Its
     # own name is its self dev-dependency, which turns `testing` on for
@@ -107,6 +108,10 @@ deny = [
     # dev-dependency, which turns `testing` on for its tests (as
     # sb-repo's).
     { crate = "sb-python-env", wrappers = ["sb", "sb-python-env"] },
+    # ops: the workflow commands (update, the branch commands,
+    # announcements, setup, restore, bench, gha) over the other modules
+    # (ops spec, Project Structure), used by the binary.
+    { crate = "sb-ops", wrappers = ["sb"] },
 ]
 
 [sources]

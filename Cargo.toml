@@ -23,6 +23,7 @@ sb-release = { path = "crates/release" }
 sb-motd = { path = "crates/motd" }
 sb-ansible = { path = "crates/ansible" }
 sb-python-env = { path = "crates/python-env" }
+sb-ops = { path = "crates/ops" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"
@@ -144,6 +145,10 @@ ratatui-core = { version = "=0.1.2", features = ["anstyle"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 # SGR in log text to ratatui `Text` (ratatui org).
 ansi-to-tui = "8.0.1"
+# Announcements' Markdown as ratatui `Text` (stack table "Markdown"; plan
+# decision 8). Its default `highlight-code` feature (syntect) stays on:
+# YAML highlighting in announcements, CONSTRAINTS.md exception E1.
+tui-markdown = "0.3.12"
 # The picker's name filter line (ratatui org; tui spec, Tech Stack: 0.9.4
 # was under two weeks old when the spec was checked).
 ratatui-textarea = "0.9.3"

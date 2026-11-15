@@ -2,7 +2,8 @@
 
 Approved by the maintainer as drafted (2026-11-13); a change after the
 maintainer's read-through becomes a fix
-task.
+task. *Amended 2026-11-15: `sb announcements` is
+shown and only reads (decision 27, differences 31 and 35 to 37).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -477,7 +478,7 @@ signal, the disk test's file and the temporary directory removed.
 | `update` | `--keep-branch` / `--reset-branch` (conflict: clap's error, exit 2), `--skip-self-update`, `--migrations <run\|skip>` (new) | no |
 | `branch <name>` | the branch, required | no |
 | `branch-sandbox <name>` | the branch, required | no |
-| `announcements` | `-b/--before <file>`, `-a/--after <file>` (both required), `-r/--repo <Saltbox\|Sandbox>` (default `Saltbox`), `--migrations <run\|skip>` (new) | yes |
+| `announcements` | `-b/--before <file>`, `-a/--after <file>` (both optional, decision 27), `-r/--repo <Saltbox\|Sandbox>` (default `Saltbox`) | no |
 
 Help texts are sb-go's (`Change the branch used by Saltbox`, and the
 others from cmd/). No `-v` anywhere (decision 18). sb-go's usage line
@@ -608,15 +609,27 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
 
 No prompt: the argument is the answer (decision 20).
 
-### `sb announcements` (hidden)
+### `sb announcements`
 
-A test harness for announcement files (56fc086). It loads `--before`
-and `--after` (the file paths; a missing one counts as "no file"),
-applies the rules above as the repository `--repo` names, shows the
-result the same way as `update`, lists the migrations and asks (or takes
-`--migrations`), then only prints `Would execute migration '<tag>' for
-<Repo> repository` for each: it never runs a playbook. An invalid file is
-an error here, exit 1 (it is what's being tested).
+A reader for one repository's announcements (the maintainer, 2026-11-15:
+it shows announcements only, and migrations run during updates only; decision
+27). It loads `--after`, or without it
+the repository's own file (`<repo>/announcements.yml`, the repository
+`--repo` names at its place in assumption 7), and `--before` when given;
+a missing file counts as "no file". The rules above decide which entries
+apply and which are new: without `--before`, every entry is new (sb-go's
+rule for no before file, and proto-markdown's reviewed viewer). One
+runner step loads and compares, its info line `Displaying new
+announcements` or `No new announcements`. Then:
+
+- stdout a terminal: tui's announcement viewer (tui spec, "The
+  announcement viewer") with every applicable entry of the after file,
+  the new ones marked, when at least one applies;
+- otherwise: the new entries inline, as `update` prints them.
+
+No migration table, no confirm and no `--migrations`: migrations run in
+`update` only (M86). An invalid file is an error here, exit 1, in
+sb-go's words (`error loading before announcement file '<path>': ...`).
 
 ## Differences from sb-go (the complete list)
 
@@ -707,13 +720,28 @@ an error here, exit 1 (it is what's being tested).
    file in the checkout kept `sb update` from fetching its fix
    (decision 23).
 30. Skipped migrations are listed in a warning (decision 22).
-31. `--migrations` on the hidden `announcements` too, so it can be tested
-    without a terminal.
+31. `announcements` is shown in `sb --help` and only reads announcements:
+    sb-go's was a hidden test harness that also listed the migrations,
+    asked about them and printed what it would run. There is no migration
+    table, confirm or `--migrations` on it (the maintainer, 2026-11-15;
+    decision 27).
 32. No `-v` on `update` or `announcements` (decision 18).
-33. Parse errors (both branch flags, a missing `--before`) exit 2
-    (cli-core's parse errors); sb-go exited 1.
+33. Parse errors (both branch flags) exit 2 (cli-core's parse errors);
+    sb-go exited 1.
 34. The repo and release specs' differences apply (branch-name checks,
     refspec widening, pinned downloads and the rest).
+35. `announcements` needs no flag: without `--before` every entry is
+    new, without `--after` it reads the repository's own file; sb-go
+    required both (`MarkPersistentFlagRequired`; decision 27).
+36. On a terminal, `announcements` (and `update`, M87) lists every
+    applicable announcement in tui's viewer, the new ones marked and the
+    older ones faint; sb-go's viewer showed only the new ones (tui spec,
+    "The announcement viewer"; proto-markdown's reviewed design).
+37. A single line break inside a paragraph of a message is a space, as
+    CommonMark has it (tui-markdown); sb-go's glamour kept it as a break
+    (`WithPreservedNewLines`, saltbox/announcements.go:410-414). Saltbox's
+    and Sandbox's public files of 2026-11-15 don't rely on it (M74's
+    review).
 
 ## Scope
 
@@ -983,8 +1011,11 @@ the real services.
       update completes;
     - self-update replaced: the warning and exit 0, no apt step started;
     - SIGINT during the Saltbox fetch: "interrupted", death by the signal.
-  - **`announcements` (hidden):** fixture pairs, `--migrations run`
-    printing the `Would execute` lines and starting no child.
+  - **`announcements`:** fixture pairs piped (the new entries inline, no
+    migration table for an entry with a migration, no child started),
+    no `--before` (every entry new), no `--after` (the root's own file
+    under `SB_SALTBOX_DIR`); on a PTY the viewer opens, `q` closes it
+    (exit 0) and Ctrl-C ends with 130, the terminal restored.
 
 ## Boundaries
 
@@ -1150,8 +1181,14 @@ the real services.
     "Re-run" warning (research D §6.13; sb-go 6108017).
 26. **The announcement viewer and inline Markdown are tui's** (module
     table; research D §6.16); `update`'s full form is built after tui.
-27. **The hidden `announcements` stays** as sb-go's test harness, with
-    `--migrations` (research D §8 options; it never runs a playbook).
+27. **`announcements` is shown and only reads** (the maintainer,
+    2026-11-15, replacing "the hidden `announcements`
+    stays as sb-go's test harness, with `--migrations`"): migrations run
+    in `update` only. A reader needs no flag, so none is required:
+    without `--before` every entry is new (sb-go's rule for no before
+    file, proto-markdown's viewer), without `--after` the repository's
+    own file (assumption 7). `-r` keeps sb-go's default, Saltbox: one
+    repository per run. Decided from these specs.
 28. **setup moves the cleared apt sources aside** into a root-only
     `/var/backups/sb/apt-sources/<run id>/` instead of deleting them
     (difference 5). Reason: the hardening rules for destructive
@@ -1214,8 +1251,10 @@ Replace it with:
   `--reset-branch`, `--skip-self-update`, `--migrations`).
 - `branch` and `branch-sandbox` rows: `branch <name>`,
   `branch-sandbox <name>` (required).
-- `announcements` row, planning note: `a test harness for announcement
-  files (runs nothing), --migrations (ops spec)`.
+- `announcements` row, first column: `announcements` (`--before`,
+  `--after`, `--repo`, none required); planning note: `reads a
+  repository's announcements: tui's viewer on a terminal, inline
+  otherwise; migrations stay with update (ops spec, decision 27)`.
 
 **Capability map, stack table:** a row for archives, shared with the
 python-env spec: `Archives (uv, Speedtest) | tar + flate2 (rust_backend)
@@ -1273,8 +1312,9 @@ restore\tlocal\tpassword-file`, `flag\tsb setup\tglobal\tverbose` and
 `command\tsb bench`, plus `sb setup`'s `--keep-branch` and
 `--reset-branch` (decision 29; entries `flag\tsb setup\tglobal\tkeep-branch`
 and `flag\tsb setup\tglobal\treset-branch`), and the new `--migrations`
-on `sb update` and `sb announcements` (`flag\tsb update\tlocal\tmigrations`,
-`flag\tsb announcements\tlocal\tmigrations`).
+on `sb update` (`flag\tsb update\tlocal\tmigrations`); `sb announcements`
+is shown where sb-go hid it, the contract test's `REWORDED` entry for its
+command line (decision 27).
 
 **config spec, Scope:** the `saltbox_user()` amendment, one function for
 repo's callers, python-env and ops (its wording is in the repo spec's
@@ -1309,7 +1349,8 @@ in the tui spec's Scope (this spec's decision 26).
    repo (no runtime or tags until those modules land; each added when
    it does).
 10. **Announcement rules (S):** load, diff, gate, sort, migration list,
-   with the hidden `sb announcements` printing inline and `--migrations`.
+   with `sb announcements` printing inline (the viewer on a terminal
+   follows with tui's viewer).
 11. **`update` skeleton (M):** the up-front flag check, disk space,
    self-update, branch questions, apt, both repositories, secure files,
    validation; announcements inline.

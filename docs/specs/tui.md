@@ -14,7 +14,8 @@ decision 8) and of sb-host's service list (host decision 1), and the
 first screen in sb's binary, so it brings ratatui and crossterm in. The
 editors (`sb edit`, `sb fact`) are the second part of this spec
 ("Editors: `sb edit` and `sb fact`", with its own plan); the
-announcements viewer is a later section (Scope).
+announcement viewer is the third ("The announcement viewer", written
+2026-11-15 from proto-markdown's reviewed design).
 
 The behaviour comes from sb-go 35a7acc (2026-10-28), `cmd/logs.go`,
 `cmd/dockerLogs.go` and `host/systemd.go`, redesigned as capability map
@@ -416,11 +417,13 @@ the Docker containers.`). A snapshot test pins them.
   - **Editors:** `sb edit` and `sb fact` are specified in this spec's
     section "Editors: `sb edit` and `sb fact`" below, planned
     separately.
-  - The announcements viewer (tui-markdown, tui-scrollview), with `ops`'
-    `update`: it takes a list of `(repo, date, title, message)`, and has
-    an inline form (tui-markdown's output on stdout, each announcement
-    under its heading, the message through `DisplayText`) for stdout
-    that isn't a terminal (ops spec, `update`, decisions 24 and 26).
+  - The announcement viewer (tui-markdown, tui-scrollview), with `ops`'
+    `update` and `sb announcements`: it takes a list of `(repo, date,
+    title, message, new)`, and has an inline form (tui-markdown's output
+    on stdout, each announcement under its heading, the message through
+    `DisplayText`) for stdout that isn't a terminal (ops spec, `update`,
+    decisions 24 and 26). Its section is "The announcement viewer"
+    below.
 - **Later for the viewer:** regex search; searching the whole journal
   (sb-journal's "budgeted, resumable search" slice); OSC 52 copy
   (crossterm `osc52`); journal priorities and unit events from
@@ -1458,6 +1461,177 @@ the test's directory.
 - Drift is found at Save, perhaps long after the change was staged; the
   drift dialog then reloads (dropping that role's staged changes) or
   keeps them staged (decision 38).
+
+## The announcement viewer
+
+*Written 2026-11-15 from proto-markdown's reviewed prototype*
+(prototypes/proto-markdown/FINDINGS.md, "Viewer redesign (maintainer
+review)", the maintainer's verdict of 2026-10-29, and its `src/main.rs`),
+at the maintainer's request (2026-11-15: the earlier prototype's menu through all
+announcements).
+This is the section the module build's M87 waited on (plan open
+question 1). The inline form is built (M74, `markdown::write_inline`);
+this section is the full-screen form.
+
+### Objective
+
+A Saltbox user sees, right after `sb update` or with `sb announcements`,
+which announcements are new, reads each one whole without scrolling past
+its end, and can still read the ones they missed before.
+
+### Input
+
+- A list of entries, each `(repo, date, title, message, new)`: the
+  repository's name, the date and title as the file wrote them, the
+  Markdown message, and whether it is new. ops decides which entries
+  apply and which are new, by sb-go's rules (ops spec, "Announcements":
+  `date|title` identity against the file before, the required folder and
+  file; no before file means every entry is new). The viewer adds no
+  rule of its own.
+- Unlike sb-go's viewer, which showed only the new entries, the list
+  holds every applicable entry of the file, the older ones too, so missed
+  ones can still be read (FINDINGS, "What counts as new").
+- The callers: `sb announcements` on a terminal, with every applicable
+  entry, when at least one applies; `sb update` on a terminal when there
+  are new ones (M87). With stdout not a terminal both print the inline
+  form instead, the new entries only (ops spec, decision 24).
+
+### Layout
+
+- **The list**, newest first by the date's text (a stable sort: on equal
+  dates the order given, Saltbox's before Sandbox's), in a rounded,
+  bordered block titled ` Announcements `, with `· N new ` after it when
+  any are new. A row is `● <date>  <title>` for a new entry: the marker
+  in the Ok role, the date Muted, the title in Text, bold. An older entry
+  is `  <date>  <title>`, all in the Faint role, without the marker. The
+  selected row is the Selected roles' bar (reverse video with colour
+  off, decision 23's rule).
+- **The selected announcement** fills the rest, in a rounded block of
+  its own whose title names the repository (` Saltbox `, ` Sandbox `):
+  a first line `<date> · <title>` (date Muted, the dot Faint, the title
+  Accent, bold), with a ` NEW ` badge (OnAccent on Ok, bold) when the
+  entry is new, then the message as tui-markdown renders it with the
+  inline form's style sheet (proto-markdown's reviewed `SaltboxSheet`;
+  heading markers and code fences hidden in colour, kept with colour
+  off). Text wraps at the pane's width.
+- **The viewer opens on the newest new entry**, or the newest one when
+  none is new.
+- **Width:** at 70 columns and wider the list is on the left, as wide as
+  its widest row (`ListItem::width`, display width) plus its border, at
+  least 24 columns and at most 40% of the screen; a longer title is cut
+  in the list and shown whole in the pane (decided in the prototype's
+  review: keep the cap, keep titles short). Below 70 columns the list
+  goes above the announcement, as tall as its rows plus its border, at
+  most a third of the screen.
+- **The footer** is the key hints, as the log screens' (`↑↓
+  announcement · PgUp/PgDn scroll · q close`), and `● new` when any are
+  new.
+- **No announcement** (an empty list) reads `No announcements apply to
+  this system.` in the pane; the callers don't open the viewer then.
+
+### Scrolling
+
+- **tui-scrollview 0.6.8** (ratatui org) scrolls the pane. It clamps
+  while rendering: content that fits never scrolls, and the furthest
+  position puts the last line on the last row (tui-scrollview
+  `scroll_view.rs`, `render`). Its scrollbar shows only when the text
+  doesn't fit, and it gives page up and down. The pane's block style
+  colours the scrollbar (Faint), since tui-scrollview's `Scrollbar` has
+  no style of its own (FINDINGS; the prototype's library review).
+- It draws the whole announcement every frame. That was why the log
+  viewer rejected it; an announcement is a few dozen lines. The content
+  is capped at 2,000 rows (a longer one is cut there), so a pathological
+  file can't make each frame's buffer huge.
+- The content's height comes from `Paragraph::line_count` (ratatui's
+  `unstable-rendered-line-info`, ADR-001), measured again one column
+  narrower when a scrollbar is needed.
+- The list moves with `ListState::select_next` and `select_previous`.
+  `select_next` clamps only when the list renders, so the viewer clamps
+  the selection before comparing, and a move past the last entry is no
+  move (the prototype's library-review bug). Choosing another entry
+  starts it at its top.
+
+### Keys and mouse
+
+- ↑/`k`, ↓/`j`: the previous and next entry. PgDn/Space, PgUp/`b`: a page
+  of the announcement. Home/`g`, End/`G`: its top and bottom. `q` and
+  Esc close the viewer (exit 0); Ctrl-C closes it with 130, as the log
+  screens.
+- **Mouse:** a click on a list row selects it; a click on the list's
+  border selects nothing (the clickable area is `Block::inner`). The
+  wheel moves the selection over the list and scrolls the announcement
+  three rows elsewhere. ratatui's `List` has no hit-testing, so the row
+  is `ListState::offset()` plus the row inside the block, as the picker
+  maps it ("The picker", Mouse).
+
+### Terminal, text and colour
+
+- The screen runs on the module's `Tui` and `App` (the event loop and
+  the restore above), on stdout. Its theme is the run's, or the plain
+  one with colour off (`NO_COLOR`, `--color=never`), as the log screens'
+  (`screen_theme`).
+- A message reaches the screen as in the inline form: `DisplayText` with
+  colour off before tui-markdown, and each rendered span's text through
+  it again (character references decode to any code point). The date,
+  title and repository go through `DisplayText` on one line.
+- Colours are the palette's roles in the run's profile; syntect's RGB
+  highlighting is brought down to the profile as log spans are
+  (ADR-002). With colour off no colour is drawn at all; the bold and
+  italic stay.
+
+### Run log
+
+The screen logs that it opened (the number of entries and of new ones)
+and how it closed, never a title or a message.
+
+### Differences from sb-go (the announcement viewer; continuing the list above)
+
+34. Every applicable announcement is listed, the new ones marked and the
+    older ones faint; sb-go's viewer showed the new ones only.
+35. A list beside (or, below 70 columns, above) the selected
+    announcement, newest first, opening on the newest new one; sb-go
+    paged through the new ones in date order.
+36. An announcement that fits doesn't scroll, and one that doesn't stops
+    at its last line (tui-scrollview); mouse selection and wheel
+    scrolling are new.
+
+### Testing Strategy
+
+- **Unit, in sb-tui, on `TestBackend`:** a short announcement doesn't
+  scroll (PageDown, End and the wheel leave it at the top); a long one
+  stops with its last line on the last row; choosing another entry
+  starts it at its top; a move past the last entry keeps the scroll;
+  the marker, the tint and the `N new` title; it opens on the newest new
+  entry; a click selects a row and a click on the border selects
+  nothing; the list as wide as its longest title (display width) and the
+  40% cap; the narrow layout below 70 columns; the scrollbar's colour;
+  no named colour under truecolor, no RGB under `ansi256`, nothing under
+  `ascii`; a message's control characters and character references
+  never reach a cell; the 2,000-row cap.
+- **End to end, in sb:** `sb announcements` on a PTY opens the viewer,
+  `q` exits 0 and Ctrl-C 130, the terminal restored both times; piped,
+  the inline form.
+- **Look:** screenshots through `sb announcements` in tmux at 120×40 and
+  80×24, plain and colour, from synthetic fixtures (new and older
+  entries, a long one that scrolls, a short one that doesn't, the
+  narrow layout, the piped output).
+
+### Decisions (the announcement viewer; continuing the list above)
+
+39. **The design is proto-markdown's reviewed viewer** (2026-10-29),
+    unchanged but for the repository named in the pane's title (the
+    list may hold Saltbox's and Sandbox's entries from `update`) and the
+    2,000-row cap. Source: FINDINGS, "Viewer redesign (maintainer
+    review)".
+40. **tui-scrollview for the pane, ListState for the list,** not our own
+    scroll maths (CLAUDE.md, "Library first"). Source: FINDINGS,
+    "Scrolling comes from libraries".
+
+### Known limits
+
+- The pane is drawn whole every frame, and cut at 2,000 rows.
+- A title longer than the list's 40% is cut in the list.
+- With colour off, new and older rows differ only by the marker.
 
 ## Verification notes
 

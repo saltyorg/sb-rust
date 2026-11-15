@@ -375,15 +375,21 @@ fn local(time: Timestamp, zone: &TimeZone) -> String {
 fn lossy(mut text: Text<'static>, profile: Profile) -> Text<'static> {
     for line in &mut text.lines {
         for span in &mut line.spans {
-            span.style = Style {
-                fg: span.style.fg.map(|c| colour_in(c, profile)),
-                bg: span.style.bg.map(|c| colour_in(c, profile)),
-                underline_color: span.style.underline_color.map(|c| colour_in(c, profile)),
-                ..span.style
-            };
+            span.style = style_in(span.style, profile);
         }
     }
     text
+}
+
+/// `style`'s colours in `profile` ([`colour_in`]): the log spans' and the
+/// announcements' one conversion.
+pub(crate) fn style_in(style: Style, profile: Profile) -> Style {
+    Style {
+        fg: style.fg.map(|c| colour_in(c, profile)),
+        bg: style.bg.map(|c| colour_in(c, profile)),
+        underline_color: style.underline_color.map(|c| colour_in(c, profile)),
+        ..style
+    }
 }
 
 /// `colour` in `profile`: anstyle-lossy passes what already fits. Reset
@@ -602,6 +608,18 @@ mod tests {
             "{c:?}"
         );
         assert_ne!(c, []);
+    }
+
+    /// Every colour of a style is brought down, its underline's too.
+    #[test]
+    fn a_styles_every_colour_fits_the_profile() {
+        let rgb = Color::Rgb(250, 120, 30);
+        let style = Style::new().fg(rgb).bg(rgb).underline_color(rgb);
+        let down = style_in(style, Profile::Ansi256);
+        for colour in [down.fg, down.bg, down.underline_color] {
+            assert!(matches!(colour, Some(Color::Indexed(_))), "{down:?}");
+        }
+        assert_eq!(style_in(style, Profile::TrueColor), style);
     }
 
     #[test]

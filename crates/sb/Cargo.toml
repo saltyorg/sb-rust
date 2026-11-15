@@ -28,6 +28,9 @@ sb-release.workspace = true
 sb-tui.workspace = true
 # `sb update-venv` (python-env spec).
 sb-python-env.workspace = true
+# The hidden `sb announcements` (ops spec), and later the other workflow
+# commands.
+sb-ops.workspace = true
 anyhow.workspace = true
 # `net` for the I/O driver bollard's sockets need (enable_all turns on
 # only what is compiled in).

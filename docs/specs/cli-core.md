@@ -154,10 +154,11 @@ restore\tlocal\tuser`, `flag\tsb restore\tlocal\tpassword-file`,
 `--keep-branch` and `--reset-branch` (ops decision 29; entries
 `flag\tsb setup\tglobal\tkeep-branch` and `flag\tsb
 setup\tglobal\treset-branch`); and the new `--migrations` on `sb update`
-and `sb announcements` (`flag\tsb update\tlocal\tmigrations`, `flag\tsb
-announcements\tlocal\tmigrations`). The completion run (`CompleteEnv`
-with `SB_COMPLETE`) comes before startup, above. *Amended 2026-11-13 by
-the ops and completion specs.*
+(`flag\tsb update\tlocal\tmigrations`). `sb announcements` is shown where
+sb-go hid it (ops decision 27): a `REWORDED` entry for its command line.
+The completion run (`CompleteEnv` with `SB_COMPLETE`) comes before
+startup, above. *Amended 2026-11-13 by the ops and completion specs,
+2026-11-15 by the ops spec.*
 
 **Cancellation:** the first SIGINT, SIGTERM or SIGHUP cancels a token
 shared by every command; work stops at its next await or check, child

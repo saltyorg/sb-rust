@@ -135,10 +135,24 @@ enum Command {
     // No `--verbose/-v` (python-env decision 9).
     #[command(long_about = "Reinstall the Rust saltbox.fact file")]
     ReinstallFacts,
+    /// Display announcements from announcement files
+    // Shown, not hidden as sb-go's test harness was: it reads
+    // announcements now, and migrations stay with `update` (ops decision
+    // 27, the maintainer, 2026-11-15). No `--verbose/-v` (ops decision 18).
+    #[command(long_about = ANNOUNCEMENTS_LONG)]
+    Announcements(sb_ops::announcements::AnnouncementsArgs),
 }
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
 const UPDATE_VENV_ABOUT: &str = "Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git repositories";
+
+/// `sb announcements`' long help: what it reads now that it is shown
+/// (ops spec, "`sb announcements`").
+const ANNOUNCEMENTS_LONG: &str = "Display Saltbox's announcements, or Sandbox's with --repo Sandbox
+
+Reads the repository's announcements.yml, or the file --after names, and
+shows the announcements missing from the --before file; without --before,
+every announcement is new. Migrations run in sb update.";
 
 /// `sb list`'s long help, sb-go's (cmd/list.go).
 const LIST_LONG: &str = "List available Saltbox, Sandbox or Saltbox-mod tags
@@ -302,6 +316,7 @@ impl Command {
             Command::ReinstallVenv => "reinstall-venv",
             Command::ReinstallPython => "reinstall-python",
             Command::ReinstallFacts => "reinstall-facts",
+            Command::Announcements(_) => "announcements",
         }
     }
 
@@ -323,7 +338,8 @@ impl Command {
             // writes that checkout's tag cache; the venv, its wrappers and
             // apt, which `update-venv`, `reinstall-venv` and
             // `reinstall-python` change, and the checkout's fact, which
-            // `reinstall-facts` replaces (python-env assumption 5).
+            // `reinstall-facts` replaces (python-env assumption 5);
+            // `announcements`, as every ops command (ops assumption 2).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
@@ -337,7 +353,8 @@ impl Command {
             | Command::List(_)
             | Command::ReinstallVenv
             | Command::ReinstallPython
-            | Command::ReinstallFacts => true,
+            | Command::ReinstallFacts
+            | Command::Announcements(_) => true,
         }
     }
 }
@@ -576,6 +593,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
         Command::ReinstallFacts => python_env::reinstall_facts(shutdown, log)?,
+        Command::Announcements(ref args) => announcements::announcements(args, shutdown, log)?,
         Command::SelfUpdate { yes, force_update } => {
             self_update::self_update(yes, force_update, shutdown, log)?;
         }
@@ -806,6 +824,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
     Ok(output)
 }
 
+mod announcements;
 mod ansible;
 mod branch;
 mod docker_logs;

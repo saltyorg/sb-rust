@@ -114,7 +114,7 @@ pub(crate) fn write_line(out: &mut impl Write, line: &Line, format: &Format) -> 
 
 /// `style` as anstyle's. `Reset` is no colour: ratatui-core's
 /// `From<Color> for anstyle::Color` panics on it.
-fn ansi(style: Style) -> anstyle::Style {
+pub(crate) fn ansi(style: Style) -> anstyle::Style {
     let colour = |c: Option<Color>| c.filter(|c| *c != Color::Reset).map(anstyle::Color::from);
     anstyle::Style::new()
         .fg_color(colour(style.fg))
