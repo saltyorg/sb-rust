@@ -2154,8 +2154,10 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       list have no parent step. M33 decides whether a `Runner` form is
       needed.
 - [ ] **Before M20: symlinked sources and the re-check** (from M11, lane
-      1). Two things M20 needs settled first:
-      - The specs disagree on a symlink in `sources.list.d`.
+      1). Two things M20 needs settled first (the maintainer decided
+      both on 2026-11-15: the link moves; sb-host adds the read-only
+      query):
+      - [x] The specs disagree on a symlink in `sources.list.d`.
         python-env.md's Testing list wants "a symlinked entry moved as a
         link and never followed". host.md H3, and M11 as built, leave a
         symlink alone. apt follows such a link, so a symlinked deadsnakes
@@ -2163,7 +2165,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
         moves a link whose target holds the needle (the link, never the
         target), or python-env.md is amended and the case is recorded as a
         difference from sb-go. Check sb-go's behaviour first.
-      - python-env's re-check after the cleanup has no host function. A
+      - [ ] python-env's re-check after the cleanup has no host function. A
         second `remove_sources_mentioning` with the same run id is
         refused ("already exists") when something matches. Decide whether
         sb-host adds a read-only `sources_mentioning(needle)`.

@@ -769,7 +769,7 @@ fn remove(roots: &Roots, run_id: &str) -> Result<Vec<PathBuf>, SourcesError> {
 }
 
 #[test]
-fn only_regular_files_that_mention_the_needle_move() {
+fn only_entries_apt_reads_that_mention_the_needle_move() {
     let fixture = Fixture::new();
     let ppa = "deadsnakes-ubuntu-ppa-jammy.list";
     write(&fixture.sources_d().join(ppa), PPA);
@@ -779,9 +779,6 @@ fn only_regular_files_that_mention_the_needle_move() {
     )
     .expect("chmod");
     write(&fixture.sources_d().join("docker.list"), "docker\n");
-    let target = fixture.dir.path().join("target.list");
-    write(&target, PPA);
-    std::os::unix::fs::symlink(&target, fixture.sources_d().join("link.list")).expect("symlink");
     std::fs::create_dir(fixture.sources_d().join("nested")).expect("mkdir");
     write(&fixture.sources_d().join("nested/inner.list"), PPA);
     fifo(&fixture.sources_d(), "pipe.list");
@@ -790,7 +787,7 @@ fn only_regular_files_that_mention_the_needle_move() {
     assert_eq!(read(&deadsnakes(&fixture).join(ppa)), PPA);
     assert_eq!(mode(&deadsnakes(&fixture).join(ppa)), 0o640);
     assert!(!fixture.sources_d().join(ppa).exists());
-    for kept in ["docker.list", "link.list", "nested/inner.list", "pipe.list"] {
+    for kept in ["docker.list", "nested/inner.list", "pipe.list"] {
         assert!(
             fixture.sources_d().join(kept).symlink_metadata().is_ok(),
             "{kept}"
@@ -1028,4 +1025,179 @@ fn every_deadsnakes_name_is_logged_before_anything_moves() {
         );
     }
     assert!(lines[2].contains("renameat called"), "{text}");
+}
+
+// A symlink in `sources.list.d` (host spec, H3 as amended 2026-11-15):
+// apt reads its target, so a link whose target mentions the needle moves,
+// as a link; the target is only read, through no link but the entry.
+
+/// A link named `name` in `sources.list.d` pointing at `target`.
+fn link(fixture: &Fixture, target: &Path, name: &str) {
+    std::os::unix::fs::symlink(target, fixture.sources_d().join(name)).expect("symlink");
+}
+
+/// The target's bytes, mode and inode, to show it wasn't touched.
+fn identity(path: &Path) -> (String, u32, u64) {
+    let meta = path.symlink_metadata().expect("lstat");
+    (read(path), meta.mode() & 0o7777, meta.ino())
+}
+
+#[test]
+fn a_symlinked_matching_list_moves_as_a_link_and_its_target_stays() {
+    let fixture = Fixture::new();
+    let target = fixture.dir.path().join("target.list");
+    write(&target, PPA);
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    let before = identity(&target);
+    link(&fixture, &target, "link.list");
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(moved, [deadsnakes(&fixture).join("link.list")]);
+    assert_eq!(std::fs::read_link(&moved[0]).expect("readlink"), target);
+    assert!(
+        fixture
+            .sources_d()
+            .join("link.list")
+            .symlink_metadata()
+            .is_err()
+    );
+    assert_eq!(identity(&target), before);
+}
+
+/// A relative target resolves against `sources.list.d`, as apt's open
+/// does; the link keeps its text in the backup.
+#[test]
+fn a_relative_link_is_read_against_sources_list_d() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.roots.etc_apt.join("lists")).expect("mkdir");
+    write(&fixture.roots.etc_apt.join("lists/ppa.list"), PPA);
+    link(&fixture, Path::new("../lists/ppa.list"), "relative.list");
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(moved, [deadsnakes(&fixture).join("relative.list")]);
+    assert_eq!(
+        std::fs::read_link(&moved[0]).expect("readlink"),
+        Path::new("../lists/ppa.list")
+    );
+    assert_eq!(read(&fixture.roots.etc_apt.join("lists/ppa.list")), PPA);
+}
+
+#[test]
+fn a_symlink_to_a_file_without_the_needle_stays() {
+    let fixture = Fixture::new();
+    let target = fixture.dir.path().join("docker.list");
+    write(
+        &target,
+        "deb https://download.docker.com/linux/ubuntu jammy stable\n",
+    );
+    link(&fixture, &target, "docker.list");
+    let before = fixture.tree();
+    assert_eq!(
+        remove(&fixture.roots, RUN).expect("remove"),
+        Vec::<PathBuf>::new()
+    );
+    assert_eq!(fixture.tree(), before);
+}
+
+/// A dangling link, one whose path runs through a file, a link to a
+/// link, and links to a directory, a FIFO or a device: nothing apt reads
+/// through one link, so each stays, and nothing waits on the FIFO.
+#[test]
+fn a_link_that_reaches_no_regular_file_in_one_step_stays() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    write(&root.join("ppa.list"), PPA);
+    std::os::unix::fs::symlink(root.join("ppa.list"), root.join("hop.list")).expect("symlink");
+    std::fs::create_dir(root.join("dir.list")).expect("mkdir");
+    fifo(root, "pipe.list");
+    link(&fixture, &root.join("missing.list"), "dangling.list");
+    link(
+        &fixture,
+        &root.join("ppa.list/below"),
+        "through-a-file.list",
+    );
+    link(&fixture, &root.join("hop.list"), "chain.list");
+    link(&fixture, &root.join("dir.list"), "dir.list");
+    link(&fixture, &root.join("pipe.list"), "pipe.list");
+    // A device is never opened: O_PATH, then its type.
+    link(&fixture, Path::new("/dev/null"), "device.list");
+    let before = fixture.tree();
+    assert_eq!(
+        remove(&fixture.roots, RUN).expect("remove"),
+        Vec::<PathBuf>::new()
+    );
+    assert_eq!(fixture.tree(), before);
+    assert!(!fixture.roots.var_backups.join("sb").exists());
+}
+
+/// Across filesystems a matching link is copied as a link, then removed;
+/// its target is never opened for writing.
+#[test]
+fn across_filesystems_a_matching_link_is_copied_as_a_link() {
+    let mut fixture = Fixture::new();
+    fixture.roots.rename = |_, _, _, _| Err(rustix::io::Errno::XDEV);
+    let target = fixture.dir.path().join("target.list");
+    write(&target, PPA);
+    let before = identity(&target);
+    link(&fixture, &target, "link.list");
+    let moved = remove(&fixture.roots, RUN).expect("remove");
+    assert_eq!(moved, [deadsnakes(&fixture).join("link.list")]);
+    assert_eq!(std::fs::read_link(&moved[0]).expect("readlink"), target);
+    assert!(
+        fixture
+            .sources_d()
+            .join("link.list")
+            .symlink_metadata()
+            .is_err()
+    );
+    assert_eq!(identity(&target), before);
+}
+
+/// A target that can't be looked at for another reason (here a name too
+/// long for the filesystem; on a host, a dead FUSE mount) fails before
+/// anything moves, naming the link and its target.
+#[test]
+fn a_target_that_cannot_be_looked_at_fails_before_anything_moves() {
+    let fixture = Fixture::new();
+    write(&fixture.sources_d().join("ppa.list"), PPA);
+    let long = fixture.dir.path().join("x".repeat(300));
+    link(&fixture, &long, "long.list");
+    let before = fixture.tree();
+    let error = remove(&fixture.roots, RUN).expect_err("failed");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "error reading {}: its target {}: File name too long (os error 36)",
+            fixture.sources_d().join("long.list").display(),
+            long.display()
+        )
+    );
+    assert_eq!(fixture.tree(), before);
+}
+
+/// A linked target over 1 MiB is refused before anything moves, without
+/// reading it whole (a sparse file of 4 GiB here).
+#[test]
+fn a_linked_target_over_the_cap_fails_before_anything_moves() {
+    let fixture = Fixture::new();
+    let target = fixture.dir.path().join("huge.list");
+    let file = std::fs::File::create(&target).expect("create");
+    file.set_len(4 << 30).expect("sparse");
+    link(&fixture, &target, "huge.list");
+    let at_cap = fixture.dir.path().join("cap.list");
+    std::fs::write(&at_cap, vec![b'#'; MAX_LINKED]).expect("write");
+    link(&fixture, &at_cap, "cap.list");
+    let error = remove(&fixture.roots, RUN).expect_err("failed");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "error reading {}: its target {}: larger than 1048576 bytes",
+            fixture.sources_d().join("huge.list").display(),
+            target.display()
+        )
+    );
+    assert!(!fixture.roots.var_backups.join("sb").exists());
+    std::fs::remove_file(fixture.sources_d().join("huge.list")).expect("unlink");
+    assert_eq!(
+        remove(&fixture.roots, RUN).expect("remove"),
+        Vec::<PathBuf>::new()
+    );
 }

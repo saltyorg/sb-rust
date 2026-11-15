@@ -222,15 +222,21 @@ impl Apt {
         self
     }
 
-    /// Moves each regular file directly in `/etc/apt/sources.list.d` whose
-    /// content contains `needle` into a root-only
-    /// `/var/backups/sb/<backup>/<run id>/`, and returns where each now
-    /// is (host spec, "apt", `remove_sources_mentioning`, amendment H3;
-    /// python-env passes `deadsnakes` for both). `needle` and `backup` are
-    /// written in sb's code, never input; `run_id` is the run log's, as
-    /// for [`Apt::add_repositories`]. Symlinks and subdirectories are left
-    /// alone; each name is logged before it moves. The files are a few
-    /// small ones, so the work runs on the caller's thread.
+    /// Moves the apt sources that mention `needle` into a root-only backup.
+    ///
+    /// Each regular file directly in `/etc/apt/sources.list.d` whose
+    /// content contains `needle`, and each symlink there whose target's
+    /// content does, goes into `/var/backups/sb/<backup>/<run id>/`, and
+    /// the result says where each now is (host spec, "apt",
+    /// `remove_sources_mentioning`, amendment H3; python-env passes
+    /// `deadsnakes` for both). A link moves as a link: its target is read
+    /// through no other link, at most 1 MiB of it, and never written or
+    /// moved. `needle` and `backup` are written in sb's code, never input;
+    /// `run_id` is the run log's, as for [`Apt::add_repositories`].
+    /// Subdirectories, and links that reach no regular file in one step
+    /// (dangling, chained, to a directory or a device), are left alone;
+    /// each name is logged before it moves. The files are a few small
+    /// ones, so the work runs on the caller's thread.
     ///
     /// # Errors
     ///

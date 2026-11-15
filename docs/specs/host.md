@@ -181,15 +181,30 @@ timeout, for the same reason as `install`.
 **`remove_sources_mentioning(needle, backup, run_id) -> Result<Vec<PathBuf>, _>`.**
 *Amended 2026-11-13 by the python-env spec (H3).* Moves each regular
 file directly in `sources.list.d` (on host's `/etc/apt` root field) whose
-content contains `needle` out of it, into a root-only
+content contains `needle`, and (amended 2026-11-15) each symlink there
+whose target's content does, out of it, into a root-only
 `/var/backups/sb/<backup>/<run id>/`, and returns what it moved: each
 file's new path in that directory, in name order, so the caller has the
 count and the directory for its step line. `backup` is a `&'static str`
 folder name, never input (python-env passes `deadsnakes`); `run_id` is
 the run log's (cli-core's `RunLog::id()`, which host can't reach, as for
 `add_repositories`), letters and digits. An empty `needle` and a missing
-`sources.list.d` move nothing. A subdirectory or symlink is
-left alone. It uses the same fenced directory handles and folder scheme
+`sources.list.d` move nothing. A symlink is moved, as a link, when
+its target's content contains `needle`: apt reads the target, so a
+symlinked list left in place would stay active. The link is read with
+`readlinkat` through the handle; its target (a relative one resolved
+against `sources.list.d`, as the kernel resolves it for apt) is opened
+`O_PATH | O_NOFOLLOW` through the handle, which opens nothing, and
+`fstat`ed; only a regular file is reopened read-only through that
+handle, and at most 1 MiB of it read (a larger target fails before
+anything moves: it may live outside the root-only directory). The
+target is never opened for writing and never moved.
+A link that reaches no regular file in that one step (dangling, a link
+to another link, to a directory or anything else) is left alone, as is
+a subdirectory. *Amended 2026-11-15 (maintainer, module build
+follow-up "Before M20"); `O_NOFOLLOW` binds the target's last
+component, so a directory link on its path resolves as it does for
+apt.* It uses the same fenced directory handles and folder scheme
 as `add_repositories`' cleanup (ops spec decisions 5 and 28): both
 directories are fixed paths (the root arguments exist for tests only);
 `sources.list.d` is opened `O_DIRECTORY | O_NOFOLLOW` and refused when
@@ -424,7 +439,12 @@ Pinned tests are named in Success criteria.
 14. The deadsnakes source files are moved into
     `/var/backups/sb/deadsnakes/<run id>/` through fenced handles instead
     of deleted by path (python-env decision 22). *Amended 2026-11-13 by
-    the python-env spec.*
+    the python-env spec.* A matching symlink is moved as a link, as
+    sb-go's `os.Remove` removes the link; a link whose target can't be
+    reached in one step (dangling, chained, to a directory or a FIFO) is
+    left alone, where sb-go follows every link, fails its whole cleanup
+    on a dangling one or one to a directory, and waits on a FIFO.
+    *Amended 2026-11-15.*
 
 Note: sb-go's `UpdatePackageLists` comment says the delays are 5/10/20 s,
 but the third delay never runs. sb-rust's docs say 5 s and 10 s, which is

@@ -103,6 +103,10 @@ const SOURCES_D: &str = "sources.list.d";
 const KEPT: &str = "ubuntu.sources";
 /// The file sb adds beside a custom mirror.
 const ARCHIVE: &str = "ubuntu-archive.sources";
+/// The most of a link's target `remove_mentioning` reads: the target may
+/// live outside the root-only `sources.list.d`, and an apt list is a few
+/// lines (host spec, H3, amended 2026-11-15).
+const MAX_LINKED: usize = 1 << 20;
 /// sb's backup folder under `/var/backups`.
 const BACKUP_ROOT: &str = "sb";
 /// `add_repositories`' folder under it.
@@ -191,10 +195,13 @@ pub(crate) fn apply(
 /// `remove_sources_mentioning`, amendment H3): each regular file directly
 /// in `sources.list.d` whose bytes contain `needle` moved aside into
 /// `/var/backups/sb/<folder>/<run id>/`, through the same fenced handles,
-/// refusals and modes as [`apply`]'s cleanup. Symlinks, subdirectories and
-/// anything else are left alone; every candidate is read before anything
-/// moves. Returns where each moved file now is, in name order. An empty
-/// `needle` names nothing, and a missing `sources.list.d` holds nothing.
+/// refusals and modes as [`apply`]'s cleanup, and each symlink whose
+/// target mentions it, moved as a link ([`link_target`]: the target is
+/// read through no other link, and never written or moved).
+/// Subdirectories, other links and anything else are left alone; every
+/// candidate is read before anything moves. Returns where each moved
+/// entry now is, in name order. An empty `needle` names nothing, and a
+/// missing `sources.list.d` holds nothing.
 pub(crate) fn remove_mentioning(
     roots: &Roots,
     needle: &'static str,
@@ -362,10 +369,11 @@ fn entries(
     Ok(names)
 }
 
-/// The regular files directly in `dir` (`path`) whose bytes contain
-/// `needle`, in name order: each `lstat`ed through the handle, then read
-/// through it without following a link or waiting on a FIFO (the type
-/// checked again on the opened file). Anything else is left alone.
+/// The entries directly in `dir` (`path`) apt reads whose bytes contain
+/// `needle`, in name order, each `lstat`ed through the handle: a regular
+/// file, read through the handle without following a link or waiting on
+/// a FIFO (the type checked again on the opened file); or a symlink whose
+/// target is one ([`link_target`]). Anything else is left alone.
 fn mentioning(
     dir: &OwnedFd,
     path: &Path,
@@ -381,20 +389,84 @@ fn mentioning(
         let name = raw.to_string_lossy().into_owned();
         let stat = rustix::fs::statat(dir, raw.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|err| failed(path.join(&name), err.into()))?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-            continue;
+        let bytes = match FileType::from_raw_mode(stat.st_mode) {
+            FileType::RegularFile => {
+                rustix::fs::openat(dir, raw.as_c_str(), file_flags(), Mode::empty())
+                    .map_err(io::Error::from)
+                    .and_then(read_regular)
+                    .map(|(bytes, _)| Some(bytes))
+            }
+            FileType::Symlink => link_target(dir, raw.as_c_str()),
+            _ => Ok(None),
         }
-        let bytes = rustix::fs::openat(dir, raw.as_c_str(), file_flags(), Mode::empty())
-            .map_err(io::Error::from)
-            .and_then(read_regular)
-            .map_err(|cause| failed(path.join(&name), cause))?
-            .0;
-        if contains(&bytes, needle) {
+        .map_err(|cause| failed(path.join(&name), cause))?;
+        if bytes.is_some_and(|bytes| contains(&bytes, needle)) {
             names.push((raw, name));
         }
     }
     names.sort_by(|a, b| a.1.cmp(&b.1));
     Ok(names)
+}
+
+/// The bytes of the symlink `name`'s target in `dir`, read without
+/// following any link beyond the entry itself (host spec, H3, amended
+/// 2026-11-15). The link is read with `readlinkat`, its target opened
+/// `O_PATH | O_NOFOLLOW` through the handle, which opens nothing (no
+/// device or FIFO side effect) and refers to a final link itself
+/// (open(2), `O_PATH`:
+/// <https://man7.org/linux/man-pages/man2/open.2.html>), then `fstat`ed;
+/// only a regular file is reopened read-only through that handle's
+/// `/proc/self/fd` link, so the inode checked is the one read (`proc_pid_fd(5)`:
+/// <https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html>), and at
+/// most [`MAX_LINKED`] bytes of it. A relative target resolves against
+/// `dir`, as the kernel resolves a link for apt: "a relative pathname is
+/// interpreted relative to the directory referred to by dirfd" (openat(2),
+/// <https://man7.org/linux/man-pages/man2/openat.2.html>), and a relative
+/// link "is interpreted relative to the directory containing the link"
+/// (symlink(7), <https://man7.org/linux/man-pages/man7/symlink.7.html>).
+/// `O_NOFOLLOW` binds the last component only; a directory link on the way
+/// resolves as it does for apt, and nothing here is written. `None` for a
+/// target that is missing (a dangling link), unreachable, another link, or
+/// not a regular file: the entry is left alone.
+fn link_target(dir: &OwnedFd, name: &CStr) -> io::Result<Option<Vec<u8>>> {
+    let target = rustix::fs::readlinkat(dir, name, Vec::new())?;
+    let shown = |cause: io::Error| {
+        let target = target.to_string_lossy();
+        io::Error::new(
+            cause.kind(),
+            format!("its target {}: {cause}", target.escape_debug()),
+        )
+    };
+    // `file_flags()` with `O_PATH`, which keeps only `O_NOFOLLOW` and
+    // `O_CLOEXEC` of them (open(2)).
+    let flags = file_flags().union(OFlags::PATH);
+    let fd = match rustix::fs::openat(dir, target.as_c_str(), flags, Mode::empty()) {
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+            return Ok(None);
+        }
+        opened => opened.map_err(|err| shown(err.into()))?,
+    };
+    if FileType::from_raw_mode(rustix::fs::fstat(&fd)?.st_mode) != FileType::RegularFile {
+        return Ok(None);
+    }
+    let through = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    // `file_flags()` but `O_NOFOLLOW`: the /proc link is the one followed,
+    // to that inode.
+    let flags = file_flags().difference(OFlags::NOFOLLOW);
+    let file = rustix::fs::open(through.as_str(), flags, Mode::empty())?;
+    // `take` first, so a huge (or sparse) target is never reserved whole,
+    // as `File::read_to_end` would from its size.
+    let mut bytes = Vec::new();
+    std::fs::File::from(file)
+        .take(MAX_LINKED as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_LINKED {
+        return Err(shown(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("larger than {MAX_LINKED} bytes"),
+        )));
+    }
+    Ok(Some(bytes))
 }
 
 /// Why a directory couldn't be used.

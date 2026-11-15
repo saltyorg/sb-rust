@@ -806,6 +806,11 @@ under its names, which this spec uses:
 > `/var/backups/sb/deadsnakes/<run id>/` through fenced handles instead of
 > deleted by path (python-env decision 22).
 
+*H3's symlink rule was amended in host.md on 2026-11-15 (maintainer): a
+symlink whose target mentions the needle is moved, as a link, its target
+never followed past that one link nor written; this spec's Testing case
+"a symlinked entry moved as a link and never followed" is that rule.*
+
 **`config` (approved).** The one `saltbox_user()` that the repo spec
 also proposes (its wording is the repo spec's): `user.name` from
 accounts.yml, read as sb-go's `GetSaltboxUser` reads it (no schema
