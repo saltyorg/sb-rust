@@ -297,12 +297,13 @@ On failure the error carries exec's stderr tail, as sb-go's
 ### The commands
 
 All four take no arguments (a positional is clap's parse error, exit 2) and
-no flags (decision 9). Help texts are sb-go's. Exit codes are cli-core's: 0,
-1 on any error (cli-core's error block), 130 on Ctrl-C.
+no flags (decision 9). Help texts are sb-go's but one short help
+(difference 15). Exit codes are cli-core's: 0, 1 on any error (cli-core's
+error block), 130 on Ctrl-C.
 
 | Command | Help (sb-go) | Saltbox user | Steps (outer, then nested) |
 |---|---|---|---|
-| `reinstall-python` | Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv | read first; `error getting saltbox user: <cause>` | "Reinstalling Saltbox Python and Ansible environment" (done "Saltbox Python and Ansible environment reinstalled", failure "Python and Ansible environment reinstall") > "Recreating Ansible virtual environment" (done "Ansible virtual environment recreated", failure "Ansible virtual environment") > `reconcile_venv(Python)` |
+| `reinstall-python` | Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv (the short help reworded, difference 15) | read first; `error getting saltbox user: <cause>` | "Reinstalling Saltbox Python and Ansible environment" (done "Saltbox Python and Ansible environment reinstalled", failure "Python and Ansible environment reinstall") > "Recreating Ansible virtual environment" (done "Ansible virtual environment recreated", failure "Ansible virtual environment") > `reconcile_venv(Python)` |
 | `reinstall-venv` | Reinstall the Ansible virtual environment | read first | "Reinstalling Ansible virtual environment" (done "Ansible virtual environment reinstalled") > `reconcile_venv(Venv)`; error `error managing Ansible venv: <cause>` |
 | `update-venv` (hidden) | Update the Ansible virtual environment and saltbox.fact | read first | "Checking Ansible virtual environment and saltbox.fact for updates" (done "Ansible virtual environment and saltbox.fact are ready", failure "Saltbox runtime dependency update check") > `reconcile_runtime` |
 | `reinstall-facts` | Reinstall the Rust saltbox.fact file | not read: works with a broken accounts.yml | "Reinstalling saltbox.fact" > `install_fact(Reinstall)`; error `error reinstalling saltbox.fact: <cause>` |
@@ -410,6 +411,12 @@ moved), so `ops` callers and the tests can read them.
     block** (M16), as `update-venv` already has it: when a nested step
     such as the sync fails, that step shows its own cause and the steps
     above it end quietly.
+15. **`reinstall-python`'s short help is "Reinstall Saltbox's Python and
+    its Ansible virtual environment using uv"** (maintainer, 2026-11-14):
+    sb-go's 92 columns wrapped in `sb --help` at fang's 120, where the
+    help column leaves 90. The command's own help (`sb reinstall-python
+    --help`) keeps sb-go's sentence as its about, which fits there. The
+    contract test's `REWORDED` list pairs the two lines.
 
 ### Scope
 
@@ -621,7 +628,8 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
     measured and recorded in the commit that links each; `scripts/check.sh
     full` passes within the ratchet and the size ceiling.
 11. The command-tree contract shows the four commands with sb-go's names,
-    help and hidden state, and `-v` in the contract's dropped list.
+    help (but difference 15, declared in its `REWORDED` list) and hidden
+    state, and `-v` in the contract's dropped list.
 
 ## Decisions
 

@@ -1,7 +1,8 @@
 ---
 source: crates/sb/tests/validate_config.rs
-expression: "String::from_utf8_lossy(&help.stdout)"
+expression: "String::from_utf8_lossy(&help.get_output().stdout)"
 ---
+
   Validate Saltbox configuration files
 
   USAGE

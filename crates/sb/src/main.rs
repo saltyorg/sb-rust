@@ -116,8 +116,10 @@ enum Command {
     // No `--verbose/-v` (python-env decision 9).
     #[command(long_about = "Reinstall the Ansible virtual environment")]
     ReinstallVenv,
-    /// Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv
-    // No `--verbose/-v` (python-env decision 9).
+    /// Reinstall Saltbox's Python and its Ansible virtual environment using uv
+    // No `--verbose/-v` (python-env decision 9). The short help is
+    // reworded to fit fang's 120 columns (python-env difference 15); the
+    // command's own help keeps sb-go's.
     #[command(
         long_about = "Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv"
     )]

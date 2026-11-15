@@ -228,7 +228,10 @@ stay clap's. A command with a shown flag that has a long help
 with that flag's long help in the flag's row (later lines under the help
 column): clap prints it for `--help` and `sb help <cmd>`, and the short
 text for `-h` (maintainer, 2026-11-14; `override_help`, used before, gives
-one text for both). Bare
+one text for both). Help starts with one blank line above the about, as
+fang's does, and ends with its last row, where fang adds one more
+(maintainer, 2026-11-14): clap drops a text's first line when it is
+blank, so sb's text starts with two. Bare
 `sb` prints the help on stdout and exits 0, as sb-go (clap would treat it
 as an error). Every help line wraps at words to the help's width: the
 width of stdout's terminal, else `COLUMNS` (clap's order; fang reads
@@ -246,8 +249,13 @@ one that fills the width exactly breaks a column early, and fang breaks
 after a hyphen and starts an overlong word on a fresh line. clap's own
 wrap (`wrap_help`, `max_term_width`) stays off, since it would wrap sb's
 text again from column 0. `sb help help` stays clap's own (clap adds
-that subcommand after sb sets the others). Parse errors (unknown
-command or flag, bad value) follow sb-go's layout in sb's palette
+that subcommand after sb sets the others). Short helps fit the 120
+columns in a command or flag row: a sb-go text that would wrap there is
+reworded, as a difference in the spec that owns the command, and the
+contract test's `REWORDED` list pairs sb-go's line with sb's
+(maintainer, 2026-11-14); a test checks every row of every `-h` at 120.
+Parse errors (unknown command or flag, bad value) follow sb-go's layout
+in sb's palette
 (maintainer, 2026-11-01, look H1 from proto-help): an `ERROR` badge, clap's message with
 the value you typed in the problem colour, clap's tips as `hint:` lines
 (label orange, the fix green; "a similar … exists: 'x'" reads "did you

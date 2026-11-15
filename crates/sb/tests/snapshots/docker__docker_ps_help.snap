@@ -1,8 +1,8 @@
 ---
 source: crates/sb/tests/docker.rs
-assertion_line: 49
 expression: "help(&[\"docker\", \"ps\", \"--help\"])"
 ---
+
   List all Docker containers and their status, displaying their internal
   ports (as potentially exposed by Traefik labels) and their external port bindings.
 

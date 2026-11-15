@@ -10,8 +10,8 @@ use predicates::prelude::*;
 #[test]
 fn root_help_follows_sb_gos_format() {
     sb().arg("--help").assert().success().stdout(
-        // clap trims the text's leading blank line.
-        predicate::str::starts_with("  Saltbox CLI\n\n  USAGE\n\n    sb [command] [--flags]\n")
+        // fang's blank line first.
+        predicate::str::starts_with("\n  Saltbox CLI\n\n  USAGE\n\n    sb [command] [--flags]\n")
             .and(predicate::str::contains("\n  COMMANDS\n\n"))
             .and(predicate::str::contains("    version [--flags]"))
             .and(predicate::str::contains("    -h --help"))
@@ -53,8 +53,111 @@ fn piped_help_is_plain() {
 fn bare_sb_prints_help_like_sb_go() {
     sb().assert()
         .success()
-        .stdout(predicate::str::starts_with("  Saltbox CLI\n"))
+        .stdout(predicate::str::starts_with("\n  Saltbox CLI\n"))
         .stderr(predicate::str::is_empty());
+}
+
+/// `help` (from `args`) starts with one blank line, as fang v2.0.1's does
+/// (the maintainer, 2026-11-14), and ends with its last row: no other
+/// blank line is added.
+fn assert_one_leading_blank_line(args: &[&str], help: &str) {
+    let mut lines = help.lines();
+    assert_eq!(lines.next(), Some(""), "{args:?}: {help}");
+    assert!(
+        lines
+            .next()
+            .is_some_and(|l| l.starts_with("  ") && !l.trim().is_empty()),
+        "{args:?}: {help}"
+    );
+    assert!(
+        help.ends_with('\n') && !help.ends_with("\n\n"),
+        "{args:?}: {help}"
+    );
+}
+
+/// Bare `sb` and `sb help` lead with the blank line too (each command's
+/// `-h` and `--help` are checked by the walk below).
+#[test]
+fn help_starts_with_one_blank_line() {
+    for args in [
+        &[][..],
+        &["--help"],
+        &["-h"],
+        &["help"],
+        &["help", "install"],
+        &["install", "--help"],
+        &["install", "-h"],
+        &["docker", "--help"],
+        &["docker", "logs", "--help"],
+        &["reinstall-python", "--help"],
+    ] {
+        let out = sb().args(args).assert().success();
+        let help = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+        assert_one_leading_blank_line(args, &help);
+    }
+}
+
+/// `path`'s short help (`-h`) at 120 columns, piped and plain.
+fn short_help_at_120(path: &[&str]) -> String {
+    let out = sb()
+        .args(path)
+        .args(["-h", "--color=never"])
+        .env("COLUMNS", "120")
+        .assert()
+        .success();
+    String::from_utf8(out.get_output().stdout.clone()).expect("utf-8")
+}
+
+/// The rows of `help`'s COMMANDS (if any) and FLAGS sections.
+fn rows(help: &str) -> (Vec<&str>, Vec<&str>) {
+    let section = |name: &str| {
+        help.split_once(&format!("  {name}\n\n"))
+            .map(|(_, rest)| rest.split_once("\n\n").map_or(rest, |(rows, _)| rows))
+            .map_or_default(|rows| rows.lines().collect())
+    };
+    (section("COMMANDS"), section("FLAGS"))
+}
+
+/// At 120 columns, fang's widest, no command's or flag's short help wraps
+/// (the maintainer, 2026-11-14): in `sb -h` and every command's `-h`, each
+/// row is one line. A row starts four spaces in; a wrapped one goes on in
+/// a line further in. Each of those helps, and its `--help`, leads with
+/// one blank line.
+#[test]
+fn no_short_help_wraps_at_120_columns() {
+    let mut paths: Vec<Vec<String>> = vec![Vec::new()];
+    let mut seen: Vec<String> = Vec::new();
+    while let Some(path) = paths.pop() {
+        let args: Vec<&str> = path.iter().map(String::as_str).collect();
+        let help = short_help_at_120(&args);
+        assert_one_leading_blank_line(&args, &help);
+        let long = sb().args(&args).arg("--help").assert().success();
+        let long = String::from_utf8(long.get_output().stdout.clone()).expect("utf-8");
+        assert_one_leading_blank_line(&args, &long);
+        let (commands, flags) = rows(&help);
+        assert!(!flags.is_empty(), "{args:?}: {help}");
+        for row in commands.iter().chain(&flags) {
+            assert!(
+                row.starts_with("    ") && !row.starts_with("     "),
+                "{args:?}: a wrapped row:\n{help}"
+            );
+        }
+        for row in commands {
+            let name = row.split_whitespace().next().expect("a name");
+            if name != "help" {
+                paths.push(path.iter().cloned().chain([name.to_owned()]).collect());
+            }
+        }
+        seen.push(args.join(" "));
+    }
+    // The walk reaches the nested commands, not only the root's.
+    for nested in ["docker logs", "docker ps", "edit", "reinstall-python"] {
+        assert!(seen.iter().any(|p| p == nested), "{nested}: {seen:?}");
+    }
+    assert!(
+        seen.iter().filter(|p| p.starts_with("edit ")).count() > 1,
+        "{seen:?}"
+    );
 }
 
 /// `sb install --help` piped, plain, with `COLUMNS` set to `columns`.

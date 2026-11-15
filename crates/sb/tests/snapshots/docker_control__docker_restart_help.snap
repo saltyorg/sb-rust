@@ -2,6 +2,7 @@
 source: crates/sb/tests/docker_control.rs
 expression: "help(&[\"docker\", \"restart\", \"--help\"])"
 ---
+
   Restart Docker containers managed by Saltbox in dependency order.
 
   USAGE

@@ -47,9 +47,10 @@
 //! and flags), and tabled's word wrap would keep the space it carries to a
 //! piece's start, shifting some continuation lines a column right.
 //!
-//! Differences from fang: clap trims the blank line fang prints before and
-//! after help; fang pads the about's lines with spaces to the width, sb
-//! doesn't; command and flag rows wrap under their help column and drop
+//! Differences from fang: help ends with its last row, where fang prints
+//! a blank line after it (clap trims the end; the blank line before the
+//! about is kept, `LEAD`); fang pads the about's lines with spaces to the
+//! width, sb doesn't; command and flag rows wrap under their help column and drop
 //! their text's blank lines (fang shows a paragraph break); the usage
 //! line isn't wrapped (sb's longest is far below 80 columns); with no
 //! terminal, `COLUMNS` gives the width (clap's order; fang reads only the
@@ -198,12 +199,26 @@ struct Look<'a> {
     width: usize,
 }
 
+/// What goes before a rendered text: fang's one blank line above the
+/// about (the maintainer, 2026-11-14), and one more for clap to trim.
+/// clap's `write_help` drops the first line when it is blank, one line
+/// only (`clap_builder` 4.6.7 `src/output/help.rs`, `write_help`, and
+/// `StyledStr::trim_start_lines`); sb's help tests check that one blank
+/// line is left.
+const LEAD: &str = "\n\n";
+
 fn apply_at(cmd: Command, path: &str, inherited: &[Arg], look: &Look<'_>) -> Command {
     let refs: Vec<&Arg> = inherited.iter().collect();
-    let text = render(&cmd, path, &refs, look, false);
+    // A command with no about starts at its USAGE heading's blank line:
+    // still one blank line, as fang's.
+    let led = |long| {
+        let text = render(&cmd, path, &refs, look, long);
+        format!("{LEAD}{}", text.trim_start_matches('\n'))
+    };
+    let text = led(false);
     let long = shown_flags(&cmd, &refs)
         .any(|a| a.get_long_help().is_some())
-        .then(|| render(&cmd, path, &refs, look, true));
+        .then(|| led(true));
     let mut below = inherited.to_vec();
     below.extend(cmd.get_arguments().filter(|a| a.is_global_set()).cloned());
     let names: Vec<String> = cmd
@@ -1207,13 +1222,27 @@ mod tests {
             .to_string()
     }
 
+    /// Help leads with one blank line, as fang's, with an about or
+    /// without one (then the USAGE heading comes next).
+    #[test]
+    fn help_leads_with_one_blank_line() {
+        let bare =
+            Command::new("x").arg(Arg::new("all").long("all").action(clap::ArgAction::SetTrue));
+        assert!(
+            shown_at(bare, &["x", "--help"], 120).starts_with("\n  USAGE\n\n"),
+            "{}",
+            shown_at(Command::new("x"), &["x", "--help"], 120)
+        );
+        assert!(shown_at(sb(), &["sb", "--help"], 120).starts_with("\n  Saltbox CLI\n\n  USAGE\n"));
+    }
+
     /// A row's text wraps at the width under the help column: a default
     /// with its help, a long help's lines each, its blank line left out.
     #[test]
     fn rows_wrap_under_the_help_column() {
         assert_eq!(
             shown_at(with_long_help(), &["sb", "install", "--help"], 50),
-            "  Runs Ansible playbooks.\n\n  Tags select what runs.\n\n  USAGE\n\n    sb install [tags] [--flags]\n\n  FLAGS\n\n    --color          Controls when to use color\n                     (auto)\n    -e --extra-vars  Extra variables\n                     Each value reaches Ansible\n                     whole.\n    -h --help        Help for install\n    -s --skip-tags   Tags to skip\n"
+            "\n  Runs Ansible playbooks.\n\n  Tags select what runs.\n\n  USAGE\n\n    sb install [tags] [--flags]\n\n  FLAGS\n\n    --color          Controls when to use color\n                     (auto)\n    -e --extra-vars  Extra variables\n                     Each value reaches Ansible\n                     whole.\n    -h --help        Help for install\n    -s --skip-tags   Tags to skip\n"
         );
         let root = shown_at(sb(), &["sb", "--help"], 60);
         assert!(

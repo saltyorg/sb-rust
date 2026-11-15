@@ -1,6 +1,7 @@
 //! The command-tree contract (spec success criterion 9): every sb command
 //! and flag exists in sb-go, with the same name, short flag, help text,
-//! visibility and switch-or-value shape. Full equality is the `ops`
+//! visibility and switch-or-value shape, but the texts `REWORDED` declares
+//! (a short help that wrapped at 120 columns). Full equality is the `ops`
 //! module's done criterion; until then sb has a subset.
 //!
 //! sb-go's tree is `tests/fixtures/sb-go-command-tree.tsv` (its header
@@ -25,6 +26,15 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 /// global flag, and `sb docker ps --json` (cli-core spec, command tree;
 /// docker spec decision 2).
 const EXTENSIONS: &[&str] = &["flag\tsb\tglobal\tcolor", "flag\tsb docker ps\tlocal\tjson"];
+
+/// sb-go's lines sb words differently on purpose, with sb's line for each:
+/// a short help that wrapped in `sb --help` at fang's 120 columns
+/// (the maintainer, 2026-11-14). Each is a difference in the spec that
+/// owns the command's help (python-env difference 15).
+const REWORDED: &[(&str, &str)] = &[(
+    "command\tsb reinstall-python\tfalse\tReinstall the Python version used by Saltbox and related Ansible virtual environment using uv",
+    "command\tsb reinstall-python\tfalse\tReinstall Saltbox's Python and its Ansible virtual environment using uv",
+)];
 
 /// sb's commands and flags in the fixture's line format.
 fn sb_tree() -> Vec<String> {
@@ -73,12 +83,18 @@ fn tree(root: &clap::Command) -> Vec<String> {
     lines
 }
 
-/// The lines of `tree` that sb-go doesn't have, extensions aside.
+/// The lines of `tree` that sb-go doesn't have, extensions aside; a
+/// reworded line counts as sb-go's when sb-go has the line it replaces.
 fn not_in_sb_go(tree: Vec<String>) -> Vec<String> {
-    let sb_go: BTreeSet<&str> = SB_GO_TREE
+    let mut sb_go: BTreeSet<&str> = SB_GO_TREE
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
         .collect();
+    for (theirs, ours) in REWORDED {
+        if sb_go.contains(theirs) {
+            sb_go.insert(ours);
+        }
+    }
     tree.into_iter()
         .filter(|line| !is_extension(line) && !sb_go.contains(line.as_str()))
         .collect()
@@ -98,6 +114,18 @@ fn every_sb_command_and_flag_matches_sb_go() {
         "not as in sb-go:\n{}",
         missing.join("\n")
     );
+}
+
+/// Every rewording replaces a line sb-go has, and sb shows its own line,
+/// not sb-go's: a stale or mistyped entry fails here.
+#[test]
+fn every_rewording_replaces_a_line_of_sb_gos() {
+    let tree = sb_tree();
+    for (theirs, ours) in REWORDED {
+        assert!(SB_GO_TREE.lines().any(|line| line == *theirs), "{theirs}");
+        assert!(tree.iter().any(|line| line == ours), "{ours}");
+        assert!(!tree.iter().any(|line| line == theirs), "{theirs}");
+    }
 }
 
 /// The walk sees what it should (so an empty walk can't pass): the root,
@@ -178,12 +206,13 @@ fn python_env_commands_have_every_sb_go_flag_but_verbose() {
         (
             "reinstall-python",
             false,
-            "Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv",
+            "Reinstall Saltbox's Python and its Ansible virtual environment using uv",
         ),
     ] {
         let missing: Vec<&str> = SB_GO_TREE
             .lines()
             .filter(|line| line.contains(&format!("\tsb {name}\t")))
+            .filter(|line| !REWORDED.iter().any(|(theirs, _)| line == theirs))
             .filter(|line| !tree.iter().any(|ours| ours == line))
             .collect();
         assert_eq!(

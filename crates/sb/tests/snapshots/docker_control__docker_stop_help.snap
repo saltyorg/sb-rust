@@ -2,6 +2,7 @@
 source: crates/sb/tests/docker_control.rs
 expression: "help(&[\"docker\", \"stop\", \"--help\"])"
 ---
+
   Stop Docker containers managed by Saltbox in dependency order.
 
   USAGE
