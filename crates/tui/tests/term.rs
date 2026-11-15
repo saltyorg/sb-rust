@@ -5,7 +5,9 @@
 //!
 //! Each test re-runs this test binary as the child on the PTY (filtered to
 //! `pty_child`, with `SB_TUI_CHILD` set), as cli-core's signal tests do,
-//! and reads its screen through vt100.
+//! and reads its screen through vt100. The `/dev/tty` screen of the inline
+//! fallback (`Tui::on_tty`) runs the same ways out with the child's stdout
+//! a file, which must get none of the screen's codes.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -32,6 +34,8 @@ use sb_tui::{App, Flow, Tui};
 const CHILD: &str = "SB_TUI_CHILD";
 /// The run log's directory in the child.
 const LOG_DIR: &str = "SB_TUI_LOG";
+/// Set: the child's screen is on `/dev/tty` (`Tui::on_tty`).
+const ON_TTY: &str = "SB_TUI_ON_TTY";
 const WAIT: Duration = Duration::from_secs(20);
 /// Longer than cli-core's 250 ms repeat window: a second SIGTERM this long
 /// after the first is a second signal, not a copy.
@@ -96,8 +100,17 @@ fn pty_child() {
         .enable_all()
         .build()
         .expect("runtime");
+    let on_tty = std::env::var_os(ON_TTY).is_some();
     let ending = runtime.block_on(async {
-        let mut tui = Tui::enter(&shutdown)?;
+        let mut tui = if on_tty {
+            let tty = std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")?;
+            Tui::on_tty(&shutdown, tty)?
+        } else {
+            Tui::enter(&shutdown)?
+        };
         let ending = tui.run(&mut Keys(0)).await;
         // `dropped`: the screen goes without `leave`, as on an early `?`.
         if mode == "dropped" {
@@ -153,6 +166,16 @@ struct Pty {
 
 impl Pty {
     fn spawn(mode: &str) -> Self {
+        Self::spawn_with(mode, false)
+    }
+
+    /// The child with its screen on `/dev/tty`, its stdout the file
+    /// [`Pty::stdout`] reads (through `/bin/sh`, which then `exec`s it).
+    fn spawn_on_tty(mode: &str) -> Self {
+        Self::spawn_with(mode, true)
+    }
+
+    fn spawn_with(mode: &str, on_tty: bool) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -162,8 +185,23 @@ impl Pty {
             })
             .expect("pty");
         let log = tempfile::tempdir().expect("log dir");
-        let mut cmd = CommandBuilder::new(std::env::current_exe().expect("test binary"));
-        cmd.args(["pty_child", "--exact", "--nocapture", "--test-threads=1"]);
+        let exe = std::env::current_exe().expect("test binary");
+        let child_args = ["pty_child", "--exact", "--nocapture", "--test-threads=1"];
+        let mut cmd = if on_tty {
+            let mut cmd = CommandBuilder::new("/bin/sh");
+            let script = r#"exec "$0" "$@" > "$STDOUT""#;
+            cmd.arg("-c");
+            cmd.arg(script);
+            cmd.arg(&exe);
+            cmd.args(child_args);
+            cmd.env("STDOUT", log.path().join("stdout"));
+            cmd.env(ON_TTY, "1");
+            cmd
+        } else {
+            let mut cmd = CommandBuilder::new(&exe);
+            cmd.args(child_args);
+            cmd
+        };
         cmd.cwd(std::env::current_dir().expect("cwd"));
         cmd.env(CHILD, mode);
         cmd.env(LOG_DIR, log.path().join("log"));
@@ -303,6 +341,17 @@ impl Pty {
             modes.contains(LocalModes::ICANON | LocalModes::ECHO),
             "{modes:?}"
         );
+    }
+
+    /// What the child wrote on its stdout when it ran on `/dev/tty`.
+    fn stdout(&self) -> String {
+        std::fs::read_to_string(self.log.path().join("stdout")).unwrap_or_default()
+    }
+
+    /// The `/dev/tty` screen wrote nothing of its own on stdout.
+    fn assert_stdout_clean(&self) {
+        let out = self.stdout();
+        assert!(!out.contains('\x1b'), "{out:?}");
     }
 
     fn run_log(&self) -> String {
@@ -481,6 +530,89 @@ fn a_second_signal_on_a_stuck_screen_restores_the_terminal_through_the_hook() {
     );
     assert!(!pty.parser.screen().contents().contains("ending"));
     pty.assert_restored();
+}
+
+#[test]
+fn on_the_tty_q_leaves_the_screen_and_restores_the_terminal() {
+    let mut pty = Pty::spawn_on_tty("screen");
+    pty.assert_up();
+    pty.send(b"x");
+    assert!(pty.showing("keys 1"));
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    assert!(pty.stdout().contains("ending Ok(Quit)"), "{}", pty.stdout());
+    pty.assert_stdout_clean();
+}
+
+#[test]
+fn on_the_tty_dropping_the_screen_restores_the_terminal() {
+    let mut pty = Pty::spawn_on_tty("dropped");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    assert!(pty.stdout().contains("ending Ok(Quit)"), "{}", pty.stdout());
+    pty.assert_stdout_clean();
+}
+
+#[test]
+fn on_the_tty_a_panic_restores_the_terminal_once() {
+    let mut pty = Pty::spawn_on_tty("screen");
+    pty.assert_up();
+    pty.send(b"p");
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 101, "{status:?}");
+    pty.assert_restored();
+    let raw = String::from_utf8_lossy(&pty.raw);
+    assert_eq!(raw.matches("\x1b[?1049l").count(), 1, "{raw:?}");
+    let message = raw.find("a planned panic").expect("the message");
+    assert!(!raw[message..].contains("\x1b[?1049l"), "{raw:?}");
+    assert!(
+        pty.run_log().contains("panicked: a planned panic"),
+        "{}",
+        pty.run_log()
+    );
+    pty.assert_stdout_clean();
+}
+
+#[test]
+fn on_the_tty_a_panic_on_another_thread_restores_the_terminal() {
+    let mut pty = Pty::spawn_on_tty("screen");
+    pty.assert_up();
+    pty.send(b"t");
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 3, "{status:?}");
+    pty.assert_restored();
+    pty.assert_stdout_clean();
+}
+
+#[test]
+fn on_the_tty_a_second_signal_on_a_stuck_screen_restores_the_terminal() {
+    let mut pty = Pty::spawn_on_tty("screen");
+    pty.assert_up();
+    pty.send(b"s");
+    // `stuck` goes to stdout, the file.
+    let deadline = Instant::now() + WAIT;
+    while !pty.stdout().contains("stuck") {
+        assert!(Instant::now() < deadline, "{}", pty.stdout());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    pty.signal(Signal::TERM);
+    let status = loop {
+        std::thread::sleep(PAST_THE_WINDOW);
+        if let Some(status) = pty.child.try_wait().expect("wait") {
+            break status;
+        }
+        pty.signal(Signal::TERM);
+    };
+    pty.exit();
+    assert!(
+        status.signal().is_some_and(|s| s.contains("Terminated")),
+        "{status:?}"
+    );
+    pty.assert_restored();
+    pty.assert_stdout_clean();
 }
 
 /// Key to screen change, `count` times; the median. The pause before each

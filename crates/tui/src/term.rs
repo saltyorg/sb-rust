@@ -6,6 +6,12 @@
 //!   (<https://docs.rs/ratatui/0.30.2/ratatui/init/index.html>), with mouse
 //!   capture through crossterm's `EnableMouseCapture`
 //!   (<https://docs.rs/crossterm/0.29.0/crossterm/event/struct.EnableMouseCapture.html>).
+//! - **On `/dev/tty`** (the inline fallback, tui spec "The inline
+//!   fallback"; [`Tui::on_tty`]) the same steps run on a `CrosstermBackend`
+//!   over the tty file. Why not `ratatui::try_init`: it writes to stdout,
+//!   which is then the pipe the chosen log goes to. crossterm reads its
+//!   input and the size from the terminal either way (stdin when it is
+//!   one, else `/dev/tty`: its `tty_fd` and `window_size`).
 //! - **A panic** runs ratatui's hook (raw mode off, the alternate screen
 //!   left), chained before cli-core's run-log hook and std's message
 //!   (`RunLog::record_panics` is installed first, as ratatui's docs ask),
@@ -24,20 +30,22 @@
 //!   the loop draws on a render event only when something changed.
 
 use std::fs::File;
-use std::io::{self, Write as _};
+use std::io::{self, BufWriter, Write as _};
 use std::os::fd::AsFd as _;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::time::Duration;
 
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event as Input, EventStream, KeyModifiers,
 };
-use crossterm::terminal::LeaveAlternateScreen;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use crossterm::{Command as _, execute};
 use futures_util::{FutureExt as _, Stream, StreamExt as _};
-use ratatui::backend::Backend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{DefaultTerminal, Frame, Terminal};
 use sb_cli_core::cancel::{RestoreHook, Shutdown};
 use tokio::sync::{Notify, mpsc};
@@ -68,6 +76,10 @@ static SCREEN: AtomicBool = AtomicBool::new(false);
 
 /// The panic hook for the mouse, installed once per process.
 static MOUSE_HOOK: Once = Once::new();
+
+/// The tty a [`Tui::on_tty`] screen draws on, for the panic hook: ratatui's
+/// own hook restores stdout only.
+static TTY: Mutex<Option<File>> = Mutex::new(None);
 
 /// What a screen does with its events; [`Tui::run`] calls it.
 pub trait App {
@@ -123,12 +135,25 @@ enum Event {
     Failed(io::Error),
 }
 
+/// Where a screen draws.
+#[derive(Debug)]
+enum Screen {
+    /// stdout, through ratatui's init.
+    Stdout(DefaultTerminal),
+    /// `/dev/tty` (stdout isn't a terminal), buffered: the backend queues
+    /// each cell's commands and ratatui flushes once a frame, crossterm's
+    /// lazy execution
+    /// (<https://docs.rs/crossterm/0.29.0/crossterm/index.html#lazy-execution>),
+    /// as std's `Stdout` buffers the stdout screen.
+    Tty(Terminal<CrosstermBackend<BufWriter<File>>>),
+}
+
 /// A full-screen terminal: raw mode, the alternate screen and mouse
 /// capture, with its event task. [`Tui::leave`] restores the terminal;
 /// dropping it without leaving restores it too, without the input drain.
 #[derive(Debug)]
 pub struct Tui {
-    terminal: DefaultTerminal,
+    screen: Screen,
     events: mpsc::UnboundedReceiver<Event>,
     task: JoinHandle<()>,
     token: CancellationToken,
@@ -164,17 +189,50 @@ impl Tui {
             ratatui::restore();
             return Err(err);
         }
+        Ok(Self::started(Screen::Stdout(terminal), shutdown, restore))
+    }
+
+    /// [`Tui::enter`] on `tty`, the terminal `/dev/tty` opened for reading
+    /// and writing, when stdout isn't a terminal: raw mode, the alternate
+    /// screen and mouse capture as ratatui's init and [`Tui::enter`] set
+    /// them, written to `tty`; the panic hook and the forced exit restore
+    /// it there.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error when `tty` can't be duplicated, or raw mode, the
+    /// alternate screen or mouse capture can't be turned on (the terminal
+    /// is restored first).
+    pub fn on_tty(shutdown: &Shutdown, tty: File) -> io::Result<Self> {
+        let out = tty.try_clone()?;
+        let mut hook_out = tty.try_clone()?;
+        enable_raw_mode()?;
+        let entered = execute!(hook_out, EnterAlternateScreen, EnableMouseCapture)
+            .and_then(|()| Terminal::new(CrosstermBackend::new(BufWriter::new(tty))));
+        let terminal = entered.inspect_err(|_| {
+            let _ = hook_out.write_all(restore_sequence().as_bytes());
+            let _ = disable_raw_mode();
+        })?;
+        mouse_off_on_panic();
+        *TTY.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook_out);
+        SCREEN.store(true, Ordering::SeqCst);
+        let restore = shutdown.on_forced_exit(forced_exit_restore(out));
+        Ok(Self::started(Screen::Tty(terminal), shutdown, restore))
+    }
+
+    /// The screen up, with its event task started.
+    fn started(screen: Screen, shutdown: &Shutdown, restore: RestoreHook) -> Self {
         let (tx, events) = mpsc::unbounded_channel();
         let task = tokio::spawn(read_events(EventStream::new(), tx));
-        Ok(Self {
-            terminal,
+        Self {
+            screen,
             events,
             task,
             token: shutdown.token(),
             wake: Arc::new(Notify::new()),
             _restore: restore,
             left: false,
-        })
+        }
     }
 
     /// Run `app` until it quits, Ctrl-C is pressed or the run's token is
@@ -186,14 +244,42 @@ impl Tui {
     /// read or has ended.
     pub async fn run<A: App>(&mut self, app: &mut A) -> io::Result<Ending> {
         let wake = Arc::clone(&self.wake);
-        run_loop(
-            &mut self.terminal,
-            &mut self.events,
-            app,
-            &self.token,
-            &wake,
-        )
-        .await
+        match &mut self.screen {
+            Screen::Stdout(terminal) => {
+                run_loop(terminal, &mut self.events, app, &self.token, &wake).await
+            }
+            Screen::Tty(terminal) => {
+                run_loop(terminal, &mut self.events, app, &self.token, &wake).await
+            }
+        }
+    }
+
+    /// Mouse capture off, on the screen's terminal.
+    fn mouse_off(&mut self) -> io::Result<()> {
+        match &mut self.screen {
+            Screen::Stdout(_) => execute!(io::stdout(), DisableMouseCapture),
+            Screen::Tty(terminal) => execute!(terminal.backend_mut(), DisableMouseCapture),
+        }
+    }
+
+    /// Raw mode off and the alternate screen left: ratatui's restore, or
+    /// its two steps on the tty (`ratatui::try_restore`'s, written there).
+    /// The cursor comes back with the terminal's drop (ratatui's
+    /// `Terminal` shows a cursor it hid).
+    fn restore(&mut self) -> io::Result<()> {
+        match &mut self.screen {
+            Screen::Stdout(_) => ratatui::try_restore(),
+            Screen::Tty(terminal) => {
+                // The screen is down before its tty leaves the slot, so the
+                // panic hook never sees a tty screen up with the slot empty
+                // (it would write to stdout, the pipe). The slot's lock is
+                // otherwise taken only while no screen is up.
+                SCREEN.store(false, Ordering::SeqCst);
+                TTY.lock().unwrap_or_else(PoisonError::into_inner).take();
+                let raw = disable_raw_mode();
+                raw.and(execute!(terminal.backend_mut(), LeaveAlternateScreen))
+            }
+        }
     }
 
     /// The screen's wake: a source calls `notify_one` on it after each
@@ -220,12 +306,12 @@ impl Tui {
     /// reads the terminal no more. Dropped before it finishes, the screen
     /// is still restored by the drop.
     pub async fn leave(mut self) -> io::Result<()> {
-        let mouse = execute!(io::stdout(), DisableMouseCapture);
+        let mouse = self.mouse_off();
         let _ = tokio::time::timeout(DRAIN, async { while self.events.recv().await.is_some() {} })
             .await;
         self.task.abort();
         let _ = (&mut self.task).await;
-        let restored = ratatui::try_restore();
+        let restored = self.restore();
         SCREEN.store(false, Ordering::SeqCst);
         self.left = true;
         mouse.and(restored)
@@ -239,8 +325,8 @@ impl Drop for Tui {
     fn drop(&mut self) {
         self.task.abort();
         if !self.left && SCREEN.swap(false, Ordering::SeqCst) {
-            let _ = execute!(io::stdout(), DisableMouseCapture);
-            ratatui::restore();
+            let _ = self.mouse_off();
+            let _ = self.restore();
         }
     }
 }
@@ -283,13 +369,22 @@ fn restore_sequence() -> String {
 /// (<https://doc.rust-lang.org/std/panic/fn.take_hook.html>). Installed
 /// once: ratatui adds a hook of its own on every `try_init`, so on a later
 /// screen ratatui's restore runs before this one, which still turns the
-/// mouse off.
+/// mouse off. A screen on the tty ([`Tui::on_tty`]) has no ratatui hook:
+/// this one restores it whole there ([`restore_sequence`], then raw mode
+/// off). `try_lock`: a hook mustn't wait on a lock the panicking thread
+/// may hold.
 fn mouse_off_on_panic() {
     MOUSE_HOOK.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             if SCREEN.swap(false, Ordering::SeqCst) {
-                let _ = execute!(io::stdout(), DisableMouseCapture, Show);
+                let tty = TTY.try_lock().ok().and_then(|mut tty| tty.take());
+                if let Some(mut tty) = tty {
+                    let _ = tty.write_all(restore_sequence().as_bytes());
+                    let _ = disable_raw_mode();
+                } else {
+                    let _ = execute!(io::stdout(), DisableMouseCapture, Show);
+                }
             }
             previous(info);
         }));

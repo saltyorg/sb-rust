@@ -196,7 +196,7 @@ fn no_services_print_the_message_and_exit_0() {
 #[test]
 fn no_services_and_no_docker_open_the_picker_with_the_unreachable_row() {
     let world = World::new("[]", "[]");
-    let out = world.piped(&["logs"]);
+    let out = world.without_terminal(&["logs"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -226,12 +226,13 @@ fn a_failing_service_list_is_an_error() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
 }
 
-/// Services but no terminal: the error, exit 1, nothing on stdout.
+/// Services but no terminal at all (no `/dev/tty`, stdout a pipe): the
+/// error, exit 1, nothing on stdout.
 #[test]
 fn no_terminal_is_an_error_with_nothing_on_stdout() {
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
-    let out = world.piped(&["logs"]);
+    let out = world.without_terminal(&["logs"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -485,4 +486,146 @@ fn a_service_change_shows_within_six_seconds() {
                 && line.contains("active=active")),
         "{log}"
     );
+}
+
+/// Piped stdout (tui spec, "The inline fallback"): the picker on the
+/// terminal (`/dev/tty`), then the chosen log on stdout, plain, with its
+/// time and origin: the tail, then an appended entry; Ctrl-C, a signal
+/// once the screen is gone, ends it by SIGINT, the terminal restored and
+/// none of the log in the run log.
+#[test]
+fn piped_stdout_picks_on_the_terminal_and_streams_the_log() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let out = world.dir.path().join("out.txt");
+    let out_arg = out.display().to_string();
+    let mut pty = Pty::spawn_shell(r#"exec "$0" logs > "$1""#, &[&out_arg], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    assert!(pty.parser.screen().alternate_screen());
+    pty.send(b"jj\r");
+    let text = logs_pty::file_holding(&out, "app[42]: ready");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text:?}");
+    for (line, message) in
+        lines
+            .iter()
+            .zip(["hello from app", &format!("a line with {MARKER}"), "ready"])
+    {
+        // `2026-11-13T10:04:05+0000 app[42]: <message>`.
+        let (time, rest) = line.split_once(' ').expect("a time");
+        assert_eq!(time.len(), 24, "{line}");
+        assert_eq!(rest, format!("app[42]: {message}"));
+    }
+    assert!(!text.contains('\x1b'), "{text:?}");
+    world.append();
+    logs_pty::file_holding(&out, "app[42]: appended while following");
+    pty.send(b"\x03");
+    let status = pty.exit();
+    assert_eq!(status.signal(), Some("Interrupt"), "{}", pty.contents());
+    pty.assert_restored();
+    let log = world.log();
+    assert!(log.contains("stream ended"), "{log}");
+    assert!(!log.contains(MARKER), "{log}");
+}
+
+/// A reader that goes away ends the stream with cli-core's quiet 141, at
+/// the next line written.
+#[test]
+fn a_closed_reader_ends_the_stream_with_141() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let out = world.dir.path().join("out.txt");
+    let status = world.dir.path().join("status");
+    let script = r#"{ "$0" logs; echo $? > "$2"; } | head -n 2 > "$1""#;
+    let args = [out.display().to_string(), status.display().to_string()];
+    let mut pty = Pty::spawn_shell(script, &[&args[0], &args[1]], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    pty.send(b"jj\r");
+    logs_pty::file_holding(&out, "hello from app");
+    // head has gone after two lines; the next one written meets the
+    // closed pipe.
+    world.append();
+    assert_eq!(logs_pty::file_holding(&status, "\n"), "141\n");
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    // Quiet: no error block.
+    assert!(!pty.contents().contains('✗'), "{}", pty.contents());
+}
+
+/// `p` (tui spec, "Pasteable output"): the screen goes, the loaded lines
+/// go to stdout, the review line to stderr, exit 0.
+#[test]
+fn p_prints_the_loaded_lines_and_the_review_line() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let err = world.dir.path().join("err.txt");
+    let err_arg = err.display().to_string();
+    let mut pty = Pty::spawn_shell(r#"exec "$0" logs 2> "$1""#, &[&err_arg], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    pty.send(b"jj\r");
+    assert!(pty.showing("app[42]: ready"), "{}", pty.contents());
+    pty.send(b"p");
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}");
+    pty.assert_restored();
+    let screen = pty.contents();
+    for message in ["hello from app", "ready"] {
+        assert!(screen.contains(&format!("app[42]: {message}")), "{screen}");
+    }
+    assert!(!screen.contains("--- following ---"), "{screen}");
+    assert_eq!(
+        std::fs::read_to_string(&err).expect("stderr"),
+        "Review it for domains, IPs and tokens before sharing it.\n"
+    );
+    let log = world.log();
+    assert!(log.contains("log printed lines=3"), "{log}");
+    assert!(!log.contains(MARKER), "{log}");
+}
+
+/// `s`: a new 0600 file in the run log's directory with the loaded lines,
+/// and the notice on the screen; the run log has the path and the count,
+/// none of the text.
+#[test]
+fn s_saves_the_loaded_lines_in_the_log_directory() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let mut pty = Pty::spawn(&["logs"], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    pty.send(b"jj\r");
+    assert!(pty.showing("app[42]: ready"), "{}", pty.contents());
+    pty.send(b"s");
+    // The notice wraps where the path's length puts it.
+    assert!(pty.showing("saved 3 lines to"), "{}", pty.contents());
+    assert!(pty.showing("sharing it."), "{}", pty.contents());
+    let logs = world.dir.path().join("logs");
+    let saved: Vec<_> = std::fs::read_dir(&logs)
+        .expect("the log directory")
+        .map(|entry| entry.expect("an entry").path())
+        .filter(|path| {
+            path.file_name().is_some_and(|n| {
+                n.to_string_lossy()
+                    .starts_with("logs-service-saltbox_managed_app-")
+            })
+        })
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    let mode = std::fs::metadata(&saved[0])
+        .expect("meta")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let text = std::fs::read_to_string(&saved[0]).expect("the file");
+    assert_eq!(text.lines().count(), 3, "{text}");
+    assert!(
+        text.contains(&format!("app[42]: a line with {MARKER}")),
+        "{text}"
+    );
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    let log = world.log();
+    assert!(log.contains("log saved"), "{log}");
+    assert!(log.contains("lines=3"), "{log}");
+    assert!(!log.contains(MARKER), "{log}");
 }

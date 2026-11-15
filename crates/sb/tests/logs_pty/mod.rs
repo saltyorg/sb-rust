@@ -99,7 +99,20 @@ impl World {
 
     /// sb with `args`, piped.
     pub fn piped(&self, args: &[&str]) -> Output {
-        let mut cmd = common::sb();
+        self.piped_cmd(common::sb(), args)
+    }
+
+    /// sb with `args`, piped, in a session of its own (util-linux's
+    /// `setsid`, waiting for it): no controlling terminal, so no
+    /// `/dev/tty` either, whatever the test runs under.
+    pub fn without_terminal(&self, args: &[&str]) -> Output {
+        let mut cmd = std::process::Command::new("setsid");
+        cmd.arg("--wait").arg(common::sb().get_program());
+        cmd.stdin(std::process::Stdio::null());
+        self.piped_cmd(cmd, args)
+    }
+
+    fn piped_cmd(&self, mut cmd: std::process::Command, args: &[&str]) -> Output {
         cmd.args(args).env("NO_COLOR", "1");
         for (k, v) in self.envs() {
             match v {
@@ -152,6 +165,24 @@ impl Pty {
     /// sb with `TERM=xterm-256color` and `NO_COLOR`, then `args` and
     /// `envs` ([`sb_envs`]; one with no value removes it).
     pub fn spawn(args: &[&str], envs: Vec<(String, Option<String>)>) -> Self {
+        Self::spawn_program(common::sb().get_program(), args, envs)
+    }
+
+    /// `/bin/sh -c script sb args...`, as [`Pty::spawn`]: sb is `$0` and
+    /// `args` follow, so `script` can redirect sb's output (its stdout a
+    /// pipe or a file while the PTY stays its terminal).
+    pub fn spawn_shell(script: &str, args: &[&str], envs: Vec<(String, Option<String>)>) -> Self {
+        let sb = common::sb().get_program().to_string_lossy().into_owned();
+        let mut all = vec!["-c", script, sb.as_str()];
+        all.extend_from_slice(args);
+        Self::spawn_program("/bin/sh".as_ref(), &all, envs)
+    }
+
+    fn spawn_program(
+        program: &std::ffi::OsStr,
+        args: &[&str],
+        envs: Vec<(String, Option<String>)>,
+    ) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 30,
@@ -160,7 +191,7 @@ impl Pty {
                 pixel_height: 0,
             })
             .expect("pty");
-        let mut cmd = CommandBuilder::new(common::sb().get_program());
+        let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.env("TERM", "xterm-256color");
         cmd.env("NO_COLOR", "1");
@@ -261,5 +292,22 @@ impl Drop for Pty {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// `path`'s text once it holds `text`; fails at the timeout.
+pub fn file_holding(path: &std::path::Path, text: &str) -> String {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let held = std::fs::read_to_string(path).unwrap_or_default();
+        if held.contains(text) {
+            return held;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {text:?} in {}: {held:?}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
 }

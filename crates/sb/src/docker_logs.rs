@@ -5,11 +5,12 @@
 //! Before the screen (tui decision 20): the container list (an
 //! unreachable daemon ends the run as `sb docker ps` does, exit 1; an
 //! empty list prints `No containers found.`, exit 0), then the terminal
-//! check, then the services `Tab` shows and their journal (a failure is
+//! check (stdout, else `/dev/tty` for the inline fallback), then the
+//! services `Tab` shows and their journal (a failure is
 //! the Services section's one row). Ctrl-C on the screen ends the run
 //! with 130, quietly (tui decision 13).
 
-use std::io::{IsTerminal as _, Write as _};
+use std::io::Write as _;
 use std::sync::Arc;
 
 use sb_cli_core::cancel::Shutdown;
@@ -56,23 +57,17 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
         out.flush().map_err(exit::output_error)?;
         return Ok(());
     }
-    // The inline fallback comes with the tui spec's slice 5.
-    if !std::io::stdout().is_terminal() {
-        anyhow::bail!(NO_TERMINAL);
-    }
+    let terminal = crate::logs::terminal(NO_TERMINAL)?;
     let services = services(shutdown).await?;
-    let ending = sb_tui::logs(
+    let docker = sb_tui::Docker::Listed { daemon, rows };
+    crate::logs::show(
         shutdown,
-        sb_tui::Logs {
-            services,
-            docker: sb_tui::Docker::Listed { daemon, rows },
-            filter: sb_tui::Filter::Containers,
-            theme: crate::logs::screen_theme(),
-            zone: sb_tui::line::local_zone(),
-        },
+        terminal,
+        services,
+        docker,
+        sb_tui::Filter::Containers,
     )
-    .await?;
-    crate::logs::ended(ending)
+    .await
 }
 
 /// The services `Tab` shows, with their journal, or why they couldn't be

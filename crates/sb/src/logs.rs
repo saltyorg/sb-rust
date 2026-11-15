@@ -8,12 +8,18 @@
 //! coredump user's uid, both under `spawn_blocking` (sb-host's journal
 //! docs). Ctrl-C on the screen ends the run with 130, quietly (tui
 //! decision 13).
+//!
+//! When stdout isn't a terminal, the inline fallback (tui spec, "The
+//! inline fallback"): the picker on `/dev/tty`, then the chosen log on
+//! stdout; with no terminal at all, the error.
 
+use std::fs::File;
 use std::io::{IsTerminal as _, Write as _};
 
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::exit::{self, Exit};
+use sb_cli_core::log;
 use sb_cli_core::theme;
 use sb_host::journal::{self, Journal, Source};
 use sb_host::systemd::{Service, Systemd, default_filters};
@@ -71,24 +77,85 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
         out.flush().map_err(exit::output_error)?;
         return Ok(());
     }
-    // The inline fallback (the picker on /dev/tty, the log on stdout)
-    // comes with the tui spec's slice 5; until then the screen needs
-    // stdout to be the terminal.
-    if !std::io::stdout().is_terminal() {
-        anyhow::bail!(NO_TERMINAL);
-    }
+    let terminal = terminal(NO_TERMINAL)?;
     let services = with_journal(services).await?;
-    let ending = sb_tui::logs(
+    show(
         shutdown,
-        sb_tui::Logs {
-            services: Ok(services),
-            docker,
-            filter: sb_tui::Filter::All,
-            theme: screen_theme(),
-            zone: sb_tui::line::local_zone(),
-        },
+        terminal,
+        Ok(services),
+        docker,
+        sb_tui::Filter::All,
     )
-    .await?;
+    .await
+}
+
+/// Where the picker draws.
+#[derive(Debug)]
+pub enum Terminal {
+    /// stdout is the terminal: the screens.
+    Screen,
+    /// stdout isn't: the picker on this tty, then the log on stdout.
+    Tty(File),
+}
+
+/// The terminal to choose a log on: stdout's, else `/dev/tty`, opened for
+/// reading and writing as crossterm opens it (its `tty_fd`). Why not a
+/// crossterm call: it opens `/dev/tty` only inside, with no public API.
+///
+/// # Errors
+///
+/// `no_terminal` when stdout isn't a terminal and there is no `/dev/tty`
+/// (no controlling terminal); the cause goes to the run log.
+pub fn terminal(no_terminal: &'static str) -> anyhow::Result<Terminal> {
+    if std::io::stdout().is_terminal() {
+        return Ok(Terminal::Screen);
+    }
+    match File::options().read(true).write(true).open("/dev/tty") {
+        Ok(tty) => Ok(Terminal::Tty(tty)),
+        Err(err) => {
+            tracing::info!(error = %err, "no terminal: /dev/tty not opened");
+            anyhow::bail!(no_terminal)
+        }
+    }
+}
+
+/// The logs commands' screens on `terminal`, then the run's result
+/// ([`ended`]).
+///
+/// # Errors
+///
+/// A screen that fails, a write to stdout that fails (a broken pipe is
+/// cli-core's quiet 141), a follow the stream can't start; `Exit(130)`
+/// after Ctrl-C on a screen.
+pub async fn show(
+    shutdown: &Shutdown,
+    terminal: Terminal,
+    services: Result<sb_tui::Services, String>,
+    docker: sb_tui::Docker,
+    filter: sb_tui::Filter,
+) -> anyhow::Result<()> {
+    let logs = |theme| sb_tui::Logs {
+        services,
+        docker,
+        filter,
+        theme,
+        zone: sb_tui::line::local_zone(),
+        save_dir: log::log_dir(std::env::var_os("SB_LOG_DIR")),
+    };
+    let ending = match terminal {
+        Terminal::Screen => sb_tui::logs(shutdown, logs(screen_theme())).await?,
+        Terminal::Tty(tty) => {
+            // The picker's colours are the tty's choice (`--color`,
+            // `NO_COLOR`, a terminal), the stream's stdout's (off when
+            // piped, unless `--color=always`).
+            let picker = if anstream::AutoStream::choice(&tty) == anstream::ColorChoice::Never {
+                theme::Theme::plain()
+            } else {
+                theme::current().clone()
+            };
+            sb_tui::inline(shutdown, logs(picker), tty, screen_theme()).await?
+        }
+    };
     ended(ending)
 }
 

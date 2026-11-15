@@ -102,11 +102,12 @@ fn an_unreachable_daemon_is_an_error() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
 }
 
-/// Containers but no terminal: the error, exit 1, nothing on stdout.
+/// Containers but no terminal at all (no `/dev/tty`, stdout a pipe): the
+/// error, exit 1, nothing on stdout.
 #[test]
 fn no_terminal_is_an_error_with_nothing_on_stdout() {
     let engine = engine();
-    let out = world(&engine).piped(&["docker", "logs"]);
+    let out = world(&engine).without_terminal(&["docker", "logs"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -270,4 +271,46 @@ fn a_failing_service_list_is_the_services_row() {
     assert!(pty.exit().success());
     let log = world.log();
     assert!(log.contains("services unavailable"), "{log}");
+}
+
+/// Piped stdout: the picker on the terminal, then the container's log on
+/// stdout; the stop and start notices on stderr, the follow going on
+/// across the restart; Ctrl-C ends it by SIGINT.
+#[test]
+fn piped_stdout_streams_a_containers_log_across_a_restart() {
+    let engine = engine();
+    let world = world(&engine);
+    let out = world.dir.path().join("out.txt");
+    let err = world.dir.path().join("err.txt");
+    let args = [out.display().to_string(), err.display().to_string()];
+    let script = r#"exec "$0" docker logs > "$1" 2> "$2""#;
+    let mut pty = Pty::spawn_shell(script, &[&args[0], &args[1]], world.envs());
+    assert!(pty.showing("Containers (2)"), "{}", pty.contents());
+    pty.send(b"j\r");
+    let text = logs_pty::file_holding(&out, "web ready");
+    // Each line `<time> stdout: <message>`, the time local.
+    let shown: Vec<&str> = text
+        .lines()
+        .map(|line| line.split_once(' ').expect("a time").1)
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "stdout: web starting",
+            &format!("stdout: a line with {MARKER}"),
+            "stdout: web ready"
+        ]
+    );
+    engine.end_follows(ID);
+    logs_pty::file_holding(&err, "container stopped; waiting for it to start again\n");
+    engine.resume_follows(ID);
+    engine.append(ID, entry(4, "after the restart"));
+    engine.event(container_event("start", ID, "web"));
+    logs_pty::file_holding(&out, "stdout: after the restart\n");
+    logs_pty::file_holding(&err, "container started\n");
+    pty.send(b"\x03");
+    let status = pty.exit();
+    assert_eq!(status.signal(), Some("Interrupt"), "{}", pty.contents());
+    pty.assert_restored();
+    assert!(!world.log().contains(MARKER), "{}", world.log());
 }
