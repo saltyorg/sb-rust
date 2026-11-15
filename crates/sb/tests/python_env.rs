@@ -257,3 +257,110 @@ fn update_venv_installs_the_pinned_uv() {
     let uvx = std::fs::read_to_string(&tree.layout.uvx).expect("uvx");
     assert!(uvx.contains("echo 'uvx 0.13.4 (stand-in)'"), "{uvx}");
 }
+
+/// `sb reinstall-facts` is listed with sb-go's help and takes no
+/// arguments and no `-v` (python-env decision 9).
+#[test]
+fn reinstall_facts_takes_no_arguments() {
+    common::sb()
+        .args(["--help", "--color=never"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reinstall-facts"));
+    common::sb()
+        .args(["reinstall-facts", "--help", "--color=never"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Reinstall the Rust saltbox.fact file",
+        ));
+    common::sb()
+        .args(["reinstall-facts", "extra"])
+        .assert()
+        .code(2);
+    common::sb()
+        .args(["reinstall-facts", "-v"])
+        .assert()
+        .code(2);
+}
+
+/// `sb reinstall-facts` replaces even an up-to-date fact, with
+/// accounts.yml missing or invalid (spec, success criterion 8).
+#[test]
+fn reinstall_facts_works_without_a_user() {
+    if !root_gate::requested() {
+        return;
+    }
+    for accounts in [None, Some("user: [not, a, map\n")] {
+        let tree = Tree::new();
+        if let Some(text) = accounts {
+            std::fs::create_dir_all(&tree.layout.checkout).expect("checkout");
+            std::fs::write(tree.layout.checkout.join("accounts.yml"), text).expect("accounts");
+        }
+        let body = sb_python_env::testing::fact_binary("1.4.0");
+        tree.serve_fact(Arch::current().expect("arch"), "v1.4.0", &body);
+        tree.fact(&body);
+        run(&tree, "reinstall-facts").success().stderr(
+            predicate::str::contains("Reinstall forced.")
+                .and(predicate::str::contains(
+                    "saltbox.fact reinstalled successfully (version v1.4.0)",
+                ))
+                .and(predicate::str::contains("Reinstalling saltbox.fact")),
+        );
+        assert_eq!(std::fs::read(&tree.layout.fact).expect("fact"), body);
+        let downloads = tree
+            .fake
+            .seen()
+            .iter()
+            .filter(|seen| seen.target.contains("/releases/download/"))
+            .count();
+        assert_eq!(downloads, 1, "{accounts:?}");
+    }
+}
+
+/// A failed reinstall exits 1, the failing nested step naming the cause:
+/// here the release has no fact for this architecture.
+#[test]
+fn a_failed_reinstall_facts_exits_1() {
+    if !root_gate::requested() {
+        return;
+    }
+    let tree = Tree::new();
+    let other = match Arch::current().expect("arch") {
+        Arch::Amd64 => Arch::Arm64,
+        Arch::Arm64 => Arch::Amd64,
+    };
+    tree.serve_fact(other, "v1.4.0", b"x");
+    run(&tree, "reinstall-facts")
+        .code(1)
+        .stderr(predicate::str::contains("is missing saltbox-facts-"));
+}
+
+/// `sb update-venv` repairs a fact edited at the released version, with
+/// no metadata request beyond the one (success criterion 6).
+#[test]
+fn update_venv_repairs_a_tampered_fact() {
+    if !root_gate::requested() {
+        return;
+    }
+    let tree = tree("nobody");
+    let _ = tree.healthy();
+    let good = std::fs::read(&tree.layout.fact).expect("fact");
+    let mut bad = good.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 1;
+    tree.fact(&bad);
+    run(&tree, "update-venv").success().stderr(
+        predicate::str::contains("does not match its release").and(predicate::str::contains(
+            "saltbox.fact reinstalled successfully",
+        )),
+    );
+    assert_eq!(std::fs::read(&tree.layout.fact).expect("fact"), good);
+    let api = tree
+        .fake
+        .seen()
+        .iter()
+        .filter(|seen| seen.target.starts_with("/api/"))
+        .count();
+    assert_eq!(api, 1);
+}

@@ -1,9 +1,10 @@
 //! `sb-python-env`: the uv-managed Python, the Ansible venv Saltbox runs,
 //! the 22.04 deadsnakes cleanup and `saltbox.fact` (python-env spec). So
-//! far slices 1 to 4: the fixed [`Layout`], the toolchain
+//! far slices 1 to 5: the fixed [`Layout`], the toolchain
 //! ([`toolchain`]), the isolated child builder (`isolate`), the uv probe
-//! and install ([`uv`]), the venv's checks, its reconcile with the
-//! clean retry and the build into staging ([`venv`]), the manifest, the
+//! and install ([`uv`]), `saltbox.fact` ([`fact`]), the venv's checks,
+//! its reconcile with the clean retry and the build into staging
+//! ([`venv`]), the manifest, the
 //! wrappers, activation and the generation cleanup ([`activate`]), and
 //! [`reconcile_runtime`].
 //!
@@ -14,6 +15,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod activate;
+pub mod fact;
 mod isolate;
 pub mod manifest;
 #[cfg(feature = "testing")]
@@ -23,6 +25,7 @@ pub mod uv;
 pub mod venv;
 pub mod wrappers;
 
+pub use fact::{FactError, FactMode, FactOutcome, install_fact};
 pub use isolate::IsolateError;
 pub use toolchain::{Toolchain, ToolchainError};
 pub use uv::{ExtractError, UvError};
@@ -134,8 +137,7 @@ impl Layout {
 #[derive(Debug, Clone)]
 pub struct Env<'a> {
     pub layout: &'a Layout,
-    /// The release client: uv's (and later the fact's) metadata and
-    /// downloads.
+    /// The release client: uv's and the fact's metadata and downloads.
     pub release: &'a sb_release::Releases,
     /// The uv release this sb provides.
     pub uv_version: &'a str,
@@ -198,9 +200,8 @@ pub struct RuntimeError(#[from] Exit);
 /// words, the old deadsnakes packages, the venv ([`reconcile_venv`] with
 /// no force) and `saltbox.fact`.
 ///
-/// So far (module build M14) the deadsnakes cleanup (M20) and the fact
-/// (M19) have nothing to do: their steps pass as they do on a host where
-/// neither needs work.
+/// So far the deadsnakes cleanup (module build M20) has nothing to do:
+/// its step passes as it does on a host that needs no cleanup.
 ///
 /// # Errors
 ///
@@ -233,11 +234,10 @@ pub async fn reconcile_runtime(
     .await?;
     let fact = Labels::new("Checking saltbox.fact", "saltbox.fact is ready")
         .failure("saltbox.fact update");
-    step.step(fact, async |_| {
-        // Nothing to install until the fact lands (module build M19): its
-        // error then reads "error downloading and installing saltbox fact:
-        // <cause>".
-        tracing::info!("the saltbox.fact check isn't built yet: nothing checked");
+    step.step(fact, async |step| {
+        install_fact(step, env, FactMode::Update)
+            .await
+            .context("error downloading and installing saltbox fact")?;
         anyhow::Ok(())
     })
     .await?;

@@ -208,6 +208,11 @@ fn python_env_commands_have_every_sb_go_flag_but_verbose() {
             false,
             "Reinstall Saltbox's Python and its Ansible virtual environment using uv",
         ),
+        (
+            "reinstall-facts",
+            false,
+            "Reinstall the Rust saltbox.fact file",
+        ),
     ] {
         let missing: Vec<&str> = SB_GO_TREE
             .lines()

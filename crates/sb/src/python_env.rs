@@ -1,13 +1,15 @@
 //! python-env's commands (python-env spec, "The commands"): the hidden
 //! `sb update-venv` (module build M14), `sb reinstall-venv` and `sb
-//! reinstall-python` (M16).
+//! reinstall-python` (M16), and `sb reinstall-facts` (M19).
 
 use anyhow::Context as _;
 use sb_cli_core::build_info::{BuildInfo, UV_VERSION};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::log::RunLog;
-use sb_python_env::{Env, Force, Layout, reconcile_runtime, reconcile_venv};
+use sb_python_env::{
+    Env, FactMode, Force, Layout, install_fact, reconcile_runtime, reconcile_venv,
+};
 use sb_release::{Arch, Releases};
 use sb_term_ui::{Labels, Options, Runner, Step};
 
@@ -34,6 +36,21 @@ fn run(
     body: impl AsyncFnOnce(&mut Step, &Env<'_>, &str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let user = saltbox_user()?;
+    run_without_user(name, labels, shutdown, log, async |step, env| {
+        body(step, env, &user).await
+    })
+}
+
+/// `body` in one outer step of a runner named `name`, on python-env's
+/// layout, with no Saltbox user (`reinstall-facts`, which works with a
+/// broken accounts.yml).
+fn run_without_user(
+    name: &str,
+    labels: Labels,
+    shutdown: &Shutdown,
+    log: Option<&RunLog>,
+    body: impl AsyncFnOnce(&mut Step, &Env<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let layout = Layout::for_sb();
     let build = BuildInfo::current(env!("CARGO_PKG_VERSION"));
     // uv's release (and the fact's) through the proxy or GitHub, as `sb
@@ -43,7 +60,7 @@ fn run(
     super::block_on(async {
         let mut runner = Runner::start(name, shutdown, log, Options::default());
         let result = runner
-            .step(labels, async |step| body(step, &env, &user).await)
+            .step(labels, async |step| body(step, &env).await)
             .await;
         runner.finish();
         result.map_err(anyhow::Error::from)
@@ -132,6 +149,31 @@ pub fn reinstall_python(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Re
                 anyhow::Ok(())
             })
             .await?;
+            Ok(())
+        },
+    )
+}
+
+/// `sb reinstall-facts`: the latest saltbox.fact installed whatever the
+/// installed one holds (`install_fact` with `FactMode::Reinstall`), under
+/// sb-go's label and error (cmd/reinstallFacts.go). No Saltbox user is
+/// read, so it works with accounts.yml missing or invalid (spec, success
+/// criterion 8).
+///
+/// # Errors
+///
+/// The step's failure.
+pub fn reinstall_facts(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
+    let reinstalling = "Reinstalling saltbox.fact";
+    run_without_user(
+        "sb reinstall-facts",
+        Labels::new(reinstalling, reinstalling),
+        shutdown,
+        log,
+        async |step, env| {
+            install_fact(step, env, FactMode::Reinstall)
+                .await
+                .context("error reinstalling saltbox.fact")?;
             Ok(())
         },
     )

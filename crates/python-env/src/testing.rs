@@ -70,6 +70,36 @@ pub const UV: &str = "0.13.4";
 /// The lock the tree holds.
 pub const LOCK: &str = "ansible==12.0.0 --hash=sha256:00\n";
 
+/// The tag of the fact release [`Tree::healthy`] serves.
+pub const FACT_TAG: &str = "v1.4.0";
+
+/// A stand-in saltbox.fact of this build's architecture whose `--version`
+/// prints `version`: sb-release's stand-in ELF with its `stand-in sb `
+/// prefix blanked, so the line is the version after spaces, which the
+/// fact's parse trims. UNVERIFIED: patching the format string in place;
+/// checked against the stand-in rustc 1.100.0 builds, which holds the
+/// prefix once. Why not a stand-in of its own: it would need a build
+/// script running rustc (CONSTRAINTS.md's E5, sb-release's only).
+///
+/// # Panics
+///
+/// When the stand-in doesn't hold the prefix exactly once.
+#[must_use]
+pub fn fact_binary(version: &str) -> Vec<u8> {
+    let mut bytes = sb_release::testing::stand_in(version);
+    let prefix = b"stand-in sb ";
+    let mut found = bytes
+        .windows(prefix.len())
+        .enumerate()
+        .filter(|(_, window)| window == prefix)
+        .map(|(at, _)| at);
+    let (Some(at), None) = (found.next(), found.next()) else {
+        panic!("the stand-in holds its output prefix exactly once");
+    };
+    bytes[at..at + prefix.len()].fill(b' ');
+    bytes
+}
+
 /// An executable `name` in `dir` running `script` with `sh`.
 ///
 /// # Panics
@@ -364,7 +394,8 @@ impl Tree {
         std::os::unix::fs::symlink(venv, link).expect("link");
     }
 
-    /// A healthy tree: one generation, active.
+    /// A healthy tree: one generation, active, and the fact of the
+    /// release [`FACT_TAG`] the fake serves for this build's architecture.
     ///
     /// # Panics
     ///
@@ -373,7 +404,43 @@ impl Tree {
     pub fn healthy(&self) -> Generation {
         let generation = self.generation(GENERATION, PYTHON_RELEASE);
         self.activate(&generation.venv);
+        let body = fact_binary(FACT_TAG.trim_start_matches('v'));
+        self.serve_fact(Arch::current().expect("arch"), FACT_TAG, &body);
+        self.fact(&body);
         generation
+    }
+
+    /// The fake serving saltyorg/ansible-facts' latest release `tag`, its
+    /// asset for `arch` holding `body`, from GitHub's API (the proxy is
+    /// down: unscripted, 404).
+    pub fn serve_fact(&self, arch: Arch, tag: &str, body: &[u8]) {
+        let name = crate::fact::asset_name(arch);
+        self.serve(
+            "/api/repos/saltyorg/ansible-facts/releases/latest",
+            &format!("/saltyorg/ansible-facts/releases/download/{tag}/{name}"),
+            tag,
+            &name,
+            body,
+        );
+    }
+
+    /// The layout's fact holding `body`, mode 0755.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    pub fn fact(&self, body: &[u8]) {
+        let path = &self.layout.fact;
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("facts dir");
+        std::fs::write(path, body).expect("fact");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    /// The layout's fact as a script running `script` (after recording its
+    /// call in [`Tree::calls`]).
+    pub fn fact_script(&self, script: &str) {
+        let body = format!("#!/bin/sh\n{}\n{script}\n", self.calls_line());
+        self.fact(body.as_bytes());
     }
 
     /// Where the venv's entry points record their Ansible config.

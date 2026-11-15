@@ -717,6 +717,14 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
   for.
 - **The fact stays root-owned, mode 0755,** inside the Saltbox-owned
   checkout until the next venv reconcile chowns it (sb-go's behaviour).
+- **The fact's directory is the Saltbox user's.** The staged fact is
+  checked, run (`--version`) and activated by its path in
+  `<checkout>/ansible_facts.d`, and the installed fact is run to read its
+  version, as sb-go does: both are protected against the network, not
+  against that user, who is the host's admin and whose checkout Ansible
+  runs as root anyway. A local writer can also keep a fact that reports
+  a newer version (decision 2 keeps a newer one). Added with module
+  build M19, from its security review.
 - **No lock between concurrent sb runs** (sb-go has none).
 - **A broken published fact release** is installed and kept; the fix is a
   new release.

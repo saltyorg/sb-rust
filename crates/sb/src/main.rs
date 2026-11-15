@@ -124,6 +124,10 @@ enum Command {
         long_about = "Reinstall the Python version used by Saltbox and related Ansible virtual environment using uv"
     )]
     ReinstallPython,
+    /// Reinstall the Rust saltbox.fact file
+    // No `--verbose/-v` (python-env decision 9).
+    #[command(long_about = "Reinstall the Rust saltbox.fact file")]
+    ReinstallFacts,
 }
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
@@ -287,6 +291,7 @@ impl Command {
             Command::List(_) => "list",
             Command::ReinstallVenv => "reinstall-venv",
             Command::ReinstallPython => "reinstall-python",
+            Command::ReinstallFacts => "reinstall-facts",
         }
     }
 
@@ -307,7 +312,8 @@ impl Command {
             // Saltbox checkout (ansible spec, success criterion 9); list
             // writes that checkout's tag cache; the venv, its wrappers and
             // apt, which `update-venv`, `reinstall-venv` and
-            // `reinstall-python` change (python-env assumption 5).
+            // `reinstall-python` change, and the checkout's fact, which
+            // `reinstall-facts` replaces (python-env assumption 5).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::BranchSandbox { .. }
@@ -320,7 +326,8 @@ impl Command {
             | Command::UpdateVenv
             | Command::List(_)
             | Command::ReinstallVenv
-            | Command::ReinstallPython => true,
+            | Command::ReinstallPython
+            | Command::ReinstallFacts => true,
         }
     }
 }
@@ -555,6 +562,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::UpdateVenv => python_env::update_venv(shutdown, log)?,
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
+        Command::ReinstallFacts => python_env::reinstall_facts(shutdown, log)?,
         Command::SelfUpdate { yes, force_update } => {
             self_update::self_update(yes, force_update, shutdown, log)?;
         }
@@ -1009,6 +1017,7 @@ mod tests {
             (Command::UpdateVenv, "update-venv"),
             (Command::ReinstallVenv, "reinstall-venv"),
             (Command::ReinstallPython, "reinstall-python"),
+            (Command::ReinstallFacts, "reinstall-facts"),
         ] {
             assert!(command.needs_root(), "{name}");
             assert_eq!(command.name(), name);
