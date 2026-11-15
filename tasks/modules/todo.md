@@ -147,8 +147,8 @@ amendment's `free_space`, over an injected `statvfs`.
 **Scope:** S
 
 ## Checkpoint H1: host foundations
-- [ ] M1-M4 merged; `check.sh full` on `main`.
-- [ ] No looks (library code, no new output).
+- [x] M1-M4 merged; `check.sh full` on `main`.
+- [x] No looks (library code, no new output).
 
 ## Task M5: repo: crate and a bare `sb branch-sandbox`
 
@@ -246,9 +246,9 @@ the ops spec.
 **Scope:** S
 
 ## Checkpoint R: repo
-- [ ] M5-M8 and M23 merged; `check.sh full` on `main`.
-- [ ] Move triage.md's exec-M1 and exec-L2 rows to fixed.
-- [ ] No looks.
+- [x] M5-M8 and M23 merged; `check.sh full` on `main`.
+- [x] Move triage.md's exec-M1 and exec-L2 rows to fixed.
+- [x] No looks.
 
 ## Task M9: host: apt policy, install, remove, update_lists, the lock note
 
@@ -334,8 +334,8 @@ jammy and DEB822 rules; atomic saves.
 **Scope:** S
 
 ## Checkpoint H2: host complete
-- [ ] M1-M4, M9-M11 merged; every part of the host spec is built.
-- [ ] No looks.
+- [x] M1-M4, M9-M11 merged; every part of the host spec is built.
+- [x] No looks.
 
 ## Task M12: config: `saltbox_user()`
 
@@ -574,9 +574,9 @@ both directions with sb-go (sb-go's tree read by sb, sb's read by sb-go).
 **Scope:** S
 
 ## Checkpoint PE: python-env
-- [ ] M12-M21 merged; `check.sh full`; the live acceptance green on three
+- [x] M12-M21 merged; `check.sh full`; the live acceptance green on three
       releases.
-- [ ] No looks (sb-go's step texts).
+- [x] No looks (sb-go's step texts).
 
 ---
 
@@ -774,8 +774,8 @@ from M13).
 **Scope:** S
 
 ## Checkpoint X: exec and release
-- [ ] M22-M29 merged; `check.sh full`.
-- [ ] Look: the confirm prompt and a self-update run (M26), seen by the
+- [x] M22-M29 merged; `check.sh full`.
+- [x] Look: the confirm prompt and a self-update run (M26), seen by the
       maintainer.
 
 ## Task M30: ansible: crate and `sb diag`
@@ -2169,7 +2169,9 @@ in tui's viewer on a terminal and refresh completion, once both exist.
         second `remove_sources_mentioning` with the same run id is
         refused ("already exists") when something matches. Decide whether
         sb-host adds a read-only `sources_mentioning(needle)`.
-- [ ] **At M67's look: weigh a side-effect-free viewer core** (the
+- [x] **At M67's look: weigh a side-effect-free viewer core** (closed
+      2026-11-14: the maintainer approved M67 as built, choosing "Approve,
+      merge" over "Approve, rework core later") (the
       maintainer, 2026-11-13, from a comparison with bootvine). The
       maintainer asked for it to be weighed in the viewer's spec, but the
       tui spec is approved and M67 is built (lane 4, unmerged): its

@@ -74,10 +74,13 @@ column. The maintainer adopted those as they stand.
 
 | Verdict | High | Medium | Low | unrated | Total | of which was unsure |
 |---|---|---|---|---|---|---|
-| KEEP | 6 | 17 | 6 | 0 | 29 | 11 |
-| DEFER | 0 | 5 | 14 | 2 | 21 | 1 |
+| KEEP | 6 | 18 | 7 | 0 | 31 | 11 |
+| DEFER | 0 | 4 | 13 | 2 | 19 | 1 |
 | DROP | 1 | 14 | 80 | 7 | 102 | 8 |
 | Total | 7 | 36 | 100 | 9 | 152 | 20 |
+
+On 2026-11-15 (Checkpoint R) exec-M1 and exec-L2 moved from DEFER to KEEP:
+both were fixed in bdfc7e6 (module task M23).
 
 ## KEEP (fixed now)
 
@@ -114,6 +117,8 @@ column. The maintainer adopted those as they stand.
 | config-L1 | Low | config | 42, 43 | sb passes a tab-only line or tab-indented top level that Ansible rejects | Tabs are the common YAML mistake; validate-config passes a file Saltbox then fails on |  |
 | config-L2 | Low | config | 46 | A secret under a misplaced structure is echoed | A wrong indent in the accounts file is an ordinary mistake; the secret then lands on screen and in the log |  |
 | config-L11 | Low | sb | 46 (was 52) | Ctrl-C may lag when DNS is dead | A server with broken DNS is where validate-config gets run; untested claim, and a second Ctrl-C forces the exit | yes |
+| exec-M1 | Medium | exec | 7, 14 | A piped child prompting on the terminal hangs sb for ever | exec's only caller is a captured `systemctl is-active`; matters with the first command that runs git or ssh. **Fix specified 2026-11-13** (repo spec's exec amendment: `SSH_ASKPASS_REQUIRE=force`, `SSH_ASKPASS=/bin/false`, exec spec "Environment rules"); **fixed 2026-11-13 in bdfc7e6** (module task M23) |
+| exec-L2 | Low | exec | 15 | `stream` loses a final unterminated line when a grandchild holds the pipe | No command uses `stream` yet. **Fix specified 2026-11-13** (repo spec's exec amendment, exec spec "Ways to run"); **fixed 2026-11-13 in bdfc7e6** (module task M23) |
 
 ## DEFER (waits for its consumer)
 
@@ -121,11 +126,9 @@ column. The maintainer adopted those as they stand.
 
 | id | severity | crate | task | description | reason | was unsure |
 |---|---|---|---|---|---|---|
-| exec-M1 | Medium | exec | 7, 14 | A piped child prompting on the terminal hangs sb for ever | exec's only caller is a captured `systemctl is-active`; matters with the first command that runs git or ssh. **Fix specified 2026-11-13** (repo spec's exec amendment: `SSH_ASKPASS_REQUIRE=force`, `SSH_ASKPASS=/bin/false`, exec spec "Environment rules"); **fixed 2026-11-13 in bdfc7e6** (module task M23) |  |
 | exec-M2 | Medium | exec | 11 | A secret split by an escape evades the mask | No command registers a secret with exec or streams child output yet |  |
 | san-L3 | Low | exec | 11 | Mask runs before sanitizing | Same defect as exec-M2 |  |
 | exec-M3 | Medium | exec | 15 | `pty` with a cleared environment can't find a bare program name | No command uses `pty` yet |  |
-| exec-L2 | Low | exec | 15 | `stream` loses a final unterminated line when a grandchild holds the pipe | No command uses `stream` yet. **Fix specified 2026-11-13** (repo spec's exec amendment, exec spec "Ways to run"); **fixed 2026-11-13 in bdfc7e6** (module task M23) |  |
 | exec-L6 | Low | exec | 15 | `attached` doesn't re-check the token after the hold | No command uses `attached` yet |  |
 | exec-L4 | Low | exec | 23 | A PTY child that reads twice hangs until its timeout | No command uses `pty` yet; a doc line when one does |  |
 | exec-L5 | Low | exec | 23 | No mask for a secret sent on stdin | An API addition with no consumer |  |
