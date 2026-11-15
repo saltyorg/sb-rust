@@ -597,7 +597,11 @@ fn s_saves_the_loaded_lines_in_the_log_directory() {
     assert!(pty.showing("app[42]: ready"), "{}", pty.contents());
     pty.send(b"s");
     // The notice wraps where the path's length puts it.
-    assert!(pty.showing("saved 3 lines to"), "{}", pty.contents());
+    assert!(
+        pty.showing("saved the 3 lines loaded in the viewer"),
+        "{}",
+        pty.contents()
+    );
     assert!(pty.showing("sharing it."), "{}", pty.contents());
     let logs = world.dir.path().join("logs");
     let saved: Vec<_> = std::fs::read_dir(&logs)

@@ -1333,15 +1333,29 @@ fn s_saves_the_loaded_lines_and_says_where_until_the_next_key() {
         "m1\nm2\nm3\n"
     );
     let notice = format!(
-        "saved 3 lines to {}. Review it for domains, IPs and tokens before sharing it.",
+        "saved the 3 lines loaded in the viewer to {}. Review it for domains, IPs and tokens before sharing it.",
         files[0].display()
     );
     let screen = h.screen().join("\n");
     assert!(screen.contains(&notice), "{screen}");
     // Any key takes the notice away, one the viewer doesn't use too.
     assert_eq!(h.key(KeyCode::Char('z')), Flow::Redraw);
-    assert!(!h.screen().join("\n").contains("saved 3 lines"));
+    assert!(!h.screen().join("\n").contains("saved the 3 lines"));
     assert_eq!(h.key(KeyCode::Char('z')), Flow::Unchanged);
+}
+
+/// One loaded line is "1 line": a oneshot unit that logged once.
+#[test]
+fn the_save_notice_says_line_for_one() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut h = saving(120, 10, dir.path());
+    h.send(tail(1..2, true));
+    h.key(KeyCode::Char('s'));
+    let screen = h.screen().join("\n");
+    assert!(
+        screen.contains("saved the 1 line loaded in the viewer to "),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -1380,7 +1394,7 @@ fn the_save_notice_wraps_in_the_footer() {
     assert!(
         screen
             .iter()
-            .any(|row| row.starts_with("saved 29 lines to")),
+            .any(|row| row.starts_with("saved the 29 lines loaded")),
         "{screen:?}"
     );
     assert!(screen.iter().any(|row| row == "m29"), "{screen:?}");
@@ -1396,7 +1410,7 @@ fn the_save_notice_takes_at_most_a_third_of_the_screen() {
     let screen = h.screen();
     // The header, five log rows, three of the notice.
     assert_eq!(screen.len(), 9);
-    assert!(screen[6].starts_with("saved 29 lines"), "{screen:?}");
+    assert!(screen[6].starts_with("saved the 29"), "{screen:?}");
     assert!(
         screen[1..6].iter().all(|row| !row.contains("saved")),
         "{screen:?}"

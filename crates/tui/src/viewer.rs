@@ -322,7 +322,13 @@ impl Viewer {
                     lines = count,
                     "log saved"
                 );
-                let notice = format!("saved {count} lines to {shown}. {}", save::REVIEW);
+                // The buffer, not the whole log: the notice says so (spec,
+                // "Pasteable output").
+                let lines = if count == 1 { "line" } else { "lines" };
+                let notice = format!(
+                    "saved the {count} {lines} loaded in the viewer to {shown}. {}",
+                    save::REVIEW
+                );
                 (notice, false)
             }
             Err(err) => {

@@ -216,8 +216,9 @@ docs/community/support.md:34) and sb-go's screens can't give.
     `logs-<kind>-<name>-<YYYYMMDDTHHMMSSZ>.txt`, created with
     `create_new` and mode 0600. The name keeps only `[A-Za-z0-9_.@-]` of
     the source's name, others become `_`. The viewer then shows a notice:
-    `saved N lines to <path>. Review it for domains, IPs and tokens
-    before sharing it.` A failed save shows its cause.
+    `saved the N lines loaded in the viewer to <path>. Review it for
+    domains, IPs and tokens before sharing it.` (`1 line` for one). A
+    failed save shows its cause.
   - `p` leaves the screen and writes the loaded buffer, plain, to stdout,
     then the same review line to stderr, and exits 0.
   - Both write only what is loaded: the notice says so, and PgUp loads
