@@ -33,12 +33,15 @@ tokio = { workspace = true, features = ["time"] }
 saphyr.workspace = true
 saphyr-parser.workspace = true
 thiserror.workspace = true
+# The facts directory, pinned as an fd: openat, statat, flock, renameat,
+# fchown, fchmod, fsync (tui spec, Editors).
+rustix = { workspace = true, features = ["fs"] }
+# The facts save's temp file names (tempfile's own generator).
+fastrand.workspace = true
 
 [dev-dependencies]
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
-# The facts property test's generator, seeded per case (already in the tree).
-fastrand.workspace = true
 tracing-subscriber.workspace = true
 tempfile.workspace = true
 axum.workspace = true

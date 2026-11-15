@@ -6,9 +6,14 @@
 //!
 //! [`document`] is the dialect: a parser that keeps every line and a
 //! writer that changes only the lines an edit touches (sb-go
-//! facts/document.go).
+//! facts/document.go). [`session`] opens the facts directory and takes
+//! the locks, [`apply`] saves the staged changes, and [`secret`] says
+//! which values the editor masks.
 
+pub mod apply;
 pub mod document;
+pub mod secret;
+pub mod session;
 
 /// One fact: a key of an instance and its value, continuation lines
 /// joined with `\n`. Its `Debug` leaves the value out (a fact can be a

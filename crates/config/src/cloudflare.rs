@@ -6,7 +6,6 @@
 //! any zone or SSL failure; the credentials never appear in what it
 //! reports.
 
-use std::hash::{BuildHasher as _, Hasher as _};
 use std::time::Duration;
 
 use reqwest::header::HeaderMap;
@@ -75,13 +74,9 @@ pub fn base_url(text: &str) -> String {
 }
 
 /// cloudflare-go's backoff (`retryDelay`): 0.5 s doubling per retry, at
-/// most 8 s, less a random quarter at most. The randomness comes from
-/// std's `RandomState` (randomly keyed per thread, each `new` a fresh key:
-/// <https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.html>);
-/// why not fastrand or rand: no random-number crate is in sb-config's
-/// tree, and jitter needs no more than this. UNVERIFIED as a randomness
-/// source (std documents it for hashing), checked against the jitter
-/// bounds test.
+/// most 8 s, less a random quarter at most, drawn with fastrand
+/// (<https://docs.rs/fastrand/2.5.0/fastrand/fn.u64.html>), which the
+/// facts half's temp names brought into sb-config.
 #[must_use]
 pub fn backoff(count: u32) -> Duration {
     let full = Duration::from_millis(500)
@@ -90,11 +85,8 @@ pub fn backoff(count: u32) -> Duration {
     let quarter = u64::try_from((full / 4).as_nanos())
         .unwrap_or(u64::MAX)
         .max(1);
-    let random = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
-    // At most a quarter of `full`, so nothing saturates.
-    full.saturating_sub(Duration::from_nanos(random % quarter))
+    // Below a quarter of `full`, so nothing saturates.
+    full.saturating_sub(Duration::from_nanos(fastrand::u64(0..quarter)))
 }
 
 /// The longest a delay the server names is waited (maintainer,
