@@ -3,7 +3,8 @@
 Approved by the maintainer as drafted (2026-11-13); a change after the
 maintainer's read-through becomes a fix
 task. *Amended 2026-11-15: `sb announcements` is
-shown and only reads (decision 27, differences 31 and 35 to 37).*
+shown and only reads (decision 27, differences 31 and 35 to 37); both
+repositories by default (decision 30, difference 38).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -478,7 +479,7 @@ signal, the disk test's file and the temporary directory removed.
 | `update` | `--keep-branch` / `--reset-branch` (conflict: clap's error, exit 2), `--skip-self-update`, `--migrations <run\|skip>` (new) | no |
 | `branch <name>` | the branch, required | no |
 | `branch-sandbox <name>` | the branch, required | no |
-| `announcements` | `-b/--before <file>`, `-a/--after <file>` (both optional, decision 27), `-r/--repo <Saltbox\|Sandbox>` (default `Saltbox`) | no |
+| `announcements` | `-b/--before <file>`, `-a/--after <file>` (both optional, decision 27), `-r/--repo <Saltbox\|Sandbox>` (without it, both; decision 30) | no |
 
 Help texts are sb-go's (`Change the branch used by Saltbox`, and the
 others from cmd/). No `-v` anywhere (decision 18). sb-go's usage line
@@ -611,21 +612,25 @@ No prompt: the argument is the answer (decision 20).
 
 ### `sb announcements`
 
-A reader for one repository's announcements (the maintainer, 2026-11-15:
-it shows announcements only, and migrations run during updates only; decision
-27). It loads `--after`, or without it
-the repository's own file (`<repo>/announcements.yml`, the repository
-`--repo` names at its place in assumption 7), and `--before` when given;
-a missing file counts as "no file". The rules above decide which entries
+A reader for the repositories' announcements (the maintainer,
+2026-11-15: it shows announcements only, and migrations run during updates
+only; decision 27). Without `-r` it reads
+Saltbox's and Sandbox's, with it the one named (decision 30). For each it
+loads `--after`, or without it the repository's own file
+(`<repo>/announcements.yml`, at its place in assumption 7), and
+`--before` when given; a missing file counts as "no file", so a server
+without Sandbox shows Saltbox's alone. The rules above decide which entries
 apply and which are new: without `--before`, every entry is new (sb-go's
 rule for no before file, and proto-markdown's reviewed viewer). One
 runner step loads and compares, its info line `Displaying new
 announcements` or `No new announcements`. Then:
 
 - stdout a terminal: tui's announcement viewer (tui spec, "The
-  announcement viewer") with every applicable entry of the after file,
-  the new ones marked, when at least one applies;
-- otherwise: the new entries inline, as `update` prints them.
+  announcement viewer") with every applicable entry of each
+  repository's file in one list, the new ones marked, when at least one
+  applies;
+- otherwise: the new entries inline, as `update` prints them, Saltbox's
+  first.
 
 No migration table, no confirm and no `--migrations`: migrations run in
 `update` only (M86). An invalid file is an error here, exit 1, in
@@ -742,6 +747,9 @@ sb-go's words (`error loading before announcement file '<path>': ...`).
     (`WithPreservedNewLines`, saltbox/announcements.go:410-414). Saltbox's
     and Sandbox's public files of 2026-11-15 don't rely on it (M74's
     review).
+38. `announcements` without `-r` shows Saltbox's and Sandbox's
+    announcements; sb-go's harness read one repository, Saltbox by
+    default (decision 30).
 
 ## Scope
 
@@ -1014,8 +1022,13 @@ the real services.
   - **`announcements`:** fixture pairs piped (the new entries inline, no
     migration table for an entry with a migration, no child started),
     no `--before` (every entry new), no `--after` (the root's own file
-    under `SB_SALTBOX_DIR`); on a PTY the viewer opens, `q` closes it
-    (exit 0) and Ctrl-C ends with 130, the terminal restored.
+    under `SB_SALTBOX_DIR`); both repositories without `-r`, Saltbox's
+    first, and `-r` narrowing to one; a missing Sandbox checkout
+    (Saltbox's alone, no error); an invalid Sandbox file (exit 1, its
+    path named); on a PTY the viewer opens with both repositories in one
+    list, `q` closes it (exit 0) and Ctrl-C ends with 130, the terminal
+    restored. Sandbox's checkout sits under the test's own appdata path
+    (an inventory in the temporary root), never the host's.
 
 ## Boundaries
 
@@ -1187,8 +1200,8 @@ the real services.
     in `update` only. A reader needs no flag, so none is required:
     without `--before` every entry is new (sb-go's rule for no before
     file, proto-markdown's viewer), without `--after` the repository's
-    own file (assumption 7). `-r` keeps sb-go's default, Saltbox: one
-    repository per run. Decided from these specs.
+    own file (assumption 7). Decided from these specs. Its
+    "`-r` keeps sb-go's default, Saltbox" is replaced by decision 30.
 28. **setup moves the cleared apt sources aside** into a root-only
     `/var/backups/sb/apt-sources/<run id>/` instead of deleting them
     (difference 5). Reason: the hardening rules for destructive
@@ -1202,6 +1215,15 @@ the real services.
     flag or fails naming it (term-ui spec, "Prompts" and criterion 10;
     decided.md cites it as term-ui decision 2). Decided
     from recorded rules, 2026-11-13.
+30. **`announcements` shows both repositories by default** (the
+    maintainer, 2026-11-15, at M74b's look): without `-r`, Saltbox's and
+    Sandbox's announcements in one list (the viewer's pane names each
+    entry's repository), Saltbox's first in the inline form; `-r` narrows
+    to one. A missing Sandbox checkout is no file: Saltbox's alone, no
+    error. `--before` and `--after` name one repository's files, so
+    either without `-r` means Saltbox's (sb-go's default for them). Replaces decision 27's "`-r` keeps sb-go's
+    default, Saltbox". Root stays required (assumption 2; the
+    maintainer, the same day).
 
 ## Known limits
 
@@ -1252,9 +1274,10 @@ Replace it with:
 - `branch` and `branch-sandbox` rows: `branch <name>`,
   `branch-sandbox <name>` (required).
 - `announcements` row, first column: `announcements` (`--before`,
-  `--after`, `--repo`, none required); planning note: `reads a
-  repository's announcements: tui's viewer on a terminal, inline
-  otherwise; migrations stay with update (ops spec, decision 27)`.
+  `--after`, `--repo`, none required); planning note: `reads Saltbox's
+  and Sandbox's announcements, or one repository's with -r: tui's viewer
+  on a terminal, inline otherwise; migrations stay with update (ops
+  spec, decisions 27 and 30)`.
 
 **Capability map, stack table:** a row for archives, shared with the
 python-env spec: `Archives (uv, Speedtest) | tar + flate2 (rust_backend)

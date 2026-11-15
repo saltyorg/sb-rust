@@ -387,3 +387,5 @@ wrappers-widened	deny.toml	sb-cli-core: sb-ops added	the capability map has ops 
 wrappers-widened	deny.toml	sb-term-ui: sb-ops added	ops draws its steps, the migration table and the confirm through term-ui (ops spec, assumption 4 and "Migrations"; module build M74)
 wrappers-widened	deny.toml	sb-config: sb-ops added	ops reads announcements.yml through sb-config's YAML entry (ops spec, "Announcements"; ADR-022; module build M74)
 wrappers-widened	deny.toml	sb-tui: sb-ops added	ops shows announcements through tui's inline Markdown form (ops spec, assumption 4 and decision 26; tui spec, Scope; module build M74)
+assertion-removed	crates/ops/src/announcements/tests.rs	assert_eq!(parsed.repo, "Saltbox");	--repo has no default now, both repositories without it (ops decision 30, the maintainer, 2026-11-15): the same test asserts parsed.repo is None, and repos_are_both_unless_one_is_named checks each case
+assertion-removed	crates/ops/src/announcements/tests.rs	assert_eq!(parsed.repo, "Sandbox");	--repo is an Option now (ops decision 30): the same assertion stands as parsed.repo.as_deref() == Some("Sandbox")

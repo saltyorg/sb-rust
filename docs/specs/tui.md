@@ -1492,7 +1492,8 @@ its end, and can still read the ones they missed before.
   holds every applicable entry of the file, the older ones too, so missed
   ones can still be read (FINDINGS, "What counts as new").
 - The callers: `sb announcements` on a terminal, with every applicable
-  entry, when at least one applies; `sb update` on a terminal when there
+  entry of Saltbox's and Sandbox's (or the repository `-r` names), when
+  at least one applies; `sb update` on a terminal when there
   are new ones (M87). With stdout not a terminal both print the inline
   form instead, the new entries only (ops spec, decision 24).
 

@@ -520,31 +520,33 @@ fn stdout_theme() -> Theme {
     }
 }
 
-/// tui's announcement viewer over `listed`, `repo`'s, when any apply
-/// (ops spec, "`sb announcements`"). Ctrl-C on it ends sb with 130, as on
-/// the log screens.
+/// tui's announcement viewer over `listed`, when any apply (ops spec,
+/// "`sb announcements`"): one list, newest first, Saltbox's first among
+/// equal dates (the viewer's stable sort over the order given). Ctrl-C on it ends sb with 130, as on the log
+/// screens.
 ///
 /// # Errors
 ///
 /// The screen's I/O error; cli-core's `Exit(130)` after Ctrl-C.
 async fn view(
-    repo: Repo,
-    listed: Vec<(Announcement, bool)>,
+    listed: Vec<(Repo, Vec<(Announcement, bool)>)>,
     shutdown: &Shutdown,
 ) -> anyhow::Result<()> {
-    if listed.is_empty() {
-        return Ok(());
-    }
-    let entries = listed
+    let entries: Vec<Entry> = listed
         .into_iter()
-        .map(|(a, new)| Entry {
-            repo: repo.name().to_owned(),
-            date: a.date,
-            title: a.title,
-            message: a.message,
-            new,
+        .flat_map(|(repo, entries)| {
+            entries.into_iter().map(move |(a, new)| Entry {
+                repo: repo.name().to_owned(),
+                date: a.date,
+                title: a.title,
+                message: a.message,
+                new,
+            })
         })
         .collect();
+    if entries.is_empty() {
+        return Ok(());
+    }
     match sb_tui::announcements::view(shutdown, entries, stdout_theme()).await? {
         Ending::Interrupted => Err(exit::Exit(130).into()),
         Ending::Quit | Ending::Cancelled => Ok(()),
@@ -583,22 +585,45 @@ pub struct AnnouncementsArgs {
     #[arg(short, long, global = true, value_name = "file")]
     pub after: Option<PathBuf>,
     /// Repository name (Saltbox or Sandbox)
-    // Why not a `ValueEnum`: clap would refuse a wrong name while parsing,
-    // exit 2 in its words; sb-go's harness fails with its own text and
-    // exit 1 ([`announcements`]), which this keeps.
-    #[arg(short, long, global = true, default_value = "Saltbox")]
-    pub repo: String,
+    // Without it, both repositories ([`AnnouncementsArgs::repos`]; ops
+    // decision 30). Why not a `ValueEnum`: clap would refuse a wrong name
+    // while parsing, exit 2 in its words; sb-go's harness fails with its
+    // own text and exit 1, which this keeps.
+    #[arg(short, long, global = true)]
+    pub repo: Option<String>,
+}
+
+impl AnnouncementsArgs {
+    /// The repositories to show (ops decision 30). The one `--repo` names;
+    /// without it, Saltbox's and Sandbox's, Saltbox's first, unless
+    /// `--before` or `--after` names a file: those are one repository's,
+    /// Saltbox's as sb-go's default.
+    ///
+    /// # Errors
+    ///
+    /// sb-go's error for a name that is neither (exit 1).
+    pub fn repos(&self) -> anyhow::Result<Vec<Repo>> {
+        match &self.repo {
+            Some(name) => Repo::from_name(name).map(|repo| vec![repo]).ok_or_else(|| {
+                anyhow::anyhow!("invalid repository name '{name}', must be 'Saltbox' or 'Sandbox'")
+            }),
+            None if self.before.is_some() || self.after.is_some() => Ok(vec![Repo::Saltbox]),
+            None => Ok(vec![Repo::Saltbox, Repo::Sandbox]),
+        }
+    }
 }
 
 /// `sb announcements` (ops spec, "`sb announcements`"): the announcements
-/// of the repository `--repo` names, from `--after` (else its own file
-/// under the Saltbox root `root`, [`own_file`]), those `--before` lacks
-/// marked new (without it, all of them): on a terminal every one that
-/// applies in tui's viewer, else the new ones inline. A missing file is
-/// no file. It only shows: migrations run in `sb update`
-/// (maintainer, 2026-11-15). The loading is one runner step, whose info
-/// line says whether announcements follow; the runner is done before
-/// anything reaches stdout.
+/// of the repositories [`AnnouncementsArgs::repos`] gives, each from
+/// `--after` (else its own file under the Saltbox root `root`,
+/// [`own_file`]), those `--before` lacks marked new (without it, all of
+/// them): on a terminal every one that applies in tui's viewer, else the
+/// new ones inline, Saltbox's first. A missing file is no file, so a
+/// server without Sandbox shows Saltbox's alone; an invalid one is an
+/// error (ops spec, "`sb announcements`"). It only shows: migrations run
+/// in `sb update` (maintainer, 2026-11-15). The loading is one runner
+/// step, whose info line says whether announcements follow; the runner
+/// is done before anything reaches stdout.
 ///
 /// # Errors
 ///
@@ -611,13 +636,7 @@ pub async fn announcements(
     shutdown: &Shutdown,
     log: Option<&RunLog>,
 ) -> anyhow::Result<()> {
-    let repo = Repo::from_name(&args.repo).ok_or_else(|| {
-        anyhow::anyhow!(
-            "invalid repository name '{}', must be 'Saltbox' or 'Sandbox'",
-            args.repo
-        )
-    })?;
-    let after = args.after.clone().unwrap_or_else(|| own_file(repo, root));
+    let repos = args.repos()?;
     let mut runner = Runner::start("sb announcements", shutdown, log, Options::default());
     let found = runner
         .step(
@@ -638,16 +657,25 @@ pub async fn announcements(
                     Some(path) => loaded("before", path)?,
                     None => None,
                 };
-                let after = loaded("after", &after)?;
-                let listed = classify(before.as_deref(), after.as_deref());
-                let new = listed.iter().filter(|(_, new)| *new).count();
-                tracing::info!(
-                    repo = repo.name(),
-                    before = args.before.is_some(),
-                    listed = listed.len(),
-                    new,
-                    "announcements compared"
-                );
+                let mut listed = Vec::with_capacity(repos.len());
+                for repo in repos {
+                    let path = args.after.clone().unwrap_or_else(|| own_file(repo, root));
+                    let after = loaded("after", &path)?;
+                    let entries = classify(before.as_deref(), after.as_deref());
+                    tracing::info!(
+                        repo = repo.name(),
+                        before = args.before.is_some(),
+                        listed = entries.len(),
+                        new = entries.iter().filter(|(_, new)| *new).count(),
+                        "announcements compared"
+                    );
+                    listed.push((repo, entries));
+                }
+                let new = listed
+                    .iter()
+                    .flat_map(|(_, entries)| entries)
+                    .filter(|(_, new)| *new)
+                    .count();
                 step.info(if new == 0 {
                     "No new announcements"
                 } else {
@@ -660,13 +688,17 @@ pub async fn announcements(
     runner.finish();
     let listed = found?;
     if io::stdout().is_terminal() {
-        return view(repo, listed, shutdown).await;
+        return view(listed, shutdown).await;
     }
-    let new = only_new(listed);
+    let new: Vec<(Repo, Vec<Announcement>)> = listed
+        .into_iter()
+        .map(|(repo, entries)| (repo, only_new(entries)))
+        .filter(|(_, new)| !new.is_empty())
+        .collect();
     if new.is_empty() {
         return Ok(());
     }
-    show(&[(repo, new)])
+    show(&new)
 }
 
 #[cfg(test)]

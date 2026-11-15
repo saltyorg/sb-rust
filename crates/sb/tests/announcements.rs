@@ -48,6 +48,18 @@ impl Files {
         let missing = dir.path().join("missing/file");
         let after = AFTER.replace("MISSING", &missing.display().to_string());
         std::fs::write(dir.path().join("after.yml"), after).expect("after");
+        // The inventory puts the appdata path, and so Sandbox's checkout,
+        // in the directory too: no run reads the host's.
+        let inventory = dir.path().join("inventories/host_vars");
+        std::fs::create_dir_all(&inventory).expect("inventory dir");
+        std::fs::write(
+            inventory.join("localhost.yml"),
+            format!(
+                "server_appdata_path: {}\n",
+                dir.path().join("appdata").display()
+            ),
+        )
+        .expect("inventory");
         // A playbook stand-in that would mark any run.
         let playbook = dir.path().join("ansible-playbook");
         std::fs::write(
@@ -100,6 +112,14 @@ impl Files {
                     .into_owned(),
             ),
         ]
+    }
+
+    /// Sandbox's own announcements file: `<appdata>/sandbox`, its
+    /// checkout created.
+    fn sandbox_file(&self, text: &str) {
+        let checkout = self.path("appdata/sandbox");
+        std::fs::create_dir_all(&checkout).expect("checkout");
+        std::fs::write(checkout.join("announcements.yml"), text).expect("sandbox file");
     }
 
     fn ran(&self) -> bool {
@@ -291,7 +311,8 @@ fn it_is_shown_with_sb_gos_flags() {
         assert!(!help.contains(flag), "{flag}: {help}");
     }
     assert!(
-        help.contains("On a terminal, every announcement that applies"),
+        help.contains("Display Saltbox's and Sandbox's announcements")
+            && help.contains("the new ones marked"),
         "{help}"
     );
 }
@@ -496,4 +517,108 @@ impl Drop for Pty {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Sandbox's file for the both-repositories tests: one entry.
+const SANDBOX: &str = "announcements:\n  - date: \"2026-04-01\"\n    title: \"Sandbox news\"\n    \
+                       message: From the sandbox.\n";
+
+const SALTBOX_OWN: &str = "# Saltbox Announcement - January 10, 2026\n\nAlready seen.\n";
+const SANDBOX_OWN: &str = "# Sandbox Announcement - April 1, 2026\n\nFrom the sandbox.\n";
+
+/// No `-r`: Saltbox's and Sandbox's own files, Saltbox's first (ops
+/// decision 30); `-r` narrows to the one named.
+#[test]
+fn both_repositories_by_default_and_r_narrows_to_one() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
+    files.sandbox_file(SANDBOX);
+    let out = files.run(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert_eq!(stdout(&out), format!("{SALTBOX_OWN}\n{SANDBOX_OWN}"));
+    for (repo, shown) in [("Saltbox", SALTBOX_OWN), ("Sandbox", SANDBOX_OWN)] {
+        let out = files.run(&["-r", repo]);
+        assert_eq!(out.status.code(), Some(0), "{repo}: {}", both(&out));
+        assert_eq!(stdout(&out), shown, "{repo}");
+    }
+}
+
+/// No Sandbox checkout: Saltbox's alone, no error.
+#[test]
+fn a_missing_sandbox_checkout_shows_saltboxs_alone() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
+    let out = files.run(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert_eq!(stdout(&out), SALTBOX_OWN);
+    assert!(
+        stderr(&out).contains("Displaying new announcements"),
+        "{}",
+        both(&out)
+    );
+    // `-r Sandbox` there: nothing, no error either.
+    let out = files.run(&["-r", "Sandbox"]);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert_eq!(stdout(&out), "");
+    assert!(
+        stderr(&out).contains("No new announcements"),
+        "{}",
+        both(&out)
+    );
+}
+
+/// An invalid Sandbox file is an error with both repositories too: exit
+/// 1, its path named, nothing on stdout (the spec's rule for this command).
+#[test]
+fn an_invalid_sandbox_file_fails_the_default_run() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
+    files.sandbox_file("announcements:\n  - title: [x]\n");
+    let out = files.run(&[]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    let sandbox = files.path("appdata/sandbox/announcements.yml");
+    assert!(
+        stderr(&out).contains(&format!(
+            "error loading after announcement file '{}'",
+            sandbox.display()
+        )),
+        "{}",
+        both(&out)
+    );
+    assert_eq!(stdout(&out), "");
+}
+
+/// On a terminal, one list for both repositories; the pane names the
+/// selected entry's.
+#[test]
+fn on_a_terminal_both_repositories_share_the_list() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
+    files.sandbox_file(SANDBOX);
+    let mut pty = Pty::spawn(&["announcements"], &files.pty_envs());
+    assert!(pty.showing("Announcements · 2 new"), "{}", pty.contents());
+    let screen = pty.contents();
+    assert!(
+        screen.contains("Sandbox news") && screen.contains("Old news"),
+        "{screen}"
+    );
+    // Newest first: Sandbox's, in its pane.
+    assert!(screen.contains("╭ Sandbox "), "{screen}");
+    pty.send(b"j");
+    assert!(pty.showing("╭ Saltbox "), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.exit().success(), "{}", pty.contents());
+    pty.assert_restored();
 }

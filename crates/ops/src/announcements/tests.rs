@@ -554,17 +554,17 @@ fn args(line: &[&str]) -> AnnouncementsArgs {
 
 /// No flag is required (decision 27, amended): without `--before` every
 /// announcement is new, without `--after` the repository's own file is
-/// read; `--repo` defaults to Saltbox, as sb-go's.
+/// read, without `--repo` both repositories (decision 30).
 #[test]
 fn no_flag_is_required() {
     let parsed = args(&[]);
     assert_eq!(parsed.before, None);
     assert_eq!(parsed.after, None);
-    assert_eq!(parsed.repo, "Saltbox");
+    assert_eq!(parsed.repo, None);
     let parsed = args(&["-b", "x", "-a", "y", "-r", "Sandbox"]);
     assert_eq!(parsed.before.as_deref(), Some(Path::new("x")));
     assert_eq!(parsed.after.as_deref(), Some(Path::new("y")));
-    assert_eq!(parsed.repo, "Sandbox");
+    assert_eq!(parsed.repo.as_deref(), Some("Sandbox"));
     let parsed = args(&["--before", "p", "--after", "q", "--repo", "Saltbox"]);
     assert_eq!(parsed.before.as_deref(), Some(Path::new("p")));
     assert_eq!(parsed.after.as_deref(), Some(Path::new("q")));
@@ -626,5 +626,37 @@ fn a_tagged_collection_is_the_collection() {
             required: true,
             tag: "x".into()
         }
+    );
+}
+
+/// Both repositories without `--repo` (decision 30), Saltbox's first; the
+/// one it names with it; Saltbox's alone when a file is named, those
+/// being one repository's; sb-go's error for another name.
+#[test]
+fn repos_are_both_unless_one_is_named() {
+    assert_eq!(
+        args(&[]).repos().expect("both"),
+        [Repo::Saltbox, Repo::Sandbox]
+    );
+    assert_eq!(
+        args(&["-r", "Saltbox"]).repos().expect("one"),
+        [Repo::Saltbox]
+    );
+    assert_eq!(
+        args(&["-r", "Sandbox"]).repos().expect("one"),
+        [Repo::Sandbox]
+    );
+    assert_eq!(args(&["-a", "x"]).repos().expect("a file"), [Repo::Saltbox]);
+    assert_eq!(args(&["-b", "x"]).repos().expect("a file"), [Repo::Saltbox]);
+    assert_eq!(
+        args(&["-a", "x", "-r", "Sandbox"]).repos().expect("named"),
+        [Repo::Sandbox]
+    );
+    assert_eq!(
+        args(&["-r", "saltbox"])
+            .repos()
+            .expect_err("wrong")
+            .to_string(),
+        "invalid repository name 'saltbox', must be 'Saltbox' or 'Sandbox'"
     );
 }
