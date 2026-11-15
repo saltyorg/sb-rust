@@ -1012,7 +1012,8 @@ fn a_sigterm_reaches_the_editor_and_ends_sb() {
 }
 
 /// Bare `sb edit` shows its help until the picker comes (M53), and the
-/// help is sb-go's without the wrapper sentence (tui spec, difference 27).
+/// help is sb-go's without the wrapper sentence (tui spec, difference 27)
+/// or the GUI-client one (difference 34).
 #[test]
 fn bare_edit_shows_the_help() {
     let output = common::sb().arg("edit").output().expect("run sb");
@@ -1032,6 +1033,7 @@ fn bare_edit_shows_the_help() {
         "{text}"
     );
     assert!(!text.contains("Editor wrappers"), "{text}");
+    assert!(!text.contains("GUI"), "{text}");
     // The validation's line, and the flag on `edit` and each subcommand.
     assert!(text.contains("sb offers to edit it again"), "{text}");
     for args in [&["edit", "--help"][..], &["edit", "settings", "--help"]] {

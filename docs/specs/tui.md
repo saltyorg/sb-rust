@@ -1070,6 +1070,9 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     `EDITOR='vi #x'` runs `vi` alone. go-shellquote has no comments and
     passes `#x` to the editor. Quoted (`'#x'`) or inside a word (`a#b`),
     `#` is kept by both.
+34. `sb edit`'s help text drops sb-go's "GUI clients may need a wait
+    option and a working root GUI session": Saltbox runs on Ubuntu servers
+    without a GUI (the maintainer, 2026-11-15).
 
 ### Scope
 

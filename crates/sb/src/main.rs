@@ -67,7 +67,8 @@ enum Command {
     /// Edit Saltbox configuration files
     // Alone: help on stdout, exit 0, until the picker comes (M53). The
     // help is sb-go's without "Editor wrappers should exec the foreground
-    // editor so cancellation can stop it" (tui spec, difference 27).
+    // editor so cancellation can stop it" (tui spec, difference 27) and
+    // without its GUI-client sentence (difference 34).
     #[command(
         long_about = EDIT_ABOUT,
         arg_required_else_help = true,
@@ -185,8 +186,7 @@ preference explicitly:
   sudo EDITOR=/usr/bin/vim.basic sb edit settings
 
 Quotes and backslash escapes are supported. Shell aliases, functions, variable
-expansion, substitutions, and ~ expansion are not supported. GUI clients may
-need a wait option and a working root GUI session.
+expansion, substitutions, and ~ expansion are not supported.
 
 Configuration targets must already exist and be regular files. Symlinks to
 regular files are supported.
