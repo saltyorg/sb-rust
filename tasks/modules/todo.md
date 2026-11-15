@@ -2127,7 +2127,7 @@ in tui's viewer on a terminal and refresh completion, once both exist.
       8); wrap-on frames take 2-4 ms. The cost is building the coloured
       text of the ~70 long lines on screen each frame: cache it per line,
       as M73 cached the wrapped height, within the 32 MiB buffer cap.
-- [ ] **exec's remaining fixed bounds in groups.rs** (found reviewing
+- [x] **exec's remaining fixed bounds in groups.rs** (found reviewing
       3f9e8f9). `took < GRACE` at crates/exec/tests/groups.rs:264, :322
       and :348, `start.elapsed() < GRACE` at :363 and :454, and `< BOUND`
       at :233, :277 and :301 are fixed wall-clock bounds of the kind

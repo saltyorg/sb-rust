@@ -29,6 +29,27 @@ const GRACE: Duration = Duration::from_millis(800);
 /// What "within the grace plus one second" allows for.
 const BOUND: Duration = Duration::from_millis(800 + 1000);
 
+/// The grace where the child goes on SIGTERM: long, so a bound of half of
+/// it tells a stop on SIGTERM from one that waited for SIGKILL even on a
+/// loaded host (a stop on SIGTERM took up to 3 s under the heaviest load
+/// measured). Nothing waits it out unless that breaks.
+const LONG_GRACE: Duration = Duration::from_secs(8);
+
+/// Slack for a loaded host on a stop's end after SIGKILL, on top of a
+/// stop on SIGTERM timed here and now: the two are the same kind of path
+/// (a signal, the death, the reap), but single samples of it. Under the
+/// heaviest load measured, a stop killed after the grace ran up to a
+/// second past the grace plus one second plus the sample, and up to one
+/// and a half past the grace plus the sample.
+///
+/// What that costs: where the group is empty once SIGKILL lands (the
+/// three tests killed after the grace), the bound passes a SIGKILL up to
+/// about two and a half seconds late; an idle host's stop takes the grace
+/// and a few milliseconds. The old bound of the grace plus one second
+/// caught a SIGKILL a second late, but only when the host was idle. A
+/// missing SIGKILL, or one three seconds late, still fails.
+const SLACK: Duration = Duration::from_millis(1500);
+
 /// After SIGKILL, how long a stop gives the group's members before it
 /// ends regardless (exec spec, "Reading after a stop"; exec's own
 /// constant is private).
@@ -155,14 +176,50 @@ fn no_zombie(leader: i32) {
     assert!(matches!(peek, Ok(None) | Err(Errno::CHILD)), "{peek:?}");
 }
 
+/// How long a run of `true` takes here and now: the host's spawn and
+/// scheduling costs at the moment, with no stop in it, so a bound on a
+/// stop measured against it still fails when the stop breaks.
+async fn a_run_of_true() -> Duration {
+    let start = Instant::now();
+    let done = Cmd::new("true")
+        .capture(&CancellationToken::new())
+        .await
+        .expect("ran");
+    assert_eq!(done.outcome.ending, Ending::Exited(0));
+    start.elapsed()
+}
+
+/// The bound on a stop that ends on SIGTERM, from the cancel: half the
+/// long grace after a run of `true` timed here and now, so a loaded
+/// host's costs are on both sides. A stop that waited for SIGKILL takes
+/// the whole grace and more.
+async fn on_sigterm() -> Duration {
+    a_run_of_true().await + LONG_GRACE / 2
+}
+
+/// `cmd`, a child that goes on SIGTERM, timed out after `limit` with the
+/// long grace: the result and how long the run took from its start.
+async fn timed_out(cmd: Cmd, limit: Duration) -> (Captured, Duration) {
+    let start = Instant::now();
+    let done = cmd
+        .timeout(limit)
+        .grace(LONG_GRACE)
+        .capture(&CancellationToken::new())
+        .await
+        .expect("ran");
+    (done, start.elapsed())
+}
+
 /// How long a stop takes here and now when the child goes on SIGTERM: a
 /// measure of how slow the host is at the moment (near nothing when idle,
 /// up to a second under the heaviest load measured). It doesn't run the
 /// zombie stop's two timed wake-ups, so it adds to the slack below, not
-/// replaces it.
+/// replaces it. A stop after the grace adds it, and the slack, to "the
+/// grace plus one second": SIGKILL's path from exec's timer to the reap
+/// is a stop's path, and the host's slowness is on it.
 async fn a_stop_on_sigterm() -> Duration {
     let (_dir, file) = pid_file();
-    let cmd = script("echo $$ > \"$1\"; exec sleep 30", &file);
+    let cmd = script("echo $$ > \"$1\"; exec sleep 30", &file).grace(LONG_GRACE);
     let (done, _, took) = cancelled(cmd, &file).await;
     assert_eq!(done.outcome.ending, Ending::Interrupted);
     took
@@ -195,7 +252,7 @@ async fn a_zombie_member_is_waited_for_a_second(body: &'static str) {
         "{took:?}"
     );
     assert!(
-        took < last + quick + LAST_CHECK * 3 / 2,
+        took < last + quick + SLACK,
         "{took:?} against {quick:?} for a stop on SIGTERM"
     );
     assert_eq!(reap(pids[1]).join().expect("reaper"), Some(9), "SIGKILL");
@@ -225,6 +282,10 @@ async fn a_zombie_left_with_the_leader_ends_the_stop_a_second_after_sigkill() {
 async fn a_timeout_on_a_child_that_ignores_sigterm_kills_it_after_the_grace() {
     subreaper();
     let limit = Duration::from_millis(200);
+    // The same timeout on the same shell without the trap: the run's path
+    // from its start, without the grace.
+    let (quick, base) = timed_out(Cmd::new("sh").arg("-c").arg("exec sleep 30"), limit).await;
+    assert_eq!(quick.outcome.ending, Ending::TimedOut);
     let start = Instant::now();
     let done = Cmd::new("sh")
         .arg("-c")
@@ -236,7 +297,11 @@ async fn a_timeout_on_a_child_that_ignores_sigterm_kills_it_after_the_grace() {
         .expect("ran");
     let took = start.elapsed();
     assert_eq!(done.outcome.ending, Ending::TimedOut);
-    assert!(took >= limit + GRACE && took < limit + BOUND, "{took:?}");
+    assert!(took >= limit + GRACE, "{took:?}");
+    assert!(
+        took < base + BOUND + SLACK,
+        "{took:?} against {base:?} for a timeout on SIGTERM"
+    );
 }
 
 /// A child that ends on its own leaves its group alone: a background
@@ -264,10 +329,14 @@ async fn a_normal_end_leaves_a_background_member_running() {
 async fn a_child_that_exits_on_sigterm_gets_no_sigkill() {
     subreaper();
     let (_dir, file) = pid_file();
-    let cmd = script("echo $$ > \"$1\"; exec sleep 30", &file);
+    let bound = on_sigterm().await;
+    let cmd = script("echo $$ > \"$1\"; exec sleep 30", &file).grace(LONG_GRACE);
     let (done, pids, took) = cancelled(cmd, &file).await;
     assert_eq!(done.outcome.ending, Ending::Interrupted);
-    assert!(took < GRACE, "{took:?}: waited for the grace");
+    assert!(
+        took < bound,
+        "{took:?} against {bound:?}: waited for the grace"
+    );
     no_zombie(pids[0]);
 }
 
@@ -275,12 +344,17 @@ async fn a_child_that_exits_on_sigterm_gets_no_sigkill() {
 async fn a_child_that_ignores_sigterm_is_killed_after_the_grace() {
     subreaper();
     let (_dir, file) = pid_file();
+    let quick = a_stop_on_sigterm().await;
     // `exec`: the leader is the group's only member, so no short-lived
     // child is left as a zombie of this subreaper.
     let cmd = script("trap '' TERM; echo $$ > \"$1\"; exec sleep 30", &file);
     let (done, _, took) = cancelled(cmd, &file).await;
     assert_eq!(done.outcome.ending, Ending::Interrupted);
-    assert!(took >= GRACE && took < BOUND, "{took:?}");
+    assert!(took >= GRACE, "{took:?}");
+    assert!(
+        took < BOUND + quick + SLACK,
+        "{took:?} against {quick:?} for a stop on SIGTERM"
+    );
 }
 
 /// The leader goes on SIGTERM; its grandchild ignores it and is still in
@@ -288,6 +362,7 @@ async fn a_child_that_ignores_sigterm_is_killed_after_the_grace() {
 #[tokio::test]
 async fn a_grandchild_left_by_its_leader_is_killed_after_the_grace() {
     subreaper();
+    let quick = a_stop_on_sigterm().await;
     let (_dir, file) = pid_file();
     let cmd = script(
         "(trap '' TERM; exec sleep 30) & echo $$ $! > \"$1\"; wait",
@@ -304,7 +379,11 @@ async fn a_grandchild_left_by_its_leader_is_killed_after_the_grace() {
     let (done, (pids, reaper, sent)) = tokio::join!(cmd.capture(&token), control);
     let took = sent.elapsed();
     assert_eq!(done.expect("ran").outcome.ending, Ending::Interrupted);
-    assert!(took >= GRACE && took < BOUND, "{took:?}");
+    assert!(took >= GRACE, "{took:?}");
+    assert!(
+        took < BOUND + quick + SLACK,
+        "{took:?} against {quick:?} for a stop on SIGTERM"
+    );
     assert_eq!(reaper.join().expect("reaper"), Some(9), "SIGKILL");
     no_zombie(pids[0]);
 }
@@ -314,7 +393,8 @@ async fn a_grandchild_left_by_its_leader_is_killed_after_the_grace() {
 async fn a_leader_and_grandchild_that_exit_on_sigterm_get_no_sigkill() {
     subreaper();
     let (_dir, file) = pid_file();
-    let cmd = script("sleep 30 & echo $$ $! > \"$1\"; wait", &file);
+    let bound = on_sigterm().await;
+    let cmd = script("sleep 30 & echo $$ $! > \"$1\"; wait", &file).grace(LONG_GRACE);
     let token = CancellationToken::new();
     let control = async {
         let pids = pids(&file).await;
@@ -325,7 +405,7 @@ async fn a_leader_and_grandchild_that_exit_on_sigterm_get_no_sigkill() {
     let (done, (pids, reaper, sent)) = tokio::join!(cmd.capture(&token), control);
     let took = sent.elapsed();
     assert_eq!(done.expect("ran").outcome.ending, Ending::Interrupted);
-    assert!(took < GRACE, "{took:?}");
+    assert!(took < bound, "{took:?} against {bound:?}");
     assert_eq!(reaper.join().expect("reaper"), Some(15), "SIGTERM");
     no_zombie(pids[0]);
 }
@@ -335,7 +415,8 @@ async fn a_leader_and_grandchild_that_exit_on_sigterm_get_no_sigkill() {
 async fn a_stopped_child_still_ends() {
     subreaper();
     let (_dir, file) = pid_file();
-    let cmd = script("echo $$ > \"$1\"; kill -STOP $$; sleep 30", &file);
+    let bound = on_sigterm().await;
+    let cmd = script("echo $$ > \"$1\"; kill -STOP $$; sleep 30", &file).grace(LONG_GRACE);
     let token = CancellationToken::new();
     let control = async {
         let pids = pids(&file).await;
@@ -351,22 +432,24 @@ async fn a_stopped_child_still_ends() {
     };
     let (done, sent) = tokio::join!(cmd.capture(&token), control);
     assert_eq!(done.expect("ran").outcome.ending, Ending::Interrupted);
-    assert!(sent.elapsed() < GRACE, "{:?}", sent.elapsed());
+    let took = sent.elapsed();
+    assert!(
+        took < bound,
+        "{took:?} against {bound:?}: waited for SIGKILL"
+    );
 }
 
 #[tokio::test]
 async fn a_timeout_reads_timed_out() {
     subreaper();
-    let start = Instant::now();
-    let done = Cmd::new("sleep")
-        .arg("30")
-        .timeout(Duration::from_millis(200))
-        .grace(GRACE)
-        .capture(&CancellationToken::new())
-        .await
-        .expect("ran");
+    let limit = Duration::from_millis(200);
+    let bound = limit + on_sigterm().await;
+    let (done, took) = timed_out(Cmd::new("sleep").arg("30"), limit).await;
     assert_eq!(done.outcome.ending, Ending::TimedOut);
-    assert!(start.elapsed() < GRACE, "{:?}", start.elapsed());
+    assert!(
+        took < bound,
+        "{took:?} against {bound:?}: waited for the grace"
+    );
     let err = done.check().expect_err("timed out fails");
     assert_eq!(err.to_string(), "sleep 30 timed out");
 }
@@ -435,27 +518,35 @@ async fn an_untouched_child_keeps_its_outcome() {
 /// of the group is killed at once, not left to run.
 #[tokio::test]
 async fn a_run_dropped_during_a_stop_kills_whats_left() {
+    const DROP_AFTER: Duration = Duration::from_millis(200);
     subreaper();
     let (_dir, file) = pid_file();
+    let bound = DROP_AFTER + on_sigterm().await;
     let cmd = script(
         "(trap '' TERM; exec sleep 30) & echo $$ $! > \"$1\"; wait",
         &file,
-    );
+    )
+    .grace(LONG_GRACE);
     let token = CancellationToken::new();
     let control = async {
         let pids = pids(&file).await;
         let reaper = reap(pids[1]);
         ignoring_term(pids[1]).await;
         token.cancel();
+        let sent = Instant::now();
         // Well inside the grace: the leader is gone, its grandchild not.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        reaper
+        tokio::time::sleep(DROP_AFTER).await;
+        (reaper, sent)
     };
-    let start = Instant::now();
-    let reaper = tokio::select! {
+    let (reaper, sent) = tokio::select! {
         _ = cmd.capture(&token) => panic!("ended inside the grace"),
-        reaper = control => reaper,
+        control = control => control,
     };
     assert_eq!(reaper.join().expect("reaper"), Some(9), "SIGKILL");
-    assert!(start.elapsed() < GRACE, "{:?}", start.elapsed());
+    // Killed at the drop, as quickly as a stop on SIGTERM ends. Exec's
+    // grace timer goes with the dropped run, so this bound fails a kill
+    // left to something that outlives the drop (a task of its own); the
+    // reaper's Some(9) fails a drop that doesn't kill.
+    let took = sent.elapsed();
+    assert!(took < bound, "{took:?} against {bound:?}");
 }
