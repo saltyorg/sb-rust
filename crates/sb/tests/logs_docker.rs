@@ -209,6 +209,31 @@ fn ctrl_c_exits_130_with_the_terminal_restored() {
     pty.assert_restored();
 }
 
+/// `sb docker logs` raises the soft `RLIMIT_NOFILE` too, as `sb logs`.
+#[test]
+fn the_open_files_limit_is_raised() {
+    let engine = engine();
+    let world = world(&engine);
+    let mut pty = Pty::spawn_shell(
+        r#"ulimit -Sn 1024 && exec "$0" docker logs"#,
+        &[],
+        world.envs(),
+    );
+    assert!(pty.showing("Containers (2)"), "{}", pty.contents());
+    let (soft, hard) = pty.open_files_limit();
+    assert_eq!(
+        soft,
+        Some(logs_pty::raised_open_files(hard)),
+        "hard {hard:?}"
+    );
+    // Raised from the shell's 1024, where the hard limit allows it.
+    if hard.is_none_or(|hard| hard > 1024) {
+        assert_ne!(soft, Some(1024));
+    }
+    pty.send(b"q");
+    assert!(pty.exit().success());
+}
+
 /// `sb logs` lists both kinds, services first, and opens a container's
 /// log from there too.
 #[test]

@@ -20,8 +20,9 @@
 //!   with more newer and not following, the page after. One request at a
 //!   time per direction.
 //! - **The buffer** holds at most 20,000 entries and 32 MiB of message
-//!   bytes; past either, the end far from the view is dropped, and the
-//!   dropped side has more again. Dropping the newest end stops following.
+//!   and origin bytes; past either, the end far from the view is dropped,
+//!   and the dropped side has more again. Dropping the newest end stops
+//!   following.
 //! - **Follow:** the source follows; scrolling up pauses the view (it
 //!   stays put while lines come), and End, `G`, `f` or reaching the bottom
 //!   resumes it. `f` while following at the bottom stops the follow.
@@ -46,6 +47,7 @@
 //!   the next key; `p` quits with [`Leave::Print`], and the caller prints
 //!   [`Viewer::plain`] once the screen is gone.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -87,7 +89,7 @@ const SEARCH_HINT: &str = "Enter searches · Esc clears ";
 pub struct Limits {
     /// Entries held.
     pub entries: usize,
-    /// Message bytes held.
+    /// Message and origin bytes held.
     pub bytes: usize,
 }
 
@@ -141,10 +143,30 @@ pub enum Leave {
 /// One entry of the buffer.
 #[derive(Clone, Debug)]
 enum Entry {
-    /// A log line and the matches of the search in effect in it.
-    Line(Line, usize),
+    /// A log line, the matches of the search in effect in it, and its
+    /// height as last measured.
+    Line(Line, usize, Cell<Option<Height>>),
     /// A source notice, drawn as its own row (tui spec, "Viewer notices").
     Notice(Notice),
+}
+
+/// A log line's height on screen and the layout it was measured at: the
+/// log area's width, wrap and `t`. Kept with its entry, so a frame
+/// measures only lines it hasn't measured at this layout: measuring is
+/// `Paragraph::line_count`, a wrap of the whole record (up to 64 KiB),
+/// which made a frame of long records cost about twice the spec's 5 ms
+/// at 240×70 when every frame measured its window again (M73's frame-cost
+/// timing). A search's highlight splits spans but not the text, so it
+/// keeps the height. Why not ratatui's own cache: its `layout-cache`
+/// feature keeps `Layout::split`'s results
+/// (<https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.init_cache>),
+/// not a paragraph's wrapped height, and ratatui has none for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Height {
+    width: u16,
+    wrap: bool,
+    meta: bool,
+    rows: usize,
 }
 
 /// One end of the buffer: where the next page there starts, whether
@@ -221,6 +243,10 @@ pub struct Viewer {
     /// The footer's notice after `s` (its text, and whether it is an
     /// error), until the next key.
     saved: Option<(String, bool)>,
+    /// Log lines measured since the count was last taken: the frame-cost
+    /// test's (tui spec, Testing Strategy, "Frame cost").
+    #[cfg(test)]
+    measured: Cell<usize>,
 }
 
 impl Viewer {
@@ -284,6 +310,8 @@ impl Viewer {
             current: None,
             save_dir: None,
             saved: None,
+            #[cfg(test)]
+            measured: Cell::new(0),
         }
     }
 
@@ -300,7 +328,7 @@ impl Viewer {
     #[must_use]
     pub fn plain(&self) -> (String, usize) {
         let lines = self.entries.iter().filter_map(|entry| match entry {
-            Entry::Line(line, _) => Some(line),
+            Entry::Line(line, _, _) => Some(line),
             Entry::Notice(_) => None,
         });
         save::plain(lines, &self.format)
@@ -460,14 +488,14 @@ impl Viewer {
 
     /// `line` as an entry, counted in the bytes and the search's matches.
     fn line_entry(&mut self, line: Line) -> Entry {
-        self.bytes += line.message.len();
+        self.bytes += line.message.len() + line.origin.len();
         let hits = if self.query.is_empty() {
             0
         } else {
             line::hits(&line, &self.format, &self.query)
         };
         self.total += hits;
-        Entry::Line(line, hits)
+        Entry::Line(line, hits, Cell::new(None))
     }
 
     /// `n` entries went in before the current match.
@@ -489,8 +517,8 @@ impl Viewer {
             } else {
                 self.entries.pop_back()
             };
-            if let Some(Entry::Line(line, hits)) = &gone {
-                self.bytes -= line.message.len();
+            if let Some(Entry::Line(line, hits, _)) = &gone {
+                self.bytes -= line.message.len() + line.origin.len();
                 self.total -= hits;
             }
             self.current = match self.current {
@@ -519,7 +547,7 @@ impl Viewer {
     /// The position of the oldest (or newest) line held.
     fn edge_line(&self, oldest: bool) -> Option<Position> {
         let position = |e: &Entry| match e {
-            Entry::Line(line, _) => Some(line.position.clone()),
+            Entry::Line(line, _, _) => Some(line.position.clone()),
             Entry::Notice(_) => None,
         };
         if oldest {
@@ -568,7 +596,7 @@ impl Viewer {
             return Text::from(TextLine::styled("--- start of log ---", muted));
         }
         match usize::try_from(item).ok().and_then(|i| self.entries.get(i)) {
-            Some(Entry::Line(line, _)) => {
+            Some(Entry::Line(line, _, _)) => {
                 line::searched(line, &self.format, &self.query, self.format.hit())
             }
             Some(Entry::Notice(notice)) => {
@@ -599,14 +627,43 @@ impl Viewer {
         }
     }
 
-    /// Item `item`'s height on screen, at least one row.
+    /// Item `item`'s height on screen, at least one row: a log line's
+    /// kept [`Height`] when it was measured at this layout. Markers and
+    /// notices are one short line, measured each time.
     fn rows(&self, item: isize) -> usize {
+        let kept = match usize::try_from(item).ok().and_then(|i| self.entries.get(i)) {
+            Some(Entry::Line(_, _, kept)) => Some(kept),
+            _ => None,
+        };
+        if let Some(height) = kept.and_then(Cell::get)
+            && (height.width, height.wrap, height.meta) == (self.width, self.wrap, self.format.meta)
+        {
+            return height.rows;
+        }
         // ADR-001: `line_count` is ratatui's unstable rendered-line info.
-        self.paragraph(item).line_count(self.width.max(1)).max(1)
+        let rows = self.paragraph(item).line_count(self.width.max(1)).max(1);
+        if let Some(kept) = kept {
+            #[cfg(test)]
+            self.measured.set(self.measured.get() + 1);
+            kept.set(Some(Height {
+                width: self.width,
+                wrap: self.wrap,
+                meta: self.format.meta,
+                rows,
+            }));
+        }
+        rows
     }
 
-    /// Rows from `anchor` down, counted until `cap`.
+    /// Rows from `anchor` down, counted until `cap`. Every item is a row
+    /// at least, so with `cap` items or more after the anchor's it is
+    /// `cap` without measuring: a new layout far from the buffer's ends
+    /// measures only what the window shows (M73's frame cost).
     fn rows_below(&self, anchor: Anchor, cap: usize) -> usize {
+        let after = usize::try_from(self.end_item() - anchor.item - 1).unwrap_or(0);
+        if after >= cap {
+            return cap;
+        }
         let mut total = 0;
         let mut item = anchor.item;
         let mut skip = anchor.skip;
@@ -619,8 +676,14 @@ impl Viewer {
         total
     }
 
-    /// Rows above `anchor`, counted until `cap`.
+    /// Rows above `anchor`, counted until `cap`; `cap` without measuring
+    /// when the items above it and its rows above the window make that
+    /// many already, as [`Self::rows_below`].
     fn rows_above(&self, anchor: Anchor, cap: usize) -> usize {
+        let before = usize::try_from(anchor.item - self.first_item()).unwrap_or(0);
+        if anchor.skip + before >= cap {
+            return cap;
+        }
         let mut total = anchor.skip;
         let mut item = anchor.item;
         while total < cap && item > self.first_item() {
@@ -778,7 +841,7 @@ impl Viewer {
         self.total = 0;
         let (format, query) = (&self.format, &self.query);
         for entry in &mut self.entries {
-            if let Entry::Line(line, hits) = entry {
+            if let Entry::Line(line, hits, _) = entry {
                 *hits = line::hits(line, format, query);
                 self.total += *hits;
             }
@@ -797,7 +860,7 @@ impl Viewer {
         self.total = 0;
         self.current = None;
         for entry in &mut self.entries {
-            if let Entry::Line(_, hits) = entry {
+            if let Entry::Line(_, hits, _) = entry {
                 *hits = 0;
             }
         }
@@ -805,7 +868,7 @@ impl Viewer {
 
     fn hits_in(&self, entry: usize) -> usize {
         match self.entries.get(entry) {
-            Some(Entry::Line(_, hits)) => *hits,
+            Some(Entry::Line(_, hits, _)) => *hits,
             _ => 0,
         }
     }
@@ -874,7 +937,7 @@ impl Viewer {
         let Some((entry, k)) = self.current else {
             return;
         };
-        let Some(Entry::Line(line, _)) = self.entries.get(entry) else {
+        let Some(Entry::Line(line, _, _)) = self.entries.get(entry) else {
             return;
         };
         let Some((screen_line, lead, word)) = line::hit_lead(line, &self.format, &self.query, k)

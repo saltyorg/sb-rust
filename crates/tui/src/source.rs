@@ -67,10 +67,35 @@ pub struct Line {
     /// Who wrote it: for a service journalctl's `ident[pid]`, for a
     /// container the stream; empty when unknown. Untrusted bytes.
     pub origin: Vec<u8>,
-    /// The message, untrusted bytes, uncut (the viewer cuts at 64 KiB).
+    /// The message, untrusted bytes, held to the record cap.
     pub message: Vec<u8>,
+    /// The message's bytes past the record cap, not held: the viewer's
+    /// `… [N bytes not shown]` counts them.
+    pub cut: usize,
     /// Where it is.
     pub position: Position,
+}
+
+impl Line {
+    /// A source's entry as a line: at most [`crate::line::RECORD_CAP`] of
+    /// its message and [`crate::line::ORIGIN_CAP`] of its origin are
+    /// copied, and the message's rest counted in `cut`. Nothing shows,
+    /// searches, saves or prints past those caps, and a field many
+    /// entries share is stored once in a journal file and charged once by
+    /// a page's 4 MiB output limit, while each line holds its own copy
+    /// (M73's security pass): so a page holds at most 500 × (64 KiB +
+    /// 256 B).
+    #[must_use]
+    pub fn new(time: Option<Timestamp>, origin: &[u8], message: &[u8], position: Position) -> Self {
+        let held = message.len().min(crate::line::RECORD_CAP);
+        Self {
+            time,
+            origin: origin[..origin.len().min(crate::line::ORIGIN_CAP)].to_vec(),
+            message: message[..held].to_vec(),
+            cut: message.len() - held,
+            position,
+        }
+    }
 }
 
 /// What the viewer asks of a source.
@@ -317,6 +342,25 @@ impl Drop for SourceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line holds at most the record cap of its message and the origin
+    /// cap of its origin, and counts the message bytes it cut (M73's
+    /// security pass): a field many entries share is stored once in a
+    /// journal file and charged once by a page's output limit, but each
+    /// line holds its own copy.
+    #[test]
+    fn a_line_holds_at_most_its_caps() {
+        let message = vec![b'm'; 1 << 20];
+        let origin = vec![b'o'; 1000];
+        let big = Line::new(None, &origin, &message, crate::testing::position(1));
+        assert_eq!(big.message.len(), crate::line::RECORD_CAP);
+        assert_eq!(big.cut, (1 << 20) - crate::line::RECORD_CAP);
+        assert_eq!(big.origin.len(), crate::line::ORIGIN_CAP);
+        let at = vec![b'm'; crate::line::RECORD_CAP];
+        let small = Line::new(None, b"app[7]", &at, crate::testing::position(2));
+        assert_eq!((small.message.len(), small.cut), (at.len(), 0));
+        assert_eq!(small.origin, b"app[7]");
+    }
 
     #[test]
     fn generations_follow_each_other() {

@@ -225,6 +225,26 @@ impl Pty {
         }
     }
 
+    /// sb's soft and hard `RLIMIT_NOFILE` while it runs, `None` for
+    /// unlimited, from its `/proc/<pid>/limits` row "Max open files"
+    /// (proc(5): the soft limit, the hard limit, the unit). Why not
+    /// procfs's `Process::limits`, a workspace dependency: in sb's
+    /// dev-dependencies it changes `Cargo.lock`, which makes a task a
+    /// shared-files merge (module plan, rule 3) for this test helper.
+    pub fn open_files_limit(&self) -> (Option<u64>, Option<u64>) {
+        let pid = self.child.process_id().expect("a pid");
+        let limits = std::fs::read_to_string(format!("/proc/{pid}/limits")).expect("limits");
+        let row = limits
+            .lines()
+            .find_map(|l| l.strip_prefix("Max open files"))
+            .expect("the open files row");
+        let mut fields = row.split_whitespace().map(|f| f.parse::<u64>().ok());
+        (
+            fields.next().expect("the soft limit"),
+            fields.next().expect("the hard limit"),
+        )
+    }
+
     pub fn send(&mut self, bytes: &[u8]) {
         self.writer.write_all(bytes).expect("write");
         self.writer.flush().expect("flush");
@@ -293,6 +313,13 @@ impl Drop for Pty {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The soft `RLIMIT_NOFILE` the logs commands raise to under `hard`
+/// (`None` for unlimited): min(hard, systemd's 262144), as journalctl's
+/// (tui spec, "`RLIMIT_NOFILE`").
+pub fn raised_open_files(hard: Option<u64>) -> u64 {
+    hard.map_or(262_144, |hard| hard.min(262_144))
 }
 
 /// `path`'s text once it holds `text`; fails at the timeout.

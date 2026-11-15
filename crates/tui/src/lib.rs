@@ -39,7 +39,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
 pub use picker::Filter;
-pub use term::{App, Ending, Flow, Tui};
+pub use term::{App, Ending, Flow, Tui, raise_open_files};
 
 use crate::line::Format;
 use crate::picker::{Choice, ListServices, Picker};

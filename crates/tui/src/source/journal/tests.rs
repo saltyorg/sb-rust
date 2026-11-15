@@ -357,8 +357,14 @@ impl Growing {
     }
 
     fn grow(&self, n: u64) {
+        Self::write(&self.path, n, n);
+    }
+
+    /// `n` entries counted, the first `linked` of them linked: the rest
+    /// are slots journald hasn't written yet, which the follow waits on.
+    fn write(path: &Path, n: u64, linked: u64) {
         let (mut c, layout) = crafted::journal(6);
-        for i in n..6 {
+        for i in linked..6 {
             c.set_array_item(layout.main_array, i, 0);
             if i > 0 {
                 let shared_array = c.get(layout.shared + crafted::D_ENTRY_ARRAY);
@@ -372,7 +378,7 @@ impl Growing {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&self.path)
+            .open(path)
             .expect("opens");
         file.write_all(&c.b).expect("grow");
     }
@@ -425,6 +431,36 @@ async fn entries_written_before_the_follow_starts_come_first_once() {
     v.quiet().await;
     file.grow(6);
     assert_eq!(v.followed(1).await, ["m5"]);
+}
+
+/// follow-L1: a read the follow waited on (an entry slot journald hadn't
+/// written yet) is read again on the source's tick, not only at the
+/// journal's next write. The slot is written through a hard link in
+/// another directory, which the follow's watch on the file's own
+/// directory doesn't see (inotify reports a directory's entries by the
+/// path they were opened through, inotify(7)), so only the tick can show
+/// it.
+#[tokio::test]
+async fn a_waited_read_is_retried_on_the_tick() {
+    let file = Growing::new();
+    file.grow(2);
+    // A slow tick, so the slot is written well before it comes.
+    let settings = Settings {
+        retry: Duration::from_secs(2),
+        ..small(10)
+    };
+    let mut v = Viewer::on(file.journal(), every_entry(), settings);
+    assert_eq!(v.page(Request::Tail).await.messages, ["m0", "m1"]);
+    v.handle.send(Request::Follow(true));
+    v.quiet().await;
+    // m2 counted, its slot not written: the follow's drain waits on it.
+    Growing::write(&file.path, 3, 2);
+    v.quiet().await;
+    let elsewhere = tempfile::tempdir().expect("a directory");
+    let link = elsewhere.path().join("system.journal");
+    std::fs::hard_link(&file.path, &link).expect("linked");
+    Growing::write(&link, 3, 3);
+    assert_eq!(v.followed(1).await, ["m2"]);
 }
 
 /// Another kind of source's position names none of the journal's
@@ -618,4 +654,60 @@ async fn a_source_whose_viewer_is_gone_ends() {
     tokio::time::timeout(Duration::from_secs(5), handle.requests.closed())
         .await
         .expect("the source ended");
+}
+
+/// follow-L4: a follow the system's inotify limits stop says which limit,
+/// with the system's own error; any other cause is its error chain.
+#[test]
+fn an_inotify_limit_is_named_in_the_follows_notice() {
+    let errno = std::io::Error::from;
+    let instances = OpenError::Inotify {
+        source: errno(rustix::io::Errno::MFILE),
+    };
+    assert_eq!(
+        cant_follow(&instances),
+        format!(
+            "create the follow's inotify instance: {}; the system's inotify limit \
+             (fs.inotify.max_user_instances) may be reached",
+            errno(rustix::io::Errno::MFILE)
+        )
+    );
+    let watches = OpenError::Watch {
+        path: PathBuf::from("/j"),
+        source: errno(rustix::io::Errno::NOSPC),
+    };
+    assert_eq!(
+        cant_follow(&watches),
+        format!(
+            "watch the journal directory /j: {}; the system's inotify limit \
+             (fs.inotify.max_user_watches) may be reached",
+            errno(rustix::io::Errno::NOSPC)
+        )
+    );
+    // Another errno is no limit: the chain alone.
+    let nomem = OpenError::Inotify {
+        source: errno(rustix::io::Errno::NOMEM),
+    };
+    assert_eq!(
+        cant_follow(&nomem),
+        format!(
+            "create the follow's inotify instance: {}",
+            errno(rustix::io::Errno::NOMEM)
+        )
+    );
+    let denied = OpenError::Watch {
+        path: PathBuf::from("/j"),
+        source: errno(rustix::io::Errno::ACCESS),
+    };
+    assert_eq!(
+        cant_follow(&denied),
+        format!(
+            "watch the journal directory /j: {}",
+            errno(rustix::io::Errno::ACCESS)
+        )
+    );
+    assert_eq!(
+        cant_follow(&OpenError::NothingToWatch),
+        OpenError::NothingToWatch.to_string()
+    );
 }

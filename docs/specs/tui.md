@@ -755,7 +755,14 @@ no real systemctl.
   own timestamp, unless the probe shows they can be joined reliably.
 - **A TTY container's line has no length bound in bollard's decoder**
   before sb's cap; the daemon is root's own socket and the log is bounded
-  by Saltbox's 30 MiB, so it is a note, not a threat.
+  by Saltbox's 30 MiB, so it is a note, not a threat. The decoder also
+  looks for the newline from its buffer's start at each chunk, so a long
+  line without one (a `\r`-only progress bar) costs time quadratic in its
+  length, and the screen waits while it is read (M73's security pass).
+- **An older Docker page holds its whole time window** before it is cut
+  to 500 lines (sb-docker's `logs::older`): bounded by what the
+  container logged in the window, at most Saltbox's 30 MiB of rotated
+  log (M73's security pass).
 - **Save and print give the loaded part only;** a complete log needs
   paging back first.
 - **Services have no live signal:** a change shows within the 5 s
@@ -1533,6 +1540,64 @@ the test's directory.
   - A match's row inside a wrapped entry is measured with
     `Paragraph::line_count` up to the end of its word (ADR-001); a word
     wider than the window can put it a row off (UNVERIFIED in the code).
+
+- **Hardening as built (M73, 2026-11-15):**
+  - Frame cost: `viewer/tests.rs`'s `a_frames_cost_doesnt_grow_with_the_buffer`
+    counts the log lines measured per frame (`t` off and on, paging up,
+    Home, wrap off and on, End) on 2,000 and on 20,000 records of 5,000+
+    characters at 240×70: the same counts for both, under the test's
+    bound of 2,000, and at most the lines in view for `t` at the bottom.
+    The timing found a frame of such records at about 9 ms in release
+    when every frame measured its window again (`Paragraph::line_count`
+    wraps the whole record), so each line now keeps its height for the
+    layout it was measured at (width, wrap, `t`), a frame measures only
+    lines it hasn't (`a_frame_measures_only_lines_it_hasnt_measured`),
+    and the paging check counts entries before it measures: each is a
+    row at least, so five screens of them far from an end need no
+    heights.
+  - Success criterion 8 as measured ([ADR-023](../decisions/ADR-023-tui-binary-size.md)):
+    with wrap on (the default) every frame is within 5 ms, about 3 ms
+    at the median. With wrap off, a window of 70 such records drawn
+    sideways takes 5.6 ms a frame, and the frame that turns wrap off
+    9.9 ms: each frame builds the styled text of every record in view
+    (`DisplayText` and ansi-to-tui over 5,000+ bytes each), which a
+    height cache doesn't save. Both are within one 60 fps frame; meeting
+    5 ms there would mean keeping the built text of the lines in view.
+    Open for the maintainer.
+  - Lines hold their caps (M73's security pass): an adapter builds each
+    line with `Line::new`, which copies at most 64 KiB of the message
+    and 256 bytes of the origin and counts the rest in `Line::cut` for
+    the `… [N bytes not shown]` notice. A field many entries share is
+    stored once in a journal file and charged once by a page's 4 MiB
+    output limit, but each line held its own whole copy, so a page of
+    entries sharing a large `SYSLOG_IDENTIFIER` or `MESSAGE` could hold
+    gigabytes; it now holds at most 500 × (64 KiB + 256 B). The buffer's
+    32 MiB counts origins as well as messages.
+  - Colour profiles: `line.rs`'s `every_colour_on_a_line_fits_the_profile`
+    feeds every SGR colour form (the 8, the bright 8, 256 colours, RGB, as
+    foreground and background) with the cut notice and a search hit, and
+    checks each profile: no RGB under `ansi256`, only the sixteen under
+    `ansi`, none under `ascii`, and under truecolor sb's own colours RGB.
+    The Testing Strategy's "no named colour under truecolor" is read as
+    sb's own colours: a log's own named colour (SGR 31) is the user's
+    terminal palette and passes as it came.
+  - RLIMIT_NOFILE: `sb logs` and `sb docker logs` call
+    `sb_tui::raise_open_files` first; the soft limit goes up to min(hard,
+    262144) and never down, the hard limit unchanged (journalctl, as
+    root, sets both; the hard limit is above 262144 on a stock Ubuntu
+    host, so they agree there). The tests start sb under `ulimit -Sn 1024`
+    and read its `/proc/<pid>/limits` while the picker shows.
+  - follow-L1: the journal adapter drains on its own 4/s tick while
+    following (tokio's `Interval`), beside the wake, the tick reset after
+    every request and wake, so a read waited on gets a whole period; with
+    nothing new a drain is a header read per open file. Its test writes a
+    waited slot through a hard link in another directory, which the
+    follow's watch doesn't see.
+  - follow-L4: a follow that can't start shows its error with every
+    cause (the system's error, which the notice left out before) and,
+    for `EMFILE` creating the inotify instance or `ENOSPC` adding a
+    watch, `the system's inotify limit (fs.inotify.max_user_instances)`
+    (or `max_user_watches`) `may be reached`.
 
 ## Open questions
 

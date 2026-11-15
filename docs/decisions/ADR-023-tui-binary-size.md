@@ -52,6 +52,23 @@ render interval allows, and below proto-logs' 14 ms on the multi-thread
 runtime. The test's bound (100 ms added) catches the class of bug
 proto-logs had: input seen only on a tick.
 
+The frame time (tui spec, Testing Strategy, "Frame cost"; module build
+M73, 2026-11-15) was measured by hand on the release build with
+`crates/tui/src/viewer/tests.rs`'s `a_frames_cost_doesnt_grow_with_the_buffer`
+(`cargo test --release -p sb-tui --lib frames_cost -- --nocapture`):
+a buffer of 20,000 records of 5,000+ characters at 240×70, eleven keys,
+each key's handling and its frame timed, three runs under load from
+other work (a quiet host may be faster). Before M73 every frame measured
+its window again, at about 0.3 ms a record, and the median frame took
+9.1 to 9.6 ms. With each line's height kept for its layout, and the
+paging check counting entries before it measures, the median is 2.8 to
+2.9 ms. With wrap on (the default), every frame takes 1.9 to 3.7 ms, `t`
+included. With wrap off, a frame takes 5.6 ms and the frame that turns
+wrap off 9.9 ms: each builds the styled text of the 70 records in view.
+Both are within one 60 fps frame (16.7 ms); they are above the spec's
+5 ms budget, which the tui spec's verification notes leave open for the
+maintainer.
+
 ## Decision
 
 Accept ratatui `=0.30.2` (default features off: `crossterm_0_29`,

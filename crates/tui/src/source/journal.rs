@@ -28,7 +28,12 @@
 //!   entry (the tail, or a forward page with nothing newer), then runs
 //!   sb-host's wake protocol (`FollowWait`, then `drain` while
 //!   `Batch::more`, and once more after a batch with errors), the
-//!   documented loop of `sb_host::journal`'s module docs.
+//!   documented loop of `sb_host::journal`'s module docs; a 4/s tick
+//!   drains as well, so a read the follow waited on is retried without
+//!   the journal's next write (follow-L1).
+//! - **A follow that can't start** is a notice, `can't follow: <cause>; f
+//!   retries`, the view staying paged; the cause names the system's
+//!   inotify limit when that is what stopped it (follow-L4).
 //! - `Journal::follow` blocks (the watches and the first batch), so it
 //!   runs under tokio's `spawn_blocking`
 //!   (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>),
@@ -40,14 +45,16 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use rustix::io::Errno;
 use sb_cli_core::exit::chain;
 use sb_host::journal::{
-    self, Batch, Cursor, FollowWait, Follower, Journal, Limits, PageEnd, Query, ReadError,
+    self, Batch, Cursor, FollowWait, Follower, Journal, Limits, OpenError, PageEnd, Query,
     ReadErrorKind, ReadErrors, Record, Uid, UnitName, Wake,
 };
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 
 use super::{Event, Inner, Line, Notice, Outbox, PageKind, Position, Request, SourceHandle};
 
@@ -62,6 +69,10 @@ const OUTPUT: usize = 4 << 20;
 /// The most cursors the cycle guard remembers: the viewer's buffer of
 /// 20,000 entries (tui decision 12).
 const REMEMBERED: usize = 20_000;
+
+/// How often a follow drains with no wake: the screen's 4/s tick
+/// (follow-L1).
+const RETRY: Duration = Duration::from_millis(250);
 
 /// A source task for `unit`'s journal: one [`Journal::unit_query`] for
 /// every page and the follow. `journal` is the run's one journal, opened
@@ -83,6 +94,8 @@ struct Settings {
     page: usize,
     limits: Limits,
     remembered: usize,
+    /// How often a follow drains with no wake (follow-L1).
+    retry: Duration,
 }
 
 impl Default for Settings {
@@ -91,6 +104,7 @@ impl Default for Settings {
             page: PAGE,
             limits: Limits::with_output(OUTPUT),
             remembered: REMEMBERED,
+            retry: RETRY,
         }
     }
 }
@@ -188,6 +202,8 @@ struct Following {
 enum Step {
     Request(Option<Request>),
     Woken(std::io::Result<Wake>),
+    /// The tick, while following.
+    Retry,
 }
 
 #[derive(Debug)]
@@ -209,20 +225,37 @@ impl Adapter {
     /// follow can't hold one off between wakes; within one, a request
     /// waits for the drains to catch up (each is awaited to its end, as
     /// sb-host's `drain` asks).
+    ///
+    /// While following, a tick drains too (follow-L1): a read the follow
+    /// waited on (an entry journald was still writing) is read again then,
+    /// not only at the journal's next write, which may be a long time
+    /// coming for a quiet service. With nothing new, a drain is a header
+    /// read per open file (sb-journal's `Follower::drain`). tokio's
+    /// `Interval` with `MissedTickBehavior::Delay`
+    /// (<https://docs.rs/tokio/1.54.1/tokio/time/struct.Interval.html>),
+    /// `reset` after every request and wake, so a read waited on at a
+    /// drain gets a whole period before it is read again (sb-journal
+    /// waits one drain on it) and a busy follow isn't drained twice;
+    /// `tick` is cancel-safe, so it races in `select!`.
     async fn run(mut self, mut requests: mpsc::UnboundedReceiver<Request>) {
+        let mut retry = tokio::time::interval(self.settings.retry);
+        retry.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        retry.reset();
         loop {
             let step = match self.follow.as_mut() {
                 Some(following) => tokio::select! {
                     biased;
                     request = requests.recv() => Step::Request(request),
                     wake = following.waiter.wait() => Step::Woken(wake),
+                    _ = retry.tick() => Step::Retry,
                 },
                 None => Step::Request(requests.recv().await),
             };
+            let ticked = matches!(step, Step::Retry);
             let open = match step {
                 Step::Request(None) => false,
                 Step::Request(Some(request)) => self.handle(request).await,
-                Step::Woken(Ok(Wake::Woken)) => self.drain().await,
+                Step::Woken(Ok(Wake::Woken)) | Step::Retry => self.drain().await,
                 Step::Woken(Ok(Wake::Stopped)) => {
                     self.stop_following();
                     true
@@ -236,6 +269,9 @@ impl Adapter {
             };
             if !open {
                 return;
+            }
+            if !ticked {
+                retry.reset();
             }
         }
     }
@@ -353,10 +389,9 @@ impl Adapter {
             Err(err) => {
                 // `f` retries from the same end.
                 self.follow_from = Some(from);
-                tracing::warn!(error = %err, "journal follow failed to start");
-                return self
-                    .outbox
-                    .send(Event::Notice(Notice::CantFollow(err.to_string())));
+                let cause = cant_follow(&err);
+                tracing::warn!(error = %cause, "journal follow failed to start");
+                return self.outbox.send(Event::Notice(Notice::CantFollow(cause)));
             }
         };
         let waiter = match FollowWait::new(&follower) {
@@ -453,7 +488,7 @@ impl Adapter {
         for err in &ended {
             tracing::info!(error = %err, "journal page ended by its limit");
         }
-        let shown: Vec<String> = shown.into_iter().map(with_causes).collect();
+        let shown: Vec<String> = shown.into_iter().map(|e| with_causes(e)).collect();
         for err in &shown {
             tracing::warn!(error = %err, "journal read error");
         }
@@ -474,11 +509,38 @@ impl Adapter {
 /// `err` and its sources, `: ` between them: an `Io` error's system
 /// error is its source, not part of its text (sb-journal's `ReadError`).
 /// cli-core's `exit::chain` walks them.
-fn with_causes(err: &ReadError) -> String {
+fn with_causes(err: &(dyn std::error::Error + 'static)) -> String {
     chain(err)
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+/// Why a follow couldn't start (follow-L4; tui spec, "Sources"): `err`
+/// and its causes, the system's error among them, and the limit's name
+/// when it is the system's inotify limit: `EMFILE` creating the instance
+/// (`fs.inotify.max_user_instances`, or the open files limit, which the
+/// logs commands raise) and `ENOSPC` adding a watch
+/// (`fs.inotify.max_user_watches`), as `inotify_init(2)` and
+/// `inotify_add_watch(2)` give them
+/// (<https://man7.org/linux/man-pages/man7/inotify.7.html>, "/proc
+/// interfaces"). The errno is read with rustix's `Errno::from_io_error`
+/// (<https://docs.rs/rustix/1.1.6/rustix/io/struct.Errno.html#method.from_io_error>).
+fn cant_follow(err: &OpenError) -> String {
+    let limit = match err {
+        OpenError::Inotify { source } if Errno::from_io_error(source) == Some(Errno::MFILE) => {
+            Some("fs.inotify.max_user_instances")
+        }
+        OpenError::Watch { source, .. } if Errno::from_io_error(source) == Some(Errno::NOSPC) => {
+            Some("fs.inotify.max_user_watches")
+        }
+        _ => None,
+    };
+    let cause = with_causes(err);
+    match limit {
+        Some(limit) => format!("{cause}; the system's inotify limit ({limit}) may be reached"),
+        None => cause,
+    }
 }
 
 fn position(cursor: Cursor) -> Position {
@@ -487,12 +549,12 @@ fn position(cursor: Cursor) -> Position {
 
 /// A record as a line: its time, journalctl's origin, its message.
 fn line(record: &Record) -> Line {
-    Line {
-        time: record.realtime(),
-        origin: origin(record),
-        message: record.message().unwrap_or_default().to_vec(),
-        position: position(record.cursor()),
-    }
+    Line::new(
+        record.realtime(),
+        &origin(record),
+        record.message().unwrap_or_default(),
+        position(record.cursor()),
+    )
 }
 
 /// journalctl's origin (its `short` output): `SYSLOG_IDENTIFIER`, else

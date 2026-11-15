@@ -507,6 +507,50 @@ where
     }
 }
 
+/// systemd's `HIGH_RLIMIT_NOFILE` (`src/basic/def.h`, v249 and v255):
+/// what journalctl asks for with `rlimit_nofile_bump` (tui spec,
+/// "`RLIMIT_NOFILE`"; decided.md A-Q6).
+const HIGH_RLIMIT_NOFILE: u64 = 256 * 1024;
+
+/// Raise the soft `RLIMIT_NOFILE` as journalctl does, for the journal files
+/// a page and a follow hold open and the follow's inotify instance, to
+/// min(hard, [`HIGH_RLIMIT_NOFILE`]): never lowered, the hard limit left as
+/// it is. Through rustix's `getrlimit` and `setrlimit`
+/// (<https://docs.rs/rustix/1.1.6/rustix/process/fn.setrlimit.html>). The
+/// logs commands call it at their start, and only they (tui decision 6).
+/// A failure is logged and the run goes on.
+///
+/// The children those commands start inherit it: systemctl, every 5 s
+/// for the picker's services. journalctl resets it to 1024 only for its
+/// pager (`rlimit_nofile_safe`), as a program using `select(2)` breaks on
+/// descriptors past 1024; systemctl is systemd's own and doesn't, and a
+/// reset per child would need `pre_exec`, which is `unsafe`, forbidden
+/// here. A new child of another kind would need that weighed again.
+pub fn raise_open_files() {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let limit = getrlimit(Resource::Nofile);
+    let Some(soft) = raised_open_files(&limit) else {
+        return;
+    };
+    let raised = Rlimit {
+        current: Some(soft),
+        maximum: limit.maximum,
+    };
+    match setrlimit(Resource::Nofile, raised) {
+        Ok(()) => tracing::info!(from = ?limit.current, to = soft, "open files limit raised"),
+        Err(err) => tracing::warn!(error = %err, "open files limit not raised"),
+    }
+}
+
+/// The soft limit [`raise_open_files`] sets, given `limit`; `None` when the
+/// soft limit is there or above already, or unlimited.
+fn raised_open_files(limit: &rustix::process::Rlimit) -> Option<u64> {
+    let target = limit
+        .maximum
+        .map_or(HIGH_RLIMIT_NOFILE, |hard| hard.min(HIGH_RLIMIT_NOFILE));
+    limit.current.filter(|&soft| soft < target).map(|_| target)
+}
+
 fn is_ctrl_c(input: &Input) -> bool {
     matches!(input, Input::Key(key)
         if key.code.is_char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -516,6 +560,37 @@ fn is_ctrl_c(input: &Input) -> bool {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+    use rustix::process::Rlimit;
+
+    fn limit(current: Option<u64>, maximum: Option<u64>) -> Rlimit {
+        Rlimit { current, maximum }
+    }
+
+    /// Up to min(hard, 262144), never down; an unlimited hard limit is
+    /// the 262144.
+    #[test]
+    fn the_open_files_limit_rises_as_journalctls() {
+        assert_eq!(
+            raised_open_files(&limit(Some(1024), Some(1 << 20))),
+            Some(262_144)
+        );
+        assert_eq!(raised_open_files(&limit(Some(1024), None)), Some(262_144));
+        assert_eq!(
+            raised_open_files(&limit(Some(1024), Some(4096))),
+            Some(4096)
+        );
+        assert_eq!(
+            raised_open_files(&limit(Some(4095), Some(4096))),
+            Some(4096)
+        );
+        assert_eq!(raised_open_files(&limit(Some(4096), Some(4096))), None);
+        assert_eq!(raised_open_files(&limit(Some(262_144), None)), None);
+        assert_eq!(
+            raised_open_files(&limit(Some(1 << 20), Some(1 << 20))),
+            None
+        );
+        assert_eq!(raised_open_files(&limit(None, None)), None);
+    }
     use futures_util::stream;
     use ratatui::backend::TestBackend;
     use ratatui::widgets::Paragraph;

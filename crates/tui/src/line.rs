@@ -34,9 +34,9 @@ use crate::source::Line;
 /// 12).
 pub const RECORD_CAP: usize = 64 << 10;
 
-/// The most of an origin shown: a service sets its own identifier, so it
-/// is untrusted and unbounded too.
-const ORIGIN_CAP: usize = 256;
+/// The most of an origin shown (and held, [`Line::new`]): a service sets
+/// its own identifier, so it is untrusted and unbounded too.
+pub const ORIGIN_CAP: usize = 256;
 
 /// The local time zone: `/etc/localtime`'s `TZif` data, else UTC.
 #[must_use]
@@ -110,12 +110,13 @@ pub fn text(line: &Line, format: &Format) -> Text<'static> {
     searched(line, format, "", Style::new())
 }
 
-/// The message's bytes shown: cut at the record cap, and how many went.
+/// The message's bytes shown: cut at the record cap, and how many went,
+/// those its source didn't keep ([`Line::cut`]) too.
 fn shown<'a>(line: &'a Line, format: &Format) -> (&'a [u8], usize) {
     // A byte cut: it can split a character (one U+FFFD before the notice)
     // or an SGR (dropped by `DisplayText`), both harmless.
     let cut = line.message.len().saturating_sub(format.record_cap);
-    (&line.message[..line.message.len() - cut], cut)
+    (&line.message[..line.message.len() - cut], cut + line.cut)
 }
 
 /// What search reads of `line` (tui spec, "Search"): the message's screen
@@ -300,6 +301,7 @@ mod tests {
             time: Some("2026-11-13T09:04:05Z".parse().expect("a time")),
             origin: b"app[7]".to_vec(),
             message: message.to_vec(),
+            cut: 0,
             position: testing::position(1),
         }
     }
@@ -396,6 +398,27 @@ mod tests {
         assert_eq!(last.content, " … [983040 bytes not shown]");
     }
 
+    /// A line its source cut shows the whole count of what went, the
+    /// source's cut and the viewer's own.
+    #[test]
+    fn a_line_cut_by_its_source_counts_every_byte_not_shown() {
+        let big = vec![b'x'; 1 << 20];
+        let mut line = Line::new(None, b"", &big, testing::position(1));
+        let f = format(Profile::Ascii);
+        let text = text(&line, &f);
+        let last = text.lines[0].spans.last().expect("the notice");
+        assert_eq!(last.content, " … [983040 bytes not shown]");
+        let mut small = format(Profile::Ascii);
+        small.record_cap = 4;
+        line.message.truncate(10);
+        let text = super::text(&line, &small);
+        let last = text.lines[0].spans.last().expect("the notice");
+        assert_eq!(
+            last.content,
+            format!(" … [{} bytes not shown]", 983_040 + 6)
+        );
+    }
+
     #[test]
     fn tabs_expand_and_escapes_other_than_colour_go() {
         let line = service_line(b"a\tb\x1b]0;title\x07\x1b[2J\xc2\x9bc");
@@ -468,6 +491,76 @@ mod tests {
         f.record_cap = 8;
         let text = text(&service_line(COLOURED), &f);
         assert_eq!(colours(&text), []);
+    }
+
+    /// Every SGR colour form a log can send: the 8 and the bright 8,
+    /// 256 colours (a basic one, a cube one, a grey), RGB, as foreground
+    /// and background.
+    const EVERY_FORM: &[u8] = b"\x1b[31ma\x1b[94mb\x1b[42mc\x1b[103md\x1b[0m\
+\x1b[38;5;3me\x1b[38;5;100mf\x1b[48;5;240mg\x1b[0m\
+\x1b[38;2;1;2;3mh\x1b[48;2;200;100;50mi\x1b[0m j";
+
+    /// Log spans step down with the colour profile (tui spec, "Text
+    /// path"), and so do sb's own colours on a line (the cut notice's
+    /// Muted, a search hit's background): no RGB under ansi256, only the
+    /// sixteen under ansi, nothing under ascii; under truecolor sb's own
+    /// are RGB, never a named colour, and the log's pass as they came.
+    #[test]
+    fn every_colour_on_a_line_fits_the_profile() {
+        let line = service_line(EVERY_FORM);
+        for profile in [
+            Profile::TrueColor,
+            Profile::Ansi256,
+            Profile::Ansi,
+            Profile::Ascii,
+        ] {
+            let mut f = format(profile);
+            // Past the cap: the notice is drawn, the colours still all in.
+            f.record_cap = EVERY_FORM.len() - 1;
+            let text = searched(&line, &f, "a", f.hit());
+            let c = colours(&text);
+            let fits = |c: &Color| match profile {
+                Profile::TrueColor => true,
+                Profile::Ansi256 => !matches!(c, Color::Rgb(..)),
+                Profile::Ansi => !matches!(c, Color::Rgb(..) | Color::Indexed(_)),
+                Profile::Ascii => false,
+            };
+            assert!(c.iter().all(fits), "{profile:?}: {c:?}");
+            let notice = text.lines[0].spans.last().expect("the notice");
+            assert!(notice.content.contains("bytes not shown"), "{notice:?}");
+            match profile {
+                Profile::TrueColor => {
+                    assert!(
+                        matches!(notice.style.fg, Some(Color::Rgb(..))),
+                        "{notice:?}"
+                    );
+                    assert!(c.contains(&Color::Rgb(1, 2, 3)), "{c:?}");
+                    assert!(c.contains(&Color::Indexed(100)), "{c:?}");
+                }
+                Profile::Ansi256 => {
+                    assert!(
+                        matches!(notice.style.fg, Some(Color::Indexed(_))),
+                        "{notice:?}"
+                    );
+                }
+                Profile::Ansi => assert!(notice.style.fg.is_some(), "{notice:?}"),
+                Profile::Ascii => assert_eq!(c, []),
+            }
+            // Every log form keeps a colour, none dropped: `a` to `i`.
+            if profile != Profile::Ascii {
+                for letter in ["a", "b", "c", "d", "e", "f", "g", "h", "i"] {
+                    let span = text.lines[0]
+                        .spans
+                        .iter()
+                        .find(|s| s.content == letter)
+                        .unwrap_or_else(|| panic!("{letter}: {text:?}"));
+                    assert!(
+                        span.style.fg.is_some() || span.style.bg.is_some(),
+                        "{profile:?} {letter}: {span:?}"
+                    );
+                }
+            }
+        }
     }
 
     fn hit() -> Style {

@@ -67,6 +67,7 @@ pub fn line(n: u64, message: &str) -> Line {
         time: None,
         origin: Vec::new(),
         message: message.as_bytes().to_vec(),
+        cut: 0,
         position: position(n),
     }
 }

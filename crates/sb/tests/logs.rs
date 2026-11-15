@@ -349,6 +349,28 @@ fn q_in_the_viewer_quits() {
     pty.assert_restored();
 }
 
+/// `sb logs` raises the soft `RLIMIT_NOFILE` as journalctl does, read back
+/// in the running sb; the hard limit stays.
+#[test]
+fn the_open_files_limit_is_raised() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let mut pty = Pty::spawn_shell(r#"ulimit -Sn 1024 && exec "$0" logs"#, &[], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    let (soft, hard) = pty.open_files_limit();
+    assert_eq!(
+        soft,
+        Some(logs_pty::raised_open_files(hard)),
+        "hard {hard:?}"
+    );
+    // Raised from the shell's 1024, where the hard limit allows it.
+    if hard.is_none_or(|hard| hard > 1024) {
+        assert_ne!(soft, Some(1024));
+    }
+    pty.send(b"q");
+    assert!(pty.exit().success());
+}
+
 /// How a search for `hello` lights the app's first line on screen with
 /// `extra` set (no value removes a variable): whether `hello` is drawn in
 /// reverse video, `from` after it not, and `hello`'s background.

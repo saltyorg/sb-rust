@@ -38,6 +38,8 @@ pub const NO_TERMINAL: &str = "sb docker logs needs a terminal to choose a log";
 /// An unreachable daemon or a failed list, no terminal, a screen that
 /// fails; `Exit(130)` after Ctrl-C.
 pub fn docker_logs(shutdown: &Shutdown) -> anyhow::Result<()> {
+    // As `sb logs`: the Services section's journal is read here too.
+    sb_tui::raise_open_files();
     block_on(run(shutdown))?
 }
 

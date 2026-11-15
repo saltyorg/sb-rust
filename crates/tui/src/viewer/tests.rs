@@ -299,6 +299,41 @@ fn near_the_oldest_line_the_page_before_is_asked_for_once() {
     assert_eq!(h.requests(), []);
 }
 
+/// Rows above the window inside a tall entry count with the entries
+/// above it: the page before is asked for once both make less than five
+/// screens, and not before.
+#[test]
+fn rows_inside_a_tall_entry_count_toward_the_oldest_line() {
+    // Two log rows: five screens are 10 rows.
+    let mut h = open(40, 3, Limits::default());
+    let mut ls = lines(0..5);
+    // 30 rows at 40 columns.
+    ls[4] = line(4, &"x".repeat(1200));
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: true,
+        more_newer: false,
+    });
+    h.requests();
+    // The window starts 29 rows into the tall entry; 23 rows up leaves
+    // 6 of its rows and the 4 short entries above: 10, not less.
+    for _ in 0..23 {
+        h.key(KeyCode::Char('k'));
+    }
+    assert!(
+        !h.requests().iter().any(|r| matches!(r, Request::Older(_))),
+        "asked too soon"
+    );
+    h.key(KeyCode::Char('k'));
+    assert!(
+        h.requests().iter().any(|r| matches!(r, Request::Older(_))),
+        "not asked at 9 rows"
+    );
+}
+
 #[test]
 fn far_from_the_oldest_line_nothing_is_asked_for() {
     let mut h = open(40, 4, Limits::default());
@@ -359,6 +394,26 @@ fn the_buffer_drops_the_far_end_past_its_bytes() {
     assert!(h.viewer.bytes <= 12);
     assert_eq!(h.viewer.entries.len(), 6);
     assert!(h.viewer.older.more);
+}
+
+/// An origin's bytes count toward the byte cap as the message's do.
+#[test]
+fn the_byte_cap_counts_origins_too() {
+    let limits = Limits {
+        entries: usize::MAX,
+        bytes: 40,
+    };
+    let mut h = open(40, 6, limits);
+    h.requests();
+    let with_origin = |n: u64| Line {
+        origin: vec![b'o'; 8],
+        ..line(n, "m")
+    };
+    h.send(tail(0..1, false));
+    h.send(Event::Followed((1..11).map(with_origin).collect()));
+    // Nine bytes a line: four fit in 40.
+    assert_eq!(h.viewer.entries.len(), 4);
+    assert!(h.viewer.bytes <= 40);
 }
 
 #[test]
@@ -1436,4 +1491,119 @@ fn s_and_p_are_the_search_lines_letters_while_it_is_open() {
     assert_eq!(h.key(KeyCode::Char('p')), Flow::Redraw);
     assert_eq!(h.viewer.leave(), None);
     assert_eq!(saved_files(dir.path()), [] as [std::path::PathBuf; 0]);
+}
+
+/// A tail of `n` records of 5,000+ characters each, in words, so a
+/// wrapped record takes many rows.
+fn long_tail(n: u64) -> Event {
+    let words = "lorem ipsum ".repeat(420);
+    let ls: Vec<Line> = (0..n).map(|i| line(i, &format!("m{i} {words}"))).collect();
+    Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: true,
+        more_newer: false,
+    }
+}
+
+/// What each of a run of frames costs on a buffer of `n` long records at
+/// 240×70: the entries measured, and the time taken (a key's handling,
+/// paging requests included, and its frame).
+fn frame_costs(n: u64) -> Vec<(usize, std::time::Duration)> {
+    // Room for every record: the cap by bytes would drop most of them.
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(n));
+    let keys = [
+        // Following at the bottom, the layout changed (`t` off, on).
+        KeyCode::Char('t'),
+        KeyCode::Char('t'),
+        // Paused, a few screens up, then near the top.
+        KeyCode::PageUp,
+        KeyCode::PageUp,
+        KeyCode::Char('k'),
+        KeyCode::Home,
+        KeyCode::PageDown,
+        // Wrap off, then on again at the bottom.
+        KeyCode::Char('w'),
+        KeyCode::PageUp,
+        KeyCode::Char('w'),
+        KeyCode::End,
+    ];
+    keys.iter()
+        .map(|&key| {
+            h.viewer.measured.set(0);
+            let started = std::time::Instant::now();
+            h.key(key);
+            (h.viewer.measured.get(), started.elapsed())
+        })
+        .collect()
+}
+
+/// The frame cost (tui spec, Testing Strategy, "Frame cost"; proto-logs'
+/// "frame-time budget check"): the log lines measured per frame don't grow
+/// with the buffer, here 2,000 against 20,000 records of 5,000+
+/// characters, and stay within a few screens of entries. The time is
+/// printed, for the by-hand release timing (`cargo test --release`, the
+/// size ADR).
+#[test]
+fn a_frames_cost_doesnt_grow_with_the_buffer() {
+    let small = frame_costs(2_000);
+    let big = frame_costs(20_000);
+    let counts = |costs: &[(usize, std::time::Duration)]| {
+        costs.iter().map(|(count, _)| *count).collect::<Vec<_>>()
+    };
+    assert_eq!(counts(&small), counts(&big));
+    // Each frame measures at most the window and the paging edges' five
+    // screens each way, in entries: a few hundred at 70 rows, not 20,000.
+    assert!(counts(&big).iter().all(|&c| c < 2_000), "{big:?}");
+    // A new layout at the bottom measures the lines in view (a 5,000-
+    // character record is 21 rows at 240 columns: four fill 70 rows), not
+    // the paging edge's five screens: the entries alone tell that the
+    // oldest is far.
+    assert!(counts(&big)[..2].iter().all(|&c| c <= 5), "{big:?}");
+    let mut times: Vec<_> = big.iter().map(|(_, time)| *time).collect();
+    times.sort();
+    eprintln!(
+        "frame cost at 240x70, 20,000 records: median {:?}, slowest {:?}",
+        times[times.len() / 2],
+        times[times.len() - 1]
+    );
+}
+
+/// Heights are kept with their entries: a frame with nothing new measures
+/// no log line, a followed line is measured once, and a new layout (`w`,
+/// `t`, the width) measures again what the window needs.
+#[test]
+fn a_frame_measures_only_lines_it_hasnt_measured() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(200));
+    let measured = |h: &mut Harness| h.viewer.measured.replace(0);
+    measured(&mut h);
+    h.draw();
+    assert_eq!(measured(&mut h), 0);
+    h.send(Event::Followed(vec![line(200, "new")]));
+    assert_eq!(measured(&mut h), 1);
+    h.key(KeyCode::Char('k'));
+    assert_eq!(measured(&mut h), 0);
+    h.key(KeyCode::Char('w'));
+    assert!(measured(&mut h) > 0);
+    h.key(KeyCode::Char('w'));
+    measured(&mut h);
+    h.key(KeyCode::Char('t'));
+    assert!(measured(&mut h) > 0);
+    h.key(KeyCode::Char('t'));
+    measured(&mut h);
+    h.terminal.backend_mut().resize(100, 70);
+    h.draw();
+    assert!(measured(&mut h) > 0);
 }

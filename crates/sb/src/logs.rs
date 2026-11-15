@@ -43,6 +43,9 @@ pub const NO_TERMINAL: &str = "sb logs needs a terminal to choose a log";
 /// The service list's error, no terminal, an unknown release, a journal
 /// that can't be opened, a screen that fails; `Exit(130)` after Ctrl-C.
 pub fn logs(shutdown: &Shutdown) -> anyhow::Result<()> {
+    // The journal's files and the follow's inotify instance, as
+    // journalctl's (tui spec, "RLIMIT_NOFILE"), before anything is open.
+    sb_tui::raise_open_files();
     block_on(run(shutdown))?
 }
 

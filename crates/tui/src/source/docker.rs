@@ -521,12 +521,12 @@ fn line(entry: &LogLine) -> Line {
     if let Some(rest) = message.strip_suffix(b"\n") {
         message = rest.strip_suffix(b"\r").unwrap_or(rest);
     }
-    Line {
-        time: Timestamp::from_nanosecond(entry.position.time_ns).ok(),
-        origin: origin.as_bytes().to_vec(),
-        message: message.to_vec(),
-        position: Position(Inner::Docker(entry.position)),
-    }
+    Line::new(
+        Timestamp::from_nanosecond(entry.position.time_ns).ok(),
+        origin.as_bytes(),
+        message,
+        Position(Inner::Docker(entry.position)),
+    )
 }
 
 /// The Containers section's list, as the picker shows it: the last list

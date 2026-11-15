@@ -143,6 +143,7 @@ mod tests {
             time: Some("2026-11-13T09:04:05Z".parse().expect("a time")),
             origin: b"app[7]".to_vec(),
             message: message.to_vec(),
+            cut: 0,
             position: testing::position(n),
         }
     }
