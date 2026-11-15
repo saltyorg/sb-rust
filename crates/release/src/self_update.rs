@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use sb_cli_core::build_info::BuildInfo;
+use sb_cli_core::cancel::Shutdown;
 use sb_exec::Cmd;
 use sb_term_ui::{Labels, Runner, Step};
 use semver::Version;
@@ -47,6 +48,10 @@ pub struct SelfUpdate<'a> {
     pub force: bool,
     /// Shown as a warning after a successful update (`sb update`'s).
     pub message: Option<&'a str>,
+    /// The run's shutdown, which a Ctrl-C at the question interrupts: the
+    /// one the `runner` closure's runners are started with
+    /// ([`self_update`]), since `Runner` doesn't hand its own out.
+    pub shutdown: &'a Shutdown,
 }
 
 /// How a self-update ended without an error.
@@ -150,7 +155,12 @@ pub async fn self_update(
             Outcome::Latest
         });
     };
-    if !sb_term_ui::confirm(QUESTION, update.yes.then_some(true), "--yes")? {
+    if !sb_term_ui::confirm(
+        QUESTION,
+        update.yes.then_some(true),
+        "--yes",
+        update.shutdown,
+    )? {
         return Ok(Outcome::Declined);
     }
     install(releases, update, &found, runner()).await?;

@@ -17,6 +17,7 @@ use std::fs::{File, OpenOptions};
 
 use dialoguer::Input;
 use dialoguer::theme::Theme;
+use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::theme::Role;
 
 use crate::style::paint;
@@ -36,8 +37,10 @@ pub enum PromptError {
     /// bug in the command).
     #[error("can't ask \"{0}\" while the runner draws")]
     RunnerLive(String),
-    /// Ctrl-C while asking (console raises SIGINT for it, which cli-core
-    /// handles as an interrupted run).
+    /// Ctrl-C while asking: console raises SIGINT for it, and the confirm
+    /// has the run's [`Shutdown`] record that delivery before it returns
+    /// ([`Shutdown::interrupt_raised`]), so cli-core's `finish_run` ends
+    /// sb by the signal, however late the signals thread reads it.
     #[error("interrupted")]
     Interrupted,
     /// Reading or drawing failed.
@@ -46,7 +49,8 @@ pub enum PromptError {
 }
 
 /// Ask `question`, yes or no, default no: `answer` when the caller has one
-/// (its `flag`, such as `--yes`), else on the terminal. The whole line
+/// (its `flag`, such as `--yes`), else on the terminal; `shutdown` is the
+/// run's, which a Ctrl-C at the question interrupts. The whole line
 /// typed before Enter is the answer: `y` or `yes`, in any case, with
 /// spaces around trimmed, accepts; anything else (`nay`, `no thank you`,
 /// Enter alone) declines. It guards replacing a root-run binary, so a
@@ -56,16 +60,23 @@ pub enum PromptError {
 ///
 /// [`PromptError::NoTerminal`] naming `flag` when there is no terminal or
 /// sb is in the background; [`PromptError::RunnerLive`] while a runner is
-/// live; [`PromptError::Interrupted`] on Ctrl-C;
+/// live; [`PromptError::Interrupted`] on Ctrl-C, the run then interrupted
+/// by SIGINT in `shutdown`;
 /// [`PromptError::Failed`] when the terminal fails.
 pub fn confirm(
     question: &str,
     answer: Option<bool>,
     flag: &'static str,
+    shutdown: &Shutdown,
 ) -> Result<bool, PromptError> {
-    confirm_on(question, answer, flag, crate::runner_live(), || {
-        OpenOptions::new().read(true).write(true).open("/dev/tty")
-    })
+    confirm_on(
+        question,
+        answer,
+        flag,
+        shutdown,
+        crate::runner_live(),
+        || OpenOptions::new().read(true).write(true).open("/dev/tty"),
+    )
 }
 
 /// [`confirm`] with the terminal from `terminal`, `runner_live` saying
@@ -75,6 +86,7 @@ fn confirm_on(
     question: &str,
     answer: Option<bool>,
     flag: &'static str,
+    shutdown: &Shutdown,
     runner_live: bool,
     terminal: impl FnOnce() -> std::io::Result<File>,
 ) -> Result<bool, PromptError> {
@@ -138,6 +150,16 @@ fn confirm_on(
             // And the question's line ended, so what follows starts clean.
             let _ = term.write_line("");
             if err.kind() == std::io::ErrorKind::Interrupted {
+                // console raised SIGINT before returning (UNVERIFIED, from
+                // its source: `read_single_key`,
+                // <https://docs.rs/console/0.16.6/src/console/unix_term.rs.html>):
+                // recorded now, not when the signals thread gets to it, or
+                // the run could end with exit 1 before the thread records
+                // it. Why not console's `Term::read_key_raw`, which returns
+                // `Key::CtrlC` without raising: dialoguer 0.12.0's `Input`
+                // reads with `read_key` (`src/prompts/input.rs`), and
+                // replacing `Input` would mean line editing of our own.
+                let _ = shutdown.interrupt_raised();
                 PromptError::Interrupted
             } else {
                 failed(err.to_string())
@@ -221,9 +243,14 @@ mod tests {
     #[test]
     fn a_given_answer_is_used_without_asking() {
         for answer in [true, false] {
-            let asked = confirm_on("Do you want to update", Some(answer), "--yes", true, || {
-                unreachable!("not asked")
-            });
+            let asked = confirm_on(
+                "Do you want to update",
+                Some(answer),
+                "--yes",
+                &Shutdown::new(),
+                true,
+                || unreachable!("not asked"),
+            );
             assert_eq!(asked.expect("answered"), answer);
         }
     }
@@ -231,8 +258,15 @@ mod tests {
     /// No terminal and no answer: an error naming the flag, never a hang.
     #[test]
     fn without_a_terminal_the_error_names_the_flag() {
-        let err = confirm_on("Do you want to update", None, "--yes", false, no_tty)
-            .expect_err("no terminal");
+        let err = confirm_on(
+            "Do you want to update",
+            None,
+            "--yes",
+            &Shutdown::new(),
+            false,
+            no_tty,
+        )
+        .expect_err("no terminal");
         assert!(matches!(err, PromptError::NoTerminal { flag: "--yes", .. }));
         assert_eq!(
             err.to_string(),
@@ -245,9 +279,14 @@ mod tests {
     /// the screen with its live lines), terminal or not.
     #[test]
     fn while_a_runner_draws_nothing_is_asked() {
-        let err = confirm_on("Do you want to update", None, "--yes", true, || {
-            unreachable!("no terminal opened")
-        })
+        let err = confirm_on(
+            "Do you want to update",
+            None,
+            "--yes",
+            &Shutdown::new(),
+            true,
+            || unreachable!("no terminal opened"),
+        )
         .expect_err("refused");
         assert_eq!(
             err.to_string(),
@@ -260,8 +299,15 @@ mod tests {
     #[test]
     fn a_file_that_isnt_a_terminal_is_refused() {
         let file = tempfile::tempfile().expect("file");
-        let err = confirm_on("Do you want to update", None, "--yes", false, || Ok(file))
-            .expect_err("not a terminal");
+        let err = confirm_on(
+            "Do you want to update",
+            None,
+            "--yes",
+            &Shutdown::new(),
+            false,
+            || Ok(file),
+        )
+        .expect_err("not a terminal");
         assert_eq!(
             err.to_string(),
             "can't ask \"Do you want to update\": sb runs in the background; answer it \

@@ -13,7 +13,6 @@ use sb_cli_core::exit::Exit;
 use sb_cli_core::log::RunLog;
 use sb_config::run::{self, Checks, FileError, Issues};
 use sb_exec::{Cmd, Ending, SpawnCause, SpawnError};
-use sb_term_ui::PromptError;
 
 /// One of the six files `sb edit` opens (sb-go layout/layout.go:13-21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,31 +152,17 @@ pub fn edit(
 ///
 /// # Errors
 ///
-/// The confirm's error; "interrupted" on Ctrl-C once sb's signals thread
-/// has recorded the signal (or [`SETTLE`] has passed). console raises
-/// SIGINT for Ctrl-C and returns at once (console 0.16.6
-/// `src/unix_term.rs`, `read_single_key`), and the thread records it a
-/// moment later: without the wait, the run could end with exit 1 rather
-/// than by the signal. The wait is tokio's timeout on the token's
-/// cancellation
-/// (<https://docs.rs/tokio/1.54.1/tokio/time/fn.timeout.html>,
-/// <https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.cancelled>).
+/// The confirm's error: "interrupted" on Ctrl-C, the signal already
+/// recorded by `shutdown` when the confirm returns (term-ui's confirm), so
+/// cli-core's `finish_run` ends sb by it.
 fn ask_again(question: &str, no_edit_again: bool, shutdown: &Shutdown) -> anyhow::Result<bool> {
-    match sb_term_ui::confirm(question, no_edit_again.then_some(false), "--no-edit-again") {
-        Err(PromptError::Interrupted) => {
-            let recorded = shutdown.token();
-            let _ = super::block_on(async {
-                tokio::time::timeout(SETTLE, recorded.cancelled()).await
-            })?;
-            bail!("interrupted")
-        }
-        answer => Ok(answer?),
-    }
+    Ok(sb_term_ui::confirm(
+        question,
+        no_edit_again.then_some(false),
+        "--no-edit-again",
+        shutdown,
+    )?)
 }
-
-/// How long an interrupted question waits for sb's signals thread to
-/// record the SIGINT console raised: it reads within microseconds.
-const SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The settings validate-config checks a file with
 /// (`sb_config::run::Settings`), for a run with [`Checks::Skip`]: the

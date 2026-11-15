@@ -187,7 +187,17 @@ the terminal delivers them to the child; a SIGTERM or SIGHUP still
 cancels (exec passes a SIGTERM to the child's pid) and a second one
 still forces the exit; when the child dies of a signal sb itself received, the run is
 interrupted by it. The decision is one pure function (`decide`),
-tested case by case.
+tested case by case. A SIGINT sb raises at itself (console does for
+Ctrl-C at a prompt) is decided by `Shutdown::interrupt_raised` once the
+raise returns: signal-hook's handler sets the SIGINT delivery flag
+itself (`flag::register`), so a first SIGINT is recorded then, with no
+wait for the signals thread, whose read of that delivery then does
+nothing; a Ctrl-C delivered after it is a second signal, and one that
+wouldn't be a first, or that a hold notes, is left to the thread.
+The thread records a first signal under the holds' lock, so a delivery
+is seen either undecided or recorded, and the first signal counted is
+kept there for both (after a command's own request too). *Amended 2026-11-15
+(maintainer).*
 
 **Exit codes:** 0 success; 1 error; 2 for a parse error; death by
 SIGINT, SIGTERM or SIGHUP when interrupted (`$?` reads 130, 143 or

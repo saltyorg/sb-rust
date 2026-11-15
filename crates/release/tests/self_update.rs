@@ -86,6 +86,7 @@ async fn try_run(
         yes: true,
         force,
         message,
+        shutdown: &shutdown,
     };
     let outcome = self_update(&releases, update, || {
         Runner::start(

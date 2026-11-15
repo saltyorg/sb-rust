@@ -292,8 +292,9 @@ fn type_ahead_doesnt_answer_the_question() {
     assert_eq!(setup.sb_bytes(), before);
 }
 
-/// Ctrl-C at the question ends sb by the signal with the cursor shown
-/// (never left hidden by whatever drew last) and nothing downloaded.
+/// Ctrl-C at the question ends sb by the signal (130 to the shell), with
+/// "interrupted" and the cursor shown (never left hidden by whatever drew
+/// last), and nothing downloaded.
 #[test]
 fn ctrl_c_at_the_question_shows_the_cursor() {
     if !root_gate::requested() {
@@ -307,7 +308,8 @@ fn ctrl_c_at_the_question_shows_the_cursor() {
         assert!(shown > hidden, "{out:?}");
     }
     assert!(!out.contains("Do you want to update no"), "{out}");
-    assert!(!out.contains("EXIT=0"), "{out}");
+    assert!(out.contains("EXIT=130"), "{out}");
+    assert!(out.contains("interrupted"), "{out}");
     assert!(!setup.downloaded());
     assert_eq!(setup.sb_bytes(), before);
 }

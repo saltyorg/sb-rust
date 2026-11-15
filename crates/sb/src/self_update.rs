@@ -32,6 +32,7 @@ pub(crate) fn self_update(
         yes,
         force,
         message: None,
+        shutdown,
     };
     let outcome = super::block_on(sb_release::self_update(&releases, update, || {
         sb_term_ui::Runner::start(

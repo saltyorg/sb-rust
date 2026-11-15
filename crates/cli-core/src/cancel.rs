@@ -185,6 +185,8 @@ const DELIVERY: Duration = Duration::from_millis(100);
 
 /// The held signals: SIGINT and SIGQUIT, by slot.
 const HELD: [i32; 2] = [SIGINT, SIGQUIT];
+/// SIGINT's slot in [`HELD`].
+const SIGINT_SLOT: usize = 0;
 
 fn slot(signal: i32) -> Option<usize> {
     HELD.iter().position(|held| *held == signal)
@@ -278,6 +280,15 @@ struct HoldState {
     count: usize,
     /// The held signals noted, by slot, since the outermost hold began.
     noted: [bool; 2],
+    /// A SIGINT sb raised at itself was decided by
+    /// [`Shutdown::interrupt_raised`], before the signals thread read it:
+    /// the thread's next read of SIGINT is that delivery, unless another
+    /// came since (its delivery flag set again).
+    raised: bool,
+    /// The first signal counted, by the signals thread or by
+    /// [`Shutdown::interrupt_raised`], so that either decides a later one
+    /// as a second, a command's own request before it or not.
+    counted: Option<i32>,
 }
 
 impl Holds {
@@ -300,21 +311,6 @@ impl Holds {
             .unwrap_or_else(PoisonError::into_inner)
             .0
     }
-
-    /// The signals thread's step for `signal`: decide under the lock, mark
-    /// the delivery decided and note a held signal; the caller acts.
-    fn take(&self, first: Option<i32>, signal: i32) -> Act {
-        let mut state = self.lock();
-        let act = decide(first, state.count > 0, signal);
-        if let Some(slot) = slot(signal) {
-            self.arrived[slot].store(false, Ordering::SeqCst);
-            if act == Act::Note {
-                state.noted[slot] = true;
-            }
-        }
-        self.changed.notify_all();
-        act
-    }
 }
 
 /// What the signals thread does with a signal (cli-core spec,
@@ -332,6 +328,9 @@ enum Act {
     /// decision 5): the restore hooks run (bounded by the deadline), then
     /// sb ends by it, whatever the run was doing (maintainer, 2026-11-05).
     HardEscape,
+    /// A SIGINT sb raised at itself, decided already by
+    /// [`Shutdown::interrupt_raised`]: nothing more to do.
+    Raised,
 }
 
 /// The signals thread's decision for `signal`, given the first signal
@@ -496,11 +495,78 @@ impl Shutdown {
         self.holds.lock().count > 0
     }
 
-    /// The signals thread's decision for `signal`, given the first signal
-    /// it counted itself; one a hold recorded (its child died of it)
-    /// counts too, so the next signal forces the exit.
+    /// The signals thread's step for `signal`, given the first signal it
+    /// counted itself (one a hold recorded, its child dead of it, counts
+    /// too, so the next signal forces the exit): under the holds' lock,
+    /// decide, mark the delivery decided, note a held signal and record a
+    /// first one, so [`Shutdown::interrupt_raised`] sees each delivery
+    /// either undecided or recorded; the caller acts on the rest.
     fn step(&self, first: Option<i32>, signal: i32) -> Act {
-        self.holds.take(first.or(self.signal()), signal)
+        let holds = &self.holds;
+        let mut state = holds.lock();
+        let slot = slot(signal);
+        let act = if signal == SIGINT
+            && std::mem::take(&mut state.raised)
+            && !slot.is_some_and(|slot| holds.arrived[slot].load(Ordering::SeqCst))
+        {
+            Act::Raised
+        } else {
+            decide(
+                first.or(state.counted).or(self.signal()),
+                state.count > 0,
+                signal,
+            )
+        };
+        if let Some(slot) = slot {
+            holds.arrived[slot].store(false, Ordering::SeqCst);
+            if act == Act::Note {
+                state.noted[slot] = true;
+            }
+        }
+        if act == Act::Cancel {
+            state.counted.get_or_insert(signal);
+            self.signalled(signal);
+        }
+        holds.changed.notify_all();
+        act
+    }
+
+    /// sb raised SIGINT at itself and the raise has returned: console
+    /// does so for Ctrl-C at a prompt, then returns `Interrupted`
+    /// (UNVERIFIED: console's docs don't say so; checked against its
+    /// source, `read_single_key`,
+    /// <https://docs.rs/console/0.16.6/src/console/unix_term.rs.html>,
+    /// pinned by `Cargo.lock`). Decide that
+    /// delivery now, as the signals thread would, rather than wait for the
+    /// thread to read it, and say whether a signal has ended the run (so
+    /// `finish_run` ends sb by it). Nothing waits: the delivery flag
+    /// (`Holds::arrived`) is set by signal-hook's handler itself
+    /// (`flag::register`, an atomic store, async-signal-safe;
+    /// <https://docs.rs/signal-hook/0.4.5/signal_hook/flag/fn.register.html>),
+    /// and a signal raised at the calling thread is handled before
+    /// `raise` returns (raise(3),
+    /// <https://man7.org/linux/man-pages/man3/raise.3.html>). Decided
+    /// here, it is the thread's next read of SIGINT, which then does
+    /// nothing; a Ctrl-C delivered after it still counts as a second
+    /// signal. A delivery that isn't a first (a second signal forces the
+    /// exit) or that a hold would note is left to the thread.
+    #[must_use]
+    pub fn interrupt_raised(&self) -> bool {
+        let holds = &self.holds;
+        let mut state = holds.lock();
+        let first = state.counted.or(self.signal());
+        // Decided first, then the flag taken: one swap, so a delivery
+        // can't land between reading the flag and clearing it.
+        if decide(first, state.count > 0, SIGINT) == Act::Cancel
+            && holds.arrived[SIGINT_SLOT].swap(false, Ordering::SeqCst)
+        {
+            state.raised = true;
+            state.counted.get_or_insert(SIGINT);
+            self.signalled(SIGINT);
+            holds.changed.notify_all();
+        }
+        drop(state);
+        self.interrupted()
     }
 
     /// Run `hook` before a second signal's exit, until the returned guard
@@ -598,15 +664,13 @@ impl Shutdown {
                         continue;
                     }
                     match shutdown.step(first.map(|(first, _)| first), signal) {
-                        Act::Cancel => {
-                            first = Some((signal, Instant::now()));
-                            shutdown.signalled(signal);
-                        }
+                        Act::Cancel => first = Some((signal, Instant::now())),
                         Act::ForcedExit(first) => {
                             Arc::clone(&shutdown.hooks).run_then_end_by(first)
                         }
                         Act::Note => tracing::debug!(signal, "held signal noted"),
                         Act::HardEscape => Arc::clone(&shutdown.hooks).run_then_end_by(SIGQUIT),
+                        Act::Raised => tracing::debug!(signal, "raised by sb, decided already"),
                     }
                 }
             })?;
@@ -792,6 +856,7 @@ mod tests {
     fn only_sigint_and_sigquit_have_slots() {
         use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM};
         assert_eq!(slot(SIGINT), Some(0));
+        assert_eq!(SIGINT_SLOT, 0);
         assert_eq!(slot(SIGQUIT), Some(1));
         assert_eq!(slot(SIGTERM), None);
     }
@@ -904,6 +969,83 @@ mod tests {
         let requested = Shutdown::new();
         let _ = requested.request(3);
         assert_eq!(requested.step(None, SIGINT), Act::Cancel);
+    }
+
+    /// A SIGINT sb raised at itself (console, for Ctrl-C at a prompt) is
+    /// recorded the moment the raise returns, before the signals thread
+    /// reads it; the thread's read of that delivery then does nothing,
+    /// and the next signal forces the exit.
+    #[test]
+    fn a_raised_interrupt_is_recorded_at_once() {
+        use signal_hook::consts::{SIGINT, SIGTERM};
+        let shutdown = Shutdown::new();
+        assert!(!shutdown.interrupt_raised(), "nothing delivered");
+        deliver(&shutdown, SIGINT);
+        assert!(shutdown.interrupt_raised());
+        assert_eq!(shutdown.signal(), Some(SIGINT));
+        assert!(shutdown.token().is_cancelled());
+        assert!(!shutdown.holds.pending(), "decided");
+        assert!(shutdown.interrupt_raised(), "and stays so");
+        assert_eq!(shutdown.step(None, SIGINT), Act::Raised);
+        assert_eq!(shutdown.step(None, SIGTERM), Act::ForcedExit(SIGINT));
+    }
+
+    /// A Ctrl-C delivered after the raise was decided, before the thread
+    /// read either, is a second signal: the thread's one read forces the
+    /// exit.
+    #[test]
+    fn a_ctrl_c_after_a_raised_interrupt_forces_the_exit() {
+        use signal_hook::consts::SIGINT;
+        let shutdown = Shutdown::new();
+        deliver(&shutdown, SIGINT);
+        assert!(shutdown.interrupt_raised());
+        deliver(&shutdown, SIGINT);
+        assert_eq!(shutdown.step(None, SIGINT), Act::ForcedExit(SIGINT));
+    }
+
+    /// A raised SIGINT the thread decided first is not decided again; one
+    /// that would be a second signal, or that a hold notes, is left to the
+    /// thread; after a command's own request it isn't an interruption.
+    #[test]
+    fn a_raised_interrupt_is_decided_once_as_the_thread_would() {
+        use signal_hook::consts::{SIGINT, SIGTERM};
+        let read_first = Shutdown::new();
+        assert_eq!(read(&read_first, SIGINT), Act::Cancel);
+        assert!(read_first.interrupt_raised());
+        assert_eq!(read(&read_first, SIGINT), Act::ForcedExit(SIGINT));
+
+        let second = Shutdown::new();
+        assert_eq!(read(&second, SIGTERM), Act::Cancel);
+        deliver(&second, SIGINT);
+        assert!(second.interrupt_raised(), "interrupted by the SIGTERM");
+        assert!(second.holds.pending(), "left to the thread");
+        assert_eq!(second.step(None, SIGINT), Act::ForcedExit(SIGTERM));
+
+        let under_hold = Shutdown::new();
+        let hold = under_hold.hold();
+        deliver(&under_hold, SIGINT);
+        assert!(!under_hold.interrupt_raised());
+        assert_eq!(under_hold.step(None, SIGINT), Act::Note);
+        drop(hold);
+
+        // After a command's own request the raised SIGINT isn't the
+        // ending, but it is counted: the next signal is a second.
+        let requested = Shutdown::new();
+        let _ = requested.request(3);
+        deliver(&requested, SIGINT);
+        assert!(!requested.interrupt_raised());
+        assert_eq!(requested.requested(), Some(3));
+        assert_eq!(requested.step(None, SIGINT), Act::Raised);
+        assert_eq!(requested.step(None, SIGTERM), Act::ForcedExit(SIGINT));
+
+        // After a request and a SIGTERM the thread counted, a raised
+        // SIGINT is a second signal, left to the thread.
+        let terminated = Shutdown::new();
+        let _ = terminated.request(3);
+        assert_eq!(read(&terminated, SIGTERM), Act::Cancel);
+        deliver(&terminated, SIGINT);
+        assert!(!terminated.interrupt_raised());
+        assert_eq!(terminated.step(None, SIGINT), Act::ForcedExit(SIGTERM));
     }
 
     /// What signal-hook's handler does at delivery (`flag::register`).

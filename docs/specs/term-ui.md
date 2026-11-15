@@ -338,6 +338,16 @@ sequence.
   *Amended 2026-11-13 with M26.*
 - Every prompt takes its answer from the caller when one was given (the
   command's flag), without asking.
+- Ctrl-C at the confirm ends sb by SIGINT, every time. console raises
+  SIGINT for it and returns at once, before cli-core's signals thread
+  has read the signal, so sb could end with exit 1 and an "interrupted"
+  block (about 3 runs in 8 under the coverage build). The confirm takes
+  the run's `Shutdown` and calls `Shutdown::interrupt_raised` when
+  console returns: the delivery flag signal-hook's handler set
+  (`flag::register`) is decided there, as the signals thread would, so
+  the run is interrupted before the confirm returns, without a wait.
+  M50's bounded wait in `sb edit` is gone; self-update's confirm gets
+  the same. *Amended 2026-11-15 (maintainer).*
 - Prompts read the terminal, not stdin (`curl … | sudo bash` leaves stdin
   as the script; the install-script plan says prompts use `/dev/tty`). No
   terminal, or a background process group, and no answer: a clear error
