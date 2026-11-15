@@ -882,7 +882,12 @@ mod tests {
         let job: crate::run::Job = Box::pin(async {
             disk_within(CHILD_TIMEOUT, &Paint::plain(), || panic!("bad read")).await
         });
-        let results = crate::run::collect(vec![(crate::Section::Disk, job)], crate::run::CAP).await;
+        let results = crate::run::collect(
+            vec![(crate::Section::Disk, job)],
+            crate::run::CAP,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
         assert_eq!(results[0].1, "Error: panic occurred (bad read)");
     }
 

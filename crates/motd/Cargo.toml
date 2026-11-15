@@ -42,6 +42,10 @@ reqwest.workspace = true
 # (CONSTRAINTS.md).
 sb-exec.workspace = true
 thiserror.workspace = true
+# Services: the systemd service list and its duration texts (motd
+# decision 14), and the time they are measured at.
+sb-host.workspace = true
+jiff.workspace = true
 # The sections' tasks and the 30 s cap (motd decision 11).
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 # The token sb-exec's `capture` takes.
@@ -52,6 +56,8 @@ tracing.workspace = true
 # Docker's fake Engine API and Traefik's fake server (motd spec, Testing).
 sb-docker = { workspace = true, features = ["testing"] }
 sb-config = { workspace = true, features = ["testing"] }
+# systemctl pointed at a stand-in (`Systemd::with_program`).
+sb-host = { workspace = true, features = ["testing"] }
 # The runner's tests on tokio's paused clock (motd spec, Testing).
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 tempfile.workspace = true

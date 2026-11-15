@@ -3540,6 +3540,7 @@ version = "0.1.0"
 dependencies = [
  "anstyle",
  "icu_properties",
+ "jiff",
  "procfs",
  "regex",
  "reqwest",
@@ -3548,6 +3549,7 @@ dependencies = [
  "sb-config",
  "sb-docker",
  "sb-exec",
+ "sb-host",
  "sb-term-ui",
  "serde",
  "serde_json",

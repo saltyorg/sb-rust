@@ -9,6 +9,10 @@
 //! and `tokio::time::timeout_at` caps the wait
 //! (<https://docs.rs/tokio/1.54.1/tokio/time/fn.timeout_at.html>). Every
 //! section starts at once, so one deadline for all is each one's 30 s.
+//! At that deadline the run's token is cancelled, which reaches each
+//! section that takes it (Services' systemctl calls), and the task is
+//! aborted; a child still running is ended with its dropped run (sb-exec
+//! kills the group).
 
 use std::any::Any;
 use std::future::Future;
@@ -16,6 +20,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::Section;
 
@@ -26,8 +31,13 @@ pub const CAP: Duration = Duration::from_secs(30);
 pub type Job = Pin<Box<dyn Future<Output = String> + Send + 'static>>;
 
 /// Each job run as its own task under `cap`, its value or error line
-/// returned in display order (the jobs' `Section` order).
-pub async fn collect(jobs: Vec<(Section, Job)>, cap: Duration) -> Vec<(Section, String)> {
+/// returned in display order (the jobs' `Section` order). `token` is
+/// cancelled when the cap passes with a job still running.
+pub async fn collect(
+    jobs: Vec<(Section, Job)>,
+    cap: Duration,
+    token: &CancellationToken,
+) -> Vec<(Section, String)> {
     let start = Instant::now();
     let deadline = start + cap;
     let mut tasks: Vec<_> = jobs
@@ -54,6 +64,7 @@ pub async fn collect(jobs: Vec<(Section, Job)>, cap: Duration) -> Vec<(Section, 
                 panicked(err.try_into_panic().ok().as_deref())
             }
             Err(_) => {
+                token.cancel();
                 // Dropping a JoinHandle leaves its task running: abort it.
                 handle.abort();
                 log(section, "timed out", cap);
@@ -118,7 +129,7 @@ mod tests {
             (Section::Distribution, job("d", Duration::from_secs(2))),
             (Section::Uptime, job("", Duration::ZERO)),
         ];
-        let results = collect(jobs, CAP).await;
+        let results = collect(jobs, CAP, &CancellationToken::new()).await;
         assert_eq!(
             results,
             [
@@ -137,7 +148,7 @@ mod tests {
             (Section::Kernel, job("never", Duration::from_secs(3600))),
             (Section::Uptime, job("u", Duration::from_secs(1))),
         ];
-        let results = collect(jobs, CAP).await;
+        let results = collect(jobs, CAP, &CancellationToken::new()).await;
         assert_eq!(
             results,
             [
@@ -153,6 +164,35 @@ mod tests {
         assert_eq!(start.elapsed(), CAP);
     }
 
+    /// The cap reaches a section through the run's token: cancelled when
+    /// a job runs past it, so the job's own calls see it (Services), and
+    /// left alone when every job ends in time.
+    #[tokio::test(start_paused = true)]
+    async fn the_cap_cancels_the_runs_token() {
+        let token = CancellationToken::new();
+        let seen = token.clone();
+        let watcher: Job = Box::pin(async move {
+            seen.cancelled().await;
+            "never shown".to_string()
+        });
+        let jobs = vec![
+            (Section::Services, watcher),
+            (Section::Kernel, job("k", Duration::from_secs(1))),
+        ];
+        let results = collect(jobs, CAP, &token).await;
+        assert!(token.is_cancelled());
+        assert_eq!(results[0].1, "k");
+        assert_eq!(results[1].1, "Error: provider timed out after 30s");
+        let token = CancellationToken::new();
+        collect(
+            vec![(Section::Kernel, job("k", Duration::from_secs(29)))],
+            CAP,
+            &token,
+        )
+        .await;
+        assert!(!token.is_cancelled());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn two_slow_sections_share_one_deadline() {
         let start = Instant::now();
@@ -160,7 +200,7 @@ mod tests {
             (Section::Distribution, job("x", Duration::from_secs(3600))),
             (Section::Kernel, job("y", Duration::from_secs(3600))),
         ];
-        let results = collect(jobs, CAP).await;
+        let results = collect(jobs, CAP, &CancellationToken::new()).await;
         assert!(results.iter().all(|(_, v)| v.contains("timed out")));
         assert_eq!(start.elapsed(), CAP);
     }
@@ -182,7 +222,7 @@ mod tests {
                 Box::pin(async { std::panic::panic_any(7_u8) }),
             ),
         ];
-        let results = collect(jobs, CAP).await;
+        let results = collect(jobs, CAP, &CancellationToken::new()).await;
         assert_eq!(
             results,
             [

@@ -955,6 +955,15 @@ Nothing touches a real host's state, and every fixture is synthetic.
   provider reads the model before M44, which takes the source text from
   sb-config's tree (a source string kept on plain scalars) before the
   providers send any credential; a unit test pins today's reading.
+- **Services (M43, 2026-11-15).** The list is sb-host's `services` with
+  `with_additional(additional_services)`; `enabled: false` hides the
+  section, and a file with issues keeps the default filters and names
+  (decision 3). When the 30 s cap passes, the runner cancels the run's
+  token, which `services` takes, and aborts the task; the abort is what
+  ends a hanging systemctl call there, as sb-exec kills a child's group
+  when its run is dropped, and the token is for a caller that waits on
+  it. Display names and states go through `DisplayText`, and names are
+  padded by bytes, as sb-go's `len` does.
 - **Disk Usage beside sb-go (M38):** decided by the maintainer,
   2026-11-14: Differences 23 and 24. Control characters in a mount point are dropped by
   `DisplayText` (decision 24), where df writes `?`.

@@ -96,7 +96,8 @@ fn a_timeout_a_panic_and_an_empty_value_are_logged_as_such() {
         (Section::Kernel, Box::pin(async { panic!("boom") })),
         (Section::Uptime, Box::pin(async { String::new() })),
     ];
-    let (_, text) = logged(run::collect(jobs, run::CAP));
+    let token = tokio_util::sync::CancellationToken::new();
+    let (_, text) = logged(run::collect(jobs, run::CAP, &token));
     let line = |flag: &str| {
         text.lines()
             .find(|line| line.contains(&format!("section=\"{flag}\"")))

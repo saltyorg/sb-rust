@@ -2,10 +2,11 @@
 //! per selected section, collected in parallel. Built so far: the
 //! selection rules, the runner, the layout, the system sections, Disk
 //! Usage, Package Status, GPU, User Sessions, Last login, Docker and
-//! Traefik, and motd.yml with its colours, its `Config:` line and
-//! `--generate-config` (module build M36-M42); the other sections, the
-//! banner and `--share` come with their own tasks (M43-M47), and until
-//! then a selected section without its code shows no line.
+//! Traefik, motd.yml with its colours, its `Config:` line and
+//! `--generate-config`, and Services (module build M36-M43); the other
+//! sections, the banner and `--share` come with their own tasks
+//! (M44-M47), and until then a selected section without its code shows
+//! no line.
 
 pub mod config;
 mod disk;
@@ -15,6 +16,7 @@ mod layout;
 mod logins;
 mod packages;
 pub mod run;
+mod services;
 mod system;
 mod text;
 
@@ -22,6 +24,8 @@ use std::sync::Arc;
 
 use anstyle::Color;
 use sb_cli_core::theme::Theme;
+use sb_host::systemd::Systemd;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Slot;
 
@@ -322,30 +326,52 @@ pub async fn report(
     load: impl FnOnce() -> config::Loaded,
 ) -> Result<String, Error> {
     let chosen = options.chosen()?;
-    report_with(chosen, colours, docker::Settings::from_env(), load()).await
+    let sources = Sources {
+        docker: docker::Settings::from_env(),
+        systemd: Systemd::new(),
+    };
+    report_with(chosen, colours, sources, load()).await
+}
+
+/// Where the sections that ask a daemon look: Docker's and Traefik's
+/// settings and systemctl. The tests point them at fakes and stand-ins.
+/// No `Default`: systemctl is always chosen, so no test lists the host's
+/// services by accident.
+#[derive(Debug)]
+struct Sources {
+    docker: docker::Settings,
+    systemd: Systemd,
 }
 
 /// The `Config:` line's key (Difference 2).
 const CONFIG_KEY: &str = "Config:";
 
-/// [`report`] with the sections chosen, Docker's and Traefik's settings
-/// and motd.yml given, not read from the environment (the tests' fakes).
+/// [`report`] with the sections chosen, their sources and motd.yml
+/// given, not read from the environment (the tests' fakes).
 async fn report_with(
     chosen: Vec<Section>,
     colours: Colours<'_>,
-    settings: docker::Settings,
+    sources: Sources,
     loaded: config::Loaded,
 ) -> Result<String, Error> {
     let names: Vec<&str> = chosen.iter().map(|s| s.flag()).collect();
     tracing::info!(sections = names.join(","), "motd sections chosen");
     let motd_colours = loaded.motd.as_ref().map_or_default(|motd| motd.colours);
     let paint = Paint::with(colours.theme, colours.on, &motd_colours);
-    let containers = docker::Containers::new(settings);
+    let containers = docker::Containers::new(sources.docker);
+    let context = Context {
+        paint,
+        containers,
+        systemd: Arc::new(sources.systemd),
+        systemd_settings: loaded.motd.and_then(|motd| motd.systemd).map(Arc::new),
+        token: CancellationToken::new(),
+    };
     let jobs = chosen
         .into_iter()
-        .filter_map(|section| job(section, &paint, &containers).map(|job| (section, job)))
+        .filter_map(|section| job(section, &context).map(|job| (section, job)))
         .collect();
-    let results = run::collect(jobs, run::CAP).await;
+    let results = run::collect(jobs, run::CAP, &context.token).await;
+    let paint = context.paint;
     let config = loaded.line.map(|line| (CONFIG_KEY, paint.warning(&line)));
     let lines: Vec<(&str, String)> = config
         .into_iter()
@@ -358,6 +384,17 @@ async fn report_with(
     Ok(layout::render(&lines, |key| paint.label(key)))
 }
 
+/// What the sections' jobs share: the paint, the one container listing,
+/// systemctl with motd.yml's `systemd` part, and the run's token, which
+/// the runner cancels at the cap.
+struct Context {
+    paint: Paint,
+    containers: Arc<docker::Containers>,
+    systemd: Arc<Systemd>,
+    systemd_settings: Option<Arc<config::Systemd>>,
+    token: CancellationToken,
+}
+
 /// The section's collection, or none for a section whose task hasn't
 /// landed yet. The runtime is current-thread, so a job must not block:
 /// the cap can only fire at an await. The system sections read one small
@@ -367,9 +404,9 @@ async fn report_with(
 /// or tokio's `spawn_blocking`
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>), as
 /// Disk Usage and GPU do.
-fn job(section: Section, paint: &Paint, containers: &Arc<docker::Containers>) -> Option<run::Job> {
-    let paint = paint.clone();
-    let containers = Arc::clone(containers);
+fn job(section: Section, context: &Context) -> Option<run::Job> {
+    let paint = context.paint.clone();
+    let containers = Arc::clone(&context.containers);
     let job: run::Job = match section {
         Section::Distribution => Box::pin(async { system::distribution_here() }),
         Section::Kernel => Box::pin(async { system::kernel_here() }),
@@ -394,6 +431,14 @@ fn job(section: Section, paint: &Paint, containers: &Arc<docker::Containers>) ->
         Section::Traefik => Box::pin(async move { docker::traefik(&containers, &paint).await }),
         Section::Reboot => {
             Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
+        }
+        Section::Services => {
+            let systemd = Arc::clone(&context.systemd);
+            let settings = context.systemd_settings.clone();
+            let token = context.token.clone();
+            Box::pin(async move {
+                services::services(&systemd, settings.as_deref(), &paint, &token).await
+            })
         }
         _ => return None,
     };
@@ -545,10 +590,24 @@ mod tests {
             docker_host: Some(format!("unix://{}", dir.path().join("none.sock").display())),
             ..docker::Settings::default()
         };
+        // systemctl a stand-in: the host's services are never listed.
+        let systemctl = dir.path().join("systemctl");
+        packages::tests::stand_in(
+            &systemctl,
+            r#"case "$1" in
+  list-units) echo '[{"unit":"docker.service","load":"loaded","active":"active","sub":"running","description":"x"}]' ;;
+  show) ;;
+  *) echo '[]' ;;
+esac"#,
+        );
+        let sources = Sources {
+            docker: settings,
+            systemd: Systemd::new().with_program(systemctl),
+        };
         let text = report_with(
             options.chosen().unwrap(),
             colours,
-            settings,
+            sources,
             config::Loaded::default(),
         )
         .await
@@ -576,17 +635,30 @@ mod tests {
                 "User Sessions:",
                 "Last login:",
                 "Disk Usage:",
+                "Services:",
                 "Docker:",
                 "Traefik:",
             ]
         );
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("Services:")
+                    && line.ends_with(" Docker   active/running")),
+            "{text}"
+        );
         assert!(text.ends_with("\n\n"));
-        let none = docker::Containers::new(docker::Settings::default());
-        assert!(job(Section::Jellyfin, &Paint::plain(), &none).is_none());
+        let context = Context {
+            paint: Paint::plain(),
+            containers: docker::Containers::new(docker::Settings::default()),
+            systemd: Arc::new(Systemd::new()),
+            systemd_settings: None,
+            token: CancellationToken::new(),
+        };
+        assert!(job(Section::Queues, &context).is_none());
         // GPU's and Reboot Status's lines may be hidden here; their jobs
         // are there.
-        assert!(job(Section::Gpu, &Paint::plain(), &none).is_some());
-        assert!(job(Section::Reboot, &Paint::plain(), &none).is_some());
+        assert!(job(Section::Gpu, &context).is_some());
+        assert!(job(Section::Reboot, &context).is_some());
     }
 
     #[test]
@@ -702,6 +774,15 @@ mod tests {
         assert_eq!(Paint::with(&theme, false, &motd.colours).label("x"), "x");
     }
 
+    /// Sources for a report of Kernel alone: no daemon is asked, and
+    /// systemctl is a path that isn't there.
+    fn kernel_only() -> Sources {
+        Sources {
+            docker: docker::Settings::default(),
+            systemd: Systemd::new().with_program("/nonexistent/systemctl"),
+        }
+    }
+
     /// A file with issues: the `Config:` line first, its key padded with
     /// the others, its text in the warning colour; the sections still show.
     #[tokio::test]
@@ -715,14 +796,9 @@ mod tests {
             motd: None,
             line: Some("motd.yml has 2 issues; run sb validate-config".to_string()),
         };
-        let text = report_with(
-            vec![Section::Kernel],
-            colours,
-            docker::Settings::default(),
-            loaded,
-        )
-        .await
-        .unwrap();
+        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded)
+            .await
+            .unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
@@ -738,14 +814,9 @@ mod tests {
             motd: None,
             line: Some("x".to_string()),
         };
-        let text = report_with(
-            vec![Section::Kernel],
-            colours,
-            docker::Settings::default(),
-            loaded,
-        )
-        .await
-        .unwrap();
+        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded)
+            .await
+            .unwrap();
         let paint = Paint::new(&theme, true);
         assert!(
             text.starts_with(&format!(
@@ -755,6 +826,60 @@ mod tests {
             )),
             "{text:?}"
         );
+    }
+
+    /// motd.yml's `systemd` part reaches Services: its addition and
+    /// display name show; a file with issues keeps the defaults alone
+    /// (decision 3).
+    #[tokio::test]
+    async fn services_take_motd_ymls_additions() {
+        let _spawns = packages::tests::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = dir.path().join("systemctl");
+        packages::tests::stand_in(
+            &systemctl,
+            r#"case "$1" in
+  list-units) echo '[{"unit":"docker.service","load":"loaded","active":"failed","sub":"failed","description":"x"},{"unit":"rclone_vfs.service","load":"loaded","active":"inactive","sub":"dead","description":"x"}]' ;;
+  show) ;;
+  *) echo '[]' ;;
+esac"#,
+        );
+        let theme = Theme::plain();
+        let colours = Colours {
+            theme: &theme,
+            on: false,
+        };
+        let motd = config::Motd {
+            systemd: Some(config::Systemd {
+                enabled: true,
+                additional_services: vec!["rclone_vfs".to_string()],
+                display_names: [("rclone_vfs".to_string(), "Rclone".to_string())].into(),
+            }),
+            ..config::Motd::default()
+        };
+        let sources = || Sources {
+            docker: docker::Settings::default(),
+            systemd: Systemd::new().with_program(&systemctl),
+        };
+        let loaded = config::Loaded {
+            motd: Some(motd),
+            line: None,
+        };
+        let text = report_with(vec![Section::Services], colours, sources(), loaded)
+            .await
+            .unwrap();
+        assert_eq!(
+            text,
+            "Services:  Docker   failed\n           Rclone   inactive\n\n"
+        );
+        let loaded = config::Loaded {
+            motd: None,
+            line: Some("x".to_string()),
+        };
+        let text = report_with(vec![Section::Services], colours, sources(), loaded)
+            .await
+            .unwrap();
+        assert_eq!(text, "Config:    x\nServices:  Docker   failed\n\n");
     }
 
     #[tokio::test]
