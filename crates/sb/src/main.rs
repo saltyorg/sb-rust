@@ -150,9 +150,11 @@ const UPDATE_VENV_ABOUT: &str = "Update the Ansible virtual environment from the
 /// (ops spec, "`sb announcements`").
 const ANNOUNCEMENTS_LONG: &str = "Display Saltbox's announcements, or Sandbox's with --repo Sandbox
 
-Reads the repository's announcements.yml, or the file --after names, and
-shows the announcements missing from the --before file; without --before,
-every announcement is new. Migrations run in sb update.";
+Reads the repository's announcements.yml, or the file --after names.
+Announcements missing from the --before file are new; without --before,
+every announcement is. On a terminal, every announcement that applies is
+listed, the new ones marked; piped, the new ones are printed. Migrations
+run in sb update.";
 
 /// `sb list`'s long help, sb-go's (cmd/list.go).
 const LIST_LONG: &str = "List available Saltbox, Sandbox or Saltbox-mod tags

@@ -37,6 +37,8 @@ ansi-to-tui.workspace = true
 # Announcements' Markdown, the inline form (tui spec, Scope; ops spec,
 # "Shown"), with syntect's code highlighting (CONSTRAINTS.md E1).
 tui-markdown.workspace = true
+# The announcement viewer's pane (tui spec, "The announcement viewer").
+tui-scrollview.workspace = true
 # The picker's name filter line (tui spec, "The picker", Keys).
 ratatui-textarea.workspace = true
 # `DisplayText`, the one way untrusted bytes reach the screen (journal

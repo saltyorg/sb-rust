@@ -152,9 +152,66 @@ fn sanitized(message: &str) -> String {
     clean
 }
 
+/// `message` as the announcement viewer draws it (tui spec, "The
+/// announcement viewer"): sanitized and rendered as the inline form
+/// (the palette's sheet; tui-markdown's own sheet, markers and fences
+/// kept, with colour off), tables laid out to `width`, each span's text
+/// made safe again and its colours brought to the profile, none at all
+/// with colour off.
+pub(crate) fn screen_text(message: &str, theme: &Theme, width: u16) -> Text<'static> {
+    let message = sanitized(message);
+    let text = if theme.profile() == Profile::Ascii {
+        render(&message, &Options::default().table_width(width))
+    } else {
+        render(
+            &message,
+            &Options::new(Sheet(theme.clone())).table_width(width),
+        )
+    };
+    let profile = theme.profile();
+    let style = |style| on_screen(style, profile);
+    Text {
+        lines: text
+            .lines
+            .into_iter()
+            .map(|line| Line {
+                spans: line
+                    .spans
+                    .into_iter()
+                    .map(|span| Span::styled(safe(&span.content).into_owned(), style(span.style)))
+                    .collect(),
+                style: style(line.style),
+                alignment: line.alignment,
+            })
+            .collect(),
+        style: style(text.style),
+        alignment: text.alignment,
+    }
+}
+
+/// `style` for the screen in `profile`: its colours brought down as log
+/// spans' are ([`style_in`]); with colour off, none at all, its bold and
+/// italic kept. Why not a colourless style sheet instead: syntect's
+/// highlighting (`highlight-code`) colours fenced code whatever the sheet
+/// says (tui-markdown 0.3.12 `renderer/code.rs`), and `Options` can't turn
+/// it off per call; tui-markdown's default sheet, which keeps the
+/// markers, has named colours too.
+fn on_screen(style: Style, profile: Profile) -> Style {
+    if profile == Profile::Ascii {
+        Style {
+            fg: None,
+            bg: None,
+            underline_color: None,
+            ..style
+        }
+    } else {
+        style_in(style, profile)
+    }
+}
+
 /// `text` sanitized by `DisplayText` (colour off) on one line, its lines
 /// joined by a space.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     DisplayText::from_bytes(text.as_bytes(), false)
         .lines()
         .collect::<Vec<_>>()
@@ -466,6 +523,14 @@ mod tests {
         let spaces = one("h", "- item\n    - sub\n\n- tabbed item\n", &Theme::plain());
         assert_eq!(shown, spaces);
         assert!(shown.contains("- item\n    - sub\n"), "{shown:?}");
+    }
+
+    /// Lines and tabs come through as they were, every piece between them
+    /// sanitized.
+    #[test]
+    fn sanitizing_keeps_lines_and_tabs() {
+        assert_eq!(sanitized("a\n\tb\x07\tc\n"), "a\n\tb\tc\n");
+        assert_eq!(sanitized("\x1b[31mx\x1b[0m"), "x");
     }
 
     #[test]

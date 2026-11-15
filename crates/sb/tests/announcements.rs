@@ -3,15 +3,21 @@
 //! directory, which is also the Saltbox root, and the inline output on
 //! stdout. Migrations are never listed, asked about or run here (a
 //! stand-in `ansible-playbook` that would leave a mark). Root runs
-//! (`SB_TEST_ROOT=1`): the command needs root; each run has no
-//! controlling terminal (`setsid -w`).
+//! (`SB_TEST_ROOT=1`): the command needs root; each piped run has no
+//! controlling terminal (`setsid -w`). On a PTY ([`Pty`], as the log
+//! screens' harness), the viewer opens and closes.
 
 mod common;
 mod root_gate;
 
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 
 const BEFORE: &str = "---\nannouncements:\n  - date: \"2026-01-10\"\n    title: \"Old news\"\n    \
                       message: |\n      Already seen.\n";
@@ -72,6 +78,28 @@ impl Files {
         cmd.arg("-w").arg(sb).arg("announcements").args(args);
         cmd.current_dir(self.dir.path());
         cmd.output().expect("run sb")
+    }
+
+    /// The environment of a PTY run: the Saltbox root, and the stand-in
+    /// as the playbook and first on `PATH`, as [`Files::run`] sets them.
+    fn pty_envs(&self) -> Vec<(&'static str, String)> {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![self.dir.path().to_path_buf()];
+        dirs.extend(std::env::split_paths(&path));
+        vec![
+            ("SB_SALTBOX_DIR", self.dir.path().display().to_string()),
+            (
+                "SB_ANSIBLE_PLAYBOOK",
+                self.path("ansible-playbook").display().to_string(),
+            ),
+            (
+                "PATH",
+                std::env::join_paths(dirs)
+                    .expect("PATH")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ]
     }
 
     fn ran(&self) -> bool {
@@ -263,7 +291,209 @@ fn it_is_shown_with_sb_gos_flags() {
         assert!(!help.contains(flag), "{flag}: {help}");
     }
     assert!(
-        help.contains("without --before,\n  every announcement is new"),
+        help.contains("On a terminal, every announcement that applies"),
         "{help}"
     );
+}
+
+/// On a terminal, the viewer: every entry that applies, the new ones
+/// marked; `q` closes it, exit 0, the terminal restored.
+#[test]
+fn on_a_terminal_the_viewer_lists_every_entry_and_q_closes_it() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    let logs = files.path("logs");
+    std::fs::create_dir(&logs).expect("logs");
+    let mut envs = files.pty_envs();
+    envs.push(("SB_LOG_DIR", logs.display().to_string()));
+    let before = files.path("before.yml").display().to_string();
+    let after = files.path("after.yml").display().to_string();
+    let mut pty = Pty::spawn(&["announcements", "-b", &before, "-a", &after], &envs);
+    assert!(pty.showing("Announcements · 2 new"), "{}", pty.contents());
+    let screen = pty.contents();
+    for text in ["Settings moved", "New defaults", "Old news", " NEW "] {
+        assert!(screen.contains(text), "{text}: {screen}");
+    }
+    assert!(!screen.contains("Gated"), "{screen}");
+    pty.send(b"q");
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}\n{}", pty.contents());
+    pty.assert_restored();
+    assert!(!files.ran(), "a playbook ran");
+    let log = std::fs::read_to_string(logs.join("sb.log")).unwrap_or_default();
+    assert!(log.contains("announcement viewer opened"), "{log}");
+    assert!(
+        !log.contains("Settings moved"),
+        "no title in the log: {log}"
+    );
+}
+
+/// Ctrl-C on the viewer: exit 130, quietly, the terminal restored.
+#[test]
+fn ctrl_c_on_the_viewer_exits_130() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    let envs = files.pty_envs();
+    let after = files.path("after.yml").display().to_string();
+    let mut pty = Pty::spawn(&["announcements", "-a", &after], &envs);
+    assert!(pty.showing("Announcements · 3 new"), "{}", pty.contents());
+    pty.send(b"\x03");
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 130, "{}", pty.contents());
+    pty.assert_restored();
+    assert!(!pty.contents().contains("ERROR"), "{}", pty.contents());
+}
+
+/// On a terminal with nothing that applies, no viewer opens.
+#[test]
+fn on_a_terminal_nothing_to_show_opens_nothing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    let envs = files.pty_envs();
+    let mut pty = Pty::spawn(&["announcements"], &envs);
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}\n{}", pty.contents());
+    assert!(
+        pty.contents().contains("No new announcements"),
+        "{}",
+        pty.contents()
+    );
+    assert!(
+        !pty.contents().contains("Announcements ·"),
+        "{}",
+        pty.contents()
+    );
+    pty.assert_restored();
+}
+
+/// How long a PTY test waits for the screen or for sb to exit.
+const WAIT: Duration = Duration::from_secs(20);
+
+/// sb on a PTY of 100×30 (portable-pty), its screen parsed through vt100
+/// as it arrives: the log screens' harness (`logs_pty`), cut to what
+/// these tests use. Why not that module itself: most of it (the
+/// `systemctl` world, the open-files limit) would be dead code in this
+/// test binary, which the gate's warnings refuse, as `edit.rs` found.
+struct Pty {
+    child: Box<dyn Child + Send + Sync>,
+    _master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn std::io::Write + Send>,
+    output: mpsc::Receiver<Vec<u8>>,
+    parser: vt100::Parser,
+}
+
+impl Pty {
+    /// sb with `args`, `common::apply_sb_env`'s environment, then
+    /// `TERM=xterm-256color`, `NO_COLOR` and `envs`.
+    fn spawn(args: &[&str], envs: &[(&str, String)]) -> Self {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 30,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("pty");
+        let mut base = common::sb();
+        let mut cmd = CommandBuilder::new(base.get_program());
+        for (k, v) in base.get_envs() {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            }
+        }
+        base.args(args);
+        cmd.args(base.get_args());
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("NO_COLOR", "1");
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let child = pair.slave.spawn_command(cmd).expect("spawn");
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().expect("reader");
+        let writer = pair.master.take_writer().expect("writer");
+        let (tx, output) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0; 4096];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            _master: pair.master,
+            writer,
+            output,
+            parser: vt100::Parser::new(30, 100, 0),
+        }
+    }
+
+    fn send(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).expect("write");
+        self.writer.flush().expect("flush");
+    }
+
+    fn contents(&self) -> String {
+        self.parser.screen().contents()
+    }
+
+    /// Wait until the screen shows `text`; false at the timeout.
+    fn showing(&mut self, text: &str) -> bool {
+        let deadline = Instant::now() + WAIT;
+        while !self.contents().contains(text) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            match self.output.recv_timeout(left) {
+                Ok(bytes) => self.parser.process(&bytes),
+                Err(_) => break,
+            }
+        }
+        self.contents().contains(text)
+    }
+
+    /// Wait for sb to exit, reading its output meanwhile.
+    fn exit(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("wait") {
+                while let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(200)) {
+                    self.parser.process(&bytes);
+                }
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "sb didn't exit:\n{}",
+                self.contents()
+            );
+            if let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(10)) {
+                self.parser.process(&bytes);
+            }
+        }
+    }
+
+    /// The alternate screen left, mouse capture off, the cursor shown.
+    fn assert_restored(&self) {
+        let screen = self.parser.screen();
+        assert!(!screen.alternate_screen(), "{}", screen.contents());
+        assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        assert!(!screen.hide_cursor());
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }

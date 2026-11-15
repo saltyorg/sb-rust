@@ -287,6 +287,35 @@ fn new_means_a_date_and_title_the_before_file_lacks() {
     );
 }
 
+/// The viewer's list: every entry that applies, in the file's order,
+/// each marked new or not by the same rule.
+#[test]
+fn classify_keeps_every_applicable_entry_marking_the_new_ones() {
+    let before = [entry("2026-01-01", "a")];
+    let dir = tempfile::tempdir().expect("dir");
+    let mut gated = entry("2026-01-04", "gated");
+    gated.required_file = dir.path().join("missing").display().to_string();
+    let after = [
+        entry("2026-01-03", "c"),
+        entry("2026-01-01", "a"),
+        gated,
+        entry("2026-01-02", "b"),
+    ];
+    let marked = |listed: Vec<(Announcement, bool)>| -> Vec<(String, bool)> {
+        listed.into_iter().map(|(a, new)| (a.title, new)).collect()
+    };
+    assert_eq!(
+        marked(classify(Some(&before), Some(&after))),
+        [("c".into(), true), ("a".into(), false), ("b".into(), true)]
+    );
+    assert!(classify(None, Some(&after)).iter().all(|(_, new)| *new));
+    assert_eq!(classify(Some(&before), None), []);
+    assert_eq!(
+        titles(&only_new(classify(Some(&before), Some(&after)))),
+        ["b", "c"]
+    );
+}
+
 #[test]
 fn the_identity_is_sb_gos_joined_text() {
     // `2026|x` + `y` and `2026` + `x|y` are one key in sb-go.

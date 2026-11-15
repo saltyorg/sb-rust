@@ -149,6 +149,9 @@ ansi-to-tui = "8.0.1"
 # decision 8). Its default `highlight-code` feature (syntect) stays on:
 # YAML highlighting in announcements, CONSTRAINTS.md exception E1.
 tui-markdown = "0.3.12"
+# The announcement viewer's pane (ratatui org; plan decision 8; tui spec,
+# "The announcement viewer", Scrolling): it scrolls only what doesn't fit.
+tui-scrollview = "0.6.8"
 # The picker's name filter line (ratatui org; tui spec, Tech Stack: 0.9.4
 # was under two weeks old when the spec was checked).
 ratatui-textarea = "0.9.3"

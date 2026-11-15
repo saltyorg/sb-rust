@@ -8,7 +8,7 @@
 //! them.
 
 use std::collections::HashSet;
-use std::io;
+use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
 
 use saphyr::{MarkedYamlOwned, YamlDataOwned};
@@ -21,6 +21,8 @@ use sb_config::issue::Issue;
 use sb_config::parse;
 use sb_config::scalar::{Value, resolve};
 use sb_term_ui::{Labels, Options, Runner};
+use sb_tui::Ending;
+use sb_tui::announcements::Entry;
 use sb_tui::markdown;
 
 /// The repositories that ship announcements (ops spec, assumption 7).
@@ -346,30 +348,52 @@ fn yes_no(word: &str) -> Option<bool> {
     }
 }
 
-/// The entries of `after` to show (sb-go's `CheckSingleRepoAnnouncements`):
-/// none without an after file; with no before file, or an empty one,
-/// every entry; else those whose `date|title` the before file lacks. Then
-/// only those whose required folder and file are there ([`applies`]),
-/// sorted by their date's text, a stable sort (sb-go's `sort.Slice` left
-/// equal dates in any order).
+/// The entries of `after` that apply ([`applies`]: their required folder
+/// and file are there), in the file's order, each with whether it is new
+/// (sb-go's `CheckSingleRepoAnnouncements`): none without an after file;
+/// with no before file, or an empty one, every entry is new; else those
+/// whose `date|title` the before file lacks. The viewer's list (tui spec,
+/// "The announcement viewer", Input).
 #[must_use]
-pub fn new_entries(
+pub fn classify(
     before: Option<&[Announcement]>,
     after: Option<&[Announcement]>,
-) -> Vec<Announcement> {
+) -> Vec<(Announcement, bool)> {
     let Some(after) = after else {
         return Vec::new();
     };
     // sb-go's key: the two joined by `|`.
     let key = |a: &Announcement| format!("{}|{}", a.date, a.title);
     let seen: HashSet<String> = before.unwrap_or_default().iter().map(key).collect();
-    let mut new: Vec<Announcement> = after
+    after
         .iter()
-        .filter(|a| !seen.contains(&key(a)) && applies(a))
-        .cloned()
+        .filter(|a| applies(a))
+        .map(|a| (a.clone(), !seen.contains(&key(a))))
+        .collect()
+}
+
+/// The new ones of `classified`, sorted by their date's text, a stable
+/// sort (sb-go's `sort.Slice` left equal dates in any order): what the
+/// inline form shows.
+#[must_use]
+pub fn only_new(classified: Vec<(Announcement, bool)>) -> Vec<Announcement> {
+    let mut new: Vec<Announcement> = classified
+        .into_iter()
+        .filter_map(|(a, new)| new.then_some(a))
         .collect();
     new.sort_by(|a, b| a.date.cmp(&b.date));
     new
+}
+
+/// The entries of `after` to show inline (sb-go's
+/// `CheckSingleRepoAnnouncements`): [`classify`]'s new ones, by date
+/// ([`only_new`]).
+#[must_use]
+pub fn new_entries(
+    before: Option<&[Announcement]>,
+    after: Option<&[Announcement]>,
+) -> Vec<Announcement> {
+    only_new(classify(before, after))
 }
 
 /// Whether `announcement`'s gates hold (sb-go's `shouldShowAnnouncement`):
@@ -457,9 +481,8 @@ fn long_date(text: &str) -> Option<String> {
 
 /// Write `shown` on stdout in tui's inline Markdown form, each under its
 /// heading (ops spec, "Shown"), in colour as stdout's choice says, tables
-/// fitted to stdout's terminal when it is one. On a terminal too, until
-/// tui's announcement viewer exists (ops spec, Scope: "until then
-/// announcements print inline"; module build M87).
+/// fitted to stdout's terminal when it is one: the form for stdout that
+/// isn't a terminal (`update` uses it on a terminal too until M87).
 ///
 /// # Errors
 ///
@@ -478,15 +501,54 @@ pub fn show(shown: &[(Repo, Vec<Announcement>)]) -> anyhow::Result<()> {
         .iter()
         .map(|(heading, message)| markdown::Announcement { heading, message })
         .collect();
-    let theme = if sb_term_ui::colour_on(sb_term_ui::Stream::Stdout) {
-        theme::current().clone()
-    } else {
-        Theme::plain()
-    };
+    let theme = stdout_theme();
     let width = sb_term_ui::stdout_width().and_then(|w| u16::try_from(w).ok());
     let mut out = io::stdout().lock();
     markdown::write_inline(&mut out, &items, &theme, width).map_err(exit::output_error)?;
     Ok(())
+}
+
+/// The run's theme, or none when stdout gets no colour (`NO_COLOR`,
+/// `--color=never`, a pipe), as sb's other output reads it (term-ui's
+/// `colour_on`): the inline form's and the viewer's, as sb's log
+/// screens choose theirs.
+fn stdout_theme() -> Theme {
+    if sb_term_ui::colour_on(sb_term_ui::Stream::Stdout) {
+        theme::current().clone()
+    } else {
+        Theme::plain()
+    }
+}
+
+/// tui's announcement viewer over `listed`, `repo`'s, when any apply
+/// (ops spec, "`sb announcements`"). Ctrl-C on it ends sb with 130, as on
+/// the log screens.
+///
+/// # Errors
+///
+/// The screen's I/O error; cli-core's `Exit(130)` after Ctrl-C.
+async fn view(
+    repo: Repo,
+    listed: Vec<(Announcement, bool)>,
+    shutdown: &Shutdown,
+) -> anyhow::Result<()> {
+    if listed.is_empty() {
+        return Ok(());
+    }
+    let entries = listed
+        .into_iter()
+        .map(|(a, new)| Entry {
+            repo: repo.name().to_owned(),
+            date: a.date,
+            title: a.title,
+            message: a.message,
+            new,
+        })
+        .collect();
+    match sb_tui::announcements::view(shutdown, entries, stdout_theme()).await? {
+        Ending::Interrupted => Err(exit::Exit(130).into()),
+        Ending::Quit | Ending::Cancelled => Ok(()),
+    }
 }
 
 /// The file each repository keeps its announcements in.
@@ -531,8 +593,9 @@ pub struct AnnouncementsArgs {
 /// `sb announcements` (ops spec, "`sb announcements`"): the announcements
 /// of the repository `--repo` names, from `--after` (else its own file
 /// under the Saltbox root `root`, [`own_file`]), those `--before` lacks
-/// marked new (without it, all of them), shown as `update` shows them. A
-/// missing file is no file. It only shows: migrations run in `sb update`
+/// marked new (without it, all of them): on a terminal every one that
+/// applies in tui's viewer, else the new ones inline. A missing file is
+/// no file. It only shows: migrations run in `sb update`
 /// (maintainer, 2026-11-15). The loading is one runner step, whose info
 /// line says whether announcements follow; the runner is done before
 /// anything reaches stdout.
@@ -540,7 +603,8 @@ pub struct AnnouncementsArgs {
 /// # Errors
 ///
 /// An unknown repository name, or a file that can't be loaded (sb-go's
-/// texts, exit 1), or a failed write to stdout.
+/// texts, exit 1), a failed write to stdout, the viewer's I/O error, or
+/// `Exit(130)` after Ctrl-C on it.
 pub async fn announcements(
     args: &AnnouncementsArgs,
     root: &Path,
@@ -575,24 +639,30 @@ pub async fn announcements(
                     None => None,
                 };
                 let after = loaded("after", &after)?;
-                let new = new_entries(before.as_deref(), after.as_deref());
+                let listed = classify(before.as_deref(), after.as_deref());
+                let new = listed.iter().filter(|(_, new)| *new).count();
                 tracing::info!(
                     repo = repo.name(),
                     before = args.before.is_some(),
-                    new = new.len(),
+                    listed = listed.len(),
+                    new,
                     "announcements compared"
                 );
-                step.info(if new.is_empty() {
+                step.info(if new == 0 {
                     "No new announcements"
                 } else {
                     "Displaying new announcements"
                 });
-                Ok(new)
+                Ok(listed)
             },
         )
         .await;
     runner.finish();
-    let new = found?;
+    let listed = found?;
+    if io::stdout().is_terminal() {
+        return view(repo, listed, shutdown).await;
+    }
+    let new = only_new(listed);
     if new.is_empty() {
         return Ok(());
     }

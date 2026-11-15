@@ -9,9 +9,10 @@
 //! ([`status`]); then the viewer ([`viewer`]) and its lines ([`line`]),
 //! the picker ([`picker`]) and `sb logs`' screens ([`logs`]), with the
 //! inline fallback when stdout isn't a terminal ([`inline`]). And the
-//! announcements' inline form ([`markdown`]), for ops' `update` and `sb
-//! announcements`.
+//! announcements' inline form ([`markdown`]) and their viewer
+//! ([`announcements`]), for ops' `update` and `sb announcements`.
 
+pub mod announcements;
 mod columns;
 pub mod line;
 pub mod markdown;

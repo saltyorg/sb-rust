@@ -17,7 +17,8 @@ sb-config.workspace = true
 saphyr.workspace = true
 # `sb announcements`' runner step (term-ui).
 sb-term-ui.workspace = true
-# The announcements' inline Markdown form (tui spec, Scope).
+# The announcements' inline Markdown form and their viewer (tui spec,
+# Scope and "The announcement viewer").
 sb-tui.workspace = true
 # The heading's date (ops spec, Project Structure).
 jiff.workspace = true
