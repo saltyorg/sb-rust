@@ -537,15 +537,15 @@ and 22), parsing M11's queries from fixtures and moving the source files
 aside through `remove_sources_mentioning`. update-venv is complete.
 
 **Acceptance criteria:**
-- [ ] Parsing of `dpkg-query` and `apt-cache policy` fixtures picks
+- [x] Parsing of `dpkg-query` and `apt-cache policy` fixtures picks
       exactly the spec's packages.
-- [ ] Removal and autoremove run only when there is something to remove;
+- [x] Removal and autoremove run only when there is something to remove;
       the sources move to `/var/backups/sb/deadsnakes/<run id>/`.
-- [ ] Not 22.04: nothing to do.
+- [x] Not 22.04: nothing to do.
 
 **Verification:**
-- [ ] `cargo test -p sb-python-env` with fixtures.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-python-env` with fixtures.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M11, M19
 **Files:** `crates/python-env/src/deadsnakes.rs`, `crates/python-env/tests/fixtures/`
