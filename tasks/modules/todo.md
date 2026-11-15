@@ -998,14 +998,14 @@ library-reviewer.
 and the host-pci.ids parser (decision 2) with fixture tests.
 
 **Acceptance criteria:**
-- [ ] Package and reboot status as sb-go on fixtures.
-- [ ] The pci.ids parser reads the host's file at run time; no embedded
+- [x] Package and reboot status as sb-go on fixtures.
+- [x] The pci.ids parser reads the host's file at run time; no embedded
       database.
-- [ ] A missing file or GPU leaves the section as the spec says.
+- [x] A missing file or GPU leaves the section as the spec says.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-motd`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M38
 **Files:** `crates/motd/src/{packages.rs,gpu.rs}`, `crates/motd/tests/fixtures/`
@@ -1020,14 +1020,14 @@ and the host-pci.ids parser (decision 2) with fixture tests.
 then sessions and the last login.
 
 **Acceptance criteria:**
-- [ ] The platform note records versions and method, no environment
+- [x] The platform note records versions and method, no environment
       details.
-- [ ] Sessions and last login match each release's fixtures.
-- [ ] A missing `loginctl` or `last` leaves the section as the spec says.
+- [x] Sessions and last login match each release's fixtures.
+- [x] A missing `loginctl` or `last` leaves the section as the spec says.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd`; the container matrix under the cap.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-motd`; the container matrix under the cap.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M39
 **Files:** `crates/motd/src/logins.rs`, `crates/motd/tests/matrix.sh`, `docs/platform-notes/motd-sources.md`
@@ -1041,13 +1041,13 @@ then sessions and the last login.
 Traefik client.
 
 **Acceptance criteria:**
-- [ ] Container counts and states from the fake Engine API.
-- [ ] Traefik's status from a fake server, with the spec's errors.
-- [ ] Docker unreachable shows the spec's line.
+- [x] Container counts and states from the fake Engine API.
+- [x] Traefik's status from a fake server, with the spec's errors.
+- [x] Docker unreachable shows the spec's line.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-motd`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M40
 **Files:** `crates/motd/src/docker.rs`, `crates/motd/tests/`
