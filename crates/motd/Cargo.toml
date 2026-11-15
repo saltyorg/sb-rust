@@ -20,19 +20,30 @@ regex.workspace = true
 # `uname(2)` for Kernel, `statvfs(3)` and `stat(2)` for Disk Usage (motd
 # spec, Sections; decision 16).
 rustix = { workspace = true, features = ["fs", "system"] }
-# loginctl's session list (motd spec, Tech Stack).
+# loginctl's session list and Traefik's routers (motd spec, Tech Stack).
+serde.workspace = true
 serde_json.workspace = true
+# Docker and Traefik: the run's one container listing and its roles
+# (motd decision 13).
+sb-docker.workspace = true
+# Traefik's answer read through the 1 MiB body cap, its errors' chain.
+sb-config.workspace = true
+# Traefik's routers (motd decision 15).
+reqwest.workspace = true
 # Every child: update-notifier's scripts, apt, loginctl and last
 # (CONSTRAINTS.md).
 sb-exec.workspace = true
 thiserror.workspace = true
 # The sections' tasks and the 30 s cap (motd decision 11).
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 # The token sb-exec's `capture` takes.
 tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Docker's fake Engine API and Traefik's fake server (motd spec, Testing).
+sb-docker = { workspace = true, features = ["testing"] }
+sb-config = { workspace = true, features = ["testing"] }
 # The runner's tests on tokio's paused clock (motd spec, Testing).
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 tempfile.workspace = true

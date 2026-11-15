@@ -1,12 +1,13 @@
 //! `sb motd` (motd spec): the banner, then one aligned `Key:  value` line
 //! per selected section, collected in parallel. Built so far: the
 //! selection rules, the runner, the layout, the system sections, Disk
-//! Usage, Package Status, GPU, User Sessions and Last login (module build
-//! M36-M40); the other sections, motd.yml, the banner and `--share` come
-//! with their own tasks (M41-M47), and until then a selected section
-//! without its code shows no line.
+//! Usage, Package Status, GPU, User Sessions, Last login, Docker and
+//! Traefik (module build M36-M41); the other sections, motd.yml, the
+//! banner and `--share` come with their own tasks (M42-M47), and until
+//! then a selected section without its code shows no line.
 
 mod disk;
+mod docker;
 pub mod gpu;
 mod layout;
 mod logins;
@@ -14,6 +15,8 @@ mod packages;
 pub mod run;
 mod system;
 mod text;
+
+use std::sync::Arc;
 
 use sb_cli_core::theme::{Role, Theme};
 
@@ -279,13 +282,24 @@ pub enum Level {
 ///
 /// [`Error::NothingSelected`] when no section is chosen.
 pub async fn report(options: &Options, colours: Colours<'_>) -> Result<String, Error> {
+    report_with(options, colours, docker::Settings::from_env()).await
+}
+
+/// [`report`] with Docker's and Traefik's settings given, not read from
+/// the environment (the tests' fakes).
+async fn report_with(
+    options: &Options,
+    colours: Colours<'_>,
+    settings: docker::Settings,
+) -> Result<String, Error> {
     let chosen = options.chosen()?;
     let names: Vec<&str> = chosen.iter().map(|s| s.flag()).collect();
     tracing::info!(sections = names.join(","), "motd sections chosen");
     let paint = Paint::new(colours.theme, colours.on);
+    let containers = docker::Containers::new(settings);
     let jobs = chosen
         .into_iter()
-        .filter_map(|section| job(section, &paint).map(|job| (section, job)))
+        .filter_map(|section| job(section, &paint, &containers).map(|job| (section, job)))
         .collect();
     let results = run::collect(jobs, run::CAP).await;
     Ok(layout::render(&results, |key| colours.label(key)))
@@ -300,8 +314,9 @@ pub async fn report(options: &Options, colours: Colours<'_>) -> Result<String, E
 /// or tokio's `spawn_blocking`
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>), as
 /// Disk Usage and GPU do.
-fn job(section: Section, paint: &Paint) -> Option<run::Job> {
+fn job(section: Section, paint: &Paint, containers: &Arc<docker::Containers>) -> Option<run::Job> {
     let paint = paint.clone();
+    let containers = Arc::clone(containers);
     let job: run::Job = match section {
         Section::Distribution => Box::pin(async { system::distribution_here() }),
         Section::Kernel => Box::pin(async { system::kernel_here() }),
@@ -322,6 +337,8 @@ fn job(section: Section, paint: &Paint) -> Option<run::Job> {
         Section::LastLogin => {
             Box::pin(async move { logins::last_login(&logins::Tools::system(), &paint).await })
         }
+        Section::Docker => Box::pin(async move { docker::docker(&containers, &paint).await }),
+        Section::Traefik => Box::pin(async move { docker::traefik(&containers, &paint).await }),
         Section::Reboot => {
             Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
         }
@@ -469,7 +486,14 @@ mod tests {
             theme: &theme,
             on: false,
         };
-        let text = report(&options, colours).await.unwrap();
+        // Docker at a socket that isn't there: the host's daemon is never
+        // asked.
+        let dir = tempfile::tempdir().unwrap();
+        let settings = docker::Settings {
+            docker_host: Some(format!("unix://{}", dir.path().join("none.sock").display())),
+            ..docker::Settings::default()
+        };
+        let text = report_with(&options, colours, settings).await.unwrap();
         let keys: Vec<&str> = text
             .lines()
             .filter(|line| !line.starts_with(' ') && !line.is_empty())
@@ -493,14 +517,17 @@ mod tests {
                 "User Sessions:",
                 "Last login:",
                 "Disk Usage:",
+                "Docker:",
+                "Traefik:",
             ]
         );
         assert!(text.ends_with("\n\n"));
-        assert!(job(Section::Jellyfin, &Paint::plain()).is_none());
+        let none = docker::Containers::new(docker::Settings::default());
+        assert!(job(Section::Jellyfin, &Paint::plain(), &none).is_none());
         // GPU's and Reboot Status's lines may be hidden here; their jobs
         // are there.
-        assert!(job(Section::Gpu, &Paint::plain()).is_some());
-        assert!(job(Section::Reboot, &Paint::plain()).is_some());
+        assert!(job(Section::Gpu, &Paint::plain(), &none).is_some());
+        assert!(job(Section::Reboot, &Paint::plain(), &none).is_some());
     }
 
     #[test]

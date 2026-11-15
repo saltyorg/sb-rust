@@ -300,7 +300,10 @@ never reach stdout, stderr or the run log.
       Stopped with exit 0, created and paused are Idle, so they are counted
       but not listed. sb-go listed them.
     - The daemon is reached through bollard, and an unreachable daemon
-      reads `Error: <cause>`.
+      reads `Error: <cause>` in the error colour.
+    - A container whose inspect failed (other than removed since the
+      list) needs attention, listed by its short ID as `inspect failed`
+      (M41; sb-go ran no inspect, and raised with the maintainer).
 11. **Traefik:** a non-JSON answer reads `Error: unexpected answer from
     Traefik (HTTP <code>)`. sb-go's `curl -s` hid connection errors and
     showed "Failed to parse".
@@ -872,6 +875,19 @@ Nothing touches a real host's state, and every fixture is synthetic.
   logind already lists the login being made on every release, where
   utmp doesn't yet on 22.04 and 24.04; logind also lists a command run
   over SSH without a terminal, which utmp never holds (Difference 7).
+- **Docker and Traefik (M41, 2026-11-15).** One sb-docker listing serves
+  both sections. It is limited to sb-go's 5 s for its `docker ps` child
+  (decision 11's 5 s per child; a daemon that takes the connection and
+  doesn't answer, such as docker.socket while dockerd starts, would
+  otherwise hold the login for the section's 30 s); past it, the list
+  reads as unavailable, sb-go's text for a failed `docker ps`. Traefik's
+  call has curl's 3 s connect limit inside the same 5 s, which bounded
+  sb-go's `curl` child; past either, the API reads as not accessible.
+  The `traefik` row counts as up when it is running, paused or
+  restarting, the states `docker ps` without `-a` lists. Its proxy is
+  reqwest's reading of the proxy variables in a run (sb-config's
+  `Proxy::System`) and none in the tests. The tests set Traefik's base
+  through the settings, which a run reads from `SB_MOTD_TRAEFIK_URL`.
 - **Disk Usage beside sb-go (M38):** decided by the maintainer,
   2026-11-14: Differences 23 and 24. Control characters in a mount point are dropped by
   `DisplayText` (decision 24), where df writes `?`.
