@@ -2120,6 +2120,15 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **Every run log line carries the run id** (lane 4; the maintainer,
+      2026-11-15). sb-host's ownership lines (`sb_host::owner: ownership
+      ...`, `recursive ownership ...`) are written outside the run's span,
+      so grepping a run id misses them; carry the span into every thread
+      (`Span::current()` and `in_scope`, or `Instrument`).
+- [ ] **Values sb computes are shown, not `[ARG]`** (lane 4; the
+      maintainer, 2026-11-15). python-env's children log sb's own paths
+      as `[ARG]` (`uv pip sync --python [ARG] ... [ARG]`); show every value
+      sb computes with exec's `shown_value`, and mask only real secrets.
 - [ ] **Mutation passes run in a sandbox** (the gate; the maintainer,
       2026-11-15). The passes run tests as root, so a mutant that bends a
       path or drops a safety flag writes on the host: on 2026-11-15 a
