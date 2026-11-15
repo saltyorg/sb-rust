@@ -1062,15 +1062,15 @@ model read through `check_file` (motd decision 17), the `Config:` line,
 colours, `--generate-config` and its golden file.
 
 **Acceptance criteria:**
-- [ ] motd.yml is read once through `check_file`; issues show on the
+- [x] motd.yml is read once through `check_file`; issues show on the
       `Config:` line as the spec says.
-- [ ] `--generate-config` matches its golden file.
-- [ ] Screenshots of `sb motd` with a configured motd.yml and with a
+- [x] `--generate-config` matches its golden file.
+- [x] Screenshots of `sb motd` with a configured motd.yml and with a
       broken one.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd -p sb`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-motd -p sb`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M41, M48
 **Files:** `crates/motd/src/config.rs`, `crates/motd/tests/`, `crates/sb/tests/motd.rs`
@@ -1247,15 +1247,15 @@ exit codes, the log record; fake-editor tests through the binary.
 term-ui's confirm, and `--no-edit-again`.
 
 **Acceptance criteria:**
-- [ ] After the editor exits, the file's issues show under the step as
+- [x] After the editor exits, the file's issues show under the step as
       validate-config shows them.
-- [ ] With issues, the confirm offers another edit; `--no-edit-again`
+- [x] With issues, the confirm offers another edit; `--no-edit-again`
       answers no.
-- [ ] Screenshots of a clean edit and of one with issues.
+- [x] Screenshots of a clean edit and of one with issues.
 
 **Verification:**
-- [ ] `cargo test -p sb`; `crates/sb/tests/edit.rs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb`; `crates/sb/tests/edit.rs`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M49, M26 (the confirm)
 **Files:** `crates/sb/src/edit.rs`, `crates/sb/tests/edit.rs`
