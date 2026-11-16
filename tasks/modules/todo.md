@@ -1927,14 +1927,14 @@ branch commands on repo, replacing M5's bare wiring, with
 land (each added in M85).
 
 **Acceptance criteria:**
-- [ ] `<name>` is required and checked by `check_branch_name`.
-- [ ] Each resets its checkout through `fetch_and_reset` with the Saltbox
+- [x] `<name>` is required and checked by `check_branch_name`.
+- [x] Each resets its checkout through `fetch_and_reset` with the Saltbox
       user as owner.
-- [ ] sb-go's texts and help.
+- [x] sb-go's texts and help.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb` on local bare repositories.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb` on local bare repositories.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M78, M8, M12
 **Files:** `crates/ops/src/branch.rs`, `crates/sb/src/{main.rs,branch.rs}`, `crates/sb/tests/branch.rs`
@@ -1949,15 +1949,15 @@ land (each added in M85).
 stub-and-namespace harness the later ops tests use.
 
 **Acceptance criteria:**
-- [ ] Each piece runs host's apt and file calls in sb-go's order with its
+- [x] Each piece runs host's apt and file calls in sb-go's order with its
       texts and modes.
-- [ ] The harness runs them against stand-in programs and a temporary
+- [x] The harness runs them against stand-in programs and a temporary
       root.
-- [ ] `add_repositories` is host's (M10), not re-implemented.
+- [x] `add_repositories` is host's (M10), not re-implemented.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M79, M9, M10
 **Files:** `crates/ops/src/{prereq.rs,locale.rs,configs.rs,hooks.rs,testing.rs}`
@@ -1971,14 +1971,14 @@ stub-and-namespace harness the later ops tests use.
 symlinked root, and the container matrix on 22.04, 24.04 and 26.04.
 
 **Acceptance criteria:**
-- [ ] A relaunched `runner` user's run leaves the venv, uv, the fact and
+- [x] A relaunched `runner` user's run leaves the venv, uv, the fact and
       the six configs owned as the spec says.
-- [ ] The symlinked Saltbox root works.
-- [ ] The matrix passes on three releases.
+- [x] The symlinked Saltbox root works.
+- [x] The matrix passes on three releases.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb`; `gha-matrix.sh` under the cap.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb`; `gha-matrix.sh` under the cap.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M80, M16, M19
 **Files:** `crates/ops/src/gha.rs`, `crates/ops/tests/gha-matrix.sh`, `crates/sb/src/{main.rs,gha.rs}`
