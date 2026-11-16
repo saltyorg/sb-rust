@@ -370,6 +370,14 @@ To discuss with the maintainer once every module is done, not before:
     may land somewhere else than plain musl does. The pair the
     maintainer picks, and its effect on size and startup, goes in the
     ADR that records the choice.
+- **A performance pass** (maintainer, 2026-11-16), once the libc and
+  allocator choice is settled, so it profiles the build that ships. Each
+  command's hot paths are measured and profiled (CPU time, allocations,
+  syscalls and I/O, startup) to find where sb's own code could be faster
+  or lighter, then changed only where a measurement shows a gain and
+  correctness holds: every test, the mutation score and the specs'
+  behaviour stay as they are, and each change carries its before and
+  after figures. What it finds can also set tighter ratchet rows.
 - **A phase exploring alternative output designs** (maintainer,
   2026-11-14). The maintainer's design canvas "sb list: refined columns"
   (https://claude.ai/artifact/FLU6EQNhqSh2BHD9NkeHv2) is the starting point, one of the designs to weigh, not a spec. It
