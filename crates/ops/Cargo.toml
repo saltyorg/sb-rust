@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The stand-in programs and temporary root setup's and gha's shared pieces
+# run against (`testing` module), for sb-ops' tests and later sb's: never
+# in a release build.
+testing = ["dep:tempfile", "sb-host/testing"]
+
 [dependencies]
 sb-cli-core.workspace = true
 # announcements.yml through Saltbox's YAML entry (ops spec, "Announcements";
@@ -20,6 +26,16 @@ sb-term-ui.workspace = true
 # The branch commands' fetch and reset of Saltbox's checkouts (ops spec,
 # "`sb branch <name>` and `sb branch-sandbox <name>`").
 sb-repo.workspace = true
+# setup's and gha's apt sequence and sources (ops spec, assumption 4: host's
+# apt, `add_repositories`).
+sb-host.workspace = true
+# The locale programs and the git hooks script (every child through exec).
+sb-exec.workspace = true
+# The config files' handles: opened without following a link, `fstat`ed
+# (ops spec, `secure_existing_configs`).
+rustix.workspace = true
+# The harness's temporary root (`testing` only).
+tempfile = { workspace = true, optional = true }
 # The announcements' inline Markdown form and their viewer (tui spec,
 # Scope and "The announcement viewer").
 sb-tui.workspace = true
@@ -33,6 +49,12 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Itself with `testing`, for the harness its tests run (as sb-python-env's).
+sb-ops = { workspace = true, features = ["testing"] }
+# The steps drawn to memory, and the runner's shutdown.
+sb-term-ui = { workspace = true, features = ["testing"] }
+indicatif.workspace = true
+tokio = { workspace = true, features = ["macros", "sync"] }
 
 [lints]
 workspace = true

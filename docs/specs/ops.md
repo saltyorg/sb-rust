@@ -223,9 +223,13 @@ gha. For each `<root>/defaults/*.default`, in name order:
 - the destination is `<root>/<name without .default>`;
 - missing: a step `Copying <file>.default` copies it, created
   exclusively (`O_CREAT | O_EXCL`, 0600, no following);
-- present: `lstat`; a symlink or non-regular file is refused (`could not
-  secure <path>: not a regular file`); a regular file is chmodded to
-  0600; its content is untouched.
+- present: `lstat`; a symlink is refused (`configuration file <path>
+  must not be a symlink`), another non-regular file too (`configuration
+  file <path> is not a regular file`), in sb-go's words; a regular file
+  gets 0600 as `secure_existing_configs` gives it; its content is
+  untouched. *Amended 2026-11-16 (module build M80): the texts are
+  sb-go's (setup.go `secureExistingConfigFile`), where this line had
+  paraphrased them.*
 
 `secure_existing_configs` is the same without copying (sb-go
 setup.go:380-433): for each `<root>/defaults/*.default`, the file without
@@ -764,6 +768,14 @@ fails.
     and shows the other's, and its step line counts the announcements
     shown; sb-go's harness failed on any invalid file and printed no
     count (decision 31).
+
+`setup` and `gha`, the default configs (module build M80):
+38. A `defaults/` directory that can't be read is an error (`error
+    listing default config files: <cause>`); sb-go's `filepath.Glob`
+    ignores the error and finds nothing, so it secured nothing silently.
+39. A default named only `.default` stands for no file and is skipped;
+    sb-go's glob took it and failed on the Saltbox root itself (`... is
+    not a regular file`).
 
 ## Scope
 

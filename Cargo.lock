@@ -3570,15 +3570,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "indicatif",
  "jiff",
+ "rustix",
  "saphyr",
  "sb-cli-core",
  "sb-config",
+ "sb-exec",
+ "sb-host",
+ "sb-ops",
  "sb-repo",
  "sb-term-ui",
  "sb-tui",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
 ]
 

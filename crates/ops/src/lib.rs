@@ -2,7 +2,10 @@
 //! together and own only the order, the prompts and the announcement
 //! rules (capability map, `ops`; docs/specs/ops.md). So far the
 //! announcement rules and `sb announcements` ([`announcements`], the
-//! spec's slice 10), and the branch commands ([`branch`], slice 9).
+//! spec's slice 10), the branch commands ([`branch`], slice 9), and
+//! setup's and gha's shared pieces (slice 5): [`prereq`], [`locale`],
+//! [`configs`] and [`hooks`], with the `testing` harness they run
+//! against.
 
 // sb's lines go through `Write` and cli-core's output errors;
 // `print!`/`eprint!` panic on a closed pipe.
@@ -10,3 +13,9 @@
 
 pub mod announcements;
 pub mod branch;
+pub mod configs;
+pub mod hooks;
+pub mod locale;
+pub mod prereq;
+#[cfg(feature = "testing")]
+pub mod testing;
