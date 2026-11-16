@@ -477,8 +477,18 @@ impl Runner {
                     rows: usize::from(indicatif::TermLike::height(&term)),
                     width: usize::from(indicatif::TermLike::width(&term)),
                 };
-                // No refresh limit, so every redraw reaches the screen.
-                let target = ProgressDrawTarget::term_like_with_hz(Box::new(term), u8::MAX);
+                // No refresh limit, so every redraw reaches the screen:
+                // `term_like` sets none
+                // (<https://docs.rs/indicatif/0.18.6/indicatif/struct.ProgressDrawTarget.html#method.term_like>).
+                // Why not `term_like_with_hz(.., u8::MAX)`: it still limits,
+                // to a burst of 20 and then one draw every 3 ms by its own
+                // `Instant::now()` (`RateLimiter`,
+                // <https://docs.rs/crate/indicatif/0.18.6/source/src/draw_target.rs>),
+                // which neither `Clock::Frozen` nor tokio's paused clock
+                // (`start_paused`) moves: a test whose frames came with no
+                // real time between them lost its last ones in a release
+                // build, and nothing draws a dropped frame again.
+                let target = ProgressDrawTarget::term_like(Box::new(term));
                 let clock = Clock::Frozen(Instant::now());
                 (Mode::Live(Area::new(target)), colour, size, clock, true)
             }
