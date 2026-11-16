@@ -473,7 +473,7 @@ impl Apt {
         let ran = Cmd::new(self.dpkg_query.as_os_str())
             .arg("-W")
             .arg("-f=${db:Status-Abbrev}")
-            .value(name)
+            .shown_value(name)
             .timeout(limit)
             .capture(token)
             .await
@@ -546,7 +546,7 @@ impl Apt {
             .arg("policy")
             // The name can never be read as an option (apt 2.4 honours `--`).
             .arg("--")
-            .value(name)
+            .shown_value(name)
             .env("LC_ALL", "C")
             .timeout(self.query_timeout)
             .capture(token)
@@ -626,7 +626,9 @@ fn go_duration(duration: Duration) -> String {
 
 /// `cmd` with `values` after its literal arguments.
 fn with_values(cmd: Cmd, values: &[&str]) -> Cmd {
-    values.iter().fold(cmd, |cmd, value| cmd.value(*value))
+    values
+        .iter()
+        .fold(cmd, |cmd, value| cmd.shown_value(*value))
 }
 
 /// `cmd` streamed into `step` with no timeout; its output is in the step

@@ -47,8 +47,8 @@ impl Repo {
         self.remote_with(step, args, &[]).await
     }
 
-    /// [`Repo::remote`] with `values` (a URL, a path; the log shows
-    /// `[ARG]`) after the literal `args`.
+    /// [`Repo::remote`] with `values` (a URL, a path; shown in the log as
+    /// given, as every value sb computes is) after the literal `args`.
     pub(crate) async fn remote_with(
         &self,
         step: &mut Step,
@@ -57,7 +57,9 @@ impl Repo {
     ) -> anyhow::Result<()> {
         let command = |base: sb_exec::Cmd| {
             let base = args.iter().fold(base, |cmd, arg| cmd.arg(arg));
-            values.iter().fold(base, |cmd, value| cmd.value(*value))
+            values
+                .iter()
+                .fold(base, |cmd, value| cmd.shown_value(*value))
         };
         let streamed = command(self.git()).stream(step).await?;
         if !needs_retry(streamed.outcome.ending, &streamed.stderr_tail) {

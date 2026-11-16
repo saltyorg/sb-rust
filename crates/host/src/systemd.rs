@@ -265,7 +265,7 @@ impl Systemd {
             .arg("--timestamp=utc")
             .arg("--property=Id,ActiveEnterTimestamp,StateChangeTimestamp");
         for name in names {
-            cmd = cmd.value(format!("{name}.service"));
+            cmd = cmd.shown_value(format!("{name}.service"));
         }
         Ok(parse_show(&run(&cmd, token).await?))
     }

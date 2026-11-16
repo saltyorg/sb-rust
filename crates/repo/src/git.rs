@@ -109,7 +109,7 @@ impl Repo {
             .git()
             .arg("check-ref-format")
             .arg("--branch")
-            .value(name);
+            .shown_value(name);
         let ran = self.read(cmd, token).await?;
         match ran.check() {
             Ok(ran) if ran.stdout.trim_end_matches('\n') == name => Ok(()),

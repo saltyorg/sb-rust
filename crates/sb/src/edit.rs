@@ -324,7 +324,10 @@ async fn run_editor(
     let not_started =
         |program: &str, err: &SpawnError| anyhow!("find editor {program:?}: {}", err.cause());
     if let Some(Editor { program, args }) = chosen {
-        let cmd = args.iter().fold(Cmd::new(program), Cmd::value).value(path);
+        let cmd = args
+            .iter()
+            .fold(Cmd::new(program), Cmd::shown_value)
+            .shown_value(path);
         let ran = cmd
             .attached(shutdown)
             .await
@@ -332,7 +335,7 @@ async fn run_editor(
         return Ok((program.clone(), ran.outcome.ending));
     }
     for program in FALLBACK {
-        match Cmd::new(program).value(path).attached(shutdown).await {
+        match Cmd::new(program).shown_value(path).attached(shutdown).await {
             Ok(ran) => return Ok((program.to_string(), ran.outcome.ending)),
             // exec resolves `PATH` at spawn: a name not found, or found
             // but not executable, moves to the next one, as sb-go's

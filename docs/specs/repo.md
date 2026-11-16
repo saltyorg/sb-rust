@@ -324,8 +324,8 @@ No test touches a Saltbox checkout or the network.
    prompting ssh ends the fetch with an error, never a wait.
 6. SIGINT during a fetch ends the step "interrupted" and sb by the signal
    within the grace period plus one second.
-7. The run log has each git command (literal arguments, masked values as
-   exec logs them), its outcome and its output lines.
+7. The run log has each git command (its arguments as exec logs them:
+   values shown, exec's decision 14), its outcome and its output lines.
 8. Binary size within the ratchet's tolerance (no new crate is expected).
 
 ## Decisions

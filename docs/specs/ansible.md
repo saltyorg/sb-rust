@@ -590,7 +590,9 @@ for validate-config.
     value to keep off the screen and out of the log goes in an `@file`:
     only `--extra-vars=@<file>` is shown, and Ansible reads the file. The
     user values go through exec's `shown_value` (amendment 5); exec's
-    masking stays for every other crate's commands. `-e` values are the
+    masking stays for every other crate's commands. *Amended 2026-11-15
+    by exec's decision 14: every value sb computes is shown too; masking
+    stays only for credentials.* `-e` values are the
     user's own input, not secrets sb holds, so CONSTRAINTS.md's Logging
     row ("logs never contain secret values") is kept: a secret goes in an
     `@file`, and the run log stays root's only (0700). Source: the
@@ -625,7 +627,7 @@ for validate-config.
 - `allow_hyphen_values` makes `-e` take the next element whatever it is:
   `sb install plex -e --no-cache` passes `--no-cache` to Ansible as extra
   vars (sb-go's pflag does the same).
-- `-e` values must be UTF-8 (clap's `String`; exec's `value`); a
+- `-e` values must be UTF-8 (clap's `String`; exec's `shown_value`); a
   non-UTF-8 value is a usage error, exit 2.
 - Ansible's output isn't in sb's run log (exec, "Logging"); Ansible's own
   `log_path` has it.

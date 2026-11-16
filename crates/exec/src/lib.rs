@@ -158,20 +158,22 @@ impl Cmd {
         self
     }
 
-    /// Any other argument (a path, a name, a user's pass-through argument):
-    /// the log and errors show `[ARG]`.
+    /// An argument the log and errors show as `[ARG]`, for a value that
+    /// is neither sb's own nor a credential. No production caller uses it:
+    /// values sb computes go through [`Cmd::shown_value`] and credentials
+    /// through [`Cmd::secret`] (spec, decision 14).
     #[must_use]
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.args.push(Arg::Value(value.into()));
         self
     }
 
-    /// A value the log and errors show as given.
-    ///
-    /// For a caller whose spec decided its values are shown
-    /// (ansible-playbook's arguments: the maintainer, 2026-11-14). A value
-    /// that must stay out of the log goes through [`Cmd::value`] or
-    /// [`Cmd::secret`] instead.
+    /// A value the log and errors show as given: the default for every
+    /// value sb computes or passes on (paths, versions, names, branches,
+    /// a user's ansible arguments; the maintainer, 2026-11-14 and
+    /// 2026-11-15, spec decision 14). A credential (a token, a password,
+    /// an API key) goes through [`Cmd::secret`] or [`Cmd::secret_env`]
+    /// instead.
     #[must_use]
     pub fn shown_value(mut self, value: impl Into<String>) -> Self {
         self.args.push(Arg::Shown(value.into()));

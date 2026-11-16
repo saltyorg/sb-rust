@@ -868,7 +868,8 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     <cause>` (sb-go faf9887's wording).
   - The arguments are the variable's extra words, then the path.
 - **Run.** exec's `Cmd::new(program)`, each extra word and the path as
-  `value(..)` (shown as `[ARG]` in the log), run with `attached(&shutdown)`:
+  `shown_value(..)` (shown as given in the log; exec's decision 14,
+  *amended 2026-11-15*), run with `attached(&shutdown)`:
   sb's stdin, stdout and stderr, the inherited environment, nothing
   captured. A cancellation sends SIGTERM, then exec's grace period. A
   non-zero exit fails with `error opening editor: <exit status>`, exit 1,
@@ -904,7 +905,8 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     terminal and no flag, term-ui's prompt rule applies: an error naming
     `--no-edit-again`, exit 1, never a hang (term-ui criterion 10).
   - Ctrl+C at the prompt or during validation: 130, terminal restored.
-- **Logging** (map decision 11): the file chosen, the editor's program name,
+- **Logging** (map decision 11): the file chosen, the editor's command
+  (its program, extra words and the path: exec's child record),
   its exit status, whether the file's bytes changed (compared in memory,
   never logged), and the
   validation's issue count. Never the file's content or an issue's text
@@ -1359,7 +1361,7 @@ the test's directory.
     starts. Source: brief F D2 and D3 (the map's `tui` row and open item;
     sb-go 3cd52b3; exec's `attached` refusal).
 25. **The editor is chosen as sb-go does,** split with shlex, run through
-    exec's `attached` with the path as a `value`. A cancellation sends
+    exec's `attached` with the extra words and the path as `shown_value`s. A cancellation sends
     SIGTERM and the grace period. Source: brief F D3 (map decision 1; stack
     table's shlex row; exec spec).
 26. **Target checks and their texts are sb-go's.** Source: brief F D4.

@@ -115,7 +115,7 @@ pub async fn sessions(tools: &Tools, version_id: Option<&str>, paint: &Paint) ->
             .arg("-p")
             .arg("State");
         for id in asked {
-            cmd = cmd.value(id);
+            cmd = cmd.shown_value(id);
         }
         child_output(cmd, "loginctl show-session").await
     };

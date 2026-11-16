@@ -8,13 +8,21 @@
 //! stand-in on a temporary root.
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::log::RunLog;
 use sb_python_env::testing::Tree;
 use sb_python_env::{Force, reconcile_venv};
 use sb_term_ui::{Labels, Options, Runner, Target};
+
+/// Tests that write stand-in programs and run them hold this from writing
+/// them until their run is over (ETXTBSY otherwise).
+static SPAWNS: Mutex<()> = Mutex::new(());
+
+/// A user no host has: the ownership pass is skipped, so a test runs
+/// without root.
+const UNKNOWN: &str = "sb-rust-user-that-does-not-exist-7fcd24d1";
 
 /// The process's one run log, in a directory kept for the process.
 fn run_log() -> &'static (RunLog, tempfile::TempDir) {
@@ -77,6 +85,9 @@ fn every_line_of_an_ownership_pass_carries_the_run_id() {
         return;
     }
     let (log, dir) = run_log();
+    let _spawns = SPAWNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = Tree::new();
     let _ = tree.healthy();
     let (error, screen) = reinstall(&tree, "nobody");
@@ -92,4 +103,38 @@ fn every_line_of_an_ownership_pass_carries_the_run_id() {
         "lines without {run}:\n{}",
         without.join("\n")
     );
+}
+
+/// The children's start records show the values sb computes, the uv pip
+/// sync's venv Python and requirements file among them, and nothing as
+/// `[ARG]`: only credentials are masked (the maintainer, 2026-11-15).
+#[test]
+fn the_childrens_records_show_the_paths_sb_computes() {
+    let (_, dir) = run_log();
+    let _spawns = SPAWNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tree = Tree::new();
+    let _ = tree.healthy();
+    let (error, screen) = reinstall(&tree, UNKNOWN);
+    assert_eq!(error, None, "{screen}");
+    let venv = std::fs::read_link(&tree.layout.active_venv).expect("link");
+    let python = venv.join("bin/python3");
+    let text = log_text(dir.path());
+    // This tree's run: the log holds the other test's too.
+    let root = tree.root.path().display().to_string();
+    let sync = text
+        .lines()
+        .find(|line| {
+            line.contains("child started") && line.contains(" pip sync ") && line.contains(&root)
+        })
+        .unwrap_or_else(|| panic!("no uv pip sync record:\n{text}"));
+    for shown in [
+        format!("--python {}", python.display()),
+        tree.layout.lock.display().to_string(),
+        "masked=0".to_string(),
+    ] {
+        assert!(sync.contains(&shown), "{shown:?} not in {sync}");
+    }
+    assert!(!text.contains("[ARG]"), "{text}");
 }

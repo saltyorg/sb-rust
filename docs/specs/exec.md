@@ -60,12 +60,16 @@ group, within the grace period plus one second.
 
 `Cmd::new(program)` (named apart from std's and tokio's `Command`) with:
 
-- **Arguments, fail closed for the log:** `arg(&'static str)` for
-  literals written in sb's code, which the log shows; `value(String)` for
-  anything else (paths, names, a user's pass-through argument), logged as
-  `[ARG]`; `secret(String)` for credentials, `[REDACTED]` in the log and
-  also taken out of the child's output and of errors. The run log shows
-  the program, the literals in place and the count of masked arguments.
+- **Arguments, shown unless a credential:** `arg(&'static str)` for
+  literals written in sb's code; `shown_value(String)` for every value sb
+  computes or passes on (paths, versions, file and unit names, branches,
+  sb's own URLs, a user's ansible arguments), which the log and errors
+  show as given;
+  `secret(String)` for credentials (tokens, passwords, API keys),
+  `[REDACTED]` in the log and also taken out of the child's output and
+  of errors. `value(String)` stays for a value that is neither, logged
+  as `[ARG]`; no caller uses it (decision 14). The run log shows the
+  program, the arguments as shown and the count of masked ones.
   argv is readable in `/proc/<pid>/cmdline` by other users, so a caller
   passes a secret through the environment or stdin where the tool allows.
 - **A joined option:** `option_value(&'static str, String)` for a literal
@@ -76,12 +80,12 @@ group, within the grace period plus one second.
   rendering the log and errors use, for a caller that prints the command
   (ansible's `Executing...` line). *Amended 2026-11-13 by the ansible
   spec.*
-- **A shown value:** `shown_value(String)` for a value the caller decided
-  the log and errors show as given: the rendering has it in place, and it
-  isn't counted as masked. Only ansible's playbook arguments use it (its
-  decision 17: the maintainer, 2026-11-14: nothing is masked, and a
-  user keeps a value out of the logs with an @file); every other value
-  stays `value`. *Amended 2026-11-14 by the ansible spec.*
+- **A shown value:** `shown_value(String)`: the rendering has the value
+  in place, and it isn't counted as masked. ansible's playbook arguments
+  came first (its decision 17: the maintainer, 2026-11-14: nothing is
+  masked, and a user keeps a value out of the logs with an
+  @file); since decision 14 it is the default for every value sb
+  computes. *Amended 2026-11-14 by the ansible spec, and 2026-11-15.*
 - **Environment:** inherited; `env(name, value)`,
   `secret_env(name, value)` (taken out of output too), `env_remove(name)`,
   or `env_clear()` (sb-go's `WithEnv`). The log names changed variables,
@@ -278,7 +282,7 @@ even if the child then exits 0 within the grace period.
 
 ### Logging
 
-A run-log record when a child starts (program, literal arguments, the
+A run-log record when a child starts (program, arguments as shown, the
 count of masked ones, changed variable names, working directory, the way
 it runs) and when it ends (outcome, elapsed). `stream` and `pty` lines are
 logged by term-ui as the step's output, secrets taken out; `capture`
@@ -296,9 +300,8 @@ maintainer, 2026-11-14).
 - Ctrl-C during an attached child leaves it to the child (sb-go cancels
   its context, which kills the child).
 - A PTY child gets sb's terminal size (sb-go: always 24×120).
-- Arguments are masked in logs and errors unless they are literals in
-  sb's code or a caller's shown values (ansible's playbook arguments,
-  shown as sb-go shows them); secrets are taken out of output too
+- Credentials are masked in logs and errors, and taken out of output
+  too; every other argument is shown as given, as sb-go shows it
   (sb-go: callers mask by hand, where they do).
 - Combined and Discard aren't separate ways: `capture` returns both
   streams.
@@ -394,8 +397,9 @@ let outcome = Cmd::new("systemctl")
   directory is an error, not `$HOME`.
 - **Environment and logging:** `GIT_TERMINAL_PROMPT=0`, changed variables
   present, no value logged; the known-secret test on a `secret` argument,
-  a `secret_env` value, a child echoing them, and a pass-through `value`
-  (the carried `-e` item).
+  a `secret_env` value, a child echoing them, and a `value` (exec's own
+  tests; the carried `-e` item is a `shown_value` since ansible's
+  decision 17).
 - **Rules that keep the harness safe:** in-process tests cancel through
   the token and never send real signals to the test process; real
   SIGINT and SIGTERM only through a test binary; before any group signal,
@@ -411,8 +415,7 @@ let outcome = Cmd::new("systemctl")
 
 - **Always:** library calls for processes, groups and the PTY; every
   piped and PTY child killed with its group on cancel or timeout; secrets
-  marked where they enter; arguments masked unless literal or shown
-  values a caller's spec decided on.
+  marked where they enter; every other argument shown (decision 14).
 - **Ask first:** a dependency beyond those named; a fifth way to run;
   further changes to cli-core's cancellation or term-ui's `Step` API.
 - **Never:** build a command line from strings for a shell; log a masked
@@ -442,7 +445,7 @@ let outcome = Cmd::new("systemctl")
 6. No masked argument, secret or environment value in any log record or
    error, nor in output exec shows (`capture`, `stream`, `pty`; `attached`
    output is the child's own on the terminal), the known-secret test with
-   a pass-through value included.
+   a masked `value` included.
 7. `GIT_TERMINAL_PROMPT=0` for every child not attached.
 8. The sudoers and `use_pty` question answered in docs/platform-notes/;
    the capability map's row, deny.toml and the cli-core spec amended.
@@ -566,3 +569,13 @@ let outcome = Cmd::new("systemctl")
     SIGINT and SIGQUIT (decision 2, cli-core's `Shutdown::hold`) needs
     the `Shutdown`, not only its token; explicit, with no process-wide
     copy in exec.
+14. **Values sb computes are shown; only credentials are masked**
+    (maintainer, 2026-11-15, after reading a `sb reinstall-venv` run whose
+    `uv pip sync --python [ARG] ... [ARG]` hid sb's own paths). Shown is
+    the default for every value sb computes or passes on: paths,
+    versions, file, unit and package names, branches, sb's own URLs,
+    session ids, an editor's arguments. `secret` and `secret_env` are for
+    credentials: tokens, passwords and API keys. A URL that can carry
+    userinfo (one a user configures) goes through `secret`, or has its
+    userinfo taken out first, as sb-config's `loggable_url` does. `value`
+    and `option_value` stay in the API, with no production caller.

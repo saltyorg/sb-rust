@@ -303,7 +303,7 @@ impl Repo {
             step.step(Labels::new(creating, creating), async |step| {
                 // `-b`: HEAD on `branch`, whatever `init.defaultBranch`
                 // says (difference 12; <https://git-scm.com/docs/git-init#Documentation/git-init.txt--bltbranch-namegt>).
-                let init = self.git().arg("init").arg("-b").value(branch);
+                let init = self.git().arg("init").arg("-b").shown_value(branch);
                 self.change(step, init)
                     .await
                     .with_context(|| ran(&format!("init -b {branch}")))
@@ -311,7 +311,12 @@ impl Repo {
             .await?;
             let configuring = "Configuring Git remote";
             step.step(Labels::new(configuring, configuring), async |step| {
-                let add = self.git().arg("remote").arg("add").arg("origin").value(url);
+                let add = self
+                    .git()
+                    .arg("remote")
+                    .arg("add")
+                    .arg("origin")
+                    .shown_value(url);
                 self.change(step, add)
                     .await
                     .with_context(|| ran(&format!("remote add origin {url}")))
@@ -327,7 +332,11 @@ impl Repo {
             let tracking = format!("origin/{branch}");
             let creating = format!("Creating branch {branch}");
             step.step(Labels::new(&creating, &creating), async |step| {
-                let create = self.git().arg("branch").value(branch).value(&tracking);
+                let create = self
+                    .git()
+                    .arg("branch")
+                    .shown_value(branch)
+                    .shown_value(&tracking);
                 self.change(step, create)
                     .await
                     .with_context(|| ran(&format!("branch {branch} {tracking}")))
@@ -335,7 +344,7 @@ impl Repo {
             .await?;
             let resetting = format!("Resetting to branch {branch}");
             step.step(Labels::new(&resetting, &resetting), async |step| {
-                let reset = self.git().arg("reset").arg("--hard").value(&tracking);
+                let reset = self.git().arg("reset").arg("--hard").shown_value(&tracking);
                 self.change(step, reset)
                     .await
                     .with_context(|| ran(&format!("reset --hard {tracking}")))
@@ -377,7 +386,7 @@ impl Repo {
             .arg("rev-parse")
             .arg("--verify")
             .arg("--quiet")
-            .value(format!("refs/remotes/origin/{branch}"));
+            .shown_value(format!("refs/remotes/origin/{branch}"));
         let ran = self.read(cmd, token).await?;
         match ran.outcome.ending {
             Ending::Exited(0) => Ok(()),
@@ -402,7 +411,7 @@ impl Repo {
             .git()
             .arg("checkout")
             .arg("--quiet")
-            .value(branch)
+            .shown_value(branch)
             .arg("--");
         self.change(step, checkout).await?;
         self.change(step, clean()).await?;

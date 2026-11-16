@@ -134,7 +134,7 @@ pub async fn check_environment(
             cmd.arg("pip")
                 .arg("check")
                 .arg("--python")
-                .value(python_arg)
+                .shown_value(python_arg)
                 .timeout(HEALTH_TIMEOUT)
         });
     probe(&pip_check.cmd, token)
@@ -812,7 +812,7 @@ async fn install_python<'a>(
                     .arg("--managed-python")
                     .arg("--no-bin")
                     .arg("--install-dir")
-                    .value(dir_arg.clone());
+                    .shown_value(dir_arg.clone());
                 let cmd = if force == Force::Python {
                     cmd.arg("--reinstall")
                 } else {
@@ -823,7 +823,7 @@ async fn install_python<'a>(
                 } else {
                     cmd.arg("--no-cache")
                 };
-                cmd.value(version.clone())
+                cmd.shown_value(version.clone())
             });
         let _streamed = install
             .cmd
@@ -843,7 +843,7 @@ async fn install_python<'a>(
                 .arg("--managed-python")
                 .arg("--no-project")
                 .arg("--no-python-downloads")
-                .value(version.clone())
+                .shown_value(version.clone())
                 .env("UV_PYTHON_INSTALL_DIR", dir_arg.clone())
                 .timeout(FIND_TIMEOUT)
         });
@@ -950,10 +950,10 @@ async fn stage<'a>(
             .map(|cmd| {
                 cmd.arg("venv")
                     .arg("--python")
-                    .value(python_path.clone())
+                    .shown_value(python_path.clone())
                     .arg("--no-project")
                     .arg("--no-python-downloads")
-                    .value(venv.to_string_lossy())
+                    .shown_value(venv.to_string_lossy())
             });
         let _streamed = create
             .cmd
@@ -975,14 +975,14 @@ async fn stage<'a>(
                     .arg("sync")
                     .arg("--no-progress")
                     .arg("--python")
-                    .value(python.to_string_lossy())
+                    .shown_value(python.to_string_lossy())
                     .arg("--require-hashes");
                 let cmd = if force == Force::None {
                     cmd
                 } else {
                     cmd.arg("--no-cache")
                 };
-                cmd.value(env.layout.lock.to_string_lossy())
+                cmd.shown_value(env.layout.lock.to_string_lossy())
             });
         let _streamed = sync
             .cmd
