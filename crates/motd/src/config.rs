@@ -59,15 +59,16 @@ impl Slot {
     ];
 
     /// The role sb's palette gives the slot when motd.yml doesn't set it:
-    /// Accent, Text, Accent2, Warn, Ok, Problem, Ok, Warn, Problem.
+    /// Accent, Ok, Accent2, Warn, Ok, Problem, Ok, Warn, Problem. Values
+    /// take Ok, as sb-go gives value and success the same green, so value,
+    /// warning and error read as a traffic light on counts and percents.
     #[must_use]
     pub fn role(self) -> Role {
         match self {
             Slot::Label => Role::Accent,
-            Slot::Value => Role::Text,
             Slot::AppName => Role::Accent2,
             Slot::Warning | Slot::High => Role::Warn,
-            Slot::Success | Slot::Low => Role::Ok,
+            Slot::Value | Slot::Success | Slot::Low => Role::Ok,
             Slot::Error | Slot::Critical => Role::Problem,
         }
     }
@@ -714,7 +715,7 @@ mod tests {
             roles,
             [
                 Role::Accent,
-                Role::Text,
+                Role::Ok,
                 Role::Accent2,
                 Role::Warn,
                 Role::Ok,

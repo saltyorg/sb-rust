@@ -747,7 +747,11 @@ Nothing touches a real host's state, and every fixture is synthetic.
    - Nine slots: text.label/value/app_name, status.warning/success/error,
      and progress_bar.low/high/critical.
    - An absent key takes the role sb's palette gives that slot: Accent,
-     Text, Accent2, Warn, Ok, Problem, Ok, Warn, Problem.
+     Ok, Accent2, Warn, Ok, Problem, Ok, Warn, Problem. The value slot
+     takes Ok, not Text (the maintainer,
+     2026-11-15): sb-go gives value and success the same green
+     (`motd/styles.go`), so value, warning and error read as a traffic
+     light on disk percents and the Docker and Traefik counts.
    - Each colour is resolved for the colour profile with cli-core's
      `Profile::resolve`. `#abc` means `#aabbcc`.
 6. **Sessions come from logind's JSON and last login from `last`, each

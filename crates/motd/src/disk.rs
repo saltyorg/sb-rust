@@ -841,7 +841,7 @@ mod tests {
         );
         let paint = Paint::new(&theme, true);
         for (percent, text, bar) in [
-            (79, Role::Text, Level::Low),
+            (79, Role::Ok, Level::Low),
             (80, Role::Warn, Level::High),
             (89, Role::Warn, Level::High),
             (90, Role::Problem, Level::Critical),

@@ -667,7 +667,7 @@ esac"#,
         let on = Paint::new(&theme, true);
         assert_eq!(
             on.value("1"),
-            sb_term_ui::style::paint(&theme, Role::Text, true, "1")
+            sb_term_ui::style::paint(&theme, Role::Ok, true, "1")
         );
         assert_eq!(
             on.warning("w"),
@@ -742,7 +742,7 @@ esac"#,
         // Not in the file: sb's palette.
         assert_eq!(
             paint.value("x"),
-            sb_term_ui::style::paint(&theme, Role::Text, true, "x")
+            sb_term_ui::style::paint(&theme, Role::Ok, true, "x")
         );
         assert_eq!(
             paint.error("x"),
