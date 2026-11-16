@@ -2129,6 +2129,13 @@ calling it from `update` and `setup`, and the completion refresh.*
 
 ## Follow-ups found during the build
 
+- [ ] **First sight far right meets 5 ms** (the maintainer, 2026-11-16).
+      With wrap off far to the right, a line the viewer has never drawn
+      there (paging to new lines, a jump from far away) is still parsed
+      from its start once: 5.5 to 23.5 ms for a screen at column 4,000,
+      after ed95149 brought rebuilds to 2.5 to 4 ms. Bring the first
+      frame under 5 ms too, for example by parsing places ahead in the
+      background.
 - [ ] **One enum for ops' two repositories** (found by lane 1's M79,
       2026-11-16). `branch::Checkout` (M79) and `announcements::Repo` (M74)
       both name Saltbox and Sandbox. Merge them when update needs both
