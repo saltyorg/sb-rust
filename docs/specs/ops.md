@@ -344,9 +344,14 @@ backup role writes with OpenSSL 3's defaults:
 - PBKDF2-HMAC-SHA256, 10000 iterations, 48 bytes: the key (32), then
   the IV (16);
 - AES-256-CBC, PKCS#7 padding;
-- a padding failure prints `Decryption failed. This likely means the
-  password was incorrect`; any other failure prints `  (Technical
-  error: <cause>)`.
+- a plaintext that isn't UTF-8 counts as a wrong password: nothing is
+  placed. Every file the service keeps is text, and a wrong key passes
+  the padding check about once in 256 files (the maintainer, 2026-11-16;
+  difference 40);
+- a padding failure or a plaintext that isn't text prints `Decryption
+  failed. This likely means the password was incorrect`; any other
+  failure (the format, the length) prints `  (Technical error:
+  <cause>)`.
 
 The whole body is held in memory (at most 16 MiB) and decrypted there.
 The password, the derived key and IV, and each plaintext are held in
@@ -776,6 +781,11 @@ fails.
     and shows the other's, and its step line counts the announcements
     shown; sb-go's harness failed on any invalid file and printed no
     count (decision 31).
+40. `restore` refuses a decrypted file that isn't UTF-8 text as a wrong
+    password: nothing is placed and the password line is printed. sb-go
+    placed whatever passed the padding check, so a wrong password
+    overwrote about one file in 256 with garbage (the maintainer,
+    2026-11-16).
 
 `setup` and `gha`, the default configs (module build M80):
 40. A `defaults/` directory that can't be read is an error (`error
@@ -1329,10 +1339,11 @@ the real services.
 - A forced exit (a second signal) or SIGKILL while a file is written can
   leave one `.sb-restore-*` file (0600, root's) in the Saltbox root.
 - The backup format is unauthenticated (CBC, no MAC, decision 7): a
-  changed ciphertext decrypts to changed plaintext without the password,
-  and a wrong password passes the padding check about once in 256 files.
-  Integrity rests on HTTPS to the service and refused redirects
-  (difference 13).
+  changed ciphertext decrypts to changed plaintext without the password.
+  A wrong password that passes the padding check (about once in 256
+  files) is caught by the text check (difference 40) unless its garbage
+  happens to be UTF-8, which is rare. Integrity rests on HTTPS to the
+  service and refused redirects (difference 13).
 - `--password-file <path>` is read after the sudo relaunch, as root. A
   user with sudo can read the file anyway; the content is never shown.
 - bench's Speedtest nodes are fixed IDs from Ookla's list; a node Ookla

@@ -18,6 +18,10 @@ while [ "$i" -le 200 ]; do
   printf 'line %03d of a synthetic rclone-style config\n' "$i" >> long.conf
   i=$((i + 1))
 done
-for plaintext in settings.yml empty.yml long.conf; do
+# Text beyond ASCII, which restores, and bytes that aren't UTF-8, which
+# count as a wrong password (ops spec, "Decryption").
+printf 'user: S\303\270ren\n' > utf8.yml
+printf '\377\376binary\n' > binary.dat
+for plaintext in settings.yml empty.yml long.conf utf8.yml binary.dat; do
   openssl enc -aes-256-cbc -pbkdf2 -k "$password" -in "$plaintext" -out "$plaintext.enc"
 done

@@ -40,6 +40,22 @@ pub enum DecryptError {
     /// (CBC has no other; the caller says so, as sb-go).
     #[error("invalid padding")]
     Padding,
+    /// The padding checked out but the plaintext isn't UTF-8: a wrong
+    /// password that passed the padding check (about once in 256), since
+    /// every file the service keeps is text (the maintainer, 2026-11-16;
+    /// ops difference 40).
+    #[error("the decrypted file isn't text")]
+    NotText,
+}
+
+impl DecryptError {
+    /// Whether this is a wrong password's sign: bad padding, or garbage
+    /// that isn't text. The caller then says the password looks wrong
+    /// and places nothing.
+    #[must_use]
+    pub fn is_wrong_password(&self) -> bool {
+        matches!(self, Self::Padding | Self::NotText)
+    }
 }
 
 /// `data`, a file in OpenSSL's salted format, decrypted with `password`.
@@ -61,8 +77,9 @@ pub enum DecryptError {
 ///
 /// # Errors
 ///
-/// [`DecryptError`]: no header, a length that isn't whole blocks, or
-/// padding that doesn't check out (a wrong password, most likely).
+/// [`DecryptError`]: no header, a length that isn't whole blocks, padding
+/// that doesn't check out, or a plaintext that isn't UTF-8 (the last two
+/// a wrong password, most likely: [`DecryptError::is_wrong_password`]).
 ///
 /// # Panics
 ///
@@ -84,6 +101,10 @@ pub fn decrypt(data: &[u8], password: &[u8]) -> Result<Zeroizing<Vec<u8>>, Decry
         .map_err(|_| DecryptError::Padding)?
         .len();
     buffer.truncate(length);
+    // std's check, on the buffer that is cleared on drop (no copy).
+    if std::str::from_utf8(&buffer).is_err() {
+        return Err(DecryptError::NotText);
+    }
     Ok(buffer)
 }
 
@@ -104,10 +125,11 @@ mod tests {
     }
 
     /// Each openssl-made file decrypts to its plaintext: one block, an
-    /// empty plaintext (a block of padding), and many blocks.
+    /// empty plaintext (a block of padding), many blocks, and text beyond
+    /// ASCII.
     #[test]
     fn openssl_made_files_decrypt_to_their_plaintext() {
-        for name in ["settings.yml", "empty.yml", "long.conf"] {
+        for name in ["settings.yml", "empty.yml", "long.conf", "utf8.yml"] {
             let plaintext: Zeroizing<Vec<u8>> =
                 decrypt(&fixture(&format!("{name}.enc")), PASSWORD).expect(name);
             assert_eq!(*plaintext, fixture(name), "{name}");
@@ -128,6 +150,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A plaintext that isn't UTF-8 text counts as a wrong password (the
+    /// maintainer, 2026-11-16; ops difference 40): all nine files are
+    /// text, and a wrong key that passes the padding check (about once in
+    /// 256) gives garbage, which this catches.
+    #[test]
+    fn a_plaintext_that_isnt_text_is_a_is_wrong_password() {
+        let err = decrypt(&fixture("binary.dat.enc"), PASSWORD).expect_err("not text");
+        assert_eq!(err, DecryptError::NotText);
+        assert!(err.is_wrong_password());
+        assert!(DecryptError::Padding.is_wrong_password());
+        assert!(!DecryptError::Format.is_wrong_password());
+        assert!(!DecryptError::Length(17).is_wrong_password());
+    }
+
+    /// The case the text check is for: a wrong password whose garbage
+    /// passes the padding check. `wrong-65` is one for settings.yml.enc,
+    /// found offline by trying `wrong-0`, `wrong-1` and on with `openssl
+    /// enc -d` (which accepts the padding) until the output wasn't UTF-8.
+    #[test]
+    fn a_wrong_password_that_passes_the_padding_is_caught_as_not_text() {
+        let err = decrypt(&fixture("settings.yml.enc"), b"wrong-65").expect_err("garbage");
+        assert_eq!(err, DecryptError::NotText);
+        assert!(err.is_wrong_password());
     }
 
     /// No header, or too short for the salt: the format error; no
@@ -164,5 +211,9 @@ mod tests {
             "invalid ciphertext length: 17"
         );
         assert_eq!(DecryptError::Padding.to_string(), "invalid padding");
+        assert_eq!(
+            DecryptError::NotText.to_string(),
+            "the decrypted file isn't text"
+        );
     }
 }
