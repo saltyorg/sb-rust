@@ -864,14 +864,15 @@ of the new crates is measured in their task against the ratchet.
 Check:   scripts/check.sh fast | task | full
 Test:    cargo test -p sb-ops -p sb
 Matrix:  SB_LOG_DIR=<scratch> systemd-run --scope -p MemoryMax=4G -p CPUQuota=200% crates/ops/tests/gha-matrix.sh
-Install: SB_LOG_DIR=<scratch> systemd-run --scope -p MemoryMax=4G -p CPUQuota=200% install/tests/os-policy.sh
+Install: SBI_SB=<sb built with SB_VERSION and SB_GIT_COMMIT> install/tests/containers.sh (policy.sh runs inside)
 Lint:    shellcheck install/install.sh install/tests/*.sh crates/ops/tests/*.sh
 Try:     the production build of sb, run as root with SB_LOG_DIR set
 ```
 
 The matrix and install tests run in `ubuntu:<release>` containers (the
 Docker the size check already uses), by hand at checkpoints, like the
-journal matrix.
+journal matrix. The install script and its tests never run on a host:
+it is a root installer that replaces `/usr/local/bin/sb`.
 
 ## Project Structure
 
@@ -1027,7 +1028,14 @@ the real services.
   `-b` passed as one argument, stdin never read: the script piped into
   bash with trailing lines that must still run), plus the todo's
   acceptance checks: both documented forms, with and without `-v`, a
-  forced failure exiting non-zero.
+  forced failure exiting non-zero. *Run 2026-11-16 (module build M83,
+  `install/tests/containers.sh` with `policy.sh` inside): passed on
+  22.04, 24.04 and 26.04. `--repair` piped with curl and wget installed
+  the latest released sb (sb-go 0.1.3) from GitHub; a fresh install of
+  the sb under test, piped with `-b master` and no terminal, ran `sb
+  setup` through to ansible-core 2.21.2; a second run, a fresh install
+  on 22.04 and a run as another user were refused with `&&` not run;
+  truncated scripts exited non-zero.*
 - **Against sb-go (by hand, once):** `sb restore` and sb-go's restore
   against the same fake service in a mount namespace; files, modes and
   `[DONE]/[IGNORED]/[FAIL]` lines the same, differences only as listed.
