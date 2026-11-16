@@ -11,12 +11,13 @@
 //! inline fallback when stdout isn't a terminal ([`inline`]). And the
 //! announcements' inline form ([`markdown`]) and their viewer
 //! ([`announcements`]), for ops' `update` and `sb announcements`. And
-//! `sb edit`'s picker ([`edit_picker`]).
+//! `sb edit`'s picker ([`edit_picker`]) and `sb fact`'s page ([`fact`]).
 
 mod ahead;
 pub mod announcements;
 mod columns;
 pub mod edit_picker;
+pub mod fact;
 pub mod line;
 pub mod markdown;
 pub mod picker;

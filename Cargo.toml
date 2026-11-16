@@ -143,8 +143,10 @@ ratatui = { version = "=0.30.2", default-features = false, features = ["crosster
 # `From<anstyle::Color>` for the palette and log spans (map decision 10),
 # the version ratatui 0.30.2 uses (ADR-001 decision 1).
 ratatui-core = { version = "=0.1.2", features = ["anstyle"] }
-# Raw mode, the alternate screen, mouse capture and the async `EventStream`.
-crossterm = { version = "0.29.0", features = ["event-stream"] }
+# Raw mode, the alternate screen, mouse capture and the async `EventStream`;
+# `osc52` for the fact editor's Copy, `CopyToClipboard` (tui spec, Tech
+# Stack).
+crossterm = { version = "0.29.0", features = ["event-stream", "osc52"] }
 # SGR in log text to ratatui `Text` (ratatui org).
 ansi-to-tui = "8.0.1"
 # Announcements' Markdown as ratatui `Text` (stack table "Markdown"; plan

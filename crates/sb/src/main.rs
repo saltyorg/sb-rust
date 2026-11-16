@@ -93,6 +93,9 @@ enum Command {
         #[command(subcommand)]
         command: Option<EditCommand>,
     },
+    /// Manage Saltbox configuration facts
+    #[command(long_about = fact::ABOUT)]
+    Fact,
     /// Display system information
     // No `--verbose/-v` (motd decision 9).
     #[command(long_about = motd::ABOUT)]
@@ -341,6 +344,7 @@ impl Command {
                 Some(EditCommand::Settings) => "edit settings",
                 Some(EditCommand::Inventory) => "edit inventory",
             },
+            Command::Fact => "fact",
             Command::Motd(_) => "motd",
             Command::SelfUpdate { .. } => "self-update",
             Command::Logs => "logs",
@@ -367,9 +371,9 @@ impl Command {
             // completion run unprivileged (cli-core decision 3); Saltbox's
             // config is root's to read (config spec); the Saltbox and
             // Sandbox checkouts and their ownership are root's to change;
-            // so are the files `edit` opens (tui spec, editors, assumption
-            // 2); the journal
-            // files are root's to read (tui assumption 2); motd as every
+            // so are the files `edit` opens and the facts `fact` edits (tui
+            // spec, editors, assumption 2); the journal files are root's to
+            // read (tui assumption 2); motd as every
             // command (motd decision 20: pam_motd already runs it as root);
             // sb's own file, which `self-update` replaces (release spec,
             // assumption 5); playbooks run with `--become` from root's
@@ -387,6 +391,7 @@ impl Command {
             | Command::BranchSandbox { .. }
             | Command::Update(_)
             | Command::Edit { .. }
+            | Command::Fact
             | Command::Motd(_)
             | Command::SelfUpdate { .. }
             | Command::Logs
@@ -640,6 +645,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             Some(command) => edit::edit(command.file(), no_edit_again, shutdown, log)?,
             None => edit::pick(no_edit_again, shutdown, log)?,
         },
+        Command::Fact => fact::fact(shutdown)?,
         Command::Motd(ref args) => motd::motd(args, shutdown, log)?,
         Command::Gha => gha::gha(shutdown, log)?,
         Command::Setup(ref args) => setup::setup(args, shutdown, log)?,
@@ -904,11 +910,13 @@ mod ansible;
 mod branch;
 mod docker_logs;
 mod edit;
+mod fact;
 mod gha;
 mod logs;
 mod motd;
 mod python_env;
 mod restore;
+mod screen;
 mod self_update;
 mod setup;
 mod update;
@@ -1129,6 +1137,14 @@ mod tests {
         assert_eq!(edit(Some(EditCommand::Settings)).name(), "edit settings");
         assert_eq!(edit(Some(EditCommand::Inventory)).name(), "edit inventory");
         assert_eq!(EditCommand::Inventory.file(), edit::File::Inventory);
+    }
+
+    /// `fact` needs root (its files are root's to change) and logs under
+    /// its name.
+    #[test]
+    fn fact_needs_root_and_logs_its_name() {
+        assert!(Command::Fact.needs_root());
+        assert_eq!(Command::Fact.name(), "fact");
     }
 
     /// `motd` needs root and logs under its name (motd decision 20).

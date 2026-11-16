@@ -1,0 +1,17 @@
+---
+source: crates/tui/src/fact/tests.rs
+assertion_line: 799
+expression: "drawn(&mut p, 80, 12).backend()"
+---
+"╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
+"│ Search   press / to search                                                   │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"› ▸ Homepage  3 settings                                                        "
+"  ▸ Komodo  2 settings                                                          "
+"  ▸ Plex  4 settings                                                            "
+"                                                                                "
+"╭ Unsaved changes (0) ─────────────────────────────────────────────────────────╮"
+"│ Nothing changed yet                                                          │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"                                                                                "
+"  Copy (c)   Show (s)   Quit (q)                                                "

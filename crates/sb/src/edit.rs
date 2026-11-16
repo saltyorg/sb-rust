@@ -123,11 +123,11 @@ pub fn pick(no_edit_again: bool, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     let (ending, chosen) = super::block_on(sb_tui::edit_picker::pick(
         shutdown,
         &items,
-        crate::logs::screen_theme(),
+        crate::screen::theme(),
     ))??;
     match chosen {
         Some(file) => edit(file, no_edit_again, shutdown, log),
-        None => crate::logs::ended(ending),
+        None => crate::screen::ended(ending),
     }
 }
 

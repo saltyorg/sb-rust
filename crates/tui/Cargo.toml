@@ -20,6 +20,9 @@ sb-host.workspace = true
 # The container list, its picker status, log reads and events the docker
 # adapter and the Containers section use (tui spec, "Sources").
 sb-docker.workspace = true
+# The facts the fact editor shows and which of them it masks (tui spec,
+# editors, `sb fact`).
+sb-config.workspace = true
 # sb-docker's errors, as it gives them.
 anyhow.workspace = true
 # Line times and the status rule's durations (tui spec, Tech Stack).

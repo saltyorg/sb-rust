@@ -18,14 +18,13 @@ use std::io::{IsTerminal as _, Write as _};
 
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
-use sb_cli_core::exit::{self, Exit};
+use sb_cli_core::exit;
 use sb_cli_core::log;
 use sb_cli_core::theme;
 use sb_host::journal::{self, Journal, Source};
 use sb_host::systemd::{Service, Systemd, default_filters};
-use sb_tui::Ending;
 
-use crate::{block_on, docker_logs, set_override};
+use crate::{block_on, docker_logs, screen, set_override};
 
 /// sb-go's message for an empty list, extended to both kinds (tui spec,
 /// "First load before the screen").
@@ -146,7 +145,7 @@ pub async fn show(
         save_dir: log::log_dir(std::env::var_os("SB_LOG_DIR")),
     };
     let ending = match terminal {
-        Terminal::Screen => sb_tui::logs(shutdown, logs(screen_theme())).await?,
+        Terminal::Screen => sb_tui::logs(shutdown, logs(screen::theme())).await?,
         Terminal::Tty(tty) => {
             // The picker's colours are the tty's choice (`--color`,
             // `NO_COLOR`, a terminal), the stream's stdout's (off when
@@ -156,28 +155,10 @@ pub async fn show(
             } else {
                 theme::current().clone()
             };
-            sb_tui::inline(shutdown, logs(picker), tty, screen_theme()).await?
+            sb_tui::inline(shutdown, logs(picker), tty, screen::theme()).await?
         }
     };
-    ended(ending)
-}
-
-/// The theme the logs screens draw with: the run's, or none when stdout
-/// gets no colour (`NO_COLOR`, `--color=never`; ADR-002 decision 4, the
-/// tui spec's "Text path"), read as sb's other output reads it
-/// (`colour_on`, anstream's choice). crossterm drops only colours under
-/// `NO_COLOR` and doesn't know `--color`, so without this the viewer
-/// lit a match with a background that isn't drawn; the plain theme's
-/// `ascii` lights it in reverse video (tui decision 23). Left as it is:
-/// `NO_COLOR` with `--color=always` gets the run's theme, whose colours
-/// crossterm still drops (crossterm's `force_color_output` would follow
-/// the choice; no Saltbox use sets both).
-pub(crate) fn screen_theme() -> theme::Theme {
-    if sb_term_ui::colour_on(sb_term_ui::Stream::Stdout) {
-        theme::current().clone()
-    } else {
-        theme::Theme::plain()
-    }
+    screen::ended(ending)
 }
 
 /// `list` with the journal their logs are read from (the run's one,
@@ -205,20 +186,6 @@ pub async fn with_journal(list: Vec<Service>) -> anyhow::Result<sb_tui::Services
         journal,
         coredump_uid,
     })
-}
-
-/// The run's result after the screens: 130 after Ctrl-C, quietly (tui
-/// decision 13).
-///
-/// # Errors
-///
-/// `Exit(130)` after Ctrl-C.
-pub fn ended(ending: Ending) -> anyhow::Result<()> {
-    match ending {
-        Ending::Interrupted => Err(Exit(130).into()),
-        // A signal's ending is finish_run's to show.
-        Ending::Quit | Ending::Cancelled => Ok(()),
-    }
 }
 
 /// The journal to read: `SB_JOURNAL_DIR`'s directory (tests and
