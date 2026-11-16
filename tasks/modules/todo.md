@@ -1084,13 +1084,13 @@ colours, `--generate-config` and its golden file.
 names and display names.
 
 **Acceptance criteria:**
-- [ ] Configured names join the defaults through `with_additional`.
-- [ ] The section's cap reaches `services` through the token.
-- [ ] Display names as the spec says.
+- [x] Configured names join the defaults through `with_additional`.
+- [x] The section's cap reaches `services` through the token.
+- [x] Display names as the spec says.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd` with stand-in `systemctl`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-motd` with stand-in `systemctl`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M42, M2
 **Files:** `crates/motd/src/services.rs`
