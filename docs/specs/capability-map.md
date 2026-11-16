@@ -362,6 +362,14 @@ To discuss with the maintainer once every module is done, not before:
   maintainer decides whether the difference matters. The figures so far
   are in [ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md)'s
   Consequences; a move back to musl supersedes that ADR.
+  - **Memory allocators too** (maintainer, 2026-11-16). Each libc build
+    is measured with its own malloc and with the widely used Rust global
+    allocators (for example mimalloc and jemalloc, through
+    `#[global_allocator]`), on the same figures. musl's own malloc is
+    the one most often replaced, so a musl build with another allocator
+    may land somewhere else than plain musl does. The pair the
+    maintainer picks, and its effect on size and startup, goes in the
+    ADR that records the choice.
 - **A phase exploring alternative output designs** (maintainer,
   2026-11-14). The maintainer's design canvas "sb list: refined columns"
   (https://claude.ai/artifact/FLU6EQNhqSh2BHD9NkeHv2) is the starting point, one of the designs to weigh, not a spec. It
