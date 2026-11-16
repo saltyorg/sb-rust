@@ -946,28 +946,42 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     Reload, which adopts the disk version and drops that role's staged
     changes for the user to make again, or Cancel, which keeps them
     staged and writes nothing for that role. Either way the role's lock
-    is released before the dialog's answer is acted on.
-- **Dialect** (sb-go facts/document.go, Saltbox's `configparser` plus
-  `;` comments):
-  - Input is UTF-8 without NUL. CRLF files stay CRLF.
-  - `#` and `;` start comments. A comment or blank line ends a
-    multi-line value. A line indented deeper than its key continues the
-    value.
+    is released before the dialog's answer is acted on, and the save
+    carries on with the next role (decision 41).
+- **Dialect** (sb-go facts/document.go, read as Saltbox's
+  `configparser` reads it where the two differ, decision 39):
+  - Input is UTF-8 without NUL. CRLF files stay CRLF. A carriage return
+    without a line feed makes the file refuse to open (`catalog <role>:
+    carriage return without a line feed at line <n>`): Saltbox reads the
+    file with universal newlines, where a lone CR ends a line.
+  - `#` starts a comment, Saltbox's only comment prefix. A comment or
+    blank line ends a multi-line value. A line indented deeper than its
+    key continues the value, even one that starts with `;`, as Saltbox's
+    configparser reads it. Indents are counted in characters, and
+    whitespace is Python's `str.isspace`.
+  - A `;` line that doesn't continue a value (one at column 0, say) is a
+    comment, as in sb-go, whose older writer produced them.
   - A malformed section, a duplicate section or a duplicate key is an
     error. Keys are split at the first `=`, so keys may contain brackets.
   - **Untouched lines are kept byte for byte.** An edited key keeps its
     own `key =` spacing. Multi-line values are written as `\n\t`
-    continuations (Saltbox's writer's form), and comment lines inside the
-    old value are kept.
+    continuations (Saltbox's writer's form). A comment always ends a
+    value, so a value's lines hold no comment to keep.
   - A value with a line that has leading or trailing whitespace, or an
     empty inner line, is refused: "cannot be represented without loss".
-    Every set value is checked by parsing the result again. CR and NUL in
-    a value are refused.
+    CR and NUL in a value are refused.
+  - Every edit is checked by parsing the result again. Each set value
+    must read back exactly, and every other fact must read as it did
+    before. An edit that would change any other fact is refused with
+    `Merged` ("the changes cannot be written without altering other
+    facts in the file"). sb-go re-checks only the values it set.
 - **Changes** (sb-go facts/apply.go): set a fact (change a key, or **add
   a key to an existing copy**), delete a fact, delete a copy (an INI
   section), delete an app (unlinks `<role>.ini`). Conflicting changes are
   refused: an edit under something deleted, or the same key twice.
-  Renaming, new apps and new copies stay out, as in sb-go.
+  Renaming, new apps and new copies stay out, as in sb-go. Every change
+  is checked before any role is locked (`Session::check`, which the
+  screen also calls before staging), so a refused change writes nothing.
 - **Save** (apply), per role in sorted order: take the role lock,
   check drift, prepare, commit, release the lock.
   - **Prepare:** check the role against its baseline, then create
@@ -980,9 +994,21 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     identity), `renameat` over the file, `fsync` the directory, then
     release the lock. There is no rollback. A failed role's temp file is
     unlinked and its lock released.
-  - **Result:** each role is Applied, Failed (with its cause) or
-    Unattempted. The outcome dialog lists them, and unapplied changes
-    stay staged in the changes panel.
+  - **Result:** each role is one of (decision 41):
+    - **Applied:** its changes are on disk (or changed nothing).
+    - **Unsynced:** its changes are on disk, but the directory sync
+      failed, so they may not survive a crash. They count as applied
+      (saving again is harmless). The save stops there (sb-go's "both
+      Applied and Failed").
+    - **Drifted, reloaded or kept:** the file changed on disk since the
+      open and nothing was written for it. Reloaded drops its staged
+      changes; kept leaves them staged. The save carries on with the
+      next role.
+    - **Failed,** with its cause. The save stops there.
+    - **Unattempted:** not tried, because an earlier role failed or was
+      unsynced, the lock wait was cancelled, or the save was stopped.
+    The outcome dialog lists them, and unapplied changes stay staged in
+    the changes panel.
 - **Screen** (docs/ideas/fact-editor.md, proto-facts' reviewed design):
   - Each app is a heading with its settings beneath it and their values
     visible. Apps with several copies get a heading per copy.
@@ -997,9 +1023,12 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   - Delete works on a setting, a copy or an app. A note explains that
     Saltbox creates a new value on its next run.
   - Add asks for a key name, then its value (ratatui-textarea), under the
-    selected copy. It refuses a key that exists, an empty key, `=`, a
-    leading `#` or `;`, `[`, `]` and newlines (Saltbox's own limits),
-    before staging.
+    selected copy. It refuses, before staging, a key that exists, an
+    empty key, leading or trailing whitespace, `=`, a leading `#`, `;` or
+    `[`, and control characters, newlines among them (sb-go's
+    `validateKey`, Saltbox's reader's limits). Brackets inside a key are
+    accepted, as sb-go and Saltbox accept them (`headers[Authorization]`;
+    decision 40).
   - Dialogs (edit, add, save, quit with unsaved changes, outcome) use
     tui-popup. The right-click menu is drawn by sb, because tui-popup
     can't place a popup at the cursor (proto-facts FINDINGS). Every menu
@@ -1024,7 +1053,7 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     characters are escaped (as sb-go's `display()`).
   - **Never logged:** any fact value, masked or not (map decision 11 names
     "fact values"). The log records role, copy, key and change kind,
-    lock waits, drift, and the Applied/Failed/Unattempted outcome.
+    lock waits, drift, and each role's outcome (the Result line above).
 - **Exit codes:** 0 on quit (with or without a save), 1 on an open error
   or no terminal, 130 or 143 on Ctrl+C or SIGTERM with the terminal
   restored. A Ctrl+C with staged changes discards them, and an
@@ -1073,6 +1102,17 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
 34. `sb edit`'s help text drops sb-go's "GUI clients may need a wait
     option and a working root GUI session": Saltbox runs on Ubuntu servers
     without a GUI (the maintainer, 2026-11-15).
+35. An indented `;` line right after a value continues the value, as
+    Saltbox's configparser reads it (its only comment prefix is `#`).
+    sb-go reads it as a comment. A `;` line that doesn't continue a
+    value is a comment in both (decision 39, 2026-11-15).
+36. A fact file with a carriage return not followed by a line feed
+    refuses to open, naming the line. sb-go reads the CR as part of the
+    line; Saltbox's universal newlines end the line there (decision 39,
+    2026-11-15).
+37. An edit that would change how any other fact reads is refused with
+    `Merged`. sb-go re-checks only the values it set (decision 39,
+    2026-11-15).
 
 ### Scope
 
@@ -1220,9 +1260,11 @@ the test's directory.
   test checks that the alternate screen and mouse capture are off and
   no mouse bytes leak before the fake editor starts.
 - **Facts dialect (unit):** round-trip tests ported from sb-go's
-  facts/*_test.go (CRLF, continuations, comments inside values and
-  between keys, brackets in keys, `;` comments, the lossless refusals,
-  CR and NUL, duplicates, `DEFAULT`). A property test: parse then write
+  facts/*_test.go (CRLF, continuations, comments between keys, brackets
+  in keys, `;` comments and indented `;` continuations, the lossless
+  refusals, CR and NUL, a lone CR, duplicates, `DEFAULT`), checked
+  against Saltbox's own reader (python3 configparser with
+  saltbox_facts.py's settings). A property test: parse then write
   with no changes gives the same bytes. Files Saltbox's own writer
   produces (tab continuations, `True`/`False`) are fixtures, written by
   hand from saltbox_facts.py's rules.
@@ -1298,7 +1340,8 @@ the test's directory.
     or is cancelled, and is released after the role's commit; drift
     shows its dialog.
 25. Owner and mode are kept on save; a failed role leaves no temp file;
-    outcomes are reported as Applied, Failed and Unattempted.
+    outcomes are reported as Applied, Unsynced, Drifted (reloaded or
+    kept), Failed and Unattempted.
 26. Adding a key to an existing copy writes it, and the limits refuse
     bad names before staging.
 27. Secret-looking keys render masked; Show reveals one value; Copy's
@@ -1368,6 +1411,27 @@ the test's directory.
     real use; sb-go's holding the lock while a change is staged makes a
     concurrent Saltbox run fail on that role after 30 s. Decided
     from recorded rules, 2026-11-13.
+39. **Where sb-go's reader and Saltbox's differ, sb reads a fact file as
+    Saltbox's configparser does** (saltbox_facts.py's settings): an
+    indented `;` line right after a value is part of that value, a lone
+    CR refuses the file, indents count characters and whitespace is
+    Python's. A `;` line at column 0 stays a comment. An edit is
+    refused with `Merged` when the result would read any other fact
+    differently (differences 35-37). Reason: Saltbox is the file's
+    reader, so an edit sb checks against any other reading could change
+    a fact unseen. Decided after the code review,
+    2026-11-15.
+40. **Add refuses only a leading `[` among brackets;** brackets inside
+    a key are accepted (`headers[Authorization]`), as sb-go's
+    `validateKey` and Saltbox's reader accept them. The earlier text,
+    "refuses `[` and `]`", was wrong; M55 builds to this one. Decided
+    from sb-go and Saltbox's reader, 2026-11-15.
+41. **The save's outcomes are Applied, Failed and Unattempted, plus
+    Drifted (reloaded or kept) and Unsynced** (the Result line). A
+    drift writes nothing for that role, and the save carries on with
+    the next role; a failure or an unsynced role stops it. Unsynced is
+    sb-go's "both Applied and Failed" under its own name. Decided after
+    the code review, 2026-11-15.
 
 ### Known limits
 
@@ -1375,9 +1439,16 @@ the test's directory.
   to Show.
 - A commit across several roles has no rollback. A failure leaves the
   earlier roles applied, and the outcome dialog says which.
-- Saltbox's module reads a `;` line as invalid, where sb (as sb-go)
-  keeps it as a comment. A file sb saves never gains one: sb writes no
-  comments.
+- A `;` line that doesn't continue a value (at column 0, say) is a
+  comment to sb, as to sb-go. Saltbox's module refuses such a line, or
+  reads it as a key when it holds an `=`. A file sb saves never gains
+  one: sb writes no comments. An indented `;` line right after a value
+  is read as Saltbox reads it (decision 39).
+- Someone who can mount a FUSE file system with `allow_other` over a
+  role file can make `sb fact` hang while it reads that file. That
+  needs the Saltbox user, who usually has sudo anyway, so sb doesn't
+  guard against it (2026-11-15, after the security
+  review).
 - The masking list is a guess by name. A secret under another name (for
   example `cookie`) shows until it is added to the list.
 - `sb edit` validates the file after it is saved. A broken file is on
