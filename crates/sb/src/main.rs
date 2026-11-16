@@ -77,15 +77,11 @@ enum Command {
     #[command(long_about = "Update Saltbox & Sandbox")]
     Update(sb_ops::update::UpdateArgs),
     /// Edit Saltbox configuration files
-    // Alone: help on stdout, exit 0, until the picker comes (M53). The
-    // help is sb-go's without "Editor wrappers should exec the foreground
-    // editor so cancellation can stop it" (tui spec, difference 27) and
-    // without its GUI-client sentence (difference 34).
-    #[command(
-        long_about = EDIT_ABOUT,
-        arg_required_else_help = true,
-        disable_help_subcommand = true
-    )]
+    // Alone: the picker (M53). The help is sb-go's without "Editor
+    // wrappers should exec the foreground editor so cancellation can stop
+    // it" (tui spec, difference 27) and without its GUI-client sentence
+    // (difference 34).
+    #[command(long_about = EDIT_ABOUT, disable_help_subcommand = true)]
     Edit {
         /// Don't offer to edit the file again when it has issues
         // On `edit` and each subcommand (tui spec, editors): a global
@@ -93,8 +89,9 @@ enum Command {
         // (<https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.global>).
         #[arg(long, global = true)]
         no_edit_again: bool,
+        /// None: the picker.
         #[command(subcommand)]
-        command: EditCommand,
+        command: Option<EditCommand>,
     },
     /// Display system information
     // No `--verbose/-v` (motd decision 9).
@@ -336,12 +333,13 @@ impl Command {
             Command::BranchSandbox { .. } => "branch-sandbox",
             Command::Update(_) => "update",
             Command::Edit { command, .. } => match command {
-                EditCommand::Accounts => "edit accounts",
-                EditCommand::AdvSettings => "edit adv_settings",
-                EditCommand::BackupConfig => "edit backup_config",
-                EditCommand::HetznerVlan => "edit hetzner_vlan",
-                EditCommand::Settings => "edit settings",
-                EditCommand::Inventory => "edit inventory",
+                None => "edit",
+                Some(EditCommand::Accounts) => "edit accounts",
+                Some(EditCommand::AdvSettings) => "edit adv_settings",
+                Some(EditCommand::BackupConfig) => "edit backup_config",
+                Some(EditCommand::HetznerVlan) => "edit hetzner_vlan",
+                Some(EditCommand::Settings) => "edit settings",
+                Some(EditCommand::Inventory) => "edit inventory",
             },
             Command::Motd(_) => "motd",
             Command::SelfUpdate { .. } => "self-update",
@@ -638,7 +636,10 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Edit {
             command,
             no_edit_again,
-        } => edit::edit(command.file(), no_edit_again, shutdown, log)?,
+        } => match command {
+            Some(command) => edit::edit(command.file(), no_edit_again, shutdown, log)?,
+            None => edit::pick(no_edit_again, shutdown, log)?,
+        },
         Command::Motd(ref args) => motd::motd(args, shutdown, log)?,
         Command::Gha => gha::gha(shutdown, log)?,
         Command::Setup(ref args) => setup::setup(args, shutdown, log)?,
@@ -1101,16 +1102,32 @@ mod tests {
         }
     }
 
-    /// `edit` needs root and logs each subcommand under its sb-go name.
+    /// `edit` needs root and logs each subcommand under its sb-go name,
+    /// the picker as `edit`.
     #[test]
     fn edit_needs_root_and_logs_its_file() {
         let edit = |command| Command::Edit {
             command,
             no_edit_again: false,
         };
-        assert!(edit(EditCommand::Settings).needs_root());
-        assert_eq!(edit(EditCommand::AdvSettings).name(), "edit adv_settings");
-        assert_eq!(edit(EditCommand::Inventory).name(), "edit inventory");
+        assert!(edit(Some(EditCommand::Settings)).needs_root());
+        assert!(edit(None).needs_root());
+        assert_eq!(edit(None).name(), "edit");
+        assert_eq!(edit(Some(EditCommand::Accounts)).name(), "edit accounts");
+        assert_eq!(
+            edit(Some(EditCommand::AdvSettings)).name(),
+            "edit adv_settings"
+        );
+        assert_eq!(
+            edit(Some(EditCommand::BackupConfig)).name(),
+            "edit backup_config"
+        );
+        assert_eq!(
+            edit(Some(EditCommand::HetznerVlan)).name(),
+            "edit hetzner_vlan"
+        );
+        assert_eq!(edit(Some(EditCommand::Settings)).name(), "edit settings");
+        assert_eq!(edit(Some(EditCommand::Inventory)).name(), "edit inventory");
         assert_eq!(EditCommand::Inventory.file(), edit::File::Inventory);
     }
 

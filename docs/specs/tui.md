@@ -1199,7 +1199,8 @@ crates/config/src/facts/        sb-config's facts half
 crates/config/tests/fixtures/facts/  synthetic fact files (CRLF, continuations, comments)
 crates/sb/src/edit.rs           sb edit: target checks, editor choice, run, validation, prompt
 crates/tui/src/                 sb-tui (base shared with the log viewer)
-  picker.rs                     the edit picker: returns the chosen file, draws nothing after
+  edit_picker.rs                the edit picker: returns the chosen file, draws nothing after
+                                (picker.rs is the log picker's, built first)
   fact/                         the fact editor screen: page, panel, dialogs, menu
 crates/sb/tests/edit.rs         fake-editor tests through the binary
 crates/sb/tests/fact.rs         PTY smoke test

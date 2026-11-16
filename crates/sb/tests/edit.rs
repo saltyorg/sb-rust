@@ -1,7 +1,8 @@
-//! `sb edit <file>` through the binary with a fake editor (tui spec,
-//! "Editors", Testing strategy; module build M49 and M50): a shell script
-//! that records its name and arguments, can save a prepared text or
-//! append bytes to the file, exits with a chosen code, or waits for a
+//! `sb edit <file>` and the picker of bare `sb edit` through the binary
+//! with a fake editor (tui spec, "Editors", Testing strategy; module build
+//! M49, M50 and M53): a shell script that records its name and arguments,
+//! can save a prepared text or append bytes to the file, can record what
+//! waits on its terminal, exits with a chosen code, or waits for a
 //! signal. Every test uses its own Saltbox root (sb-config's valid
 //! fixture set and its schemas), log directory and `PATH`; none opens a
 //! real editor, and no credential check reaches a real service.
@@ -26,9 +27,17 @@ use sb_config::testing::{Fake, saltbox_root};
 /// `$FAKE_SAVES.n` (when there is one) saved over its last argument (the
 /// file), then `$FAKE_APPEND` appended to it, then exit `$FAKE_EXIT`.
 /// With `FAKE_WAIT` set it writes its pid to `$FAKE_ARGV.pid` and waits;
-/// a SIGTERM writes `$FAKE_ARGV.term` and ends it.
+/// a SIGTERM writes `$FAKE_ARGV.term` and ends it. With `FAKE_STDIN` set it
+/// first prints [`STARTED`], then saves what its terminal holds unread
+/// (waiting up to 0.2 s) to `$FAKE_ARGV.stdin`.
 const FAKE: &str = r#"#!/bin/sh
 printf '%s\n' "$0" "$@" > "$FAKE_ARGV"
+if [ -n "$FAKE_STDIN" ]; then
+  echo "fake editor started"
+  /bin/stty -icanon min 0 time 2
+  /bin/dd bs=4096 count=1 of="$FAKE_ARGV.stdin" 2>/dev/null
+  /bin/stty icanon
+fi
 for last; do :; done
 runs=$(( $(/bin/cat "$FAKE_ARGV.runs" 2>/dev/null || echo 0) + 1 ))
 echo "$runs" > "$FAKE_ARGV.runs"
@@ -41,6 +50,9 @@ if [ -n "$FAKE_WAIT" ]; then
 fi
 exit "${FAKE_EXIT:-0}"
 "#;
+
+/// What the fake prints first with `FAKE_STDIN` set.
+const STARTED: &str = "fake editor started";
 
 /// The six files and their subcommands, as sb-go's layout has them.
 const FILES: [(&str, &str); 6] = [
@@ -746,6 +758,18 @@ struct Pty {
 impl Pty {
     /// `sb edit <args>` in `world`, `extra` set after its environment.
     fn spawn(world: &World, args: &[&str], extra: &[(&str, &std::ffi::OsStr)]) -> Self {
+        Self::spawn_with(world, args, extra, None)
+    }
+
+    /// [`Pty::spawn`] with sb started by `/bin/sh` as `exec sb <args>
+    /// <redirect>`, so one of its streams is something other than the
+    /// PTY.
+    fn spawn_with(
+        world: &World,
+        args: &[&str],
+        extra: &[(&str, &std::ffi::OsStr)],
+        redirect: Option<&str>,
+    ) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 30,
@@ -760,7 +784,15 @@ impl Pty {
         for (key, value) in extra {
             base.env(key, value);
         }
-        let mut cmd = CommandBuilder::new(base.get_program());
+        let mut cmd = match redirect {
+            None => CommandBuilder::new(base.get_program()),
+            Some(redirect) => {
+                let mut sh = CommandBuilder::new("/bin/sh");
+                sh.args(["-c", &format!("exec \"$0\" \"$@\" {redirect}")]);
+                sh.arg(base.get_program());
+                sh
+            }
+        };
         cmd.args(base.get_args());
         cmd.env("TERM", "xterm-256color");
         cmd.env("NO_COLOR", "1");
@@ -817,6 +849,28 @@ impl Pty {
                 Ok(bytes) => self.parser.process(&bytes),
                 Err(_) => return self.contents().contains(text),
             }
+        }
+    }
+
+    /// Wait until the screen is `done`; false at the timeout.
+    fn wait_screen(&mut self, done: impl Fn(&vt100::Screen) -> bool) -> bool {
+        let deadline = Instant::now() + WAIT;
+        while !done(self.parser.screen()) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            match self.output.recv_timeout(left) {
+                Ok(bytes) => self.parser.process(&bytes),
+                Err(_) => return done(self.parser.screen()),
+            }
+        }
+        true
+    }
+
+    /// Take the output already here, without waiting.
+    fn take_now(&mut self) {
+        while let Ok(bytes) = self.output.try_recv() {
+            self.parser.process(&bytes);
         }
     }
 
@@ -1011,23 +1065,20 @@ fn a_sigterm_reaches_the_editor_and_ends_sb() {
     );
 }
 
-/// Bare `sb edit` shows its help until the picker comes (M53), and the
-/// help is sb-go's without the wrapper sentence (tui spec, difference 27)
-/// or the GUI-client one (difference 34).
+/// `sb edit --help` is sb-go's help without the wrapper sentence (tui
+/// spec, difference 27) or the GUI-client one (difference 34), and lists
+/// the six subcommands.
 #[test]
-fn bare_edit_shows_the_help() {
-    let output = common::sb().arg("edit").output().expect("run sb");
-    assert!(output.status.success());
-    let text = String::from_utf8_lossy(&output.stdout);
-    for (sub, _) in FILES {
-        assert!(text.contains(&format!("    {sub} ")), "{text}");
-    }
+fn the_help_is_sb_go_s_with_the_differences() {
     let output = common::sb()
         .args(["edit", "--help"])
         .output()
         .expect("run sb");
     assert!(output.status.success());
     let text = String::from_utf8_lossy(&output.stdout);
+    for (sub, _) in FILES {
+        assert!(text.contains(&format!("    {sub} ")), "{text}");
+    }
     assert!(
         text.contains("VISUAL takes precedence over EDITOR"),
         "{text}"
@@ -1041,4 +1092,235 @@ fn bare_edit_shows_the_help() {
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(text.contains("--no-edit-again"), "{args:?}: {text}");
     }
+}
+
+/// Bare `sb edit` without a terminal on stdin and stdout refuses before
+/// drawing, naming `sb edit <file>`; no editor runs.
+#[test]
+fn the_picker_refuses_without_a_terminal() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .edit(&[])
+        .env("VISUAL", world.fake())
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("sb edit requires an interactive terminal; use sb edit <file>"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert!(!world.ran());
+}
+
+/// The picker needs both stdin and stdout to be a terminal: either one
+/// redirected away from the PTY refuses, before anything is drawn.
+#[test]
+fn the_picker_refuses_with_only_one_stream_on_a_terminal() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let out = world.dir.path().join("out");
+    for redirect in [format!("> '{}'", out.display()), "< /dev/null".to_owned()] {
+        let fake = world.fake();
+        let mut pty = Pty::spawn_with(&world, &[], &[("VISUAL", fake.as_ref())], Some(&redirect));
+        let status = pty.exit();
+        assert_eq!(status.exit_code(), 1, "{redirect}: {}", pty.contents());
+        let shown = format!(
+            "{}{}",
+            pty.contents(),
+            std::fs::read_to_string(&out).unwrap_or_default()
+        );
+        assert!(
+            shown.contains("sb edit requires an interactive terminal; use sb edit <file>"),
+            "{redirect}: {shown}"
+        );
+        assert!(!shown.contains("Select a Saltbox"), "{redirect}: {shown}");
+        assert!(!world.ran(), "{redirect}");
+    }
+}
+
+// --- the picker on a PTY (M53) ---
+
+/// Bare `sb edit` on a PTY, the fake as `VISUAL` recording its terminal,
+/// up to the picker.
+fn picker(world: &World) -> Pty {
+    let fake = world.fake();
+    let mut pty = Pty::spawn(
+        world,
+        &[],
+        &[("VISUAL", fake.as_ref()), ("FAKE_STDIN", "1".as_ref())],
+    );
+    assert!(
+        pty.showing("Select a Saltbox configuration file to edit:"),
+        "{}",
+        pty.contents()
+    );
+    assert!(pty.parser.screen().alternate_screen());
+    assert_ne!(
+        pty.parser.screen().mouse_protocol_mode(),
+        vt100::MouseProtocolMode::None
+    );
+    pty
+}
+
+/// Once the fake has started: the screen as it found it was restored (no
+/// alternate screen, no mouse capture), and nothing waited on its terminal.
+fn assert_editor_got_a_clean_terminal(world: &World, pty: &mut Pty) {
+    assert!(pty.showing(STARTED), "{}", pty.contents());
+    let screen = pty.parser.screen();
+    assert!(!screen.alternate_screen(), "{}", pty.contents());
+    assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+    let stdin_file = PathBuf::from(format!("{}.stdin", world.argv_file().display()));
+    let deadline = Instant::now() + WAIT;
+    while !stdin_file.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // dd writes the file at its open, then what it read.
+    let status = pty.exit();
+    let unread = std::fs::read(&stdin_file).expect("the fake read its terminal");
+    assert_eq!(String::from_utf8_lossy(&unread), "");
+    assert_eq!(status.exit_code(), 0, "{}", pty.contents());
+}
+
+/// Down twice and Enter open the third file, Advanced Settings, in the
+/// editor once the picker has gone; it is validated as `sb edit
+/// adv_settings` validates it, and sb exits 0.
+#[test]
+fn enter_opens_the_chosen_file_in_the_editor() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut pty = picker(&world);
+    pty.send(b"\x1b[B");
+    pty.send(b"j");
+    pty.send(b"\r");
+    assert_editor_got_a_clean_terminal(&world, &mut pty);
+    let path = world.root().join("adv_settings.yml").display().to_string();
+    assert_eq!(world.argv(), [world.fake(), path]);
+    assert!(
+        pty.contents().contains("Validated adv_settings.yml"),
+        "{}",
+        pty.contents()
+    );
+    pty.assert_restored();
+    assert!(
+        logged(&world.log(), "chosen", "adv_settings.yml"),
+        "{}",
+        world.log()
+    );
+}
+
+/// An SGR mouse report: a left press at `column`, `row` (1-based).
+fn left_click(column: u16, row: u16) -> Vec<u8> {
+    format!("\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m").into_bytes()
+}
+
+/// A double click on a row opens its file. Mouse reports the terminal
+/// sends once the picker has turned mouse capture off, while it leaves,
+/// never reach the editor: the picker reads them off before it starts.
+#[test]
+fn a_double_click_opens_the_file_and_no_mouse_bytes_reach_the_editor() {
+    if !root_gate::requested() {
+        return;
+    }
+    // A run where the harness was too slow to send the reports while the
+    // picker was still leaving proves nothing either way; it runs again
+    // (as sb-tui's own drain test).
+    for _ in 0..3 {
+        let world = World::new();
+        let mut pty = picker(&world);
+        // The list's first row is the screen's third; Hetzner VLAN
+        // Settings is the fifth file, on the seventh row.
+        let click = left_click(5, 7);
+        pty.send(&click);
+        pty.send(&click);
+        assert!(
+            pty.wait_screen(|s| s.mouse_protocol_mode() == vt100::MouseProtocolMode::None),
+            "{}",
+            pty.contents()
+        );
+        for after in [0, 10, 20] {
+            std::thread::sleep(Duration::from_millis(after));
+            pty.send(b"\x1b[<35;10;5M");
+        }
+        pty.take_now();
+        if !pty.parser.screen().alternate_screen() {
+            // Already left: the reports may have come after the drain.
+            let _ = pty.exit();
+            continue;
+        }
+        assert_editor_got_a_clean_terminal(&world, &mut pty);
+        let path = world.root().join("hetzner_vlan.yml").display().to_string();
+        assert_eq!(world.argv(), [world.fake(), path]);
+        assert!(!pty.contents().contains("<35;10;5M"), "{}", pty.contents());
+        pty.assert_restored();
+        return;
+    }
+    panic!("the harness never sent the reports while the picker left");
+}
+
+/// SIGTERM to sb in the picker: no editor, the terminal restored, and sb
+/// ends by the signal (143 to a shell).
+#[test]
+fn a_sigterm_in_the_picker_restores_the_terminal() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut pty = picker(&world);
+    let pid = pty
+        .child
+        .process_id()
+        .and_then(|pid| Pid::from_raw(i32::try_from(pid).ok()?))
+        .expect("sb's pid");
+    kill_process(pid, Signal::TERM).expect("kill");
+    let status = pty.exit();
+    assert_eq!(
+        status.signal(),
+        Some("Terminated"),
+        "{status:?}\n{}",
+        pty.contents()
+    );
+    assert!(!world.ran());
+    pty.assert_restored();
+}
+
+/// `q` and Esc leave the picker: exit 0, no editor, the terminal restored.
+#[test]
+fn q_and_esc_leave_without_an_editor() {
+    if !root_gate::requested() {
+        return;
+    }
+    for key in [&b"q"[..], b"\x1b"] {
+        let world = World::new();
+        let mut pty = picker(&world);
+        pty.send(key);
+        let status = pty.exit();
+        assert_eq!(status.exit_code(), 0, "{key:?}: {}", pty.contents());
+        assert!(!world.ran(), "{key:?}");
+        pty.assert_restored();
+    }
+}
+
+/// Ctrl-C in the picker: exit 130, quietly, no editor, the terminal
+/// restored.
+#[test]
+fn ctrl_c_in_the_picker_exits_130() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut pty = picker(&world);
+    pty.send(b"\x03");
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 130, "{}", pty.contents());
+    assert!(!world.ran());
+    pty.assert_restored();
 }

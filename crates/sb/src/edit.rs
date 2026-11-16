@@ -1,9 +1,11 @@
 //! `sb edit <file>` (tui spec, "Editors": `sb edit` and `sb edit <file>`;
 //! module build M49, M50): the target checks, the editor choice and the
 //! run, then the file validated as validate-config validates it and, with
-//! issues, "Edit <file> again?". The picker (M53) comes later.
+//! issues, "Edit <file> again?". Bare `sb edit` shows sb-tui's picker
+//! first (M53), then takes the same path with the file chosen.
 
 use std::ffi::OsStr;
+use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail};
@@ -26,6 +28,28 @@ pub enum File {
 }
 
 impl File {
+    /// The six, in the picker's order (sb-go cmd/edit.go:175-205).
+    pub const ALL: [Self; 6] = [
+        Self::Accounts,
+        Self::Settings,
+        Self::AdvSettings,
+        Self::BackupConfig,
+        Self::HetznerVlan,
+        Self::Inventory,
+    ];
+
+    /// The picker's title for it (sb-go cmd/edit.go:175-205).
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Accounts => "Accounts",
+            Self::Settings => "Settings",
+            Self::AdvSettings => "Advanced Settings",
+            Self::BackupConfig => "Backup Settings",
+            Self::HetznerVlan => "Hetzner VLAN Settings",
+            Self::Inventory => "Inventory Settings",
+        }
+    }
+
     /// The file's shown name (the picker's description, the log's `file`).
     pub fn shown(self) -> &'static str {
         match self {
@@ -68,6 +92,42 @@ impl File {
             Self::HetznerVlan => hetzner_vlan,
             Self::Inventory => inventory,
         }
+    }
+}
+
+/// The picker's refusal without a terminal on stdin and stdout (tui
+/// spec, editors, "Picker").
+pub const NO_TERMINAL: &str = "sb edit requires an interactive terminal; use sb edit <file>";
+
+/// Bare `sb edit`: sb-tui's picker over [`File::ALL`], then [`edit`] on
+/// the file chosen, once the picker has restored the terminal (alternate
+/// screen left, mouse off, input drained), so both paths run the editor
+/// the same way. `q` or Esc ends with nothing done, exit 0.
+///
+/// # Errors
+///
+/// [`NO_TERMINAL`] before anything is drawn when stdin or stdout isn't a
+/// terminal; the screen's I/O error; `Exit(130)` after Ctrl-C ("interrupted"
+/// is `finish_run`'s after a signal); then [`edit`]'s errors.
+pub fn pick(no_edit_again: bool, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        bail!(NO_TERMINAL);
+    }
+    let items = File::ALL.map(|file| {
+        let item = sb_tui::edit_picker::Item {
+            title: file.title(),
+            shown: file.shown(),
+        };
+        (item, file)
+    });
+    let (ending, chosen) = super::block_on(sb_tui::edit_picker::pick(
+        shutdown,
+        &items,
+        crate::logs::screen_theme(),
+    ))??;
+    match chosen {
+        Some(file) => edit(file, no_edit_again, shutdown, log),
+        None => crate::logs::ended(ending),
     }
 }
 
@@ -438,6 +498,23 @@ mod tests {
         );
     }
 
+    /// The picker's titles and order are sb-go's.
+    #[test]
+    fn the_picker_lists_sb_go_s_titles_in_its_order() {
+        let listed: Vec<_> = File::ALL.iter().map(|f| (f.title(), f.shown())).collect();
+        assert_eq!(
+            listed,
+            [
+                ("Accounts", "accounts.yml"),
+                ("Settings", "settings.yml"),
+                ("Advanced Settings", "adv_settings.yml"),
+                ("Backup Settings", "backup_config.yml"),
+                ("Hetzner VLAN Settings", "hetzner_vlan.yml"),
+                ("Inventory Settings", "localhost.yml"),
+            ]
+        );
+    }
+
     #[test]
     fn each_file_has_its_shown_name_and_path() {
         let root = Path::new("/srv/x");
@@ -455,14 +532,7 @@ mod tests {
     #[test]
     fn each_file_is_checked_as_validate_config_checks_it() {
         let root = Path::new("/saltbox");
-        for file in [
-            File::Accounts,
-            File::Settings,
-            File::AdvSettings,
-            File::BackupConfig,
-            File::HetznerVlan,
-            File::Inventory,
-        ] {
+        for file in File::ALL {
             assert_eq!(
                 root.join(file.checked_as().path),
                 file.path(root),

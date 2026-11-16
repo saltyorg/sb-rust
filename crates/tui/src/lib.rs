@@ -10,11 +10,13 @@
 //! the picker ([`picker`]) and `sb logs`' screens ([`logs`]), with the
 //! inline fallback when stdout isn't a terminal ([`inline`]). And the
 //! announcements' inline form ([`markdown`]) and their viewer
-//! ([`announcements`]), for ops' `update` and `sb announcements`.
+//! ([`announcements`]), for ops' `update` and `sb announcements`. And
+//! `sb edit`'s picker ([`edit_picker`]).
 
 mod ahead;
 pub mod announcements;
 mod columns;
+pub mod edit_picker;
 pub mod line;
 pub mod markdown;
 pub mod picker;
