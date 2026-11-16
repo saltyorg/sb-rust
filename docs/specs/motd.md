@@ -183,9 +183,10 @@ mount points.
 - With one instance, the summary is shown alone. The exception is the Arr
   queues, which always show names. With several, each line starts with
   `Name:` padded, in the app_name colour.
-- The default timeout is 1 s per request. A configured `timeout` (seconds,
-  fractions allowed) replaces it. For qBittorrent and rTorrent, it replaces
-  the 20 s data timeout, and the 1 s fast check stays. Every timeout is
+- The default timeout is 1 s per request. A configured `timeout`
+  (seconds; fractions only where the schema allows them, Difference 19)
+  replaces it. For qBittorrent and rTorrent, it replaces the 20 s data
+  timeout, and the 1 s fast check stays. Every timeout is
   capped by what is left of the section's 30 s (sb-go's
   `timeoutFromContext`, `motd/queue.go:551-571`).
 - An error shows as `Error: <first line, redacted>` in the error colour.
@@ -248,8 +249,11 @@ never reach stdout, stderr or the run log.
 - Run-log records name the instance by its name and its configured base
   URL through `sb_config::http::loggable_url`, with the query removed.
   They never carry the request URL.
-- The panic message and the `Config:` issues get the same treatment. The
-  issue line shows only a count. The run log gets the issues with their
+- The panic message on its error line and the `Config:` issues get the
+  same treatment. The issue line shows only a count. (cli-core's panic
+  hook records a panic's own message in the run log as it is, before
+  motd's line is made; no known panic carries a credential, M44's
+  security review.) The run log gets the issues with their
   positions, through config's `secret_paths` with Task 60's credential
   paths.
 
@@ -261,8 +265,9 @@ never reach stdout, stderr or the run log.
 2. **An invalid motd.yml** prints `Config:  motd.yml has N issue(s); run
    sb validate-config` and skips only the config-driven parts: the HTTP
    sections, the colours, and Services' additions (decision 3). sb-go hid
-   every config section silently, and treated valid files it couldn't
-   decode the same way (`timeout: 1.5`).
+   every config section silently. A fractional `timeout` is such an
+   issue in both, as Saltbox's schema takes a whole number there
+   (Difference 19).
 3. **The older bare-list form** (`sonarr: [ {...} ]`) is migrated by
    validate-config and `sb update` to the current form (decision 4),
    with a backup of the original; motd itself reads it as an issue under
@@ -335,8 +340,12 @@ never reach stdout, stderr or the run log.
 17. **motd.yml is read once per run.** sb-go read it up to 10 times.
 18. **Errors** are cli-core's error block. Unknown flags are clap's parse
     error, exit 2 (sb-go: exit 1), as for every sb command.
-19. **`timeout` takes fractions** (the schema's `number`). sb-go's `int`
-    rejected `1.5`, which hid every config section.
+19. **`timeout` takes fractions only where the schema allows them.**
+    Saltbox's schema types `timeout` as `number`, which sb-config, as
+    sb-go's validator does, takes as a whole number, so `timeout: 1.5` is
+    an issue under Difference 2 today (2026-11-15). The
+    model reads fractions, for a schema that allows them; sb-go's `int`
+    field couldn't.
 20. **A GPU on a non-zero PCI domain** shows its name. sb-go's colon split
     showed `02.0 VGA compatible controller: <name>` there.
 21. **GPU names come from the host's `/usr/share/misc/pci.ids`** through
@@ -363,6 +372,15 @@ never reach stdout, stderr or the run log.
     0300: Device vvvv:dddd` (checked with pciutils 3.7.0 on 22.04, the
     file moved away, with and without udev's `hwdb.bin`), which sb-go's
     match on the class name leaves out; sb still lists the device.
+26. **A provider behind a redirect shows an error line** (M44; raised
+    in review). Every provider asks sb-config's `Http`
+    ("HTTP instances"), which follows no redirect, so its credential
+    headers (`X-Plex-Token`, `X-Emby-Token`, `Authorization`) never go
+    to a second host; the line reads `… status code 302` (Jellyfin: `302
+    Found`). Go's `http.Client` follows up to ten and forwards those
+    custom headers, so a motd.yml pointing at an HTTP address that
+    redirects to HTTPS showed values in sb-go. Saltbox's own motd.yml
+    points at the containers' internal addresses, which don't redirect.
 
 ### Scope
 
@@ -978,18 +996,40 @@ Nothing touches a real host's state, and every fixture is synthetic.
   number (integer), got: 1.5`). So a fractional timeout is an issue: it
   shows the `Config:` line and skips the HTTP sections, and Difference
   19's fractions can't be reached through `check_file` (decision 17).
-  The model keeps fractions for when the schema allows them. Raised with
-  the maintainer.
+  The model keeps fractions for when the schema allows them. Settled
+  (2026-11-15): Differences 2 and 19 say so (M44).
 - **An unquoted credential that looks like a number (found at M42's
-  review; for M44).** The model reads a field's text from sb-config's
-  resolved scalar, so `password: 0123` reads `83` (yaml.v3's base-0
-  octal), `0x1F` reads `31`, and `password: 1.50` or `apikey: true`
-  reads as absent. sb-go's fields are Go strings, which yaml.v3 fills
-  with the scalar's source text (`0123`). The schema's credential fields
-  have no format, length or pattern, so the file checks clean. No
-  provider reads the model before M44, which takes the source text from
-  sb-config's tree (a source string kept on plain scalars) before the
-  providers send any credential; a unit test pins today's reading.
+  review; fixed at M44).** sb-go's fields are Go strings, which yaml.v3
+  fills with the scalar's text as written (`decode.go`, `scalar`: `n.Value`
+  for any scalar that resolved to something other than a string or
+  null), so `password: 0123` is `0123`, not yaml.v3's base-0 octal 83,
+  and `apikey: true` is `true`. sb-config's tree now keeps that text on
+  each such scalar (`Node::source`) and reads it with `go_string`, which
+  motd's model uses for every text field; the schema's credential fields
+  have no format, length or pattern, so such a file checks clean.
+- **HTTP providers, first half (M44, 2026-11-15).** Plex, Emby,
+  Jellyfin, SABnzbd and NZBGet ask one `sb_config::http::Http` built
+  when the first of them needs it, with the run's proxy (the one
+  Traefik's call takes: reqwest's reading of the proxy variables in a
+  run, none in the tests). Each instance is its own task; its request's
+  limit is its `timeout` or 1 s, cut to what is left of the 30 s. Their
+  error texts are sb-go's where sb wrote them (`plex API returned status
+  code N`, `failed to connect to Emby: …`, jellyfin-go's `failed to get
+  sessions: 401 Unauthorized`); the transport's and the JSON decoder's
+  own words are reqwest's and serde's. Every configured `token`,
+  `apikey` and `password` is hidden, raw, query-encoded and
+  path-encoded, in error lines, summaries (SABnzbd's sizes are remote
+  text), panic messages and the run log, whose instance records give the
+  name and the base URL without login or query. The canary test runs
+  every provider against fakes that echo the credentials back, in Rust's
+  `Debug` escapes too (serde's errors quote a value so) and with
+  lowercase percent escapes. Remote text on a line is cut to sb-config's
+  2000 characters after the credentials are hidden. An instance's name
+  is sb-go's: as written on a summary, trimmed on an error line. The
+  instance tasks are a tokio `JoinSet`, so the section's cap aborts them
+  all. jellyfin-go counts a session whose `NowPlayingItem` or
+  `TranscodingInfo` is `null` as having one, and so does sb.
+  Redirects: Difference 26.
 - **Services (M43, 2026-11-15).** The list is sb-host's `services` with
   `with_additional(additional_services)`; `enabled: false` hides the
   section, and a file with issues keeps the default filters and names

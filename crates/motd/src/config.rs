@@ -209,8 +209,8 @@ pub struct Instance {
     pub token: Option<String>,
     pub user: Option<String>,
     pub password: Option<String>,
-    /// A `timeout` above zero, in seconds, fractions allowed
-    /// (Difference 19); none for the default.
+    /// A `timeout` above zero, in seconds; fractions where the schema
+    /// allows them (Difference 19); none for the default.
     pub timeout: Option<Duration>,
     pub enabled: bool,
 }
@@ -317,14 +317,12 @@ fn instance(node: &Node) -> Instance {
     }
 }
 
-/// A scalar's text: strings as they are and whole numbers as digits;
-/// other scalars, null and collections are none.
+/// A field's text as sb-go's Go `string` field reads it: sb-config's
+/// `go_string`, a string as it is and any other scalar as written (an
+/// unquoted `password: 0123` is `0123`, `apikey: true` is `true`); null
+/// and collections are none.
 fn text(node: &Node) -> Option<String> {
-    match &node.data {
-        Data::Scalar(Value::Str(text) | Value::Timestamp(text)) => Some(text.clone()),
-        Data::Scalar(Value::Int(number)) => Some(number.to_string()),
-        _ => None,
-    }
+    node.go_string().map(ToString::to_string)
 }
 
 /// `enabled`: on unless it is `false` (sb-go's `IsEnabled`).
@@ -336,7 +334,8 @@ fn flag(node: Option<&Node>) -> bool {
 }
 
 /// A `timeout` above zero, as a duration (sb-go took only whole seconds
-/// above zero; Difference 19 takes fractions).
+/// above zero; fractions are read for a schema that allows them,
+/// Difference 19).
 fn seconds(node: &Node) -> Option<Duration> {
     let seconds = match node.data {
         Data::Scalar(Value::Int(number)) => u32::try_from(number).ok().map(f64::from)?,
@@ -1056,18 +1055,25 @@ mod tests {
         );
     }
 
-    /// Today's reading of an unquoted credential that looks like a number
-    /// (resolved, not its source text; spec, verification notes): M44
-    /// takes the source text before any provider sends one.
+    /// An unquoted credential that looks like a number or a boolean reads
+    /// as written, as sb-go's Go `string` fields read it (spec,
+    /// verification notes; M44): `0123` stays `0123`, not 83.
     #[test]
-    fn an_unquoted_number_reads_as_resolved_until_m44() {
+    fn an_unquoted_credential_reads_as_written() {
         let root = root_with(Some(
-            "nzbget:\n  instances:\n    - name: NZBGet\n      url: http://nzbget:6789\n      user: 0x1F\n      password: 0123\n",
+            "nzbget:\n  instances:\n    - name: 2024\n      url: http://nzbget:6789\n      user: 0x1F\n      password: 0123\n\
+             sabnzbd:\n  instances:\n    - name: SABnzbd\n      url: http://sabnzbd:8080\n      apikey: true\n\
+             plex:\n  instances:\n    - name: Plex\n      url: http://plex:32400\n      token: 1.50\n",
         ));
         let motd = load(&settings(root.path())).motd.expect("a model");
         let nzbget = &motd.apps[&App::Nzbget].instances[0];
-        assert_eq!(nzbget.user.as_deref(), Some("31"));
-        assert_eq!(nzbget.password.as_deref(), Some("83"));
+        assert_eq!(nzbget.name, "2024");
+        assert_eq!(nzbget.user.as_deref(), Some("0x1F"));
+        assert_eq!(nzbget.password.as_deref(), Some("0123"));
+        let sabnzbd = &motd.apps[&App::Sabnzbd].instances[0];
+        assert_eq!(sabnzbd.apikey.as_deref(), Some("true"));
+        let plex = &motd.apps[&App::Plex].instances[0];
+        assert_eq!(plex.token.as_deref(), Some("1.50"));
     }
 
     /// Fields of another type than the schema's read as absent; a
@@ -1078,17 +1084,20 @@ mod tests {
             line: 1,
             column: 1,
             data: Data::Mapping(Vec::new()),
+            source: None,
         };
         assert_eq!(Motd::from_tree(&root), Motd::default());
         let node = |data| sb_config::tree::Node {
             line: 1,
             column: 1,
             data,
+            source: None,
         };
         assert_eq!(
-            text(&node(Data::Scalar(Value::Int(7)))).as_deref(),
+            text(&node(Data::Scalar(Value::Str("7".into())))).as_deref(),
             Some("7")
         );
+        // A resolved scalar without its text (built by hand) reads none.
         assert_eq!(text(&node(Data::Scalar(Value::Bool(true)))), None);
         assert_eq!(text(&node(Data::Scalar(Value::Null))), None);
         assert_eq!(seconds(&node(Data::Scalar(Value::Int(-1)))), None);

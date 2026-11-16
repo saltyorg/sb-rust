@@ -88,7 +88,8 @@ pub async fn body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
         match response.chunk().await {
             Ok(Some(chunk)) => body.extend_from_slice(&chunk),
             Ok(None) => break,
-            Err(err) => return Err(transport_error(&err)),
+            // Without its URL, as every motd provider error is built.
+            Err(err) => return Err(transport_error(&err.without_url())),
         }
     }
     body.truncate(MAX_BODY);

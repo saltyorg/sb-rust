@@ -607,6 +607,7 @@ mod tests {
             line: 1,
             column: 1,
             data,
+            source: None,
         }
     }
 

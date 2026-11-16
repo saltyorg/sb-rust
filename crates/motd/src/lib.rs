@@ -3,9 +3,10 @@
 //! selection rules, the runner, the layout, the system sections, Disk
 //! Usage, Package Status, GPU, User Sessions, Last login, Docker and
 //! Traefik, motd.yml with its colours, its `Config:` line and
-//! `--generate-config`, and Services (module build M36-M43); the other
-//! sections, the banner and `--share` come with their own tasks
-//! (M44-M47), and until then a selected section without its code shows
+//! `--generate-config`, Services, and the media servers and downloaders
+//! Plex, Emby, Jellyfin, `SABnzbd` and `NZBGet` (module build M36-M44); the
+//! other sections, the banner and `--share` come with their own tasks
+//! (M45-M47), and until then a selected section without its code shows
 //! no line.
 
 pub mod config;
@@ -15,6 +16,8 @@ pub mod gpu;
 mod layout;
 mod logins;
 mod packages;
+mod providers;
+pub mod redact;
 pub mod run;
 mod services;
 mod system;
@@ -28,6 +31,11 @@ use sb_host::systemd::Systemd;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Slot;
+
+/// Docker's address, Traefik's base URL and the proxy every HTTP request
+/// takes (Traefik's and the providers').
+#[doc(inline)]
+pub use docker::Settings as DockerSettings;
 
 /// One of sb-go's 24 sections, in its fixed display order
 /// (`cmd/motd.go:202-339`, `displayMotd`'s `sources`).
@@ -325,22 +333,37 @@ pub async fn report(
     colours: Colours<'_>,
     load: impl FnOnce() -> config::Loaded,
 ) -> Result<String, Error> {
-    let chosen = options.chosen()?;
     let sources = Sources {
-        docker: docker::Settings::from_env(),
+        docker: DockerSettings::from_env(),
         systemd: Systemd::new(),
     };
+    report_from(options, colours, sources, load).await
+}
+
+/// [`report`] with its sources given, not read from the environment (the
+/// tests' fakes and stand-ins).
+///
+/// # Errors
+///
+/// [`Error::NothingSelected`] when no section is chosen.
+pub async fn report_from(
+    options: &Options,
+    colours: Colours<'_>,
+    sources: Sources,
+    load: impl FnOnce() -> config::Loaded,
+) -> Result<String, Error> {
+    let chosen = options.chosen()?;
     report_with(chosen, colours, sources, load()).await
 }
 
 /// Where the sections that ask a daemon look: Docker's and Traefik's
-/// settings and systemctl. The tests point them at fakes and stand-ins.
-/// No `Default`: systemctl is always chosen, so no test lists the host's
-/// services by accident.
+/// settings, with the run's proxy, and systemctl. The tests point them at
+/// fakes and stand-ins. No `Default`: systemctl is always chosen, so no
+/// test lists the host's services by accident.
 #[derive(Debug)]
-struct Sources {
-    docker: docker::Settings,
-    systemd: Systemd,
+pub struct Sources {
+    pub docker: DockerSettings,
+    pub systemd: Systemd,
 }
 
 /// The `Config:` line's key (Difference 2).
@@ -358,19 +381,31 @@ async fn report_with(
     tracing::info!(sections = names.join(","), "motd sections chosen");
     let motd_colours = loaded.motd.as_ref().map_or_default(|motd| motd.colours);
     let paint = Paint::with(colours.theme, colours.on, &motd_colours);
+    let secrets = loaded.motd.as_ref().map_or_default(redact::Secrets::of);
+    let providers = providers::Shared::new(
+        sources.docker.proxy.clone(),
+        tokio::time::Instant::now() + run::CAP,
+        secrets.clone(),
+    );
     let containers = docker::Containers::new(sources.docker);
+    let (systemd_settings, apps) = match loaded.motd {
+        Some(motd) => (motd.systemd.map(Arc::new), motd.apps),
+        None => (None, std::collections::BTreeMap::new()),
+    };
     let context = Context {
         paint,
         containers,
         systemd: Arc::new(sources.systemd),
-        systemd_settings: loaded.motd.and_then(|motd| motd.systemd).map(Arc::new),
+        systemd_settings,
+        apps: Arc::new(apps),
+        providers,
         token: CancellationToken::new(),
     };
     let jobs = chosen
         .into_iter()
         .filter_map(|section| job(section, &context).map(|job| (section, job)))
         .collect();
-    let results = run::collect(jobs, run::CAP, &context.token).await;
+    let results = run::collect(jobs, run::CAP, &context.token, &secrets).await;
     let paint = context.paint;
     let config = loaded.line.map(|line| (CONFIG_KEY, paint.warning(&line)));
     let lines: Vec<(&str, String)> = config
@@ -385,13 +420,16 @@ async fn report_with(
 }
 
 /// What the sections' jobs share: the paint, the one container listing,
-/// systemctl with motd.yml's `systemd` part, and the run's token, which
-/// the runner cancels at the cap.
+/// systemctl with motd.yml's `systemd` part, motd.yml's apps and the
+/// providers' client, deadline and credentials, and the run's token,
+/// which the runner cancels at the cap.
 struct Context {
     paint: Paint,
     containers: Arc<docker::Containers>,
     systemd: Arc<Systemd>,
     systemd_settings: Option<Arc<config::Systemd>>,
+    apps: Arc<std::collections::BTreeMap<config::App, config::AppSection>>,
+    providers: Arc<providers::Shared>,
     token: CancellationToken,
 }
 
@@ -440,9 +478,51 @@ fn job(section: Section, context: &Context) -> Option<run::Job> {
                 services::services(&systemd, settings.as_deref(), &paint, &token).await
             })
         }
+        Section::Plex => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                providers::plex::plex(apps.get(&config::App::Plex), &shared, &paint).await
+            })
+        }
+        Section::Emby => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                providers::emby::emby(apps.get(&config::App::Emby), &shared, &paint).await
+            })
+        }
+        Section::Jellyfin => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                providers::jellyfin::jellyfin(apps.get(&config::App::Jellyfin), &shared, &paint)
+                    .await
+            })
+        }
+        Section::Sabnzbd => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                providers::sabnzbd::sabnzbd(apps.get(&config::App::Sabnzbd), &shared, &paint).await
+            })
+        }
+        Section::Nzbget => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                providers::nzbget::nzbget(apps.get(&config::App::Nzbget), &shared, &paint).await
+            })
+        }
         _ => return None,
     };
     Some(job)
+}
+
+/// What a provider section's job holds: motd.yml's apps and the
+/// providers' shared part.
+type ProviderParts = (
+    Arc<std::collections::BTreeMap<config::App, config::AppSection>>,
+    Arc<providers::Shared>,
+);
+
+fn provider(context: &Context) -> ProviderParts {
+    (Arc::clone(&context.apps), Arc::clone(&context.providers))
 }
 
 #[cfg(test)]
@@ -652,6 +732,12 @@ esac"#,
             containers: docker::Containers::new(docker::Settings::default()),
             systemd: Arc::new(Systemd::new()),
             systemd_settings: None,
+            apps: Arc::new(std::collections::BTreeMap::new()),
+            providers: providers::Shared::new(
+                sb_config::http::Proxy::Off,
+                tokio::time::Instant::now(),
+                redact::Secrets::default(),
+            ),
             token: CancellationToken::new(),
         };
         assert!(job(Section::Queues, &context).is_none());
@@ -703,6 +789,7 @@ esac"#,
             line: 1,
             column: 1,
             data: sb_config::tree::Data::Mapping(Vec::new()),
+            source: None,
         };
         assert_eq!(
             config::Motd::from_tree(&root).colours,

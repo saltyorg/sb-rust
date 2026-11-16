@@ -23,6 +23,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::Section;
+use crate::redact::Secrets;
 
 /// sb-go's `defaultProviderTimeout` (`motd/parallel.go`), per section.
 pub const CAP: Duration = Duration::from_secs(30);
@@ -32,11 +33,13 @@ pub type Job = Pin<Box<dyn Future<Output = String> + Send + 'static>>;
 
 /// Each job run as its own task under `cap`, its value or error line
 /// returned in display order (the jobs' `Section` order). `token` is
-/// cancelled when the cap passes with a job still running.
+/// cancelled when the cap passes with a job still running; a panic's
+/// message has `secrets` hidden.
 pub async fn collect(
     jobs: Vec<(Section, Job)>,
     cap: Duration,
     token: &CancellationToken,
+    secrets: &Secrets,
 ) -> Vec<(Section, String)> {
     let start = Instant::now();
     let deadline = start + cap;
@@ -61,7 +64,7 @@ pub async fn collect(
             }
             Ok(Err(err)) => {
                 log(section, "panicked", start.elapsed());
-                panicked(err.try_into_panic().ok().as_deref())
+                panicked(err.try_into_panic().ok().as_deref(), secrets)
             }
             Err(_) => {
                 token.cancel();
@@ -94,21 +97,27 @@ fn timed_out(cap: Duration) -> String {
 }
 
 /// sb-go's line for a panic (`motd/parallel.go`): the message made safe to
-/// draw and cut to its first line. Credentials are hidden here too once
-/// motd.yml brings them (decision 12, M44). Why not `JoinError`'s
+/// draw and cut to its first line, motd.yml's credentials hidden before
+/// and after (decision 12). Why not `JoinError`'s
 /// `Display`: it reads `task <id> panicked with message "<msg>"`, and
 /// tokio's payload-to-text helper is private
 /// (tokio 1.54.1 `src/runtime/task/error.rs`, `panic_payload_as_str`).
-fn panicked(payload: Option<&(dyn Any + Send)>) -> String {
-    let message = payload
+fn panicked(payload: Option<&(dyn Any + Send)>, secrets: &Secrets) -> String {
+    let message = panic_message(payload);
+    let shown = secrets.hide(&crate::text::one_line(secrets.hide(message).as_bytes()));
+    format!("Error: panic occurred ({shown})")
+}
+
+/// A panic's message: its `&str` or `String` payload, or what tokio
+/// writes for any other (`Box<dyn Any>`).
+pub(crate) fn panic_message(payload: Option<&(dyn Any + Send)>) -> &str {
+    payload
         .and_then(|p| {
             p.downcast_ref::<&str>()
                 .copied()
                 .or_else(|| p.downcast_ref::<String>().map(String::as_str))
         })
-        .unwrap_or("Box<dyn Any>");
-    let shown = crate::text::one_line(message.as_bytes());
-    format!("Error: panic occurred ({shown})")
+        .unwrap_or("Box<dyn Any>")
 }
 
 #[cfg(test)]
@@ -129,7 +138,7 @@ mod tests {
             (Section::Distribution, job("d", Duration::from_secs(2))),
             (Section::Uptime, job("", Duration::ZERO)),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new()).await;
+        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
         assert_eq!(
             results,
             [
@@ -148,7 +157,7 @@ mod tests {
             (Section::Kernel, job("never", Duration::from_secs(3600))),
             (Section::Uptime, job("u", Duration::from_secs(1))),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new()).await;
+        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
         assert_eq!(
             results,
             [
@@ -179,7 +188,7 @@ mod tests {
             (Section::Services, watcher),
             (Section::Kernel, job("k", Duration::from_secs(1))),
         ];
-        let results = collect(jobs, CAP, &token).await;
+        let results = collect(jobs, CAP, &token, &Secrets::default()).await;
         assert!(token.is_cancelled());
         assert_eq!(results[0].1, "k");
         assert_eq!(results[1].1, "Error: provider timed out after 30s");
@@ -188,6 +197,7 @@ mod tests {
             vec![(Section::Kernel, job("k", Duration::from_secs(29)))],
             CAP,
             &token,
+            &Secrets::default(),
         )
         .await;
         assert!(!token.is_cancelled());
@@ -200,7 +210,7 @@ mod tests {
             (Section::Distribution, job("x", Duration::from_secs(3600))),
             (Section::Kernel, job("y", Duration::from_secs(3600))),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new()).await;
+        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
         assert!(results.iter().all(|(_, v)| v.contains("timed out")));
         assert_eq!(start.elapsed(), CAP);
     }
@@ -222,7 +232,7 @@ mod tests {
                 Box::pin(async { std::panic::panic_any(7_u8) }),
             ),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new()).await;
+        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
         assert_eq!(
             results,
             [
@@ -240,6 +250,22 @@ mod tests {
                     "Error: panic occurred (Box<dyn Any>)".to_string()
                 ),
             ]
+        );
+    }
+
+    /// A panic's message never shows a credential, even one split by a
+    /// control character the message's drawing drops.
+    #[tokio::test]
+    async fn a_panic_hides_the_credentials() {
+        let jobs: Vec<(Section, Job)> = vec![(
+            Section::Plex,
+            Box::pin(async { panic!("token run-canary-42 and run-\x07canary-42") }),
+        )];
+        let secrets = Secrets::from_values(["run-canary-42"]);
+        let results = collect(jobs, CAP, &CancellationToken::new(), &secrets).await;
+        assert_eq!(
+            results[0].1,
+            "Error: panic occurred (token [REDACTED] and [REDACTED])"
         );
     }
 

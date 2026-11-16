@@ -886,6 +886,7 @@ mod tests {
             vec![(crate::Section::Disk, job)],
             crate::run::CAP,
             &tokio_util::sync::CancellationToken::new(),
+            &crate::redact::Secrets::default(),
         )
         .await;
         assert_eq!(results[0].1, "Error: panic occurred (bad read)");

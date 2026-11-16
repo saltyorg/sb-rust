@@ -97,7 +97,12 @@ fn a_timeout_a_panic_and_an_empty_value_are_logged_as_such() {
         (Section::Uptime, Box::pin(async { String::new() })),
     ];
     let token = tokio_util::sync::CancellationToken::new();
-    let (_, text) = logged(run::collect(jobs, run::CAP, &token));
+    let (_, text) = logged(run::collect(
+        jobs,
+        run::CAP,
+        &token,
+        &sb_motd::redact::Secrets::default(),
+    ));
     let line = |flag: &str| {
         text.lines()
             .find(|line| line.contains(&format!("section=\"{flag}\"")))

@@ -228,7 +228,7 @@ fn indent(lines: &mut [String], from: usize, to: usize, by: usize) {
 }
 
 /// Whether `new` holds `old`'s values, each of `sections` now under
-/// `instances`: positions aside. Walked from a list on
+/// `instances`: positions aside, each scalar's text as written too. Walked from a list on
 /// the heap, so a deep file costs no stack.
 fn same_values(old: &Node, new: &Node, sections: &[&str]) -> bool {
     let (Data::Mapping(old_entries), Data::Mapping(new_entries)) = (&old.data, &new.data) else {
@@ -257,7 +257,7 @@ fn same_values(old: &Node, new: &Node, sections: &[&str]) -> bool {
     }
     while let Some((a, b)) = pending.pop() {
         match (&a.data, &b.data) {
-            (Data::Scalar(x), Data::Scalar(y)) if x == y => {}
+            (Data::Scalar(x), Data::Scalar(y)) if x == y && a.source == b.source => {}
             (Data::Sequence(x), Data::Sequence(y)) if x.len() == y.len() => {
                 pending.extend(x.iter().zip(y));
             }
@@ -775,6 +775,7 @@ mod tests {
             line: 1,
             column: 1,
             data: Data::Sequence(Vec::new()),
+            source: None,
         };
         assert!(!same_values(&list, &new, &["plex"]));
         assert!(!same_values(&old, &list, &["plex"]));

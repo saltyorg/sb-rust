@@ -16,6 +16,11 @@ pub struct Node {
     pub line: usize,
     pub column: usize,
     pub data: Data,
+    /// A scalar's text as written (its quotes taken off), kept when it
+    /// resolved to something other than a string or null (`0123`,
+    /// `true`, `1.50`): what yaml.v3 puts in a Go `string` field. None
+    /// otherwise, and for a collection.
+    pub source: Option<String>,
 }
 
 /// A mapping (its keys in file order), a sequence or a scalar.
@@ -53,6 +58,19 @@ impl Node {
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Node> {
         self.entry(key).map(|(_, value)| value)
+    }
+
+    /// The scalar as yaml.v3 decodes it into a Go `string` field
+    /// (go.yaml.in yaml v3.0.5, `decode.go`, `scalar`): a string as it
+    /// is, any other scalar as its text as written (`password: 0123`
+    /// reads `0123`, not the int 83); none for null or a collection.
+    #[must_use]
+    pub fn go_string(&self) -> Option<&str> {
+        match &self.data {
+            Data::Scalar(Value::Str(text)) => Some(text),
+            Data::Scalar(Value::Null) | Data::Mapping(_) | Data::Sequence(_) => None,
+            Data::Scalar(_) => self.source.as_deref(),
+        }
     }
 
     /// Null or an empty string: sb-go's `isEmptyValue`.
@@ -163,6 +181,7 @@ fn convert(
     // Everything under a secret key is secret too.
     let hidden = under_secret || secret(path);
     let (line, column) = (node.span.start.line(), node.span.start.col() + 1);
+    let mut source = None;
     let data = match &untagged(node).data {
         YamlDataOwned::Mapping(map) => Data::Mapping(
             map.iter()
@@ -217,7 +236,12 @@ fn convert(
         ),
         YamlDataOwned::Representation(text, style, tag) => {
             match resolve(text, *style, tag.as_ref()) {
-                Ok(value) => Data::Scalar(value),
+                Ok(value) => {
+                    if !matches!(value, Value::Str(_) | Value::Null) {
+                        source = Some(text.clone());
+                    }
+                    Data::Scalar(value)
+                }
                 Err(message) => {
                     // yaml.v3's message quotes the text: not a secret's.
                     let message = if hidden {
@@ -244,7 +268,12 @@ fn convert(
         // loader resolves aliases and drops bad values as errors (parse).
         _ => Data::Scalar(Value::Null),
     };
-    Node { line, column, data }
+    Node {
+        line,
+        column,
+        data,
+        source,
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +295,7 @@ mod tests {
             line: 1,
             column: 1,
             data: Data::Scalar(Value::Str("secret-leaf".into())),
+            source: None,
         };
         for level in 0..sb_cli_core::config::yaml::MAX_DEPTH {
             let data = if level % 2 == 0 {
@@ -282,6 +312,7 @@ mod tests {
                 line: 2,
                 column: 3,
                 data,
+                source: None,
             };
         }
         let tree = Tree::new(node);
@@ -294,6 +325,38 @@ mod tests {
             .expect("thread")
             .join()
             .expect("dropped without overflow");
+    }
+
+    /// A Go `string` field gets a scalar's text as written: yaml.v3's
+    /// `decode.go` sets `n.Value` for any scalar that resolved to
+    /// something other than a string or null (M44: an unquoted
+    /// `password: 0123`).
+    #[test]
+    fn go_string_is_the_text_as_written() {
+        let node = tree(
+            "octal: 0123\nhex: 0x1F\nfloat: 1.50\nbool: true\ntagged: !!int \"017\"\n\
+             quoted: '0123'\nplain: abc\nnull: ~\nempty: ''\ndate: 2001-12-14\nlist: [1]\n",
+        );
+        let read = |key: &str| node.get(key).expect(key).go_string();
+        assert_eq!(
+            node.get("octal").unwrap().data,
+            Data::Scalar(Value::Int(83))
+        );
+        assert_eq!(read("octal"), Some("0123"));
+        assert_eq!(read("hex"), Some("0x1F"));
+        assert_eq!(read("float"), Some("1.50"));
+        assert_eq!(read("bool"), Some("true"));
+        assert_eq!(read("tagged"), Some("017"));
+        assert_eq!(read("quoted"), Some("0123"));
+        assert_eq!(read("plain"), Some("abc"));
+        assert_eq!(read("null"), None);
+        assert_eq!(read("empty"), Some(""));
+        assert_eq!(read("date"), Some("2001-12-14"));
+        assert_eq!(read("list"), None);
+        assert_eq!(node.go_string(), None);
+        // Strings and null keep no second copy.
+        assert_eq!(node.get("plain").unwrap().source, None);
+        assert_eq!(node.get("null").unwrap().source, None);
     }
 
     #[test]
@@ -313,12 +376,14 @@ mod tests {
                 Node {
                     line: 3,
                     column: 5,
-                    data: Data::Scalar(Value::Str("x".into()))
+                    data: Data::Scalar(Value::Str("x".into())),
+                    source: None,
                 },
                 Node {
                     line: 4,
                     column: 5,
-                    data: Data::Scalar(Value::Str("y".into()))
+                    data: Data::Scalar(Value::Str("y".into())),
+                    source: None,
                 },
             ])
         );
