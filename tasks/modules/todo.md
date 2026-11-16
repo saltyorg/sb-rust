@@ -1127,14 +1127,14 @@ test, with Plex, Emby, Jellyfin, SABnzbd and NZBGet.
 qBittorrent, and rTorrent's XML-RPC with quick-xml.
 
 **Acceptance criteria:**
-- [ ] Each provider's values from its fake server match sb-go's.
-- [ ] rTorrent's `methodCall` and `methodResponse` (int, i4, i8, string,
+- [x] Each provider's values from its fake server match sb-go's.
+- [x] rTorrent's `methodCall` and `methodResponse` (int, i4, i8, string,
       array, fault) round-trip through quick-xml.
-- [ ] The canary test covers these providers too.
+- [x] The canary test covers these providers too.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd`.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor.
+- [x] `cargo test -p sb-motd`.
+- [x] Review: code-reviewer, library-reviewer, security-auditor.
 
 **Dependencies:** M44
 **Files:** `crates/motd/{Cargo.toml,src/providers/}`, `crates/motd/tests/`, `Cargo.toml`, `Cargo.lock`
