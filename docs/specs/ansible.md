@@ -213,9 +213,9 @@ death by signal for an interrupted run (cli-core).
     repo: the widest tag of any repo shown (display width, after
     escaping, each character's width summed as the grid measures), plus 2. Each repo fits as many columns as the width holds
     (the last column needs no gap); lines carry no trailing spaces.
-  - **Footer:** `sb list <query>` in the command slot, ` search` in the
-    hint slot, then, without `-m`, `   ` and ` include Saltbox-mod` in the
-    hint slot around `-m` in the command slot. Never after a search.
+  - **Footer:** `sb list <query>` in the command slot and ` search` in
+    the hint slot, with or without `-m` (help explains `-m`). Never after
+    a search.
   - **Colours:** each slot is drawn in one theme role, set in one place,
     `COLOURS` in `crates/ansible/src/list.rs` (decision 19): heading
     `service` (and bold), count `muted`, rule `muted`, command `accent`,
@@ -499,8 +499,8 @@ for validate-config.
   coloured and plain, piped (80, plain), and of the search at widths 40,
   80 and 120 and piped; the shared width (a long Saltbox tag widens
   Sandbox's columns), `-m` with and without the directory, the footer
-  with and without `-m`, a failing repo between two good ones (exit 1,
-  the others printed).
+  the same with and without `-m`, a failing repo between two good ones
+  (exit 1, the others printed).
 - **By hand, capped, in a container** (`ubuntu:24.04` with ansible-core
   from pip, a one-play playbook that prints its extra vars): the `-e`
   cases reach a real Ansible whole; Ctrl-C gives 99; a fixture of real
@@ -667,13 +667,13 @@ for validate-config.
     each repo on its own); no cache note (the canvas's right-hand
     `cached` and `rebuilt, repo changed`, and sb-go's `(cached)`, are
     dropped: the run log has it); a blank line before the first heading
-    (the maintainer's note of 2026-11-14 asked for none; the brief of
-    2026-11-16 asks for one, and the later one stands); the footer's
-    `-m` part left out when `-m` was given, and no footer after a
-    search. **Colours:** the canvas's, through theme roles (the
-    maintainer, 2026-11-16, after the first look): the heading in
+    (the maintainer's note of 2026-11-14: the canvas lacked one); the
+    footer hints at the query only, never at `-m`, which help explains
+    (the maintainer, 2026-11-16, after the colour look), and there is no
+    footer after a search. **Colours:** the canvas's, through theme roles
+    (the maintainer, 2026-11-16, after the first look): the heading in
     `service` (the palette's blue), bold; the commands (`sandbox-<tag>`,
-    `mod-<tag>`, `sb list <query>`, `-m`) in `accent` (cyan); the counts,
+    `mod-<tag>`, `sb list <query>`) in `accent` (cyan); the counts,
     the rule and the hint text in `muted` (the canvas's dim grey). The
     one place to change them is the slot table, `COLOURS` in
     `crates/ansible/src/list.rs`: one line per slot (heading, count,

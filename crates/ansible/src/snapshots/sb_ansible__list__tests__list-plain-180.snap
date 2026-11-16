@@ -1,6 +1,6 @@
 ---
 source: crates/ansible/src/list.rs
-expression: "render_list(&wide(false), false, &plain(), true, width)"
+expression: "render_list(&wide(false), &plain(), true, width)"
 ---
 
 Saltbox  31 tags
@@ -18,4 +18,4 @@ Sandbox  8 tags  ·  install as sandbox-<tag>
 always                          bazarr4k                        plexripper                      sonarr4k
 autobrr                         plex-meta-manager               radarr4k                        tdarr
 
-sb list <query> search   -m include Saltbox-mod
+sb list <query> search

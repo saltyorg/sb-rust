@@ -207,7 +207,6 @@ pub fn list(args: &ListArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> anyho
         let text = match query {
             None => Some(sb_ansible::render_list(
                 &listing,
-                args.include_mod,
                 theme::current(),
                 colour,
                 width.unwrap_or(sb_ansible::PIPED_WIDTH),

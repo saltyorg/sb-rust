@@ -950,8 +950,8 @@ fn dashes() -> String {
     "-".repeat(80)
 }
 
-/// The footer hint without `-m`.
-const FOOTER: &str = "\nsb list <query> search   -m include Saltbox-mod\n";
+/// The footer hint, the same with and without `-m`.
+const FOOTER: &str = "\nsb list <query> search\n";
 
 /// `sb list` from a valid cache, piped: the refined layout, plain, at 80
 /// (stdout isn't a terminal): a blank line, each repository's heading,
@@ -1099,8 +1099,8 @@ fn list_include_mod_lists_saltbox_mod_fresh() {
     let output = world.sb(&["list", "-m"]).output().expect("run sb");
     assert!(output.status.success(), "{}", stderr(&output));
     let out = stdout(&output);
-    // Its columns share Sandbox's `tautulli`'s width; `-m` given, the
-    // footer leaves it out.
+    // Its columns share Sandbox's `tautulli`'s width; the footer is the
+    // usual one.
     assert!(
         out.ends_with(&format!(
             "\nSaltbox-mod  2 tags  ·  install as mod-<tag>\n{}\nalways    jf\n\
@@ -1409,7 +1409,7 @@ fn list_shows_the_rebuild_only_while_it_runs() {
         format!(
             "\nSaltbox  2 tags\n{rule}\nalways  plex\n\
              \nSandbox  2 tags  ·  install as sandbox-<tag>\n{rule}\nalways  b\n\
-             \nsb list <query> search   -m include Saltbox-mod"
+             \nsb list <query> search"
         ),
         "{shown}"
     );

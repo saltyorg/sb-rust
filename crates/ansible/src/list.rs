@@ -152,20 +152,14 @@ async fn list_mod<F: FnOnce() -> Runner>(
 /// (spec, `sb list`, decision 19): sb-go's notice for a missing
 /// `saltbox_mod`, if any; a blank line; each repository's heading, a rule
 /// across `width` and its tags in [`columns`], a blank line between
-/// repositories; then a blank line and the footer hint, its `-m` part
-/// only without `include_mod`. Every column is as wide as the widest tag
+/// repositories; then a blank line and the footer hint at the query
+/// (`-m` is help's to explain). Every column is as wide as the widest tag
 /// of any repository, so the columns line up between them. Styled in
 /// `theme`'s roles when `colour` is on and the profile isn't `ascii`;
 /// plain otherwise, the rule then in `-`. Nothing but the notice when no
 /// repository was listed.
 #[must_use]
-pub fn render_list(
-    listing: &Listing,
-    include_mod: bool,
-    theme: &Theme,
-    colour: bool,
-    width: usize,
-) -> String {
+pub fn render_list(listing: &Listing, theme: &Theme, colour: bool, width: usize) -> String {
     let mut out = String::new();
     if listing.mod_missing {
         out.push_str(MOD_MISSING);
@@ -215,17 +209,10 @@ pub fn render_list(
         let _ = writeln!(out, "\n{ruled}{rule}{ruled:#}");
         out.push_str(&columns(cells, widest, width));
     }
-    let _ = write!(
+    let _ = writeln!(
         out,
         "\n{command}sb list <query>{command:#}{hint} search{hint:#}"
     );
-    if !include_mod {
-        let _ = write!(
-            out,
-            "{hint}   {hint:#}{command}-m{command:#}{hint} include Saltbox-mod{hint:#}"
-        );
-    }
-    out.push('\n');
     out
 }
 
@@ -255,11 +242,9 @@ struct Colours {
     count: Role,
     /// The rule under each heading.
     rule: Role,
-    /// A command or flag: `sandbox-<tag>`, `mod-<tag>`, `sb list <query>`,
-    /// `-m`.
+    /// A command: `sandbox-<tag>`, `mod-<tag>`, `sb list <query>`.
     command: Role,
-    /// The words around them: `  ·  install as `, ` search`, ` include
-    /// Saltbox-mod`.
+    /// The words around them: `  ·  install as `, ` search`.
     hint: Role,
 }
 
@@ -612,16 +597,16 @@ mod tests {
         for width in [80, 180] {
             insta::assert_snapshot!(
                 format!("list-plain-{width}"),
-                render_list(&wide(false), false, &plain(), true, width)
+                render_list(&wide(false), &plain(), true, width)
             );
             insta::assert_snapshot!(
                 format!("list-colour-{width}"),
-                visible(&render_list(&wide(false), false, &colour(), true, width))
+                visible(&render_list(&wide(false), &colour(), true, width))
             );
         }
         insta::assert_snapshot!(
             "list-mod-plain-80",
-            render_list(&wide(true), true, &plain(), true, 80)
+            render_list(&wide(true), &plain(), true, 80)
         );
     }
 
@@ -629,7 +614,7 @@ mod tests {
     /// widens Sandbox's and `saltbox_mod`'s columns too.
     #[test]
     fn every_repository_shares_the_widest_tag() {
-        let text = render_list(&wide(true), true, &plain(), false, 80);
+        let text = render_list(&wide(true), &plain(), false, 80);
         let gap = " ".repeat(LONG.len() + 2 - "always".len());
         assert!(text.contains(&format!("\nalways{gap}organizr\n")), "{text}");
         assert!(
@@ -641,7 +626,7 @@ mod tests {
             "{text}"
         );
         // Without it, the widest is `plex-meta-manager`, for all three.
-        let text = render_list(&listing(), false, &plain(), false, 80);
+        let text = render_list(&listing(), &plain(), false, 80);
         let gap = " ".repeat("plex-meta-manager".len() + 2 - "always".len());
         assert!(text.contains(&format!("\nalways{gap}")), "{text}");
         assert!(!text.contains(LONG), "{text}");
@@ -653,7 +638,7 @@ mod tests {
     fn the_headings_name_the_count_and_the_prefix() {
         let mut one = wide(true);
         one.sections[2].tags.truncate(1);
-        let text = render_list(&one, true, &plain(), false, 80);
+        let text = render_list(&one, &plain(), false, 80);
         let headings: Vec<&str> = text
             .lines()
             .filter(|line| line.starts_with("Salt") || line.starts_with("Sand"))
@@ -669,7 +654,7 @@ mod tests {
         // A repository with no tags is its heading and rule alone.
         let mut empty = listing();
         empty.sections[1].tags.clear();
-        let text = render_list(&empty, false, &plain(), false, 80);
+        let text = render_list(&empty, &plain(), false, 80);
         let rule = "-".repeat(80);
         assert!(
             text.contains(&format!(
@@ -679,25 +664,23 @@ mod tests {
         );
     }
 
-    /// The footer hint names `-m` only when it wasn't given.
+    /// The footer hints at the query only, with or without `-m` (`-m` is
+    /// help's to explain; the maintainer, 2026-11-16).
     #[test]
-    fn the_footer_names_m_only_without_it() {
-        let text = render_list(&listing(), false, &plain(), false, 80);
-        assert!(
-            text.ends_with("\n\nsb list <query> search   -m include Saltbox-mod\n"),
-            "{text}"
-        );
-        let text = render_list(&wide(true), true, &plain(), false, 80);
-        assert!(text.ends_with("\n\nsb list <query> search\n"), "{text}");
-        // Coloured: the commands in their slot's role, the words in the
+    fn the_footer_hints_at_the_query_only() {
+        for listed in [listing(), wide(true)] {
+            let text = render_list(&listed, &plain(), false, 80);
+            assert!(text.ends_with("\n\nsb list <query> search\n"), "{text}");
+            assert!(!text.contains("include Saltbox-mod"), "{text}");
+        }
+        // Coloured: the command in its slot's role, the word in the
         // hint's.
         let theme = colour();
-        let text = render_list(&listing(), false, &theme, true, 80);
+        let text = render_list(&listing(), &theme, true, 80);
         let (code, hint) = (theme.style(COLOURS.command), theme.style(COLOURS.hint));
         assert!(
             text.ends_with(&format!(
-                "{code}sb list <query>{code:#}{hint} search{hint:#}{hint}   {hint:#}\
-                 {code}-m{code:#}{hint} include Saltbox-mod{hint:#}\n"
+                "\n\n{code}sb list <query>{code:#}{hint} search{hint:#}\n"
             )),
             "{text:?}"
         );
@@ -709,13 +692,13 @@ mod tests {
     #[test]
     fn plain_output_has_no_styling_and_a_dash_rule() {
         for (theme, colour_on) in [(colour(), false), (plain(), true), (plain(), false)] {
-            let text = render_list(&wide(false), false, &theme, colour_on, 80);
+            let text = render_list(&wide(false), &theme, colour_on, 80);
             assert!(!text.contains('\x1b'), "{text:?}");
             assert!(text.contains(&format!("\n{}\n", "-".repeat(80))), "{text}");
             assert!(!text.contains('─'), "{text}");
         }
         let theme = colour();
-        let text = render_list(&wide(false), false, &theme, true, 120);
+        let text = render_list(&wide(false), &theme, true, 120);
         let heading = theme.style(COLOURS.heading).bold();
         let (count, rule) = (theme.style(COLOURS.count), theme.style(COLOURS.rule));
         assert!(
@@ -745,7 +728,7 @@ mod tests {
     fn the_notice_comes_first() {
         let mut missing = listing();
         missing.mod_missing = true;
-        let text = render_list(&missing, true, &plain(), false, 80);
+        let text = render_list(&missing, &plain(), false, 80);
         assert!(
             text.starts_with(
                 "Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is installed.\n\
@@ -755,17 +738,14 @@ mod tests {
         );
         missing.sections.clear();
         assert_eq!(
-            render_list(&missing, true, &plain(), false, 80),
+            render_list(&missing, &plain(), false, 80),
             "Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is installed.\n"
         );
-        assert_eq!(
-            render_list(&Listing::default(), false, &plain(), false, 80),
-            ""
-        );
+        assert_eq!(render_list(&Listing::default(), &plain(), false, 80), "");
         // A tag is escaped, and measured as shown.
         let mut forged = listing();
         forged.sections[1].tags = strings(&["a\x1b[2Jb", "c"]);
-        let text = render_list(&forged, false, &plain(), false, 80);
+        let text = render_list(&forged, &plain(), false, 80);
         assert!(text.contains("a\\u{1b}[2Jb"), "{text}");
         assert!(!text.contains('\x1b'), "{text:?}");
     }
