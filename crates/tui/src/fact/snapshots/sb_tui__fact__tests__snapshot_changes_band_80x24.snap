@@ -1,0 +1,29 @@
+---
+source: crates/tui/src/fact/tests.rs
+assertion_line: 1573
+expression: "drawn(&mut f.page, 80, 24).backend()"
+---
+"╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
+"│ Search   press / to search                                                   │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"  ▾ Homepage                                                                    "
+"    motd               first line …                                             "
+"    theme              dark  will be deleted                                    "
+"    title              家庭メディア 🎬 Server                                   " Hidden by multi-width symbols: [(24, " "), (26, " "), (28, " "), (30, " "), (32, " "), (34, " "), (37, " ")]
+"› ▾ Komodo  will be deleted                                                     "
+"    database_password  ••••••••                                                 "
+"    jwt_secret         ••••••••                                                 "
+"  ▾ Plex                                                                        "
+"    plex                                                                        "
+"      claim_token      ••••••••                                                 "
+"      transcode_path   /mnt/local/transcodes                                    "
+"    plex2                                                                       "
+"      claim_token      ••••••••                                                 "
+"      transcode_path   /mnt/local/transcodes2                                   "
+"                                                                                "
+"╭ Unsaved changes (2) ─────────────────────────────────────────────────────────╮"
+"│ Delete homepage · theme                                                undo  │"
+"│ Delete komodo                                                          undo  │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+" komodo will be deleted when you save. Saltbox creates a new value next time it "
+"  Edit (e)   Add (a)   Copy (c)   Show (s)   Keep (d)   Save (v)   Quit (q)     "

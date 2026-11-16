@@ -1,0 +1,29 @@
+---
+source: crates/tui/src/fact/tests.rs
+assertion_line: 1608
+expression: "drawn(&mut f.page, 80, 24).backend()"
+---
+"╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
+"│ Search   press / to search                                                   │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"  ▾ Homepage                                                                    "
+"    motd               first line …                                             "
+"›   theme              dark  will be deleted                                    "
+"    title              家庭メディア 🎬 Server                                   " Hidden by multi-width symbols: [(24, " "), (26, " "), (28, " "), (30, " "), (32, " "), (34, " "), (37, " ")]
+"  ▾ Komodo                                                                      "
+"    database_password  ••••••••                                                 "
+"    jwt_secret         ••••••••                                                 "
+"  ▾ ╭ Unsaved changes ─────────────────────────────────────────────────────╮    "
+"    │You have 1 unsaved change. Save them before you quit?                 │    "
+"    │                                                                      │    "
+"    │ Save (y)    Discard (d)    Cancel (n)                                │    "
+"    ╰──────────────────────────────────────────────────────────────────────╯    "
+"      claim_token      ••••••••                                                 "
+"      transcode_path   /mnt/local/transcodes2                                   "
+"                                                                                "
+"                                                                                "
+"╭ Unsaved changes (1) ─────────────────────────────────────────────────────────╮"
+"│ Delete homepage · theme                                                undo  │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+" homepage · theme will be deleted when you save. Saltbox creates a new value nex"
+"  Edit (e)   Add (a)   Copy (c)   Show (s)   Keep (d)   Save (v)   Quit (q)     "

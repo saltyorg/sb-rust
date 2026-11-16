@@ -1,7 +1,7 @@
 //! `sb fact` (tui spec, "Editors", `sb fact`; module build M54): the
 //! terminal check, the facts session opened on Saltbox's facts directory,
-//! then sb-tui's page over its catalog. The session's editor lock is held
-//! until the page closes.
+//! then sb-tui's fact editor over it (M54, M55). The session's editor
+//! lock is held until the editor closes.
 
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
@@ -53,12 +53,7 @@ pub fn fact(shutdown: &Shutdown) -> anyhow::Result<()> {
         Ok(session) => session,
         Err(err) => bail!("open fact editor: {err}"),
     };
-    let ending = block_on(sb_tui::fact::browse(
-        shutdown,
-        session.catalog(),
-        screen::theme(),
-    ))??;
-    // The editor lock is released only now the page has closed.
-    drop(session);
+    // The page keeps the session, and its editor lock, until it closes.
+    let ending = block_on(sb_tui::fact::browse(shutdown, session, screen::theme()))??;
     screen::ended(ending)
 }

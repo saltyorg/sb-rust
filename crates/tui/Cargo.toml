@@ -44,6 +44,8 @@ tui-markdown.workspace = true
 tui-scrollview.workspace = true
 # sb restore's answers, cleared on drop (ops decision 10).
 zeroize.workspace = true
+# The fact editor's dialogs (tui spec, editors, Tech Stack).
+tui-popup.workspace = true
 # The picker's name filter line (tui spec, "The picker", Keys).
 ratatui-textarea.workspace = true
 # `DisplayText`, the one way untrusted bytes reach the screen (journal

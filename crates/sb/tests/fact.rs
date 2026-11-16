@@ -1,7 +1,7 @@
 //! `sb fact` through the binary (tui spec, "Editors", `sb fact`; module
 //! build M54): the refusal without a terminal, the open errors before
 //! the screen, the page on a PTY over fixture fact files, `q` and Ctrl-C,
-//! and the run log without a fact's value. Every test has its own Saltbox
+//! an edit saved, and the run log without a fact's value. Every test has its own Saltbox
 //! root, whose inventory points `server_appdata_path` at its own facts
 //! directory; none reads a real one.
 
@@ -461,6 +461,45 @@ fn show_and_copy_never_reach_the_run_log() {
     assert!(log.contains("fact copied"), "{log}");
     assert!(log.contains("key=database_password"), "{log}");
     assert!(!log.contains(SECRET), "{log}");
+}
+
+/// An edit saved through the binary: the file holds the new value, its
+/// other lines as they were, and the run log names the change, never the
+/// value (M55).
+#[test]
+fn an_edit_is_saved_to_the_file() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut pty = Pty::spawn(&world);
+    assert!(pty.showing("Homepage"), "{}", pty.contents());
+    // Homepage's heading, motd, then title.
+    pty.send(b"jj");
+    pty.send(b"e");
+    assert!(pty.showing("Edit title"), "{}", pty.contents());
+    pty.send(b"\x7f\x7f\x7f\x7fAway");
+    pty.send(b"\r");
+    assert!(pty.showing("Away  changed"), "{}", pty.contents());
+    pty.send(b"v");
+    assert!(pty.showing("Save 1 change"), "{}", pty.contents());
+    pty.send(b"y");
+    assert!(pty.showing("homepage: saved"), "{}", pty.contents());
+    pty.send(b"\r");
+    pty.send(b"q");
+    assert_eq!(pty.exit().exit_code(), 0, "{}", pty.contents());
+    pty.assert_restored();
+    assert_eq!(
+        std::fs::read_to_string(world.facts().join("homepage.ini")).expect("file"),
+        "[homepage]\ntitle = Away\nmotd = first line\n\tsecond line\n"
+    );
+    let log = world.log();
+    assert!(log.contains("change staged"), "{log}");
+    assert!(
+        log.contains("outcome=\"applied\"") || log.contains("outcome=applied"),
+        "{log}"
+    );
+    assert!(!log.contains("Away"), "{log}");
 }
 
 /// The facts directory follows the inventory's `server_appdata_path`.

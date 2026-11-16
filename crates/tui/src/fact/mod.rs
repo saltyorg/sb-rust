@@ -1,8 +1,8 @@
-//! The fact editor's page (tui spec, "Editors", `sb fact`, Screen; the
-//! settings page of docs/ideas/fact-editor.md and proto-facts' reviewed
-//! design). This is its read-only part (module build M54): the apps and
-//! their settings, search, folding, masking, Show and Copy. Changes,
-//! saving and the dialogs come with M55, the mouse and the menu with M56.
+//! The fact editor (tui spec, "Editors", `sb fact`, Screen; the settings
+//! page of docs/ideas/fact-editor.md and proto-facts' reviewed design):
+//! the apps and their settings, search, folding, masking, Show and Copy
+//! (module build M54); the changes, the changes panel with undo, saving
+//! and the dialogs (M55). The mouse and the menu come with M56.
 //!
 //! - **The page** is ratatui's `List` with a `ListState`
 //!   (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.List.html>):
@@ -31,18 +31,37 @@
 //! - **Secrets** ([`is_secret_key`]) show as dots. **Show** (`s`) reveals
 //!   the selected one until the selection moves (on a value that isn't
 //!   masked it has nothing to do, and is drawn faint); **Copy** (`c`) sends
-//!   any value
-//!   through crossterm's OSC 52 `CopyToClipboard`
+//!   any value through crossterm's OSC 52 `CopyToClipboard`
 //!   (<https://docs.rs/crossterm/0.29.0/crossterm/clipboard/struct.CopyToClipboard.html>)
 //!   without showing it. Values, keys and names reach the screen through
 //!   term-ui's `DisplayText`, which drops control sequences.
-//! - **The changes panel** is always there: on the right from 100 columns,
-//!   at the bottom below that. It has nothing to list until M55.
+//! - **Changes** ([`changes`]): Edit (`e`, or Enter on a setting), Add a
+//!   setting to the selected copy (`a`: its name, then its value), Delete
+//!   or Keep a setting, a copy or an app (`d`; deleting an app or a copy
+//!   replaces the changes inside it), Undo the selected row's change
+//!   (`u`). The session checks every change before it is staged
+//!   (`Session::check`), so a change the file can't take is refused at
+//!   once, with its reason on the status line.
+//! - **The changes panel** lists each staged change with its undo: on the
+//!   right from 100 columns, a band at the bottom below that.
+//! - **Save** (`v`) asks first, then saves on its own thread ([`save`]),
+//!   with the "waiting for Saltbox", drift and outcome dialogs
+//!   ([`dialog`]). Quit with staged changes asks Save, Discard or Cancel.
+//!   Dialogs are tui-popup's (<https://docs.rs/tui-popup/0.7.7/tui_popup/>);
+//!   the drift dialog's text scrolls in a tui-scrollview
+//!   (<https://docs.rs/tui-scrollview/0.6.8/tui_scrollview/>).
 //! - **Never logged:** a fact's value. The run log gets the role, copy and
-//!   key of what is shown and copied, and whether the copy was sent.
+//!   key of what is shown, copied and staged, the change's kind, and
+//!   whether the copy was sent; sb-config logs the save.
 
-use std::collections::BTreeSet;
+mod changes;
+mod dialog;
+mod keys;
+mod save;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyModifiers};
@@ -56,9 +75,15 @@ use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config::escape_controls;
 use sb_cli_core::theme::{Role, Theme};
 use sb_config::facts::Role as App;
+use sb_config::facts::apply::RoleOutcome;
 use sb_config::facts::secret::is_secret_key;
+use sb_config::facts::session::Session;
 use sb_term_ui::DisplayText;
+use tokio::sync::Notify;
+use tui_scrollview::ScrollViewState;
 
+use self::changes::{Pending, Target};
+use self::dialog::Popup;
 use crate::term::{App as Screen, Ending, Flow, Tui};
 
 /// The selection's mark, as the pickers draw it: it shows the selection
@@ -77,31 +102,57 @@ const WIDE: u16 = 100;
 /// The changes panel's width beside the page.
 const PANEL_WIDTH: u16 = 36;
 
+/// The most changes the bottom band lists before it scrolls no further
+/// (proto-facts' four).
+const BAND_ROWS: usize = 4;
+
 /// The status line's note after a copy: OSC 52 can't confirm it (tui
 /// spec, Known limits).
 /// Short enough for an 80-column status line with most keys (the
 /// maintainer, 2026-11-16).
 const COPIED: &str = "(if your terminal allows it; otherwise use Show)";
 
-/// The fact editor's page over `roles` (sb-config's catalog), in `theme`,
-/// on stdout's terminal, until `q`, Esc, Ctrl-C or the run's token (a
-/// first SIGTERM or SIGHUP).
+/// How long Saltbox's lock is waited for before the waiting dialog shows:
+/// a shorter hold would only flash it.
+const WAIT_SHOWN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What a deletion's note says (tui spec, Screen).
+const REGENERATED: &str = "Saltbox creates a new value next time it runs.";
+
+/// The fact editor over `session`'s catalog, in `theme`, on stdout's
+/// terminal, until it quits, Ctrl-C or the run's token (a first SIGTERM
+/// or SIGHUP). A save under way when Ctrl-C or the token ends the screen
+/// finishes the role it is committing, then stops; the session (and its
+/// editor lock) goes when this returns.
 ///
 /// # Errors
 ///
 /// The I/O error when the screen can't be set up, drawn or read, or
 /// can't be restored (reported whatever the ending, cli-L5).
-pub async fn browse(shutdown: &Shutdown, roles: Vec<App>, theme: Theme) -> io::Result<Ending> {
-    let mut page = Page::new(roles, theme, Box::new(io::stdout()));
+pub async fn browse(shutdown: &Shutdown, session: Session, theme: Theme) -> io::Result<Ending> {
+    let mut page = Page::new(session, theme, Box::new(io::stdout()));
     tracing::info!(roles = page.roles.len(), "fact editor opened");
     let mut tui = Tui::enter(shutdown)?;
+    page.wake = Some(tui.waker());
     let ending = tui.run(&mut page).await;
+    // A save still running stops after its role; a drift question still
+    // open is answered Cancel (its reply goes with the dialog).
+    let running = page.saving.take();
+    page.popup = Popup::None;
+    if let Some(running) = &running {
+        running.stop();
+    }
     let left = tui.leave().await;
-    tracing::info!(ending = ?ending.as_ref().ok(), "fact editor closed");
+    if let Some(running) = running {
+        // On a blocking thread of the pool: the save may be committing.
+        let _ = sb_cli_core::spawn::blocking(move || running.finish()).await;
+    }
+    tracing::info!(ending = ?ending.as_ref().ok(), staged = page.pending.len(), "fact editor closed");
     crate::ended(ending, left)
 }
 
-/// A setting: its role, copy and fact indexes in the catalog.
+/// A setting: its role, copy and setting indexes (into
+/// [`Page::settings`]).
 type Id = (usize, usize, usize);
 
 /// One row of the page.
@@ -115,17 +166,35 @@ enum Row {
 /// What a bottom button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
+    Edit,
+    Add,
     Copy,
     Show,
+    Delete,
+    Save,
     Quit,
+}
+
+/// A setting as the page shows it: the catalog's, with its staged value,
+/// or one staged to be added.
+#[derive(Clone)]
+struct Setting {
+    key: String,
+    value: String,
+    /// Whether it is staged to be added (not in the file yet).
+    added: bool,
 }
 
 /// The page's state.
 struct Page {
     roles: Vec<App>,
+    /// The session the changes are checked and saved with; away while a
+    /// save runs.
+    session: Option<Session>,
     theme: Theme,
     list: ListState,
-    folded: BTreeSet<usize>,
+    /// The folded apps, by name, so a reload keeps them.
+    folded: BTreeSet<String>,
     /// Whether the first draw has chosen expanded or folded.
     fold_decided: bool,
     /// The search line; its editing keys (Backspace, Ctrl-H, word delete)
@@ -133,32 +202,45 @@ struct Page {
     search: TextArea<'static>,
     query: String,
     searching: bool,
-    /// The one value Show reveals, until the selection moves.
-    shown: Option<Id>,
+    /// The one value Show reveals, until the selection moves, by name: an
+    /// addition can move the rows under it.
+    shown: Option<Target>,
     status: String,
+    /// The staged changes, by what they are on.
+    pending: BTreeMap<Target, Pending>,
+    popup: Popup,
+    /// A save under way.
+    saving: Option<save::Running>,
+    /// Quit once the save the quit dialog started has saved everything.
+    quit_after_save: bool,
     /// Where Copy's OSC 52 goes: the terminal (stdout), or a test's sink.
     out: Box<dyn Write + Send>,
+    /// What a save's thread wakes the screen with ([`Tui::waker`]).
+    wake: Option<Arc<Notify>>,
     /// The list's height in the last frame (the page keys' step).
     height: u16,
 }
 
 impl std::fmt::Debug for Page {
-    // No value in it: `Role`'s facts print their keys only.
+    // No value in it: `Role`'s facts and `Pending` print no values.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Page")
             .field("roles", &self.roles)
             .field("selected", &self.list.selected())
             .field("query", &self.query)
+            .field("pending", &self.pending)
             .finish_non_exhaustive()
     }
 }
 
 /// The search line, empty: one line, its cursor shown only while it has
 /// focus (set at each draw).
-fn search_box() -> TextArea<'static> {
+fn search_box(theme: &Theme) -> TextArea<'static> {
     let mut line = TextArea::default();
     line.set_cursor_line_style(Style::default());
     line.set_placeholder_text("press / to search");
+    line.set_style(Style::from(theme.style(Role::Text)));
+    line.set_placeholder_style(Style::from(theme.style(Role::Faint)));
     line
 }
 
@@ -181,23 +263,54 @@ fn title_case(name: &str) -> String {
         .map_or_default(|first| first.to_uppercase().chain(chars).collect())
 }
 
+/// `target`'s role, copy and key for the run log, escaped (cli-core's
+/// rule): never a value. A missing part is `-`.
+fn names(target: &Target) -> (String, String, String) {
+    let (role, copy, key) = match target {
+        Target::App(role) => (role.as_str(), "-", "-"),
+        Target::Copy(role, copy) => (role.as_str(), copy.as_str(), "-"),
+        Target::Setting(role, copy, key) => (role.as_str(), copy.as_str(), key.as_str()),
+    };
+    (
+        escape_controls(role),
+        escape_controls(copy),
+        escape_controls(key),
+    )
+}
+
+/// Whether `key` is one of a text line's own: a newline (Enter, Ctrl-M,
+/// `\n`, `\r`) that ratatui-textarea would add, as its single-line example
+/// filters them
+/// (<https://github.com/ratatui/ratatui-textarea/blob/v0.9.3/examples/single_line.rs>).
+fn newline(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Enter | KeyCode::Char('\n' | '\r') => true,
+        KeyCode::Char('m') => key.modifiers.contains(KeyModifiers::CONTROL),
+        _ => false,
+    }
+}
+
 impl Page {
-    fn new(roles: Vec<App>, theme: Theme, out: Box<dyn Write + Send>) -> Self {
-        let mut search = search_box();
-        search.set_style(Style::from(theme.style(Role::Text)));
-        search.set_placeholder_style(Style::from(theme.style(Role::Faint)));
+    fn new(session: Session, theme: Theme, out: Box<dyn Write + Send>) -> Self {
+        let roles = session.catalog();
         Self {
             list: ListState::default().with_selected((!roles.is_empty()).then_some(0)),
             roles,
+            session: Some(session),
+            search: search_box(&theme),
             theme,
             folded: BTreeSet::new(),
             fold_decided: false,
-            search,
             query: String::new(),
             searching: false,
             shown: None,
             status: String::new(),
+            pending: BTreeMap::new(),
+            popup: Popup::None,
+            saving: None,
+            quit_after_save: false,
             out,
+            wake: None,
             height: 0,
         }
     }
@@ -219,6 +332,80 @@ impl Page {
         role.instances.len() > 1 || role.instances.first().is_some_and(|i| i.name != role.name)
     }
 
+    /// Copy `i` of app `r`'s settings as the page shows them: the file's,
+    /// each with its staged value, then the ones staged to be added, in
+    /// key order.
+    fn settings(&self, r: usize, i: usize) -> Vec<Setting> {
+        let role = &self.roles[r];
+        let instance = &role.instances[i];
+        let staged = |key: &str| {
+            self.pending.get(&Target::Setting(
+                role.name.clone(),
+                instance.name.clone(),
+                key.to_owned(),
+            ))
+        };
+        let mut settings: Vec<Setting> = instance
+            .facts
+            .iter()
+            .map(|fact| Setting {
+                key: fact.key.clone(),
+                value: match staged(&fact.key) {
+                    Some(Pending::Set(value)) => value.clone(),
+                    _ => fact.value.clone(),
+                },
+                added: false,
+            })
+            .collect();
+        let added = self
+            .pending
+            .iter()
+            .filter_map(|(target, pending)| match (target, pending) {
+                (Target::Setting(app, copy, key), Pending::Set(value))
+                    if *app == role.name
+                        && *copy == instance.name
+                        && !instance.facts.iter().any(|fact| fact.key == *key) =>
+                {
+                    Some(Setting {
+                        key: key.clone(),
+                        value: value.clone(),
+                        added: true,
+                    })
+                }
+                _ => None,
+            });
+        settings.extend(added);
+        settings
+    }
+
+    fn setting(&self, (r, i, f): Id) -> Setting {
+        self.settings(r, i).swap_remove(f)
+    }
+
+    /// What `row` is, by name.
+    fn target(&self, row: Row) -> Target {
+        match row {
+            Row::App(r) => Target::App(self.roles[r].name.clone()),
+            Row::Copy(r, i) => Target::Copy(
+                self.roles[r].name.clone(),
+                self.roles[r].instances[i].name.clone(),
+            ),
+            Row::Setting((r, i, f)) => Target::Setting(
+                self.roles[r].name.clone(),
+                self.roles[r].instances[i].name.clone(),
+                self.setting((r, i, f)).key,
+            ),
+        }
+    }
+
+    /// Whether `target`, or the app or copy it is in, is staged to be
+    /// deleted.
+    fn deleted(&self, target: &Target) -> bool {
+        std::iter::once(target.clone())
+            .chain(target.outer())
+            .any(|t| self.pending.get(&t) == Some(&Pending::Delete))
+    }
+
     /// Whether `name` holds the query, in any case. Values are never
     /// searched.
     fn matches(&self, name: &str) -> bool {
@@ -235,9 +422,12 @@ impl Page {
             let mut below = Vec::new();
             for (i, instance) in role.instances.iter().enumerate() {
                 let copy_hit = role_hit || self.matches(&instance.name);
-                let settings: Vec<Row> = (0..instance.facts.len())
-                    .filter(|&f| copy_hit || self.matches(&instance.facts[f].key))
-                    .map(|f| Row::Setting((r, i, f)))
+                let settings: Vec<Row> = self
+                    .settings(r, i)
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, setting)| copy_hit || self.matches(&setting.key))
+                    .map(|(f, _)| Row::Setting((r, i, f)))
                     .collect();
                 if !copy_hit && settings.is_empty() {
                     continue;
@@ -251,7 +441,7 @@ impl Page {
                 continue;
             }
             rows.push(Row::App(r));
-            if self.query.is_empty() && self.folded.contains(&r) {
+            if self.query.is_empty() && self.folded.contains(&role.name) {
                 continue;
             }
             rows.extend(below);
@@ -270,9 +460,19 @@ impl Page {
         }
     }
 
+    /// Whether setting `id`'s key names a secret: masked until Show.
+    fn secret(&self, id: Id) -> bool {
+        is_secret_key(&self.setting(id).key)
+    }
+
+    /// Whether Show has revealed setting `id`.
+    fn is_shown(&self, id: Id) -> bool {
+        self.shown.as_ref() == Some(&self.target(Row::Setting(id)))
+    }
+
     /// Whether setting `id` shows as dots now.
     fn masked(&self, id: Id) -> bool {
-        self.secret(id) && self.shown != Some(id)
+        self.secret(id) && !self.is_shown(id)
     }
 
     /// Move the selection with `ListState`'s own `movement`, then clamp it
@@ -303,23 +503,28 @@ impl Page {
         let Some(Row::App(r) | Row::Copy(r, _) | Row::Setting((r, _, _))) = self.selected() else {
             return;
         };
+        let name = self.roles[r].name.clone();
         if fold {
-            self.folded.insert(r);
+            self.folded.insert(name);
             let heading = self.rows().iter().position(|row| *row == Row::App(r));
             self.list.select(heading);
         } else {
-            self.folded.remove(&r);
+            self.folded.remove(&name);
         }
     }
 
     /// Enter: an app's heading folds or opens it (not while searching, as
-    /// [`Page::fold_selected`]).
+    /// [`Page::fold_selected`]); a setting opens its edit box.
     fn activate(&mut self) {
-        if self.query.is_empty()
-            && let Some(Row::App(r)) = self.selected()
-            && !self.folded.remove(&r)
-        {
-            self.folded.insert(r);
+        match self.selected() {
+            Some(Row::App(r)) if self.query.is_empty() => {
+                let name = self.roles[r].name.clone();
+                if !self.folded.remove(&name) {
+                    self.folded.insert(name);
+                }
+            }
+            Some(Row::Setting(_)) => self.start_edit(),
+            _ => {}
         }
     }
 
@@ -332,11 +537,7 @@ impl Page {
                 self.searched();
             }
             KeyCode::Enter | KeyCode::Down | KeyCode::Tab => self.searching = false,
-            // One line: Ctrl-M and the newline characters would add one,
-            // as ratatui-textarea's single-line example filters them
-            // (<https://github.com/ratatui/ratatui-textarea/blob/v0.9.3/examples/single_line.rs>).
-            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {}
-            KeyCode::Char('\n' | '\r') => {}
+            _ if newline(&key) => {}
             // `input` says whether the text changed.
             _ => {
                 if self.search.input(key) {
@@ -359,6 +560,9 @@ impl Page {
     }
 
     fn key(&mut self, key: KeyEvent) -> Flow {
+        if !matches!(self.popup, Popup::None) {
+            return self.popup_key(key);
+        }
         if self.searching {
             self.search_key(key);
             return Flow::Redraw;
@@ -381,8 +585,13 @@ impl Page {
             KeyCode::Enter => self.activate(),
             KeyCode::Left => self.fold_selected(true),
             KeyCode::Right => self.fold_selected(false),
+            KeyCode::Char('u') => self.undo_selected(),
+            KeyCode::Char('e') => return self.act(Action::Edit),
+            KeyCode::Char('a') => return self.act(Action::Add),
             KeyCode::Char('c') => return self.act(Action::Copy),
             KeyCode::Char('s') => return self.act(Action::Show),
+            KeyCode::Char('d') => return self.act(Action::Delete),
+            KeyCode::Char('v') => return self.act(Action::Save),
             KeyCode::Char('q') | KeyCode::Esc => return self.act(Action::Quit),
             _ => return Flow::Unchanged,
         }
@@ -392,12 +601,21 @@ impl Page {
     /// A bottom button's action, by key (and by click with M56).
     fn act(&mut self, action: Action) -> Flow {
         match action {
-            Action::Quit => return Flow::Quit,
+            Action::Quit if self.pending.is_empty() => return Flow::Quit,
+            Action::Quit => self.popup = Popup::ConfirmQuit,
+            Action::Save if self.pending.is_empty() => {
+                "Nothing to save".clone_into(&mut self.status);
+            }
+            Action::Save => self.popup = Popup::ConfirmSave,
+            Action::Edit => self.start_edit(),
+            Action::Add => self.start_add(),
+            Action::Delete => self.toggle_delete(),
             Action::Show => match self.selected_setting() {
-                Some(id) if self.shown == Some(id) => self.shown = None,
+                Some(id) if self.is_shown(id) => self.shown = None,
                 Some(id) if self.secret(id) => {
-                    self.shown = Some(id);
-                    let (role, copy, key) = self.names(id);
+                    let target = self.target(Row::Setting(id));
+                    let (role, copy, key) = names(&target);
+                    self.shown = Some(target);
                     tracing::info!(role = %role, copy = %copy, key = %key, "fact shown");
                 }
                 Some(_) => "This value isn't hidden".clone_into(&mut self.status),
@@ -414,13 +632,13 @@ impl Page {
     /// Copy setting `id`'s value to the clipboard through OSC 52, without
     /// showing it.
     fn copy(&mut self, id: Id) {
-        let fact = &self.roles[id.0].instances[id.1].facts[id.2];
+        let setting = self.setting(id);
         let copied = crossterm::execute!(
             self.out,
-            CopyToClipboard::to_clipboard_from(fact.value.as_str())
+            CopyToClipboard::to_clipboard_from(setting.value.as_str())
         );
-        let shown = one_line(&fact.key);
-        let (role, copy, key) = self.names(id);
+        let shown = one_line(&setting.key);
+        let (role, copy, key) = names(&self.target(Row::Setting(id)));
         self.status = match copied {
             Ok(()) => {
                 tracing::info!(role = %role, copy = %copy, key = %key, "fact copied");
@@ -433,26 +651,236 @@ impl Page {
         };
     }
 
-    /// Setting `id`'s role, copy and key for the run log, escaped (cli-core's
-    /// rule): never its value.
-    fn names(&self, (r, i, f): Id) -> (String, String, String) {
-        let role = &self.roles[r];
-        let instance = &role.instances[i];
-        (
-            escape_controls(&role.name),
-            escape_controls(&instance.name),
-            escape_controls(&instance.facts[f].key),
-        )
+    /// `target` as the changes panel and the status line name it:
+    /// `app · copy · key`, the copy left out for an app with one copy
+    /// named after it (proto-facts).
+    fn label(&self, target: &Target) -> String {
+        let app = |role: &str| self.roles.iter().position(|r| r.name == role);
+        let with_copy = |role: &str| app(role).is_none_or(|r| self.has_copies(r));
+        let text = match target {
+            Target::App(role) => role.clone(),
+            Target::Copy(role, copy) => format!("{role} · {copy}"),
+            Target::Setting(role, copy, key) if with_copy(role) => {
+                format!("{role} · {copy} · {key}")
+            }
+            Target::Setting(role, _, key) => format!("{role} · {key}"),
+        };
+        one_line(&text)
     }
 
-    /// Whether setting `id`'s key names a secret: masked until Show.
-    fn secret(&self, (r, i, f): Id) -> bool {
-        is_secret_key(&self.roles[r].instances[i].facts[f].key)
+    /// Stage `pending` on `target` once the session has checked it with
+    /// every other staged change; `replacing` are the changes it replaces
+    /// (an app's or copy's deletion replaces those inside it). A refusal
+    /// stages nothing and says why on the status line.
+    fn stage(&mut self, target: &Target, pending: &Pending) -> bool {
+        let mut staged = self.pending.clone();
+        staged.retain(|t, _| !t.inside(target));
+        staged.insert(target.clone(), pending.clone());
+        if let Some(session) = &self.session
+            && let Err(refused) = session.check(&changes::to_changes(&staged))
+        {
+            self.status = format!("Can't stage that change: {refused}");
+            return false;
+        }
+        let added = matches!(target, Target::Setting(..))
+            && !self.exists(target)
+            && matches!(pending, Pending::Set(_));
+        let (role, copy, key) = names(target);
+        tracing::info!(
+            role = %role,
+            copy = %copy,
+            key = %key,
+            change = changes::kind(target, pending, added),
+            "change staged"
+        );
+        self.pending = staged;
+        true
     }
 
-    /// A setting's indent: deeper under a copy's heading.
-    fn indent(&self, r: usize) -> &'static str {
-        if self.has_copies(r) { "    " } else { "  " }
+    /// Whether `target` is in the catalog (not one staged to be added).
+    fn exists(&self, target: &Target) -> bool {
+        let Some(role) = self.roles.iter().find(|r| r.name == target.role()) else {
+            return false;
+        };
+        match target {
+            Target::App(_) => true,
+            Target::Copy(_, copy) => role.instances.iter().any(|i| i.name == *copy),
+            Target::Setting(_, copy, key) => role
+                .instances
+                .iter()
+                .any(|i| i.name == *copy && i.facts.iter().any(|f| f.key == *key)),
+        }
+    }
+
+    /// Drop `target`'s staged change, if it has one.
+    fn undo(&mut self, target: &Target) -> bool {
+        if self.pending.remove(target).is_none() {
+            return false;
+        }
+        let (role, copy, key) = names(target);
+        tracing::info!(role = %role, copy = %copy, key = %key, "change undone");
+        self.status = format!("Undid the change to {}", self.label(target));
+        self.clamp();
+        true
+    }
+
+    /// `u`: undo the selected row's change.
+    fn undo_selected(&mut self) {
+        let Some(row) = self.selected() else {
+            return;
+        };
+        let target = self.target(row);
+        if !self.undo(&target) {
+            "Nothing to undo here".clone_into(&mut self.status);
+        }
+    }
+
+    /// The selection back on a row after rows went (an undone addition,
+    /// a reload).
+    fn clamp(&mut self) {
+        self.move_selection(|_| {});
+    }
+
+    /// `d`: Delete the selected row's setting, copy or app, or Keep it
+    /// again. Deleting a setting staged to be added drops the addition.
+    fn toggle_delete(&mut self) {
+        let Some(row) = self.selected() else {
+            return;
+        };
+        let target = self.target(row);
+        if self.pending.get(&target) == Some(&Pending::Delete) {
+            self.undo(&target);
+            return;
+        }
+        if target
+            .outer()
+            .iter()
+            .any(|t| self.pending.get(t) == Some(&Pending::Delete))
+        {
+            "Its app or copy is already to be deleted".clone_into(&mut self.status);
+            return;
+        }
+        if !self.exists(&target) {
+            self.undo(&target);
+            return;
+        }
+        if self.stage(&target, &Pending::Delete) {
+            self.status = format!(
+                "{} will be deleted when you save. {REGENERATED}",
+                self.label(&target)
+            );
+        }
+    }
+
+    /// Save the staged changes: the session goes to a thread of its own
+    /// ([`save::Running`]) until the save is over.
+    fn start_save(&mut self) -> Flow {
+        let Some(session) = self.session.take() else {
+            "Can't save: the save before stopped unexpectedly; quit and open sb fact again"
+                .clone_into(&mut self.status);
+            return Flow::Redraw;
+        };
+        let changes = changes::to_changes(&self.pending);
+        tracing::info!(changes = changes.len(), "save started");
+        match save::Running::start(session, changes, self.wake.clone()) {
+            Ok(running) => {
+                self.saving = Some(running);
+                self.popup = Popup::Saving;
+            }
+            Err((session, err)) => {
+                self.session = Some(*session);
+                self.status = format!("Couldn't start the save: {err}");
+                self.popup = Popup::None;
+                self.quit_after_save = false;
+            }
+        }
+        Flow::Redraw
+    }
+
+    /// The save's news: the waiting dialog's time, a drift question, or
+    /// its end.
+    fn save_events(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(running) = &self.saving {
+            let event = match running.next() {
+                save::Next::Event(event) => event,
+                save::Next::Quiet => break,
+                save::Next::Gone => {
+                    self.save_lost();
+                    return true;
+                }
+            };
+            changed = true;
+            match event {
+                // A wait shorter than a second goes unshown; a drift
+                // question being answered stays up.
+                save::Event::Waiting { role, waited } => {
+                    if waited >= WAIT_SHOWN
+                        && matches!(self.popup, Popup::Saving | Popup::Waiting { .. })
+                    {
+                        self.popup = Popup::Waiting { role, waited };
+                    }
+                }
+                save::Event::Drift { role, drift, reply } => {
+                    self.popup = Popup::Drift {
+                        role,
+                        drift,
+                        reply,
+                        scroll: ScrollViewState::default(),
+                    };
+                }
+                save::Event::Done { session, outcomes } => {
+                    self.saving = None;
+                    self.saved(*session, &outcomes);
+                }
+            }
+        }
+        changed
+    }
+
+    /// The save's thread ended without handing the session back (it
+    /// panicked): what was committed stays, nothing more can be saved.
+    fn save_lost(&mut self) {
+        self.saving = None;
+        self.quit_after_save = false;
+        tracing::error!("the save stopped unexpectedly");
+        self.popup = Popup::Outcome {
+            lines: vec![(
+                "The save stopped unexpectedly. Some apps may be saved; quit and open sb fact again to see them.".to_owned(),
+                Role::Problem,
+            )],
+            all_saved: false,
+        };
+    }
+
+    /// The save is over: the session back, the catalog as it is now, the
+    /// changes that were written (or dropped by a reload) gone from the
+    /// panel, and the outcome dialog.
+    fn saved(&mut self, session: Session, outcomes: &BTreeMap<String, RoleOutcome>) {
+        for (role, outcome) in outcomes {
+            if matches!(
+                outcome,
+                RoleOutcome::Applied
+                    | RoleOutcome::Unsynced(_)
+                    | RoleOutcome::Drifted { reloaded: true }
+            ) {
+                self.pending.retain(|target, _| target.role() != role);
+            }
+        }
+        self.roles = session.catalog();
+        self.session = Some(session);
+        self.shown = None;
+        self.status.clear();
+        self.clamp();
+        // Saved only when every app's changes are on disk: a reload dropped
+        // its changes, which the user has to make again.
+        let all_saved = outcomes
+            .values()
+            .all(|outcome| matches!(outcome, RoleOutcome::Applied | RoleOutcome::Unsynced(_)));
+        self.popup = Popup::Outcome {
+            lines: dialog::outcome_lines(outcomes),
+            all_saved,
+        };
     }
 
     /// Where values start, after the indent and the key: the same column
@@ -460,73 +888,98 @@ impl Page {
     /// move while searching (proto-facts), the keys counted up to
     /// [`KEY_WIDTH_CAP`].
     fn key_width(&self) -> usize {
-        self.roles
-            .iter()
-            .enumerate()
-            .flat_map(|(r, role)| role.instances.iter().map(move |i| (r, i)))
-            .flat_map(|(r, instance)| instance.facts.iter().map(move |f| (r, f)))
-            .map(|(r, fact)| {
-                self.indent(r).len() + Span::raw(one_line(&fact.key)).width().min(KEY_WIDTH_CAP)
-            })
-            .max()
-            .unwrap_or(0)
+        let mut width = 0;
+        for (r, role) in self.roles.iter().enumerate() {
+            for i in 0..role.instances.len() {
+                for setting in self.settings(r, i) {
+                    let key = Span::raw(one_line(&setting.key)).width().min(KEY_WIDTH_CAP);
+                    width = width.max(self.indent(r).len() + key);
+                }
+            }
+        }
+        width
     }
 
-    /// One row of the page.
+    /// A setting's indent: deeper under a copy's heading.
+    fn indent(&self, r: usize) -> &'static str {
+        if self.has_copies(r) { "    " } else { "  " }
+    }
+
+    /// The tag after a row with a staged change.
+    fn tag(&self, target: &Target, added: bool) -> Option<Span<'static>> {
+        match self.pending.get(target)? {
+            Pending::Delete => Some(Span::styled("  will be deleted", self.style(Role::Problem))),
+            Pending::Set(_) if added => Some(Span::styled("  new", self.style(Role::Ok))),
+            Pending::Set(_) => Some(Span::styled("  changed", self.style(Role::Warn))),
+        }
+    }
+
+    /// One row of the page; a row staged to be deleted is struck through.
     fn item(&self, row: Row, key_width: usize) -> ListItem<'static> {
-        match row {
+        let target = self.target(row);
+        let strike = if self.deleted(&target) {
+            Modifier::CROSSED_OUT
+        } else {
+            Modifier::empty()
+        };
+        let mut spans = match row {
             Row::App(r) => {
                 let role = &self.roles[r];
-                let folded = self.query.is_empty() && self.folded.contains(&r);
+                let folded = self.query.is_empty() && self.folded.contains(&role.name);
                 let mut spans = vec![
                     Span::styled(if folded { "▸ " } else { "▾ " }, self.style(Role::Faint)),
                     Span::styled(
                         title_case(&one_line(&role.name)),
-                        self.style(Role::Text).add_modifier(Modifier::BOLD),
+                        self.style(Role::Text).add_modifier(Modifier::BOLD | strike),
                     ),
                 ];
                 if folded {
-                    let count: usize = role.instances.iter().map(|i| i.facts.len()).sum();
+                    let count: usize = (0..role.instances.len())
+                        .map(|i| self.settings(r, i).len())
+                        .sum();
                     let settings = if count == 1 { "setting" } else { "settings" };
                     spans.push(Span::styled(
                         format!("  {count} {settings}"),
                         self.style(Role::Muted),
                     ));
                 }
-                ListItem::new(Line::from(spans))
+                spans
             }
-            Row::Copy(r, i) => ListItem::new(Line::from(vec![
+            Row::Copy(r, i) => vec![
                 Span::raw("  "),
                 Span::styled(
                     one_line(&self.roles[r].instances[i].name),
-                    self.style(Role::Accent),
+                    self.style(Role::Accent).add_modifier(strike),
                 ),
-            ])),
+            ],
             Row::Setting(id) => {
                 // Every value starts in the same column.
                 let indent = self.indent(id.0);
-                let fact = &self.roles[id.0].instances[id.1].facts[id.2];
-                let key = one_line(&fact.key);
+                let setting = self.setting(id);
+                let key = one_line(&setting.key);
                 let pad = key_width.saturating_sub(indent.len() + Span::raw(key.as_str()).width());
                 let value = if self.masked(id) {
-                    Span::styled(DOTS, self.style(Role::Muted))
+                    Span::styled(DOTS, self.style(Role::Muted).add_modifier(strike))
                 } else {
-                    let shown = DisplayText::from_bytes(fact.value.as_bytes(), false);
+                    let shown = DisplayText::from_bytes(setting.value.as_bytes(), false);
                     let mut lines = shown.lines();
                     let mut first = lines.next().unwrap_or_default().to_owned();
                     if lines.next().is_some() {
                         first.push_str(" …");
                     }
-                    Span::styled(first, self.style(Role::Text))
+                    Span::styled(first, self.style(Role::Text).add_modifier(strike))
                 };
-                ListItem::new(Line::from(vec![
+                vec![
                     Span::raw(indent),
-                    Span::styled(key, self.style(Role::Text)),
+                    Span::styled(key, self.style(Role::Text).add_modifier(strike)),
                     Span::raw(" ".repeat(pad + 2)),
                     value,
-                ]))
+                ]
             }
-        }
+        };
+        let added = matches!(row, Row::Setting(id) if self.setting(id).added);
+        spans.extend(self.tag(&target, added));
+        ListItem::new(Line::from(spans))
     }
 
     /// The page's one line when no row is shown.
@@ -542,35 +995,80 @@ impl Page {
     }
 
     /// The bottom buttons: each with its key; the ones that can't act on
-    /// the selected row are drawn faint.
-    fn buttons(&self) -> Vec<(Span<'static>, Action)> {
+    /// the selected row are drawn faint. "Save changes" is "Save" when
+    /// the row is too narrow for every button's whole label.
+    fn buttons(&self, width: u16) -> Vec<(Span<'static>, Action)> {
+        let row = self.selected();
+        let target = row.map(|row| self.target(row));
         let on_setting = self.selected_setting();
-        let show = if on_setting.is_some() && on_setting == self.shown {
+        let live = target.as_ref().is_some_and(|t| !self.deleted(t));
+        let show = if on_setting.is_some_and(|id| self.is_shown(id)) {
             "Hide"
         } else {
             "Show"
         };
-        [
-            ("Copy", "c", Action::Copy, on_setting.is_some()),
-            (
-                show,
-                "s",
-                Action::Show,
-                on_setting.is_some_and(|id| self.secret(id)),
-            ),
-            ("Quit", "q", Action::Quit, true),
-        ]
-        .into_iter()
-        .map(|(label, key, action, enabled)| {
-            let style = if enabled {
-                self.style(Role::Text).patch(self.bg(Role::ButtonBg))
-            } else {
-                self.style(Role::Faint)
-                    .patch(self.bg(Role::ButtonDisabledBg))
-            };
-            (Span::styled(format!(" {label} ({key}) "), style), action)
-        })
-        .collect()
+        let delete = if target
+            .as_ref()
+            .is_some_and(|t| self.pending.get(t) == Some(&Pending::Delete))
+        {
+            "Keep"
+        } else {
+            "Delete"
+        };
+        // Inside a deleted app or copy only Keep on it acts.
+        let can_delete = target
+            .as_ref()
+            .is_some_and(|t| self.pending.get(t) == Some(&Pending::Delete) || !self.deleted(t));
+        let can_add = match row {
+            Some(Row::Copy(..) | Row::Setting(_)) => live,
+            Some(Row::App(r)) => live && self.roles[r].instances.len() == 1,
+            None => false,
+        };
+        let specs = |save: &'static str| {
+            [
+                ("Edit", "e", Action::Edit, on_setting.is_some() && live),
+                ("Add", "a", Action::Add, can_add),
+                ("Copy", "c", Action::Copy, on_setting.is_some()),
+                (
+                    show,
+                    "s",
+                    Action::Show,
+                    on_setting.is_some_and(|id| self.secret(id)),
+                ),
+                (delete, "d", Action::Delete, can_delete),
+                (save, "v", Action::Save, !self.pending.is_empty()),
+                ("Quit", "q", Action::Quit, true),
+            ]
+        };
+        // Each label, its key, the spaces around it and one between.
+        let needed = |save| -> usize {
+            specs(save)
+                .iter()
+                .map(|(label, key, ..)| Span::raw(format!(" {label} ({key}) ")).width() + 1)
+                .sum::<usize>()
+                + 1
+        };
+        let save = if needed("Save changes") <= usize::from(width) {
+            "Save changes"
+        } else {
+            "Save"
+        };
+        specs(save)
+            .into_iter()
+            .map(|(label, key, action, enabled)| {
+                let style = match (enabled, action) {
+                    (true, Action::Save) => self
+                        .style(Role::OnAccent)
+                        .patch(self.bg(Role::Ok))
+                        .add_modifier(Modifier::BOLD),
+                    (true, _) => self.style(Role::Text).patch(self.bg(Role::ButtonBg)),
+                    (false, _) => self
+                        .style(Role::Faint)
+                        .patch(self.bg(Role::ButtonDisabledBg)),
+                };
+                (Span::styled(format!(" {label} ({key}) "), style), action)
+            })
+            .collect()
     }
 
     /// The search box: the screen's title on its border, then the line.
@@ -607,21 +1105,67 @@ impl Page {
         frame.render_widget(&self.search, field);
     }
 
-    /// The changes panel: none to list on the read-only page.
+    /// The changes panel: each staged change's verb, what it is on and its
+    /// undo, one row each, laid out by ratatui (proto-facts; the undo's
+    /// click comes with M56).
     fn draw_changes(&self, frame: &mut Frame<'_>, area: Rect) {
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(self.style(Role::Border))
             .title(Span::styled(
-                " Unsaved changes (0) ",
+                format!(" Unsaved changes ({}) ", self.pending.len()),
                 self.style(Role::Accent).add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(area).inner(Margin::new(1, 0));
         frame.render_widget(block, area);
-        frame.render_widget(
-            Span::styled("Nothing changed yet", self.style(Role::Muted)),
-            inner,
+        if self.pending.is_empty() {
+            frame.render_widget(
+                Span::styled("Nothing changed yet", self.style(Role::Muted)),
+                inner,
+            );
+            return;
+        }
+        let undo = Span::styled(
+            " undo ",
+            self.style(Role::Link).add_modifier(Modifier::UNDERLINED),
         );
+        // Changes past the rows there are: the last row says how many.
+        let rows: Vec<Rect> = inner.rows().collect();
+        let shown = if self.pending.len() > rows.len() {
+            let more = self.pending.len() - rows.len().saturating_sub(1);
+            if let Some(last) = rows.last() {
+                frame.render_widget(
+                    Span::styled(format!("+{more} more"), self.style(Role::Muted)),
+                    *last,
+                );
+            }
+            rows.len().saturating_sub(1)
+        } else {
+            rows.len()
+        };
+        for ((target, pending), row) in self.pending.iter().zip(rows.into_iter().take(shown)) {
+            let verb = match pending {
+                Pending::Delete => Span::styled("Delete", self.style(Role::Problem)),
+                Pending::Set(_) if !self.exists(target) => {
+                    Span::styled("Add", self.style(Role::Ok))
+                }
+                Pending::Set(_) => Span::styled("Edit", self.style(Role::Warn)),
+            };
+            let [verb_area, label_area, undo_area] = row.layout(
+                &Layout::horizontal([
+                    Constraint::Length(6),
+                    Constraint::Fill(1),
+                    Constraint::Length(u16::try_from(undo.width()).unwrap_or(u16::MAX)),
+                ])
+                .spacing(1),
+            );
+            frame.render_widget(verb, verb_area);
+            frame.render_widget(
+                Span::styled(self.label(target), self.style(Role::Text)),
+                label_area,
+            );
+            frame.render_widget(undo.clone(), undo_area);
+        }
     }
 }
 
@@ -633,15 +1177,27 @@ impl Screen for Page {
                 _ => Flow::Unchanged,
             };
         };
-        let before = self.selected();
+        let before = self.selected().map(|row| self.target(row));
+        let status = self.status.clone();
         let flow = self.key(key);
         // Show, and what the status line said, last until the selection
-        // moves.
-        if self.selected() != before {
+        // moves; a message this key set stays.
+        if self.selected().map(|row| self.target(row)) != before {
             self.shown = None;
-            self.status.clear();
+            if self.status == status {
+                self.status.clear();
+            }
         }
         flow
+    }
+
+    /// A running save's news.
+    fn wake(&mut self) -> Flow {
+        if self.save_events() {
+            Flow::Redraw
+        } else {
+            Flow::Unchanged
+        }
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -651,8 +1207,9 @@ impl Screen for Page {
         // the buttons
         // (<https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.vertical>).
         // Below 100 columns the changes panel is a band above the status
-        // line: its border and its one line.
-        let bottom = if wide { 0 } else { 3 };
+        // line: its border and a row per change, up to four.
+        let band = u16::try_from(self.pending.len().clamp(1, BAND_ROWS)).unwrap_or(1) + 2;
+        let bottom = if wide { 0 } else { band };
         let [search, body, changes_bottom, status, buttons] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Fill(1),
@@ -677,8 +1234,8 @@ impl Screen for Page {
             // Expanded when it fits, else folded to app names.
             self.fold_decided = true;
             if self.rows().len() > usize::from(list_area.height) {
-                self.folded = (0..self.roles.len()).collect();
-                self.move_selection(|_| {});
+                self.folded = self.roles.iter().map(|role| role.name.clone()).collect();
+                self.clamp();
             }
         }
         let rows = self.rows();
@@ -710,8 +1267,8 @@ impl Screen for Page {
         // The buttons laid out by ratatui, one column apart, each in the
         // rectangle that is its click target (proto-facts; the clicks come
         // with M56).
-        let spans = self.buttons();
         let row = buttons.inner(Margin::new(1, 0));
+        let spans = self.buttons(row.width);
         let areas =
             Layout::horizontal(spans.iter().map(|(span, _)| {
                 Constraint::Length(u16::try_from(span.width()).unwrap_or(u16::MAX))
@@ -721,6 +1278,7 @@ impl Screen for Page {
         for ((span, _), area) in spans.into_iter().zip(areas.iter()) {
             frame.render_widget(span, *area);
         }
+        dialog::draw(self, frame, area);
     }
 }
 

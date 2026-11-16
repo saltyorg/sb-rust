@@ -1,6 +1,6 @@
 ---
 source: crates/tui/src/fact/tests.rs
-assertion_line: 807
+assertion_line: 880
 expression: "drawn(&mut p, 80, 24).backend()"
 ---
 "╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
@@ -26,4 +26,4 @@ expression: "drawn(&mut p, 80, 24).backend()"
 "│ Nothing changed yet                                                          │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
 "                                                                                "
-"  Copy (c)   Show (s)   Quit (q)                                                "
+"  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save (v)   Quit (q)   "
