@@ -5,7 +5,7 @@
 //! spec's slice 10), the branch commands ([`branch`], slice 9), and
 //! setup's and gha's shared pieces (slice 5): [`prereq`], [`locale`],
 //! [`configs`] and [`hooks`], with the `testing` harness they run
-//! against.
+//! against; `sb gha` ([`gha`], slice 6).
 
 // sb's lines go through `Write` and cli-core's output errors;
 // `print!`/`eprint!` panic on a closed pipe.
@@ -14,6 +14,7 @@
 pub mod announcements;
 pub mod branch;
 pub mod configs;
+pub mod gha;
 pub mod hooks;
 pub mod locale;
 pub mod prereq;

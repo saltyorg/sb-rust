@@ -119,6 +119,10 @@ enum Command {
     /// Runs Ansible playbooks with specified tags
     #[command(long_about = "Runs Ansible playbooks with specified tags")]
     Install(sb_ansible::InstallArgs),
+    /// Install GHA dependencies
+    // Hidden, as sb-go's; no flags (ops spec, "`sb gha` (hidden)").
+    #[command(long_about = "Install GHA dependencies", hide = true)]
+    Gha,
     /// Update the Ansible virtual environment and saltbox.fact
     // Hidden, as sb-go's. No `--verbose/-v` (python-env decision 9).
     #[command(long_about = UPDATE_VENV_ABOUT, hide = true)]
@@ -323,6 +327,7 @@ impl Command {
             Command::Logs => "logs",
             Command::Diag => "diag",
             Command::Install(_) => "install",
+            Command::Gha => "gha",
             Command::UpdateVenv => "update-venv",
             Command::List(_) => "list",
             Command::ReinstallVenv => "reinstall-venv",
@@ -352,7 +357,8 @@ impl Command {
             // apt, which `update-venv`, `reinstall-venv` and
             // `reinstall-python` change, and the checkout's fact, which
             // `reinstall-facts` replaces (python-env assumption 5);
-            // `announcements`, as every ops command (ops assumption 2).
+            // `announcements` and `gha`, as every ops command (ops
+            // assumption 2; gha's apt, /srv and the configs' owner).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::Branch { .. }
@@ -363,6 +369,7 @@ impl Command {
             | Command::Logs
             | Command::Diag
             | Command::Install(_)
+            | Command::Gha
             | Command::UpdateVenv
             | Command::List(_)
             | Command::ReinstallVenv
@@ -606,6 +613,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             no_edit_again,
         } => edit::edit(command.file(), no_edit_again, shutdown, log)?,
         Command::Motd(ref args) => motd::motd(args, shutdown)?,
+        Command::Gha => gha::gha(shutdown, log)?,
         Command::UpdateVenv => python_env::update_venv(shutdown, log)?,
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
@@ -846,6 +854,7 @@ mod ansible;
 mod branch;
 mod docker_logs;
 mod edit;
+mod gha;
 mod logs;
 mod motd;
 mod python_env;
@@ -1093,6 +1102,8 @@ mod tests {
             (Command::ReinstallVenv, "reinstall-venv"),
             (Command::ReinstallPython, "reinstall-python"),
             (Command::ReinstallFacts, "reinstall-facts"),
+            // gha too: without the relaunch, `SUDO_USER` is never set.
+            (Command::Gha, "gha"),
         ] {
             assert!(command.needs_root(), "{name}");
             assert_eq!(command.name(), name);

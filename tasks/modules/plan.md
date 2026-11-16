@@ -326,7 +326,10 @@ Full tasks in [todo.md](todo.md). Gates: **F** free, **L** look,
 - [ ] M78 ops: bench, network (L, S)
 - [ ] M79 ops: `sb branch`, `sb branch-sandbox` (F)
 - [ ] M80 ops: setup's and gha's shared pieces (F)
-- [ ] M81 ops: `sb gha` (F)
+- [ ] M81 ops: `sb gha` (F). M81 owns the ops spec's "PATH stubs in a
+  private mount namespace" harness for the built binary
+  (`sb_ops::testing::Host::namespaced`, on M80's `Host`); M82 and
+  update's binary tests run on it (coordinator, 2026-11-16).
 - [ ] M82 ops: `sb setup` (F)
 - [ ] M83 ops: the install script (F)
 - [ ] M84 ops: `update`, part 1 (F)

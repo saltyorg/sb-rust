@@ -253,3 +253,53 @@ impl Host {
         path
     }
 }
+
+/// The host paths the namespace covers with an empty tmpfs (ops spec,
+/// Testing Strategy, "Sequences"): apt's sources and their backups, the
+/// locale file's directory, and `/srv`.
+pub const COVERED: [&str; 4] = ["/etc/apt", "/var/backups", "/etc/default", "/srv"];
+
+impl Host {
+    /// `program` with `args`, as root, in a private mount namespace where
+    /// each of [`COVERED`] is an empty tmpfs (0755, root's) and this
+    /// host's stand-ins come first on `PATH`; `setup` (shell lines, run
+    /// first, under `set -e`) prepares the covered paths. The program
+    /// runs only when every mount and the setup succeeded, so nothing it
+    /// does reaches the host's `/etc/apt`, `/var/backups`, `/etc/default`
+    /// or `/srv`; the mounts end with the namespace. unshare(1) and
+    /// mount(8): <https://man7.org/linux/man-pages/man1/unshare.1.html>,
+    /// <https://man7.org/linux/man-pages/man8/mount.8.html> (as
+    /// scripts/check.sh's mutation sandbox). Tests start it directly
+    /// (the `testing` feature's processes are exempt from sb-exec's rule).
+    ///
+    /// # Panics
+    ///
+    /// When a stand-in path holds a colon, which `PATH` can't carry.
+    #[must_use]
+    pub fn namespaced(&self, program: &Path, args: &[&str], setup: &str) -> std::process::Command {
+        let mut script = String::from("set -e\n");
+        for path in COVERED {
+            script.push_str("mount -t tmpfs -o mode=0755,nosuid,nodev sb-ops-test ");
+            script.push_str(path);
+            script.push_str("\nmountpoint -q ");
+            script.push_str(path);
+            script.push('\n');
+        }
+        script.push_str(setup);
+        script.push_str("\nexec \"$@\"\n");
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![self.stand_ins()];
+        paths.extend(std::env::split_paths(&path));
+        let mut cmd = std::process::Command::new("unshare");
+        cmd.args(["--mount", "--propagation", "private", "--", "sh", "-c"])
+            .arg(script)
+            .arg("sh")
+            .arg(program)
+            .args(args)
+            .env(
+                "PATH",
+                std::env::join_paths(paths).expect("PATH without a colon in a stand-in path"),
+            );
+        cmd
+    }
+}

@@ -1006,7 +1006,11 @@ the real services.
   `/srv/git/saltbox`, run as a `runner` user with a stand-in sudo
   policy; asserts sb-go's test-gha.yml checks: `runner:runner:600` on
   accounts.yml and settings.yml, `/srv/ansible/venv/bin/ansible
-  --version`, `/usr/local/bin/uv`, `saltbox.fact`.
+  --version`, `/usr/local/bin/uv`, `saltbox.fact`. *Run 2026-11-16
+  (module build M81, `crates/ops/tests/gha-matrix.sh`): passed on 22.04,
+  24.04 and 26.04, all six configs `runner:runner:600`, the checks and
+  `uv pip freeze` run as `runner`, with uv 0.13.4,
+  ansible-core 2.21.2 and saltbox.fact 1.1.0, Saltbox master's pins.*
 - **install script (by hand, capped):** sb-go's test-install-os-policy
   cases in containers (release lists, root, existing root, `--repair`,
   `-b` passed as one argument, stdin never read: the script piped into

@@ -3579,6 +3579,7 @@ dependencies = [
  "sb-exec",
  "sb-host",
  "sb-ops",
+ "sb-python-env",
  "sb-repo",
  "sb-term-ui",
  "sb-tui",
