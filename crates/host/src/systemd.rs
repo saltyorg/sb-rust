@@ -42,6 +42,40 @@ impl Filter {
             Self::Exact(exact) => name == exact,
         }
     }
+
+    /// The systemctl pattern for this filter's units of `suffix`
+    /// (`.service`, `.timer`): `<prefix>*<suffix>` or `<name><suffix>`.
+    /// systemctl matches a unit pattern with fnmatch(3) ("Parameter
+    /// Syntax",
+    /// <https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#Parameter%20Syntax>),
+    /// and systemd passes `FNM_NOESCAPE`, which the page doesn't say
+    /// (v249's `list_units_filtered` in src/core/dbus-manager.c and
+    /// `unit_file_get_list` in src/shared/install.c:
+    /// <https://github.com/systemd/systemd/blob/v249/src/core/dbus-manager.c>,
+    /// <https://github.com/systemd/systemd/blob/v249/src/shared/install.c>).
+    /// So `\` is literal and stays as it is (a systemd-escaped name, such
+    /// as `\x2d`, matches itself; checked on systemd 249), and the filter's
+    /// own `*`, `?` and `[`, which no valid unit name holds, become the
+    /// bracket forms `[*]`, `[?]` and `[[]`, the only literal forms
+    /// without escapes.
+    fn pattern(&self, suffix: &str) -> String {
+        let (text, glob) = match self {
+            Self::Prefix(prefix) => (prefix, "*"),
+            Self::Exact(exact) => (exact, ""),
+        };
+        let mut pattern = String::with_capacity(text.len() + suffix.len() + 1);
+        for c in text.chars() {
+            match c {
+                '*' => pattern.push_str("[*]"),
+                '?' => pattern.push_str("[?]"),
+                '[' => pattern.push_str("[[]"),
+                _ => pattern.push(c),
+            }
+        }
+        pattern.push_str(glob);
+        pattern.push_str(suffix);
+        pattern
+    }
 }
 
 /// sb-go's `DefaultFilters`: the Saltbox-managed units and `docker`.
@@ -174,6 +208,13 @@ impl Systemd {
     ///   service, as sb-go's).
     /// - Both timestamps come from one `show` over the matched units.
     ///
+    /// Both listings are scoped by the filters' patterns ([`Filter`]'s
+    /// `<prefix>*` and exact names, as `.service` and `.timer` units), as
+    /// sb-go lists each filter's pattern and never every unit: an
+    /// unscoped `list-unit-files` reads every unit file on the host,
+    /// about a second on a server with a few hundred. The match then runs
+    /// again on what came back. No filter lists nothing.
+    ///
     /// The three listings run at once (tokio's `join!`,
     /// <https://docs.rs/tokio/1.54.1/tokio/macro.join.html>), then `show`:
     /// at most two timeouts. Cancelling `token` ends every call.
@@ -191,21 +232,33 @@ impl Systemd {
         filters: &[Filter],
         token: &CancellationToken,
     ) -> Result<Vec<Service>, ServicesError> {
-        let units = self.table::<UnitRow>(
-            self.cmd()
-                .arg("list-units")
-                .arg("--type=service,timer")
-                .arg("--all")
-                .arg("--output=json"),
-            token,
-        );
-        let files = self.table::<UnitFileRow>(
-            self.cmd()
-                .arg("list-unit-files")
-                .arg("--type=service")
-                .arg("--output=json"),
-            token,
-        );
+        // No pattern would list every unit.
+        if filters.is_empty() {
+            return Ok(Vec::new());
+        }
+        // `--` first: a configured name starting with `-` is a pattern,
+        // not an option.
+        let mut units = self
+            .cmd()
+            .arg("list-units")
+            .arg("--type=service,timer")
+            .arg("--all")
+            .arg("--output=json")
+            .arg("--");
+        let mut files = self
+            .cmd()
+            .arg("list-unit-files")
+            .arg("--type=service")
+            .arg("--output=json")
+            .arg("--");
+        for filter in filters {
+            units = units
+                .shown_value(filter.pattern(".service"))
+                .shown_value(filter.pattern(".timer"));
+            files = files.shown_value(filter.pattern(".service"));
+        }
+        let units = self.table::<UnitRow>(units, token);
+        let files = self.table::<UnitFileRow>(files, token);
         let timers = self.table::<TimerRow>(
             self.cmd()
                 .arg("list-timers")
@@ -495,17 +548,34 @@ mod tests {
     }
 
     /// A stand-in systemctl answering each call with `release`'s capture,
-    /// after checking its arguments are the spec's.
+    /// after checking its arguments are the spec's: both listings scoped
+    /// by the default filters' patterns (the capture is unfiltered; the
+    /// match runs again in sb).
     fn systemctl(dir: &Path, release: &str) -> PathBuf {
+        systemctl_with(dir, release, &[])
+    }
+
+    /// [`systemctl`] for the default filters and each of `exact` exactly.
+    fn systemctl_with(dir: &Path, release: &str, exact: &[&str]) -> PathBuf {
         let f = fixtures(release);
         let f = f.display();
+        let mut units = String::from(
+            "saltbox_managed_*.service saltbox_managed_*.timer docker.service docker.timer",
+        );
+        let mut files = String::from("saltbox_managed_*.service docker.service");
+        for name in exact {
+            let service = [" ", name, ".service"].concat();
+            units.push_str(&service);
+            units.push_str(&[" ", name, ".timer"].concat());
+            files.push_str(&service);
+        }
         stand_in(
             dir,
             "systemctl",
             &format!(
                 r#"case "$*" in
-  "list-units --type=service,timer --all --output=json") cat '{f}/list-units.json' ;;
-  "list-unit-files --type=service --output=json") cat '{f}/list-unit-files.json' ;;
+  "list-units --type=service,timer --all --output=json -- {units}") cat '{f}/list-units.json' ;;
+  "list-unit-files --type=service --output=json -- {files}") cat '{f}/list-unit-files.json' ;;
   "list-timers --all --output=json") cat '{f}/list-timers.json' ;;
   "show --timestamp=utc --property=Id,ActiveEnterTimestamp,StateChangeTimestamp "*) cat '{f}/show.txt' ;;
   *) echo "unexpected: $*" >&2; exit 9 ;;
@@ -607,11 +677,40 @@ esac"#
         }
     }
 
+    /// A filter's pattern matches the filter's text literally under
+    /// systemd's `FNM_NOESCAPE`: `\\` as it is, `*`, `?` and `[` in
+    /// brackets (see `Filter::pattern`).
+    #[test]
+    fn patterns_escape_fnmatch_specials() {
+        assert_eq!(
+            Filter::Prefix("saltbox_managed_".into()).pattern(".timer"),
+            "saltbox_managed_*.timer"
+        );
+        assert_eq!(
+            Filter::Exact(r"a\x2db*c?[d]".into()).pattern(".service"),
+            r"a\x2db[*]c[?][[]d].service"
+        );
+        // An escaped instance name, as motd.yml may configure, as it is.
+        assert_eq!(
+            Filter::Exact(r"openvpn-client@my\x2dvpn".into()).pattern(".service"),
+            r"openvpn-client@my\x2dvpn.service"
+        );
+    }
+
+    /// No filter: no systemctl call (an unscoped listing), nothing found.
+    #[tokio::test]
+    async fn no_filter_lists_nothing() {
+        let found = list(Path::new("/nonexistent/systemctl"), &[])
+            .await
+            .expect("list");
+        assert_eq!(found, []);
+    }
+
     #[tokio::test]
     async fn configured_names_are_added_and_unknown_ones_left_out() {
         let _spawns = SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("tempdir");
-        let program = systemctl(dir.path(), "24.04");
+        let program = systemctl_with(dir.path(), "24.04", &["other", "nothing-here"]);
         let filters = with_additional(&["other.service", "nothing-here"]);
         let found = list(&program, &filters).await.expect("list");
         let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
@@ -625,7 +724,7 @@ esac"#
         let _spawns = SPAWNS.lock().await;
         for release in RELEASES {
             let dir = tempfile::tempdir().expect("tempdir");
-            let program = systemctl(dir.path(), release);
+            let program = systemctl_with(dir.path(), release, &["procps"]);
             // procps.service is an alias of systemd-sysctl.service on each
             // release: list-unit-files names it, list-units doesn't.
             let found = list(&program, &with_additional(&["procps"]))

@@ -1031,7 +1031,9 @@ maintainer's answer).
    > **Cancellation and time.** `services(filters, token)` takes the
    > caller's `CancellationToken`, which reaches every capture, so motd's
    > section cap and Ctrl-C end it. `list-units`, `list-unit-files` and
-   > `list-timers` run concurrently, then `show` runs on the matched
+   > `list-timers` run concurrently (the first two scoped by the filters'
+   > patterns, host spec "How it is read", amended 2026-11-16), then
+   > `show` runs on the matched
    > units, so the call takes at most two timeouts (20 s), not four
    > (40 s), inside motd's 30 s cap. The `show` call reads both
    > `ActiveEnterTimestamp` and `StateChangeTimestamp` (the tui spec's

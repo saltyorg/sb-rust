@@ -375,11 +375,28 @@ name `docker`. `with_additional(names)` adds motd's configured names, with
 unit file is left out, as sb-go leaves out `not-found` units. The result
 is sorted by name, without duplicates, and `not-found` units are dropped.
 
-**How it is read.** Each call below is a capture with a 10 s timeout:
-1. `systemctl list-units --type=service,timer --all --output=json`.
-   Timers and their states come from the same call.
-2. `systemctl list-unit-files --type=service --output=json`, so unloaded,
-   disabled leftovers still appear (proto-logs).
+**How it is read.** Each call below is a capture with a 10 s timeout.
+The two listings are scoped by the filters' patterns, after `--`: a
+prefix filter is `<prefix>*`, an exact name (a default or one of motd's
+configured services) `<name>`, each as `<…>.service` (and `<…>.timer`
+for `list-units`). systemctl matches patterns with fnmatch(3)
+("Parameter Syntax",
+https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#Parameter%20Syntax)
+and `FNM_NOESCAPE` (systemd's source, not the page: v249's
+`list_units_filtered` and `unit_file_get_list`), so a `\` in a name (a
+systemd escape such as `\x2d`) stays as it is and matches itself, and a
+filter's own `*`, `?` and `[` become `[*]`, `[?]` and `[[]`.
+No filter lists nothing, with no call. *Amended 2026-11-16 (the
+maintainer): an unscoped `list-unit-files` read every unit file, about
+1.2 s for a few hundred on systemd 249, so `sb motd --all` took about
+1.2 s where sb-go's per-filter `list-units` took about 0.12 s; scoped,
+each listing takes a few milliseconds.* The match runs again on what
+comes back (the filters above), so an extra row changes nothing.
+1. `systemctl list-units --type=service,timer --all --output=json --
+   <patterns>`. Timers and their states come from the same call.
+2. `systemctl list-unit-files --type=service --output=json --
+   <patterns>`, so unloaded, disabled leftovers still appear
+   (proto-logs).
 3. `systemctl list-timers --all --output=json`, for next runs.
 4. One `systemctl show --timestamp=utc
    --property=Id,ActiveEnterTimestamp,StateChangeTimestamp` over the
