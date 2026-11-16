@@ -2120,6 +2120,10 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 
 ## Follow-ups found during the build
 
+- [ ] **One enum for ops' two repositories** (found by lane 1's M79,
+      2026-11-16). `branch::Checkout` (M79) and `announcements::Repo` (M74)
+      both name Saltbox and Sandbox. Merge them when update needs both
+      (M84 or M85).
 - [ ] **"Refused" test ports stay reserved** (found by lane 3's gate,
       2026-11-16). `refused()` in crates/sb/tests/docker_control.rs and
       crates/config/tests/run_log.rs binds port 0, drops the listener and
