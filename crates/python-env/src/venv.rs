@@ -423,9 +423,8 @@ fn retries(force: Force, cancelled: bool) -> bool {
 async fn cleanup(layout: &Layout) -> Result<(), VenvError> {
     let layout = layout.clone();
     // The run's span goes along, so the thread's records carry the run id
-    // (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-    let span = tracing::Span::current();
-    tokio::task::spawn_blocking(move || span.in_scope(|| activate::cleanup_generations(&layout)))
+    // (cli-core's `spawn`).
+    sb_cli_core::spawn::blocking(move || activate::cleanup_generations(&layout))
         .await
         .map_err(VenvError::CleanupJoin)?
         .map_err(VenvError::Cleanup)
@@ -522,13 +521,10 @@ async fn ensure_ownership(layout: &Layout, user: Option<&str>) -> Result<(), Ven
         layout.python.clone(),
     ];
     // The run's span goes along, so the ownership records carry the run id
-    // (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-    let span = tracing::Span::current();
-    tokio::task::spawn_blocking(move || {
-        span.in_scope(|| {
-            sb_host::ensure_owner(&user, &single)?;
-            sb_host::ensure_owner_recursive(&user, &trees)
-        })
+    // (cli-core's `spawn`).
+    sb_cli_core::spawn::blocking(move || {
+        sb_host::ensure_owner(&user, &single)?;
+        sb_host::ensure_owner_recursive(&user, &trees)
     })
     .await
     .map_err(VenvError::Join)??;
@@ -648,13 +644,9 @@ impl Leftovers<'_> {
             self.generation.take(),
             self.python.take(),
         );
-        // The run's span goes along
-        // (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-        let span = tracing::Span::current();
-        let removed = tokio::task::spawn_blocking(move || {
-            span.in_scope(|| {
-                remove_leftovers(&layout, generation.as_deref(), python.as_deref());
-            });
+        // The run's span goes along (cli-core's `spawn`).
+        let removed = sb_cli_core::spawn::blocking(move || {
+            remove_leftovers(&layout, generation.as_deref(), python.as_deref());
         })
         .await;
         if let Err(err) = removed {

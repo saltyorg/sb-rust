@@ -22,9 +22,10 @@ sb-host.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# The ownership walk on the blocking pool, through cli-core's helper that
+# carries the span.
+sb-cli-core.workspace = true
 tokio-util.workspace = true
-# `spawn_blocking` for the ownership walk.
-tokio.workspace = true
 
 [dev-dependencies]
 # Itself with `testing`, for the stand-in git its tests run (as

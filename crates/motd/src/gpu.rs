@@ -105,9 +105,8 @@ pub async fn gpu_here() -> String {
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
 /// A panic in the read reaches the runner, which shows its error line.
 pub async fn gpu_at(sources: Sources) -> String {
-    // The run's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-    let span = tracing::Span::current();
-    match tokio::task::spawn_blocking(move || span.in_scope(|| gpu(&sources))).await {
+    // The run's span goes along (cli-core's `spawn`).
+    match sb_cli_core::spawn::blocking(move || gpu(&sources)).await {
         Ok(value) => value,
         Err(join) => match join.try_into_panic() {
             Ok(payload) => std::panic::resume_unwind(payload),

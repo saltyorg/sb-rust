@@ -25,6 +25,16 @@ pass clippy and their tests.
   that for library and binary code (maintainer, 2026-11-13). Tests,
   examples and `testing`-feature support code may start processes
   directly.
+- Every thread and blocking-pool task starts through sb-cli-core's
+  `spawn` (`thread`, `scoped_thread`, `blocking`), which carries the
+  caller's tracing span, so every run-log record has the run id:
+  `clippy.toml` disallows `std::thread::spawn`, `Builder::spawn`,
+  `Builder::spawn_scoped`, `Scope::spawn` and tokio's `spawn_blocking`
+  (the free function, `Handle`'s, `Runtime`'s and `JoinSet`'s, `_on`
+  included), with the same exemptions and the same check (maintainer,
+  2026-11-16). Threads a dependency starts itself (hyper-util's
+  resolver) are outside it: their records keep no run id, and the run
+  log keeps dependencies at WARN only.
 - No unfinished work: `todo!`, `unimplemented!` and `dbg!` are denied by
   clippy; `TODO`/`FIXME`/`XXX` comments and empty stubs don't land.
 - No test made easier: no new `#[ignore]`, no deleted test, no assertion
@@ -145,3 +155,4 @@ called out in review, and expires.
 | E3 | clippy `disallowed_methods` (`std::process::Command::new`) | `crates/cli-core/src/root.rs`, `relaunch_as_root` | The sudo relaunch replaces sb's process (`CommandExt::exec`) before the command runs, and cli-core can't use sb-exec, which depends on it. On expiry: check that it is still the only process cli-core starts, else move it | saltydk | 2027-11-14 |
 | E4 | clippy `disallowed_methods` (`tokio::process::Command::new`, `portable_pty::CommandBuilder::new`) | `crates/exec/src/run.rs`, `Cmd::command`; `crates/exec/src/pty.rs`, `Cmd::pty_child` | sb-exec is where every child process starts, piped or in a PTY; the rule exists to send every other crate here. On expiry: check that these are sb-exec's only spawn sites in library code, else renew | saltydk | 2027-11-14 |
 | E5 | clippy `disallowed_methods` (`std::process::Command::new`) | `crates/release/build.rs`, the stand-in sb's rustc | The build script runs rustc to compile the stand-in sb that self-update's tests serve (release spec, "Testing strategy"): at build time only, only with the `testing` feature, never inside sb. A build script can't use sb-exec, and without the feature (every release and production build) it starts nothing. On expiry: check that the stand-in is still needed and still built only under `testing` (or that cargo has a stable way to build a test binary other packages' tests can run, artifact dependencies), else renew | saltydk | 2027-11-14 |
+| E6 | clippy `disallowed_methods` (`std::thread::Builder::spawn`, `Builder::spawn_scoped`, `tokio::task::spawn_blocking`) | `crates/cli-core/src/spawn.rs`, `thread`, `scoped_thread` and `blocking` | The rule sends every thread and blocking-pool task here, where the caller's span is carried in (`Span::current()` and `in_scope`); these three are where the spawns themselves happen. On expiry: check that they are still the only spawn sites in library and binary code, else renew | saltydk | 2027-11-16 |

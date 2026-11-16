@@ -281,19 +281,16 @@ async fn install(step: &mut Step, env: &Env<'_>, token: &CancellationToken) -> R
     // one thread, which also draws the steps
     // (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
     let (from, into) = (archive.path().to_path_buf(), staging.path().to_path_buf());
-    // The run's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-    let span = tracing::Span::current();
-    let staged = tokio::task::spawn_blocking(move || {
-        span.in_scope(|| {
-            let mut staged = Vec::with_capacity(NAMES.len());
-            for name in NAMES {
-                let path = into.join(name);
-                extract(&from, name, &path, MAX_BINARY)
-                    .map_err(|cause| UvError::Extract { name, cause })?;
-                staged.push(path);
-            }
-            Ok::<_, UvError>(staged)
-        })
+    // The run's span goes along (cli-core's `spawn`).
+    let staged = sb_cli_core::spawn::blocking(move || {
+        let mut staged = Vec::with_capacity(NAMES.len());
+        for name in NAMES {
+            let path = into.join(name);
+            extract(&from, name, &path, MAX_BINARY)
+                .map_err(|cause| UvError::Extract { name, cause })?;
+            staged.push(path);
+        }
+        Ok::<_, UvError>(staged)
     })
     .await
     // A panic in the extraction is resumed here, as `JoinError::into_panic`'s

@@ -68,11 +68,11 @@ impl Cmd {
         // Why not tokio's `AsyncFd` on the PTY: portable-pty hands out only
         // a std `Read` (and a raw fd, which borrowing needs `unsafe` for).
         let window = LINE + mask.longest();
-        // The caller's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-        let span = tracing::Span::current();
-        let reading = std::thread::Builder::new()
-            .name("pty reader".into())
-            .spawn(move || span.in_scope(|| read_pty_lines(reader, &mask, window, &lines)));
+        // The caller's span goes along (cli-core's `spawn`).
+        let reading = sb_cli_core::spawn::thread(
+            std::thread::Builder::new().name("pty reader".into()),
+            move || read_pty_lines(reader, &mask, window, &lines),
+        );
         if let Err(err) = reading {
             // No reader: nothing would see the child's output; it goes.
             tracing::warn!(command, error = %err, "pty reader not started");
@@ -185,20 +185,18 @@ impl Cmd {
         let (exited, exit) = oneshot::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let master = pair.master;
-        // The caller's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-        let span = tracing::Span::current();
-        let waiting = std::thread::Builder::new()
-            .name("pty wait".into())
-            .spawn(move || {
-                span.in_scope(|| {
-                    let _ = exited.send(exit_status(pid));
-                    let _ = released.recv();
-                    reap(pid);
-                });
+        // The caller's span goes along (cli-core's `spawn`).
+        let waiting = sb_cli_core::spawn::thread(
+            std::thread::Builder::new().name("pty wait".into()),
+            move || {
+                let _ = exited.send(exit_status(pid));
+                let _ = released.recv();
+                reap(pid);
                 drop(writer);
                 drop(master);
                 drop(child);
-            });
+            },
+        );
         if let Err(err) = waiting {
             // Nothing would reap or stop it: it goes now.
             let _ = kill_process(pid, Signal::KILL);

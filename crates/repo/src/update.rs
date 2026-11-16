@@ -140,12 +140,9 @@ impl Repo {
             // The walk blocks (thousands of entries), off the runner's
             // thread (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>),
             // with the run's span, so its record carries the run id
-            // (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-            let span = tracing::Span::current();
-            tokio::task::spawn_blocking(move || {
-                span.in_scope(|| sb_host::ensure_owner_recursive(&owner, &[path]))
-            })
-            .await??;
+            // (cli-core's `spawn`).
+            sb_cli_core::spawn::blocking(move || sb_host::ensure_owner_recursive(&owner, &[path]))
+                .await??;
             Ok(())
         })
         .await?;

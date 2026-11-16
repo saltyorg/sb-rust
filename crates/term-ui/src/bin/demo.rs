@@ -68,10 +68,11 @@ fn signal_self() {
     // `--leave-foreground`: move into a process group of its own mid-run,
     // as Ctrl-Z then `bg` would, so the terminal's foreground is another.
     if arg("--leave-foreground") {
-        std::thread::spawn(|| {
+        sb_cli_core::spawn::thread(std::thread::Builder::new(), || {
             std::thread::sleep(Duration::from_millis(300));
             let _ = setpgid(None, None);
-        });
+        })
+        .expect("thread");
     }
     let (signal, times) = if arg("--terminate") {
         (Signal::TERM, 1)
@@ -82,13 +83,14 @@ fn signal_self() {
     } else {
         return;
     };
-    std::thread::spawn(move || {
+    sb_cli_core::spawn::thread(std::thread::Builder::new(), move || {
         std::thread::sleep(Duration::from_millis(700));
         for _ in 0..times {
             let _ = kill_process(getpid(), signal);
             std::thread::sleep(Duration::from_millis(300));
         }
-    });
+    })
+    .expect("thread");
 }
 
 async fn demo(

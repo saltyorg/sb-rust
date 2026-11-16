@@ -21,4 +21,20 @@ disallowed-methods = [
   # A child in a PTY, which sb-exec's Cmd also gives.
   { path = "portable_pty::CommandBuilder::new", reason = "start child processes through sb-exec", replacement = "sb_exec::Cmd::new", allow-invalid = true },
   { path = "portable_pty::CommandBuilder::new_default_prog", reason = "start child processes through sb-exec", replacement = "sb_exec::Cmd::new", allow-invalid = true },
+  # Every thread and blocking-pool task sb starts goes through cli-core's
+  # `spawn`, which carries the caller's tracing span, so every run-log
+  # record has the run id (cli-core spec, "Logging"; the maintainer,
+  # 2026-11-16). The same exemptions as above: tests, examples and
+  # `testing` code may spawn directly; cli-core's three helpers carry an
+  # `#[expect]` (CONSTRAINTS.md, E6).
+  { path = "std::thread::spawn", reason = "start threads through cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::thread" },
+  { path = "std::thread::Builder::spawn", reason = "start threads through cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::thread" },
+  { path = "std::thread::Builder::spawn_scoped", reason = "start threads through cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::scoped_thread" },
+  { path = "std::thread::Scope::spawn", reason = "start threads through cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::scoped_thread" },
+  # allow-invalid: a crate without tokio can't resolve the paths.
+  { path = "tokio::task::spawn_blocking", reason = "use cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::blocking", allow-invalid = true },
+  { path = "tokio::runtime::Handle::spawn_blocking", reason = "use cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::blocking", allow-invalid = true },
+  { path = "tokio::runtime::Runtime::spawn_blocking", reason = "use cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::blocking", allow-invalid = true },
+  { path = "tokio::task::JoinSet::spawn_blocking", reason = "use cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::blocking", allow-invalid = true },
+  { path = "tokio::task::JoinSet::spawn_blocking_on", reason = "use cli-core's spawn, which carries the run's span", replacement = "sb_cli_core::spawn::blocking", allow-invalid = true },
 ]

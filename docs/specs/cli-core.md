@@ -87,8 +87,10 @@ logged. *Amended 2026-11-13 by the completion spec.*
    tracing's error field. Every record carries the run id: work sb
    moves off the run's thread (tokio's blocking pool, a thread of sb's own)
    takes the caller's span along, with tracing's `Span::current()` and
-   `in_scope` (`entered` for a thread that lives as long as the run, the
-   signals thread). Tasks on sb's runtime need nothing: it is
+   `in_scope`, through cli-core's `spawn` (`thread`, `scoped_thread`,
+   `blocking`): clippy.toml disallows the bare std and tokio spawns
+   outside it (*amended 2026-11-16 by the maintainer*; CONSTRAINTS.md,
+   Floor). Tasks on sb's runtime need nothing: it is
    current-thread, so they run on the run's thread, in its span; a
    multi-thread runtime would need `Instrument` on each task
    (*amended 2026-11-15 by the maintainer*: ownership records from the

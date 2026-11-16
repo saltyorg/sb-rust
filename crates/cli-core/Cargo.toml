@@ -21,6 +21,8 @@ toml.workspace = true
 thiserror.workspace = true
 signal-hook.workspace = true
 tokio-util.workspace = true
+# The blocking pool, for spawn.rs's helper that carries the caller's span.
+tokio.workspace = true
 rustix.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true

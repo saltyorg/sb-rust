@@ -172,7 +172,7 @@ GitHub API (last push, archived flag).
 | Host OS release | `sysinfo` (`system` feature, and `disk` for bench's Total Disk, ops spec), reading `/etc/os-release`. *Amended 2026-11-13 by the ops spec.* | 0.40.0 / 2026-10 | 58M | host/ubuntu.go parser | cli-core (approved 2026-10-30; os_info rejected: runs `lsb_release`) |
 | Errors | `anyhow` (bin), `thiserror` (lib modules) | 2026 | 260M / 464M | — | untested |
 | Logging | `tracing` + `tracing-subscriber`, one file via `tracing-appender` (never rotating; Saltbox's logrotate rotates it) | 0.2.5 (appender) / 2026-04 | 240M / 42M | terminal/logging (screen only) | proto-runner; decision 11 |
-| Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs); sb-host takes tokio's `rt` for `spawn_blocking` around the journal reads and the follow's wake wait (host spec, Tech Stack) | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs, sb-host |
+| Async + HTTP | `tokio`, `reqwest` (rustls, aws-lc-rs); sb-host runs the journal reads and the follow's wake wait on tokio's blocking pool, through cli-core's `spawn`, which carries the run's span (host spec, Tech Stack; cli-core spec, "Logging") | 2026-10 | 276M / 234M | net/http, x/net | proto-musl, proto-logs, sb-host |
 | Docker | `bollard` | 0.21.1 / 2026-08 | 20M | moby client | proto-musl, proto-logs, proto-inline |
 | systemctl JSON output | `serde_json` | 1.0.154 / 2026-10 | 389M | parsing systemctl's human-readable columns | proto-logs |
 | Timestamps | `jiff` | 0.2.38 / 2026-10 | 98M | time | proto-logs |

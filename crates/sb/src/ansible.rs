@@ -95,11 +95,9 @@ pub fn install(
         // statvfs blocks on a hung mount: off the runtime's thread, as
         // sb-host asks
         // (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
-        // The run's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
+        // The run's span goes along (cli-core's `spawn`).
         let paths = [std::path::PathBuf::from("/"), appdata.clone()];
-        let span = tracing::Span::current();
-        tokio::task::spawn_blocking(move || span.in_scope(|| sb_host::check_disk_space(&paths)))
-            .await??;
+        sb_cli_core::spawn::blocking(move || sb_host::check_disk_space(&paths)).await??;
         let routed = Routed::route(&tags);
         // Mod tags alone are never validated, and read no cache (sb-go).
         let validated = !routed.saltbox.is_empty() || !routed.sandbox.is_empty();

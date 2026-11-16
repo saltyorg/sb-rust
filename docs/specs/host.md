@@ -187,8 +187,8 @@ whose target's content does, out of it, into a root-only
 file's new path in that directory, in name order, so the caller has the
 count and the directory for its step line. `backup` is a `&'static str`
 folder name, never input (python-env passes `deadsnakes`); `run_id` is
-the run log's (cli-core's `RunLog::id()`, which host can't reach, as for
-`add_repositories`), letters and digits. An empty `needle` and a missing
+the run log's (cli-core's `RunLog::id()`; host isn't given the run log,
+as for `add_repositories`), letters and digits. An empty `needle` and a missing
 `sources.list.d` move nothing. "Contains" ignores ASCII case, as
 sb-go lowercases a source's text (*amended 2026-11-15, module build
 M20*). A symlink is moved, as a link, when
@@ -254,7 +254,7 @@ the run's backup directory already existing).
   again, within the same 240 s budget as the dpkg lock, outside the 3
   mirror attempts (decision 5).
 
-**`add_repositories(step, run_id)`.** Used by setup and gha. `run_id` is the run log's id (cli-core's `RunLog::id()`, which host can't reach), naming the backup directory; it must be a plain name (letters and digits). It reads the codename
+**`add_repositories(step, run_id)`.** Used by setup and gha. `run_id` is the run log's id (cli-core's `RunLog::id()`; host isn't given the run log), naming the backup directory; it must be a plain name (letters and digits). It reads the codename
 from `lsb_release -sc`'s stdout only (capture, 5 s; error `error getting
 Ubuntu release codename: <cause>`). Then it applies sb-go's release rules
 on a given root:
@@ -527,8 +527,9 @@ what both do.
 - **nix 0.28,** `user`: already linked through portable-pty; gains the
   feature. Also the systemd-coredump user's uid for the journal's unit
   query (`journal::coredump_uid`, `look up user <u>: <cause>`)
-- **tokio 1.54** (the workspace entry; host uses `rt`): `spawn_blocking`
-  for the journal's blocking reads, `journal::page` and `journal::drain`
+- **tokio 1.54** (the workspace entry; host uses `rt`): the blocking pool,
+  through cli-core's `spawn` (which carries the run's span; *amended
+  2026-11-16*), for the journal's blocking reads, `journal::page` and `journal::drain`
   (journal spec, assumption 3 and API: a correction to this list), and
   for the wake wait's `poll`, `journal::FollowWait`. Not `AsyncFd`, whose
   constructors 1.54.1 deprecates as unsound (journal spec, decision 12)

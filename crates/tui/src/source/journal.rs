@@ -381,13 +381,10 @@ impl Adapter {
         let end = from.clone();
         // A panic in the follow is resumed here, as sb-host's helpers do
         // (<https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinError.html#method.into_panic>).
-        // The run's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
-        let span = tracing::Span::current();
-        let started = tokio::task::spawn_blocking(move || {
-            span.in_scope(|| journal.follow(query, &end, &limits))
-        })
-        .await
-        .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+        // The run's span goes along (cli-core's `spawn`).
+        let started = sb_cli_core::spawn::blocking(move || journal.follow(query, &end, &limits))
+            .await
+            .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
         let (follower, batch) = match started {
             Ok(started) => started,
             Err(err) => {

@@ -39,7 +39,8 @@ serde_json.workspace = true
 anyhow.workspace = true
 # The run log's records (why a venv is unhealthy).
 tracing.workspace = true
-# `spawn_blocking` for the ownership walk.
+# The blocking pool's `JoinError` (the pool itself through cli-core's
+# `spawn`).
 tokio.workspace = true
 # Generation and Python release names, the manifest's `created_at`
 # (spec, Tech Stack).
