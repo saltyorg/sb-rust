@@ -79,7 +79,9 @@ const PANEL_WIDTH: u16 = 36;
 
 /// The status line's note after a copy: OSC 52 can't confirm it (tui
 /// spec, Known limits).
-const COPIED: &str = "to the clipboard (if your terminal allows it; otherwise use Show)";
+/// Short enough for an 80-column status line with most keys (the
+/// maintainer, 2026-11-16).
+const COPIED: &str = "(if your terminal allows it; otherwise use Show)";
 
 /// The fact editor's page over `roles` (sb-config's catalog), in `theme`,
 /// on stdout's terminal, until `q`, Esc, Ctrl-C or the run's token (a

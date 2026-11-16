@@ -1055,8 +1055,10 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     a secret word or `sig`.
   - **Show** reveals the selected value only, until the selection moves.
     **Copy** sends it through crossterm's OSC 52 `CopyToClipboard`
-    without showing it. The status line says "if your terminal allows it;
-    otherwise use Show", because success can't be confirmed.
+    without showing it. The status line says "Copied <key> (if your
+    terminal allows it; otherwise use Show)", because success can't be
+    confirmed (the shorter lead-in fits 80 columns; the maintainer,
+    2026-11-16).
   - The edit box for a masked value opens with the text hidden until
     Show is pressed in it.
   - Values are shown through term-ui's `DisplayText`, so control

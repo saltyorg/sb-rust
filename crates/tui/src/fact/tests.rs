@@ -491,10 +491,11 @@ fn copy_sends_the_value_through_osc_52() {
     press(&mut p, KeyCode::Char('c'));
     // base64 of "not-a-real-password".
     assert_eq!(sink.text(), "\x1b]52;c;bm90LWEtcmVhbC1wYXNzd29yZA==\x1b\\");
-    let rows = screen(&drawn(&mut p, 120, 24));
+    // Whole on an 80-column screen.
+    let rows = screen(&drawn(&mut p, 80, 24));
     assert_eq!(
         rows[22],
-        " Copied database_password to the clipboard (if your terminal allows it; otherwise use Show)"
+        " Copied database_password (if your terminal allows it; otherwise use Show)"
     );
     // Still masked.
     assert!(!rows.iter().any(|row| row.contains(SECRET)));
