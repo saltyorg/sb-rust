@@ -1105,14 +1105,14 @@ names and display names.
 test, with Plex, Emby, Jellyfin, SABnzbd and NZBGet.
 
 **Acceptance criteria:**
-- [ ] Each provider's values from its fake server match sb-go's.
-- [ ] The canary test proves no credential reaches output, errors or the
+- [x] Each provider's values from its fake server match sb-go's.
+- [x] The canary test proves no credential reaches output, errors or the
       run log.
-- [ ] A slow or failing provider stays inside its budget.
+- [x] A slow or failing provider stays inside its budget.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd`.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor (untrusted
+- [x] `cargo test -p sb-motd`.
+- [x] Review: code-reviewer, library-reviewer, security-auditor (untrusted
       responses, credentials).
 
 **Dependencies:** M43
