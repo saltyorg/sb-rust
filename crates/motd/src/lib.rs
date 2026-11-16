@@ -403,7 +403,7 @@ async fn report_with(
     };
     let jobs = chosen
         .into_iter()
-        .filter_map(|section| job(section, &context).map(|job| (section, job)))
+        .map(|section| (section, job(section, &context)))
         .collect();
     let results = run::collect(jobs, run::CAP, &context.token, &secrets).await;
     let paint = context.paint;
@@ -433,8 +433,7 @@ struct Context {
     token: CancellationToken,
 }
 
-/// The section's collection, or none for a section whose task hasn't
-/// landed yet. The runtime is current-thread, so a job must not block:
+/// The section's collection. The runtime is current-thread, so a job must not block:
 /// the cap can only fire at an await. The system sections read one small
 /// file each, or list /proc, and make no other call; Package Status reads
 /// update-notifier's small summary, then awaits its children, as Reboot
@@ -442,7 +441,7 @@ struct Context {
 /// or tokio's `spawn_blocking`
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>), as
 /// Disk Usage and GPU do.
-fn job(section: Section, context: &Context) -> Option<run::Job> {
+fn job(section: Section, context: &Context) -> run::Job {
     let paint = context.paint.clone();
     let containers = Arc::clone(&context.containers);
     let job: run::Job = match section {
@@ -509,9 +508,30 @@ fn job(section: Section, context: &Context) -> Option<run::Job> {
                 providers::nzbget::nzbget(apps.get(&config::App::Nzbget), &shared, &paint).await
             })
         }
-        _ => return None,
+        Section::Qbittorrent => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                providers::qbittorrent::qbittorrent(
+                    apps.get(&config::App::Qbittorrent),
+                    &shared,
+                    &paint,
+                )
+                .await
+            })
+        }
+        Section::Rtorrent => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                providers::rtorrent::rtorrent(apps.get(&config::App::Rtorrent), &shared, &paint)
+                    .await
+            })
+        }
+        Section::Queues => {
+            let (apps, shared) = provider(context);
+            Box::pin(async move { providers::arr::queues(&apps, &shared, &paint).await })
+        }
     };
-    Some(job)
+    job
 }
 
 /// What a provider section's job holds: motd.yml's apps and the
@@ -727,24 +747,30 @@ esac"#,
             "{text}"
         );
         assert!(text.ends_with("\n\n"));
-        let context = Context {
-            paint: Paint::plain(),
-            containers: docker::Containers::new(docker::Settings::default()),
-            systemd: Arc::new(Systemd::new()),
-            systemd_settings: None,
-            apps: Arc::new(std::collections::BTreeMap::new()),
-            providers: providers::Shared::new(
-                sb_config::http::Proxy::Off,
-                tokio::time::Instant::now(),
-                redact::Secrets::default(),
-            ),
-            token: CancellationToken::new(),
+    }
+
+    /// Without motd.yml, every HTTP section is hidden: no instance to ask.
+    #[tokio::test]
+    async fn without_motd_yml_the_http_sections_show_nothing() {
+        let theme = Theme::plain();
+        let colours = Colours {
+            theme: &theme,
+            on: false,
         };
-        assert!(job(Section::Queues, &context).is_none());
-        // GPU's and Reboot Status's lines may be hidden here; their jobs
-        // are there.
-        assert!(job(Section::Gpu, &context).is_some());
-        assert!(job(Section::Reboot, &context).is_some());
+        let http = vec![
+            Section::Queues,
+            Section::Sabnzbd,
+            Section::Nzbget,
+            Section::Qbittorrent,
+            Section::Rtorrent,
+            Section::Plex,
+            Section::Emby,
+            Section::Jellyfin,
+        ];
+        let text = report_with(http, colours, kernel_only(), config::Loaded::default())
+            .await
+            .unwrap();
+        assert_eq!(text, "\n");
     }
 
     #[test]

@@ -191,7 +191,10 @@ mount points.
   `timeoutFromContext`, `motd/queue.go:551-571`).
 - An error shows as `Error: <first line, redacted>` in the error colour.
 - Every HTTP client is one `sb_config::http::Http` (reqwest with rustls,
-  1 MiB body cap) built once per run.
+  1 MiB body cap) built once per run. qBittorrent's main data and
+  rTorrent's multicall, which list every torrent, are read whole up to
+  64 and 16 MiB, and a larger answer is an error line (verification
+  notes, M45).
 
 **Disk Usage, df's rules.** The mounts come from `/proc/self/mountinfo`.
 - The filesystem types tmpfs, overlay, fuse.mergerfs and fuse.rclone are
@@ -331,7 +334,10 @@ never reach stdout, stderr or the run log.
     Stopped, unknown as Error). sb-go counted them nowhere.
 13. **rTorrent makes one multicall.** `d.is_active` is already in it.
     sb-go made N+1 calls. An unexpected XML-RPC type is an error line,
-    where sb-go panicked and recovered.
+    where sb-go panicked and recovered. A status other than 200 is an
+    error line too (go-rtorrent parsed whatever came), and a fault reads
+    `fault <code>: <message>` (go-rtorrent: `Error: <nil>: <code>:
+    <message>`).
 14. **Plex doesn't count paused sessions** as active, as Emby already
     doesn't. sb-go counted them.
 15. **The font list is sorted.**
@@ -381,6 +387,15 @@ never reach stdout, stderr or the run log.
     custom headers, so a motd.yml pointing at an HTTP address that
     redirects to HTTPS showed values in sb-go. Saltbox's own motd.yml
     points at the containers' internal addresses, which don't redirect.
+27. **qBittorrent's main data is asked once** (M45). go-qbittorrent
+    retries a failed request and logs in again after a 403; sb shows the
+    line for the first failure, inside the login's time budget.
+28. **The queues count each record once** (M45). starr's `GetQueue(0,
+    100)` shrinks the last page's size while its page number stays
+    (`AdjustPerPage`), so above 100 records it asks again for records it
+    has and sb-go counted them twice; sb keeps pages of 100. A page of
+    more than 100 records counts 100, and a line names at most 20
+    statuses (then `…`), cut to sb-config's 2000 characters.
 
 ### Scope
 
@@ -1039,6 +1054,54 @@ Nothing touches a real host's state, and every fixture is synthetic.
   when its run is dropped, and the token is for a caller that waits on
   it. Display names and states go through `DisplayText`, and names are
   padded by bytes, as sb-go's `len` does.
+- **HTTP providers, second half (M45, 2026-11-16).**
+  - **Download Queues** ask Sonarr and Radarr `/api/v3/queue`, Lidarr
+    and Readarr `/api/v1/queue`, with starr's parameters (`page`,
+    `pageSize=100`, `sortDirection=ascending`, `sortKey=timeleft` and
+    the app's `includeUnknown…Items=true`, in Go's sorted order) and
+    `X-Api-Key`, pages 1, 2, … until the total is in or a page is empty
+    (at most 1000 pages). starr's `AdjustPerPage` shrinks the last
+    page's size while the page number stays, so it asks again for
+    records it has; sb keeps the size, and each record counts once.
+    Every line is named, sorted across the four apps; statuses are
+    counted, sorted and lowercased as sb-go's; starr's error text is
+    `api.Get(v3/queue): invalid status code, N >= 300, <message>`.
+  - **qBittorrent** logs in with a form (a fixed 1 s), sends back every
+    cookie the login set (`SID` up to qBittorrent 5.1, `QBT_SID_<port>`
+    from 5.2) with `maindata?rid=0` (the instance's `timeout` or 20 s);
+    go-qbittorrent's texts for a ban (403), `Fails.` and other statuses.
+    The torrents are counted as serde reads them, on the blocking pool,
+    nothing of a torrent kept. A state qBittorrent adds later counts as
+    an error, as `unknown` does (Difference 12).
+  - **rTorrent** sends `system.hostname` (1 s), then one `d.multicall2`
+    over `main` with `d.is_active=`, `d.complete=` and `d.message=`,
+    then the two global rates: three calls after the check (Difference
+    13). XML-RPC is read with quick-xml: `int`, `i4`, `i8`, `string`,
+    an untyped value (a string, by the spec), `array`, a fault's
+    `struct`; any other type, or values nested more than 16 deep, is an
+    error line. A status other than 200 is an error, where go-rtorrent
+    parsed whatever came. Each call's limit is taken when it starts (the
+    check a fixed 1 s, the data the instance's `timeout` or 20 s, both cut
+    to the section's deadline); the answer is parsed on the blocking
+    pool, and the rows are counted and let go before the rates. A Basic
+    login echoed back is hidden in its encoded form too.
+  - Both torrent clients show `↓<down> ↑<up> | N Downloading | N
+    Seeding`, then `N Stopped` and `N Error` wholly in the error colour,
+    counts and speeds in the value colour, sb-go's `formatSpeed` (the
+    NZBGet sizes' powers of 1024 with `/s`).
+  - **The data's body cap (raised in review).** qBittorrent's
+    `maindata` lists every torrent (about 1.5 KB each) and rTorrent's
+    multicall every row (about 120 bytes): sb-config's 1 MiB would stop
+    them near 700 and 9,000 torrents. Those two answers are read whole
+    up to 64 MiB (about 40,000 torrents) and 16 MiB (about 130,000), and
+    a larger one is the error `the answer is larger than N MiB`
+    (`sb_config::http::body_within`); every other provider's answer
+    keeps 1 MiB.
+  - **Why no count-only route (maintainer, 2026-11-16).** qBittorrent's
+    `torrents/count` gives only the total, and `torrents/info` filters
+    return whole torrents in groups unlike sb-go's. rTorrent's
+    `view.size` views count by `d.state` (paused counts as started), and
+    no view holds `d.message` errors. So the full listing stays.
 - **motd.yml's migration (2026-11-15; decision 4).** The format history
   was read from Saltbox's public history: V1 742b8772 (2025-09-28, eleven
   app lists), V2 0d39510a (colours; `enabled` on items; url and

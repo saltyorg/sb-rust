@@ -38,6 +38,11 @@ anstyle.workspace = true
 icu_properties.workspace = true
 # Traefik's routers (motd decision 15).
 reqwest.workspace = true
+# rTorrent's XML-RPC: the `methodCall` written, the `methodResponse` read
+# (motd spec, Tech Stack).
+quick-xml.workspace = true
+# qBittorrent's login form (application/x-www-form-urlencoded).
+form_urlencoded.workspace = true
 # Every child: update-notifier's scripts, apt, loginctl and last
 # (CONSTRAINTS.md).
 sb-exec.workspace = true

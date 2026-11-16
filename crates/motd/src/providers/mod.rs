@@ -5,7 +5,8 @@
 //!
 //! - Every request goes through the run's one `sb_config::http::Http`
 //!   (reqwest with rustls, no redirects followed, bodies read through
-//!   sb-config's 1 MiB cap), built when the first provider asks for it.
+//!   sb-config's 1 MiB cap; the torrent clients' data whole up to their
+//!   own caps), built when the first provider asks for it.
 //! - Each instance is its own tokio task, so a panic in one is that
 //!   instance's error line
 //!   (<https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinError.html#method.try_into_panic>).
@@ -24,11 +25,15 @@
 //! The JSON bodies are read with serde; each field Go would leave at its
 //! zero value (absent or `null`) is an `Option` read as its default.
 
+pub mod arr;
 pub mod emby;
 pub mod jellyfin;
 pub mod nzbget;
 pub mod plex;
+pub mod qbittorrent;
+pub mod rtorrent;
 pub mod sabnzbd;
+pub mod xmlrpc;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -95,7 +100,14 @@ impl Shared {
     /// as sb-go's `timeoutFromContext`).
     #[must_use]
     pub fn timeout(&self, instance: &Instance, fallback: Duration) -> Duration {
-        let wanted = instance.timeout.unwrap_or(fallback);
+        self.within(instance.timeout.unwrap_or(fallback))
+    }
+
+    /// `wanted`, cut to what is left before the deadline (1 ms once it has
+    /// passed): the torrent clients' fixed 1 s check, which no `timeout`
+    /// changes.
+    #[must_use]
+    pub fn within(&self, wanted: Duration) -> Duration {
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Duration::from_millis(1);
@@ -119,6 +131,42 @@ impl Shared {
 }
 
 impl Shared {
+    /// `text` with `instance`'s Basic login hidden too: its user and
+    /// password as reqwest's `basic_auth` encodes them for the
+    /// `Authorization` header
+    /// (<https://docs.rs/reqwest/0.13.5/reqwest/struct.RequestBuilder.html#method.basic_auth>),
+    /// which a server echoing the request's headers would show; taken from
+    /// a request built and not sent. Why not the base64 crate: not one of
+    /// sb's dependencies, for one encoding reqwest already makes.
+    #[must_use]
+    pub fn hide_login(&self, instance: &Instance, text: &str) -> String {
+        let (Some(user), Some(password)) = (instance.user.as_deref(), instance.password.as_deref())
+        else {
+            return text.to_string();
+        };
+        let Some(Ok(http)) = self.http.get() else {
+            return text.to_string();
+        };
+        let token = http
+            .client()
+            .get("http://login.invalid/")
+            .basic_auth(user, Some(password))
+            .build()
+            .ok()
+            .and_then(|request| {
+                request
+                    .headers()
+                    .get(reqwest::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Basic "))
+                    .map(ToString::to_string)
+            });
+        match token {
+            Some(token) => sb_config::secret::hide(text, &token),
+            None => text.to_string(),
+        }
+    }
+
     /// Remote text, already one line safe to draw, as motd shows it:
     /// credentials hidden, then cut to sb-config's `MAX_TEXT` characters
     /// (a long serde message or `SABnzbd` field stays one short line).
@@ -292,13 +340,24 @@ fn instance_name(name: &str, fallback: &str) -> String {
 /// `Name:`, padded to the longest name (by bytes, as Go's `len`), in the
 /// app name colour. Errors in the error colour. Empty for none.
 #[must_use]
-pub fn listing(mut answers: Vec<(String, Answer)>, paint: &Paint) -> String {
+pub fn listing(answers: Vec<(String, Answer)>, paint: &Paint) -> String {
+    lines(answers, paint, false)
+}
+
+/// [`listing`] with every line named, one instance too (the Arr queues:
+/// sb-go's `formatDetailedQueueOutput`).
+#[must_use]
+pub fn named_listing(answers: Vec<(String, Answer)>, paint: &Paint) -> String {
+    lines(answers, paint, true)
+}
+
+fn lines(mut answers: Vec<(String, Answer)>, paint: &Paint, always_named: bool) -> String {
     answers.sort_by(|a, b| a.0.cmp(&b.0));
     let shown = |answer: &Answer| match answer {
         Ok(summary) => summary.clone(),
         Err(error) => paint.error(error),
     };
-    if let [(_, answer)] = answers.as_slice() {
+    if !always_named && let [(_, answer)] = answers.as_slice() {
         return shown(answer);
     }
     let width = answers
@@ -407,6 +466,62 @@ fn queue(paint: &Paint, items: i64, left: &str, size: &str, speed: Option<&str>)
         None => format!("Paused, {summary}"),
         Some(speed) => format!("Downloading at {}, {summary}", paint.value(speed)),
     }
+}
+
+/// The largest value sb-go's `int64` holds, as an `f64` (2^63).
+const MAX_INT64: f64 = 9_223_372_036_854_775_808.0;
+
+/// sb-go's `formatBytes(int64(count))`: whole bytes (towards zero, at
+/// most `int64`'s range), `B` below 1024, else powers of 1024 with one
+/// decimal. The unit is found on whole numbers, as Go's integer
+/// division does.
+pub(crate) fn bytes(count: f64) -> String {
+    const UNIT: f64 = 1024.0;
+    // `+ 0.0` turns a negative zero into zero, as Go's int has no sign.
+    let whole = count.trunc().min(MAX_INT64) + 0.0;
+    if whole < UNIT {
+        return format!("{whole} B");
+    }
+    let (mut div, mut exp) = (UNIT, 0);
+    let mut n = (whole / UNIT).floor();
+    while n >= UNIT {
+        div *= UNIT;
+        exp += 1;
+        n = (n / UNIT).floor();
+    }
+    let unit = ["K", "M", "G", "T", "P", "E"].get(exp).unwrap_or(&"E");
+    format!("{:.1} {unit}B", whole / div)
+}
+
+/// A rate in bytes a second as `bytes` takes it: none below zero, at
+/// most 4 GiB/s (a real rate is far below; std has no lossless `i64` to
+/// `f64` conversion, and `as` would need an exception).
+pub(crate) fn rate_bytes(rate: i64) -> f64 {
+    f64::from(u32::try_from(rate.max(0)).unwrap_or(u32::MAX))
+}
+
+/// The torrent clients' summary (sb-go's `formatQbittorrentSummary` and
+/// `formatRtorrentSummary`): `No torrents present`, or `↓<down> ↑<up> |
+/// N Downloading | N Seeding`, then ` | N Stopped` and ` | N Error` in the
+/// error colour when there are any; counts and speeds in the value
+/// colour.
+pub(crate) fn torrents_summary(paint: &Paint, counts: [usize; 4], down: &str, up: &str) -> String {
+    let [downloading, seeding, stopped, errored] = counts;
+    if counts.iter().all(|n| *n == 0) {
+        return "No torrents present".to_string();
+    }
+    let mut parts = vec![
+        format!("↓{} ↑{}", paint.value(down), paint.value(up)),
+        format!("{} Downloading", count(paint, downloading)),
+        format!("{} Seeding", count(paint, seeding)),
+    ];
+    if stopped > 0 {
+        parts.push(paint.error(&format!("{stopped} Stopped")));
+    }
+    if errored > 0 {
+        parts.push(paint.error(&format!("{errored} Error")));
+    }
+    parts.join(" | ")
 }
 
 #[cfg(test)]

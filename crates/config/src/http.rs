@@ -96,6 +96,31 @@ pub async fn body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
+/// `response`'s whole body, for an answer that can be larger than
+/// [`MAX_BODY`] by design (motd's torrent clients list every torrent),
+/// or an error once it passes `cap`: such an answer would be cut, and a
+/// cut one can't be read.
+///
+/// # Errors
+///
+/// The text shown when reading the body fails part way, or when it is
+/// larger than `cap`.
+pub async fn body_within(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if body.len() + chunk.len() > cap {
+                    return Err(format!("the answer is larger than {} MiB", cap >> 20));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => return Ok(body),
+            Err(err) => return Err(transport_error(&err.without_url())),
+        }
+    }
+}
+
 /// Text from a remote service as an issue may show it: control
 /// characters escaped, cut at `MAX_TEXT` characters with `…`.
 #[must_use]
@@ -181,6 +206,28 @@ mod tests {
             .await
             .expect("body");
         assert_eq!(small, b"hello");
+    }
+
+    /// A body that can be larger is read whole up to its cap, and one past
+    /// it is an error, not a cut body.
+    #[tokio::test]
+    async fn a_larger_body_is_read_whole_or_refused() {
+        let fake = Fake::start().expect("fake");
+        fake.script("/two", Answer::json(200, "x".repeat(2 * MAX_BODY)));
+        let http = http();
+        let get = || http.client().get(format!("{}/two", fake.url())).send();
+        let whole = body_within(get().await.expect("send"), 3 * MAX_BODY)
+            .await
+            .expect("body");
+        assert_eq!(whole.len(), 2 * MAX_BODY);
+        let exact = body_within(get().await.expect("send"), 2 * MAX_BODY)
+            .await
+            .expect("body");
+        assert_eq!(exact.len(), 2 * MAX_BODY);
+        let err = body_within(get().await.expect("send"), MAX_BODY)
+            .await
+            .expect_err("too large");
+        assert_eq!(err, "the answer is larger than 1 MiB");
     }
 
     #[test]

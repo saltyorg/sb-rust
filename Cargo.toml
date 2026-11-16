@@ -94,6 +94,8 @@ rustix = { version = "1.1.6", features = ["fs", "process", "stdio", "system", "t
 # /proc for motd's system sections and Disk Usage's mountinfo (motd spec,
 # Tech Stack; decision 16), without chrono and flate2.
 procfs = { version = "0.18.0", default-features = false }
+# rTorrent's XML-RPC in sb motd (motd spec, Tech Stack; plan decision 8).
+quick-xml = "0.42.0"
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
 # The systemd-coredump user's uid (host spec, decision 2): the version
 # portable-pty already links, so no second copy, with only `user`.

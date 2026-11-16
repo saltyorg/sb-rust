@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, Texts, send};
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Texts, bytes, send};
 use crate::Paint;
 use crate::config::{AppSection, Instance};
 
@@ -76,7 +76,7 @@ async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
         .map(|queue| queue.summary(paint))
-        .map_err(|err| shared.error_text(&err))
+        .map_err(|err| shared.error_text(&shared.hide_login(instance, &err)))
 }
 
 /// `<base>/jsonrpc` without the base's user name and password.
@@ -176,31 +176,6 @@ impl Queue {
             (!self.paused).then_some(speed.as_str()),
         )
     }
-}
-
-/// The largest value sb-go's `int64` holds, as an `f64` (2^63).
-const MAX_INT64: f64 = 9_223_372_036_854_775_808.0;
-
-/// sb-go's `formatBytes(int64(count))`: whole bytes (towards zero, at
-/// most `int64`'s range), `B` below 1024, else powers of 1024 with one
-/// decimal. The unit is found on whole numbers, as Go's integer
-/// division does.
-fn bytes(count: f64) -> String {
-    const UNIT: f64 = 1024.0;
-    // `+ 0.0` turns a negative zero into zero, as Go's int has no sign.
-    let whole = count.trunc().min(MAX_INT64) + 0.0;
-    if whole < UNIT {
-        return format!("{whole} B");
-    }
-    let (mut div, mut exp) = (UNIT, 0);
-    let mut n = (whole / UNIT).floor();
-    while n >= UNIT {
-        div *= UNIT;
-        exp += 1;
-        n = (n / UNIT).floor();
-    }
-    let unit = ["K", "M", "G", "T", "P", "E"].get(exp).unwrap_or(&"E");
-    format!("{:.1} {unit}B", whole / div)
 }
 
 #[cfg(test)]

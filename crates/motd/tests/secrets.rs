@@ -6,7 +6,8 @@
 //! value serde quotes in its error, a lowercase-escaped form, a redirect
 //! carrying one), `SABnzbd`'s first instance at a refused port and its
 //! second at a fake that echoes its key. No canary, raw or encoded,
-//! reaches the report or the run log. A test binary of its own: tracing
+//! reaches the report or the run log. The queues, qBittorrent and
+//! rTorrent (M45) are covered as the media servers are. A test binary of its own: tracing
 //! caches each callsite's interest process-wide
 //! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>).
 
@@ -46,6 +47,9 @@ const EMBY_TOKEN: &str = "Ek7q";
 const JELLYFIN_TOKEN: &str = "jf canary/+&=?#%~é";
 const SABNZBD_KEY: &str = "sab canary&key=1";
 const NZBGET_PASSWORD: &str = "nzb-Canary-Pass:@/";
+const SONARR_KEY: &str = "sonarrcanarykey0123456789abcdef";
+const QBITTORRENT_PASSWORD: &str = "qb canary=pass&x";
+const RTORRENT_PASSWORD: &str = "rt\\canary\"pass";
 
 /// Each canary in the forms a text could carry it: raw, as a query
 /// parameter and in a path, each with upper- and lowercase escapes.
@@ -63,6 +67,10 @@ fn forms(canary: &str) -> Vec<String> {
     // As serde's errors quote it.
     let debug = format!("{canary:?}");
     forms.push(debug[1..debug.len() - 1].to_string());
+    // rTorrent's Basic login.
+    if canary == RTORRENT_PASSWORD {
+        forms.push(basic_token("rt-user", canary));
+    }
     forms.retain(|form| form.len() >= 4);
     forms
 }
@@ -94,6 +102,9 @@ fn assert_clean(what: &str, text: &str) {
         JELLYFIN_TOKEN,
         SABNZBD_KEY,
         NZBGET_PASSWORD,
+        SONARR_KEY,
+        QBITTORRENT_PASSWORD,
+        RTORRENT_PASSWORD,
     ] {
         for form in forms(canary) {
             assert!(!text.contains(&form), "{what} shows {form:?}:\n{text}");
@@ -183,6 +194,54 @@ fn script(fake: &Fake) {
             ),
         ),
     );
+    // Sonarr's error body echoes its key, as starr's text shows a body.
+    fake.script(
+        "/sonarr/api/v3/queue",
+        Answer::new(401, format!("bad key {SONARR_KEY}")),
+    );
+    // qBittorrent logs in, then answers its main data with the password
+    // where serde quotes it.
+    fake.script(
+        "/qbittorrent/api/v2/auth/login",
+        Answer::new(200, "Ok.").header("set-cookie", "SID=s; path=/"),
+    );
+    fake.script(
+        "/qbittorrent/api/v2/sync/maindata",
+        Answer::json(
+            200,
+            format!(
+                r#"{{"server_state":{{"dl_info_speed":{}}}}}"#,
+                quoted(QBITTORRENT_PASSWORD)
+            ),
+        ),
+    );
+    // rTorrent answers with a fault that echoes its password and the
+    // request's Basic `Authorization` header.
+    fake.script(
+        "/rtorrent/RPC2",
+        Answer::new(
+            200,
+            format!(
+                "<methodResponse><fault><value><struct><member><name>faultCode</name><value><i4>-1</i4></value></member><member><name>faultString</name><value><string>{} Authorization: Basic {}</string></value></member></struct></value></fault></methodResponse>",
+                RTORRENT_PASSWORD.replace('&', "&amp;").replace('"', "&quot;"),
+                basic_token("rt-user", RTORRENT_PASSWORD)
+            ),
+        ),
+    );
+}
+
+/// The Basic token of `user` and `password`, as reqwest encodes it.
+fn basic_token(user: &str, password: &str) -> String {
+    let request = reqwest::Client::new()
+        .get("http://login.invalid/")
+        .basic_auth(user, Some(password))
+        .build()
+        .expect("request");
+    let value = request.headers()[reqwest::header::AUTHORIZATION]
+        .to_str()
+        .expect("text")
+        .to_string();
+    value["Basic ".len()..].to_string()
 }
 
 /// motd.yml with one instance per provider, each with its canary.
@@ -201,7 +260,10 @@ fn motd_yml(fake: &Fake) -> String {
          emby:\n  instances:\n    - name: Emby\n      url: {base}/emby\n      token: {emby_token}\n\
          jellyfin:\n  instances:\n    - name: Jellyfin\n      url: {base}/jellyfin\n      token: {jellyfin_token}\n\
          sabnzbd:\n  instances:\n    - name: SABnzbd\n      url: {sabnzbd}\n      apikey: {sabnzbd_key}\n    - name: SABnzbd 2\n      url: {base}/sabnzbd\n      apikey: {sabnzbd_key}\n\
-         nzbget:\n  instances:\n    - name: NZBGet\n      url: {nzbget}\n      user: nzb-user\n      password: {nzbget_password}\n",
+         nzbget:\n  instances:\n    - name: NZBGet\n      url: {nzbget}\n      user: nzb-user\n      password: {nzbget_password}\n\
+         sonarr:\n  instances:\n    - name: Sonarr\n      url: {base}/sonarr\n      apikey: {sonarr_key}\n\
+         qbittorrent:\n  instances:\n    - name: qBittorrent\n      url: {base}/qbittorrent\n      user: qb-user\n      password: {qbittorrent_password}\n\
+         rtorrent:\n  instances:\n    - name: rTorrent\n      url: {base}/rtorrent/RPC2\n      user: rt-user\n      password: {rtorrent_password}\n",
         plex = quoted(&{
             let mut url = reqwest::Url::parse(&format!("{base}/plex")).expect("url");
             url.query_pairs_mut()
@@ -215,17 +277,18 @@ fn motd_yml(fake: &Fake) -> String {
         sabnzbd_key = quoted(SABNZBD_KEY),
         nzbget = quoted(&nzbget_url),
         nzbget_password = quoted(NZBGET_PASSWORD),
+        sonarr_key = quoted(SONARR_KEY),
+        qbittorrent_password = quoted(QBITTORRENT_PASSWORD),
+        rtorrent_password = quoted(RTORRENT_PASSWORD),
     )
 }
 
-#[test]
-fn no_credential_reaches_the_report_or_the_run_log() {
-    let fake = Fake::start().expect("fake");
-    script(&fake);
-    let motd = motd_yml(&fake);
-    let root = root(&motd);
+/// The report of every HTTP section for the Saltbox root `root`, and the
+/// log it wrote at every level of every target (stricter than the run
+/// log's filter).
+fn report_and_log(root: &Path) -> (String, String) {
     let settings = sb_config::run::Settings {
-        root: root.path().to_path_buf(),
+        root: root.to_path_buf(),
         zoneinfo: Vec::new(),
         http: Http::new(&Proxy::Off, Duration::from_secs(1)).expect("client"),
         cloudflare_url: String::new(),
@@ -241,6 +304,9 @@ fn no_credential_reaches_the_report_or_the_run_log() {
             Section::Jellyfin,
             Section::Sabnzbd,
             Section::Nzbget,
+            Section::Queues,
+            Section::Qbittorrent,
+            Section::Rtorrent,
         ],
     };
     let sources = Sources {
@@ -249,7 +315,6 @@ fn no_credential_reaches_the_report_or_the_run_log() {
     };
     let captured = Captured::default();
     let writer = captured.clone();
-    // Every level of every target: stricter than the run log's filter.
     let subscriber = tracing_subscriber::fmt()
         .with_writer(move || writer.clone())
         .with_ansi(false)
@@ -271,9 +336,27 @@ fn no_credential_reaches_the_report_or_the_run_log() {
             ))
     })
     .expect("a report");
-    let log = captured.text();
+    (report, captured.text())
+}
+
+#[test]
+fn no_credential_reaches_the_report_or_the_run_log() {
+    let fake = Fake::start().expect("fake");
+    script(&fake);
+    let motd = motd_yml(&fake);
+    let root = root(&motd);
+    let (report, log) = report_and_log(root.path());
     // Each provider answered with an error line, so each path ran.
-    for key in ["SABnzbd:", "NZBGet:", "Plex:", "Emby:", "Jellyfin:"] {
+    for key in [
+        "SABnzbd:",
+        "NZBGet:",
+        "Plex:",
+        "Emby:",
+        "Jellyfin:",
+        "Download Queues:",
+        "qBittorrent:",
+        "rTorrent:",
+    ] {
         let line = report
             .lines()
             .find(|line| line.starts_with(key))
@@ -281,6 +364,14 @@ fn no_credential_reaches_the_report_or_the_run_log() {
         assert!(line.contains("Error: "), "{line}");
     }
     assert!(report.contains("[REDACTED]"), "{report}");
+    // Each new provider's line had its canary to hide.
+    for key in ["Download Queues:", "qBittorrent:", "rTorrent:"] {
+        let line = report
+            .lines()
+            .find(|line| line.starts_with(key))
+            .unwrap_or_default();
+        assert!(line.contains("[REDACTED]"), "{key} {line}");
+    }
     assert!(report.contains("302 Found"), "{report}");
     assert!(report.contains("SABnzbd 2:"), "{report}");
     // SABnzbd's second instance got its key in the query.
@@ -291,7 +382,16 @@ fn no_credential_reaches_the_report_or_the_run_log() {
         "{:?}",
         fake.seen()
     );
-    for app in ["plex", "emby", "jellyfin", "sabnzbd", "nzbget"] {
+    for app in [
+        "plex",
+        "emby",
+        "jellyfin",
+        "sabnzbd",
+        "nzbget",
+        "sonarr",
+        "qbittorrent",
+        "rtorrent",
+    ] {
         assert!(
             log.lines()
                 .any(|line| line.contains("motd instance")
