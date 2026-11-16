@@ -1794,16 +1794,23 @@ sort, the migration list), the hidden `sb announcements` with
 `--migrations`, and tui's inline Markdown output (each announcement
 under `<Repo> Announcement - <Month D, YYYY>`, messages through
 `DisplayText`). After this task merges, `crates/tui` passes to lane 3.
+*As built (the maintainer, 2026-11-15 and 2026-11-16): `sb
+announcements` is shown and read-only, with no `--migrations`
+(migrations run during `sb update` only); it opens tui's announcement
+viewer on a terminal (M87's viewer half, built with it) and prints
+inline otherwise; without `-r` it reads both repositories, a found file
+that fails warns and the other's show, and the step line counts what is
+shown.*
 
 **Acceptance criteria:**
-- [ ] The rules on fixtures: new entries, the required folder and file,
+- [x] The rules on fixtures: new entries, the required folder and file,
       the stable date sort, Saltbox's before Sandbox's.
-- [ ] `sb announcements --before --after` prints inline and runs nothing.
-- [ ] Screenshots of the inline output.
+- [x] `sb announcements --before --after` prints inline and runs nothing.
+- [x] Screenshots of the inline output.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb-tui -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb-tui -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M73
 **Files:** `crates/ops/{Cargo.toml,src/lib.rs,src/announcements.rs}`, `crates/tui/{Cargo.toml,src/markdown.rs}`, `crates/sb/src/{main.rs,announcements.rs}`, `crates/sb/Cargo.toml`, `deny.toml`, `.claude/hooks/library-check.sh`, `Cargo.toml`, `Cargo.lock`
@@ -2092,6 +2099,8 @@ the branch commands gain runtime and tags too.
 
 **Description:** ops' slice 13: `update` and `setup` show announcements
 in tui's viewer on a terminal and refresh completion, once both exist.
+*The viewer itself is built (with M74, 2026-11-16); what is left is
+calling it from `update` and `setup`, and the completion refresh.*
 
 **Acceptance criteria:**
 - [ ] On a terminal, `update` opens the announcement viewer; piped, the
