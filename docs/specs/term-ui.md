@@ -233,12 +233,28 @@ pub struct DisplayText { /* … */ }
 impl DisplayText {
     /// `colour`: the caller passes `keeps_codes(colour_on, profile)`.
     pub fn from_bytes(bytes: &[u8], colour: bool) -> DisplayText;
+    /// `from_bytes`, with a `Resume` about every `every` columns of each
+    /// line, the first line starting at display column `column` (the
+    /// log viewer far right with wrap off, tui spec "Hardening as built").
+    pub fn resumable(bytes: &[u8], colour: bool, column: usize, every: usize)
+        -> (DisplayText, Vec<Resume>);
+    /// `from_bytes` from display column `column`: the parse a `Resume`
+    /// starts, of the bytes from its `byte` on, which makes the rest of
+    /// the text from there.
+    pub fn from_bytes_at(bytes: &[u8], colour: bool, column: usize) -> DisplayText;
     /// The lines, in order; at least one.
     pub fn lines(&self) -> impl ExactSizeIterator<Item = &str> + DoubleEndedIterator;
     /// The lines joined by `\n`.
     pub fn as_str(&self) -> &str;
 }
 // `Display` writes `as_str()`.
+
+/// Where a parse can start again: just before a printed character (the
+/// parser in its ground state, no carriage return pending), next to a
+/// printable ASCII character; none from the first byte changed before
+/// parsing (invalid UTF-8, C1) on, none left on a line a carriage return
+/// took back.
+pub struct Resume { pub byte: usize, pub line: usize, pub column: usize, pub visible: usize }
 
 /// Whether a line's own colour codes are kept: colour on, and the profile
 /// isn't `ascii`.
@@ -752,7 +768,9 @@ Choices behind it:
   with their payloads; cursor and mode CSIs; the parameter limit;
   `ESC[?1m`; C0, DEL and C1; CR; lossy UTF-8), and an exhaustive check of
   every short input over an alphabet of sequence bytes: no control
-  character but a plain SGR's ESC gets through. The run log drops APC, PM
+  character but a plain SGR's ESC gets through. A parse resumed at any
+  `Resume` makes the rest of the text, on crafted lines and every short
+  input over such an alphabet. The run log drops APC, PM
   and SOS payloads.
 - A known secret marked sensitive never reaches the run log
   (CONSTRAINTS.md logging rule).

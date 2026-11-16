@@ -118,6 +118,55 @@ before); on CJK records 8.8 to 9.0 and 19.2 to 19.4 ms (9.2 and
 (14.8 and 33.8 before). Such frames come once per jump or change, not
 per step.
 
+The maintainer asked for those frames to meet 5 ms too (2026-11-15,
+the follow-up "The viewer's far-right rebuild frame meets 5 ms"), and
+the rebuild is closed: the colour parse resumes. `DisplayText` (term-ui)
+can report places where a parse of the same bytes can start again
+(`DisplayText::resumable`: before a printed character, so its parser is
+in its ground state, about every 64 columns) and parse from one
+(`from_bytes_at`, from its column for the tab stops). The viewer keeps,
+for each line it built far right, those places with the message's byte,
+the screen column and the style ansi-to-tui had in effect there
+(`resume.rs`): ansi-to-tui's state between spans is one `Style` that
+each SGR sets, adds to, takes from or resets, so a parse begun with no
+style, each span's style patched over the kept one, styles as the whole
+parse does. A text far right is then built from the last place an
+eighth of a screen left of the window through a quarter of a screen
+right of it, and handed to ratatui with the rest of the way as
+`Paragraph::scroll`'s offset, so no marks are made for it. The places
+are kept with the line's text in the frame cache, counted in its 4 MiB,
+and across a change of theme, `t` or the search, which drop the texts.
+A message of several screen lines, one a carriage return takes back,
+and a search for a query that can overlap itself (`aa`) are built from
+their start as before, and so is a search on a line holding a
+character that joins the one before it into a grapheme wider than the
+two apart (a variation selector, a zero-width joiner, a keycap's mark, a
+skin tone): a match that ends between them makes ratatui measure the two
+apart. Release timing on the frame-cost test (now `far_right_holds`,
+three runs under heavy load, 2,000 records at 240x70; before is the
+same frames on the previous build): a `t` change at column 4,000 takes
+2.5 to 2.7 ms on plain records, colour off or on (6.0 to 8.6 before),
+3.8 to 4.0 ms on CJK records (19.8 to 22.9) and 3.9 to 4.1 ms on
+colour-per-word records (18.7 to 21.6); at 1,000 2.3 to 3.0, 3.8 to 4.0
+and 3.5 to 3.7 ms. The frame after a search there takes 3.2 to 4.1 ms
+(13.1 to 28.6 before). A resize narrower keeps the texts and makes no
+marks now (before, 4 columns narrower made the marks again: 3.4 to
+10.3 ms); one from 160 columns to 240, which builds every text again
+from its places, takes 3.8 to 4.9 ms. Steps sideways and a row up stay
+at 1.5 to 2.4 ms. In the noisiest run, under heavier load, one `t`
+frame took 5.6 ms and a resize 5.2 ms; every other far-right frame of
+the three runs is within 5 ms.
+`resume/tests.rs`'s `a_resumed_line_draws_as_the_whole_text` checks
+that a line built from a place draws as the whole line scrolled, cell
+by cell, every SGR form and reset included.
+
+What still grows with the column is a line seen for the first time far
+right, which has no places yet: a page up or a jump there from far
+away parses each new line from its start once (on these records 5.5 to
+9.2 ms for a whole screen of them at 1,000 and 4,000, 19.5 to 23.5 ms on
+CJK and colour-per-word records at 4,000; 12.6 to 26.3 ms before, with
+a search on).
+
 ## Decision
 
 Accept ratatui `=0.30.2` (default features off: `crossterm_0_29`,

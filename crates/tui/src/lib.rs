@@ -17,6 +17,7 @@ mod columns;
 pub mod line;
 pub mod markdown;
 pub mod picker;
+mod resume;
 mod save;
 mod search;
 pub mod source;

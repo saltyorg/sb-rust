@@ -46,6 +46,67 @@ impl DisplayText {
     /// ```
     #[must_use]
     pub fn from_bytes(bytes: &[u8], colour: bool) -> Self {
+        Self::parse(bytes, colour, 0, None).0
+    }
+
+    /// Sanitizes `bytes` as [`from_bytes`](Self::from_bytes) does, and
+    /// says where a parse of them can start again.
+    ///
+    /// There is a [`Resume`] about every `every` columns of each line.
+    /// `column` is the display column the first
+    /// line starts at, for its tab stops: a parse resumed at a
+    /// [`Resume`] is of the bytes from its `byte` on, from its `column`.
+    /// The text that parse makes is the rest of this text from the
+    /// resume's character on, line by line, the first line from that
+    /// character (the tui log viewer far to the right with wrap off,
+    /// which parses only from near the column it shows).
+    ///
+    /// Each resume is just before a character the parser printed, so the
+    /// parser is in its ground state there, with no carriage return
+    /// pending, and next to a printable ASCII character (before or
+    /// after it), so that it falls between two graphemes in all but a few
+    /// cases the caller checks (a prepended or an extending mark beside
+    /// it). There are none where the bytes were changed before parsing
+    /// (invalid UTF-8, C1), from the first change on, none at a character
+    /// the bytes' end splits, and none left on a line a carriage return
+    /// took back. A carriage return after the
+    /// bytes given can still take a line back: the caller looks for one.
+    ///
+    /// ```
+    /// use sb_term_ui::DisplayText;
+    ///
+    /// let bytes = b"\x1b[31mred\x1b[0m and plain";
+    /// let (text, resumes) = DisplayText::resumable(bytes, true, 0, 4);
+    /// let at = resumes[1];
+    /// assert_eq!((&bytes[at.byte..], at.column, at.visible), (&b"and plain"[..], 4, 4));
+    /// let rest = DisplayText::from_bytes_at(&bytes[at.byte..], true, at.column);
+    /// assert!(text.as_str().ends_with(rest.as_str()));
+    /// ```
+    #[must_use]
+    pub fn resumable(
+        bytes: &[u8],
+        colour: bool,
+        column: usize,
+        every: usize,
+    ) -> (Self, Vec<Resume>) {
+        Self::parse(bytes, colour, column, Some(every.max(1)))
+    }
+
+    /// Sanitizes `bytes` with the first line starting at display column
+    /// `column`: the parse a [`Resume`] starts.
+    #[must_use]
+    pub fn from_bytes_at(bytes: &[u8], colour: bool, column: usize) -> Self {
+        Self::parse(bytes, colour, column, None).0
+    }
+
+    /// [`DisplayText::resumable`]'s parse: with `every`, a resume about every
+    /// so many columns.
+    fn parse(
+        bytes: &[u8],
+        colour: bool,
+        column: usize,
+        every: Option<usize>,
+    ) -> (DisplayText, Vec<Resume>) {
         let text = seven_bit(&String::from_utf8_lossy(bytes));
         let input = text.as_bytes();
         let mut sink = Sink {
@@ -56,10 +117,17 @@ impl DisplayText {
             text: String::with_capacity(input.len()),
             lines: Vec::new(),
             line_start: 0,
-            column: 0,
+            column,
             after_cr: false,
             last_was_newline: false,
             pending: STAND_IN,
+            resumes: every.map(|every| Resumes {
+                every,
+                next: column,
+                ascii: false,
+                codes: 0,
+                at: Vec::new(),
+            }),
         };
         let mut parser = Parser::<DefaultCharAccumulator>::new();
         for (at, c) in text.char_indices() {
@@ -97,7 +165,37 @@ impl DisplayText {
                 }
             }
         }
-        sink.finish()
+        let mut resumes = sink.resumes.take().map_or_default(|r| r.at);
+        if !resumes.is_empty() {
+            // A resume's byte is in the text parsed, which is `bytes` up to
+            // the first change made before parsing: invalid UTF-8 or a C1
+            // code. A character the end splits leaves the bytes before it
+            // as they are, but not the character: the U+FFFD printed for
+            // it may stand for one that joins the character before it (a
+            // variation selector, a keycap's mark), so no resume is kept
+            // there.
+            let (valid, split) = match std::str::from_utf8(bytes) {
+                Ok(text) => (text.len(), false),
+                Err(e) => (e.valid_up_to(), e.error_len().is_none()),
+            };
+            // `contains` first: it looks for the byte as memchr does, much
+            // faster than a scan of pairs, and most text holds no C1 code.
+            let same = if bytes[..valid].contains(&0xc2) {
+                bytes[..valid]
+                    .windows(2)
+                    .position(|pair| matches!(pair, [0xc2, 0x80..=0x9f]))
+                    .unwrap_or(valid)
+            } else {
+                valid
+            };
+            let kept = if split && same == valid {
+                same
+            } else {
+                same + 1
+            };
+            resumes.retain(|r| r.byte < kept);
+        }
+        (sink.finish(), resumes)
     }
 
     /// The lines, in order; at least one.
@@ -110,6 +208,21 @@ impl DisplayText {
     pub fn as_str(&self) -> &str {
         &self.text
     }
+}
+
+/// Where a parse can start again ([`DisplayText::resumable`]): just
+/// before a printed character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resume {
+    /// The character's first byte in the bytes parsed.
+    pub byte: usize,
+    /// Its line.
+    pub line: usize,
+    /// The line's display width before it, tab stops counted.
+    pub column: usize,
+    /// The line's text before it, in bytes, kept SGRs left out: where it
+    /// is in the line's characters as drawn.
+    pub visible: usize,
 }
 
 /// Writes [`DisplayText::as_str`].
@@ -170,6 +283,21 @@ struct Sink<'a> {
     last_was_newline: bool,
     /// The non-ASCII character the stand-in being parsed stands for.
     pending: char,
+    /// The resumes being kept, when asked for.
+    resumes: Option<Resumes>,
+}
+
+/// The resumes [`DisplayText::resumable`] keeps, and what choosing the
+/// next one needs.
+struct Resumes {
+    every: usize,
+    /// The column at or past which the next is kept.
+    next: usize,
+    /// The line's last visible character is printable ASCII.
+    ascii: bool,
+    /// The bytes of the kept SGRs on the line so far.
+    codes: usize,
+    at: Vec<Resume>,
 }
 
 impl Sink<'_> {
@@ -180,6 +308,12 @@ impl Sink<'_> {
             self.after_cr = false;
             self.text.truncate(self.line_start);
             self.column = 0;
+            if let Some(resumes) = &mut self.resumes {
+                // What the line held is gone, and so is every resume in it.
+                let line = self.lines.len();
+                resumes.at.retain(|r| r.line != line);
+                resumes.start_line();
+            }
         }
     }
 
@@ -190,6 +324,9 @@ impl Sink<'_> {
         self.column = 0;
         self.after_cr = false;
         self.last_was_newline = true;
+        if let Some(resumes) = &mut self.resumes {
+            resumes.start_line();
+        }
     }
 
     fn finish(mut self) -> DisplayText {
@@ -203,6 +340,15 @@ impl Sink<'_> {
             text: self.text,
             lines: self.lines,
         }
+    }
+}
+
+impl Resumes {
+    /// A new line: from its first column, with nothing on it yet.
+    fn start_line(&mut self) {
+        self.next = 0;
+        self.ascii = false;
+        self.codes = 0;
     }
 }
 
@@ -230,6 +376,27 @@ impl Perform for Sink<'_> {
         if c.is_control() {
             return;
         }
+        if let Some(resumes) = &mut self.resumes {
+            // Printed, so the parser is in its ground state: anstyle-parse
+            // 1.0.0 prints only from Ground (src/state/codegen.rs, its
+            // `Ground` row; `process_utf8` in src/lib.rs stays there),
+            // and its `Parser` has no public state to snapshot instead.
+            // UNVERIFIED beyond that source, checked by resumed parses in
+            // `a_resumed_parse_makes_the_rest_of_the_text`. With a
+            // printable ASCII character on one side it is almost surely a
+            // grapheme's start, which the caller checks.
+            let ascii = c == ' ' || c.is_ascii_graphic();
+            if self.column >= resumes.next && (resumes.ascii || ascii) {
+                resumes.at.push(Resume {
+                    byte: self.at + 1 - c.len_utf8(),
+                    line: self.lines.len(),
+                    column: self.column,
+                    visible: self.text.len() - self.line_start - resumes.codes,
+                });
+                resumes.next = self.column + resumes.every;
+            }
+            resumes.ascii = ascii;
+        }
         self.text.push(c);
         self.column += console::measure_text_width(c.encode_utf8(&mut [0; 4]));
     }
@@ -243,6 +410,9 @@ impl Perform for Sink<'_> {
                 let spaces = 8 - self.column % 8;
                 self.text.extend(std::iter::repeat_n(' ', spaces));
                 self.column += spaces;
+                if let Some(resumes) = &mut self.resumes {
+                    resumes.ascii = true;
+                }
             }
             _ => self.text_follows(),
         }
@@ -257,6 +427,9 @@ impl Perform for Sink<'_> {
         let raw = &self.input[self.start..=self.at];
         if self.colour && !ignore && is_sgr(raw) {
             self.text.extend(raw.iter().map(|&b| char::from(b)));
+            if let Some(resumes) = &mut self.resumes {
+                resumes.codes += raw.len();
+            }
         }
     }
 }
@@ -691,6 +864,140 @@ mod tests {
             }
         }
         assert_eq!(checked, 19 + 19 * 19 + 19usize.pow(3) + 19usize.pow(4));
+    }
+
+    /// Where line `line` of `text` is `visible` bytes in, kept SGRs left
+    /// out: past the SGRs there, which come before the character.
+    fn text_at(text: &DisplayText, line: usize, visible: usize) -> &str {
+        let whole = text.lines().nth(line).expect("the resume's line");
+        let mut seen = 0;
+        let mut at = 0;
+        loop {
+            if let Some(rest) = whole[at..].strip_prefix("\x1b[") {
+                at = whole.len() - rest.len() + rest.find('m').expect("an SGR's end") + 1;
+                continue;
+            }
+            if seen == visible {
+                return &whole[at..];
+            }
+            let c = whole[at..].chars().next().expect("a character");
+            seen += c.len_utf8();
+            at += c.len_utf8();
+        }
+    }
+
+    /// A parse resumed at any resume makes the rest of the text from the
+    /// resume's character on, the rest of its line and every line after,
+    /// colour on and off; resumes are next to printable ASCII, about every
+    /// so many columns, and none are left where the bytes changed before
+    /// parsing or on a line a carriage return took back.
+    #[test]
+    fn a_resumed_parse_makes_the_rest_of_the_text() {
+        const SYMBOLS: [&str; 12] = [
+            "\x1b", "[", "]", "\x07", "1", ";", "m", "a", "\n", "\r", "\t", "日",
+        ];
+        let colours = (0..60)
+            .map(|i| format!("\x1b[3{}mword{i}\x1b[0m ", i % 8))
+            .collect::<Vec<_>>()
+            .concat();
+        let inputs: Vec<Vec<u8>> = vec![
+            colours.into_bytes(),
+            "lorem ipsum ".repeat(30).into_bytes(),
+            "a\tbb\tccc\t".repeat(20).into_bytes(),
+            "日本語のログ ".repeat(30).into_bytes(),
+            "e\u{301}x".repeat(40).into_bytes(),
+            b"osc \x1b]0;a\x07 after\x1b[1;31m bold red\x1b[22m red \x1b[?25l gone".to_vec(),
+            b"one\ntwo \x1b[3\n1m split\nthree".to_vec(),
+            b"progress 10%\rprogress 20%\r\rdone and more text".to_vec(),
+            b"before \xff invalid after".to_vec(),
+            "before \u{9b}31m c1 after".into(),
+            "split at the end \u{65e5}".as_bytes()[..19].to_vec(),
+        ];
+        for bytes in &inputs {
+            for colour in [true, false] {
+                let whole = DisplayText::from_bytes(bytes, colour);
+                let (text, resumes) = DisplayText::resumable(bytes, colour, 0, 3);
+                assert_eq!(text, whole);
+                for r in &resumes {
+                    let rest = DisplayText::from_bytes_at(&bytes[r.byte..], colour, r.column);
+                    let mut lines = rest.lines();
+                    assert_eq!(
+                        lines.next(),
+                        Some(text_at(&whole, r.line, r.visible)),
+                        "{r:?} of {:?}",
+                        String::from_utf8_lossy(bytes)
+                    );
+                    assert!(lines.eq(whole.lines().skip(r.line + 1)), "{r:?}");
+                    let next = &bytes[r.byte..];
+                    let after = text.lines().nth(r.line).map(|l| l.chars().count());
+                    assert!(after.is_some(), "{r:?}");
+                    assert!(
+                        next.first()
+                            .is_some_and(|b| b.is_ascii_graphic() || *b == b' ')
+                            || bytes[..r.byte].last().is_some_and(|b| {
+                                b.is_ascii_graphic() || *b == b' ' || *b == b'\t' || *b == b'm'
+                            }),
+                        "{r:?} of {:?}",
+                        String::from_utf8_lossy(bytes)
+                    );
+                }
+                let pairs = resumes.windows(2).filter(|w| w[0].line == w[1].line);
+                assert!(
+                    pairs.clone().all(|w| w[1].column >= w[0].column + 3),
+                    "{resumes:?}"
+                );
+                // Lines of 120 columns and more have a resume every few.
+                if bytes.len() > 300 && !bytes.contains(&b'\n') {
+                    assert!(resumes.len() > 20, "{resumes:?}");
+                }
+            }
+        }
+        let progress = DisplayText::resumable(&inputs[7], true, 0, 3).1;
+        assert_eq!(progress.first().map(|r| r.byte), Some(27), "{progress:?}");
+        // Up to the first change: a resume at an invalid byte (decoded as
+        // U+FFFD from the whole bytes too) is kept, none at a character
+        // the end splits.
+        for (input, change) in [(8, 7), (9, 6), (10, 16)] {
+            let resumes = DisplayText::resumable(&inputs[input], true, 0, 1).1;
+            assert_eq!(resumes.last().map(|r| r.byte), Some(change), "{input}");
+        }
+        // A resumed parse's tab stops count from its column.
+        let tabbed = DisplayText::from_bytes_at(b"x\ty", false, 5);
+        assert_eq!(tabbed.as_str(), "x  y");
+        // Each line has resumes of its own, from its first column.
+        let lines = DisplayText::resumable(b"abcdef\nghijkl", false, 0, 4).1;
+        let firsts: Vec<_> = lines.iter().map(|r| (r.line, r.column, r.byte)).collect();
+        assert_eq!(firsts, [(0, 0, 0), (0, 4, 4), (1, 0, 7), (1, 4, 11)]);
+        // A short input over the sequences' alphabet: every resume is good.
+        let count = SYMBOLS.len();
+        for length in 1..=4u32 {
+            for mut index in 0..count.pow(length) {
+                let mut input = String::from("a");
+                for _ in 0..length {
+                    input.push_str(SYMBOLS[index % count]);
+                    index /= count;
+                }
+                input.push('z');
+                for colour in [true, false] {
+                    let whole = DisplayText::from_bytes(input.as_bytes(), colour);
+                    let (_, resumes) = DisplayText::resumable(input.as_bytes(), colour, 0, 1);
+                    for r in resumes {
+                        let rest = DisplayText::from_bytes_at(
+                            &input.as_bytes()[r.byte..],
+                            colour,
+                            r.column,
+                        );
+                        let mut lines = rest.lines();
+                        assert_eq!(
+                            lines.next(),
+                            Some(text_at(&whole, r.line, r.visible)),
+                            "{input:?} {r:?}"
+                        );
+                        assert!(lines.eq(whole.lines().skip(r.line + 1)), "{input:?} {r:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// A line holds no control character other than the ESC of a plain

@@ -256,9 +256,14 @@ fn cells(grapheme: &str, width: u16) -> usize {
     if cells > width { 0 } else { usize::from(cells) }
 }
 
-/// The byte offset of `part`, a slice of `whole`, within it.
-fn offset(whole: &str, part: &str) -> usize {
-    part.as_ptr().addr() - whole.as_ptr().addr()
+/// The byte offset of `part`, a slice of `whole`, within it (std's
+/// `str::substr_range`,
+/// <https://doc.rust-lang.org/std/primitive.str.html#method.substr_range>).
+pub(crate) fn offset(whole: &str, part: &str) -> usize {
+    whole
+        .substr_range(part)
+        .expect("a grapheme of the text it came from")
+        .start
 }
 
 #[cfg(test)]

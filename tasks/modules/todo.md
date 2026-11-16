@@ -2149,7 +2149,7 @@ calling it from `update` and `setup`, and the completion refresh.*
       refused connection. Hold the port for the test's lifetime with a
       socket that is bound but never listens (a connect to it is refused),
       for example socket2's `Socket::bind` without `listen`.
-- [ ] **The viewer's far-right rebuild frame meets 5 ms** (lane 2; the
+- [x] **The viewer's far-right rebuild frame meets 5 ms** (lane 2; the
       maintainer, 2026-11-15). With wrap off far to the right, a frame that
       rebuilds every line in view (a jump there, a search, a theme or `t`
       change, a resize) still grows with the column: about 6 ms on plain
@@ -2159,6 +2159,15 @@ calling it from `update` and `setup`, and the completion refresh.*
       mid-line: make the colour parse resumable (checkpoints of the SGR
       state every N columns, cached per line) so the rebuild starts near
       the column.
+      Done: `DisplayText::resumable` and `from_bytes_at` (term-ui) resume
+      the parse; each line built far right keeps its places (byte, column,
+      style, about every 64 columns) in the frame cache, within its 4 MiB
+      and across theme, `t` and search changes (`resume.rs`). A `t`
+      change or a search at columns 1,000 and 4,000 takes 2.3 to 4.1 ms on
+      plain, CJK and colour-per-word records, a resize there 3.8 to 4.9
+      ms (ADR-023, the tui spec's "Hardening as built"). A line first
+      seen far right (a page up or a jump there) is still parsed from its
+      start once: 5.5 to 23.5 ms a screen of them at 4,000.
 - [x] **Every run log line carries the run id** (lane 4; the maintainer,
       2026-11-15). sb-host's ownership lines (`sb_host::owner: ownership
       ...`, `recursive ownership ...`) are written outside the run's span,

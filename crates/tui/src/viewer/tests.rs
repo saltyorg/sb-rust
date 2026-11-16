@@ -1554,18 +1554,59 @@ fn frame_costs(n: u64) -> Vec<(usize, usize, std::time::Duration)> {
         .collect()
 }
 
-/// What frames cost with wrap off at `column`, on 2,000 long records at
-/// 240×70: a step right onto the column, a row up, a step left, and a
-/// frame that builds every text in view again (as a jump there does).
-/// For each, the texts built, the widest screen line handed to ratatui,
-/// and the time taken.
-fn far_right_costs(column: u16) -> Vec<(usize, usize, std::time::Duration)> {
+/// A tail of `n` records of `words`, each after its number.
+fn tail_of(n: u64, words: &str) -> Event {
+    let ls: Vec<Line> = (0..n).map(|i| line(i, &format!("m{i} {words}"))).collect();
+    Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: true,
+        more_newer: false,
+    }
+}
+
+/// The far-right timing's records, each 4,500 columns and more: words,
+/// CJK text with a space every six characters, and words each in its
+/// own colour.
+fn far_records() -> [(&'static str, String); 3] {
+    let colours: String = (0..700)
+        .map(|i| format!("\x1b[3{}mword{i} ", i % 8))
+        .collect::<Vec<_>>()
+        .concat();
+    [
+        ("plain", "lorem ipsum ".repeat(420)),
+        ("cjk", "日本語のログ ".repeat(360)),
+        ("colour", colours),
+    ]
+}
+
+/// What one frame cost: the texts built, the widest screen line handed
+/// to ratatui, the message bytes parsed far right, and the time taken.
+#[derive(Clone, Copy, Debug)]
+struct Cost {
+    built: usize,
+    widest: usize,
+    parsed: usize,
+    time: std::time::Duration,
+}
+
+/// What frames cost with wrap off at `column`, on 2,000 records of
+/// `words` at 240×70 in `format`: a step right onto the column, a row
+/// up, a step left; then frames that build every text in view again
+/// there, from their lines' kept resume places: `t` off and on, a
+/// search, a resize (from 160 columns: narrower, the texts kept hold
+/// the window still and are drawn again as they are). Last, one that
+/// builds them
+/// with nothing kept, as a jump there from far away does.
+fn far_right_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
     let limits = Limits {
         entries: 20_000,
         bytes: usize::MAX,
     };
-    let mut h = open(240, 70, limits);
-    h.send(long_tail(2_000));
+    let mut h = open_with(240, 70, limits, format);
+    h.send(tail_of(2_000, words));
     h.key(KeyCode::Char('w'));
     h.key(KeyCode::PageUp);
     h.viewer.column = column.saturating_sub(COLUMN_STEP);
@@ -1573,24 +1614,103 @@ fn far_right_costs(column: u16) -> Vec<(usize, usize, std::time::Duration)> {
     let cost = |h: &mut Harness, frame: &dyn Fn(&mut Harness)| {
         h.viewer.built.set(0);
         h.viewer.widest.set(0);
+        h.viewer.parsed.set(0);
         let started = std::time::Instant::now();
         frame(h);
-        let elapsed = started.elapsed();
-        (h.viewer.built.get(), h.viewer.widest.get(), elapsed)
+        let time = started.elapsed();
+        Cost {
+            built: h.viewer.built.get(),
+            widest: h.viewer.widest.get(),
+            parsed: h.viewer.parsed.get(),
+            time,
+        }
     };
-    let mut costs: Vec<_> = [KeyCode::Right, KeyCode::Char('k'), KeyCode::Left]
-        .iter()
-        .map(|&key| {
-            cost(&mut h, &|h| {
-                h.key(key);
-            })
+    let mut costs: Vec<_> = [
+        KeyCode::Right,
+        KeyCode::Char('k'),
+        KeyCode::Left,
+        KeyCode::Char('t'),
+        KeyCode::Char('t'),
+    ]
+    .iter()
+    .map(|&key| {
+        cost(&mut h, &|h| {
+            h.key(key);
         })
-        .collect();
+    })
+    .collect();
+    // The frame after a search: its own work, counting matches in every
+    // entry, isn't the frame's.
+    h.viewer.query = "lorem".to_owned();
+    costs.push(cost(&mut h, &|h| h.draw()));
+    // A resize to 240 columns from 160, the texts built there: wider, the
+    // window needs more columns than they hold.
+    h.terminal.backend_mut().resize(160, 70);
+    h.key(KeyCode::Char('t'));
+    h.key(KeyCode::Char('t'));
+    h.terminal.backend_mut().resize(240, 70);
+    costs.push(cost(&mut h, &|h| h.draw()));
     costs.push(cost(&mut h, &|h| {
         h.viewer.drawn = Drawn::default();
         h.draw();
     }));
     costs
+}
+
+/// The far-right frames of [`far_right_costs`] at columns 1,000 and
+/// 4,000 against those at the first column, for `words` in `format`: the
+/// same texts built, each screen line handed to ratatui cut to about the
+/// window, and each frame that builds the texts again from their resume
+/// places parsing about as much at 4,000 as at 1,000, a few screens of
+/// each line in view, so that its cost doesn't grow with the column.
+fn far_right_holds(name: &str, words: &str, format: &Format) {
+    let built = |costs: &[Cost]| costs.iter().map(|c| c.built).collect::<Vec<_>>();
+    let near = far_right_costs(0, words, format.clone());
+    eprintln!("{name} wrap off at column 0: {near:?}");
+    let mut parsed = Vec::new();
+    for column in [1_000, 4_000] {
+        let far = far_right_costs(column, words, format.clone());
+        eprintln!(
+            "{name} wrap off at column {column}, right, up, left, t, t, search, resize, from nothing: {:?}",
+            far.iter().map(|c| c.time).collect::<Vec<_>>()
+        );
+        // The same texts built as at the first column, but for the resize:
+        // at the first column the texts built at 160 hold 240 already.
+        assert_eq!(
+            built(&far)[..6],
+            built(&near)[..6],
+            "{name} at {column}: {far:?}"
+        );
+        // Each screen line handed to ratatui is about the window: cut at
+        // the column, or built from a little left of it through a little
+        // right ([`resume::far`]).
+        assert!(
+            far.iter().all(|c| c.widest <= 2 * 240),
+            "{name} at {column}: {far:?}"
+        );
+        // A rebuild parses about a screen and a half of each of 69 lines:
+        // the window, a quarter of a screen right of it, an eighth left,
+        // and up to a resume's spacing more, at a byte or two a column
+        // (from nothing, at 1,000, it parses about 2,600 bytes a line).
+        for (i, c) in far[3..7].iter().enumerate() {
+            assert!(c.built <= 69, "{name} at {column}, rebuild {i}: {far:?}");
+            assert!(
+                c.parsed <= 69 * 1000,
+                "{name} at {column}, rebuild {i}: {far:?}"
+            );
+        }
+        assert!(
+            far[3..7].iter().all(|c| c.built == 69),
+            "{name} at {column}: {far:?}"
+        );
+        parsed.push(far[3..7].iter().map(|c| c.parsed).collect::<Vec<_>>());
+    }
+    for (at_1000, at_4000) in parsed[0].iter().zip(&parsed[1]) {
+        assert!(
+            at_4000 * 4 <= at_1000 * 5,
+            "{name}: {at_4000} bytes at 4,000 against {at_1000} at 1,000"
+        );
+    }
 }
 
 /// The frame cost (tui spec, Testing Strategy, "Frame cost"; proto-logs'
@@ -1634,24 +1754,17 @@ fn a_frames_cost_doesnt_grow_with_the_buffer() {
         times[times.len() / 2],
         times[times.len() - 1]
     );
-    // Far to the right with wrap off (the follow-up "Far-right wrap-off
-    // frames are fast too"): the same texts built as at the first column,
-    // and each screen line handed to ratatui cut to about the window, so
-    // that a frame's cost doesn't grow with the column.
-    let near = far_right_costs(0);
-    for column in [1_000, 4_000] {
-        let far = far_right_costs(column);
-        let built = |costs: &[(usize, usize, std::time::Duration)]| {
-            costs.iter().map(|(built, _, _)| *built).collect::<Vec<_>>()
-        };
-        assert_eq!(built(&far), built(&near), "column {column}: {far:?}");
-        assert!(
-            far.iter().all(|&(_, widest, _)| widest <= 240 + 64),
-            "column {column}: {far:?}"
-        );
-        eprintln!("wrap off at column {column}, right, up, left, all built: {far:?}");
+    // Far to the right with wrap off (the follow-ups "Far-right wrap-off
+    // frames are fast too" and "The viewer's far-right rebuild frame
+    // meets 5 ms"), with colour off and on.
+    far_right_holds("ascii", &"lorem ipsum ".repeat(420), &format());
+    let truecolor = Format::new(
+        TimeZone::UTC,
+        Theme::resolve(&Palette::default(), Profile::TrueColor),
+    );
+    for (name, words) in far_records() {
+        far_right_holds(name, &words, &truecolor);
     }
-    eprintln!("wrap off at column 0, right, up, left, all built: {near:?}");
 }
 
 /// Heights are kept with their entries: a frame with nothing new measures
@@ -1847,13 +1960,7 @@ fn a_kept_texts_size_counts_its_marks() {
     assert!(kept.len() > 60, "{}", kept.len());
     for built in kept {
         let marks = built.marks.as_ref().expect("cut at column 9");
-        let bare = Built {
-            id: built.id,
-            text: built.text.clone(),
-            rows: built.rows,
-            columns: built.columns,
-            marks: None,
-        };
+        let bare = Built::new(built.id, built.text.clone(), built.rows, built.columns);
         assert!(marks.size() > 0);
         assert_eq!(built.size(), bare.size() + marks.size());
     }
@@ -1899,19 +2006,14 @@ fn a_whole_text_is_kept_for_every_column() {
 /// grapheme wider than the window as none.
 #[test]
 fn marks_follow_the_window_width() {
-    let mut built = Built {
-        id: 0,
-        text: Text::from("日本語".repeat(100)),
-        rows: usize::MAX,
-        columns: usize::MAX,
-        marks: None,
-    };
+    let mut built = Built::new(0, Text::from("日本語".repeat(100)), usize::MAX, usize::MAX);
     let _ = built.window(0, 1, 8, 40);
     assert_eq!(built.marks.as_ref().map(Marks::width), Some(40));
     let _ = built.window(0, 1, 8, 40);
     assert_eq!(built.marks.as_ref().map(Marks::width), Some(40));
     let one: Vec<String> = built
         .window(0, 1, 8, 1)
+        .0
         .lines
         .iter()
         .map(ToString::to_string)
@@ -1921,6 +2023,139 @@ fn marks_follow_the_window_width() {
     // nothing, and the cut, with marks for that width, is empty (with
     // the 40-column marks it would hold the characters from column 8).
     assert_eq!(one, [""]);
+}
+
+/// Far to the right a text is built from a little left of the window
+/// through a little right of it: a few steps either way build nothing,
+/// and more build each line in view again, from its kept places.
+#[test]
+fn far_right_steps_build_only_past_the_texts_kept() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(200));
+    h.key(KeyCode::Char('w'));
+    h.viewer.column = 2000;
+    h.draw();
+    let built = |h: &mut Harness, key: KeyCode, times: usize| {
+        h.viewer.built.set(0);
+        h.viewer.parsed.set(0);
+        for _ in 0..times {
+            h.key(key);
+        }
+        (h.viewer.built.get(), h.viewer.parsed.get())
+    };
+    // An eighth of a screen left (30 columns) and a quarter right.
+    assert_eq!(built(&mut h, KeyCode::Left, 3), (0, 0));
+    assert_eq!(built(&mut h, KeyCode::Right, 3 + 7), (0, 0));
+    // One more step right builds the log lines in view again.
+    let (again, parsed) = built(&mut h, KeyCode::Right, 1);
+    assert!(again > 60, "{again}");
+    assert!(parsed <= again * 600, "{parsed}");
+}
+
+/// Far to the right with wrap off, the window draws as ratatui's
+/// `Paragraph::scroll` draws each whole text in view, through steps both
+/// ways, `t`, a search, a resize and a page up, the texts built from
+/// their lines' kept resume places and from nothing.
+#[test]
+fn far_right_texts_draw_as_paragraph_scroll() {
+    use ratatui::widgets::Widget as _;
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let truecolor = Format::new(
+        TimeZone::UTC,
+        Theme::resolve(&Palette::default(), Profile::TrueColor),
+    );
+    let mut h = open_with(100, 16, limits, truecolor);
+    let codes = [
+        "\x1b[1;31m",
+        "\x1b[22m",
+        "\x1b[38;5;99m",
+        "\x1b[4;44m",
+        "\x1b[0m",
+        "日本 ",
+    ];
+    let ls: Vec<Line> = (0..300)
+        .map(|i| {
+            let words: String = (0..400)
+                .map(|w| format!("{}word{w} ", codes[(w + i) % codes.len()]))
+                .collect::<Vec<_>>()
+                .concat();
+            Line {
+                time: Some("2026-11-13T09:04:05Z".parse().expect("a time")),
+                origin: b"app[7]".to_vec(),
+                ..line(i as u64, &words)
+            }
+        })
+        .collect();
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: false,
+        more_newer: false,
+    });
+    h.key(KeyCode::Char('w'));
+    h.viewer.column = 2000;
+    h.draw();
+    // The frame as ratatui composed it: the test backend's own buffer
+    // keeps the cell after a wide character from an earlier frame, which
+    // a terminal overwrites when it draws the character.
+    let matches = |h: &mut Harness, step: &str| {
+        let Harness {
+            viewer, terminal, ..
+        } = h;
+        let screen = terminal
+            .draw(|frame| viewer.draw(frame))
+            .expect("drawn")
+            .buffer
+            .clone();
+        let top = viewer.top();
+        let rows = u16::try_from(viewer.height).expect("a small window");
+        let width = viewer.width;
+        let area = Rect::new(0, 0, width, 1);
+        for y in 0..rows {
+            let item = top.item + isize::try_from(y).expect("a row");
+            let mut expected = ratatui::buffer::Buffer::empty(area);
+            Paragraph::new(viewer.item_text(item))
+                .scroll((0, viewer.column))
+                .render(area, &mut expected);
+            for x in 0..width {
+                assert_eq!(
+                    screen[(x, y + 1)],
+                    expected[(x, 0)],
+                    "{step}: at {x},{y}, column {}",
+                    viewer.column
+                );
+            }
+        }
+    };
+    matches(&mut h, "from nothing");
+    let mut steps = vec![("right", KeyCode::Right); 12];
+    steps.extend(vec![("left", KeyCode::Left); 30]);
+    steps.extend([
+        ("t", KeyCode::Char('t')),
+        ("t", KeyCode::Char('t')),
+        ("up", KeyCode::Char('k')),
+    ]);
+    for (step, key) in steps {
+        h.key(key);
+        matches(&mut h, step);
+    }
+    h.viewer.query = "word3".to_owned();
+    h.draw();
+    matches(&mut h, "search");
+    h.terminal.backend_mut().resize(90, 16);
+    h.draw();
+    matches(&mut h, "resize");
+    h.key(KeyCode::PageUp);
+    matches(&mut h, "page up");
 }
 
 /// With wrap off and scrolled sideways, a tall record partly above the

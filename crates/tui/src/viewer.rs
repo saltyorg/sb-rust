@@ -71,6 +71,7 @@ use tokio::sync::{Notify, mpsc};
 
 use crate::columns::{self, Marks};
 use crate::line::{self, Format};
+use crate::resume::{self, Resumes};
 use crate::save;
 use crate::source::{
     Event, Generation, Line, Notice, Outbox, PageKind, Position, Request, SourceHandle, Tagged,
@@ -198,7 +199,10 @@ const DRAWN_BYTES: usize = 4 << 20;
 /// are lit), so a change of either drops them all; a text built for
 /// fewer rows or columns than a frame shows (wrap off) is built again;
 /// within those, the sideways column is a cut of the text at drawing
-/// ([`columns`], with the text's marks kept beside it).
+/// ([`columns`], with the text's marks kept beside it). Far to the right
+/// a text starts near the window, built from a place its line's last
+/// build kept ([`resume`]): those places are kept across a change of
+/// format or search too, for the next frame's texts.
 ///
 /// Bounded to what is on screen, not counted toward the buffer's 32 MiB:
 /// each frame keeps only the texts it drew, one per entry in view, so at
@@ -212,29 +216,61 @@ const DRAWN_BYTES: usize = 4 << 20;
 /// `layout-cache` holds `Layout::split`'s results,
 /// <https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.init_cache>).
 /// With wrap off each text is about the
-/// window's columns of the rows it shows ([`line::within`]); with wrap on
-/// it is the whole record, and every record in view but the first and
-/// the last fits in the window.
+/// window's columns of the rows it shows ([`line::within`]), or far to
+/// the right those from a little left of the window ([`resume::far`]);
+/// with wrap on it is the whole record, and every record in view but the
+/// first and the last fits in the window.
+///
+/// A line's resume places ([`Resumes`], a few dozen bytes every 64
+/// columns parsed) are kept inside the same bound: they sit in its
+/// [`Built`] and count in its size, so they too are kept only for the
+/// entries the last frame drew and within [`DRAWN_BYTES`]. Across a
+/// change of format or search they move to `resumes`, without their
+/// texts, and the next frame takes them back into the texts it builds,
+/// so they are never kept beside a text of their own line, nor for a
+/// line that frame doesn't draw.
 #[derive(Debug, Default)]
 struct Drawn {
     built_for: Option<(Format, String)>,
     texts: Vec<Built>,
+    resumes: Vec<(u64, Resumes)>,
 }
 
 /// A log line's text as [`Drawn`] keeps it: whose (its [`Kept`] id), the
-/// screen lines and columns it holds right (`usize::MAX`: all), and
-/// where to cut it with wrap off away from the first column, once a frame
-/// has needed that.
+/// screen lines and columns it holds right (`usize::MAX`: all), the
+/// screen column its lines start at (`from`, past the first far to the
+/// right) and the leftmost a window can show it from (`left`), where to
+/// cut it with wrap off away from the first column, once a frame has
+/// needed that, and its line's resume places, once one was built far
+/// right.
 #[derive(Debug)]
 struct Built {
     id: u64,
     text: Text<'static>,
     rows: usize,
     columns: usize,
+    from: usize,
+    left: usize,
     marks: Option<Marks>,
+    resumes: Option<Resumes>,
 }
 
 impl Built {
+    /// `text`, holding `rows` screen lines and `columns` columns right
+    /// from the first.
+    fn new(id: u64, text: Text<'static>, rows: usize, columns: usize) -> Self {
+        Self {
+            id,
+            text,
+            rows,
+            columns,
+            from: 0,
+            left: 0,
+            marks: None,
+            resumes: None,
+        }
+    }
+
     /// The text's bytes, counted as its lines, their spans and the
     /// spans' contents, and its marks: what keeping it costs, less the
     /// allocator's own.
@@ -253,6 +289,7 @@ impl Built {
             })
             .sum();
         text + self.marks.as_ref().map_or(0, Marks::size)
+            + self.resumes.as_ref().map_or(0, Resumes::size)
     }
 
     /// With wrap off, the `rows` screen lines from line `skip` that a
@@ -262,16 +299,27 @@ impl Built {
     /// them all on each draw). The marks are made the first time a frame
     /// needs a cut, and again for another width, through the columns the
     /// text holds right: a window that needs more builds a new text.
-    fn window(&mut self, skip: usize, rows: usize, column: u16, width: u16) -> Text<'_> {
+    ///
+    /// A text built far right ([`resume::far`]) starts a little left of
+    /// the window (`from`), so it is handed over whole with the rest as
+    /// `Paragraph::scroll`'s x offset (the second value), which walks only
+    /// that little: as cheap as a cut, and no marks to make
+    /// (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html#method.scroll>).
+    fn window(&mut self, skip: usize, rows: usize, column: u16, width: u16) -> (Text<'_>, u16) {
         debug_assert!(
-            usize::from(column) + usize::from(width) <= self.columns,
+            usize::from(column) + usize::from(width) <= self.columns
+                && self.left <= usize::from(column),
             "a window past the columns built"
         );
         let end = self.text.lines.len().min(skip.saturating_add(rows));
         let shown = skip.min(end)..end;
-        let lines = if column == 0 {
+        let mut offset = 0;
+        let lines = if column == 0 || self.from > 0 {
+            let from = u16::try_from(self.from).unwrap_or(u16::MAX);
+            offset = column.saturating_sub(from);
             self.text.lines[shown].iter().map(columns::whole).collect()
         } else {
+            let column = usize::from(column);
             if self.marks.as_ref().map(Marks::width) != Some(width) {
                 self.marks = None;
             }
@@ -279,14 +327,15 @@ impl Built {
                 .marks
                 .get_or_insert_with(|| Marks::new(&self.text, width, self.columns));
             shown
-                .map(|row| marks.cut(&self.text, row, usize::from(column)))
+                .map(|row| marks.cut(&self.text, row, column))
                 .collect()
         };
-        Text {
+        let text = Text {
             lines,
             style: self.text.style,
             alignment: self.text.alignment,
-        }
+        };
+        (text, offset)
     }
 }
 
@@ -382,6 +431,10 @@ pub struct Viewer {
     /// count was last taken, in columns.
     #[cfg(test)]
     widest: Cell<usize>,
+    /// Message bytes parsed to build texts far right with wrap off
+    /// ([`resume::far`]) since the count was last taken.
+    #[cfg(test)]
+    parsed: Cell<usize>,
 }
 
 impl Viewer {
@@ -454,6 +507,8 @@ impl Viewer {
             built: Cell::new(0),
             #[cfg(test)]
             widest: Cell::new(0),
+            #[cfg(test)]
+            parsed: Cell::new(0),
         }
     }
 
@@ -788,7 +843,11 @@ impl Viewer {
     /// `rows` screen lines shown: the last frame's from `last` when that
     /// holds as much, else built, whole with wrap on, and with wrap off
     /// as much as the window shows and a screen more to the right, so
-    /// sideways steps within it build nothing ([`line::within`]).
+    /// sideways steps within it build nothing ([`line::within`]). Away
+    /// from the first column it is built from the resume place nearest
+    /// the window that its line's last text kept ([`resume::far`]), and
+    /// from the line's start only when there is none yet or the line
+    /// can't be resumed.
     fn text_of(&self, item: isize, rows: usize, last: &mut Drawn) -> Option<Built> {
         let Some(Entry::Line(line, _, kept)) =
             usize::try_from(item).ok().and_then(|i| self.entries.get(i))
@@ -802,35 +861,86 @@ impl Viewer {
         } else {
             (rows, usize::from(self.column) + width)
         };
-        if let Some(at) = last
-            .texts
-            .iter()
-            .position(|b| b.id == kept.id && b.rows >= rows && b.columns >= needed)
-        {
-            return Some(last.texts.swap_remove(at));
+        let column = if self.wrap {
+            0
+        } else {
+            usize::from(self.column)
+        };
+        let mine = last.texts.iter().position(|b| b.id == kept.id);
+        if let Some(at) = mine {
+            let b = &last.texts[at];
+            // A text built far right counts columns from its start: in a
+            // window narrower than a character before it, ratatui would
+            // have drawn that character in none.
+            let fits = b.from == 0 || b.resumes.as_ref().is_some_and(|r| r.fits(self.width));
+            if b.rows >= rows && b.columns >= needed && b.left <= column && fits {
+                return Some(last.texts.swap_remove(at));
+            }
         }
+        // The resume places kept for the line, from its last text or
+        // across a change of format or search.
+        let mut resumes = match mine {
+            Some(at) => last.texts.swap_remove(at).resumes,
+            None => last
+                .resumes
+                .iter()
+                .position(|(id, _)| *id == kept.id)
+                .map(|at| last.resumes.swap_remove(at).1),
+        };
         #[cfg(test)]
         self.built.set(self.built.get() + 1);
         let hit = self.format.hit();
-        let (text, rows, columns) = if self.wrap {
+        if self.wrap {
             let text = line::searched(line, &self.format, &self.query, hit);
-            (text, rows, needed)
-        } else {
-            // A screen more to the right: the columns built for, unless
-            // that is the whole message, which every window can show.
-            let reach = needed + width;
-            match line::within(line, &self.format, &self.query, hit, rows, reach) {
-                (text, true) => (text, usize::MAX, usize::MAX),
-                (text, false) => (text, rows, reach),
+            // The line's resume places stay with it, for wrap off again.
+            let mut built = Built::new(kept.id, text, rows, needed);
+            built.resumes = resumes;
+            return Some(built);
+        }
+        if column > 0 {
+            // Away from the first column, from an eighth of a screen left
+            // of the window through a quarter right of it: steps within
+            // that (a few each way) build nothing, and a frame that
+            // builds every text in view parses about a screen and a half
+            // of each, wherever the column is.
+            let mut places = resumes
+                .take()
+                .unwrap_or_else(|| Resumes::new(line, &self.format));
+            let left = column.saturating_sub(width / 8);
+            let far = resume::far(
+                line,
+                &self.format,
+                &self.query,
+                hit,
+                &mut places,
+                (left, needed + width / 4),
+                self.width,
+            );
+            if let Some(far) = far {
+                #[cfg(test)]
+                self.parsed.set(self.parsed.get() + far.parsed);
+                return Some(Built {
+                    id: kept.id,
+                    text: far.text,
+                    rows: usize::MAX,
+                    columns: far.columns,
+                    from: far.from,
+                    left: far.left,
+                    marks: None,
+                    resumes: Some(places),
+                });
             }
+            resumes = Some(places);
+        }
+        // A screen more to the right: the columns built for, unless
+        // that is the whole message, which every window can show.
+        let reach = needed + width;
+        let mut built = match line::within(line, &self.format, &self.query, hit, rows, reach) {
+            (text, true) => Built::new(kept.id, text, usize::MAX, usize::MAX),
+            (text, false) => Built::new(kept.id, text, rows, reach),
         };
-        Some(Built {
-            id: kept.id,
-            text,
-            rows,
-            columns,
-            marks: None,
-        })
+        built.resumes = resumes;
+        Some(built)
     }
 
     /// Item `item`'s height on screen, at least one row: a log line's
@@ -1387,11 +1497,18 @@ impl Viewer {
         let mut last = std::mem::take(&mut self.drawn);
         let built_for = (self.format.clone(), self.query.clone());
         if last.built_for.as_ref() != Some(&built_for) {
-            last.texts.clear();
+            // The texts go, their resume places stay (they hold no
+            // colour of the profile, no search and no time).
+            last.resumes = last
+                .texts
+                .drain(..)
+                .filter_map(|b| Some((b.id, b.resumes?)))
+                .collect();
         }
         let mut drawn = Drawn {
             built_for: Some(built_for),
             texts: Vec::new(),
+            resumes: Vec::new(),
         };
         let mut kept = 0;
         let mut at = self.top();
@@ -1416,13 +1533,13 @@ impl Viewer {
                     // With wrap off, the window's rows of the text, cut
                     // at the sideways column.
                     let rows = usize::from(shown);
-                    let text = built.window(at.skip, rows, self.column, log.width);
+                    let (text, offset) = built.window(at.skip, rows, self.column, log.width);
                     #[cfg(test)]
                     {
                         let widest = text.lines.iter().map(TextLine::width).max();
                         self.widest.set(self.widest.get().max(widest.unwrap_or(0)));
                     }
-                    frame.render_widget(Paragraph::new(text), area);
+                    frame.render_widget(Paragraph::new(text).scroll((0, offset)), area);
                 }
                 let size = built.size();
                 if kept + size <= self.drawn_bytes {

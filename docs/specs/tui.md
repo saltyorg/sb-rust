@@ -1846,10 +1846,37 @@ and how it closed, never a title or a message.
     `columns.rs`'s `a_cut_draws_as_the_scrolled_line` checks the cut
     against `Paragraph::scroll` cell by cell. A frame that builds every
     text in view far right (a jump there, or a search, theme or `t`
-    change there; a resize there makes the marks again) still grows
+    change there; a resize there makes the marks again) still grew
     with the column, since the message left
     of it is parsed for its styles: 5.7 to 5.8 ms at 4,000 on these
-    records (17.8 before), more on CJK or colour-per-word text
+    records (17.8 before), more on CJK or colour-per-word text.
+    Closed (the maintainer, 2026-11-15, the follow-up "The viewer's
+    far-right rebuild frame meets 5 ms"): the colour parse resumes.
+    term-ui's `DisplayText::resumable` reports where a parse can start
+    again (before a printed character, about every 64 columns) and
+    `DisplayText::from_bytes_at` parses from there; the viewer keeps
+    those places for each line it built far right, with the screen
+    column and ansi-to-tui's style there (`resume.rs`), in the frame
+    cache and within its 4 MiB, across a change of theme, `t` or the
+    search too. A text far right is built from the last place an eighth
+    of a screen left of the window through a quarter right of it, and
+    drawn with the rest as `Paragraph::scroll`'s offset. A message of
+    several screen lines or one a carriage return takes back, a search
+    for a query that can overlap itself, and a search on a line with a
+    character that joins the one before it (a variation selector, a
+    zero-width joiner, a keycap's mark, a skin tone) are built from
+    their start. A `t` change or a search at 1,000 and 4,000 takes 2.3
+    to 4.1 ms on plain, CJK and colour-per-word records (6.0 to 28.6 ms
+    before at 4,000), a resize from 160 to 240 columns 3.8 to 4.9 ms
+    (one frame of each a little over 5 ms in the noisiest run); a
+    narrower resize keeps the texts. `viewer/tests.rs`'s
+    `far_right_holds` times them and counts the bytes parsed (about the
+    same at 4,000 as at 1,000), `resume/tests.rs`'s
+    `a_resumed_line_draws_as_the_whole_text` and `viewer/tests.rs`'s
+    `far_right_texts_draw_as_paragraph_scroll` check the drawing against
+    the whole text cell by cell. A line seen for the first time far
+    right (a page up or a jump there from far away) has
+    no places yet and is parsed from its start once
     ([ADR-023](../decisions/ADR-023-tui-binary-size.md)).
   - Lines hold their caps (M73's security pass): an adapter builds each
     line with `Line::new`, which copies at most 64 KiB of the message

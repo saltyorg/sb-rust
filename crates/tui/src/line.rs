@@ -98,7 +98,7 @@ impl Format {
         }
     }
 
-    fn colour(&self) -> bool {
+    pub(crate) fn colour(&self) -> bool {
         self.theme.profile() != Profile::Ascii
     }
 }
@@ -112,7 +112,7 @@ pub fn text(line: &Line, format: &Format) -> Text<'static> {
 
 /// The message's bytes shown: cut at the record cap, and how many went,
 /// those its source didn't keep ([`Line::cut`]) too.
-fn shown<'a>(line: &'a Line, format: &Format) -> (&'a [u8], usize) {
+pub(crate) fn shown<'a>(line: &'a Line, format: &Format) -> (&'a [u8], usize) {
     // A byte cut: it can split a character (one U+FFFD before the notice)
     // or an SGR (dropped by `DisplayText`), both harmless.
     let cut = line.message.len().saturating_sub(format.record_cap);
@@ -240,7 +240,7 @@ pub(crate) fn within(
 /// return stays pending across bytes that print nothing (a C1 code,
 /// the rest of an escape sequence), so what takes its line back can
 /// come after the end though the return came before it.
-fn takes_back(bytes: &[u8], end: usize) -> bool {
+pub(crate) fn takes_back(bytes: &[u8], end: usize) -> bool {
     let from = bytes[..end]
         .iter()
         .rposition(|&b| b == b'\n')
@@ -347,7 +347,7 @@ fn plain(display: &DisplayText) -> Text<'static> {
 }
 
 /// `time origin: `, the parts that are known.
-fn meta(line: &Line, format: &Format) -> String {
+pub(crate) fn meta(line: &Line, format: &Format) -> String {
     let mut prefix = String::new();
     if let Some(time) = line.time {
         prefix.push_str(&local(time, &format.zone));
@@ -374,11 +374,16 @@ fn local(time: Timestamp, zone: &TimeZone) -> String {
 /// anstyle-lossy, as the palette is.
 fn lossy(mut text: Text<'static>, profile: Profile) -> Text<'static> {
     for line in &mut text.lines {
-        for span in &mut line.spans {
-            span.style = style_in(span.style, profile);
-        }
+        lossy_line(line, profile);
     }
     text
+}
+
+/// [`lossy`] for one line.
+pub(crate) fn lossy_line(line: &mut TextLine<'_>, profile: Profile) {
+    for span in &mut line.spans {
+        span.style = style_in(span.style, profile);
+    }
 }
 
 /// `style`'s colours in `profile` ([`colour_in`]): the log spans' and the
