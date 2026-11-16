@@ -123,6 +123,11 @@ enum Command {
     // Hidden, as sb-go's; no flags (ops spec, "`sb gha` (hidden)").
     #[command(long_about = "Install GHA dependencies", hide = true)]
     Gha,
+    /// Install Saltbox and its dependencies
+    // Hidden, as sb-go's (ops spec, "`sb setup` (hidden)"); its flags are
+    // sb-go's, persistent, with update's branch flags (ops decision 29).
+    #[command(long_about = "Install Saltbox and its dependencies", hide = true)]
+    Setup(sb_ops::setup::SetupArgs),
     /// Update the Ansible virtual environment and saltbox.fact
     // Hidden, as sb-go's. No `--verbose/-v` (python-env decision 9).
     #[command(long_about = UPDATE_VENV_ABOUT, hide = true)]
@@ -328,6 +333,7 @@ impl Command {
             Command::Diag => "diag",
             Command::Install(_) => "install",
             Command::Gha => "gha",
+            Command::Setup(_) => "setup",
             Command::UpdateVenv => "update-venv",
             Command::List(_) => "list",
             Command::ReinstallVenv => "reinstall-venv",
@@ -357,8 +363,9 @@ impl Command {
             // apt, which `update-venv`, `reinstall-venv` and
             // `reinstall-python` change, and the checkout's fact, which
             // `reinstall-facts` replaces (python-env assumption 5);
-            // `announcements` and `gha`, as every ops command (ops
-            // assumption 2; gha's apt, /srv and the configs' owner).
+            // `announcements`, `gha` and `setup`, as every ops command
+            // (ops assumption 2; gha's and setup's apt, /srv and the
+            // configs).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::Branch { .. }
@@ -370,6 +377,7 @@ impl Command {
             | Command::Diag
             | Command::Install(_)
             | Command::Gha
+            | Command::Setup(_)
             | Command::UpdateVenv
             | Command::List(_)
             | Command::ReinstallVenv
@@ -614,6 +622,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         } => edit::edit(command.file(), no_edit_again, shutdown, log)?,
         Command::Motd(ref args) => motd::motd(args, shutdown)?,
         Command::Gha => gha::gha(shutdown, log)?,
+        Command::Setup(ref args) => setup::setup(args, shutdown, log)?,
         Command::UpdateVenv => python_env::update_venv(shutdown, log)?,
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
@@ -859,6 +868,7 @@ mod logs;
 mod motd;
 mod python_env;
 mod self_update;
+mod setup;
 
 #[cfg(test)]
 mod contract;
@@ -1108,6 +1118,12 @@ mod tests {
             assert!(command.needs_root(), "{name}");
             assert_eq!(command.name(), name);
         }
+        // setup changes apt, /srv and the Saltbox root (ops assumption 2).
+        let setup = Cli::try_parse_from(["sb", "setup"])
+            .expect("parses")
+            .command;
+        assert!(setup.needs_root());
+        assert_eq!(setup.name(), "setup");
     }
 
     /// `list` writes the Saltbox checkout's tag cache, as root (ansible

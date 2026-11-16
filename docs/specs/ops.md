@@ -1011,6 +1011,17 @@ the real services.
   24.04 and 26.04, all six configs `runner:runner:600`, the checks and
   `uv pip freeze` run as `runner`, with uv 0.13.4,
   ansible-core 2.21.2 and saltbox.fact 1.1.0, Saltbox master's pins.*
+- **setup matrix (by hand, capped):** `sb setup -b master` as root with
+  no terminal in fresh `ubuntu:24.04` and `26.04` containers (systemd
+  installed for `systemd-detect-virt`), cloning Saltbox's public
+  repository; then a second `sb setup`, which the guard refuses, and
+  `sb setup --force`, which fetches and resets the checkout. Checks: the
+  checkout on master, accounts.yml and settings.yml `root:root:600`,
+  `/srv/ansible/venv/bin/ansible --version`, `/usr/local/bin/uv`,
+  saltbox.fact, `LANG` in `/etc/default/locale`. *Run 2026-11-16
+  (module build M82, `crates/ops/tests/setup-matrix.sh`): passed on
+  24.04 and 26.04, with uv 0.13.4, ansible-core 2.21.2 and saltbox.fact
+  1.1.0.*
 - **install script (by hand, capped):** sb-go's test-install-os-policy
   cases in containers (release lists, root, existing root, `--repair`,
   `-b` passed as one argument, stdin never read: the script piped into

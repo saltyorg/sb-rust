@@ -24,19 +24,23 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 
 /// What sb has that sb-go doesn't, on purpose: `--color`, the one new
 /// global flag, `sb docker ps --json` (cli-core spec, command tree;
-/// docker spec decision 2) and `sb edit --no-edit-again` (tui spec,
-/// editors, difference 22).
+/// docker spec decision 2), `sb edit --no-edit-again` (tui spec,
+/// editors, difference 22) and `sb setup`'s `--keep-branch` and
+/// `--reset-branch`, update's flags (ops decision 29, difference 6).
 const EXTENSIONS: &[&str] = &[
     "flag\tsb\tglobal\tcolor",
     "flag\tsb docker ps\tlocal\tjson",
     "flag\tsb edit\tglobal\tno-edit-again",
+    "flag\tsb setup\tglobal\tkeep-branch",
+    "flag\tsb setup\tglobal\treset-branch",
 ];
 
 /// sb-go's lines sb words differently on purpose, with sb's line for each:
 /// a short help that wrapped in `sb --help` at fang's 120 columns (the
-/// maintainer, 2026-11-14), and a command sb shows that sb-go hid (the
-/// maintainer, 2026-11-15). Each is a difference in the spec that owns
-/// the command (python-env difference 15, ops difference 31).
+/// maintainer, 2026-11-14), a command sb shows that sb-go hid (the
+/// maintainer, 2026-11-15), and setup's `-v`, accepted but hidden and
+/// ignored. Each is a difference in the spec that owns the command
+/// (python-env difference 15, ops differences 31 and 1).
 const REWORDED: &[(&str, &str)] = &[
     (
         "command\tsb reinstall-python\tfalse\tReinstall the Python version used by Saltbox and related Ansible virtual environment using uv",
@@ -45,6 +49,10 @@ const REWORDED: &[(&str, &str)] = &[
     (
         "command\tsb announcements\ttrue\tDisplay announcements from announcement files",
         "command\tsb announcements\tfalse\tDisplay announcements from announcement files",
+    ),
+    (
+        "flag\tsb setup\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb setup\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
     ),
 ];
 

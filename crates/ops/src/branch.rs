@@ -12,7 +12,7 @@ use sb_cli_core::config;
 use sb_cli_core::exit::Exit;
 use sb_cli_core::log::RunLog;
 use sb_repo::Repo;
-use sb_term_ui::{Labels, Options, Runner};
+use sb_term_ui::{Labels, Options, Runner, Step};
 
 /// Which checkout a branch command switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,18 +106,36 @@ pub(crate) async fn switch(
     .failure(format!("{repo_name} branch switch"));
     runner
         .step(labels, async |step| {
-            let updating = Labels::new(
-                format!("Updating {repo_name} repository"),
-                format!("{repo_name} repository updated ({branch})"),
-            )
-            .failure(format!("{repo_name} repository update"));
-            step.step(updating, async |step| {
-                repo.fetch_and_reset(branch, owner, step).await
-            })
-            .await?;
+            update(step, repo, branch, owner).await?;
             Ok(())
         })
         .await
+}
+
+/// "Updating <Repo> repository" (success "<Repo> repository updated
+/// (<branch>)"), repo's `fetch_and_reset` to `branch`, owned by `owner`:
+/// sb-go's step in the branch commands and in setup over a checkout
+/// (saltbox/setup.go's `SaltboxRepo`).
+///
+/// # Errors
+///
+/// The failed step's quiet `Exit`.
+pub(crate) async fn update(
+    step: &mut Step,
+    repo: &Repo,
+    branch: &str,
+    owner: &str,
+) -> Result<(), Exit> {
+    let repo_name = repo.name();
+    let updating = Labels::new(
+        format!("Updating {repo_name} repository"),
+        format!("{repo_name} repository updated ({branch})"),
+    )
+    .failure(format!("{repo_name} repository update"));
+    step.step(updating, async |step| {
+        repo.fetch_and_reset(branch, owner, step).await
+    })
+    .await
 }
 
 #[cfg(test)]

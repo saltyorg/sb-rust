@@ -4,9 +4,11 @@
 //! checkout, `/srv`, the apt sources and their backups and
 //! `/etc/default/locale`, and stand-in `apt-get`, `lsb_release`,
 //! `locale`, `locale-gen`, `update-locale`, `dpkg-reconfigure` and
-//! `bash` that record their arguments, one call a line, in the order
-//! they ran. Nothing reaches the host: every path the pieces take is
-//! one of the root's, given to them as an argument. The stand-ins are
+//! `bash`, and setup's `systemd-detect-virt` and `dpkg-query`, that
+//! record their arguments, one call a line, in the order they ran; and a
+//! bare repository standing in for Saltbox's ([`Remote`]). Nothing
+//! reaches the host: every path the pieces take is one of the root's,
+//! given to them as an argument. The stand-ins are
 //! shell scripts, as sb-host's and sb-python-env's; a test that writes one
 //! and runs it guards against ETXTBSY as theirs do (a lock held from
 //! writing it until its run is over).
@@ -25,7 +27,7 @@ use crate::prereq::Dirs;
 pub const CODENAME: &str = "noble";
 
 /// The stand-ins every [`Host`] has.
-pub const STAND_INS: [&str; 7] = [
+pub const STAND_INS: [&str; 9] = [
     "apt-get",
     "lsb_release",
     "locale",
@@ -33,6 +35,8 @@ pub const STAND_INS: [&str; 7] = [
     "update-locale",
     "dpkg-reconfigure",
     "bash",
+    "systemd-detect-virt",
+    "dpkg-query",
 ];
 
 /// A temporary host for the shared pieces.
@@ -53,7 +57,10 @@ impl Host {
     /// `sources.list.d`, the backups' parent, `/etc/default`, and every
     /// stand-in of [`STAND_INS`], each recording its call and exiting 0
     /// (`lsb_release` printing [`CODENAME`]; `update-locale` writing its
-    /// two settings into the locale file, as the real one does).
+    /// two settings into the locale file, as the real one does), but
+    /// `systemd-detect-virt -c` printing `none` with exit 1 and
+    /// `dpkg-query` exiting 1, as on a server that is no container and has
+    /// no desktop.
     ///
     /// # Panics
     ///
@@ -84,6 +91,8 @@ impl Host {
         for name in STAND_INS {
             let _ = host.stand_in(name, "exit 0");
         }
+        let _ = host.stand_in("systemd-detect-virt", "echo none; exit 1");
+        let _ = host.stand_in("dpkg-query", "exit 1");
         let codename = host.path("codename");
         let _ = host.stand_in(
             "lsb_release",
@@ -234,6 +243,16 @@ impl Host {
         }
     }
 
+    /// host's setup checks on the stand-in `systemd-detect-virt` and
+    /// `dpkg-query`, on an `x86_64` machine.
+    #[must_use]
+    pub fn checks(&self) -> sb_host::setup::Setup {
+        sb_host::setup::Setup::new()
+            .with_detect_virt(self.stand_ins().join("systemd-detect-virt"))
+            .with_apt(Apt::new().with_dpkg_query(self.stand_ins().join("dpkg-query")))
+            .with_machine(|| "x86_64".to_owned())
+    }
+
     /// The stand-in `bash`.
     #[must_use]
     pub fn bash(&self) -> PathBuf {
@@ -301,5 +320,138 @@ impl Host {
                 std::env::join_paths(paths).expect("PATH without a colon in a stand-in path"),
             );
         cmd
+    }
+}
+
+/// `git <args>` in `dir`, which must succeed; its stdout, trimmed. None
+/// of the host's git settings, as sb-repo's tests: `GIT_CONFIG_GLOBAL` and
+/// `GIT_CONFIG_SYSTEM` at /dev/null skip its config files (git 2.32+,
+/// <https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL>;
+/// commit signing, credential helpers and rewrites stay out), and the
+/// ignore and attributes files, read without any config, are named
+/// (<https://git-scm.com/docs/git-config#Documentation/git-config.txt-coreexcludesFile>).
+///
+/// # Panics
+///
+/// When git can't run or fails.
+#[must_use = "git's output is what a test checks"]
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(["-c", "core.excludesFile=/dev/null"])
+        .args(["-c", "core.attributesFile=/dev/null"])
+        .args(["-c", "user.name=sb", "-c", "user.email=sb"])
+        .args(["-c", "init.defaultBranch=master"])
+        .args(["-c", "advice.detachedHead=false"])
+        // A checkout setup gave to the Saltbox user; Saltbox gives root's
+        // git a safe.directory entry for it (repo spec, assumption 2), a
+        // test this one-off option.
+        .args(["-c", "safe.directory=*"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("LC_ALL", "C")
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// A bare repository standing in for Saltbox's on a temporary root, with
+/// the working copy it is pushed from: `master` and `develop`, each
+/// holding the given files, `branch.txt` naming the branch, a default for
+/// accounts.yml (naming the Saltbox user) and settings.yml, and
+/// Saltbox's hooks script; the two configs and the fact ignored, as
+/// Saltbox's .gitignore has them. The working copy is left on `develop`.
+#[derive(Debug)]
+pub struct Remote {
+    /// The root; removed when the remote is dropped.
+    pub dir: tempfile::TempDir,
+    /// The bare repository's `file://` URL.
+    pub url: String,
+}
+
+impl Remote {
+    /// The remote, `files` (paths relative to the checkout, and their
+    /// text) in both branches, accounts.yml's default naming `user`.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written or git fails.
+    #[must_use]
+    pub fn saltbox(files: &[(&str, &str)], user: &str) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _ = git(dir.path(), &["init", "--quiet", "--bare", "saltbox.git"]);
+        let _ = git(dir.path(), &["init", "--quiet", "work"]);
+        let remote = Self {
+            url: format!("file://{}", dir.path().join("saltbox.git").display()),
+            dir,
+        };
+        let accounts = format!("user:\n  name: {user}\n");
+        let fixed = [
+            (
+                ".gitignore",
+                "accounts.yml\nsettings.yml\nansible_facts.d/\n",
+            ),
+            ("defaults/accounts.yml.default", accounts.as_str()),
+            ("defaults/settings.yml.default", "settings: seed\n"),
+            ("bin/git/init-hooks", "true\n"),
+            ("branch.txt", "master\n"),
+        ];
+        for (rel, text) in files.iter().chain(&fixed) {
+            remote.write(rel, text);
+        }
+        let work = remote.work();
+        let _ = git(&work, &["add", "."]);
+        let _ = git(&work, &["commit", "--quiet", "-m", "master"]);
+        let _ = git(&work, &["remote", "add", "origin", &remote.url]);
+        let _ = git(&work, &["push", "--quiet", "origin", "master"]);
+        let _ = git(&work, &["checkout", "--quiet", "-b", "develop"]);
+        remote.commit("branch.txt", "develop\n");
+        remote
+    }
+
+    /// The working copy the remote is pushed from.
+    #[must_use]
+    pub fn work(&self) -> PathBuf {
+        self.dir.path().join("work")
+    }
+
+    /// `rel` in the working copy holding `text`, its parents made.
+    fn write(&self, rel: &str, text: &str) {
+        let path = self.work().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/"))).expect("parent");
+        std::fs::write(path, text).expect("write");
+    }
+
+    /// `rel` holding `text`, committed on the working copy's branch and
+    /// pushed.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written or git fails.
+    pub fn commit(&self, rel: &str, text: &str) {
+        self.write(rel, text);
+        let work = self.work();
+        let _ = git(&work, &["add", "."]);
+        let _ = git(&work, &["commit", "--quiet", "-m", rel]);
+        let _ = git(&work, &["push", "--quiet", "origin", "HEAD"]);
+    }
+
+    /// A clone of the remote at `branch` into `dest`.
+    ///
+    /// # Panics
+    ///
+    /// When git fails or `dest` isn't UTF-8.
+    pub fn clone_into(&self, branch: &str, dest: &Path) {
+        let dest = dest.to_str().expect("a UTF-8 destination");
+        let _ = git(
+            self.dir.path(),
+            &["clone", "--quiet", "-b", branch, &self.url, dest],
+        );
     }
 }
