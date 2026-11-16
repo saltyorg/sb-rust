@@ -69,6 +69,7 @@ use sb_cli_core::theme::Role;
 use sb_term_ui::DisplayText;
 use tokio::sync::{Notify, mpsc};
 
+use crate::ahead::{self, Ahead, Window};
 use crate::columns::{self, Marks};
 use crate::line::{self, Format};
 use crate::resume::{self, Resumes};
@@ -271,24 +272,27 @@ impl Built {
         }
     }
 
+    /// `far`, a line's text built far right ([`resume::far`]), with the
+    /// line's places.
+    fn far(id: u64, far: resume::Far, resumes: Option<Resumes>) -> Self {
+        Self {
+            id,
+            text: far.text,
+            rows: usize::MAX,
+            columns: far.columns,
+            from: far.from,
+            left: far.left,
+            marks: None,
+            resumes,
+        }
+    }
+
     /// The text's bytes, counted as its lines, their spans and the
     /// spans' contents, and its marks: what keeping it costs, less the
     /// allocator's own.
     fn size(&self) -> usize {
-        let text: usize = self
-            .text
-            .lines
-            .iter()
-            .map(|line| {
-                let spans: usize = line
-                    .spans
-                    .iter()
-                    .map(|span| size_of::<Span<'_>>() + span.content.len())
-                    .sum();
-                size_of::<TextLine<'_>>() + spans
-            })
-            .sum();
-        text + self.marks.as_ref().map_or(0, Marks::size)
+        ahead::text_bytes(&self.text)
+            + self.marks.as_ref().map_or(0, Marks::size)
             + self.resumes.as_ref().map_or(0, Resumes::size)
     }
 
@@ -386,6 +390,9 @@ pub struct Viewer {
     /// ([`DRAWN_BYTES`]; smaller in tests).
     drawn: Drawn,
     drawn_bytes: usize,
+    /// Resume places made ahead for lines the next frames may show far
+    /// right ([`crate::ahead`]).
+    ahead: Ahead,
     /// The page edges to ask from (`Event::Page`'s `oldest` and `newest`,
     /// or the edge line's after a drop or a follow).
     older: Edge,
@@ -462,6 +469,7 @@ impl Viewer {
         open: impl FnOnce(Outbox) -> SourceHandle,
     ) -> Self {
         let (tx, events) = mpsc::unbounded_channel();
+        let ahead = Ahead::new(Arc::clone(&wake));
         let source = open(Outbox::new(tx, wake, Generation::default()));
         source.send(Request::Tail);
         source.send(Request::Follow(true));
@@ -484,6 +492,7 @@ impl Viewer {
             next_id: 0,
             drawn: Drawn::default(),
             drawn_bytes: DRAWN_BYTES,
+            ahead,
             older: Edge::default(),
             newer: Edge::default(),
             loaded: false,
@@ -848,7 +857,13 @@ impl Viewer {
     /// the window that its line's last text kept ([`resume::far`]), and
     /// from the line's start only when there is none yet or the line
     /// can't be resumed.
-    fn text_of(&self, item: isize, rows: usize, last: &mut Drawn) -> Option<Built> {
+    fn text_of(
+        &self,
+        item: isize,
+        rows: usize,
+        last: &mut Drawn,
+        ahead: &mut Ahead,
+    ) -> Option<Built> {
         let Some(Entry::Line(line, _, kept)) =
             usize::try_from(item).ok().and_then(|i| self.entries.get(i))
         else {
@@ -878,8 +893,9 @@ impl Viewer {
             }
         }
         // The resume places kept for the line, from its last text or
-        // across a change of format or search.
-        let mut resumes = match mine {
+        // across a change of format or search; those made ahead cover
+        // the whole line, so they come first.
+        let kept_before = match mine {
             Some(at) => last.texts.swap_remove(at).resumes,
             None => last
                 .resumes
@@ -887,6 +903,18 @@ impl Viewer {
                 .position(|(id, _)| *id == kept.id)
                 .map(|at| last.resumes.swap_remove(at).1),
         };
+        let (made, text) = ahead.take(kept.id, &self.format, &self.query);
+        let mut resumes = made.or(kept_before);
+        if let Some(far) = text {
+            // Made ahead for this format and search; used where it holds
+            // the window, as a kept text is.
+            let built = Built::far(kept.id, far, resumes.take());
+            let fits = built.resumes.as_ref().is_some_and(|r| r.fits(self.width));
+            if built.columns >= needed && built.left <= column && fits {
+                return Some(built);
+            }
+            resumes = built.resumes;
+        }
         #[cfg(test)]
         self.built.set(self.built.get() + 1);
         let hit = self.format.hit();
@@ -906,29 +934,19 @@ impl Viewer {
             let mut places = resumes
                 .take()
                 .unwrap_or_else(|| Resumes::new(line, &self.format));
-            let left = column.saturating_sub(width / 8);
             let far = resume::far(
                 line,
                 &self.format,
                 &self.query,
                 hit,
                 &mut places,
-                (left, needed + width / 4),
+                self.far_window(),
                 self.width,
             );
             if let Some(far) = far {
                 #[cfg(test)]
                 self.parsed.set(self.parsed.get() + far.parsed);
-                return Some(Built {
-                    id: kept.id,
-                    text: far.text,
-                    rows: usize::MAX,
-                    columns: far.columns,
-                    from: far.from,
-                    left: far.left,
-                    marks: None,
-                    resumes: Some(places),
-                });
+                return Some(Built::far(kept.id, far, Some(places)));
             }
             resumes = Some(places);
         }
@@ -1495,6 +1513,7 @@ impl Viewer {
             self.prefetch();
         }
         let mut last = std::mem::take(&mut self.drawn);
+        let mut ahead = std::mem::take(&mut self.ahead);
         let built_for = (self.format.clone(), self.query.clone());
         if last.built_for.as_ref() != Some(&built_for) {
             // The texts go, their resume places stay (they hold no
@@ -1523,7 +1542,8 @@ impl Viewer {
                 height: shown,
                 ..log
             };
-            if let Some(mut built) = self.text_of(at.item, at.skip + usize::from(shown), &mut last)
+            if let Some(mut built) =
+                self.text_of(at.item, at.skip + usize::from(shown), &mut last, &mut ahead)
             {
                 if self.wrap {
                     let skip = u16::try_from(at.skip).unwrap_or(u16::MAX);
@@ -1561,6 +1581,105 @@ impl Viewer {
             };
         }
         self.drawn = drawn;
+        self.ahead = ahead;
+        self.want_ahead();
+    }
+
+    /// With wrap off, ask for the resume places of the lines the next
+    /// frames may show far right, nearest first: the window's, a screen
+    /// either way, the buffer's two ends (Home, End), the lines around
+    /// the search's next and previous match (`n`, `N`), then a second
+    /// screen either way. Away from the first column, the texts too, as
+    /// `text_of` would build them now, for the lines off screen that a
+    /// key brings in at once (a screen either way, the ends); the
+    /// window's own are drawn already. A line that fits in
+    /// the window needs nothing. With wrap on nothing is asked for, and
+    /// what was kept goes.
+    fn want_ahead(&mut self) {
+        let mut entries: Vec<(usize, bool)> = Vec::new();
+        if !self.wrap {
+            let len = self.entries.len();
+            let screen = self.height.max(1);
+            let top = self.top_entry();
+            let mut add = |from: usize, to: usize, text: bool| {
+                entries.extend((from.min(len)..to.min(len)).map(|entry| (entry, text)));
+            };
+            add(top, top + screen, false);
+            add(top + screen, top + 2 * screen, true);
+            add(top.saturating_sub(screen), top, true);
+            add(0, screen, true);
+            add(len.saturating_sub(screen), len, true);
+            if !self.query.is_empty() {
+                let next = self.hit_from(top + screen).map(|(entry, _)| entry);
+                let before = self.hit_before(top).map(|(entry, _)| entry);
+                // Places only: `n` and `N` move the column to the match
+                // when it is out of sight, so a text for this window
+                // wouldn't serve.
+                for entry in next.into_iter().chain(before) {
+                    add(entry.saturating_sub(screen / 2), entry + screen, false);
+                }
+            }
+            add(top + 2 * screen, top + 3 * screen, false);
+            add(
+                top.saturating_sub(2 * screen),
+                top.saturating_sub(screen),
+                false,
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut ids = Vec::new();
+        let mut lines = std::collections::HashMap::new();
+        for (entry, text) in entries {
+            if let Some(Entry::Line(line, _, kept)) = self.entries.get(entry)
+                && seen.insert(entry)
+            {
+                ids.push((kept.id, text));
+                lines.insert(kept.id, line);
+            }
+        }
+        let window = (!self.wrap && self.column > 0).then(|| {
+            let (left, reach) = self.far_window();
+            Window {
+                format: self.format.clone(),
+                query: self.query.clone(),
+                left,
+                reach,
+                column: usize::from(self.column),
+                width: self.width,
+            }
+        });
+        let (format, width) = (&self.format, usize::from(self.width));
+        self.ahead.want(&ids, format, window, |id| {
+            let line = *lines.get(&id)?;
+            let shown = line::shown(line, format).0;
+            // Fits in the window (a tab is the only byte wider than a
+            // column): never built far right.
+            if shown.len() <= width && !shown.contains(&b'\t') {
+                return None;
+            }
+            Some(line)
+        });
+    }
+
+    /// Wait until everything wanted is made ahead (tests: as the time to a
+    /// person's next key lets the worker finish).
+    #[cfg(test)]
+    fn settle_ahead(&mut self) {
+        loop {
+            self.ahead.settle();
+            if !self.ahead.wants_more() {
+                return;
+            }
+            self.want_ahead();
+        }
+    }
+
+    /// The columns a text built far right holds ([`resume::far`]'s
+    /// `left` and `reach`): from an eighth of a screen left of the window
+    /// through a quarter right of it.
+    fn far_window(&self) -> (usize, usize) {
+        let (column, width) = (usize::from(self.column), usize::from(self.width));
+        (column.saturating_sub(width / 8), column + width + width / 4)
     }
 
     fn header(&self) -> TextLine<'static> {
@@ -1631,6 +1750,12 @@ impl App for Viewer {
     /// Takes every event the source has sent; those of another
     /// generation (a source the user left) are dropped.
     fn wake(&mut self) -> Flow {
+        // What was made ahead changes nothing on screen: taken in, no
+        // frame; lines not yet asked for are asked for now.
+        self.ahead.drain();
+        if self.ahead.wants_more() {
+            self.want_ahead();
+        }
         let mut changed = false;
         while let Ok(tagged) = self.events.try_recv() {
             if tagged.generation != self.source.generation() {

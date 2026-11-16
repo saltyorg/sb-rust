@@ -167,6 +167,36 @@ away parses each new line from its start once (on these records 5.5 to
 CJK and colour-per-word records at 4,000; 12.6 to 26.3 ms before, with
 a search on).
 
+The maintainer asked for that first frame to meet 5 ms too
+(2026-11-16, the follow-up "First sight far right meets 5 ms"), and it
+is closed: the viewer makes lines ready ahead of time, on a thread of
+its own (`ahead.rs`, started through `sb_cli_core::spawn::thread`).
+With wrap off it asks for the lines the next frames may show: the
+window's, two screens either way, the buffer's two ends (Home, End) and
+the lines around the search's next and previous match (`n`, `N`). The
+worker finds each line's resume places through its whole message, and
+for the lines a key brings in at once (a screen either way, the ends)
+away from the first column it also builds the text the window there
+shows, for the format, the search and the window the viewer gave (the
+match's lines get places only: `n` moves the column to the match). A
+text made ahead serves while it holds the window, as a kept one does.
+The frame then draws it as it is, and the line's places stay kept, so
+it is never parsed from its start again. Each finished line wakes the
+viewer as a source's event does. A frame asks for at most 32 new lines,
+since each is copied for the worker on the viewer's thread, and the
+worker's queue holds as many; the rest are asked for as results wake
+the viewer. What is made ahead is kept only for lines still wanted, at
+most 4 MiB of it. A panic on the worker is resumed on the viewer's
+thread, so the screen ends as before. Release timing, three runs under
+very heavy load (2,000 records at 240x70, the worker given the time to
+a person's next key): a page up, Home or End at column 1,000 or 4,000
+takes 1.8 to 4.8 ms on plain, CJK and colour-per-word records, colour
+off or on, against 7.4 to 30.2 ms before (4.8 to 15.4 at 1,000); one of
+the 72 frames took 5.5 ms. A jump to lines none of those cover (a new search's first match
+far away), or one sooner than the worker can finish (it makes a screen
+of 5,000-column lines in tens of milliseconds), still builds each line
+from its start once.
+
 ## Decision
 
 Accept ratatui `=0.30.2` (default features off: `crossterm_0_29`,

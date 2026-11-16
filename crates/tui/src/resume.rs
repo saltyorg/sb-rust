@@ -82,31 +82,45 @@ struct Point {
 /// its bytes.
 #[derive(Clone, Debug)]
 pub(crate) struct Resumes {
-    /// The message is one screen line that no carriage return takes back.
-    usable: bool,
+    /// What the message the points are for is like.
+    message: Message,
     /// The colour the points were made with: with it off, `DisplayText`
     /// keeps no SGR and every style is empty.
     colour: bool,
-    /// The bytes of the message shown they were made for (the format's
-    /// record cap).
-    shown: usize,
-    /// The message holds a character that joins the one before it into
-    /// a grapheme wider than the two apart (a variation selector, a zero
-    /// width joiner, a keycap's mark, a skin tone, a tag): a search match
-    /// that ends between them splits the grapheme, as ratatui measures
-    /// each span apart, and moves the columns after it from what the
-    /// points say.
-    joins: bool,
+    /// The points cover the whole message ([`scan`]): nothing is left to
+    /// find ahead of time.
+    whole: bool,
     /// The widest grapheme met, in cells: a window narrower than that
     /// draws it in none, which the points' columns don't count.
     widest: u16,
     points: Vec<Point>,
 }
 
+/// What a message shown is like, for its points.
+#[derive(Clone, Copy, Debug)]
+struct Message {
+    /// It is one screen line that no carriage return takes back.
+    usable: bool,
+    /// Its bytes shown (the format's record cap).
+    shown: usize,
+    /// It holds a character that joins the one before it into a grapheme
+    /// wider than the two apart (a variation selector, a zero width
+    /// joiner, a keycap's mark, a skin tone, a tag): a search match that
+    /// ends between them splits the grapheme, as ratatui measures each
+    /// span apart, and moves the columns after it from what the points
+    /// say.
+    joins: bool,
+}
+
 impl Resumes {
     /// No points yet for `line`, and whether it can have any.
     pub(crate) fn new(line: &Line, format: &Format) -> Self {
-        let shown = line::shown(line, format).0;
+        Self::of(line::shown(line, format).0, format.colour())
+    }
+
+    /// No points yet for `shown`, a message's bytes shown, parsed with
+    /// `colour` or not.
+    pub(crate) fn of(shown: &[u8], colour: bool) -> Self {
         // `contains` looks for a byte as memchr does, faster than a scan
         // of pairs: most messages hold no carriage return to check.
         let newline = shown
@@ -114,13 +128,26 @@ impl Resumes {
             .is_some_and(|(_, before)| before.contains(&b'\n'));
         let back = shown.contains(&b'\r') && line::takes_back(shown, 0);
         Self {
-            usable: !newline && !back,
-            colour: format.colour(),
-            shown: shown.len(),
-            joins: !shown.is_ascii() && (0..shown.len()).any(|at| joins(&shown[at..])),
+            message: Message {
+                usable: !newline && !back,
+                shown: shown.len(),
+                // Only a lead byte of E2, EF, F0 or F3 can start a joiner.
+                joins: !shown.is_ascii()
+                    && shown.iter().enumerate().any(|(at, b)| {
+                        matches!(b, 0xe2 | 0xef | 0xf0 | 0xf3) && joins(&shown[at..])
+                    }),
+            },
+            colour,
+            whole: false,
             widest: 1,
             points: Vec::new(),
         }
+    }
+
+    /// Whether the points cover the whole message ([`scan`]).
+    #[cfg(test)]
+    pub(crate) fn is_whole(&self) -> bool {
+        self.whole
     }
 
     /// The points' bytes: what keeping them costs, less the allocator's
@@ -217,12 +244,12 @@ pub(crate) fn far(
     width: u16,
 ) -> Option<Far> {
     let (shown, cut) = line::shown(line, format);
-    if resumes.colour != format.colour() || resumes.shown != shown.len() {
+    if resumes.colour != format.colour() || resumes.message.shown != shown.len() {
         *resumes = Resumes::new(line, format);
     }
     let lowered = query.to_lowercase();
-    let split = !query.is_empty() && resumes.joins;
-    if !resumes.usable || !resumes.fits(width) || split || overlaps(query, &lowered) {
+    let split = !query.is_empty() && resumes.message.joins;
+    if !resumes.message.usable || !resumes.fits(width) || split || overlaps(query, &lowered) {
         return None;
     }
     let meta = if format.meta {
@@ -322,6 +349,26 @@ pub(crate) fn far(
         #[cfg(test)]
         parsed,
     })
+}
+
+/// The points of the whole of `shown`, the message the points are for,
+/// from the last one kept: the work the viewer does ahead of time, off
+/// its thread, so that a line's first build far right starts near the
+/// window too (the follow-up "First sight far right meets 5 ms"). A
+/// message that can't be resumed gets none.
+pub(crate) fn scan(shown: &[u8], resumes: &mut Resumes) {
+    if resumes.whole {
+        return;
+    }
+    resumes.whole = true;
+    if !resumes.message.usable || resumes.message.shown != shown.len() {
+        return;
+    }
+    let from = resumes.points.last().copied();
+    if let Some(run) = run(shown, from, shown.len(), resumes.colour) {
+        resumes.widest = resumes.widest.max(run.widest);
+        resumes.merge(from, &run.points, shown.len());
+    }
 }
 
 /// Parse `shown` from `from` (its start: `None`) to byte `end`.

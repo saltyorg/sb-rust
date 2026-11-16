@@ -1875,8 +1875,23 @@ and how it closed, never a title or a message.
     `a_resumed_line_draws_as_the_whole_text` and `viewer/tests.rs`'s
     `far_right_texts_draw_as_paragraph_scroll` check the drawing against
     the whole text cell by cell. A line seen for the first time far
-    right (a page up or a jump there from far away) has
-    no places yet and is parsed from its start once
+    right (a page up or a jump there from far away) had no places yet
+    and was parsed from its start once: 7.4 to 30.2 ms for a screen of
+    them at 4,000. Closed (the maintainer, 2026-11-16, the follow-up
+    "First sight far right meets 5 ms"): with wrap off, a worker thread
+    (`ahead.rs`) makes ahead the places of the lines the next frames may
+    show (two screens either way, the buffer's ends, the lines around
+    the search's next and previous match) and, away from the first
+    column, the texts of those a key brings in at once (a screen either
+    way, the ends), for the window in view; such a frame draws them as
+    they are, in 1.8 to 4.8 ms (one frame of 72 at 5.5 ms under very
+    heavy load), and the lines' places stay kept. It is kept only for
+    lines still wanted, within 4 MiB; a frame asks for at most 32 lines
+    at once, and a panic on the worker ends the screen as before. `viewer/tests.rs`'s `first_sight_*`
+    tests check that a page up, Home and End there build nothing;
+    `ahead/tests.rs` the worker, its bound and which texts serve. A
+    jump to lines none of that covers, or one sooner than the worker
+    finishes, still builds each line from its start once
     ([ADR-023](../decisions/ADR-023-tui-binary-size.md)).
   - Lines hold their caps (M73's security pass): an adapter builds each
     line with `Line::new`, which copies at most 64 KiB of the message

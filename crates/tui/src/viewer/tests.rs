@@ -13,6 +13,7 @@ use ratatui::style::{Color, Modifier};
 use sb_cli_core::theme::{Palette, Profile, Theme};
 
 use super::*;
+use crate::ahead::Ahead;
 use crate::testing::{FakeSource, fake_source, line, position};
 
 struct Harness {
@@ -1598,8 +1599,8 @@ struct Cost {
 /// there, from their lines' kept resume places: `t` off and on, a
 /// search, a resize (from 160 columns: narrower, the texts kept hold
 /// the window still and are drawn again as they are). Last, one that
-/// builds them
-/// with nothing kept, as a jump there from far away does.
+/// builds them with nothing kept, and nothing made ahead
+/// ([`first_sight_costs`] has those).
 fn far_right_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
     let limits = Limits {
         entries: 20_000,
@@ -1607,6 +1608,10 @@ fn far_right_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
     };
     let mut h = open_with(240, 70, limits, format);
     h.send(tail_of(2_000, words));
+    // Nothing made ahead: the rebuilds work from the places their own
+    // texts kept, and the worker would only make texts for windows the
+    // next frames change again.
+    h.viewer.ahead = Ahead::default();
     h.key(KeyCode::Char('w'));
     h.key(KeyCode::PageUp);
     h.viewer.column = column.saturating_sub(COLUMN_STEP);
@@ -1650,11 +1655,98 @@ fn far_right_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
     h.key(KeyCode::Char('t'));
     h.terminal.backend_mut().resize(240, 70);
     costs.push(cost(&mut h, &|h| h.draw()));
+    // And with nothing kept or made ahead at all, as for a line seen there
+    // for the first time without places made ahead.
     costs.push(cost(&mut h, &|h| {
         h.viewer.drawn = Drawn::default();
         h.draw();
     }));
     costs
+}
+
+/// What frames that bring in lines seen far right for the first time
+/// cost at `column`, on 2,000 records of `words` at 240×70 in `format`:
+/// a page up, Home and End, each after the worker made its places and
+/// texts ahead (as the time to a person's next key lets it).
+fn first_sight_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open_with(240, 70, limits, format);
+    h.send(tail_of(2_000, words));
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::PageUp);
+    h.viewer.column = column;
+    h.draw();
+    [KeyCode::PageUp, KeyCode::Home, KeyCode::End]
+        .iter()
+        .map(|&key| {
+            h.viewer.settle_ahead();
+            h.viewer.built.set(0);
+            h.viewer.widest.set(0);
+            h.viewer.parsed.set(0);
+            let started = std::time::Instant::now();
+            h.key(key);
+            let time = started.elapsed();
+            Cost {
+                built: h.viewer.built.get(),
+                widest: h.viewer.widest.get(),
+                parsed: h.viewer.parsed.get(),
+                time,
+            }
+        })
+        .collect()
+}
+
+/// Lines seen for the first time far right (the follow-up "First sight
+/// far right meets 5 ms") build nothing at columns 1,000 and 4,000:
+/// their texts were made ahead for the window, so a page up, Home or End
+/// costs what a step sideways does. The time of each frame is printed,
+/// for the by-hand release timing (the size ADR).
+fn first_sight_holds(name: &str, words: &str, format: &Format) {
+    for column in [1_000, 4_000] {
+        let costs = first_sight_costs(column, words, format.clone());
+        eprintln!(
+            "{name} first sight at column {column}, page up, Home, End: {:?}",
+            costs.iter().map(|c| c.time).collect::<Vec<_>>()
+        );
+        for c in &costs {
+            assert_eq!((c.built, c.parsed), (0, 0), "{name} at {column}: {costs:?}");
+            assert!(c.widest <= 2 * 240, "{name} at {column}: {costs:?}");
+        }
+    }
+}
+
+#[test]
+fn first_sight_far_right_builds_nothing_with_colour_off() {
+    first_sight_holds("ascii", &"lorem ipsum ".repeat(420), &format());
+}
+
+/// [`first_sight_holds`] for the far-right records' kind `at`, in
+/// truecolor: one test each, so each stays short in a debug build.
+fn first_sight_holds_for(at: usize) {
+    let truecolor = Format::new(
+        TimeZone::UTC,
+        Theme::resolve(&Palette::default(), Profile::TrueColor),
+    );
+    let (name, words) = &far_records()[at];
+    first_sight_holds(name, words, &truecolor);
+}
+
+#[test]
+fn first_sight_far_right_builds_nothing_on_plain_records() {
+    first_sight_holds_for(0);
+}
+
+#[test]
+fn first_sight_far_right_builds_nothing_on_cjk_records() {
+    first_sight_holds_for(1);
+}
+
+#[test]
+fn first_sight_far_right_builds_nothing_on_colour_per_word_records() {
+    first_sight_holds_for(2);
 }
 
 /// The far-right frames of [`far_right_costs`] at columns 1,000 and
@@ -2056,13 +2148,163 @@ fn far_right_steps_build_only_past_the_texts_kept() {
     assert!(parsed <= again * 600, "{parsed}");
 }
 
+/// With wrap off, the lines made ahead are the window's, a screen either
+/// way, the buffer's two ends and a second screen either way, and with a
+/// search the lines around the match before and after the window; a line
+/// that fits in the window needs nothing.
+#[test]
+fn the_lines_made_ahead_are_those_the_next_keys_bring() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    let mut ls: Vec<Line> = (0..2_000)
+        .map(|i| line(i, &format!("m{i} {}", "lorem ipsum ".repeat(420))))
+        .collect();
+    // One match, far above the window, and a short line in view.
+    ls[300] = line(300, &format!("needle {}", "lorem ipsum ".repeat(420)));
+    ls[1_000] = line(1_000, "short");
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: true,
+        more_newer: false,
+    });
+    h.key(KeyCode::Char('w'));
+    h.viewer.anchor = Anchor { item: 980, skip: 0 };
+    h.viewer.follow = Follow::Off;
+    h.draw();
+    h.viewer.settle_ahead();
+    let screen = 69;
+    // Seven screens, the short line left out.
+    assert_eq!(h.viewer.ahead.kept(), 7 * screen - 1);
+    // The search counts its matches and jumps to the one before the
+    // window; back to where it was.
+    h.viewer.search("needle".to_owned());
+    h.viewer.anchor = Anchor { item: 980, skip: 0 };
+    h.draw();
+    h.viewer.settle_ahead();
+    // And the lines around the match: half a screen above it, a screen
+    // from it, none of them in the band already.
+    assert_eq!(h.viewer.ahead.kept(), 7 * screen - 1 + screen / 2 + screen);
+}
+
+/// A jump sideways from the first column, the rows the same, builds the
+/// lines in view from the places made ahead for them, not from their
+/// starts.
+#[test]
+fn a_jump_sideways_uses_places_made_ahead() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(2_000));
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::PageUp);
+    h.viewer.settle_ahead();
+    h.viewer.built.set(0);
+    h.viewer.parsed.set(0);
+    h.viewer.column = 4000;
+    h.draw();
+    let (built, parsed) = (h.viewer.built.get(), h.viewer.parsed.get());
+    assert!(built > 60, "{built}");
+    assert!(parsed <= built * 1000, "{parsed} bytes for {built} lines");
+}
+
+/// Far to the right, lines seen for the first time are ready too: their
+/// places and texts are made ahead, off the viewer's thread, for the
+/// screens around the window and the buffer's ends, so a page up, Home or
+/// End there builds nothing; with wrap on nothing is asked for.
+#[test]
+fn far_right_first_sight_uses_places_made_ahead() {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(2_000));
+    h.draw();
+    assert_eq!(h.viewer.ahead.pending(), 0, "wrap on: nothing asked for");
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::PageUp);
+    h.viewer.column = 4000;
+    h.draw();
+    for key in [
+        KeyCode::PageUp,
+        KeyCode::PageUp,
+        KeyCode::Home,
+        KeyCode::End,
+    ] {
+        h.viewer.settle_ahead();
+        h.viewer.built.set(0);
+        h.viewer.parsed.set(0);
+        h.key(key);
+        // Their texts were made ahead for this window: nothing built.
+        let (built, parsed) = (h.viewer.built.get(), h.viewer.parsed.get());
+        assert_eq!((built, parsed), (0, 0), "{key:?}");
+    }
+    assert!(h.viewer.ahead.bytes() <= crate::ahead::AHEAD_BYTES);
+    // A page up from the middle parses from their start only the lines
+    // new to the band (a screen's worth), not those it drew or had.
+    h.key(KeyCode::PageUp);
+    h.key(KeyCode::PageUp);
+    h.viewer.settle_ahead();
+    let fresh = h.viewer.ahead.fresh();
+    h.key(KeyCode::PageUp);
+    h.viewer.settle_ahead();
+    let new = h.viewer.ahead.fresh() - fresh;
+    assert!(
+        (60..=69).contains(&new),
+        "{new} lines parsed from their start"
+    );
+}
+
+/// Whether the window draws as ratatui's `Paragraph::scroll` draws each
+/// whole text in view (`step` names the frame on a mismatch). The frame
+/// is as ratatui composed it: the test backend's own buffer keeps the
+/// cell after a wide character from an earlier frame, which a terminal
+/// overwrites when it draws the character.
+fn draws_as_paragraph_scroll(h: &mut Harness, step: &str) {
+    use ratatui::widgets::Widget as _;
+    let Harness {
+        viewer, terminal, ..
+    } = h;
+    let screen = terminal
+        .draw(|frame| viewer.draw(frame))
+        .expect("drawn")
+        .buffer
+        .clone();
+    let top = viewer.top();
+    let rows = u16::try_from(viewer.height).expect("a small window");
+    let width = viewer.width;
+    let area = Rect::new(0, 0, width, 1);
+    for y in 0..rows {
+        let item = top.item + isize::try_from(y).expect("a row");
+        let mut expected = ratatui::buffer::Buffer::empty(area);
+        Paragraph::new(viewer.item_text(item))
+            .scroll((0, viewer.column))
+            .render(area, &mut expected);
+        for x in 0..width {
+            assert_eq!(
+                screen[(x, y + 1)],
+                expected[(x, 0)],
+                "{step}: at {x},{y}, column {}",
+                viewer.column
+            );
+        }
+    }
+}
+
 /// Far to the right with wrap off, the window draws as ratatui's
 /// `Paragraph::scroll` draws each whole text in view, through steps both
 /// ways, `t`, a search, a resize and a page up, the texts built from
 /// their lines' kept resume places and from nothing.
 #[test]
 fn far_right_texts_draw_as_paragraph_scroll() {
-    use ratatui::widgets::Widget as _;
     let limits = Limits {
         entries: 20_000,
         bytes: usize::MAX,
@@ -2104,39 +2346,7 @@ fn far_right_texts_draw_as_paragraph_scroll() {
     h.key(KeyCode::Char('w'));
     h.viewer.column = 2000;
     h.draw();
-    // The frame as ratatui composed it: the test backend's own buffer
-    // keeps the cell after a wide character from an earlier frame, which
-    // a terminal overwrites when it draws the character.
-    let matches = |h: &mut Harness, step: &str| {
-        let Harness {
-            viewer, terminal, ..
-        } = h;
-        let screen = terminal
-            .draw(|frame| viewer.draw(frame))
-            .expect("drawn")
-            .buffer
-            .clone();
-        let top = viewer.top();
-        let rows = u16::try_from(viewer.height).expect("a small window");
-        let width = viewer.width;
-        let area = Rect::new(0, 0, width, 1);
-        for y in 0..rows {
-            let item = top.item + isize::try_from(y).expect("a row");
-            let mut expected = ratatui::buffer::Buffer::empty(area);
-            Paragraph::new(viewer.item_text(item))
-                .scroll((0, viewer.column))
-                .render(area, &mut expected);
-            for x in 0..width {
-                assert_eq!(
-                    screen[(x, y + 1)],
-                    expected[(x, 0)],
-                    "{step}: at {x},{y}, column {}",
-                    viewer.column
-                );
-            }
-        }
-    };
-    matches(&mut h, "from nothing");
+    draws_as_paragraph_scroll(&mut h, "from nothing");
     let mut steps = vec![("right", KeyCode::Right); 12];
     steps.extend(vec![("left", KeyCode::Left); 30]);
     steps.extend([
@@ -2146,16 +2356,36 @@ fn far_right_texts_draw_as_paragraph_scroll() {
     ]);
     for (step, key) in steps {
         h.key(key);
-        matches(&mut h, step);
+        draws_as_paragraph_scroll(&mut h, step);
     }
-    h.viewer.query = "word3".to_owned();
+    h.viewer.query = "ord2".to_owned();
     h.draw();
-    matches(&mut h, "search");
+    draws_as_paragraph_scroll(&mut h, "search");
     h.terminal.backend_mut().resize(90, 16);
     h.draw();
-    matches(&mut h, "resize");
+    draws_as_paragraph_scroll(&mut h, "resize");
     h.key(KeyCode::PageUp);
-    matches(&mut h, "page up");
+    draws_as_paragraph_scroll(&mut h, "page up");
+    // Lines brought in from texts the worker made ahead (nothing built in
+    // the frame), with the search on and at the new width, then with `t`
+    // off and no search.
+    for stage in ["search", "t off"] {
+        if stage == "t off" {
+            h.viewer.query.clear();
+            h.key(KeyCode::Char('t'));
+        }
+        for (step, key) in [
+            ("page up", KeyCode::PageUp),
+            ("Home", KeyCode::Home),
+            ("End", KeyCode::End),
+        ] {
+            h.viewer.settle_ahead();
+            h.viewer.built.set(0);
+            h.key(key);
+            assert_eq!(h.viewer.built.get(), 0, "{stage}, {step}: made ahead");
+            draws_as_paragraph_scroll(&mut h, &format!("{stage}, {step} from texts made ahead"));
+        }
+    }
 }
 
 /// With wrap off and scrolled sideways, a tall record partly above the

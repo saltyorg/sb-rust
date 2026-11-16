@@ -12,6 +12,7 @@
 //! announcements' inline form ([`markdown`]) and their viewer
 //! ([`announcements`]), for ops' `update` and `sb announcements`.
 
+mod ahead;
 pub mod announcements;
 mod columns;
 pub mod line;

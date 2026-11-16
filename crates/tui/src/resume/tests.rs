@@ -169,7 +169,10 @@ fn a_resumed_line_draws_as_the_whole_text() {
                             else {
                                 // Only a search on a line with joined
                                 // graphemes is built from its start.
-                                assert!(!query.is_empty() && resumes.joins, "{label}: resumable");
+                                assert!(
+                                    !query.is_empty() && resumes.message.joins,
+                                    "{label}: resumable"
+                                );
                                 continue;
                             };
                             assert!(far.left <= column, "{label}: {far:?}");
@@ -293,6 +296,9 @@ fn some_lines_are_built_from_their_start() {
     for query in ["lorem", "ipsum ", "Lorem", "ab", "aB", "Aa"] {
         assert!(build(&long, query, 240), "{query}");
     }
+    // A search on text with no joiner, CJK or not, is resumed.
+    assert!(build(&"日本 ".repeat(2000), "日本", 240));
+    assert!(build(&"é ".repeat(2000), "é", 240));
     assert!(!build(&"日本".repeat(2000), "", 1));
     assert!(build(&long, "", 1));
     assert!(build(&"日本".repeat(2000), "", 2));
@@ -461,4 +467,58 @@ fn a_parse_end_inside_a_character_keeps_no_place_there() {
             }
         }
     }
+}
+
+/// A line's places made ahead for the whole line ([`scan`], the viewer's
+/// background work) let its first build far right parse only near the
+/// window, and it draws as the whole line does; a line that can't be
+/// resumed gets none, and a whole line is scanned once.
+#[test]
+fn places_made_ahead_serve_the_first_build_far_right() {
+    for (name, words) in [
+        ("plain", "lorem ipsum ".repeat(420)),
+        ("cjk", "日本語のログ ".repeat(360)),
+        (
+            "colour",
+            (0..700)
+                .map(|i| format!("\x1b[3{}mword{i} ", i % 8))
+                .collect::<Vec<_>>()
+                .concat(),
+        ),
+    ] {
+        let f = format(Profile::TrueColor);
+        let line = service_line(format!("m7 {words}").as_bytes());
+        let mut resumes = Resumes::new(&line, &f);
+        assert!(!resumes.is_whole());
+        scan(line::shown(&line, &f).0, &mut resumes);
+        assert!(resumes.is_whole(), "{name}");
+        let points = resumes.points.len();
+        scan(line::shown(&line, &f).0, &mut resumes);
+        assert_eq!(resumes.points.len(), points, "{name}: scanned once");
+        let whole = line::searched(&line, &f, "", hit());
+        for column in [4000, 1000] {
+            let far = far(
+                &line,
+                &f,
+                "",
+                hit(),
+                &mut resumes,
+                (column, column + 300),
+                240,
+            )
+            .expect("resumable");
+            assert!(
+                far.parsed <= (300 + 2 * EVERY) * 2,
+                "{name} at {column}: {far:?}"
+            );
+            draws_as_the_whole(&far, &whole, 240, name);
+        }
+    }
+    // Several screen lines: nothing to scan.
+    let f = format(Profile::TrueColor);
+    let lines = service_line(format!("{}\ntwo", "lorem ipsum ".repeat(50)).as_bytes());
+    let mut resumes = Resumes::new(&lines, &f);
+    scan(line::shown(&lines, &f).0, &mut resumes);
+    assert_eq!(resumes.points, []);
+    assert!(resumes.is_whole());
 }
