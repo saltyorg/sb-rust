@@ -398,6 +398,9 @@ async fn disk_within(
     paint: &Paint,
     read: impl FnOnce() -> std::io::Result<Vec<Row>> + Send + 'static,
 ) -> String {
+    // The run's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
+    let span = tracing::Span::current();
+    let read = move || span.in_scope(read);
     match tokio::time::timeout(limit, tokio::task::spawn_blocking(read)).await {
         Ok(Ok(Ok(rows))) => render(&rows, paint),
         Ok(Ok(Err(err))) => {

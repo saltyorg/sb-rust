@@ -542,11 +542,13 @@ pub fn with_stack<T: Send>(depth: usize, f: impl FnOnce() -> T + Send) -> std::i
     if depth <= SHALLOW {
         return Ok(f());
     }
+    // The caller's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
+    let span = tracing::Span::current();
     std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
             .name("sb-yaml".to_string())
             .stack_size(DEEP_STACK)
-            .spawn_scoped(scope, f)?;
+            .spawn_scoped(scope, move || span.in_scope(f))?;
         Ok(handle
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic)))

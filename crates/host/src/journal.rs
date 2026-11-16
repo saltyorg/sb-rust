@@ -202,8 +202,11 @@ pub async fn drain(mut follower: Follower, limits: Limits) -> (Follower, Batch) 
 /// `f` on tokio's blocking pool
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>),
 /// its outcome taken as [`unpanicked`] takes it.
+/// The caller's span goes along, so the thread's records carry the run id
+/// (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    unpanicked(tokio::task::spawn_blocking(f).await)
+    let span = tracing::Span::current();
+    unpanicked(tokio::task::spawn_blocking(move || span.in_scope(f)).await)
 }
 
 /// The value of a task on tokio's blocking pool. A panic in it is resumed
@@ -313,7 +316,9 @@ impl FollowWait {
     pub async fn wait(&mut self) -> io::Result<Wake> {
         let task = self.pending.get_or_insert_with(|| {
             let (wake, stop) = (Arc::clone(&self.wake), Arc::clone(&self.stop));
-            tokio::task::spawn_blocking(move || poll_wake(&wake, &stop))
+            // The caller's span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
+            let span = tracing::Span::current();
+            tokio::task::spawn_blocking(move || span.in_scope(|| poll_wake(&wake, &stop)))
         });
         let joined = task.await;
         // Taken before a panic is resumed, so a later wait starts afresh

@@ -138,9 +138,14 @@ impl Repo {
         step.step(Labels::new(owning, owning), async |_| {
             let (owner, path) = (owner.to_string(), self.path.clone());
             // The walk blocks (thousands of entries), off the runner's
-            // thread (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
-            tokio::task::spawn_blocking(move || sb_host::ensure_owner_recursive(&owner, &[path]))
-                .await??;
+            // thread (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>),
+            // with the run's span, so its record carries the run id
+            // (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
+            let span = tracing::Span::current();
+            tokio::task::spawn_blocking(move || {
+                span.in_scope(|| sb_host::ensure_owner_recursive(&owner, &[path]))
+            })
+            .await??;
             Ok(())
         })
         .await?;

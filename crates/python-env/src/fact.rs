@@ -328,12 +328,16 @@ async fn decide(
             // Up to 32 MiB read off the runtime's one thread, which also
             // draws the steps
             // (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>);
-            // a panic resumed, as sb-host's `unpanicked` does.
+            // a panic resumed, as sb-host's `unpanicked` does; the run's
+            // span goes along (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
             let path = fact.clone();
-            let got = tokio::task::spawn_blocking(move || sb_release::sha256_file(&path))
-                .await
-                .unwrap_or_else(|err| std::panic::resume_unwind(err.into_panic()))
-                .map_err(FactError::Check)?;
+            let span = tracing::Span::current();
+            let got = tokio::task::spawn_blocking(move || {
+                span.in_scope(|| sb_release::sha256_file(&path))
+            })
+            .await
+            .unwrap_or_else(|err| std::panic::resume_unwind(err.into_panic()))
+            .map_err(FactError::Check)?;
             let want = release.asset.sha256();
             if got == want {
                 FactOutcome::UpToDate { version: current }

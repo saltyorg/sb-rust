@@ -112,10 +112,13 @@ impl Hooks {
     /// `deadline`; a hook still running then is abandoned.
     fn run_within(self: Arc<Self>, deadline: Duration) {
         let (done, finished) = mpsc::channel();
+        // The caller's span goes along, so a hook's records carry the run
+        // id (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
+        let span = tracing::Span::current();
         let restore = std::thread::Builder::new()
             .name("restore".into())
             .spawn(move || {
-                self.run();
+                span.in_scope(|| self.run());
                 let _ = done.send(());
             });
         // No thread (out of resources): exit without the hooks rather than
@@ -649,9 +652,16 @@ impl Shutdown {
             signals.add_signal(SIGHUP)?;
         }
         let shutdown = self.clone();
+        // The run's span is the thread's for its life, so its records
+        // carry the run id
+        // (`entered`, as the thread example under
+        // <https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.or_current>
+        // propagates a span to a spawned thread).
+        let span = tracing::Span::current();
         std::thread::Builder::new()
             .name("signals".into())
             .spawn(move || {
+                let _run = span.entered();
                 // The first signal counted: this thread's, or the one a
                 // hold recorded when its child died of it (then the next
                 // signal forces the exit). A command's own request isn't

@@ -84,7 +84,15 @@ logged. *Amended 2026-11-13 by the completion spec.*
    regardless of outcome, for every run as root. The record holds sb's
    version and the command's name, never argument values (they can carry secrets), then the command's
    events and how the run ended; a failure's error and causes go in as
-   tracing's error field. A panic, on any thread, leaves an ERROR record
+   tracing's error field. Every record carries the run id: work sb
+   moves off the run's thread (tokio's blocking pool, a thread of sb's own)
+   takes the caller's span along, with tracing's `Span::current()` and
+   `in_scope` (`entered` for a thread that lives as long as the run, the
+   signals thread). Tasks on sb's runtime need nothing: it is
+   current-thread, so they run on the run's thread, in its span; a
+   multi-thread runtime would need `Instrument` on each task
+   (*amended 2026-11-15 by the maintainer*: ownership records from the
+   blocking pool had no run id). A panic, on any thread, leaves an ERROR record
    `panicked: <message>` with its location in the run (a panic hook
    installed once the log is open, which then calls std's own, so the
    message still reaches stderr). When the panic ends the run, that

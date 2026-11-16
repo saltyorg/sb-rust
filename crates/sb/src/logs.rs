@@ -190,8 +190,13 @@ pub(crate) fn screen_theme() -> theme::Theme {
 pub async fn with_journal(list: Vec<Service>) -> anyhow::Result<sb_tui::Services> {
     let release = sb_host::ubuntu_release()?;
     let source = journal_source(set_override(std::env::var_os("SB_JOURNAL_DIR")));
-    let journal = tokio::task::spawn_blocking(move || Journal::open(source, &release)).await??;
-    let coredump_uid = tokio::task::spawn_blocking(journal::coredump_uid)
+    // The run's span goes along to each thread (<https://docs.rs/tracing/0.1.44/tracing/struct.Span.html#method.in_scope>).
+    let span = tracing::Span::current();
+    let opening = span.clone();
+    let journal =
+        tokio::task::spawn_blocking(move || opening.in_scope(|| Journal::open(source, &release)))
+            .await??;
+    let coredump_uid = tokio::task::spawn_blocking(move || span.in_scope(journal::coredump_uid))
         .await?
         .unwrap_or_else(|err| {
             // The unit's own entries still show; only 26.04's coredump
