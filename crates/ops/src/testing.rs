@@ -365,8 +365,9 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 /// the working copy it is pushed from: `master` and `develop`, each
 /// holding the given files, `branch.txt` naming the branch, a default for
 /// accounts.yml (naming the Saltbox user) and settings.yml, and
-/// Saltbox's hooks script; the two configs and the fact ignored, as
-/// Saltbox's .gitignore has them. The working copy is left on `develop`.
+/// Saltbox's hooks script; the two configs, the fact and the inventory's
+/// `localhost.yml` ignored, as Saltbox's .gitignore has them. The working
+/// copy is left on `develop`.
 #[derive(Debug)]
 pub struct Remote {
     /// The root; removed when the remote is dropped.
@@ -395,7 +396,10 @@ impl Remote {
         let fixed = [
             (
                 ".gitignore",
-                "accounts.yml\nsettings.yml\nansible_facts.d/\n",
+                concat!(
+                    "accounts.yml\nsettings.yml\nansible_facts.d/\n",
+                    "inventories/host_vars/localhost.yml\n",
+                ),
             ),
             ("defaults/accounts.yml.default", accounts.as_str()),
             ("defaults/settings.yml.default", "settings: seed\n"),

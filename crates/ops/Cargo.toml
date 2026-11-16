@@ -34,6 +34,9 @@ sb-exec.workspace = true
 # gha's venv and saltbox.fact (ops spec, assumption 4: python-env's
 # `reconcile_venv` and `install_fact`).
 sb-python-env.workspace = true
+# update's self-update step: release's flow with the answer given (ops
+# spec, "`sb update`", step 3).
+sb-release.workspace = true
 # The config files' handles: opened without following a link, `fstat`ed
 # (ops spec, `secure_existing_configs`).
 rustix.workspace = true
@@ -54,6 +57,11 @@ tracing.workspace = true
 tempfile.workspace = true
 # Itself with `testing`, for the harness its tests run (as sb-python-env's).
 sb-ops = { workspace = true, features = ["testing"] }
+# release's fake GitHub, for update's self-update in process.
+sb-release = { workspace = true, features = ["testing"] }
+# The fake release's asset digest, as release's tests give it.
+sha2.workspace = true
+hex.workspace = true
 # python-env's stand-in tree and fake GitHub, for gha's in-process tests.
 sb-python-env = { workspace = true, features = ["testing"] }
 # The steps drawn to memory, and the runner's shutdown.

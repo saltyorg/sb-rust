@@ -10,7 +10,7 @@ use sb_release::{GithubRepo, Outcome, Releases, SelfUpdate};
 /// decides the channel, sb-go's, the only one there is (release spec,
 /// assumption 2): a raw sb-rust build is self-update disabled, so it
 /// can't replace itself from it by accident.
-const SB_REPO: GithubRepo = GithubRepo {
+pub(crate) const SB_REPO: GithubRepo = GithubRepo {
     owner: "saltyorg",
     name: "sb-go",
 };
@@ -53,7 +53,9 @@ pub(crate) fn self_update(
 /// it was replaced while sb ran, which the kernel marks ` (deleted)`
 /// (proc(5), `/proc/pid/exe`), rather than writing next to a stale path
 /// (release spec, known limits).
-fn executable(path: std::io::Result<std::path::PathBuf>) -> anyhow::Result<std::path::PathBuf> {
+pub(crate) fn executable(
+    path: std::io::Result<std::path::PathBuf>,
+) -> anyhow::Result<std::path::PathBuf> {
     let path = path.map_err(|err| anyhow::anyhow!("get executable path: {err}"))?;
     if path.to_string_lossy().ends_with(" (deleted)") {
         anyhow::bail!("sb was replaced while running; run it again");

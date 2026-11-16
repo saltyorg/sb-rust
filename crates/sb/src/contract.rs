@@ -25,14 +25,16 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 /// What sb has that sb-go doesn't, on purpose: `--color`, the one new
 /// global flag, `sb docker ps --json` (cli-core spec, command tree;
 /// docker spec decision 2), `sb edit --no-edit-again` (tui spec,
-/// editors, difference 22) and `sb setup`'s `--keep-branch` and
-/// `--reset-branch`, update's flags (ops decision 29, difference 6).
+/// editors, difference 22), `sb setup`'s `--keep-branch` and
+/// `--reset-branch`, update's flags (ops decision 29, difference 6), and
+/// `sb update --migrations` (ops decision 19, difference 23).
 const EXTENSIONS: &[&str] = &[
     "flag\tsb\tglobal\tcolor",
     "flag\tsb docker ps\tlocal\tjson",
     "flag\tsb edit\tglobal\tno-edit-again",
     "flag\tsb setup\tglobal\tkeep-branch",
     "flag\tsb setup\tglobal\treset-branch",
+    "flag\tsb update\tglobal\tmigrations",
 ];
 
 /// sb-go's lines sb words differently on purpose, with sb's line for each:

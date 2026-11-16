@@ -63,15 +63,7 @@ pub fn setup(args: &SetupArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> any
         run_id: &python.run_id,
     };
     super::block_on(async {
-        // The question on the terminal, before the runner draws (term-ui's
-        // confirm refuses while it does), after repo's line for the current
-        // branch, as sb-go prints it first; on stderr, where the runner
-        // draws, escaped as every line sb prints from git (cli-core's
-        // `escaped`).
-        let ask = |shown: &str, question: &str| {
-            let _ = writeln!(anstream::stderr(), "{}", exit::escaped(shown));
-            sb_term_ui::confirm(question, None, BRANCH_FLAGS, shutdown)
-        };
+        let ask = |shown: &str, question: &str| ask_branch(shown, question, shutdown);
         let plan = sb_ops::setup::plan(
             &root,
             found,
@@ -86,4 +78,22 @@ pub fn setup(args: &SetupArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> any
         runner.finish();
         result.map_err(anyhow::Error::from)
     })?
+}
+
+/// A branch question on the terminal, before the runner draws (term-ui's
+/// confirm refuses while it does), after repo's line for the current
+/// branch, as sb-go prints it first; that line on stderr, where the
+/// runner draws, escaped as every line sb prints from git (cli-core's
+/// `escaped`). `setup`'s and `update`'s.
+///
+/// # Errors
+///
+/// The confirm's: no terminal (naming the branch flags), Ctrl-C.
+pub(crate) fn ask_branch(
+    shown: &str,
+    question: &str,
+    shutdown: &Shutdown,
+) -> Result<bool, sb_term_ui::PromptError> {
+    let _ = writeln!(anstream::stderr(), "{}", exit::escaped(shown));
+    sb_term_ui::confirm(question, None, BRANCH_FLAGS, shutdown)
 }

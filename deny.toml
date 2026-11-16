@@ -95,7 +95,7 @@ deny = [
     # self-update, used by the binary (and later python-env and ops). Its
     # own name is its self dev-dependency, which turns `testing` on for
     # its tests (as sb-journal's).
-    { crate = "sb-release", wrappers = ["sb", "sb-release", "sb-python-env"] },
+    { crate = "sb-release", wrappers = ["sb", "sb-release", "sb-python-env", "sb-ops"] },
     # motd: `sb motd`, the login's status, over cli-core, term-ui, exec,
     # host, config and docker (capability map motd row; motd spec,
     # Project Structure), used by the binary.

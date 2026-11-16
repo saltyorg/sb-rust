@@ -71,6 +71,11 @@ enum Command {
         /// The branch to switch to
         name: String,
     },
+    /// Update Saltbox & Sandbox
+    // sb-go's flags but `-v` (ops decision 18), and `--migrations` (decision
+    // 19).
+    #[command(long_about = "Update Saltbox & Sandbox")]
+    Update(sb_ops::update::UpdateArgs),
     /// Edit Saltbox configuration files
     // Alone: help on stdout, exit 0, until the picker comes (M53). The
     // help is sb-go's without "Editor wrappers should exec the foreground
@@ -319,6 +324,7 @@ impl Command {
             Command::ValidateConfig => "validate-config",
             Command::Branch { .. } => "branch",
             Command::BranchSandbox { .. } => "branch-sandbox",
+            Command::Update(_) => "update",
             Command::Edit { command, .. } => match command {
                 EditCommand::Accounts => "edit accounts",
                 EditCommand::AdvSettings => "edit adv_settings",
@@ -370,6 +376,7 @@ impl Command {
             | Command::ValidateConfig
             | Command::Branch { .. }
             | Command::BranchSandbox { .. }
+            | Command::Update(_)
             | Command::Edit { .. }
             | Command::Motd(_)
             | Command::SelfUpdate { .. }
@@ -623,6 +630,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Motd(ref args) => motd::motd(args, shutdown)?,
         Command::Gha => gha::gha(shutdown, log)?,
         Command::Setup(ref args) => setup::setup(args, shutdown, log)?,
+        Command::Update(ref args) => update::update(args, shutdown, log)?,
         Command::UpdateVenv => python_env::update_venv(shutdown, log)?,
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
@@ -869,6 +877,7 @@ mod motd;
 mod python_env;
 mod self_update;
 mod setup;
+mod update;
 
 #[cfg(test)]
 mod contract;
@@ -1124,6 +1133,12 @@ mod tests {
             .command;
         assert!(setup.needs_root());
         assert_eq!(setup.name(), "setup");
+        // update, apt and the checkouts.
+        let update = Cli::try_parse_from(["sb", "update"])
+            .expect("parses")
+            .command;
+        assert!(update.needs_root());
+        assert_eq!(update.name(), "update");
     }
 
     /// `list` writes the Saltbox checkout's tag cache, as root (ansible

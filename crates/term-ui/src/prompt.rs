@@ -79,6 +79,32 @@ pub fn confirm(
     )
 }
 
+/// Whether a question can be asked here, by [`confirm`]'s rule: `/dev/tty`
+/// opens and sb is in its foreground process group. For a command that
+/// must know before its first step whether its questions can be asked
+/// (`sb update`'s up-front flag check, ops spec).
+///
+/// # Errors
+///
+/// Why not, in the confirm's words: `no terminal (<cause>)` or `sb runs
+/// in the background`.
+pub fn can_ask() -> Result<(), String> {
+    open_terminal(|| OpenOptions::new().read(true).write(true).open("/dev/tty")).map(drop)
+}
+
+/// The terminal from `terminal`, if sb is in its foreground process group
+/// (a read from the background stops sb; rustix's `tcgetpgrp`,
+/// <https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcgetpgrp.html>).
+fn open_terminal(terminal: impl FnOnce() -> std::io::Result<File>) -> Result<File, String> {
+    let tty = terminal().map_err(|err| format!("no terminal ({err})"))?;
+    let foreground =
+        rustix::termios::tcgetpgrp(&tty).is_ok_and(|group| group == rustix::process::getpgrp());
+    if !foreground {
+        return Err("sb runs in the background".to_owned());
+    }
+    Ok(tty)
+}
+
 /// [`confirm`] with the terminal from `terminal`, `runner_live` saying
 /// whether a runner is live (a parameter, so a test doesn't read the
 /// process-wide count that other tests' runners raise at the same time).
@@ -101,15 +127,7 @@ fn confirm_on(
         reason,
         flag,
     };
-    let tty = terminal().map_err(|err| no_terminal(format!("no terminal ({err})")))?;
-    // In the terminal's foreground process group, or a read stops sb
-    // (rustix's `tcgetpgrp`,
-    // <https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcgetpgrp.html>).
-    let foreground =
-        rustix::termios::tcgetpgrp(&tty).is_ok_and(|group| group == rustix::process::getpgrp());
-    if !foreground {
-        return Err(no_terminal("sb runs in the background".to_owned()));
-    }
+    let tty = open_terminal(terminal).map_err(no_terminal)?;
     let failed = |error: String| PromptError::Failed {
         question: question.to_owned(),
         error,
@@ -272,6 +290,22 @@ mod tests {
             err.to_string(),
             "can't ask \"Do you want to update\": no terminal (No such device or address \
              (os error 6)); answer it with --yes"
+        );
+    }
+
+    /// The rule on its own, for a command's up-front check: no terminal,
+    /// or one sb isn't in the foreground of, is a reason; the same
+    /// reasons as the confirm's.
+    #[test]
+    fn the_terminal_rule_gives_the_confirms_reasons() {
+        assert_eq!(
+            open_terminal(no_tty).expect_err("no terminal"),
+            "no terminal (No such device or address (os error 6))"
+        );
+        let file = tempfile::tempfile().expect("file");
+        assert_eq!(
+            open_terminal(|| Ok(file)).expect_err("not a terminal"),
+            "sb runs in the background"
         );
     }
 

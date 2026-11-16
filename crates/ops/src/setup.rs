@@ -15,19 +15,16 @@ use sb_cli_core::exit::Exit;
 use sb_host::SetupUnsupported;
 use sb_host::apt::Apt;
 use sb_python_env::{Env, FactMode, Force, install_fact, reconcile_venv};
-use sb_repo::{Answer, Choice, Repo, branch_choice, branch_notices};
+use sb_repo::{Answer, Repo};
 use sb_term_ui::{Labels, PromptError, Runner, Step};
 
+pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
 use crate::locale::Locale;
 use crate::prereq::Dirs;
 use crate::{branch, configs, hooks, locale, prereq};
 
 /// Saltbox's repository (sb-go's `layout.SaltboxRepoURL`).
 pub const SALTBOX_URL: &str = "https://github.com/saltyorg/saltbox.git";
-
-/// The flags that answer the branch question, as its error names them
-/// (ops decision 29).
-pub const BRANCH_FLAGS: &str = "--keep-branch or --reset-branch";
 
 /// `-b`'s default, and the branch an empty `-b` stands for (sb-go's
 /// `SaltboxRepo`).
@@ -53,35 +50,6 @@ pub struct SetupArgs {
     // installer stops passing it (ops decision 1, difference 1).
     #[arg(short, long, global = true, hide = true)]
     pub verbose: bool,
-}
-
-/// The flags that answer the branch question, as `update`'s (ops decision
-/// 29): flattened into [`SetupArgs`]
-/// (`#[command(flatten)]`, <https://docs.rs/clap/4.6.7/clap/_derive/index.html>).
-#[derive(clap::Args, Debug, Clone, Copy)]
-pub struct BranchFlags {
-    /// Skip branch reset prompt and stay on current branch
-    // Both together are clap's parse error, exit 2 (ops difference 33):
-    // <https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.conflicts_with>.
-    #[arg(long, global = true, conflicts_with = "reset_branch")]
-    pub keep_branch: bool,
-    /// Skip branch reset prompt and reset to default branch
-    #[arg(long, global = true)]
-    pub reset_branch: bool,
-}
-
-impl BranchFlags {
-    /// The branch question's answer the flags give, if any.
-    #[must_use]
-    pub fn answer(self) -> Option<Answer> {
-        if self.keep_branch {
-            Some(Answer::Keep)
-        } else if self.reset_branch {
-            Some(Answer::Reset)
-        } else {
-            None
-        }
-    }
 }
 
 /// Why the guard refuses the Saltbox root, in sb-go's words
@@ -164,19 +132,9 @@ pub struct Plan {
 /// The plan for `found` (the guard's) at `root`, `-b`'s `wanted` branch
 /// ([`DEFAULT_BRANCH`] when empty): over a directory, `<root>/.git`
 /// decides whether it is a checkout (sb-go's `os.Stat`). On a checkout,
-/// repo's `branch_choice` compares its branch with `wanted`, `answer`
-/// (the flags') answers, or else `ask` shows repo's `Saltbox: Currently
-/// on branch '<b>'` and asks `Saltbox: Do you want to reset to the
-/// '<wanted>' branch?` (term-ui's confirm in sb, on the terminal), in
-/// sb-go's order; the notices then leave out the line already shown.
-/// The chosen branch must pass repo's `check_branch_name` (a kept
-/// detached HEAD doesn't). Elsewhere the plan is `wanted`, which the
-/// clone or the init checks.
-///
-/// # Panics
-///
-/// Never: repo's `branch_choice` asks only when no answer is given, and
-/// the second call has one (a bug otherwise, M-PANIC-ON-BUG).
+/// the branch question ([`branch::resolve`]: `answer`, the flags', or
+/// else `ask`). Elsewhere the plan is `wanted`, which the clone or the
+/// init checks.
 ///
 /// # Errors
 ///
@@ -217,32 +175,9 @@ pub async fn plan(
         });
     }
     let repo = Repo::open(SALTBOX, root)?;
-    let token = shutdown.token();
-    let current = repo.current_branch(&token).await?;
-    // Asked, repo's line for the current branch comes first, as sb-go
-    // prints it before its question.
-    let shown = branch_notices(&repo, &current, wanted, &Choice::Ask);
-    let (choice, asked) = match branch_choice(&current, wanted, answer) {
-        Choice::Ask => {
-            let question = format!("{SALTBOX}: Do you want to reset to the '{wanted}' branch?");
-            let answer = if ask(&shown.join("\n"), &question)? {
-                Answer::Reset
-            } else {
-                Answer::Keep
-            };
-            (branch_choice(&current, wanted, Some(answer)), true)
-        }
-        choice => (choice, false),
-    };
-    let mut notices = branch_notices(&repo, &current, wanted, &choice);
-    if asked {
-        notices.retain(|notice| !shown.contains(notice));
-    }
-    let branch = match choice {
-        Choice::Use(branch) | Choice::Keep(branch) => branch,
-        Choice::Ask => unreachable!("branch_choice asked with an answer given"),
-    };
-    repo.check_branch_name(&branch, &token).await?;
+    let current = repo.current_branch(&shutdown.token()).await?;
+    let branch::Resolved { branch, notices } =
+        branch::resolve(&repo, &current, wanted, answer, ask, shutdown).await?;
     Ok(Plan {
         found,
         branch,

@@ -11,8 +11,8 @@ use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::exit::Exit;
 use sb_cli_core::log::RunLog;
-use sb_repo::Repo;
-use sb_term_ui::{Labels, Options, Runner, Step};
+use sb_repo::{Answer, Choice, Repo, branch_choice, branch_notices};
+use sb_term_ui::{Labels, Options, PromptError, Runner, Step};
 
 /// Which checkout a branch command switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,103 @@ impl Checkout {
             Self::Sandbox => config::appdata_path(&config::inventory_path(root)).join("sandbox"),
         }
     }
+}
+
+/// The flags that answer the branch question, as its error names them
+/// (ops decision 29).
+pub const BRANCH_FLAGS: &str = "--keep-branch or --reset-branch";
+
+/// The flags that answer the branch question, `update`'s and `setup`'s
+/// (ops decision 29): flattened into each command's arguments
+/// (`#[command(flatten)]`, <https://docs.rs/clap/4.6.7/clap/_derive/index.html>).
+#[derive(clap::Args, Debug, Clone, Copy)]
+pub struct BranchFlags {
+    /// Skip branch reset prompt and stay on current branch
+    // Both together are clap's parse error, exit 2 (ops difference 33):
+    // <https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.conflicts_with>.
+    #[arg(long, global = true, conflicts_with = "reset_branch")]
+    pub keep_branch: bool,
+    /// Skip branch reset prompt and reset to default branch
+    #[arg(long, global = true)]
+    pub reset_branch: bool,
+}
+
+impl BranchFlags {
+    /// The branch question's answer the flags give, if any.
+    #[must_use]
+    pub fn answer(self) -> Option<Answer> {
+        if self.keep_branch {
+            Some(Answer::Keep)
+        } else if self.reset_branch {
+            Some(Answer::Reset)
+        } else {
+            None
+        }
+    }
+}
+
+/// The branch a command updates a checkout to, and repo's notices for the
+/// choice, shown under the command's step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub branch: String,
+    pub notices: Vec<String>,
+}
+
+/// The branch question for `repo`, on `current`, before any step (repo's
+/// `branch_choice`; sb-go's `ResolveUpdateBranch`): `wanted` when the
+/// checkout is on it; otherwise `answer` (the flags') decides, or else
+/// `ask` shows repo's `<Repo>: Currently on branch '<b>'` and asks `<Repo>:
+/// Do you want to reset to the '<wanted>' branch?` (term-ui's confirm in
+/// sb, on the terminal), in sb-go's order; the notices then leave out the
+/// line already shown. The chosen branch must pass repo's
+/// `check_branch_name` (a kept detached HEAD doesn't).
+///
+/// # Panics
+///
+/// Never: repo's `branch_choice` asks only when no answer is given, and
+/// the second call has one (a bug otherwise, M-PANIC-ON-BUG).
+///
+/// # Errors
+///
+/// The question unanswered (no terminal: term-ui's error naming
+/// [`BRANCH_FLAGS`]); a refused branch name.
+pub async fn resolve(
+    repo: &Repo,
+    current: &str,
+    wanted: &str,
+    answer: Option<Answer>,
+    ask: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
+    shutdown: &Shutdown,
+) -> anyhow::Result<Resolved> {
+    // Asked, repo's line for the current branch comes first, as sb-go
+    // prints it before its question.
+    let shown = branch_notices(repo, current, wanted, &Choice::Ask);
+    let (choice, asked) = match branch_choice(current, wanted, answer) {
+        Choice::Ask => {
+            let question = format!(
+                "{}: Do you want to reset to the '{wanted}' branch?",
+                repo.name()
+            );
+            let answer = if ask(&shown.join("\n"), &question)? {
+                Answer::Reset
+            } else {
+                Answer::Keep
+            };
+            (branch_choice(current, wanted, Some(answer)), true)
+        }
+        choice => (choice, false),
+    };
+    let mut notices = branch_notices(repo, current, wanted, &choice);
+    if asked {
+        notices.retain(|notice| !shown.contains(notice));
+    }
+    let branch = match choice {
+        Choice::Use(branch) | Choice::Keep(branch) => branch,
+        Choice::Ask => unreachable!("branch_choice asked with an answer given"),
+    };
+    repo.check_branch_name(&branch, &shutdown.token()).await?;
+    Ok(Resolved { branch, notices })
 }
 
 /// The branch command for `checkout`, under the Saltbox directory `root`:
