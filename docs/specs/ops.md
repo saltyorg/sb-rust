@@ -363,7 +363,9 @@ The password, the derived key and IV, and each plaintext are held in
   (Saltbox's restore and rclone roles move `localhost.yml` and
   `rclone.conf` from there);
 - an existing file is overwritten without a backup, as in sb-go;
-- an interrupted run leaves no temporary file (dropped on every path).
+- a failure or a first signal (cli-core's cancel) leaves no temporary
+  file (dropped on every path); the root is synced after each rename;
+- the temporary file is set to 0600 whatever the umask.
 
 **Output** (sb-go's lines, on stdout):
 `Fetching files from https://crs.saltbox.dev...`, then one line per file,
@@ -1320,6 +1322,17 @@ the real services.
 
 - dialoguer returns a `String`; sb moves it into `Zeroizing` at once,
   but the prompt's own intermediate buffers can't be cleared.
+- Clearing secrets is best effort: sb's own buffers, AES's key schedule,
+  CBC's IV and the hash cores are cleared on drop, but hmac 0.13's
+  padded key block and PBKDF2's intermediate blocks are stack temporaries
+  the crates don't clear (module build M75's security audit).
+- A forced exit (a second signal) or SIGKILL while a file is written can
+  leave one `.sb-restore-*` file (0600, root's) in the Saltbox root.
+- The backup format is unauthenticated (CBC, no MAC, decision 7): a
+  changed ciphertext decrypts to changed plaintext without the password,
+  and a wrong password passes the padding check about once in 256 files.
+  Integrity rests on HTTPS to the service and refused redirects
+  (difference 13).
 - `--password-file <path>` is read after the sudo relaunch, as root. A
   user with sudo can read the file anyway; the content is never shown.
 - bench's Speedtest nodes are fixed IDs from Ookla's list; a node Ookla

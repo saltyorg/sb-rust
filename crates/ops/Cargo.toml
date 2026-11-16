@@ -12,7 +12,7 @@ publish.workspace = true
 # run against, and the Saltbox host update and the branch commands run on
 # (python-env's stand-in tree, sb-config's fixtures and fake), in the
 # `testing` module, for sb-ops' tests and sb's: never in a release build.
-testing = ["dep:tempfile", "sb-host/testing", "sb-python-env/testing", "sb-config/testing"]
+testing = ["sb-host/testing", "sb-python-env/testing", "sb-config/testing"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -44,8 +44,6 @@ sb-ansible.workspace = true
 # The config files' handles: opened without following a link, `fstat`ed
 # (ops spec, `secure_existing_configs`).
 rustix.workspace = true
-# The harness's temporary root (`testing` only).
-tempfile = { workspace = true, optional = true }
 # The announcements' inline Markdown form and their viewer (tui spec,
 # Scope and "The announcement viewer").
 sb-tui.workspace = true
@@ -56,6 +54,24 @@ clap.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# restore's crypto (ops spec, "Decryption"): OpenSSL's enc format, the
+# user key, and buffers cleared on drop. Each crate's `zeroize` feature
+# clears its own state too: AES's key schedule, CBC's IV, the hash cores
+# over the password and the user name. hmac 0.13's padded key block and
+# PBKDF2's intermediate blocks are stack temporaries no feature clears
+# (best effort; ops spec, Known limits).
+aes = { workspace = true, features = ["zeroize"] }
+cbc = { workspace = true, features = ["zeroize"] }
+pbkdf2.workspace = true
+sha1 = { workspace = true, features = ["zeroize"] }
+sha2 = { workspace = true, features = ["zeroize"] }
+zeroize.workspace = true
+# The user key's hex (stack table "Versions"; already in the tree).
+hex.workspace = true
+# restore's placement: a temporary file in the root, persisted over the
+# destination (ops spec, "Placement"); the `testing` harness's temporary
+# root too.
+tempfile.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

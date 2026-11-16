@@ -166,6 +166,17 @@ semver = "1.0.28"
 # Streamed SHA-256 of downloads (stack table "Self-update"; release spec);
 # already in the tree through lzma-rust2.
 sha2 = "0.11.1"
+# sb restore's decryption, OpenSSL's `enc -aes-256-cbc -pbkdf2` format
+# (ops spec, Tech Stack; plan decision 8: RustCrypto, pure Rust). The
+# ciphertext's AES-256 in CBC mode with PKCS#7 padding; the key and IV
+# by PBKDF2-HMAC-SHA256; the restore service's user key is a SHA-1 hex.
+aes = "0.9.4"
+cbc = "0.2.1"
+pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
+sha1 = "0.11.0"
+# Clears the password, key, IV and plaintext buffers on drop
+# (RustCrypto's own; already in the tree).
+zeroize = "1.9.1"
 # The ELF header of a downloaded binary (release spec, "ELF check"; R7):
 # its ELF reader only, no std, no other formats. goblin is the
 # alternative, with less adoption.
