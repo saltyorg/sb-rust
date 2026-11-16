@@ -619,16 +619,18 @@ impl AnnouncementsArgs {
 /// [`own_file`]), those `--before` lacks marked new (without it, all of
 /// them): on a terminal every one that applies in tui's viewer, else the
 /// new ones inline, Saltbox's first. A missing file is no file, so a
-/// server without Sandbox shows Saltbox's alone; an invalid one is an
-/// error (ops spec, "`sb announcements`"). It only shows: migrations run
-/// in `sb update` (maintainer, 2026-11-15). The loading is one runner
-/// step, whose info line says whether announcements follow; the runner
-/// is done before anything reaches stdout.
+/// server without Sandbox shows Saltbox's alone. An invalid one is an
+/// error, but for both repositories without `-r`, where it warns and the
+/// other's show (ops decision 31). It only shows: migrations run in `sb
+/// update` (maintainer, 2026-11-15). The loading is one runner step,
+/// whose info line counts what will be shown; the runner is done before
+/// anything reaches stdout.
 ///
 /// # Errors
 ///
-/// An unknown repository name, or a file that can't be loaded (sb-go's
-/// texts, exit 1), a failed write to stdout, the viewer's I/O error, or
+/// An unknown repository name, or a file that can't be loaded with `-r`
+/// or named with `--before` or `--after` (sb-go's texts, exit 1; without
+/// them it warns), a failed write to stdout, the viewer's I/O error, or
 /// `Exit(130)` after Ctrl-C on it.
 pub async fn announcements(
     args: &AnnouncementsArgs,
@@ -637,30 +639,42 @@ pub async fn announcements(
     log: Option<&RunLog>,
 ) -> anyhow::Result<()> {
     let repos = args.repos()?;
+    // Both repositories, neither file named: a file sb found itself that
+    // can't be loaded warns and leaves the other's (ops decision 31).
+    let lenient = repos.len() > 1;
+    let terminal = io::stdout().is_terminal();
     let mut runner = Runner::start("sb announcements", shutdown, log, Options::default());
     let found = runner
         .step(
-            Labels::new(
-                "Checking for new announcements",
-                "Checked for new announcements",
-            ),
+            Labels::new("Reading announcements", "Read announcements"),
             async |step| {
-                let loaded = |which: &str, path: &Path| {
-                    load(path).map_err(|err| {
-                        anyhow::anyhow!(
-                            "error loading {which} announcement file '{}': {err}",
-                            path.display()
-                        )
-                    })
+                // sb-go's words for a file that can't be loaded.
+                let failed = |which: &str, path: &Path, err: LoadError| {
+                    anyhow::anyhow!(
+                        "error loading {which} announcement file '{}': {err}",
+                        path.display()
+                    )
                 };
                 let before = match &args.before {
-                    Some(path) => loaded("before", path)?,
+                    Some(path) => load(path).map_err(|err| failed("before", path, err))?,
                     None => None,
                 };
                 let mut listed = Vec::with_capacity(repos.len());
                 for repo in repos {
                     let path = args.after.clone().unwrap_or_else(|| own_file(repo, root));
-                    let after = loaded("after", &path)?;
+                    // The warning reaches the run log as the step's notice.
+                    let after = match load(&path) {
+                        Ok(after) => after,
+                        Err(err) if lenient => {
+                            step.warn(format!(
+                                "{} announcements skipped: error loading announcement file '{}': {err}",
+                                repo.name(),
+                                path.display()
+                            ));
+                            None
+                        }
+                        Err(err) => return Err(failed("after", &path, err)),
+                    };
                     let entries = classify(before.as_deref(), after.as_deref());
                     tracing::info!(
                         repo = repo.name(),
@@ -671,15 +685,17 @@ pub async fn announcements(
                     );
                     listed.push((repo, entries));
                 }
-                let new = listed
+                // What will be shown (ops decision 31): on a terminal every
+                // entry that applies, piped the new ones.
+                let shown = listed
                     .iter()
                     .flat_map(|(_, entries)| entries)
-                    .filter(|(_, new)| *new)
+                    .filter(|(_, new)| terminal || *new)
                     .count();
-                step.info(if new == 0 {
-                    "No new announcements"
-                } else {
-                    "Displaying new announcements"
+                step.info(match shown {
+                    0 => "No announcements".to_owned(),
+                    1 => "1 announcement".to_owned(),
+                    n => format!("{n} announcements"),
                 });
                 Ok(listed)
             },
@@ -687,7 +703,7 @@ pub async fn announcements(
         .await;
     runner.finish();
     let listed = found?;
-    if io::stdout().is_terminal() {
+    if terminal {
         return view(listed, shutdown).await;
     }
     let new: Vec<(Repo, Vec<Announcement>)> = listed

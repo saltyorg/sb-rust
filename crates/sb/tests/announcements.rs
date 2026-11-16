@@ -161,8 +161,14 @@ fn it_shows_the_new_entries_and_no_migrations() {
     assert_eq!(shown, SHOWN);
     assert!(!shown.contains('\x1b'), "piped: no colour\n{shown}");
     let steps = stderr(&out);
-    assert!(steps.contains("Displaying new announcements"), "{steps}");
-    assert!(steps.contains("Checked for new announcements"), "{steps}");
+    // The step counts what is shown (the maintainer, 2026-11-16; ops
+    // decision 31): piped, the two new ones.
+    assert!(steps.contains("› 2 announcements"), "{steps}");
+    assert!(steps.contains("Read announcements"), "{steps}");
+    assert!(
+        !steps.contains(" new ") && !steps.contains("new announcements"),
+        "\"new\" is sb update's word: {steps}"
+    );
     for text in [TABLE_LINE, "Run all migration tags?", "Would execute"] {
         assert!(!both(&out).contains(text), "{text}: {}", both(&out));
     }
@@ -213,7 +219,8 @@ fn without_an_after_file_the_repositorys_own_is_read() {
     assert_eq!(stdout(&out), SHOWN);
 }
 
-/// Nothing new: no output on stdout, and the step says so.
+/// Nothing new: no output on stdout, and the step says there is nothing
+/// to show.
 #[test]
 fn nothing_new_prints_nothing() {
     if !root_gate::requested() {
@@ -224,9 +231,8 @@ fn nothing_new_prints_nothing() {
         let out = files.run(&["-b", before, "-a", after]);
         assert_eq!(out.status.code(), Some(0), "{}", both(&out));
         assert_eq!(stdout(&out), "", "{}", both(&out));
-        assert!(!stderr(&out).contains("Displaying"), "{}", both(&out));
         assert!(
-            stderr(&out).contains("No new announcements"),
+            stderr(&out).contains("› No announcements"),
             "{}",
             both(&out)
         );
@@ -342,6 +348,12 @@ fn on_a_terminal_the_viewer_lists_every_entry_and_q_closes_it() {
     let status = pty.exit();
     assert!(status.success(), "{status:?}\n{}", pty.contents());
     pty.assert_restored();
+    // The step counted what the viewer showed: all three that apply.
+    assert!(
+        pty.contents().contains("› 3 announcements"),
+        "{}",
+        pty.contents()
+    );
     assert!(!files.ran(), "a playbook ran");
     let log = std::fs::read_to_string(logs.join("sb.log")).unwrap_or_default();
     assert!(log.contains("announcement viewer opened"), "{log}");
@@ -381,7 +393,7 @@ fn on_a_terminal_nothing_to_show_opens_nothing() {
     let status = pty.exit();
     assert!(status.success(), "{status:?}\n{}", pty.contents());
     assert!(
-        pty.contents().contains("No new announcements"),
+        pty.contents().contains("› No announcements"),
         "{}",
         pty.contents()
     );
@@ -558,7 +570,7 @@ fn a_missing_sandbox_checkout_shows_saltboxs_alone() {
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
     assert_eq!(stdout(&out), SALTBOX_OWN);
     assert!(
-        stderr(&out).contains("Displaying new announcements"),
+        stderr(&out).contains("› 1 announcement\n"),
         "{}",
         both(&out)
     );
@@ -567,25 +579,43 @@ fn a_missing_sandbox_checkout_shows_saltboxs_alone() {
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
     assert_eq!(stdout(&out), "");
     assert!(
-        stderr(&out).contains("No new announcements"),
+        stderr(&out).contains("› No announcements"),
         "{}",
         both(&out)
     );
 }
 
-/// An invalid Sandbox file is an error with both repositories too: exit
-/// 1, its path named, nothing on stdout (the spec's rule for this command).
+/// Without `-r`, an invalid file the user didn't name warns, naming it,
+/// and the other repository's announcements show, exit 0 (the
+/// maintainer, 2026-11-16; ops decision 31), as `sb update` and a missing
+/// checkout do; with `-r` naming that repository, it still fails, exit 1.
 #[test]
-fn an_invalid_sandbox_file_fails_the_default_run() {
+fn an_invalid_file_sb_found_itself_warns_and_the_other_shows() {
     if !root_gate::requested() {
         return;
     }
     let files = Files::new();
+    let invalid = "announcements:\n  - title: [x]\n";
     std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
-    files.sandbox_file("announcements:\n  - title: [x]\n");
-    let out = files.run(&[]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    files.sandbox_file(invalid);
     let sandbox = files.path("appdata/sandbox/announcements.yml");
+    let out = files.run(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert_eq!(stdout(&out), SALTBOX_OWN);
+    let warning = format!(
+        "Sandbox announcements skipped: error loading announcement file '{}': \
+         error parsing announcement YAML:",
+        sandbox.display()
+    );
+    assert!(stderr(&out).contains(&warning), "{}", both(&out));
+    assert!(
+        stderr(&out).contains("› 1 announcement\n"),
+        "{}",
+        both(&out)
+    );
+    // Named with -r: an error, as before.
+    let out = files.run(&["-r", "Sandbox"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
         stderr(&out).contains(&format!(
             "error loading after announcement file '{}'",
@@ -595,6 +625,44 @@ fn an_invalid_sandbox_file_fails_the_default_run() {
         both(&out)
     );
     assert_eq!(stdout(&out), "");
+    // A file named with --after, without -r: an error, as before.
+    std::fs::write(files.path("bad.yml"), invalid).expect("bad");
+    let out = files.run(&["-a", "bad.yml"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        stderr(&out).contains("error loading after announcement file 'bad.yml'"),
+        "{}",
+        both(&out)
+    );
+    // Both found invalid: two warnings, nothing to show, exit 0, as
+    // `sb update` skips each (decision 31).
+    std::fs::write(files.path("announcements.yml"), invalid).expect("saltbox file");
+    let out = files.run(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert_eq!(stdout(&out), "");
+    for repo in ["Saltbox", "Sandbox"] {
+        assert!(
+            stderr(&out).contains(&format!("{repo} announcements skipped:")),
+            "{repo}: {}",
+            both(&out)
+        );
+    }
+    assert!(
+        stderr(&out).contains("› No announcements"),
+        "{}",
+        both(&out)
+    );
+    // Saltbox's own file invalid, Sandbox's fine: the same rule.
+    std::fs::write(files.path("announcements.yml"), invalid).expect("saltbox file");
+    files.sandbox_file(SANDBOX);
+    let out = files.run(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert_eq!(stdout(&out), SANDBOX_OWN);
+    assert!(
+        stderr(&out).contains("Saltbox announcements skipped: error loading announcement file"),
+        "{}",
+        both(&out)
+    );
 }
 
 /// On a terminal, one list for both repositories; the pane names the

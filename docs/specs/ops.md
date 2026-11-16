@@ -4,7 +4,8 @@ Approved by the maintainer as drafted (2026-11-13); a change after the
 maintainer's read-through becomes a fix
 task. *Amended 2026-11-15: `sb announcements` is
 shown and only reads (decision 27, differences 31 and 35 to 37); both
-repositories by default (decision 30, difference 38).*
+repositories by default (decision 30, difference 38); lenient without
+`-r`, its step line a count (decision 31, difference 39; 2026-11-16).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -622,8 +623,11 @@ loads `--after`, or without it the repository's own file
 without Sandbox shows Saltbox's alone. The rules above decide which entries
 apply and which are new: without `--before`, every entry is new (sb-go's
 rule for no before file, and proto-markdown's reviewed viewer). One
-runner step loads and compares, its info line `Displaying new
-announcements` or `No new announcements`. Then:
+runner step, "Reading announcements" / "Read announcements", loads and
+compares; its info line counts what will be shown (`12 announcements`,
+`1 announcement`, `No announcements`): on a terminal every entry that
+applies, piped the new ones. "New" stays `update`'s word (decision 31).
+Then:
 
 - stdout a terminal: tui's announcement viewer (tui spec, "The
   announcement viewer") with every applicable entry of each
@@ -634,7 +638,13 @@ announcements` or `No new announcements`. Then:
 
 No migration table, no confirm and no `--migrations`: migrations run in
 `update` only (M86). An invalid file is an error here, exit 1, in
-sb-go's words (`error loading before announcement file '<path>': ...`).
+sb-go's words (`error loading before announcement file '<path>': ...`),
+but one sb found itself while reading both repositories (no `-r`, no
+file named): that one warns, `<Repo> announcements skipped: error loading
+announcement file '<path>': <issue>`, and the other repository's
+announcements show, exit 0, as in `update` and for a missing checkout
+(decision 31). With `-r` naming the repository, its invalid file still
+fails.
 
 ## Differences from sb-go (the complete list)
 
@@ -750,6 +760,10 @@ sb-go's words (`error loading before announcement file '<path>': ...`).
 38. `announcements` without `-r` shows Saltbox's and Sandbox's
     announcements; sb-go's harness read one repository, Saltbox by
     default (decision 30).
+39. `announcements` without `-r` warns about an invalid repository file
+    and shows the other's, and its step line counts the announcements
+    shown; sb-go's harness failed on any invalid file and printed no
+    count (decision 31).
 
 ## Scope
 
@@ -1024,10 +1038,13 @@ the real services.
     no `--before` (every entry new), no `--after` (the root's own file
     under `SB_SALTBOX_DIR`); both repositories without `-r`, Saltbox's
     first, and `-r` narrowing to one; a missing Sandbox checkout
-    (Saltbox's alone, no error); an invalid Sandbox file (exit 1, its
-    path named); on a PTY the viewer opens with both repositories in one
-    list, `q` closes it (exit 0) and Ctrl-C ends with 130, the terminal
-    restored. Sandbox's checkout sits under the test's own appdata path
+    (Saltbox's alone, no error); an invalid file without `-r` (a
+    warning naming it, the other repository's shown, exit 0; Saltbox's
+    and Sandbox's alike; both invalid, nothing shown, exit 0), with `-r`
+    or a named `--after` (exit 1, its path named); the step line's
+    count, piped and on a terminal; on a PTY the viewer opens with both
+    repositories in one list, `q` closes it (exit 0) and Ctrl-C ends
+    with 130, the terminal restored. Sandbox's checkout sits under the test's own appdata path
     (an inventory in the temporary root), never the host's.
 
 ## Boundaries
@@ -1224,6 +1241,17 @@ the real services.
     either without `-r` means Saltbox's (sb-go's default for them). Replaces decision 27's "`-r` keeps sb-go's
     default, Saltbox". Root stays required (assumption 2; the
     maintainer, the same day).
+31. **`announcements` reads leniently without `-r`, and counts what it
+    shows** (the maintainer, 2026-11-16). With both repositories and no
+    file named, a repository's file that can't be loaded warns, naming
+    the file, and the other's announcements show with exit 0, as `update`
+    does (decision 23) and as a missing checkout already did; with `-r`,
+    or a file named with `--before` or `--after`, it fails with exit 1.
+    The step's info line is a count of what will be shown (`12
+    announcements`), not of new ones: "new" stays `update`'s word. The
+    rule covers Saltbox's own file too (decided: neither
+    file is named then); with both invalid, each warns and nothing shows,
+    exit 0, as `update` skips each.
 
 ## Known limits
 
