@@ -958,12 +958,43 @@ mod tests {
         assert_eq!(fake.seen().len(), 3);
     }
 
+    /// A loopback address nothing listens on, with the socket that holds its
+    /// port: bound and never listening, so a connect to it is refused
+    /// (connect(2), `ECONNREFUSED`: "no one listening on the remote
+    /// address", <https://man7.org/linux/man-pages/man2/connect.2.html>) and,
+    /// while the caller keeps the socket, no other test's server can be given
+    /// the port, as a port bound and freed again could be. tokio's `TcpSocket`
+    /// binds without listening
+    /// (<https://docs.rs/tokio/1.54.1/tokio/net/struct.TcpSocket.html#method.bind>);
+    /// std's `TcpListener::bind` always listens. The port stays held because
+    /// the socket has no `SO_REUSEADDR` (tokio's `TcpSocket` leaves it off),
+    /// and Linux lets a second socket share the address only when both set it
+    /// (socket(7), <https://man7.org/linux/man-pages/man7/socket.7.html>);
+    /// the assertion below checks it.
+    fn refused() -> (tokio::net::TcpSocket, std::net::SocketAddr) {
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket
+            .bind(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                0,
+            )))
+            .expect("bind");
+        let addr = socket.local_addr().expect("addr");
+        // The port is held: nothing else can bind it while the socket lives.
+        let second = std::net::TcpListener::bind(addr).map(|_| ());
+        assert_eq!(
+            second.map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::AddrInUse),
+            "{addr} not held"
+        );
+        (socket, addr)
+    }
+
     /// A refused connection is a transport error, followed by the guidance.
     #[tokio::test]
     async fn a_refused_connection_gives_the_guidance() {
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let base = format!("http://{}/client/v4/", closed.local_addr().expect("addr"));
-        drop(closed);
+        let (_held, addr) = refused();
+        let base = format!("http://{addr}/client/v4/");
         let http = Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client");
         let err = check(
             &Check {

@@ -330,9 +330,9 @@ impl Fake {
             .with_state(Arc::clone(&script));
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let (ready, started) = std::sync::mpsc::channel::<std::io::Result<()>>();
-        let thread = std::thread::Builder::new()
-            .name("fake-github".into())
-            .spawn(move || {
+        let thread = sb_cli_core::spawn::thread(
+            std::thread::Builder::new().name("fake-github".into()),
+            move || {
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -364,7 +364,8 @@ impl Fake {
                         _ = stopped => {}
                     }
                 });
-            })?;
+            },
+        )?;
         started
             .recv()
             .unwrap_or_else(|_| Err(std::io::Error::other("the fake's thread ended")))?;

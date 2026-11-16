@@ -450,17 +450,46 @@ mod tests {
         assert_eq!(job.map(|j| j.id().to_string()), Ok("job-1".to_string()));
     }
 
-    /// Nothing listening (a port just freed), and an answer slower than
-    /// the request's limit: sb-go's send error, reqwest's cause after it.
+    /// A loopback address nothing listens on, with the socket that holds its
+    /// port: bound and never listening, so a connect to it is refused
+    /// (connect(2), `ECONNREFUSED`: "no one listening on the remote
+    /// address", <https://man7.org/linux/man-pages/man2/connect.2.html>) and,
+    /// while the caller keeps the socket, no other test's server can be given
+    /// the port, as a port bound and freed again could be. tokio's `TcpSocket`
+    /// binds without listening
+    /// (<https://docs.rs/tokio/1.54.1/tokio/net/struct.TcpSocket.html#method.bind>);
+    /// std's `TcpListener::bind` always listens. The port stays held because
+    /// the socket has no `SO_REUSEADDR` (tokio's `TcpSocket` leaves it off),
+    /// and Linux lets a second socket share the address only when both set it
+    /// (socket(7), <https://man7.org/linux/man-pages/man7/socket.7.html>);
+    /// the assertion below checks it.
+    fn refused() -> (tokio::net::TcpSocket, std::net::SocketAddr) {
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket
+            .bind(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                0,
+            )))
+            .expect("bind");
+        let addr = socket.local_addr().expect("addr");
+        // The port is held: nothing else can bind it while the socket lives.
+        let second = std::net::TcpListener::bind(addr).map(|_| ());
+        assert_eq!(
+            second.map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::AddrInUse),
+            "{addr} not held"
+        );
+        (socket, addr)
+    }
+
+    /// Nothing listening (a held port), and an answer slower than the
+    /// request's limit: sb-go's send error, reqwest's cause after it.
     #[tokio::test]
     async fn transport_failures_are_send_errors() {
-        let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .and_then(|l| l.local_addr())
-            .expect("free port")
-            .port();
+        let (_held, addr) = refused();
         let fake = FakeController::start().expect("fake");
         let refused = controller(&fake)
-            .with_base(&format!("http://127.0.0.1:{port}"))
+            .with_base(&format!("http://{addr}"))
             .expect("base");
         let err = refused
             .request(Action::Start, &[])
@@ -600,14 +629,11 @@ mod tests {
         assert!(matches!(err, ControlError::Poll(_)), "{err:?}");
         assert!(err.to_string().contains("timed out"), "{err}");
         assert_eq!(fake.seen().len(), FAILED_POLLS_IN_A_ROW as usize);
-        // Nothing listening (a port just freed): the same, quickly.
-        let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .and_then(|l| l.local_addr())
-            .expect("free port")
-            .port();
+        // Nothing listening (a held port): the same, quickly.
+        let (_held, addr) = refused();
         let started = std::time::Instant::now();
         let err = controller(&fake)
-            .with_base(&format!("http://127.0.0.1:{port}"))
+            .with_base(&format!("http://{addr}"))
             .expect("base")
             .with_polls(Duration::from_millis(20), 60)
             .wait(&job("job-1"))

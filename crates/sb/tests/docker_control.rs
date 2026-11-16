@@ -96,13 +96,37 @@ impl World {
     }
 }
 
-/// A loopback URL nothing listens on (a port just freed).
-fn refused() -> String {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("free port")
-        .port();
-    format!("http://127.0.0.1:{port}/")
+/// A loopback URL nothing listens on, with the socket that holds its
+/// port: bound and never listening, so a connect to it is refused
+/// (connect(2), `ECONNREFUSED`: "no one listening on the remote
+/// address", <https://man7.org/linux/man-pages/man2/connect.2.html>) and,
+/// while the caller keeps the socket, no other test's server can be given
+/// the port. A port bound and freed again could be (seen under the gate's
+/// parallel load: a 404 from another test's fake). tokio's `TcpSocket`
+/// binds without listening
+/// (<https://docs.rs/tokio/1.54.1/tokio/net/struct.TcpSocket.html#method.bind>);
+/// std's `TcpListener::bind` always listens. The port stays held because
+/// the socket has no `SO_REUSEADDR` (tokio's `TcpSocket` leaves it off),
+/// and Linux lets a second socket share the address only when both set it
+/// (socket(7), <https://man7.org/linux/man-pages/man7/socket.7.html>);
+/// the assertion below checks it.
+fn refused() -> (tokio::net::TcpSocket, String) {
+    let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+    socket
+        .bind(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            0,
+        )))
+        .expect("bind");
+    let addr = socket.local_addr().expect("addr");
+    // The port is held: nothing else can bind it while the socket lives.
+    let second = std::net::TcpListener::bind(addr).map(|_| ());
+    assert_eq!(
+        second.map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::AddrInUse),
+        "{addr} not held"
+    );
+    (socket, format!("http://{addr}/"))
 }
 
 fn text(out: &Output) -> String {
@@ -310,7 +334,8 @@ fn each_failure_shows_its_block_and_exits_1() {
     let asked: Vec<String> = fake.seen().into_iter().map(|s| s.path).collect();
     assert_eq!(asked, ["/stop"]);
     // Nothing listening: sb-go's send error.
-    let out = world.sb(&refused(), &["docker", "start"]);
+    let (_held, url) = refused();
+    let out = world.sb(&url, &["docker", "start"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(
         text(&out).contains("send Docker controller request: "),

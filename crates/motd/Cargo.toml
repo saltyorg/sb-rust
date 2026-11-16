@@ -66,8 +66,9 @@ sb-docker = { workspace = true, features = ["testing"] }
 sb-config = { workspace = true, features = ["testing"] }
 # systemctl pointed at a stand-in (`Systemd::with_program`).
 sb-host = { workspace = true, features = ["testing"] }
-# The runner's tests on tokio's paused clock (motd spec, Testing).
-tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
+# The runner's tests on tokio's paused clock (motd spec, Testing); `net`
+# for the held refused port of docker.rs's tests.
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "test-util", "time"] }
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 

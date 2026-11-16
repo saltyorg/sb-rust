@@ -448,12 +448,36 @@ mod tests {
         .unwrap()
     }
 
-    /// A loopback URL nothing listens on: a port bound, then let go.
-    fn refused() -> String {
-        let closed = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let address = closed.local_addr().unwrap();
-        drop(closed);
-        format!("http://{address}")
+    /// A loopback URL nothing listens on, with the socket that holds its
+    /// port: bound and never listening, so a connect to it is refused
+    /// (connect(2), `ECONNREFUSED`: "no one listening on the remote
+    /// address", <https://man7.org/linux/man-pages/man2/connect.2.html>) and,
+    /// while the caller keeps the socket, no other test's server can be given
+    /// the port, as a port bound and freed again could be. tokio's `TcpSocket`
+    /// binds without listening
+    /// (<https://docs.rs/tokio/1.54.1/tokio/net/struct.TcpSocket.html#method.bind>);
+    /// std's `TcpListener::bind` always listens. The port stays held because
+    /// the socket has no `SO_REUSEADDR` (tokio's `TcpSocket` leaves it off),
+    /// and Linux lets a second socket share the address only when both set it
+    /// (socket(7), <https://man7.org/linux/man-pages/man7/socket.7.html>);
+    /// the assertion below checks it.
+    fn refused() -> (tokio::net::TcpSocket, String) {
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket
+            .bind(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                0,
+            )))
+            .expect("bind");
+        let addr = socket.local_addr().expect("addr");
+        // The port is held: nothing else can bind it while the socket lives.
+        let second = std::net::TcpListener::bind(addr).map(|_| ());
+        assert_eq!(
+            second.map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::AddrInUse),
+            "{addr} not held"
+        );
+        (socket, format!("http://{addr}"))
     }
 
     /// A daemon at a socket that isn't there.
@@ -717,7 +741,8 @@ mod tests {
     async fn a_restarting_traefik_is_still_asked() {
         for state in ["paused", "restarting"] {
             let engine = engine(vec![container(1, "traefik", &json!({ "Status": state }))]);
-            let containers = Containers::new(settings(&engine, &refused()));
+            let (_held, url) = refused();
+            let containers = Containers::new(settings(&engine, &url));
             assert_eq!(
                 traefik(&containers, &Paint::plain()).await,
                 "Traefik container is running but API is not accessible",
@@ -832,7 +857,8 @@ mod tests {
             traefik(&containers, &paint).await,
             paint.error("Error: unexpected answer from Traefik (HTTP 200)")
         );
-        let refused = Containers::new(settings(&engine, &refused()));
+        let (_held, url) = refused();
+        let refused = Containers::new(settings(&engine, &url));
         assert_eq!(
             traefik(&refused, &Paint::plain()).await,
             "Traefik container is running but API is not accessible"

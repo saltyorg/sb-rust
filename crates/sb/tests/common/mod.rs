@@ -95,12 +95,12 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     // fake, with no proxy, certificate or zoneinfo settings of the
     // developer's.
     let refused = refused_url();
-    cmd.env("CLOUDFLARE_BASE_URL", &refused);
-    cmd.env("SB_DOCKERHUB_URL", &refused);
+    cmd.env("CLOUDFLARE_BASE_URL", refused);
+    cmd.env("SB_DOCKERHUB_URL", refused);
     // Nor the Saltbox Docker controller, which starts and stops the host's
     // containers: a refused URL and a unit file that doesn't exist, unless
     // a test points them at its fake and its own file.
-    cmd.env("SB_DOCKER_CONTROLLER_URL", &refused);
+    cmd.env("SB_DOCKER_CONTROLLER_URL", refused);
     cmd.env(
         "SB_DOCKER_CONTROLLER_UNIT",
         test_log_dir().join("no-controller.service"),
@@ -119,11 +119,39 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     }
 }
 
-/// A loopback URL whose port was bound and closed, so a request is
-/// refused at once. Another test could bind the port in between: a low
-/// risk, and such a run would fail rather than reach a real service.
-fn refused_url() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
-    let port = listener.local_addr().expect("its address").port();
-    format!("http://127.0.0.1:{port}/")
+/// A loopback URL nothing listens on, the same for the whole test binary:
+/// its port is held by a socket that lives as long as the process (a
+/// static; `apply_sb_env`'s callers build commands in many places and
+/// couldn't each keep a socket), bound and never listening, so a request
+/// is refused at once (connect(2), `ECONNREFUSED`,
+/// <https://man7.org/linux/man-pages/man2/connect.2.html>) and no other
+/// test's server can be given the port, as a port bound and freed again
+/// could be. tokio's `TcpSocket` binds without listening
+/// (<https://docs.rs/tokio/1.54.1/tokio/net/struct.TcpSocket.html#method.bind>);
+/// std's `TcpListener::bind` always listens. The port stays held because
+/// the socket has no `SO_REUSEADDR` (tokio's `TcpSocket` leaves it off),
+/// and Linux lets a second socket share the address only when both set it
+/// (socket(7), <https://man7.org/linux/man-pages/man7/socket.7.html>);
+/// the assertion below checks it.
+fn refused_url() -> &'static str {
+    static HELD: std::sync::OnceLock<(tokio::net::TcpSocket, String)> = std::sync::OnceLock::new();
+    let (_socket, url) = HELD.get_or_init(|| {
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket
+            .bind(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                0,
+            )))
+            .expect("bind");
+        let addr = socket.local_addr().expect("addr");
+        // The port is held: nothing else can bind it while the socket lives.
+        let second = std::net::TcpListener::bind(addr).map(|_| ());
+        assert_eq!(
+            second.map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::AddrInUse),
+            "{addr} not held"
+        );
+        (socket, format!("http://{addr}/"))
+    });
+    url
 }
