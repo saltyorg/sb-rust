@@ -33,13 +33,9 @@ const NO_PROMPTS: [(&str, &str); 3] = [
     ("SSH_ASKPASS_REQUIRE", "force"),
 ];
 
-/// What a `value` argument shows as in the log and in errors: it may be a
-/// path, a name or a user's pass-through argument (spec, "fail closed").
-const VALUE: &str = "[ARG]";
-
 /// A child process to run (spec, "A command"). Named apart from std's and
 /// tokio's `Command`. Its `Debug` shows what the log shows (no secret, no
-/// masked value), so a `?cmd` field or a `dbg!` can't print one.
+/// variable's value), so a `?cmd` field or a `dbg!` can't print one.
 pub struct Cmd {
     program: OsString,
     args: Vec<Arg>,
@@ -55,17 +51,12 @@ pub struct Cmd {
 const GRACE: Duration = Duration::from_secs(5);
 
 enum Arg {
+    /// A literal in sb's code (`arg`), shown.
     Literal(&'static str),
-    Value(String),
-    /// A value the caller chose to show as given (`shown_value`).
+    /// A value shown as given (`shown_value`).
     Shown(String),
+    /// A credential (`secret`): `[REDACTED]`, and taken out of output.
     Secret(String),
-    /// A literal option and a value in one element: `joined` is the two
-    /// together, as the child gets them.
-    Joined {
-        option: &'static str,
-        joined: String,
-    },
 }
 
 impl Arg {
@@ -73,10 +64,7 @@ impl Arg {
     fn text(&self) -> &str {
         match self {
             Self::Literal(literal) => literal,
-            Self::Value(text)
-            | Self::Shown(text)
-            | Self::Secret(text)
-            | Self::Joined { joined: text, .. } => text,
+            Self::Shown(text) | Self::Secret(text) => text,
         }
     }
 }
@@ -97,7 +85,7 @@ impl fmt::Debug for Cmd {
             .field("stdin", &self.stdin.as_ref().map(Vec::len))
             .field("timeout", &self.timeout)
             .field("grace", &self.grace)
-            // The program and its arguments are in `command`, masked.
+            // The program and its arguments are in `command`, secrets masked.
             .finish_non_exhaustive()
     }
 }
@@ -158,16 +146,6 @@ impl Cmd {
         self
     }
 
-    /// An argument the log and errors show as `[ARG]`, for a value that
-    /// is neither sb's own nor a credential. No production caller uses it:
-    /// values sb computes go through [`Cmd::shown_value`] and credentials
-    /// through [`Cmd::secret`] (spec, decision 14).
-    #[must_use]
-    pub fn value(mut self, value: impl Into<String>) -> Self {
-        self.args.push(Arg::Value(value.into()));
-        self
-    }
-
     /// A value the log and errors show as given: the default for every
     /// value sb computes or passes on (paths, versions, names, branches,
     /// a user's ansible arguments; the maintainer, 2026-11-14 and
@@ -177,21 +155,6 @@ impl Cmd {
     #[must_use]
     pub fn shown_value(mut self, value: impl Into<String>) -> Self {
         self.args.push(Arg::Shown(value.into()));
-        self
-    }
-
-    /// A literal option joined to a value in one argument (`--opt=<value>`,
-    /// for a tool that refuses the value as a separate argument when it
-    /// starts with `-`): the child gets the two together, the log and
-    /// errors show the literal and `[ARG]` (`--opt=[ARG]`). Nothing goes between the two: `option`
-    /// carries its own `=`.
-    #[must_use]
-    pub fn option_value(mut self, option: &'static str, value: impl Into<String>) -> Self {
-        let value = value.into();
-        let mut joined = String::with_capacity(option.len() + value.len());
-        joined.push_str(option);
-        joined.push_str(&value);
-        self.args.push(Arg::Joined { option, joined });
         self
     }
 
@@ -317,12 +280,10 @@ impl Cmd {
 
     /// The command as the log and errors show it, for a caller that prints
     /// it (ansible's `Executing...` line): the program, literals and shown
-    /// values in place, `[ARG]` for each value, `[REDACTED]` for each
-    /// secret, and a joined option's literal followed by `[ARG]`
-    /// (`--opt=[ARG]`). The arguments are joined with spaces, unquoted, as
-    /// sb-go prints its command (`strings.Join(command, " ")`). Why not
-    /// `shell_words::join` or `shlex`: they quote, and the line would then
-    /// differ from sb-go's.
+    /// values in place, `[REDACTED]` for each secret. The arguments are
+    /// joined with spaces, unquoted, as sb-go prints its command
+    /// (`strings.Join(command, " ")`). Why not `shell_words::join` or
+    /// `shlex`: they quote, and the line would then differ from sb-go's.
     #[must_use]
     pub fn shown(&self) -> String {
         let mut shown = self.program.to_string_lossy().into_owned();
@@ -331,22 +292,22 @@ impl Cmd {
             match arg {
                 Arg::Literal(literal) => shown.push_str(literal),
                 Arg::Shown(value) => shown.push_str(value),
-                Arg::Value(_) => shown.push_str(VALUE),
                 Arg::Secret(_) => shown.push_str(WITHHELD),
-                Arg::Joined { option, .. } => {
-                    shown.push_str(option);
-                    shown.push_str(VALUE);
-                }
             }
         }
         shown
     }
 
-    /// How many arguments [`Cmd::shown`] masks, for the log.
+    /// How many arguments [`Cmd::shown`] masks (the secrets), for the log.
     fn masked(&self) -> usize {
         self.args
             .iter()
-            .filter(|arg| !matches!(arg, Arg::Literal(_) | Arg::Shown(_)))
+            // Exhaustive, so a new kind of argument must say whether it
+            // counts.
+            .filter(|arg| match arg {
+                Arg::Secret(_) => true,
+                Arg::Literal(_) | Arg::Shown(_) => false,
+            })
             .count()
     }
 
@@ -354,7 +315,7 @@ impl Cmd {
     pub(crate) fn mask(&self) -> mask::Mask {
         let args = self.args.iter().filter_map(|arg| match arg {
             Arg::Secret(secret) => Some(secret.as_str()),
-            Arg::Literal(_) | Arg::Value(_) | Arg::Shown(_) | Arg::Joined { .. } => None,
+            Arg::Literal(_) | Arg::Shown(_) => None,
         });
         let vars = self.env.values().filter_map(|var| match var {
             Var::Secret(secret) => Some(secret.as_str()),
@@ -629,31 +590,19 @@ impl SpawnError {
 mod tests {
     use super::*;
 
+    /// Literals and shown values show; only a secret is masked (spec,
+    /// decision 14).
     #[test]
-    fn literals_show_and_everything_else_is_masked() {
+    fn only_secrets_are_masked() {
         let cmd = Cmd::new("git")
             .arg("-C")
-            .value("some/repo")
+            .shown_value("some/repo")
             .arg("fetch")
             .secret("hunter2-not-real");
-        assert_eq!(cmd.shown(), "git -C [ARG] fetch [REDACTED]");
-        assert_eq!(cmd.masked(), 2);
+        assert_eq!(cmd.shown(), "git -C some/repo fetch [REDACTED]");
+        assert_eq!(cmd.masked(), 1);
         assert_eq!(Cmd::new("true").shown(), "true");
         assert_eq!(Cmd::new("true").masked(), 0);
-    }
-
-    /// A joined option shows its literal with `[ARG]` and counts as
-    /// masked; the child gets the two joined.
-    #[test]
-    fn a_joined_option_shows_its_literal_only() {
-        let cmd = Cmd::new("ansible-playbook")
-            .arg("--become")
-            .option_value("--extra-vars=", r#"{"k": "v"}"#);
-        assert_eq!(cmd.shown(), "ansible-playbook --become --extra-vars=[ARG]");
-        assert_eq!(cmd.masked(), 1);
-        let argv: Vec<&str> = cmd.args.iter().map(Arg::text).collect();
-        assert_eq!(argv, ["--become", r#"--extra-vars={"k": "v"}"#]);
-        assert!(!format!("{cmd:?}").contains("\"k\""));
     }
 
     /// A shown value is in the rendering as given and isn't counted as
@@ -664,12 +613,12 @@ mod tests {
             .arg("--tags")
             .shown_value("plex,sonarr")
             .shown_value(r#"--extra-vars={"a": 1}"#)
-            .value("some/path");
+            .shown_value("some/path");
         assert_eq!(
             cmd.shown(),
-            r#"ansible-playbook --tags plex,sonarr --extra-vars={"a": 1} [ARG]"#
+            r#"ansible-playbook --tags plex,sonarr --extra-vars={"a": 1} some/path"#
         );
-        assert_eq!(cmd.masked(), 1);
+        assert_eq!(cmd.masked(), 0);
         let argv: Vec<&str> = cmd.args.iter().map(Arg::text).collect();
         assert_eq!(
             argv,
@@ -716,13 +665,14 @@ mod tests {
     }
 
     /// Debug shows what the log shows: a `?cmd` in a tracing field or a
-    /// `dbg!` must not print a secret, a value or a variable's value.
+    /// `dbg!` must not print a secret, a variable's value or stdin; a
+    /// shown value is in it, as in the log.
     #[test]
-    fn debug_shows_no_value() {
+    fn debug_shows_no_secret() {
         let cmd = Cmd::new("x")
             .arg("literal")
             .secret("arg-secret-zz")
-            .value("pass-zz")
+            .shown_value("shown-zz")
             .env("PLAIN", "plain-zz")
             .secret_env("T", "env-secret-zz")
             .env_remove("GONE")
@@ -730,7 +680,6 @@ mod tests {
         let shown = format!("{cmd:?}");
         for hidden in [
             "arg-secret-zz",
-            "pass-zz",
             "plain-zz",
             "env-secret-zz",
             "stdin-secret-zz",
@@ -739,7 +688,7 @@ mod tests {
         }
         assert_eq!(
             shown,
-            r#"Cmd { command: "x literal [REDACTED] [ARG]", env_cleared: false, env: ["GONE", "PLAIN", "T"], cwd: None, stdin: Some(15), timeout: None, grace: 5s, .. }"#
+            r#"Cmd { command: "x literal [REDACTED] shown-zz", env_cleared: false, env: ["GONE", "PLAIN", "T"], cwd: None, stdin: Some(15), timeout: None, grace: 5s, .. }"#
         );
     }
 
@@ -827,7 +776,7 @@ mod tests {
     fn secrets_come_from_secret_arguments_and_variables_only() {
         let cmd = Cmd::new("x")
             .arg("literal")
-            .value("value")
+            .shown_value("value")
             .secret("arg-secret")
             .env("PLAIN", "plain")
             .secret_env("TOKEN", "env-secret");

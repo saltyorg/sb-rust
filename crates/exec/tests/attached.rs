@@ -60,7 +60,7 @@ async fn the_environment_follows_the_rules() {
     let dir = tempfile::tempdir().expect("temp dir");
     let file = dir.path().join("env");
     let _ = sh("env > \"$1\"")
-        .value(file.to_string_lossy().into_owned())
+        .shown_value(file.to_string_lossy().into_owned())
         .env("COLORTERM", "truecolor")
         .attached(&shutdown)
         .await
@@ -168,7 +168,7 @@ async fn an_interrupted_run_starts_no_child() {
     let dir = tempfile::tempdir().expect("temp dir");
     let file = dir.path().join("ran");
     let ran = sh("touch \"$1\"")
-        .value(file.to_string_lossy().into_owned())
+        .shown_value(file.to_string_lossy().into_owned())
         .attached(&shutdown)
         .await
         .expect("an outcome");

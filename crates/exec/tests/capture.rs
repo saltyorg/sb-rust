@@ -257,53 +257,49 @@ async fn a_grandchild_holding_stdout_is_left_after_the_drain() {
 }
 
 /// Every `secret` argument and `secret_env` value is taken out of stdout,
-/// stderr and the error; a pass-through `value` is masked in the error.
+/// stderr and the error; a shown value stays in both.
 #[tokio::test]
 async fn secrets_are_taken_out_of_output_and_errors() {
     let cmd = sh("echo \"$1 $TOKEN $2\"; echo \"$1 $TOKEN\" >&2; exit 1")
         .arg("sh")
         .secret("arg-secret-not-real-1")
-        .value("pass-through-2")
+        .shown_value("shown-value")
         .secret_env("TOKEN", "env-secret-not-real-3");
     let done = capture(&cmd).await.expect("ran");
-    assert_eq!(done.stdout, "[REDACTED] [REDACTED] pass-through-2\n");
+    assert_eq!(done.stdout, "[REDACTED] [REDACTED] shown-value\n");
     assert_eq!(done.stderr, "[REDACTED] [REDACTED]\n");
     let err = done.check().expect_err("exit 1");
     let shown = format!("{err} {:?} {err:?}", err.last_lines());
-    for hidden in [
-        "arg-secret-not-real-1",
-        "env-secret-not-real-3",
-        "pass-through-2",
-    ] {
+    for hidden in ["arg-secret-not-real-1", "env-secret-not-real-3"] {
         assert!(!shown.contains(hidden), "{hidden}: {shown}");
     }
     assert!(
         err.to_string()
-            .ends_with("sh [REDACTED] [ARG] exited with code 1"),
+            .ends_with("sh [REDACTED] shown-value exited with code 1"),
         "{err}"
     );
     assert_eq!(err.last_lines(), ["[REDACTED] [REDACTED]"]);
 }
 
-/// A joined option (ansible's `--extra-vars=<value>`) reaches the child
-/// as one element, byte for byte, JSON and a leading `-` included; the
-/// error shows the literal with `[ARG]`, never the value.
+/// A joined option (ansible's `--extra-vars=<value>`, one `shown_value`)
+/// reaches the child as one element, byte for byte, JSON and a leading
+/// `-` included; the error shows it as given.
 #[tokio::test]
-async fn a_joined_option_is_one_element_and_masked() {
+async fn a_joined_option_is_one_element_and_shown() {
     let cmd = sh("printf '%s\\n' \"$#\" \"$@\"; exit 2")
         .arg("sh")
-        .option_value("--extra-vars=", r#"{"a": [1, "b c"], "d": "-e"}"#)
-        .option_value("--x=", "-leading value-not-real");
+        .shown_value(r#"--extra-vars={"a": [1, "b c"], "d": "-e"}"#)
+        .shown_value("--x=-leading value");
     let done = capture(&cmd).await.expect("ran");
     assert_eq!(
         done.stdout,
-        "2\n--extra-vars={\"a\": [1, \"b c\"], \"d\": \"-e\"}\n--x=-leading value-not-real\n"
+        "2\n--extra-vars={\"a\": [1, \"b c\"], \"d\": \"-e\"}\n--x=-leading value\n"
     );
     let err = done.check().expect_err("exit 2");
-    assert!(!format!("{err:?}").contains("value-not-real"), "{err:?}");
     assert!(
-        err.to_string()
-            .ends_with("sh --extra-vars=[ARG] --x=[ARG] exited with code 2"),
+        err.to_string().ends_with(
+            r#"sh --extra-vars={"a": [1, "b c"], "d": "-e"} --x=-leading value exited with code 2"#
+        ),
         "{err}"
     );
 }

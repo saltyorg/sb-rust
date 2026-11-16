@@ -67,19 +67,18 @@ group, within the grace period plus one second.
   show as given;
   `secret(String)` for credentials (tokens, passwords, API keys),
   `[REDACTED]` in the log and also taken out of the child's output and
-  of errors. `value(String)` stays for a value that is neither, logged
-  as `[ARG]`; no caller uses it (decision 14). The run log shows the
-  program, the arguments as shown and the count of masked ones.
+  of errors. There is no third kind: the method a caller picks says
+  which it is (decision 14). The run log shows the program, the
+  arguments as shown and the count of masked ones (the secrets).
   argv is readable in `/proc/<pid>/cmdline` by other users, so a caller
   passes a secret through the environment or stdin where the tool allows.
-- **A joined option:** `option_value(&'static str, String)` for a literal
-  option joined to a user value in one element (`--opt=<value>`): the
-  child gets the two joined, the log and errors show the literal and
-  `[ARG]` (`--opt=[ARG]`; ansible's `--extra-vars=` moved to
-  `shown_value`, its decision 17). `Cmd::shown()` is public: the masked
-  rendering the log and errors use, for a caller that prints the command
-  (ansible's `Executing...` line). *Amended 2026-11-13 by the ansible
-  spec.*
+- **A joined option** (`--opt=<value>`, for a tool that refuses a value
+  starting with `-` as a separate argument) is one `shown_value` the
+  caller builds (`format!("--extra-vars={value}")`), or one `secret`
+  when it carries a credential. `Cmd::shown()` is public: the rendering
+  the log and errors use, secrets masked, for a caller that prints the
+  command (ansible's `Executing...` line). *Amended 2026-11-13 by the
+  ansible spec; `option_value` removed 2026-11-16 (decision 14).*
 - **A shown value:** `shown_value(String)`: the rendering has the value
   in place, and it isn't counted as masked. ansible's playbook arguments
   came first (its decision 17: the maintainer, 2026-11-14: nothing is
@@ -397,9 +396,8 @@ let outcome = Cmd::new("systemctl")
   directory is an error, not `$HOME`.
 - **Environment and logging:** `GIT_TERMINAL_PROMPT=0`, changed variables
   present, no value logged; the known-secret test on a `secret` argument,
-  a `secret_env` value, a child echoing them, and a `value` (exec's own
-  tests; the carried `-e` item is a `shown_value` since ansible's
-  decision 17).
+  a `secret_env` value, a child echoing them, and a `shown_value` that
+  stays in the output and the error.
 - **Rules that keep the harness safe:** in-process tests cancel through
   the token and never send real signals to the test process; real
   SIGINT and SIGTERM only through a test binary; before any group signal,
@@ -418,7 +416,7 @@ let outcome = Cmd::new("systemctl")
   marked where they enter; every other argument shown (decision 14).
 - **Ask first:** a dependency beyond those named; a fifth way to run;
   further changes to cli-core's cancellation or term-ui's `Step` API.
-- **Never:** build a command line from strings for a shell; log a masked
+- **Never:** build a command line from strings for a shell; log a secret
   argument or an environment value; signal sb's own process group; leave
   a piped or PTY child running after sb exits on a signal it handles.
 
@@ -442,10 +440,10 @@ let outcome = Cmd::new("systemctl")
    the next line; a reading child gets EOF; a missing directory is an
    error.
 5. Output after exit is read for at most 2 s.
-6. No masked argument, secret or environment value in any log record or
-   error, nor in output exec shows (`capture`, `stream`, `pty`; `attached`
+6. No secret argument, `secret_env` value or other environment value in
+   any log record or error, nor in output exec shows (`capture`, `stream`, `pty`; `attached`
    output is the child's own on the terminal), the known-secret test with
-   a masked `value` included.
+   a shown value beside the secrets.
 7. `GIT_TERMINAL_PROMPT=0` for every child not attached.
 8. The sudoers and `use_pty` question answered in docs/platform-notes/;
    the capability map's row, deny.toml and the cli-core spec amended.
@@ -577,5 +575,8 @@ let outcome = Cmd::new("systemctl")
     session ids, an editor's arguments. `secret` and `secret_env` are for
     credentials: tokens, passwords and API keys. A URL that can carry
     userinfo (one a user configures) goes through `secret`, or has its
-    userinfo taken out first, as sb-config's `loggable_url` does. `value`
-    and `option_value` stay in the API, with no production caller.
+    userinfo taken out first, as sb-config's `loggable_url` does.
+    *Amended 2026-11-16 (maintainer):* exec's masking `value` and
+    `option_value` are removed, so only `shown_value` and
+    `secret`/`secret_env` remain and the method name makes the choice at
+    every call; a joined option is one `shown_value` (or `secret`).

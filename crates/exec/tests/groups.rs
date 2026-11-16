@@ -136,7 +136,7 @@ fn script(body: &'static str, file: &Path) -> Cmd {
         .arg("-c")
         .arg(body)
         .arg("sh")
-        .value(file.to_str().expect("utf-8"))
+        .shown_value(file.to_str().expect("utf-8"))
         .grace(GRACE)
 }
 
@@ -467,7 +467,10 @@ async fn an_exit_0_after_the_signal_reads_interrupted() {
     assert_eq!(done.outcome.ending, Ending::Interrupted);
     assert_eq!(
         done.check().expect_err("fails").to_string(),
-        "sh -c trap 'exit 0' TERM; echo $$ > \"$1\"; while :; do sleep 0.05; done sh [ARG] was interrupted"
+        format!(
+            "sh -c trap 'exit 0' TERM; echo $$ > \"$1\"; while :; do sleep 0.05; done sh {} was interrupted",
+            file.display()
+        )
     );
 }
 

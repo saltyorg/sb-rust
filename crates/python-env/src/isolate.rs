@@ -586,7 +586,7 @@ mod applied {
         };
         let isolated = isolated
             .expect("isolated")
-            .map(|cmd| cmd.arg("--version").value("a value"));
+            .map(|cmd| cmd.arg("--version").shown_value("a value"));
         let token = tokio_util::sync::CancellationToken::new();
         let ran = isolated.cmd.capture(&token).await.expect("spawn");
         let _ = ran.check().expect("ran");

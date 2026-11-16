@@ -702,7 +702,8 @@ decision 17.
    log and errors show the literal and `[ARG]` (`--extra-vars=[ARG]`)."
    And: "`Cmd::shown()` is public: the masked rendering the log and
    errors use, for a caller that prints the command (ansible's
-   `Executing...` line)."
+   `Executing...` line)." *`option_value` was removed 2026-11-16
+   (exec's decision 14); the joined option is one `shown_value`.*
 2. **term-ui** ("Tables"), replace "Column spans (`sb list`) come with
    that command." with: "`Table::spanning_row(text)` adds a bold row
    across every column (`sb list`'s later repos), through tabled's

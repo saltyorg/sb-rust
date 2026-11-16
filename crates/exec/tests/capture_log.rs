@@ -2,7 +2,7 @@
 //! Tasks 2 and 3): the start record (the command with literals in place,
 //! the count of masked arguments, changed variable names, the working
 //! directory, the way) and the end record (outcome, elapsed), with no
-//! secret and no pass-through value in either. A test binary of its own:
+//! secret and no variable's value in either. A test binary of its own:
 //! tracing caches each callsite's interest process-wide
 //! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>),
 //! so a log test sharing a process with tests that run without a
@@ -76,7 +76,7 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
         .arg("echo \"$1 $TOKEN $2\"; exit 4")
         .arg("sh")
         .secret("arg-secret-not-real-1")
-        .value("pass-through-2")
+        .shown_value("shown-2")
         .secret_env("TOKEN", "env-secret-not-real-3")
         .env("SB_EXEC_PLAIN", "plain-value-4")
         .cwd(dir.path());
@@ -88,8 +88,8 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
         .find(|l| l.contains("child started"))
         .unwrap_or_else(|| panic!("no start record: {text}"));
     for field in [
-        r#"command="sh -c echo \"$1 $TOKEN $2\"; exit 4 sh [REDACTED] [ARG]""#,
-        "masked=2",
+        r#"command="sh -c echo \"$1 $TOKEN $2\"; exit 4 sh [REDACTED] shown-2""#,
+        "masked=1",
         r#"env="GIT_TERMINAL_PROMPT,SB_EXEC_PLAIN,SSH_ASKPASS,SSH_ASKPASS_REQUIRE,TOKEN""#,
         "env_cleared=false",
         &format!("cwd=\"{}\"", dir.path().display()),
@@ -145,7 +145,6 @@ async fn the_records_name_the_child_and_keep_its_secrets() {
         "stream-secret-not-real-6",
         "missing-secret-5",
         "arg-secret-not-real-1",
-        "pass-through-2",
         "env-secret-not-real-3",
         "plain-value-4",
     ] {

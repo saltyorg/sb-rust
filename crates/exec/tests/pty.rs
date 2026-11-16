@@ -290,7 +290,7 @@ async fn a_dropped_pty_run_leaves_no_member() {
         .step(Labels::new("Running", "ran"), async |step| {
             let cmd = sh("echo $$ > \"$1\"; exec sleep 30")
                 .arg("sh")
-                .value(file.to_str().expect("utf-8"));
+                .shown_value(file.to_str().expect("utf-8"));
             let written = async {
                 loop {
                     if let Ok(text) = std::fs::read_to_string(&file)

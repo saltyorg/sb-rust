@@ -81,15 +81,15 @@ fn main() -> RunEnd {
         let exe = std::env::current_exe().unwrap_or_default();
         Cmd::new(exe)
             .arg("--child")
-            .value(mode.as_str())
-            .value(file.as_str())
+            .shown_value(mode.as_str())
+            .shown_value(file.as_str())
             .grace(grace)
     } else {
         Cmd::new("sh")
             .arg("-c")
             .arg(script)
             .arg("sh")
-            .value(file.as_str())
+            .shown_value(file.as_str())
             .grace(grace)
     };
     let result: Result<(), Box<dyn Error>> = match (shutdown.listen_for_signals(), runtime) {
