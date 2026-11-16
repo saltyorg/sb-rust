@@ -1,9 +1,10 @@
 ---
 source: crates/ansible/src/list.rs
-expression: "columns(&strings(&SALTBOX), PIPED_WIDTH)"
+expression: "columns(tags.clone(), 13, PIPED_WIDTH)"
 ---
-always      crowdsec  jackett   ombi           portainer    sabnzbd
-authelia    ddclient  jellyfin  organizr       prowlarr     sanity-check
-autoscan    docker    lidarr    overseerr      qbittorrent  sonarr
-bazarr      emby      mariadb   plex           radarr       tautulli
-cloudflare  glances   nzbget    plex-autoscan  rclone       traefik
+always         ddclient       lidarr         plex           rclone
+authelia       docker         mariadb        plex-autoscan  sabnzbd
+autoscan       emby           nzbget         portainer      sanity-check
+bazarr         glances        ombi           prowlarr       sonarr
+cloudflare     jackett        organizr       qbittorrent    tautulli
+crowdsec       jellyfin       overseerr      radarr         traefik

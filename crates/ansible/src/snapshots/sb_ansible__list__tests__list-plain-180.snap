@@ -1,0 +1,21 @@
+---
+source: crates/ansible/src/list.rs
+expression: "render_list(&wide(false), false, &plain(), true, width)"
+---
+
+Saltbox  31 tags
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+always                          docker                          nzbget                          prowlarr                        tautulli
+authelia                        emby                            ombi                            qbittorrent                     traefik
+autoscan                        glances                         organizr                        radarr                          generate-traefik-file-template
+bazarr                          jackett                         overseerr                       rclone
+cloudflare                      jellyfin                        plex                            sabnzbd
+crowdsec                        lidarr                          plex-autoscan                   sanity-check
+ddclient                        mariadb                         portainer                       sonarr
+
+Sandbox  8 tags  ·  install as sandbox-<tag>
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+always                          bazarr4k                        plexripper                      sonarr4k
+autobrr                         plex-meta-manager               radarr4k                        tdarr
+
+sb list <query> search   -m include Saltbox-mod

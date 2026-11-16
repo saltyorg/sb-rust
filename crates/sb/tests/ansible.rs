@@ -945,9 +945,19 @@ fn install_long_help_is_on_help_only() {
     );
 }
 
-/// `sb list` from a valid cache: each repository's title with `(cached)`,
-/// its tags in columns at 80 (stdout isn't a terminal), nothing on
-/// stderr, no listing run.
+/// The rule of plain output, 80 wide (spec, `sb list`, decision 19).
+fn dashes() -> String {
+    "-".repeat(80)
+}
+
+/// The footer hint without `-m`.
+const FOOTER: &str = "\nsb list <query> search   -m include Saltbox-mod\n";
+
+/// `sb list` from a valid cache, piped: the refined layout, plain, at 80
+/// (stdout isn't a terminal): a blank line, each repository's heading,
+/// rule and tags in columns of one width (`tautulli`'s plus 2), the
+/// footer; no cache state, which the run log has; nothing on stderr, no
+/// listing run.
 #[test]
 fn list_shows_the_cached_tags_in_columns() {
     if !root_gate::requested() {
@@ -956,18 +966,54 @@ fn list_shows_the_cached_tags_in_columns() {
     let world = World::new();
     let output = world.sb(&["list"]).output().expect("run sb");
     assert!(output.status.success(), "{}", stderr(&output));
+    let rule = dashes();
     assert_eq!(
         stdout(&output),
-        "Saltbox tags: (cached)\n\nalways  plex  sonarr\n\
-         \nSandbox tags (prepend sandbox-): (cached)\n\nalways  b  tautulli\n"
+        format!(
+            "\nSaltbox  3 tags\n{rule}\nalways    plex      sonarr\n\
+             \nSandbox  3 tags  ·  install as sandbox-<tag>\n{rule}\nalways    b         tautulli\n\
+             {FOOTER}"
+        )
     );
     assert_eq!(stderr(&output), "");
     assert_eq!(world.runs(), Vec::<Vec<String>>::new());
+    let log = world.log();
+    let listed: Vec<&str> = log.lines().filter(|l| l.contains("tags listed")).collect();
+    assert_eq!(listed.len(), 2, "{log}");
+    assert!(listed.iter().all(|l| l.contains("cached=true")), "{log}");
+}
+
+/// `--color=always` styles the listing (the rule a `─`); `--color=never`
+/// on the same output is the plain form.
+#[test]
+fn list_styles_only_with_colour() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .sb(&["--color=always", "list"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains('\x1b'), "{out:?}");
+    assert!(out.contains(&"─".repeat(80)), "{out}");
+    assert_eq!(
+        console::strip_ansi_codes(&out).replace('─', "-"),
+        stdout(
+            &world
+                .sb(&["--color=never", "list"])
+                .output()
+                .expect("run sb")
+        )
+    );
 }
 
 /// No cache: each repository is listed in a transient step of a runner
-/// titled `sb list`, written, and shown without `(cached)`; piped, the
-/// steps that succeeded print nothing, nor the title (decision 18).
+/// titled `sb list`, written, shown, and logged as not from the cache;
+/// piped, the steps that succeeded print nothing, nor the title
+/// (decision 18).
 #[test]
 fn list_rebuilds_a_missing_cache_as_steps() {
     if !root_gate::requested() {
@@ -979,18 +1025,25 @@ fn list_rebuilds_a_missing_cache_as_steps() {
     tag_cache::listing(&world.appdata().join("sandbox"), &["always", "b"]);
     let output = world.sb(&["list"]).output().expect("run sb");
     assert!(output.status.success(), "{}", stderr(&output));
+    let rule = dashes();
     assert_eq!(
         stdout(&output),
-        "Saltbox tags:\n\nalways  plex  sonarr\n\
-         \nSandbox tags (prepend sandbox-):\n\nalways  b\n"
+        format!(
+            "\nSaltbox  3 tags\n{rule}\nalways  plex    sonarr\n\
+             \nSandbox  2 tags  ·  install as sandbox-<tag>\n{rule}\nalways  b\n\
+             {FOOTER}"
+        )
     );
     assert_eq!(stderr(&output), "");
     assert_eq!(world.runs().len(), 2);
     assert!(world.root().join("cache.json").exists());
-    // The steps are logged as every step is.
+    // The steps are logged as every step is, and each listing rebuilt.
     let log = world.log();
     assert!(log.contains("Updating Saltbox tags cache"), "{log}");
     assert!(log.contains("Updating Sandbox tags cache"), "{log}");
+    let listed: Vec<&str> = log.lines().filter(|l| l.contains("tags listed")).collect();
+    assert_eq!(listed.len(), 2, "{log}");
+    assert!(listed.iter().all(|l| l.contains("cached=false")), "{log}");
 }
 
 /// A rebuild that fails keeps the whole tree under the `sb list` title,
@@ -1014,7 +1067,10 @@ fn list_keeps_the_whole_tree_when_a_rebuild_fails() {
     .expect("stderr");
     let output = world.sb(&["list"]).output().expect("run sb");
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert_eq!(stdout(&output), "Saltbox tags:\n\nalways  plex\n");
+    assert_eq!(
+        stdout(&output),
+        format!("\nSaltbox  2 tags\n{}\nalways  plex\n{FOOTER}", dashes())
+    );
     let err = stderr(&output);
     assert!(
         err.starts_with("sb list\n- Updating Saltbox tags cache\n✓ Updating Saltbox tags cache   "),
@@ -1043,8 +1099,14 @@ fn list_include_mod_lists_saltbox_mod_fresh() {
     let output = world.sb(&["list", "-m"]).output().expect("run sb");
     assert!(output.status.success(), "{}", stderr(&output));
     let out = stdout(&output);
+    // Its columns share Sandbox's `tautulli`'s width; `-m` given, the
+    // footer leaves it out.
     assert!(
-        out.ends_with("\nSaltbox_mod tags (prepend mod-):\n\nalways  jf\n"),
+        out.ends_with(&format!(
+            "\nSaltbox-mod  2 tags  ·  install as mod-<tag>\n{}\nalways    jf\n\
+             \nsb list <query> search\n",
+            dashes()
+        )),
         "{out}"
     );
     // Its listing's step is transient: piped, a success prints nothing,
@@ -1074,7 +1136,7 @@ fn list_include_mod_lists_saltbox_mod_fresh() {
     assert!(
         stdout(&output).starts_with(
             "Saltbox-mod directory not found, skipping.  Ensure Saltbox-mod is installed.\n\
-             Saltbox tags: (cached)\n"
+             \nSaltbox  3 tags\n"
         ),
         "{}",
         stdout(&output)
@@ -1094,10 +1156,14 @@ fn list_reports_a_failing_repo_after_the_others() {
     tag_cache::listing(&world.appdata().join("saltbox_mod"), &["jf"]);
     let output = world.sb(&["list", "-m"]).output().expect("run sb");
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let rule = dashes();
     assert_eq!(
         stdout(&output),
-        "Saltbox tags: (cached)\n\nalways  plex  sonarr\n\
-         \nSaltbox_mod tags (prepend mod-):\n\njf\n"
+        format!(
+            "\nSaltbox  3 tags\n{rule}\nalways  plex    sonarr\n\
+             \nSaltbox-mod  1 tag  ·  install as mod-<tag>\n{rule}\njf\n\
+             \nsb list <query> search\n"
+        )
     );
     let err = stderr(&output);
     assert!(
@@ -1176,7 +1242,7 @@ fn list_reports_saltbox_mods_failures() {
         "{err}"
     );
     assert!(
-        stdout(&output).contains("Sandbox tags"),
+        stdout(&output).contains("\nSandbox  3 tags"),
         "{}",
         stdout(&output)
     );
@@ -1236,11 +1302,14 @@ fn list_fits_the_terminals_width() {
         .output()
         .expect("run script");
     let out = console::strip_ansi_codes(&stdout(&output)).replace('\r', "");
-    // 30 tags of 6 characters: 5 to a 40-column line (80 would fit 10).
+    // 30 tags of 6 characters, in columns as wide as Sandbox's
+    // `tautulli` plus 2: 4 to a 40-column line (80 would fit 8), and the
+    // rule as wide as the terminal.
     assert!(
-        out.contains("tag-00  tag-06  tag-12  tag-18  tag-24\n"),
+        out.contains("tag-00    tag-08    tag-16    tag-24\n"),
         "{out}"
     );
+    assert!(out.contains(&format!("\n{}\n", "─".repeat(40))), "{out}");
     assert!(
         out.lines()
             .filter(|line| line.starts_with("tag-"))
@@ -1281,13 +1350,19 @@ fn list_shows_the_mod_listing_only_while_it_runs() {
     let mut screen = vt100::Parser::new(24, 80, 0);
     screen.process(&output.stdout);
     let shown = screen.screen().contents();
-    assert!(shown.starts_with("Saltbox tags: (cached)\n"), "{shown}");
+    assert!(shown.starts_with("\nSaltbox  3 tags\n"), "{shown}");
     assert!(
-        shown.contains("Saltbox_mod tags (prepend mod-):\n\nalways  jf"),
+        shown.contains("Saltbox-mod  2 tags  ·  install as mod-<tag>\n"),
         "{shown}"
     );
+    assert!(shown.contains("\nalways    jf\n"), "{shown}");
     assert!(!shown.contains("Listing"), "{shown}");
-    assert!(!shown.contains("sb list"), "{shown}");
+    // The runner's title is gone; the footer's `sb list <query>` stays.
+    assert!(!shown.lines().any(|line| line == "sb list"), "{shown}");
+    assert!(
+        shown.trim_end().ends_with("\nsb list <query> search"),
+        "{shown}"
+    );
     // The step is logged as every step is.
     let log = world.log();
     assert!(log.contains("Listing Saltbox_mod tags"), "{log}");
@@ -1327,9 +1402,15 @@ fn list_shows_the_rebuild_only_while_it_runs() {
     let mut screen = vt100::Parser::new(24, 80, 0);
     screen.process(&output.stdout);
     let shown = screen.screen().contents();
+    // On a terminal the output is styled: the rule is a `─`.
+    let rule = "─".repeat(80);
     assert_eq!(
         shown.trim_end(),
-        "Saltbox tags:\n\nalways  plex\n\nSandbox tags (prepend sandbox-):\n\nalways  b",
+        format!(
+            "\nSaltbox  2 tags\n{rule}\nalways  plex\n\
+             \nSandbox  2 tags  ·  install as sandbox-<tag>\n{rule}\nalways  b\n\
+             \nsb list <query> search   -m include Saltbox-mod"
+        ),
         "{shown}"
     );
 }
@@ -1356,7 +1437,7 @@ fn list_search_shows_the_mod_notice_and_an_empty_query_lists() {
     let output = world.sb(&["list", ""]).output().expect("run sb");
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(
-        stdout(&output).starts_with("Saltbox tags: (cached)\n"),
+        stdout(&output).starts_with("\nSaltbox  3 tags\n"),
         "{}",
         stdout(&output)
     );

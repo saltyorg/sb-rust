@@ -393,6 +393,9 @@ To discuss with the maintainer once every module is done, not before:
     changed" is not how it should look.
   The phase explores alternatives for sb's outputs, this one included,
   once the commands exist; until then the approved looks stand.
+  `sb list`'s design was taken forward on 2026-11-16, at the
+  maintainer's request: the ansible spec's `sb list` and its decision
+  19 have the layout and the maintainer's changes to the canvas.
 - **Tests on a real machine** (maintainer, 2026-11-13). Every test of
   sb's host-changing commands uses stand-ins (apt-get, ansible-playbook,
   systemctl on `PATH`, a fake GitHub and Engine API), and the by-hand

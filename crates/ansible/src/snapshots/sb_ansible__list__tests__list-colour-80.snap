@@ -1,0 +1,32 @@
+---
+source: crates/ansible/src/list.rs
+expression: "visible(&render_list(&wide(false), false, &colour(), true, width))"
+---
+
+␛[1m␛[38;2;126;166;255mSaltbox␛[0m␛[38;2;139;149;167m  31 tags␛[0m
+␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────␛[0m
+always                          organizr
+authelia                        overseerr
+autoscan                        plex
+bazarr                          plex-autoscan
+cloudflare                      portainer
+crowdsec                        prowlarr
+ddclient                        qbittorrent
+docker                          radarr
+emby                            rclone
+glances                         sabnzbd
+jackett                         sanity-check
+jellyfin                        sonarr
+lidarr                          tautulli
+mariadb                         traefik
+nzbget                          generate-traefik-file-template
+ombi
+
+␛[1m␛[38;2;126;166;255mSandbox␛[0m␛[38;2;139;149;167m  8 tags␛[0m␛[38;2;139;149;167m  ·  install as ␛[0m␛[38;2;92;207;230msandbox-<tag>␛[0m
+␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────␛[0m
+always                          plexripper
+autobrr                         radarr4k
+bazarr4k                        sonarr4k
+plex-meta-manager               tdarr
+
+␛[38;2;92;207;230msb list <query>␛[0m␛[38;2;139;149;167m search␛[0m␛[38;2;139;149;167m   ␛[0m␛[38;2;92;207;230m-m␛[0m␛[38;2;139;149;167m include Saltbox-mod␛[0m

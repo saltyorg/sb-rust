@@ -194,12 +194,36 @@ death by signal for an interrupted run (cli-core).
   when any step failed, the whole tree stays under the title, the steps
   that succeeded included, with the failure's cause. `sb install`'s
   rebuild steps stay.
-- **No query:** per repo a title (`Saltbox tags:`, `\nSandbox tags
-  (prepend sandbox-):`, `\nSaltbox_mod tags (prepend mod-):`), ` (cached)`
-  when the cache wasn't rebuilt, a blank line, then the tags in
-  column-major columns fitted to stdout's width (80 when stdout isn't a
-  terminal), 2 spaces apart, through `uutils_term_grid`
-  (`Direction::TopToBottom`, `Filling::Spaces(2)`).
+- **No query** (the maintainer's "refined columns" design, 2026-11-16;
+  decision 19, difference 12): sb-go's notice for a missing
+  `saltbox_mod`, if any; a blank line; then for each repo a heading,
+  a rule and its tags, with a blank line between repos; then a blank
+  line and the footer. Nothing but the notice when no repo printed.
+  - **Heading:** the repo's name (`Saltbox`, `Sandbox`, `Saltbox-mod`)
+    in the heading slot, bold, then `  <N> tags` (`  1 tag`) in the count
+    slot. Sandbox adds `  ·  install as ` in the hint slot and
+    `sandbox-<tag>` in the command slot; Saltbox-mod the same with
+    `mod-<tag>`. No cache state: whether the
+    cache was used or rebuilt is in the run log only (a `tags listed`
+    record for Saltbox and for Sandbox, with `cached`; a rebuild is
+    also its step's records).
+  - **Rule:** `─` across the whole width, in the rule slot; `-` when the
+    output is plain (see **Plain**).
+  - **Tags:** filled top to bottom, every column the same width in every
+    repo: the widest tag of any repo shown (display width, after
+    escaping, each character's width summed as the grid measures), plus 2. Each repo fits as many columns as the width holds
+    (the last column needs no gap); lines carry no trailing spaces.
+  - **Footer:** `sb list <query>` in the command slot, ` search` in the
+    hint slot, then, without `-m`, `   ` and ` include Saltbox-mod` in the
+    hint slot around `-m` in the command slot. Never after a search.
+  - **Colours:** each slot is drawn in one theme role, set in one place,
+    `COLOURS` in `crates/ansible/src/list.rs` (decision 19): heading
+    `service` (and bold), count `muted`, rule `muted`, command `accent`,
+    hint `muted`.
+  - **Width:** stdout's terminal width; 80 when it isn't a terminal.
+  - **Plain:** with colour off (piped, `--color=never`, `NO_COLOR`) or
+    under `ascii`, the same lines with no styling, the rule in `-`; the
+    `·` stays, as the step tree's glyphs do under `ascii`.
 - **Query:** the lowercased query matched as a substring (distance 0) or
   within Levenshtein 2 of the whole tag; sorted by distance, then repo
   (Saltbox, Sandbox, mod), then tag; `Found N matching tag(s) for 'q':`
@@ -292,8 +316,14 @@ nothing from ops, so it lands here.
 10. A corrupt or unreadable cache is rebuilt (sb-go: an error).
 11. The cache is written atomically, with 0644 set explicitly, and only
     when it changed (sb-go: `os.WriteFile` in place on every use).
-12. `sb list`'s columns pack each column to its own width, as `ls` does
-    (sb-go: every column the widest tag's width plus 2).
+12. `sb list` without a query has the maintainer's "refined columns"
+    layout (2026-11-16, decision 19): a blank line first, a heading per
+    repo with its tag count and install prefix, a rule under it, the
+    columns one width across every repo (the widest tag of any repo plus
+    2), and a footer hint; no `(cached)` (sb-go: `Saltbox tags:`,
+    `\nSandbox tags (prepend sandbox-):`, `\nSaltbox_mod tags (prepend
+    mod-):`, ` (cached)`, a blank line, and columns as wide as that repo's
+    widest tag plus 2, no colour).
 13. The rebuild's listing never adds `sanity_check` to the skipped tags
     (sb-go's `list` did; it changed nothing).
 14. `sb list -m` shows `Listing Saltbox_mod tags` while `saltbox_mod`'s
@@ -336,6 +366,7 @@ and sb-repo.
 | Atomic write | `tempfile` (`NamedTempFile::persist`) | 3.27.0 | yes | https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html#method.persist |
 | `TASK TAGS:` match | `regex` | 1.13.1 | yes | https://docs.rs/regex/1.13.1/regex/ |
 | Tag columns | `uutils_term_grid` | 0.8.1 (2026-10-23) | **no: new** | https://docs.rs/uutils_term_grid/0.8.1/term_grid/ |
+| Tag width (padding to the shared column width) | `unicode-width` (`UnicodeWidthStr::width`) | 0.2.3 | yes (cli-core's) | https://docs.rs/unicode-width/0.2.3/unicode_width/trait.UnicodeWidthStr.html |
 | Search table | term-ui `Table` on `tabled` (`Span`) | 0.22.0 | yes | https://docs.rs/tabled/0.22.0/tabled/settings/span/struct.Span.html |
 
 `uutils_term_grid` is the one new dependency (Ask first): uutils' `ls`
@@ -464,10 +495,12 @@ for validate-config.
   SIGTERM to sb reaches the fake; Ctrl-C during a slow `--list-tags`
   (fake sleeping): the step ends interrupted, sb dies of SIGINT, no
   playbook runs.
-- **`sb list`:** snapshots (insta) of both outputs at widths 40, 80 and
-  120 and piped, `(cached)` present or not, `-m` with and without the
-  directory, a failing repo between two good ones (exit 1, the others
-  printed).
+- **`sb list`:** snapshots (insta) of the listing at 80 and 180 columns,
+  coloured and plain, piped (80, plain), and of the search at widths 40,
+  80 and 120 and piped; the shared width (a long Saltbox tag widens
+  Sandbox's columns), `-m` with and without the directory, the footer
+  with and without `-m`, a failing repo between two good ones (exit 1,
+  the others printed).
 - **By hand, capped, in a container** (`ubuntu:24.04` with ansible-core
   from pip, a one-play playbook that prints its extra vars): the `-e`
   cases reach a real Ansible whole; Ctrl-C gives 99; a fixture of real
@@ -581,7 +614,10 @@ for validate-config.
     Source: map decision 1 (the command kept); it needs nothing from ops.
 16. **`list`'s columns through `uutils_term_grid`.** Source: capability
     map library policy 2 (don't own terminal layout) and CLAUDE.md's
-    Library first.
+    Library first. Since decision 19 each cell is padded to the shared
+    width first: the grid sizes each column by its own widest cell and
+    has no fixed width (`GridOptions` holds only `direction`, `filling`
+    and `width`), so equal cells give equal columns.
 17. **Every argument sb passes to `ansible-playbook` is shown as given**,
     in the `Executing...` line, in exec's failure block and in the run
     log: the tags, `--skip-tags`, every `--extra-vars=<value>` and
@@ -621,6 +657,40 @@ for validate-config.
     output once we print"; then: the whole step tree goes when
     everything succeeds, the rebuild steps included; then, on any
     failure the whole tree stays, the steps that succeeded included).
+
+19. **`sb list`'s refined columns** (the maintainer, 2026-11-16, from
+    the design canvas the capability map's output-design phase names,
+    brought forward for this command). The canvas's headings, rules,
+    column-major columns and footer hint are taken, with the
+    maintainer's changes: one column width across Saltbox, Sandbox and
+    Saltbox-mod, so the columns line up between repos (the canvas sized
+    each repo on its own); no cache note (the canvas's right-hand
+    `cached` and `rebuilt, repo changed`, and sb-go's `(cached)`, are
+    dropped: the run log has it); a blank line before the first heading
+    (the maintainer's note of 2026-11-14 asked for none; the brief of
+    2026-11-16 asks for one, and the later one stands); the footer's
+    `-m` part left out when `-m` was given, and no footer after a
+    search. **Colours:** the canvas's, through theme roles (the
+    maintainer, 2026-11-16, after the first look): the heading in
+    `service` (the palette's blue), bold; the commands (`sandbox-<tag>`,
+    `mod-<tag>`, `sb list <query>`, `-m`) in `accent` (cyan); the counts,
+    the rule and the hint text in `muted` (the canvas's dim grey). The
+    one place to change them is the slot table, `COLOURS` in
+    `crates/ansible/src/list.rs`: one line per slot (heading, count,
+    rule, command, hint), each naming a role, as motd maps its slots to
+    roles; nothing else in the listing names a role. What a role looks
+    like needs no code change: sb's config file
+    (`<server_appdata_path>/sb/config.toml`, `/opt/sb/config.toml` by
+    default) sets a role's colour under `[theme.colors]` as `#RRGGBB`,
+    for example `service = "#79C0FF"` (cli-core spec, startup step 6),
+    but for every screen that uses the role, not only `sb list`.
+    Decided here (the brief left them open): piped
+    output is the same layout without styling at 80 columns, footer
+    included, so the lines a pipe gets match the screen's; plain output
+    (colour off for any reason, or `ascii`) draws the rule in `-`; the
+    missing-`saltbox_mod` notice keeps its place, first, before the
+    blank line. Unchanged: the notice's text, the search output, the
+    transient step tree.
 
 ## Known limits
 

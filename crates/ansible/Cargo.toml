@@ -32,6 +32,9 @@ anyhow.workspace = true
 strsim.workspace = true
 # sb list's columns, as many as the width holds (spec, decision 16).
 uutils_term_grid.workspace = true
+# The tags' display width, to pad each to the one column width every
+# repository shares (spec, decision 19); cli-core's help measures so.
+unicode-width.workspace = true
 
 [dev-dependencies]
 # sb list's outputs as snapshots (spec, Testing strategy).

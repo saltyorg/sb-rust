@@ -171,9 +171,10 @@ async fn check_tags(
 /// titled `sb list` that starts at its first step and ends before any
 /// output; `saltbox_mod`'s with `-m`, listed in a step of that runner.
 /// Every step is transient (spec, decision 18): on success only the tags
-/// are left. Then the columns, or the search table, on stdout, fitted to
-/// its terminal (80 columns when it isn't one), and the repositories
-/// that failed as one error after them.
+/// are left. Then the refined columns (spec, decision 19), or the search
+/// table, on stdout, fitted to its terminal (80 columns when it isn't
+/// one) and styled when stdout gets colour, and the repositories that
+/// failed as one error after them.
 ///
 /// # Errors
 ///
@@ -202,18 +203,18 @@ pub fn list(args: &ListArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> anyho
         let width = sb_term_ui::stdout_width();
         // An empty query is none, as in sb-go (`query != ""`).
         let query = args.query.as_deref().filter(|query| !query.is_empty());
+        let colour = sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
         let text = match query {
             None => Some(sb_ansible::render_list(
                 &listing,
+                args.include_mod,
+                theme::current(),
+                colour,
                 width.unwrap_or(sb_ansible::PIPED_WIDTH),
             )),
-            Some(query) => sb_ansible::render_search(
-                &listing,
-                query,
-                theme::current(),
-                sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
-                width,
-            ),
+            Some(query) => {
+                sb_ansible::render_search(&listing, query, theme::current(), colour, width)
+            }
         };
         if let Some(text) = text {
             std::io::stdout()

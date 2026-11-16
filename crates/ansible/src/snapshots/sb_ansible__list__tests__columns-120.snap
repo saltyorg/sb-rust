@@ -1,7 +1,0 @@
----
-source: crates/ansible/src/list.rs
-expression: "columns(&strings(&SALTBOX), 120)"
----
-always    bazarr      ddclient  glances   lidarr   ombi       plex           prowlarr     rclone        sonarr
-authelia  cloudflare  docker    jackett   mariadb  organizr   plex-autoscan  qbittorrent  sabnzbd       tautulli
-autoscan  crowdsec    emby      jellyfin  nzbget   overseerr  portainer      radarr       sanity-check  traefik

@@ -44,7 +44,7 @@ pub struct RepoTags {
 }
 
 /// A repository's tags and whether they came from the cache (`sb list`'s
-/// `(cached)`).
+/// `tags listed` run-log record).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listed {
     /// The tags, in Ansible's order.
