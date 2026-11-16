@@ -308,10 +308,12 @@ fn report_and_log(root: &Path) -> (String, String) {
             Section::Qbittorrent,
             Section::Rtorrent,
         ],
+        ..Options::default()
     };
     let sources = Sources {
         docker: DockerSettings::default(),
         systemd: sb_host::systemd::Systemd::new().with_program("/nonexistent/systemctl"),
+        banner: sb_motd::banner::Tools::system(),
     };
     let captured = Captured::default();
     let writer = captured.clone();
@@ -336,7 +338,7 @@ fn report_and_log(root: &Path) -> (String, String) {
             ))
     })
     .expect("a report");
-    (report, captured.text())
+    (report.text, captured.text())
 }
 
 #[test]

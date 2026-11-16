@@ -3,12 +3,11 @@
 //! selection rules, the runner, the layout, the system sections, Disk
 //! Usage, Package Status, GPU, User Sessions, Last login, Docker and
 //! Traefik, motd.yml with its colours, its `Config:` line and
-//! `--generate-config`, Services, and the media servers and downloaders
-//! Plex, Emby, Jellyfin, `SABnzbd` and `NZBGet` (module build M36-M44); the
-//! other sections, the banner and `--share` come with their own tasks
-//! (M45-M47), and until then a selected section without its code shows
-//! no line.
+//! `--generate-config`, Services, the media servers, downloaders and
+//! download queues, and the banner (module build M36-M46); `--share`
+//! comes with its own task (M47).
 
+pub mod banner;
 pub mod config;
 mod disk;
 mod docker;
@@ -160,14 +159,16 @@ impl Section {
     }
 }
 
-/// What `sb motd`'s flags ask for. The banner, `--share` and
-/// `--generate-config` are read by their own tasks (M42, M46, M47).
+/// What `sb motd`'s flags ask for. `--share` and `--generate-config` are
+/// read by their own tasks (M42, M47).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Options {
     /// `--all`: every section.
     pub all: bool,
     /// The section flags given, in any order, repeats allowed.
     pub sections: Vec<Section>,
+    /// The banner flags (none drawn by default).
+    pub banner: banner::Banner,
 }
 
 impl Options {
@@ -197,6 +198,45 @@ impl Options {
 pub enum Error {
     #[error("no information selected to display (use --all or specific flags)")]
     NothingSelected,
+    /// `--type` isn't a boxes design; [`Error::listing`] has the designs.
+    #[error("invalid banner type specified: {kind}")]
+    InvalidType { kind: String },
+    /// `--font` isn't a font; [`Error::listing`] has the fonts, sorted
+    /// (Difference 15).
+    #[error("invalid font specified: {font}")]
+    InvalidFont { font: String, fonts: Vec<String> },
+    /// `--banner-file` can't be read.
+    #[error("could not read banner file '{path}': {cause}")]
+    BannerFile { path: String, cause: String },
+}
+
+impl Error {
+    /// The list sb-go prints after the message, in its columns: the boxes
+    /// designs after an unknown type, the fonts after an unknown font
+    /// (`cmd/motd.go:166-206`). The error's message is one line, as
+    /// cli-core's error block shows it, and the list follows it.
+    #[must_use]
+    pub fn listing(&self) -> Option<String> {
+        match self {
+            Self::InvalidType { .. } => Some(format!(
+                "Available types:\n{}",
+                banner::columns(&banner::TYPES)
+            )),
+            Self::InvalidFont { fonts, .. } => Some(format!(
+                "Available fonts (from /usr/share/figlet):\n{}",
+                banner::columns(fonts)
+            )),
+            Self::NothingSelected | Self::BannerFile { .. } => None,
+        }
+    }
+}
+
+/// What `sb motd` shows: the banner and the sections' lines for stdout,
+/// and the banner's warnings for stderr (sb-go's `Warning:` lines).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Report {
+    pub text: String,
+    pub warnings: Vec<String>,
 }
 
 /// How the output is coloured: the theme and whether stdout takes colour
@@ -318,24 +358,29 @@ pub enum Level {
     Critical,
 }
 
-/// `sb motd`'s output for `options`: motd.yml read and checked once by
-/// `load` (sb's run: [`config::load_here`]) after the selection, then
-/// the chosen sections collected in parallel under the runner's cap, and
-/// laid out, the `Config:` line first when motd.yml has issues (decision
-/// 3). The run log gets the sections chosen and each one's time and
-/// outcome (criterion 12).
+/// `sb motd`'s output for `options`: after the selection, the banner's
+/// type and font checked and its file read (sb-go's order, `cmd/motd.go`),
+/// then motd.yml read and checked once by `load` (sb's run:
+/// [`config::load_here`]); the banner drawn while the chosen sections are
+/// collected in parallel under the runner's cap (decision 25), and laid
+/// out under it, the `Config:` line first when motd.yml has issues
+/// (decision 3). The run log gets the sections chosen and each one's time
+/// and outcome (criterion 12).
 ///
 /// # Errors
 ///
-/// [`Error::NothingSelected`] when no section is chosen.
+/// [`Error::NothingSelected`] when no section is chosen, then the
+/// banner's [`Error::InvalidType`], [`Error::InvalidFont`] and
+/// [`Error::BannerFile`].
 pub async fn report(
     options: &Options,
     colours: Colours<'_>,
     load: impl FnOnce() -> config::Loaded,
-) -> Result<String, Error> {
+) -> Result<Report, Error> {
     let sources = Sources {
         docker: DockerSettings::from_env(),
         systemd: Systemd::new(),
+        banner: banner::Tools::system(),
     };
     report_from(options, colours, sources, load).await
 }
@@ -345,25 +390,37 @@ pub async fn report(
 ///
 /// # Errors
 ///
-/// [`Error::NothingSelected`] when no section is chosen.
+/// As [`report`].
 pub async fn report_from(
     options: &Options,
     colours: Colours<'_>,
     sources: Sources,
     load: impl FnOnce() -> config::Loaded,
-) -> Result<String, Error> {
+) -> Result<Report, Error> {
     let chosen = options.chosen()?;
-    report_with(chosen, colours, sources, load()).await
+    banner::check(&options.banner, &sources.banner)?;
+    let file = banner::read_file(&options.banner)?;
+    let tools = sources.banner.clone();
+    let (drawn, lines) = tokio::join!(
+        banner::draw(&options.banner, file, &tools),
+        report_with(chosen, colours, sources, load()),
+    );
+    Ok(Report {
+        text: drawn.text + &lines?,
+        warnings: drawn.warnings,
+    })
 }
 
 /// Where the sections that ask a daemon look: Docker's and Traefik's
-/// settings, with the run's proxy, and systemctl. The tests point them at
-/// fakes and stand-ins. No `Default`: systemctl is always chosen, so no
-/// test lists the host's services by accident.
+/// settings, with the run's proxy, and systemctl; and the banner's toilet,
+/// boxes and fonts. The tests point them at fakes and stand-ins. No
+/// `Default`: systemctl is always chosen, so no test lists the host's
+/// services by accident.
 #[derive(Debug)]
 pub struct Sources {
     pub docker: DockerSettings,
     pub systemd: Systemd,
+    pub banner: banner::Tools,
 }
 
 /// The `Config:` line's key (Difference 2).
@@ -565,6 +622,7 @@ mod tests {
         let options = Options {
             all: true,
             sections: vec![Section::Kernel],
+            ..Options::default()
         };
         assert_eq!(options.chosen().unwrap(), Section::ALL.to_vec());
     }
@@ -574,6 +632,7 @@ mod tests {
         let options = Options {
             all: false,
             sections: vec![Section::Kernel, Section::Distribution, Section::Kernel],
+            ..Options::default()
         };
         assert_eq!(
             options.chosen().unwrap(),
@@ -678,6 +737,7 @@ mod tests {
         let options = Options {
             all: true,
             sections: Vec::new(),
+            ..Options::default()
         };
         let colours = Colours {
             theme: &theme,
@@ -703,6 +763,7 @@ esac"#,
         let sources = Sources {
             docker: settings,
             systemd: Systemd::new().with_program(systemctl),
+            banner: banner::Tools::system(),
         };
         let text = report_with(
             options.chosen().unwrap(),
@@ -893,6 +954,7 @@ esac"#,
         Sources {
             docker: docker::Settings::default(),
             systemd: Systemd::new().with_program("/nonexistent/systemctl"),
+            banner: banner::Tools::system(),
         }
     }
 
@@ -973,6 +1035,7 @@ esac"#,
         let sources = || Sources {
             docker: docker::Settings::default(),
             systemd: Systemd::new().with_program(&systemctl),
+            banner: banner::Tools::system(),
         };
         let loaded = config::Loaded {
             motd: Some(motd),
@@ -993,6 +1056,58 @@ esac"#,
             .await
             .unwrap();
         assert_eq!(text, "Config:    x\nServices:  Docker   failed\n\n");
+    }
+
+    /// The banner is drawn while the sections are collected (decision 25):
+    /// a toilet and a systemctl that each take 2 s end together in well
+    /// under 4 s, the banner first.
+    #[tokio::test]
+    async fn the_banner_is_drawn_while_the_sections_are_collected() {
+        let _spawns = packages::tests::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = dir.path().join("systemctl");
+        packages::tests::stand_in(
+            &systemctl,
+            r#"case "$1" in
+  list-units) sleep 2; echo '[{"unit":"docker.service","load":"loaded","active":"failed","sub":"failed","description":"x"}]' ;;
+  *) echo '[]' ;;
+esac"#,
+        );
+        let toilet = dir.path().join("toilet");
+        packages::tests::stand_in(&toilet, "sleep 2; echo BANNER");
+        let theme = Theme::plain();
+        let colours = Colours {
+            theme: &theme,
+            on: false,
+        };
+        let options = Options {
+            sections: vec![Section::Services],
+            banner: banner::Banner {
+                title: "T".into(),
+                kind: "none".into(),
+                font: "ivrit".into(),
+                ..banner::Banner::default()
+            },
+            ..Options::default()
+        };
+        let sources = Sources {
+            docker: docker::Settings::default(),
+            systemd: Systemd::new().with_program(&systemctl),
+            banner: banner::Tools {
+                toilet,
+                ..banner::Tools::system()
+            },
+        };
+        let started = std::time::Instant::now();
+        let report = report_from(&options, colours, sources, config::Loaded::default)
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(report.text, "BANNER\n\nServices:  Docker   failed\n\n");
+        assert!(
+            elapsed < std::time::Duration::from_millis(3500),
+            "{elapsed:?}"
+        );
     }
 
     #[tokio::test]

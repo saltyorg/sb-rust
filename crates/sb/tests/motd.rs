@@ -1,7 +1,8 @@
 //! `sb motd` through the built binary (motd spec, Testing strategy, "End
 //! to end"; module build M36, M37): the layout of the system sections,
 //! colour under Saltbox's `CLICOLOR_FORCE=1` with stdout piped, the
-//! selection error and `-v`'s parse error. Root runs (`SB_TEST_ROOT=1`),
+//! selection error and `-v`'s parse error; the banner through stand-in
+//! toilet and boxes first on `PATH` (M46). Root runs (`SB_TEST_ROOT=1`),
 //! each with its own log directory; a run as another user would relaunch
 //! through sudo. The system sections read the host's os-release, /proc
 //! and `uname(2)`, read-only; nothing here contacts a service.
@@ -13,10 +14,15 @@ use std::path::Path;
 use std::process::Output;
 
 /// `sb motd <args>` as root, stdout piped, logging to `logs`, with `env`.
+/// No banner unless `args` give a title or a banner file: an empty
+/// `--title` otherwise, so the host's toilet and boxes never run.
 fn motd(args: &[&str], logs: &Path, env: &[(&str, &str)]) -> Output {
     let mut cmd = common::sb();
-    cmd.arg("motd")
-        .args(args)
+    cmd.arg("motd");
+    if !args.contains(&"--title") {
+        cmd.args(["--title", ""]);
+    }
+    cmd.args(args)
         .env("SB_LOG_DIR", logs)
         .env_remove("NO_COLOR")
         .env_remove("SB_COLOR_PROFILE")
@@ -377,4 +383,207 @@ fn an_invalid_motd_yml_shows_the_config_line() {
         "{:?}",
         text(&out.stdout)
     );
+}
+
+/// A directory of stand-ins for `PATH`: toilet prints its arguments, and
+/// boxes its own, then its stdin between `#` lines. Without `boxes`, only
+/// toilet is there; with neither, the directory is empty.
+fn stand_ins(toilet: bool, boxes: bool) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = temp();
+    let write = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("stand-in");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    };
+    if toilet {
+        write("toilet", r#"echo "toilet $*""#);
+    }
+    if boxes {
+        write("boxes", r#"echo "boxes $*"; echo '#'; cat; echo '#'"#);
+    }
+    dir
+}
+
+/// The title through toilet and boxes, then a blank line (sb-go's
+/// `fmt.Println`), then the sections (motd spec, Command flow step 5).
+#[test]
+fn the_banner_comes_first_through_toilet_and_boxes() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let tools = stand_ins(true, true);
+    // The stand-ins first; the boxes stand-in needs `cat`.
+    let path = format!(
+        "{}:{}",
+        tools.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = motd(
+        &["--title", "Saltbox", "--kernel"],
+        logs.path(),
+        &[("PATH", &path)],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.starts_with("boxes -d peek -a hc -p h8\n#\ntoilet -f ivrit Saltbox\n#\n\nKernel:  "),
+        "{stdout:?}"
+    );
+    assert_eq!(text(&out.stderr), "");
+    let out = motd(
+        &[
+            "--title", "Saltbox", "--type", "none", "--font", "term", "--kernel",
+        ],
+        logs.path(),
+        &[("PATH", &path)],
+    );
+    assert!(
+        text(&out.stdout).starts_with("toilet -f term Saltbox\n\nKernel:  "),
+        "{:?}",
+        text(&out.stdout)
+    );
+}
+
+/// Without toilet, sb-go's fallback and its warning; without boxes,
+/// toilet's banner alone and a warning (Command flow step 5).
+#[test]
+fn missing_tools_fall_back_with_a_warning() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let none = stand_ins(false, false);
+    let path = none.path().display().to_string();
+    let out = motd(
+        &["--title", "Saltbox", "--kernel"],
+        logs.path(),
+        &[("PATH", &path)],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).starts_with("--- Saltbox ---\n\nKernel:  "),
+        "{:?}",
+        text(&out.stdout)
+    );
+    assert_eq!(
+        text(&out.stderr),
+        "warning: toilet command not found, using fallback banner\n"
+    );
+    let toilet = stand_ins(true, false);
+    let path = toilet.path().display().to_string();
+    let out = motd(
+        &["--title", "Saltbox", "--kernel"],
+        logs.path(),
+        &[("PATH", &path)],
+    );
+    assert!(
+        text(&out.stdout).starts_with("toilet -f ivrit Saltbox\n\nKernel:  "),
+        "{:?}",
+        text(&out.stdout)
+    );
+    assert_eq!(
+        text(&out.stderr),
+        "warning: boxes command not found, using toilet only\n"
+    );
+}
+
+/// A banner file is printed raw, or through toilet with its arguments
+/// as argv; an unreadable one is sb-go's error, exit 1.
+#[test]
+fn a_banner_file_is_printed_or_drawn() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let tools = stand_ins(true, true);
+    let path = tools.path().display().to_string();
+    let file = tools.path().join("banner.txt");
+    std::fs::write(&file, "Welcome\n").expect("banner");
+    let file = file.display().to_string();
+    let out = motd(
+        &["--banner-file", &file, "--kernel"],
+        logs.path(),
+        &[("PATH", &path)],
+    );
+    assert!(
+        text(&out.stdout).starts_with("Welcome\n\nKernel:  "),
+        "{:?}",
+        text(&out.stdout)
+    );
+    let out = motd(
+        &[
+            "--banner-file",
+            &file,
+            "--banner-file-toilet",
+            "-f 'my font'",
+            "--kernel",
+        ],
+        logs.path(),
+        &[("PATH", &path)],
+    );
+    assert!(
+        text(&out.stdout).starts_with("toilet -f my font\n\nKernel:  "),
+        "{:?}",
+        text(&out.stdout)
+    );
+    let missing = tools.path().join("missing").display().to_string();
+    let out = motd(&["--banner-file", &missing, "--kernel"], logs.path(), &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(text(&out.stdout), "");
+    assert!(
+        text(&out.stderr).contains(&format!("could not read banner file '{missing}': ")),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// An unknown type or font is sb-go's error with its list, exit 1,
+/// before anything is shown (Command flow step 3).
+#[test]
+fn an_unknown_type_or_font_is_refused() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let out = motd(
+        &["--title", "x", "--type", "nope", "--kernel"],
+        logs.path(),
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(text(&out.stdout), "");
+    let stderr = text(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(
+        lines[0], "✗ invalid banner type specified: nope",
+        "{stderr}"
+    );
+    assert_eq!(lines[1..3], ["Available types:", ""], "{stderr}");
+    assert!(
+        lines[3].starts_with("  ada-box           ada-cmt"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("unicornthink"), "{stderr}");
+    assert!(
+        lines[lines.len() - 1].starts_with("  details: "),
+        "{stderr}"
+    );
+    let out = motd(
+        &["--title", "x", "--font", "no-such-font", "--kernel"],
+        logs.path(),
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("invalid font specified: no-such-font"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Available fonts (from /usr/share/figlet):"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("term"), "{stderr}");
 }

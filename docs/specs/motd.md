@@ -396,6 +396,28 @@ never reach stdout, stderr or the run log.
     has and sb-go counted them twice; sb keeps pages of 100. A page of
     more than 100 records counts 100, and a line names at most 20
     statuses (then `…`), cut to sb-config's 2000 characters.
+29. **The banner file is read up to 1 MiB, without blocking** (M46).
+    Any file reads as in sb-go's `os.ReadFile` (`/dev/null` is an empty
+    banner), but a larger one, or a pipe whose writer hasn't written yet,
+    is the `could not read banner file` error, exit 1, and a FIFO with no
+    writer reads as empty instead of hanging the login. Bytes that aren't
+    UTF-8 go to toilet as they are, and show as U+FFFD when the file is
+    printed raw, where sb-go wrote them as they were.
+30. **`--banner-file-toilet` is split by shlex** (M46; decision 22), as
+    POSIX shell words: inside double quotes a backslash escapes only
+    `$`, `` ` ``, `"`, `\` and a newline, a `#` at a word's start begins
+    a comment, and only space, tab and newline separate words. sb-go's
+    own splitter dropped a backslash before any character in double
+    quotes and split on every Unicode space. toilet's options (`-f
+    font`, `-F filter`, `-w width`, quoted names) split the same.
+31. **The banner's warnings are sb's `warning:` lines** (M46) with
+    sb-go's texts (`warning: toilet command not found, using fallback
+    banner`), escaped and in the warn colour, where sb-go wrote
+    `Warning: …` and its `Error creating banner: …` lines plain. When
+    toilet fails with boxes missing too, the line names toilet's
+    failure, where sb-go named boxes first. The banner is toilet's
+    stdout alone, where sb-go's `none` type, its boxes-missing path and
+    its banner-file path took toilet's stderr into the banner too.
 
 ### Scope
 
@@ -1102,6 +1124,31 @@ Nothing touches a real host's state, and every fixture is synthetic.
     return whole torrents in groups unlike sb-go's. rTorrent's
     `view.size` views count by `d.state` (paused counts as started), and
     no view holds `d.message` errors. So the full listing stays.
+- **The banner (M46).** sb-go's order: the selection, then the type
+  (a boxes design, `none` or empty) and a font given (`term`, or
+  `<font>.flf`/`.tlf` that `stat` finds in `/usr/share/figlet` or the
+  working directory, a directory included, as Go's `os.Stat`), only when
+  the title is drawn; then the banner file, read before collection
+  starts. The lists are sb-go's columns (four of `  %-16s`), the fonts
+  sorted with `term` among them. cli-core's error block shows one line
+  per message, so the message is the block's headline and sb writes the
+  list under it, then the `details:` line, and ends with exit 1 (as `sb
+  install`'s tag suggestions do). The banner is drawn while the sections
+  are collected (decision 25): toilet, then boxes with toilet's output
+  on stdin, each through sb-exec with the 5 s timeout. A child that
+  isn't on `PATH` is the missing case; one that won't start (not
+  executable) is a failure with its fallback. After the timeout, sb-exec's
+  5 s grace runs before SIGKILL, as for motd's other children, where
+  sb-go killed at 5 s; both children together stay inside the sections'
+  30 s, as they run beside them (a test with a toilet and a systemctl
+  that each take 2 s ends in about 2 s). The output is the banner
+  plus the line break sb-go's `fmt.Println` adds, then the sections.
+  Tests: stand-ins in temporary directories for every path (boxed, `none`
+  and empty types, each tool missing, each failing, a banner file raw and
+  through toilet with shlex's words, an unterminated quote), the type and
+  font checks on a temporary font directory, sb-go's error texts, and
+  `sb motd` end to end with stand-ins first on `PATH` (the other `sb
+  motd` tests pass `--title ''`, so the host's toilet never runs).
 - **motd.yml's migration (2026-11-15; decision 4).** The format history
   was read from Saltbox's public history: V1 742b8772 (2025-09-28, eleven
   app lists), V2 0d39510a (colours; `enabled` on items; url and

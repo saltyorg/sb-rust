@@ -3556,6 +3556,7 @@ dependencies = [
  "sb-term-ui",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

@@ -627,7 +627,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             command,
             no_edit_again,
         } => edit::edit(command.file(), no_edit_again, shutdown, log)?,
-        Command::Motd(ref args) => motd::motd(args, shutdown)?,
+        Command::Motd(ref args) => motd::motd(args, shutdown, log)?,
         Command::Gha => gha::gha(shutdown, log)?,
         Command::Setup(ref args) => setup::setup(args, shutdown, log)?,
         Command::Update(ref args) => update::update(args, shutdown, log)?,

@@ -1,14 +1,16 @@
 //! `sb motd` (motd spec): sb-go's 32 flags (`cmd/motd.go:68-100`, without
 //! `-v`, motd decision 9) and the run on a current-thread runtime built
-//! after parsing: the chosen sections with motd.yml's colours and its
-//! `Config:` line, and `--generate-config` (module build M36-M42). The
-//! banner and `--share` are read by their tasks (M46, M47).
+//! after parsing: the banner, the chosen sections with motd.yml's colours
+//! and its `Config:` line, and `--generate-config` (module build M36-M46).
+//! `--share` is read by its task (M47).
 
 use std::io::Write;
 
 use sb_cli_core::cancel::Shutdown;
-use sb_cli_core::exit;
+use sb_cli_core::exit::{self, Exit};
+use sb_cli_core::log::RunLog;
 use sb_cli_core::theme;
+use sb_motd::banner::Banner;
 use sb_motd::{Colours, Options, Section};
 
 /// `sb motd`'s long help (sb-go's `motdCmd.Long`).
@@ -40,9 +42,9 @@ pub struct Args {
     /// Banner type for boxes (use 'none' to omit box)
     #[arg(long = "type", default_value = "peek", allow_hyphen_values = true)]
     banner_type: String,
-    /// Font for toilet cli
-    #[arg(long, default_value = "ivrit", allow_hyphen_values = true)]
-    font: String,
+    /// `--font`, and whether it was given.
+    #[command(flatten)]
+    font: FontFlag,
     /// Path to a file containing a custom banner to display
     #[arg(long = "banner-file", default_value = "", allow_hyphen_values = true)]
     banner_file: String,
@@ -64,12 +66,66 @@ impl Args {
         self.share.then_some("--share")
     }
 
-    /// The library's options: `--all` and the section flags given.
+    /// The library's options: `--all`, the section flags given and the
+    /// banner's flags.
     fn options(&self) -> Options {
         Options {
             all: self.all,
             sections: self.sections.0.clone(),
+            banner: Banner {
+                title: self.title.clone(),
+                kind: self.banner_type.clone(),
+                font: self.font.font.clone(),
+                font_given: self.font.given,
+                file: self.banner_file.clone(),
+                file_toilet: self.banner_file_toilet.clone(),
+            },
         }
+    }
+}
+
+/// `--font` and whether the command line gave it: sb-go checks a font
+/// only then (`cmd.Flags().Changed("font")`). A hand-written
+/// `Args`/`FromArgMatches` pair, as for the section flags, because the
+/// derive can't see where a value came from; clap's `value_source` can
+/// (<https://docs.rs/clap/4.6.7/clap/struct.ArgMatches.html#method.value_source>,
+/// <https://docs.rs/clap/4.6.7/clap/_derive/index.html#mixing-builder-and-derive-apis>).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FontFlag {
+    font: String,
+    given: bool,
+}
+
+/// `--font`'s id and name.
+const FONT: &str = "font";
+
+impl clap::FromArgMatches for FontFlag {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        Ok(Self {
+            font: matches.get_one::<String>(FONT).cloned().unwrap_or_default(),
+            given: matches.value_source(FONT) == Some(clap::parser::ValueSource::CommandLine),
+        })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+}
+
+impl clap::Args for FontFlag {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        cmd.arg(
+            clap::Arg::new(FONT)
+                .long(FONT)
+                .default_value("ivrit")
+                .allow_hyphen_values(true)
+                .help("Font for toilet cli"),
+        )
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        Self::augment_args(cmd)
     }
 }
 
@@ -147,7 +203,8 @@ fn help(section: Section) -> &'static str {
     }
 }
 
-/// `sb motd`: the report on stdout, coloured as stdout's choice says
+/// `sb motd`: the banner's warnings on stderr as sb's `warning:` lines,
+/// then the report on stdout, coloured as stdout's choice says
 /// (`CLICOLOR_FORCE` included). A signal drops the collection, and
 /// cli-core's `finish_run` shows "interrupted"
 /// (<https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled>).
@@ -155,9 +212,10 @@ fn help(section: Section) -> &'static str {
 /// # Errors
 ///
 /// `--generate-config`'s schema doesn't load, `--share` given before its
-/// task lands, no section chosen (sb-go's text, exit 1), the runtime, or
+/// task lands, no section chosen, a banner type or font that isn't one,
+/// an unreadable banner file (sb-go's texts, exit 1), the runtime, or
 /// stdout.
-pub fn motd(args: &Args, shutdown: &Shutdown) -> anyhow::Result<()> {
+pub fn motd(args: &Args, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     if args.generate_config {
         return generate_config();
     }
@@ -177,11 +235,50 @@ pub fn motd(args: &Args, shutdown: &Shutdown) -> anyhow::Result<()> {
     let Some(report) = report else {
         anyhow::bail!("interrupted");
     };
+    let report = match report {
+        Ok(report) => report,
+        Err(err) => return Err(listed(err, log)),
+    };
+    for warning in &report.warnings {
+        super::warn(warning);
+    }
     let mut out = std::io::stdout().lock();
-    out.write_all(report?.as_bytes())
+    out.write_all(report.text.as_bytes())
         .map_err(exit::output_error)?;
     out.flush().map_err(exit::output_error)?;
     Ok(())
+}
+
+/// `err` for sb's error path. An unknown banner type or font is sb-go's
+/// message in cli-core's error block, then its list in sb-go's columns,
+/// then the block's `details:` line, written here (as `sb install`'s tag
+/// suggestions are), and the run ends with exit 1 quietly: the block shows
+/// one line per message, and the list needs its own. Every other error
+/// goes to cli-core's block as it is.
+fn listed(err: sb_motd::Error, log: Option<&RunLog>) -> anyhow::Error {
+    let Some(listing) = err.listing() else {
+        return err.into();
+    };
+    tracing::warn!(error = %err, "motd banner check failed");
+    let theme = theme::current();
+    let mut text = exit::error_block(&err, None, theme);
+    for line in listing.lines() {
+        text.push_str(&exit::escaped(line));
+        text.push('\n');
+    }
+    if let Some(log) = log {
+        let label = theme.style(theme::Role::Muted);
+        let _ = std::fmt::Write::write_fmt(
+            &mut text,
+            format_args!(
+                "\n  {label}details:{label:#} {}\n",
+                exit::escaped(&log.pointer())
+            ),
+        );
+    }
+    // As cli-core's error block: nothing better to do if stderr fails.
+    let _ = anstream::stderr().write_all(text.as_bytes());
+    Exit(1).into()
 }
 
 /// `--generate-config`: sb-go's example motd.yml from the Saltbox root's
@@ -246,7 +343,8 @@ mod tests {
     #[test]
     fn all_and_no_flags() {
         assert!(parse(&["--all"]).unwrap().options().all);
-        assert_eq!(parse(&[]).unwrap().options(), Options::default());
+        let none = parse(&[]).unwrap().options();
+        assert!(!none.all && none.sections.is_empty(), "{none:?}");
     }
 
     /// The banner's defaults are sb-go's (`cmd/motd.go:95-99`).
@@ -255,7 +353,8 @@ mod tests {
         let args = parse(&[]).unwrap();
         assert_eq!(args.title, "Saltbox");
         assert_eq!(args.banner_type, "peek");
-        assert_eq!(args.font, "ivrit");
+        assert_eq!(args.font.font, "ivrit");
+        assert!(!args.font.given);
         assert_eq!(args.banner_file, "");
         assert_eq!(args.banner_file_toilet, "");
         let args = parse(&[
@@ -277,15 +376,75 @@ mod tests {
             (
                 args.title.as_str(),
                 args.banner_type.as_str(),
-                args.font.as_str()
+                args.font.font.as_str()
             ),
             ("T", "none", "term")
         );
+        assert!(args.font.given);
         assert_eq!(
             (args.banner_file.as_str(), args.banner_file_toilet.as_str()),
             ("f", "-f x")
         );
         assert!(args.share && args.generate_config);
+    }
+
+    /// The banner flags reach the library; a font counts as given when
+    /// the command line names it, even with the default's value.
+    #[test]
+    fn banner_flags_become_the_options() {
+        let banner = parse(&[]).unwrap().options().banner;
+        assert_eq!(
+            banner,
+            Banner {
+                title: "Saltbox".into(),
+                kind: "peek".into(),
+                font: "ivrit".into(),
+                font_given: false,
+                file: String::new(),
+                file_toilet: String::new(),
+            }
+        );
+        let banner = parse(&[
+            "--font",
+            "ivrit",
+            "--title",
+            "T",
+            "--type",
+            "none",
+            "--banner-file",
+            "f",
+            "--banner-file-toilet",
+            "-f x",
+        ])
+        .unwrap()
+        .options()
+        .banner;
+        assert!(banner.font_given);
+        assert_eq!(
+            (
+                banner.title.as_str(),
+                banner.kind.as_str(),
+                banner.file.as_str(),
+                banner.file_toilet.as_str()
+            ),
+            ("T", "none", "f", "-f x")
+        );
+        let mut font = FontFlag::default();
+        let matches = clap::Command::new("motd")
+            .args(
+                <FontFlag as clap::Args>::augment_args_for_update(clap::Command::new("x"))
+                    .get_arguments()
+                    .cloned(),
+            )
+            .get_matches_from(["motd", "--font", "big"]);
+        clap::FromArgMatches::update_from_arg_matches(&mut font, &matches).unwrap();
+        assert_eq!(
+            font,
+            FontFlag {
+                font: "big".into(),
+                given: true
+            }
+        );
     }
 
     /// pflag takes the next word for a value flag even when it starts
@@ -309,7 +468,7 @@ mod tests {
             [
                 args.title.as_str(),
                 args.banner_type.as_str(),
-                args.font.as_str(),
+                args.font.font.as_str(),
                 args.banner_file.as_str(),
                 args.banner_file_toilet.as_str()
             ],
@@ -317,8 +476,7 @@ mod tests {
         );
     }
 
-    /// `--share` is refused until built, never ignored; the banner's flags
-    /// are taken and unused until M46.
+    /// `--share` is refused until built, never ignored.
     #[test]
     fn unbuilt_behaviour_flags_are_named() {
         assert_eq!(parse(&["--all"]).unwrap().not_built_yet(), None);

@@ -57,6 +57,7 @@ fn the_sections_chosen_and_each_outcome_are_logged() {
     let options = Options {
         all: false,
         sections: vec![Section::Kernel, Section::Distribution],
+        ..Options::default()
     };
     let colours = Colours {
         theme: &theme,

@@ -43,6 +43,9 @@ reqwest.workspace = true
 quick-xml.workspace = true
 # qBittorrent's login form (application/x-www-form-urlencoded).
 form_urlencoded.workspace = true
+# `--banner-file-toilet`'s arguments split as shell words (motd decision
+# 22; stack table "Shell quoting").
+shlex.workspace = true
 # Every child: update-notifier's scripts, apt, loginctl and last
 # (CONSTRAINTS.md).
 sb-exec.workspace = true
