@@ -13,8 +13,6 @@ sb-host.workspace = true
 sb-term-ui.workspace = true
 sb-docker.workspace = true
 sb-config.workspace = true
-# `sb branch-sandbox` (repo spec; ops replaces the wiring, M79).
-sb-repo.workspace = true
 # `sb edit`'s editor, attached to the terminal (tui spec, editors).
 sb-exec.workspace = true
 # `sb motd` (motd spec).

@@ -77,10 +77,11 @@ deny = [
     # name is its self dev-dependency, which turns `testing` on for its
     # tests (sb-journal plan, "Code with no user yet").
     { crate = "sb-journal", wrappers = ["sb-host", "sb-journal"] },
-    # repo: git on Saltbox's checkouts (repo spec); used by the binary
-    # until ops exists. Its own name is its self dev-dependency, which
-    # turns `testing` on for its tests (as sb-journal's).
-    { crate = "sb-repo", wrappers = ["sb", "sb-repo", "sb-ansible"] },
+    # repo: git on Saltbox's checkouts (repo spec); used by ops' branch
+    # commands (and later update and setup) and ansible. Its own name is
+    # its self dev-dependency, which turns `testing` on for its tests (as
+    # sb-journal's).
+    { crate = "sb-repo", wrappers = ["sb-ops", "sb-repo", "sb-ansible"] },
     # config: sb validate-config's schemas and checks, used by the binary.
     { crate = "sb-config", wrappers = ["sb", "sb-motd", "sb-ops"] },
     # tui: sb's full-screen screens (the log picker and viewer, the

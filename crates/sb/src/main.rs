@@ -17,6 +17,7 @@ use sb_cli_core::help;
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
 use sb_cli_core::theme;
+use sb_ops::branch::Checkout;
 
 /// Saltbox CLI
 #[derive(Parser)]
@@ -58,6 +59,12 @@ enum Command {
     // No `--verbose/-v`: the run log has the detail (config decision 1).
     #[command(long_about = "Validate Saltbox configuration files")]
     ValidateConfig,
+    /// Change the branch used by Saltbox
+    #[command(long_about = "Change the branch used by Saltbox")]
+    Branch {
+        /// The branch to switch to
+        name: String,
+    },
     /// Change the branch used by Sandbox
     #[command(long_about = "Change the branch used by Sandbox")]
     BranchSandbox {
@@ -301,6 +308,7 @@ impl Command {
                 DockerCommand::Restart { .. } => "docker restart",
             },
             Command::ValidateConfig => "validate-config",
+            Command::Branch { .. } => "branch",
             Command::BranchSandbox { .. } => "branch-sandbox",
             Command::Edit { command, .. } => match command {
                 EditCommand::Accounts => "edit accounts",
@@ -331,9 +339,10 @@ impl Command {
             Command::Version { .. } => false,
             // The Docker socket, and sb's rule that only version and
             // completion run unprivileged (cli-core decision 3); Saltbox's
-            // config is root's to read (config spec); the Sandbox checkout
-            // and its ownership are root's to change; so are the files
-            // `edit` opens (tui spec, editors, assumption 2); the journal
+            // config is root's to read (config spec); the Saltbox and
+            // Sandbox checkouts and their ownership are root's to change;
+            // so are the files `edit` opens (tui spec, editors, assumption
+            // 2); the journal
             // files are root's to read (tui assumption 2); motd as every
             // command (motd decision 20: pam_motd already runs it as root);
             // sb's own file, which `self-update` replaces (release spec,
@@ -346,6 +355,7 @@ impl Command {
             // `announcements`, as every ops command (ops assumption 2).
             Command::Docker { .. }
             | Command::ValidateConfig
+            | Command::Branch { .. }
             | Command::BranchSandbox { .. }
             | Command::Edit { .. }
             | Command::Motd(_)
@@ -587,7 +597,10 @@ fn warn(message: impl std::fmt::Display) {
 fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     match *command {
         Command::ValidateConfig => validate_config(shutdown, log)?,
-        Command::BranchSandbox { ref name } => branch::branch_sandbox(name, shutdown, log)?,
+        Command::Branch { ref name } => branch::branch(Checkout::Saltbox, name, shutdown, log)?,
+        Command::BranchSandbox { ref name } => {
+            branch::branch(Checkout::Sandbox, name, shutdown, log)?;
+        }
         Command::Edit {
             command,
             no_edit_again,
@@ -1011,6 +1024,20 @@ mod tests {
     fn validate_config_needs_root() {
         assert!(Command::ValidateConfig.needs_root());
         assert_eq!(Command::ValidateConfig.name(), "validate-config");
+    }
+
+    /// Both branch commands change a root-owned checkout and its
+    /// ownership, and log under sb-go's names.
+    #[test]
+    fn branch_commands_need_root_and_log_their_names() {
+        for (args, name) in [
+            (["sb", "branch", "develop"], "branch"),
+            (["sb", "branch-sandbox", "develop"], "branch-sandbox"),
+        ] {
+            let command = Cli::try_parse_from(args).expect("parses").command;
+            assert!(command.needs_root(), "{name}");
+            assert_eq!(command.name(), name);
+        }
     }
 
     /// `edit` needs root and logs each subcommand under its sb-go name.

@@ -17,6 +17,9 @@ sb-config.workspace = true
 saphyr.workspace = true
 # `sb announcements`' runner step (term-ui).
 sb-term-ui.workspace = true
+# The branch commands' fetch and reset of Saltbox's checkouts (ops spec,
+# "`sb branch <name>` and `sb branch-sandbox <name>`").
+sb-repo.workspace = true
 # The announcements' inline Markdown form and their viewer (tui spec,
 # Scope and "The announcement viewer").
 sb-tui.workspace = true

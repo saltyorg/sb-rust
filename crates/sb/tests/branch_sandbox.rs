@@ -1,4 +1,5 @@
-//! `sb branch-sandbox <name>` through the built binary (module build M5):
+//! `sb branch-sandbox <name>` through the built binary (module build M5;
+//! sb-ops' branch command since M79):
 //! its help and arguments as any run, and the switch end to end on a
 //! local Sandbox checkout (a `file://` remote in a temp dir) found through
 //! `SB_SALTBOX_DIR`'s inventory, owned by accounts.yml's user afterwards
