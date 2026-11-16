@@ -30,10 +30,25 @@ const SALTBOX_TAGS: [&str; 7] = [
 /// `git <args>` in `dir`, which must succeed; its stdout.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
+        // None of the host's git settings: its global and system config
+        // files (commit signing, credential helpers, rewrites) and its
+        // per-user ignore and attributes files stay out, so a commit here
+        // never asks for a key (the gate's mutation sandbox has no agent
+        // to sign with) and `git add` takes every fixture file.
+        // GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM set to /dev/null skip
+        // those config files (git 2.32+):
+        // https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL
+        // The ignore and attributes files are read without any config,
+        // from $XDG_CONFIG_HOME/git, unless these name others:
+        // https://git-scm.com/docs/git-config#Documentation/git-config.txt-coreexcludesFile
+        .args(["-c", "core.excludesFile=/dev/null"])
+        .args(["-c", "core.attributesFile=/dev/null"])
         .args(["-c", "user.name=sb", "-c", "user.email=sb"])
         .args(["-c", "init.defaultBranch=master"])
         .args(args)
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("LC_ALL", "C")
         .output()
         .expect("run git");
