@@ -37,8 +37,10 @@ fi
 # Test the build under test, and never the host's Docker daemon: a
 # leftover override of the sb binary or the live opt-in would change what
 # every stage checks (docker plan Task 9), and python-env's live opt-in
-# would start containers from every test run (module build M21).
-unset SB_TEST_BINARY SB_LIVE_DOCKER SB_LIVE_PYTHON
+# would start containers from every test run (module build M21). A
+# leftover SB_TEST_NO_SYSTEMD would skip a test outside the mutation
+# sandbox, the only place that sets it (mutation_sandbox).
+unset SB_TEST_BINARY SB_LIVE_DOCKER SB_LIVE_PYTHON SB_TEST_NO_SYSTEMD
 # The mutation passes' nextest runs read their settings from
 # .config/nextest.toml's `mutants` profile alone: an inherited NEXTEST_*
 # variable (a profile, retries, a test-thread count, another config file)
@@ -504,7 +506,9 @@ trap mutation_cleanup EXIT
 # - /run is an empty read-only tmpfs, so no host daemon's socket (Docker,
 #   systemd, D-Bus) is reachable, and the network namespace has only its
 #   own loopback, so neither is a daemon on the host's (the tests' fakes
-#   listen on the namespace's).
+#   listen on the namespace's). SB_TEST_NO_SYSTEMD=1 tells the one test
+#   that needs the host's systemd (sb's hangup test of a session scope's
+#   stop) to skip; it still runs in the Tests step (cargo llvm-cov).
 # unshare(1), mount(8) and ip(8):
 # https://man7.org/linux/man-pages/man1/unshare.1.html,
 # https://man7.org/linux/man-pages/man8/mount.8.html,
@@ -517,7 +521,7 @@ mutation_sandbox() {
   while [[ $1 != -- ]]; do dirs+=("$1"); shift; done
   shift
   if [[ $(id -u) == 0 ]]; then
-    unshare --mount --net --propagation private \
+    SB_TEST_NO_SYSTEMD=1 unshare --mount --net --propagation private \
       bash -c "$(declare -f mutation_sandbox_inner)"'; mutation_sandbox_inner "$@"' \
       mutation-sandbox "$((${#dirs[@]} + 1))" /tmp "${dirs[@]}" "$@"
   else

@@ -291,7 +291,10 @@ and sb-host's tests) under this profile:
     systemd, D-Bus) is reachable, and the network namespace has only its
     own loopback, up, so the tests' fake servers work and no daemon
     listening on the host's loopback (the Saltbox docker controller) is
-    reachable.
+    reachable. So the one test that needs the host's systemd (sb's
+    hangup test of a session scope's stop) skips in a pass:
+    `mutation_sandbox` sets `SB_TEST_NO_SYSTEMD=1` for it (2026-11-16),
+    and the Tests step still runs it.
 
   The working directory is entered again by its path inside, since it
   still names the mount it was entered through. Each step that fails, and

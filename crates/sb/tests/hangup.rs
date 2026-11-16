@@ -292,6 +292,25 @@ fn a_session_scope_stop_takes_the_grace() {
     if !root_gate::requested() {
         return;
     }
+    // The gate's mutation sandbox has no systemd to ask: its /run is
+    // empty (scripts/check.sh, mutation_sandbox, the only place that sets
+    // SB_TEST_NO_SYSTEMD). The gate's Tests step still runs this test.
+    // Set anywhere systemd runs, it fails rather than skips:
+    // /run/systemd/system is sd_booted(3)'s check,
+    // https://www.freedesktop.org/software/systemd/man/latest/sd_booted.html
+    let no_systemd = std::env::var_os("SB_TEST_NO_SYSTEMD");
+    assert!(
+        no_systemd.as_ref().is_none_or(|v| v == "1"),
+        "SB_TEST_NO_SYSTEMD must be 1 or unset, got {no_systemd:?}"
+    );
+    if no_systemd.is_some() {
+        assert!(
+            !std::path::Path::new("/run/systemd/system").exists(),
+            "SB_TEST_NO_SYSTEMD=1 where systemd is running"
+        );
+        eprintln!("not run: SB_TEST_NO_SYSTEMD=1, no systemd to start a scope");
+        return;
+    }
     assert_sighup_not_ignored();
     let world = World::with_stand_in(
         "trap '' HUP\ntrap 'sleep 0.3; : > \"$here/done\"; exit 0' TERM\n\
