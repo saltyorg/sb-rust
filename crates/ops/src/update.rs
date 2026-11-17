@@ -261,10 +261,10 @@ pub async fn run(
 /// # Errors
 ///
 /// The question unanswered; a migration that fails (`failed to execute
-/// migration '<tag>' for <Repo> repository: ...`, exit 1, the ones after
-/// it named as the lines that run them by hand), or is
-/// interrupted (exec's quiet exit, sb then ending by the signal); `lines`
-/// that can't be written.
+/// migration '<tag>' for <Repo> repository (to run by hand: ...): ...`,
+/// exit 1, it and the ones after it named as the lines that run them by
+/// hand), or is interrupted (the same lines in a warning, then exec's
+/// quiet exit, sb ending by the signal); `lines` that can't be written.
 async fn migrations(
     update: &Update<'_>,
     shown: &[(Checkout, Vec<Announcement>)],
@@ -326,12 +326,18 @@ async fn migrations(
             &exit::escaped(&format!("Running migration '{tag}' for {name} repository")),
         )?;
         let tags = [tag.clone()];
-        // A failure names the migrations after it, which the next update
-        // won't offer again (the announcements are no longer new): each as
-        // the line that runs it by hand (difference 41).
+        // A failure or an interrupt names this migration and those after
+        // it, which the next update won't offer again (the announcements
+        // are no longer new): each as the line that runs it by hand
+        // (difference 43).
+        let left = || by_hand(&pending[at..]);
+        // In parentheses, so the cause shown after it isn't read as the
+        // last line's.
         let context = || {
-            let left = by_hand(&pending[at + 1..]);
-            format!("failed to execute migration '{tag}' for {name} repository{left}")
+            format!(
+                "failed to execute migration '{tag}' for {name} repository (to run by hand: {})",
+                left()
+            )
         };
         // ansible's lines on stdout, as `sb install`'s.
         let ran = update
@@ -345,9 +351,23 @@ async fn migrations(
             )
             .await
             .with_context(context)?;
-        // Exec's quiet exit for an interrupted run (its `pass_through`):
-        // cli-core ends sb by the signal.
+        // An interrupted run (exec's `attached`: sb's SIGTERM or hangup, a
+        // Ctrl-C before the child started or one it died of): the
+        // warning, then exec's quiet exit (its `pass_through`), cli-core
+        // ending sb by the signal. Ansible itself takes Ctrl-C and exits
+        // 99 (ansible spec, assumption 5): the failure below, its list
+        // the same.
         if ran.outcome.ending == Ending::Interrupted {
+            let unrun = left();
+            tracing::warn!(migrations = %unrun, "migrations interrupted");
+            let style = theme::current().style(theme::Role::Warn);
+            write(
+                lines,
+                &format!(
+                    "{style}warning:{style:#} {}",
+                    exit::escaped(&format!("Migrations interrupted; to run by hand: {unrun}"))
+                ),
+            )?;
             return Err(Exit(1).into());
         }
         let _ran = ran.check().with_context(context)?;
@@ -357,14 +377,9 @@ async fn migrations(
 }
 
 /// The migrations `left` as the `sb install` lines that run them by
-/// hand, in parentheses after ` (not run, to run by hand: `, so the cause
-/// shown after the failure isn't read as theirs; nothing when none are
-/// left: Saltbox's tag as it is, Sandbox's with its `sandbox-` prefix,
-/// as `sb install` routes tags (ansible spec).
+/// hand, `, `-joined: Saltbox's tag as it is, Sandbox's with its
+/// `sandbox-` prefix, as `sb install` routes tags (ansible spec).
 fn by_hand(left: &[Pending]) -> String {
-    if left.is_empty() {
-        return String::new();
-    }
     let lines: Vec<String> = left
         .iter()
         .map(|migration| match migration.repo {
@@ -372,7 +387,7 @@ fn by_hand(left: &[Pending]) -> String {
             Checkout::Sandbox => format!("sb install sandbox-{}", migration.tag),
         })
         .collect();
-    format!(" (not run, to run by hand: {})", lines.join(", "))
+    lines.join(", ")
 }
 
 /// The branch question for an opened checkout ([`branch::resolve`]): the
@@ -570,22 +585,18 @@ mod tests {
         }
     }
 
-    /// Each migration left unrun as the `sb install` line that runs it:
-    /// routed back through `sb install`'s own rule (sb-ansible's
-    /// `Routed::route`), each line lands in its checkout with its tag.
+    /// Each migration as the `sb install` line that runs it: routed back
+    /// through `sb install`'s own rule (sb-ansible's `Routed::route`),
+    /// each line lands in its checkout with its tag.
     #[test]
-    fn unrun_migrations_are_the_lines_that_run_them() {
+    fn migrations_are_the_lines_that_run_them() {
         assert_eq!(by_hand(&[]), "");
         let left = [
             pending(Checkout::Saltbox, "migrate-a"),
             pending(Checkout::Sandbox, "migrate-c"),
         ];
         let text = by_hand(&left);
-        let inside = text
-            .strip_prefix(" (not run, to run by hand: ")
-            .and_then(|rest| rest.strip_suffix(')'))
-            .expect("the parenthesised list");
-        let tags: Vec<String> = inside
+        let tags: Vec<String> = text
             .split(", ")
             .map(|line| {
                 line.strip_prefix("sb install ")

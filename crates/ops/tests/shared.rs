@@ -423,7 +423,7 @@ async fn a_link_or_a_special_file_in_a_configs_place_is_refused() {
     assert_eq!(secured.to_string(), special);
 }
 
-/// A `defaults` that isn't a directory can't be listed (difference 38).
+/// A `defaults` that isn't a directory can't be listed (difference 40).
 #[test]
 fn an_unreadable_defaults_is_an_error() {
     let host = Host::new();

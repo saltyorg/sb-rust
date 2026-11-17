@@ -593,10 +593,14 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
     '<tag>' for <Repo> repository` and ansible's `run` (its playbook run
     by tag, as `sb install`'s) with that tag in that repository (Saltbox, Sandbox, saltbox_mod by
     path), then `All migrations completed successfully`. A failure:
-    `failed to execute migration '<tag>' for <Repo> repository[ (not
-    run, to run by hand: sb install <tag>, sb install sandbox-<tag>)]:
-    ...`, exit 1, the part in brackets naming the migrations after it,
-    when there are any (difference 41).
+    `failed to execute migration '<tag>' for <Repo> repository (to run
+    by hand: sb install <tag>, sb install sandbox-<tag>, ...): ...`,
+    exit 1, the list naming it and the migrations after it. Ctrl-C
+    during one reaches Ansible, which exits 99: that failure, with its
+    list. sb's own interrupt (SIGTERM, a hangup, Ctrl-C before a
+    playbook starts or one it dies of): warning `Migrations interrupted;
+    to run by hand: ...` with the same list, then sb ends by the signal
+    (difference 43).
   - Skipped (declined or `--migrations skip`): warning `Skipped
     migrations: <repo> <tag>, ...`, so the screen and the log keep them
     (decision 22).
@@ -772,25 +776,30 @@ fails.
     count (decision 31).
 
 `setup` and `gha`, the default configs (module build M80):
-38. A `defaults/` directory that can't be read is an error (`error
+40. A `defaults/` directory that can't be read is an error (`error
     listing default config files: <cause>`); sb-go's `filepath.Glob`
     ignores the error and finds nothing, so it secured nothing silently.
-39. A default named only `.default` stands for no file and is skipped;
+41. A default named only `.default` stands for no file and is skipped;
     sb-go's glob took it and failed on the Saltbox root itself (`... is
     not a regular file`).
 
 `update`, the announcements (module build M85):
-40. The comparison of each checkout's announcements before and after its
+42. The comparison of each checkout's announcements before and after its
     pull is a step of its own, "Checking for new announcements" /
     "Checked for new announcements", on every update; sb-go printed only
     `Displaying new announcements`, when there were some. The step holds
     that line and decision 23's warnings: term-ui's runner has no notices
     outside a step.
-41. A failed migration's error names the migrations after it, which
-    didn't run, each as the `sb install` line that runs it by hand (`sb
-    install <tag>`, `sb install sandbox-<tag>` for Sandbox's): the next
-    update won't offer them again, as their announcements are no longer
-    new. sb-go named only the failed one (the maintainer, 2026-11-17).
+43. No migration is silently lost: a failed migration's error names it
+    and the migrations after it, which didn't run (Ctrl-C reaches
+    Ansible, which exits 99, so it ends here too), and one sb itself is
+    interrupted in (SIGTERM, a hangup) gives a warning naming it and
+    those after it before sb ends by the signal; each as the `sb
+    install` line that runs it by hand (`sb install <tag>`, `sb install
+    sandbox-<tag>` for Sandbox's).
+    The next update won't offer them again, as their announcements are
+    no longer new. sb-go named only the failed one, and nothing after an
+    interrupt (the maintainer, 2026-11-17).
 
 ## Scope
 
@@ -1082,7 +1091,11 @@ the real services.
     - an invalid `announcements.yml` before and after: the warnings, the
       update completes;
     - self-update replaced: the warning and exit 0, no apt step started;
-    - SIGINT during the Saltbox fetch: "interrupted", death by the signal.
+    - SIGINT during the Saltbox fetch: "interrupted", death by the signal;
+    - a failed migration (and Ansible's own Ctrl-C exit 99): the error
+      naming it and those after it as `sb install` lines, exit 1; sb
+      interrupted (SIGTERM) during one: the warning with those lines,
+      death by the signal.
   - **`announcements`:** fixture pairs piped (the new entries inline, no
     migration table for an entry with a migration, no child started),
     no `--before` (every entry new), no `--after` (the root's own file
@@ -1316,8 +1329,8 @@ the real services.
 - Migrations declined in one run aren't offered again (the diff is
   empty next time); the warning lists them, and `sb install <tag>`
   (`sb install sandbox-<tag>` for Sandbox's) runs one by hand. sb-go is
-  the same. After a failed migration, its error gives those lines for the
-  ones left (difference 41).
+  the same. After a failed or interrupted migration, its error or warning
+  gives those lines for it and the ones left (difference 43).
 - A Sandbox checkout that doesn't exist fails `update` with repo's
   `inspect required directory` error, as sb-go.
 

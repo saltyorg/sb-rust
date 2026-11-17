@@ -526,8 +526,8 @@ fn a_failing_migration_exits_1_with_its_words() {
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(
         stderr.contains(
-            "failed to execute migration 'migrate-b' for Sandbox repository (not run, to run by \
-             hand: sb install migrate-a)"
+            "failed to execute migration 'migrate-b' for Sandbox repository (to run by hand: sb \
+             install sandbox-migrate-b, sb install migrate-a)"
         ),
         "{stderr}"
     );
@@ -566,4 +566,43 @@ fn on_a_terminal_the_migrations_question_is_asked() {
         ],
     );
     assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+}
+
+/// sb interrupted during a migration (ops difference 43): a SIGTERM to sb
+/// (a shutdown, `kill`) stops the playbook (exec's `attached`), and sb
+/// names the interrupted migration and those after it in a warning, each
+/// with the line that runs it by hand, and in the run log, then dies of
+/// the signal; nothing after it runs. The stand-in playbook sends it, to
+/// its parent, sb, during the first run, then waits as the playbook,
+/// `exec` keeping it the one process exec stops.
+#[test]
+fn an_interrupted_migration_names_what_is_left_and_ends_by_the_signal() {
+    if !root_gate::requested() {
+        return;
+    }
+    let (world, _) = migrations_world();
+    let _ = world.host.stand_in(
+        "ansible-playbook",
+        &format!(
+            "case \"$*\" in\n*--list-tags*) cat <<'LIST'\n{}LIST\n;;\n*) kill -TERM $PPID; exec sleep 30 ;;\nesac",
+            sb_ops::testing::LIST_TAGS
+        ),
+    );
+    let out = world.update(&["--reset-branch", "--migrations", "run"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.signal(), Some(15), "{:?}: {stderr}", out.status);
+    assert!(
+        stderr.contains(
+            "Migrations interrupted; to run by hand: sb install sandbox-migrate-b, sb install \
+             migrate-a"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(tag_runs(&world).len(), 1, "{:?}", world.host.calls());
+    assert!(
+        !stderr.contains("Validating Saltbox configuration"),
+        "{stderr}"
+    );
+    let log = run_log(&world);
+    assert!(log.contains("migrations interrupted"), "{log}");
 }

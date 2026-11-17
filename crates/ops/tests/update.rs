@@ -46,6 +46,9 @@ struct World {
     fake: Fake,
     releases: Releases,
     backups: tempfile::TempDir,
+    /// The run is interrupted (a SIGTERM recorded) as the migrations
+    /// question is answered.
+    interrupt_at_confirm: std::cell::Cell<bool>,
 }
 
 impl World {
@@ -61,6 +64,7 @@ impl World {
             fake,
             releases,
             backups: tempfile::tempdir().expect("backups"),
+            interrupt_at_confirm: std::cell::Cell::new(false),
         }
     }
 
@@ -174,8 +178,12 @@ impl World {
         };
         let confirmed = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&confirmed);
+        let interrupt = self.interrupt_at_confirm.get().then(|| shutdown.clone());
         let confirm = move |question: &str| {
             record.lock().expect("confirmed").push(question.to_owned());
+            if let Some(shutdown) = &interrupt {
+                shutdown.signalled(15);
+            }
             migrate.ok_or_else(|| PromptError::NoTerminal {
                 question: question.to_owned(),
                 reason: "no terminal".to_owned(),
@@ -991,6 +999,76 @@ async fn migrations_skipped_are_named_and_the_question_decides() {
     assert!(ran.confirmed.is_empty(), "{:?}", ran.confirmed);
 }
 
+/// sb interrupted before a migration's playbook starts (here a SIGTERM as
+/// the question is answered): exec's attached run doesn't start it and
+/// is interrupted, and the warning names it and the one after it, each
+/// with its by-hand line, before the run ends (ops difference 43).
+#[tokio::test]
+async fn an_interrupt_names_what_is_left_in_a_warning() {
+    let _spawns = SPAWNS.lock().await;
+    let (world, _, _) = migrations_world();
+    world.interrupt_at_confirm.set(true);
+    let flags = args(&["--reset-branch", "--skip-self-update"]);
+    let ran = world
+        .run_migrating(&flags, Ok(()), &[], None, &roomy(), Some(true))
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.lines);
+    assert!(
+        ran.lines.contains(
+            "Migrations interrupted; to run by hand: sb install sandbox-migrate-b, sb install \
+             migrate-a"
+        ),
+        "{}",
+        ran.lines
+    );
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+    assert!(
+        !ran.lines.contains("All migrations completed"),
+        "{}",
+        ran.lines
+    );
+}
+
+/// Ctrl-C during a migration reaches Ansible, which exits 99
+/// (`KEYBOARD_INTERRUPT`): the failure's text names the interrupted
+/// migration and the one after it, nothing else runs.
+#[tokio::test]
+async fn ansibles_own_ctrl_c_exit_names_what_is_left() {
+    let _spawns = SPAWNS.lock().await;
+    let (world, _, _) = migrations_world();
+    let _ = world.host.stand_in(
+        "ansible-playbook",
+        &format!(
+            "case \"$*\" in\n*--list-tags*) cat <<'LIST'\n{}LIST\n;;\n*) exit 99 ;;\nesac",
+            sb_ops::testing::LIST_TAGS
+        ),
+    );
+    let flags = args(&[
+        "--reset-branch",
+        "--migrations",
+        "run",
+        "--skip-self-update",
+    ]);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    let error = ran.error.expect("an interrupted migration");
+    assert!(
+        error.starts_with(
+            "failed to execute migration 'migrate-b' for Sandbox repository (to run by hand: \
+             sb install sandbox-migrate-b, sb install migrate-a): "
+        ),
+        "{error}"
+    );
+    assert!(error.contains("exited with code 99"), "{error}");
+    assert_eq!(tag_runs(&world).len(), 1, "{:?}", world.host.calls());
+    assert!(
+        !ran.screen.contains("Validating Saltbox configuration"),
+        "{}",
+        ran.screen
+    );
+}
+
 /// A failing migration stops the run with the spec's text (exit 1): the
 /// later migration and validation don't run.
 #[tokio::test]
@@ -1009,11 +1087,11 @@ async fn a_failing_migration_stops_with_its_words() {
         .await;
     let error = ran.error.expect("a failed migration");
     assert!(
-        // The one after it named, with the line that runs it by hand (the
-        // maintainer, 2026-11-17: ops difference 41).
+        // The failed one and the one after it, each with the line that
+        // runs it by hand (the maintainer, 2026-11-17: ops difference 43).
         error.starts_with(
-            "failed to execute migration 'migrate-b' for Sandbox repository (not run, to run \
-             by hand: sb install migrate-a): "
+            "failed to execute migration 'migrate-b' for Sandbox repository (to run by hand: \
+             sb install sandbox-migrate-b, sb install migrate-a): "
         ),
         "{error}"
     );
