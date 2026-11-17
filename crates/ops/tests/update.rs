@@ -112,6 +112,21 @@ impl World {
         self_update: Option<SelfUpdate<'_>>,
         disk: &Disk,
     ) -> Ran {
+        self.run_migrating(args, terminal, replies, self_update, disk, None)
+            .await
+    }
+
+    /// [`World::run`], the migrations question answered `migrate` (none:
+    /// as with no terminal).
+    async fn run_migrating(
+        &self,
+        args: &UpdateArgs,
+        terminal: Result<(), String>,
+        replies: &[bool],
+        self_update: Option<SelfUpdate<'_>>,
+        disk: &Disk,
+        migrate: Option<bool>,
+    ) -> Ran {
         let apt = self.host.apt();
         let root = self.saltbox();
         let paths = [self.sb.tree.root.path().to_path_buf()];
@@ -157,23 +172,43 @@ impl World {
             };
             Runner::start("sb update", &shutdown, None, options)
         };
-        let result = update::run(&update, terminal, ask, runner, &shutdown).await;
+        let confirmed = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&confirmed);
+        let confirm = move |question: &str| {
+            record.lock().expect("confirmed").push(question.to_owned());
+            migrate.ok_or_else(|| PromptError::NoTerminal {
+                question: question.to_owned(),
+                reason: "no terminal".to_owned(),
+                flag: "--migrations",
+            })
+        };
+        let mut lines = Vec::new();
+        let result = update::run(
+            &update, terminal, ask, confirm, runner, &shutdown, &mut lines,
+        )
+        .await;
         let asked = asked.lock().expect("asked").clone();
+        let confirmed = confirmed.lock().expect("confirmed").clone();
         Ran {
             error: result.err().map(|err| format!("{err:#}")),
             screen: term.contents(),
             requested: shutdown.requested(),
             asked,
+            confirmed,
+            lines: String::from_utf8_lossy(&lines).into_owned(),
         }
     }
 }
 
-/// What a run left.
+/// What a run left: the migrations question asked (`confirmed`) and the
+/// lines the migrations wrote besides.
 struct Ran {
     error: Option<String>,
     screen: String,
     requested: Option<u8>,
     asked: Vec<String>,
+    confirmed: Vec<String>,
+    lines: String,
 }
 
 /// The flags as clap parses them from `args`.
@@ -812,5 +847,181 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
             "Saltbox updated",
             "Sandbox updated",
         ],
+    );
+}
+
+/// Two announcements upstream asking for migrations, Sandbox's the older;
+/// the stand-in ansible-playbook lists tags as before, and for a run by
+/// tag records its working directory in `cwd`, failing when `fail` is
+/// there.
+fn migrations_world() -> (World, PathBuf, PathBuf) {
+    let world = World::new("master", "master");
+    for (remote, tag, date) in [
+        (&world.sb.saltbox_remote, "migrate-a", "2026-11-02"),
+        (&world.sb.sandbox_remote, "migrate-b", "2026-11-01"),
+    ] {
+        let _ = sb_ops::testing::git(&remote.work(), &["checkout", "--quiet", "master"]);
+        remote.commit(
+            "announcements.yml",
+            &format!(
+                "announcements:\n- date: '{date}'\n  title: Moved\n  message: Run it\n  migration:\n    required: true\n    tag: {tag}\n"
+            ),
+        );
+    }
+    let cwd = world.sb.tree.root.path().join("migration-cwd");
+    let fail = world.sb.tree.root.path().join("migration-fail");
+    let _ = world.host.stand_in(
+        "ansible-playbook",
+        &format!(
+            "case \"$*\" in\n*--list-tags*) cat <<'LIST'\n{}LIST\n;;\n*) pwd >> '{}'\n[ -e '{}' ] && exit 2\nexit 0 ;;\nesac",
+            sb_ops::testing::LIST_TAGS,
+            cwd.display(),
+            fail.display()
+        ),
+    );
+    (world, cwd, fail)
+}
+
+/// The runs by tag the stand-in saw.
+fn tag_runs(world: &World) -> Vec<String> {
+    world
+        .host
+        .calls()
+        .into_iter()
+        .filter(|call| call.contains("--tags"))
+        .collect()
+}
+
+/// `--migrations run`: every migration, by date (Sandbox's first), each
+/// its tag in its own checkout, between sb-go's lines; validation after.
+#[tokio::test]
+async fn migrations_run_by_date_each_in_its_checkout() {
+    let _spawns = SPAWNS.lock().await;
+    let (world, cwd, _) = migrations_world();
+    let flags = args(&[
+        "--reset-branch",
+        "--migrations",
+        "run",
+        "--skip-self-update",
+    ]);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}{}", ran.screen, ran.lines);
+    assert_eq!(
+        tag_runs(&world),
+        [
+            "ansible-playbook sandbox.yml --become --tags migrate-b",
+            "ansible-playbook saltbox.yml --become --tags migrate-a"
+        ]
+    );
+    let dirs = std::fs::read_to_string(&cwd).expect("cwd");
+    assert_eq!(
+        dirs.lines().collect::<Vec<_>>(),
+        [
+            world.sandbox().display().to_string(),
+            world.saltbox().display().to_string()
+        ]
+    );
+    in_order(
+        &ran.lines,
+        &[
+            "Starting migration execution",
+            "Running migration 'migrate-b' for Sandbox repository",
+            "Running migration 'migrate-a' for Saltbox repository",
+            "All migrations completed successfully",
+        ],
+    );
+    assert!(ran.confirmed.is_empty(), "{:?}", ran.confirmed);
+    assert!(
+        ran.screen.contains("Saltbox configuration validated"),
+        "{}",
+        ran.screen
+    );
+}
+
+/// `--migrations skip`, or no on the terminal: none run, each named in a
+/// warning (decision 22); yes on the terminal runs them; no migrations,
+/// no question.
+#[tokio::test]
+async fn migrations_skipped_are_named_and_the_question_decides() {
+    let _spawns = SPAWNS.lock().await;
+    let (world, _, _) = migrations_world();
+    let flags = args(&[
+        "--reset-branch",
+        "--migrations",
+        "skip",
+        "--skip-self-update",
+    ]);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        ran.lines
+            .contains("Skipped migrations: Sandbox migrate-b, Saltbox migrate-a"),
+        "{}",
+        ran.lines
+    );
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+
+    let flags = args(&["--skip-self-update"]);
+    let (world, _, _) = migrations_world();
+    let ran = world
+        .run_migrating(&flags, Ok(()), &[], None, &roomy(), Some(false))
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(ran.confirmed, [update::MIGRATIONS_QUESTION]);
+    assert!(ran.lines.contains("Skipped migrations:"), "{}", ran.lines);
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+
+    let (world, _, _) = migrations_world();
+    let ran = world
+        .run_migrating(&flags, Ok(()), &[], None, &roomy(), Some(true))
+        .await;
+    assert_eq!(ran.error, None, "{}{}", ran.screen, ran.lines);
+    assert_eq!(tag_runs(&world).len(), 2, "{:?}", world.host.calls());
+
+    // No migration among the new announcements: nothing asked.
+    let world = World::new("master", "master");
+    let ran = world
+        .run_migrating(&flags, Ok(()), &[], None, &roomy(), None)
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(ran.confirmed.is_empty(), "{:?}", ran.confirmed);
+}
+
+/// A failing migration stops the run with the spec's text (exit 1): the
+/// later migration and validation don't run.
+#[tokio::test]
+async fn a_failing_migration_stops_with_its_words() {
+    let _spawns = SPAWNS.lock().await;
+    let (world, _, fail) = migrations_world();
+    std::fs::write(&fail, "").expect("fail marker");
+    let flags = args(&[
+        "--reset-branch",
+        "--migrations",
+        "run",
+        "--skip-self-update",
+    ]);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    let error = ran.error.expect("a failed migration");
+    assert!(
+        error.starts_with("failed to execute migration 'migrate-b' for Sandbox repository: "),
+        "{error}"
+    );
+    assert!(error.contains("exited with code 2"), "{error}");
+    assert_eq!(tag_runs(&world).len(), 1, "{:?}", world.host.calls());
+    assert!(
+        !ran.lines.contains("All migrations completed"),
+        "{}",
+        ran.lines
+    );
+    assert!(
+        !ran.screen.contains("Validating Saltbox configuration"),
+        "{}",
+        ran.screen
     );
 }

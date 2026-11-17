@@ -45,6 +45,9 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     // sb-go's three (cmd/update.go): the root, the appdata path, /srv.
     let disk_paths = [PathBuf::from("/"), appdata, PathBuf::from("/srv")];
     let (disk, apt) = (Disk::new(), Apt::new());
+    // A second signal SIGKILLs the children still running (a migration's
+    // playbook, apt, git), as `sb install` registers it (exec decision 12).
+    let _children = sb_exec::on_forced_exit(shutdown);
     super::python_env::with_env(log, |python, releases| {
         let self_update = target.as_deref().map(|target| SelfUpdate {
             repo: SB_REPO,
@@ -69,13 +72,18 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             backups: &backups,
         };
         let ask = |shown: &str, question: &str| ask_branch(shown, question, shutdown);
+        // The migrations' question on the terminal, `--migrations` its flag.
+        let confirm =
+            |question: &str| sb_term_ui::confirm(question, None, "--migrations", shutdown);
         let runner = || Runner::start("sb update", shutdown, log, Options::default());
         super::block_on(sb_ops::update::run(
             &update,
             sb_term_ui::can_ask(),
             ask,
+            confirm,
             runner,
             shutdown,
+            &mut anstream::stderr(),
         ))?
     })
 }

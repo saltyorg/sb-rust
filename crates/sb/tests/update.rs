@@ -372,3 +372,195 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
         ("develop".into(), "develop".into())
     );
 }
+
+/// A world with announcements asking for migrations upstream, Sandbox's
+/// the older; the stand-in ansible-playbook lists tags as before and, for
+/// a run by tag, records its working directory in the file returned.
+fn migrations_world() -> (World, PathBuf) {
+    let world = World::new("master", "master");
+    for (remote, tag, date) in [
+        (&world.sb.saltbox_remote, "migrate-a", "2026-11-02"),
+        (&world.sb.sandbox_remote, "migrate-b", "2026-11-01"),
+    ] {
+        let _ = sb_ops::testing::git(&remote.work(), &["checkout", "--quiet", "master"]);
+        remote.commit(
+            "announcements.yml",
+            &format!(
+                "announcements:\n- date: '{date}'\n  title: Moved\n  message: Run it\n  migration:\n    required: true\n    tag: {tag}\n"
+            ),
+        );
+    }
+    let cwd = world.dir.path().join("migration-cwd");
+    let _ = world.host.stand_in(
+        "ansible-playbook",
+        &format!(
+            "case \"$*\" in\n*--list-tags*) cat <<'LIST'\n{}LIST\n;;\n*) pwd >> '{}' ;;\nesac",
+            sb_ops::testing::LIST_TAGS,
+            cwd.display()
+        ),
+    );
+    (world, cwd)
+}
+
+/// The runs by tag the stand-in saw.
+fn tag_runs(world: &World) -> Vec<String> {
+    world
+        .host
+        .calls()
+        .into_iter()
+        .filter(|call| call.contains("--tags"))
+        .collect()
+}
+
+/// `--migrations run` (ops spec, Testing Strategy): sb-go's table on
+/// stdout, each tag run in its checkout, Sandbox's older one first (the
+/// stand-in recording `--tags <tag>` and its working directory), between
+/// sb-go's lines; validation after.
+#[test]
+fn migrations_run_with_the_flag_in_their_checkouts() {
+    if !root_gate::requested() {
+        return;
+    }
+    let (world, cwd) = migrations_world();
+    let out = world.update(&["--reset-branch", "--migrations", "run"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    in_order(
+        &stdout,
+        &[
+            "The following tags need to be run to handle migrations:",
+            "Announcement Date",
+            "Sandbox",
+            "migrate-b",
+            "2026-11-01",
+            "Saltbox",
+            "migrate-a",
+            "2026-11-02",
+            // ansible's lines on stdout, as `sb install`'s.
+            "Executing Ansible playbook with command:",
+            "--tags migrate-b",
+            "Executing Ansible playbook with command:",
+            "--tags migrate-a",
+        ],
+    );
+    in_order(
+        &stderr,
+        &[
+            "Starting migration execution",
+            "Running migration 'migrate-b' for Sandbox repository",
+            "Running migration 'migrate-a' for Saltbox repository",
+            "All migrations completed successfully",
+            "Saltbox configuration validated",
+        ],
+    );
+    assert_eq!(
+        tag_runs(&world),
+        [
+            "ansible-playbook sandbox.yml --become --tags migrate-b",
+            "ansible-playbook saltbox.yml --become --tags migrate-a"
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&cwd)
+            .expect("cwd")
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            world.sandbox().display().to_string(),
+            world.saltbox().display().to_string()
+        ]
+    );
+}
+
+/// The run log's text, every file under the world's log directory.
+fn run_log(world: &World) -> String {
+    let mut text = String::new();
+    for entry in std::fs::read_dir(world.dir.path().join("logs")).expect("logs") {
+        let path = entry.expect("log").path();
+        text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+    }
+    text
+}
+
+/// `--migrations skip`: none run, each named in a warning on the screen
+/// and in the run log (decision 22).
+#[test]
+fn migrations_skipped_are_named_in_a_warning() {
+    if !root_gate::requested() {
+        return;
+    }
+    let (world, _) = migrations_world();
+    let out = world.update(&["--reset-branch", "--migrations", "skip"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Skipped migrations: Sandbox migrate-b, Saltbox migrate-a"),
+        "{stderr}"
+    );
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+    let log = run_log(&world);
+    assert!(
+        log.contains("migrations skipped") && log.contains("Sandbox migrate-b, Saltbox migrate-a"),
+        "{log}"
+    );
+}
+
+/// A failing migration stops sb with the spec's text and exit 1: the
+/// later migration and validation don't run.
+#[test]
+fn a_failing_migration_exits_1_with_its_words() {
+    if !root_gate::requested() {
+        return;
+    }
+    let (world, _) = migrations_world();
+    let _ = world.host.stand_in(
+        "ansible-playbook",
+        &format!(
+            "case \"$*\" in\n*--list-tags*) cat <<'LIST'\n{}LIST\n;;\n*) exit 2 ;;\nesac",
+            sb_ops::testing::LIST_TAGS
+        ),
+    );
+    let out = world.update(&["--reset-branch", "--migrations", "run"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("failed to execute migration 'migrate-b' for Sandbox repository"),
+        "{stderr}"
+    );
+    assert_eq!(tag_runs(&world).len(), 1, "{:?}", world.host.calls());
+    assert!(
+        !stderr.contains("Validating Saltbox configuration"),
+        "{stderr}"
+    );
+}
+
+/// On a terminal and without `--migrations`: after the table, term-ui's
+/// confirm asks `Run all migration tags?` on the terminal; `n` skips
+/// them, named in the warning.
+#[test]
+fn on_a_terminal_the_migrations_question_is_asked() {
+    if !root_gate::requested() {
+        return;
+    }
+    let (world, _) = migrations_world();
+    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let cmd = world.namespaced(Path::new(&sb), &["update", "--color=never"], &[]);
+    let mut pty = Pty::spawn(&cmd);
+    assert!(pty.showing("Run all migration tags?"), "{}", pty.text());
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+    pty.send(b"n\r");
+    let status = pty.exit();
+    let text = pty.text();
+    assert!(status.success(), "{text}");
+    in_order(
+        &text,
+        &[
+            "The following tags need to be run to handle migrations:",
+            "Run all migration tags?",
+            "Skipped migrations: Sandbox migrate-b, Saltbox migrate-a",
+            "Saltbox configuration validated",
+        ],
+    );
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+}

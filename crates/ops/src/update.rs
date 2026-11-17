@@ -2,17 +2,20 @@
 //! build M84 and M85): before anything changes, the checkouts' branches
 //! read, the up-front flag check and the disk space; then self-update,
 //! the branch questions, apt, Saltbox (its runtime and tags), the config
-//! permissions, Sandbox (its tags), the new announcements inline, and
-//! validation. The migrations come with M86, the viewer and the
-//! completion refresh with M87.
+//! permissions, Sandbox (its tags), the new announcements inline, their
+//! migrations (M86), and validation. The viewer and the completion
+//! refresh come with M87.
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use sb_ansible::{Ansible, TagCache};
+use sb_ansible::{Ansible, RunArgs, TagCache, Tags};
 use sb_cli_core::cancel::Shutdown;
-use sb_cli_core::exit::Exit;
+use sb_cli_core::exit::{self, Exit};
+use sb_cli_core::theme;
 use sb_config::run::Settings;
+use sb_exec::Ending;
 use sb_host::apt::Apt;
 use sb_host::disk::Disk;
 use sb_python_env::{Env, reconcile_runtime};
@@ -31,6 +34,9 @@ pub const DEFAULT_BRANCH: &str = "master";
 
 /// Self-update's warning after it replaced sb (sb-go's).
 pub const RERUN: &str = "Re-run the update command to update Saltbox";
+
+/// The question before the migrations run, all or none (sb-go's).
+pub const MIGRATIONS_QUESTION: &str = "Run all migration tags?";
 
 /// `sb update`'s flags: sb-go's but `-v` (ops decision 18), persistent as
 /// there (`global`), and `--migrations` (decision 19).
@@ -123,7 +129,7 @@ pub struct Update<'a> {
     pub args: &'a UpdateArgs,
     /// python-env's layout, release client and programs: Saltbox's runtime.
     pub python: &'a Env<'a>,
-    /// `ansible-playbook`, for the tags caches.
+    /// `ansible-playbook`, for the tags caches and the migrations.
     pub ansible: &'a Ansible,
     /// validate-config's settings, its root this one.
     pub settings: &'a Settings,
@@ -137,8 +143,7 @@ struct Opened {
     current: String,
 }
 
-/// `sb update` (but M86's migrations), in sb-go's order with the spec's
-/// changes:
+/// `sb update`, in sb-go's order with the spec's changes:
 ///
 /// 1. both checkouts opened and their branches read, then
 ///    [`missing_answers`] with `terminal` (term-ui's `can_ask`) for the
@@ -157,7 +162,7 @@ struct Opened {
 ///    updating <Repo>: ...`), after the steps before it, as sb-go's
 ///    `requireDirectory` does;
 /// 6. the new announcements on stdout, once that runner is done (inline
-///    until the viewer, M87);
+///    until the viewer, M87), then their [`migrations`];
 /// 7. a runner of its own: validate-config's checks (sb-config's `run`).
 ///
 /// # Errors
@@ -169,8 +174,10 @@ pub async fn run(
     update: &Update<'_>,
     terminal: Result<(), String>,
     mut ask: impl FnMut(&str, &str) -> Result<bool, PromptError>,
+    confirm: impl FnOnce(&str) -> Result<bool, PromptError>,
     mut runner: impl FnMut() -> Runner,
     shutdown: &Shutdown,
+    lines: &mut impl Write,
 ) -> anyhow::Result<()> {
     let token = shutdown.token();
     let open = async |checkout: Checkout, path: &Path| -> anyhow::Result<Opened> {
@@ -232,10 +239,114 @@ pub async fn run(
     if !shown.is_empty() {
         announcements::show(&shown)?;
     }
+    migrations(update, &shown, confirm, shutdown, lines).await?;
     let mut steps = runner();
     let validated = sb_config::run::run(&mut steps, update.settings, update.backups).await;
     steps.finish();
     validated.context("error validating Saltbox configuration")
+}
+
+/// The migrations the new announcements `shown` name (ops spec,
+/// "Migrations"; sb-go's `PromptForMigrations` and `ExecuteMigrations`),
+/// all or none: their table on stdout, then `--migrations` or, without
+/// it, [`MIGRATIONS_QUESTION`] (`confirm`, on the terminal; default no).
+/// Run: `Starting migration execution`, then for each `Running migration
+/// '<tag>' for <Repo> repository` and ansible's run of that tag in that
+/// checkout's playbook, attached, its lines on stdout as `sb install`'s,
+/// then `All migrations completed successfully`. Not run: a warning
+/// naming each (decision 22). sb's lines go to `lines`, a stream that
+/// strips colour when it is off (anstream's); the run log gets the
+/// decision and each migration.
+///
+/// # Errors
+///
+/// The question unanswered; a migration that fails (`failed to execute
+/// migration '<tag>' for <Repo> repository: ...`, exit 1), or is
+/// interrupted (exec's quiet exit, sb then ending by the signal); `lines`
+/// that can't be written.
+async fn migrations(
+    update: &Update<'_>,
+    shown: &[(Checkout, Vec<Announcement>)],
+    confirm: impl FnOnce(&str) -> Result<bool, PromptError>,
+    shutdown: &Shutdown,
+    lines: &mut impl Write,
+) -> anyhow::Result<()> {
+    let pending = announcements::migrations(shown);
+    if pending.is_empty() {
+        return Ok(());
+    }
+    announcements::show_migrations(&pending)?;
+    let approved = match update.args.migrations {
+        Some(Migrations::Run) => true,
+        Some(Migrations::Skip) => false,
+        None => confirm(MIGRATIONS_QUESTION)?,
+    };
+    let named = pending
+        .iter()
+        .map(|migration| format!("{} {}", migration.repo.name(), migration.tag))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // The run log keeps what was decided and what ran (decision 22), as
+    // the runner's notices reach it; these lines aren't a runner's, since
+    // the playbooks run attached.
+    tracing::info!(
+        migrations = %named,
+        approved,
+        by_flag = update.args.migrations.is_some(),
+        "migrations decided"
+    );
+    let write = |lines: &mut dyn Write, text: &str| -> anyhow::Result<()> {
+        writeln!(lines, "{text}")
+            .and_then(|()| lines.flush())
+            .map_err(exit::output_error)?;
+        Ok(())
+    };
+    if !approved {
+        tracing::warn!(migrations = %named, "migrations skipped");
+        // sb's `warning:` line, as the binary's own: the theme's warn
+        // colour, which `lines` (anstream's stderr in sb) strips when
+        // colour is off.
+        let style = theme::current().style(theme::Role::Warn);
+        return write(
+            lines,
+            &format!(
+                "{style}warning:{style:#} {}",
+                exit::escaped(&format!("Skipped migrations: {named}"))
+            ),
+        );
+    }
+    write(lines, "Starting migration execution")?;
+    for migration in &pending {
+        let name = migration.repo.name();
+        let tag = &migration.tag;
+        tracing::info!(repo = name, tag = %tag, "migration started");
+        write(
+            lines,
+            &exit::escaped(&format!("Running migration '{tag}' for {name} repository")),
+        )?;
+        let tags = [tag.clone()];
+        let context = || format!("failed to execute migration '{tag}' for {name} repository");
+        // ansible's lines on stdout, as `sb install`'s.
+        let ran = update
+            .ansible
+            .run(
+                &migration.repo.playbooks(update.root),
+                Tags::Given(&tags),
+                &RunArgs::default(),
+                shutdown,
+                &mut io::stdout(),
+            )
+            .await
+            .with_context(context)?;
+        // Exec's quiet exit for an interrupted run (its `pass_through`):
+        // cli-core ends sb by the signal.
+        if ran.outcome.ending == Ending::Interrupted {
+            return Err(Exit(1).into());
+        }
+        let _ran = ran.check().with_context(context)?;
+        tracing::info!(repo = name, tag = %tag, "migration completed");
+    }
+    write(lines, "All migrations completed successfully")
 }
 
 /// The branch question for an opened checkout ([`branch::resolve`]): the

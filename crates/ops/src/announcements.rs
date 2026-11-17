@@ -8,7 +8,7 @@
 //! them.
 
 use std::collections::HashSet;
-use std::io::{self, IsTerminal as _};
+use std::io::{self, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use saphyr::{MarkedYamlOwned, YamlDataOwned};
@@ -479,6 +479,39 @@ pub fn show(shown: &[(Checkout, Vec<Announcement>)]) -> anyhow::Result<()> {
     let width = sb_term_ui::stdout_width().and_then(|w| u16::try_from(w).ok());
     let mut out = io::stdout().lock();
     markdown::write_inline(&mut out, &items, &theme, width).map_err(exit::output_error)?;
+    Ok(())
+}
+
+/// The migrations `pending` names, on stdout after the announcements (ops
+/// spec, "Migrations"; sb-go's `PromptForMigrations`): sb-go's line `The
+/// following tags need to be run to handle migrations:`, then term-ui's
+/// table `#`, `Repo`, `Tag`, `Announcement Date`, numbered from 1, in
+/// colour as stdout's choice says, fitted to stdout's terminal when it is
+/// one.
+///
+/// # Errors
+///
+/// cli-core's `OutputError` when stdout can't be written.
+pub fn show_migrations(pending: &[Pending]) -> anyhow::Result<()> {
+    let mut table =
+        sb_term_ui::Table::new(["#", "Repo", "Tag", "Announcement Date"]).right_align(0);
+    for (number, migration) in (1..).zip(pending) {
+        table.row([
+            number.to_string(),
+            migration.repo.name().to_owned(),
+            migration.tag.clone(),
+            migration.date.clone(),
+        ]);
+    }
+    let colour = sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
+    let rendered = table.render(&stdout_theme(), colour, sb_term_ui::stdout_width());
+    let mut out = io::stdout().lock();
+    writeln!(
+        out,
+        "\nThe following tags need to be run to handle migrations:\n\n{rendered}"
+    )
+    .and_then(|()| out.flush())
+    .map_err(exit::output_error)?;
     Ok(())
 }
 
