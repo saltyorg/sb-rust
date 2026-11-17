@@ -70,18 +70,18 @@ check() { # name, sb's value, the tool's value
 }
 # sb's value for one section, plain, its key and padding removed.
 sb() {
-  NO_COLOR=1 SB_LOG_DIR=/tmp/sb-log /sb motd "--$1" | sed -E -e '/^$/d' -e 's/^[A-Za-z][A-Za-z ]*:  +//' -e 's/^ +//'
+  NO_COLOR=1 SB_LOG_DIR=/tmp/sb-log /sb motd --title '' "--$1" | sed -E -e '/^$/d' -e 's/^[A-Za-z][A-Za-z ]*:  +//' -e 's/^ +//'
 }
 systemctl is-system-running --wait >/dev/null 2>&1 || systemctl --failed --no-legend
 echo "$rel: $(systemctl --version | head -1); last from $(dpkg -S "$(command -v last 2>/dev/null || echo /none)" 2>/dev/null | cut -d: -f1 || echo none)"
 
-# sb as Saltbox runs it: from update-motd.d under pam_motd, during the
+# sb as Saltbox runs it (without the banner): from update-motd.d under pam_motd, during the
 # login, beside what who and last say at that moment.
 cat >/etc/update-motd.d/99-sbm <<'EOM'
 #!/bin/sh
 n=$(ls /var/tmp/sbm-at-login.* 2>/dev/null | wc -l)
 {
-  NO_COLOR=1 SB_LOG_DIR=/tmp/sb-log /sb motd --sessions --login
+  NO_COLOR=1 SB_LOG_DIR=/tmp/sb-log /sb motd --title '' --sessions --login
   echo "who: $(who | grep -c .)"
   echo "last: $(last -w -n 5 | grep -v '^reboot' | head -1)"
 } >"/var/tmp/sbm-at-login.$n" 2>&1
@@ -157,7 +157,7 @@ grep -q "still logged in" <<<"$first" || { echo "  FAIL  login: the first entry 
 df_rows=$(df -H -x tmpfs -x overlay -x fuse.mergerfs -x fuse.rclone --output=target,pcent,size 2>/dev/null \
   | tail -n +2 | awk '{size=$NF; pc=$(NF-1); $NF=""; $(NF-1)=""; sub(/ +$/, ""); print $0 "|" pc "|" size}' \
   | grep -Ev '^/(dev|sys|proc|run)(/|\|)' | sort)
-sb_rows=$(NO_COLOR=1 SB_LOG_DIR=/tmp/sb-log /sb motd --disk | grep 'used out of' | sed -e 's/^Disk Usage://' -e 's/^ *//' \
+sb_rows=$(NO_COLOR=1 SB_LOG_DIR=/tmp/sb-log /sb motd --title '' --disk | grep 'used out of' | sed -e 's/^Disk Usage://' -e 's/^ *//' \
   | sed -E 's/^(.*[^ ]) +([0-9]+%) used out of +([^ ]+)$/\1|\2|\3/' | sort)
 check disk "$sb_rows" "$df_rows"
 grep -Eq '^(/sbm-volume|/mnt/sbm bind)\|' <<<"$sb_rows" || { echo "  FAIL  disk: the volume is missing"; fail=1; }
