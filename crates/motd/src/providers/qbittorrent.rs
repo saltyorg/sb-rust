@@ -193,9 +193,8 @@ async fn login(shared: &Shared, instance: &Instance) -> Result<Option<String>, S
         .append_pair("username", instance.user.as_deref().unwrap_or_default())
         .append_pair("password", instance.password.as_deref().unwrap_or_default())
         .finish();
-    let http = shared.http().await.map_err(failed)?;
-    let response = http
-        .client()
+    let client = shared.client().await.map_err(failed)?;
+    let response = client
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
@@ -242,9 +241,8 @@ async fn fetch(shared: &Shared, instance: &Instance) -> Result<Counts, String> {
     let failed = |why: String| format!("could not sync main data: {why}");
     let mut url = api_url(&instance.url, "sync/maindata").map_err(failed)?;
     url.query_pairs_mut().append_pair("rid", "0");
-    let http = shared.http().await.map_err(failed)?;
-    let mut request = http
-        .client()
+    let client = shared.client().await.map_err(failed)?;
+    let mut request = client
         .get(url)
         .timeout(shared.timeout(instance, DATA_TIMEOUT));
     if let Some(session) = session {

@@ -114,8 +114,8 @@ pub fn edit(
             path.to_string_lossy()
         );
     };
-    // Before the editor runs, so a client that can't be built fails
-    // before the edit, not after it.
+    // Before the editor runs: the check's settings (the client in them
+    // is never built, as the check makes no request).
     let settings = settings(root)?;
     let question = format!("Edit {} again?", file.shown());
     loop {

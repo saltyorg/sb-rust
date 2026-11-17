@@ -358,15 +358,15 @@ async fn a_hung_instance_ends_at_its_timeout_or_the_deadline() {
 #[tokio::test]
 async fn the_client_is_built_once() {
     let shared = shared(&[]);
-    let first: *const Http = shared.http().await.unwrap();
-    let second: *const Http = shared.http().await.unwrap();
+    let first: *const reqwest::Client = shared.client().await.unwrap();
+    let second: *const reqwest::Client = shared.client().await.unwrap();
     assert_eq!(first, second);
     let broken = Shared::new(
         Proxy::Via("not a proxy url \u{0}".to_string()),
         Instant::now() + crate::run::CAP,
         Secrets::default(),
     );
-    let why = broken.http().await.unwrap_err();
+    let why = broken.client().await.unwrap_err();
     let one = section(vec![with_token("Plex", "http://x", "t")]);
     let text = plex::plex(Some(&one), &broken, &Paint::plain()).await;
     assert_eq!(text, format!("Error: {why}"));

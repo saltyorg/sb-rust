@@ -86,13 +86,15 @@ impl Shared {
         })
     }
 
-    /// The run's client, or why it couldn't be built.
-    async fn http(&self) -> Result<&Http, String> {
+    /// The run's client, built at the first request, or why it couldn't
+    /// be.
+    async fn client(&self) -> Result<&reqwest::Client, String> {
         self.http
             .get_or_init(|| async { Http::new(&self.proxy, DEFAULT_TIMEOUT) })
             .await
             .as_ref()
-            .map_err(Clone::clone)
+            .map_err(Clone::clone)?
+            .client()
     }
 
     /// One request's limit for `instance`: its `timeout` or sb-go's 1 s,
@@ -147,8 +149,12 @@ impl Shared {
         let Some(Ok(http)) = self.http.get() else {
             return text.to_string();
         };
-        let token = http
-            .client()
+        // Built already: the cell is filled only by `Shared::client`,
+        // which builds the client then.
+        let Ok(client) = http.client() else {
+            return text.to_string();
+        };
+        let token = client
             .get("http://login.invalid/")
             .basic_auth(user, Some(password))
             .build()
@@ -402,8 +408,8 @@ pub async fn send(
     timeout: Duration,
     texts: Texts,
 ) -> Result<Vec<u8>, String> {
-    let http = shared.http().await?;
-    let response = request(http.client())
+    let client = shared.client().await?;
+    let response = request(client)
         .timeout(timeout)
         .send()
         .await

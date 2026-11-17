@@ -803,8 +803,9 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
 /// and version never pay for it: current-thread, with I/O and time
 /// (reqwest's sockets, the checks' timeouts and backoff). Exit 1 when
 /// anything failed: the run has shown every block, so it returns a quiet
-/// exit. An HTTP client that can't be built (TLS or proxy setup) fails
-/// before the runner starts, as sb's plain error block. An old-format
+/// exit. The HTTP client is built at the first credential check's
+/// request; one that can't be built (TLS setup) fails each check that
+/// needs it, in its own block. An old-format
 /// motd.yml is migrated first, its original copied to `SB_BACKUPS_DIR`,
 /// or sb-config's default, `/opt/saltbox/backups` (motd decision 4; a
 /// temporary folder in sb's test build).
@@ -821,11 +822,13 @@ fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<
 }
 
 /// validate-config's settings, `sb update`'s too: the Saltbox root, the
-/// zoneinfo places, the HTTP client and the services' URLs.
+/// zoneinfo places, the HTTP client (built at its first request) and
+/// the services' URLs.
 ///
 /// # Errors
 ///
-/// The HTTP client can't be built.
+/// The proxy settings can't be read (`Http::new`; with
+/// `Proxy::System` it reads no URL, so in practice none).
 fn validate_settings() -> anyhow::Result<sb_config::run::Settings> {
     use sb_config::{cloudflare, dockerhub, http, run, validators};
     // Empty means unset, as for `SB_SALTBOX_DIR`. A test or debugging URL

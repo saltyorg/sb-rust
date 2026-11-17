@@ -95,9 +95,8 @@ async fn call(
         Limit::Data => (shared.timeout(instance, DATA_TIMEOUT), MAX_DATA),
     };
     let body = xmlrpc::method_call(method, params).map_err(|err| err.to_string())?;
-    let http = shared.http().await?;
-    let mut request = http
-        .client()
+    let client = shared.client().await?;
+    let mut request = client
         .post(instance.url.as_str())
         .header("Content-Type", "text/xml")
         .body(body)

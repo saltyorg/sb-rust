@@ -38,6 +38,7 @@ pub async fn login(http: &Http, url: &str, login: &DockerhubLogin) -> Result<(),
     let (user, token) = (login.user.as_str(), login.token.as_str());
     let response = http
         .client()
+        .map_err(|err| format!("failed to make request: {err}"))?
         .post(url)
         .json(&serde_json::json!({ "username": user, "password": token }))
         .send()

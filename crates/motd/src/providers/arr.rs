@@ -171,9 +171,8 @@ async fn fetch(shared: &Shared, instance: &Instance, arr: Arr) -> Result<Queue, 
     let mut queue = Queue::default();
     for page in 1..=MAX_PAGES {
         let url = page_url(&instance.url, arr, page)?;
-        let http = shared.http().await?;
-        let response = http
-            .client()
+        let client = shared.client().await?;
+        let response = client
             .get(url)
             .header("X-Api-Key", key.clone())
             .header("Accept", "application/json")

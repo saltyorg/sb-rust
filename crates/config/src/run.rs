@@ -547,6 +547,17 @@ mod tests {
         fake: &Fake,
         shutdown: &Shutdown,
     ) -> (Result<(), Exit>, String) {
+        let http = Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client");
+        run_with(root, fake, shutdown, http).await
+    }
+
+    /// `run_until`, with this client (a clone shares what it builds).
+    async fn run_with(
+        root: &std::path::Path,
+        fake: &Fake,
+        shutdown: &Shutdown,
+        http: Http,
+    ) -> (Result<(), Exit>, String) {
         let term = indicatif::InMemoryTerm::new(80, 140);
         let options = Options {
             target: Target::InMemory {
@@ -558,7 +569,7 @@ mod tests {
         let settings = Settings {
             root: root.to_path_buf(),
             zoneinfo: Vec::new(),
-            http: Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client"),
+            http,
             cloudflare_url: format!("{}/client/v4/", fake.url()),
             dockerhub_url: format!("{}/v2/users/login/", fake.url()),
             backoff: no_wait,
@@ -958,6 +969,26 @@ mod tests {
             "{screen}"
         );
         assert_eq!(fake.seen(), [] as [crate::testing::Seen; 0]);
+    }
+
+    /// The client, and the platform's roots it loads, is built only when a
+    /// credential check makes a request: a run with none set builds none.
+    #[tokio::test]
+    async fn a_run_without_credentials_builds_no_client() {
+        let root = saltbox_root("valid").expect("root");
+        let accounts = std::fs::read_to_string(root.path().join("accounts.yml")).expect("read");
+        let user_only = accounts.split("cloudflare:").next().expect("user");
+        write(root.path(), "accounts.yml", user_only);
+        let fake = healthy();
+        let http = Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client");
+        let (result, screen) = run_with(root.path(), &fake, &Shutdown::new(), http.clone()).await;
+        assert!(result.is_ok(), "{screen}");
+        assert!(!http.built(), "{screen}");
+
+        let root = saltbox_root("valid").expect("root");
+        let (result, screen) = run_with(root.path(), &fake, &Shutdown::new(), http.clone()).await;
+        assert!(result.is_ok(), "{screen}");
+        assert!(http.built(), "{screen}");
     }
 
     /// A failed check shows its own block, and accounts.yml fails with it.

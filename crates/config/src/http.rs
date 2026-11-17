@@ -3,6 +3,7 @@
 //! 1 MiB, remote text escaped and cut before it is shown. The proxy comes
 //! as a parameter (`Proxy`), so tests never meet a developer's proxy.
 
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Response bodies are read up to this many bytes.
@@ -30,10 +31,41 @@ pub enum Proxy {
     Via(String),
 }
 
-/// The client.
-#[derive(Clone, Debug)]
+/// The client, built at its first request: building one loads the
+/// platform's roots (rustls-platform-verifier reads every certificate in
+/// the system's store), which a run whose checks make no request (motd's
+/// and `sb edit`'s file checks, validate-config without credentials)
+/// doesn't need. Clones share the one built, through std's `OnceLock`
+/// (<https://doc.rust-lang.org/std/sync/struct.OnceLock.html#method.get_or_init>).
+#[derive(Clone)]
 pub struct Http {
-    client: reqwest::Client,
+    lazy: Arc<Lazy>,
+}
+
+/// What the client is built from, and the client once built (or why it
+/// couldn't be).
+struct Lazy {
+    proxy: Mode,
+    timeout: Duration,
+    client: OnceLock<Result<reqwest::Client, String>>,
+}
+
+/// The proxy as the builder takes it; `Via`'s URL already checked.
+enum Mode {
+    System,
+    Off,
+    // Boxed: reqwest's `Proxy` is far larger than the other variants.
+    Via(Box<reqwest::Proxy>),
+}
+
+/// No field is shown: a proxy URL can carry credentials (and reqwest's
+/// client lists its proxies), so only whether the client is built.
+impl std::fmt::Debug for Http {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Http")
+            .field("built", &self.lazy.client.get().is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Http {
@@ -44,32 +76,62 @@ impl Http {
     /// (<https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.no_proxy>,
     /// <https://docs.rs/reqwest/0.13.5/reqwest/struct.Proxy.html#method.all>,
     /// <https://docs.rs/reqwest/0.13.5/reqwest/redirect/struct.Policy.html#method.none>).
+    /// The proxy URL is checked here; the client is built at its first
+    /// request ([`Http::client`]).
     ///
     /// # Errors
     ///
-    /// The text shown when the proxy URL is invalid or the client can't be
-    /// built.
+    /// The text shown when the proxy URL is invalid.
     pub fn new(proxy: &Proxy, timeout: Duration) -> Result<Self, String> {
-        let builder = reqwest::Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none());
-        let builder = match proxy {
-            Proxy::System => builder,
-            Proxy::Off => builder.no_proxy(),
-            Proxy::Via(url) => {
-                builder.proxy(reqwest::Proxy::all(url).map_err(|err| transport_error(&err))?)
-            }
+        let proxy = match proxy {
+            Proxy::System => Mode::System,
+            Proxy::Off => Mode::Off,
+            Proxy::Via(url) => Mode::Via(Box::new(
+                reqwest::Proxy::all(url).map_err(|err| transport_error(&err))?,
+            )),
         };
-        builder
-            .build()
-            .map(|client| Http { client })
-            .map_err(|err| transport_error(&err))
+        Ok(Http {
+            lazy: Arc::new(Lazy {
+                proxy,
+                timeout,
+                client: OnceLock::new(),
+            }),
+        })
     }
 
-    /// The reqwest client.
+    /// The reqwest client, built at the first call and kept.
+    ///
+    /// # Errors
+    ///
+    /// The text shown when the client can't be built (the same text, at
+    /// every call).
+    pub fn client(&self) -> Result<&reqwest::Client, String> {
+        self.lazy
+            .client
+            .get_or_init(|| self.lazy.build())
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    /// Whether the client has been built (the laziness's tests).
+    #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
+    pub fn built(&self) -> bool {
+        self.lazy.client.get().is_some()
+    }
+}
+
+impl Lazy {
+    fn build(&self) -> Result<reqwest::Client, String> {
+        let builder = reqwest::Client::builder()
+            .timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::none());
+        let builder = match &self.proxy {
+            Mode::System => builder,
+            Mode::Off => builder.no_proxy(),
+            Mode::Via(proxy) => builder.proxy((**proxy).clone()),
+        };
+        builder.build().map_err(|err| transport_error(&err))
     }
 }
 
@@ -234,7 +296,12 @@ mod tests {
         fake.script("/big", Answer::json(200, "x".repeat(MAX_BODY + 4096)));
         fake.script("/small", Answer::json(200, "hello"));
         let http = http();
-        let get = |path: &str| http.client().get(format!("{}{path}", fake.url())).send();
+        let get = |path: &str| {
+            http.client()
+                .expect("client")
+                .get(format!("{}{path}", fake.url()))
+                .send()
+        };
         let big = body(get("/big").await.expect("send")).await.expect("body");
         assert_eq!(big.len(), MAX_BODY);
         let small = body(get("/small").await.expect("send"))
@@ -250,7 +317,12 @@ mod tests {
         let fake = Fake::start().expect("fake");
         fake.script("/two", Answer::json(200, "x".repeat(2 * MAX_BODY)));
         let http = http();
-        let get = || http.client().get(format!("{}/two", fake.url())).send();
+        let get = || {
+            http.client()
+                .expect("client")
+                .get(format!("{}/two", fake.url()))
+                .send()
+        };
         let whole = body_within(get().await.expect("send"), 3 * MAX_BODY)
             .await
             .expect("body");
@@ -283,6 +355,7 @@ mod tests {
         let http = Http::new(&Proxy::Off, Duration::from_millis(200)).expect("client");
         let err = http
             .client()
+            .expect("client")
             .get(format!("{}/slow", fake.url()))
             .send()
             .await
@@ -313,6 +386,7 @@ mod tests {
         let http = Http::new(&Proxy::Via(url), Duration::from_secs(5)).expect("client");
         let result = http
             .client()
+            .expect("client")
             .get("https://dockerhub.invalid/v2/")
             .send()
             .await;
@@ -334,6 +408,7 @@ mod tests {
         fake.script("/d", Answer::json(200, "direct"));
         let response = http()
             .client()
+            .expect("client")
             .get(format!("{}/d", fake.url()))
             .send()
             .await
@@ -341,9 +416,34 @@ mod tests {
         assert_eq!(response.status().as_u16(), 200);
     }
 
+    /// The client, with the platform's roots it loads, is built at the
+    /// first request, not with `Http`: a run whose checks make no request
+    /// builds none. Clones share the one built.
+    #[test]
+    fn the_client_is_built_at_first_use_and_shared() {
+        let http = http();
+        let copy = http.clone();
+        assert!(!http.built());
+        assert!(copy.client().is_ok());
+        assert!(http.built());
+        assert!(http.client().is_ok());
+    }
+
+    /// The debug form shows no proxy URL, which can carry credentials.
+    #[test]
+    fn the_debug_form_shows_no_proxy() {
+        let via = Proxy::Via("http://user:hunter2@127.0.0.1:9".into());
+        let shown = format!("{:?}", Http::new(&via, TIMEOUT).expect("client"));
+        assert!(shown.starts_with("Http"), "{shown}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+    }
+
     #[test]
     fn a_client_builds_for_each_proxy_setting() {
         assert!(Http::new(&Proxy::System, TIMEOUT).is_ok());
+        // And the client builds, at its first use.
+        let system = Http::new(&Proxy::System, TIMEOUT).expect("http");
+        assert!(system.client().is_ok());
         assert!(Http::new(&Proxy::Via("not a url".into()), TIMEOUT).is_err());
     }
 }

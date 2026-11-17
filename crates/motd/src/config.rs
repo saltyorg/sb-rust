@@ -380,8 +380,9 @@ pub fn load(settings: &Settings) -> Loaded {
 /// [`load`] with the run's settings: the Saltbox root from
 /// `SB_SALTBOX_DIR` and the zoneinfo places from `ZONEINFO`. The check
 /// makes no request, so its client reads no proxy setting; the HTTP
-/// sections get their own (M44). A client that can't be built leaves the
-/// file unread.
+/// sections get their own (M44). The client is built only for a request,
+/// so this check builds none; `Http::new` fails only on a proxy URL, which
+/// `Proxy::Off` doesn't have, and would leave the file unread.
 #[must_use]
 pub fn load_here() -> Loaded {
     let http = match Http::new(&Proxy::Off, Duration::from_secs(1)) {

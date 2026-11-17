@@ -231,11 +231,11 @@ impl Check<'_> {
             Credentials::Token(token) => hide(text, token),
         };
         let headers = auth_headers(credentials)?;
+        // Built at the first request (`Http::client`).
+        let client = self.http.client()?;
         let mut retry = 0;
         let outcome = loop {
-            let sent = self
-                .http
-                .client()
+            let sent = client
                 .get(url.clone())
                 .headers(headers.clone())
                 .send()

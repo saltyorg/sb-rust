@@ -47,9 +47,8 @@ async fn fetch(shared: &Shared, instance: &Instance) -> Result<Counts, String> {
     let url = reqwest::Url::parse(&url).map_err(|err| err.to_string())?;
     let token = instance.token.as_deref().unwrap_or_default();
     let authorization = super::secret_header(&format!("MediaBrowser Token=\"{token}\""))?;
-    let http = shared.http().await?;
-    let response = http
-        .client()
+    let client = shared.client().await?;
+    let response = client
         .get(url)
         .header("Accept", "application/json")
         .header("Authorization", authorization)
