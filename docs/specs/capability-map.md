@@ -352,12 +352,17 @@ To discuss with the maintainer once every module is done, not before:
   maintainer, 2026-11-13). They stay as they are until then. With every
   command in place they are re-measured, and the maintainer decides how
   far they can be cut down. The fixed limits (the 10 ms startup budget,
-  the size ceiling) gate every change meanwhile. Last measured at the
-  hardening plan's Checkpoint B (2026-11-13, commit 964f963, glibc
-  build): coverage 98.63% of lines and 98.119% of functions, production
-  binary 11,843,920 bytes, `sb --help` median 2.30 ms. The rows' own
-  figures came from older hardware, where 85bc4f0 also times 2.30 ms
-  on the newer host.
+  the size ceiling) gate every change meanwhile. Last measured on main
+  at 90e9d4f (2026-11-17, glibc build), the way the gate and ADR-014
+  measure: coverage 98.51% of lines (69,601 of 70,657) and 97.67% of
+  functions (8,632 of 8,838) over `crates/`, production binary
+  20,307,264 bytes, `sb --help` median 3.99 ms and `sb version` 4.23 ms.
+  Timed side by side on one host and load, 90e9d4f's release build
+  starts in 4.11 ms (`--help`) and 4.47 ms (`version`) against
+  964f963's 2.57 ms and 2.96 ms. Measured before at the hardening
+  plan's Checkpoint B (2026-11-13, 964f963): 98.63% of lines, 98.119% of
+  functions, 11,843,920 bytes, `sb --help` 2.30 ms. The rows' own
+  figures came from older hardware.
 - **musl or glibc** (maintainer, 2026-11-13). glibc and musl builds of
   the feature-complete CLI are measured side by side on one host
   (startup, peak memory, the commands' own run times), and the
