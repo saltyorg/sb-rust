@@ -72,7 +72,7 @@ impl World {
     /// `sb update <args>` in the namespace and a session of its own: no
     /// terminal.
     fn update(&self, args: &[&str]) -> Output {
-        let sb = common::sb().get_program().to_string_lossy().into_owned();
+        let sb = test_build();
         let mut command = vec!["-w", sb.as_str(), "update", "--color=never"];
         command.extend_from_slice(args);
         self.namespaced(Path::new("/usr/bin/setsid"), &command, &[])
@@ -113,6 +113,17 @@ impl World {
         }
         cmd
     }
+}
+
+/// This test build of sb, never `SB_TEST_BINARY`'s, for every run in the
+/// namespace: update ends with the completion refresh, and only a build
+/// with sb-completion's `testing` feature refreshes under
+/// `SB_TEST_COMPLETION_ROOT`; any other writes the host's shell
+/// directories (as completion.rs's `test_build`).
+fn test_build() -> String {
+    assert_cmd::cargo::cargo_bin("sb")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The lines' positions in `text`, which must rise.
@@ -194,6 +205,7 @@ fn piped_with_every_flag_every_step_runs_in_order() {
             "Displaying new announcements",
             "Validating Saltbox configuration",
             "Saltbox configuration validated",
+            "Shell completions checked",
         ],
     );
     assert!(
@@ -243,7 +255,7 @@ fn sigint_during_the_saltbox_fetch_ends_sb_by_the_signal() {
         std::fs::set_permissions(&pack, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
     let before = sb_ops::testing::git(&world.saltbox(), &["rev-parse", "HEAD"]);
-    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let sb = test_build();
     // sb is the process started: unshare and sh exec into it.
     let child = world
         .namespaced(
@@ -332,7 +344,7 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
         return;
     }
     let world = World::new("develop", "develop");
-    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let sb = test_build();
     let cmd = world.namespaced(
         Path::new(&sb),
         &["update", "--color=never", "--migrations", "skip"],
@@ -549,7 +561,7 @@ fn on_a_terminal_the_viewer_then_the_migrations_question() {
         return;
     }
     let (world, _) = migrations_world();
-    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let sb = test_build();
     let cmd = world.namespaced(Path::new(&sb), &["update", "--color=never"], &[]);
     let mut pty = Pty::spawn(&cmd);
     // The raw screen: the viewer's texts arrive between escape codes.
@@ -591,7 +603,7 @@ fn on_a_terminal_ctrl_c_in_the_viewer_ends_with_130() {
         return;
     }
     let (world, _) = migrations_world();
-    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let sb = test_build();
     let cmd = world.namespaced(Path::new(&sb), &["update", "--color=never"], &[]);
     let mut pty = Pty::spawn(&cmd);
     assert!(pty.showing(" NEW "), "{}", pty.text());
@@ -629,7 +641,7 @@ fn on_a_terminal_the_viewer_lists_the_older_announcements_too() {
         "announcements.yml",
         &format!("{old}- date: '2026-11-03'\n  title: Later news\n  message: Fresh\n"),
     );
-    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let sb = test_build();
     let cmd = world.namespaced(
         Path::new(&sb),
         &["update", "--color=never", "--migrations", "skip"],

@@ -68,7 +68,7 @@ the announcement rules. The behaviour comes from sb-go (`cmd/setup.go`,
      (decision 21);
    - `config`: `saltbox_user()` (an amendment, below), and
      validate-config's checks for `update`;
-   - `completion` (approved 2026-11-13): `refresh(step)`.
+   - `completion` (approved 2026-11-13): `refresh(step, paths, executable)`.
 5. **The Saltbox root** is `/srv/git/saltbox`, or `SB_SALTBOX_DIR` when
    set (config spec). Tests use it; sudo's relaunch drops it.
 6. **No consumer changes.** Saltbox's CI keeps calling `sb gha`, and
@@ -181,7 +181,9 @@ named as in sb-go (`<name>`, success `<name> completed`):
    default just copied), then `reconcile_venv` with that user.
 
 **4. Completions.** After success, completion's refresh of installed
-registrations. A failure is a warning line, never the exit code.
+registrations, as `update`'s step 12 runs it (a step "Checking shell
+completions" after `Installing Saltbox`; M87). A failure is a warning
+line, never the exit code.
 
 **Exit:** 0; 1 with cli-core's error block; an interrupt dies of its
 signal (`$?` 130 or 143).
@@ -645,8 +647,12 @@ required (`cobra.ExactArgs(1)`, cmd/branch.go:24).
     (the config amendment the tui spec proposes, with motd.yml's
     migration from its older format first, its backup in
     `/opt/saltbox/backups`: motd spec, decision 4).
-12. **Completion refresh** (completion's `refresh(step)`): a failure is a warning
-    (cmd/completion.go:160-179). Left out until `completion` exists.
+12. **Completion refresh** (completion's `refresh`): a failure is a warning
+    (cmd/completion.go:160-179). After validation passed, in the
+    validation's runner, as a step of its own, "Checking shell
+    completions" (success "Shell completions checked"), holding
+    completion's "Refreshing shell completions" and a step per shell
+    (M87).
 
 Errors keep sb-go's wrapping: `error updating Saltbox: ...`, `error
 updating Sandbox: ...`, `error securing Saltbox configuration
@@ -983,6 +989,11 @@ announcements skipped: error loading announcement file '<path>':
     runs without `XDG_CONFIG_HOME` (its licence file would go there
     before `HOME`), and icanhazip's and ipinfo's answers are read up to
     64 KiB (curl had no limit).
+59. `update` and `setup` hold completion's "Refreshing shell
+    completions" in a step of their own, "Checking shell completions"
+    (success "Shell completions checked"): sb's runner shows a step's
+    warning under a step, and the refresh's failure is one. sb-go ran
+    the refresh at the runner's top level (cmd/completion.go:182).
 
 ## Scope
 
@@ -996,10 +1007,9 @@ announcements skipped: error loading announcement file '<path>':
 **Update and branches** are in this spec: "`update`, `branch`,
 `branch-sandbox` and `announcements`" above, sharing
 `secure_existing_configs` and repo's branch resolution with setup.
-`update`'s full form: the announcement viewer is built (M87, the new
-ones marked, every one that applies listed); the completion refresh
-joins once completion's `refresh(step)` exists (its M60), until then
-left out.
+`update`'s full form is built: the announcement viewer (M87, the new
+ones marked, every one that applies listed) and the completion refresh
+(M87, after completion's M60).
 
 **Not here:** `diag` and `reinstall-*` (their own specs); pointing
 Saltbox's docs at `sb restore` instead of `restore.saltbox.dev` (a
@@ -1089,7 +1099,8 @@ it is a root installer that replaces `/usr/local/bin/sb`.
 ```
 crates/ops/                 sb-ops
   src/lib.rs
-  src/setup.rs              guard, phases, branch, completion refresh
+  src/setup.rs              guard, phases, branch
+  src/completions.rs        the completion refresh, for update and setup
   src/gha.rs                gha's sequence and ownership
   src/prereq.rs             prerequisites (apt sequence)
   src/locale.rs             locale-gen, update-locale, dpkg-reconfigure

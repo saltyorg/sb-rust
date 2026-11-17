@@ -14,6 +14,7 @@ use sb_cli_core::config;
 use sb_cli_core::log::RunLog;
 use sb_host::apt::Apt;
 use sb_host::disk::Disk;
+use sb_ops::completions::Refresh;
 use sb_ops::update::{RERUN, Update, UpdateArgs};
 use sb_release::SelfUpdate;
 use sb_term_ui::{Options, Runner};
@@ -46,6 +47,12 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     // sb-go's three (cmd/update.go): the root, the appdata path, /srv.
     let disk_paths = [PathBuf::from("/"), appdata, PathBuf::from("/srv")];
     let (disk, apt) = (Disk::new(), Apt::new());
+    // The completion refresh's shells' directories (a test's root under
+    // the `testing` feature) and sb's own executable (step 12, M87).
+    let (completion_paths, executable) = (
+        sb_completion::install::Paths::for_sb(),
+        std::env::current_exe(),
+    );
     // A second signal SIGKILLs the children still running (a migration's
     // playbook, apt, git), as `sb install` registers it (exec decision 12).
     let _children = sb_exec::on_forced_exit(shutdown);
@@ -73,6 +80,10 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             backups: &backups,
             // The new announcements in tui's viewer on a terminal (M87).
             stdout_terminal: std::io::stdout().is_terminal(),
+            completions: Refresh {
+                paths: &completion_paths,
+                executable: &executable,
+            },
         };
         let ask = |shown: &str, question: &str| ask_branch(shown, question, shutdown);
         // The migrations' question on the terminal, `--migrations` its flag.

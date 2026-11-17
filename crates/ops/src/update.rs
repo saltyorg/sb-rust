@@ -4,7 +4,7 @@
 //! the branch questions, apt, Saltbox (its runtime and tags), the config
 //! permissions, Sandbox (its tags), the new announcements (tui's viewer
 //! on a terminal, inline piped; M87), their migrations (M86), and
-//! validation. The completion refresh comes after M60.
+//! validation, then completion's refresh (M87).
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +26,7 @@ use sb_term_ui::{Labels, PromptError, Runner, Step};
 use crate::announcements::{self, Announcement, LoadError, Pending};
 use crate::branch::{self, Resolved};
 pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
+use crate::completions::{self, Refresh};
 use crate::{Checkout, configs};
 
 /// The branch `update` resets to, unless the user keeps another (sb-go's
@@ -138,6 +139,8 @@ pub struct Update<'a> {
     /// Whether stdout is a terminal: the new announcements in tui's
     /// viewer then, else inline (ops spec, "Shown").
     pub stdout_terminal: bool,
+    /// The completion refresh after validation (step 12).
+    pub completions: Refresh<'a>,
 }
 
 /// A checkout opened and its branch read, before any step.
@@ -167,13 +170,16 @@ struct Opened {
 /// 6. the new announcements, once that runner is done: on stdout's
 ///    terminal tui's viewer, every entry that applies marked new or not,
 ///    else the new ones inline; then their [`migrations`];
-/// 7. a runner of its own: validate-config's checks (sb-config's `run`).
+/// 7. a runner of its own: validate-config's checks (sb-config's `run`),
+///    then, when they passed, the completion refresh ([`completions`],
+///    a failure a warning).
 ///
 /// # Errors
 ///
 /// A refusal before any step (its text), self-update's failure (`error
 /// during self-update: ...`), an unanswered question, or a failed step's
-/// quiet `Exit` (its block shown in the tree).
+/// quiet `Exit` (its block shown in the tree), the completion refresh's
+/// included when Ctrl-C or a signal stops it.
 pub async fn run(
     update: &Update<'_>,
     terminal: Result<(), String>,
@@ -254,11 +260,17 @@ pub async fn run(
     migrations(update, &shown, confirm, shutdown, lines).await?;
     let mut steps = runner();
     let validated = sb_config::run::run(&mut steps, update.settings, update.backups).await;
+    // Then the completion refresh, under a step of its own, a failure a
+    // warning (step 12); sb-go's update returns before it when
+    // validation failed.
+    let refreshed = if validated.is_ok() {
+        completions::refresh(&mut steps, &update.completions).await
+    } else {
+        Ok(())
+    };
     steps.finish();
-    // The completion refresh goes here, after validation (ops spec,
-    // "`sb update`", step 12: completion's `refresh(step)` in a runner of
-    // its own, a failure a warning), once completion's M60 has built it.
-    validated.context("error validating Saltbox configuration")
+    validated.context("error validating Saltbox configuration")?;
+    Ok(refreshed?)
 }
 
 /// The migrations the new announcements `shown` name (ops spec,

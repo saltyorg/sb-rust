@@ -163,10 +163,13 @@ cache read, no root. A usage error for another shell (exit 2).
 
 ### Refresh for `update` and `setup`
 
-`refresh(step)` is the install for every shell, as a term-ui step per
-shell (sb-go: "Refreshing <Shell> completion", completion.go:180-206),
-its result lines as the step's output; a failure is a warning, not the
-command's failure (sb-go's `runner.Warning`). `ops` calls it.
+`refresh(step, paths, executable)` is the install for every shell, as a
+term-ui step per shell (sb-go: "Refreshing <Shell> completion",
+completion.go:180-206), its result lines as the step's output; a failure
+is a warning, not the command's failure (sb-go's `runner.Warning`),
+including an executable `std::env::current_exe` couldn't give. `ops`
+calls it with `install::Paths::for_sb()` and sb's own executable, its
+tests with a temporary root.
 
 ### Differences from sb-go (the complete list)
 
@@ -210,8 +213,9 @@ command's failure (sb-go's `runner.Warning`). `ops` calls it.
   installing spellings and `generate`, the probes, paths, markers,
   migration, the result lines, `refresh` for `ops`, the PTY and container
   tests.
-- **Later, elsewhere:** calling `refresh` from `update` and `setup`
-  (`ops`); completion for other dynamic values (none in sb-go).
+- **Elsewhere:** calling `refresh` from `update` and `setup` (`ops`,
+  module build M87). **Later:** completion for other dynamic values (none
+  in sb-go).
 - **Not here:** writing the cache (`ansible`).
 
 ## Tech Stack
@@ -243,7 +247,7 @@ scripts/check.sh fast | task | full
 
 ```
 crates/completion/
-  src/lib.rs        → the shells, names, errors; refresh(step)
+  src/lib.rs        → the shells, names, errors; refresh
   src/tags.rs       → the install-tag ValueCompleter (sb-go's rules)
   src/install.rs    → probes, paths, writes, markers, migration, results
   tests/            → sb-go-written files for migration; tag cases
@@ -437,5 +441,5 @@ maintainer's approval.)
    spellings.
 3. **Migration and cleanup (S):** sb-go's files and markers, the old
    outputs, live-executable preservation, from sb-go-written fixtures.
-4. **`refresh(step)` for `ops` (S):** the per-shell steps and the
+4. **`refresh` for `ops` (S):** the per-shell steps and the
    warning on failure.

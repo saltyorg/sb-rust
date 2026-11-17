@@ -1,4 +1,4 @@
-//! `refresh(step)` for ops' `update` and `setup` (completion spec,
+//! `refresh` for ops' `update` and `setup` (completion spec,
 //! "Refresh for `update` and `setup`"; sb-go's
 //! `regenerateInstalledCompletions` and its tests): one sub-step per
 //! shell under "Refreshing shell completions", the install's lines as its
@@ -51,9 +51,9 @@ struct Ran {
     ok: bool,
 }
 
-/// `refresh_with` inside a caller's step, then that step's own end, on a
+/// `refresh` inside a caller's step, then that step's own end, on a
 /// runner drawing to memory.
-fn refreshed(paths: &Paths, executable: &Path) -> Ran {
+fn refreshed(paths: &Paths, executable: &std::io::Result<PathBuf>) -> Ran {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -70,7 +70,7 @@ fn refreshed(paths: &Paths, executable: &Path) -> Ran {
         let mut runner = Runner::start("sb update", &shutdown, None, options);
         let result = runner
             .step(Labels::new("Updating", "Updated"), async |step| {
-                sb_completion::refresh_with(step, paths, executable).await;
+                sb_completion::refresh(step, paths, executable).await;
                 Ok(())
             })
             .await;
@@ -91,7 +91,7 @@ fn each_shell_gets_a_step() {
     // at <root>/usr/bin/zsh).
     let (dir, sb) =
         root(r#"printf '%s/local/share/zsh/site-functions\n' "$(cd "$(dirname "$0")/.." && pwd)""#);
-    let ran = refreshed(&Paths::under(dir.path()), &sb);
+    let ran = refreshed(&Paths::under(dir.path()), &Ok(sb));
     assert!(ran.ok, "{}", ran.screen);
     let mut at = 0;
     for label in [
@@ -128,7 +128,7 @@ fn each_shell_gets_a_step() {
 fn a_failed_shell_is_a_warning() {
     let _spawns = SPAWNS.lock();
     let (dir, sb) = root("echo broken >&2; exit 3");
-    let ran = refreshed(&Paths::under(dir.path()), &sb);
+    let ran = refreshed(&Paths::under(dir.path()), &Ok(sb));
     assert!(ran.ok, "the caller failed: {}", ran.screen);
     for text in [
         "✗ Zsh completion refresh",
@@ -152,11 +152,31 @@ fn a_failed_shell_is_a_warning() {
 #[test]
 fn names_that_cant_be_had_are_a_warning() {
     let (dir, _) = root("exit 0");
-    let ran = refreshed(&Paths::under(dir.path()), &dir.path().join("missing"));
+    let ran = refreshed(&Paths::under(dir.path()), &Ok(dir.path().join("missing")));
     assert!(ran.ok, "{}", ran.screen);
     assert!(
         ran.screen
             .contains("! Shell completion refresh failed: resolve completion executable: "),
+        "{}",
+        ran.screen
+    );
+    assert!(!ran.screen.contains("Refreshing"), "{}", ran.screen);
+}
+
+/// sb's own executable that can't be had (`std::env::current_exe`
+/// failed) is the warning, and no step runs.
+#[test]
+fn an_executable_that_cant_be_had_is_a_warning() {
+    let (dir, _) = root("exit 0");
+    let ran = refreshed(
+        &Paths::under(dir.path()),
+        &Err(std::io::Error::other("no such process")),
+    );
+    assert!(ran.ok, "{}", ran.screen);
+    assert!(
+        ran.screen.contains(
+            "! Shell completion refresh failed: get completion executable: no such process"
+        ),
         "{}",
         ran.screen
     );

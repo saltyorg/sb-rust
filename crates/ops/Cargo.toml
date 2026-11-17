@@ -49,6 +49,9 @@ sb-release.workspace = true
 # The tags caches after each pull and the migrations' playbook runs (ops
 # spec, "`sb update`", steps 7, 9 and 10; the branch commands, step 5).
 sb-ansible.workspace = true
+# update's and setup's completion refresh (ops spec, update step 12 and
+# setup step 4; completion's `refresh_with`).
+sb-completion.workspace = true
 # The config files' handles: opened without following a link, `fstat`ed
 # (ops spec, `secure_existing_configs`); bench's stat and statvfs of df's
 # filesystems (f_bfree, which sysinfo lacks).

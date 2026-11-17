@@ -16,10 +16,12 @@ use sb_ansible::Ansible;
 use sb_ansible::TagCache;
 use sb_cli_core::build_info::BuildInfo;
 use sb_cli_core::cancel::Shutdown;
+use sb_completion::install::Paths;
 use sb_config::run::Settings;
 use sb_config::{http, validators};
 use sb_host::disk::{Disk, Stats};
 use sb_ops::Checkout;
+use sb_ops::completions::Refresh;
 use sb_ops::testing::{Host, Saltbox};
 use sb_ops::update::{self, Migrations, Update, UpdateArgs};
 use sb_release::testing::{Answer, Fake, stand_in};
@@ -49,6 +51,11 @@ struct World {
     /// The run is interrupted (a SIGTERM recorded) as the migrations
     /// question is answered.
     interrupt_at_confirm: std::cell::Cell<bool>,
+    /// The completion refresh's root (never the host's `/usr` or `/etc`)
+    /// and sb's stand-in executable in it.
+    completion: tempfile::TempDir,
+    /// The refresh is given an executable that isn't there, so it fails.
+    broken_completion: std::cell::Cell<bool>,
 }
 
 impl World {
@@ -65,6 +72,8 @@ impl World {
             releases,
             backups: tempfile::tempdir().expect("backups"),
             interrupt_at_confirm: std::cell::Cell::new(false),
+            completion: completion_root(),
+            broken_completion: std::cell::Cell::new(false),
         }
     }
 
@@ -137,6 +146,15 @@ impl World {
         let python = self.sb.tree.env();
         let ansible = Ansible::with_program(self.host.stand_ins().join("ansible-playbook"));
         let settings = self.settings();
+        let completion_paths = Paths::under(self.completion.path());
+        let executable = Ok(self
+            .completion
+            .path()
+            .join(if self.broken_completion.get() {
+                "missing"
+            } else {
+                "opt/sb/sb"
+            }));
         let update = Update {
             root: &root,
             disk,
@@ -151,6 +169,10 @@ impl World {
             backups: self.backups.path(),
             // Piped, as the harness's runs are.
             stdout_terminal: false,
+            completions: Refresh {
+                paths: &completion_paths,
+                executable: &executable,
+            },
         };
         let term = indicatif::InMemoryTerm::new(100, 400);
         let shutdown = self_update.map_or_else(Shutdown::new, |update| update.shutdown.clone());
@@ -219,6 +241,17 @@ struct Ran {
     asked: Vec<String>,
     confirmed: Vec<String>,
     lines: String,
+}
+
+/// A completion root holding sb's stand-in executable and nothing else
+/// (no shell, so the refresh checks each and writes nothing).
+fn completion_root() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("completion root");
+    let sb = dir.path().join("opt/sb/sb");
+    std::fs::create_dir_all(sb.parent().expect("parent")).expect("dirs");
+    std::fs::write(&sb, "#!/bin/sh\n").expect("sb");
+    std::fs::set_permissions(&sb, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    dir
 }
 
 /// The flags as clap parses them from `args`.
@@ -383,8 +416,15 @@ async fn piped_with_every_flag_every_step_runs_in_order() {
             "Saltbox configuration validated",
             "Validated accounts.yml",
             "Validated settings.yml",
+            // The completion refresh last (ops spec, step 12; M87).
+            "Shell completions checked",
+            "Shell completions refreshed",
+            "Bash completion checked",
+            "Zsh completion checked",
+            "Fish completion checked",
         ],
     );
+    assert!(!ran.screen.contains("refresh failed"), "{}", ran.screen);
     assert!(ran.asked.is_empty(), "{:?}", ran.asked);
     assert_eq!(ran.requested, None);
     assert_eq!(
@@ -579,6 +619,58 @@ async fn validation_shows_issues_as_validate_config_does() {
         "{ours:#?}"
     );
     assert_eq!(ours, theirs);
+    // A failed validation ends the run before the completion refresh, as
+    // sb-go's update returns before it.
+    assert!(!ran.screen.contains("Shell completion"), "{}", ran.screen);
+}
+
+/// A completion refresh that fails is a warning, never update's failure
+/// (ops spec, step 12; sb-go's `runner.Warning`).
+#[tokio::test]
+async fn a_failed_completion_refresh_only_warns() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    world.broken_completion.set(true);
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    in_order(
+        &ran.screen,
+        &[
+            "Saltbox configuration validated",
+            "Shell completions checked",
+            "! Shell completion refresh failed: resolve completion executable: ",
+        ],
+    );
+}
+
+/// With a shell there, the refresh writes its file under the completion
+/// root (the test's, never the host's).
+#[tokio::test]
+async fn the_completion_refresh_writes_each_installed_shells_file() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let root = world.completion.path();
+    for (path, text) in [
+        ("usr/bin/bash", "#!/bin/sh\nexit 0\n"),
+        ("usr/share/bash-completion/bash_completion", ""),
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+        std::fs::write(&path, text).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    }
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        root.join("usr/local/share/bash-completion/completions/sb.bash")
+            .is_file(),
+        "{}",
+        ran.screen
+    );
 }
 
 /// `--keep-branch`: each checkout updates its own branch, with repo's

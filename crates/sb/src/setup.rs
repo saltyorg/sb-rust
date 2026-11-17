@@ -13,6 +13,7 @@ use sb_cli_core::config;
 use sb_cli_core::exit;
 use sb_cli_core::log::RunLog;
 use sb_host::apt::Apt;
+use sb_ops::completions::Refresh;
 use sb_ops::locale::Locale;
 use sb_ops::prereq::Dirs;
 use sb_ops::setup::{BRANCH_FLAGS, SALTBOX_URL, Setup, SetupArgs};
@@ -50,6 +51,12 @@ pub fn setup(args: &SetupArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> any
         Dirs::saltbox(),
         Locale::system(),
     );
+    // The completion refresh's shells' directories (a test's root under
+    // the `testing` feature) and sb's own executable (M87).
+    let (completion_paths, executable) = (
+        sb_completion::install::Paths::for_sb(),
+        std::env::current_exe(),
+    );
     let setup = Setup {
         checks: &checks,
         support: sb_host::check_setup_support,
@@ -61,6 +68,10 @@ pub fn setup(args: &SetupArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> any
         url: SALTBOX_URL,
         python: &python,
         run_id: &python.run_id,
+        completions: Refresh {
+            paths: &completion_paths,
+            executable: &executable,
+        },
     };
     super::block_on(async {
         let ask = |shown: &str, question: &str| ask_branch(shown, question, shutdown);

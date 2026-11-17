@@ -11,7 +11,7 @@ pub mod tags;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap_complete::env::{Bash, CompleteEnv, EnvCompleter, Fish, Shells, Zsh};
 use sb_term_ui::{Labels, Step};
@@ -54,11 +54,17 @@ fi
 "#;
 
 /// Refresh the shells' files, for ops' `update` and `setup` (spec,
-/// "Refresh for `update` and `setup`"): [`refresh_with`] sb's own
-/// executable and [`install::Paths::for_sb`].
-pub async fn refresh(step: &mut Step) {
-    match std::env::current_exe() {
-        Ok(executable) => refresh_with(step, &install::Paths::for_sb(), &executable).await,
+/// "Refresh for `update` and `setup`"): [`refresh_with`] `executable`,
+/// sb's own as `std::env::current_exe` gave it, under `paths`
+/// ([`install::Paths::for_sb`]; a test's root). An executable that can't
+/// be had is the warning under `step`, as any other refresh failure.
+pub async fn refresh(
+    step: &mut Step,
+    paths: &install::Paths,
+    executable: &std::io::Result<PathBuf>,
+) {
+    match executable {
+        Ok(executable) => refresh_with(step, paths, executable).await,
         Err(err) => step.warn(format!(
             "Shell completion refresh failed: get completion executable: {err}"
         )),

@@ -7,9 +7,12 @@
 //! the fetch over an existing checkout included, is
 //! crates/sb/tests/setup.rs.
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use sb_cli_core::cancel::Shutdown;
+use sb_completion::install::Paths;
+use sb_ops::completions::Refresh;
 use sb_ops::setup::{self, Found, GuardError, Plan, Setup};
 use sb_ops::testing::{Host, Remote, git};
 use sb_python_env::testing::Tree;
@@ -31,6 +34,9 @@ struct World {
     host: Host,
     tree: Tree,
     remote: Remote,
+    /// The completion refresh's root (never the host's `/usr` or `/etc`)
+    /// and sb's stand-in executable in it.
+    completion: tempfile::TempDir,
 }
 
 impl World {
@@ -52,7 +58,17 @@ impl World {
         // A fresh server: no checkout (the tree's own pins are in the
         // remote now).
         std::fs::remove_dir_all(&layout.checkout).expect("remove the tree's checkout");
-        Self { host, tree, remote }
+        let completion = tempfile::tempdir().expect("completion root");
+        let sb = completion.path().join("opt/sb/sb");
+        std::fs::create_dir_all(sb.parent().expect("parent")).expect("dirs");
+        std::fs::write(&sb, "#!/bin/sh\n").expect("sb");
+        std::fs::set_permissions(&sb, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        Self {
+            host,
+            tree,
+            remote,
+            completion,
+        }
     }
 
     fn root(&self) -> &Path {
@@ -77,6 +93,19 @@ impl World {
         plan: &Plan,
         support: fn() -> Result<(), sb_host::SetupUnsupported>,
     ) -> (bool, String) {
+        self.run_refreshing(plan, support, "opt/sb/sb").await
+    }
+
+    /// [`World::run`], the completion refresh given `executable` under its
+    /// root.
+    async fn run_refreshing(
+        &self,
+        plan: &Plan,
+        support: fn() -> Result<(), sb_host::SetupUnsupported>,
+        executable: &str,
+    ) -> (bool, String) {
+        let completion_paths = Paths::under(self.completion.path());
+        let executable = Ok(self.completion.path().join(executable));
         let (checks, apt, dirs, locale, bash) = (
             self.host.checks(),
             self.host.apt(),
@@ -96,6 +125,10 @@ impl World {
             url: &self.remote.url,
             python: &python,
             run_id: "run1",
+            completions: Refresh {
+                paths: &completion_paths,
+                executable: &executable,
+            },
         };
         let term = indicatif::InMemoryTerm::new(100, 400);
         let options = Options {
@@ -384,8 +417,12 @@ async fn a_fresh_install_runs_every_phase_in_sb_gos_order() {
             "Activating Git hooks",
             "Installing Python runtime completed",
             "Ansible virtual environment",
+            // The completion refresh after it (ops spec, setup step 4; M87).
+            "Shell completions checked",
+            "Shell completions refreshed",
         ],
     );
+    assert!(!screen.contains("refresh failed"), "{screen}");
     assert_eq!(world.branch(), ("develop".to_owned(), "develop".to_owned()));
     assert!(world.tree.layout.fact.is_file());
     for name in ["accounts.yml", "settings.yml"] {
@@ -415,6 +452,29 @@ async fn a_fresh_install_runs_every_phase_in_sb_gos_order() {
         ],
         "{:?}",
         world.host.calls()
+    );
+}
+
+/// A completion refresh that fails is a warning, never setup's failure
+/// (ops spec, setup step 4).
+#[tokio::test]
+async fn a_failed_completion_refresh_only_warns() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new();
+    let plan = Plan {
+        found: Found::Nothing,
+        branch: "master".to_owned(),
+        notices: Vec::new(),
+    };
+    let (ok, screen) = world.run_refreshing(&plan, supported, "missing").await;
+    assert!(ok, "{screen}");
+    in_order(
+        &screen,
+        &[
+            "Saltbox installation completed",
+            "Shell completions checked",
+            "! Shell completion refresh failed: resolve completion executable: ",
+        ],
     );
 }
 
@@ -469,6 +529,8 @@ async fn a_failing_phase_ends_setup_with_its_words() {
     assert!(!ok);
     assert!(screen.contains("Checking system compatibility"), "{screen}");
     assert!(screen.contains("22.04"), "{screen}");
+    // A failed setup ends before the completion refresh.
+    assert!(!screen.contains("Shell completion"), "{screen}");
     assert!(world.host.calls().is_empty(), "{:?}", world.host.calls());
 
     // An LXC container: the desktop check and apt never run.

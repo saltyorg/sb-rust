@@ -3708,6 +3708,7 @@ dependencies = [
  "saphyr",
  "sb-ansible",
  "sb-cli-core",
+ "sb-completion",
  "sb-config",
  "sb-exec",
  "sb-host",

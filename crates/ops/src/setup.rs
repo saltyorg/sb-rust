@@ -3,10 +3,9 @@
 //! on a fresh server. Before any step, the guard on the Saltbox root and,
 //! over an existing checkout, the branch question; then one root step
 //! `Installing Saltbox` holding sb-go's five phases in its order and
-//! names. The completion refresh after it (ops spec, "`sb setup`", 4.)
-//! joins once completion's `refresh(step)` exists (its M60; M87's second
-//! half): a step after `Installing Saltbox` in [`run`]'s runner, a
-//! failure a warning.
+//! names, then completion's refresh (ops spec, "`sb setup`", 4.; M87):
+//! a step after `Installing Saltbox` in [`run`]'s runner, a failure a
+//! warning.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -21,6 +20,7 @@ use sb_repo::{Answer, Repo};
 use sb_term_ui::{Labels, PromptError, Runner, Step};
 
 pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
+use crate::completions::{self, Refresh};
 use crate::locale::Locale;
 use crate::prereq::Dirs;
 use crate::{branch, configs, hooks, locale, prereq};
@@ -209,17 +209,22 @@ pub struct Setup<'a> {
     pub python: &'a Env<'a>,
     /// The run log's id, naming the apt sources' backup.
     pub run_id: &'a str,
+    /// The completion refresh after the installation (step 4).
+    pub completions: Refresh<'a>,
 }
 
 /// setup under one root step `Installing Saltbox` (success `Saltbox
 /// installation completed`): `plan`'s notices, then the phases in sb-go's
 /// order, each `<name>` with success `<name> completed`, each part's
-/// error in sb-go's words around the part's own.
+/// error in sb-go's words around the part's own; then, when it
+/// succeeded, the completion refresh as a step of its own
+/// ([`completions::refresh`], a failure a warning), as sb-go's setup
+/// runs it after its task.
 ///
 /// # Errors
 ///
 /// The step's quiet `Exit` when a phase failed (its block shown under
-/// it).
+/// it), or the completion refresh's when Ctrl-C or a signal stops it.
 pub async fn run(runner: &mut Runner, setup: &Setup<'_>, plan: &Plan) -> Result<(), Exit> {
     let labels = Labels::new("Installing Saltbox", "Saltbox installation completed")
         .failure("Saltbox installation");
@@ -261,7 +266,8 @@ pub async fn run(runner: &mut Runner, setup: &Setup<'_>, plan: &Plan) -> Result<
             .await?;
             Ok(())
         })
-        .await
+        .await?;
+    completions::refresh(runner, &setup.completions).await
 }
 
 /// A phase: `name`, success `<name> completed`, failure `name` (sb-go's

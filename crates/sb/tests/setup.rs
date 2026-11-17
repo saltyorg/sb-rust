@@ -95,7 +95,7 @@ impl World {
     /// `sb setup <args>` in the namespace and a session of its own: no
     /// terminal.
     fn setup(&self, args: &[&str]) -> Output {
-        let sb = common::sb().get_program().to_string_lossy().into_owned();
+        let sb = test_build();
         let mut command = vec!["-w", sb.as_str(), "setup", "--color=never"];
         command.extend_from_slice(args);
         self.namespaced(Path::new("/usr/bin/setsid"), &command)
@@ -141,6 +141,17 @@ impl World {
             .map(|call| call.split(' ').next().unwrap_or_default().to_owned())
             .collect()
     }
+}
+
+/// This test build of sb, never `SB_TEST_BINARY`'s, for every run in the
+/// namespace: setup ends with the completion refresh, and only a build
+/// with sb-completion's `testing` feature refreshes under
+/// `SB_TEST_COMPLETION_ROOT`; any other writes the host's shell
+/// directories (as completion.rs's `test_build`).
+fn test_build() -> String {
+    assert_cmd::cargo::cargo_bin("sb")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The lines' positions in `text`, which must rise.
@@ -254,6 +265,7 @@ fn a_fresh_install_runs_sb_gos_sequence() {
             "Installing Python runtime",
             "Ansible virtual environment",
             "Saltbox installation completed",
+            "Shell completions checked",
         ],
     );
     assert_eq!(
@@ -351,7 +363,7 @@ fn at_a_terminal_the_question_follows_the_current_branch() {
     }
     let world = World::new();
     world.remote.clone_into("develop", world.root());
-    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let sb = test_build();
     let cmd = world.namespaced(Path::new(&sb), &["setup", "--color=never", "--force"]);
     let mut pty = Pty::spawn(&cmd);
     let question = "Saltbox: Do you want to reset to the 'master' branch?";
