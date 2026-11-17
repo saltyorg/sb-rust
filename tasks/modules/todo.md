@@ -1993,14 +1993,14 @@ with `--keep-branch`/`--reset-branch`, hidden `-v`; the completion
 refresh is left to M87.
 
 **Acceptance criteria:**
-- [ ] The guard's five cases with their texts.
-- [ ] The phases run in sb-go's order and names; no terminal and no
+- [x] The guard's five cases with their texts.
+- [x] The phases run in sb-go's order and names; no terminal and no
       branch flag fails before any step.
-- [ ] The contract test's setup `EXTENSIONS` lines.
+- [x] The contract test's setup `EXTENSIONS` lines.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb` on the harness.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb` on the harness.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M81, M3, M8
 **Files:** `crates/ops/src/setup.rs`, `crates/sb/src/{main.rs,setup.rs,contract.rs}`, `crates/sb/tests/setup.rs`
@@ -2129,13 +2129,14 @@ calling it from `update` and `setup`, and the completion refresh.*
 
 ## Follow-ups found during the build
 
-- [ ] **First sight far right meets 5 ms** (the maintainer, 2026-11-16).
+- [x] **First sight far right meets 5 ms** (the maintainer, 2026-11-16).
       With wrap off far to the right, a line the viewer has never drawn
       there (paging to new lines, a jump from far away) is still parsed
       from its start once: 5.5 to 23.5 ms for a screen at column 4,000,
       after ed95149 brought rebuilds to 2.5 to 4 ms. Bring the first
       frame under 5 ms too, for example by parsing places ahead in the
       background.
+      Done: 37aceeb (a page up, Home or End far right 1.8 to 4.8 ms).
 - [ ] **One enum for ops' two repositories** (found by lane 1's M79,
       2026-11-16). `branch::Checkout` (M79) and `announcements::Repo` (M74)
       both name Saltbox and Sandbox. Merge them when update needs both
