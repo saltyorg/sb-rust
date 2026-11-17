@@ -28,9 +28,11 @@ sb-term-ui.workspace = true
 # "`sb branch <name>` and `sb branch-sandbox <name>`").
 sb-repo.workspace = true
 # setup's and gha's apt sequence and sources (ops spec, assumption 4: host's
-# apt, `add_repositories`).
+# apt, `add_repositories`), and bench's free-space rule for the disk test
+# (host's `free_space`).
 sb-host.workspace = true
-# The locale programs and the git hooks script (every child through exec).
+# The locale programs, the git hooks script and bench's
+# `systemd-detect-virt` (every child through exec).
 sb-exec.workspace = true
 # gha's venv and saltbox.fact (ops spec, assumption 4: python-env's
 # `reconcile_venv` and `install_fact`).
@@ -42,7 +44,8 @@ sb-release.workspace = true
 # spec, "`sb update`", steps 7, 9 and 10; the branch commands, step 5).
 sb-ansible.workspace = true
 # The config files' handles: opened without following a link, `fstat`ed
-# (ops spec, `secure_existing_configs`).
+# (ops spec, `secure_existing_configs`); bench's stat and statvfs of df's
+# filesystems (f_bfree, which sysinfo lacks).
 rustix.workspace = true
 # The announcements' inline Markdown form and their viewer (tui spec,
 # Scope and "The announcement viewer").
@@ -51,6 +54,11 @@ sb-tui.workspace = true
 jiff.workspace = true
 # The commands' flags (setup's, update's, the branch commands'), as sb-ansible's carry install's.
 clap.workspace = true
+# bench's uptime, load, kernel, arch and ARM CPU name (ops spec, "`sb
+# bench`").
+sysinfo.workspace = true
+# bench's /proc/cpuinfo, /proc/meminfo and mounts, parsed as motd's rows are.
+procfs.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -70,7 +78,8 @@ zeroize.workspace = true
 hex.workspace = true
 # restore's placement: a temporary file in the root, persisted over the
 # destination (ops spec, "Placement"); the `testing` harness's temporary
-# root too.
+# root too; bench's disk test file: 0600, created exclusively, removed on
+# drop (ops spec, "`sb bench`", 2.).
 tempfile.workspace = true
 # restore's fetch (ops spec, "Protocol"): one client, no redirects; tokio's
 # `select!` stops it on a first signal.

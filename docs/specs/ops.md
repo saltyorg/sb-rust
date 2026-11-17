@@ -8,7 +8,10 @@ repositories by default (decision 30, difference 38); lenient without
 `-r`, its step line a count (decision 31, difference 39; 2026-11-16).
 Amended 2026-11-17: no flags of its own, both repositories always, each
 entry labelled with its repository, nothing called new (decisions 27, 30
-and 31, difference 45).*
+and 31, difference 45).
+Amended 2026-11-16: bench's System rows and disk test
+follow sb-go's bench.sh row by row (decision 33, differences 19 and 46
+to 53); the help contract is a rewording.*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -468,36 +471,43 @@ and run as code except the digest-pinned Ookla Speedtest.
 <node>`). **Results:** three term-ui tables on stdout, each printed when
 its section ends, then the total time and a timestamp. No `clear`.
 
-**1. System** (a two-column table, sysinfo 0.40 with the `system` and
-`disk` features unless noted):
+**1. System** (a two-column table; each row found as sb-go's
+bench.sh finds it, `cmd/bench_script.sh`'s `get_system_info`,
+`check_virt` and `print_system_info`, in process where the script ran a
+program; decision 33):
 
 | Row | Source |
 |---|---|
-| CPU Model | `Cpu::brand` of the first CPU; `CPU model not detected` when empty |
-| CPU Cores | the CPU count `@ <MHz> MHz` (`Cpu::frequency`, omitted when 0) |
-| CPU Cache | `/proc/cpuinfo`'s first `cache size` line, the row left out when absent |
-| AES-NI | `aes` among `/proc/cpuinfo`'s `flags` (x86_64) or `Features` (aarch64): `✓ Enabled` / `✗ Disabled` |
-| VM-x/AMD-V | `vmx` or `svm` among the `flags`; on aarch64 the row is left out |
-| Total Disk | the sum of sysinfo's `Disks` on `ext2 ext3 ext4 btrfs xfs vfat ntfs zfs`, one entry per device (zfs: per pool), `(<used> Used)` |
-| Total RAM | `System::total_memory`, `(<used> Used)` |
-| Total Swap | `System::total_swap`, left out when 0 |
-| System Uptime | `System::uptime()` as `<d> days, <h> hour <m> min` |
-| Load Average | `System::load_average()`, `<1>, <5>, <15>` |
-| OS | `System::long_os_version()` |
-| Arch | `System::cpu_arch()` |
-| Kernel | `System::kernel_version()` |
-| TCP Congestion Ctrl | `/proc/sys/net/ipv4/tcp_congestion_control` |
-| Virtualization | `systemd-detect-virt` (exec capture, 5 s), upper-cased; `none` is `Dedicated` |
+| CPU Model | `/proc/cpuinfo`'s last `model name` (procfs's `CpuInfo`); on ARM lscpu's `Model name`, in process sysinfo's `Cpu::brand` (the same implementer and part names); `CPU model not detected` when empty |
+| CPU Cores | the count of `processor` lines (blank for none), `@ <MHz> MHz` with the first `cpu MHz` as written (on ARM lscpu's `CPU max MHz`: the largest `cpufreq/cpuinfo_max_freq`, four decimals, else `cpu MHz`), omitted when none |
+| CPU Cache | `/proc/cpuinfo`'s last `cache size`, the row left out when absent |
+| AES-NI | `aes` anywhere in `/proc/cpuinfo`, any case (`grep -i aes`): `✓ Enabled` / `✗ Disabled` |
+| VM-x/AMD-V | `vmx` or `svm` anywhere, any case (`grep -Ei`), on every architecture |
+| Total Disk | df's total of `simfs ext2 ext3 ext4 btrfs xfs vfat ntfs` (`/proc/self/mounts` through procfs, only those types looked at; each mount point's device, rustix's `stat`, once, as df's `filter_mount_list`; rustix's `statvfs`: size `f_blocks × f_frsize`, used `(f_blocks - f_bfree) × f_frsize`), plus the swap's total and used, plus `zpool list -o size,allocated -Hp`'s sums (exec, 5 s; none without zpool); `(<used> Used)`; the filesystems are read within 5 s, else the value is blank |
+| Total RAM | `free`'s total and used from `/proc/meminfo` (procfs's `Meminfo`): used is total − available as procps 4.0.4 (24.04, 26.04; available is `MemFree` when `MemAvailable` is 0 or above the total), total − free − buffers − (cached + `SReclaimable`) as procps 3.3.17 (22.04, from os-release's `VERSION_ID`), either total − free when negative; `(<used> Used)` |
+| Total Swap | `free`'s swap: total, used total − free; left out when 0 |
+| System Uptime | `System::uptime()` split into whole days, hours and minutes, each singular or plural as its number needs: `117 days, 20 hours, 20 mins`, `1 day, 1 hour, 1 min` (difference 46) |
+| Load Average | `System::load_average()`, `<1>, <5>, <15>` with two decimals, as `w` |
+| OS | os-release's `PRETTY_NAME` (bench.sh's `awk -F=`, a double quote at either end removed), else lsb-release's `DISTRIB_DESCRIPTION`, else redhat-release's text |
+| Arch | `System::cpu_arch()` (`uname -m`) and `(<n> Bit)`, `n` the C `long`'s bits (`getconf LONG_BIT`) |
+| Kernel | `System::kernel_version()` (`uname -r`) |
+| TCP Congestion Ctrl | `/proc/sys/net/ipv4/tcp_congestion_control` (`sysctl -n`) |
+| Virtualization | `systemd-detect-virt`'s stdout (exec capture, 5 s, any exit code) upper-cased; `none`, nothing or a failure is `Dedicated` (difference 16) |
 | IPv4/IPv6 | `GET https://icanhazip.com` bound to `0.0.0.0`, then to `::` (reqwest `local_address`), 4 s each: `✓ Online` / `✗ Offline` each |
 | Organization, Location, Region | `GET https://ipinfo.io/json`, 4 s: `org`, `city / country`, `region`; `No ISP detected` when `org` is missing |
 
-Sizes use binary units (`KiB` to `TiB`, one decimal). The address
-fields in either answer are never printed or logged.
+Sizes are bench.sh's `calc_size` with binary unit names (`KiB` to
+`TiB`, one decimal; nothing is `0 KiB`). A value the host doesn't give
+is blank, as the script printed an empty variable. The address fields
+in either answer are never printed or logged.
 
 **2. Disk write** (in-process; decision 12):
 - needs at least 2 GiB free on the working directory's filesystem
   (host's `free_space`), else the row `Not enough space for the disk
-  test` and the section ends;
+  test` and the section ends; free space that can't be read gives the
+  row `Unable to determine available space for the disk test`
+  (bench.sh's `Unable to determine available space for I/O test!`,
+  reworded as difference 15) and the section ends;
 - three runs, each writing 1 GiB in 512 KiB blocks of zeros to a
   `tempfile::NamedTempFile` in the working directory (0600,
   exclusive), then `File::sync_data` (fdatasync), timed from the first
@@ -506,9 +516,11 @@ fields in either answer are never printed or logged.
 - the blocking writes run under `spawn_blocking`; the shutdown token is
   checked between blocks, so Ctrl-C stops within one block;
 - rows `1st run`, `2nd run`, `3rd run`, `Average`, in MB/s (10^6 bytes,
-  as dd reported), one decimal;
+  as dd reported), one decimal; the average is of the runs that
+  measured (difference 47); a run whose writes fail, or a later run
+  that can't create its file, is `Test failed`;
 - an unwritable working directory gives the row `No write permission
-  in the working directory` and the section ends (bench.sh exited).
+  in the working directory` and the section ends (difference 48).
 
 **3. Speedtest:**
 - the pinned asset (decision 13) through release's verified download
@@ -787,7 +799,8 @@ announcements skipped: error loading announcement file '<path>':
 18. The disk test needs 2 GiB free (bench.sh: 1 GiB), so it can't fill
     the disk to the last byte, and it writes through `sync_data` in
     process rather than `dd conv=fdatasync`.
-19. Total Disk doesn't add swap (bench.sh did).
+19. *(Dropped 2026-11-16: Total Disk adds the swap, as
+    bench.sh did.)*
 20. Speedtest runs on aarch64 too, with its own pinned asset; bench.sh
     in sb-go was x86_64-only.
 21. The vendored bench.sh, its LICENSE and NOTICE aren't shipped.
@@ -896,6 +909,36 @@ announcements skipped: error loading announcement file '<path>':
     (sb-go's harness showed one repository's, unlabelled in its viewer).
     The flags are clap's unknown-argument error, exit 2.
 
+`bench`, 2026-11-16 (decision 33):
+46. System Uptime's units are singular or plural as their numbers need,
+    with a comma between each (`1 day, 1 hour, 1 min`); bench.sh printed
+    `%d days, %d hour %d min` whatever the numbers (the maintainer,
+    2026-11-16).
+47. The disk test's average is the mean of the measured rates, in MB/s
+    throughout; bench.sh averaged dd's rounded text and counted a
+    `GB/s` as 1024 `MB/s` where dd's GB is 1000 MB. A failed run is
+    `Test failed` and left out; bench.sh showed dd's error text.
+48. An unwritable working directory is the Disk write section's row and
+    the other sections still run; bench.sh stopped before any section.
+49. On ARM, CPU Model is sysinfo's name for the CPU part, CPU Cores the
+    `processor` entries (online CPUs), and the frequency the largest
+    `cpuinfo_max_freq`; bench.sh asked lscpu, which names parts from its
+    own table and counts offline CPUs too.
+50. The timestamp is in `/etc/localtime`'s zone, as sb-tui's; `date`
+    followed `TZ` too.
+51. Total RAM's used follows the release's procps (decision 33), so it
+    matches `free` there; one formula would differ from `free` on
+    22.04 or on 24.04 and later. Only 22.04 gets procps 3.3's formula
+    (the supported releases'; another system with procps 3.3 would get
+    procps 4's).
+52. Total Disk counts every zfs pool; bench.sh passed `zpool list`'s
+    whole output to `calc_sum` as one word, so with two pools or more it
+    added nothing for zfs.
+53. Total Disk's filesystems are read within 5 s, the value blank past
+    that or when the mounts can't be read; bench.sh's df had no limit (a
+    hung filesystem held the script). OS falls back to redhat-release's
+    text as the script did, which no supported release has.
+
 ## Scope
 
 **In:**
@@ -963,10 +1006,12 @@ password and plaintext buffers; https://docs.rs/zeroize/1.9.1/zeroize/),
 https://docs.rs/flate2/1.1.10/flate2/read/struct.GzDecoder.html; python-env uses it too), `reqwest` 0.13.5, `tempfile`
 3.27.0 (`NamedTempFile::persist`,
 https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html#method.persist),
-`sysinfo` 0.40.0 (gains the `disk` feature;
-https://docs.rs/sysinfo/0.40.0/sysinfo/struct.Disks.html), `rustix`
+`sysinfo` 0.40.0 (`system` only: bench's mount list is procfs's, so the
+`disk` feature isn't needed, decision 33), `procfs`
+0.18.0 (bench's `/proc/cpuinfo`, `/proc/meminfo` and mounts, as motd's;
+https://docs.rs/procfs-core/0.18.0/procfs_core/struct.CpuInfo.html), `rustix`
 (`openat`, `statat`, `mkdirat`, `renameat`, `unlinkat` for the host
-amendment; the `fs` feature is already on), `serde_json` (Speedtest and
+amendment, and bench's `stat` and `statvfs`; the `fs` feature is already on), `serde_json` (Speedtest and
 ipinfo JSON). `dialoguer` 0.12.0 is new to Cargo.lock: term-ui's confirm
 comes with `release` (self-update, the first user in the build order).
 restore's form is tui's (decision 32), on ratatui-textarea, already in
@@ -1115,8 +1160,10 @@ the real services.
   `--reset-branch` and `--keep-branch` give the recorded git calls of
   each answer; both together are clap's error, exit 2; no terminal and
   neither flag: the error naming both, no stub called.
-- **bench:** the system rows from fixture `/proc/cpuinfo` text (x86_64
-  and aarch64), sysinfo values formatted (sizes, uptime, load); the
+- **bench:** the system rows from fixture `/proc/cpuinfo`,
+  `/proc/meminfo` and os-release text (x86_64 and aarch64, procps 3.3
+  and 4), df's sums from fixed `statvfs` counts, zpool's from a stand-in,
+  values formatted (sizes, uptime, load); the
   disk test with a small size on a temp directory, the 2 GiB rule from a
   fixed free-space value, an unwritable directory, Ctrl-C between
   blocks removing the file; the Speedtest step with a stand-in
@@ -1328,7 +1375,8 @@ the real services.
 10. **The user key and the user name are secrets**, as the password:
     out of output, errors and logs. decided.md G (the hash is treated as
     a secret); map decision 11 (never logged: secrets).
-11. **bench is rewritten in Rust:** sysinfo for the system part, an
+11. **bench is rewritten in Rust:** in-process reads for the system part
+    (bench.sh's logic: decision 33), an
     in-process fsync'd disk test, Speedtest as the sha256-pinned Ookla
     binary; a new output format, a listed difference; the vendored
     script and its licence go. The maintainer's answer of 2026-11-13
@@ -1443,6 +1491,24 @@ the real services.
     log viewer's screen; Esc in the form keeps sb-go's cancel; the final
     list prints after the screen closes in the line form.
 
+33. **bench's System rows and disk test follow bench.sh's logic** (the
+    maintainer, 2026-11-16: bench.sh's tested logic is
+    followed). Each row is found
+    as sb-go's `cmd/bench_script.sh` finds it, in process where the
+    script ran a program: df's types, its used (`f_blocks - f_bfree`)
+    and its one-entry-per-device rule, the swap and zfs pools in Total
+    Disk, free's figures, the last `model name` and `cache size`, the
+    first `cpu MHz`, the whole-file greps for AES and virtualization,
+    `PRETTY_NAME`, `uname -m (LONG_BIT Bit)`. A difference stays only
+    where this spec requires it (its output format, decision 11 and
+    difference 15; systemd-detect-virt only, difference 16; the 2 GiB
+    floor, difference 18), the script's way can't be had in process
+    (difference 49), the maintainer asked (difference 46), the script's
+    arithmetic was wrong (differences 47 and 52), a hang has to end
+    (difference 53), or sb's other screens already decide (difference
+    50: sb-tui's zone); difference 51 keeps `free`'s figure on each
+    release. Each is listed (differences 46 to 53).
+
 ## Known limits
 
 - The viewer reads the placed file again, as root, following a link,
@@ -1531,8 +1597,9 @@ Replace it with:
 **Capability map, stack table:** a row for archives, shared with the
 python-env spec: `Archives (uv, Speedtest) | tar + flate2 (rust_backend)
 | 0.4.46 / 1.1.10 | — | archive/tar, compress/gzip | untested (python-env
-and ops specs)`; the `Host OS release` row's sysinfo note gains `disk`
-(bench's Total Disk).
+and ops specs)`; the `Host OS release` row's sysinfo note gained `disk`
+(bench's Total Disk), withdrawn 2026-11-16 (decision 33: bench lists
+the mounts through procfs).
 
 **tasks/prototypes/todo.md, "Later: Install script lives in this
 repository", "Why":** the capture premise is stale for the same reason;
@@ -1581,7 +1648,9 @@ no cancel key; Ctrl-C is the way out (cli-core's interrupted ending).`
 bench`'s help text (ops spec), with the contract test's `EXTENSIONS`
 entries `flag\tsb restore\tlocal\tuser`, `flag\tsb
 restore\tlocal\tpassword-file`, `flag\tsb setup\tglobal\tverbose` and
-`command\tsb bench`, plus `sb setup`'s `--keep-branch` and
+`command\tsb bench` (taken at M77 as the stricter `REWORDED` entry for
+sb-go's `command\tsb bench\tfalse\tRuns bench.sh benchmark` line, as only
+the help text differs; the maintainer, 2026-11-16), plus `sb setup`'s `--keep-branch` and
 `--reset-branch` (decision 29; entries `flag\tsb setup\tglobal\tkeep-branch`
 and `flag\tsb setup\tglobal\treset-branch`), and the new `--migrations`
 on `sb update` (`flag\tsb update\tlocal\tmigrations`); `sb announcements`

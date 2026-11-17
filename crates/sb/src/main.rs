@@ -175,6 +175,11 @@ enum Command {
     // decision 3); `--user` and `--password-file` are new (decision 8).
     #[command(long_about = RESTORE_LONG, hide = true)]
     Restore(sb_ops::restore::RestoreArgs),
+    /// Benchmarks this server's system, disk and network
+    // sb's own help: bench is rewritten in Rust (ops difference 15). No
+    // flags.
+    #[command(long_about = "Benchmarks this server's system, disk and network")]
+    Bench,
 }
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
@@ -411,6 +416,7 @@ impl Command {
             Command::ReinstallFacts => "reinstall-facts",
             Command::Announcements => "announcements",
             Command::Restore(_) => "restore",
+            Command::Bench => "bench",
             Command::Completion { command } => match command {
                 None => "completion",
                 Some(CompletionCommand::Bash) => "completion bash",
@@ -447,9 +453,9 @@ impl Command {
             // apt, which `update-venv`, `reinstall-venv` and
             // `reinstall-python` change, and the checkout's fact, which
             // `reinstall-facts` replaces (python-env assumption 5);
-            // `announcements`, `gha` and `setup`, as every ops command
-            // (ops assumption 2; gha's and setup's apt, /srv and the
-            // configs).
+            // `announcements`, `gha`, `setup` and `bench`, as every ops
+            // command (ops assumption 2; gha's and setup's apt, /srv and
+            // the configs).
             Command::Docker { .. }
             | Command::ValidateConfig
             | Command::Branch { .. }
@@ -471,6 +477,7 @@ impl Command {
             | Command::ReinstallFacts
             | Command::Announcements
             | Command::Restore(_)
+            | Command::Bench
             // The installing forms write the shells' system directories
             // (completion spec, assumption 4).
             | Command::Completion {
@@ -749,6 +756,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::ReinstallFacts => python_env::reinstall_facts(shutdown, log)?,
         Command::Announcements => announcements::announcements(shutdown, log)?,
         Command::Restore(ref args) => restore::restore(args, shutdown)?,
+        Command::Bench => bench::bench(shutdown, log)?,
         Command::SelfUpdate { yes, force_update } => {
             self_update::self_update(yes, force_update, shutdown, log)?;
         }
@@ -1001,6 +1009,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 
 mod announcements;
 mod ansible;
+mod bench;
 mod branch;
 mod completion;
 mod docker_logs;

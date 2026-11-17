@@ -44,9 +44,12 @@ const EXTENSIONS: &[&str] = &[
 /// sb-go's lines sb words differently on purpose, with sb's line for each:
 /// a short help that wrapped in `sb --help` at fang's 120 columns (the
 /// maintainer, 2026-11-14), a command sb shows that sb-go hid (the
-/// maintainer, 2026-11-15), and setup's `-v`, accepted but hidden and
-/// ignored. Each is a difference in the spec that owns the command
-/// (python-env difference 15, ops differences 31 and 1).
+/// maintainer, 2026-11-15), setup's `-v`, accepted but hidden and
+/// ignored, and `sb bench`'s help, as bench is rewritten in Rust (the ops
+/// spec lists `command\tsb bench` as an extension; a rewording is the
+/// stricter check, as only the help text differs). Each is a difference
+/// in the spec that owns the command (python-env difference 15, ops
+/// differences 31, 1 and 15).
 const REWORDED: &[(&str, &str)] = &[
     (
         "command\tsb reinstall-python\tfalse\tReinstall the Python version used by Saltbox and related Ansible virtual environment using uv",
@@ -59,6 +62,10 @@ const REWORDED: &[(&str, &str)] = &[
     (
         "flag\tsb setup\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
         "flag\tsb setup\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "command\tsb bench\tfalse\tRuns bench.sh benchmark",
+        "command\tsb bench\tfalse\tBenchmarks this server's system, disk and network",
     ),
 ];
 

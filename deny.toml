@@ -65,14 +65,14 @@ deny = [
     # restart (exec spec, decision 4); sb-host's systemctl calls; the
     # binary's `sb edit`, which runs the editor attached (tui spec,
     # editors: crates/sb/src/edit.rs); python-env's uv, Python and git;
-    # ops' locale programs and git hooks.
+    # ops' locale programs, git hooks and bench's systemd-detect-virt.
     { crate = "sb-exec", wrappers = ["sb", "sb-ops", "sb-docker", "sb-release", "sb-host", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },
     # docker: sb docker ps (and later start/stop/restart, the picker's
     # list, log streams), used by the binary.
     { crate = "sb-docker", wrappers = ["sb", "sb-tui", "sb-motd"] },
     # host: the supported-release check and the journal reader's wrapper
     # (sb-journal's types and its tokio glue), used by the binary; ops'
-    # apt sequence and sources for setup and gha.
+    # apt sequence and sources for setup and gha, and bench's free space.
     { crate = "sb-host", wrappers = ["sb", "sb-ops", "sb-tui", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env"] },
     # journal: sb's own journal reader, depending on nothing of sb's and
     # wrapped by host (journal spec, "Capability map correction"). Its own

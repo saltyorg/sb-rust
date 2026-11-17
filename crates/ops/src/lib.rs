@@ -7,13 +7,15 @@
 //! [`configs`] and [`hooks`], with the `testing` harness they run
 //! against; `sb gha` ([`gha`], slice 6); `sb setup` ([`setup`], slice
 //! 7); `sb update` ([`update`], slice 11), on one [`Checkout`] type for
-//! the two checkouts; `sb restore` ([`restore`], slices 1 and 2).
+//! the two checkouts; `sb restore` ([`restore`], slices 1 and 2); and
+//! `sb bench`'s system and disk ([`bench`], slice 3).
 
 // sb's lines go through `Write` and cli-core's output errors;
 // `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod announcements;
+pub mod bench;
 pub mod branch;
 mod checkout;
 pub mod configs;

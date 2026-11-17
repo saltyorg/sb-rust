@@ -1934,9 +1934,9 @@ test, and the one read-only check of the real service's 404.
 text.
 
 **Acceptance criteria:**
-- [ ] The system rows and Total Disk from sysinfo; cpuinfo parsed from
-      fixtures.
-- [ ] The disk test writes and reads in-process with the spec's sizes
+- [ ] The system rows and Total Disk found as bench.sh finds them (ops
+      decision 33); cpuinfo parsed from fixtures.
+- [ ] The disk test writes in-process with the spec's sizes
       and cleans up.
 - [ ] Screenshots of `sb bench` without the network part.
 
