@@ -366,6 +366,20 @@ fn issues_line(count: usize) -> String {
 /// The line for a file that can't be read.
 const UNREADABLE: &str = "motd.yml can't be read; run sb validate-config";
 
+/// The line for a file that answered with a permission error: no pointer
+/// to validate-config, which can't fix that (Difference 33).
+const DENIED: &str = "motd.yml can't be read: permission denied";
+
+/// The line for a file that can't be read, given what opening it again
+/// answers (`open`): a permission error is [`DENIED`]. Why reopen:
+/// sb-config's `FileError::Read` carries the cause as text.
+fn unreadable_line(open: &std::io::Result<()>) -> &'static str {
+    match open {
+        Err(err) if crate::text::is_denial(err) => DENIED,
+        _ => UNREADABLE,
+    }
+}
+
 /// The line for a schema that can't be loaded.
 const UNCHECKED: &str = "motd.yml's schema can't be loaded; run sb validate-config";
 
@@ -374,7 +388,23 @@ const UNCHECKED: &str = "motd.yml's schema can't be loaded; run sb validate-conf
 /// never shows a credential's value.
 #[must_use]
 pub fn load(settings: &Settings) -> Loaded {
-    loaded(run::check_file(settings, FILE))
+    let mut loaded = loaded(run::check_file(settings, FILE));
+    if loaded.line.as_deref() == Some(UNREADABLE) {
+        // Opened as cli-core's reader opens it: never blocking on a FIFO,
+        // never taking a terminal.
+        let open = rustix::fs::open(
+            settings.root.join(FILE.path),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::NOCTTY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map(drop)
+        .map_err(std::io::Error::from);
+        loaded.line = Some(unreadable_line(&open).to_string());
+    }
+    loaded
 }
 
 /// [`load`] with the run's settings: the Saltbox root from
@@ -1050,6 +1080,32 @@ mod tests {
         assert_eq!(loaded.line.as_deref(), Some(UNCHECKED));
         assert_eq!(loaded.motd, None);
         assert_eq!(UNREADABLE, "motd.yml can't be read; run sb validate-config");
+        assert_eq!(DENIED, "motd.yml can't be read: permission denied");
+        // A read refused with a permission error drops the validate-config
+        // pointer (Difference 33); any other unreadable file keeps it.
+        let denied = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(unreadable_line(&denied), DENIED);
+        let eperm = Err(std::io::Error::from_raw_os_error(1));
+        assert_eq!(unreadable_line(&eperm), DENIED);
+        let other = Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        assert_eq!(unreadable_line(&other), UNREADABLE);
+        assert_eq!(unreadable_line(&Ok(())), UNREADABLE);
+        // A FIFO with no writer: the reopen mustn't wait for one.
+        let root = root_with(None);
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            root.path().join("motd.yml"),
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .expect("mkfifo");
+        let (sent, received) = std::sync::mpsc::channel();
+        let fifo = settings(root.path());
+        sb_cli_core::spawn::thread(std::thread::Builder::new(), move || {
+            sent.send(load(&fifo).line)
+        })
+        .expect("thread");
+        let line = received.recv_timeout(Duration::from_secs(10));
+        assert_eq!(line.expect("load returns").as_deref(), Some(UNREADABLE));
         assert_eq!(
             UNCHECKED,
             "motd.yml's schema can't be loaded; run sb validate-config"

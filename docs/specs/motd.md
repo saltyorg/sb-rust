@@ -438,6 +438,17 @@ never reach stdout, stderr or the run log.
     `delay`, which the maintainer kept as named, and `fallback`, as the
     item is the fallback) and any status sb doesn't know stay as the app
     names them, lowercased.
+33. **A permission error is named as one** (maintainer, 2026-11-17).
+    When connecting to Docker's Unix socket fails with EACCES or EPERM
+    (or bollard reports the socket missing and a `stat` of its path is
+    refused that way), Docker's and Traefik's lines
+    read `Error: permission denied on Docker's socket (<path>)`, where
+    sb-go's Traefik line said `Docker service is not running`; and a
+    motd.yml that can't be read for a permission error reads
+    `motd.yml can't be read: permission denied`, without the pointer to
+    validate-config, which can't fix it. A permission error never claims
+    a service is down. motd runs as root (decision 20), so these show
+    only where root itself is refused.
 
 ### Scope
 
@@ -1019,7 +1030,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
   call has curl's 3 s connect limit inside the same 5 s, which bounded
   sb-go's `curl` child; past either, the API reads as not accessible.
   The `traefik` row counts as up when it is running, paused or
-  restarting, the states `docker ps` without `-a` lists. Its proxy is
+  restarting, the states `docker ps` without `-a` lists. A socket that
+  refuses with a permission error reads as one in both sections
+  (Difference 33). Its proxy is
   reqwest's reading of the proxy variables in a run (sb-config's
   `Proxy::System`) and none in the tests. The tests set Traefik's base
   through the settings, which a run reads from `SB_MOTD_TRAEFIK_URL`.
@@ -1030,7 +1043,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
   their own client with M44). The `Config:` line's texts:
   - `motd.yml has 1 issue; run sb validate-config`, or `N issues`;
   - `motd.yml can't be read; run sb validate-config` for a file that
-    can't be read (over the cap included);
+    can't be read (over the cap included), but `motd.yml can't be read:
+    permission denied` when opening it again (without blocking, as
+    cli-core's reader opens it) answers EACCES or EPERM (Difference 33);
   - `motd.yml's schema can't be loaded; run sb validate-config`.
 
   The text is in the warning colour, which is sb's Warn there, as the

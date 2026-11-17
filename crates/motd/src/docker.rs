@@ -103,6 +103,9 @@ impl Settings {
 enum Down {
     /// The daemon couldn't be reached (or its address is one sb refuses).
     Unreachable(String),
+    /// Its socket answered with a permission error: the socket, named
+    /// (Difference 33). Never read as the daemon being down.
+    Denied(String),
     /// It answered, but its container list failed.
     NoList,
 }
@@ -150,6 +153,41 @@ impl Containers {
     }
 }
 
+/// Why connecting to `address` failed with `err`: a permission error
+/// (EACCES or EPERM) names the socket rather than reading as a daemon
+/// that is down (Difference 33). bollard keeps the OS error in the chain
+/// for a refused connect; its "socket not found" check (`Path::exists`)
+/// doesn't, so for a Unix socket `probe` (a `stat` of the path, which
+/// can't block) tells a directory on its path that refuses search apart.
+/// Anything else stays unreachable, with its cause.
+fn connect_failure(
+    address: &str,
+    cause: String,
+    err: &(dyn std::error::Error + 'static),
+    probe: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Down {
+    let Some(path) = address.strip_prefix("unix://") else {
+        return Down::Unreachable(cause);
+    };
+    let typed = std::iter::successors(Some(err), |e| e.source())
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(crate::text::is_denial);
+    if typed || probe(std::path::Path::new(path)).is_err_and(|e| crate::text::is_denial(&e)) {
+        Down::Denied(format!("Docker's socket ({path})"))
+    } else {
+        Down::Unreachable(cause)
+    }
+}
+
+/// The Docker and Traefik line for a socket that answered with a
+/// permission error (Difference 33).
+fn denied(resource: &str, paint: &Paint) -> String {
+    paint.error(&format!(
+        "Error: permission denied on {}",
+        one_line(resource.as_bytes())
+    ))
+}
+
 /// sb-docker's listing of every container, or why there is none (the
 /// cause in the run log).
 async fn list(settings: &Settings) -> Result<Listing, Down> {
@@ -164,7 +202,9 @@ async fn list(settings: &Settings) -> Result<Listing, Down> {
     })?;
     let daemon = sb_docker::connect::connect(&address).await.map_err(|err| {
         tracing::warn!(error = %format!("{err:#}"), "docker not reached");
-        Down::Unreachable(format!("{err:#}"))
+        connect_failure(&address, format!("{err:#}"), err.as_ref(), |path| {
+            std::fs::metadata(path).map(drop)
+        })
     })?;
     sb_docker::connect::list(&daemon).await.map_err(|err| {
         tracing::warn!(error = %format!("{err:#}"), "docker containers not listed");
@@ -184,6 +224,7 @@ pub async fn docker(containers: &Containers, paint: &Paint) -> String {
         Err(Down::Unreachable(cause)) => {
             return paint.error(&format!("Error: {}", one_line(cause.as_bytes())));
         }
+        Err(Down::Denied(resource)) => return denied(resource, paint),
         Err(Down::NoList) => return "Docker is running but container list is unavailable".into(),
     };
     let total = listing.rows.len() + listing.failures.len();
@@ -285,6 +326,7 @@ pub async fn traefik(containers: &Containers, paint: &Paint) -> String {
     let listing = match containers.listing().await {
         Ok(listing) => listing,
         Err(Down::Unreachable(_)) => return "Docker service is not running".into(),
+        Err(Down::Denied(resource)) => return denied(resource, paint),
         Err(Down::NoList) => return "Traefik container is not running".into(),
     };
     // `docker ps` without `-a` lists paused and restarting containers too.
@@ -653,6 +695,66 @@ mod tests {
         assert_eq!(
             traefik(&containers, &Paint::plain()).await,
             "Traefik container is not running"
+        );
+    }
+
+    /// A socket that answers with a permission error (Difference 33): both
+    /// sections name it and the socket, in the error colour; neither says
+    /// the daemon is down.
+    #[tokio::test]
+    async fn a_denied_socket_is_named_as_a_permission_error() {
+        let containers = Containers {
+            settings: Settings::default(),
+            listing: OnceCell::new_with(Some(Err(Down::Denied(
+                "Docker's socket (/run/docker.sock)".into(),
+            )))),
+            limit: LIMIT,
+        };
+        let text = "Error: permission denied on Docker's socket (/run/docker.sock)";
+        assert_eq!(docker(&containers, &Paint::plain()).await, text);
+        assert_eq!(traefik(&containers, &Paint::plain()).await, text);
+        let paint = painted();
+        assert_eq!(docker(&containers, &paint).await, paint.error(text));
+        assert_eq!(traefik(&containers, &paint).await, paint.error(text));
+    }
+
+    /// A failed connection to a Unix socket is a permission error when
+    /// its chain holds EACCES or EPERM, or, for bollard's "socket not
+    /// found" (no OS error), when a `stat` of the path is refused; anything
+    /// else, and any other address, stays unreachable with its cause.
+    #[test]
+    fn a_failed_connection_is_denied_only_on_a_permission_error() {
+        /// An error around `cause`, as sb-docker's context wraps bollard's.
+        #[derive(Debug, thiserror::Error)]
+        #[error("couldn't reach Docker")]
+        struct Wrapped(#[source] std::io::Error);
+        let socket = "unix:///run/docker.sock";
+        let named = Down::Denied("Docker's socket (/run/docker.sock)".into());
+        let fine = |_: &std::path::Path| Ok(());
+        let refused =
+            |_: &std::path::Path| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let eacces = Wrapped(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(connect_failure(socket, "x".into(), &eacces, fine), named);
+        let eperm = Wrapped(std::io::Error::from_raw_os_error(1));
+        assert_eq!(connect_failure(socket, "x".into(), &eperm, fine), named);
+        // bollard's "socket not found" holds no OS error: the stat decides.
+        let not_found = std::fmt::Error;
+        assert_eq!(
+            connect_failure(socket, "x".into(), &not_found, refused),
+            named
+        );
+        assert_eq!(
+            connect_failure(socket, "gone".into(), &not_found, fine),
+            Down::Unreachable("gone".into())
+        );
+        let missing = Wrapped(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(
+            connect_failure(socket, "gone".into(), &missing, fine),
+            Down::Unreachable("gone".into())
+        );
+        assert_eq!(
+            connect_failure("tcp://docker:2375", "gone".into(), &eacces, refused),
+            Down::Unreachable("gone".into())
         );
     }
 

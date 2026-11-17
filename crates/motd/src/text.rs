@@ -46,6 +46,16 @@ pub(crate) fn block(bytes: &[u8]) -> String {
         .to_string()
 }
 
+/// Whether `err` is a permission error: EACCES or EPERM, by errno first
+/// (std maps both to `PermissionDenied` today, but doesn't document the
+/// mapping as stable).
+pub(crate) fn is_denial(err: &std::io::Error) -> bool {
+    let errno = err.raw_os_error();
+    errno == Some(rustix::io::Errno::ACCESS.raw_os_error())
+        || errno == Some(rustix::io::Errno::PERM.raw_os_error())
+        || err.kind() == std::io::ErrorKind::PermissionDenied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
