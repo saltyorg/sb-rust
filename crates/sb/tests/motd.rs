@@ -179,22 +179,36 @@ fn nothing_selected_is_sb_gos_error() {
     );
 }
 
-/// `--share` is refused until its task lands (M47): never a run that
-/// ignores it. Exit 1, nothing on stdout.
+/// `--share` masks Last login's source and every address in the
+/// values (criterion 7); without it the source shows as given. `last` is
+/// a stand-in first on `PATH`.
 #[test]
-fn unbuilt_share_is_refused() {
+fn share_masks_the_last_login_source() {
+    use std::os::unix::fs::PermissionsExt as _;
     if !root_gate::requested() {
         return;
     }
     let logs = temp();
-    let (args, flag) = (&["--all", "--share"][..], "--share");
-    let out = motd(args, logs.path(), &[]);
-    assert_eq!(out.status.code(), Some(1), "{args:?}");
-    assert_eq!(text(&out.stdout), "", "{args:?}");
+    let tools = temp();
+    let last = tools.path().join("last");
+    std::fs::write(
+        &last,
+        "#!/bin/sh\necho 'sbuser   pts/0        192.0.2.9        Sat Nov 14 23:10   still logged in'\n",
+    )
+    .expect("stand-in");
+    std::fs::set_permissions(&last, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    let path = tools.path().display().to_string();
+    let out = motd(&["--login", "--share"], logs.path(), &[("PATH", &path)]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "Last login:  sbuser at Sat Nov 14 23:10 (still logged in) from xxx.xxx.xxx.xxx\n\n"
+    );
+    let out = motd(&["--login"], logs.path(), &[("PATH", &path)]);
     assert!(
-        text(&out.stderr).contains(&format!("sb motd {flag} is not available")),
+        text(&out.stdout).contains("from 192.0.2.9\n"),
         "{}",
-        text(&out.stderr)
+        text(&out.stdout)
     );
 }
 

@@ -283,7 +283,11 @@ never reach stdout, stderr or the run log.
 6. **`--share`** masks IP addresses in every line, and host names in the
    last-login source, in every provider error, and wherever a configured
    instance's host appears (decision 7). sb-go masked only the last-login
-   IP.
+   IP, and wrote a last-login host name as `xxx.xxx.xxx.xxx`. An address
+   std's parser refuses (`192.0.2.300`) stays, where sb-go's pattern masked
+   any four dotted numbers in its last-login fallbacks, and `::1` and
+   other addresses that start with a colon are masked, which sb-go's
+   `\b` before them missed (M47).
 7. **User Sessions comes from logind** (decision 6). sb-go read `who`,
    which reads utmp, and utmp is gone on newer Ubuntu. Sessions of the
    classes `manager`, `manager-early` and `background` are not counted
@@ -1124,6 +1128,42 @@ Nothing touches a real host's state, and every fixture is synthetic.
     return whole torrents in groups unlike sb-go's. rTorrent's
     `view.size` views count by `d.state` (paused counts as started), and
     no view holds `d.message` errors. So the full listing stays.
+- **`--share` (M47).** One filter ([`redact::Share`]) over every value
+  line once the sections are collected, the `Config:` line included,
+  never over the banner or the run log. It works on the text between
+  sb's own colour codes (anstyle's SGR; remote text went through
+  `DisplayText`), so a code touching an address doesn't hide its word
+  boundary. In order:
+  - the known hosts, as whole names in any case (motd.yml's instances,
+    enabled or not, Traefik's base and `DOCKER_HOST`; only names with a
+    dot, as a single label is a container on Saltbox's network or
+    `localhost`, and masking it would hide the containers' names in
+    Docker's line), and every name under a host's registrable domain
+    (psl, as sb-config's Cloudflare check), `*.` included (Saltbox serves
+    its apps as one domain's subdomains, and a certificate error lists
+    the others);
+  - in a line holding `Error: `, and in all of Traefik's routers, every
+    host-shaped name (dotted labels ending in an alphabetic one), as
+    those texts name hosts sb wasn't given (a certificate's names, a
+    router's ACME domains). A path's part, a call (`api.Get(`), unit and
+    file kinds (`.service`, `.sock`, `.yml`) and rTorrent's
+    `system.hostname` stay; if the known hosts' pattern can't be built,
+    every name is masked instead;
+  - IPv6 candidates (a run of hex digits, colons and dots with no letter
+    or digit touching it, a colon or dot at either end let go, a
+    `%zone` kept), then IPv4 candidates (sb-go's pattern), each
+    confirmed by std's parser, so an IPv4 tail goes with its IPv6
+    address. Brackets and ports stay (`[xxxx:xxxx:xxxx:xxxx]:443`), and
+    times and MAC addresses aren't addresses. Last login's source is
+  masked before it is painted, as sb-go's `obscureIP`: an address as its
+  mask, a name as `[HOST]`, `local` as it is. Tests: the filter's forms
+  (unit), the last-login source on a stand-in `last`, a Plex error
+  echoing a configured host, one not configured, an IPv4 and a
+  bracketed IPv6 through the report, a Traefik router's ACME error, and
+  `sb motd --login --share` end to end. Not masked: a single-label
+  last-login host, which sb-go's reading of `last` takes for `local`
+  (the name lands in the date, as there); an address cut by the 2000
+  characters' cap.
 - **The banner (M46).** sb-go's order: the selection, then the type
   (a boxes design, `none` or empty) and a font given (`term`, or
   `<font>.flf`/`.tlf` that `stat` finds in `/usr/share/figlet` or the

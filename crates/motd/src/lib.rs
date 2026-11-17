@@ -4,8 +4,7 @@
 //! Usage, Package Status, GPU, User Sessions, Last login, Docker and
 //! Traefik, motd.yml with its colours, its `Config:` line and
 //! `--generate-config`, Services, the media servers, downloaders and
-//! download queues, and the banner (module build M36-M46); `--share`
-//! comes with its own task (M47).
+//! download queues, the banner and `--share` (module build M36-M47).
 
 pub mod banner;
 pub mod config;
@@ -159,8 +158,8 @@ impl Section {
     }
 }
 
-/// What `sb motd`'s flags ask for. `--share` and `--generate-config` are
-/// read by their own tasks (M42, M47).
+/// What `sb motd`'s flags ask for (`--generate-config` is sb's own,
+/// before any of this).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Options {
     /// `--all`: every section.
@@ -169,6 +168,8 @@ pub struct Options {
     pub sections: Vec<Section>,
     /// The banner flags (none drawn by default).
     pub banner: banner::Banner,
+    /// `--share`: addresses and known hosts masked (decision 7).
+    pub share: bool,
 }
 
 impl Options {
@@ -403,7 +404,7 @@ pub async fn report_from(
     let tools = sources.banner.clone();
     let (drawn, lines) = tokio::join!(
         banner::draw(&options.banner, file, &tools),
-        report_with(chosen, colours, sources, load()),
+        report_with(chosen, colours, sources, load(), options.share),
     );
     Ok(Report {
         text: drawn.text + &lines?,
@@ -433,12 +434,20 @@ async fn report_with(
     colours: Colours<'_>,
     sources: Sources,
     loaded: config::Loaded,
+    share: bool,
 ) -> Result<String, Error> {
     let names: Vec<&str> = chosen.iter().map(|s| s.flag()).collect();
     tracing::info!(sections = names.join(","), "motd sections chosen");
     let motd_colours = loaded.motd.as_ref().map_or_default(|motd| motd.colours);
     let paint = Paint::with(colours.theme, colours.on, &motd_colours);
     let secrets = loaded.motd.as_ref().map_or_default(redact::Secrets::of);
+    let share = share.then(|| {
+        redact::Share::of(
+            loaded.motd.as_ref(),
+            &sources.docker.traefik_base,
+            sources.docker.docker_host.as_deref(),
+        )
+    });
     let providers = providers::Shared::new(
         sources.docker.proxy.clone(),
         tokio::time::Instant::now() + run::CAP,
@@ -457,6 +466,7 @@ async fn report_with(
         apps: Arc::new(apps),
         providers,
         token: CancellationToken::new(),
+        share: share.is_some(),
     };
     let jobs = chosen
         .into_iter()
@@ -467,11 +477,14 @@ async fn report_with(
     let config = loaded.line.map(|line| (CONFIG_KEY, paint.warning(&line)));
     let lines: Vec<(&str, String)> = config
         .into_iter()
-        .chain(
-            results
-                .into_iter()
-                .map(|(section, value)| (section.key(), value)),
-        )
+        .chain(results.into_iter().map(|(section, value)| {
+            // Traefik's routers name hosts sb wasn't given (a rule's).
+            let traefik = section == Section::Traefik;
+            match &share {
+                Some(share) => (section.key(), share.mask(&value, traefik)),
+                None => (section.key(), value),
+            }
+        }))
         .collect();
     Ok(layout::render(&lines, |key| paint.label(key)))
 }
@@ -488,6 +501,8 @@ struct Context {
     apps: Arc<std::collections::BTreeMap<config::App, config::AppSection>>,
     providers: Arc<providers::Shared>,
     token: CancellationToken,
+    /// `--share`: Last login masks its source before painting it.
+    share: bool,
 }
 
 /// The section's collection. The runtime is current-thread, so a job must not block:
@@ -519,7 +534,10 @@ fn job(section: Section, context: &Context) -> run::Job {
             logins::sessions(&logins::Tools::system(), release.as_deref(), &paint).await
         }),
         Section::LastLogin => {
-            Box::pin(async move { logins::last_login(&logins::Tools::system(), &paint).await })
+            let share = context.share;
+            Box::pin(
+                async move { logins::last_login(&logins::Tools::system(), &paint, share).await },
+            )
         }
         Section::Docker => Box::pin(async move { docker::docker(&containers, &paint).await }),
         Section::Traefik => Box::pin(async move { docker::traefik(&containers, &paint).await }),
@@ -770,6 +788,7 @@ esac"#,
             colours,
             sources,
             config::Loaded::default(),
+            false,
         )
         .await
         .unwrap();
@@ -828,9 +847,15 @@ esac"#,
             Section::Emby,
             Section::Jellyfin,
         ];
-        let text = report_with(http, colours, kernel_only(), config::Loaded::default())
-            .await
-            .unwrap();
+        let text = report_with(
+            http,
+            colours,
+            kernel_only(),
+            config::Loaded::default(),
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(text, "\n");
     }
 
@@ -958,6 +983,69 @@ esac"#,
         }
     }
 
+    /// `--share` (criterion 7): a provider error echoing a configured
+    /// host, one sb wasn't given, an IPv4 and a bracketed IPv6 with its
+    /// port shows them masked; without it they show as given.
+    #[tokio::test]
+    async fn share_masks_hosts_and_addresses_in_every_line() {
+        use sb_config::testing::{Answer as Reply, Fake};
+        let fake = Fake::start().unwrap();
+        fake.script(
+            "/status/sessions",
+            Reply::json(
+                200,
+                r#"{"MediaContainer":{"size":"via PLEX.example.org at 192.0.2.7 and [2001:db8::7]:443 for backup.other.net"}}"#,
+            ),
+        );
+        let instance = |url: String, enabled: bool| config::Instance {
+            name: "Plex".into(),
+            url,
+            apikey: None,
+            token: Some("t0ken-for-share".into()),
+            user: None,
+            password: None,
+            timeout: None,
+            enabled,
+        };
+        let loaded = || config::Loaded {
+            motd: Some(config::Motd {
+                apps: [(
+                    config::App::Plex,
+                    config::AppSection {
+                        enabled: true,
+                        instances: vec![
+                            instance(fake.url().to_string(), true),
+                            instance("https://plex.example.org".into(), false),
+                        ],
+                    },
+                )]
+                .into(),
+                ..config::Motd::default()
+            }),
+            line: None,
+        };
+        let theme = Theme::plain();
+        let colours = Colours {
+            theme: &theme,
+            on: false,
+        };
+        let shared = report_with(vec![Section::Plex], colours, kernel_only(), loaded(), true)
+            .await
+            .unwrap();
+        assert!(
+            shared
+                .contains("via [HOST] at xxx.xxx.xxx.xxx and [xxxx:xxxx:xxxx:xxxx]:443 for [HOST]"),
+            "{shared}"
+        );
+        let plain = report_with(vec![Section::Plex], colours, kernel_only(), loaded(), false)
+            .await
+            .unwrap();
+        assert!(
+            plain.contains("via PLEX.example.org at 192.0.2.7 and [2001:db8::7]:443"),
+            "{plain}"
+        );
+    }
+
     /// A file with issues: the `Config:` line first, its key padded with
     /// the others, its text in the warning colour; the sections still show.
     #[tokio::test]
@@ -971,7 +1059,7 @@ esac"#,
             motd: None,
             line: Some("motd.yml has 2 issues; run sb validate-config".to_string()),
         };
-        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded)
+        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded, false)
             .await
             .unwrap();
         let lines: Vec<&str> = text.lines().collect();
@@ -989,7 +1077,7 @@ esac"#,
             motd: None,
             line: Some("x".to_string()),
         };
-        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded)
+        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded, false)
             .await
             .unwrap();
         let paint = Paint::new(&theme, true);
@@ -1041,7 +1129,7 @@ esac"#,
             motd: Some(motd),
             line: None,
         };
-        let text = report_with(vec![Section::Services], colours, sources(), loaded)
+        let text = report_with(vec![Section::Services], colours, sources(), loaded, false)
             .await
             .unwrap();
         assert_eq!(
@@ -1052,7 +1140,7 @@ esac"#,
             motd: None,
             line: Some("x".to_string()),
         };
-        let text = report_with(vec![Section::Services], colours, sources(), loaded)
+        let text = report_with(vec![Section::Services], colours, sources(), loaded, false)
             .await
             .unwrap();
         assert_eq!(text, "Config:    x\nServices:  Docker   failed\n\n");

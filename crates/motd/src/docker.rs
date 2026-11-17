@@ -806,6 +806,29 @@ mod tests {
         );
     }
 
+    /// `--share` over Traefik's line (criterion 7): a router's error
+    /// naming the user's domain and an address shows them masked, the
+    /// router names kept.
+    #[tokio::test]
+    async fn shared_router_errors_mask_hosts_and_addresses() {
+        let engine = engine(vec![running(1, "traefik")]);
+        let api = Fake::start().unwrap();
+        api.script(
+            "/api/http/routers",
+            Answer::json(
+                200,
+                r#"[{"name":"plex-secure@docker","status":"enabled","error":"unable to obtain ACME certificate for domains \"plex.mine.io\" from 203.0.113.5"}]"#,
+            ),
+        );
+        let containers = Containers::new(settings(&engine, &format!("{}/", api.url())));
+        let line = traefik(&containers, &Paint::plain()).await;
+        assert_eq!(
+            crate::redact::Share::default().mask(&line, true),
+            "1 routers (0 active, 1 need attention)\n\
+             plex-secure@docker: unable to obtain ACME certificate for domains \"[HOST]\" from xxx.xxx.xxx.xxx"
+        );
+    }
+
     #[tokio::test]
     async fn healthy_routers_are_the_counts_alone() {
         let engine = engine(vec![running(1, "traefik")]);

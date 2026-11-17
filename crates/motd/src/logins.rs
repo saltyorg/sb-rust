@@ -200,7 +200,7 @@ fn count_open(ids: &[String], states: &str) -> usize {
 
 /// Last login: the first entry of `last -w -n 5` that is a login, in
 /// sb-go's text, or `No recent logins`.
-pub async fn last_login(tools: &Tools, paint: &Paint) -> String {
+pub async fn last_login(tools: &Tools, paint: &Paint, share: bool) -> String {
     let output = child_output(
         Cmd::new(tools.last.as_os_str())
             .arg("-w")
@@ -209,7 +209,12 @@ pub async fn last_login(tools: &Tools, paint: &Paint) -> String {
         "last",
     )
     .await;
-    first_login(&output, paint).unwrap_or_else(|| NO_LOGINS.to_string())
+    let shown = if share {
+        first_login_with(&output, paint, crate::redact::mask_source)
+    } else {
+        first_login(&output, paint)
+    };
+    shown.unwrap_or_else(|| NO_LOGINS.to_string())
 }
 
 /// sb-go's `isSkippableLastLine`, with wtmpdb's `wtmpdb begins` beside
@@ -233,6 +238,16 @@ fn skippable(line: &str, fields: &[&str]) -> bool {
 /// earlier. The user, date, logout time and source are in the value
 /// colour.
 fn first_login(output: &str, paint: &Paint) -> Option<String> {
+    first_login_with(output, paint, str::to_string)
+}
+
+/// [`first_login`] with the source passed through `source` before it is
+/// painted (`--share`'s mask, as sb-go's `obscureIP` there).
+fn first_login_with(
+    output: &str,
+    paint: &Paint,
+    source: impl Fn(&str) -> String,
+) -> Option<String> {
     for line in output.lines() {
         let line = line.trim();
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -249,7 +264,7 @@ fn first_login(output: &str, paint: &Paint) -> Option<String> {
         };
         let user = paint.value(fields[0]);
         let date = paint.value(&date.join(" "));
-        let from = paint.value(from);
+        let from = paint.value(&source(from));
         if line.contains("still logged in") {
             return Some(format!("{user} at {date} (still logged in) from {from}"));
         }
@@ -661,8 +676,41 @@ mod tests {
              echo 'sbuser   pts/0        127.0.0.1        Sat Nov 14 23:10   still logged in'",
         );
         assert_eq!(
-            last_login(&tools, &Paint::plain()).await,
+            last_login(&tools, &Paint::plain(), false).await,
             "sbuser at Sat Nov 14 23:10 (still logged in) from 127.0.0.1"
+        );
+    }
+
+    /// `--share` masks the source before it is painted: an address as
+    /// sb-go's mask, a host name as `[HOST]`, `local` as it is.
+    #[tokio::test]
+    async fn last_login_masks_its_source_for_share() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tools(dir.path());
+        for (source, shown) in [
+            ("192.0.2.9", "xxx.xxx.xxx.xxx"),
+            ("2001:db8::9", "xxxx:xxxx:xxxx:xxxx"),
+            ("laptop.example.org", "[HOST]"),
+        ] {
+            stand_in(
+                &tools.last,
+                &format!(
+                    "echo 'sbuser   pts/0        {source}        Sat Nov 14 23:10   still logged in'"
+                ),
+            );
+            assert_eq!(
+                last_login(&tools, &Paint::plain(), true).await,
+                format!("sbuser at Sat Nov 14 23:10 (still logged in) from {shown}")
+            );
+        }
+        stand_in(
+            &tools.last,
+            "echo 'sbuser   tty1         Sat Nov 14 23:10   still logged in'",
+        );
+        assert_eq!(
+            last_login(&tools, &Paint::plain(), true).await,
+            "sbuser at Sat Nov 14 23:10 (still logged in) from local"
         );
     }
 
@@ -672,7 +720,7 @@ mod tests {
         let _spawns = SPAWNS.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let tools = tools(dir.path());
-        assert_eq!(last_login(&tools, &Paint::plain()).await, NO_LOGINS);
+        assert_eq!(last_login(&tools, &Paint::plain(), false).await, NO_LOGINS);
         assert_eq!(NO_LOGINS, "No recent logins");
         for body in [
             "echo 'sbuser pts/0 192.0.2.9 Sat Nov 14 23:10 gone'; exit 1",
@@ -681,7 +729,7 @@ mod tests {
         ] {
             stand_in(&tools.last, body);
             assert_eq!(
-                last_login(&tools, &Paint::plain()).await,
+                last_login(&tools, &Paint::plain(), false).await,
                 NO_LOGINS,
                 "{body}"
             );
@@ -699,7 +747,7 @@ mod tests {
             "printf 'ev\\033]0;t\\007il pts/0 192.0.2.9 Sat Nov 14 23:10 gone\\n'",
         );
         assert_eq!(
-            last_login(&tools, &Paint::plain()).await,
+            last_login(&tools, &Paint::plain(), false).await,
             "evil at Sat Nov 14 23:10 from 192.0.2.9"
         );
     }

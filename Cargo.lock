@@ -3544,6 +3544,7 @@ dependencies = [
  "icu_properties",
  "jiff",
  "procfs",
+ "psl",
  "quick-xml",
  "regex",
  "reqwest",

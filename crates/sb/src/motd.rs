@@ -1,8 +1,8 @@
 //! `sb motd` (motd spec): sb-go's 32 flags (`cmd/motd.go:68-100`, without
 //! `-v`, motd decision 9) and the run on a current-thread runtime built
 //! after parsing: the banner, the chosen sections with motd.yml's colours
-//! and its `Config:` line, and `--generate-config` (module build M36-M46).
-//! `--share` is read by its task (M47).
+//! and its `Config:` line, `--share` and `--generate-config` (module build
+//! M36-M47).
 
 use std::io::Write;
 
@@ -58,16 +58,8 @@ pub struct Args {
 }
 
 impl Args {
-    /// A flag whose behaviour isn't built yet: refused rather than
-    /// ignored, so `--share` never shows an unmasked line. It leaves this
-    /// list with its task (M47). `--generate-config` is read before it,
-    /// as it ignores every other flag.
-    fn not_built_yet(&self) -> Option<&'static str> {
-        self.share.then_some("--share")
-    }
-
-    /// The library's options: `--all`, the section flags given and the
-    /// banner's flags.
+    /// The library's options: `--all`, the section flags given, the
+    /// banner's flags and `--share`.
     fn options(&self) -> Options {
         Options {
             all: self.all,
@@ -80,6 +72,7 @@ impl Args {
                 file: self.banner_file.clone(),
                 file_toilet: self.banner_file_toilet.clone(),
             },
+            share: self.share,
         }
     }
 }
@@ -211,16 +204,12 @@ fn help(section: Section) -> &'static str {
 ///
 /// # Errors
 ///
-/// `--generate-config`'s schema doesn't load, `--share` given before its
-/// task lands, no section chosen, a banner type or font that isn't one,
-/// an unreadable banner file (sb-go's texts, exit 1), the runtime, or
-/// stdout.
+/// `--generate-config`'s schema doesn't load, no section chosen, a
+/// banner type or font that isn't one, an unreadable banner file (sb-go's
+/// texts, exit 1), the runtime, or stdout.
 pub fn motd(args: &Args, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     if args.generate_config {
         return generate_config();
-    }
-    if let Some(flag) = args.not_built_yet() {
-        anyhow::bail!("sb motd {flag} is not available in this build yet");
     }
     let options = args.options();
     let colours = Colours {
@@ -476,23 +465,11 @@ mod tests {
         );
     }
 
-    /// `--share` is refused until built, never ignored.
+    /// `--share` reaches the library's options (M47).
     #[test]
-    fn unbuilt_behaviour_flags_are_named() {
-        assert_eq!(parse(&["--all"]).unwrap().not_built_yet(), None);
-        assert_eq!(
-            parse(&["--all", "--share"]).unwrap().not_built_yet(),
-            Some("--share")
-        );
-        // `--generate-config` is built (M42), and ignores every other flag
-        // before this check.
-        assert_eq!(parse(&["--generate-config"]).unwrap().not_built_yet(), None);
-        assert_eq!(
-            parse(&["--all", "--title", "x", "--type", "none"])
-                .unwrap()
-                .not_built_yet(),
-            None
-        );
+    fn share_reaches_the_options() {
+        assert!(!parse(&["--all"]).unwrap().options().share);
+        assert!(parse(&["--all", "--share"]).unwrap().options().share);
     }
 
     /// No `-v` (motd decision 9), and no arguments (`cobra.NoArgs`).
