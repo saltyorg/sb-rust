@@ -1837,10 +1837,12 @@ shown.*
 **Scope:** M
 
 ## Checkpoint V: log viewer
-- [ ] M61-M74 merged; `check.sh full`.
-- [ ] Look: the picker and viewer (M67, M68), container rows (M69), the
+- [x] M61-M74 merged; `check.sh full`. Done: full passed on main's
+      tree at 798cbdd (2026-11-17).
+- [x] Look: the picker and viewer (M67, M68), container rows (M69), the
       unified picker (M70), search (M71), the inline forms (M72), the
-      inline announcements (M74).
+      inline announcements (M74). Done: each approved by the maintainer
+      at its task's look.
 - [x] The announcement viewer's spec section asked for (plan open
       question 1). Done: written at M74's look (tui.md, "The
       announcement viewer", 397f079) and built in c8f73c7.
