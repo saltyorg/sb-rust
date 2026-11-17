@@ -1161,14 +1161,14 @@ qBittorrent, and rTorrent's XML-RPC with quick-xml.
 type and font checks, `--banner-file-toilet`'s arguments through shlex.
 
 **Acceptance criteria:**
-- [ ] With toilet and boxes present, the banner as the spec says;
+- [x] With toilet and boxes present, the banner as the spec says;
       without them, the fallbacks.
-- [ ] Unknown types and fonts refused with the spec's texts.
-- [ ] Screenshots of the banner and a fallback.
+- [x] Unknown types and fonts refused with the spec's texts.
+- [x] Screenshots of the banner and a fallback.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd` with stand-in programs.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-motd` with stand-in programs.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M45
 **Files:** `crates/motd/{Cargo.toml,src/banner.rs}`, `Cargo.toml`, `Cargo.lock`
@@ -2037,14 +2037,14 @@ acceptance checks. Publishing it is a separate, explicitly authorised
 step, not part of this task.
 
 **Acceptance criteria:**
-- [ ] The script installs sb and runs `sb setup` attached to the
+- [x] The script installs sb and runs `sb setup` attached to the
       terminal, passing `-b`.
-- [ ] sb-go's test-install cases pass in containers.
-- [ ] ShellCheck clean, if the gate runs it.
+- [x] sb-go's test-install cases pass in containers.
+- [x] ShellCheck clean, if the gate runs it.
 
 **Verification:**
-- [ ] `install/tests/` under the cap.
-- [ ] Review: code-reviewer, security-auditor (a script run as root).
+- [x] `install/tests/` under the cap.
+- [x] Review: code-reviewer, security-auditor (a script run as root).
 
 **Dependencies:** M82
 **Files:** `install/install.sh`, `install/tests/`
@@ -2059,14 +2059,14 @@ check, disk space, self-update (exit 0 with the "Re-run" warning), the
 branch questions, apt, both repositories.
 
 **Acceptance criteria:**
-- [ ] The flag check refuses conflicting flags before any step.
-- [ ] Self-update inside `update` ends the run with exit 0 and the
+- [x] The flag check refuses conflicting flags before any step.
+- [x] Self-update inside `update` ends the run with exit 0 and the
       warning.
-- [ ] Both repositories update with the branch rules.
+- [x] Both repositories update with the branch rules.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M83, M26, M79
 **Files:** `crates/ops/src/update.rs`, `crates/sb/src/{main.rs,update.rs,contract.rs}`, `crates/sb/tests/update.rs`
