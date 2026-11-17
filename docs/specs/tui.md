@@ -1047,7 +1047,12 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   - A value is masked (dots of a fixed length) when its key name contains
     `pass`, `secret`, `token`, `key` or `api`, in any case (proto-facts
     `looks_secret`). Facts have no schema, so validate-config's secret
-    paths don't apply. Masking too much is harmless.
+    paths don't apply. Masking too much is harmless. *Amended 2026-11-17
+    (ops decision 32):* the rule is shared with restore's viewer
+    (sb-config's `facts::secret::is_secret`), and gains the words
+    `apprise`, `auth`, `credential` and `hook`, and a value whose first
+    word is a URL with a user, a password, or a query parameter named by
+    a secret word or `sig`.
   - **Show** reveals the selected value only, until the selection moves.
     **Copy** sends it through crossterm's OSC 52 `CopyToClipboard`
     without showing it. The status line says "if your terminal allows it;
@@ -1633,6 +1638,42 @@ and how it closed, never a title or a message.
 - The pane is drawn whole every frame, and cut at 2,000 rows.
 - A title longer than the list's 40% is cut in the list.
 - With colour off, new and older rows differ only by the marker.
+
+## The restore screen
+
+*Added 2026-11-17 (the maintainer, 2026-11-16 and 2026-11-17; ops spec,
+"`sb restore` (hidden)" and decision 32, which say what it shows and
+does).* The module `restore`: one `App` on the module's `Tui`, three
+modes.
+
+- **Form:** three ratatui-textarea lines (`Username` shown,
+  `Password` and `Repeat password` masked with `set_mask_char('•')`),
+  no undo history; Enter, `\n`, `\r` and Ctrl-M move on (ratatui-textarea's
+  single-line example, as the picker's filter line); the checks' text
+  under the fields; Esc cancels. Centred with `Rect::centered`.
+- **Run:** a `List` with a `ListState`, a row per file: the name padded
+  to 20, then `waiting`, `fetching…`, `DONE`, `IGNORED` or `FAIL` with its
+  reason.
+- **Viewer,** once the summary comes: the announcement viewer's layout
+  and list, shared through the module `split` (the menu beside the pane
+  from 70 columns, above it below; the list movement clamped at once; a
+  click's row from `ListState::offset()`), a check line above, a
+  Continue button below. The pane is a tui-scrollview `ScrollView` of a
+  wrapped `Paragraph`, as the announcement's, with a line cursor: each
+  line's first row from `Paragraph::line_count`, the offset moved to
+  keep the cursor's rows in sight. Each line goes through term-ui's
+  `DisplayText` (colour off); a value whose key (before the first `:` or
+  `=`, a list's `- ` trimmed) or value is secret by the caller's rule
+  shows `••••••••` until `s` (the cursor's line) or `a` (all). Focus is
+  the menu, the content or Continue (Tab, Shift-Tab); the focused part's
+  border or button is the accent's. The selected row is the Selected
+  roles' bar, reverse video with colour off (decision 23's rule).
+- **The fetch** is the caller's future, given the answers once the form
+  is submitted, run beside `Tui::run` in one `tokio::select!` and
+  reporting through an unbounded channel and the screen's waker; it is
+  dropped when the screen closes, the updates still queued taken first.
+  The screen returns its rows, the summary and how it ended; ops prints
+  the final list.
 
 ## Verification notes
 

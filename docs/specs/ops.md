@@ -298,29 +298,79 @@ script, restore, `sb install preinstall`, `sb install restore`.
 
 **Flags:** `--user <name>` and `--password-file <path|->` (decision 8).
 No password flag and no `-v`. Help texts are sb-go's for the command;
-the two flags' help: `Restore service user name (asked when not given)`
-and `Read the password from this file, or stdin with '-' (asked when not
-given)`.
+the two flags' help: `Restore service user name (asked on a terminal
+when not given)` and `Read the password from this file, or stdin with
+'-' (asked on a terminal when not given)`.
 
-**Answers:**
-- the user from `--user`, else a text prompt `Username`; an empty name
-  is refused (difference 11);
-- the password from `--password-file`, else a password prompt
-  `Password` with confirmation `Repeat password` and dialoguer's
-  mismatch text `Error: passwords do not match or are empty` (sb-go's);
-  an empty password is refused;
-- `--password-file <path>` reads at most 4 KiB from the path, `-` from
-  stdin; one trailing `\n` (or `\r\n`) is dropped; an empty result is
-  refused (`the password file is empty`); its content never appears in
-  an error;
-- no terminal and an answer missing: term-ui's error naming the flag,
-  exit 1, never a hang.
+**On a terminal** (stdout one) and an answer missing (the maintainer,
+2026-11-16 and 2026-11-17, decision 32), `sb restore` is tui's restore
+screen. With both `--user` and `--password-file` given, there is no
+screen: the line form, as without a terminal.
 
-Prompts read `/dev/tty` (term-ui). Ctrl-C at a prompt is cli-core's
-interrupted ending, 130. Esc does nothing: dialoguer 0.12's `Input` and
-`Password` have no `interact_opt` (checked in dialoguer 0.12.0's source,
-`src/prompts/input.rs` and `password.rs`), so sb-go's Esc-to-cancel
-(`Restore cancelled.`, exit 0) goes (difference 10).
+- **The form:** `Username`, `Password` and `Repeat password`, each a
+  ratatui-textarea line; the two passwords masked (`•`), the user name
+  shown as typed. Tab, Shift-Tab, ↑ and ↓ move between the fields,
+  Enter moves to the next and submits from the last. An empty user name
+  shows `Enter the user name`, an empty password or two that differ
+  sb-go's `Error: passwords do not match or are empty`, in the form, and
+  nothing starts. Esc closes it without restoring, sb-go's `Restore
+  cancelled.`, exit 0. `--user` or `--password-file` fills its fields
+  (the file's bytes are sent as read unless a password field is edited).
+- **The live list,** once submitted: the nine files as rows, each
+  waiting, then fetching, then `DONE`, `IGNORED` or `FAIL`, a failure
+  with its reason (the line form's note: the wrong-password line, a
+  technical error, or the transport error). The hints name Ctrl-C to
+  stop the run.
+- **The viewer,** once the run ends: a line asks the user to check that
+  each restored file is decrypted, correct, and the right configuration
+  file; under it the menu of the nine files, each with its mark, beside
+  the selected file's content (above it below 70 columns), and a
+  Continue button.
+  - The menu: ↑, ↓, `j`, `k`, Home, End, a click or the wheel select a
+    file; Enter moves into its content. A failed or ignored file can't
+    be opened: selected, the pane shows why (the failure's reason, or
+    that the service has no such file).
+  - The content: the file as placed, read-only, each line made safe,
+    wrapped, scrolled with a line cursor (↑, ↓, PgUp, PgDn, Home, End,
+    the wheel, a click on a line); Esc goes back to the menu.
+  - Secrets are masked (`key: ••••••••`) by the shared rule (below); `s`
+    shows the cursor line's value until the cursor moves, `a` shows all
+    of them until pressed again; the pane's title says when all show.
+  - Tab and Shift-Tab move between the menu, the content and Continue.
+    Continue (Enter on it, `c`, a click on it, or `q` and Esc in the
+    menu) closes the screen. Restore has no step after it, so Continue
+    ends sb restore; a later step of a flow would follow it.
+- **The masking rule** is sb-config's, shared with the fact editor
+  (`facts::secret::is_secret`): a key whose name contains `pass`,
+  `secret`, `token`, `key`, `api`, `apprise`, `auth`, `credential` or
+  `hook`, in any case, or a value whose first word (a comment after it
+  ignored) is a URL with a user or password in it, or with a query
+  parameter named by such a word or `sig` (an Azure SAS signature). A
+  bare URL, a list item's or a whole line's, is judged as a value too.
+  When the screen closes, every shown value is hidden again and one more
+  frame drawn, so a terminal without an alternate screen (GNU screen's
+  default) keeps a masked frame. The run
+  log never holds a restored file's content; a URL it logs drops its user
+  and password and masks such query values (`http::loggable_url`).
+- **Leaving:** Ctrl-C ends sb with 130 at any time, quietly, as the
+  viewers do, the run stopped and the files so far listed; a first
+  SIGTERM or SIGHUP stops the run and closes the screen. Once the screen
+  is gone, the final list prints on stdout in the line form (below),
+  each failure's reason indented under its line (a transport failure's
+  too, which the line form leaves bare), then the count line or the
+  error, so the scrollback keeps it. Rows not yet ended are left out.
+
+**Without a terminal** (stdout not one), or with both flags given, the
+line form: the user from `--user`, the password from `--password-file`,
+each required (an error naming the flag, exit 1, never a hang); an empty
+name is refused (difference 11).
+
+**The password file:** `--password-file <path>` reads at most 4 KiB from
+the path, `-` from stdin; a longer file is refused (`the password file
+is over 4 KiB`), not cut; one trailing `\n` (or `\r\n`) is dropped; an
+empty result is refused (`the password file is empty`); its content never
+appears in an error. On a terminal with `-` and stdin a terminal, the
+form asks instead (reading the terminal would echo it).
 
 **Protocol** (Saltbox's backup role and sb-go restore.go:236, 368-470;
 decision 7):
@@ -372,7 +422,8 @@ The password, the derived key and IV, and each plaintext are held in
   file (dropped on every path); the root is synced after each rename;
 - the temporary file is set to 0600 whatever the umask.
 
-**Output** (sb-go's lines, on stdout):
+**Output** (the line form, sb-go's lines, on stdout; on a terminal after
+the screen closes):
 `Fetching files from https://crs.saltbox.dev...`, then one line per file,
 the name padded to 20 characters, then ` [DONE]`, ` [IGNORED]` or
 ` [FAIL]`, then `Restore process completed: <n> files successfully
@@ -395,7 +446,10 @@ decrypted`, exit 1.
 - cli-core's run record never logs argument values (cli-core spec,
   startup step 4), so `--user` stays out of it;
 - prompt answers are never logged (term-ui);
-- no child process is started, so nothing reaches argv.
+- no child process is started; `--user`'s value is in sb's own argv,
+  though, so the process list and, when sb relaunches through sudo or is
+  run with it, sudo's command log show the user name. The long help says
+  so: leaving `--user` out asks instead (decision 10's limit, below).
 
 ### `sb bench`
 
@@ -693,11 +747,15 @@ fails.
    Differences 4 and 5 apply to gha's cleanup too.
 
 `restore`:
-9. Inline term-ui prompts (dialoguer) instead of a full-screen form
-   (stack table, `dialoguer` replaces the restore textinput model).
-10. Esc doesn't cancel (dialoguer has no cancel for text and password);
-    Ctrl-C ends with 130 as before. sb-go's `Restore cancelled.` exit 0
-    goes.
+9. On a terminal, a full-screen form and then a live list of the nine
+   files, each row's outcome and reason as it comes, then a viewer of
+   the restored files with secrets masked and shown on demand, closed
+   by Continue; the final list printed after the screen closes. sb-go's
+   full-screen form gave way to its lines (decision 32). With both flags
+   given, the lines only, as sb-go's.
+10. Without a terminal, the flags answer: no prompt at all. Esc in the
+    form keeps sb-go's `Restore cancelled.`, exit 0; Ctrl-C ends with
+    130.
 11. `--user` and `--password-file` answer the prompts (decision 8); an
     empty user name is refused (sb-go accepted it and fetched under the
     empty name's key); sb-go's 64-character limit on the inputs goes.
@@ -885,9 +943,9 @@ https://docs.rs/sysinfo/0.40.0/sysinfo/struct.Disks.html), `rustix`
 (`openat`, `statat`, `mkdirat`, `renameat`, `unlinkat` for the host
 amendment; the `fs` feature is already on), `serde_json` (Speedtest and
 ipinfo JSON). `dialoguer` 0.12.0 is new to Cargo.lock: term-ui's confirm
-comes with `release` (self-update, the first user in the build order),
-and restore is the first user of its text and password prompts
-(https://docs.rs/dialoguer/0.12.0/dialoguer/struct.Password.html#method.with_confirmation).
+comes with `release` (self-update, the first user in the build order).
+restore's form is tui's (decision 32), on ratatui-textarea, already in
+the tree.
 
 `aws-lc-rs` (in the tree through rustls) could do all the crypto with no
 new crate, but it is C and the stack table names RustCrypto; switching
@@ -993,9 +1051,15 @@ the real services.
   User-Agent. The log test feeds a known user name and password and
   asserts that neither, nor the key, is in the run log, stdout or
   stderr.
-- **restore, prompts:** on a PTY (rexpect): the username and password
-  prompts, the mismatch text, Ctrl-C ending 130; without a terminal and
-  without flags, the error naming `--user`, exit 1, no hang.
+- **restore, the screen:** tui's unit tests on ratatui's `TestBackend`
+  (the fields, the checks, the masks, the list's updates, the viewer's
+  menu, content, cursor, `s` and `a`, failures not opened, Continue, the
+  mouse); sb-config's tests of the shared rule and `loggable_url`; on a
+  PTY (portable-pty and vt100): the form, the mismatch text, the list,
+  the viewer and Continue, the final list after it, Esc's cancel, Ctrl-C
+  in the form and mid-run ending 130, both flags giving the line form;
+  without a terminal and without flags, the error naming `--user`, exit
+  1, no hang.
 - **setup guard:** sb-go's setup_test.go cases on a temp root (missing,
   symlink with and without `--force`, a file, a directory with and
   without `--force`).
@@ -1328,16 +1392,49 @@ the real services.
     file is named then); with both invalid, each warns and nothing shows,
     exit 0, as `update` skips each.
 
+32. **`sb restore` on a terminal is a form, a live list and a viewer of
+    the restored files** (the maintainer, 2026-11-16, replacing M76's
+    line prompts; amended 2026-11-17): tui's restore screen, on sb-tui's
+    screen pieces (the `Tui`/`App` loop, ratatui-textarea for the
+    fields, the announcement viewer's menu beside a tui-scrollview pane).
+    Once the run ends, the viewer asks the user to check each restored
+    file, then Continue closes it (a later step of a flow would follow).
+    Secrets: "Logging should mask but not the screen, unless you can
+    show it optionally on demand in the TUI": masked on screen with `s`
+    and `a` to show them, one rule shared with the fact editor, which
+    gains `apprise`, `auth`, `credential`, `hook` and URLs with
+    credentials. Both `--user` and `--password-file` given: no screen,
+    the line form. Decided: "a terminal" is stdout's, as the
+    log viewer's screen; Esc in the form keeps sb-go's cancel; the final
+    list prints after the screen closes in the line form.
+
 ## Known limits
 
-- dialoguer returns a `String`; sb moves it into `Zeroizing` at once,
-  but the prompt's own intermediate buffers can't be cleared.
+- The viewer reads the placed file again, as root, following a link,
+  with no type or size check: someone else able to write the Saltbox
+  root could point it elsewhere. The root is the operator's (Saltbox's
+  seed user's), so this is left as it is. Its copies of the file (the
+  lines, the frames) aren't cleared; the file is on disk anyway.
+- The viewer masks by the key's name and a URL's credentials (the
+  shared rule): a secret under another name shows, such as a token in a
+  URL's path (an Apprise URL under a key that isn't `apprise`), a
+  flow mapping's values, or the lines of a block scalar under a secret
+  key. A file past 2,000 wrapped rows is cut there in the pane, as the
+  announcement viewer's.
+- The form's fields are ratatui-textarea `String`s, not cleared on drop:
+  sb takes the answers into `Zeroizing` buffers and empties the fields
+  at once, with no undo history, but the fields' freed memory and the
+  textarea's yank buffer (Ctrl-K, Ctrl-W) aren't cleared.
 - Clearing secrets is best effort: sb's own buffers, AES's key schedule,
   CBC's IV and the hash cores are cleared on drop, but hmac 0.13's
   padded key block and PBKDF2's intermediate blocks are stack temporaries
   the crates don't clear (module build M75's security audit).
 - A forced exit (a second signal) or SIGKILL while a file is written can
   leave one `.sb-restore-*` file (0600, root's) in the Saltbox root.
+- `--user` puts the user name in the process list and in sudo's command
+  log (module build M76's security audit); the form keeps it out.
+- Copies the crates keep aren't cleared: reqwest's request URL (it
+  holds the key), std's stdin buffer for `--password-file -`.
 - The backup format is unauthenticated (CBC, no MAC, decision 7): a
   changed ciphertext decrypts to changed plaintext without the password.
   A wrong password that passes the padding check (about once in 256

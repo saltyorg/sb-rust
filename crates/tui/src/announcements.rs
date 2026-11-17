@@ -15,11 +15,10 @@
 //!   (ratatui's `unstable-rendered-line-info`, ADR-001,
 //!   <https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html#method.line_count>),
 //!   measured again one column narrower when the scrollbar takes one.
-//! - **The list** is ratatui's `List` with a `ListState`
-//!   (<https://docs.rs/ratatui-widgets/0.3.2/ratatui_widgets/list/struct.ListState.html>):
-//!   `select_next` and `select_previous` move it. `List` has no
-//!   hit-testing, so a click's row is `ListState::offset()` plus its row
-//!   inside the block (`Block::inner`), as the picker maps it.
+//! - **The list and the layout** are [`crate::split`]'s, shared with
+//!   restore's viewer: ratatui's `List` with a `ListState`, moved by
+//!   `select_next` and `select_previous` and clamped at once, a click's
+//!   row from `ListState::offset()`.
 //! - **The text** is the inline form's ([`crate::markdown`]): sanitized
 //!   before and after tui-markdown, in the palette's roles.
 
@@ -32,22 +31,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph, Wrap};
 use sb_cli_core::cancel::Shutdown;
-use sb_cli_core::theme::{Profile, Role, Theme};
-use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
+use sb_cli_core::theme::{Role, Theme};
+use tui_scrollview::ScrollViewState;
 
-use crate::markdown;
 use crate::term::{App, Ending, Flow, Tui};
-
-/// Below this width the list goes above the announcement.
-const SIDE_BY_SIDE_MIN_WIDTH: u16 = 70;
-
-/// The list's narrowest width, its border included.
-const LIST_MIN_WIDTH: u16 = 24;
-
-/// The most rows an announcement's pane holds: tui-scrollview draws the
-/// whole content every frame, into a buffer of this many rows at most
-/// (tui spec, "Scrolling").
-const MAX_ROWS: u16 = 2000;
+use crate::{markdown, split};
 
 /// Rows the wheel scrolls the announcement by.
 const WHEEL_ROWS: usize = 3;
@@ -161,21 +149,11 @@ impl Viewer {
         Style::from(anstyle::Style::new().bg_color(self.theme.color(role)))
     }
 
-    /// Runs a list movement, and starts a newly selected announcement at
-    /// its top. `ListState::select_next` doesn't clamp until the list is
-    /// rendered (ratatui-widgets 0.3.2 `list/state.rs`), so the selection
-    /// is clamped here first: a move past the last entry is no move.
+    /// Runs a list movement ([`split::move_list`]: clamped, a move past
+    /// the last entry is no move), and starts a newly selected
+    /// announcement at its top.
     fn move_list(&mut self, movement: impl FnOnce(&mut ListState)) -> Flow {
-        if self.entries.is_empty() {
-            return Flow::Unchanged;
-        }
-        let before = self.list.selected();
-        movement(&mut self.list);
-        let last = self.entries.len() - 1;
-        if let Some(selected) = self.list.selected() {
-            self.list.select(Some(selected.min(last)));
-        }
-        if self.list.selected() == before {
+        if !split::move_list(&mut self.list, self.entries.len(), movement) {
             return Flow::Unchanged;
         }
         self.article.scroll_to_top();
@@ -209,10 +187,9 @@ impl Viewer {
         let in_list = self.list_area.contains(at);
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if self.list_rows.contains(at) => {
-                let row = self.list.offset() + usize::from(mouse.row - self.list_rows.y);
                 // A click under the last entry selects nothing.
-                match self.entries.get(row) {
-                    Some(_) => self.move_list(|list| list.select(Some(row))),
+                match split::clicked(&self.list, self.list_rows, at, self.entries.len()) {
+                    Some(row) => self.move_list(|list| list.select(Some(row))),
                     None => Flow::Unchanged,
                 }
             }
@@ -334,48 +311,14 @@ impl Viewer {
         Line::from(spans)
     }
 
-    /// The list's and the pane's areas in `body`: side by side from 70
-    /// columns, the list as wide as its widest row or its `title` plus its
-    /// border, from
-    /// 24 columns up to 40% of the screen; else the list above, as tall as
-    /// its rows plus its border, up to a third of the screen.
-    fn areas(body: Rect, rows: &[ListItem<'_>], title: &Line<'_>) -> [Rect; 2] {
-        if body.width >= SIDE_BY_SIDE_MIN_WIDTH {
-            let widest = rows
-                .iter()
-                .map(ListItem::width)
-                .chain([title.width()])
-                .max()
-                .unwrap_or(0);
-            let width = u16::try_from(widest + 2)
-                .unwrap_or(u16::MAX)
-                .clamp(LIST_MIN_WIDTH, body.width * 2 / 5);
-            Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(body)
-        } else {
-            let height = u16::try_from(rows.len() + 2)
-                .unwrap_or(u16::MAX)
-                .min(body.height / 3);
-            Layout::vertical([Constraint::Length(height), Constraint::Fill(1)]).areas(body)
-        }
-    }
-
     fn block(&self) -> Block<'static> {
         Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(self.style(Role::Border))
     }
 
-    /// The selected row's bar: the Selected roles, reverse video with
-    /// colour off (tui decision 23's rule).
     fn selected(&self) -> Style {
-        let bar = self
-            .style(Role::SelectedFg)
-            .patch(self.bg(Role::SelectedBg));
-        if self.theme.profile() == Profile::Ascii {
-            bar.add_modifier(Modifier::REVERSED)
-        } else {
-            bar
-        }
+        split::selected(&self.theme)
     }
 
     fn draw_pane(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -409,13 +352,14 @@ impl Viewer {
             width = width.saturating_sub(1);
             paragraph = self.paragraph(index, width);
         }
-        let height = u16::try_from(paragraph.line_count(width))
-            .unwrap_or(u16::MAX)
-            .min(MAX_ROWS);
-        let mut view = ScrollView::new(Size::new(width, height))
-            .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
-        view.render_widget(paragraph, view.area());
-        frame.render_stateful_widget(view, inner, &mut self.article);
+        let height = u16::try_from(paragraph.line_count(width)).unwrap_or(u16::MAX);
+        split::render_scrolled(
+            frame,
+            inner,
+            &mut self.article,
+            paragraph,
+            Size::new(width, height),
+        );
     }
 
     fn paragraph(&mut self, index: usize, width: u16) -> Paragraph<'static> {
@@ -439,7 +383,7 @@ impl App for Viewer {
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
         let rows: Vec<ListItem<'static>> = self.entries.iter().map(|e| self.row(e)).collect();
         let title = self.list_title();
-        let [list_area, pane] = Self::areas(body, &rows, &title);
+        let [list_area, pane] = split::areas(body, &rows, &title);
         self.list_area = list_area;
         let list_block = self.block().title(title);
         self.list_rows = list_block.inner(list_area);

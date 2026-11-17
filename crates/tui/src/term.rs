@@ -282,6 +282,27 @@ impl Tui {
         }
     }
 
+    /// One frame of `app` now, outside [`Tui::run`]: for a screen that
+    /// changes what it shows as it closes (restore hides every shown
+    /// secret first, so a terminal without an alternate screen keeps a
+    /// masked frame).
+    ///
+    /// # Errors
+    ///
+    /// The I/O error when drawing fails.
+    pub fn draw<A: App>(&mut self, app: &mut A) -> io::Result<()> {
+        match &mut self.screen {
+            Screen::Stdout(terminal) => terminal
+                .draw(|frame| app.draw(frame))
+                .map(drop)
+                .map_err(io::Error::other),
+            Screen::Tty(terminal) => terminal
+                .draw(|frame| app.draw(frame))
+                .map(drop)
+                .map_err(io::Error::other),
+        }
+    }
+
     /// The screen's wake: a source calls `notify_one` on it after each
     /// event it sends, and the loop calls [`App::wake`]. `Notify` keeps
     /// one permit, so a wake is never lost and a burst costs one

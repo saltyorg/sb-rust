@@ -162,6 +162,11 @@ enum Command {
     // 27, the maintainer, 2026-11-15). No `--verbose/-v` (ops decision 18).
     #[command(long_about = ANNOUNCEMENTS_LONG)]
     Announcements(sb_ops::announcements::AnnouncementsArgs),
+    /// Fetches and decrypts files based on username and password
+    // Hidden, as sb-go's (ops decision 2). No `--verbose/-v` (ops
+    // decision 3); `--user` and `--password-file` are new (decision 8).
+    #[command(long_about = RESTORE_LONG, hide = true)]
+    Restore(sb_ops::restore::RestoreArgs),
 }
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
@@ -178,6 +183,15 @@ Reads each repository's announcements.yml, or the file --after names
 are new; without --before, every announcement is. On a terminal, every
 announcement that applies is listed, the new ones marked; piped, the new
 ones are printed. Migrations run in sb update.";
+
+/// `sb restore`'s long help: sb-go's (cmd/restore.go), the flags' answers
+/// in place of its form.
+const RESTORE_LONG: &str = "Fetches encrypted files from a remote URL, decrypts them, and places them in the Saltbox directory.
+
+The restore URL defaults to \"crs.saltbox.dev\". On a terminal the user name and the password
+are asked for in a form unless --user and --password-file give them; without one, both flags
+are needed. --user shows in the process list and in sudo's log: leave it out to be asked
+instead.";
 
 /// `sb list`'s long help, sb-go's (cmd/list.go).
 const LIST_LONG: &str = "List available Saltbox, Sandbox or Saltbox-mod tags
@@ -346,6 +360,7 @@ impl Command {
             Command::ReinstallPython => "reinstall-python",
             Command::ReinstallFacts => "reinstall-facts",
             Command::Announcements(_) => "announcements",
+            Command::Restore(_) => "restore",
         }
     }
 
@@ -390,7 +405,8 @@ impl Command {
             | Command::ReinstallVenv
             | Command::ReinstallPython
             | Command::ReinstallFacts
-            | Command::Announcements(_) => true,
+            | Command::Announcements(_)
+            | Command::Restore(_) => true,
         }
     }
 }
@@ -636,6 +652,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
         Command::ReinstallFacts => python_env::reinstall_facts(shutdown, log)?,
         Command::Announcements(ref args) => announcements::announcements(args, shutdown, log)?,
+        Command::Restore(ref args) => restore::restore(args, shutdown)?,
         Command::SelfUpdate { yes, force_update } => {
             self_update::self_update(yes, force_update, shutdown, log)?;
         }
@@ -891,6 +908,7 @@ mod gha;
 mod logs;
 mod motd;
 mod python_env;
+mod restore;
 mod self_update;
 mod setup;
 mod update;

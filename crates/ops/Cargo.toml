@@ -12,7 +12,7 @@ publish.workspace = true
 # run against, and the Saltbox host update and the branch commands run on
 # (python-env's stand-in tree, sb-config's fixtures and fake), in the
 # `testing` module, for sb-ops' tests and sb's: never in a release build.
-testing = ["sb-host/testing", "sb-python-env/testing", "sb-config/testing"]
+testing = ["sb-host/testing", "sb-python-env/testing", "sb-config/testing", "dep:axum", "dep:futures-util", "tokio/net", "tokio/rt", "tokio/sync"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -72,6 +72,14 @@ hex.workspace = true
 # destination (ops spec, "Placement"); the `testing` harness's temporary
 # root too.
 tempfile.workspace = true
+# restore's fetch (ops spec, "Protocol"): one client, no redirects; tokio's
+# `select!` stops it on a first signal.
+reqwest.workspace = true
+# The body's cap: `Limited` fails a byte past it.
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["macros"] }
+axum = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -90,7 +98,8 @@ sb-python-env = { workspace = true, features = ["testing"] }
 # The steps drawn to memory, and the runner's shutdown.
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
-tokio = { workspace = true, features = ["macros", "sync"] }
+# The async tests (gha's, restore's command).
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true

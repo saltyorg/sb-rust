@@ -7,7 +7,7 @@ use crossterm::event::{KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
-use sb_cli_core::theme::Palette;
+use sb_cli_core::theme::{Palette, Profile};
 
 use super::*;
 

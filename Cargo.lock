@@ -3668,12 +3668,16 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "anyhow",
+ "axum",
  "cbc",
  "clap",
+ "futures-util",
  "hex",
+ "http-body-util",
  "indicatif",
  "jiff",
  "pbkdf2",
+ "reqwest",
  "rustix",
  "saphyr",
  "sb-ansible",
@@ -3822,6 +3826,7 @@ dependencies = [
  "tui-markdown",
  "tui-scrollview",
  "vt100",
+ "zeroize",
 ]
 
 [[package]]

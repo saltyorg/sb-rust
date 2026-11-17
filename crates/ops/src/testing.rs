@@ -13,6 +13,9 @@
 //! and runs it guards against ETXTBSY as theirs do (a lock held from
 //! writing it until its run is over).
 
+/// The fake restore service `sb restore`'s tests run against.
+pub mod restore;
+
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;

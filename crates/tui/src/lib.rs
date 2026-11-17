@@ -18,10 +18,12 @@ mod columns;
 pub mod line;
 pub mod markdown;
 pub mod picker;
+pub mod restore;
 mod resume;
 mod save;
 mod search;
 pub mod source;
+mod split;
 pub mod status;
 mod term;
 #[cfg(any(test, feature = "testing"))]

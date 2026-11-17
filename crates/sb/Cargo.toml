@@ -50,7 +50,8 @@ sb-release = { workspace = true, features = ["testing"] }
 # sb-release's).
 sb-python-env = { workspace = true, features = ["testing"] }
 # The ops harness: stand-in apt, locale and bash, and the private mount
-# namespace `sb gha` runs in (never in a release or production build).
+# namespace `sb gha` runs in, and the fake restore service `sb restore`'s
+# tests run against (never in a release or production build).
 sb-ops = { workspace = true, features = ["testing"] }
 insta.workspace = true
 serde_json.workspace = true

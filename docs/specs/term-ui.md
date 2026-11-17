@@ -396,18 +396,33 @@ sequence.
 - Built with `release` (self-update's confirm); the label is the caller's
   text, `?` and the `[y/N]` hint are dialoguer's. *Amended 2026-11-13 by
   the release spec.*
-- The text and password prompts' first user is `sb restore` (ops spec;
+- ~~The text and password prompts' first user is `sb restore` (ops spec;
   the confirm comes earlier with `release`). dialoguer's text and
   password prompts have no cancel key; Ctrl-C is the way out (cli-core's
-  interrupted ending). *Amended 2026-11-13 by the ops spec.*
+  interrupted ending). *Amended 2026-11-13 by the ops spec.*~~
+  Superseded 2026-11-17: restore asks in tui's form (next bullet).
+- Not built: `sb restore` became a full-screen form on a terminal
+  (sb-tui; ops decision 32, the maintainer, 2026-11-16), so it asks no
+  line prompt, and no other command needs a text or password prompt yet.
+  Found while building them (M76), for whoever does: dialoguer's
+  `Password` can't be left with Ctrl-C under sb's signal handling.
+  console reads it in canonical mode, where Ctrl-C is the kernel's
+  SIGINT; cli-core's signal-hook handler (`SA_RESTART`) restarts the
+  read and the kernel drops the typed line, so Enter returns an empty
+  password, which `Password` asks again (a scratch program on console
+  0.16.6 and signal-hook 0.4.5, in tmux). A raw-mode reader for the
+  whole prompt (crossterm's raw mode and `event::read`) worked. Why not
+  console's `read_key` per key: raw for one key at a time, so a key
+  typed between two reads would be echoed. *Amended 2026-11-17.*
 
 ## Out of scope
 
 Full-screen screens (`tui`), Markdown output (announcements, `tui`),
 starting processes and PTYs (`exec`), per-command output formats
 (`--plain`, JSON). *Amended 2026-11-13 by the ops spec:* "restore
-prompts (deferred with the restore backend)" dropped; `sb restore` is
-the text and password prompts' first user (Prompts).
+prompts (deferred with the restore backend)" dropped. *Amended
+2026-11-17:* restore's prompts are tui's form (ops decision 32), so no
+text or password prompt is built yet (Prompts).
 
 ## Tech stack
 

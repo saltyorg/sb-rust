@@ -154,7 +154,9 @@ pub fn transport_error(err: &reqwest::Error) -> String {
 /// and password taken out
 /// (<https://docs.rs/url/2.5.8/url/struct.Url.html#method.set_password>);
 /// text that isn't a URL is withheld whole, since it could be anything.
-/// A query string stays: neither service takes credentials there.
+/// A query parameter whose name is a secret key (the shared rule,
+/// `facts::secret`; ops decision 32) has its value replaced by
+/// `[REDACTED]`; the others stay.
 #[must_use]
 pub fn loggable_url(text: &str) -> String {
     match reqwest::Url::parse(text) {
@@ -162,6 +164,25 @@ pub fn loggable_url(text: &str) -> String {
             // Both fail only for URLs that can't have credentials.
             let _ = url.set_username("");
             let _ = url.set_password(None);
+            if url
+                .query_pairs()
+                .any(|(name, _)| crate::facts::secret::is_secret_key(&name))
+            {
+                let pairs: Vec<(String, String)> = url
+                    .query_pairs()
+                    .map(|(name, value)| {
+                        let value = if crate::facts::secret::is_secret_key(&name) {
+                            crate::secret::REDACTED.to_owned()
+                        } else {
+                            value.into_owned()
+                        };
+                        (name.into_owned(), value)
+                    })
+                    .collect();
+                // url's serializer
+                // (<https://docs.rs/url/2.5.8/url/struct.Url.html#method.query_pairs_mut>).
+                url.query_pairs_mut().clear().extend_pairs(pairs);
+            }
             url.to_string()
         }
         Err(_) => "(not a URL)".to_string(),
@@ -187,6 +208,20 @@ mod tests {
         );
         assert_eq!(loggable_url("http://127.0.0.1:9/x"), "http://127.0.0.1:9/x");
         assert_eq!(loggable_url("hunter2 not a url"), "(not a URL)");
+    }
+
+    /// A secret-named query parameter's value is masked; the others and
+    /// a query with none stay as they were.
+    #[test]
+    fn a_logged_url_masks_secret_query_values() {
+        assert_eq!(
+            loggable_url("https://example.test/x?token=hunter2&page=2"),
+            "https://example.test/x?token=%5BREDACTED%5D&page=2"
+        );
+        assert_eq!(
+            loggable_url("https://example.test/x?page=2&q=a%20b"),
+            "https://example.test/x?page=2&q=a%20b"
+        );
     }
 
     fn http() -> Http {
