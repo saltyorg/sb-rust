@@ -1341,9 +1341,11 @@ const stubs = (versions, arch) => {
   // With TEST_SANDBOX_PROBE set, each test run (the coverage run, the doc
   // tests, the release-build run) writes as a test that bends a path
   // would: a file in TEST_SANDBOX_PROBE (on the host) and TEST_SANDBOX_ETC,
-  // then one in its TMPDIR and one in target/. Each write's result goes to
-  // TEST_SANDBOX_RESULT, as `<subcommand> <place> ok|refused`; its mount
-  // table, its network and PID namespaces and what /run holds go beside
+  // then one in its TMPDIR and one in target/, and makes a directory in
+  // /tmp (its private one: TEST_SANDBOX_TMP_CHILD names it), as bench's
+  // Speedtest step does. Each result goes to TEST_SANDBOX_RESULT, as
+  // `<subcommand> <place> ok|refused`; its mount table, its network and
+  // PID namespaces, what /run holds and /tmp's mode and owner go beside
   // it, one file each per subcommand. With TEST_WRITES_ETC set, the
   // coverage run writes that file and fails if it can't, as a test would,
   // saying so.
@@ -1351,10 +1353,12 @@ const stubs = (versions, arch) => {
     + '  for w in "host $TEST_SANDBOX_PROBE/written" "etc $TEST_SANDBOX_ETC" "tmpdir ${TMPDIR:-/tmp}/written" "target target/written"; do\n'
     + '    if (echo test >"${w#* }") 2>/dev/null; then echo "$1 ${w%% *} ok"; else echo "$1 ${w%% *} refused"; fi >>"$TEST_SANDBOX_RESULT"\n'
     + '  done\n'
+    + '  if mkdir "/tmp/$TEST_SANDBOX_TMP_CHILD" 2>/dev/null; then echo "$1 tmp ok"; else echo "$1 tmp refused"; fi >>"$TEST_SANDBOX_RESULT"\n'
     + '  cat /proc/self/mountinfo >"$TEST_SANDBOX_RESULT.mountinfo.$1"\n'
     + '  $SANDBOX_READLINK /proc/self/ns/net >"$TEST_SANDBOX_RESULT.net.$1"\n'
     + '  $SANDBOX_READLINK /proc/self/ns/pid >"$TEST_SANDBOX_RESULT.pid.$1"\n'
-    + '  $SANDBOX_LS -A /run >"$TEST_SANDBOX_RESULT.run.$1" ;;\n'
+    + '  $SANDBOX_LS -A /run >"$TEST_SANDBOX_RESULT.run.$1"\n'
+    + '  $SANDBOX_STAT -c "%a %u" /tmp >"$TEST_SANDBOX_RESULT.tmpmode.$1" ;;\n'
     + 'esac; fi\n';
   out.cargo += 'if [ "$1" = llvm-cov ] && [ -n "${TEST_WRITES_ETC:-}" ]; then\n'
     + '  echo test >"$TEST_WRITES_ETC" || { echo "the test could not write $TEST_WRITES_ETC"; exit 101; }\n'
@@ -2263,14 +2267,16 @@ test('check.sh task: each prototype is named, wherever its [package] section sit
 // step's temp directory), `output` (a pass's output), `target` (a
 // repository's target/), `logs` (a log directory: test-logs or a test's
 // own), `proc` (the namespace's /proc), `pts`, `shm`, `mqueue` (/dev's
-// terminals and the private tmpfs), or the path itself: /sys, /dev or
+// terminals and the private tmpfs), `tmp` (the private /tmp), or the path
+// itself: /sys, /dev or
 // /proc/sys among them would fail the assertion.
 const writableMounts = (file) => {
   const unescape = (p) => p.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
   const name = (m) => /\/sb-mutants-\d+\.[^/]+$/.test(m) ? 'pass' : /\/sb-check\.[^/]+$/.test(m) ? 'run'
     : /\/target\/mutants-run-\d+$/.test(m) ? 'output' : /\/repo\/target$/.test(m) ? 'target'
       : /\/(test-logs|logs|sandbox-[^/]+|test-sandbox-[^/]+)$/.test(m) ? 'logs'
-        : m === '/proc' ? 'proc' : m === '/dev/pts' ? 'pts' : m === '/dev/shm' ? 'shm' : m === '/dev/mqueue' ? 'mqueue' : m;
+        : m === '/proc' ? 'proc' : m === '/dev/pts' ? 'pts' : m === '/dev/shm' ? 'shm' : m === '/dev/mqueue' ? 'mqueue'
+          : m === '/tmp' ? 'tmp' : m;
   const mounts = readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => l.split(' '))
     .map((f) => ({ point: unescape(f[4]), rw: !f[5].split(',').includes('ro') }));
   const hidden = (i) => mounts.slice(i + 1).some(({ point }) =>
@@ -2296,9 +2302,9 @@ test("check.sh: a mutant can't write a host file or reach a host daemon, the pas
     assert.equal(readFileSync(result, 'utf8'), 'host refused\ntmpdir ok\noutput ok\n', r.output);
     assert.ok(!existsSync(join(probe, 'written')), 'the mutant wrote on the host');
     // Every mount is read-only but the pass's directory, its output and the
-    // tests' log directory, and /proc's, /sys's and /dev's.
+    // tests' log directory, the private /tmp, and /proc's, /sys's and /dev's.
     assert.deepEqual(writableMounts(result + '.mountinfo'),
-      ['logs', 'mqueue', 'output', 'pass', 'proc', 'pts', 'shm'], r.output);
+      ['logs', 'mqueue', 'output', 'pass', 'proc', 'pts', 'shm', 'tmp'], r.output);
     // No host daemon is reachable: an empty /run, a network namespace of
     // its own.
     assert.equal(readFileSync(result + '.run', 'utf8'), '', r.output);
@@ -2314,34 +2320,41 @@ test("check.sh: a mutant can't write a host file or reach a host daemon, the pas
 // stub test run's writes to the host (this repository's target/, outside
 // the run's) and to /etc fail; its TMPDIR, the run's own, and its
 // target/ work; /run is empty and the network its own. Wherever the
-// repository is, /tmp included: only the run's directories are writable.
-test("check.sh: a test can't write a host file or /etc, or reach a host daemon; its TMPDIR and target/ work", () => {
+// repository is, /tmp included: only the run's directories and its
+// private /tmp are writable; a child made in that /tmp is not the host's.
+test("check.sh: a test can't write a host file or /etc, or reach a host daemon; its TMPDIR, target/ and a private /tmp work", () => {
   const dir = mkdtempSync(join(tmpdir(), 'test-sandbox-'));
   mkdirSync(join(SCRIPTS, '..', 'target'), { recursive: true });
   const probe = mkdtempSync(join(SCRIPTS, '..', 'target', 'test-sandbox-probe-'));
   const etc = '/etc/sb-gate-sandbox-probe-' + process.pid;
+  // A child of /tmp (sticky, root's): the test's own, in its private
+  // /tmp, never the host's.
+  const tmpChild = 'sb-gate-sandbox-tmp-' + process.pid;
   const result = join(dir, 'result');
   const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
   try {
     const r = checkRun('task', {
       work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
       env: { TEST_SANDBOX_PROBE: probe, TEST_SANDBOX_ETC: etc, TEST_SANDBOX_RESULT: result,
-        SANDBOX_READLINK: tool('readlink'), SANDBOX_LS: tool('ls') },
+        TEST_SANDBOX_TMP_CHILD: tmpChild, SANDBOX_READLINK: tool('readlink'), SANDBOX_LS: tool('ls'), SANDBOX_STAT: tool('stat') },
     });
     passes(r, 'task');
     const subs = ['llvm-cov', 'test', 'nextest'];
     assert.equal(readFileSync(result, 'utf8'),
-      subs.map((sub) => [sub + ' host refused', sub + ' etc refused', sub + ' tmpdir ok', sub + ' target ok'].join('\n') + '\n').join(''),
+      subs.map((sub) => [sub + ' host refused', sub + ' etc refused', sub + ' tmpdir ok', sub + ' target ok', sub + ' tmp ok'].join('\n') + '\n').join(''),
       r.output);
     assert.ok(!existsSync(join(probe, 'written')), 'the test wrote on the host');
     assert.ok(!existsSync(etc), 'the test wrote ' + etc);
+    assert.ok(!existsSync(join('/tmp', tmpChild)), 'the test wrote the host\'s /tmp');
     const own = (ns) => execFileSync('readlink', ['/proc/self/ns/' + ns], { encoding: 'utf8' }).trim();
     for (const sub of subs) {
       // Read-only but the run's temp directory, target/ and the log
       // directory, the namespace's /proc, /dev's terminals and its
       // private /dev/shm and /dev/mqueue.
       assert.deepEqual(writableMounts(result + '.mountinfo.' + sub),
-        ['logs', 'mqueue', 'proc', 'pts', 'run', 'shm', 'target'], sub + '\n' + r.output);
+        ['logs', 'mqueue', 'proc', 'pts', 'run', 'shm', 'target', 'tmp'], sub + '\n' + r.output);
+      // The private /tmp is as the host's: 1777 and root's.
+      assert.equal(readFileSync(result + '.tmpmode.' + sub, 'utf8').trim(), '1777 0', sub);
       assert.equal(readFileSync(result + '.run.' + sub, 'utf8'), '', sub);
       assert.notEqual(readFileSync(result + '.net.' + sub, 'utf8').trim(), own('net'), sub);
       assert.notEqual(readFileSync(result + '.pid.' + sub, 'utf8').trim(), own('pid'), sub);
@@ -2350,6 +2363,7 @@ test("check.sh: a test can't write a host file or /etc, or reach a host daemon; 
     rmSync(probe, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
     rmSync(etc, { force: true });
+    rmSync(join('/tmp', tmpChild), { recursive: true, force: true });
   }
 });
 

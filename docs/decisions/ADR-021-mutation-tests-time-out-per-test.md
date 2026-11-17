@@ -357,3 +357,16 @@ and sb-host's tests) under this profile:
   reachable writable mounts exactly the expected ones, `/run` empty, its
   own network and PID namespaces; and that a test that writes `/etc`
   fails the run.
+
+  *Amended 2026-11-17, later (the maintainer, after the full gate on the
+  sandbox failed bench's test of its Speedtest step, which makes its
+  directory under `/tmp` on purpose):* each run gets a private, writable
+  `/tmp`: a tmpfs, mode 1777 and root's, as the host's. It is built under
+  the sandbox's `/run` and moved over `/tmp` before anything else is
+  mounted, with what the run needs from the host's `/tmp` bound back at
+  the same path: each named directory there (writable), and the working
+  directory, each `PATH` directory and `HOME` (read-only, as everything
+  else). Nothing a test writes in `/tmp` reaches the host's. The floor
+  guard's tests check that a stubbed test run can make a directory in
+  it, that it is 1777 and root's, and that the host's `/tmp` has no such
+  directory after; a pass's mount table shows it as well.

@@ -565,6 +565,11 @@ trap on_exit EXIT
 # - The DIRs are the only writable places of the host, named by the
 #   caller: a run's own temp directory (its TMPDIR) and output, never /tmp
 #   as a whole, so the sandbox is the same wherever the worktree is.
+# - /tmp is the run's own: a tmpfs, 1777 and root's, as the host's, so a
+#   test that makes a directory there on purpose (bench's Speedtest step)
+#   works and the host's /tmp is never written. What the run needs from
+#   the host's /tmp (a DIR, the worktree, a PATH directory, HOME) is bound
+#   back at its own path (sandbox_inner).
 # - With --own-pids (the test steps), its own processes only: a PID
 #   namespace with its own /proc, so no host process can be signalled, nor
 #   reached through /proc/<pid>/root; when the namespace's first process
@@ -624,13 +629,18 @@ sandbox_argv() {
   fi
 }
 
-# sandbox_inner OWN N DIR... CMD...: inside the namespaces, the N DIRs
-# (physical paths) bound to themselves first, so that each keeps its own
-# read-write flag; every other mount remounted read-only but /proc (the
-# namespace's own), /dev/pts and the private /dev/shm and /dev/mqueue;
-# /proc/sys and /proc/sysrq-trigger read-only; an empty read-only tmpfs on
-# /run; loopback up; then CMD: with OWN 1 (its own PID namespace) as the
-# namespace's first process's child, else in this shell's place.
+# sandbox_inner OWN N DIR... CMD...: inside the namespaces, a private
+# /tmp (a tmpfs, 1777 and root's, as the host's: a test may make a
+# directory there, as bench's Speedtest step does on purpose, and the
+# host's /tmp is never written), with what the run needs from the host's
+# /tmp bound back into it, the N DIRs (physical paths) there among it;
+# the other DIRs bound to themselves, so that each keeps its own
+# read-write flag; every
+# other mount remounted read-only but /proc (the namespace's own),
+# /dev/pts, the private /tmp, /dev/shm and /dev/mqueue; /proc/sys and
+# /proc/sysrq-trigger read-only; an empty read-only tmpfs on /run; loopback
+# up; then CMD: with OWN 1 (its own PID namespace) as the namespace's first
+# process's child, else in this shell's place.
 # Each step that fails stops the run (status 125), and so does any mount
 # left writable, or one that can't be reached and isn't shown to be under
 # a later mount: no test runs on a writable host.
@@ -644,13 +654,52 @@ sandbox_inner() {
   # asked for (a log directory that is a link to /, say).
   for d in "${dirs[@]}"; do
     [[ $d == /* && $d != / ]] || fail "refuses the writable directory '$d'"
-    mount --bind "$d" "$d" || fail "could not bind $d"
+  done
+  # What the run needs from the host's /tmp, to bind back at the same
+  # path once the private one covers it: each DIR there, writable; the
+  # working directory (a worktree in a scratch directory), each PATH
+  # directory and HOME (the gate's own tests' stub tools and home),
+  # read-only by the remount below. Resolved now, while the host's /tmp is
+  # still there; outer ones first, so that a DIR inside the working
+  # directory binds over it; only what the host has, so nothing is made
+  # there.
+  local need=() back=() p rel
+  need+=("${dirs[@]}" "$PWD" "${HOME:-}")
+  IFS=: read -r -a fields <<<"${PATH:-}"
+  need+=("${fields[@]}")
+  # The physical path (cd's own, pwd -P); in byte order a directory sorts
+  # before what is under it.
+  while IFS= read -r p; do back+=("$p"); done < <(
+    for p in "${need[@]}"; do
+      [[ -n $p && -d $p ]] || continue
+      p=$(cd -- "$p" 2>/dev/null && pwd -P) || continue
+      [[ $p == /tmp/* ]] && printf '%s\n' "$p"
+    done | LC_ALL=C sort -u
+  )
+  # The private /tmp is built on /run, over the host's (covered again
+  # below), while the host's /tmp is still in place, with what is needed
+  # bound in from it, then moved over /tmp in one step: every command
+  # until then, and each one after it found through a PATH directory
+  # there (the gate's own tests' stub tools), stays reachable, and nothing
+  # is made or left in /run. -n: no /run/mount/utab entry. Recursive, so
+  # that a mount under a bound-back path is there as on the host (and
+  # read-only by the remount below), and mkdir -p only meets directories
+  # that exist.
+  mount -n -t tmpfs -o mode=1777,nosuid,nodev,size=4g sb-tmp /run || fail "could not make a private /tmp"
+  for p in "${back[@]}"; do
+    rel=${p#/tmp/}
+    mkdir -p "/run/$rel" && mount -n --rbind "$p" "/run/$rel" || fail "could not bind $p back"
+  done
+  mount -n --move /run /tmp || fail "could not put the private /tmp in place"
+  for d in "${dirs[@]}"; do
+    [[ $d == /tmp/* ]] && continue
+    mount -n --bind "$d" "$d" || fail "could not bind $d"
   done
   # The places a test writes in besides the DIRs: private ones, not the
   # host's.
-  mount -t tmpfs -o nosuid,nodev,size=256m sb-shm /dev/shm || fail "could not cover /dev/shm"
+  mount -n -t tmpfs -o nosuid,nodev,size=256m sb-shm /dev/shm || fail "could not cover /dev/shm"
   if [[ -d /dev/mqueue ]]; then
-    mount -t tmpfs -o nosuid,nodev,noexec,size=4k sb-mqueue /dev/mqueue || fail "could not cover /dev/mqueue"
+    mount -n -t tmpfs -o nosuid,nodev,noexec,size=4k sb-mqueue /dev/mqueue || fail "could not cover /dev/mqueue"
   fi
   # Whether a mount point stays as it is: a DIR or under one, the
   # namespace's /proc, a terminal, or a private tmpfs above.
@@ -660,6 +709,9 @@ sandbox_inner() {
       if [[ $1 == "$d" || $1 == "$d"/* ]]; then hit=0; fi
     done
     if [[ $1 == /proc || $1 == /proc/* ]] && [[ $1 != /proc/sys && $1 != /proc/sys/* ]]; then hit=0; fi
+    # The private /tmp itself; what is bound back under it is read-only
+    # unless it is a DIR.
+    if [[ $1 == /tmp ]]; then hit=0; fi
     # Without a PID namespace of its own, /proc and its mounts are the
     # host's: /proc/sys among them goes read-only below; the others (the
     # binfmt_misc automount) stay.
@@ -696,13 +748,13 @@ sandbox_inner() {
     kept "$mp" && continue
     covered "$i" && continue
     [[ -e $mp ]] || fail "can't reach $mp, which no later mount covers"
-    mount -o remount,bind,ro "$mp" || fail "could not make $mp read-only"
+    mount -n -o remount,bind,ro "$mp" || fail "could not make $mp read-only"
   done
   # The kernel's settings through /proc: bound to themselves, read-only.
   for d in /proc/sys /proc/sysrq-trigger; do
-    mount --bind "$d" "$d" && mount -o remount,bind,ro "$d" || fail "could not make $d read-only"
+    mount -n --bind "$d" "$d" && mount -n -o remount,bind,ro "$d" || fail "could not make $d read-only"
   done
-  mount -t tmpfs -o ro,nosuid,nodev,noexec,size=4k sb-sandbox /run || fail "could not cover /run"
+  mount -n -t tmpfs -o ro,nosuid,nodev,noexec,size=4k sb-sandbox /run || fail "could not cover /run"
   ip link set lo up || fail "could not bring up loopback"
   # Every mount that can be reached, read-only but those kept.
   table
