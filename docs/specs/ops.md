@@ -548,9 +548,9 @@ in either answer are never printed or logged.
   Kong, CN 32155, Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP
   48463;
 - a `Speedtest` title row across the table, as System's and Disk
-  write's (the maintainer), then bench.sh's columns as a
-  plain first row (term-ui's table has one heading row), `Node Name |
-  Upload Speed | Download Speed | Latency`: the JSON's
+  write's, over bench.sh's columns as headings (term-ui's
+  `Table::titled`; the maintainer and 2026-11-17),
+  `Node Name | Upload Speed | Download Speed | Latency`: the JSON's
   `upload.bandwidth` and `download.bandwidth` (bytes per second) as
   `<n> Mbps` (× 8 / 10^6, two decimals) and
   `ping.latency` as `<n> ms` (two decimals), the values the CLI's text

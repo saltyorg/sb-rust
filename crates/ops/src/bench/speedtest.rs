@@ -350,11 +350,11 @@ pub fn table(outcome: &Outcome) -> Table {
         }
         Outcome::Nodes(nodes) => {
             // The title across the table, as System's and Disk write's,
-            // then bench.sh's column names as a plain first row (the
-            // maintainer): term-ui's table has one heading
-            // row, so they are neither bold nor centred.
-            let mut table = Table::spanning("Speedtest");
-            table.row(["Node Name", "Upload Speed", "Download Speed", "Latency"]);
+            // over bench.sh's column names as headings (the maintainer).
+            let mut table = Table::titled(
+                "Speedtest",
+                ["Node Name", "Upload Speed", "Download Speed", "Latency"],
+            );
             for (node, measured) in nodes {
                 match measured {
                     Measured::Speeds {
@@ -812,9 +812,27 @@ mod tests {
             "Speedtest",
             "{text}"
         );
-        // bench.sh's column names: the first row, plain (term-ui's table
-        // has one heading row, the title's).
-        assert!(lines[3].contains("│ Node Name"), "{text}");
+        // bench.sh's column names: headings under the title, centred
+        // (term-ui's `Table::titled`), and bold with colour.
+        assert!(lines[3].contains("│    Node Name    │"), "{text}");
+        let theme = sb_cli_core::theme::Theme::resolve(
+            &sb_cli_core::theme::Palette::default(),
+            sb_cli_core::theme::Profile::TrueColor,
+        );
+        let coloured =
+            table(&Outcome::Nodes(vec![(NODES[0], parse(RESULT))])).render(&theme, true, None);
+        for heading in [
+            "Speedtest",
+            "Node Name",
+            "Upload Speed",
+            "Download Speed",
+            "Latency",
+        ] {
+            assert!(
+                coloured.contains(&format!("\x1b[1m{heading}")),
+                "{heading}: {coloured:?}"
+            );
+        }
         // The title once (the other "Speedtest" is Speedtest.net's row).
         let titles = lines
             .iter()
