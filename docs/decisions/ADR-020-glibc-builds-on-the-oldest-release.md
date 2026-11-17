@@ -197,3 +197,49 @@ above, rustc 1.99.1:
   [musl-c-dependencies.md](../platform-notes/musl-c-dependencies.md)
   stay as records of what was measured. They no longer describe the
   release build.
+
+## Confirmed (maintainer, 2026-11-17)
+
+glibc with its own malloc stays, ahead of Checkpoint Z: the
+side-by-side measurement that Consequences calls for ("musl is revisited
+when the CLI is feature complete"), taken on 90e9d4f with the
+allocators added, found nothing that favours a change.
+
+**Method.** sb's `production` profile for x86_64, built six ways from
+the same tree with rustc 1.100.0 in one ubuntu:22.04 container: glibc
+(as above) and static musl (`musl-gcc` for the C dependencies), each
+with its libc's malloc, mimalloc 0.1.52 and tikv-jemallocator 0.6.1
+(jemalloc 5.3.0) through `#[global_allocator]`, in a scratch tree only.
+All six were run in one ubuntu:22.04 container with fixed CPU and
+memory limits: startup with `hyperfine -N` (three rounds of 200 runs,
+the variants' order rotated), four read-only commands against the
+crates' own test fixtures and local fakes (three rounds of 40 runs),
+and peak resident memory with GNU time (20 runs). Every variant ran
+every command to exit 0 first.
+
+**Figures** (medians):
+
+| | glibc | glibc + mimalloc | glibc + jemalloc | musl | musl + mimalloc | musl + jemalloc |
+|---|---:|---:|---:|---:|---:|---:|
+| Size (bytes) | 20,303,872 | 20,631,096 | 20,944,792 | 20,448,240 | 20,773,680 | 21,091,920 |
+| `sb --help` (ms) | 2.78 | 4.35 | 3.12 | 3.97 | 3.41 | 2.54 |
+| `sb version` (ms) | 3.06 | 5.11 | 3.48 | 4.20 | 4.02 | 2.79 |
+| `sb list` (ms) | 6.77 | 8.58 | 7.37 | 8.49 | 7.58 | 6.54 |
+| `sb motd --all` (ms) | 29.77 | 32.05 | 31.93 | 42.23 | 30.48 | 31.77 |
+| `sb docker ps` (ms) | 5.78 | 7.24 | 6.30 | 7.71 | 7.01 | 5.58 |
+| `sb validate-config` (ms) | 15.01 | 16.08 | 15.40 | 23.43 | 15.30 | 14.86 |
+| Peak, `--help` (MiB) | 7.0 | 15.2 | 8.5 | 5.0 | 13.1 | 6.0 |
+| Peak, `motd --all` (MiB) | 13.5 | 23.2 | 15.0 | 11.5 | 23.2 | 13.5 |
+
+**Why glibc with its own malloc.** It is the smallest binary and ties
+for fastest on every figure with musl and jemalloc (within about 0.25 ms
+on startup and 2 ms on `motd`, which overlap between rounds); its only
+cost is 1 to 2 MiB more peak memory than the musl builds. Plain musl's
+malloc is what makes musl slow: about 1.2 ms more startup, 8 ms more on
+`validate-config` and 12 ms more on `motd`, all gone with jemalloc.
+mimalloc's defaults reserve a 1 GiB arena and commit it eagerly, which
+cost 6 to 10 MiB more peak memory, and it was never the fastest.
+jemalloc on glibc adds 641 KB and is slightly slower to start. Every
+variant is inside the 10 ms startup budget and the size limit. A
+static binary, if ever wanted, would be musl with jemalloc, not plain
+musl.

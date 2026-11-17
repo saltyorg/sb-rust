@@ -2180,7 +2180,8 @@ calling it from `update` and `setup`, and the completion refresh.*
 - [ ] Every M task merged; every Commands row "built".
 - [ ] The capability map's "When the binary is complete" items go to the
       maintainer: the schemas' owner, the ratchet rows re-measured, glibc
-      and musl side by side.
+      and musl side by side (settled 2026-11-17, ahead of the checkpoint:
+      glibc with its own malloc; ADR-020, "Confirmed").
 
 ## Follow-ups found during the build
 

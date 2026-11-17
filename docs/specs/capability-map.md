@@ -368,7 +368,16 @@ To discuss with the maintainer once every module is done, not before:
   (startup, peak memory, the commands' own run times), and the
   maintainer decides whether the difference matters. The figures so far
   are in [ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md)'s
-  Consequences; a move back to musl supersedes that ADR.
+  Consequences; a move back to musl supersedes that ADR. **Settled
+  (maintainer, 2026-11-17, ahead of Checkpoint Z): glibc with its own
+  malloc.** Measured on 90e9d4f, six production builds (glibc and
+  static musl, each with its own malloc, mimalloc and jemalloc): glibc
+  with its own malloc is the smallest (20.3 MB) and ties for fastest
+  with musl and jemalloc on startup (`sb --help` 2.78 against 2.54 ms)
+  and on `list`, `motd`, `docker ps` and `validate-config`, at 1 to
+  2 MiB more peak memory than musl. Plain musl's malloc costs up to
+  12 ms on `motd`; mimalloc 6 to 10 MiB of memory. The method and the
+  figures are in ADR-020's "Confirmed" note.
   - **Memory allocators too** (maintainer, 2026-11-16). Each libc build
     is measured with its own malloc and with the widely used Rust global
     allocators (for example mimalloc and jemalloc, through
@@ -376,7 +385,9 @@ To discuss with the maintainer once every module is done, not before:
     the one most often replaced, so a musl build with another allocator
     may land somewhere else than plain musl does. The pair the
     maintainer picks, and its effect on size and startup, goes in the
-    ADR that records the choice.
+    ADR that records the choice. **Settled (maintainer, 2026-11-17):
+    the libc's own malloc, with glibc; neither mimalloc nor jemalloc
+    beats it there** (ADR-020, "Confirmed").
 - **A performance pass** (maintainer, 2026-11-16), once the libc and
   allocator choice is settled, so it profiles the build that ships. Each
   command's hot paths are measured and profiled (CPU time, allocations,
