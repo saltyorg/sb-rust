@@ -471,7 +471,7 @@ fn long_date(text: &str) -> Option<String> {
 /// Write `shown` on stdout in tui's inline Markdown form, each under its
 /// heading (ops spec, "Shown"), in colour as stdout's choice says, tables
 /// fitted to stdout's terminal when it is one: the form for stdout that
-/// isn't a terminal (`update` uses it on a terminal too until M87).
+/// isn't a terminal (`update` uses it when stdout isn't a terminal).
 ///
 /// # Errors
 ///
@@ -542,37 +542,41 @@ fn stdout_theme() -> Theme {
     }
 }
 
-/// tui's announcement viewer over `listed`, when any are shown (ops spec,
-/// "`sb announcements`"): one list, newest first, Saltbox's first among
-/// equal dates (the viewer's stable sort over the order given), none
-/// marked new. Ctrl-C on it ends sb with 130, as on the log screens.
-///
-/// # Errors
-///
-/// The screen's I/O error; cli-core's `Exit(130)` after Ctrl-C.
-async fn view(
-    listed: Vec<(Checkout, Vec<Announcement>)>,
-    shutdown: &Shutdown,
-) -> anyhow::Result<()> {
-    let entries: Vec<Entry> = listed
+/// The viewer's entries for `listed` (tui spec, "The announcement
+/// viewer", Input): each repository's entries in the order given, named
+/// by their repository, each marked new as given (`update`'s
+/// [`classify`]; `sb announcements` marks none).
+#[must_use]
+pub(crate) fn viewer_entries(listed: Vec<(Checkout, Vec<(Announcement, bool)>)>) -> Vec<Entry> {
+    listed
         .into_iter()
         .flat_map(|(repo, entries)| {
-            entries.into_iter().map(move |a| Entry {
+            entries.into_iter().map(move |(a, new)| Entry {
                 repo: repo.name().to_owned(),
                 date: a.date,
                 title: a.title,
                 message: a.message,
-                new: false,
+                new,
             })
         })
-        .collect();
+        .collect()
+}
+
+/// tui's announcement viewer over `entries`, when there are any (ops
+/// spec, "Shown" and "`sb announcements`"): one list, newest first,
+/// Saltbox's first among equal dates (the viewer's stable sort over the
+/// order given). How it ended is the caller's: Ctrl-C ends sb with 130,
+/// as on the log screens; `update` names its pending migrations first.
+/// Without entries it doesn't open and reads as closed.
+///
+/// # Errors
+///
+/// The screen's I/O error.
+pub(crate) async fn view(entries: Vec<Entry>, shutdown: &Shutdown) -> anyhow::Result<Ending> {
     if entries.is_empty() {
-        return Ok(());
+        return Ok(Ending::Quit);
     }
-    match sb_tui::announcements::view(shutdown, entries, stdout_theme()).await? {
-        Ending::Interrupted => Err(exit::Exit(130).into()),
-        Ending::Quit | Ending::Cancelled => Ok(()),
-    }
+    Ok(sb_tui::announcements::view(shutdown, entries, stdout_theme()).await?)
 }
 
 /// The file each repository keeps its announcements in.
@@ -670,7 +674,15 @@ pub async fn announcements(
     runner.finish();
     let listed = read?;
     if terminal {
-        return view(listed, shutdown).await;
+        // Nothing is called new here (the maintainer, 2026-11-17).
+        let unmarked = listed
+            .into_iter()
+            .map(|(repo, entries)| (repo, entries.into_iter().map(|a| (a, false)).collect()))
+            .collect();
+        return match view(viewer_entries(unmarked), shutdown).await? {
+            Ending::Interrupted => Err(exit::Exit(130).into()),
+            Ending::Quit | Ending::Cancelled => Ok(()),
+        };
     }
     let shown: Vec<(Checkout, Vec<Announcement>)> = listed
         .into_iter()

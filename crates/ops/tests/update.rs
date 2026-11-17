@@ -149,6 +149,8 @@ impl World {
             ansible: &ansible,
             settings: &settings,
             backups: self.backups.path(),
+            // Piped, as the harness's runs are.
+            stdout_terminal: false,
         };
         let term = indicatif::InMemoryTerm::new(100, 400);
         let shutdown = self_update.map_or_else(Shutdown::new, |update| update.shutdown.clone());

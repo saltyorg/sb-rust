@@ -2,9 +2,9 @@
 //! build M84 and M85): before anything changes, the checkouts' branches
 //! read, the up-front flag check and the disk space; then self-update,
 //! the branch questions, apt, Saltbox (its runtime and tags), the config
-//! permissions, Sandbox (its tags), the new announcements inline, their
-//! migrations (M86), and validation. The viewer and the completion
-//! refresh come with M87.
+//! permissions, Sandbox (its tags), the new announcements (tui's viewer
+//! on a terminal, inline piped; M87), their migrations (M86), and
+//! validation. The completion refresh comes after M60.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -135,6 +135,9 @@ pub struct Update<'a> {
     pub settings: &'a Settings,
     /// The directory motd.yml's migration backs the original up into.
     pub backups: &'a Path,
+    /// Whether stdout is a terminal: the new announcements in tui's
+    /// viewer then, else inline (ops spec, "Shown").
+    pub stdout_terminal: bool,
 }
 
 /// A checkout opened and its branch read, before any step.
@@ -161,8 +164,9 @@ struct Opened {
 ///    checkout that couldn't be opened or read fails its own step (`error
 ///    updating <Repo>: ...`), after the steps before it, as sb-go's
 ///    `requireDirectory` does;
-/// 6. the new announcements on stdout, once that runner is done (inline
-///    until the viewer, M87), then their [`migrations`];
+/// 6. the new announcements, once that runner is done: on stdout's
+///    terminal tui's viewer, every entry that applies marked new or not,
+///    else the new ones inline; then their [`migrations`];
 /// 7. a runner of its own: validate-config's checks (sb-config's `run`).
 ///
 /// # Errors
@@ -233,16 +237,27 @@ pub async fn run(
     }
     .await;
     steps.finish();
-    let shown = result?;
-    // On stdout, once the runner is done (inline on a terminal too until
-    // the viewer, M87).
+    let Found { shown, listed } = result?;
+    // Once the runner is done (ops spec, "Shown"): on stdout's terminal
+    // the viewer, its every entry that applies, the new ones marked (tui
+    // spec, "The announcement viewer", Input); piped, the new ones inline
+    // (decision 24).
     if !shown.is_empty() {
-        announcements::show(&shown)?;
+        if update.stdout_terminal {
+            let ending =
+                announcements::view(announcements::viewer_entries(listed), shutdown).await?;
+            left_viewer(ending, &shown, lines)?;
+        } else {
+            announcements::show(&shown)?;
+        }
     }
     migrations(update, &shown, confirm, shutdown, lines).await?;
     let mut steps = runner();
     let validated = sb_config::run::run(&mut steps, update.settings, update.backups).await;
     steps.finish();
+    // The completion refresh goes here, after validation (ops spec,
+    // "`sb update`", step 12: completion's `refresh(step)` in a runner of
+    // its own, a failure a warning), once completion's M60 has built it.
     validated.context("error validating Saltbox configuration")
 }
 
@@ -358,22 +373,62 @@ async fn migrations(
         // 99 (ansible spec, assumption 5): the failure below, its list
         // the same.
         if ran.outcome.ending == Ending::Interrupted {
-            let unrun = left();
-            tracing::warn!(migrations = %unrun, "migrations interrupted");
-            let style = theme::current().style(theme::Role::Warn);
-            write(
-                lines,
-                &format!(
-                    "{style}warning:{style:#} {}",
-                    exit::escaped(&format!("Migrations interrupted; to run by hand: {unrun}"))
-                ),
-            )?;
+            warn_unrun(lines, &left())?;
             return Err(Exit(1).into());
         }
         let _ran = ran.check().with_context(context)?;
         tracing::info!(repo = name, tag = %tag, "migration completed");
     }
     write(lines, "All migrations completed successfully")
+}
+
+/// After the viewer: closed (`q`, Esc), the run goes on. Left by Ctrl-C
+/// or a signal, the run ends there, its pending migrations named first
+/// as an interrupted migration names them (`Migrations interrupted; to
+/// run by hand: ...`, decision 22 and difference 43), since the next
+/// update won't offer them again: Ctrl-C with 130, as the viewer's other
+/// callers, a signal with the quiet exit cli-core ends by.
+///
+/// # Errors
+///
+/// The ending; `lines` that can't be written.
+fn left_viewer(
+    ending: sb_tui::Ending,
+    shown: &[(Checkout, Vec<Announcement>)],
+    lines: &mut impl Write,
+) -> anyhow::Result<()> {
+    if ending == sb_tui::Ending::Quit {
+        return Ok(());
+    }
+    let pending = announcements::migrations(shown);
+    if !pending.is_empty() {
+        warn_unrun(lines, &by_hand(&pending))?;
+    }
+    let code = if ending == sb_tui::Ending::Interrupted {
+        130
+    } else {
+        1
+    };
+    Err(Exit(code).into())
+}
+
+/// The warning naming the migrations not run, `unrun` (the `sb install`
+/// lines), and the run log's record of them.
+///
+/// # Errors
+///
+/// `lines` that can't be written.
+fn warn_unrun(lines: &mut dyn Write, unrun: &str) -> anyhow::Result<()> {
+    tracing::warn!(migrations = %unrun, "migrations interrupted");
+    let style = theme::current().style(theme::Role::Warn);
+    writeln!(
+        lines,
+        "{style}warning:{style:#} {}",
+        exit::escaped(&format!("Migrations interrupted; to run by hand: {unrun}"))
+    )
+    .and_then(|()| lines.flush())
+    .map_err(exit::output_error)?;
+    Ok(())
 }
 
 /// The migrations `left` as the `sb install` lines that run them by
@@ -513,11 +568,20 @@ async fn secure_step(runner: &mut Runner, root: &Path) -> Result<(), Exit> {
         .await
 }
 
+/// What the announcements step found: the new ones that apply, by date,
+/// per checkout (the inline form's and the migrations'), and every one
+/// that applies, marked new or not (the viewer's).
+struct Found {
+    shown: Vec<(Checkout, Vec<Announcement>)>,
+    listed: Vec<(Checkout, Vec<(Announcement, bool)>)>,
+}
+
 /// "Checking for new announcements" (success "Checked for new
 /// announcements"): each checkout's announcements after its pull against
-/// `before`, the new ones that apply, by date (ops spec,
-/// "Announcements"), Saltbox's first, with sb-go's info `Displaying new
-/// announcements` when there are any. A file that can't be loaded, before
+/// `before` ([`announcements::classify`]): the new ones that apply, by
+/// date (ops spec, "Announcements"), Saltbox's first, with sb-go's info
+/// `Displaying new announcements` when there are any, and every one that
+/// applies for the viewer. A file that can't be loaded, before
 /// or after, is a warning naming it, and that checkout's announcements are
 /// skipped this run (decision 23); a missing file is none.
 ///
@@ -528,7 +592,7 @@ async fn new_announcements(
     runner: &mut Runner,
     root: &Path,
     before: Vec<Result<Option<Vec<Announcement>>, LoadError>>,
-) -> Result<Vec<(Checkout, Vec<Announcement>)>, Exit> {
+) -> Result<Found, Exit> {
     let labels = Labels::new(
         "Checking for new announcements",
         "Checked for new announcements",
@@ -536,6 +600,7 @@ async fn new_announcements(
     runner
         .step(labels, async |step| {
             let mut shown = Vec::new();
+            let mut listed = Vec::new();
             for (checkout, before) in [Checkout::Saltbox, Checkout::Sandbox].into_iter().zip(before) {
                 let path = announcements::own_file(checkout, root);
                 let skipped = |step: &mut Step, which: &str, err: &LoadError| {
@@ -559,16 +624,18 @@ async fn new_announcements(
                         continue;
                     }
                 };
-                let new = announcements::new_entries(before.as_deref(), after.as_deref());
+                let classified = announcements::classify(before.as_deref(), after.as_deref());
+                let new = announcements::only_new(classified.clone());
                 tracing::info!(repo = checkout.name(), new = new.len(), "announcements compared");
                 if !new.is_empty() {
                     shown.push((checkout, new));
                 }
+                listed.push((checkout, classified));
             }
             if !shown.is_empty() {
                 step.info("Displaying new announcements");
             }
-            Ok(shown)
+            Ok(Found { shown, listed })
         })
         .await
 }

@@ -671,7 +671,12 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
   equal dates in any order), Saltbox's shown before Sandbox's.
 - **Shown:** info `Displaying new announcements`, then
   - stdout a terminal: tui's announcement viewer (capability map module
-    table; its design is the tui spec's);
+    table; its design is the tui spec's), every announcement that
+    applies listed, the new ones marked (M87). `q` or Esc goes on to the
+    migrations; Ctrl-C (130) or a signal ends the run there, after the
+    warning `Migrations interrupted; to run by hand: ...` naming any it
+    had to offer, since the next update won't (decision 22, difference
+    43; decided 2026-11-17);
   - otherwise: tui's inline Markdown output on stdout, each announcement
     under a heading `<Repo> Announcement - <Month D, YYYY>` (sb-go's
     title; the date as written when it doesn't parse), the message
@@ -991,9 +996,10 @@ announcements skipped: error loading announcement file '<path>':
 **Update and branches** are in this spec: "`update`, `branch`,
 `branch-sandbox` and `announcements`" above, sharing
 `secure_existing_configs` and repo's branch resolution with setup.
-`update`'s full form (the announcement viewer, the completion refresh)
-is built once `tui` and `completion` exist; until then announcements
-print inline and the refresh is left out.
+`update`'s full form: the announcement viewer is built (M87, the new
+ones marked, every one that applies listed); the completion refresh
+joins once completion's `refresh(step)` exists (its M60), until then
+left out.
 
 **Not here:** `diag` and `reinstall-*` (their own specs); pointing
 Saltbox's docs at `sb restore` instead of `restore.saltbox.dev` (a

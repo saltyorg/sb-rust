@@ -3,8 +3,10 @@
 //! on a fresh server. Before any step, the guard on the Saltbox root and,
 //! over an existing checkout, the branch question; then one root step
 //! `Installing Saltbox` holding sb-go's five phases in its order and
-//! names. The completion refresh after it comes with completion (module
-//! build M87).
+//! names. The completion refresh after it (ops spec, "`sb setup`", 4.)
+//! joins once completion's `refresh(step)` exists (its M60; M87's second
+//! half): a step after `Installing Saltbox` in [`run`]'s runner, a
+//! failure a warning.
 
 use std::io;
 use std::path::{Path, PathBuf};

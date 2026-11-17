@@ -5,6 +5,7 @@
 //! runtime, `ansible-playbook` for the tags, validate-config's settings,
 //! and sb's own file for self-update.
 
+use std::io::IsTerminal as _;
 use std::path::PathBuf;
 
 use sb_cli_core::build_info::BuildInfo;
@@ -70,6 +71,8 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             ansible: &ansible,
             settings: &settings,
             backups: &backups,
+            // The new announcements in tui's viewer on a terminal (M87).
+            stdout_terminal: std::io::stdout().is_terminal(),
         };
         let ask = |shown: &str, question: &str| ask_branch(shown, question, shutdown);
         // The migrations' question on the terminal, `--migrations` its flag.

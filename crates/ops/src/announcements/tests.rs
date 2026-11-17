@@ -611,3 +611,43 @@ fn applicable_is_every_entry_that_applies_by_date() {
     assert_eq!(titles, ["Earlier", "Later"]);
     assert_eq!(applicable(None), []);
 }
+
+/// The viewer's list (tui spec, "Input"): each repository's entries in
+/// the order given, Saltbox's first, named by their repository, each
+/// marked new as `update` classified it; `sb announcements` passes none
+/// new.
+#[test]
+fn the_viewer_lists_every_entry_with_its_repository_and_mark() {
+    let listed = vec![
+        (
+            Checkout::Saltbox,
+            vec![
+                (entry("2026-01-01", "Seen"), false),
+                (entry("2026-02-01", "Fresh"), true),
+            ],
+        ),
+        (
+            Checkout::Sandbox,
+            vec![(entry("2026-01-15", "Other"), true)],
+        ),
+    ];
+    let shown: Vec<(String, String, bool)> = viewer_entries(listed)
+        .into_iter()
+        .map(|e| (e.repo, e.title, e.new))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Saltbox".to_owned(), "Seen".to_owned(), false),
+            ("Saltbox".to_owned(), "Fresh".to_owned(), true),
+            ("Sandbox".to_owned(), "Other".to_owned(), true),
+        ]
+    );
+    let full = viewer_entries(vec![(
+        Checkout::Saltbox,
+        vec![(entry("2026-01-01", "A"), true)],
+    )]);
+    assert_eq!(full[0].date, "2026-01-01");
+    assert_eq!(full[0].message, "A's message");
+    assert_eq!(viewer_entries(Vec::new()), []);
+}

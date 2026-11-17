@@ -538,11 +538,13 @@ fn a_failing_migration_exits_1_with_its_words() {
     );
 }
 
-/// On a terminal and without `--migrations`: after the table, term-ui's
+/// On a terminal and without `--migrations`: the new announcements open
+/// in tui's viewer first (ops spec, "Shown"; M87), both repositories in
+/// one list, marked new; `q` closes it, then the table, and term-ui's
 /// confirm asks `Run all migration tags?` on the terminal; `n` skips
 /// them, named in the warning.
 #[test]
-fn on_a_terminal_the_migrations_question_is_asked() {
+fn on_a_terminal_the_viewer_then_the_migrations_question() {
     if !root_gate::requested() {
         return;
     }
@@ -550,6 +552,17 @@ fn on_a_terminal_the_migrations_question_is_asked() {
     let sb = common::sb().get_program().to_string_lossy().into_owned();
     let cmd = world.namespaced(Path::new(&sb), &["update", "--color=never"], &[]);
     let mut pty = Pty::spawn(&cmd);
+    // The raw screen: the viewer's texts arrive between escape codes.
+    for shown in ["Announcements", " NEW ", "Saltbox", "Sandbox", "Moved"] {
+        assert!(pty.showing(shown), "{shown}: {}", pty.text());
+    }
+    assert!(
+        !pty.text().contains("Run all migration tags?"),
+        "{}",
+        pty.text()
+    );
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+    pty.send(b"q");
     assert!(pty.showing("Run all migration tags?"), "{}", pty.text());
     assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
     pty.send(b"n\r");
@@ -566,6 +579,70 @@ fn on_a_terminal_the_migrations_question_is_asked() {
         ],
     );
     assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+}
+
+/// Ctrl-C in the viewer ends sb with 130, as on the log screens (tui
+/// spec, "Keys and mouse"): no migration question, nothing run, and the
+/// pending migrations named as the lines that run them by hand, since
+/// the next update won't offer them again (decision 22, difference 43).
+#[test]
+fn on_a_terminal_ctrl_c_in_the_viewer_ends_with_130() {
+    if !root_gate::requested() {
+        return;
+    }
+    let (world, _) = migrations_world();
+    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let cmd = world.namespaced(Path::new(&sb), &["update", "--color=never"], &[]);
+    let mut pty = Pty::spawn(&cmd);
+    assert!(pty.showing(" NEW "), "{}", pty.text());
+    pty.send(b"\x03");
+    let status = pty.exit();
+    let text = pty.text();
+    assert_eq!(status.exit_code(), 130, "{text}");
+    assert!(!text.contains("Run all migration tags?"), "{text}");
+    assert!(
+        text.contains(
+            "Migrations interrupted; to run by hand: sb install sandbox-migrate-b, sb install migrate-a"
+        ),
+        "{text}"
+    );
+    assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
+}
+
+/// The viewer lists every announcement that applies, not only the new
+/// ones (tui spec, "Input"): one seen in an earlier update is listed
+/// beside the new one, which alone is marked (`· 1 new`, its ` NEW `
+/// badge).
+#[test]
+fn on_a_terminal_the_viewer_lists_the_older_announcements_too() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("master", "master");
+    let remote = &world.sb.saltbox_remote;
+    let _ = sb_ops::testing::git(&remote.work(), &["checkout", "--quiet", "master"]);
+    let old = "announcements:\n- date: '2026-10-01'\n  title: Earlier news\n  message: Seen\n";
+    remote.commit("announcements.yml", old);
+    let out = world.update(&["--migrations", "skip"]);
+    assert!(out.status.success(), "{out:?}");
+    remote.commit(
+        "announcements.yml",
+        &format!("{old}- date: '2026-11-03'\n  title: Later news\n  message: Fresh\n"),
+    );
+    let sb = common::sb().get_program().to_string_lossy().into_owned();
+    let cmd = world.namespaced(
+        Path::new(&sb),
+        &["update", "--color=never", "--migrations", "skip"],
+        &[],
+    );
+    let mut pty = Pty::spawn(&cmd);
+    // Single words: the raw screen splits a row's text at its style changes.
+    for shown in ["Announcements", " NEW ", "Later", "Earlier"] {
+        assert!(pty.showing(shown), "{shown}: {}", pty.text());
+    }
+    pty.send(b"q");
+    let status = pty.exit();
+    assert!(status.success(), "{}", pty.text());
 }
 
 /// sb interrupted during a migration (ops difference 43): a SIGTERM to sb
