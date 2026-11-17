@@ -547,9 +547,12 @@ in either answer are never printed or logged.
   61933, Amsterdam, NL 41423, Suzhou, CN 5396, Ningbo, CN 59387, Hong
   Kong, CN 32155, Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP
   48463;
-- bench.sh's table, `Node Name | Upload Speed | Download Speed |
-  Latency`: the JSON's `upload.bandwidth` and `download.bandwidth`
-  (bytes per second) as `<n> Mbps` (× 8 / 10^6, two decimals) and
+- a `Speedtest` title row across the table, as System's and Disk
+  write's (the maintainer), then bench.sh's columns as a
+  plain first row (term-ui's table has one heading row), `Node Name |
+  Upload Speed | Download Speed | Latency`: the JSON's
+  `upload.bandwidth` and `download.bandwidth` (bytes per second) as
+  `<n> Mbps` (× 8 / 10^6, two decimals) and
   `ping.latency` as `<n> ms` (two decimals), the values the CLI's text
   form prints (difference 55); a run that doesn't exit 0 is the row's
   `Test failed`, an answer without the three values `Failed to parse

@@ -334,8 +334,9 @@ pub enum Outcome {
     Nodes(Vec<(Node, Measured)>),
 }
 
-/// The Speedtest table: bench.sh's columns, a failed node's text in its
-/// second column; or the one row saying why it didn't run.
+/// The Speedtest table: its title, then bench.sh's columns, a failed
+/// node's text in its second column; or the one row saying why it didn't
+/// run.
 #[must_use]
 pub fn table(outcome: &Outcome) -> Table {
     match outcome {
@@ -348,7 +349,12 @@ pub fn table(outcome: &Outcome) -> Table {
             table
         }
         Outcome::Nodes(nodes) => {
-            let mut table = Table::new(["Node Name", "Upload Speed", "Download Speed", "Latency"]);
+            // The title across the table, as System's and Disk write's,
+            // then bench.sh's column names as a plain first row (the
+            // maintainer): term-ui's table has one heading
+            // row, so they are neither bold nor centred.
+            let mut table = Table::spanning("Speedtest");
+            table.row(["Node Name", "Upload Speed", "Download Speed", "Latency"]);
             for (node, measured) in nodes {
                 match measured {
                     Measured::Speeds {
@@ -798,7 +804,30 @@ mod tests {
         for never in ["EXTERNAL", "INTERNAL", "MAC", "HOST", "SERVERIP"] {
             assert!(!text.contains(never), "{never}\n{text}");
         }
+        // A "Speedtest" title row across the table, above the columns, as
+        // System's and Disk write's (the maintainer).
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[1].trim_matches(|c| c == '│' || c == ' '),
+            "Speedtest",
+            "{text}"
+        );
+        // bench.sh's column names: the first row, plain (term-ui's table
+        // has one heading row, the title's).
+        assert!(lines[3].contains("│ Node Name"), "{text}");
+        // The title once (the other "Speedtest" is Speedtest.net's row).
+        let titles = lines
+            .iter()
+            .filter(|line| line.trim_matches(|c| c == '│' || c == ' ') == "Speedtest")
+            .count();
+        assert_eq!(titles, 1, "{text}");
         let text = rendered(&Outcome::Unavailable("digest mismatch".to_owned()));
+        let first = text.lines().nth(1).expect("title line");
+        assert_eq!(
+            first.trim_matches(|c| c == '│' || c == ' '),
+            "Speedtest",
+            "{text}"
+        );
         assert!(
             text.contains("│ Skipped │ Speedtest unavailable: digest mismatch │"),
             "{text}"
