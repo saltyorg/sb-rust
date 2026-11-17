@@ -1009,7 +1009,12 @@ async fn a_failing_migration_stops_with_its_words() {
         .await;
     let error = ran.error.expect("a failed migration");
     assert!(
-        error.starts_with("failed to execute migration 'migrate-b' for Sandbox repository: "),
+        // The one after it named, with the line that runs it by hand (the
+        // maintainer, 2026-11-17: ops difference 41).
+        error.starts_with(
+            "failed to execute migration 'migrate-b' for Sandbox repository (not run, to run \
+             by hand: sb install migrate-a): "
+        ),
         "{error}"
     );
     assert!(error.contains("exited with code 2"), "{error}");

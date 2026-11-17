@@ -23,7 +23,7 @@ use sb_release::{Outcome, Releases, SelfUpdate};
 use sb_repo::{Answer, Choice, Repo, branch_choice};
 use sb_term_ui::{Labels, PromptError, Runner, Step};
 
-use crate::announcements::{self, Announcement, LoadError};
+use crate::announcements::{self, Announcement, LoadError, Pending};
 use crate::branch::{self, Resolved};
 pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
 use crate::{Checkout, configs};
@@ -261,7 +261,8 @@ pub async fn run(
 /// # Errors
 ///
 /// The question unanswered; a migration that fails (`failed to execute
-/// migration '<tag>' for <Repo> repository: ...`, exit 1), or is
+/// migration '<tag>' for <Repo> repository: ...`, exit 1, the ones after
+/// it named as the lines that run them by hand), or is
 /// interrupted (exec's quiet exit, sb then ending by the signal); `lines`
 /// that can't be written.
 async fn migrations(
@@ -316,7 +317,7 @@ async fn migrations(
         );
     }
     write(lines, "Starting migration execution")?;
-    for migration in &pending {
+    for (at, migration) in pending.iter().enumerate() {
         let name = migration.repo.name();
         let tag = &migration.tag;
         tracing::info!(repo = name, tag = %tag, "migration started");
@@ -325,7 +326,13 @@ async fn migrations(
             &exit::escaped(&format!("Running migration '{tag}' for {name} repository")),
         )?;
         let tags = [tag.clone()];
-        let context = || format!("failed to execute migration '{tag}' for {name} repository");
+        // A failure names the migrations after it, which the next update
+        // won't offer again (the announcements are no longer new): each as
+        // the line that runs it by hand (difference 41).
+        let context = || {
+            let left = by_hand(&pending[at + 1..]);
+            format!("failed to execute migration '{tag}' for {name} repository{left}")
+        };
         // ansible's lines on stdout, as `sb install`'s.
         let ran = update
             .ansible
@@ -347,6 +354,25 @@ async fn migrations(
         tracing::info!(repo = name, tag = %tag, "migration completed");
     }
     write(lines, "All migrations completed successfully")
+}
+
+/// The migrations `left` as the `sb install` lines that run them by
+/// hand, in parentheses after ` (not run, to run by hand: `, so the cause
+/// shown after the failure isn't read as theirs; nothing when none are
+/// left: Saltbox's tag as it is, Sandbox's with its `sandbox-` prefix,
+/// as `sb install` routes tags (ansible spec).
+fn by_hand(left: &[Pending]) -> String {
+    if left.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = left
+        .iter()
+        .map(|migration| match migration.repo {
+            Checkout::Saltbox => format!("sb install {}", migration.tag),
+            Checkout::Sandbox => format!("sb install sandbox-{}", migration.tag),
+        })
+        .collect();
+    format!(" (not run, to run by hand: {})", lines.join(", "))
 }
 
 /// The branch question for an opened checkout ([`branch::resolve`]): the
@@ -530,4 +556,46 @@ async fn new_announcements(
             Ok(shown)
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(repo: Checkout, tag: &str) -> Pending {
+        Pending {
+            repo,
+            tag: tag.to_owned(),
+            date: "2026-11-17".to_owned(),
+        }
+    }
+
+    /// Each migration left unrun as the `sb install` line that runs it:
+    /// routed back through `sb install`'s own rule (sb-ansible's
+    /// `Routed::route`), each line lands in its checkout with its tag.
+    #[test]
+    fn unrun_migrations_are_the_lines_that_run_them() {
+        assert_eq!(by_hand(&[]), "");
+        let left = [
+            pending(Checkout::Saltbox, "migrate-a"),
+            pending(Checkout::Sandbox, "migrate-c"),
+        ];
+        let text = by_hand(&left);
+        let inside = text
+            .strip_prefix(" (not run, to run by hand: ")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .expect("the parenthesised list");
+        let tags: Vec<String> = inside
+            .split(", ")
+            .map(|line| {
+                line.strip_prefix("sb install ")
+                    .expect("an sb install line")
+                    .to_owned()
+            })
+            .collect();
+        let routed = sb_ansible::Routed::route(&tags);
+        assert_eq!(routed.saltbox, ["migrate-a"]);
+        assert_eq!(routed.sandbox, ["migrate-c"]);
+        assert_eq!(routed.saltbox_mod, Vec::<String>::new());
+    }
 }

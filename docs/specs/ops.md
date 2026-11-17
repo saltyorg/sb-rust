@@ -593,8 +593,10 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
     '<tag>' for <Repo> repository` and ansible's `run` (its playbook run
     by tag, as `sb install`'s) with that tag in that repository (Saltbox, Sandbox, saltbox_mod by
     path), then `All migrations completed successfully`. A failure:
-    `failed to execute migration '<tag>' for <Repo> repository: ...`,
-    exit 1.
+    `failed to execute migration '<tag>' for <Repo> repository[ (not
+    run, to run by hand: sb install <tag>, sb install sandbox-<tag>)]:
+    ...`, exit 1, the part in brackets naming the migrations after it,
+    when there are any (difference 41).
   - Skipped (declined or `--migrations skip`): warning `Skipped
     migrations: <repo> <tag>, ...`, so the screen and the log keep them
     (decision 22).
@@ -784,6 +786,11 @@ fails.
     `Displaying new announcements`, when there were some. The step holds
     that line and decision 23's warnings: term-ui's runner has no notices
     outside a step.
+41. A failed migration's error names the migrations after it, which
+    didn't run, each as the `sb install` line that runs it by hand (`sb
+    install <tag>`, `sb install sandbox-<tag>` for Sandbox's): the next
+    update won't offer them again, as their announcements are no longer
+    new. sb-go named only the failed one (the maintainer, 2026-11-17).
 
 ## Scope
 
@@ -1307,8 +1314,10 @@ the real services.
 - The cleanup's directory checks can't stop root itself from planting
   a link between the check and the open; the open refuses one anyway.
 - Migrations declined in one run aren't offered again (the diff is
-  empty next time); the warning lists them, and `sb install <tag>` runs
-  one by hand. sb-go is the same.
+  empty next time); the warning lists them, and `sb install <tag>`
+  (`sb install sandbox-<tag>` for Sandbox's) runs one by hand. sb-go is
+  the same. After a failed migration, its error gives those lines for the
+  ones left (difference 41).
 - A Sandbox checkout that doesn't exist fails `update` with repo's
   `inspect required directory` error, as sb-go.
 

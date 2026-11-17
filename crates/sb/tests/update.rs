@@ -525,7 +525,10 @@ fn a_failing_migration_exits_1_with_its_words() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(
-        stderr.contains("failed to execute migration 'migrate-b' for Sandbox repository"),
+        stderr.contains(
+            "failed to execute migration 'migrate-b' for Sandbox repository (not run, to run by \
+             hand: sb install migrate-a)"
+        ),
         "{stderr}"
     );
     assert_eq!(tag_runs(&world).len(), 1, "{:?}", world.host.calls());
