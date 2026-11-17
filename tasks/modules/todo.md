@@ -1197,7 +1197,39 @@ type and font checks, `--banner-file-toilet`'s arguments through shlex.
 **Scope:** S
 
 ## Checkpoint M: motd
-- [ ] M36-M47 merged; `check.sh full`; the budgets' numbers recorded.
+- [x] M36-M47 merged; `check.sh full`; the budgets' numbers recorded.
+      Done: full passed on main's tree at 03fcccc (2026-11-17). The
+      budgets (motd spec, criteria 9 to 11 and Testing, "Timing"),
+      measured on 2026-11-17:
+      - Method: the production build of sb and sb-go at 35a7acc
+        (`CGO_ENABLED=0`), each run in one ubuntu:22.04 container with
+        no network, capped at 2 CPUs and 2 GB, timed by hyperfine
+        2.0.0. The flags are Saltbox's login flags (`--all --title
+        Saltbox --font ivrit --type parchment`), and motd.yml has one
+        instance per provider. The fakes are a socat handler on the
+        loopback answering every provider at once (its listen backlog
+        raised, so a burst of connections isn't dropped), a port that
+        accepts and never answers, and a closed port. toilet and boxes
+        are the release's packages, and update-notifier's summary file
+        is in place.
+      - Criterion 9 (every source answering at once, 30 runs each):
+        sb's median 50.2 ms, sb-go's 67.3 ms.
+      - Criterion 10 (20 runs of sb, 10 of sb-go): with one instance
+        refused, sb 47.4 ms against 47.0 ms with none (sb-go 69.2 ms
+        against 68.3 ms); with one instance accepting and never
+        answering at the default 1 s timeout, sb 1025.8 ms (sb-go
+        1044.2 ms). In that run every other section ended within
+        30 ms.
+      - Criterion 11 (every source hung: the fakes, stand-ins that
+        never end for toilet, boxes, loginctl, last, systemctl and
+        update-notifier's scripts, Docker and Traefik pointed at the
+        port that never answers): three runs of sb, each ending in
+        10.0 s with every section's line shown and no stand-in left.
+        The 10 s is Services' two systemctl calls at their 5 s timeout
+        each.
+      - The container matrix (`crates/motd/tests/matrix.sh`) passed on
+        22.04, 24.04 and 26.04, after its `sb motd` calls took
+        `--title ''` (M46's banner was in their values).
 - [ ] Look: `sb motd --all` with every section (M36, M38, M42, M46 seen
       at their tasks; the rest here).
 
