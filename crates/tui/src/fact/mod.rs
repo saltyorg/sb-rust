@@ -116,7 +116,12 @@ const COPIED: &str = "(if your terminal allows it; otherwise use Show)";
 /// a shorter hold would only flash it.
 const WAIT_SHOWN: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// What a deletion's note says (tui spec, Screen).
+/// The status line's note after a Delete (tui spec, Screen), short
+/// enough for an 80-column line after most labels (the maintainer,
+/// 2026-11-16, as Copy's).
+const DELETED: &str = "deleted on save; Saltbox recreates it next run";
+
+/// What the save question says of deletions (tui spec, Screen).
 const REGENERATED: &str = "Saltbox creates a new value next time it runs.";
 
 /// The fact editor over `session`'s catalog, in `theme`, on stdout's
@@ -765,10 +770,7 @@ impl Page {
             return;
         }
         if self.stage(&target, &Pending::Delete) {
-            self.status = format!(
-                "{} will be deleted when you save. {REGENERATED}",
-                self.label(&target)
-            );
+            self.status = format!("{}: {DELETED}", self.label(&target));
         }
     }
 

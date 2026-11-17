@@ -1026,7 +1026,11 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     change. It sits on the right at 100 columns or more and at the bottom
     below that.
   - Delete works on a setting, a copy or an app. A note explains that
-    Saltbox creates a new value on its next run.
+    Saltbox creates a new value on its next run: "<setting, copy or
+    app>: deleted on save; Saltbox recreates it next run" on the
+    status line, short enough for 80 columns (the maintainer,
+    2026-11-16), and "Deleted values: Saltbox creates a new value next
+    time it runs." in the save question.
   - Add asks for a key name, then its value (ratatui-textarea), under the
     selected copy. It refuses, before staging, a key that exists, an
     empty key, leading or trailing whitespace, `=`, a leading `#`, `;` or

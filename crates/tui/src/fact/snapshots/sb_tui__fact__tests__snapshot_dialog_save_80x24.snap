@@ -1,6 +1,5 @@
 ---
 source: crates/tui/src/fact/tests.rs
-assertion_line: 1599
 expression: "drawn(&mut f.page, 80, 24).backend()"
 ---
 "╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
@@ -25,5 +24,5 @@ expression: "drawn(&mut f.page, 80, 24).backend()"
 "╭ Unsaved changes (1) ─────────────────────────────────────────────────────────╮"
 "│ Delete homepage · theme                                                undo  │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
-" homepage · theme will be deleted when you save. Saltbox creates a new value nex"
+" homepage · theme: deleted on save; Saltbox recreates it next run               "
 "  Edit (e)   Add (a)   Copy (c)   Show (s)   Keep (d)   Save (v)   Quit (q)     "

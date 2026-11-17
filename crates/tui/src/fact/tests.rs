@@ -1183,7 +1183,14 @@ fn delete_at_three_levels_and_keep() {
     press(&mut f.page, KeyCode::Char('d'));
     assert_eq!(
         f.page.status,
-        "plex · plex2 · transcode_path will be deleted when you save. Saltbox creates a new value next time it runs."
+        "plex · plex2 · transcode_path: deleted on save; Saltbox recreates it next run"
+    );
+    // Whole on an 80-column screen.
+    assert!(
+        screen(&drawn(&mut f.page, 80, 30)).contains(
+            &" plex · plex2 · transcode_path: deleted on save; Saltbox recreates it next run"
+                .to_owned()
+        )
     );
     assert!(shows(&mut f.page, 100, 40, "will be deleted"));
     assert!(shows(&mut f.page, 100, 40, "Keep (d)"));
