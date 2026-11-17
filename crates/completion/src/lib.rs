@@ -6,7 +6,10 @@
 //! The engine is `clap_complete`'s `unstable-dynamic`, pinned exactly
 //! (ADR-001): every use of it is in this crate.
 
+pub mod install;
 pub mod tags;
+#[cfg(feature = "testing")]
+pub mod testing;
 
 use clap_complete::env::{Bash, CompleteEnv, EnvCompleter, Fish, Shells, Zsh};
 

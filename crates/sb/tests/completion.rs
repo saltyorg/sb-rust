@@ -10,7 +10,7 @@ mod nobody;
 mod root_gate;
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::prelude::*;
 
@@ -281,4 +281,214 @@ fn a_request_runs_as_the_calling_user() {
     assert!(!log_dir.exists(), "an unprivileged run logged");
     let files: Vec<_> = std::fs::read_dir(root.path()).expect("list").collect();
     assert_eq!(files.len(), 1, "the request wrote in the Saltbox root");
+}
+
+/// Tests that write a stand-in shell and run it hold this from writing it
+/// until its run is over (ETXTBSY otherwise; as sb-host's `SPAWNS`).
+static SPAWNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// An install root with stand-in shells: bash with bash-completion, and
+/// zsh and fish answering their probes, each only if asked for.
+fn install_root(shells: &[&str]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("temp dir");
+    let write = |path: &str, text: &str, mode: u32| {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+        std::fs::write(&path, text).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    };
+    let zsh_dir = root.path().join("usr/local/share/zsh/site-functions");
+    let sysconf = root.path().join("etc/fish");
+    for shell in shells {
+        let script = match *shell {
+            "bash" => "exit 0".to_owned(),
+            "zsh" => format!("printf '%s\\n' '{}'", zsh_dir.display()),
+            "fish" => format!("printf '3.6.1\\n%s\\n' '{}'", sysconf.display()),
+            "broken-zsh" => "exit 4".to_owned(),
+            other => panic!("no stand-in {other}"),
+        };
+        let name = shell.trim_start_matches("broken-");
+        write(
+            &format!("usr/bin/{name}"),
+            &format!("#!/bin/sh\n{script}\n"),
+            0o755,
+        );
+    }
+    write("usr/share/bash-completion/bash_completion", "", 0o644);
+    root
+}
+
+/// This test build of sb, never `SB_TEST_BINARY`'s: only a build with
+/// sb-completion's `testing` feature installs under the test's root; any
+/// other writes the host's shell directories.
+fn test_build() -> PathBuf {
+    assert_cmd::cargo::cargo_bin("sb")
+}
+
+/// The test build of sb, with its install root at `root`, under a 0077
+/// umask (sh's `umask`, then exec sb). Only with the root tests asked for
+/// (`root_gate`): the installing forms need root, and a run that hands
+/// over to sudo would lose `SB_TEST_COMPLETION_ROOT`.
+fn completion_run(root: &Path, args: &[&str]) -> std::process::Output {
+    let mut cmd = std::process::Command::new("sh");
+    common::apply_sb_env(&mut cmd);
+    cmd.env("SB_TEST_COMPLETION_ROOT", root)
+        .args(["-c", "umask 077; exec \"$0\" \"$@\""])
+        .arg(test_build())
+        .args(args)
+        .output()
+        .expect("run sb")
+}
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Bare `sb completion` and `completion install` install every
+/// installed shell's file, 0644 and in 0755 directories under a 0077
+/// umask, with sb-go's lines; a missing shell is skipped, not an error.
+#[test]
+fn completion_installs_every_installed_shell() {
+    if !root_gate::requested() {
+        return;
+    }
+    let _spawns = SPAWNS.lock();
+    let root = install_root(&["bash", "zsh"]);
+    let at = |path: &str| root.path().join(path);
+    for args in [&["completion"][..], &["completion", "install"][..]] {
+        let output = completion_run(root.path(), args);
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
+        assert_eq!(
+            text(&output.stdout),
+            format!(
+                "Installed bash completion: {}\nInstalled zsh completion: {}\nSkipped fish completion: shell is not installed\n",
+                at("usr/local/share/bash-completion/completions/sb.bash").display(),
+                at("usr/local/share/zsh/site-functions/_sb").display(),
+            ),
+            "{args:?}"
+        );
+    }
+    let mode = |path: &str| {
+        std::fs::metadata(at(path))
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(
+        mode("usr/local/share/bash-completion/completions/sb.bash"),
+        0o644
+    );
+    assert_eq!(mode("usr/local/share/zsh/site-functions/_sb"), 0o644);
+    assert_eq!(mode("usr/local/share/bash-completion"), 0o755);
+    assert_eq!(mode("usr/local/share/bash-completion/completions"), 0o755);
+    let zsh = std::fs::read_to_string(at("usr/local/share/zsh/site-functions/_sb")).expect("zsh");
+    assert!(
+        zsh.starts_with("#compdef sb\n# sb completion zsh sb\n"),
+        "{zsh}"
+    );
+}
+
+/// Naming a shell makes it unavailable an error, after its line (exit
+/// 1); `install <shell> --allow-unavailable` doesn't (released sb-go
+/// 0.1.1's self-update passes it); another shell is a usage error.
+#[test]
+fn a_named_unavailable_shell_is_an_error_unless_allowed() {
+    if !root_gate::requested() {
+        return;
+    }
+    let _spawns = SPAWNS.lock();
+    let root = install_root(&["bash"]);
+    for args in [
+        &["completion", "fish"][..],
+        &["completion", "install", "fish"][..],
+    ] {
+        let output = completion_run(root.path(), args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert_eq!(
+            text(&output.stdout),
+            "Skipped fish completion: shell is not installed\n"
+        );
+        let stderr = text(&output.stderr);
+        assert!(
+            stderr.contains("fish completion unavailable: shell is not installed"),
+            "{stderr}"
+        );
+    }
+    let output = completion_run(
+        root.path(),
+        &["completion", "install", "fish", "--allow-unavailable"],
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        text(&output.stdout),
+        "Skipped fish completion: shell is not installed\n"
+    );
+    let output = completion_run(root.path(), &["completion", "bash"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let output = completion_run(root.path(), &["completion", "install", "powershell"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
+
+/// A failed shell doesn't stop the others; the run ends with exit 1 and
+/// the failure after every line.
+#[test]
+fn a_failed_shell_fails_the_run_after_the_others() {
+    if !root_gate::requested() {
+        return;
+    }
+    let _spawns = SPAWNS.lock();
+    let root = install_root(&["bash", "broken-zsh", "fish"]);
+    let output = completion_run(root.path(), &["completion"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = text(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert!(
+        lines[0].starts_with("Installed bash completion: "),
+        "{stdout}"
+    );
+    assert_eq!(
+        lines[1],
+        "Failed zsh completion: shell probe failed: exit status 4 ()"
+    );
+    assert!(
+        lines[2].starts_with("Installed fish completion: "),
+        "{stdout}"
+    );
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("detect zsh: shell probe failed: exit status 4 ()"),
+        "{stderr}"
+    );
+}
+
+/// A symlink to sb in the bin directories gets its own file, calling the
+/// symlink.
+#[test]
+fn a_symlink_name_gets_its_own_file() {
+    if !root_gate::requested() {
+        return;
+    }
+    let _spawns = SPAWNS.lock();
+    let root = install_root(&["zsh"]);
+    let link = root.path().join("usr/local/bin/saltbox");
+    std::fs::create_dir_all(link.parent().expect("parent")).expect("dir");
+    let sb = std::fs::canonicalize(test_build()).expect("sb");
+    std::os::unix::fs::symlink(&sb, &link).expect("link");
+    let output = completion_run(root.path(), &["completion", "zsh"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let file = root
+        .path()
+        .join("usr/local/share/zsh/site-functions/_saltbox");
+    let zsh = std::fs::read_to_string(&file).expect("saltbox's file");
+    assert!(
+        zsh.starts_with("#compdef saltbox\n# sb completion zsh saltbox\n"),
+        "{zsh}"
+    );
+    assert!(zsh.contains(&link.display().to_string()), "{zsh}");
+    let own = std::fs::read_to_string(root.path().join("usr/local/share/zsh/site-functions/_sb"))
+        .expect("sb's file");
+    assert!(own.contains(&sb.display().to_string()), "{own}");
 }

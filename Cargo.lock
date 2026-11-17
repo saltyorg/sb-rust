@@ -3514,10 +3514,14 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clap_complete",
+ "regex",
  "sb-ansible",
  "sb-cli-core",
+ "sb-exec",
  "shlex",
  "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

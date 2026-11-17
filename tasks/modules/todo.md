@@ -1457,7 +1457,7 @@ settling verification items 1-6.
 **Acceptance criteria:**
 - [ ] A run with `SB_COMPLETE` prints only candidates and is never logged.
 - [ ] The tag completer reads ansible's cache and answers sb-go's cases.
-- [ ] Verification items 1-6 settled in each shell's container (2's symlink name and 5, the completer path, need `completion install`: settled with M58).
+- [ ] Verification items 1-6 settled in each shell's container (2's symlink name and 5, the completer path, needed `completion install`: settled with M58).
 
 **Verification:**
 - [ ] `cargo test -p sb-completion -p sb`; `tests/shells.sh` under the cap.

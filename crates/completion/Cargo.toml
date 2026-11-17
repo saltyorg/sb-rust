@@ -20,9 +20,23 @@ sb-ansible.workspace = true
 # The earlier words unquoted as the shell passes them (bash and zsh pass
 # them as typed).
 shlex.workspace = true
+# The shell probes (exec spec, assumption 4: `capture`, `env_clear`,
+# `timeout`) and their cancellation.
+sb-exec.workspace = true
+tokio-util.workspace = true
+# Atomic writes of the shells' files (`NamedTempFile::persist`).
+tempfile.workspace = true
+# sb-go's name pattern and fish's version.
+regex.workspace = true
+
+[features]
+# The install root under a test's directory (`testing::ROOT_VAR`), for
+# sb's tests; never in a release build.
+testing = []
 
 [dev-dependencies]
-tempfile.workspace = true
+# The probes run on a real runtime in the tests.
+tokio.workspace = true
 
 [lints]
 workspace = true

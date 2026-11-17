@@ -157,16 +157,12 @@ enum Command {
     #[command(long_about = "Reinstall the Rust saltbox.fact file")]
     ReinstallFacts,
     /// Install shell completion for sb
-    // Hidden, as sb-go's (completion spec, "`sb completion`").
-    #[command(
-        long_about = COMPLETION_LONG,
-        hide = true,
-        arg_required_else_help = true,
-        disable_help_subcommand = true
-    )]
+    // Hidden, as sb-go's (completion spec, "`sb completion`"); alone, it
+    // installs for every installed shell.
+    #[command(long_about = COMPLETION_LONG, hide = true, disable_help_subcommand = true)]
     Completion {
         #[command(subcommand)]
-        command: CompletionCommand,
+        command: Option<CompletionCommand>,
     },
     /// Display announcements from announcement files
     // Shown, not hidden as sb-go's test harness was: it reads
@@ -197,6 +193,27 @@ Use \"completion generate <shell>\" to write a script to standard output.";
 /// `sb completion`'s subcommands (completion spec).
 #[derive(Subcommand, Clone, Copy)]
 enum CompletionCommand {
+    /// Install bash completion
+    #[command(long_about = "Install bash completion")]
+    Bash,
+    /// Install zsh completion
+    #[command(long_about = "Install zsh completion")]
+    Zsh,
+    /// Install fish completion
+    #[command(long_about = "Install fish completion")]
+    Fish,
+    /// Install completion for installed shells
+    #[command(long_about = "Install completion for installed shells")]
+    Install {
+        /// The one shell to install for
+        #[arg(value_name = "bash|zsh|fish")]
+        shell: Option<sb_completion::Shell>,
+        /// Allow an unavailable shell during automatic completion refresh
+        // Hidden, as sb-go's: released sb-go 0.1.1's self-update passes it
+        // to the new binary (spec, decision 8).
+        #[arg(long, hide = true)]
+        allow_unavailable: bool,
+    },
     /// Write a completion script to standard output
     #[command(long_about = "Write a completion script to standard output")]
     Generate {
@@ -394,9 +411,14 @@ impl Command {
             Command::ReinstallFacts => "reinstall-facts",
             Command::Announcements => "announcements",
             Command::Restore(_) => "restore",
-            Command::Completion {
-                command: CompletionCommand::Generate { .. },
-            } => "completion generate",
+            Command::Completion { command } => match command {
+                None => "completion",
+                Some(CompletionCommand::Bash) => "completion bash",
+                Some(CompletionCommand::Zsh) => "completion zsh",
+                Some(CompletionCommand::Fish) => "completion fish",
+                Some(CompletionCommand::Install { .. }) => "completion install",
+                Some(CompletionCommand::Generate { .. }) => "completion generate",
+            },
         }
     }
 
@@ -408,7 +430,7 @@ impl Command {
             // (completion spec, decision 4).
             Command::Version { .. }
             | Command::Completion {
-                command: CompletionCommand::Generate { .. },
+                command: Some(CompletionCommand::Generate { .. }),
             } => false,
             // The Docker socket, and sb's rule that only version and
             // completion run unprivileged (cli-core decision 3); Saltbox's
@@ -448,7 +470,19 @@ impl Command {
             | Command::ReinstallPython
             | Command::ReinstallFacts
             | Command::Announcements
-            | Command::Restore(_) => true,
+            | Command::Restore(_)
+            // The installing forms write the shells' system directories
+            // (completion spec, assumption 4).
+            | Command::Completion {
+                command:
+                    None
+                    | Some(
+                        CompletionCommand::Bash
+                        | CompletionCommand::Zsh
+                        | CompletionCommand::Fish
+                        | CompletionCommand::Install { .. },
+                    ),
+            } => true,
         }
     }
 }
@@ -737,16 +771,6 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Docker {
             command: DockerCommand::Restart { ref ignore },
         } => docker_control(command.name(), &Control::Restart(ignore), shutdown, log)?,
-        Command::Completion {
-            command: CompletionCommand::Generate { shell },
-        } => {
-            // `sb`, looked up on `PATH` at Tab time (completion spec,
-            // "`sb completion generate`").
-            let mut out = std::io::stdout().lock();
-            out.write_all(&shell.registration("sb", "sb"))
-                .map_err(exit::output_error)?;
-            out.flush().map_err(exit::output_error)?;
-        }
         Command::Version { json } => {
             let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
             let mut out = std::io::stdout().lock();
@@ -762,6 +786,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             // exit and be ignored (exit 0, not 141).
             out.flush().map_err(exit::output_error)?;
         }
+        Command::Completion { command } => completion::completion(command, shutdown)?,
     }
     Ok(())
 }
@@ -977,6 +1002,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 mod announcements;
 mod ansible;
 mod branch;
+mod completion;
 mod docker_logs;
 mod edit;
 mod fact;

@@ -90,6 +90,13 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     ] {
         cmd.env_remove(name);
     }
+    // Nor the host's shell directories: `sb completion install` writes its
+    // files under a root of the test's (the test build's
+    // `SB_TEST_COMPLETION_ROOT`); tests that check them set their own.
+    cmd.env(
+        "SB_TEST_COMPLETION_ROOT",
+        test_log_dir().join("no-completion-root"),
+    );
     // No test reaches Cloudflare or Docker Hub: both checks go to a
     // loopback port nothing listens on unless a test points them at its
     // fake, with no proxy, certificate or zoneinfo settings of the

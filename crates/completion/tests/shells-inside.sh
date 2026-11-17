@@ -57,15 +57,11 @@ bind \cx sb_capture
 EOF
 chown -R sbuser:sbuser "$home"
 
-# Each shell's file, where sb installs it: `sb completion generate`'s
-# stub, which calls `sb` on PATH.
 # shellcheck disable=SC2016 # fish expands it
 fish_dir=$(fish --no-config -c 'printf %s $__fish_sysconf_dir')/completions
 bash_dir=/usr/local/share/bash-completion/completions
 zsh_dir=/usr/local/share/zsh/site-functions
-mkdir -p "$fish_dir" "$bash_dir" "$zsh_dir"
-sb completion generate fish >"$fish_dir/sb.fish"
-sb completion generate zsh >"$zsh_dir/_sb"
+mkdir -p "$bash_dir"
 note "fish loads from $fish_dir; zsh's clean fpath: $(zsh -d -f -c 'print -l $fpath' | tr '\n' ' ')"
 
 # Verification item 2: which bash file names bash-completion's loader
@@ -82,8 +78,26 @@ for file in sb.bash sb; do
     note "bash-completion does not load $bash_dir/$file"
   fi
 done
-rm -f "$bash_dir/sb"
-sb completion generate bash >"$bash_dir/sb.bash"
+rm -f "$bash_dir/sb" "$bash_dir/sb.bash"
+
+# `sb completion install` as root, with a second name, a symlink to sb:
+# every shell's file for each name, each calling its own path
+# (verification items 2 and 5).
+ln -s sb /usr/local/bin/saltbox
+sb completion install >/out/install.txt 2>&1 || fail "completion install: $(cat /out/install.txt)"
+for name in sb saltbox; do
+  for file in "$bash_dir/$name.bash" "$zsh_dir/_$name" "$fish_dir/$name.fish"; do
+    grep -qx "Installed .* completion: $file" /out/install.txt || fail "no line for $file"
+    [ "$(stat -c %a "$file")" = 644 ] || fail "$file is not 0644"
+    head -n 2 "$file" | grep -q "^# sb completion [a-z]* $name\$" || fail "$file has no marker"
+  done
+  grep -q "/usr/local/bin/$name" "$zsh_dir/_$name" || fail "_$name doesn't call /usr/local/bin/$name"
+  grep -q "/usr/local/bin/$name" "$fish_dir/$name.fish" || fail "$name.fish doesn't call /usr/local/bin/$name"
+done
+for name in sb saltbox; do
+  grep -q "_clap_complete_$name $name\$" "$bash_dir/sb.bash" || fail "sb.bash doesn't register $name"
+done
+note "completion install: $(wc -l </out/install.txt) lines, every file 0644 with its marker"
 
 # One login shell of the user's in tmux; type each case, press Tab once,
 # then Ctrl-X: ~/captured gets the line as completion left it.
@@ -158,6 +172,9 @@ for shell in /bin/bash /usr/bin/zsh /usr/bin/fish; do
   drive "$shell" "$name" "${cases[@]}" "${open[@]}"
   # A fresh shell whose first Tab is a tag (item 1 for zsh's autoload).
   drive "$shell" "$name-first-tag" "sb install so" "sb install sonarr"
+  # The symlink's own file, its first Tab included (item 2).
+  drive "$shell" "$name-saltbox" "saltbox vers" "saltbox version" \
+    "saltbox install plex,so" "saltbox install plex,sonarr"
 done
 
 [ "$failures" -eq 0 ] || fail "$failures case(s) failed"

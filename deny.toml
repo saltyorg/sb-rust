@@ -66,7 +66,7 @@ deny = [
     # binary's `sb edit`, which runs the editor attached (tui spec,
     # editors: crates/sb/src/edit.rs); python-env's uv, Python and git;
     # ops' locale programs and git hooks.
-    { crate = "sb-exec", wrappers = ["sb", "sb-ops", "sb-docker", "sb-release", "sb-host", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env"] },
+    { crate = "sb-exec", wrappers = ["sb", "sb-ops", "sb-docker", "sb-release", "sb-host", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },
     # docker: sb docker ps (and later start/stop/restart, the picker's
     # list, log streams), used by the binary.
     { crate = "sb-docker", wrappers = ["sb", "sb-tui", "sb-motd"] },

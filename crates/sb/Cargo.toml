@@ -55,6 +55,9 @@ sb-python-env = { workspace = true, features = ["testing"] }
 # namespace `sb gha` runs in, and the fake restore service `sb restore`'s
 # tests run against (never in a release or production build).
 sb-ops = { workspace = true, features = ["testing"] }
+# The test build's `SB_TEST_COMPLETION_ROOT`, where `sb completion install`
+# writes in tests (never in a release or production build).
+sb-completion = { workspace = true, features = ["testing"] }
 insta.workspace = true
 serde_json.workspace = true
 console.workspace = true

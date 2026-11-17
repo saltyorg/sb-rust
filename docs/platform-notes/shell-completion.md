@@ -14,10 +14,13 @@ shells from apt:
 | 26.04 | 5.3.9 | 2.16.0 | 5.9 | 4.2.1 | 3.6a |
 
 **Method:** `crates/completion/tests/shells.sh`, one throwaway container
-per release. sb's stub for each shell (`sb completion generate`) is put
-where sb installs it: `/usr/local/share/bash-completion/completions/sb.bash`,
-`/usr/local/share/zsh/site-functions/_sb` and
-`$__fish_sysconf_dir/completions/sb.fish` (`/etc/fish/completions`). A tag
+per release. `sb completion install` runs as root in it, with a second
+name, `/usr/local/bin/saltbox`, a symlink to sb; it writes
+`/usr/local/share/bash-completion/completions/<name>.bash`,
+`/usr/local/share/zsh/site-functions/_<name>` and
+`$__fish_sysconf_dir/completions/<name>.fish` (`/etc/fish/completions`)
+for both names (module build M58; before it, M57 put
+`sb completion generate`'s stub in the same places). A tag
 cache at the default Saltbox root holds Saltbox's `plex`, `radarr`,
 `sonarr` and Sandbox's `plex`. A new user's login shell (bash, zsh, fish)
 runs in tmux; each case is typed, Tab pressed once, and a key bound in the
@@ -44,8 +47,9 @@ The same on all three releases.
 2. **bash loader (item 2):** bash-completion's loader finds the file as
    `sb.bash` and as `sb` in `/usr/local/share/bash-completion/completions`
    on 2.11 and 2.16; sb writes `sb.bash`, as sb-go. A login shell loads
-   bash-completion through the user's `~/.bashrc` from `/etc/skel`. A
-   symlinked name is checked with `completion install` (M58).
+   bash-completion through the user's `~/.bashrc` from `/etc/skel`. The
+   symlinked name completes in each shell from its own file, its first
+   Tab included (`saltbox vers`, `saltbox install plex,so`).
 3. **fish (item 3):** fish 3.3.1, 3.7.0 and 4.2.1 load the file from
    `/etc/fish/completions`; the stub's quoting works; an open quote
    (`sb install 'plex, so`) reaches sb with its quote, gets nothing, and
@@ -61,7 +65,10 @@ The same on all three releases.
    gets nothing. No fallback to file names: a file `sofile` in the
    user's home was never offered for `--extra-vars so`, `--skip-tags so`
    or a tag.
-5. **The completer path (item 5):** with `completion install` (M58).
+5. **The completer path (item 5):** each name's zsh and fish file calls
+   that name's own path (`/usr/local/bin/saltbox` for the symlink, not
+   the installing run's `argv[0]`); each bash file registers every name,
+   each calling its own path. Every file is 0644 and carries its marker.
 6. **Startup budget (item 6):** a request for `sb install tag2` against a
    cache of 300 Saltbox and 100 Sandbox tags, release build,
    `hyperfine -N --warmup 5 --runs 50`: about 4 ms mean, as `sb version`
