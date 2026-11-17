@@ -43,7 +43,7 @@ pub enum DecryptError {
     /// The padding checked out but the plaintext isn't UTF-8: a wrong
     /// password that passed the padding check (about once in 256), since
     /// every file the service keeps is text (the maintainer, 2026-11-16;
-    /// ops difference 40).
+    /// ops difference 44).
     #[error("the decrypted file isn't text")]
     NotText,
 }
@@ -153,7 +153,7 @@ mod tests {
     }
 
     /// A plaintext that isn't UTF-8 text counts as a wrong password (the
-    /// maintainer, 2026-11-16; ops difference 40): all nine files are
+    /// maintainer, 2026-11-16; ops difference 44): all nine files are
     /// text, and a wrong key that passes the padding check (about once in
     /// 256) gives garbage, which this catches.
     #[test]
