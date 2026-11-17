@@ -294,7 +294,11 @@ and sb-host's tests) under this profile:
     reachable. So the one test that needs the host's systemd (sb's
     hangup test of a session scope's stop) skips in a pass:
     `mutation_sandbox` sets `SB_TEST_NO_SYSTEMD=1` for it (2026-11-16),
-    and the Tests step still runs it.
+    and the Tests step still runs it. *Amended 2026-11-17 (the
+    maintainer):* every test run of the gate is in the sandbox now
+    (`sandbox_argv`), so the Tests step skips it too, and it runs by hand
+    on a systemd of its own in a container,
+    `crates/sb/tests/hangup-systemd.sh`.
 
   The working directory is entered again by its path inside, since it
   still names the mount it was entered through. Each step that fails, and
@@ -310,3 +314,46 @@ and sb-host's tests) under this profile:
   output (the first fails, the others work), and read back its mount
   table (every other mount read-only), its `/run` (empty) and its network
   namespace (its own).
+
+  *Amended 2026-11-17 (the maintainer, after a completion install test
+  wrote the host's `/etc/fish` during the unsandboxed Tests step; its
+  stand-in fish named `/etc/fish`): the sandbox is the gate's one sandbox
+  for every test run* (`sandbox_argv` and `sandbox_inner` in check.sh):
+  the coverage run, the doc and prototype tests, the release-build run,
+  the startup timing, the floor guard's own tests and the mutation passes,
+  in fast, task and full alike. What it now is, by the code and security
+  reviews of that change:
+  - writable are only the directories its caller names, each by its
+    physical path: a test step's own temp directory (its `TMPDIR`, made
+    per run, removed on exit and by a later run's sweep when a run is
+    killed), the worktree's `target/` and the tests' log directory; a
+    pass's directory, output and log directory. `/tmp` as a whole is no
+    longer writable, so a worktree under `/tmp` gets the same sandbox; a
+    named directory that is `/` is refused;
+  - the test steps run in a PID namespace of their own with its own
+    `/proc`: no host process can be signalled or reached through
+    `/proc/<pid>/root`; its first process reaps the tests' orphans and
+    passes signals on, and every process in it ends with it (unshare's
+    `--kill-child` when unshare is killed). The mutation passes keep the
+    host's: their sweeps find a pass's leftovers by host pid and start
+    time, as their tests check, so a mutant can still signal a host
+    process or write the host through `/proc/<pid>/root` (a known limit,
+    left for a change of the sweeps);
+  - `/proc/sys`, `/proc/sysrq-trigger`, every `/sys` mount (the cgroup tree
+    too) and `/dev` are read-only, but `/dev/pts` (the pty tests'
+    terminals) and a private `/dev/shm` and `/dev/mqueue`;
+  - a mount that can't be reached is left as it is only when a later mount
+    covers it (the host's `/proc` under the namespace's, an outer
+    sandbox's `/run` over `/run/lock`), with the mount table read
+    losslessly (`printf -v`); otherwise the run stops (status 125, which a
+    test step reports as exit 2), as for a mount left writable;
+  - it guards against mistakes, not a hostile test: root keeps
+    CAP_SYS_ADMIN in it and could mount again, and a socket file outside
+    `/run` can still be connected to through a read-only mount (no test
+    does).
+  The whole crate suite passed in it as root (3179 tests). The floor
+  guard's tests check a stubbed test run and pass: a write to the host
+  and to `/etc` refused, its `TMPDIR` and `target/` writable, the
+  reachable writable mounts exactly the expected ones, `/run` empty, its
+  own network and PID namespaces; and that a test that writes `/etc`
+  fails the run.

@@ -2178,6 +2178,11 @@ calling it from `update` and `setup`, and the completion refresh.*
 
 ## Checkpoint Z: the binary is complete
 - [ ] Every M task merged; every Commands row "built".
+- [ ] The by-hand container scripts pass on the final tree: the motd,
+      gha and setup matrices, the install-script containers, and
+      `crates/sb/tests/hangup-systemd.sh` (hangup's session-scope test on
+      a systemd of its own, which the gate's sandbox hides; added
+      2026-11-17).
 - [ ] The capability map's "When the binary is complete" items go to the
       maintainer: the schemas' owner, the ratchet rows re-measured, glibc
       and musl side by side (settled 2026-11-17, ahead of the checkpoint:

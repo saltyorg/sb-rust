@@ -39,8 +39,8 @@ fi
 # leftover override of the sb binary or the live opt-in would change what
 # every stage checks (docker plan Task 9), and python-env's live opt-in
 # would start containers from every test run (module build M21). A
-# leftover SB_TEST_NO_SYSTEMD would skip a test outside the mutation
-# sandbox, the only place that sets it (mutation_sandbox).
+# leftover SB_TEST_NO_SYSTEMD would skip a test outside the sandbox, the
+# only place that sets it (sandbox_argv).
 unset SB_TEST_BINARY SB_LIVE_DOCKER SB_LIVE_PYTHON SB_TEST_NO_SYSTEMD
 # nextest's runs (the mutation passes' and the release-build tests) read
 # their settings from .config/nextest.toml's profiles alone: an inherited NEXTEST_*
@@ -293,7 +293,9 @@ fast() {
     # The dot reporter: one character a test, then each failure in full (the
     # failure report is as Node 24 prints it; the page describes the dots
     # only): https://nodejs.org/docs/latest-v24.x/api/test.html#test-reporters
-    node --test --test-reporter=dot scripts/floor-guard.test.mjs
+    # In the sandbox too: the tests run check.sh in scratch repositories
+    # under their TMPDIR, and its own sandboxes nest inside this one.
+    in_sandbox node --test --test-reporter=dot scripts/floor-guard.test.mjs
   else
     skip "nothing under scripts/ changed since $base"
   fi
@@ -546,84 +548,259 @@ group_stop() {
 # On exit: the test run's group, then a mutation pass's leftovers.
 on_exit() {
   group_stop
+  # Before the pass's cleanup, whose failure would end the trap there.
+  if [[ -n $test_tmp ]]; then rm -rf -- "$test_tmp" || true; fi
   mutation_cleanup
 }
 trap on_exit EXIT
 
-# mutation_sandbox DIR... -- CMD...: CMD in private mount and network
-# namespaces where every mount is read-only but /tmp and the DIRs, so a
-# mutant that bends a path or drops a safety flag can't write on the host
-# as root, nor reach its daemons (two wrote files, 2026-11-15; ADR-021):
-# - /tmp holds the pass's copies and the tests' temp roots;
-# - /proc, /sys and /dev stay as they are (kernel interfaces and devices);
+# sandbox_argv DIR... -- CMD...: sets `sandboxed` to the command that runs
+# CMD in private mount, network and PID namespaces where every mount is
+# read-only but the DIRs, so a test, or a mutant that bends a path or
+# drops a safety flag, can't write on the host as root, nor reach its
+# daemons or processes. Every test run of the gate goes through it: the
+# mutation passes (two mutants wrote files, 2026-11-15; ADR-021) and the
+# test steps (a completion test wrote the host's /etc/fish, 2026-11-17;
+# the maintainer: every test run in the sandbox).
+# - The DIRs are the only writable places of the host, named by the
+#   caller: a run's own temp directory (its TMPDIR) and output, never /tmp
+#   as a whole, so the sandbox is the same wherever the worktree is.
+# - With --own-pids (the test steps), its own processes only: a PID
+#   namespace with its own /proc, so no host process can be signalled, nor
+#   reached through /proc/<pid>/root; when the namespace's first process
+#   ends, every process in it does (pid_namespaces(7)), and unshare's
+#   --kill-child ends it when unshare is killed (a stopped gate). The
+#   mutation passes keep the host's: their sweeps find and end a pass's
+#   leftovers by host pid and start time (mutation_sweep), as their tests
+#   check; that a mutant can still signal a host process or reach the
+#   host through /proc/<pid>/root is a known limit (ADR-021).
+# - The kernel's settings read-only: /proc/sys, /proc/sysrq-trigger and
+#   every /sys mount (the cgroup tree too); /dev read-only but /dev/pts
+#   (the pty tests' terminals), with a private /dev/shm and /dev/mqueue.
 # - /run is an empty read-only tmpfs, so no host daemon's socket (Docker,
-#   systemd, D-Bus) is reachable, and the network namespace has only its
-#   own loopback, so neither is a daemon on the host's (the tests' fakes
-#   listen on the namespace's). SB_TEST_NO_SYSTEMD=1 tells the one test
-#   that needs the host's systemd (sb's hangup test of a session scope's
-#   stop) to skip; it still runs in the Tests step (cargo llvm-cov).
+#   systemd, D-Bus) is found where it is looked for, and the network
+#   namespace has only its own loopback, so neither is a daemon on the
+#   host's (the tests' fakes listen on the namespace's). A socket file
+#   elsewhere on the host can still be connected to through a read-only
+#   mount; no test does. SB_TEST_NO_SYSTEMD=1 tells the one test that needs
+#   systemd (sb's hangup test of a session scope's stop) so: it skips here
+#   and runs on a systemd of its own in a container,
+#   crates/sb/tests/hangup-systemd.sh, by hand (the maintainer,
+#   2026-11-17).
+# It guards against mistakes, not a hostile test: root keeps
+# CAP_SYS_ADMIN in it and could mount again (ADR-021).
 # unshare(1), mount(8) and ip(8):
 # https://man7.org/linux/man-pages/man1/unshare.1.html,
 # https://man7.org/linux/man-pages/man8/mount.8.html,
-# https://man7.org/linux/man-pages/man8/ip-link.8.html. Root only: mount(8)
-# refuses a user namespace's mapped user (util-linux 2.37). Not root, the
-# pass runs as before, with no sandbox: a mutant then writes only what
-# that user may.
-mutation_sandbox() {
-  local dirs=()
+# https://man7.org/linux/man-pages/man8/ip-link.8.html,
+# https://man7.org/linux/man-pages/man7/pid_namespaces.7.html. Root only:
+# mount(8) refuses a user namespace's mapped user (util-linux 2.37). Not
+# root, CMD runs as it is, with no sandbox, and says so: it then writes
+# only what that user may.
+# A command array, not a function, so that in_group's setsid can start it.
+sandboxed=()
+sandbox_argv() {
+  local dirs=() pids=() own=0
+  if [[ $1 == --own-pids ]]; then
+    own=1 pids=(--pid --fork --kill-child --mount-proc)
+    shift
+  fi
   while [[ $1 != -- ]]; do dirs+=("$1"); shift; done
   shift
   if [[ $(id -u) == 0 ]]; then
-    SB_TEST_NO_SYSTEMD=1 unshare --mount --net --propagation private \
-      bash -c "$(declare -f mutation_sandbox_inner)"'; mutation_sandbox_inner "$@"' \
-      mutation-sandbox "$((${#dirs[@]} + 1))" /tmp "${dirs[@]}" "$@"
+    # unshare --fork ignores SIGINT and SIGTERM around its fork, and the
+    # program it starts inherits that (util-linux 2.37.2: SigIgn shows
+    # SIGTERM ignored there), so a test's SIGTERM trap (a shell can't trap
+    # a signal ignored at its start) and the first process's own trap
+    # would never run: the three are set to their defaults first
+    # (coreutils env's --default-signal).
+    sandboxed=(env SB_TEST_NO_SYSTEMD=1 unshare --mount --net "${pids[@]}" --propagation private
+      env --default-signal=INT,QUIT,TERM
+      bash -c "$(declare -f sandbox_inner)"'; sandbox_inner "$@"'
+      sandbox "$own" "${#dirs[@]}" "${dirs[@]}" "$@")
   else
-    echo "mutants: not root: the pass runs without the sandbox"
-    "$@"
+    echo "check: not root: the tests run without the sandbox"
+    sandboxed=("$@")
   fi
 }
 
-# mutation_sandbox_inner N DIR... CMD...: inside the namespaces, the N
-# DIRs (/tmp first, physical paths) bound to themselves first, so that each
-# keeps its own read-write flag; every other mount but /proc, /sys and /dev
-# remounted read-only; an empty read-only tmpfs on /run; loopback up; then
-# CMD. Each step that fails stops the pass (status 125), and so does any
-# mount left writable: no pass runs on a writable host.
-mutation_sandbox_inner() {
-  local n=$1 d mp keep fields opts points=()
-  shift
+# sandbox_inner OWN N DIR... CMD...: inside the namespaces, the N DIRs
+# (physical paths) bound to themselves first, so that each keeps its own
+# read-write flag; every other mount remounted read-only but /proc (the
+# namespace's own), /dev/pts and the private /dev/shm and /dev/mqueue;
+# /proc/sys and /proc/sysrq-trigger read-only; an empty read-only tmpfs on
+# /run; loopback up; then CMD: with OWN 1 (its own PID namespace) as the
+# namespace's first process's child, else in this shell's place.
+# Each step that fails stops the run (status 125), and so does any mount
+# left writable, or one that can't be reached and isn't shown to be under
+# a later mount: no test runs on a writable host.
+sandbox_inner() {
+  local own=$1 n=$2 d i j mp fields opts points=() writable=()
+  shift 2
   local dirs=("${@:1:n}")
   shift "$n"
-  fail() { echo "check: the mutation sandbox $*" >&2; exit 125; }
-  for d in "${dirs[@]}"; do mount --bind "$d" "$d" || fail "could not bind $d"; done
-  # Whether a mount point stays as it is: a DIR or under one, or a kernel
-  # interface or device tree.
+  fail() { echo "check: the sandbox $*" >&2; exit 125; }
+  # A refused DIR: a writable root, or a directory above it, can't be
+  # asked for (a log directory that is a link to /, say).
+  for d in "${dirs[@]}"; do
+    [[ $d == /* && $d != / ]] || fail "refuses the writable directory '$d'"
+    mount --bind "$d" "$d" || fail "could not bind $d"
+  done
+  # The places a test writes in besides the DIRs: private ones, not the
+  # host's.
+  mount -t tmpfs -o nosuid,nodev,size=256m sb-shm /dev/shm || fail "could not cover /dev/shm"
+  if [[ -d /dev/mqueue ]]; then
+    mount -t tmpfs -o nosuid,nodev,noexec,size=4k sb-mqueue /dev/mqueue || fail "could not cover /dev/mqueue"
+  fi
+  # Whether a mount point stays as it is: a DIR or under one, the
+  # namespace's /proc, a terminal, or a private tmpfs above.
   kept() {
     local d hit=1
-    for d in "${dirs[@]}" /proc /sys /dev; do
+    for d in "${dirs[@]}" /dev/pts /dev/shm /dev/mqueue; do
       if [[ $1 == "$d" || $1 == "$d"/* ]]; then hit=0; fi
     done
+    if [[ $1 == /proc || $1 == /proc/* ]] && [[ $1 != /proc/sys && $1 != /proc/sys/* ]]; then hit=0; fi
+    # Without a PID namespace of its own, /proc and its mounts are the
+    # host's: /proc/sys among them goes read-only below; the others (the
+    # binfmt_misc automount) stay.
     ((hit == 0))
   }
-  # Field 5 of mountinfo is the mount point, field 6 its options. A
-  # backslash starts a three-digit octal escape (space, tab, newline,
-  # backslash; proc(5)); printf's %b reads \0NNN, so each gets its 0.
-  while read -r _ _ _ _ mp _; do points+=("$(printf '%b' "${mp//\\/\\0}")"); done </proc/self/mountinfo
-  for mp in "${points[@]}"; do
-    kept "$mp" || mount -o remount,bind,ro "$mp" || fail "could not make $mp read-only"
+  # The mount table's mount points, in order. Field 5 of mountinfo is the
+  # mount point, field 6 its options. A backslash starts a three-digit
+  # octal escape (space, tab, newline, backslash; proc(5)); printf's %b
+  # reads \0NNN, so each gets its 0; -v, not $( ), keeps a trailing
+  # newline.
+  table() {
+    points=() writable=()
+    while read -r -a fields; do
+      printf -v mp '%b' "${fields[4]//\\/\\0}"
+      points+=("$mp")
+      opts=,${fields[5]},
+      if [[ $opts == *,ro,* ]]; then writable+=(0); else writable+=(1); fi
+    done </proc/self/mountinfo
+  }
+  # Whether mount i is under a later one (the same point or one of its
+  # directories): hidden, so it can't be reached.
+  covered() {
+    local i=$1 j
+    for ((j = i + 1; j < ${#points[@]}; j++)); do
+      if [[ ${points[i]} == "${points[j]}" || ${points[j]} == / || ${points[i]} == "${points[j]}"/* ]]; then return 0; fi
+    done
+    return 1
+  }
+  table
+  for ((i = 0; i < ${#points[@]}; i++)); do
+    mp=${points[i]}
+    # Kept, or under a later mount (the host's /proc and its mounts under
+    # the namespace's own, an outer sandbox's /run hiding /run/lock).
+    kept "$mp" && continue
+    covered "$i" && continue
+    [[ -e $mp ]] || fail "can't reach $mp, which no later mount covers"
+    mount -o remount,bind,ro "$mp" || fail "could not make $mp read-only"
   done
-  mount -t tmpfs -o ro,nosuid,nodev,noexec,size=4k sb-mutants /run || fail "could not cover /run"
+  # The kernel's settings through /proc: bound to themselves, read-only.
+  for d in /proc/sys /proc/sysrq-trigger; do
+    mount --bind "$d" "$d" && mount -o remount,bind,ro "$d" || fail "could not make $d read-only"
+  done
+  mount -t tmpfs -o ro,nosuid,nodev,noexec,size=4k sb-sandbox /run || fail "could not cover /run"
   ip link set lo up || fail "could not bring up loopback"
-  while read -r -a fields; do
-    mp=$(printf '%b' "${fields[4]//\\/\\0}")
-    opts=,${fields[5]},
-    if ! kept "$mp" && [[ $opts != *,ro,* ]]; then fail "left $mp writable"; fi
-  done </proc/self/mountinfo
+  # Every mount that can be reached, read-only but those kept.
+  table
+  for ((i = 0; i < ${#points[@]}; i++)); do
+    mp=${points[i]}
+    ((writable[i])) || continue
+    covered "$i" && continue
+    case $mp in /proc/sys | /proc/sys/* | /proc/sysrq-trigger) fail "left $mp writable" ;; esac
+    kept "$mp" || fail "left $mp writable"
+  done
   # The working directory still names the mount it was entered through,
-  # read-only now for a directory under /tmp: entered again by its path, it
-  # is on the new bind mounts.
+  # read-only now: entered again by its path, it is on the new bind mounts
+  # when it lies under a DIR.
   cd "$PWD" || fail "could not enter $PWD again"
-  exec "$@"
+  ((own)) || exec "$@"
+  # This shell is the namespace's first process: it waits for CMD, reaping
+  # every orphan the tests leave (they are its children now), passes on a
+  # SIGTERM, SIGINT or SIGHUP (the first process gets none it doesn't
+  # handle), and ends with CMD's status; then the namespace's processes
+  # end with it. CMD starts with SIGINT and SIGQUIT at their defaults, as
+  # in_group's: bash ignores both for a command it starts with `&`.
+  local child status
+  env --default-signal=INT,QUIT "$@" &
+  child=$!
+  trap 'kill -TERM "$child" 2>/dev/null' TERM
+  trap 'kill -INT "$child" 2>/dev/null' INT
+  trap 'kill -HUP "$child" 2>/dev/null' HUP
+  while true; do
+    status=0
+    wait "$child" || status=$?
+    # A trapped signal ends `wait` early (status > 128) while CMD runs.
+    kill -0 "$child" 2>/dev/null || break
+  done
+  exit "$status"
+}
+
+# The test steps' temp directory: each run's own, made on first use under
+# TMPDIR (or /tmp), removed on exit (and by a later run's sweep, when this
+# one is killed: test_tmp_sweep_stale), the only writable place in the
+# sandbox besides target/ and the log directory (test_sandbox).
+test_tmp=
+
+# test_tmp_sweep_stale: removes each test steps' temp directory under the
+# temp directory whose check.sh has ended (its pid gone, or now another
+# process's), as mutation_sweep_stale does pass directories. A run killed
+# with SIGKILL runs no EXIT trap; the sandbox's PID namespace ended its
+# processes with it, so only files are left. A link, another user's
+# directory, and one whose check.sh still runs are left alone.
+test_tmp_sweep_stale() {
+  local d pid start
+  for d in "${TMPDIR:-/tmp}"/sb-check.*/; do
+    [[ ! -L ${d%/} && -O $d && -f $d/.sb-check.pid ]] || continue
+    read -r pid start <"$d/.sb-check.pid" || continue
+    [[ $pid =~ ^[1-9][0-9]*$ && $start =~ ^[0-9]+$ ]] || continue
+    if [[ $(proc_start "$pid" 2>/dev/null) == "$start" ]]; then continue; fi
+    if rm -rf -- "${d%/}"; then
+      echo "check: removed ${d%/}, left by a run that was killed"
+    else
+      echo "check: could not remove ${d%/}, left by a run that was killed" >&2
+    fi
+  done
+}
+
+# test_sandbox CMD...: sets `sandboxed` to CMD in the sandbox for a test
+# step: writable are the run's temp directory (the tests' TMPDIR), the
+# worktree's target/ (the builds and coverage data) and the tests' log
+# directory, $SB_LOG_DIR (under target/, so the same, unless it is a link
+# out of it, as the gate's own tests' scratch repositories make it); the
+# rest of the host, the worktree included, is read-only.
+test_sandbox() {
+  if [[ -z $test_tmp ]]; then
+    test_tmp=$(mktemp -d "${TMPDIR:-/tmp}/sb-check.XXXXXX")
+    test_tmp=$(cd "$test_tmp" && pwd -P)
+    # mktemp makes it 0700; sb's relaunch tests run a stand-in sudo, and
+    # sb, as `nobody`, which must be able to enter it, as for the
+    # mutation pass's directory.
+    chmod 755 "$test_tmp"
+    # It names this check.sh, so that a later run can tell a killed run's
+    # directory from a live one's (test_tmp_sweep_stale).
+    echo "$$ $(proc_start $$)" >"$test_tmp/.sb-check.pid"
+  fi
+  mkdir -p target "$SB_LOG_DIR"
+  sandbox_argv --own-pids "$test_tmp" "$(cd target && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
+    env TMPDIR="$test_tmp" "$@"
+}
+
+# in_sandbox CMD...: CMD in its own process group (in_group), in the test
+# steps' sandbox (test_sandbox), returning its status; a sandbox that
+# could not be set up (125) is no verdict: exit 2.
+in_sandbox() {
+  local status=0
+  test_sandbox "$@"
+  in_group "${sandboxed[@]}" || status=$?
+  if ((status == 125)); then
+    echo "check: the sandbox could not be set up for: $*" >&2
+    exit 2
+  fi
+  return "$status"
 }
 
 # mutation_pass N ARGS...: one cargo-mutants pass over the changed code with
@@ -671,14 +848,13 @@ mutation_pass() {
   # The whole mutant's 300 s timeout stays as the backstop behind
   # nextest's per-test one.
   mutation_sweeper "$mutation_tmp"
-  # In the sandbox: the host read-only but /tmp (the pass's directory is
-  # under it), the pass's output and the tests' log directory.
-  # Physical paths, as mountinfo names them; the pass's directory too, in
-  # case TMPDIR is outside /tmp.
+  # In the sandbox: the host read-only but the pass's directory (its
+  # TMPDIR), the pass's output and the tests' log directory. Physical
+  # paths, as mountinfo names them.
   mkdir -p "target/mutants-run-$n" "$SB_LOG_DIR"
-  TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" \
-    mutation_sandbox "$mutation_tmp" "$(cd "target/mutants-run-$n" && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
-    "${mutants[@]}" -o "target/mutants-run-$n" --timeout 300 || rc=$?
+  sandbox_argv "$mutation_tmp" "$(cd "target/mutants-run-$n" && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
+    "${mutants[@]}" -o "target/mutants-run-$n" --timeout 300
+  TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" "${sandboxed[@]}" || rc=$?
   mutation_sweeper_stop
   if ! mutation_sweep "$mutation_tmp"; then
     # Kept for a look, and not swept again on exit, nor by a later run:
@@ -714,12 +890,6 @@ mutation_check() {
   step "mutation score on changed code >= ${MUTATION_MIN}%"
   need cargo-mutants
   need cargo-nextest
-  # The sandbox's tools (util-linux, iproute2), as root (mutation_sandbox).
-  if [[ $(id -u) == 0 ]]; then
-    need unshare
-    need mount
-    need ip
-  fi
   local c t key testers=() outcomes=()
   # A key or tester that names no crate would silently change the scope.
   for key in "${!MUTATION_TESTERS[@]}"; do
@@ -733,6 +903,7 @@ mutation_check() {
   done
   # Tracked changes plus untracked crate files (git diff alone misses new
   # files; `--no-index` exits 1 when the files differ, which they do).
+  rm -f target/changes.diff
   {
     git diff "${diff_flags[@]}" "$base" -- crates
     git ls-files -z --others --exclude-standard -- crates | while IFS= read -r -d '' f; do
@@ -747,6 +918,9 @@ mutation_check() {
   # passwordless sudo that once looped into thousands of processes. A
   # refusing sudo first on PATH keeps every mutant away from the real one.
   mkdir -p target/no-sudo
+  # Written anew, never through what a test left there (target/ is
+  # writable in the sandbox).
+  rm -f target/no-sudo/sudo
   printf '#!/bin/sh\necho "sudo blocked during mutation testing" >&2\nexit 97\n' \
     >target/no-sudo/sudo
   chmod 755 target/no-sudo/sudo
@@ -807,10 +981,15 @@ task() {
   need diff-cover
   # Each test run in a process group of its own, ended with check.sh
   # (in_group).
-  in_group cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
+  # Every test run in the sandbox (sandbox_argv), which hides systemd: the
+  # one test that needs it is the container script's.
+  if [[ $(id -u) == 0 ]]; then
+    echo "in the sandbox; hangup's a_session_scope_stop_takes_the_grace skips (no systemd): run crates/sb/tests/hangup-systemd.sh"
+  fi
+  in_sandbox cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
   step "tests (doc tests, prototypes)"
-  in_group cargo test --locked --quiet --doc "${pkg_args[@]}"
-  if ((${#proto_args[@]})); then in_group cargo test --locked --quiet "${proto_args[@]}"; fi
+  in_sandbox cargo test --locked --quiet --doc "${pkg_args[@]}"
+  if ((${#proto_args[@]})); then in_sandbox cargo test --locked --quiet "${proto_args[@]}"; fi
   step "changed-line coverage >= ${COVERAGE_MIN}% (diff-cover)"
   # New files are untracked until committed; without --include-untracked
   # they would not count as changed lines.
@@ -835,12 +1014,14 @@ task() {
   # other crates' release builds left untested.
   step "tests (crates), release build"
   need cargo-nextest
-  in_group cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
+  in_sandbox cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
   mutation_check
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine
   cargo build --locked --quiet --release -p sb
-  hyperfine --warmup 5 --runs 50 --export-json target/startup.json \
+  # The timed runs are runs of sb as root, so in the sandbox too; set up
+  # once, it adds nothing to a run's time.
+  in_sandbox hyperfine --warmup 5 --runs 50 --export-json target/startup.json \
     'target/release/sb --help' 'target/release/sb version' >/dev/null
   node -e '
     const r = require("./target/startup.json").results;
@@ -937,8 +1118,19 @@ if [[ $stage != fast ]]; then tools+=(script cargo-llvm-cov diff-cover cargo-mut
 if [[ $stage == full ]]; then tools+=(cargo-deny); fi
 if [[ $stage == full && $arch == x86_64 ]]; then tools+=(cross docker); fi
 check_tools "${tools[@]}"
+# The sandbox's tools (util-linux, iproute2), as root (sandbox_argv): every
+# test run goes through it, the floor guard's own tests in fast too, and
+# each in a process group of its own (in_group: setsid).
+need setsid
+if [[ $(id -u) == 0 ]]; then
+  need unshare
+  need mount
+  need ip
+fi
 
-# What a killed run's mutation pass left, at the start of every stage.
+# What a killed run's mutation pass and test steps left, at the start of
+# every stage.
 mutation_sweep_stale
+test_tmp_sweep_stale
 "$stage"
 printf '\n\033[1mcheck %s: all passed\033[0m\n' "$stage"

@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 // For the stubbed runs of check.sh (hardening Task 4).
-import { readFileSync, symlinkSync } from 'node:fs';
+import { readdirSync, readFileSync, symlinkSync } from 'node:fs';
 // For the mutation pass's directory (ADR-021).
 import { existsSync } from 'node:fs';
 // For the processes a killed run's pass left (ADR-021).
@@ -1338,6 +1338,27 @@ const stubs = (versions, arch) => {
     + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
     + '  exit 0\n'
     + 'fi\n';
+  // With TEST_SANDBOX_PROBE set, each test run (the coverage run, the doc
+  // tests, the release-build run) writes as a test that bends a path
+  // would: a file in TEST_SANDBOX_PROBE (on the host) and TEST_SANDBOX_ETC,
+  // then one in its TMPDIR and one in target/. Each write's result goes to
+  // TEST_SANDBOX_RESULT, as `<subcommand> <place> ok|refused`; its mount
+  // table, its network and PID namespaces and what /run holds go beside
+  // it, one file each per subcommand. With TEST_WRITES_ETC set, the
+  // coverage run writes that file and fails if it can't, as a test would,
+  // saying so.
+  out.cargo += 'if [ -n "${TEST_SANDBOX_PROBE:-}" ]; then case "$1" in llvm-cov | test | nextest)\n'
+    + '  for w in "host $TEST_SANDBOX_PROBE/written" "etc $TEST_SANDBOX_ETC" "tmpdir ${TMPDIR:-/tmp}/written" "target target/written"; do\n'
+    + '    if (echo test >"${w#* }") 2>/dev/null; then echo "$1 ${w%% *} ok"; else echo "$1 ${w%% *} refused"; fi >>"$TEST_SANDBOX_RESULT"\n'
+    + '  done\n'
+    + '  cat /proc/self/mountinfo >"$TEST_SANDBOX_RESULT.mountinfo.$1"\n'
+    + '  $SANDBOX_READLINK /proc/self/ns/net >"$TEST_SANDBOX_RESULT.net.$1"\n'
+    + '  $SANDBOX_READLINK /proc/self/ns/pid >"$TEST_SANDBOX_RESULT.pid.$1"\n'
+    + '  $SANDBOX_LS -A /run >"$TEST_SANDBOX_RESULT.run.$1" ;;\n'
+    + 'esac; fi\n';
+  out.cargo += 'if [ "$1" = llvm-cov ] && [ -n "${TEST_WRITES_ETC:-}" ]; then\n'
+    + '  echo test >"$TEST_WRITES_ETC" || { echo "the test could not write $TEST_WRITES_ETC"; exit 101; }\n'
+    + 'fi\n';
   // With SIGNALS_PROBE set, each test run writes the signals it starts
   // with ignored (/proc's SigIgn mask), as `<subcommand> <mask>`.
   out.cargo += 'if [ -n "${SIGNALS_PROBE:-}" ]; then case "$1" in llvm-cov | test | nextest)\n'
@@ -1348,15 +1369,15 @@ const stubs = (versions, arch) => {
   out.cargo += 'if [ -n "${RUN_FAILS_AT:-}" ] && [ "$1" = "$RUN_FAILS_AT" ]; then exit 101; fi\n';
   // With STOP_RUN set, the test run named by STOP_RUN_AT (`llvm-cov` or
   // `nextest`) starts a child (as cargo starts its test binaries), writes
-  // its own pid and the child's to STOP_RUN, stops check.sh, its parent,
-  // with SIGTERM by its pid alone, and runs on, as a coverage pass did
-  // (2026-11-17). Both run STOP_SLEEP with their output closed, so that
-  // neither holds the test's pipes.
+  // STOP_RUN, the ready file checkRun's stopWhen waits for, and runs on:
+  // the wrapper then stops check.sh by its pid alone, as a coverage pass
+  // was stopped (2026-11-17). Both run `STOP_SLEEP 60 STOP_MARK` (sleep
+  // sums its arguments), so the test finds them on the host by that mark,
+  // with their output closed, so that neither holds the test's pipes.
   out.cargo += 'if [ -n "${STOP_RUN:-}" ] && [ "$1" = "$STOP_RUN_AT" ]; then\n'
-    + '  $STOP_SLEEP 60 </dev/null >/dev/null 2>&1 &\n'
-    + '  echo "$$ $!" >"$STOP_RUN"\n'
-    + '  kill -TERM "$PPID"\n'
-    + '  exec $STOP_SLEEP 60 </dev/null >/dev/null 2>&1\n'
+    + '  $STOP_SLEEP 60 "$STOP_MARK" </dev/null >/dev/null 2>&1 &\n'
+    + '  echo ready >"$STOP_RUN"\n'
+    + '  exec $STOP_SLEEP 60 "$STOP_MARK" </dev/null >/dev/null 2>&1\n'
     + 'fi\n';
   // `docker run`: sb version, unless the container is of the release in
   // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
@@ -1375,12 +1396,25 @@ const stubs = (versions, arch) => {
 // - base: check.sh's base argument (default HEAD);
 // - versions: a stub's version (null: no stub at all);
 // - arch, env, config: uname -m, extra environment, git configuration.
+// logDir: the directory the scratch repository's target/test-logs (its
+// $SB_LOG_DIR) links to, which check.sh's sandboxes keep writable: the
+// stubs' log and any probe file a test names go there, so that a stub
+// running in a sandbox can write them. A test that reads its probe files
+// after the run names its own; else one in the run's scratch directory.
+// stopWhen: a file a stub writes when it is ready to be stopped; check.sh
+// then runs under a wrapper that waits for it, writes how many processes
+// with STOP_MARK in their command line run (to stopWhen.count; STOP_PGREP
+// and STOP_WC name pgrep and wc), and stops
+// check.sh by its pid with SIGTERM, as an agent stops a gate (a stub can't
+// do it from inside the test steps' PID namespace).
 const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', versions = {}, arch = 'x86_64',
-  moves = [],
+  moves = [], logDir = null, stopWhen = null,
   env: extra = {}, config = {} } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'check-sh-'));
   try {
-    const bin = join(dir, 'stub-bin'), repo = join(dir, 'repo'), logFile = join(dir, 'stub.log');
+    const logs = logDir ?? join(dir, 'logs');
+    mkdirSync(logs, { recursive: true });
+    const bin = join(dir, 'stub-bin'), repo = join(dir, 'repo'), logFile = join(logs, 'stub.log');
     const write = (root, entries, mode) => {
       for (const [f, text] of Object.entries(entries)) {
         if (text === null) { rmSync(join(root, f)); continue; }
@@ -1404,6 +1438,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir, PATH: bin + ':' + sys, STUB_LOG: logFile, TMPDIR: tmp, ...extra };
     const git = (...args) => execFileSync('git', args, { cwd: repo, env: scratch, stdio: 'pipe' });
     mkdirSync(join(repo, 'target'), { recursive: true });
+    symlinkSync(logs, join(repo, 'target', 'test-logs'));
     git('init', '-q');
     write(repo, {
       'scripts/check.sh': readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'),
@@ -1418,7 +1453,13 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     write(repo, work);
     // moves: [from, to] pairs, renamed with `git mv` (staged).
     for (const [from, to] of moves) { mkdirSync(dirname(join(repo, to)), { recursive: true }); git('mv', from, to); }
-    const r = spawnSync('bash', ['scripts/check.sh', stage, base], { cwd: repo, env: scratch, encoding: 'utf8' });
+    const wrap = 'bash scripts/check.sh "$1" "$2" & p=$!; n=0\n'
+      + 'while [ ! -e "$3" ] && [ $((n += 1)) -lt 1200 ]; do sleep 0.05; done\n'
+      + '"$STOP_PGREP" -f -- "$STOP_MARK" | "$STOP_WC" -l >"$3.count"\n'
+      + 'kill -TERM "$p"; wait "$p"\n';
+    const r = stopWhen
+      ? spawnSync('bash', ['-c', wrap, 'stop', stage, base, stopWhen], { cwd: repo, env: scratch, encoding: 'utf8' })
+      : spawnSync('bash', ['scripts/check.sh', stage, base], { cwd: repo, env: scratch, encoding: 'utf8' });
     const calls = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => {
       // The arguments come last, so a | among them stays in them.
       const [tool, target, buildTarget, covTarget, ...args] = l.split('|');
@@ -1608,7 +1649,7 @@ test('check.sh: a signal-ignoring process left by a mutation pass is gone after 
   let started = [];
   try {
     const r = checkRun('task', {
-      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
       env: { LEAK_PIDS: pids, LEAK_DECOY_DIR: join(dir, 'decoy'), LEAK_CP: tool('cp'), LEAK_MKDIR: tool('mkdir'),
         LEAK_RM: tool('rm'), LEAK_SETSID: tool('setsid'), LEAK_SLEEP: tool('sleep'), LEAK_WC: tool('wc'), TMPDIR: dir },
     });
@@ -1657,7 +1698,7 @@ function leakDuringPass(age) {
       LEAK_WC: tool('wc'), TMPDIR: dir };
     // Empty is unset to check.sh, so the caller's value never leaks in.
     env.SB_MUTATION_ORPHAN_AGE = age ?? '';
-    const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env });
+    const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir, env });
     started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
     const left = existsSync(pids + '.result') ? readFileSync(pids + '.result', 'utf8') : '';
     return { r, started, left, decoyAlive: started.length > 1 && alive(started[1]) };
@@ -1679,21 +1720,25 @@ for (const at of ['llvm-cov', 'nextest']) {
     const alive = (pid) => {
       try { return !/^\d+ \(.*\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8')); } catch { return false; }
     };
-    let started = [];
+    // The processes with the mark in their command line, on the host.
+    const mark = '0.000' + String(process.pid).padStart(7, '0') + at.length;
+    const marked = () => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid)).filter((pid) => {
+      try { return readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').includes(mark) && alive(pid); } catch { return false; }
+    }).map(Number);
     try {
       const r = checkRun('task', {
         work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
-        env: { STOP_RUN: file, STOP_RUN_AT: at, STOP_SLEEP: tool('sleep'), TMPDIR: dir },
+        logDir: dir, stopWhen: file,
+        env: { STOP_RUN: file, STOP_RUN_AT: at, STOP_SLEEP: tool('sleep'), STOP_MARK: mark,
+          STOP_PGREP: tool('pgrep'), STOP_WC: tool('wc'), TMPDIR: dir },
       });
-      assert.equal(r.signal, 'SIGTERM', 'check.sh did not end by the signal:\n' + r.output);
-      started = readFileSync(file, 'utf8').trim().split(' ').map(Number);
-      assert.equal(started.length, 2, r.output);
+      assert.equal(r.status, 143, 'check.sh did not end by the signal:\n' + r.output);
+      assert.equal(readFileSync(file + '.count', 'utf8').trim(), '2', 'the run and its child were not running:\n' + r.output);
       // The trap's signal is sent as check.sh exits; give it a moment.
-      for (let n = 0; n < 50 && started.some(alive); n++) execFileSync(tool('sleep'), ['0.1']);
-      assert.ok(!alive(started[0]), 'the ' + at + ' run outlived the gate:\n' + r.output);
-      assert.ok(!alive(started[1]), 'its child outlived the gate:\n' + r.output);
+      for (let n = 0; n < 50 && marked().length; n++) execFileSync(tool('sleep'), ['0.1']);
+      assert.deepEqual(marked(), [], 'the ' + at + ' run or its child outlived the gate:\n' + r.output);
     } finally {
-      for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      for (const pid of marked()) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1716,17 +1761,21 @@ test('check.sh: a failing coverage or release-build run fails the gate with its 
 
 // Started with `&`, a run would ignore SIGINT and SIGQUIT (bash, without
 // job control), and so would its tests: exec's test of a child that
-// SIGINTs itself failed. Every test run starts with both at their
+// SIGINTs itself failed. And the sandbox's unshare --fork ignores SIGTERM
+// around its fork: sb-ansible's test of a listing's SIGTERM trap failed
+// in it (2026-11-17). Every test run starts with the three at their
 // defaults.
-test('check.sh: the test runs start with SIGINT and SIGQUIT not ignored', () => {
+test('check.sh: the test runs start with SIGINT, SIGQUIT and SIGTERM not ignored', () => {
   const dir = mkdtempSync(join(tmpdir(), 'signals-'));
   const file = join(dir, 'masks');
   try {
-    passes(checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { SIGNALS_PROBE: file } }), 'task');
+    passes(checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir, env: { SIGNALS_PROBE: file } }), 'task');
     const masks = readFileSync(file, 'utf8').trim().split('\n').map((l) => l.split(' '));
     assert.deepEqual(masks.map(([sub]) => sub), ['llvm-cov', 'test', 'nextest'], masks.join('\n'));
-    // SIGINT is signal 2 (bit 1), SIGQUIT 3 (bit 2).
-    for (const [sub, mask] of masks) assert.equal(BigInt('0x' + mask) & 6n, 0n, sub + ' ignores ' + mask);
+    // SIGINT is signal 2 (bit 1), SIGQUIT 3 (bit 2), SIGTERM 15 (bit 14):
+    // the sandbox's unshare --fork ignores SIGTERM around its fork, which
+    // a test's own SIGTERM trap must not inherit.
+    for (const [sub, mask] of masks) assert.equal(BigInt('0x' + mask) & 0x4006n, 0n, sub + ' ignores ' + mask);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1785,7 +1834,7 @@ test('check.sh: what the mutation pass of a killed run left is swept by the next
   let started = [];
   try {
     const killed = checkRun('task', {
-      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
       env: { LEAK_KILLED: pids, LEAK_KILL_SWEEPER: tool('pgrep'), LEAK_MKDIR: tool('mkdir'), LEAK_READLINK: tool('readlink'),
         LEAK_SETSID: tool('setsid'), LEAK_SLEEP: tool('sleep'), LEAK_WC: tool('wc'), TMPDIR: dir },
     });
@@ -1822,7 +1871,7 @@ test('check.sh: a run killed alone during a mutation pass is cleaned up by its s
   let started = [];
   try {
     const r = checkRun('task', {
-      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
       env: { LEAK_KILLED: pids, LEAK_MKDIR: tool('mkdir'), LEAK_READLINK: tool('readlink'), LEAK_SETSID: tool('setsid'),
         LEAK_SLEEP: tool('sleep'), LEAK_WC: tool('wc'), TMPDIR: dir },
     });
@@ -1901,7 +1950,7 @@ test('check.sh: a pass directory kept for a look names no check.sh', () => {
   const read = () => readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
   try {
     const r = checkRun('task', {
-      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
       env: { LEAK_STUCK: pids, LEAK_MKDIR: tool('mkdir'), LEAK_SLEEP: tool('sleep'), TMPDIR: dir },
     });
     refuses(r, 2, /check: processes left under /);
@@ -2198,12 +2247,37 @@ test('check.sh task: each prototype is named, wherever its [package] section sit
 // safety flag writes wherever the bent path points: on 2026-11-15 two
 // mutants of the motd.yml migration wrote /nonexistent and
 // /opt/saltbox/backups on the host. Each pass runs in private mount and
-// network namespaces where every mount is read-only but /tmp (the pass's
-// copies and the tests' temp roots), the pass's output and /proc, /sys and
-// /dev, /run is empty and only the namespace's loopback is up (ADR-021).
+// network namespaces where every mount is read-only but the pass's
+// directory (its copies and the tests' temp roots, its TMPDIR), the pass's
+// output, the tests' log directory and /proc, /sys and /dev, /run is empty
+// and only the namespace's loopback is up (ADR-021).
 // A stub mutant's write to the host fails; the pass's own writes work.
-// The repository is outside /tmp (its target/ holds the probe), as the
-// gate runs it; under /tmp the probe would be writable.
+// Only the pass's directories are writable, never /tmp as a whole, so the
+// probe in this repository's target/ is read-only there wherever the
+// repository is, /tmp included.
+// The writable mounts a sandbox's processes can reach, from its mount table
+// (proc(5): field 5 the mount point, octal escapes; field 6 its options):
+// a mount under a later one (the same point, or one of its directories)
+// is hidden and left out, as the sandbox's own check does. Each is named
+// by what it is: `pass` (a mutation pass's directory), `run` (a test
+// step's temp directory), `output` (a pass's output), `target` (a
+// repository's target/), `logs` (a log directory: test-logs or a test's
+// own), `proc` (the namespace's /proc), `pts`, `shm`, `mqueue` (/dev's
+// terminals and the private tmpfs), or the path itself: /sys, /dev or
+// /proc/sys among them would fail the assertion.
+const writableMounts = (file) => {
+  const unescape = (p) => p.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
+  const name = (m) => /\/sb-mutants-\d+\.[^/]+$/.test(m) ? 'pass' : /\/sb-check\.[^/]+$/.test(m) ? 'run'
+    : /\/target\/mutants-run-\d+$/.test(m) ? 'output' : /\/repo\/target$/.test(m) ? 'target'
+      : /\/(test-logs|logs|sandbox-[^/]+|test-sandbox-[^/]+)$/.test(m) ? 'logs'
+        : m === '/proc' ? 'proc' : m === '/dev/pts' ? 'pts' : m === '/dev/shm' ? 'shm' : m === '/dev/mqueue' ? 'mqueue' : m;
+  const mounts = readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => l.split(' '))
+    .map((f) => ({ point: unescape(f[4]), rw: !f[5].split(',').includes('ro') }));
+  const hidden = (i) => mounts.slice(i + 1).some(({ point }) =>
+    point === mounts[i].point || point === '/' || mounts[i].point.startsWith(point + '/'));
+  return mounts.filter((m, i) => m.rw && !hidden(i)).map((m) => name(m.point)).sort();
+};
+
 test("check.sh: a mutant can't write a host file or reach a host daemon, the pass's own writes work", () => {
   const dir = mkdtempSync(join(tmpdir(), 'sandbox-'));
   // On the host, outside /tmp: under the repository's target directory.
@@ -2214,20 +2288,17 @@ test("check.sh: a mutant can't write a host file or reach a host daemon, the pas
   try {
     writeFileSync(join(probe, 'before'), 'writable outside the pass');
     const r = checkRun('task', {
-      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
       env: { SANDBOX_PROBE: probe, SANDBOX_RESULT: result, SANDBOX_MKDIR: tool('mkdir'), SANDBOX_READLINK: tool('readlink'),
         SANDBOX_LS: tool('ls') },
     });
     passes(r, 'task');
     assert.equal(readFileSync(result, 'utf8'), 'host refused\ntmpdir ok\noutput ok\n', r.output);
     assert.ok(!existsSync(join(probe, 'written')), 'the mutant wrote on the host');
-    // Every mount is read-only but /tmp's, and /proc's, /sys's and /dev's
-    // (proc(5): field 5 the mount point, octal escapes; field 6 its options).
-    const unescape = (p) => p.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
-    const writable = readFileSync(result + '.mountinfo', 'utf8').split('\n').filter(Boolean).map((l) => l.split(' '))
-      .filter((f) => !f[5].split(',').includes('ro')).map((f) => unescape(f[4]))
-      .filter((m) => !/^\/(tmp|proc|sys|dev)(\/|$)/.test(m));
-    assert.deepEqual(writable, [], r.output);
+    // Every mount is read-only but the pass's directory, its output and the
+    // tests' log directory, and /proc's, /sys's and /dev's.
+    assert.deepEqual(writableMounts(result + '.mountinfo'),
+      ['logs', 'mqueue', 'output', 'pass', 'proc', 'pts', 'shm'], r.output);
     // No host daemon is reachable: an empty /run, a network namespace of
     // its own.
     assert.equal(readFileSync(result + '.run', 'utf8'), '', r.output);
@@ -2235,5 +2306,63 @@ test("check.sh: a mutant can't write a host file or reach a host daemon, the pas
   } finally {
     rmSync(probe, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Every test run of the gate is in the sandbox (the maintainer,
+// 2026-11-17, after a completion test wrote the host's /etc/fish): a
+// stub test run's writes to the host (this repository's target/, outside
+// the run's) and to /etc fail; its TMPDIR, the run's own, and its
+// target/ work; /run is empty and the network its own. Wherever the
+// repository is, /tmp included: only the run's directories are writable.
+test("check.sh: a test can't write a host file or /etc, or reach a host daemon; its TMPDIR and target/ work", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'test-sandbox-'));
+  mkdirSync(join(SCRIPTS, '..', 'target'), { recursive: true });
+  const probe = mkdtempSync(join(SCRIPTS, '..', 'target', 'test-sandbox-probe-'));
+  const etc = '/etc/sb-gate-sandbox-probe-' + process.pid;
+  const result = join(dir, 'result');
+  const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+  try {
+    const r = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
+      env: { TEST_SANDBOX_PROBE: probe, TEST_SANDBOX_ETC: etc, TEST_SANDBOX_RESULT: result,
+        SANDBOX_READLINK: tool('readlink'), SANDBOX_LS: tool('ls') },
+    });
+    passes(r, 'task');
+    const subs = ['llvm-cov', 'test', 'nextest'];
+    assert.equal(readFileSync(result, 'utf8'),
+      subs.map((sub) => [sub + ' host refused', sub + ' etc refused', sub + ' tmpdir ok', sub + ' target ok'].join('\n') + '\n').join(''),
+      r.output);
+    assert.ok(!existsSync(join(probe, 'written')), 'the test wrote on the host');
+    assert.ok(!existsSync(etc), 'the test wrote ' + etc);
+    const own = (ns) => execFileSync('readlink', ['/proc/self/ns/' + ns], { encoding: 'utf8' }).trim();
+    for (const sub of subs) {
+      // Read-only but the run's temp directory, target/ and the log
+      // directory, the namespace's /proc, /dev's terminals and its
+      // private /dev/shm and /dev/mqueue.
+      assert.deepEqual(writableMounts(result + '.mountinfo.' + sub),
+        ['logs', 'mqueue', 'proc', 'pts', 'run', 'shm', 'target'], sub + '\n' + r.output);
+      assert.equal(readFileSync(result + '.run.' + sub, 'utf8'), '', sub);
+      assert.notEqual(readFileSync(result + '.net.' + sub, 'utf8').trim(), own('net'), sub);
+      assert.notEqual(readFileSync(result + '.pid.' + sub, 'utf8').trim(), own('pid'), sub);
+    }
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(etc, { force: true });
+  }
+});
+
+// A test that writes /etc fails in the gate: the write is refused, the
+// test fails, and so does the run.
+test('check.sh: a test that writes /etc fails the run', () => {
+  const etc = '/etc/sb-gate-sandbox-probe-fail-' + process.pid;
+  try {
+    const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { TEST_WRITES_ETC: etc } });
+    assert.equal(r.status, 101, r.output);
+    assert.match(r.output, new RegExp('the test could not write ' + etc), r.output);
+    assert.ok(!existsSync(etc), 'the test wrote ' + etc);
+  } finally {
+    rmSync(etc, { force: true });
   }
 });
