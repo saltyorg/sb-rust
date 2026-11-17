@@ -300,7 +300,8 @@ Answers at the plan's approval (2026-11-11):
 
 Decided unattended, reversible
 (2026-11-12; named in Checkpoint T's message, and kept or overruled at
-Checkpoint C's sitting). Neither had a Fable
+Checkpoint C's sitting). *Settled at the sitting (the maintainer, 2026-11-17): all kept
+but Task 19's type-ahead call, overruled (Task 62).* Neither had a Fable
 review of its own before it was made; both were reviewed in the Fable
 review of this alignment, which found them accurately stated and
 checked the 26-of-290 count and the `go version -m` fact:

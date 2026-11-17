@@ -1563,17 +1563,45 @@ the gate). Lands alone on `rust-toolchain.toml` and `Cargo.toml`.
 **Files:** `rust-toolchain.toml`, `Cargo.toml`, `crates/cli-core/src/{exit.rs,config.rs,help.rs}`, `crates/journal/`, `crates/{config,docker,sb,term-ui}/src/` (the lint sites), the cli-core spec
 **Scope:** M
 
+## Task 62: keys typed during a live run are discarded at its end
+
+From Checkpoint C's sitting (the maintainer, 2026-11-17), overruling
+Task 19's unattended call. With the echo off, keys typed while the
+step tree is live reach the shell after sb ends, where a half-typed
+line runs blind. sb-go swallows them (Bubble Tea reads every key while
+live) and apt restores with TCSAFLUSH after dpkg; every prompt flushes
+stale input, as sb's confirm already does (prompt.rs, 4a6b474).
+
+- [ ] term-ui restores the terminal with TCSAFLUSH after a live run, on
+      every ending, the forced-exit hook included.
+- [ ] A PTY test: keys typed during a run don't reach the shell side.
+- [ ] The term-ui spec records it, and the confirm's flush in Prompts.
+- [ ] Review: code-reviewer, library-reviewer.
+
+**Files:** `crates/term-ui/src/tty.rs`, its tests, the term-ui spec
+**Scope:** S
+
 ## Checkpoint C: complete
-- [ ] `check.sh full` passes; the matrix is green on three releases and
-      the fuzz harness passes.
+- [x] `check.sh full` passes; the matrix is green on three releases and
+      the fuzz harness passes. Done (2026-11-17, on main 9f97fb2, the
+      journal unchanged since): full passed with the release-build
+      tests; compare, compat, follow and stress green on 22.04, 24.04
+      and 26.04; the fuzz harness's 9000 cases over 8 seeds passed
+      within its memory and time bounds.
 - [x] Size, startup and coverage: moved out of this plan (decision 36)
       to the capability map's "When the binary is complete".
-- [ ] The maintainer's sitting: the proposed declines confirmed or
+- [x] The maintainer's sitting: the proposed declines confirmed or
       overruled (an overruled one becomes a fix task here, before the
-      archive), and the unattended calls kept or overruled.
+      archive), and the unattended calls kept or overruled. Done
+      (the maintainer, 2026-11-17): docs-L14's decline confirmed; the
+      lowercase rule, Task 34's option (b), how tool versions are read
+      and decisions 37, 39 and 41 kept; Task 19's type-ahead call
+      overruled after research (keys typed during a live run are
+      discarded when it ends, as sb-go and apt do), which is Task 62.
 - [ ] Every KEEP id in tasks/triage.md is fixed, or declined with the
       maintainer's confirmation (decision 18). Then the plan is
-      archived to `tasks/hardening/`.
+      archived to `tasks/hardening/`. All 36 KEEP ids are fixed on
+      main (checked 2026-11-17); the archive waits for Task 62.
 
 ## Proposed declines for the maintainer
 
@@ -1589,7 +1617,8 @@ listed here too. The ids the cut dropped aren't listed: they are closed
 decision 15, was confirmed by decision 16 and is recorded in Task 6,
 not here.)
 
-- [ ] docs-L14, its stricter half (Task 4, 2026-11-12): "lowercase
+- [x] docs-L14, its stricter half (Task 4, 2026-11-12; confirmed by the
+      maintainer, 2026-11-17): "lowercase
       first char only" read as no uppercase anywhere in the description
       is declined; only the first letter, after leading non-letters,
       must be lowercase. The stricter reading would reject 26 of the
