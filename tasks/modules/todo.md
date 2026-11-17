@@ -1888,14 +1888,14 @@ fixtures (how they were made, recorded), and the placement layer on a
 temporary root.
 
 **Acceptance criteria:**
-- [ ] Fixtures made by openssl decrypt; a wrong password is the padding
+- [x] Fixtures made by openssl decrypt; a wrong password is the padding
       error.
-- [ ] Keys, IVs, passwords and plaintext are zeroized.
-- [ ] Placement writes files with the spec's modes under the root.
+- [x] Keys, IVs, passwords and plaintext are zeroized.
+- [x] Placement writes files with the spec's modes under the root.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops`; the crates' size measured.
-- [ ] Review: code-reviewer, security-auditor (secrets, crypto).
+- [x] `cargo test -p sb-ops`; the crates' size measured.
+- [x] Review: code-reviewer, security-auditor (secrets, crypto).
 
 **Dependencies:** M74
 **Files:** `crates/ops/{Cargo.toml,src/restore/}`, `crates/ops/tests/fixtures/`, `Cargo.toml`, `Cargo.lock`
@@ -1911,15 +1911,15 @@ the fetch against the fake service, the output lines, the secrets log
 test, and the one read-only check of the real service's 404.
 
 **Acceptance criteria:**
-- [ ] The prompts read the terminal; `--user` and `--password-file`
+- [x] The prompts read the terminal; `--user` and `--password-file`
       answer them; no terminal and no answer fails.
-- [ ] No password or plaintext reaches output, errors or the run log.
-- [ ] Screenshots of both prompts and a restore run on the fake service.
+- [x] No password or plaintext reaches output, errors or the run log.
+- [x] Screenshots of both prompts and a restore run on the fake service.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb-term-ui -p sb`; the contract test's new
+- [x] `cargo test -p sb-ops -p sb-term-ui -p sb`; the contract test's new
       `EXTENSIONS` lines.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor.
+- [x] Review: code-reviewer, library-reviewer, security-auditor.
 
 **Dependencies:** M75, M26 (prompt.rs handoff)
 **Files:** `crates/ops/src/restore/`, `crates/term-ui/src/prompt.rs`, `crates/sb/src/{main.rs,restore.rs,contract.rs}`, `crates/sb/tests/restore.rs`
