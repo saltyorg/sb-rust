@@ -11,7 +11,12 @@
 //! given to them as an argument. The stand-ins are
 //! shell scripts, as sb-host's and sb-python-env's; a test that writes one
 //! and runs it guards against ETXTBSY as theirs do (a lock held from
-//! writing it until its run is over).
+//! writing it until its run is over). bench's network fakes are
+//! [`network`]'s.
+
+pub mod network;
+
+pub use network::{NETWORK_VARIABLE, NetworkFake, Seen, TestNetwork, from_env, from_file};
 
 /// The fake restore service `sb restore`'s tests run against.
 pub mod restore;

@@ -51,13 +51,17 @@ sb-release = { workspace = true, features = ["testing"] }
 # (never in a release or production build: the same check as
 # sb-release's).
 sb-python-env = { workspace = true, features = ["testing"] }
-# The ops harness: stand-in apt, locale and bash, and the private mount
-# namespace `sb gha` runs in, and the fake restore service `sb restore`'s
-# tests run against (never in a release or production build).
+# The ops harness: stand-in apt, locale and bash, the private mount
+# namespace `sb gha` runs in, the fake restore service `sb restore`'s
+# tests run against, and bench's network fakes and the test build's
+# `SB_BENCH_TEST_NETWORK` (never in a release or production build).
 sb-ops = { workspace = true, features = ["testing"] }
 # The test build's `SB_TEST_COMPLETION_ROOT`, where `sb completion install`
 # writes in tests (never in a release or production build).
 sb-completion = { workspace = true, features = ["testing"] }
+# The Speedtest archive the fake release serves (bench's tests).
+tar.workspace = true
+flate2.workspace = true
 insta.workspace = true
 serde_json.workspace = true
 console.workspace = true

@@ -9,10 +9,14 @@ publish.workspace = true
 
 [features]
 # The stand-in programs and temporary root setup's and gha's shared pieces
-# run against, and the Saltbox host update and the branch commands run on
-# (python-env's stand-in tree, sb-config's fixtures and fake), in the
-# `testing` module, for sb-ops' tests and sb's: never in a release build.
-testing = ["sb-host/testing", "sb-python-env/testing", "sb-config/testing", "dep:axum", "dep:futures-util", "tokio/net", "tokio/rt", "tokio/sync"]
+# The stand-in programs and temporary root setup's and gha's shared pieces
+# run against, the Saltbox host update and the branch commands run on
+# (python-env's stand-in tree, sb-config's fixtures and fake), the fake
+# restore service, and bench's network fakes, in the `testing` module,
+# for sb-ops' tests and sb's end-to-end tests: built into the sb that
+# `cargo test` runs (dev-dependency features unify), never into a release
+# or production build, where bench asks the real services.
+testing = ["sb-host/testing", "sb-python-env/testing", "sb-config/testing", "dep:axum", "dep:futures-util", "sb-release/testing", "tokio/net", "tokio/rt", "tokio/sync"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -38,7 +42,9 @@ sb-exec.workspace = true
 # `reconcile_venv` and `install_fact`).
 sb-python-env.workspace = true
 # update's self-update step: release's flow with the answer given (ops
-# spec, "`sb update`", step 3).
+# spec, "`sb update`", step 3); bench's Speedtest: release's verified
+# download of the pinned archive and its ELF check (ops spec, decision
+# 13; release spec, "bench").
 sb-release.workspace = true
 # The tags caches after each pull and the migrations' playbook runs (ops
 # spec, "`sb update`", steps 7, 9 and 10; the branch commands, step 5).
@@ -59,6 +65,13 @@ clap.workspace = true
 sysinfo.workspace = true
 # bench's /proc/cpuinfo, /proc/meminfo and mounts, parsed as motd's rows are.
 procfs.workspace = true
+# The archive's one `speedtest` entry (capability map, "Archives";
+# python-env uses them too).
+tar.workspace = true
+flate2.workspace = true
+# bench's icanhazip and ipinfo answers and the Speedtest CLI's JSON.
+serde.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -74,7 +87,8 @@ pbkdf2.workspace = true
 sha1 = { workspace = true, features = ["zeroize"] }
 sha2 = { workspace = true, features = ["zeroize"] }
 zeroize.workspace = true
-# The user key's hex (stack table "Versions"; already in the tree).
+# The user key's hex (stack table "Versions"; already in the tree), and
+# bench's Speedtest pin digest.
 hex.workspace = true
 # restore's placement: a temporary file in the root, persisted over the
 # destination (ops spec, "Placement"); the `testing` harness's temporary
@@ -82,11 +96,13 @@ hex.workspace = true
 # drop (ops spec, "`sb bench`", 2.).
 tempfile.workspace = true
 # restore's fetch (ops spec, "Protocol"): one client, no redirects; tokio's
-# `select!` stops it on a first signal.
+# `select!` stops it on a first signal. bench's icanhazip and ipinfo.
 reqwest.workspace = true
 # The body's cap: `Limited` fails a byte past it.
 http-body-util.workspace = true
-tokio = { workspace = true, features = ["macros"] }
+# restore's `select!`, and bench's time limits on the blocking pool's work.
+tokio = { workspace = true, features = ["macros", "time"] }
+# The fakes (`testing`): restore's service and bench's network.
 axum = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 
@@ -97,7 +113,8 @@ sb-ops = { workspace = true, features = ["testing"] }
 # Saltbox's pinned schemas and config fixtures, and the credential
 # checks' fake, for update's validation in process.
 sb-config = { workspace = true, features = ["testing"] }
-# release's fake GitHub, for update's self-update in process.
+# release's fake GitHub, for update's self-update in process, and its
+# TLS fake and stand-in ELF for bench's Speedtest tests.
 sb-release = { workspace = true, features = ["testing"] }
 # The fake release's asset digest, as release's tests give it.
 sha2.workspace = true
@@ -107,8 +124,10 @@ sb-python-env = { workspace = true, features = ["testing"] }
 # The steps drawn to memory, and the runner's shutdown.
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
-# The async tests (gha's, restore's command).
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+# The async tests (gha's, restore's command, bench's), and bench's
+# network fakes on loopback.
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync"] }
+axum.workspace = true
 
 [lints]
 workspace = true

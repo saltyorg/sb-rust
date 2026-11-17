@@ -19,6 +19,8 @@ use sb_exec::{Cmd, Ending};
 use sb_term_ui::{Cell, Table};
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 
+use super::network::{self, Endpoints, Isp, Online};
+
 /// The filesystem types bench.sh's `df -t` lists for Total Disk.
 const DF_TYPES: [&str; 8] = [
     "simfs", "ext2", "ext3", "ext4", "btrfs", "xfs", "vfat", "ntfs",
@@ -362,6 +364,9 @@ pub struct Facts {
     pub kernel: Option<String>,
     pub congestion: Option<String>,
     pub virtualization: String,
+    /// icanhazip on each family, and ipinfo's fields.
+    pub online: Online,
+    pub isp: Isp,
 }
 
 /// A two-column row's cells.
@@ -431,6 +436,9 @@ pub fn table(facts: &Facts) -> Table {
     table.row(row("Kernel", shown(facts.kernel.clone())));
     table.row(row("TCP Congestion Ctrl", shown(facts.congestion.clone())));
     table.row(row("Virtualization", facts.virtualization.as_str()));
+    for row in network::rows(facts.online, &facts.isp) {
+        table.row(row);
+    }
     table
 }
 
@@ -478,6 +486,8 @@ impl Default for Sources {
 }
 
 /// This host's [`Facts`]: the files and sysinfo on the blocking pool;
+/// icanhazip and ipinfo at `endpoints` (none: no request, offline and no
+/// ISP);
 /// the mounts there within `disks_limit` (cli-core's `spawn::blocking`,
 /// which keeps the run's span); then `zpool`
 /// and `systemd-detect-virt` through exec within 5 s each. A value that
@@ -488,11 +498,21 @@ impl Default for Sources {
 /// When `/proc/meminfo` can't be read, `token` was cancelled
 /// (`interrupted`; a hung mount's thread is left behind, as motd's), or a
 /// blocking task panicked.
-pub async fn gather(sources: &Sources, token: &CancellationToken) -> anyhow::Result<Facts> {
+pub async fn gather(
+    sources: &Sources,
+    endpoints: Option<&Endpoints>,
+    token: &CancellationToken,
+) -> anyhow::Result<Facts> {
     let files = sources.clone();
     let mut facts = sb_cli_core::spawn::blocking(move || read_host(&files)).await??;
     let df = df_usage(sources.disks, sources.disks_limit, token).await;
     let pools = zpools(&sources.zpool, token).await;
+    if let Some(endpoints) = endpoints {
+        (facts.online, facts.isp) = tokio::join!(
+            network::online(endpoints, token),
+            network::isp(endpoints, token)
+        );
+    }
     facts.disk = df.map(|df| df.plus(facts.swap).plus(pools));
     facts.virtualization = detect_virt(&sources.detect_virt, token).await;
     if token.is_cancelled() {
@@ -659,6 +679,8 @@ fn read_host(sources: &Sources) -> anyhow::Result<Facts> {
         congestion: read_file(&sources.congestion, logged("congestion control"))
             .map(|text| text.trim().to_owned()),
         virtualization: String::new(),
+        online: Online::default(),
+        isp: Isp::default(),
     })
 }
 
@@ -1075,6 +1097,16 @@ mod tests {
             kernel: Some("6.8.0-1-generic".to_owned()),
             congestion: Some("bbr".to_owned()),
             virtualization: "KVM".to_owned(),
+            online: Online {
+                v4: true,
+                v6: false,
+            },
+            isp: Isp {
+                org: Some("AS1 Example".to_owned()),
+                city: Some("Falkenstein".to_owned()),
+                country: Some("DE".to_owned()),
+                region: Some("Saxony".to_owned()),
+            },
         }
     }
 
@@ -1101,6 +1133,10 @@ mod tests {
             "│ Kernel              │ 6.8.0-1-generic           │",
             "│ TCP Congestion Ctrl │ bbr                       │",
             "│ Virtualization      │ KVM                       │",
+            "│ IPv4/IPv6           │ ✓ Online / ✗ Offline      │",
+            "│ Organization        │ AS1 Example               │",
+            "│ Location            │ Falkenstein / DE          │",
+            "│ Region              │ Saxony                    │",
         ];
         let mut at = text.find("System").expect("heading");
         for line in rows {
@@ -1230,8 +1266,9 @@ mod tests {
 
     #[tokio::test]
     async fn gather_reads_the_given_sources_and_sums_total_disk() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("dir");
-        let facts = gather(&sources(dir.path()), &CancellationToken::new())
+        let facts = gather(&sources(dir.path()), None, &CancellationToken::new())
             .await
             .expect("gather");
         assert_eq!(facts.cpu, cpu(X86_64, None));
@@ -1256,7 +1293,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gather_asks_the_network_rows_when_given_endpoints() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let fake = crate::testing::NetworkFake::start("ADDRESS\n", r#"{"org":"AS1 Example"}"#)
+            .expect("fake");
+        let endpoints = fake.endpoints();
+        let facts = gather(
+            &sources(dir.path()),
+            Some(&endpoints),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("gather");
+        assert_eq!(facts.online, Online { v4: true, v6: true });
+        assert_eq!(facts.isp.org.as_deref(), Some("AS1 Example"));
+        let text = rendered(&facts);
+        assert!(
+            text.contains("│ IPv4/IPv6           │ ✓ Online / ✓ Online"),
+            "{text}"
+        );
+        assert!(!text.contains("ADDRESS"), "{text}");
+    }
+
+    #[tokio::test]
     async fn missing_sources_are_blank_and_programs_add_nothing() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("dir");
         let given = sources(dir.path());
         let sources = Sources {
@@ -1267,7 +1329,7 @@ mod tests {
             zpool: stand_in(dir.path(), "zpool-fails", "1\\t1\\n", 1),
             ..given.clone()
         };
-        let facts = gather(&sources, &CancellationToken::new())
+        let facts = gather(&sources, None, &CancellationToken::new())
             .await
             .expect("gather");
         assert_eq!(facts.cpu, Cpu::default());
@@ -1288,7 +1350,7 @@ mod tests {
             detect_virt: stand_in(dir.path(), "virt-none", "none\\n", 1),
             ..sources
         };
-        let facts = gather(&sources, &CancellationToken::new())
+        let facts = gather(&sources, None, &CancellationToken::new())
             .await
             .expect("gather");
         assert_eq!(facts.virtualization, "Dedicated");
@@ -1297,7 +1359,7 @@ mod tests {
             meminfo: dir.path().join("none"),
             ..given
         };
-        let err = gather(&sources, &CancellationToken::new())
+        let err = gather(&sources, None, &CancellationToken::new())
             .await
             .expect_err("no meminfo");
         assert!(err.to_string().starts_with("reading "), "{err}");
@@ -1305,13 +1367,14 @@ mod tests {
 
     #[tokio::test]
     async fn this_hosts_files_and_mounts_are_read() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("dir");
         let sources = Sources {
             detect_virt: dir.path().join("none"),
             zpool: dir.path().join("none"),
             ..Sources::default()
         };
-        let facts = gather(&sources, &CancellationToken::new())
+        let facts = gather(&sources, None, &CancellationToken::new())
             .await
             .expect("gather");
         assert!(facts.cpu.cores > 0);
@@ -1329,13 +1392,14 @@ mod tests {
 
     #[tokio::test]
     async fn mounts_not_listed_in_time_leave_total_disk_blank() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("dir");
         let sources = Sources {
             disks: HUNG,
             disks_limit: Duration::from_millis(20),
             ..sources(dir.path())
         };
-        let facts = gather(&sources, &CancellationToken::new())
+        let facts = gather(&sources, None, &CancellationToken::new())
             .await
             .expect("gather");
         assert_eq!(facts.disk, None);
@@ -1344,7 +1408,7 @@ mod tests {
             disks: || None,
             ..sources
         };
-        let facts = gather(&sources, &CancellationToken::new())
+        let facts = gather(&sources, None, &CancellationToken::new())
             .await
             .expect("gather");
         assert_eq!(facts.disk, None);
@@ -1352,6 +1416,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancelled_gather_is_interrupted_without_waiting_for_the_mounts() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("dir");
         let sources = Sources {
             disks: HUNG,
@@ -1361,7 +1426,9 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         let started = std::time::Instant::now();
-        let err = gather(&sources, &token).await.expect_err("interrupted");
+        let err = gather(&sources, None, &token)
+            .await
+            .expect_err("interrupted");
         assert_eq!(err.to_string(), "interrupted");
         assert!(started.elapsed() < Duration::from_secs(30));
     }

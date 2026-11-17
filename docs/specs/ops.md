@@ -11,7 +11,9 @@ entry labelled with its repository, nothing called new (decisions 27, 30
 and 31, difference 45).
 Amended 2026-11-16: bench's System rows and disk test
 follow sb-go's bench.sh row by row (decision 33, differences 19 and 46
-to 53); the help contract is a rewording.*
+to 53); the help contract is a rewording. Amended 2026-11-16 at M78:
+the network rows and Speedtest follow bench.sh the same way (decision
+33, differences 54 to 58), the aarch64 pin recorded (decision 13).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -467,8 +469,10 @@ and run as code except the digest-pinned Ookla Speedtest.
 `Runs bench.sh benchmark`; difference 15). Not hidden. No flags.
 
 **Progress:** term-ui's runner on stderr, a step per measurement
-(`Reading system information`, `Disk write test (n/3)`, `Speedtest:
-<node>`). **Results:** three term-ui tables on stdout, each printed when
+(`Reading system information`, `Disk write test (n/3)`, `Preparing
+Speedtest`, `Speedtest: <node>`), each shown only while it runs (term-ui's
+transient steps), so a run that succeeds leaves only the results; a
+section without steps starts no runner. **Results:** three term-ui tables on stdout, each printed when
 its section ends, then the total time and a timestamp. No `clear`.
 
 **1. System** (a two-column table; each row found as sb-go's
@@ -493,8 +497,8 @@ program; decision 33):
 | Kernel | `System::kernel_version()` (`uname -r`) |
 | TCP Congestion Ctrl | `/proc/sys/net/ipv4/tcp_congestion_control` (`sysctl -n`) |
 | Virtualization | `systemd-detect-virt`'s stdout (exec capture, 5 s, any exit code) upper-cased; `none`, nothing or a failure is `Dedicated` (difference 16) |
-| IPv4/IPv6 | `GET https://icanhazip.com` bound to `0.0.0.0`, then to `::` (reqwest `local_address`), 4 s each: `✓ Online` / `✗ Offline` each |
-| Organization, Location, Region | `GET https://ipinfo.io/json`, 4 s: `org`, `city / country`, `region`; `No ISP detected` when `org` is missing |
+| IPv4/IPv6 | `GET https://icanhazip.com` bound to `0.0.0.0` and to `::` at once (reqwest `local_address`), 4 s each, no redirects, an answer over 64 KiB refused (difference 58): a family is `✓ Online` when its answer has any text but newlines (bench.sh's `$(curl -s ...)`), else `✗ Offline`; `<v4> / <v6>` in one cell, the Ok role with both online, Problem with neither, Warn otherwise (difference 54) |
+| Organization, Location, Region | `GET https://ipinfo.io/json`, 4 s (difference 17): `Organization` when `org` is there, `Location` (`city / country`) with both, `Region` when `region` is there, and a `Region` row `No ISP detected` without `org`, as bench.sh's `ipv4_info`; a field of nothing but newlines counts as none, as `-n "$(...)"` |
 
 Sizes are bench.sh's `calc_size` with binary unit names (`KiB` to
 `TiB`, one decimal; nothing is `0 KiB`). A value the host doesn't give
@@ -524,30 +528,41 @@ in either answer are never printed or logged.
 
 **3. Speedtest:**
 - the pinned asset (decision 13) through release's verified download
-  into a private 0700 temporary directory, then the single regular
+  into a private 0700 temporary directory in `/tmp` (not `$TMPDIR`;
+  difference 58), then the single regular
   entry `speedtest` extracted with `tar` and `flate2` (at most 64 MiB,
-  created exclusively, 0700), then an ELF check for the running
-  architecture (64-bit, `e_machine` 62 on x86_64, 183 on aarch64);
+  created exclusively, 0700; a duplicate, a link, an empty or oversized
+  entry, or none, refused with sb-go's texts), then an ELF check for the
+  running architecture (release's `check_elf`: 64-bit, `e_machine` 62 on
+  x86_64, 183 on aarch64); the archive is removed once read;
 - each node runs `speedtest --format=json --progress=no
   --accept-license --accept-gdpr [--server-id=<id>]` through exec's
-  `capture`, 120 s each, with `HOME` set to the temporary directory so
-  no licence file is left in root's home (UNVERIFIED: checked against
-  Ookla's CLI in the task);
+  `capture`, 120 s each, with `HOME` set to the temporary directory and
+  `XDG_CONFIG_HOME` removed so the licence file
+  (`$HOME/.config/ookla/speedtest-cli.json`) goes with it
+  (docs/platform-notes/speedtest.md), the rest of sb's environment kept
+  as sb-go's;
 - nodes, sb-go's (bench_script.sh:115-128): Speedtest.net (no id), Los
   Angeles, US 7190, Dallas, US 22288, Montreal, CA 64420, Paris, FR
   61933, Amsterdam, NL 41423, Suzhou, CN 5396, Ningbo, CN 59387, Hong
   Kong, CN 32155, Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP
   48463;
-- the JSON's `upload.bandwidth` and `download.bandwidth` (bytes per
-  second, shown in Mbps, two decimals) and `ping.latency` (ms) go in a
-  table `Node | Upload | Download | Latency`; a failed run or an answer
-  without them is the row's `Test failed`, and the next node runs
-  (UNVERIFIED: the field names are checked against one real run in the
-  task and recorded in `docs/platform-notes/speedtest.md`, no output
-  kept);
-- the JSON's interface and address fields are never printed or logged;
-- a failed download or digest mismatch ends the section with `Speedtest
-  unavailable: <cause>`; the others still print.
+- bench.sh's table, `Node Name | Upload Speed | Download Speed |
+  Latency`: the JSON's `upload.bandwidth` and `download.bandwidth`
+  (bytes per second) as `<n> Mbps` (× 8 / 10^6, two decimals) and
+  `ping.latency` as `<n> ms` (two decimals), the values the CLI's text
+  form prints (difference 55); a run that doesn't exit 0 is the row's
+  `Test failed`, an answer without the three values `Failed to parse
+  results`, as bench.sh's, and the next node runs;
+- the JSON's interface, server and result fields are never read, and
+  the CLI's output reaches neither the screen nor the log;
+- a Speedtest that can't be prepared (the architecture, the client, the
+  download or its digest, the archive, the ELF check) is the section's
+  one row, `Speedtest unavailable: <cause>`, and the others still print
+  (difference 56);
+- a `testing` build (sb's own tests) reads the network endpoints and the
+  pin from the file `SB_BENCH_TEST_NETWORK` names and the download's
+  fake from `SB_RELEASE_TEST_BASES`, and asks nothing without them.
 
 **Exit:** 0 when every section ran, even with failed rows; 1 only when
 sb itself fails (the runtime, the terminal); an interrupt dies of its
@@ -938,6 +953,28 @@ announcements skipped: error loading announcement file '<path>':
     that or when the mounts can't be read; bench.sh's df had no limit (a
     hung filesystem held the script). OS falls back to redhat-release's
     text as the script did, which no supported release has.
+
+`bench`, at M78 (2026-11-16; decision 33):
+54. IPv4/IPv6 is one cell in one colour (Ok, Warn or Problem by the two
+    families); bench.sh coloured each half. bench.sh's warning when
+    neither family answered went: the script printed it before its
+    `clear`, which wiped it.
+55. Speedtest's values come from the CLI's JSON (`--format=json`), the
+    numbers its text form prints, with its units; bench.sh read the
+    text with awk. The CLI's licence file stays in sb's private
+    directory (`HOME`); bench.sh's went to root's home.
+56. A Speedtest that can't be prepared is its section's row and the
+    other sections print; sb-go prepared it before the script ran and
+    failed the whole command without any output.
+57. A `Preparing Speedtest` step shows the download; bench.sh printed
+    nothing while sb-go downloaded.
+58. Hardening at M78's security review: the Speedtest's private
+    directory is made in `/tmp` whatever `$TMPDIR` says (sb-go's
+    `os.MkdirTemp("")` followed it; a non-sticky one another user can
+    write would let them swap the directory before it runs), the CLI
+    runs without `XDG_CONFIG_HOME` (its licence file would go there
+    before `HOME`), and icanhazip's and ipinfo's answers are read up to
+    64 KiB (curl had no limit).
 
 ## Scope
 
@@ -1387,9 +1424,11 @@ the real services.
 13. **Speedtest is pinned per architecture:** sb-go's
     `ookla-speedtest-1.2.0-linux-x86_64.tgz` (size 1106829, sha256
     `5690596c54ff9bed63fa3732f818a05dbc2db19ad36ed68f21ca5f64d5cfeeb7`,
-    host/benchmark.go:20-22) and Ookla's 1.2.0 `linux-aarch64` asset,
-    whose size and digest the task records from Ookla's download. sb
-    ships arm64 (map decision 6).
+    host/benchmark.go:20-22) and Ookla's 1.2.0 `linux-aarch64` asset
+    (size 1082287, sha256
+    `3953d231da3783e2bf8904b6dd72767c5c6e533e163d3742fd0437affa431bd3`,
+    taken from Ookla's download at M78; docs/platform-notes/speedtest.md).
+    sb ships arm64 (map decision 6).
 14. **No disk-space check is added to setup or gha.** sb-go has none;
     adding one would be an unrequested difference.
 15. **restore keeps creating a missing Saltbox root** (sb-go). The docs
@@ -1507,7 +1546,9 @@ the real services.
     arithmetic was wrong (differences 47 and 52), a hang has to end
     (difference 53), or sb's other screens already decide (difference
     50: sb-tui's zone); difference 51 keeps `free`'s figure on each
-    release. Each is listed (differences 46 to 53).
+    release. Each is listed (differences 46 to 58; at M78, 54 to 58 for
+    the network rows and Speedtest, differences 17 and 20 already
+    listed).
 
 ## Known limits
 
