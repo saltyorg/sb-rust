@@ -496,7 +496,59 @@ mutation_cleanup() {
   mutation_sweeper_stop
   if [[ -n $mutation_tmp ]] && mutation_sweep "$mutation_tmp"; then mutation_remove "$mutation_tmp"; fi
 }
-trap mutation_cleanup EXIT
+
+# The process group of the test run in_group started, while it runs: its
+# leader's pid, which is the group's id.
+group_pid=
+
+# in_group CMD...: runs CMD in a process group of its own and waits for
+# it, returning its status. A gate stopped by its pid alone (SIGTERM,
+# SIGINT, SIGHUP) runs its EXIT trap, but its children aren't signalled:
+# a stopped run's coverage pass (cargo-llvm-cov and the cargo test under
+# it) ran on, adopted by init (seen twice, 2026-11-17). So:
+# - The run starts under util-linux setsid(1), in a new session whose
+#   group id is its pid ("setsid runs a program in a new session";
+#   started with `&` it leads no group, so it forks nothing, and `-w`
+#   keeps its status if it ever did:
+#   https://man7.org/linux/man-pages/man1/setsid.1.html), and the trap
+#   signals that whole group: kill(2) with a negative pid signals every
+#   process in the group
+#   (https://man7.org/linux/man-pages/man2/kill.2.html).
+# - It is waited for with the `wait` builtin, which a SIGINT ends at once;
+#   bash waits out a foreground child first (bash manual, "Signals":
+#   https://www.gnu.org/software/bash/manual/html_node/Signals.html).
+# - Without job control, "asynchronous commands ignore SIGINT and SIGQUIT"
+#   (the same page), and the tests would inherit that: exec's test of a
+#   child that SIGINTs itself failed. coreutils env's --default-signal
+#   sets both to their defaults for CMD, whatever check.sh was started
+#   with (https://www.gnu.org/software/coreutils/manual/html_node/env-invocation.html).
+# - Its stdin is /dev/null, as for any `&` command without job control; no
+#   test run reads it. Ctrl-C and a hangup reach it through the trap; a
+#   terminal's Ctrl-\ and Ctrl-Z reach check.sh alone.
+# Not covered: a process that starts a session of its own (script, a
+# test's setsid or pty), or that ignores SIGTERM. Each is a test's, which
+# ends it.
+in_group() {
+  setsid -w env --default-signal=INT,QUIT "$@" &
+  group_pid=$!
+  local status=0
+  wait "$group_pid" || status=$?
+  group_pid=
+  return "$status"
+}
+
+# Ends the test run in_group started, if one runs, with its whole group.
+group_stop() {
+  # A group already gone is nothing to end.
+  if [[ -n $group_pid ]] && kill -TERM -- "-$group_pid" 2>/dev/null; then :; fi
+}
+
+# On exit: the test run's group, then a mutation pass's leftovers.
+on_exit() {
+  group_stop
+  mutation_cleanup
+}
+trap on_exit EXIT
 
 # mutation_sandbox DIR... -- CMD...: CMD in private mount and network
 # namespaces where every mount is read-only but /tmp and the DIRs, so a
@@ -750,12 +802,15 @@ task() {
   # prototype, so those two run after it (ADR-016).
   step "tests (crates), with changed-line coverage >= ${COVERAGE_MIN}%"
   need script
+  need setsid
   need cargo-llvm-cov
   need diff-cover
-  cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
+  # Each test run in a process group of its own, ended with check.sh
+  # (in_group).
+  in_group cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
   step "tests (doc tests, prototypes)"
-  cargo test --locked --quiet --doc "${pkg_args[@]}"
-  if ((${#proto_args[@]})); then cargo test --locked --quiet "${proto_args[@]}"; fi
+  in_group cargo test --locked --quiet --doc "${pkg_args[@]}"
+  if ((${#proto_args[@]})); then in_group cargo test --locked --quiet "${proto_args[@]}"; fi
   step "changed-line coverage >= ${COVERAGE_MIN}% (diff-cover)"
   # New files are untracked until committed; without --include-untracked
   # they would not count as changed lines.
@@ -780,7 +835,7 @@ task() {
   # other crates' release builds left untested.
   step "tests (crates), release build"
   need cargo-nextest
-  cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
+  in_group cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
   mutation_check
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine

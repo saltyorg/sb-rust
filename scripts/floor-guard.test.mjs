@@ -1173,7 +1173,7 @@ const CRATES = {
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
 const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'getconf', 'git', 'grep', 'id', 'mkdir',
-  'ip', 'mktemp', 'mount', 'rm', 'sed', 'sleep', 'sort', 'stat', 'unshare', 'xargs'];
+  'ip', 'mktemp', 'mount', 'rm', 'sed', 'setsid', 'sleep', 'sort', 'stat', 'unshare', 'xargs'];
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
@@ -1337,6 +1337,26 @@ const stubs = (versions, arch) => {
     + '  $SANDBOX_LS -A /run >"$SANDBOX_RESULT.run"\n'
     + '  echo \'{"caught":1,"missed":0,"timeout":0}\' >"$out/mutants.out/outcomes.json"\n'
     + '  exit 0\n'
+    + 'fi\n';
+  // With SIGNALS_PROBE set, each test run writes the signals it starts
+  // with ignored (/proc's SigIgn mask), as `<subcommand> <mask>`.
+  out.cargo += 'if [ -n "${SIGNALS_PROBE:-}" ]; then case "$1" in llvm-cov | test | nextest)\n'
+    + '  while read -r k v; do [ "$k" = SigIgn: ] && echo "$1 $v" >>"$SIGNALS_PROBE"; done </proc/$$/status ;;\n'
+    + 'esac; fi\n';
+  // With RUN_FAILS_AT set (`llvm-cov` or `nextest`), that test run fails
+  // as a failing test makes cargo fail, with status 101.
+  out.cargo += 'if [ -n "${RUN_FAILS_AT:-}" ] && [ "$1" = "$RUN_FAILS_AT" ]; then exit 101; fi\n';
+  // With STOP_RUN set, the test run named by STOP_RUN_AT (`llvm-cov` or
+  // `nextest`) starts a child (as cargo starts its test binaries), writes
+  // its own pid and the child's to STOP_RUN, stops check.sh, its parent,
+  // with SIGTERM by its pid alone, and runs on, as a coverage pass did
+  // (2026-11-17). Both run STOP_SLEEP with their output closed, so that
+  // neither holds the test's pipes.
+  out.cargo += 'if [ -n "${STOP_RUN:-}" ] && [ "$1" = "$STOP_RUN_AT" ]; then\n'
+    + '  $STOP_SLEEP 60 </dev/null >/dev/null 2>&1 &\n'
+    + '  echo "$$ $!" >"$STOP_RUN"\n'
+    + '  kill -TERM "$PPID"\n'
+    + '  exec $STOP_SLEEP 60 </dev/null >/dev/null 2>&1\n'
     + 'fi\n';
   // `docker run`: sb version, unless the container is of the release in
   // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
@@ -1646,6 +1666,71 @@ function leakDuringPass(age) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// A gate stopped with SIGTERM by its pid alone ends its coverage pass and
+// its release-build test run, each with the processes it started: they
+// run in a process group of their own, which the EXIT trap signals
+// (in_group), where they ran on, adopted by init (2026-11-17).
+for (const at of ['llvm-cov', 'nextest']) {
+  test('check.sh: stopping the gate by its pid ends its ' + at + ' run and that run\'s children', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stop-'));
+    const file = join(dir, 'pids');
+    const tool = (t) => execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim();
+    const alive = (pid) => {
+      try { return !/^\d+ \(.*\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8')); } catch { return false; }
+    };
+    let started = [];
+    try {
+      const r = checkRun('task', {
+        work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
+        env: { STOP_RUN: file, STOP_RUN_AT: at, STOP_SLEEP: tool('sleep'), TMPDIR: dir },
+      });
+      assert.equal(r.signal, 'SIGTERM', 'check.sh did not end by the signal:\n' + r.output);
+      started = readFileSync(file, 'utf8').trim().split(' ').map(Number);
+      assert.equal(started.length, 2, r.output);
+      // The trap's signal is sent as check.sh exits; give it a moment.
+      for (let n = 0; n < 50 && started.some(alive); n++) execFileSync(tool('sleep'), ['0.1']);
+      assert.ok(!alive(started[0]), 'the ' + at + ' run outlived the gate:\n' + r.output);
+      assert.ok(!alive(started[1]), 'its child outlived the gate:\n' + r.output);
+    } finally {
+      for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// A failing test run fails the gate with its own status, through the
+// run's own process group (in_group), and the steps after it don't run.
+test('check.sh: a failing coverage or release-build run fails the gate with its status', () => {
+  for (const [at, after] of [['llvm-cov', 'diff-cover'], ['nextest', 'mutants']]) {
+    const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { RUN_FAILS_AT: at } });
+    assert.equal(r.status, 101, at + ':\n' + r.output);
+    assert.doesNotMatch(r.output, /check task: all passed/, r.output);
+    // The runs, not the version checks before the stages.
+    const ran = r.calls.filter((c) => !/(^|\s)(--version|install --list)$/.test(c.args))
+      .map((c) => (c.tool === 'cargo' ? c.args.split(' ')[0] : c.tool));
+    assert.ok(ran.includes(at), at + ' never ran:\n' + r.output);
+    assert.ok(!ran.includes(after), after + ' ran after a failing ' + at + ':\n' + r.output);
+  }
+});
+
+// Started with `&`, a run would ignore SIGINT and SIGQUIT (bash, without
+// job control), and so would its tests: exec's test of a child that
+// SIGINTs itself failed. Every test run starts with both at their
+// defaults.
+test('check.sh: the test runs start with SIGINT and SIGQUIT not ignored', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'signals-'));
+  const file = join(dir, 'masks');
+  try {
+    passes(checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { SIGNALS_PROBE: file } }), 'task');
+    const masks = readFileSync(file, 'utf8').trim().split('\n').map((l) => l.split(' '));
+    assert.deepEqual(masks.map(([sub]) => sub), ['llvm-cov', 'test', 'nextest'], masks.join('\n'));
+    // SIGINT is signal 2 (bit 1), SIGQUIT 3 (bit 2).
+    for (const [sub, mask] of masks) assert.equal(BigInt('0x' + mask) & 6n, 0n, sub + ' ignores ' + mask);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('check.sh: an orphan of a mutation pass is killed during it, a live child and a process outside are not', () => {
   const { r, started, left, decoyAlive } = leakDuringPass('0');
