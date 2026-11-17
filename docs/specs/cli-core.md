@@ -511,7 +511,13 @@ boundaries that callers match on.
 - Root: only commands that need root relaunch through `sudo`; help,
   version and Tab completion run as the calling user. (Revised twice: an
   always-root draft, as sb-go, was dropped once completion could read a
-  world-readable tag cache instead of going through sudo.)
+  world-readable tag cache instead of going through sudo.) A third
+  revision, running most commands as the caller and relaunching on a
+  permission error, was specified and built on 2026-11-17, then
+  dropped by the maintainer the same day for the
+  workarounds it needed: checks before any output, a restart mid-command,
+  a log directory with a permissive window and a handover, and a log
+  writer of sb's own. sudo up front stays, as sb-go.
 - Config file ownership: like Saltbox's own configuration, the file and
   its `sb` directory belong to the Saltbox user (from `accounts.yml`, as
   sb-go's `GetSaltboxUser` reads it) and their group, with fairly open
