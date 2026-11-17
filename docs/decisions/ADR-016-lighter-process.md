@@ -7,6 +7,11 @@ check named in part 2 was retired by
 [ADR-017](ADR-017-hardening-plan-cut.md), and the choice part 5 left
 open was made by [ADR-018](ADR-018-rust-skills-plugin-off.md) (the
 rust-skills plugin is off).
+Changed 2026-11-16 (maintainer): the crates' unit and integration tests
+also run once in a release build, after the coverage run
+(CONSTRAINTS.md, "Tests"), since a failure that showed only in a
+release build passed the debug run; "the crates' tests run once" below
+is now once in each build.
 
 ## Date
 

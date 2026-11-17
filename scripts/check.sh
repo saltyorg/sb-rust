@@ -6,9 +6,10 @@
 #                                  and lints, fmt, clippy, floor guard (and
 #                                  the guard's own tests when scripts/ changed),
 #                                  secrets
-#   scripts/check.sh task [base]   before handing work back: fast + tests,
-#                                  changed-line coverage, mutation score,
-#                                  startup budget
+#   scripts/check.sh task [base]   before handing work back: fast + tests
+#                                  (under coverage, then in a release
+#                                  build), changed-line coverage, mutation
+#                                  score, startup budget
 #   scripts/check.sh full [base]   before committing (and CI): commit
 #                                  messages after base, then task +
 #                                  dependencies, architecture, binary size
@@ -41,8 +42,8 @@ fi
 # leftover SB_TEST_NO_SYSTEMD would skip a test outside the mutation
 # sandbox, the only place that sets it (mutation_sandbox).
 unset SB_TEST_BINARY SB_LIVE_DOCKER SB_LIVE_PYTHON SB_TEST_NO_SYSTEMD
-# The mutation passes' nextest runs read their settings from
-# .config/nextest.toml's `mutants` profile alone: an inherited NEXTEST_*
+# nextest's runs (the mutation passes' and the release-build tests) read
+# their settings from .config/nextest.toml's profiles alone: an inherited NEXTEST_*
 # variable (a profile, retries, a test-thread count, another config file)
 # would override it (https://nexte.st/docs/configuration/env-vars/). So
 # would an inherited CARGO_MUTANTS_* one (cargo-mutants 27.1.0 reads its
@@ -760,6 +761,26 @@ task() {
   # they would not count as changed lines.
   diff-cover target/lcov.info --compare-branch="$base" --include-untracked \
     --fail-under="$COVERAGE_MIN"
+  # The crates' tests again, in a release build: a test that passes only
+  # at a debug build's speed, or a bug only the optimiser or the missing
+  # debug assertions show, fails here. indicatif's rate limit dropped the
+  # in-memory screen's last frames in a release build alone, and every
+  # debug run passed (8830411; the maintainer, 2026-11-16). The cargo
+  # profile is `release-tests` (Cargo.toml: the release profile's code in
+  # target/release-tests/, so the test build of sb never sits at
+  # target/release/sb), the nextest one `release-tests` too
+  # (.config/nextest.toml: a test still running after 60 s fails rather
+  # than holds up the gate, though under heavy load on a shared host a
+  # slow test could fail there alone; every failure is reported). After
+  # the cheap coverage check, so that one fails first. The whole
+  # workspace, as measured with the gate's usual scope (8 cores): 40 s with
+  # nothing to rebuild, 75 s after a change to a leaf crate, 150 s after
+  # one to cli-core; four timing-heavy crates alone (term-ui, tui, exec,
+  # cli-core) took 35 to 55 s, a saving of up to about 100 s, with the
+  # other crates' release builds left untested.
+  step "tests (crates), release build"
+  need cargo-nextest
+  cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
   mutation_check
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine

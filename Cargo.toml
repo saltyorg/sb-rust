@@ -219,3 +219,10 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# The gate's release-build test run (scripts/check.sh, `task`): the
+# release profile's code, in a directory of its own (target/release-tests/),
+# so the test build of sb, its `testing` hooks compiled in, never lands at
+# target/release/sb, where a binary is handed over from.
+[profile.release-tests]
+inherits = "release"

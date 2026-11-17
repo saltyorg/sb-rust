@@ -1528,7 +1528,7 @@ test('check.sh: cargo runs locked, with the target directory its own', () => {
   });
   passes(r, 'full');
   const cargo = r.calls.filter((c) => c.tool === 'cargo' && c.args !== 'install --list');
-  for (const sub of ['fmt', 'clippy', 'test', 'llvm-cov', 'mutants', 'build', 'deny']) {
+  for (const sub of ['fmt', 'clippy', 'test', 'llvm-cov', 'nextest', 'mutants', 'build', 'deny']) {
     assert.ok(cargo.some((c) => c.args.split(' ')[0] === sub), 'no cargo ' + sub + ' call:\n' + r.output);
   }
   for (const c of cargo) {
@@ -1549,7 +1549,8 @@ test('check.sh: cargo runs locked, with the target directory its own', () => {
 
 // Each mutant's tests run under nextest's `mutants` profile, which ends a
 // hung test (ADR-021), and no inherited NEXTEST_* or CARGO_MUTANTS_*
-// variable overrides it.
+// variable overrides it, nor the release-build run's profile (the stub
+// logs the variables of every cargo call).
 test('check.sh: the mutation passes run nextest with the mutants profile, and no NEXTEST_ or CARGO_MUTANTS_ variable', () => {
   const r = checkRun('task', {
     work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' },
@@ -1999,7 +2000,7 @@ test('check.sh full: a document beside any other file, a clean tree, and a docum
     const r = checkRun('full', { work });
     passes(r, 'full');
     assert.doesNotMatch(r.output, /only docs\/ and tasks\/ changed/, r.output);
-    for (const sub of ['llvm-cov', 'test', 'build', 'deny']) assert.ok(cargoSubs(r).includes(sub), sub + '\n' + r.output);
+    for (const sub of ['llvm-cov', 'test', 'nextest', 'build', 'deny']) assert.ok(cargoSubs(r).includes(sub), sub + '\n' + r.output);
     assert.equal(r.calls.filter((c) => c.tool === 'cross').length, 1, r.output);
   }
 });
@@ -2026,18 +2027,25 @@ test('check.sh fast: the gate scripts\' own tests run when scripts/ changed or n
   }
 });
 
-test('check.sh task: the crates\' tests run once, under coverage, then the doc tests and the prototypes', () => {
+test('check.sh task: the crates\' tests run once under coverage, then the doc tests and the prototypes, then the crates\' again in a release build', () => {
   const proto = { 'prototypes/proto-a/Cargo.toml': '[package]\nname = "proto-a"\n\n[dependencies]\nname = "1"\n' };
   const r = checkRun('task', { files: proto, work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
   passes(r, 'task');
-  const runs = r.calls.filter((c) => c.tool === 'cargo' && /^(llvm-cov|test) /.test(c.args)).map((c) => c.args);
-  assert.equal(runs.length, 3, r.output);
+  const runs = r.calls.filter((c) => c.tool === 'cargo' && /^(llvm-cov|test|nextest) /.test(c.args)).map((c) => c.args);
+  assert.equal(runs.length, 4, r.output);
   assert.match(runs[0], /^llvm-cov .*-p sb -p sb-foo /);
   assert.match(runs[1], /^test .*--doc .*-p sb-foo/);
   assert.equal(runs[2], 'test --locked --quiet -p proto-a');
+  // The release build's run: the crates the coverage run tests, under
+  // the `release-tests` cargo profile (its own directory) and nextest
+  // profile (its per-test timeout, every failure reported).
+  const crates = runs[0].match(/(?: -p \S+)+/)[0];
+  assert.match(crates, / -p sb -p sb-foo /);
+  assert.equal(runs[3], 'nextest run --locked --cargo-profile release-tests --profile release-tests' + crates);
   // Without a prototype there is no third run, and none over the workspace.
   const none = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
   passes(none, 'task');
+  assert.equal(none.calls.filter((c) => c.tool === 'cargo' && c.args.startsWith('nextest run --locked --cargo-profile release-tests ')).length, 1, none.output);
   assert.ok(!none.calls.some((c) => c.tool === 'cargo' && /^test (?!.*--doc)/.test(c.args)), none.output);
 });
 

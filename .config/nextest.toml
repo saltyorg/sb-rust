@@ -1,6 +1,8 @@
 # cargo-nextest's configuration (https://nexte.st/docs/configuration/).
-# Only scripts/check.sh's mutation passes run nextest, with the `mutants`
-# profile (ADR-021); every other test run is cargo test or cargo llvm-cov.
+# scripts/check.sh runs nextest in its mutation passes, with the
+# `mutants` profile (ADR-021), and for the crates' tests in a release
+# build, with `release-tests`; every other test run is cargo test or
+# cargo llvm-cov.
 
 [profile.mutants]
 # A test still running after 2 periods of 30 s is ended and counts as
@@ -17,3 +19,11 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # nothing once another test has failed
 # (https://nexte.st/docs/running/#termination-behavior, since 0.9.111).
 fail-fast = { max-fail = 1, terminate = "immediate" }
+
+[profile.release-tests]
+# The gate's release-build test run (scripts/check.sh, `task`). The same
+# per-test end as the mutation passes': a test still running after 60 s
+# fails, so a hang fails the gate rather than holds it up. Every failure
+# is reported, not the first alone: it runs once, not once a mutant.
+slow-timeout = { period = "30s", terminate-after = 2 }
+fail-fast = false
