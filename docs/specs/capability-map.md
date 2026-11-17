@@ -396,6 +396,23 @@ To discuss with the maintainer once every module is done, not before:
   correctness holds: every test, the mutation score and the specs'
   behaviour stay as they are, and each change carries its before and
   after figures. What it finds can also set tighter ratchet rows.
+  - **Size: the build profile stays as it is** (maintainer, 2026-11-17).
+    The production binary of 90e9d4f is 20,303,872 bytes (11,843,920 on
+    964f963). The growth is the features added since, spread over the
+    new crates and their use of std, tokio and serde; no single crate
+    accounts for it. Three changes were measured in scratch builds,
+    with the four offline commands' and a scripted `sb logs` session's
+    user-space instructions (`perf stat`):
+
+    | change | size | instructions |
+    |---|---:|---|
+    | `opt-level = "s"` | 13,685,408 (−32.6%) | +7 to +13% |
+    | `panic = "abort"` | 18,279,584 (−10.0%) | −0.1 to −3.4% |
+    | no syntax highlighting (tui-markdown without its default feature) | 19,240,408 (−5.2%) | unchanged |
+
+    Kept: opt-level 3 (speed), panic unwinding (motd's sections and the
+    runner's steps report a panic and go on; an abort would end the
+    run), and syntax highlighting (CONSTRAINTS.md exception E1).
 - **A phase exploring alternative output designs** (maintainer,
   2026-11-14). The maintainer's design canvas "sb list: refined columns"
   (https://claude.ai/artifact/FLU6EQNhqSh2BHD9NkeHv2) is the starting point, one of the designs to weigh, not a spec. It
