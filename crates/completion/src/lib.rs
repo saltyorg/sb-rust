@@ -11,7 +11,10 @@ pub mod tags;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+use std::path::Path;
+
 use clap_complete::env::{Bash, CompleteEnv, EnvCompleter, Fish, Shells, Zsh};
+use sb_term_ui::{Labels, Step};
 
 /// The variable that makes a run of sb a completion request (spec,
 /// decision 9: not clap's default `COMPLETE`, which a user's exported
@@ -50,6 +53,97 @@ const ZSH_FIRST_LOAD: &str = r#"if [[ "${funcstack[1]}" == "FILE" ]]; then
 fi
 "#;
 
+/// Refresh the shells' files, for ops' `update` and `setup` (spec,
+/// "Refresh for `update` and `setup`"): [`refresh_with`] sb's own
+/// executable and [`install::Paths::for_sb`].
+pub async fn refresh(step: &mut Step) {
+    match std::env::current_exe() {
+        Ok(executable) => refresh_with(step, &install::Paths::for_sb(), &executable).await,
+        Err(err) => step.warn(format!(
+            "Shell completion refresh failed: get completion executable: {err}"
+        )),
+    }
+}
+
+/// sb-go's `regenerateInstalledCompletions`: under `step`, a step
+/// "Refreshing shell completions" with a sub-step per shell, in sb-go's
+/// order, each the install for that shell with its result lines as the
+/// sub-step's output (sb-go's labels: "Refreshing Bash completion", "Bash
+/// completion checked", "Bash completion refresh"). A shell that fails
+/// fails its sub-step and the others still run; then the refresh's step
+/// fails and `step` gets sb-go's warning, "Shell completion refresh
+/// failed: ...", but `step` itself goes on: a refresh never fails its
+/// caller (sb-go's `runner.Warning`).
+pub async fn refresh_with(step: &mut Step, paths: &install::Paths, executable: &Path) {
+    let names = match install::names(paths, executable) {
+        Ok(names) => names,
+        Err(err) => {
+            step.warn(format!("Shell completion refresh failed: {err}"));
+            return;
+        }
+    };
+    let own_dir = executable.parent().unwrap_or(Path::new("/"));
+    let mut failures = Vec::new();
+    let labels = Labels::new(
+        "Refreshing shell completions",
+        "Shell completions refreshed",
+    )
+    .failure("Shell completion refresh");
+    let refreshed = step
+        .step(labels, async |parent| {
+            // One after another, not term-ui's `group_all`: sb-go's order,
+            // each shell's step under the last.
+            for shell in Shell::ALL {
+                // Checked here, though term-ui skips a step on a cancelled
+                // token, so the warning says why.
+                if parent.token().is_cancelled() {
+                    failures.push("interrupted".to_owned());
+                    break;
+                }
+                let title = shell.title();
+                let labels = Labels::new(
+                    format!("Refreshing {title} completion"),
+                    format!("{title} completion checked"),
+                )
+                .failure(format!("{title} completion refresh"));
+                let mut failed = Vec::new();
+                // Its failure is shown by its own step and counted below.
+                let _ = parent
+                    .step(labels, async |child| {
+                        let token = child.token();
+                        let report =
+                            install::install(paths, &[shell], &names, own_dir, &token).await;
+                        for line in &report.lines {
+                            child.output(line.to_string());
+                        }
+                        failed = report.failures;
+                        if failed.is_empty() {
+                            Ok(())
+                        } else {
+                            Err(anyhow::Error::msg(failed.join("\n")))
+                        }
+                    })
+                    .await;
+                failures.extend(failed);
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(anyhow::Error::msg(failures.join("\n")))
+            }
+        })
+        .await;
+    // A refresh skipped by Ctrl-C has nothing to say: the run ends by the
+    // signal. A failure is one warning line each, as sb-go's
+    // `errors.Join`.
+    if refreshed.is_err() && !failures.is_empty() {
+        step.warn(format!(
+            "Shell completion refresh failed: {}",
+            failures.join("\n")
+        ));
+    }
+}
+
 /// A shell sb completes in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Shell {
@@ -64,6 +158,16 @@ pub enum Shell {
 impl Shell {
     /// The three, in sb-go's order.
     pub const ALL: [Self; 3] = [Self::Bash, Self::Zsh, Self::Fish];
+
+    /// Its name capitalised, as sb-go's refresh labels spell it.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Bash => "Bash",
+            Self::Zsh => "Zsh",
+            Self::Fish => "Fish",
+        }
+    }
 
     /// Its name, as sb-go's messages and the commands spell it.
     #[must_use]

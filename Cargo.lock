@@ -3514,13 +3514,16 @@ dependencies = [
 name = "sb-completion"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "clap_complete",
+ "indicatif",
  "memchr",
  "regex",
  "sb-ansible",
  "sb-cli-core",
  "sb-exec",
+ "sb-term-ui",
  "shlex",
  "tempfile",
  "tokio",

@@ -1516,7 +1516,7 @@ live-executable preservation, from sb-go-written fixtures.
 and `setup`, with a warning on failure.
 
 **Acceptance criteria:**
-- [ ] One step per installed shell.
+- [ ] One step per shell (every shell, as sb-go; one not installed is checked).
 - [ ] A failure warns and doesn't fail the caller.
 - [ ] `refresh(step)` is public as ops calls it.
 

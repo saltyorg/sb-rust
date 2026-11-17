@@ -60,7 +60,7 @@ deny = [
     { crate = "sb-cli-core", wrappers = ["sb", "sb-ops", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates; host's apt streams into its steps.
-    { crate = "sb-term-ui", wrappers = ["sb", "sb-ops", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
+    { crate = "sb-term-ui", wrappers = ["sb", "sb-ops", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },
     # exec: child processes; its first user is sb-docker's start, stop and
     # restart (exec spec, decision 4); sb-host's systemctl calls; the
     # binary's `sb edit`, which runs the editor attached (tui spec,

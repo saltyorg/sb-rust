@@ -30,6 +30,10 @@ tempfile.workspace = true
 regex.workspace = true
 # sb-go's markers found in a file (`bytes.Contains` there).
 memchr.workspace = true
+# The refresh's steps for ops' update and setup (`refresh`), and their
+# bodies' errors.
+sb-term-ui.workspace = true
+anyhow.workspace = true
 
 [features]
 # The install root under a test's directory (`testing::ROOT_VAR`), for
@@ -37,6 +41,9 @@ memchr.workspace = true
 testing = []
 
 [dev-dependencies]
+# The refresh's steps on a runner drawing to memory.
+sb-term-ui = { workspace = true, features = ["testing"] }
+indicatif.workspace = true
 # The probes run on a real runtime in the tests.
 tokio.workspace = true
 
