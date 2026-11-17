@@ -3808,6 +3808,7 @@ dependencies = [
  "anyhow",
  "console",
  "dialoguer",
+ "fastrand",
  "indicatif",
  "insta",
  "rustix",

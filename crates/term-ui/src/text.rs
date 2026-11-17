@@ -99,9 +99,25 @@ impl DisplayText {
         Self::parse(bytes, colour, column, None).0
     }
 
-    /// [`DisplayText::resumable`]'s parse: with `every`, a resume about every
-    /// so many columns.
+    /// The parse: [`plain`]'s copy when `bytes` hold nothing to change
+    /// and no resume is asked for, else [`DisplayText::parse_full`].
     fn parse(
+        bytes: &[u8],
+        colour: bool,
+        column: usize,
+        every: Option<usize>,
+    ) -> (DisplayText, Vec<Resume>) {
+        if every.is_none()
+            && let Some(text) = plain(bytes)
+        {
+            return (text, Vec::new());
+        }
+        Self::parse_full(bytes, colour, column, every)
+    }
+
+    /// The full parse: [`DisplayText::resumable`]'s, with `every` a resume
+    /// about every so many columns, and any text [`plain`] declines.
+    fn parse_full(
         bytes: &[u8],
         colour: bool,
         column: usize,
@@ -238,6 +254,47 @@ const ESC: u8 = 0x1b;
 /// [`seven_bit`] has already removed from the text, so a print of it is
 /// always the stand-in.
 const STAND_IN: char = '\u{80}';
+
+/// `bytes` as the full parse leaves them, when it changes nothing: valid
+/// UTF-8 with no control character but newline (no escape, carriage
+/// return, tab, other C0, DEL or C1), so every character is printed as it
+/// is and only newlines split lines, as [`Sink`] splits them (a final one
+/// adds none; empty text is one empty line). `None` for anything else,
+/// which the parser takes. Most log and table text is such text, and the
+/// parser's per-character state machine is most of a log viewer frame's
+/// cost there (the performance pass, 2026-11-17). Why not a fast path in
+/// the library: anstyle-parse has none; it is a state machine that sees
+/// each byte (<https://docs.rs/anstyle-parse/1.0.0/anstyle_parse/struct.Parser.html>).
+fn plain(bytes: &[u8]) -> Option<DisplayText> {
+    // C0 but newline, and DEL; ESC, CR and tab are among them.
+    if bytes.iter().any(|&b| (b < 0x20 && b != b'\n') || b == 0x7f) {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    // C1 (U+0080 to U+009F) is C2 80 to C2 9F in UTF-8. `contains` first,
+    // as in `parse_full`: most text holds no C2 byte.
+    if bytes.contains(&0xc2)
+        && bytes
+            .windows(2)
+            .any(|pair| matches!(pair, [0xc2, 0x80..=0x9f]))
+    {
+        return None;
+    }
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (at, _) in text.match_indices('\n') {
+        lines.push(start..at);
+        start = at + 1;
+    }
+    let mut text = text.to_owned();
+    if start == text.len() && !lines.is_empty() {
+        // A final newline adds no line (`Sink::finish`).
+        text.pop();
+    } else {
+        lines.push(start..text.len());
+    }
+    Some(DisplayText { text, lines })
+}
 
 /// The 8-bit C1 forms as their 7-bit `ESC` forms, the rest of C1 dropped
 /// (term-ui spec, "Escape handling"). Why not the library: anstyle-parse,
@@ -507,6 +564,149 @@ fn trim_end(piece: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::{DisplayText, wrap_line};
+
+    /// The fast path takes exactly the text the parser leaves as it is:
+    /// valid UTF-8 with no control character but newline. Each class at
+    /// its edges: space and `~` in; 0x1F, DEL and C1 (U+0080 to U+009F)
+    /// out; U+00A0 in.
+    #[test]
+    fn only_plain_text_takes_the_fast_path() {
+        let plain = [
+            "",
+            "a",
+            " ~",
+            "é 日 “quoted” 👍",
+            "a\nb",
+            "a\n",
+            "\n\n",
+            "x\u{a0}y",
+        ];
+        for text in plain {
+            assert!(super::plain(text.as_bytes()).is_some(), "{text:?}");
+        }
+        let loud: [&[u8]; 16] = [
+            b"a\x1b[31m",
+            b"a\rb",
+            b"a\tb",
+            b"\x00",
+            b"\x1f",
+            b"\x7f",
+            "\u{80}".as_bytes(),
+            "\u{9b}".as_bytes(),
+            "\u{9f}".as_bytes(),
+            b"\xff",
+            b"a\xe2\x80",
+            // Overlong forms of ESC and CSI, a surrogate, past U+10FFFF, a
+            // lone continuation byte: invalid UTF-8, which std refuses.
+            b"\xc0\x9b",
+            b"\xe0\x80\x9b",
+            b"\xed\xa0\x80",
+            b"\xf4\x90\x80\x80",
+            b"\x80",
+        ];
+        for bytes in loud {
+            assert!(super::plain(bytes).is_none(), "{bytes:?}");
+        }
+    }
+
+    /// The fast path makes exactly what the full parse makes: over random
+    /// byte strings built from what the parser acts on (escapes, CR, tab,
+    /// C0, DEL, C1 in both forms, broken UTF-8) and any byte at all, and
+    /// over plain text, in colour or not, from column 0 or 3. fastrand's
+    /// seeded generator
+    /// (<https://docs.rs/fastrand/2.5.0/fastrand/struct.Rng.html#method.with_seed>);
+    /// why not proptest, it isn't a dependency (adding one goes to the
+    /// maintainer first). A failure prints its bytes.
+    #[test]
+    fn the_fast_path_matches_the_full_parse() {
+        let mut rng = fastrand::Rng::with_seed(0x9e37_79b9_7f4a_7c15);
+        let loud: &[&[u8]] = &[
+            b"a",
+            b" ",
+            b"\n",
+            b"\r",
+            b"\t",
+            b"\x1b",
+            b"[",
+            b"31",
+            b";",
+            b"m",
+            b"]",
+            b"\x07",
+            b"\x7f",
+            b"\x00",
+            "\u{9b}".as_bytes(),
+            b"\xc2",
+            b"\x9c",
+            "“".as_bytes(),
+            "é".as_bytes(),
+            "日".as_bytes(),
+            b"\xff",
+            b"\xe2\x80",
+        ];
+        let plain: &[&[u8]] = &[
+            b"a",
+            b"Z",
+            b" ",
+            b"~",
+            b"\n",
+            "é".as_bytes(),
+            "日".as_bytes(),
+            "“".as_bytes(),
+            "\u{a0}".as_bytes(),
+            "👍".as_bytes(),
+            b"0123456789",
+        ];
+        let mut fast = 0;
+        for round in 0..20_000 {
+            let is_loud = round % 2 == 0;
+            let pieces = if is_loud { loud } else { plain };
+            let mut bytes = Vec::new();
+            for _ in 0..rng.usize(..48) {
+                // In the loud rounds, one choice in a dozen is any byte.
+                if is_loud && rng.usize(..12) == 0 {
+                    bytes.push(rng.u8(..));
+                } else {
+                    bytes.extend_from_slice(pieces[rng.usize(..pieces.len())]);
+                }
+            }
+            fast += usize::from(super::plain(&bytes).is_some());
+            for colour in [false, true] {
+                for column in [0, 3] {
+                    assert_eq!(
+                        DisplayText::from_bytes_at(&bytes, colour, column),
+                        DisplayText::parse_full(&bytes, colour, column, None).0,
+                        "{bytes:?}"
+                    );
+                }
+            }
+        }
+        // Both paths ran: the plain rounds, half of them, take the fast one.
+        assert!((10_000..20_000).contains(&fast), "{fast}");
+    }
+
+    /// The same, for every byte and every pair of bytes, inside plain text
+    /// and at its ends: each C0 and C1 byte, each C2 pair and each broken
+    /// sequence, none left to chance.
+    #[test]
+    fn every_byte_and_pair_matches_the_full_parse() {
+        let check = |bytes: &[u8]| {
+            for colour in [false, true] {
+                assert_eq!(
+                    DisplayText::from_bytes_at(bytes, colour, 3),
+                    DisplayText::parse_full(bytes, colour, 3, None).0,
+                    "{bytes:?}"
+                );
+            }
+        };
+        for a in 0..=u8::MAX {
+            check(&[a]);
+            check(&[b'x', a, b'\n', b'y']);
+            for b in 0..=u8::MAX {
+                check(&[b'x', a, b, b'\n']);
+            }
+        }
+    }
 
     /// Wrapping counts display width: colour codes count nothing and stay
     /// whole on each piece, a wide character counts two; no piece starts
