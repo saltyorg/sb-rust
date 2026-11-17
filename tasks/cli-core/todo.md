@@ -3,6 +3,9 @@
 Plan: [tasks/cli-core/plan.md](plan.md). Spec: [docs/specs/cli-core.md](../../docs/specs/cli-core.md).
 Prototype tasks and their open items: [tasks/prototypes/todo.md](../prototypes/todo.md).
 
+Finished: every task is done; later plans carry its open items
+([tasks/todo.md](../todo.md), "Finished plans").
+
 Every task follows CONSTRAINTS.md: test first, `scripts/check.sh fast`
 after edits, `task` before handing back, `full` before committing, a
 `Library-check:` line in each commit changing Rust, and the library-reviewer
@@ -126,6 +129,9 @@ still isn't root stops instead of looping.
 - Open until the first root-needing command (`sb docker ps`): two
   mutants are equivalent today (`needs_root` always false, effective UID
   always 0) and the relaunch path in `main` runs end to end only then.
+  *Closed by the docker plan's Task 6b: `sb docker ps` runs the
+  relaunch end to end, and both mutants are caught
+  ([tasks/docker/todo.md](../docker/todo.md)).*
 
 **Dependencies:** Task 4
 **Files:** `crates/cli-core/src/{root.rs,command.rs}`, `crates/cli-core/tests/relaunch.rs`

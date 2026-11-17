@@ -3,6 +3,10 @@
 Plan: `tasks/prototypes/plan.md`. Each prototype task ends with `prototypes/<name>/FINDINGS.md`
 in the format the plan defines.
 
+Finished: the maintainer approved the map on 2026-10-29 (Checkpoint C).
+Each box still open below says where its work was carried or what
+superseded it.
+
 Every task also requires:
 `cargo build -p <name>` and `cargo clippy -p <name>` with no warnings.
 
@@ -128,6 +132,7 @@ replace sb-go's hand-written hit-map, without owning ANSI or width code?
 **Verification:**
 - [ ] Manual mouse session in at least two terminal emulators, named in
       FINDINGS.
+      *Carried to the module build's M56 (the two-emulator check).*
 
 - [x] Look and feel reviewed by the maintainer (2026-10-29); the
       two-emulator manual check above is still open.
@@ -216,6 +221,8 @@ dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
 - [x] `install <TAB>` completes tags from a tag source (a static list in the
       prototype).
 - [ ] It works in bash, zsh and fish, with the install steps recorded.
+      *Carried to the proto-complete review and the module build's M57
+      (verification items 1-6 in each shell's container).*
 - [x] FINDINGS notes the API's stability status (unstable feature flags, if
       any).
 
@@ -293,6 +300,9 @@ the static musl binary.
       memory, follow cost and robustness, corruption and fuzz testing, a
       security audit, features for Saltbox's use, and old and future
       formats with a CI design. Results go into FINDINGS.md.
+      *Superseded: the sb-journal spec (decision 7) and its plan
+      ([tasks/journal/](../journal/plan.md)) took it up, the fuzz
+      harness (Task 8) and the security audit (Task 11) included.*
 
 ## Later: Install script lives in this repository
 
@@ -344,6 +354,9 @@ Candidates to weigh in the spec, not decisions:
 - [ ] Each documented command run against a test server (one at a time,
       endpoint from environment variables), with and without `-v`, plus a
       forced failure to check the exit code and failure output.
+
+*Superseded: carried to the ops spec ("The install script") and the
+module build's M83; the boxes above stay as written.*
 
 **Dependencies:** cli-core, runner module
 **Files:** a new install script in this repository (path decided in the spec)

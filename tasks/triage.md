@@ -74,13 +74,17 @@ column. The maintainer adopted those as they stand.
 
 | Verdict | High | Medium | Low | unrated | Total | of which was unsure |
 |---|---|---|---|---|---|---|
-| KEEP | 6 | 18 | 7 | 0 | 31 | 11 |
-| DEFER | 0 | 4 | 13 | 2 | 19 | 1 |
+| KEEP | 6 | 18 | 11 | 1 | 36 | 11 |
+| DEFER | 0 | 4 | 9 | 1 | 14 | 1 |
 | DROP | 1 | 14 | 80 | 7 | 102 | 8 |
 | Total | 7 | 36 | 100 | 9 | 152 | 20 |
 
 On 2026-11-15 (Checkpoint R) exec-M1 and exec-L2 moved from DEFER to KEEP:
 both were fixed in bdfc7e6 (module task M23).
+
+On 2026-11-17 cli-core's cli-L5, journal's follow-L1, follow-L4 and
+page-L5, and term-ui's san-I4 moved from DEFER to KEEP the same way:
+the module build fixed each when its consumer arrived (the rows below).
 
 ## KEEP (fixed now)
 
@@ -119,6 +123,11 @@ both were fixed in bdfc7e6 (module task M23).
 | config-L11 | Low | sb | 46 (was 52) | Ctrl-C may lag when DNS is dead | A server with broken DNS is where validate-config gets run; untested claim, and a second Ctrl-C forces the exit | yes |
 | exec-M1 | Medium | exec | 7, 14 | A piped child prompting on the terminal hangs sb for ever | exec's only caller is a captured `systemctl is-active`; matters with the first command that runs git or ssh. **Fix specified 2026-11-13** (repo spec's exec amendment: `SSH_ASKPASS_REQUIRE=force`, `SSH_ASKPASS=/bin/false`, exec spec "Environment rules"); **fixed 2026-11-13 in bdfc7e6** (module task M23) |
 | exec-L2 | Low | exec | 15 | `stream` loses a final unterminated line when a grandchild holds the pipe | No command uses `stream` yet. **Fix specified 2026-11-13** (repo spec's exec amendment, exec spec "Ways to run"); **fixed 2026-11-13 in bdfc7e6** (module task M23) |
+| san-I4 | unrated | term-ui | 25 | No size bound in `from_bytes`; the viewer needs its own cap | Already a recorded requirement for the viewer spec; **fixed 2026-11-13 in 32497d8** (module task M66: the journal adapter's 4 MiB output limit) |  |
+| cli-L5 | Low | cli-core | 22 | A requested exit code swallows a real error | Latent; no command combined the two then; **fixed 2026-11-13 in 9eafa73** (module task M68: a failed restore after Ctrl-C is still reported) |  |
+| follow-L1 | Low | journal | 40 | A waited read is retried only at the next inotify event | The retry timing belongs to the viewer's wake loop; decide it there; **fixed 2026-11-15 in 24a7f01** (module task M73) |  |
+| follow-L4 | Low | journal | 40 | Follow fails outright on inotify exhaustion | Correct behaviour; only the viewer's wording was open; **fixed 2026-11-15 in 24a7f01** (module task M73) |  |
+| page-L5 | Low | journal | 39 | Release and source passed twice, nothing ties them | An API addition with no consumer then (decision 10 names it); **fixed 2026-11-13 in 172d0b1** (module task M65: `Journal::unit_query`) |  |
 
 ## DEFER (waits for its consumer)
 
@@ -136,11 +145,6 @@ both were fixed in bdfc7e6 (module task M23).
 | san-I1 | unrated | term-ui | 21 | Step labels and titles drawn unsanitized | Every caller passes constants or escaped paths; matters with the first caller that passes foreign text |  |
 | ui-L1 | Low | term-ui | 21 | Labels and title unsanitized | Same as san-I1 |  |
 | ui-L5 | Low | term-ui | 21 | Long output lines stored whole and re-measured each frame | Only through streamed child output |  |
-| san-I4 | unrated | term-ui | 25 | No size bound in `from_bytes`; the viewer needs its own cap | Already a recorded requirement for the viewer spec |  |
-| cli-L5 | Low | cli-core | 22 | A requested exit code swallows a real error | Latent; no command combines the two today |  |
-| follow-L1 | Low | journal | 40 | A waited read is retried only at the next inotify event | The retry timing belongs to the viewer's wake loop; decide it there |  |
-| follow-L4 | Low | journal | 40 | Follow fails outright on inotify exhaustion | Correct behaviour; only the viewer's wording is open |  |
-| page-L5 | Low | journal | 39 | Release and source passed twice, nothing ties them | An API addition with no consumer (decision 10 names it) |  |
 | page-L9 | Low | journal | 39 | API ergonomics (PartialEq, constructors, cursor parsing) | API changes with no consumer |  |
 | sb-M1 | Medium | sb | 48 | No gate runs the production musl binary | Gate work, but it guards what users will actually run; do it when the first release is prepared | yes |
 | sb-M4 | Medium | sb | 48 | The cross build drops the version variables | Bites at the first release build (wrong `sb version`); no release pipeline exists yet |  |

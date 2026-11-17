@@ -293,33 +293,35 @@ of `--help`.
 | `docker start` | Starts Saltbox's containers through the Docker controller | docker | built | `-v` dropped (docker decision 6) |
 | `docker stop` (`--ignore`) | Stops them | docker | built | as above |
 | `docker restart` (`--ignore`) | Restarts them | docker | built | as above |
-| `docker logs` | Shows container logs | tui, docker | specified ([tui](tui.md)), then built per slice | one picker for docker and journal logs (journal spec decision 8; idea: [log-picker](../ideas/log-picker.md)). *Amended 2026-11-13 by the tui spec.* |
-| `logs` | Shows logs of Saltbox's systemd services | tui, host, journal | built: services (tui slice 1); containers, filters and the inline fallback per later slice | as above; sb-journal and sb-host's follow are built. *Amended 2026-11-13 by the tui spec.* |
+| `docker logs` | Shows container logs | tui, docker | built (module build M69; the unified picker, M70) | one picker for docker and journal logs (journal spec decision 8; idea: [log-picker](../ideas/log-picker.md)). *Amended 2026-11-13 by the tui spec.* |
+| `logs` | Shows logs of Saltbox's systemd services | tui, host, journal | built: services (module build M68), containers (M69), the unified picker's filters (M70) and the inline fallback (M72) | as above; sb-journal and sb-host's follow are built. *Amended 2026-11-13 by the tui spec.* |
 | `fact` | Browses and edits saltbox facts interactively | tui | specified ([tui](tui.md)) | edits `<appdata>/saltbox/<role>.ini`, not `saltbox.fact`; the role lock only at Save (tui spec decision 38; idea: [fact-editor](../ideas/fact-editor.md)). *Amended 2026-11-13 by the tui spec.* |
-| `edit <file>` | Opens one config file in an editor: `accounts`, `adv_settings`, `backup_config`, `hetzner_vlan`, `settings`, `inventory` | tui (edit picker) | specified ([tui](tui.md)) | validates the file after the editor exits (tui spec). *Amended 2026-11-13 by the tui spec.* |
+| `edit <file>` | Opens one config file in an editor: `accounts`, `adv_settings`, `backup_config`, `hetzner_vlan`, `settings`, `inventory` | tui (edit picker) | built per slice: the six subcommands and the check after the edit (module build M49, M50); the picker follows (M53) | validates the file after the editor exits (tui spec). *Amended 2026-11-13 by the tui spec.* |
 | `install [tags]` (`-v` to `-vvvv`, `-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | built (module build M31; the tag cache and validation, M32 and M33) | `-v` is counted and passed to `ansible-playbook` as `-v` to `-vvvv` (it stays here, unlike the dropped `-v` elsewhere); `-e` passes each value whole, so JSON reaches Ansible intact (open items below); the tag cache is shared with `list` and completion |
 | `list [query]` (`--include-mod`) | Lists the available tags | ansible | built (module build M34) | |
 | `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`, `--migrations`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
-| `branch <name>` (required) | Switches the branch Saltbox uses | ops, repo | specified ([ops](ops.md)) | *Amended 2026-11-13 by the ops spec.* |
-| `branch-sandbox <name>` (required) | Switches the branch Sandbox uses | ops, repo | built, bare: no tags cache yet (module build M5; ops completes it in M79) | *Amended 2026-11-13 by the ops spec.* |
+| `branch <name>` (required) | Switches the branch Saltbox uses | ops, repo | built per slice (module build M79): runtime and tags join in M85 | *Amended 2026-11-13 by the ops spec.* |
+| `branch-sandbox <name>` (required) | Switches the branch Sandbox uses | ops, repo | built per slice (module build M5, on ops since M79): runtime and tags join in M85 | *Amended 2026-11-13 by the ops spec.* |
 | `diag` | Runs the diagnostics role | ansible | built (module build M30) | *Amended 2026-11-13 by the ansible spec.* |
-| `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | built per slice: Distribution and Kernel, the selection, runner and layout (module build M36); the other sections, motd.yml, the banner and `--share` follow (M37-M47) | spec approved; `-v` dropped (motd decision 9). *Amended 2026-11-13 by the motd spec.* |
-| `reinstall-facts` | Reinstalls the saltbox.fact file | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
-| `reinstall-python` | Reinstalls Saltbox's Python (uv) and the Ansible venv | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
-| `reinstall-venv` | Reinstalls the Ansible venv | python-env | specified ([python-env](python-env.md)) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | built per slice: Distribution and Kernel, the selection, runner and layout (module build M36); the other sections, motd.yml and `--generate-config` (M37-M45); the banner (M46) and `--share` (M47) follow | spec approved; `-v` dropped (motd decision 9). *Amended 2026-11-13 by the motd spec.* |
+| `reinstall-facts` | Reinstalls the saltbox.fact file | python-env | built (module build M19) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `reinstall-python` | Reinstalls Saltbox's Python (uv) and the Ansible venv | python-env | built (module build M16) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `reinstall-venv` | Reinstalls the Ansible venv | python-env | built (module build M16) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
 | `bench` | Runs the bundled bench.sh benchmark | ops | specified ([ops](ops.md)) | rewritten in Rust (ops spec decision 11): sysinfo, an in-process disk test, the pinned Ookla Speedtest; no vendored script. *Amended 2026-11-13 by the ops spec.* |
 | `completion install [bash\|zsh\|fish]`, `completion <shell>` (hidden) | Installs the shell completion registration | completion | specified ([completion](completion.md)) | dynamic completion through `CompleteEnv` (proto-complete); slices paused until the maintainer reviews proto-complete's look (completion slice 0). *Amended 2026-11-13 by the completion spec.* |
 | `completion generate <shell>` | Writes a completion script to stdout | completion | specified ([completion](completion.md)) | as above. *Amended 2026-11-13 by the completion spec.* |
-| `setup` (hidden; `--branch`, `--force`, `--keep-branch`, `--reset-branch`, `-v` hidden and ignored) | Installs Saltbox and its dependencies | ops | specified ([ops](ops.md)) | the first command on a new host. *Amended 2026-11-13 by the ops spec.* |
-| `update-venv` (hidden) | Updates the Ansible venv and saltbox.fact | python-env | built per slice: a healthy venv kept, its wrappers, cleanup and ownership, libpq-dev (module build M14); the rebuild (M15, M16), uv's install (M18), the fact (M19) and deadsnakes (M20) follow | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
+| `setup` (hidden; `--branch`, `--force`, `--keep-branch`, `--reset-branch`, `-v` hidden and ignored) | Installs Saltbox and its dependencies | ops | built per slice (module build M82): the completion refresh joins in M87 | the first command on a new host. *Amended 2026-11-13 by the ops spec.* |
+| `update-venv` (hidden) | Updates the Ansible venv and saltbox.fact | python-env | built (module build M14-M20: a healthy venv kept, the rebuild, uv's install, the fact and deadsnakes) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
 | `self-update` (hidden; `--yes`, and `--force-update` in builds with self-update disabled, raw builds included) | Updates the CLI itself | release | built | sends a User-Agent; keeps the digest check (stack table). *Amended 2026-11-13 by the release spec.* |
 | `announcements` (`--before`, `--after`, `--repo`, none required) | Shows a repository's announcements, the new ones marked | ops, tui | built (module build M74: the inline form, then tui's viewer on a terminal, M87's viewer half) | reads Saltbox's and Sandbox's announcements, or one repository's with -r: tui's viewer on a terminal, inline otherwise; migrations stay with update (ops spec, decisions 27 and 30). *Amended 2026-11-13 by the ops spec, 2026-11-15.* |
 | `restore` (hidden) | Fetches and decrypts a user's backed-up files | ops | specified ([ops](ops.md)) | RustCrypto stack (stack table); --user and --password-file, no -v (ops spec). *Amended 2026-11-13 by the ops spec.* |
-| `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | specified ([ops](ops.md)) | CI-only |
+| `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | built (module build M81) | CI-only |
 
 29 rows: every command sb-go registers, with `docker` and `completion`
-listed by their subcommands. 6 are built; the other 23 are specified
-(2026-11-13).
+listed by their subcommands. On 2026-11-17, 18 are built, 5 are built
+per slice (`edit`, `branch`, `branch-sandbox`, `motd`, `setup`) and 6
+are specified (`fact`, `update`, `bench`, both `completion` rows and
+`restore`).
 
 ## Upstream note (for the maintainer to raise; no consumer changes here)
 

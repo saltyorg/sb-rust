@@ -71,24 +71,27 @@ every sibling finish (decision 3).
 - [x] Task 7: The sync validators and secrets
 - [x] Task 8: The HTTP fake, the client and Docker Hub
 - [x] Task 9: The Cloudflare check
-- [ ] Task 10: The validation run in sb-config
-- [ ] Task 11: `sb validate-config` in sb (command, runner, basic
+- [x] Task 10: The validation run in sb-config
+- [x] Task 11: `sb validate-config` in sb (command, runner, basic
       end-to-end, size ADR)
 
 ### Checkpoint B: The command works
 
-- [ ] `scripts/check.sh full`; the maintainer runs a release build on a
+- [x] `scripts/check.sh full`; the maintainer runs a release build on a
       real host's config
 
 ### Phase 3: Proof
 
-- [ ] Task 12: End-to-end: the runner's look, failures, signals, the log
-- [ ] Task 13: Success criteria, parity and measurements
+- [x] Task 12: End-to-end: the runner's look, failures, signals, the log
+- [x] Task 13: Success criteria, parity and measurements
 
 ### Checkpoint C: Complete
 
-- [ ] All tasks done; spec success criteria met or carried by name;
+- [x] All tasks done; spec success criteria met or carried by name;
       `scripts/check.sh full`
+
+Finished: Checkpoint C closed and the plan archived on 2026-11-04
+(11e514a); the boxes here follow [todo.md](todo.md).
 
 Details, acceptance criteria and verification: [tasks/config/todo.md](todo.md).
 

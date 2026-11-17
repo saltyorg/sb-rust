@@ -582,6 +582,9 @@ both directions with sb-go (sb-go's tree read by sb, sb's read by sb-go).
 
 # Lane 2: exec, release, ansible, motd
 
+*motd's tasks (M36-M47) moved to lane 3 on 2026-11-13 (plan.md, the
+lane change of 2026-11-13); their Lane lines say so.*
+
 ## Task M22: exec: `option_value` and public `shown()`
 
 **Lane:** 2 · **Gate:** free
@@ -590,6 +593,11 @@ both directions with sb-go (sb-go's tree read by sb, sb's read by sb-go).
 str, String)` joins a literal option to a user value in one argv element
 (`--extra-vars=<value>`), shown as `--extra-vars=[ARG]` in logs and
 errors; `Cmd::shown()` becomes public.
+*As built, then changed (the maintainer, 2026-11-16): 69701ad removed
+`option_value` and the `[ARG]` rendering after 6e12a38 left them with
+no production caller; a joined option is one `shown_value` the caller
+builds, or one `secret` (exec decision 14), and `shown()` stays
+public.*
 
 **Acceptance criteria:**
 - [x] The child receives the joined element byte for byte, JSON and a
@@ -877,6 +885,11 @@ and lenient repo failures, the error layout.
 **Description:** Slice 5: the tag columns with uutils_term_grid,
 `(cached)`, `-m`/`--include-mod`, the search table with spans through the
 term-ui amendment `Table::spanning_row`, error collection.
+*As built, then changed (the maintainer, 2026-11-16): `sb list` took the
+refined columns layout (da6f848, 6841fa0; ansible spec decision 19):
+a heading per repository, columns of one shared width, still through
+uutils_term_grid, and a footer hint; the `(cached)` note became a
+run-log record.*
 
 **Acceptance criteria:**
 - [x] Columns fill as many as the terminal width allows, through
@@ -1142,7 +1155,7 @@ qBittorrent, and rTorrent's XML-RPC with quick-xml.
 
 ## Task M46: motd: the banner
 
-**Lane:** 3 · **Gate:** look (the banner) · **Shared files:** yes (shlex, plan decision 8)
+**Lane:** 3 · **Gate:** look (the banner) · **Shared files:** yes (sb-motd gains shlex, a workspace dependency since M49's 3d0a71b; plan decision 8)
 
 **Description:** Slice 9: the toilet and boxes children, fallbacks, the
 type and font checks, `--banner-file-toilet`'s arguments through shlex.
@@ -1180,7 +1193,7 @@ type and font checks, `--banner-file-toilet`'s arguments through shlex.
 - [ ] Review: code-reviewer.
 
 **Dependencies:** M46
-**Files:** `crates/motd/src/{redact.rs,lib.rs}`, `crates/sb/tests/motd.rs`
+**Files:** `crates/motd/src/{redact.rs,lib.rs}` (redact.rs holds M44's credential hiding, a66b102), `crates/sb/tests/motd.rs`
 **Scope:** S
 
 ## Checkpoint M: motd
@@ -1191,6 +1204,9 @@ type and font checks, `--banner-file-toilet`'s arguments through shlex.
 ---
 
 # Lane 3: config and the editors, completion (starts after hardening Task 55)
+
+*The editors' screens (M53-M56) moved to lane 6 on 2026-11-16 (plan.md,
+the lane change of 2026-11-16).*
 
 ## Task M48: config: `check_file` and `validate_file`
 
@@ -1309,7 +1325,7 @@ directory fd, `O_EXCL`), the outcomes, `is_secret_key`.
 
 ## Task M53: tui editors: the edit picker
 
-**Lane:** 3 · **Gate:** look (the picker)
+**Lane:** 6 · **Gate:** look (the picker)
 
 **Description:** The editors' slice 9 on M61's base: the list with
 mouse, restore, and the hand-off to M49's path, so `sb edit` without a
@@ -1326,12 +1342,12 @@ file shows the picker.
 - [ ] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M52, M74 (crates/tui handoff)
-**Files:** `crates/tui/src/{picker.rs,lib.rs}`, `crates/sb/src/edit.rs`, `crates/sb/tests/edit.rs`
+**Files:** `crates/tui/src/{edit_picker.rs,lib.rs}` (`picker.rs` is the log viewer's, M70), `crates/sb/src/edit.rs`, `crates/sb/tests/edit.rs`
 **Scope:** S
 
 ## Task M54: tui editors: the fact editor, read-only page
 
-**Lane:** 3 · **Gate:** look (the fact editor) · **Shared files:** yes (tui-popup, tui-scrollview)
+**Lane:** 6 · **Gate:** look (the fact editor) · **Shared files:** yes (tui-popup; tui-scrollview is in sb-tui since c8f73c7)
 
 **Description:** The editors' slice 12: `sb fact` loads the role files
 and shows headings, search, folding, masking, Show and Copy.
@@ -1351,7 +1367,7 @@ and shows headings, search, folding, masking, Show and Copy.
 
 ## Task M55: tui editors: the fact editor's changes
 
-**Lane:** 3 · **Gate:** look (the panel and dialogs)
+**Lane:** 6 · **Gate:** look (the panel and dialogs)
 
 **Description:** The editors' slice 13: edit, add key, delete at three
 levels, the changes panel with undo, save, quit, and the lock-wait,
@@ -1373,7 +1389,7 @@ drift and outcome dialogs.
 
 ## Task M56: tui editors: mouse, the menu, the PTY smoke test
 
-**Lane:** 3 · **Gate:** look (the menu; the manual check)
+**Lane:** 6 · **Gate:** look (the menu; the manual check)
 
 **Description:** The editors' slice 14: mouse through recorded layout
 rects, the right-click menu, the PTY smoke test, then the manual
@@ -1487,6 +1503,10 @@ and `setup`, with a warning on failure.
 ---
 
 # Lane 4: docker, journal, the log viewer, ops
+
+*On 2026-11-16 bench (M77, M78) moved to lane 5 and M79-M86 to lane 1;
+M87 has no lane until completion (M57-M60) is unpaused. Restore (M75,
+M76) stays in lane 4 (plan.md, the lane change of 2026-11-16).*
 
 ## Task M61: tui: groundwork
 
@@ -1790,8 +1810,8 @@ are untrusted).
 
 **Description:** ops' slice 10 with tui's inline announcement form: the
 crate, the announcement rules (load through the YAML entry, diff, gate,
-sort, the migration list), the hidden `sb announcements` with
-`--migrations`, and tui's inline Markdown output (each announcement
+sort, the migration list), `sb announcements` (planned hidden, with
+`--migrations`; see as built), and tui's inline Markdown output (each announcement
 under `<Repo> Announcement - <Month D, YYYY>`, messages through
 `DisplayText`). After this task merges, `crates/tui` passes to lane 3.
 *As built (the maintainer, 2026-11-15 and 2026-11-16): `sb
@@ -1821,8 +1841,9 @@ shown.*
 - [ ] Look: the picker and viewer (M67, M68), container rows (M69), the
       unified picker (M70), search (M71), the inline forms (M72), the
       inline announcements (M74).
-- [ ] The announcement viewer's spec section asked for (plan open
-      question 1).
+- [x] The announcement viewer's spec section asked for (plan open
+      question 1). Done: written at M74's look (tui.md, "The
+      announcement viewer", 397f079) and built in c8f73c7.
 
 ## Task M75: ops: restore core
 
@@ -1872,7 +1893,7 @@ test, and the one read-only check of the real service's 404.
 
 ## Task M77: ops: bench, system and disk
 
-**Lane:** 4 · **Gate:** look (bench's new format) · **Shared files:** yes (sysinfo's `disk` feature)
+**Lane:** 5 · **Gate:** look (bench's new format) · **Shared files:** yes (sysinfo's `disk` feature)
 
 **Description:** ops' slice 3: sysinfo rows, cpuinfo parsing, host's
 `free_space`, the in-process disk test, the tables, `sb bench`'s help
@@ -1889,13 +1910,13 @@ text.
 - [ ] `cargo test -p sb-ops -p sb`.
 - [ ] Review: code-reviewer, library-reviewer.
 
-**Dependencies:** M76, M4
+**Dependencies:** M4 (M76 was lane order, dropped with the lane change of 2026-11-16)
 **Files:** `crates/ops/src/bench/{mod.rs,system.rs,disk.rs}`, `crates/sb/src/{main.rs,bench.rs}`, `Cargo.toml`, `Cargo.lock`
 **Scope:** M
 
 ## Task M78: ops: bench, network
 
-**Lane:** 4 · **Gate:** look (the network rows) · **Shared files:** yes (tar, flate2, unless M18 added them first)
+**Lane:** 5 · **Gate:** look (the network rows) · **Shared files:** yes (sb-ops gains tar and flate2, which M18 added to the workspace in 5ab54b2)
 
 **Description:** ops' slice 4: release's verified download of both
 pinned Speedtest assets, the tar extraction (size-capped, one entry),
@@ -1919,7 +1940,7 @@ ipinfo.
 
 ## Task M79: ops: `sb branch`, `sb branch-sandbox`
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** ops' slice 9, the update part's first slice: both
 branch commands on repo, replacing M5's bare wiring, with
@@ -1936,13 +1957,13 @@ land (each added in M85).
 - [x] `cargo test -p sb-ops -p sb` on local bare repositories.
 - [x] Review: code-reviewer, library-reviewer.
 
-**Dependencies:** M78, M8, M12
+**Dependencies:** M8, M12 (M78 was lane order, dropped with the lane change of 2026-11-16)
 **Files:** `crates/ops/src/branch.rs`, `crates/sb/src/{main.rs,branch.rs}`, `crates/sb/tests/branch.rs`
 **Scope:** M
 
 ## Task M80: ops: setup's and gha's shared pieces
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** ops' slice 5: `prerequisites`, `locale`,
 `copy_default_configs`, `secure_existing_configs`, `git_hooks`, and the
@@ -1965,7 +1986,7 @@ stub-and-namespace harness the later ops tests use.
 
 ## Task M81: ops: `sb gha`
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** ops' slice 6: gha's sequence, `SUDO_USER` ownership, the
 symlinked root, and the container matrix on 22.04, 24.04 and 26.04.
@@ -1986,7 +2007,7 @@ symlinked root, and the container matrix on 22.04, 24.04 and 26.04.
 
 ## Task M82: ops: `sb setup`
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** ops' slice 7: the guard, the phases, the branch prompt
 with `--keep-branch`/`--reset-branch`, hidden `-v`; the completion
@@ -2008,7 +2029,7 @@ refresh is left to M87.
 
 ## Task M83: ops: the install script
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** ops' slice 8: `install/install.sh` from sb-go's plus
 `-b`, its container tests (sb-go's test-install cases) and the
@@ -2031,7 +2052,7 @@ step, not part of this task.
 
 ## Task M84: ops: `update`, part 1
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** The first half of ops' slice 11: the up-front flag
 check, disk space, self-update (exit 0 with the "Re-run" warning), the
@@ -2053,7 +2074,7 @@ branch questions, apt, both repositories.
 
 ## Task M85: ops: `update`, part 2
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** The second half of slice 11: secure files, validation
 through `validate_file` with `Checks::Run`, the runtime through
@@ -2075,7 +2096,7 @@ the branch commands gain runtime and tags too.
 
 ## Task M86: ops: migrations
 
-**Lane:** 4 · **Gate:** free
+**Lane:** 1 · **Gate:** free
 
 **Description:** ops' slice 12: the migration table, the confirm (or
 `--migrations`), ansible's `run` by tag per repository.
@@ -2095,7 +2116,7 @@ the branch commands gain runtime and tags too.
 
 ## Task M87: ops: the announcement viewer and the completion refresh
 
-**Lane:** 4 · **Gate:** paused (the proto-complete review; the announcement viewer's tui spec section)
+**Lane:** none until completion (M57-M60) is unpaused · **Gate:** paused (the proto-complete review; the announcement viewer's tui spec section came with M74, 397f079)
 
 **Description:** ops' slice 13: `update` and `setup` show announcements
 in tui's viewer on a terminal and refresh completion, once both exist.
@@ -2112,7 +2133,7 @@ calling it from `update` and `setup`, and the completion refresh.*
 - [ ] `cargo test -p sb-ops -p sb`.
 - [ ] Review: code-reviewer, library-reviewer.
 
-**Dependencies:** M86, M60, the announcement viewer's spec section and build
+**Dependencies:** M86, M60 (the announcement viewer's spec section and build came with M74: 397f079, c8f73c7)
 **Files:** `crates/ops/src/{update.rs,setup.rs}`
 **Scope:** S
 
@@ -2200,6 +2221,7 @@ calling it from `update` and `setup`, and the completion refresh.*
       tests keep their temp roots and nothing else can change. Record it
       in ADR-021; floor-guard tests show a mutant's write to a host path
       fails inside the pass.
+      Done: 984d853.
 - [x] **The viewer's wrap-off frame meets 5 ms** (the maintainer,
       2026-11-15). M73 measured a wrap-off frame at about 5.6 ms (9.9 ms
       for the frame that switches wrap off) at 240x70 on the spec's
@@ -2217,6 +2239,7 @@ calling it from `update` and `setup`, and the completion refresh.*
       and :348, `start.elapsed() < GRACE` at :363 and :454, and `< BOUND`
       at :233, :277 and :301 are fixed wall-clock bounds of the kind
       3f9e8f9 replaced; give them baseline-derived bounds the same way.
+      Done: 6c0c747.
 - [x] **Leaked exec helper shells after 517de92** (the gate). On
       2026-11-14, 185 orphaned `dash` helper shells (exec's tests' `sh -c
       'trap ... exit'`) were found with their working directory in five
@@ -2226,6 +2249,7 @@ calling it from `update` and `setup`, and the completion refresh.*
       misses a case (a shell started after the last sweep, by a process
       the sweep killed?). Reproduce with a pass over sb-exec, find which,
       and fix or document it.
+      Done: 61af0ef (the shells came from gate runs killed mid-pass).
 - [x] **sb-ansible's log test is flaky under load** (lane 4, with its next
       task). `cache::tests::a_corrupt_or_unreadable_file_is_logged`
       (crates/ansible/src/cache.rs) captured an empty log once, during the

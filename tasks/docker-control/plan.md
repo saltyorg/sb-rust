@@ -110,6 +110,10 @@ verification.
 
 ### Checkpoint B: complete
 
+Finished: the maintainer's by-hand runs passed and the plan closed on
+2026-11-06 (c4408f8); [tasks/todo.md](../todo.md) carries its
+follow-ups.
+
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |

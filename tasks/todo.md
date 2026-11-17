@@ -15,12 +15,14 @@ the traceability table, risks, open questions). Findings, by id:
 - [tasks/cli-core/](cli-core/plan.md);
 - [tasks/prototypes/](prototypes/plan.md).
 
-[docs/specs/host.md](../docs/specs/host.md) (approved 2026-11-08) has
-no plan of its own yet: sb-host holds the supported-release check (the
-cli-core plan's Task 4) and the journal reader's wrapper (the sb-journal
-plan's Task 10), and the rest of the spec waits for its plan.
+[docs/specs/host.md](../docs/specs/host.md) (approved 2026-11-08):
+sb-host first held the supported-release check (the cli-core plan's
+Task 4) and the journal reader's wrapper (the sb-journal plan's Task
+10); the module build built the rest of the spec (M1-M4, M9-M11,
+[tasks/modules/](modules/plan.md)).
 
-Approved 2026-11-13, no plans yet (planning comes next): the
+Approved 2026-11-13 and planned in the module build
+([tasks/modules/plan.md](modules/plan.md), M1-M87): the
 [tui](../docs/specs/tui.md), [ansible](../docs/specs/ansible.md),
 [completion](../docs/specs/completion.md) (its slices paused until the
 maintainer reviews proto-complete's look),
@@ -28,7 +30,7 @@ maintainer reviews proto-complete's look),
 [repo](../docs/specs/repo.md), [release](../docs/specs/release.md),
 [ops](../docs/specs/ops.md) and [motd](../docs/specs/motd.md) specs.
 Their amendments to the approved specs are applied; exec-M1 and exec-L2
-are specified for the repo plan ([tasks/triage.md](triage.md)).
+were fixed in bdfc7e6 (module task M23; [tasks/triage.md](triage.md)).
 
 Every task follows CLAUDE.md:
 - the skills;
