@@ -3661,6 +3661,7 @@ dependencies = [
  "anstyle",
  "form_urlencoded",
  "icu_properties",
+ "insta",
  "jiff",
  "procfs",
  "psl",

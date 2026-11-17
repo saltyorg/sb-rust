@@ -185,6 +185,8 @@ fn help(section: Section) -> &'static str {
         Section::Services => "Show systemd services status",
         Section::Docker => "Show Docker container information",
         Section::Traefik => "Show Traefik router status information",
+        // Not a flag (`Section::ALL` leaves it out): `--traefik` shows it.
+        Section::Certificates => "Show Traefik's certificates",
         Section::Queues => "Show download queue information from Sonarr, Radarr, etc.",
         Section::Sabnzbd => "Show SABnzbd queue information",
         Section::Nzbget => "Show NZBGet queue information",

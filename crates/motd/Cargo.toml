@@ -74,6 +74,8 @@ sb-host = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "test-util", "time"] }
 tempfile.workspace = true
 tracing-subscriber.workspace = true
+# The Certificates line's forms (motd spec, Testing).
+insta.workspace = true
 
 [lints]
 workspace = true

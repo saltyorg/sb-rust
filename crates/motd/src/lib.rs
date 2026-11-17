@@ -36,7 +36,9 @@ use crate::config::Slot;
 pub use docker::Settings as DockerSettings;
 
 /// One of sb-go's 24 sections, in its fixed display order
-/// (`cmd/motd.go:202-339`, `displayMotd`'s `sources`).
+/// (`cmd/motd.go:202-339`, `displayMotd`'s `sources`), and sb's
+/// Certificates line after Traefik's (decision 27), which `--traefik`
+/// shows: it has no flag of its own, so it isn't in [`Section::ALL`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Section {
     Distribution,
@@ -55,6 +57,7 @@ pub enum Section {
     Services,
     Docker,
     Traefik,
+    Certificates,
     Queues,
     Sabnzbd,
     Nzbget,
@@ -66,7 +69,7 @@ pub enum Section {
 }
 
 impl Section {
-    /// Every section, in display order.
+    /// Every section with a flag, in display order: sb-go's 24.
     pub const ALL: [Section; 24] = [
         Section::Distribution,
         Section::Kernel,
@@ -114,6 +117,7 @@ impl Section {
             Section::Services => "Services:",
             Section::Docker => "Docker:",
             Section::Traefik => "Traefik:",
+            Section::Certificates => "Certificates:",
             Section::Queues => "Download Queues:",
             Section::Sabnzbd => "SABnzbd:",
             Section::Nzbget => "NZBGet:",
@@ -126,7 +130,8 @@ impl Section {
     }
 
     /// The flag that selects it (`cmd/motd.go:68-100`), which is also its
-    /// name in the run log.
+    /// name in the run log; the Certificates line's run-log name, which
+    /// `--traefik` selects.
     #[must_use]
     pub fn flag(self) -> &'static str {
         match self {
@@ -146,6 +151,7 @@ impl Section {
             Section::Services => "systemd",
             Section::Docker => "docker",
             Section::Traefik => "traefik",
+            Section::Certificates => "certificates",
             Section::Queues => "queues",
             Section::Sabnzbd => "sabnzbd",
             Section::Nzbget => "nzbget",
@@ -173,7 +179,8 @@ pub struct Options {
 }
 
 impl Options {
-    /// The sections to show, in display order: all of them with `--all`.
+    /// The sections to show, in display order: all of them with `--all`,
+    /// and the Certificates line with Traefik's.
     ///
     /// # Errors
     ///
@@ -185,6 +192,9 @@ impl Options {
         } else {
             self.sections.clone()
         };
+        if chosen.contains(&Section::Traefik) {
+            chosen.push(Section::Certificates);
+        }
         chosen.sort_unstable();
         chosen.dedup();
         if chosen.is_empty() {
@@ -541,6 +551,9 @@ fn job(section: Section, context: &Context) -> run::Job {
         }
         Section::Docker => Box::pin(async move { docker::docker(&containers, &paint).await }),
         Section::Traefik => Box::pin(async move { docker::traefik(&containers, &paint).await }),
+        Section::Certificates => {
+            Box::pin(async move { docker::certificates(&containers, &paint).await })
+        }
         Section::Reboot => {
             Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
         }
@@ -642,7 +655,26 @@ mod tests {
             sections: vec![Section::Kernel],
             ..Options::default()
         };
-        assert_eq!(options.chosen().unwrap(), Section::ALL.to_vec());
+        let mut lines = Section::ALL.to_vec();
+        let traefik = lines.iter().position(|&s| s == Section::Traefik).unwrap();
+        lines.insert(traefik + 1, Section::Certificates);
+        assert_eq!(options.chosen().unwrap(), lines);
+    }
+
+    /// `--traefik` shows the Certificates line too, right after its own
+    /// (decision 27): no flag of its own.
+    #[test]
+    fn traefik_brings_the_certificates_line() {
+        let options = Options {
+            all: false,
+            sections: vec![Section::Jellyfin, Section::Traefik],
+            ..Options::default()
+        };
+        assert_eq!(
+            options.chosen().unwrap(),
+            [Section::Traefik, Section::Certificates, Section::Jellyfin]
+        );
+        assert!(!Section::ALL.contains(&Section::Certificates));
     }
 
     #[test]

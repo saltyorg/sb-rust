@@ -110,11 +110,14 @@ enum Down {
     NoList,
 }
 
-/// The run's one listing, shared by the Docker and Traefik sections.
+/// The run's one listing, shared by the Docker and Traefik sections, and
+/// the one client Traefik's three requests share (building one loads the
+/// platform's roots, so one is built, at the first request).
 #[derive(Debug)]
 pub struct Containers {
     settings: Settings,
     listing: OnceCell<Result<Listing, Down>>,
+    client: OnceCell<Result<reqwest::Client, String>>,
     /// The listing's limit: [`LIMIT`], shorter in the tests.
     limit: Duration,
 }
@@ -131,8 +134,43 @@ impl Containers {
         Arc::new(Self {
             settings,
             listing: OnceCell::new(),
+            client: OnceCell::new(),
             limit,
         })
+    }
+
+    /// Traefik's client, built by the first request: curl's connect limit
+    /// inside the 5 s, no redirect followed, the settings' proxy.
+    async fn client(&self) -> &Result<reqwest::Client, String> {
+        self.client
+            .get_or_init(|| async { traefik_client(&self.settings.proxy) })
+            .await
+    }
+
+    /// Whether the `traefik` row is up, or the line Traefik's section
+    /// shows instead.
+    async fn traefik_up(&self, paint: &Paint) -> Result<(), String> {
+        let listing = match self.listing().await {
+            Ok(listing) => listing,
+            Err(Down::Unreachable(_)) => return Err("Docker service is not running".into()),
+            Err(Down::Denied(resource)) => return Err(denied(resource, paint)),
+            Err(Down::NoList) => return Err("Traefik container is not running".into()),
+        };
+        // `docker ps` without `-a` lists paused and restarting containers too.
+        let up = listing.rows.iter().any(|row| {
+            row.name == "traefik"
+                && matches!(row.state.as_str(), "running" | "paused" | "restarting")
+        });
+        if up {
+            Ok(())
+        } else {
+            Err("Traefik container is not running".into())
+        }
+    }
+
+    /// `path` under Traefik's base URL.
+    fn traefik_url(&self, path: &str) -> String {
+        format!("{}{path}", self.settings.traefik_base.trim_end_matches('/'))
     }
 
     /// The listing, made by the first caller.
@@ -323,24 +361,11 @@ struct Router {
 /// texts for each way there is no count (Difference 11 for an answer
 /// that isn't JSON).
 pub async fn traefik(containers: &Containers, paint: &Paint) -> String {
-    let listing = match containers.listing().await {
-        Ok(listing) => listing,
-        Err(Down::Unreachable(_)) => return "Docker service is not running".into(),
-        Err(Down::Denied(resource)) => return denied(resource, paint),
-        Err(Down::NoList) => return "Traefik container is not running".into(),
-    };
-    // `docker ps` without `-a` lists paused and restarting containers too.
-    let up = listing.rows.iter().any(|row| {
-        row.name == "traefik" && matches!(row.state.as_str(), "running" | "paused" | "restarting")
-    });
-    if !up {
-        return "Traefik container is not running".into();
+    if let Err(line) = containers.traefik_up(paint).await {
+        return line;
     }
-    let url = format!(
-        "{}/api/http/routers",
-        containers.settings.traefik_base.trim_end_matches('/')
-    );
-    let (status, body) = match fetch(&url, &containers.settings.proxy).await {
+    let url = containers.traefik_url("/api/http/routers");
+    let (status, body) = match fetch(containers, &url).await {
         Ok(answer) => answer,
         Err(err) => {
             tracing::warn!(error = %err, "traefik's api not reached");
@@ -351,8 +376,22 @@ pub async fn traefik(containers: &Containers, paint: &Paint) -> String {
 }
 
 /// The answer's status and body (at most sb-config's 1 MiB), or why
-/// there is none.
-async fn fetch(url: &str, proxy: &Proxy) -> Result<(u16, Vec<u8>), String> {
+/// there is none, on the run's Traefik client.
+async fn fetch(containers: &Containers, url: &str) -> Result<(u16, Vec<u8>), String> {
+    let client = containers.client().await.as_ref().map_err(Clone::clone)?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| sb_config::http::error_chain(&err.without_url()))?;
+    let status = response.status().as_u16();
+    Ok((status, sb_config::http::body(response).await?))
+}
+
+/// Traefik's client: sb-go's `curl --connect-timeout 3` inside the 5 s,
+/// no redirect followed (curl follows none without -L), `proxy` as
+/// sb-config's `Http::new` applies it.
+fn traefik_client(proxy: &Proxy) -> Result<reqwest::Client, String> {
     let builder = reqwest::Client::builder()
         .connect_timeout(TRAEFIK_CONNECT)
         .timeout(LIMIT)
@@ -367,16 +406,172 @@ async fn fetch(url: &str, proxy: &Proxy) -> Result<(u16, Vec<u8>), String> {
         Proxy::Via(via) => builder
             .proxy(reqwest::Proxy::all(via).map_err(|err| sb_config::http::error_chain(&err))?),
     };
-    let client = builder
+    builder
         .build()
-        .map_err(|err| sb_config::http::error_chain(&err))?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|err| sb_config::http::error_chain(&err.without_url()))?;
-    let status = response.status().as_u16();
-    Ok((status, sb_config::http::body(response).await?))
+        .map_err(|err| sb_config::http::error_chain(&err))
+}
+
+/// Traefik's warning: a certificate with under 30 days left
+/// (`getCertificateStatus`, `pkg/api/certificate.go` at v3.7.16).
+const SOON: jiff::SignedDuration = jiff::SignedDuration::from_hours(30 * 24);
+
+/// The overview's `certificates` (`pkg/api/handler_overview.go`'s
+/// `section`): every certificate served, those under 30 days from
+/// expiring, and those expired.
+#[derive(serde::Deserialize)]
+struct Counted {
+    total: u64,
+    warnings: u64,
+    errors: u64,
+}
+
+/// The part of Traefik's overview the line reads; `certificates` is left
+/// out before v3.7.0, and when Traefik has no TLS manager.
+#[derive(serde::Deserialize)]
+struct Overview {
+    certificates: Option<Counted>,
+}
+
+/// Certificates (motd spec, Certificates; decision 27): the certificates
+/// Traefik serves, from its API, never from `acme.json`.
+pub async fn certificates(containers: &Containers, paint: &Paint) -> String {
+    certificates_at(containers, paint, jiff::Timestamp::now()).await
+}
+
+/// [`certificates`] against `now`: hidden when Traefik isn't up or its API
+/// isn't reached (the Traefik line says which), else the line from the
+/// overview's counts and the first certificate to expire, both asked at
+/// once.
+async fn certificates_at(containers: &Containers, paint: &Paint, now: jiff::Timestamp) -> String {
+    if containers.traefik_up(paint).await.is_err() {
+        return String::new();
+    }
+    let overview = containers.traefik_url("/api/overview");
+    let first = containers.traefik_url("/api/certificates?sortBy=validUntil&per_page=1");
+    let (overview, first) = tokio::join!(fetch(containers, &overview), fetch(containers, &first));
+    let (status, body) = match overview {
+        Ok(answer) => answer,
+        Err(err) => {
+            tracing::warn!(error = %err, "traefik's overview not reached");
+            return String::new();
+        }
+    };
+    let first = match first {
+        Ok((200, body)) => first_expiry(&body),
+        Ok((status, _)) => Err(format!("traefik's certificates not listed (HTTP {status})")),
+        Err(err) => Err(format!("traefik's certificates not reached: {err}")),
+    };
+    let (line, counted) =
+        certificates_line(status, &body, first.as_ref().ok().copied(), now, paint);
+    // Only where the line counts certificates: a Traefik before v3.7.0
+    // answers the list with a 404 at every login, and shows no line.
+    if counted && let Err(why) = &first {
+        tracing::warn!(why, "the first certificate's date not shown");
+    }
+    line
+}
+
+/// The `notAfter` of the one certificate listed, or why there is none.
+fn first_expiry(body: &[u8]) -> Result<jiff::Timestamp, String> {
+    let listed: Value = serde_json::from_slice(body)
+        .map_err(|_| "traefik's certificates answer isn't JSON".to_string())?;
+    let not_after = listed
+        .get(0)
+        .and_then(|first| first.get("notAfter"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "traefik's certificates answer has no date".to_string())?;
+    not_after
+        .parse::<jiff::Timestamp>()
+        .map_err(|err| format!("traefik's certificate date not read: {err}"))
+}
+
+/// The line for the overview's answer and the first `notAfter`, and
+/// whether it counts certificates (a run-log warning about the date is
+/// only worth it then).
+fn certificates_line(
+    status: u16,
+    body: &[u8],
+    first: Option<jiff::Timestamp>,
+    now: jiff::Timestamp,
+    paint: &Paint,
+) -> (String, bool) {
+    let Ok(overview) = serde_json::from_slice::<Overview>(body) else {
+        let line = paint.error(&format!(
+            "Error: unexpected answer from Traefik (HTTP {status})"
+        ));
+        return (line, false);
+    };
+    let Some(counted) = overview.certificates else {
+        return (String::new(), false);
+    };
+    if counted.total == 0 {
+        return ("Traefik is serving no certificates".into(), false);
+    }
+    let valid = counted
+        .total
+        .saturating_sub(counted.warnings)
+        .saturating_sub(counted.errors);
+    let total = counted.total.to_string();
+    let total = if counted.errors > 0 {
+        paint.error(&total)
+    } else if counted.warnings > 0 {
+        paint.warning(&total)
+    } else {
+        paint.value(&total)
+    };
+    let noun = if counted.total == 1 {
+        "certificate"
+    } else {
+        "certificates"
+    };
+    let mut parts = vec![format!("{} valid", paint.value(&valid.to_string()))];
+    if counted.warnings > 0 {
+        parts.push(format!(
+            "{} expiring soon",
+            paint.warning(&counted.warnings.to_string())
+        ));
+    }
+    if counted.errors > 0 {
+        parts.push(format!(
+            "{} expired",
+            paint.error(&counted.errors.to_string())
+        ));
+    }
+    let mut line = format!("{total} {noun} ({})", parts.join(", "));
+    if let Some(at) = first {
+        line.push_str(", ");
+        line.push_str(&expiry(now.duration_until(at), paint));
+    }
+    (line, true)
+}
+
+/// When the first certificate expires, `left` from now: whole 24-hour
+/// days, rounded down (jiff's `SignedDuration`,
+/// <https://docs.rs/jiff/0.2.38/jiff/struct.SignedDuration.html#method.as_hours>);
+/// the number, or `today`, in its state's colour (value, warning under
+/// Traefik's 30 days, error once passed).
+fn expiry(left: jiff::SignedDuration, paint: &Paint) -> String {
+    let days = left.as_hours().unsigned_abs() / 24;
+    let passed = left.is_negative();
+    let paint_state = |text: &str| {
+        if passed {
+            paint.error(text)
+        } else if left < SOON {
+            paint.warning(text)
+        } else {
+            paint.value(text)
+        }
+    };
+    let unit = if days == 1 { "day" } else { "days" };
+    match (passed, days) {
+        (true, 0) => format!("earliest expired {}", paint_state("today")),
+        (true, _) => format!(
+            "earliest expired {} {unit} ago",
+            paint_state(&days.to_string())
+        ),
+        (false, 0) => format!("next expires {}", paint_state("today")),
+        (false, _) => format!("next expires in {} {unit}", paint_state(&days.to_string())),
+    }
 }
 
 /// The routers line for Traefik's answer: each router with an error, or
@@ -708,6 +903,7 @@ mod tests {
             listing: OnceCell::new_with(Some(Err(Down::Denied(
                 "Docker's socket (/run/docker.sock)".into(),
             )))),
+            client: OnceCell::new(),
             limit: LIMIT,
         };
         let text = "Error: permission denied on Docker's socket (/run/docker.sock)";
@@ -1008,5 +1204,268 @@ mod tests {
         for (raw, shown) in cases {
             assert_eq!(router_error(&raw), shown, "{raw}");
         }
+    }
+
+    // --- certificates (decision 27) ---
+
+    /// The run's clock in the certificates tests.
+    fn now() -> jiff::Timestamp {
+        "2026-11-17T12:00:00Z".parse().expect("now")
+    }
+
+    /// `now` moved by `seconds`, as Traefik writes a `notAfter`.
+    fn after(seconds: i64) -> String {
+        now()
+            .checked_add(jiff::SignedDuration::from_secs(seconds))
+            .expect("time")
+            .to_string()
+    }
+
+    const DAY: i64 = 86_400;
+
+    /// A fake Traefik with these counts and this first `notAfter` (none:
+    /// the certificates request answers 404).
+    fn certificate_api(overview: &str, first: Option<&str>) -> Fake {
+        let api = Fake::start().unwrap();
+        api.script("/api/overview", Answer::json(200, overview));
+        match first {
+            Some(not_after) => api.script(
+                "/api/certificates",
+                Answer::json(
+                    200,
+                    format!(r#"[{{"commonName":"x.example","notAfter":"{not_after}"}}]"#),
+                ),
+            ),
+            None => api.script(
+                "/api/certificates",
+                Answer::json(404, "404 page not found\n"),
+            ),
+        }
+        api
+    }
+
+    fn counts(total: u32, warnings: u32, errors: u32) -> String {
+        format!(
+            r#"{{"http":{{"routers":{{"total":3,"warnings":0,"errors":0}}}},"certificates":{{"total":{total},"warnings":{warnings},"errors":{errors}}}}}"#
+        )
+    }
+
+    /// The line Traefik's answers make, plain, with `traefik` running.
+    async fn certificate_line(api: &Fake, paint: &Paint) -> String {
+        let engine = engine(vec![running(1, "traefik")]);
+        let containers = Containers::new(settings(&engine, api.url()));
+        certificates_at(&containers, paint, now()).await
+    }
+
+    /// Each form of the line (the motd spec, Certificates): all valid,
+    /// some expiring soon, some expired, one certificate, the days in each
+    /// direction, and none served.
+    #[tokio::test]
+    async fn the_certificates_line_reads_each_case() {
+        let cases: [(&str, String, Option<String>); 10] = [
+            ("all valid", counts(3, 0, 0), Some(after(38 * DAY + 3600))),
+            ("expiring", counts(3, 1, 0), Some(after(12 * DAY + 60))),
+            ("expired", counts(3, 1, 1), Some(after(-3 * DAY - 3600))),
+            ("one", counts(1, 0, 0), Some(after(61 * DAY))),
+            ("in one day", counts(1, 1, 0), Some(after(DAY + 300))),
+            ("today", counts(1, 1, 0), Some(after(5 * 3600))),
+            ("expired today", counts(1, 0, 1), Some(after(-2 * 3600))),
+            ("one day ago", counts(2, 0, 1), Some(after(-DAY - 3600))),
+            ("none served", counts(0, 0, 0), None),
+            ("no first", counts(3, 0, 0), None),
+        ];
+        let mut shown = Vec::new();
+        for (name, overview, first) in cases {
+            let api = certificate_api(&overview, first.as_deref());
+            shown.push(format!(
+                "{name}: {}",
+                certificate_line(&api, &Paint::plain()).await
+            ));
+        }
+        insta::assert_snapshot!(shown.join("\n"), @r"
+        all valid: 3 certificates (3 valid), next expires in 38 days
+        expiring: 3 certificates (2 valid, 1 expiring soon), next expires in 12 days
+        expired: 3 certificates (1 valid, 1 expiring soon, 1 expired), earliest expired 3 days ago
+        one: 1 certificate (1 valid), next expires in 61 days
+        in one day: 1 certificate (0 valid, 1 expiring soon), next expires in 1 day
+        today: 1 certificate (0 valid, 1 expiring soon), next expires today
+        expired today: 1 certificate (0 valid, 1 expired), earliest expired today
+        one day ago: 2 certificates (1 valid, 1 expired), earliest expired 1 day ago
+        none served: Traefik is serving no certificates
+        no first: 3 certificates (3 valid)
+        ");
+    }
+
+    /// The colours are the Traefik line's slots: the counts in the value
+    /// colour when all are valid; an expiring count, its total and its
+    /// days in the warning colour; an expired count, its total and its
+    /// days in the error colour.
+    #[tokio::test]
+    async fn the_certificates_line_takes_the_traefik_lines_colours() {
+        let paint = painted();
+        let api = certificate_api(&counts(3, 0, 0), Some(&after(38 * DAY)));
+        assert_eq!(
+            certificate_line(&api, &paint).await,
+            format!(
+                "{} certificates ({} valid), next expires in {} days",
+                paint.value("3"),
+                paint.value("3"),
+                paint.value("38")
+            )
+        );
+        let api = certificate_api(&counts(3, 1, 0), Some(&after(12 * DAY)));
+        assert_eq!(
+            certificate_line(&api, &paint).await,
+            format!(
+                "{} certificates ({} valid, {} expiring soon), next expires in {} days",
+                paint.warning("3"),
+                paint.value("2"),
+                paint.warning("1"),
+                paint.warning("12")
+            )
+        );
+        let api = certificate_api(&counts(3, 1, 1), Some(&after(-3 * DAY)));
+        assert_eq!(
+            certificate_line(&api, &paint).await,
+            format!(
+                "{} certificates ({} valid, {} expiring soon, {} expired), earliest expired {} days ago",
+                paint.error("3"),
+                paint.value("1"),
+                paint.warning("1"),
+                paint.error("1"),
+                paint.error("3")
+            )
+        );
+    }
+
+    /// Hidden where the Traefik line already says why, or where Traefik
+    /// has no certificates to count (before v3.7.0, or no TLS manager).
+    #[tokio::test]
+    async fn the_certificates_line_hides_when_there_is_nothing_to_count() {
+        let api = certificate_api(r#"{"http":{"routers":{"total":1}}}"#, None);
+        assert_eq!(certificate_line(&api, &Paint::plain()).await, "");
+        // Traefik isn't running: no request at all.
+        let idle = engine(vec![]);
+        let api = certificate_api(&counts(3, 0, 0), Some(&after(38 * DAY)));
+        let containers = Containers::new(settings(&idle, api.url()));
+        assert_eq!(
+            certificates_at(&containers, &Paint::plain(), now()).await,
+            ""
+        );
+        assert_eq!(api.seen(), [] as [sb_config::testing::Seen; 0]);
+        // Traefik's API isn't there.
+        let (_held, url) = refused();
+        let up = engine(vec![running(1, "traefik")]);
+        let containers = Containers::new(settings(&up, &url));
+        assert_eq!(
+            certificates_at(&containers, &Paint::plain(), now()).await,
+            ""
+        );
+    }
+
+    /// An overview that isn't Traefik's JSON is Difference 11's error; a
+    /// first certificate whose date doesn't parse leaves the counts alone.
+    #[tokio::test]
+    async fn the_certificates_line_reads_unexpected_answers() {
+        let api = Fake::start().unwrap();
+        api.script("/api/overview", Answer::json(500, "oops"));
+        assert_eq!(
+            certificate_line(&api, &Paint::plain()).await,
+            "Error: unexpected answer from Traefik (HTTP 500)"
+        );
+        let api = certificate_api(&counts(3, 0, 0), Some("not a date"));
+        assert_eq!(
+            certificate_line(&api, &Paint::plain()).await,
+            "3 certificates (3 valid)"
+        );
+        // A list that isn't JSON, or holds no certificate: the counts alone.
+        for body in ["oops", "[]", r#"[{"commonName":"x"}]"#] {
+            let api = Fake::start().unwrap();
+            api.script("/api/overview", Answer::json(200, counts(3, 0, 0)));
+            api.script("/api/certificates", Answer::json(200, body));
+            assert_eq!(
+                certificate_line(&api, &Paint::plain()).await,
+                "3 certificates (3 valid)",
+                "{body}"
+            );
+        }
+    }
+
+    /// At Traefik's edges: exactly 30 days left is no longer a warning,
+    /// and a certificate that expires this second hasn't expired yet.
+    #[tokio::test]
+    async fn the_certificates_line_at_traefiks_edges() {
+        let paint = painted();
+        let api = certificate_api(&counts(1, 0, 0), Some(&after(30 * DAY)));
+        assert_eq!(
+            certificate_line(&api, &paint).await,
+            format!(
+                "{} certificate ({} valid), next expires in {} days",
+                paint.value("1"),
+                paint.value("1"),
+                paint.value("30")
+            )
+        );
+        let api = certificate_api(&counts(1, 1, 0), Some(&after(0)));
+        assert_eq!(
+            certificate_line(&api, &paint).await,
+            format!(
+                "{} certificate ({} valid, {} expiring soon), next expires {}",
+                paint.warning("1"),
+                paint.value("0"),
+                paint.warning("1"),
+                paint.warning("today")
+            )
+        );
+    }
+
+    /// The section's job, on the host's clock.
+    #[tokio::test]
+    async fn the_certificates_section_reads_the_clock() {
+        let in_400 = jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::from_hours(400 * 24 + 1))
+            .expect("time")
+            .to_string();
+        let api = certificate_api(&counts(1, 0, 0), Some(&in_400));
+        let engine = engine(vec![running(1, "traefik")]);
+        let containers = Containers::new(settings(&engine, api.url()));
+        assert_eq!(
+            certificates(&containers, &Paint::plain()).await,
+            "1 certificate (1 valid), next expires in 400 days"
+        );
+    }
+
+    /// The two requests: the overview, and one certificate, the first to
+    /// expire (Traefik sorts by `notAfter`, ascending by default).
+    #[tokio::test]
+    async fn the_certificates_line_asks_for_the_first_to_expire() {
+        let api = certificate_api(&counts(3, 0, 0), Some(&after(38 * DAY)));
+        certificate_line(&api, &Paint::plain()).await;
+        let mut targets: Vec<String> = api.seen().into_iter().map(|seen| seen.target).collect();
+        targets.sort();
+        assert_eq!(
+            targets,
+            [
+                "/api/certificates?sortBy=validUntil&per_page=1",
+                "/api/overview"
+            ]
+        );
+    }
+
+    /// The routers and the certificates take one client between them, so
+    /// one set of the platform's roots is loaded for all three requests.
+    #[tokio::test]
+    async fn traefiks_requests_share_one_client() {
+        let engine = engine(vec![running(1, "traefik")]);
+        let api = certificate_api(&counts(3, 0, 0), Some(&after(38 * DAY)));
+        api.script("/api/http/routers", Answer::json(200, "[]"));
+        let containers = Containers::new(settings(&engine, api.url()));
+        traefik(&containers, &Paint::plain()).await;
+        // Built by the routers' request, before this test asks for it.
+        assert!(containers.client.initialized());
+        let first: *const reqwest::Client = containers.client().await.as_ref().unwrap();
+        certificates_at(&containers, &Paint::plain(), now()).await;
+        let second: *const reqwest::Client = containers.client().await.as_ref().unwrap();
+        assert_eq!(first, second);
     }
 }
