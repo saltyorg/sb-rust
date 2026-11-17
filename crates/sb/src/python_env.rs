@@ -51,25 +51,39 @@ fn run_without_user(
     log: Option<&RunLog>,
     body: impl AsyncFnOnce(&mut Step, &Env<'_>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
+    with_env(log, |env, _| {
+        super::block_on(async {
+            let mut runner = Runner::start(name, shutdown, log, Options::default());
+            let result = runner
+                .step(labels, async |step| body(step, env).await)
+                .await;
+            runner.finish();
+            result.map_err(anyhow::Error::from)
+        })?
+    })
+}
+
+/// `body` with python-env's `Env` on sb's layout, and the release client
+/// it reaches uv's and the fact's releases through (the proxy or GitHub,
+/// as `sb self-update` reaches sb's; in a test build, the fake GitHub
+/// only). The deadsnakes backup is named by the run log's id (python-env
+/// spec, "Deadsnakes cleanup"); without a log, `Env`'s own.
+///
+/// # Errors
+///
+/// The release client or the architecture, or `body`'s.
+pub(crate) fn with_env<T>(
+    log: Option<&RunLog>,
+    body: impl FnOnce(&Env<'_>, &Releases) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     let layout = Layout::for_sb();
     let build = BuildInfo::current(env!("CARGO_PKG_VERSION"));
-    // uv's release (and the fact's) through the proxy or GitHub, as `sb
-    // self-update` reaches sb's; in a test build, the fake GitHub only.
     let releases = Releases::for_sb(&format!("sb/{}", build.version))?;
     let mut env = Env::for_sb(&layout, &releases, UV_VERSION, Arch::current()?);
-    // The deadsnakes backup is named by the run log's id (python-env spec,
-    // "Deadsnakes cleanup"); without a log, `Env`'s own.
     if let Some(log) = log {
         log.id().clone_into(&mut env.run_id);
     }
-    super::block_on(async {
-        let mut runner = Runner::start(name, shutdown, log, Options::default());
-        let result = runner
-            .step(labels, async |step| body(step, &env).await)
-            .await;
-        runner.finish();
-        result.map_err(anyhow::Error::from)
-    })?
+    body(&env, &releases)
 }
 
 /// `sb update-venv`: `reconcile_runtime` under sb-go's labels

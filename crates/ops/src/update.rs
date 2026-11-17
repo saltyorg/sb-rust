@@ -1,24 +1,29 @@
-//! `sb update`, its first half (ops spec, "`sb update`", steps 1 to 5, 7
-//! and 9; sb-go's cmd/update.go; module build M84): before anything
-//! changes, the checkouts' branches read, the up-front flag check and the
-//! disk space; then self-update, the branch questions, apt, and Saltbox
-//! and Sandbox each fetched and reset to their branch. The runtime, the
-//! tags caches, the config permissions, announcements and migrations,
-//! validation and the completion refresh join in later tasks (M85, M87).
+//! `sb update` (ops spec, "`sb update`"; sb-go's cmd/update.go; module
+//! build M84 and M85): before anything changes, the checkouts' branches
+//! read, the up-front flag check and the disk space; then self-update,
+//! the branch questions, apt, Saltbox (its runtime and tags), the config
+//! permissions, Sandbox (its tags), the new announcements inline, and
+//! validation. The migrations come with M86, the viewer and the
+//! completion refresh with M87.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
+use sb_ansible::{Ansible, TagCache};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::Exit;
+use sb_config::run::Settings;
 use sb_host::apt::Apt;
 use sb_host::disk::Disk;
+use sb_python_env::{Env, reconcile_runtime};
 use sb_release::{Outcome, Releases, SelfUpdate};
 use sb_repo::{Answer, Choice, Repo, branch_choice};
 use sb_term_ui::{Labels, PromptError, Runner, Step};
 
+use crate::announcements::{self, Announcement, LoadError};
 use crate::branch::{self, Resolved};
 pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
+use crate::{Checkout, configs};
 
 /// The branch `update` resets to, unless the user keeps another (sb-go's
 /// `"master"`).
@@ -100,10 +105,10 @@ pub fn missing_answers(
 /// What update runs with.
 #[derive(Debug)]
 pub struct Update<'a> {
-    /// The Saltbox checkout, the Saltbox root.
-    pub saltbox: &'a Path,
-    /// The Sandbox checkout, `<appdata>/sandbox`.
-    pub sandbox: &'a Path,
+    /// The Saltbox root: Saltbox's checkout, its config and tags cache;
+    /// Sandbox's checkout under its inventory's appdata path
+    /// ([`Checkout::path`]).
+    pub root: &'a Path,
     /// host's disk checks, and the paths they check (`/`, the appdata
     /// path, `/srv`).
     pub disk: &'a Disk,
@@ -116,6 +121,14 @@ pub struct Update<'a> {
     pub self_update: Option<SelfUpdate<'a>>,
     /// The flags.
     pub args: &'a UpdateArgs,
+    /// python-env's layout, release client and programs: Saltbox's runtime.
+    pub python: &'a Env<'a>,
+    /// `ansible-playbook`, for the tags caches.
+    pub ansible: &'a Ansible,
+    /// validate-config's settings, its root this one.
+    pub settings: &'a Settings,
+    /// The directory motd.yml's migration backs the original up into.
+    pub backups: &'a Path,
 }
 
 /// A checkout opened and its branch read, before any step.
@@ -124,7 +137,8 @@ struct Opened {
     current: String,
 }
 
-/// `sb update`'s first half, in sb-go's order with the spec's changes:
+/// `sb update` (but M86's migrations), in sb-go's order with the spec's
+/// changes:
 ///
 /// 1. both checkouts opened and their branches read, then
 ///    [`missing_answers`] with `terminal` (term-ui's `can_ask`) for the
@@ -134,12 +148,17 @@ struct Opened {
 ///    ends here with a requested exit 0 and release's [`RERUN`] warning;
 /// 4. the branch questions, Saltbox's then Sandbox's ([`branch::resolve`],
 ///    `ask` on the terminal, no runner drawing);
-/// 5. one runner: "Updating apt package cache", then "Updating Saltbox"
-///    and "Updating Sandbox", each repo's fetch and reset to its branch,
-///    owned by the Saltbox user, the branch notices shown under it. A
+/// 5. one runner: "Updating apt package cache"; each checkout's
+///    announcements read; "Updating Saltbox" (the fetch and reset, the
+///    runtime, the tags when the commit moved or none are cached);
+///    "Securing Saltbox configuration permissions"; "Updating Sandbox"
+///    (the same but the runtime); "Checking for new announcements". A
 ///    checkout that couldn't be opened or read fails its own step (`error
 ///    updating <Repo>: ...`), after the steps before it, as sb-go's
-///    `requireDirectory` does.
+///    `requireDirectory` does;
+/// 6. the new announcements on stdout, once that runner is done (inline
+///    until the viewer, M87);
+/// 7. a runner of its own: validate-config's checks (sb-config's `run`).
 ///
 /// # Errors
 ///
@@ -154,13 +173,13 @@ pub async fn run(
     shutdown: &Shutdown,
 ) -> anyhow::Result<()> {
     let token = shutdown.token();
-    let open = async |checkout: branch::Checkout, path: &Path| -> anyhow::Result<Opened> {
+    let open = async |checkout: Checkout, path: &Path| -> anyhow::Result<Opened> {
         let repo = Repo::open(checkout.name(), path)?;
         let current = repo.current_branch(&token).await?;
         Ok(Opened { repo, current })
     };
-    let saltbox = open(branch::Checkout::Saltbox, update.saltbox).await;
-    let sandbox = open(branch::Checkout::Sandbox, update.sandbox).await;
+    let saltbox = open(Checkout::Saltbox, &Checkout::Saltbox.path(update.root)).await;
+    let sandbox = open(Checkout::Sandbox, &Checkout::Sandbox.path(update.root)).await;
     // Off master is what repo's `branch_choice` would ask about.
     let off_master: Vec<(&str, &str)> = [&saltbox, &sandbox]
         .into_iter()
@@ -188,40 +207,67 @@ pub async fn run(
             return Ok(());
         }
     }
-    let mut plans = Vec::new();
-    for opened in [saltbox, sandbox] {
-        let plan = match opened {
-            Ok(opened) => {
-                let resolved = branch::resolve(
-                    &opened.repo,
-                    &opened.current,
-                    DEFAULT_BRANCH,
-                    answer,
-                    &mut ask,
-                    shutdown,
-                )
-                .await
-                .with_context(|| format!("error updating {}", opened.repo.name()))?;
-                Ok((opened.repo, resolved))
-            }
-            Err(err) => Err(err),
-        };
-        plans.push(plan);
-    }
+    let saltbox = plan(saltbox, answer, &mut ask, shutdown).await?;
+    let sandbox = plan(sandbox, answer, &mut ask, shutdown).await?;
     let mut steps = runner();
     let result = async {
         apt_cache(&mut steps, update.apt).await?;
-        for (checkout, plan) in [branch::Checkout::Saltbox, branch::Checkout::Sandbox]
+        // Each checkout's announcements before its pull (sb-go reads both
+        // here, after apt).
+        let before: Vec<_> = [Checkout::Saltbox, Checkout::Sandbox]
             .into_iter()
-            .zip(plans)
-        {
-            checkout_step(&mut steps, checkout.name(), plan, update.saltbox).await?;
-        }
-        Ok::<(), Exit>(())
+            .map(|checkout| announcements::load(&announcements::own_file(checkout, update.root)))
+            .collect();
+        let mut cache = TagCache::load(update.root);
+        checkout_step(&mut steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
+        secure_step(&mut steps, update.root).await?;
+        checkout_step(&mut steps, Checkout::Sandbox, sandbox, update, &mut cache).await?;
+        new_announcements(&mut steps, update.root, before).await
     }
     .await;
     steps.finish();
-    Ok(result?)
+    let shown = result?;
+    // On stdout, once the runner is done (inline on a terminal too until
+    // the viewer, M87).
+    if !shown.is_empty() {
+        announcements::show(&shown)?;
+    }
+    let mut steps = runner();
+    let validated = sb_config::run::run(&mut steps, update.settings, update.backups).await;
+    steps.finish();
+    validated.context("error validating Saltbox configuration")
+}
+
+/// The branch question for an opened checkout ([`branch::resolve`]): the
+/// outer error ends the run before any step (an unanswered question); the
+/// inner one is the checkout's that couldn't be opened, kept for its own
+/// step.
+///
+/// # Errors
+///
+/// The question unanswered, or a refused branch name (`error updating
+/// <Repo>: ...`).
+async fn plan(
+    opened: anyhow::Result<Opened>,
+    answer: Option<Answer>,
+    ask: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
+    shutdown: &Shutdown,
+) -> anyhow::Result<anyhow::Result<(Repo, Resolved)>> {
+    let opened = match opened {
+        Ok(opened) => opened,
+        Err(err) => return Ok(Err(err)),
+    };
+    let resolved = branch::resolve(
+        &opened.repo,
+        &opened.current,
+        DEFAULT_BRANCH,
+        answer,
+        ask,
+        shutdown,
+    )
+    .await
+    .with_context(|| format!("error updating {}", opened.repo.name()))?;
+    Ok(Ok((opened.repo, resolved)))
 }
 
 /// "Updating apt package cache", its sub-step "Refreshing apt package
@@ -242,17 +288,23 @@ async fn apt_cache(runner: &mut Runner, apt: &Apt) -> Result<(), Exit> {
         .await
 }
 
-/// "Updating <Repo>" (success "<Repo> updated"): the branch notices, the
-/// Saltbox user from the Saltbox root's accounts.yml, then the checkout
-/// fetched and reset to the resolved branch, owned by that user; or the
-/// error that kept the checkout from being opened (sb-go's `error
-/// updating <Repo>: inspect required directory ...`).
+/// "Updating <Repo>" (success "<Repo> updated"), sb-go's sub-steps: the
+/// branch notices, the Saltbox user from the Saltbox root's accounts.yml,
+/// the HEAD commit, the checkout fetched and reset to the resolved branch
+/// and owned by that user, for Saltbox python-env's `reconcile_runtime`
+/// (deadsnakes, venv, fact, as `update-venv`), the HEAD commit again, and
+/// the tags cache rebuilt when the commit moved or the cache has no tags
+/// for the checkout. A checkout that couldn't be opened fails here with
+/// its error (sb-go's `error updating <Repo>: inspect required directory
+/// ...`).
 async fn checkout_step(
     runner: &mut Runner,
-    name: &str,
+    checkout: Checkout,
     plan: anyhow::Result<(Repo, Resolved)>,
-    root: &Path,
+    update: &Update<'_>,
+    cache: &mut TagCache,
 ) -> Result<(), Exit> {
+    let name = checkout.name();
     let labels = Labels::new(format!("Updating {name}"), format!("{name} updated"))
         .failure(format!("{name} update"));
     runner
@@ -261,9 +313,110 @@ async fn checkout_step(
             for notice in &resolved.notices {
                 step.info(notice);
             }
-            let user = sb_config::user::saltbox_user(root).context("error getting saltbox user")?;
+            let token = step.token();
+            let user =
+                sb_config::user::saltbox_user(update.root).context("error getting saltbox user")?;
+            let old = repo
+                .head(&token)
+                .await
+                .context("error getting old commit hash")?;
             branch::update(step, &repo, &resolved.branch, &user).await?;
+            if checkout == Checkout::Saltbox {
+                reconcile_runtime(step, update.python, Some(&user)).await?;
+            }
+            let new = repo
+                .head(&token)
+                .await
+                .context("error getting new commit hash")?;
+            let playbooks = checkout.playbooks(update.root);
+            // sb-go's rule for update (ops spec, step 7): rebuilt when the
+            // commit moved or no tags are cached. Why not `TagCache::tags`,
+            // which also rebuilds an entry cached at another commit: that
+            // isn't sb-go's update rule.
+            let cached = cache
+                .entry(&playbooks)
+                .is_some_and(|entry| !entry.tags.is_empty());
+            if old != new || !cached {
+                branch::tags(step, cache, update.ansible, &playbooks, &repo).await?;
+            }
             Ok(())
+        })
+        .await
+}
+
+/// "Securing Saltbox configuration permissions" (success "Saltbox
+/// configuration permissions secured"): ops' `secure_existing_configs`,
+/// sb-go's step after Saltbox's.
+async fn secure_step(runner: &mut Runner, root: &Path) -> Result<(), Exit> {
+    let labels = Labels::new(
+        "Securing Saltbox configuration permissions",
+        "Saltbox configuration permissions secured",
+    )
+    .failure("Saltbox configuration permission migration");
+    runner
+        .step(labels, async |_| {
+            configs::secure_existing_configs(root)
+                .context("error securing Saltbox configuration permissions")
+        })
+        .await
+}
+
+/// "Checking for new announcements" (success "Checked for new
+/// announcements"): each checkout's announcements after its pull against
+/// `before`, the new ones that apply, by date (ops spec,
+/// "Announcements"), Saltbox's first, with sb-go's info `Displaying new
+/// announcements` when there are any. A file that can't be loaded, before
+/// or after, is a warning naming it, and that checkout's announcements are
+/// skipped this run (decision 23); a missing file is none.
+///
+/// # Errors
+///
+/// The step's quiet `Exit` (a step that can't fail otherwise).
+async fn new_announcements(
+    runner: &mut Runner,
+    root: &Path,
+    before: Vec<Result<Option<Vec<Announcement>>, LoadError>>,
+) -> Result<Vec<(Checkout, Vec<Announcement>)>, Exit> {
+    let labels = Labels::new(
+        "Checking for new announcements",
+        "Checked for new announcements",
+    );
+    runner
+        .step(labels, async |step| {
+            let mut shown = Vec::new();
+            for (checkout, before) in [Checkout::Saltbox, Checkout::Sandbox].into_iter().zip(before) {
+                let path = announcements::own_file(checkout, root);
+                let skipped = |step: &mut Step, which: &str, err: &LoadError| {
+                    step.warn(format!(
+                        "{} announcements skipped: error loading {which} announcement file '{}': {err}",
+                        checkout.name(),
+                        path.display()
+                    ));
+                };
+                let before = match before {
+                    Ok(before) => before,
+                    Err(err) => {
+                        skipped(step, "before", &err);
+                        continue;
+                    }
+                };
+                let after = match announcements::load(&path) {
+                    Ok(after) => after,
+                    Err(err) => {
+                        skipped(step, "after", &err);
+                        continue;
+                    }
+                };
+                let new = announcements::new_entries(before.as_deref(), after.as_deref());
+                tracing::info!(repo = checkout.name(), new = new.len(), "announcements compared");
+                if !new.is_empty() {
+                    shown.push((checkout, new));
+                }
+            }
+            if !shown.is_empty() {
+                step.info("Displaying new announcements");
+            }
+            Ok(shown)
         })
         .await
 }

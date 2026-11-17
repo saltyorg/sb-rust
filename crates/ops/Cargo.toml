@@ -9,9 +9,10 @@ publish.workspace = true
 
 [features]
 # The stand-in programs and temporary root setup's and gha's shared pieces
-# run against (`testing` module), for sb-ops' tests and later sb's: never
-# in a release build.
-testing = ["dep:tempfile", "sb-host/testing"]
+# run against, and the Saltbox host update and the branch commands run on
+# (python-env's stand-in tree, sb-config's fixtures and fake), in the
+# `testing` module, for sb-ops' tests and sb's: never in a release build.
+testing = ["dep:tempfile", "sb-host/testing", "sb-python-env/testing", "sb-config/testing"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -37,6 +38,9 @@ sb-python-env.workspace = true
 # update's self-update step: release's flow with the answer given (ops
 # spec, "`sb update`", step 3).
 sb-release.workspace = true
+# The tags caches after each pull and the migrations' playbook runs (ops
+# spec, "`sb update`", steps 7, 9 and 10; the branch commands, step 5).
+sb-ansible.workspace = true
 # The config files' handles: opened without following a link, `fstat`ed
 # (ops spec, `secure_existing_configs`).
 rustix.workspace = true
@@ -57,6 +61,9 @@ tracing.workspace = true
 tempfile.workspace = true
 # Itself with `testing`, for the harness its tests run (as sb-python-env's).
 sb-ops = { workspace = true, features = ["testing"] }
+# Saltbox's pinned schemas and config fixtures, and the credential
+# checks' fake, for update's validation in process.
+sb-config = { workspace = true, features = ["testing"] }
 # release's fake GitHub, for update's self-update in process.
 sb-release = { workspace = true, features = ["testing"] }
 # The fake release's asset digest, as release's tests give it.

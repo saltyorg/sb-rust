@@ -1,18 +1,26 @@
-//! `sb update`'s first half in process (ops spec, "`sb update`", steps 1 to
-//! 5, 7 and 9; module build M84): sb-ops' `update::run` on the harness's
-//! stand-in apt, Saltbox and Sandbox checkouts of the harness's stand-in
-//! remotes (real git, `file://` only, never the network), release's fake
-//! GitHub for self-update, and runners drawing to memory, as any user
-//! (the Saltbox user is one no host has, so ownership is skipped). The
-//! binary's run as root is crates/sb/tests/update.rs.
+//! `sb update` in process (ops spec, "`sb update`"; module build M84 and
+//! M85): sb-ops' `update::run` on the harness's Saltbox host (stand-in
+//! apt and `ansible-playbook`, python-env's stand-in tree, Saltbox and
+//! Sandbox checkouts of stand-in remotes with real git, `file://` only,
+//! sb-config's fixtures and its fake for the credential checks), release's
+//! fake GitHub for self-update, and runners drawing to memory, as any user
+//! (the fixtures' Saltbox user is one no host has, so ownership is
+//! skipped). The binary's run as root is crates/sb/tests/update.rs.
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use sb_ansible::Ansible;
+use sb_ansible::TagCache;
 use sb_cli_core::build_info::BuildInfo;
 use sb_cli_core::cancel::Shutdown;
+use sb_config::run::Settings;
+use sb_config::{http, validators};
 use sb_host::disk::{Disk, Stats};
-use sb_ops::testing::{Host, Remote, git};
+use sb_ops::Checkout;
+use sb_ops::testing::{Host, Saltbox};
 use sb_ops::update::{self, Migrations, Update, UpdateArgs};
 use sb_release::testing::{Answer, Fake, stand_in};
 use sb_release::{GithubRepo, Releases, SelfUpdate};
@@ -24,66 +32,71 @@ use sha2::{Digest as _, Sha256};
 /// it until its run is over (ETXTBSY otherwise).
 static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A user no host has: the ownership steps skip it.
-const USER: &str = "sb-ops-test-no-such-user";
-
 /// sb's releases, as the binary has them.
 const REPO: GithubRepo = GithubRepo {
     owner: "saltyorg",
     name: "sb-go",
 };
 
-/// A stand-in host and the two checkouts, each a clone of its own remote
-/// at a branch; accounts.yml in Saltbox's (ignored, as Saltbox has it)
-/// naming [`USER`]; a fake GitHub with nothing scripted yet.
+/// The harness's Saltbox host, each checkout on a branch, and a fake
+/// GitHub for self-update with nothing scripted yet.
 struct World {
+    sb: Saltbox,
     host: Host,
-    saltbox_remote: Remote,
-    sandbox_remote: Remote,
-    dir: tempfile::TempDir,
     fake: Fake,
     releases: Releases,
+    backups: tempfile::TempDir,
 }
 
 impl World {
     fn new(saltbox: &str, sandbox: &str) -> Self {
-        let host = Host::new();
-        let saltbox_remote = Remote::saltbox(&[], USER);
-        let sandbox_remote = Remote::saltbox(&[], USER);
-        let dir = tempfile::tempdir().expect("tempdir");
-        let world_fake = Fake::start().expect("fake GitHub");
-        let releases = world_fake.releases("sb/test").expect("release client");
-        let world = Self {
+        let mut sb = Saltbox::new(saltbox, sandbox);
+        // The harness's host is the world's: it holds the calls.
+        let host = std::mem::replace(&mut sb.host, Host::new());
+        let fake = Fake::start().expect("fake GitHub");
+        let releases = fake.releases("sb/test").expect("release client");
+        Self {
+            sb,
             host,
-            saltbox_remote,
-            sandbox_remote,
-            dir,
-            fake: world_fake,
+            fake,
             releases,
-        };
-        world.saltbox_remote.clone_into(saltbox, &world.saltbox());
-        world.sandbox_remote.clone_into(sandbox, &world.sandbox());
-        std::fs::write(
-            world.saltbox().join("accounts.yml"),
-            format!("user:\n  name: {USER}\n"),
-        )
-        .expect("accounts");
-        world
+            backups: tempfile::tempdir().expect("backups"),
+        }
     }
 
     fn saltbox(&self) -> PathBuf {
-        self.dir.path().join("saltbox")
+        self.sb.root().to_path_buf()
     }
 
     fn sandbox(&self) -> PathBuf {
-        self.dir.path().join("sandbox")
+        self.sb.sandbox()
     }
 
     /// A checkout's branch and `branch.txt`.
     fn branch(path: &Path) -> (String, String) {
-        let name = git(path, &["rev-parse", "--abbrev-ref", "HEAD"]);
-        let text = std::fs::read_to_string(path.join("branch.txt")).expect("branch.txt");
-        (name, text.trim().to_owned())
+        Saltbox::branch(path)
+    }
+
+    /// validate-config's settings on the world: its root, the fake's URLs.
+    fn settings(&self) -> Settings {
+        let (cloudflare_url, dockerhub_url) = self.sb.check_urls();
+        Settings {
+            root: self.saltbox(),
+            zoneinfo: validators::Saltbox::zoneinfo_places(None),
+            http: http::Http::new(&http::Proxy::Off, Duration::from_secs(10)).expect("http"),
+            cloudflare_url,
+            dockerhub_url,
+            backoff: |_| Duration::ZERO,
+        }
+    }
+
+    /// The programs the stand-ins saw, in order.
+    fn programs(&self) -> Vec<String> {
+        self.host
+            .calls()
+            .iter()
+            .map(|call| call.split(' ').next().unwrap_or_default().to_owned())
+            .collect()
     }
 
     /// update on the world with `args`, `terminal` as term-ui's rule
@@ -100,17 +113,23 @@ impl World {
         disk: &Disk,
     ) -> Ran {
         let apt = self.host.apt();
-        let (saltbox, sandbox) = (self.saltbox(), self.sandbox());
-        let paths = [self.dir.path().to_path_buf()];
+        let root = self.saltbox();
+        let paths = [self.sb.tree.root.path().to_path_buf()];
+        let python = self.sb.tree.env();
+        let ansible = Ansible::with_program(self.host.stand_ins().join("ansible-playbook"));
+        let settings = self.settings();
         let update = Update {
-            saltbox: &saltbox,
-            sandbox: &sandbox,
+            root: &root,
             disk,
             disk_paths: &paths,
             apt: &apt,
             releases: &self.releases,
             self_update,
             args,
+            python: &python,
+            ansible: &ansible,
+            settings: &settings,
+            backups: self.backups.path(),
         };
         let term = indicatif::InMemoryTerm::new(100, 400);
         let shutdown = self_update.map_or_else(Shutdown::new, |update| update.shutdown.clone());
@@ -272,21 +291,30 @@ fn without_a_terminal_each_missing_flag_is_named() {
     assert!(err.contains("--migrations"), "{err}");
 }
 
-/// Without a terminal and with every flag: apt, then Saltbox, then
-/// Sandbox, each reset to master and given to the Saltbox user.
+/// The flags every piped run gives but `--skip-self-update`'s choice.
+const PIPED: [&str; 4] = [
+    "--reset-branch",
+    "--migrations",
+    "skip",
+    "--skip-self-update",
+];
+
+/// Without a terminal and with every flag, sb-go's order: apt; Saltbox
+/// reset to master, its runtime (deadsnakes, venv, fact) and its tags
+/// cache rebuilt; the config permissions; Sandbox reset and its tags; the
+/// announcements; validate-config's checks, each file validated.
 #[tokio::test]
-async fn piped_with_every_flag_both_checkouts_update() {
+async fn piped_with_every_flag_every_step_runs_in_order() {
     let _spawns = SPAWNS.lock().await;
     let world = World::new("develop", "develop");
-    let flags = args(&[
-        "--reset-branch",
-        "--migrations",
-        "skip",
-        "--skip-self-update",
-    ]);
-    let disk = roomy();
     let ran = world
-        .run(&flags, Err("no terminal".to_owned()), &[], None, &disk)
+        .run(
+            &args(&PIPED),
+            Err("no terminal".to_owned()),
+            &[],
+            None,
+            &roomy(),
+        )
         .await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     in_order(
@@ -297,9 +325,19 @@ async fn piped_with_every_flag_both_checkouts_update() {
             "Saltbox updated",
             "Saltbox: Currently on branch 'develop'",
             "Saltbox repository updated (master)",
+            "Checking for old deadsnakes Python packages",
+            "Ansible virtual environment ready",
+            "saltbox.fact is ready",
+            "Updating Saltbox tags cache",
+            "Saltbox configuration permissions secured",
             "Sandbox updated",
             "Sandbox: Currently on branch 'develop'",
             "Sandbox repository updated (master)",
+            "Updating Sandbox tags cache",
+            "Checked for new announcements",
+            "Saltbox configuration validated",
+            "Validated accounts.yml",
+            "Validated settings.yml",
         ],
     );
     assert!(ran.asked.is_empty(), "{:?}", ran.asked);
@@ -312,13 +350,190 @@ async fn piped_with_every_flag_both_checkouts_update() {
         World::branch(&world.sandbox()),
         ("master".into(), "master".into())
     );
-    let programs: Vec<String> = world
-        .host
-        .calls()
-        .iter()
-        .map(|call| call.split(' ').next().unwrap_or_default().to_owned())
-        .collect();
-    assert_eq!(programs, ["apt-get"], "{:?}", world.host.calls());
+    assert_eq!(
+        world.programs(),
+        ["apt-get", "ansible-playbook", "ansible-playbook"],
+        "{:?}",
+        world.host.calls()
+    );
+    // Both entries cached, at each checkout's new HEAD.
+    let cache = TagCache::load(&world.saltbox());
+    for (checkout, path) in [
+        (Checkout::Saltbox, world.saltbox()),
+        (Checkout::Sandbox, world.sandbox()),
+    ] {
+        let head = sb_ops::testing::git(&path, &["rev-parse", "HEAD"]);
+        let entry = cache
+            .entry(&checkout.playbooks(&world.saltbox()))
+            .expect("cached");
+        assert_eq!(entry.commit, head, "{checkout:?}");
+        assert!(entry.tags.contains(&"plex".to_owned()), "{checkout:?}");
+    }
+    // The config files are 0600 (secure_existing_configs).
+    let mode = std::fs::metadata(world.saltbox().join("accounts.yml"))
+        .expect("accounts")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+/// Nothing moved and both caches hold tags: no listing runs (sb-go's
+/// rule, the commit unchanged and the entry there).
+#[tokio::test]
+async fn the_tags_are_kept_when_nothing_moved() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let flags = args(&PIPED);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let listed = |world: &World| {
+        world
+            .programs()
+            .iter()
+            .filter(|program| *program == "ansible-playbook")
+            .count()
+    };
+    assert_eq!(listed(&world), 2);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(listed(&world), 2, "{:?}", world.host.calls());
+    assert!(!ran.screen.contains("tags cache"), "{}", ran.screen);
+}
+
+/// An announcement the pull brings is new (ops spec, "Announcements"); an
+/// announcements file that can't be loaded is a warning naming it, that
+/// checkout's announcements skipped, the update completing (decision 23).
+#[tokio::test]
+async fn new_announcements_are_found_and_a_broken_file_only_warns() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let entry = "- date: '2026-11-01'\n  title: Old\n  message: Seen before\n";
+    for remote in [&world.sb.saltbox_remote, &world.sb.sandbox_remote] {
+        let _ = sb_ops::testing::git(&remote.work(), &["checkout", "--quiet", "master"]);
+        remote.commit("announcements.yml", &format!("announcements:\n{entry}"));
+    }
+    let flags = args(&PIPED);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    // No file before the pull: the first one's entries are all new.
+    assert!(
+        ran.screen.contains("Displaying new announcements"),
+        "{}",
+        ran.screen
+    );
+
+    // Nothing new upstream: nothing displayed.
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(
+        !ran.screen.contains("Displaying new announcements"),
+        "{}",
+        ran.screen
+    );
+
+    // A broken Sandbox file upstream: a warning naming it, Saltbox's new one
+    // still found.
+    world
+        .sb
+        .sandbox_remote
+        .commit("announcements.yml", "announcements: [unclosed\n");
+    world.sb.saltbox_remote.commit(
+        "announcements.yml",
+        &format!("announcements:\n{entry}- date: '2026-11-17'\n  title: New\n  message: Fresh\n"),
+    );
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let path = world.sandbox().join("announcements.yml");
+    assert!(
+        ran.screen.contains(&format!(
+            "Sandbox announcements skipped: error loading after announcement file '{}'",
+            path.display()
+        )),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        ran.screen.contains("Displaying new announcements"),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        ran.screen.contains("Saltbox configuration validated"),
+        "{}",
+        ran.screen
+    );
+
+    // The broken file is now Sandbox's before: the same warning, for the
+    // file before the pull.
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        ran.screen.contains(&format!(
+            "Sandbox announcements skipped: error loading before announcement file '{}'",
+            path.display()
+        )),
+        "{}",
+        ran.screen
+    );
+}
+
+/// Validation's issues show exactly as validate-config shows them: the
+/// same lines as sb-config's own run on the same root.
+#[tokio::test]
+async fn validation_shows_issues_as_validate_config_does() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    std::fs::write(
+        world.saltbox().join("hetzner_vlan.yml"),
+        "hetzner:\n  vlan_id: not-a-number\n  unknown: 1\n",
+    )
+    .expect("break hetzner_vlan.yml");
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    let validation = |screen: &str| -> Vec<String> {
+        let start = screen
+            .find("Validating Saltbox configuration")
+            .expect("the validation step");
+        screen[start..]
+            .lines()
+            .map(|line| line.trim_end().to_owned())
+            .filter(|line| !line.is_empty())
+            .collect()
+    };
+    // validate-config's own run on the same root.
+    let term = indicatif::InMemoryTerm::new(100, 400);
+    let options = Options {
+        target: Target::InMemory {
+            term: term.clone(),
+            colour: false,
+        },
+    };
+    let shutdown = Shutdown::new();
+    let mut runner = Runner::start("sb validate-config", &shutdown, None, options);
+    let _ = sb_config::run::run(&mut runner, &world.settings(), world.backups.path()).await;
+    runner.finish();
+    // Both runners draw to memory, whose clock term-ui freezes: their
+    // timings are the same.
+    let ours = validation(&ran.screen);
+    let theirs = validation(&term.contents());
+    assert!(
+        ours.iter().any(|line| line.contains("hetzner_vlan.yml")),
+        "{ours:#?}"
+    );
+    assert_eq!(ours, theirs);
 }
 
 /// `--keep-branch`: each checkout updates its own branch, with repo's
@@ -542,7 +757,7 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
         )),
     );
     world.fake.script(&path, Answer::new(200, body.clone()));
-    let target = world.dir.path().join("sb");
+    let target = world.backups.path().join("sb");
     std::fs::write(&target, b"old sb").expect("target");
     let released = BuildInfo::from_env("0.1.0", Some("1.0.0"), Some("abc1234"), None);
     let shutdown = Shutdown::new();

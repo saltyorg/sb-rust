@@ -1,59 +1,23 @@
 //! `sb branch <name>` and `sb branch-sandbox <name>` (ops spec, "`sb
 //! branch <name>` and `sb branch-sandbox <name>`"; sb-go's cmd/branch.go
 //! and cmd/branchSandbox.go): the checkout switched to a branch with
-//! sb-repo, owned by the Saltbox user. The spec's steps 1 to 3; the
-//! runtime and the tags cache (its steps 4 and 5) join when those land
-//! (module build M85).
+//! sb-repo, owned by the Saltbox user, then Saltbox's runtime and the
+//! checkout's tags cache (the spec's steps 1 to 5). Also the branch
+//! flags, the branch question and the update step `setup` and `update`
+//! share.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use anyhow::Context as _;
+use sb_ansible::{Ansible, TagCache};
 use sb_cli_core::cancel::Shutdown;
-use sb_cli_core::config;
 use sb_cli_core::exit::Exit;
 use sb_cli_core::log::RunLog;
+use sb_python_env::{Env, reconcile_runtime};
 use sb_repo::{Answer, Choice, Repo, branch_choice, branch_notices};
 use sb_term_ui::{Labels, Options, PromptError, Runner, Step};
 
-/// Which checkout a branch command switches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Checkout {
-    /// Saltbox's own checkout, the Saltbox directory itself (`sb branch`).
-    Saltbox,
-    /// The Sandbox checkout, `<server_appdata_path>/sandbox` (`sb
-    /// branch-sandbox`).
-    Sandbox,
-}
-
-impl Checkout {
-    /// The checkout's name in labels and errors (sb-go's).
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Saltbox => "Saltbox",
-            Self::Sandbox => "Sandbox",
-        }
-    }
-
-    /// The command, for the runner's log record.
-    #[must_use]
-    pub fn command(self) -> &'static str {
-        match self {
-            Self::Saltbox => "sb branch",
-            Self::Sandbox => "sb branch-sandbox",
-        }
-    }
-
-    /// Where the checkout is, under the Saltbox directory `root`: `root`
-    /// itself, or the Sandbox under the inventory's appdata path (as sb
-    /// finds its theme; cli-core's `appdata_path`).
-    #[must_use]
-    pub fn path(self, root: &Path) -> PathBuf {
-        match self {
-            Self::Saltbox => root.to_path_buf(),
-            Self::Sandbox => config::appdata_path(&config::inventory_path(root)).join("sandbox"),
-        }
-    }
-}
+use crate::Checkout;
 
 /// The flags that answer the branch question, as its error names them
 /// (ops decision 29).
@@ -152,12 +116,22 @@ pub async fn resolve(
     Ok(Resolved { branch, notices })
 }
 
+/// What a branch switch runs the runtime and the tags with: python-env's
+/// layout, release client and programs (Saltbox's runtime), and
+/// `ansible-playbook` (both checkouts' tags).
+#[derive(Debug, Clone, Copy)]
+pub struct Tools<'a> {
+    /// python-env's layout, release client and programs.
+    pub python: &'a Env<'a>,
+    /// `ansible-playbook`.
+    pub ansible: &'a Ansible,
+}
+
 /// The branch command for `checkout`, under the Saltbox directory `root`:
 /// the checkout opened, `name` checked (repo's `check_branch_name`), the
 /// Saltbox user read (config's `saltbox_user`), all before anything
-/// changes and failing as sb's error block; then the checkout fetched and
-/// reset to `name`, owned by that user, in a runner step under sb-go's
-/// labels. No prompt: the argument is the answer (spec, decision 20).
+/// changes and failing as sb's error block; then [`switch`] in a runner.
+/// No prompt: the argument is the answer (spec, decision 20).
 ///
 /// # Errors
 ///
@@ -168,6 +142,7 @@ pub async fn run(
     checkout: Checkout,
     root: &Path,
     name: &str,
+    tools: Tools<'_>,
     shutdown: &Shutdown,
     log: Option<&RunLog>,
 ) -> anyhow::Result<()> {
@@ -175,25 +150,29 @@ pub async fn run(
     repo.check_branch_name(name, &shutdown.token()).await?;
     let owner = sb_config::user::saltbox_user(root)?;
     let mut runner = Runner::start(checkout.command(), shutdown, log, Options::default());
-    let result = switch(&mut runner, &repo, name, &owner).await;
+    let result = switch(&mut runner, checkout, &repo, name, &owner, root, tools).await;
     runner.finish();
     Ok(result?)
 }
 
-/// The switch under sb-go's labels, named by the checkout (`repo.name()`,
-/// as repo's own errors are): "Switching <Repo> repository to <name>"
-/// around "Updating <Repo> repository", repo's `fetch_and_reset` (which
-/// widens the refspec, checks the branch is on the remote and sets the
-/// ownership). Crate-private until update's steps call it (M84, M85).
+/// The switch under sb-go's labels (spec, steps 3 to 5): "Switching
+/// <Repo> repository to <name>" around "Updating <Repo> repository"
+/// (repo's `fetch_and_reset`, which widens the refspec, checks the branch
+/// is on the remote and sets the ownership), then, for Saltbox,
+/// python-env's `reconcile_runtime` as `update` runs it (decision 21),
+/// then the checkout's tags cache rebuilt, always, as sb-go.
 ///
 /// # Errors
 ///
 /// The failed step's quiet `Exit`.
-pub(crate) async fn switch(
+async fn switch(
     runner: &mut Runner,
+    checkout: Checkout,
     repo: &Repo,
     branch: &str,
     owner: &str,
+    root: &Path,
+    tools: Tools<'_>,
 ) -> Result<(), Exit> {
     let repo_name = repo.name();
     let labels = Labels::new(
@@ -204,9 +183,41 @@ pub(crate) async fn switch(
     runner
         .step(labels, async |step| {
             update(step, repo, branch, owner).await?;
-            Ok(())
+            if checkout == Checkout::Saltbox {
+                reconcile_runtime(step, tools.python, Some(owner)).await?;
+            }
+            let mut cache = TagCache::load(root);
+            tags(
+                step,
+                &mut cache,
+                tools.ansible,
+                &checkout.playbooks(root),
+                repo,
+            )
+            .await
         })
         .await
+}
+
+/// The checkout's tags rebuilt into the cache (ansible's
+/// `TagCache::refresh`, under its "Updating <Repo> tags cache" sub-step),
+/// sb-go's words around a failure.
+///
+/// # Errors
+///
+/// The rebuild's error, its block shown in its sub-step.
+pub(crate) async fn tags(
+    step: &mut Step,
+    cache: &mut TagCache,
+    ansible: &Ansible,
+    playbooks: &sb_ansible::Repo,
+    repo: &Repo,
+) -> anyhow::Result<()> {
+    cache
+        .refresh(ansible, playbooks, repo, step)
+        .await
+        .context("error running and caching ansible tags")?;
+    Ok(())
 }
 
 /// "Updating <Repo> repository" (success "<Repo> repository updated
@@ -233,34 +244,4 @@ pub(crate) async fn update(
         repo.fetch_and_reset(branch, owner, step).await
     })
     .await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_checkout_has_sb_gos_name_and_its_command() {
-        assert_eq!(Checkout::Saltbox.name(), "Saltbox");
-        assert_eq!(Checkout::Sandbox.name(), "Sandbox");
-        assert_eq!(Checkout::Saltbox.command(), "sb branch");
-        assert_eq!(Checkout::Sandbox.command(), "sb branch-sandbox");
-    }
-
-    #[test]
-    fn the_saltbox_checkout_is_the_root_and_the_sandbox_is_under_appdata() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("saltbox");
-        std::fs::create_dir_all(root.join("inventories/host_vars")).expect("inventory dir");
-        std::fs::write(
-            root.join("inventories/host_vars/localhost.yml"),
-            "server_appdata_path: /data/appdata\n",
-        )
-        .expect("inventory");
-        assert_eq!(Checkout::Saltbox.path(&root), root);
-        assert_eq!(
-            Checkout::Sandbox.path(&root),
-            Path::new("/data/appdata/sandbox")
-        );
-    }
 }

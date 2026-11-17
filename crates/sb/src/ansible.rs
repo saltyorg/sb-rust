@@ -17,7 +17,7 @@ use sb_cli_core::theme;
 /// place (tests and debugging; empty means unset; sudo drops it, as
 /// `SB_SALTBOX_DIR`: cli-core spec, amended by the ansible spec). A
 /// replacement is logged, as the other overrides are.
-fn ansible() -> Ansible {
+pub(crate) fn ansible() -> Ansible {
     match super::set_override(std::env::var_os("SB_ANSIBLE_PLAYBOOK")) {
         Some(program) => {
             let program = std::path::PathBuf::from(program);

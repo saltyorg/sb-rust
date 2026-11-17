@@ -3577,6 +3577,7 @@ dependencies = [
  "jiff",
  "rustix",
  "saphyr",
+ "sb-ansible",
  "sb-cli-core",
  "sb-config",
  "sb-exec",

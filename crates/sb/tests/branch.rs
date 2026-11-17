@@ -15,6 +15,41 @@ use std::process::Command;
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
+use sb_python_env::testing::{ROOT_VAR, Tree};
+use sb_release::testing::BASES_VARIABLE;
+
+/// What a switch runs besides git (ops spec, the branch commands' steps 4
+/// and 5): python-env's stand-in tree with a healthy venv for Saltbox's
+/// runtime, its fake GitHub's bases for the release client a test build
+/// needs, and a stand-in ansible-playbook for the tags; with Saltbox's
+/// safe.directory entry for root's git (repo spec, assumption 2) in the
+/// environment's config, as the checkout is the Saltbox user's after the
+/// switch.
+struct Tools {
+    tree: Tree,
+    ansible: PathBuf,
+}
+
+impl Tools {
+    fn new(dir: &Path) -> Self {
+        let tree = Tree::new();
+        let _ = tree.healthy();
+        let ansible = sb_ops::testing::ansible_playbook(&dir.join("stand-ins"));
+        Self { tree, ansible }
+    }
+
+    /// The built sb with the tools.
+    fn sb(&self) -> Command {
+        let mut cmd = common::sb();
+        cmd.env(ROOT_VAR, self.tree.root.path())
+            .env(BASES_VARIABLE, self.tree.bases())
+            .env("SB_ANSIBLE_PLAYBOOK", &self.ansible)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "safe.directory")
+            .env("GIT_CONFIG_VALUE_0", "*");
+        cmd
+    }
+}
 
 /// `git <args>` in `dir`, which must succeed; its stdout.
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -114,17 +149,29 @@ fn saltbox_is_switched_and_owned_by_the_saltbox_user() {
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Tools::new(dir.path());
     let (root, develop) = saltbox(dir.path(), "nobody");
-    common::sb()
+    tools
+        .sb()
         .args(["branch", "develop", "--color=never"])
         .env("SB_SALTBOX_DIR", &root)
         .assert()
         .success()
         .stderr(
-            predicate::str::contains("Saltbox repository switched to develop").and(
-                predicate::str::contains("Saltbox repository updated (develop)"),
-            ),
+            predicate::str::contains("Saltbox repository switched to develop")
+                .and(predicate::str::contains(
+                    "Saltbox repository updated (develop)",
+                ))
+                .and(predicate::str::contains(
+                    "Ansible virtual environment ready",
+                ))
+                .and(predicate::str::contains("Updating Saltbox tags cache")),
         );
+    let cache = sb_ansible::TagCache::load(&root);
+    let entry = cache
+        .entry(&sb_ansible::Repo::saltbox(&root))
+        .expect("the tags cached");
+    assert_eq!(entry.commit, develop);
     assert_eq!(git(&root, &["rev-parse", "HEAD"]), develop);
     assert_eq!(
         git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]),
@@ -150,10 +197,12 @@ fn a_refused_name_fails_before_anything_changes() {
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Tools::new(dir.path());
     let (root, _) = saltbox(dir.path(), "nobody");
     let before = git(&root, &["rev-parse", "HEAD"]);
     let refspec = git(&root, &["config", "--get-all", "remote.origin.fetch"]);
-    common::sb()
+    tools
+        .sb()
         .args(["branch", "--color=never", "--", "-x"])
         .env("SB_SALTBOX_DIR", &root)
         .assert()
@@ -174,11 +223,13 @@ fn a_missing_user_fails_before_anything_changes() {
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Tools::new(dir.path());
     let (root, _) = saltbox(dir.path(), "nobody");
     let before = git(&root, &["rev-parse", "HEAD"]);
     let refspec = git(&root, &["config", "--get-all", "remote.origin.fetch"]);
     std::fs::write(root.join("accounts.yml"), "other: 1\n").expect("accounts");
-    common::sb()
+    tools
+        .sb()
         .args(["branch", "develop", "--color=never"])
         .env("SB_SALTBOX_DIR", &root)
         .assert()
@@ -200,9 +251,11 @@ fn a_branch_missing_on_the_remote_fails_and_changes_nothing() {
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Tools::new(dir.path());
     let (root, _) = saltbox(dir.path(), "nobody");
     let before = git(&root, &["rev-parse", "HEAD"]);
-    common::sb()
+    tools
+        .sb()
         .args(["branch", "no-such-branch", "--color=never"])
         .env("SB_SALTBOX_DIR", &root)
         .assert()

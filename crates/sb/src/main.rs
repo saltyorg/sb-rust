@@ -17,7 +17,7 @@ use sb_cli_core::help;
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
 use sb_cli_core::theme;
-use sb_ops::branch::Checkout;
+use sb_ops::Checkout;
 
 /// Saltbox CLI
 #[derive(Parser)]
@@ -796,6 +796,24 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
 /// or sb-config's default, `/opt/saltbox/backups` (motd decision 4; a
 /// temporary folder in sb's test build).
 fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
+    let settings = validate_settings()?;
+    // The runtime's error first (`?`), then the run's, as the result.
+    block_on(async {
+        let options = sb_term_ui::Options::default();
+        let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
+        let result = sb_config::run::run(&mut runner, &settings, &backups_dir()).await;
+        runner.finish();
+        result.map_err(anyhow::Error::from)
+    })?
+}
+
+/// validate-config's settings, `sb update`'s too: the Saltbox root, the
+/// zoneinfo places, the HTTP client and the services' URLs.
+///
+/// # Errors
+///
+/// The HTTP client can't be built.
+fn validate_settings() -> anyhow::Result<sb_config::run::Settings> {
     use sb_config::{cloudflare, dockerhub, http, run, validators};
     // Empty means unset, as for `SB_SALTBOX_DIR`. A test or debugging URL
     // in place of a service's is logged, without any credentials in it: a
@@ -822,20 +840,18 @@ fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<
             .unwrap_or_else(|| dockerhub::LOGIN_URL.to_string()),
         backoff: cloudflare::backoff,
     };
-    // The runtime's error first (`?`), then the run's, as the result.
-    block_on(async {
-        let options = sb_term_ui::Options::default();
-        let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
-        let backups = std::env::var_os("SB_BACKUPS_DIR")
-            .filter(|dir| !dir.is_empty())
-            .map_or_else(
-                sb_config::migrate::default_backups,
-                std::path::PathBuf::from,
-            );
-        let result = run::run(&mut runner, &settings, &backups).await;
-        runner.finish();
-        result.map_err(anyhow::Error::from)
-    })?
+    Ok(settings)
+}
+
+/// Where motd.yml's migration backs the original up (`SB_BACKUPS_DIR`,
+/// else config's default): validate-config's and `sb update`'s.
+fn backups_dir() -> std::path::PathBuf {
+    std::env::var_os("SB_BACKUPS_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(
+            sb_config::migrate::default_backups,
+            std::path::PathBuf::from,
+        )
 }
 
 /// `future` run on a current-thread runtime that isn't waited for after.

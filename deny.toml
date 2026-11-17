@@ -104,7 +104,7 @@ deny = [
     # install, list and diag) over exec, host, repo, term-ui and cli-core
     # (ansible spec, amendment 4), used by the binary (and later
     # completion and ops).
-    { crate = "sb-ansible", wrappers = ["sb"] },
+    { crate = "sb-ansible", wrappers = ["sb", "sb-ops"] },
     # python-env: the uv-managed Python, the Ansible venv, deadsnakes and
     # saltbox.fact (python-env spec), over exec, term-ui, host and release;
     # used by the binary and by ops (gha, setup, update). Its own name is

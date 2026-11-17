@@ -365,8 +365,8 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 /// the working copy it is pushed from: `master` and `develop`, each
 /// holding the given files, `branch.txt` naming the branch, a default for
 /// accounts.yml (naming the Saltbox user) and settings.yml, and
-/// Saltbox's hooks script; the two configs, the fact and the inventory's
-/// `localhost.yml` ignored, as Saltbox's .gitignore has them. The working
+/// Saltbox's hooks script; Saltbox's configs, the fact and the
+/// inventory's `localhost.yml` ignored, as Saltbox's .gitignore has them. The working
 /// copy is left on `develop`.
 #[derive(Debug)]
 pub struct Remote {
@@ -397,7 +397,8 @@ impl Remote {
             (
                 ".gitignore",
                 concat!(
-                    "accounts.yml\nsettings.yml\nansible_facts.d/\n",
+                    "accounts.yml\nadv_settings.yml\nbackup_config.yml\nhetzner_vlan.yml\n",
+                    "motd.yml\nproviders.yml\nsettings.yml\nansible_facts.d/\n",
                     "inventories/host_vars/localhost.yml\n",
                 ),
             ),
@@ -457,5 +458,175 @@ impl Remote {
             self.dir.path(),
             &["clone", "--quiet", "-b", branch, &self.url, dest],
         );
+    }
+}
+
+/// What the stand-in `ansible-playbook` lists: ansible's fixture of a real
+/// `--list-tags`, Saltbox's.
+pub const LIST_TAGS: &str = "playbook: saltbox.yml
+
+  play #1 (localhost): Saltbox\tTAGS: []
+      TASK TAGS: [always, authelia, docker, plex, sanity-check, sonarr, traefik]
+";
+
+/// A stand-in `ansible-playbook` in `dir` listing [`LIST_TAGS`]; its path.
+///
+/// # Panics
+///
+/// When it can't be written.
+#[must_use = "the stand-in's path is what sb runs"]
+pub fn ansible_playbook(dir: &Path) -> PathBuf {
+    let path = dir.join("ansible-playbook");
+    std::fs::create_dir_all(dir).expect("stand-in dir");
+    std::fs::write(&path, format!("#!/bin/sh\ncat <<'LIST'\n{LIST_TAGS}LIST\n"))
+        .expect("write the stand-in");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}
+
+/// A Saltbox host for `update` and the branch commands, on a temporary
+/// root: the stand-in [`Host`] (apt, the locale programs, bash) with a
+/// stand-in `ansible-playbook` listing [`LIST_TAGS`]; python-env's stand-in
+/// tree with a healthy venv and its fake GitHub; Saltbox's checkout at the
+/// tree's checkout, a clone of its own [`Remote`] holding the tree's pins
+/// and lock and Saltbox's pinned schemas, with sb-config's `valid` config
+/// set and an inventory pointing the appdata path into the tree's root;
+/// Sandbox's checkout there, a clone of its own remote; and sb-config's
+/// fake answering both credential checks well. Nothing reaches a network
+/// remote or the host's checkouts.
+#[derive(Debug)]
+pub struct Saltbox {
+    pub host: Host,
+    pub tree: sb_python_env::testing::Tree,
+    pub saltbox_remote: Remote,
+    pub sandbox_remote: Remote,
+    pub checks: sb_config::testing::Fake,
+}
+
+impl Saltbox {
+    /// The host, each checkout on the branch named.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written or git fails.
+    #[must_use]
+    pub fn new(saltbox: &str, sandbox: &str) -> Self {
+        let host = Host::new();
+        let _ = host.stand_in(
+            "ansible-playbook",
+            &format!("cat <<'LIST'\n{LIST_TAGS}LIST"),
+        );
+        let tree = sb_python_env::testing::Tree::new();
+        let _ = tree.healthy();
+        let layout = &tree.layout;
+        let configs = sb_config::testing::saltbox_root("valid").expect("config fixtures");
+        let mut files: Vec<(String, String)> = [&layout.python_pin, &layout.uv_pin, &layout.lock]
+            .iter()
+            .map(|pin| {
+                let rel = pin.strip_prefix(&layout.checkout).expect("in the checkout");
+                let text = std::fs::read_to_string(pin).expect("pin");
+                (rel.display().to_string(), text)
+            })
+            .collect();
+        for entry in std::fs::read_dir(configs.path().join("schema")).expect("schemas") {
+            let path = entry.expect("schema").path();
+            let name = path
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned();
+            let text = std::fs::read_to_string(&path).expect("schema text");
+            files.push((format!("schema/{name}"), text));
+        }
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(r, t)| (r.as_str(), t.as_str()))
+            .collect();
+        let saltbox_remote = Remote::saltbox(&files, "seed");
+        let sandbox_remote = Remote::saltbox(&[], "seed");
+        std::fs::remove_dir_all(&layout.checkout).expect("remove the tree's checkout");
+        let checks = sb_config::testing::Fake::start().expect("checks fake");
+        checks.script(
+            "/client/v4/zones",
+            sb_config::testing::Answer::json(
+                200,
+                r#"{"success":true,"result":[{"id":"z1","name":"example.com"}]}"#,
+            ),
+        );
+        checks.script(
+            "/client/v4/zones/z1/settings/ssl",
+            sb_config::testing::Answer::json(
+                200,
+                r#"{"success":true,"result":{"id":"ssl","value":"full"}}"#,
+            ),
+        );
+        checks.script(
+            "/v2/users/login/",
+            sb_config::testing::Answer::json(200, "{}"),
+        );
+        let world = Self {
+            host,
+            tree,
+            saltbox_remote,
+            sandbox_remote,
+            checks,
+        };
+        world.saltbox_remote.clone_into(saltbox, world.root());
+        for entry in std::fs::read_dir(configs.path()).expect("configs") {
+            let path = entry.expect("config").path();
+            if path.is_file() {
+                std::fs::copy(&path, world.root().join(path.file_name().expect("name")))
+                    .expect("copy config");
+            }
+        }
+        let inventory = world.root().join("inventories/host_vars");
+        std::fs::create_dir_all(&inventory).expect("inventory dir");
+        std::fs::write(
+            inventory.join("localhost.yml"),
+            format!("server_appdata_path: {}\n", world.appdata().display()),
+        )
+        .expect("inventory");
+        world.sandbox_remote.clone_into(sandbox, &world.sandbox());
+        world
+    }
+
+    /// The Saltbox root: the tree's checkout.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.tree.layout.checkout
+    }
+
+    /// The appdata path.
+    #[must_use]
+    pub fn appdata(&self) -> PathBuf {
+        self.tree.root.path().join("appdata")
+    }
+
+    /// The Sandbox checkout.
+    #[must_use]
+    pub fn sandbox(&self) -> PathBuf {
+        self.appdata().join("sandbox")
+    }
+
+    /// The credential checks' URLs on the fake: Cloudflare's API base and
+    /// Docker Hub's login.
+    #[must_use]
+    pub fn check_urls(&self) -> (String, String) {
+        (
+            format!("{}/client/v4/", self.checks.url()),
+            format!("{}/v2/users/login/", self.checks.url()),
+        )
+    }
+
+    /// A checkout's branch and `branch.txt`.
+    ///
+    /// # Panics
+    ///
+    /// When git fails or there's no `branch.txt`.
+    #[must_use]
+    pub fn branch(path: &Path) -> (String, String) {
+        let name = git(path, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        let text = std::fs::read_to_string(path.join("branch.txt")).expect("branch.txt");
+        (name, text.trim().to_owned())
     }
 }

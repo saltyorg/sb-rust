@@ -6,7 +6,8 @@
 //! setup's and gha's shared pieces (slice 5): [`prereq`], [`locale`],
 //! [`configs`] and [`hooks`], with the `testing` harness they run
 //! against; `sb gha` ([`gha`], slice 6); `sb setup` ([`setup`], slice
-//! 7); `sb update`'s first half ([`update`], slice 11).
+//! 7); `sb update` ([`update`], slice 11), on one [`Checkout`] type for
+//! the two checkouts.
 
 // sb's lines go through `Write` and cli-core's output errors;
 // `print!`/`eprint!` panic on a closed pipe.
@@ -14,6 +15,7 @@
 
 pub mod announcements;
 pub mod branch;
+mod checkout;
 pub mod configs;
 pub mod gha;
 pub mod hooks;
@@ -23,3 +25,5 @@ pub mod setup;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod update;
+
+pub use checkout::Checkout;

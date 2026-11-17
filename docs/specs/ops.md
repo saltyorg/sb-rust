@@ -777,6 +777,14 @@ fails.
     sb-go's glob took it and failed on the Saltbox root itself (`... is
     not a regular file`).
 
+`update`, the announcements (module build M85):
+40. The comparison of each checkout's announcements before and after its
+    pull is a step of its own, "Checking for new announcements" /
+    "Checked for new announcements", on every update; sb-go printed only
+    `Displaying new announcements`, when there were some. The step holds
+    that line and decision 23's warnings: term-ui's runner has no notices
+    outside a step.
+
 ## Scope
 
 **In:**

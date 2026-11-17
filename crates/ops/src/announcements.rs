@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use saphyr::{MarkedYamlOwned, YamlDataOwned};
 use sb_cli_core::cancel::Shutdown;
-use sb_cli_core::config::{self, read_small, yaml};
+use sb_cli_core::config::{read_small, yaml};
 use sb_cli_core::exit;
 use sb_cli_core::log::RunLog;
 use sb_cli_core::theme::{self, Theme};
@@ -25,33 +25,7 @@ use sb_tui::Ending;
 use sb_tui::announcements::Entry;
 use sb_tui::markdown;
 
-/// The repositories that ship announcements (ops spec, assumption 7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Repo {
-    Saltbox,
-    Sandbox,
-}
-
-impl Repo {
-    /// Its name, as headings, the migration table and messages show it.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Saltbox => "Saltbox",
-            Self::Sandbox => "Sandbox",
-        }
-    }
-
-    /// The repository `--repo` names, exactly as sb-go spells it.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "Saltbox" => Some(Self::Saltbox),
-            "Sandbox" => Some(Self::Sandbox),
-            _ => None,
-        }
-    }
-}
+use crate::Checkout;
 
 /// One entry of `announcements.yml`, as sb-go's `Announcement` type holds
 /// it: every field the file's text, empty when absent or null.
@@ -417,7 +391,7 @@ pub fn applies(announcement: &Announcement) -> bool {
 /// A migration a new announcement asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
-    pub repo: Repo,
+    pub repo: Checkout,
     pub tag: String,
     /// The announcement's date, as the table shows it.
     pub date: String,
@@ -428,7 +402,7 @@ pub struct Pending {
 /// the order given, sorted by date, a stable sort (Saltbox's first on
 /// equal dates when it comes first).
 #[must_use]
-pub fn migrations(shown: &[(Repo, Vec<Announcement>)]) -> Vec<Pending> {
+pub fn migrations(shown: &[(Checkout, Vec<Announcement>)]) -> Vec<Pending> {
     let mut pending: Vec<Pending> = shown
         .iter()
         .flat_map(|(repo, announcements)| {
@@ -449,7 +423,7 @@ pub fn migrations(shown: &[(Repo, Vec<Announcement>)]) -> Vec<Pending> {
 /// An announcement's heading, sb-go's title: `<Repo> Announcement -
 /// <Month D, YYYY>`, the date as written when it isn't `YYYY-MM-DD`.
 #[must_use]
-pub fn heading(repo: Repo, date: &str) -> String {
+pub fn heading(repo: Checkout, date: &str) -> String {
     let date = long_date(date).unwrap_or_else(|| date.to_string());
     format!("{} Announcement - {date}", repo.name())
 }
@@ -488,7 +462,7 @@ fn long_date(text: &str) -> Option<String> {
 ///
 /// cli-core's `OutputError` when stdout can't be written (a broken pipe
 /// is its quiet exit).
-pub fn show(shown: &[(Repo, Vec<Announcement>)]) -> anyhow::Result<()> {
+pub fn show(shown: &[(Checkout, Vec<Announcement>)]) -> anyhow::Result<()> {
     let headings: Vec<(String, &str)> = shown
         .iter()
         .flat_map(|(repo, announcements)| {
@@ -529,7 +503,7 @@ fn stdout_theme() -> Theme {
 ///
 /// The screen's I/O error; cli-core's `Exit(130)` after Ctrl-C.
 async fn view(
-    listed: Vec<(Repo, Vec<(Announcement, bool)>)>,
+    listed: Vec<(Checkout, Vec<(Announcement, bool)>)>,
     shutdown: &Shutdown,
 ) -> anyhow::Result<()> {
     let entries: Vec<Entry> = listed
@@ -557,17 +531,10 @@ async fn view(
 const FILE: &str = "announcements.yml";
 
 /// `repo`'s own announcements file (ops spec, assumption 7 and
-/// "Announcements"): Saltbox's at the Saltbox root `root`, Sandbox's in
-/// `<server_appdata_path>/sandbox`, the appdata path read from the
-/// inventory under `root` as cli-core reads it.
+/// "Announcements"): in its checkout under the Saltbox root `root`.
 #[must_use]
-pub fn own_file(repo: Repo, root: &Path) -> PathBuf {
-    match repo {
-        Repo::Saltbox => root.join(FILE),
-        Repo::Sandbox => config::appdata_path(&config::inventory_path(root))
-            .join("sandbox")
-            .join(FILE),
-    }
+pub fn own_file(repo: Checkout, root: &Path) -> PathBuf {
+    repo.path(root).join(FILE)
 }
 
 /// `sb announcements`' flags (ops spec, "Commands and help"): sb-go's,
@@ -602,13 +569,17 @@ impl AnnouncementsArgs {
     /// # Errors
     ///
     /// sb-go's error for a name that is neither (exit 1).
-    pub fn repos(&self) -> anyhow::Result<Vec<Repo>> {
+    pub fn repos(&self) -> anyhow::Result<Vec<Checkout>> {
         match &self.repo {
-            Some(name) => Repo::from_name(name).map(|repo| vec![repo]).ok_or_else(|| {
-                anyhow::anyhow!("invalid repository name '{name}', must be 'Saltbox' or 'Sandbox'")
-            }),
-            None if self.before.is_some() || self.after.is_some() => Ok(vec![Repo::Saltbox]),
-            None => Ok(vec![Repo::Saltbox, Repo::Sandbox]),
+            Some(name) => Checkout::from_name(name)
+                .map(|repo| vec![repo])
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "invalid repository name '{name}', must be 'Saltbox' or 'Sandbox'"
+                    )
+                }),
+            None if self.before.is_some() || self.after.is_some() => Ok(vec![Checkout::Saltbox]),
+            None => Ok(vec![Checkout::Saltbox, Checkout::Sandbox]),
         }
     }
 }
@@ -706,7 +677,7 @@ pub async fn announcements(
     if terminal {
         return view(listed, shutdown).await;
     }
-    let new: Vec<(Repo, Vec<Announcement>)> = listed
+    let new: Vec<(Checkout, Vec<Announcement>)> = listed
         .into_iter()
         .map(|(repo, entries)| (repo, only_new(entries)))
         .filter(|(_, new)| !new.is_empty())

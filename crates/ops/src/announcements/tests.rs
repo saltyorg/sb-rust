@@ -434,7 +434,7 @@ fn migrating(date: &str, title: &str, required: bool, tag: &str) -> Announcement
 #[test]
 fn a_migration_needs_required_and_a_tag() {
     let shown = [(
-        Repo::Saltbox,
+        Checkout::Saltbox,
         vec![
             migrating("2026-01-01", "a", true, "one"),
             migrating("2026-01-02", "b", false, "two"),
@@ -445,7 +445,7 @@ fn a_migration_needs_required_and_a_tag() {
     assert_eq!(
         migrations(&shown),
         [Pending {
-            repo: Repo::Saltbox,
+            repo: Checkout::Saltbox,
             tag: "one".into(),
             date: "2026-01-01".into()
         }]
@@ -456,14 +456,14 @@ fn a_migration_needs_required_and_a_tag() {
 fn migrations_go_by_date_saltboxs_first_on_equal_dates() {
     let shown = [
         (
-            Repo::Saltbox,
+            Checkout::Saltbox,
             vec![
                 migrating("2026-01-03", "a", true, "s3"),
                 migrating("2026-01-02", "b", true, "s2"),
             ],
         ),
         (
-            Repo::Sandbox,
+            Checkout::Sandbox,
             vec![
                 migrating("2026-01-02", "c", true, "x2"),
                 migrating("2026-01-01", "d", true, "x1"),
@@ -471,14 +471,14 @@ fn migrations_go_by_date_saltboxs_first_on_equal_dates() {
         ),
     ];
     let pending = migrations(&shown);
-    let listed: Vec<(Repo, &str)> = pending.iter().map(|p| (p.repo, p.tag.as_str())).collect();
+    let listed: Vec<(Checkout, &str)> = pending.iter().map(|p| (p.repo, p.tag.as_str())).collect();
     assert_eq!(
         listed,
         [
-            (Repo::Sandbox, "x1"),
-            (Repo::Saltbox, "s2"),
-            (Repo::Sandbox, "x2"),
-            (Repo::Saltbox, "s3"),
+            (Checkout::Sandbox, "x1"),
+            (Checkout::Saltbox, "s2"),
+            (Checkout::Sandbox, "x2"),
+            (Checkout::Saltbox, "s3"),
         ]
     );
 }
@@ -486,19 +486,19 @@ fn migrations_go_by_date_saltboxs_first_on_equal_dates() {
 #[test]
 fn the_heading_spells_the_date_out() {
     assert_eq!(
-        heading(Repo::Saltbox, "2026-02-01"),
+        heading(Checkout::Saltbox, "2026-02-01"),
         "Saltbox Announcement - February 1, 2026"
     );
     assert_eq!(
-        heading(Repo::Sandbox, "2024-12-25"),
+        heading(Checkout::Sandbox, "2024-12-25"),
         "Sandbox Announcement - December 25, 2024"
     );
     assert_eq!(
-        heading(Repo::Saltbox, "0099-01-02"),
+        heading(Checkout::Saltbox, "0099-01-02"),
         "Saltbox Announcement - January 2, 0099"
     );
     assert_eq!(
-        heading(Repo::Saltbox, "2024-02-29"),
+        heading(Checkout::Saltbox, "2024-02-29"),
         "Saltbox Announcement - February 29, 2024"
     );
 }
@@ -523,7 +523,7 @@ fn a_date_go_wouldnt_parse_is_shown_as_written() {
         "20260-01-01",
     ] {
         assert_eq!(
-            heading(Repo::Saltbox, date),
+            heading(Checkout::Saltbox, date),
             format!("Saltbox Announcement - {date}"),
             "{date:?}"
         );
@@ -532,12 +532,12 @@ fn a_date_go_wouldnt_parse_is_shown_as_written() {
 
 #[test]
 fn repos_are_named_as_sb_go_spells_them() {
-    assert_eq!(Repo::from_name("Saltbox"), Some(Repo::Saltbox));
-    assert_eq!(Repo::from_name("Sandbox"), Some(Repo::Sandbox));
-    assert_eq!(Repo::from_name("saltbox"), None);
-    assert_eq!(Repo::from_name(""), None);
-    assert_eq!(Repo::Saltbox.name(), "Saltbox");
-    assert_eq!(Repo::Sandbox.name(), "Sandbox");
+    assert_eq!(Checkout::from_name("Saltbox"), Some(Checkout::Saltbox));
+    assert_eq!(Checkout::from_name("Sandbox"), Some(Checkout::Sandbox));
+    assert_eq!(Checkout::from_name("saltbox"), None);
+    assert_eq!(Checkout::from_name(""), None);
+    assert_eq!(Checkout::Saltbox.name(), "Saltbox");
+    assert_eq!(Checkout::Sandbox.name(), "Sandbox");
 }
 
 #[derive(clap::Parser)]
@@ -582,11 +582,11 @@ fn migrations_is_no_flag() {
 fn each_repository_has_its_own_file() {
     let root = tempfile::tempdir().expect("root");
     assert_eq!(
-        own_file(Repo::Saltbox, root.path()),
+        own_file(Checkout::Saltbox, root.path()),
         root.path().join("announcements.yml")
     );
     assert_eq!(
-        own_file(Repo::Sandbox, root.path()),
+        own_file(Checkout::Sandbox, root.path()),
         Path::new("/opt/sandbox/announcements.yml")
     );
     let inventory = root.path().join("inventories/host_vars");
@@ -598,7 +598,7 @@ fn each_repository_has_its_own_file() {
     )
     .expect("inventory");
     assert_eq!(
-        own_file(Repo::Sandbox, root.path()),
+        own_file(Checkout::Sandbox, root.path()),
         appdata.join("sandbox/announcements.yml")
     );
 }
@@ -636,21 +636,27 @@ fn a_tagged_collection_is_the_collection() {
 fn repos_are_both_unless_one_is_named() {
     assert_eq!(
         args(&[]).repos().expect("both"),
-        [Repo::Saltbox, Repo::Sandbox]
+        [Checkout::Saltbox, Checkout::Sandbox]
     );
     assert_eq!(
         args(&["-r", "Saltbox"]).repos().expect("one"),
-        [Repo::Saltbox]
+        [Checkout::Saltbox]
     );
     assert_eq!(
         args(&["-r", "Sandbox"]).repos().expect("one"),
-        [Repo::Sandbox]
+        [Checkout::Sandbox]
     );
-    assert_eq!(args(&["-a", "x"]).repos().expect("a file"), [Repo::Saltbox]);
-    assert_eq!(args(&["-b", "x"]).repos().expect("a file"), [Repo::Saltbox]);
+    assert_eq!(
+        args(&["-a", "x"]).repos().expect("a file"),
+        [Checkout::Saltbox]
+    );
+    assert_eq!(
+        args(&["-b", "x"]).repos().expect("a file"),
+        [Checkout::Saltbox]
+    );
     assert_eq!(
         args(&["-a", "x", "-r", "Sandbox"]).repos().expect("named"),
-        [Repo::Sandbox]
+        [Checkout::Sandbox]
     );
     assert_eq!(
         args(&["-r", "saltbox"])
