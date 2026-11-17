@@ -524,7 +524,12 @@ fn certificates_line(
     } else {
         "certificates"
     };
-    let mut parts = vec![format!("{} valid", paint.value(&valid.to_string()))];
+    // Each count only when it is above 0 (the maintainer, 2026-11-17);
+    // with a total above 0, one of them is.
+    let mut parts = Vec::new();
+    if valid > 0 {
+        parts.push(format!("{} valid", paint.value(&valid.to_string())));
+    }
     if counted.warnings > 0 {
         parts.push(format!(
             "{} expiring soon",
@@ -1287,9 +1292,9 @@ mod tests {
         expiring: 3 certificates (2 valid, 1 expiring soon), next expires in 12 days
         expired: 3 certificates (1 valid, 1 expiring soon, 1 expired), earliest expired 3 days ago
         one: 1 certificate (1 valid), next expires in 61 days
-        in one day: 1 certificate (0 valid, 1 expiring soon), next expires in 1 day
-        today: 1 certificate (0 valid, 1 expiring soon), next expires today
-        expired today: 1 certificate (0 valid, 1 expired), earliest expired today
+        in one day: 1 certificate (1 expiring soon), next expires in 1 day
+        today: 1 certificate (1 expiring soon), next expires today
+        expired today: 1 certificate (1 expired), earliest expired today
         one day ago: 2 certificates (1 valid, 1 expired), earliest expired 1 day ago
         none served: Traefik is serving no certificates
         no first: 3 certificates (3 valid)
@@ -1410,9 +1415,8 @@ mod tests {
         assert_eq!(
             certificate_line(&api, &paint).await,
             format!(
-                "{} certificate ({} valid, {} expiring soon), next expires {}",
+                "{} certificate ({} expiring soon), next expires {}",
                 paint.warning("1"),
-                paint.value("0"),
                 paint.warning("1"),
                 paint.warning("today")
             )

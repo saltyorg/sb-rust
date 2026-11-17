@@ -260,7 +260,10 @@ Traefik's API (v3.7.0 and later; Saltbox pins `traefik:v3.7`), shown with
   (`summary`'s slots): the counts in the value colour when all are
   valid; with any expiring, the total and that count in the warning
   colour; with any expired, the total and that count in the error
-  colour. `valid` is the total less both.
+  colour. `valid` is the total less both. Inside the brackets each count
+  shows only when it is above 0 (the maintainer, 2026-11-17):
+  `1 certificate (1 expiring soon), next expires in 1 day`, `1
+  certificate (1 expired), earliest expired today`.
   - `3 certificates (3 valid), next expires in 38 days`
   - `3 certificates (2 valid, 1 expiring soon), next expires in 12 days`
   - `3 certificates (1 valid, 1 expiring soon, 1 expired), earliest expired 3 days ago`
