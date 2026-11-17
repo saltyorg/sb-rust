@@ -283,8 +283,8 @@ pub fn keeps_codes(colour: bool, profile: Profile) -> bool;
 - Other C0 controls, DEL and C1 are dropped; CAN and SUB end a sequence,
   as in the DEC model. Bidi and zero-width characters pass unmarked.
 
-**Tables** sanitize in `Table::render`, the one place every heading and
-cell passes, with colour off: a cell's own SGR codes are dropped (a
+**Tables** sanitize in `Table::render`, the one place every title,
+heading and cell passes, with colour off: a cell's own SGR codes are dropped (a
 container label is untrusted text, as `sb docker ps` shows it), and the
 colour the table adds itself (border, bold headings, a cell's role) is
 applied afterwards, so it stays. A cell's `\n` still separates its
@@ -337,6 +337,11 @@ sequence.
   (capability map, open items). `Table::spanning_row(text)` adds a bold
   row across every column (`sb list`'s later repos), through tabled's
   `Span`. *Amended 2026-11-13 by the ansible spec.*
+- **A title row:** `Table::titled(title, headings)` draws a row across
+  every column above the column headings; both are bold and centred, as
+  headings are, through the same `Span` (bench's Speedtest table). The
+  title wraps across the whole table when fitted. Every other table
+  draws as before. *Amended 2026-11-17 (maintainer).*
 
 ### Prompts (specified now, built with their first user: decision 1)
 

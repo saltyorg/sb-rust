@@ -6,8 +6,9 @@
 //! cell's lines at words, or at any character in a column the caller
 //! marks) and of natural width when stdout isn't one. A terminal too
 //! narrow for a character a cell gets a line saying so instead. Rows
-//! across every column, bold (`sb list`'s later repositories, and a lone
-//! heading over several columns), through tabled's `Span`.
+//! across every column, bold (`sb list`'s later repositories, a lone
+//! heading over several columns, and a title above the headings, as
+//! bench's Speedtest table has), through tabled's `Span`.
 //! <https://docs.rs/tabled/0.22.0/tabled/>
 
 use std::io::Write;
@@ -63,11 +64,13 @@ impl From<String> for Cell {
     }
 }
 
-/// A table: headings, rows of cells, right-aligned columns and an optional
-/// maximum column width (sb-go's `docker ps` caps at 100), and rows that
-/// span every column (`sb list`).
+/// A table: an optional title, headings, rows of cells, right-aligned
+/// columns and an optional maximum column width (sb-go's `docker ps` caps
+/// at 100), and rows that span every column (`sb list`).
 #[derive(Clone, Debug, Default)]
 pub struct Table {
+    /// A row across every column above the headings (`Table::titled`).
+    title: Option<String>,
     headings: Vec<String>,
     rows: Vec<Vec<Cell>>,
     /// The rows (by index in `rows`) that span every column.
@@ -135,6 +138,22 @@ impl Table {
         }
     }
 
+    /// A table with a title row across every column, then a row of these
+    /// headings, both bold and centred, and no rows yet (bench's Speedtest
+    /// table, over `Node | Upload | Download | Latency`). The title wraps
+    /// across the whole table when it is fitted, and widens the columns
+    /// when it is the widest record.
+    pub fn titled<I, S>(title: impl Into<String>, headings: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Table {
+            title: Some(title.into()),
+            ..Table::new(headings)
+        }
+    }
+
     /// Add a row of `text` across every column, bold and centred as a
     /// heading (`sb list`'s later repositories: term-ui spec, "Tables",
     /// amended by the ansible spec), through tabled's `Span`
@@ -144,13 +163,21 @@ impl Table {
         self.rows.push(vec![Cell::new(text)]);
     }
 
-    /// The records (the heading row is 0) that span every column: the
-    /// heading row of a [`Table::spanning`], and each spanning row.
+    /// How many records come before the rows: the headings, and the
+    /// title above them when there is one.
+    fn heading_rows(&self) -> usize {
+        1 + usize::from(self.title.is_some())
+    }
+
+    /// The records (the first is 0) that span every column: the title of
+    /// a [`Table::titled`], the heading row of a [`Table::spanning`], and
+    /// each spanning row.
     fn spans(&self) -> Vec<usize> {
-        self.spanning_heading
+        let head = self.heading_rows();
+        (self.title.is_some() || self.spanning_heading)
             .then_some(0)
             .into_iter()
-            .chain(self.spanning.iter().map(|row| row + 1))
+            .chain(self.spanning.iter().map(|row| row + head))
             .collect()
     }
 
@@ -160,9 +187,10 @@ impl Table {
     /// line saying so instead.
     #[must_use]
     pub fn render(&self, theme: &Theme, colour: bool, width: Option<usize>) -> String {
-        // Every heading and cell is sanitized here, with its own colour
+        // Every title, heading and cell is sanitized here, with its own colour
         // dropped (term-ui spec, "Escape handling"): a container label is
         // untrusted text. The table's colour is added after, by tabled.
+        let title = self.title.as_deref().map(shown);
         let headings: Vec<String> = self.headings.iter().map(|text| shown(text)).collect();
         let rows: Vec<Vec<String>> = self
             .rows
@@ -170,7 +198,8 @@ impl Table {
             .map(|row| row.iter().map(|cell| shown(&cell.text)).collect())
             .collect();
         let spans = self.spans();
-        let (widths, inner) = match self.widths(&headings, &rows, &spans, width) {
+        let head = self.heading_rows();
+        let (widths, inner) = match self.widths(title.as_deref(), &headings, &rows, &spans, width) {
             Ok(fitted) => fitted,
             Err(too_narrow) => return too_narrow,
         };
@@ -191,19 +220,30 @@ impl Table {
                 |width| wrapped(text, width.saturating_sub(PADDING), words),
             )
         };
+        // The title is a record of its own, spread across every column as
+        // the spanning rows are. Why not tabled's `Panel::header`
+        // (<https://docs.rs/tabled/0.22.0/tabled/settings/struct.Panel.html#method.header>),
+        // which draws the same spread record: it is added after the build,
+        // but the title must be in the widths probe and wrapped to the
+        // table's width first, as every spanning record is, and share
+        // their index list for the alignment, the bold and the rules.
         let mut builder = Builder::default();
+        if let Some(title) = &title {
+            builder.push_record([fit(title, 0, 0, true)]);
+        }
+        let heading_record = head - 1;
         builder.push_record(
             headings
                 .iter()
                 .enumerate()
-                .map(|(j, text)| fit(text, 0, j, true)),
+                .map(|(j, text)| fit(text, heading_record, j, true)),
         );
         for (i, row) in rows.iter().enumerate() {
             let words = |j| !self.anywhere.contains(&j) || self.spanning.contains(&i);
             builder.push_record(
                 row.iter()
                     .enumerate()
-                    .map(|(j, text)| fit(text, i + 1, j, words(j))),
+                    .map(|(j, text)| fit(text, i + head, j, words(j))),
             );
         }
         let mut table = builder.build();
@@ -221,9 +261,9 @@ impl Table {
         for &index in &self.right {
             table.modify(Columns::one(index), Alignment::right());
         }
-        // After the columns' alignment, so headings stay centred, as the
-        // spanning rows are.
-        table.modify(Rows::first(), Alignment::center());
+        // After the columns' alignment, so headings (and a title) stay
+        // centred, as the spanning rows are.
+        table.modify(Rows::new(..head), Alignment::center());
         for &record in &spans {
             table.modify(Rows::one(record), Alignment::center());
         }
@@ -232,7 +272,7 @@ impl Table {
         // and colour off write no SGR codes.
         if let Some(border) = table_colour(theme, Role::Border, colour) {
             table.modify(Segment::all(), BorderColor::filled(border));
-            table.modify(Rows::first(), Color::BOLD);
+            table.modify(Rows::new(..head), Color::BOLD);
             for &record in &spans {
                 table.modify(Rows::one(record), Color::BOLD);
             }
@@ -240,7 +280,7 @@ impl Table {
         for (i, row) in self.rows.iter().enumerate() {
             for (j, cell) in row.iter().enumerate() {
                 if let Some(paint) = cell.role.and_then(|role| table_colour(theme, role, colour)) {
-                    table.modify((i + 1, j), paint);
+                    table.modify((i + head, j), paint);
                 }
             }
         }
@@ -266,12 +306,16 @@ impl Table {
     /// table.
     fn widths(
         &self,
+        title: Option<&str>,
         headings: &[String],
         rows: &[Vec<String>],
         spans: &[usize],
         width: Option<usize>,
     ) -> Result<(Vec<usize>, usize), String> {
         let mut builder = Builder::default();
+        if let Some(title) = title {
+            builder.push_record([title.to_owned()]);
+        }
         builder.push_record(headings.iter().cloned());
         for row in rows {
             builder.push_record(row.iter().cloned());
@@ -630,6 +674,22 @@ mod tests {
         ");
     }
 
+    /// A `Table::spanning` heading wider than the first column wraps across
+    /// the whole table when fitted, not inside that column.
+    #[test]
+    fn a_spanning_heading_wraps_across_the_table() {
+        let mut table = Table::spanning("Saltbox, the first section");
+        table.row(["a", "b"]);
+        insta::assert_snapshot!(table.render(&plain(), false, Some(20)), @r"
+        ╭───────────────╮
+        │ Saltbox, the  │
+        │ first section │
+        ├───────┬───────┤
+        │ a     │ b     │
+        ╰───────┴───────╯
+        ");
+    }
+
     /// Only a `Table::spanning` heading spans: one heading of `Table::new`
     /// over two columns stays in the first.
     #[test]
@@ -654,6 +714,105 @@ mod tests {
         assert!(text.contains("\x1b[1mSandbox"), "{text:?}");
         assert!(text.contains("\x1b[1mSaltbox"), "{text:?}");
         assert!(!search().render(&theme, false, None).contains('\x1b'));
+    }
+
+    /// bench's Speedtest table: a title across every column, then the
+    /// column headings, both centred, then the rows with their own
+    /// alignment.
+    fn speedtest() -> Table {
+        let mut table = Table::titled("Speedtest", ["Node", "Upload", "Download", "Latency"])
+            .right_align(1)
+            .right_align(2)
+            .right_align(3);
+        table.row(["Speedtest.net", "90.00 Mbps", "940.00 Mbps", "1.50 ms"]);
+        table.row(["Paris, FR", "Test failed", "", ""]);
+        table
+    }
+
+    #[test]
+    fn a_title_row_spans_over_the_headings() {
+        insta::assert_snapshot!(speedtest().render(&plain(), false, None), @r"
+        ╭─────────────────────────────────────────────────────╮
+        │                      Speedtest                      │
+        ├───────────────┬─────────────┬─────────────┬─────────┤
+        │     Node      │   Upload    │  Download   │ Latency │
+        ├───────────────┼─────────────┼─────────────┼─────────┤
+        │ Speedtest.net │  90.00 Mbps │ 940.00 Mbps │ 1.50 ms │
+        ├───────────────┼─────────────┼─────────────┼─────────┤
+        │ Paris, FR     │ Test failed │             │         │
+        ╰───────────────┴─────────────┴─────────────┴─────────╯
+        ");
+    }
+
+    /// A title wider than the columns widens them; fitted, it wraps across
+    /// the whole table, and a spanning row after it still spans.
+    #[test]
+    fn a_title_row_fits_the_table() {
+        let mut table = Table::titled("A title longer than the columns", ["a", "b"]);
+        table.row(["x", "y"]);
+        table.spanning_row("Later");
+        table.row(["z", "w"]);
+        insta::assert_snapshot!(table.render(&plain(), false, None), @r"
+        ╭─────────────────────────────────╮
+        │ A title longer than the columns │
+        ├────────────────┬────────────────┤
+        │       a        │       b        │
+        ├────────────────┼────────────────┤
+        │ x              │ y              │
+        ├────────────────┴────────────────┤
+        │              Later              │
+        ├────────────────┬────────────────┤
+        │ z              │ w              │
+        ╰────────────────┴────────────────╯
+        ");
+        insta::assert_snapshot!(table.render(&plain(), false, Some(16)), @r"
+        ╭─────────────╮
+        │   A title   │
+        │ longer than │
+        │ the columns │
+        ├──────┬──────┤
+        │  a   │  b   │
+        ├──────┼──────┤
+        │ x    │ y    │
+        ├──────┴──────┤
+        │    Later    │
+        ├──────┬──────┤
+        │ z    │ w    │
+        ╰──────┴──────╯
+        ");
+    }
+
+    /// With colour, the title and the headings are bold; a cell's role
+    /// still paints its cell; without colour, no codes.
+    #[test]
+    fn a_title_row_is_bold_with_colour() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let mut table = speedtest();
+        table.row([
+            Cell::new("Tokyo, JP"),
+            Cell::new("Test failed").role(Role::Problem),
+        ]);
+        let text = table.render(&theme, true, None);
+        assert!(text.contains("\x1b[1mSpeedtest"), "{text:?}");
+        assert!(text.contains("\x1b[1mNode"), "{text:?}");
+        assert!(text.contains("\x1b[1mLatency"), "{text:?}");
+        assert!(text.contains(&crate::style::paint(
+            &theme,
+            Role::Problem,
+            true,
+            "Test failed"
+        )));
+        assert!(!text.contains("\x1b[1mSpeedtest.net"), "{text:?}");
+        assert!(!speedtest().render(&theme, false, None).contains('\x1b'));
+    }
+
+    /// The title is sanitized as every heading and cell is.
+    #[test]
+    fn a_title_is_sanitized() {
+        let table = Table::titled("a\x1b[31mb\x07", ["c"]);
+        let text = table.render(&plain(), false, None);
+        assert!(!text.contains('\x1b') && !text.contains('\x07'), "{text:?}");
+        assert!(text.contains("ab"), "{text:?}");
     }
 
     /// A cell made from a `String` or a `&str` holds its text, no role.
