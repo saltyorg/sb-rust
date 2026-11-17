@@ -2,7 +2,8 @@
 //! page of docs/ideas/fact-editor.md and proto-facts' reviewed design):
 //! the apps and their settings, search, folding, masking, Show and Copy
 //! (module build M54); the changes, the changes panel with undo, saving
-//! and the dialogs (M55). The mouse and the menu come with M56.
+//! and the dialogs (M55); the mouse and the right-click menu ([`mouse`],
+//! M56).
 //!
 //! - **The page** is ratatui's `List` with a `ListState`
 //!   (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.List.html>):
@@ -57,6 +58,7 @@
 mod changes;
 mod dialog;
 mod keys;
+mod mouse;
 mod save;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,7 +66,9 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use crossterm::clipboard::CopyToClipboard;
-use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    Event as Input, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -178,6 +182,8 @@ enum Action {
     Delete,
     Save,
     Quit,
+    /// Undo the selected row's change (the menu's Undo change).
+    Undo,
 }
 
 /// A setting as the page shows it: the catalog's, with its staged value,
@@ -224,6 +230,10 @@ struct Page {
     wake: Option<Arc<Notify>>,
     /// The list's height in the last frame (the page keys' step).
     height: u16,
+    /// Where the last frame drew what can be clicked.
+    hits: mouse::Hits,
+    /// The right-click menu, when it is open.
+    menu: Option<mouse::Menu>,
 }
 
 impl std::fmt::Debug for Page {
@@ -317,6 +327,8 @@ impl Page {
             out,
             wake: None,
             height: 0,
+            hits: mouse::Hits::default(),
+            menu: None,
         }
     }
 
@@ -565,6 +577,9 @@ impl Page {
     }
 
     fn key(&mut self, key: KeyEvent) -> Flow {
+        if let Some(menu) = self.menu {
+            return self.menu_key(key, menu);
+        }
         if !matches!(self.popup, Popup::None) {
             return self.popup_key(key);
         }
@@ -591,6 +606,7 @@ impl Page {
             KeyCode::Left => self.fold_selected(true),
             KeyCode::Right => self.fold_selected(false),
             KeyCode::Char('u') => self.undo_selected(),
+            KeyCode::Char('m') | KeyCode::Menu => self.open_menu(None),
             KeyCode::Char('e') => return self.act(Action::Edit),
             KeyCode::Char('a') => return self.act(Action::Add),
             KeyCode::Char('c') => return self.act(Action::Copy),
@@ -603,7 +619,7 @@ impl Page {
         Flow::Redraw
     }
 
-    /// A bottom button's action, by key (and by click with M56).
+    /// A bottom button's action, by key or by click.
     fn act(&mut self, action: Action) -> Flow {
         match action {
             Action::Quit if self.pending.is_empty() => return Flow::Quit,
@@ -613,6 +629,7 @@ impl Page {
             }
             Action::Save => self.popup = Popup::ConfirmSave,
             Action::Edit => self.start_edit(),
+            Action::Undo => self.undo_selected(),
             Action::Add => self.start_add(),
             Action::Delete => self.toggle_delete(),
             Action::Show => match self.selected_setting() {
@@ -999,7 +1016,7 @@ impl Page {
     /// The bottom buttons: each with its key; the ones that can't act on
     /// the selected row are drawn faint. "Save changes" is "Save" when
     /// the row is too narrow for every button's whole label.
-    fn buttons(&self, width: u16) -> Vec<(Span<'static>, Action)> {
+    fn buttons(&self, width: u16) -> Vec<(Span<'static>, Action, bool)> {
         let row = self.selected();
         let target = row.map(|row| self.target(row));
         let on_setting = self.selected_setting();
@@ -1068,7 +1085,11 @@ impl Page {
                         .style(Role::Faint)
                         .patch(self.bg(Role::ButtonDisabledBg)),
                 };
-                (Span::styled(format!(" {label} ({key}) "), style), action)
+                (
+                    Span::styled(format!(" {label} ({key}) "), style),
+                    action,
+                    enabled,
+                )
             })
             .collect()
     }
@@ -1108,9 +1129,10 @@ impl Page {
     }
 
     /// The changes panel: each staged change's verb, what it is on and its
-    /// undo, one row each, laid out by ratatui (proto-facts; the undo's
-    /// click comes with M56).
-    fn draw_changes(&self, frame: &mut Frame<'_>, area: Rect) {
+    /// undo, one row each, laid out by ratatui (proto-facts); the undos'
+    /// rectangles come back as their click targets.
+    fn draw_changes(&self, frame: &mut Frame<'_>, area: Rect) -> Vec<(Rect, Target)> {
+        let mut undos = Vec::new();
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(self.style(Role::Border))
@@ -1125,7 +1147,7 @@ impl Page {
                 Span::styled("Nothing changed yet", self.style(Role::Muted)),
                 inner,
             );
-            return;
+            return undos;
         }
         let undo = Span::styled(
             " undo ",
@@ -1167,21 +1189,32 @@ impl Page {
                 label_area,
             );
             frame.render_widget(undo.clone(), undo_area);
+            undos.push((undo_area, target.clone()));
         }
+        undos
     }
 }
 
 impl Screen for Page {
     fn input(&mut self, input: Input) -> Flow {
-        let Input::Key(key) = input else {
-            return match input {
-                Input::Resize(..) => Flow::Redraw,
-                _ => Flow::Unchanged,
-            };
-        };
+        // The pointer moving is the menu's alone (its hover): nothing else
+        // on the page follows it, and every move is reported.
+        if let Input::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            ..
+        }) = input
+            && self.menu.is_none()
+        {
+            return Flow::Unchanged;
+        }
         let before = self.selected().map(|row| self.target(row));
         let status = self.status.clone();
-        let flow = self.key(key);
+        let flow = match input {
+            Input::Key(key) => self.key(key),
+            Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Resize(..) => return Flow::Redraw,
+            _ => return Flow::Unchanged,
+        };
         // Show, and what the status line said, last until the selection
         // moves; a message this key set stays.
         if self.selected().map(|row| self.target(row)) != before {
@@ -1221,17 +1254,19 @@ impl Screen for Page {
         ])
         .areas(area);
         self.draw_search(frame, search);
+        self.hits.search = search;
         let list_area = if wide {
             let [list, changes] =
                 Layout::horizontal([Constraint::Fill(1), Constraint::Length(PANEL_WIDTH)])
                     .areas(body);
-            self.draw_changes(frame, changes);
+            self.hits.undo = self.draw_changes(frame, changes);
             list
         } else {
-            self.draw_changes(frame, changes_bottom);
+            self.hits.undo = self.draw_changes(frame, changes_bottom);
             body
         };
         self.height = list_area.height;
+        self.hits.list = list_area;
         if !self.fold_decided && list_area.height > 0 {
             // Expanded when it fits, else folded to app names.
             self.fold_decided = true;
@@ -1267,20 +1302,24 @@ impl Screen for Page {
             status,
         );
         // The buttons laid out by ratatui, one column apart, each in the
-        // rectangle that is its click target (proto-facts; the clicks come
-        // with M56).
+        // rectangle that is its click target (proto-facts).
         let row = buttons.inner(Margin::new(1, 0));
         let spans = self.buttons(row.width);
-        let areas =
-            Layout::horizontal(spans.iter().map(|(span, _)| {
-                Constraint::Length(u16::try_from(span.width()).unwrap_or(u16::MAX))
-            }))
-            .spacing(1)
-            .split(row);
-        for ((span, _), area) in spans.into_iter().zip(areas.iter()) {
+        let areas = Layout::horizontal(spans.iter().map(|(span, _, _)| {
+            Constraint::Length(u16::try_from(span.width()).unwrap_or(u16::MAX))
+        }))
+        .spacing(1)
+        .split(row);
+        self.hits.buttons.clear();
+        for ((span, action, enabled), area) in spans.into_iter().zip(areas.iter()) {
+            // A button the row is too narrow for isn't a target (proto-facts).
+            if enabled && usize::from(area.width) == span.width() {
+                self.hits.buttons.push((*area, action));
+            }
             frame.render_widget(span, *area);
         }
         dialog::draw(self, frame, area);
+        self.draw_menu(frame, area);
     }
 }
 

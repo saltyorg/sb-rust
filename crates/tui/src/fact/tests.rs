@@ -1870,3 +1870,386 @@ fn failed_and_unsynced_outcomes_name_the_cause() {
     );
     assert_eq!(lines[1].1, Role::Warn);
 }
+
+// --- the mouse and the right-click menu (M56) ---
+
+fn mouse_at(kind: crossterm::event::MouseEventKind, at: ratatui::layout::Position) -> Input {
+    Input::Mouse(crossterm::event::MouseEvent {
+        kind,
+        column: at.x,
+        row: at.y,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+fn left_click(page: &mut Page, at: ratatui::layout::Position) -> Flow {
+    page.input(mouse_at(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        at,
+    ))
+}
+
+fn right_click(page: &mut Page, at: ratatui::layout::Position) -> Flow {
+    page.input(mouse_at(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+        at,
+    ))
+}
+
+/// Where `text` is on the page drawn at 100×40 (its first cell), so a
+/// click lands where the screen shows it.
+fn find(page: &mut Page, text: &str) -> ratatui::layout::Position {
+    find_at(page, 100, 40, text)
+}
+
+/// Where `text` is on the page drawn at `width`×`height`.
+fn find_at(page: &mut Page, width: u16, height: u16, text: &str) -> ratatui::layout::Position {
+    let rows = screen(&drawn(page, width, height));
+    for (y, row) in rows.iter().enumerate() {
+        if let Some(byte) = row.find(text) {
+            let x = Span::raw(&row[..byte]).width();
+            return ratatui::layout::Position::new(
+                u16::try_from(x).expect("a column"),
+                u16::try_from(y).expect("a row"),
+            );
+        }
+    }
+    panic!("{text}: {rows:?}");
+}
+
+/// A click selects the row under it; a second click on it is Enter.
+#[test]
+fn a_click_selects_and_a_second_click_activates() {
+    let mut f = Fixture::new(&roles());
+    let at = find(&mut f.page, "theme");
+    assert_eq!(left_click(&mut f.page, at), Flow::Redraw);
+    assert_eq!(f.page.selected(), Some(Row::Setting((0, 0, 1))));
+    assert!(matches!(f.page.popup, Popup::None));
+    left_click(&mut f.page, at);
+    assert!(matches!(f.page.popup, Popup::Edit { .. }));
+    press(&mut f.page, KeyCode::Esc);
+    // On an app's heading the second click folds it.
+    let at = find(&mut f.page, "▾ Komodo");
+    left_click(&mut f.page, at);
+    left_click(&mut f.page, at);
+    assert!(f.page.folded.contains("komodo"));
+    // A click below the last row leaves the selection as it was.
+    let below = ratatui::layout::Position::new(5, 30);
+    left_click(&mut f.page, below);
+    assert_eq!(f.page.selected(), Some(Row::App(1)));
+}
+
+/// The wheel over the list moves the selection; elsewhere it doesn't.
+#[test]
+fn the_wheel_moves_the_selection_over_the_list() {
+    let mut f = Fixture::new(&roles());
+    let at = find(&mut f.page, "theme");
+    f.page
+        .input(mouse_at(crossterm::event::MouseEventKind::ScrollDown, at));
+    f.page
+        .input(mouse_at(crossterm::event::MouseEventKind::ScrollDown, at));
+    assert_eq!(f.page.list.selected(), Some(2));
+    f.page
+        .input(mouse_at(crossterm::event::MouseEventKind::ScrollUp, at));
+    assert_eq!(f.page.list.selected(), Some(1));
+    let search = find(&mut f.page, "Search");
+    assert_eq!(
+        f.page.input(mouse_at(
+            crossterm::event::MouseEventKind::ScrollDown,
+            search
+        )),
+        Flow::Unchanged
+    );
+    assert_eq!(f.page.list.selected(), Some(1));
+}
+
+/// A click on the search box gives it the keys; a click on the list takes
+/// them back.
+#[test]
+fn a_click_on_the_search_box_focuses_it() {
+    let mut f = Fixture::new(&roles());
+    let at = find(&mut f.page, "Search");
+    left_click(&mut f.page, at);
+    assert!(f.page.searching);
+    type_text(&mut f.page, "plex");
+    assert_eq!(f.page.query, "plex");
+    let row = find(&mut f.page, "▾ Plex");
+    left_click(&mut f.page, row);
+    assert!(!f.page.searching);
+}
+
+/// A click on a bottom button does what its key does; a faint one
+/// doesn't act.
+#[test]
+fn a_click_on_a_button_acts() {
+    let mut f = Fixture::new(&roles());
+    // On an app's heading Copy can't act.
+    let copy = find(&mut f.page, "Copy (c)");
+    left_click(&mut f.page, copy);
+    assert_eq!(f.page.status, "");
+    let delete = find(&mut f.page, "Delete (d)");
+    left_click(&mut f.page, delete);
+    assert_eq!(f.page.pending.len(), 1);
+    let save = find(&mut f.page, "Save changes (v)");
+    left_click(&mut f.page, save);
+    assert!(matches!(f.page.popup, Popup::ConfirmSave));
+    // The dialog's Cancel, by its button.
+    let cancel = find(&mut f.page, "Cancel (n)");
+    left_click(&mut f.page, cancel);
+    assert!(matches!(f.page.popup, Popup::None));
+}
+
+/// A click on a change's undo in the panel undoes it.
+#[test]
+fn a_click_on_undo_undoes_its_change() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('d'));
+    select(&mut f.page, "jwt_secret");
+    press(&mut f.page, KeyCode::Char('d'));
+    // The panel lists homepage's change first.
+    let undo = find(&mut f.page, " undo ");
+    left_click(
+        &mut f.page,
+        ratatui::layout::Position::new(undo.x + 1, undo.y),
+    );
+    assert_eq!(
+        f.page.pending.keys().collect::<Vec<_>>(),
+        [&setting_target("komodo", "komodo", "jwt_secret")]
+    );
+}
+
+/// Quit's dialog by its buttons: Discard quits.
+#[test]
+fn the_quit_dialog_s_discard_button_quits() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('d'));
+    press(&mut f.page, KeyCode::Char('q'));
+    let discard = find(&mut f.page, "Discard (d)");
+    assert_eq!(left_click(&mut f.page, discard), Flow::Quit);
+}
+
+/// The drift dialog's Reload, by its button.
+#[test]
+fn the_drift_dialog_s_reload_button_reloads() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "jwt_secret");
+    press(&mut f.page, KeyCode::Char('d'));
+    std::fs::write(f.dir.path().join("komodo.ini"), "[komodo]\nport = 1\n").expect("write");
+    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Enter);
+    f.wait_for_dialog();
+    let reload = find(&mut f.page, "Reload (r)");
+    left_click(&mut f.page, reload);
+    f.settle();
+    assert!(shows(
+        &mut f.page,
+        100,
+        40,
+        "komodo: changed on disk; reloaded"
+    ));
+    // Under a dialog, the page takes no clicks.
+    let row = find(&mut f.page, "▾ Homepage");
+    assert_eq!(left_click(&mut f.page, row), Flow::Unchanged);
+}
+
+/// A right click opens the row's menu at the pointer; a hover lights an
+/// item, a click on it acts; a click elsewhere closes the menu.
+#[test]
+fn a_right_click_opens_the_row_s_menu() {
+    let mut f = Fixture::new(&roles());
+    let at = find(&mut f.page, "database_password");
+    right_click(&mut f.page, at);
+    assert_eq!(f.page.selected(), Some(Row::Setting((1, 0, 0))));
+    let rows = screen(&drawn(&mut f.page, 100, 40));
+    let menu: Vec<&String> = rows.iter().filter(|r| r.contains('│')).collect();
+    assert!(rows[usize::from(at.y) + 1].contains("Show"), "{rows:?}");
+    assert!(
+        menu.iter().any(|r| r.contains("Copy") && r.contains('c')),
+        "{rows:?}"
+    );
+    // Show, Copy, Edit, Delete: no Undo change without a change.
+    assert_eq!(
+        f.page
+            .menu_items(Row::Setting((1, 0, 0)))
+            .iter()
+            .map(|(l, k, _)| (l.as_str(), *k))
+            .collect::<Vec<_>>(),
+        [("Show", 's'), ("Copy", 'c'), ("Edit", 'e'), ("Delete", 'd')]
+    );
+    // A hover over Delete lights it; a click on it deletes.
+    let delete = find(&mut f.page, "Delete d");
+    f.page
+        .input(mouse_at(crossterm::event::MouseEventKind::Moved, delete));
+    assert_eq!(f.page.menu.expect("open").lit, 3);
+    left_click(&mut f.page, delete);
+    assert!(f.page.menu.is_none());
+    assert_eq!(
+        f.page
+            .pending
+            .get(&setting_target("komodo", "komodo", "database_password")),
+        Some(&Pending::Delete)
+    );
+    // Another right click, then a click outside: the menu closes, nothing
+    // happens.
+    right_click(&mut f.page, at);
+    assert!(f.page.menu.is_some());
+    left_click(&mut f.page, ratatui::layout::Position::new(0, 39));
+    assert!(f.page.menu.is_none());
+    assert_eq!(f.page.pending.len(), 1);
+    // A right click below the rows opens nothing.
+    right_click(&mut f.page, ratatui::layout::Position::new(5, 30));
+    assert!(f.page.menu.is_none());
+}
+
+/// `m` opens the menu on the selected row: Up and Down light an item,
+/// Enter does it; an item's key works with the menu open; Esc closes it.
+#[test]
+fn m_opens_the_menu_from_the_keyboard() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('m'));
+    assert_eq!(
+        f.page
+            .menu_items(Row::Setting((0, 0, 1)))
+            .iter()
+            .map(|(l, _, _)| l.as_str())
+            .collect::<Vec<_>>(),
+        ["Copy", "Edit", "Delete"]
+    );
+    press(&mut f.page, KeyCode::Down);
+    press(&mut f.page, KeyCode::Enter);
+    assert!(f.page.menu.is_none());
+    assert!(matches!(f.page.popup, Popup::Edit { .. }));
+    type_into(&mut f.page, "er");
+    press(&mut f.page, KeyCode::Enter);
+    // After an edit, Undo change is offered; its key works in the menu.
+    press(&mut f.page, KeyCode::Menu);
+    assert!(
+        f.page
+            .menu_items(Row::Setting((0, 0, 1)))
+            .iter()
+            .any(|(l, k, _)| l == "Undo change" && *k == 'u')
+    );
+    press(&mut f.page, KeyCode::Char('u'));
+    assert!(f.page.menu.is_none());
+    assert!(f.page.pending.is_empty());
+    press(&mut f.page, KeyCode::Char('m'));
+    press(&mut f.page, KeyCode::Up);
+    assert_eq!(f.page.menu.expect("open").lit, 0);
+    // A key that is no item's does nothing.
+    assert_eq!(press(&mut f.page, KeyCode::Char('x')), Flow::Unchanged);
+    press(&mut f.page, KeyCode::Esc);
+    assert!(f.page.menu.is_none());
+}
+
+/// A copy's and an app's menu: Delete, or Keep once deleted.
+#[test]
+fn copy_and_app_menus_delete_or_keep() {
+    let mut f = Fixture::new(&roles());
+    let names = |p: &Page, row| -> Vec<String> {
+        p.menu_items(row).into_iter().map(|(l, _, _)| l).collect()
+    };
+    assert_eq!(names(&f.page, Row::Copy(2, 1)), ["Delete copy"]);
+    assert_eq!(names(&f.page, Row::App(2)), ["Delete app"]);
+    select(&mut f.page, "▾ Plex");
+    press(&mut f.page, KeyCode::Char('d'));
+    assert_eq!(names(&f.page, Row::App(2)), ["Keep app"]);
+    // Inside the deleted app, a setting has no Edit.
+    assert!(!names(&f.page, Row::Setting((2, 0, 1))).contains(&"Edit".to_owned()));
+}
+
+#[test]
+fn snapshot_menu_80x24() {
+    let mut f = Fixture::new(&roles());
+    let at = find_at(&mut f.page, 80, 24, "database_password");
+    right_click(&mut f.page, at);
+    assert_snapshot!(drawn(&mut f.page, 80, 24).backend());
+}
+
+#[test]
+fn snapshot_menu_from_the_keyboard_110x30() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "    plex2");
+    press(&mut f.page, KeyCode::Char('m'));
+    assert_snapshot!(drawn(&mut f.page, 110, 30).backend());
+}
+
+/// The remaining dialog buttons, by click: the save question's Save, the
+/// waiting dialog's Cancel, the outcome's OK.
+#[test]
+fn the_save_waiting_and_outcome_buttons_click() {
+    let mut f = Fixture::new(&roles());
+    let lock = std::fs::File::create(f.dir.path().join("homepage.ini.lock")).expect("lock");
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).expect("flock");
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('d'));
+    press(&mut f.page, KeyCode::Char('v'));
+    let save = find(&mut f.page, "Save (y)");
+    left_click(&mut f.page, save);
+    assert!(f.page.saving.is_some());
+    f.wait_for_dialog();
+    let cancel = find(&mut f.page, "Cancel (c)");
+    left_click(&mut f.page, cancel);
+    f.settle();
+    assert!(matches!(f.page.popup, Popup::Outcome { .. }));
+    let ok = find(&mut f.page, "OK (Enter)");
+    left_click(&mut f.page, ok);
+    assert!(matches!(f.page.popup, Popup::None));
+    drop(lock);
+}
+
+/// The wheel scrolls the drift dialog's text, as its arrow keys do.
+#[test]
+fn the_wheel_scrolls_the_drift_dialog() {
+    let mut f = Fixture::new(&roles());
+    let before = f.page.roles[2].clone();
+    let (reply, _answer) = std::sync::mpsc::channel();
+    f.page.popup = Popup::Drift {
+        role: "plex".into(),
+        drift: Box::new(sb_config::facts::session::Drift {
+            before: before.clone(),
+            after: Some(before),
+        }),
+        reply,
+        scroll: tui_scrollview::ScrollViewState::default(),
+    };
+    drawn(&mut f.page, 80, 14);
+    let at = ratatui::layout::Position::new(20, 6);
+    f.page
+        .input(mouse_at(crossterm::event::MouseEventKind::ScrollDown, at));
+    let Popup::Drift { scroll, .. } = &f.page.popup else {
+        panic!("the drift dialog");
+    };
+    assert_eq!(scroll.offset().y, 1);
+    f.page
+        .input(mouse_at(crossterm::event::MouseEventKind::ScrollUp, at));
+    let Popup::Drift { scroll, .. } = &f.page.popup else {
+        panic!("the drift dialog");
+    };
+    assert_eq!(scroll.offset().y, 0);
+}
+
+/// A click on a button while the search box has focus gives the page its
+/// keys back, as Enter in the box does.
+#[test]
+fn a_button_click_ends_the_search_s_focus() {
+    let mut f = Fixture::new(&roles());
+    press(&mut f.page, KeyCode::Char('/'));
+    let quit = find(&mut f.page, "Quit (q)");
+    assert_eq!(left_click(&mut f.page, quit), Flow::Quit);
+    assert!(!f.page.searching);
+}
+
+/// Pointer moves with no menu open do nothing.
+#[test]
+fn pointer_moves_without_a_menu_do_nothing() {
+    let mut f = Fixture::new(&roles());
+    let at = find(&mut f.page, "theme");
+    assert_eq!(
+        f.page
+            .input(mouse_at(crossterm::event::MouseEventKind::Moved, at)),
+        Flow::Unchanged
+    );
+}

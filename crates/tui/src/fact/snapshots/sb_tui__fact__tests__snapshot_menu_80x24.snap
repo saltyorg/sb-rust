@@ -1,0 +1,29 @@
+---
+source: crates/tui/src/fact/tests.rs
+assertion_line: 2163
+expression: "drawn(&mut f.page, 80, 24).backend()"
+---
+"╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
+"│ Search   press / to search                                                   │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"  ▾ Homepage                                                                    "
+"    motd               first line …                                             "
+"    theme              dark                                                     "
+"    title              家庭メディア 🎬 Server                                   " Hidden by multi-width symbols: [(24, " "), (26, " "), (28, " "), (30, " "), (32, " "), (34, " "), (37, " ")]
+"  ▾ Komodo                                                                      "
+"›   ╭──────────╮sword  ••••••••                                                 "
+"    │ Show   s │       ••••••••                                                 "
+"  ▾ │ Copy   c │                                                                "
+"    │ Edit   e │                                                                "
+"    │ Delete d │n      ••••••••                                                 "
+"    ╰──────────╯path   /mnt/local/transcodes                                    "
+"    plex2                                                                       "
+"      claim_token      ••••••••                                                 "
+"      transcode_path   /mnt/local/transcodes2                                   "
+"                                                                                "
+"                                                                                "
+"╭ Unsaved changes (0) ─────────────────────────────────────────────────────────╮"
+"│ Nothing changed yet                                                          │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"                                                                                "
+"  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save (v)   Quit (q)   "

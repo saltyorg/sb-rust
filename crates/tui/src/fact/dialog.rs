@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect, Size};
 use ratatui::style::Modifier;
@@ -131,14 +132,16 @@ fn text_box(frame: &mut Frame<'_>, area: Rect, line: &TextArea<'static>) {
 /// tui-popup sized to the text (its wrapped rows counted by ratatui's
 /// `Paragraph::line_count`, the `unstable-rendered-line-info` feature),
 /// the buttons drawn in the row after a blank one (proto-facts' `confirm`).
+/// Each button's rectangle comes back with the key it stands for, the
+/// click target.
 fn confirm(
     page: &Page,
     frame: &mut Frame<'_>,
     area: Rect,
     title: &str,
     mut text: Vec<Line<'static>>,
-    buttons: &[(&str, bool)],
-) {
+    buttons: &[(&str, bool, KeyCode)],
+) -> Vec<(Rect, KeyCode)> {
     let width = width(area);
     let rows = Paragraph::new(text.clone())
         .wrap(Wrap { trim: false })
@@ -161,11 +164,11 @@ fn confirm(
         .map(|a| a.inner(Margin::new(1, 1)))
         .and_then(|inner| inner.rows().nth(rows + 1))
     else {
-        return;
+        return Vec::new();
     };
     let spans: Vec<Span<'static>> = buttons
         .iter()
-        .map(|(label, main)| {
+        .map(|(label, main, _)| {
             let style = if *main {
                 page.style(Role::OnAccent)
                     .patch(page.bg(Role::Ok))
@@ -183,9 +186,12 @@ fn confirm(
     )
     .spacing(2)
     .split(row);
-    for (span, area) in spans.into_iter().zip(areas.iter()) {
+    let mut targets = Vec::new();
+    for ((span, area), &(_, _, code)) in spans.into_iter().zip(areas.iter()).zip(buttons) {
         frame.render_widget(span, *area);
+        targets.push((*area, code));
     }
+    targets
 }
 
 /// `role`'s facts as the drift dialog lists them, the secret ones masked
@@ -226,7 +232,7 @@ fn drift(
     role: &str,
     drift: &Drift,
     scroll: &mut ScrollViewState,
-) {
+) -> Vec<(Rect, KeyCode)> {
     let bold = page.style(Role::Text).add_modifier(Modifier::BOLD);
     let mut text = vec![
         Line::from(format!(
@@ -259,7 +265,7 @@ fn drift(
     let mut state = PopupState::default();
     frame.render_stateful_widget(popup, area, &mut state);
     let Some(inner) = state.area().map(|a| a.inner(Margin::new(1, 1))) else {
-        return;
+        return Vec::new();
     };
     let [view, _, buttons] = Layout::vertical([
         Constraint::Fill(1),
@@ -270,7 +276,7 @@ fn drift(
     // A screen too small for the text: tui-scrollview's scrollbars need
     // an area to draw in (its own comment on zero-sized views).
     if view.height == 0 || view.width < 2 {
-        return;
+        return Vec::new();
     }
     let body = Paragraph::new(text).wrap(Wrap { trim: false });
     let lines = u16::try_from(body.line_count(view.width.saturating_sub(1))).unwrap_or(u16::MAX);
@@ -295,15 +301,21 @@ fn drift(
     );
     frame.render_widget(reload, reload_area);
     frame.render_widget(cancel, cancel_area);
+    vec![
+        (reload_area, KeyCode::Char('r')),
+        (cancel_area, KeyCode::Char('c')),
+    ]
 }
 
 /// The dialog up, over the page.
 pub(super) fn draw(page: &mut Page, frame: &mut Frame<'_>, area: Rect) {
     let mut popup = std::mem::replace(&mut page.popup, Popup::None);
-    match &mut popup {
-        Popup::None => {}
+    // The buttons drawn are the dialog's click targets (M56).
+    page.hits.dialog = match &mut popup {
+        Popup::None => Vec::new(),
         Popup::Edit { line, .. } | Popup::AddKey { line, .. } | Popup::AddValue { line, .. } => {
             text_box(frame, area, line);
+            Vec::new()
         }
         Popup::Drift {
             role,
@@ -312,13 +324,18 @@ pub(super) fn draw(page: &mut Page, frame: &mut Frame<'_>, area: Rect) {
             ..
         } => drift(page, frame, area, role, changed, scroll),
         question => draw_question(page, frame, area, question),
-    }
+    };
     page.popup = popup;
 }
 
 /// The dialogs that ask or tell, with buttons and no box: save, quit,
 /// saving, waiting and the outcome.
-fn draw_question(page: &Page, frame: &mut Frame<'_>, area: Rect, popup: &Popup) {
+fn draw_question(
+    page: &Page,
+    frame: &mut Frame<'_>,
+    area: Rect,
+    popup: &Popup,
+) -> Vec<(Rect, KeyCode)> {
     let plural = |count: usize| if count == 1 { "change" } else { "changes" };
     match popup {
         Popup::ConfirmSave => {
@@ -338,8 +355,11 @@ fn draw_question(page: &Page, frame: &mut Frame<'_>, area: Rect, popup: &Popup) 
                     page.style(Role::Warn),
                 ));
             }
-            let buttons = [("Save (y)", true), ("Cancel (n)", false)];
-            confirm(page, frame, area, " Save changes ", text, &buttons);
+            let buttons = [
+                ("Save (y)", true, KeyCode::Char('y')),
+                ("Cancel (n)", false, KeyCode::Char('n')),
+            ];
+            confirm(page, frame, area, " Save changes ", text, &buttons)
         }
         Popup::ConfirmQuit => {
             let count = page.pending.len();
@@ -348,15 +368,15 @@ fn draw_question(page: &Page, frame: &mut Frame<'_>, area: Rect, popup: &Popup) 
                 plural(count)
             ))];
             let buttons = [
-                ("Save (y)", true),
-                ("Discard (d)", false),
-                ("Cancel (n)", false),
+                ("Save (y)", true, KeyCode::Char('y')),
+                ("Discard (d)", false, KeyCode::Char('d')),
+                ("Cancel (n)", false, KeyCode::Char('n')),
             ];
-            confirm(page, frame, area, " Unsaved changes ", text, &buttons);
+            confirm(page, frame, area, " Unsaved changes ", text, &buttons)
         }
         Popup::Saving => {
             let text = vec![Line::from("Saving the changes…")];
-            confirm(page, frame, area, " Saving ", text, &[]);
+            confirm(page, frame, area, " Saving ", text, &[])
         }
         Popup::Waiting { role, waited } => {
             let text = vec![Line::from(format!(
@@ -365,8 +385,8 @@ fn draw_question(page: &Page, frame: &mut Frame<'_>, area: Rect, popup: &Popup) 
                 waited.as_secs(),
                 LOCK_TIMEOUT.as_secs()
             ))];
-            let buttons = [("Cancel (c)", false)];
-            confirm(page, frame, area, " Waiting for Saltbox ", text, &buttons);
+            let buttons = [("Cancel (c)", false, KeyCode::Char('c'))];
+            confirm(page, frame, area, " Waiting for Saltbox ", text, &buttons)
         }
         Popup::Outcome { lines, all_saved } => {
             // As many lines as the screen holds with the borders, a blank
@@ -389,12 +409,19 @@ fn draw_question(page: &Page, frame: &mut Frame<'_>, area: Rect, popup: &Popup) 
             } else {
                 " Not everything was saved "
             };
-            confirm(page, frame, area, title, text, &[("OK (Enter)", true)]);
+            confirm(
+                page,
+                frame,
+                area,
+                title,
+                text,
+                &[("OK (Enter)", true, KeyCode::Enter)],
+            )
         }
         Popup::None
         | Popup::Edit { .. }
         | Popup::AddKey { .. }
         | Popup::AddValue { .. }
-        | Popup::Drift { .. } => {}
+        | Popup::Drift { .. } => Vec::new(),
     }
 }

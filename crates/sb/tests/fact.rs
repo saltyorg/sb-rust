@@ -197,6 +197,28 @@ impl Pty {
         }
     }
 
+    /// Wait until the screen is `done`; false at the timeout.
+    fn wait_screen(&mut self, done: impl Fn(&vt100::Screen) -> bool) -> bool {
+        let deadline = Instant::now() + WAIT;
+        while !done(self.parser.screen()) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            match self.output.recv_timeout(left) {
+                Ok(bytes) => self.process(&bytes),
+                Err(_) => return done(self.parser.screen()),
+            }
+        }
+        true
+    }
+
+    /// Take the output already here, without waiting.
+    fn take_now(&mut self) {
+        while let Ok(bytes) = self.output.try_recv() {
+            self.process(&bytes);
+        }
+    }
+
     /// Wait for sb to exit, reading its output meanwhile.
     fn exit(&mut self) -> portable_pty::ExitStatus {
         let deadline = Instant::now() + WAIT;
@@ -515,4 +537,66 @@ fn the_facts_directory_is_under_the_inventory_s_appdata() {
     assert!(Path::new(&world.facts().join(".fact-editor.lock")).exists());
     pty.send(b"q");
     assert_eq!(pty.exit().exit_code(), 0);
+}
+
+/// An SGR mouse report: a left press and release at `column`, `row`
+/// (1-based), as a terminal sends them with capture on.
+fn left_click(column: u16, row: u16) -> Vec<u8> {
+    format!("\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m").into_bytes()
+}
+
+/// The smoke test (tui spec, editors, Testing Strategy, "PTY smoke"):
+/// open, search, a click, an edit, the save and `q` against fixtures; the
+/// file holds the intended bytes, and mouse reports sent while the screen
+/// leaves never reach the shell.
+#[test]
+fn the_smoke_test_searches_edits_saves_and_quits() {
+    if !root_gate::requested() {
+        return;
+    }
+    // A run where the harness was too slow to send the reports while sb
+    // was still leaving proves nothing either way; it runs again.
+    for _ in 0..3 {
+        let world = World::new();
+        let mut pty = Pty::spawn(&world);
+        assert!(pty.showing("Homepage"), "{}", pty.contents());
+        // Search for the title, take the keys back, then click its row
+        // (the list's first row is the screen's fourth: the search box
+        // takes three) and click again to edit it.
+        pty.send(b"/titl\r");
+        assert!(pty.showing("Search  titl"), "{}", pty.contents());
+        let click = left_click(10, 5);
+        pty.send(&click);
+        pty.send(&click);
+        assert!(pty.showing("Edit title"), "{}", pty.contents());
+        pty.send(b"\x7f\x7f\x7f\x7fAway\r");
+        assert!(pty.showing("Away  changed"), "{}", pty.contents());
+        pty.send(b"vy");
+        assert!(pty.showing("homepage: saved"), "{}", pty.contents());
+        pty.send(b"\rq");
+        assert!(
+            pty.wait_screen(|s| s.mouse_protocol_mode() == vt100::MouseProtocolMode::None),
+            "{}",
+            pty.contents()
+        );
+        for after in [0, 10, 20] {
+            std::thread::sleep(Duration::from_millis(after));
+            pty.send(b"\x1b[<35;10;5M");
+        }
+        pty.take_now();
+        let late = !pty.parser.screen().alternate_screen();
+        assert_eq!(pty.exit().exit_code(), 0, "{}", pty.contents());
+        pty.assert_restored();
+        assert_eq!(
+            std::fs::read_to_string(world.facts().join("homepage.ini")).expect("file"),
+            "[homepage]\ntitle = Away\nmotd = first line\n\tsecond line\n"
+        );
+        if late {
+            continue;
+        }
+        // Back in cooked mode the terminal would echo them.
+        assert!(!pty.contents().contains("<35;10;5M"), "{}", pty.contents());
+        return;
+    }
+    panic!("the harness never sent the reports while sb left");
 }
