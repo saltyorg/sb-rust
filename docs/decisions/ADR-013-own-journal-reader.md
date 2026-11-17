@@ -157,7 +157,10 @@ Two of those differences are decisions, not limits:
   4,710 lines, not 3,800 (Consequences): the nine reader modules' code
   lines outside their tests, without blank or comment lines or the
   `testing` feature's modules; re-counted at the hardening plan's
-  Checkpoint C.
+  Checkpoint C. Re-counted 2026-11-17, at that checkpoint, by the same
+  method: about 5,150 lines (5,149). The same method gives 4,714 at the
+  2026-11-12 figure's commit (619f25a). The decision above is
+  unchanged.
 - 2026-11-12, hardening plan Task 6 (docs-L8): in decision 2 above,
   carriage return is applied, not dropped: trailing ones are ignored,
   then what follows the last one on its line is kept (journal spec,

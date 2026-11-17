@@ -798,10 +798,10 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
 - **The CONSTRAINTS bar:** changed-line coverage ≥ 90%, mutation ≥ 80%,
   and the project ratchet. The port is large, so it lands in slices:
   file and hash, then walk and rules, then follow, then the API. It was
-  planned at about 3,800 lines; on 2026-11-12 it is about 4,710: the
-  nine reader modules' code lines outside their tests, without blank or
-  comment lines or the `testing` feature's modules (re-counted at the
-  hardening plan's Checkpoint C). A ratchet ADR follows if the project
+  planned at about 3,800 lines; it was about 4,710 on 2026-11-12 and is
+  about 5,150 (5,149) on 2026-11-17, re-counted at the hardening plan's
+  Checkpoint C: the nine reader modules' code lines outside their tests,
+  without blank or comment lines or the `testing` feature's modules. A ratchet ADR follows if the project
   figures move, as with ADR-011. The binary-size ratchet applies: about
   240 KiB expected.
 
