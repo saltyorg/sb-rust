@@ -676,6 +676,19 @@ impl Picker {
         Flow::Redraw
     }
 
+    /// A paste (bracketed paste): into the name filter's line whole, as
+    /// one line (ratatui-textarea's `insert_str`); outside the line it
+    /// does nothing, so its letters aren't keys.
+    fn paste(&mut self, text: &str) -> Flow {
+        let Some(line) = self.editing.as_mut() else {
+            return Flow::Unchanged;
+        };
+        line.insert_str(crate::paste::one_line(text));
+        self.query = line.lines().join("");
+        self.lay_out();
+        Flow::Redraw
+    }
+
     fn mouse(&mut self, mouse: MouseEvent) -> Flow {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.move_by(-1),
@@ -1032,6 +1045,7 @@ impl App for Picker {
         match input {
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(text) => self.paste(&text),
             _ => Flow::Unchanged,
         }
     }

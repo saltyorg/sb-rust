@@ -1050,3 +1050,17 @@ async fn dropping_the_picker_stops_a_read_under_way() {
     tokio::task::yield_now().await;
     assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
 }
+
+/// A paste into the filter line is one input, its newlines spaces, a
+/// last newline dropped: it narrows the list and leaves the line open.
+/// Outside the line, a paste does nothing (its letters aren't keys).
+#[test]
+fn a_paste_goes_into_the_filter_line_whole() {
+    let mut p = both();
+    assert_eq!(p.input(Input::Paste("q".into())), Flow::Unchanged);
+    press(&mut p, KeyCode::Char('/'));
+    assert_eq!(p.input(Input::Paste("rad\n".into())), Flow::Redraw);
+    assert_eq!(p.query, "rad");
+    assert!(p.editing.is_some());
+    assert_eq!(names(&p), ["radarr", "radarr"]);
+}

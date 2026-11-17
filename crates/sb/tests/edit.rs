@@ -902,6 +902,7 @@ impl Pty {
         let screen = self.parser.screen();
         assert!(!screen.alternate_screen(), "{}", self.contents());
         assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        assert!(!screen.bracketed_paste(), "{}", self.contents());
         assert!(!screen.hide_cursor(), "{}", self.contents());
         let tty = rustix::fs::open(
             &self.tty,

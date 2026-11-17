@@ -307,6 +307,18 @@ docs/community/support.md:34) and sb-go's screens can't give.
   still reaches the run log (hardening Task 17). On `/dev/tty` (the
   inline fallback) the same steps run on a `CrosstermBackend` over the tty
   file, because `ratatui::init` writes to stdout (a "why not" comment).
+- **Bracketed paste** is on while a screen is up (crossterm's
+  `EnableBracketedPaste`), and off again on every way out (leaving, the
+  drop, the panic hook, the forced exit's restore sequence). A paste
+  comes as one `Event::Paste`: a screen with a text box open (the
+  picker's filter, the viewer's search, the fact editor's boxes and
+  search) puts it in whole through ratatui-textarea's `insert_str`, a
+  one-line box with its line ends as spaces, a last line end dropped,
+  and control characters other than a tab dropped (typing can't enter
+  them, the screen wouldn't show them, and they would reach a fact
+  file); with no box open a paste does nothing. So a pasted newline
+  never stages a value or ends a line, and the text after it is never
+  taken as keys (the maintainer, 2026-11-16, after M55).
 - **The event loop** is ratatui's async recipe
   (https://ratatui.rs/recipes/apps/terminal-and-event-handler/): a task
   reads crossterm's `EventStream` in `tokio::select!` and sends events on

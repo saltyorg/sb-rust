@@ -20,6 +20,7 @@ pub mod edit_picker;
 pub mod fact;
 pub mod line;
 pub mod markdown;
+mod paste;
 pub mod picker;
 pub mod restore;
 mod resume;

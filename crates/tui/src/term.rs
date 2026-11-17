@@ -5,7 +5,11 @@
 //!   `ratatui::try_restore`
 //!   (<https://docs.rs/ratatui/0.30.2/ratatui/init/index.html>), with mouse
 //!   capture through crossterm's `EnableMouseCapture`
-//!   (<https://docs.rs/crossterm/0.29.0/crossterm/event/struct.EnableMouseCapture.html>).
+//!   (<https://docs.rs/crossterm/0.29.0/crossterm/event/struct.EnableMouseCapture.html>)
+//!   and bracketed paste through its `EnableBracketedPaste`
+//!   (<https://docs.rs/crossterm/0.29.0/crossterm/event/struct.EnableBracketedPaste.html>),
+//!   so a paste comes as one `Event::Paste` and its newlines aren't
+//!   Enter; every way out turns both off again.
 //! - **On `/dev/tty`** (the inline fallback, tui spec "The inline
 //!   fallback"; [`Tui::on_tty`]) the same steps run on a `CrosstermBackend`
 //!   over the tty file. Why not `ratatui::try_init`: it writes to stdout,
@@ -15,8 +19,8 @@
 //! - **A panic** runs ratatui's hook (raw mode off, the alternate screen
 //!   left), chained before cli-core's run-log hook and std's message
 //!   (`RunLog::record_panics` is installed first, as ratatui's docs ask),
-//!   plus [`mouse_off_on_panic`]'s hook for the mouse and the cursor, which
-//!   ratatui's restore leaves as they are.
+//!   plus [`mouse_off_on_panic`]'s hook for the mouse, bracketed paste and
+//!   the cursor, which ratatui's restore leaves as they are.
 //! - **A second signal** (cli-core's forced exit) runs [`Tui::enter`]'s
 //!   restore hook on cli-core's restore thread: raw mode off and the
 //!   restoring sequence written through its own file descriptor
@@ -38,7 +42,8 @@ use std::time::Duration;
 
 use crossterm::cursor::Show;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event as Input, EventStream, KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as Input, EventStream, KeyModifiers,
 };
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -148,8 +153,8 @@ enum Screen {
     Tty(Terminal<CrosstermBackend<BufWriter<File>>>),
 }
 
-/// A full-screen terminal: raw mode, the alternate screen and mouse
-/// capture, with its event task. [`Tui::leave`] restores the terminal;
+/// A full-screen terminal: raw mode, the alternate screen, mouse capture
+/// and bracketed paste, with its event task. [`Tui::leave`] restores the terminal;
 /// dropping it without leaving restores it too, without the input drain.
 #[derive(Debug)]
 pub struct Tui {
@@ -174,7 +179,8 @@ impl Tui {
     /// # Errors
     ///
     /// The I/O error when stdout can't be duplicated for the restore hook,
-    /// or raw mode, the alternate screen or mouse capture can't be turned
+    /// or raw mode, the alternate screen, mouse capture or bracketed paste
+    /// can't be turned
     /// on (the terminal is restored first).
     pub fn enter(shutdown: &Shutdown) -> io::Result<Self> {
         // Its own handle for the restore thread, which mustn't take std's
@@ -184,7 +190,10 @@ impl Tui {
         mouse_off_on_panic();
         SCREEN.store(true, Ordering::SeqCst);
         let restore = shutdown.on_forced_exit(forced_exit_restore(out));
-        if let Err(err) = execute!(io::stdout(), EnableMouseCapture) {
+        if let Err(err) = execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste) {
+            // Either mode may have reached the terminal: both off again,
+            // which ratatui's restore doesn't do.
+            let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
             SCREEN.store(false, Ordering::SeqCst);
             ratatui::restore();
             return Err(err);
@@ -194,21 +203,28 @@ impl Tui {
 
     /// [`Tui::enter`] on `tty`, the terminal `/dev/tty` opened for reading
     /// and writing, when stdout isn't a terminal: raw mode, the alternate
-    /// screen and mouse capture as ratatui's init and [`Tui::enter`] set
+    /// screen, mouse capture and bracketed paste as ratatui's init and
+    /// [`Tui::enter`] set
     /// them, written to `tty`; the panic hook and the forced exit restore
     /// it there.
     ///
     /// # Errors
     ///
     /// The I/O error when `tty` can't be duplicated, or raw mode, the
-    /// alternate screen or mouse capture can't be turned on (the terminal
+    /// alternate screen, mouse capture or bracketed paste can't be turned
+    /// on (the terminal
     /// is restored first).
     pub fn on_tty(shutdown: &Shutdown, tty: File) -> io::Result<Self> {
         let out = tty.try_clone()?;
         let mut hook_out = tty.try_clone()?;
         enable_raw_mode()?;
-        let entered = execute!(hook_out, EnterAlternateScreen, EnableMouseCapture)
-            .and_then(|()| Terminal::new(CrosstermBackend::new(BufWriter::new(tty))));
+        let entered = execute!(
+            hook_out,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )
+        .and_then(|()| Terminal::new(CrosstermBackend::new(BufWriter::new(tty))));
         let terminal = entered.inspect_err(|_| {
             let _ = hook_out.write_all(restore_sequence().as_bytes());
             let _ = disable_raw_mode();
@@ -254,11 +270,15 @@ impl Tui {
         }
     }
 
-    /// Mouse capture off, on the screen's terminal.
+    /// Mouse capture and bracketed paste off, on the screen's terminal.
     fn mouse_off(&mut self) -> io::Result<()> {
         match &mut self.screen {
-            Screen::Stdout(_) => execute!(io::stdout(), DisableMouseCapture),
-            Screen::Tty(terminal) => execute!(terminal.backend_mut(), DisableMouseCapture),
+            Screen::Stdout(_) => execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste),
+            Screen::Tty(terminal) => execute!(
+                terminal.backend_mut(),
+                DisableMouseCapture,
+                DisableBracketedPaste
+            ),
         }
     }
 
@@ -312,7 +332,8 @@ impl Tui {
         Arc::clone(&self.wake)
     }
 
-    /// Restore the terminal: mouse capture off, then input read and dropped
+    /// Restore the terminal: mouse capture and bracketed paste off, then
+    /// input read and dropped
     /// for 150 ms (`DRAIN`) through the same `EventStream` (crossterm forbids
     /// mixing it with `read`/`poll`,
     /// <https://docs.rs/crossterm/0.29.0/crossterm/event/index.html>), then
@@ -320,7 +341,8 @@ impl Tui {
     ///
     /// # Errors
     ///
-    /// The I/O error when mouse capture or the terminal's modes can't be
+    /// The I/O error when mouse capture, bracketed paste or the terminal's
+    /// modes can't be
     /// turned off; every step is tried either way.
     ///
     /// The event task has ended when this returns, so its `EventStream`
@@ -364,7 +386,8 @@ fn forced_exit_restore(out: File) -> impl Fn() + Send + 'static {
     }
 }
 
-/// Mouse capture off, the alternate screen left, the cursor shown, as
+/// Mouse capture and bracketed paste off, the alternate screen left, the
+/// cursor shown, as
 /// crossterm writes them (`Command::write_ansi`), built before any hook
 /// needs it. Why not `execute!` in the hook: it formats and flushes
 /// several writes on the restore thread; one prepared write is the
@@ -373,12 +396,14 @@ fn restore_sequence() -> String {
     let mut sequence = String::new();
     // Writing to a `String` can't fail.
     let _ = DisableMouseCapture.write_ansi(&mut sequence);
+    let _ = DisableBracketedPaste.write_ansi(&mut sequence);
     let _ = LeaveAlternateScreen.write_ansi(&mut sequence);
     let _ = Show.write_ansi(&mut sequence);
     sequence
 }
 
-/// Turn mouse capture off and show the cursor when a panic comes while a
+/// Turn mouse capture and bracketed paste off and show the cursor when a
+/// panic comes while a
 /// screen is up, then run the hook before it (ratatui's restore, then
 /// cli-core's and std's). ratatui's restore does neither. The hook takes
 /// [`SCREEN`], so the [`Tui`] dropped by the unwinding doesn't restore
@@ -404,7 +429,12 @@ fn mouse_off_on_panic() {
                     let _ = tty.write_all(restore_sequence().as_bytes());
                     let _ = disable_raw_mode();
                 } else {
-                    let _ = execute!(io::stdout(), DisableMouseCapture, Show);
+                    let _ = execute!(
+                        io::stdout(),
+                        DisableMouseCapture,
+                        DisableBracketedPaste,
+                        Show
+                    );
                 }
             }
             previous(info);
@@ -1047,13 +1077,22 @@ mod tests {
         DisableMouseCapture
             .write_ansi(&mut expected)
             .expect("write");
+        DisableBracketedPaste
+            .write_ansi(&mut expected)
+            .expect("write");
         LeaveAlternateScreen
             .write_ansi(&mut expected)
             .expect("write");
         Show.write_ansi(&mut expected).expect("write");
         assert_eq!(sequence, expected);
         // The mouse modes crossterm turns on, then the screen and cursor.
-        for code in ["\x1b[?1000l", "\x1b[?1006l", "\x1b[?1049l", "\x1b[?25h"] {
+        for code in [
+            "\x1b[?1000l",
+            "\x1b[?1006l",
+            "\x1b[?2004l",
+            "\x1b[?1049l",
+            "\x1b[?25h",
+        ] {
             assert!(sequence.contains(code), "{code:?} in {sequence:?}");
         }
     }

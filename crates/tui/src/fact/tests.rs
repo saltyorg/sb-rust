@@ -2253,3 +2253,62 @@ fn pointer_moves_without_a_menu_do_nothing() {
         Flow::Unchanged
     );
 }
+
+// --- pastes (bracketed paste, asked for after M55) ---
+
+fn paste(page: &mut Page, text: &str) -> Flow {
+    page.input(Input::Paste(text.into()))
+}
+
+/// A paste into the edit box is one input, its lines kept: a newline in
+/// it doesn't stage the value, and what follows it isn't keys. Enter
+/// stages it.
+#[test]
+fn a_paste_into_the_edit_box_stages_nothing_until_enter() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('e'));
+    paste(&mut f.page, "-blue\nq");
+    assert!(matches!(f.page.popup, Popup::Edit { .. }));
+    assert!(f.page.pending.is_empty());
+    press(&mut f.page, KeyCode::Enter);
+    assert_eq!(
+        f.page
+            .pending
+            .get(&setting_target("homepage", "homepage", "theme")),
+        Some(&Pending::Set("dark-blue\nq".into()))
+    );
+}
+
+/// A pasted token with a carriage return and a last newline, as a
+/// terminal may send it, goes into a value box as its one line.
+#[test]
+fn a_pasted_token_s_line_ending_stays_out_of_the_value() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "    plex2");
+    press(&mut f.page, KeyCode::Char('a'));
+    paste(&mut f.page, "api_key\r\n");
+    assert!(matches!(f.page.popup, Popup::AddKey { .. }));
+    press(&mut f.page, KeyCode::Enter);
+    paste(&mut f.page, "tok-123\r\n");
+    press(&mut f.page, KeyCode::Enter);
+    assert_eq!(
+        f.page
+            .pending
+            .get(&setting_target("plex", "plex2", "api_key")),
+        Some(&Pending::Set("tok-123".into()))
+    );
+}
+
+/// A paste into the search box narrows the page as typing does; on the
+/// page itself, a paste does nothing (its letters aren't keys).
+#[test]
+fn a_paste_goes_into_the_search_box_and_never_acts_on_the_page() {
+    let mut f = Fixture::new(&roles());
+    assert_eq!(paste(&mut f.page, "dq"), Flow::Unchanged);
+    assert!(f.page.pending.is_empty());
+    press(&mut f.page, KeyCode::Char('/'));
+    paste(&mut f.page, "plex\n");
+    assert_eq!(f.page.query, "plex");
+    assert!(f.page.searching);
+}

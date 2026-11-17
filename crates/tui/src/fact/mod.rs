@@ -1212,6 +1212,7 @@ impl Screen for Page {
         let flow = match input {
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(text) => self.paste(&text),
             Input::Resize(..) => return Flow::Redraw,
             _ => return Flow::Unchanged,
         };

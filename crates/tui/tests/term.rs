@@ -1,5 +1,6 @@
 //! The screen on a real PTY (tui spec, Testing Strategy): setup, every way
-//! out restoring the terminal (alternate screen left, mouse off, raw mode
+//! out restoring the terminal (alternate screen left, mouse and bracketed
+//! paste off, raw mode
 //! off read back from the PTY's termios), and the input latency of the
 //! event loop on the current-thread runtime.
 //!
@@ -315,7 +316,8 @@ impl Pty {
         }
     }
 
-    /// The screen is up: the alternate screen and mouse capture on.
+    /// The screen is up: the alternate screen, mouse capture and bracketed
+    /// paste on.
     fn assert_up(&mut self) {
         assert!(
             self.showing("keys 0"),
@@ -325,14 +327,17 @@ impl Pty {
         let screen = self.parser.screen();
         assert!(screen.alternate_screen());
         assert_ne!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        // A paste comes as one event, not as keys.
+        assert!(screen.bracketed_paste());
     }
 
     /// The terminal is restored: the alternate screen left, mouse capture
-    /// off, the cursor shown, and the PTY back in canonical mode with echo.
+    /// and bracketed paste off, the cursor shown, and the PTY back in canonical mode with echo.
     fn assert_restored(&self) {
         let screen = self.parser.screen();
         assert!(!screen.alternate_screen(), "{}", screen.contents());
         assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        assert!(!screen.bracketed_paste(), "{}", screen.contents());
         assert!(!screen.hide_cursor());
         // NOCTTY: the test process never takes the PTY as its terminal.
         let tty = open(&self.tty, OFlags::RDONLY | OFlags::NOCTTY, Mode::empty()).expect("tty");

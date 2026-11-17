@@ -38,6 +38,31 @@ fn toggle_mask(line: &mut TextArea<'static>, target: &Target) {
 }
 
 impl Page {
+    /// A paste (bracketed paste): into the box up, or the search box, whole
+    /// (ratatui-textarea's `insert_str`): a value box keeps its lines, a
+    /// one-line box (a name, the search) gets them as spaces, and a last
+    /// line end goes; a newline in it never stages anything. Anywhere
+    /// else it does nothing, so its letters aren't keys.
+    pub(super) fn paste(&mut self, text: &str) -> Flow {
+        if self.menu.is_some() {
+            return Flow::Unchanged;
+        }
+        match &mut self.popup {
+            Popup::Edit { line, .. } | Popup::AddValue { line, .. } => {
+                line.insert_str(crate::paste::lines(text));
+            }
+            Popup::AddKey { line, .. } => {
+                line.insert_str(crate::paste::one_line(text));
+            }
+            Popup::None if self.searching => {
+                self.search.insert_str(crate::paste::one_line(text));
+                self.searched();
+            }
+            _ => return Flow::Unchanged,
+        }
+        Flow::Redraw
+    }
+
     /// `e`: the edit box for the selected setting, its value hidden while
     /// masked.
     pub(super) fn start_edit(&mut self) {

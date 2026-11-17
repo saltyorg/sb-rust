@@ -1367,6 +1367,17 @@ impl Viewer {
         Flow::Redraw
     }
 
+    /// A paste (bracketed paste): into the search line whole, as one line
+    /// (ratatui-textarea's `insert_str`), the line left open for Enter;
+    /// outside the line it does nothing, so its letters aren't keys.
+    fn paste(&mut self, text: &str) -> Flow {
+        let Some(line) = self.searching.as_mut() else {
+            return Flow::Unchanged;
+        };
+        line.insert_str(crate::paste::one_line(text));
+        Flow::Redraw
+    }
+
     fn end_search_line(&mut self) {
         let query = self
             .searching
@@ -1743,6 +1754,7 @@ impl App for Viewer {
                 }
             }
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(text) => self.paste(&text),
             _ => Flow::Unchanged,
         }
     }

@@ -246,6 +246,7 @@ impl Pty {
         let screen = self.parser.screen();
         assert!(!screen.alternate_screen(), "{}", self.contents());
         assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        assert!(!screen.bracketed_paste(), "{}", self.contents());
         assert!(!screen.hide_cursor(), "{}", self.contents());
     }
 }
@@ -599,4 +600,33 @@ fn the_smoke_test_searches_edits_saves_and_quits() {
         return;
     }
     panic!("the harness never sent the reports while sb left");
+}
+
+/// A paste through the terminal (bracketed paste) into the edit box: its
+/// newline doesn't stage the value, and the `q` after it isn't a key.
+#[test]
+fn a_bracketed_paste_goes_into_the_edit_box_whole() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut pty = Pty::spawn(&world);
+    assert!(pty.showing("Homepage"), "{}", pty.contents());
+    assert!(pty.parser.screen().bracketed_paste());
+    // Homepage's heading, motd, then title.
+    pty.send(b"jje");
+    assert!(pty.showing("Edit title"), "{}", pty.contents());
+    pty.send(b"\x1b[200~-a\nq\x1b[201~");
+    assert!(pty.showing("Home-a"), "{}", pty.contents());
+    pty.send(b"\r");
+    assert!(pty.showing("Home-a …  changed"), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(
+        pty.showing("You have 1 unsaved change"),
+        "{}",
+        pty.contents()
+    );
+    pty.send(b"d");
+    assert_eq!(pty.exit().exit_code(), 0, "{}", pty.contents());
+    pty.assert_restored();
 }

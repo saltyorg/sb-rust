@@ -2435,3 +2435,20 @@ fn a_tall_record_scrolled_sideways_draws_as_paragraph_scroll() {
         }
     }
 }
+
+/// A paste into the search line is one input, its newlines spaces, a
+/// last newline dropped: the line stays open for Enter. Outside the
+/// line, a paste does nothing.
+#[test]
+fn a_paste_goes_into_the_search_line_whole() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(0..50, false));
+    assert_eq!(h.viewer.input(Input::Paste("q".into())), Flow::Unchanged);
+    h.key(KeyCode::Char('/'));
+    assert_eq!(h.viewer.input(Input::Paste("m4\r\n".into())), Flow::Redraw);
+    let line = h.viewer.searching.as_ref().expect("still open");
+    assert_eq!(line.lines(), ["m4"]);
+    h.key(KeyCode::Enter);
+    assert!(h.header().contains("/m4 11/11"), "{}", h.header());
+}
