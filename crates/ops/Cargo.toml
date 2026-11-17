@@ -49,7 +49,7 @@ rustix.workspace = true
 sb-tui.workspace = true
 # The heading's date (ops spec, Project Structure).
 jiff.workspace = true
-# `sb announcements`' flags, as sb-ansible's carry install's.
+# The commands' flags (setup's, update's, the branch commands'), as sb-ansible's carry install's.
 clap.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

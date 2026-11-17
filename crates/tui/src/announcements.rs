@@ -54,7 +54,8 @@ pub struct Entry {
     /// Markdown.
     pub message: String,
     /// Whether it is new: the file before the update lacked its
-    /// `date|title`, or there was no file before.
+    /// `date|title`, or there was no file before (`sb update`'s rule);
+    /// `sb announcements` always passes false.
     pub new: bool,
 }
 
@@ -209,13 +210,24 @@ impl Viewer {
         }
     }
 
-    /// A list row: new ones marked and at full strength, older ones faint
-    /// without the marker.
-    fn row(&self, entry: &Shown) -> ListItem<'static> {
-        let line = if entry.new {
+    /// A list row: date, repository, title; new ones marked and at full
+    /// strength, older ones faint without the marker; with none marked
+    /// (`sb announcements`), every row at full strength.
+    fn row(&self, entry: &Shown, marked: bool) -> ListItem<'static> {
+        // Each row names its repository between the date and the title:
+        // both repositories share the list (the maintainer, 2026-11-17).
+        let line = if !marked {
+            Line::from(vec![
+                Span::styled(format!(" {}  ", entry.date), self.style(Role::Text)),
+                Span::styled(entry.repo.clone(), self.style(Role::Muted)),
+                Span::styled(format!("  {}", entry.title), self.style(Role::Text)),
+            ])
+        } else if entry.new {
             Line::from(vec![
                 Span::styled("● ", self.style(Role::Ok)),
                 Span::styled(format!("{}  ", entry.date), self.style(Role::Muted)),
+                Span::styled(entry.repo.clone(), self.style(Role::Muted)),
+                Span::raw("  "),
                 Span::styled(
                     entry.title.clone(),
                     self.style(Role::Text).add_modifier(Modifier::BOLD),
@@ -225,7 +237,7 @@ impl Viewer {
             Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    format!("{}  {}", entry.date, entry.title),
+                    format!("{}  {}  {}", entry.date, entry.repo, entry.title),
                     self.style(Role::Faint),
                 ),
             ])
@@ -381,7 +393,9 @@ impl App for Viewer {
     fn draw(&mut self, frame: &mut Frame<'_>) {
         let [body, footer] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
-        let rows: Vec<ListItem<'static>> = self.entries.iter().map(|e| self.row(e)).collect();
+        let marked = self.new_count() > 0;
+        let rows: Vec<ListItem<'static>> =
+            self.entries.iter().map(|e| self.row(e, marked)).collect();
         let title = self.list_title();
         let [list_area, pane] = split::areas(body, &rows, &title);
         self.list_area = list_area;

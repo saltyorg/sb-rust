@@ -326,8 +326,8 @@ fn yes_no(word: &str) -> Option<bool> {
 /// and file are there), in the file's order, each with whether it is new
 /// (sb-go's `CheckSingleRepoAnnouncements`): none without an after file;
 /// with no before file, or an empty one, every entry is new; else those
-/// whose `date|title` the before file lacks. The viewer's list (tui spec,
-/// "The announcement viewer", Input).
+/// whose `date|title` the before file lacks. `update`'s list for its
+/// viewer (tui spec, "The announcement viewer", Input).
 #[must_use]
 pub fn classify(
     before: Option<&[Announcement]>,
@@ -368,6 +368,21 @@ pub fn new_entries(
     after: Option<&[Announcement]>,
 ) -> Vec<Announcement> {
     only_new(classify(before, after))
+}
+
+/// Every entry of `after` that applies, by date: what `sb announcements`
+/// shows, nothing compared and nothing called new (the maintainer,
+/// 2026-11-17). None without an after file.
+#[must_use]
+pub fn applicable(after: Option<&[Announcement]>) -> Vec<Announcement> {
+    let mut shown: Vec<Announcement> = after
+        .unwrap_or_default()
+        .iter()
+        .filter(|a| applies(a))
+        .cloned()
+        .collect();
+    shown.sort_by(|a, b| a.date.cmp(&b.date));
+    shown
 }
 
 /// Whether `announcement`'s gates hold (sb-go's `shouldShowAnnouncement`):
@@ -527,27 +542,27 @@ fn stdout_theme() -> Theme {
     }
 }
 
-/// tui's announcement viewer over `listed`, when any apply (ops spec,
+/// tui's announcement viewer over `listed`, when any are shown (ops spec,
 /// "`sb announcements`"): one list, newest first, Saltbox's first among
-/// equal dates (the viewer's stable sort over the order given). Ctrl-C on it ends sb with 130, as on the log
-/// screens.
+/// equal dates (the viewer's stable sort over the order given), none
+/// marked new. Ctrl-C on it ends sb with 130, as on the log screens.
 ///
 /// # Errors
 ///
 /// The screen's I/O error; cli-core's `Exit(130)` after Ctrl-C.
 async fn view(
-    listed: Vec<(Checkout, Vec<(Announcement, bool)>)>,
+    listed: Vec<(Checkout, Vec<Announcement>)>,
     shutdown: &Shutdown,
 ) -> anyhow::Result<()> {
     let entries: Vec<Entry> = listed
         .into_iter()
         .flat_map(|(repo, entries)| {
-            entries.into_iter().map(move |(a, new)| Entry {
+            entries.into_iter().map(move |a| Entry {
                 repo: repo.name().to_owned(),
                 date: a.date,
                 title: a.title,
                 message: a.message,
-                new,
+                new: false,
             })
         })
         .collect();
@@ -570,155 +585,101 @@ pub fn own_file(repo: Checkout, root: &Path) -> PathBuf {
     repo.path(root).join(FILE)
 }
 
-/// `sb announcements`' flags (ops spec, "Commands and help"): sb-go's,
-/// persistent as there (`global`), but `-v` (decision 18). None is
-/// required: the command reads announcements (decision 27).
-#[derive(clap::Args, Debug, Clone)]
-pub struct AnnouncementsArgs {
-    /// Path to the before announcements.yml file
-    // Without it every announcement is new, sb-go's rule for no before
-    // file (ops spec, "Announcements").
-    #[arg(short, long, global = true, value_name = "file")]
-    pub before: Option<PathBuf>,
-    /// Path to the after announcements.yml file
-    // Without it, the repository's own file ([`own_file`]).
-    #[arg(short, long, global = true, value_name = "file")]
-    pub after: Option<PathBuf>,
-    /// Repository name (Saltbox or Sandbox)
-    // Without it, both repositories ([`AnnouncementsArgs::repos`]; ops
-    // decision 30). Why not a `ValueEnum`: clap would refuse a wrong name
-    // while parsing, exit 2 in its words; sb-go's harness fails with its
-    // own text and exit 1, which this keeps.
-    #[arg(short, long, global = true)]
-    pub repo: Option<String>,
-}
-
-impl AnnouncementsArgs {
-    /// The repositories to show (ops decision 30). The one `--repo` names;
-    /// without it, Saltbox's and Sandbox's, Saltbox's first, unless
-    /// `--before` or `--after` names a file: those are one repository's,
-    /// Saltbox's as sb-go's default.
-    ///
-    /// # Errors
-    ///
-    /// sb-go's error for a name that is neither (exit 1).
-    pub fn repos(&self) -> anyhow::Result<Vec<Checkout>> {
-        match &self.repo {
-            Some(name) => Checkout::from_name(name)
-                .map(|repo| vec![repo])
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "invalid repository name '{name}', must be 'Saltbox' or 'Sandbox'"
-                    )
-                }),
-            None if self.before.is_some() || self.after.is_some() => Ok(vec![Checkout::Saltbox]),
-            None => Ok(vec![Checkout::Saltbox, Checkout::Sandbox]),
-        }
-    }
-}
+/// The repositories `sb announcements` reads, in the order shown: both,
+/// always (the maintainer, 2026-11-17; ops decision 30).
+const REPOS: [Checkout; 2] = [Checkout::Saltbox, Checkout::Sandbox];
 
 /// `sb announcements` (ops spec, "`sb announcements`"): the announcements
-/// of the repositories [`AnnouncementsArgs::repos`] gives, each from
-/// `--after` (else its own file under the Saltbox root `root`,
-/// [`own_file`]), those `--before` lacks marked new (without it, all of
-/// them): on a terminal every one that applies in tui's viewer, else the
-/// new ones inline, Saltbox's first. A missing file is no file, so a
-/// server without Sandbox shows Saltbox's alone. An invalid one is an
-/// error, but for both repositories without `-r`, where it warns and the
-/// other's show (ops decision 31). It only shows: migrations run in `sb
-/// update` (maintainer, 2026-11-15). The loading is one runner step,
-/// whose info line counts what will be shown; the runner is done before
-/// anything reaches stdout.
+/// of Saltbox and Sandbox that apply, each repository's own file under
+/// the Saltbox root `root` ([`own_file`]): on a terminal in tui's viewer,
+/// else inline, Saltbox's first, each labelled with its repository. It
+/// takes no flags of its own and calls nothing new: that is `sb update`'s
+/// word, which compares its files in-process (the maintainer,
+/// 2026-11-17). A missing file is no file, so a server without Sandbox
+/// shows Saltbox's alone; a checkout that is there without its own file is
+/// named in a notice; an invalid file warns and the other's show (ops
+/// decision 31). It only shows: migrations run in `sb update` (maintainer,
+/// 2026-11-15). The loading is one runner step, whose info line counts what
+/// will be shown; the runner is done before anything reaches stdout.
 ///
 /// # Errors
 ///
-/// An unknown repository name, or a file that can't be loaded with `-r`
-/// or named with `--before` or `--after` (sb-go's texts, exit 1; without
-/// them it warns), a failed write to stdout, the viewer's I/O error, or
-/// `Exit(130)` after Ctrl-C on it.
+/// A failed write to stdout, the viewer's I/O error, or `Exit(130)` after
+/// Ctrl-C on it.
 pub async fn announcements(
-    args: &AnnouncementsArgs,
     root: &Path,
     shutdown: &Shutdown,
     log: Option<&RunLog>,
 ) -> anyhow::Result<()> {
-    let repos = args.repos()?;
-    // Both repositories, neither file named: a file sb found itself that
-    // can't be loaded warns and leaves the other's (ops decision 31).
-    let lenient = repos.len() > 1;
     let terminal = io::stdout().is_terminal();
     let mut runner = Runner::start("sb announcements", shutdown, log, Options::default());
-    let found = runner
+    let read = runner
         .step(
             Labels::new("Reading announcements", "Read announcements"),
             async |step| {
-                // sb-go's words for a file that can't be loaded.
-                let failed = |which: &str, path: &Path, err: LoadError| {
-                    anyhow::anyhow!(
-                        "error loading {which} announcement file '{}': {err}",
-                        path.display()
-                    )
-                };
-                let before = match &args.before {
-                    Some(path) => load(path).map_err(|err| failed("before", path, err))?,
-                    None => None,
-                };
-                let mut listed = Vec::with_capacity(repos.len());
-                for repo in repos {
-                    let path = args.after.clone().unwrap_or_else(|| own_file(repo, root));
-                    // The warning reaches the run log as the step's notice.
-                    let after = match load(&path) {
-                        Ok(after) => after,
-                        Err(err) if lenient => {
+                let mut listed = Vec::with_capacity(REPOS.len());
+                for repo in REPOS {
+                    let path = own_file(repo, root);
+                    let (outcome, after) = match load(&path) {
+                        Ok(Some(after)) => ("loaded", Some(after)),
+                        // A checkout that is there without its own file: one
+                        // older than the file, most likely (the maintainer's
+                        // Sandbox, 2026-11-17); said, not silent. No checkout
+                        // at all (a server without Sandbox) stays silent.
+                        Ok(None) => {
+                            if path.parent().is_some_and(Path::is_dir) {
+                                step.info(format!(
+                                    "{} has no announcements file: {}",
+                                    repo.name(),
+                                    path.display()
+                                ));
+                            }
+                            ("missing", None)
+                        }
+                        // The warning reaches the run log as the step's notice.
+                        Err(err) => {
                             step.warn(format!(
                                 "{} announcements skipped: error loading announcement file '{}': {err}",
                                 repo.name(),
                                 path.display()
                             ));
-                            None
+                            ("error", None)
                         }
-                        Err(err) => return Err(failed("after", &path, err)),
                     };
-                    let entries = classify(before.as_deref(), after.as_deref());
+                    let entries = applicable(after.as_deref());
                     tracing::info!(
                         repo = repo.name(),
-                        before = args.before.is_some(),
-                        listed = entries.len(),
-                        new = entries.iter().filter(|(_, new)| *new).count(),
-                        "announcements compared"
+                        path = %sb_cli_core::config::escape_controls(&path.display().to_string()),
+                        file = outcome,
+                        shown = entries.len(),
+                        "announcements read"
                     );
                     listed.push((repo, entries));
                 }
-                // What will be shown (ops decision 31): on a terminal every
-                // entry that applies, piped the new ones.
-                let shown = listed
-                    .iter()
-                    .flat_map(|(_, entries)| entries)
-                    .filter(|(_, new)| terminal || *new)
-                    .count();
+                // What will be shown, on a terminal and piped alike.
+                let shown: usize = listed.iter().map(|(_, entries)| entries.len()).sum();
                 step.info(match shown {
                     0 => "No announcements".to_owned(),
                     1 => "1 announcement".to_owned(),
                     n => format!("{n} announcements"),
                 });
-                Ok(listed)
+                Ok::<_, anyhow::Error>(listed)
             },
         )
         .await;
     runner.finish();
-    let listed = found?;
+    let listed = read?;
     if terminal {
         return view(listed, shutdown).await;
     }
-    let new: Vec<(Checkout, Vec<Announcement>)> = listed
+    let shown: Vec<(Checkout, Vec<Announcement>)> = listed
         .into_iter()
-        .map(|(repo, entries)| (repo, only_new(entries)))
-        .filter(|(_, new)| !new.is_empty())
+        .filter(|(_, entries)| !entries.is_empty())
         .collect();
-    if new.is_empty() {
+    if shown.is_empty() {
         return Ok(());
     }
-    show(&new)
+    show(&shown)
 }
 
 #[cfg(test)]

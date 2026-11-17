@@ -1,39 +1,62 @@
 //! `sb announcements` end to end (ops spec, Testing Strategy,
-//! "`announcements`"): synthetic before and after files in a temporary
-//! directory, which is also the Saltbox root, and the inline output on
-//! stdout. Migrations are never listed, asked about or run here (a
-//! stand-in `ansible-playbook` that would leave a mark). Root runs
-//! (`SB_TEST_ROOT=1`): the command needs root; each piped run has no
-//! controlling terminal (`setsid -w`). On a PTY ([`Pty`], as the log
-//! screens' harness), the viewer opens and closes.
+//! "`announcements`"): Saltbox's and Sandbox's own files in a temporary
+//! directory, which is also the Saltbox root (Sandbox's checkout under the
+//! appdata path its inventory names there), and the inline output on
+//! stdout. The command takes no flags of its own (the maintainer,
+//! 2026-11-17) and calls nothing new. Migrations are never listed, asked
+//! about or run here (a stand-in `ansible-playbook` that would leave a
+//! mark). Root runs (`SB_TEST_ROOT=1`): the command needs root; each piped
+//! run has no controlling terminal (`setsid -w`). On a PTY ([`Pty`], as the
+//! log screens' harness), the viewer opens and closes.
 
 mod common;
 mod root_gate;
 
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 
-const BEFORE: &str = "---\nannouncements:\n  - date: \"2026-01-10\"\n    title: \"Old news\"\n    \
-                      message: |\n      Already seen.\n";
+/// Saltbox's file: one old entry, two out of date order (one asking for a
+/// migration, one with a code block), and one gated by a missing file
+/// (`MISSING`, a path in the test's directory: [`Files::saltbox_file`]).
+const SALTBOX: &str = "---\nannouncements:\n  - date: \"2026-01-10\"\n    title: \"Old news\"\n    \
+                       message: |\n      Already seen.\n  - date: \"2026-03-02\"\n    \
+                       title: \"Settings moved\"\n    migration:\n      required: true\n      \
+                       tag: settings_move\n    message: |\n      ## Settings moved\n\n      \
+                       Run the **migration** when asked.\n  - date: \"2026-02-14\"\n    \
+                       title: \"New defaults\"\n    message: |\n      ### What changed\n\n      \
+                       ```yaml\n      network: saltbox\n      ```\n  - date: \"2026-02-20\"\n    \
+                       title: \"Gated\"\n    required_file: \"MISSING\"\n    \
+                       message: Not shown.\n";
 
-/// The before file's entry, two new ones out of date order (one asking for
-/// a migration, one with a code block), and one gated by a missing file
-/// (`MISSING`, a path in the test's directory: [`Files::new`]).
-const AFTER: &str = "---\nannouncements:\n  - date: \"2026-01-10\"\n    title: \"Old news\"\n    \
-                     message: |\n      Already seen.\n  - date: \"2026-03-02\"\n    \
-                     title: \"Settings moved\"\n    migration:\n      required: true\n      \
-                     tag: settings_move\n    message: |\n      ## Settings moved\n\n      \
-                     Run the **migration** when asked.\n  - date: \"2026-02-14\"\n    \
-                     title: \"New defaults\"\n    message: |\n      ### What changed\n\n      \
-                     ```yaml\n      network: saltbox\n      ```\n  - date: \"2026-02-20\"\n    \
-                     title: \"Gated\"\n    required_file: \"MISSING\"\n    \
-                     message: Not shown.\n";
+/// Saltbox's file with its one old entry.
+const SALTBOX_ONE: &str = "---\nannouncements:\n  - date: \"2026-01-10\"\n    title: \"Old news\"\n    \
+                           message: |\n      Already seen.\n";
+
+/// Sandbox's file: one entry.
+const SANDBOX: &str = "announcements:\n  - date: \"2026-04-01\"\n    title: \"Sandbox news\"\n    \
+                       message: From the sandbox.\n";
+
+/// A file that doesn't load.
+const INVALID: &str = "announcements:\n  - title: [x]\n";
+
+/// [`SALTBOX`] inline: every entry that applies, oldest first, each
+/// headed with its repository.
+const SALTBOX_SHOWN: &str = "# Saltbox Announcement - January 10, 2026\n\nAlready seen.\n\n\
+                             # Saltbox Announcement - February 14, 2026\n\n### What changed\n\n\
+                             ```yaml\nnetwork: saltbox\n```\n\n\
+                             # Saltbox Announcement - March 2, 2026\n\n## Settings moved\n\n\
+                             Run the migration when asked.\n";
+
+const SALTBOX_ONE_SHOWN: &str = "# Saltbox Announcement - January 10, 2026\n\nAlready seen.\n";
+const SANDBOX_SHOWN: &str = "# Sandbox Announcement - April 1, 2026\n\nFrom the sandbox.\n";
+
+const TABLE_LINE: &str = "The following tags need to be run to handle migrations:";
 
 struct Files {
     dir: tempfile::TempDir,
@@ -42,12 +65,6 @@ struct Files {
 impl Files {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("dir");
-        std::fs::write(dir.path().join("before.yml"), BEFORE).expect("before");
-        // The gated entry's file: one that can't exist, inside the
-        // directory, so no file on the host decides the test.
-        let missing = dir.path().join("missing/file");
-        let after = AFTER.replace("MISSING", &missing.display().to_string());
-        std::fs::write(dir.path().join("after.yml"), after).expect("after");
         // The inventory puts the appdata path, and so Sandbox's checkout,
         // in the directory too: no run reads the host's.
         let inventory = dir.path().join("inventories/host_vars");
@@ -75,14 +92,34 @@ impl Files {
         self.dir.path().join(name)
     }
 
+    /// Saltbox's own file, at the Saltbox root; `MISSING` made a path in
+    /// the directory that can't exist, so no file on the host decides the
+    /// gated entry.
+    fn saltbox_file(&self, text: &str) {
+        let missing = self.path("missing/file");
+        let text = text.replace("MISSING", &missing.display().to_string());
+        std::fs::write(self.path("announcements.yml"), text).expect("saltbox file");
+    }
+
+    /// Sandbox's own file: `<appdata>/sandbox`, its checkout created.
+    fn sandbox_file(&self, text: &str) {
+        let checkout = self.path("appdata/sandbox");
+        std::fs::create_dir_all(&checkout).expect("checkout");
+        std::fs::write(checkout.join("announcements.yml"), text).expect("sandbox file");
+    }
+
     /// `sb announcements <args>` with no controlling terminal, the
-    /// stand-in as the playbook and on `PATH`.
-    fn run(&self, args: &[&str]) -> Output {
+    /// stand-in as the playbook and on `PATH`, the run log in `logs` if
+    /// given.
+    fn run_logged(&self, args: &[&str], logs: Option<&Path>) -> Output {
         let sb = assert_cmd::cargo::cargo_bin("sb");
         let mut cmd = Command::new("setsid");
         common::apply_sb_env(&mut cmd);
         cmd.env("SB_ANSIBLE_PLAYBOOK", self.path("ansible-playbook"));
         cmd.env("SB_SALTBOX_DIR", self.dir.path());
+        if let Some(logs) = logs {
+            cmd.env("SB_LOG_DIR", logs);
+        }
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut dirs = vec![self.dir.path().to_path_buf()];
         dirs.extend(std::env::split_paths(&path));
@@ -90,6 +127,10 @@ impl Files {
         cmd.arg("-w").arg(sb).arg("announcements").args(args);
         cmd.current_dir(self.dir.path());
         cmd.output().expect("run sb")
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.run_logged(args, None)
     }
 
     /// The environment of a PTY run: the Saltbox root, and the stand-in
@@ -114,14 +155,6 @@ impl Files {
         ]
     }
 
-    /// Sandbox's own announcements file: `<appdata>/sandbox`, its
-    /// checkout created.
-    fn sandbox_file(&self, text: &str) {
-        let checkout = self.path("appdata/sandbox");
-        std::fs::create_dir_all(&checkout).expect("checkout");
-        std::fs::write(checkout.join("announcements.yml"), text).expect("sandbox file");
-    }
-
     fn ran(&self) -> bool {
         self.path("ran").exists()
     }
@@ -139,35 +172,30 @@ fn both(out: &Output) -> String {
     format!("stdout:\n{}\nstderr:\n{}", stdout(out), stderr(out))
 }
 
-const SHOWN: &str = "# Saltbox Announcement - February 14, 2026\n\n### What changed\n\n\
-                     ```yaml\nnetwork: saltbox\n```\n\n\
-                     # Saltbox Announcement - March 2, 2026\n\n## Settings moved\n\n\
-                     Run the migration when asked.\n";
-
-const TABLE_LINE: &str = "The following tags need to be run to handle migrations:";
-
-/// The new entries inline, oldest first; an entry asking for a migration
-/// is shown, but nothing is listed, asked or run: migrations are
-/// `sb update`'s.
+/// Every entry that applies inline, oldest first, headed with its
+/// repository; an entry asking for a migration is shown, but nothing is
+/// listed, asked or run: migrations are `sb update`'s. Nothing is called
+/// new.
 #[test]
-fn it_shows_the_new_entries_and_no_migrations() {
+fn it_shows_every_entry_and_no_migrations() {
     if !root_gate::requested() {
         return;
     }
     let files = Files::new();
-    let out = files.run(&["-b", "before.yml", "-a", "after.yml"]);
+    files.saltbox_file(SALTBOX);
+    let out = files.run(&[]);
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
     let shown = stdout(&out);
-    assert_eq!(shown, SHOWN);
+    assert_eq!(shown, SALTBOX_SHOWN);
     assert!(!shown.contains('\x1b'), "piped: no colour\n{shown}");
     let steps = stderr(&out);
-    // The step counts what is shown (the maintainer, 2026-11-16; ops
-    // decision 31): piped, the two new ones.
-    assert!(steps.contains("› 2 announcements"), "{steps}");
+    // The step counts what is shown: the three that apply.
+    assert!(steps.contains("› 3 announcements"), "{steps}");
     assert!(steps.contains("Read announcements"), "{steps}");
+    let lower = both(&out).to_lowercase();
     assert!(
-        !steps.contains(" new ") && !steps.contains("new announcements"),
-        "\"new\" is sb update's word: {steps}"
+        !lower.contains(" new ") && !lower.contains("new announcement"),
+        "\"new\" is sb update's word: {lower}"
     );
     for text in [TABLE_LINE, "Run all migration tags?", "Would execute"] {
         assert!(!both(&out).contains(text), "{text}: {}", both(&out));
@@ -175,68 +203,51 @@ fn it_shows_the_new_entries_and_no_migrations() {
     assert!(!files.ran(), "a playbook ran");
 }
 
-/// `--migrations` went with the migrations: a parse error.
+/// `--migrations` went with the migrations, and `--before`, `--after` and
+/// `--repo` with the comparing and the narrowing (the maintainer,
+/// 2026-11-17): each, long or short, is clap's unknown-argument error,
+/// exit 2, before anything runs.
 #[test]
-fn migrations_is_no_flag() {
-    let out = common::sb()
-        .args(["announcements", "--migrations", "run", "--color=never"])
-        .output()
-        .expect("run sb");
-    assert_eq!(out.status.code(), Some(2), "{}", both(&out));
-    assert!(stderr(&out).contains("--migrations"), "{}", both(&out));
-}
-
-/// No `--before`: every applicable entry is new, for the repository
-/// `--repo` names; a missing before file is no file too.
-#[test]
-fn without_a_before_file_every_entry_is_new() {
-    if !root_gate::requested() {
-        return;
-    }
-    let files = Files::new();
-    let expected = "# Sandbox Announcement - January 10, 2026\n\nAlready seen.\n";
+fn it_takes_no_flags_of_its_own() {
     for args in [
-        &["-a", "before.yml", "-r", "Sandbox"][..],
-        &["-b", "nothing.yml", "-a", "before.yml", "-r", "Sandbox"],
+        &["--migrations", "run"][..],
+        &["--before", "x.yml"],
+        &["-b", "x.yml"],
+        &["--after", "x.yml"],
+        &["-a", "x.yml"],
+        &["--repo", "Saltbox"],
+        &["-r", "Sandbox"],
     ] {
-        let out = files.run(args);
-        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", both(&out));
-        assert_eq!(stdout(&out), expected, "{args:?}");
-    }
-}
-
-/// No `--after`: the repository's own file, at the Saltbox root
-/// (`SB_SALTBOX_DIR`) for Saltbox.
-#[test]
-fn without_an_after_file_the_repositorys_own_is_read() {
-    if !root_gate::requested() {
-        return;
-    }
-    let files = Files::new();
-    std::fs::write(files.path("announcements.yml"), AFTER).expect("own file");
-    let out = files.run(&["-b", "before.yml"]);
-    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-    assert_eq!(stdout(&out), SHOWN);
-}
-
-/// Nothing new: no output on stdout, and the step says there is nothing
-/// to show.
-#[test]
-fn nothing_new_prints_nothing() {
-    if !root_gate::requested() {
-        return;
-    }
-    let files = Files::new();
-    for (before, after) in [("after.yml", "after.yml"), ("before.yml", "nothing.yml")] {
-        let out = files.run(&["-b", before, "-a", after]);
-        assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-        assert_eq!(stdout(&out), "", "{}", both(&out));
+        let out = common::sb()
+            .arg("announcements")
+            .args(args)
+            .arg("--color=never")
+            .output()
+            .expect("run sb");
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", both(&out));
         assert!(
-            stderr(&out).contains("› No announcements"),
-            "{}",
+            stderr(&out).contains(&format!("unexpected argument '{}'", args[0])),
+            "{args:?}: {}",
             both(&out)
         );
     }
+}
+
+/// Nothing to show: no output on stdout, and the step says so.
+#[test]
+fn nothing_to_show_prints_nothing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    let out = files.run(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert_eq!(stdout(&out), "", "{}", both(&out));
+    assert!(
+        stderr(&out).contains("› No announcements"),
+        "{}",
+        both(&out)
+    );
 }
 
 #[test]
@@ -245,7 +256,8 @@ fn colour_follows_the_choice() {
         return;
     }
     let files = Files::new();
-    let out = files.run(&["-b", "before.yml", "-a", "after.yml", "--color=always"]);
+    files.saltbox_file(SALTBOX);
+    let out = files.run(&["--color=always"]);
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
     let shown = stdout(&out);
     assert!(shown.contains("\x1b["), "{shown}");
@@ -256,46 +268,12 @@ fn colour_follows_the_choice() {
     assert!(shown.contains("Settings moved"), "{shown}");
 }
 
-/// An invalid file is an error here, sb-go's words, exit 1.
+/// Shown in `sb --help` (the maintainer, 2026-11-15); its own help has no
+/// flag of its own: not sb-go's `--before`, `--after`, `--repo` or `-v`,
+/// and no `--migrations`; it says both repositories are shown, and never
+/// "new".
 #[test]
-fn an_invalid_file_fails() {
-    if !root_gate::requested() {
-        return;
-    }
-    let files = Files::new();
-    std::fs::write(files.path("bad.yml"), "announcements:\n  - title: [x]\n").expect("bad");
-    let out = files.run(&["-b", "bad.yml", "-a", "after.yml"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        stderr(&out).contains(
-            "error loading before announcement file 'bad.yml': error parsing announcement YAML: \
-             bad.yml:2:12: announcements[0].title: must be a string, not a sequence"
-        ),
-        "{}",
-        both(&out)
-    );
-    assert_eq!(stdout(&out), "");
-}
-
-#[test]
-fn an_unknown_repository_is_sb_gos_error() {
-    if !root_gate::requested() {
-        return;
-    }
-    let files = Files::new();
-    let out = files.run(&["-b", "before.yml", "-a", "after.yml", "-r", "saltbox"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        stderr(&out).contains("invalid repository name 'saltbox', must be 'Saltbox' or 'Sandbox'"),
-        "{}",
-        both(&out)
-    );
-}
-
-/// Shown in `sb --help` now (the maintainer, 2026-11-15); its own help
-/// has sb-go's flags, but no `-v` and no `--migrations`.
-#[test]
-fn it_is_shown_with_sb_gos_flags() {
+fn its_help_has_no_flags_of_its_own() {
     let out = common::sb()
         .args(["--help", "--color=never"])
         .output()
@@ -310,45 +288,49 @@ fn it_is_shown_with_sb_gos_flags() {
         .output()
         .expect("run sb");
     let help = stdout(&out);
-    for flag in ["--before", "--after", "--repo"] {
-        assert!(help.contains(flag), "{flag}: {help}");
-    }
-    for flag in ["--verbose", "--migrations"] {
+    for flag in ["--before", "--after", "--repo", "--verbose", "--migrations"] {
         assert!(!help.contains(flag), "{flag}: {help}");
     }
     assert!(
-        help.contains("Display Saltbox's and Sandbox's announcements")
-            && help.contains("the new ones marked"),
+        help.contains("Display Saltbox's and Sandbox's announcements"),
         "{help}"
     );
+    assert!(!help.contains("new"), "\"new\" is sb update's word: {help}");
 }
 
-/// On a terminal, the viewer: every entry that applies, the new ones
-/// marked; `q` closes it, exit 0, the terminal restored.
+/// On a terminal, the viewer: every entry that applies, each row labelled
+/// with its repository, nothing called new; `q` closes it, exit 0, the
+/// terminal restored.
 #[test]
 fn on_a_terminal_the_viewer_lists_every_entry_and_q_closes_it() {
     if !root_gate::requested() {
         return;
     }
     let files = Files::new();
+    files.saltbox_file(SALTBOX);
     let logs = files.path("logs");
     std::fs::create_dir(&logs).expect("logs");
     let mut envs = files.pty_envs();
     envs.push(("SB_LOG_DIR", logs.display().to_string()));
-    let before = files.path("before.yml").display().to_string();
-    let after = files.path("after.yml").display().to_string();
-    let mut pty = Pty::spawn(&["announcements", "-b", &before, "-a", &after], &envs);
-    assert!(pty.showing("Announcements · 2 new"), "{}", pty.contents());
+    let mut pty = Pty::spawn(&["announcements"], &envs);
+    assert!(pty.showing("Settings moved"), "{}", pty.contents());
     let screen = pty.contents();
-    for text in ["Settings moved", "New defaults", "Old news", " NEW "] {
+    for text in [
+        "2026-03-02  Saltbox  Settings moved",
+        "2026-02-14  Saltbox  New defaults",
+        "2026-01-10  Saltbox  Old news",
+        "╭ Announcements ─",
+    ] {
         assert!(screen.contains(text), "{text}: {screen}");
     }
-    assert!(!screen.contains("Gated"), "{screen}");
+    for text in ["Gated", " NEW ", "● "] {
+        assert!(!screen.contains(text), "{text}: {screen}");
+    }
     pty.send(b"q");
     let status = pty.exit();
     assert!(status.success(), "{status:?}\n{}", pty.contents());
     pty.assert_restored();
-    // The step counted what the viewer showed: all three that apply.
+    // The step counted what the viewer showed: the three that apply.
     assert!(
         pty.contents().contains("› 3 announcements"),
         "{}",
@@ -370,10 +352,9 @@ fn ctrl_c_on_the_viewer_exits_130() {
         return;
     }
     let files = Files::new();
-    let envs = files.pty_envs();
-    let after = files.path("after.yml").display().to_string();
-    let mut pty = Pty::spawn(&["announcements", "-a", &after], &envs);
-    assert!(pty.showing("Announcements · 3 new"), "{}", pty.contents());
+    files.saltbox_file(SALTBOX);
+    let mut pty = Pty::spawn(&["announcements"], &files.pty_envs());
+    assert!(pty.showing("╭ Announcements ─"), "{}", pty.contents());
     pty.send(b"\x03");
     let status = pty.exit();
     assert_eq!(status.exit_code(), 130, "{}", pty.contents());
@@ -388,8 +369,7 @@ fn on_a_terminal_nothing_to_show_opens_nothing() {
         return;
     }
     let files = Files::new();
-    let envs = files.pty_envs();
-    let mut pty = Pty::spawn(&["announcements"], &envs);
+    let mut pty = Pty::spawn(&["announcements"], &files.pty_envs());
     let status = pty.exit();
     assert!(status.success(), "{status:?}\n{}", pty.contents());
     assert!(
@@ -398,7 +378,7 @@ fn on_a_terminal_nothing_to_show_opens_nothing() {
         pty.contents()
     );
     assert!(
-        !pty.contents().contains("Announcements ·"),
+        !pty.contents().contains("╭ Announcements"),
         "{}",
         pty.contents()
     );
@@ -531,77 +511,66 @@ impl Drop for Pty {
     }
 }
 
-/// Sandbox's file for the both-repositories tests: one entry.
-const SANDBOX: &str = "announcements:\n  - date: \"2026-04-01\"\n    title: \"Sandbox news\"\n    \
-                       message: From the sandbox.\n";
-
-const SALTBOX_OWN: &str = "# Saltbox Announcement - January 10, 2026\n\nAlready seen.\n";
-const SANDBOX_OWN: &str = "# Sandbox Announcement - April 1, 2026\n\nFrom the sandbox.\n";
-
-/// No `-r`: Saltbox's and Sandbox's own files, Saltbox's first (ops
-/// decision 30); `-r` narrows to the one named.
+/// Saltbox's and Sandbox's own files, always both (the maintainer,
+/// 2026-11-17), Saltbox's first, each entry headed with its repository.
 #[test]
-fn both_repositories_by_default_and_r_narrows_to_one() {
+fn both_repositories_are_always_shown() {
     if !root_gate::requested() {
         return;
     }
     let files = Files::new();
-    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
+    files.saltbox_file(SALTBOX_ONE);
     files.sandbox_file(SANDBOX);
     let out = files.run(&[]);
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-    assert_eq!(stdout(&out), format!("{SALTBOX_OWN}\n{SANDBOX_OWN}"));
-    for (repo, shown) in [("Saltbox", SALTBOX_OWN), ("Sandbox", SANDBOX_OWN)] {
-        let out = files.run(&["-r", repo]);
-        assert_eq!(out.status.code(), Some(0), "{repo}: {}", both(&out));
-        assert_eq!(stdout(&out), shown, "{repo}");
-    }
+    assert_eq!(
+        stdout(&out),
+        format!("{SALTBOX_ONE_SHOWN}\n{SANDBOX_SHOWN}")
+    );
+    // Sandbox's alone: still headed with its repository.
+    std::fs::remove_file(files.path("announcements.yml")).expect("saltbox file");
+    let out = files.run(&[]);
+    assert_eq!(stdout(&out), SANDBOX_SHOWN, "{}", both(&out));
 }
 
-/// No Sandbox checkout: Saltbox's alone, no error.
+/// No Sandbox checkout: Saltbox's alone, no error and no notice.
 #[test]
 fn a_missing_sandbox_checkout_shows_saltboxs_alone() {
     if !root_gate::requested() {
         return;
     }
     let files = Files::new();
-    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
+    files.saltbox_file(SALTBOX_ONE);
     let out = files.run(&[]);
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-    assert_eq!(stdout(&out), SALTBOX_OWN);
+    assert_eq!(stdout(&out), SALTBOX_ONE_SHOWN);
     assert!(
         stderr(&out).contains("› 1 announcement\n"),
         "{}",
         both(&out)
     );
-    // `-r Sandbox` there: nothing, no error either.
-    let out = files.run(&["-r", "Sandbox"]);
-    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-    assert_eq!(stdout(&out), "");
     assert!(
-        stderr(&out).contains("› No announcements"),
+        !stderr(&out).contains("has no announcements file"),
         "{}",
         both(&out)
     );
 }
 
-/// Without `-r`, an invalid file the user didn't name warns, naming it,
-/// and the other repository's announcements show, exit 0 (the
-/// maintainer, 2026-11-16; ops decision 31), as `sb update` and a missing
-/// checkout do; with `-r` naming that repository, it still fails, exit 1.
+/// An invalid file warns, naming it, and the other repository's
+/// announcements show, exit 0 (the maintainer, 2026-11-16; ops decision
+/// 31), as `sb update` and a missing checkout do.
 #[test]
-fn an_invalid_file_sb_found_itself_warns_and_the_other_shows() {
+fn an_invalid_file_warns_and_the_other_shows() {
     if !root_gate::requested() {
         return;
     }
     let files = Files::new();
-    let invalid = "announcements:\n  - title: [x]\n";
-    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
-    files.sandbox_file(invalid);
+    files.saltbox_file(SALTBOX_ONE);
+    files.sandbox_file(INVALID);
     let sandbox = files.path("appdata/sandbox/announcements.yml");
     let out = files.run(&[]);
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-    assert_eq!(stdout(&out), SALTBOX_OWN);
+    assert_eq!(stdout(&out), SALTBOX_ONE_SHOWN);
     let warning = format!(
         "Sandbox announcements skipped: error loading announcement file '{}': \
          error parsing announcement YAML:",
@@ -613,30 +582,8 @@ fn an_invalid_file_sb_found_itself_warns_and_the_other_shows() {
         "{}",
         both(&out)
     );
-    // Named with -r: an error, as before.
-    let out = files.run(&["-r", "Sandbox"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        stderr(&out).contains(&format!(
-            "error loading after announcement file '{}'",
-            sandbox.display()
-        )),
-        "{}",
-        both(&out)
-    );
-    assert_eq!(stdout(&out), "");
-    // A file named with --after, without -r: an error, as before.
-    std::fs::write(files.path("bad.yml"), invalid).expect("bad");
-    let out = files.run(&["-a", "bad.yml"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        stderr(&out).contains("error loading after announcement file 'bad.yml'"),
-        "{}",
-        both(&out)
-    );
-    // Both found invalid: two warnings, nothing to show, exit 0, as
-    // `sb update` skips each (decision 31).
-    std::fs::write(files.path("announcements.yml"), invalid).expect("saltbox file");
+    // Both invalid: two warnings, nothing to show, exit 0.
+    files.saltbox_file(INVALID);
     let out = files.run(&[]);
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
     assert_eq!(stdout(&out), "");
@@ -652,12 +599,11 @@ fn an_invalid_file_sb_found_itself_warns_and_the_other_shows() {
         "{}",
         both(&out)
     );
-    // Saltbox's own file invalid, Sandbox's fine: the same rule.
-    std::fs::write(files.path("announcements.yml"), invalid).expect("saltbox file");
+    // Saltbox's invalid, Sandbox's fine: the same rule.
     files.sandbox_file(SANDBOX);
     let out = files.run(&[]);
     assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-    assert_eq!(stdout(&out), SANDBOX_OWN);
+    assert_eq!(stdout(&out), SANDBOX_SHOWN);
     assert!(
         stderr(&out).contains("Saltbox announcements skipped: error loading announcement file"),
         "{}",
@@ -665,21 +611,27 @@ fn an_invalid_file_sb_found_itself_warns_and_the_other_shows() {
     );
 }
 
-/// On a terminal, one list for both repositories; the pane names the
-/// selected entry's.
+/// On a terminal, one list for both repositories, each row labelled with
+/// its own; the pane names the selected entry's.
 #[test]
 fn on_a_terminal_both_repositories_share_the_list() {
     if !root_gate::requested() {
         return;
     }
     let files = Files::new();
-    std::fs::write(files.path("announcements.yml"), BEFORE).expect("saltbox file");
+    files.saltbox_file(SALTBOX_ONE);
     files.sandbox_file(SANDBOX);
     let mut pty = Pty::spawn(&["announcements"], &files.pty_envs());
-    assert!(pty.showing("Announcements · 2 new"), "{}", pty.contents());
+    assert!(pty.showing("Sandbox news"), "{}", pty.contents());
     let screen = pty.contents();
+    assert!(screen.contains("╭ Announcements ─"), "no count: {screen}");
     assert!(
-        screen.contains("Sandbox news") && screen.contains("Old news"),
+        !screen.contains("● ") && !screen.contains(" NEW "),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("2026-04-01  Sandbox  Sandbox news")
+            && screen.contains("2026-01-10  Saltbox  Old news"),
         "{screen}"
     );
     // Newest first: Sandbox's, in its pane.
@@ -689,4 +641,42 @@ fn on_a_terminal_both_repositories_share_the_list() {
     pty.send(b"q");
     assert!(pty.exit().success(), "{}", pty.contents());
     pty.assert_restored();
+}
+
+/// A checkout that is there without its announcements file (one older
+/// than the file, the maintainer's Sandbox on 2026-11-17) is named in a
+/// notice, and the run log records the path read and that the file is
+/// missing; a checkout that isn't there says nothing (a server without
+/// Sandbox).
+#[test]
+fn a_checkout_without_its_file_says_so() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_file(SALTBOX_ONE);
+    let out = files.run(&[]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert!(
+        !stderr(&out).contains("has no announcements file"),
+        "{}",
+        both(&out)
+    );
+    std::fs::create_dir_all(files.path("appdata/sandbox")).expect("checkout");
+    let logs = files.path("logs");
+    std::fs::create_dir(&logs).expect("logs");
+    let out = files.run_logged(&[], Some(&logs));
+    assert!(out.status.success(), "{}", both(&out));
+    let sandbox = files.path("appdata/sandbox/announcements.yml");
+    let wanted = format!("› Sandbox has no announcements file: {}", sandbox.display());
+    assert!(stderr(&out).contains(&wanted), "{wanted}:\n{}", both(&out));
+    let log = std::fs::read_to_string(logs.join("sb.log")).unwrap_or_default();
+    let read = log
+        .lines()
+        .find(|line| line.contains("announcements read") && line.contains("repo=\"Sandbox\""))
+        .unwrap_or_else(|| panic!("no Sandbox record: {log}"));
+    assert!(
+        read.contains(&sandbox.display().to_string()) && read.contains("file=\"missing\""),
+        "{read}"
+    );
 }

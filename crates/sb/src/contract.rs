@@ -195,11 +195,10 @@ fn motd_has_every_sb_go_flag_but_verbose() {
     );
 }
 
-/// `sb announcements` has every flag of sb-go's (cmd/announcements.go)
-/// but `-v` (ops decision 18), each as sb-go has it: names, short flag,
-/// scope, shape and help.
+/// `sb announcements` has none of sb-go's flags (cmd/announcements.go) and
+/// none of its own: each of sb-go's is missing on purpose.
 #[test]
-fn announcements_has_every_sb_go_flag_but_verbose() {
+fn announcements_has_no_flag_of_its_own() {
     let tree = sb_tree();
     let missing: Vec<&str> = SB_GO_TREE
         .lines()
@@ -208,13 +207,25 @@ fn announcements_has_every_sb_go_flag_but_verbose() {
         .collect();
     assert_eq!(
         missing,
-        ["flag\tsb announcements\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output"]
+        [
+            // "New" is `sb update`'s alone, which compares the files
+            // before and after its pull in-process; nothing ever called
+            // sb-go's hidden command with them (the maintainer,
+            // 2026-11-17; ops difference 45).
+            "flag\tsb announcements\tglobal\tafter\ta\tvalue\tfalse\tPath to the after announcements.yml file",
+            "flag\tsb announcements\tglobal\tbefore\tb\tvalue\tfalse\tPath to the before announcements.yml file",
+            // Both repositories are always shown (the maintainer,
+            // 2026-11-17; ops difference 45).
+            "flag\tsb announcements\tglobal\trepo\tr\tvalue\tfalse\tRepository name (Saltbox or Sandbox)",
+            // sb has no verbose mode (ops decision 18).
+            "flag\tsb announcements\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        ]
     );
     let ours = tree
         .iter()
         .filter(|line| line.starts_with("flag\tsb announcements\t"))
         .count();
-    assert_eq!(ours, 3, "--after, --before and --repo");
+    assert_eq!(ours, 0, "no flag of its own");
 }
 
 /// A flag with only a short name, or one sb-go lacks, is reported, not

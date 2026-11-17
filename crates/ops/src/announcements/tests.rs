@@ -1,7 +1,5 @@
 use std::os::unix::fs::symlink;
 
-use clap::Parser as _;
-
 use super::*;
 
 /// Shaped as Saltbox's own file (public GitHub, saltyorg/Saltbox
@@ -540,42 +538,6 @@ fn repos_are_named_as_sb_go_spells_them() {
     assert_eq!(Checkout::Sandbox.name(), "Sandbox");
 }
 
-#[derive(clap::Parser)]
-struct Wrapper {
-    #[command(flatten)]
-    args: AnnouncementsArgs,
-}
-
-fn args(line: &[&str]) -> AnnouncementsArgs {
-    Wrapper::try_parse_from(std::iter::once("announcements").chain(line.iter().copied()))
-        .expect("parses")
-        .args
-}
-
-/// No flag is required (decision 27, amended): without `--before` every
-/// announcement is new, without `--after` the repository's own file is
-/// read, without `--repo` both repositories (decision 30).
-#[test]
-fn no_flag_is_required() {
-    let parsed = args(&[]);
-    assert_eq!(parsed.before, None);
-    assert_eq!(parsed.after, None);
-    assert_eq!(parsed.repo, None);
-    let parsed = args(&["-b", "x", "-a", "y", "-r", "Sandbox"]);
-    assert_eq!(parsed.before.as_deref(), Some(Path::new("x")));
-    assert_eq!(parsed.after.as_deref(), Some(Path::new("y")));
-    assert_eq!(parsed.repo.as_deref(), Some("Sandbox"));
-    let parsed = args(&["--before", "p", "--after", "q", "--repo", "Saltbox"]);
-    assert_eq!(parsed.before.as_deref(), Some(Path::new("p")));
-    assert_eq!(parsed.after.as_deref(), Some(Path::new("q")));
-}
-
-/// There is no `--migrations` any more: migrations are `sb update`'s.
-#[test]
-fn migrations_is_no_flag() {
-    assert!(Wrapper::try_parse_from(["announcements", "--migrations", "run"]).is_err());
-}
-
 /// Saltbox's file is at the root; Sandbox's under the inventory's
 /// appdata path, `/opt` when the inventory doesn't say.
 #[test]
@@ -629,40 +591,23 @@ fn a_tagged_collection_is_the_collection() {
     );
 }
 
-/// Both repositories without `--repo` (decision 30), Saltbox's first; the
-/// one it names with it; Saltbox's alone when a file is named, those
-/// being one repository's; sb-go's error for another name.
+/// What `sb announcements` shows: every entry that applies, by date, none
+/// left out for having been seen; none without a file.
 #[test]
-fn repos_are_both_unless_one_is_named() {
-    assert_eq!(
-        args(&[]).repos().expect("both"),
-        [Checkout::Saltbox, Checkout::Sandbox]
+fn applicable_is_every_entry_that_applies_by_date() {
+    let dir = tempfile::tempdir().expect("dir");
+    let missing = dir.path().join("missing");
+    let text = format!(
+        "announcements:\n  - date: \"2026-03-01\"\n    title: Later\n    message: m\n  \
+         - date: \"2026-01-01\"\n    title: Earlier\n    message: m\n  \
+         - date: \"2026-02-01\"\n    title: Gated\n    required_folder: \"{}\"\n    message: m\n",
+        missing.display()
     );
-    assert_eq!(
-        args(&["-r", "Saltbox"]).repos().expect("one"),
-        [Checkout::Saltbox]
-    );
-    assert_eq!(
-        args(&["-r", "Sandbox"]).repos().expect("one"),
-        [Checkout::Sandbox]
-    );
-    assert_eq!(
-        args(&["-a", "x"]).repos().expect("a file"),
-        [Checkout::Saltbox]
-    );
-    assert_eq!(
-        args(&["-b", "x"]).repos().expect("a file"),
-        [Checkout::Saltbox]
-    );
-    assert_eq!(
-        args(&["-a", "x", "-r", "Sandbox"]).repos().expect("named"),
-        [Checkout::Sandbox]
-    );
-    assert_eq!(
-        args(&["-r", "saltbox"])
-            .repos()
-            .expect_err("wrong")
-            .to_string(),
-        "invalid repository name 'saltbox', must be 'Saltbox' or 'Sandbox'"
-    );
+    let after = parsed(&text);
+    let titles: Vec<String> = applicable(Some(&after))
+        .into_iter()
+        .map(|a| a.title)
+        .collect();
+    assert_eq!(titles, ["Earlier", "Later"]);
+    assert_eq!(applicable(None), []);
 }

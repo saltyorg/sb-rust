@@ -1480,9 +1480,11 @@ this section is the full-screen form.
 
 ### Objective
 
-A Saltbox user sees, right after `sb update` or with `sb announcements`,
-which announcements are new, reads each one whole without scrolling past
-its end, and can still read the ones they missed before.
+A Saltbox user sees, right after `sb update`, which announcements are
+new, or with `sb announcements` every one that applies (none called new),
+each labelled with its repository; reads each one whole without
+scrolling past its end, and can still read the ones they missed before.
+*Amended 2026-11-17.*
 
 ### Input
 
@@ -1497,21 +1499,30 @@ its end, and can still read the ones they missed before.
   holds every applicable entry of the file, the older ones too, so missed
   ones can still be read (FINDINGS, "What counts as new").
 - The callers: `sb announcements` on a terminal, with every applicable
-  entry of Saltbox's and Sandbox's (or the repository `-r` names), when
-  at least one applies; `sb update` on a terminal when there
-  are new ones (M87). With stdout not a terminal both print the inline
-  form instead, the new entries only (ops spec, decision 24).
+  entry of Saltbox's and Sandbox's, none marked new, when at least one
+  applies (the maintainer, 2026-11-17; ops difference 45); `sb update`
+  on a terminal when there are new ones (M87), those marked. With stdout
+  not a terminal both print the inline form instead: `sb announcements`
+  every applicable entry, `sb update` the new ones (ops spec, decision
+  24). *Amended 2026-11-17.*
 
 ### Layout
 
 - **The list**, newest first by the date's text (a stable sort: on equal
   dates the order given, Saltbox's before Sandbox's), in a rounded,
   bordered block titled ` Announcements `, with `· N new ` after it when
-  any are new. A row is `● <date>  <title>` for a new entry: the marker
-  in the Ok role, the date Muted, the title in Text, bold. An older entry
-  is `  <date>  <title>`, all in the Faint role, without the marker. The
+  any are new. Every row names its repository between the date and the
+  title (the maintainer, 2026-11-17: both repositories share the list,
+  so each says whose it is), the same for both callers. A row is
+  `● <date>  <repo>  <title>` for a new entry: the marker in the Ok role,
+  the date and the repository Muted, the title in Text, bold. An older
+  entry is `  <date>  <repo>  <title>`, all in the Faint role, without
+  the marker. With none marked new (`sb announcements`, which never calls
+  anything new: the maintainer, 2026-11-17), no title count, no legend,
+  and every row ` <date>  <repo>  <title>`, the date and title in Text,
+  the repository Muted: faint means older than a new one. The
   selected row is the Selected roles' bar (reverse video with colour
-  off, decision 23's rule).
+  off, decision 23's rule). *Amended 2026-11-17.*
 - **The selected announcement** fills the rest, in a rounded block of
   its own whose title names the repository (` Saltbox `, ` Sandbox `):
   a first line `<date> · <title>` (date Muted, the dot Faint, the title
@@ -1594,6 +1605,9 @@ and how it closed, never a title or a message.
 
 34. Every applicable announcement is listed, the new ones marked and the
     older ones faint; sb-go's viewer showed the new ones only.
+    *Amended 2026-11-17:* marked so for `sb update`; `sb announcements`
+    marks none. Each row names its repository; sb-go's viewer, one
+    repository's, didn't.
 35. A list beside (or, below 70 columns, above) the selected
     announcement, newest first, opening on the newest new one; sb-go
     paged through the new ones in date order.
@@ -1607,7 +1621,9 @@ and how it closed, never a title or a message.
   scroll (PageDown, End and the wheel leave it at the top); a long one
   stops with its last line on the last row; choosing another entry
   starts it at its top; a move past the last entry keeps the scroll;
-  the marker, the tint and the `N new` title; it opens on the newest new
+  the marker, the tint and the `N new` title, and none of them unmarked;
+  each row's repository, with snapshots of both repositories marked
+  and not; it opens on the newest new
   entry; a click selects a row and a click on the border selects
   nothing; the list as wide as its longest title (display width) and the
   40% cap; the narrow layout below 70 columns; the scrollbar's colour;

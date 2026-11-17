@@ -1,0 +1,28 @@
+---
+source: crates/tui/src/announcements/tests.rs
+expression: terminal.backend()
+---
+"╭ Announcements ─────────────────────╮╭ Sandbox ───────────────────────────────────────────────────╮"
+"│ 2026-04-01  Sandbox  Sandbox news  ││2026-04-01 · Sandbox news                                   │"
+"│ 2026-03-02  Saltbox  Settings moved││From the sandbox.                                           │"
+"│ 2026-01-10  Saltbox  Old news      ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"│                                    ││                                                            │"
+"╰────────────────────────────────────╯╰────────────────────────────────────────────────────────────╯"
+"↑↓ announcement · PgUp/PgDn scroll · q close                                                        "

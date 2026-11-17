@@ -255,6 +255,31 @@ fn the_list_marks_new_announcements_and_tints_older_ones() {
     assert!(rows[0].contains(" Saltbox "), "{}", rows[0]);
 }
 
+/// With none marked (`sb announcements`), every row is at full strength:
+/// faint means older than a marked one, and there is none.
+#[test]
+fn with_none_marked_no_row_is_faint() {
+    let mut v = viewer(vec![
+        entry("2026-01-02", "First", "", false),
+        entry("2026-01-01", "Second", "", false),
+    ]);
+    let terminal = drawn(&mut v, 100, 24);
+    let rows = screen(&terminal);
+    let buffer = terminal.backend().buffer();
+    let row = rows.iter().position(|r| r.contains("Second")).expect("row");
+    let byte = rows[row].find("Second").expect("title");
+    let x = u16::try_from(rows[row][..byte].chars().count()).expect("column");
+    let y = u16::try_from(row).expect("row");
+    let theme = colour();
+    let fg = |role| Style::from(theme.style(role)).fg.expect("a colour");
+    assert_eq!(
+        buffer[(x, y)].fg,
+        fg(Role::Text),
+        "an unmarked row's title is the text colour"
+    );
+    assert!(!rows[row].contains('●'), "{}", rows[row]);
+}
+
 #[test]
 fn no_new_one_has_no_count_badge_or_legend() {
     let mut v = viewer(vec![entry("2026-01-01", "Seen", "Body.", false)]);
@@ -336,7 +361,9 @@ fn the_list_is_wide_enough_for_the_longest_title() {
 
 #[test]
 fn the_list_is_at_least_24_and_at_most_two_fifths_wide() {
-    let mut v = viewer(vec![entry("2026-01-01", "A", "Body.", false)]);
+    // An empty date: the row, `   Saltbox  A`, is narrower than the
+    // minimum with its border.
+    let mut v = viewer(vec![entry("", "A", "Body.", false)]);
     drawn(&mut v, 100, 20);
     assert_eq!(v.list_area.width, 24);
     let mut v = viewer(vec![entry(
@@ -646,9 +673,8 @@ fn the_message_keeps_its_colours() {
 /// list is as wide as `Announcements · N new`.
 #[test]
 fn the_list_is_wide_enough_for_its_title() {
-    let entries = (0..40)
-        .map(|i| entry(&format!("2026-{:02}-01", 12 - i / 4), "x", "", true))
-        .collect();
+    // Empty dates: each row, `●   Saltbox  x`, is narrower than the title.
+    let entries = (0..40).map(|_| entry("", "x", "", true)).collect();
     let mut v = viewer(entries);
     let rows = screen(&drawn(&mut v, 100, 24));
     assert!(
@@ -656,4 +682,79 @@ fn the_list_is_wide_enough_for_its_title() {
         "{}",
         rows[0]
     );
+}
+
+/// Entries of both repositories, as `sb announcements` gives them.
+fn both_repositories(new: bool) -> Vec<Entry> {
+    let sandbox = |date: &str, title: &str, message: &str| Entry {
+        repo: "Sandbox".into(),
+        ..entry(date, title, message, new)
+    };
+    vec![
+        entry(
+            "2026-03-02",
+            "Settings moved",
+            "## Settings moved\n\nRun the migration.",
+            new,
+        ),
+        sandbox("2026-04-01", "Sandbox news", "From the sandbox."),
+        entry("2026-01-10", "Old news", "Already seen.", false),
+    ]
+}
+
+/// Every row names its repository, between the date and the title, in
+/// the Muted role, marked or not (the maintainer, 2026-11-17: both
+/// repositories are always shown, so each says whose it is); the pane's
+/// title names the selected entry's.
+#[test]
+fn each_row_names_its_repository() {
+    for new in [false, true] {
+        let mut v = viewer(both_repositories(new));
+        let terminal = drawn(&mut v, 100, 24);
+        let rows = screen(&terminal);
+        let buffer = terminal.backend().buffer();
+        for (date, repo, title) in [
+            ("2026-04-01", "Sandbox", "Sandbox news"),
+            ("2026-03-02", "Saltbox", "Settings moved"),
+            ("2026-01-10", "Saltbox", "Old news"),
+        ] {
+            let row = rows
+                .iter()
+                .position(|r| r.contains(&format!("{date}  {repo}  {title}")))
+                .unwrap_or_else(|| {
+                    panic!("{date} {repo} {title} (new {new}):\n{}", rows.join("\n"))
+                });
+            let byte = rows[row].find(&format!("  {repo}  ")).expect("repo") + 2;
+            let x = u16::try_from(rows[row][..byte].chars().count()).expect("column");
+            let y = u16::try_from(row).expect("row");
+            let selected = v.list.selected() == Some(row - 1);
+            if !selected {
+                // Muted, but Faint on an older row among marked ones.
+                let older = new && title == "Old news";
+                let theme = colour();
+                let role = if older { Role::Faint } else { Role::Muted };
+                let want = Style::from(theme.style(role)).fg.expect("a colour");
+                assert_eq!(buffer[(x, y)].fg, want, "{repo} at ({x},{y}), new {new}");
+            }
+        }
+        // The pane opens on the newest, Sandbox's, and names it.
+        assert!(rows[0].contains("╮╭ Sandbox "), "{}", rows[0]);
+    }
+}
+
+/// `sb announcements`' viewer (none marked) with both repositories.
+#[test]
+fn snapshot_both_repositories_unmarked_100x24() {
+    let mut v = viewer(both_repositories(false));
+    let terminal = drawn(&mut v, 100, 24);
+    insta::assert_snapshot!(terminal.backend());
+}
+
+/// `sb update`'s viewer (two marked, one older) with both repositories:
+/// the same labelling.
+#[test]
+fn snapshot_both_repositories_marked_100x24() {
+    let mut v = viewer(both_repositories(true));
+    let terminal = drawn(&mut v, 100, 24);
+    insta::assert_snapshot!(terminal.backend());
 }
