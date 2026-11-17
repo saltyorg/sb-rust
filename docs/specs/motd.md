@@ -268,11 +268,17 @@ Traefik's API (v3.7.0 and later; Saltbox pins `traefik:v3.7`), shown with
   - The days are whole days to or since the first `notAfter`, against
     the host's clock, rounded down: `in 1 day`, `in N days`, and `today`
     when less than a day is left; `1 day ago`, `N days ago`, `today` once
-    it has passed. The number takes its state's colour: value, warning
-    under 30 days, error once passed.
+    it has passed. The number, or `today`, takes its state's colour:
+    value, warning under 30 days, error once passed.
+  - The wordings are the maintainer's choices (2026-11-17): `expiring
+    soon` for Traefik's warning, `earliest expired N days ago` once the
+    first has passed, and `Traefik is serving no certificates` for a
+    total of 0.
 - **When it shows nothing else:**
   - The Traefik line already says the container is down or the API isn't
-    accessible: the Certificates line is hidden (empty).
+    accessible: the Certificates line is hidden (empty). The line goes by
+    its own overview request, made beside the routers': a failure of only
+    one of the two, a passing hiccup, shows in only one of the lines.
   - The overview has no `certificates` (Traefik before v3.7.0, or no TLS
     manager): hidden.
   - `total` is 0: `Traefik is serving no certificates`.
