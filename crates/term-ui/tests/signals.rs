@@ -217,14 +217,44 @@ fn an_interrupted_run_dies_of_its_signal() {
 
 /// What a user types during a live run: a word and Enter, then another.
 const TYPED: &str = "typedxyz\rmorexyz\r";
+/// What the user types once sb has ended, for the shell's `read`.
+const AFTER: &str = "afterxyz\r";
 
 /// Typing and pressing Enter mid-run leaves no stale line: the terminal
 /// doesn't echo the keys into the live area (ui-M2; term-ui spec,
 /// "Terminal restore"), not even the newline with `echonl` set, and
 /// both echoes are on again after the run. The keys are sent through
-/// `script`'s stdin once the run has quieted the terminal.
+/// `script`'s stdin once the run has quieted the terminal. At the end
+/// they are discarded, at an ordinary ending and at the forced exit of a
+/// second Ctrl-C alike: the shell's `read` after the run gets only what
+/// is typed once sb has ended.
 #[test]
-fn typing_during_a_live_run_leaves_no_stale_line() {
+fn keys_typed_during_a_live_run_are_discarded_at_its_end() {
+    for (flag, code) in [("", 0), ("--interrupt-twice", 130)] {
+        let text = type_during_a_run(flag);
+        assert_eq!(exit_code(&text), Some(code), "{flag}: {text:?}");
+        let (during, after) = text.split_once("EXIT=").unwrap_or((&text, ""));
+        assert!(
+            !during.contains("typedxyz") && !during.contains("morexyz"),
+            "{flag}: the keys were echoed into the live area: {text:?}"
+        );
+        assert!(
+            !after.contains("typedxyz") && !after.contains("morexyz"),
+            "{flag}: the keys reached the shell after the run: {text:?}"
+        );
+        assert!(echo_restored(&text), "{flag}: {text:?}");
+        assert!(mode_on(&text, "echonl"), "{flag}: {text:?}");
+        assert!(
+            text.contains("GOT=afterxyz"),
+            "{flag}: the shell read no line: {text:?}"
+        );
+    }
+}
+
+/// Run the demo with `flag` on a terminal, type [`TYPED`] once it has
+/// switched the echo off, and [`AFTER`] once it has ended; returns all
+/// that `script` printed.
+fn type_during_a_run(flag: &str) -> String {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut child = Command::new("timeout")
         .args([
@@ -233,12 +263,14 @@ fn typing_during_a_live_run_leaves_no_stale_line() {
             "-qec",
             // Mid-run: polled until the demo has switched the echo off,
             // then the marker (only then) asks the test to type. After the
-            // run, `read` shows the keys reached the terminal's queue.
-            "stty cols 100 rows 30 echonl; \"$DEMO\" & \
-             for _ in $(seq 100); do \
-               stty -a | grep -qw -- -echo && { echo READY-TO-TYPE; break; }; sleep 0.05; \
-             done; \
-             wait $!; echo EXIT=$?; stty -a; read -r typed; echo GOT=$typed",
+            // run, the second marker asks for the line `read` gets.
+            &format!(
+                "stty cols 100 rows 30 echonl; \"$DEMO\" {flag} & \
+                 for _ in $(seq 100); do \
+                   stty -a | grep -qw -- -echo && {{ echo READY-TO-TYPE; break; }}; sleep 0.05; \
+                 done; \
+                 wait $!; echo EXIT=$?; stty -a; echo READY-AFTER; read -r typed; echo GOT=$typed"
+            ),
             "/dev/null",
         ])
         .env("DEMO", demo())
@@ -262,35 +294,33 @@ fn typing_during_a_live_run_leaves_no_stale_line() {
             }
         })
     };
-    let ready =
-        || String::from_utf8_lossy(&output.lock().expect("output")).contains("READY-TO-TYPE");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !ready() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let printed = || String::from_utf8_lossy(&output.lock().expect("output")).into_owned();
+    let wait_for = |marker: &str| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !printed().contains(marker) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        printed().contains(marker)
+    };
     // Else the keys would land after the run and prove nothing.
-    assert!(ready(), "the echo was never off mid-run: {:?}", {
-        String::from_utf8_lossy(&output.lock().expect("output")).into_owned()
-    });
+    assert!(
+        wait_for("READY-TO-TYPE"),
+        "{flag}: the echo was never off mid-run: {:?}",
+        printed()
+    );
     // Kept open until the run ends: `script` ends the session at its end.
     let mut stdin = child.stdin.take().expect("stdin");
     stdin.write_all(TYPED.as_bytes()).expect("type");
+    assert!(
+        wait_for("READY-AFTER"),
+        "{flag}: the run never ended: {:?}",
+        printed()
+    );
+    stdin.write_all(AFTER.as_bytes()).expect("type after");
     reader.join().expect("reader");
     drop(stdin);
     let _ = child.wait();
-    let text = String::from_utf8_lossy(&output.lock().expect("output")).into_owned();
-    assert_eq!(exit_code(&text), Some(0), "{text:?}");
-    let during = text.split("EXIT=").next().unwrap_or_default();
-    assert!(
-        !during.contains("typedxyz") && !during.contains("morexyz"),
-        "the keys were echoed into the live area: {text:?}"
-    );
-    assert!(echo_restored(&text), "{text:?}");
-    assert!(mode_on(&text, "echonl"), "{text:?}");
-    assert!(
-        text.contains("GOT=typedxyz"),
-        "the keys were typed: {text:?}"
-    );
+    printed()
 }
 
 /// A failed run puts the terminal back too.

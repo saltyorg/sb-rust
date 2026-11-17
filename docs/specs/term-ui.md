@@ -170,7 +170,21 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   typed or Enter pressed mid-run were echoed into the live area and left
   stale duplicate lines at its next redraw. Canonical mode and `ISIG`
   stay on: what is typed waits in the input queue, and Ctrl-C still
-  signals. Every ending puts back the modes sb found. The tty is only
+  signals. Every ending puts back the modes sb found, with `TCSAFLUSH`
+  (rustix's `OptionalActions::Flush`): whatever is unread on the
+  terminal when the run ends is discarded, the keys typed while live and
+  any typed before the run quieted the terminal alike (those were
+  echoed), so none reach the shell after sb ends, at an ordinary ending
+  and at the forced exit's restore hook alike. *Amended
+  2026-11-17 (maintainer, the hardening plan's Checkpoint C sitting,
+  type-ahead), overruling the earlier call that they stay
+  queued:* sb-go's live views are Bubble Tea programs
+  (`charm.land/bubbletea/v2` v2.1.0), which read the keys themselves;
+  apt restores the terminal after dpkg with `TCSAFLUSH` (apt 2.7.14,
+  `pkgDPkgPM::StopPtyMagic` in `apt-pkg/deb/dpkgpm.cc`); and prompts
+  drop stale input before they ask (the confirm, below). less, as of
+  v712, restores with `TCSADRAIN`, keeping it; its development tree has
+  switched to `TCSAFLUSH` on leaving. The tty is only
   touched in the foreground process group (sb-go's `tty.go` guard),
   checked again at every restore, so a background sb (or one moved there with Ctrl-Z and `bg`) never stops
   on SIGTTOU; a job-control shell puts its own modes back then. A second
@@ -180,7 +194,8 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   shell's prompt until sb resumes (bash restores the modes, not the
   cursor). Known limit: `kill -9` runs no restore, so it leaves the
   echo off (since decision 17, not only `ECHOCTL`) unless a job-control
-  shell puts its own modes back; `stty sane` turns it on again.
+  shell puts its own modes back, and the keys typed while live stay
+  queued for the shell; `stty sane` turns the echo on again.
 - **Taller than the terminal** (maintainer, hardening plan decision 17;
   ui-M1): when the live area has more lines than the terminal has rows,
   its oldest settled steps (each with its subtree, notices and failure
@@ -359,6 +374,11 @@ sequence.
   *Amended 2026-11-13 with M26.*
 - Every prompt takes its answer from the caller when one was given (the
   command's flag), without asking.
+- Before the confirm asks, what was typed already is dropped (rustix's
+  `tcflush` with `TCIFLUSH` on the terminal it reads), so a stray `y`
+  and Enter, or a paste, can't answer a question never seen. *Amended
+  2026-11-17 (maintainer): written down here from the code, as built
+  with `release` (4a6b474).*
 - Ctrl-C at the confirm ends sb by SIGINT, every time. console raises
   SIGINT for it and returns at once, before cli-core's signals thread
   has read the signal, so sb could end with exit 1 and an "interrupted"
@@ -767,7 +787,8 @@ Choices behind it:
   child's own SGR output fed through `Step::output`, live and plain.
 - PTY tests (`script`, as cli-core's colour tests): live frames, no line
   erases, clean endings for success, failure and SIGINT, `ECHOCTL` and
-  `ECHO` restored, and keys typed mid-run not echoed.
+  `ECHO` restored, and keys typed mid-run not echoed and not left for
+  the shell after an ordinary ending or the forced exit.
 - `DisplayText`: a test per class of "Escape handling", 7-bit and 8-bit
   (SGR kept byte-exact or dropped by `colour`; OSC, DCS, APC, PM and SOS
   with their payloads; cursor and mode CSIs; the parameter limit;

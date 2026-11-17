@@ -5,7 +5,10 @@
 //! Ctrl-C doesn't echo `^C` into the tree; and the cursor hidden. All put
 //! back at every ending, and by cli-core's restore hook on a second Ctrl-C.
 //! Canonical mode and `ISIG` stay on: what is typed waits in the input
-//! queue for whatever reads the terminal next, and Ctrl-C still signals.
+//! queue, and Ctrl-C still signals. The restore discards that queue
+//! (`TCSAFLUSH`): whatever is unread on the terminal when the run ends,
+//! keys typed before the run quieted it included, never reaches the shell
+//! after sb ends.
 //! The local-mode flags: <https://man7.org/linux/man-pages/man3/termios.3.html>
 //!
 //! proto-runner's reviewed guard (tcgetattr/tcsetattr through rustix's
@@ -70,7 +73,8 @@ impl Saved {
 
     /// Put the terminal back, once: the cursor shown and its modes, the
     /// modes only from the foreground (in the background a job-control
-    /// shell puts its own modes back, and `fg` restores the job's). Writes
+    /// shell puts its own modes back, and `fg` restores the job's), and
+    /// whatever is unread on the terminal discarded with them. Writes
     /// through stderr's descriptor, not std's `stderr()`, whose lock a
     /// stuck writer may hold (cli-core's restore hooks run beside it).
     pub fn restore(&mut self) {
@@ -90,8 +94,18 @@ impl Saved {
                 write_all(b"\r\n");
             }
             write_all(SHOW_CURSOR);
+            // `Flush` (TCSAFLUSH): the modes set once the output is drawn,
+            // and the terminal's unread input discarded. Every ending comes
+            // here, the forced exit's hook included.
+            // <https://docs.rs/rustix/1.1.6/rustix/termios/enum.OptionalActions.html#variant.Flush>
+            // Precedent: apt puts the terminal back after dpkg the same way
+            // (apt 2.7.14, `pkgDPkgPM::StopPtyMagic`,
+            // <https://salsa.debian.org/apt-team/apt/-/blob/2.7.14/apt-pkg/deb/dpkgpm.cc>);
+            // sb-go's live views are Bubble Tea programs (its go.mod's
+            // charm.land/bubbletea/v2 v2.1.0), which read the keys
+            // themselves and leave none for the shell.
             if in_foreground() {
-                let _ = tcsetattr(rustix::stdio::stderr(), OptionalActions::Now, &original);
+                let _ = tcsetattr(rustix::stdio::stderr(), OptionalActions::Flush, &original);
             }
         }
     }
