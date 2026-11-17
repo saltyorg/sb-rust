@@ -1052,10 +1052,12 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     decision 40).
   - Dialogs (edit, add, save, quit with unsaved changes, outcome) use
     tui-popup, and so does the right-click menu, rendered without kept
-    state into a rectangle of its own size at the pointer (M56's library
+    state into a rectangle of its own size by its row (M56's library
     review; proto-facts drew it by hand because a kept `PopupState`
-    can't move a popup before its first render). Every menu action has a
-    key, and `m` or the Menu key opens the menu on the selected row.
+    can't move a popup before its first render). It opens just under the
+    row it acts on, or just over it when there is no room under it, so
+    the row's name stays in sight (the maintainer, 2026-11-17). Every menu action has a key, and `m` or the Menu key
+    opens the menu on the selected row.
   - Quit with staged changes opens the save dialog: Save, Discard or
     Cancel (sb-go's Apply/Discard/Return).
   - Mouse: click selects, the wheel scrolls, right-click opens the menu.
@@ -1191,7 +1193,7 @@ Why not (recorded in the code, library-first rule):
 - **A kept `PopupState` for the right-click menu:** its `move_to` works
   only after a first render and its size is frozen after that
   (proto-facts FINDINGS). The menu renders with a fresh state each
-  frame into a rectangle of its own size at the pointer instead, which
+  frame into a rectangle of its own size by its row instead, which
   tui-popup centres onto itself (M56's library review).
 
 The `edit` log's "changed" field compares the file's bytes before and

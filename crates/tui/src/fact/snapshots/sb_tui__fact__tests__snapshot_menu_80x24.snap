@@ -1,6 +1,6 @@
 ---
 source: crates/tui/src/fact/tests.rs
-assertion_line: 2163
+assertion_line: 2182
 expression: "drawn(&mut f.page, 80, 24).backend()"
 ---
 "╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
@@ -11,13 +11,13 @@ expression: "drawn(&mut f.page, 80, 24).backend()"
 "    theme              dark                                                     "
 "    title              家庭メディア 🎬 Server                                   " Hidden by multi-width symbols: [(24, " "), (26, " "), (28, " "), (30, " "), (32, " "), (34, " "), (37, " ")]
 "  ▾ Komodo                                                                      "
-"›   ╭──────────╮sword  ••••••••                                                 "
-"    │ Show   s │       ••••••••                                                 "
-"  ▾ │ Copy   c │                                                                "
-"    │ Edit   e │                                                                "
-"    │ Delete d │n      ••••••••                                                 "
-"    ╰──────────╯path   /mnt/local/transcodes                                    "
-"    plex2                                                                       "
+"›   database_password  ••••••••                                                 "
+"    ╭──────────╮       ••••••••                                                 "
+"  ▾ │ Show   s │                                                                "
+"    │ Copy   c │                                                                "
+"    │ Edit   e │n      ••••••••                                                 "
+"    │ Delete d │path   /mnt/local/transcodes                                    "
+"    ╰──────────╯                                                                "
 "      claim_token      ••••••••                                                 "
 "      transcode_path   /mnt/local/transcodes2                                   "
 "                                                                                "

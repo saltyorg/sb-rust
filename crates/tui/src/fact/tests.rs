@@ -2064,7 +2064,12 @@ fn a_right_click_opens_the_row_s_menu() {
     assert_eq!(f.page.selected(), Some(Row::Setting((1, 0, 0))));
     let rows = screen(&drawn(&mut f.page, 100, 40));
     let menu: Vec<&String> = rows.iter().filter(|r| r.contains('│')).collect();
-    assert!(rows[usize::from(at.y) + 1].contains("Show"), "{rows:?}");
+    // Just under the clicked row, whose name stays in sight (the
+    // maintainer, 2026-11-17).
+    let y = usize::from(at.y);
+    assert!(rows[y].contains("database_password"), "{rows:?}");
+    assert!(rows[y + 1].contains('╭'), "{rows:?}");
+    assert!(rows[y + 2].contains("Show"), "{rows:?}");
     assert!(
         menu.iter().any(|r| r.contains("Copy") && r.contains('c')),
         "{rows:?}"
@@ -2110,6 +2115,15 @@ fn m_opens_the_menu_from_the_keyboard() {
     let mut f = Fixture::new(&roles());
     select(&mut f.page, "theme");
     press(&mut f.page, KeyCode::Char('m'));
+    // From the keyboard too, the menu opens just under the row.
+    let rows = screen(&drawn(&mut f.page, 100, 40));
+    let row = rows
+        .iter()
+        .position(|r| r.contains("theme"))
+        .expect("the row");
+    // The menu's top edge (its corner can fall on a wide character's
+    // second cell in the row below).
+    assert!(rows[row + 1].contains('╮'), "{rows:?}");
     assert_eq!(
         f.page
             .menu_items(Row::Setting((0, 0, 1)))
@@ -2311,4 +2325,29 @@ fn a_paste_goes_into_the_search_box_and_never_acts_on_the_page() {
     paste(&mut f.page, "plex\n");
     assert_eq!(f.page.query, "plex");
     assert!(f.page.searching);
+}
+
+/// With no room under the row (the list's last line), the menu opens just
+/// over it instead, so the row's name still shows.
+#[test]
+fn with_no_room_below_the_menu_opens_over_the_row() {
+    let mut f = Fixture::new(&roles());
+    // 100×19: the list's 15 rows fill it; the last one is plex2's
+    // transcode_path, on line 17, with the status line and the buttons
+    // under it.
+    let at = find_at(&mut f.page, 100, 19, "/mnt/local/transcodes2");
+    right_click(&mut f.page, at);
+    let terminal = drawn(&mut f.page, 100, 19);
+    let rows = screen(&terminal);
+    let y = usize::from(at.y);
+    assert!(rows[y].contains("/mnt/local/transcodes2"), "{rows:?}");
+    assert!(rows[y - 1].contains('╯'), "{rows:?}");
+    // The click and hover targets are the rectangle drawn.
+    assert_eq!(f.page.hits.menu.bottom(), at.y);
+    // From the keyboard on the same row, the same.
+    press(&mut f.page, KeyCode::Esc);
+    press(&mut f.page, KeyCode::Char('m'));
+    let rows = screen(&drawn(&mut f.page, 100, 19));
+    assert!(rows[y].contains("/mnt/local/transcodes2"), "{rows:?}");
+    assert_eq!(f.page.hits.menu.bottom(), at.y);
 }

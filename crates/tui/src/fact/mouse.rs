@@ -18,10 +18,14 @@
 //! (<https://docs.rs/crossterm/0.29.0/crossterm/event/enum.MouseEventKind.html>).
 //!
 //! The menu is a tui-popup `Popup` (<https://docs.rs/tui-popup/0.7.7/tui_popup/>)
-//! rendered without kept state into a rectangle of its own size at the
-//! pointer, moved and shrunk to fit the screen (`Rect::clamp`): a fresh
-//! state each frame centres it in that rectangle, which is the rectangle
-//! itself, so it opens where the pointer is and resizes with its labels.
+//! rendered without kept state into a rectangle of its own size just
+//! under the row it acts on, from the pointer's column, or just over the
+//! row when there is no room under it, then fitted to the screen
+//! (`Rect::clamp`): a fresh state each frame centres it in that
+//! rectangle, which is the rectangle itself, so it opens where it is put
+//! and resizes with its labels. Under or over, the row's name stays in
+//! sight (the maintainer, 2026-11-17; proto-facts opened it on the row,
+//! and neither ratatui nor tui-popup places a popup by a row).
 //! (Its `PopupState::move_to` only moves a popup already drawn, which is
 //! why proto-facts drew the menu by hand; the stateless render doesn't
 //! need it.) The body is a `KnownSize` newtype, as tui-popup's
@@ -63,7 +67,8 @@ pub(super) struct Hits {
     pub(super) menu: Rect,
 }
 
-/// The open menu: where it opened, and the item lit.
+/// The open menu: where it opened (the column, and its row's line), and
+/// the item lit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Menu {
     pub(super) at: Position,
@@ -128,8 +133,9 @@ impl Page {
         items
     }
 
-    /// Open the menu on the selected row: at `at` (a right click), or by
-    /// its row (`m`, the Menu key).
+    /// Open the menu on the selected row: from `at` (a right click), or
+    /// from the row (`m`, the Menu key); [`Page::draw_menu`] puts it under
+    /// or over that row.
     pub(super) fn open_menu(&mut self, at: Option<Position>) {
         let Some(selected) = self.list.selected() else {
             return;
@@ -139,7 +145,7 @@ impl Page {
         }
         let line = u16::try_from(selected.saturating_sub(self.list.offset())).unwrap_or(0);
         let list = self.hits.list;
-        // From the keyboard: on the row, past the mark, the indent and the
+        // From the keyboard: at the row, past the mark, the indent and the
         // start of a key (proto-facts' place).
         let at = at.unwrap_or(Position::new(
             list.x.saturating_add(KEYBOARD_MENU_COLUMN),
@@ -307,8 +313,9 @@ impl Page {
         }
     }
 
-    /// The menu at the pointer, moved and shrunk to fit the screen
-    /// (`Rect::clamp`), the lit item one solid bar.
+    /// The menu just under its row, or just over it when the screen has no
+    /// room under it, fitted to the screen (`Rect::clamp`), the lit item one
+    /// solid bar.
     pub(super) fn draw_menu(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let Some(menu) = self.menu else {
             self.hits.menu = Rect::default();
@@ -324,10 +331,16 @@ impl Page {
                 .style(Role::SelectedFg)
                 .patch(self.bg(Role::SelectedBg)),
         };
-        // The body and its border, at the pointer.
+        // The body and its border, under the row (`at`'s line) or over it.
         let width = u16::try_from(body.width() + 2).unwrap_or(u16::MAX);
         let height = u16::try_from(body.height() + 2).unwrap_or(u16::MAX);
-        let rect = Rect::new(menu.at.x, menu.at.y, width, height).clamp(area);
+        let under = menu.at.y.saturating_add(1);
+        let y = if under.saturating_add(height) <= area.bottom() {
+            under
+        } else {
+            menu.at.y.saturating_sub(height)
+        };
+        let rect = Rect::new(menu.at.x, y, width, height).clamp(area);
         self.hits.menu = rect;
         let mut popup = TuiPopup::new(body);
         popup.border_set = border::ROUNDED;
