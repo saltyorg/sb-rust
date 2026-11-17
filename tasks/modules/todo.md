@@ -2169,7 +2169,7 @@ calling it from `update` and `setup`, and the completion refresh.*
       2026-11-16). `branch::Checkout` (M79) and `announcements::Repo` (M74)
       both name Saltbox and Sandbox. Merge them when update needs both
       (M84 or M85).
-- [ ] **"Refused" test ports stay reserved** (found by lane 3's gate,
+- [x] **"Refused" test ports stay reserved** (found by lane 3's gate,
       2026-11-16). `refused()` in crates/sb/tests/docker_control.rs and
       crates/config/tests/run_log.rs binds port 0, drops the listener and
       uses the freed port as one nothing listens on; under the gate's
@@ -2178,6 +2178,8 @@ calling it from `update` and `setup`, and the completion refresh.*
       refused connection. Hold the port for the test's lifetime with a
       socket that is bound but never listens (a connect to it is refused),
       for example socket2's `Socket::bind` without `listen`.
+      Done: 798cbdd (a tokio `TcpSocket` bound but never listening, in
+      all eight helpers, `refused_url` held for the test binary's life).
 - [x] **The viewer's far-right rebuild frame meets 5 ms** (lane 2; the
       maintainer, 2026-11-15). With wrap off far to the right, a frame that
       rebuilds every line in view (a jump there, a search, a theme or `t`
