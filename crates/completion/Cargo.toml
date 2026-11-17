@@ -28,6 +28,8 @@ tokio-util.workspace = true
 tempfile.workspace = true
 # sb-go's name pattern and fish's version.
 regex.workspace = true
+# sb-go's markers found in a file (`bytes.Contains` there).
+memchr.workspace = true
 
 [features]
 # The install root under a test's directory (`testing::ROOT_VAR`), for

@@ -95,6 +95,7 @@ impl Root {
             &self.paths(),
             shells,
             &names,
+            &self.at("opt/sb"),
             &CancellationToken::new(),
         ));
         // Every file written is under the root: a stand-in that reported
@@ -267,6 +268,7 @@ fn a_directory_outside_the_root_is_refused() {
             &root.paths(),
             &[Shell::Fish],
             &root.names(),
+            &root.at("opt/sb"),
             &CancellationToken::new(),
         ));
         let dir = sysconf.join("completions");
@@ -416,8 +418,355 @@ fn a_cancelled_install_stops() {
         &root.paths(),
         &Shell::ALL,
         &root.names(),
+        &root.at("opt/sb"),
         &token,
     ));
     assert_eq!(report.lines, Vec::<Line>::new());
     assert_eq!(report.failures, ["interrupted"]);
+}
+
+/// The fixtures sb-go itself wrote (tests/fixtures/sb-go/): `current/`,
+/// by sb-go 35a7acc's completion manager (`Manager.Install` for `sb` and
+/// `saltbox`, every shell); `old/`, by the scripts sb-go 0.0.100 to 0.1.x
+/// installed in the legacy directories (b889ee6, the commit before
+/// 8521997, `generateStaticBashCompletion` and
+/// `generateStaticZshCompletion`). Each ran as a `go test` in a throwaway
+/// golang 1.27.4 container, with a stand-in tag cache.
+fn fixture(path: &str) -> String {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sb-go")
+        .join(path);
+    std::fs::read_to_string(&file).unwrap_or_else(|err| panic!("{}: {err}", file.display()))
+}
+
+const BASH_DIR: &str = "usr/local/share/bash-completion/completions";
+const ZSH_DIR: &str = "usr/local/share/zsh/site-functions";
+const FISH_DIR: &str = "etc/fish/completions";
+const BASH_LEGACY: &str = "etc/bash_completion.d";
+const ZSH_LEGACY: &str = "usr/share/zsh/vendor-completions";
+
+/// A host sb-go completed on, under the root: sb-go's files for sb and for
+/// `saltbox`, an alias since removed, in the current and the legacy
+/// directories; others' files beside them; an sb file and an sb-go v1
+/// file for other retired names.
+fn sb_go_host(root: &Root) {
+    for (to, from) in [
+        (format!("{BASH_DIR}/sb.bash"), "current/bash/sb.bash"),
+        (
+            format!("{BASH_DIR}/saltbox.bash"),
+            "current/bash/saltbox.bash",
+        ),
+        (format!("{BASH_DIR}/sb"), "old/legacy-bash/sb"),
+        (format!("{BASH_LEGACY}/sb"), "old/legacy-bash/sb"),
+        (format!("{BASH_LEGACY}/saltbox"), "old/legacy-bash/saltbox"),
+        (format!("{ZSH_DIR}/_sb"), "current/zsh/_sb"),
+        (format!("{ZSH_DIR}/_saltbox"), "current/zsh/_saltbox"),
+        (format!("{ZSH_LEGACY}/_sb"), "old/legacy-zsh/_sb"),
+        (format!("{ZSH_LEGACY}/_saltbox"), "old/legacy-zsh/_saltbox"),
+        (format!("{FISH_DIR}/sb.fish"), "current/fish/sb.fish"),
+        (
+            format!("{FISH_DIR}/saltbox.fish"),
+            "current/fish/saltbox.fish",
+        ),
+    ] {
+        root.write(&to, &fixture(from), 0o644);
+    }
+    root.write(
+        &format!("{BASH_DIR}/other.bash"),
+        "complete -F _other other\n",
+        0o644,
+    );
+    root.write(&format!("{BASH_LEGACY}/apt"), "# apt's own\n", 0o644);
+    root.write(
+        &format!("{ZSH_DIR}/_git"),
+        "#compdef git\n_git() { :; }\n",
+        0o644,
+    );
+    root.write(
+        &format!("{ZSH_DIR}/_old"),
+        "#compdef old\n# sb completion zsh old\n",
+        0o644,
+    );
+    root.write(
+        &format!("{FISH_DIR}/other.fish"),
+        "complete -c other\n",
+        0o644,
+    );
+    root.write(
+        &format!("{FISH_DIR}/v1.fish"),
+        "# sb-go managed completion v1 fish v1 0123\ncomplete -c v1\n",
+        0o644,
+    );
+}
+
+/// sb-go's files are replaced in place, the old outputs for sb removed
+/// after its new file, and the files of names no longer installed removed
+/// when sb's or sb-go's own (marker or script text), others' kept.
+#[test]
+fn sb_gos_files_are_replaced_and_retired() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    root.all_shells();
+    sb_go_host(&root);
+    let report = root.install(&Shell::ALL);
+    let at = |path: String| root.at(&path).display().to_string();
+    assert_eq!(
+        lines(&report),
+        [
+            format!(
+                "Installed bash completion: {}",
+                at(format!("{BASH_DIR}/sb.bash"))
+            ),
+            format!(
+                "Removed old completion: {}",
+                at(format!("{BASH_LEGACY}/sb"))
+            ),
+            format!("Removed old completion: {}", at(format!("{BASH_DIR}/sb"))),
+            format!(
+                "Removed obsolete bash completion: {}",
+                at(format!("{BASH_DIR}/saltbox.bash"))
+            ),
+            format!(
+                "Removed obsolete bash completion: {}",
+                at(format!("{BASH_LEGACY}/saltbox"))
+            ),
+            format!("Installed zsh completion: {}", at(format!("{ZSH_DIR}/_sb"))),
+            format!(
+                "Removed old completion: {}",
+                at(format!("{ZSH_LEGACY}/_sb"))
+            ),
+            format!(
+                "Removed obsolete zsh completion: {}",
+                at(format!("{ZSH_DIR}/_old"))
+            ),
+            format!(
+                "Removed obsolete zsh completion: {}",
+                at(format!("{ZSH_DIR}/_saltbox"))
+            ),
+            format!(
+                "Removed obsolete zsh completion: {}",
+                at(format!("{ZSH_LEGACY}/_saltbox"))
+            ),
+            format!(
+                "Installed fish completion: {}",
+                at(format!("{FISH_DIR}/sb.fish"))
+            ),
+            format!(
+                "Removed obsolete fish completion: {}",
+                at(format!("{FISH_DIR}/saltbox.fish"))
+            ),
+            format!(
+                "Removed obsolete fish completion: {}",
+                at(format!("{FISH_DIR}/v1.fish"))
+            ),
+        ]
+    );
+    assert_eq!(report.failures, Vec::<String>::new());
+    for kept in [
+        format!("{BASH_DIR}/other.bash"),
+        format!("{BASH_LEGACY}/apt"),
+        format!("{ZSH_DIR}/_git"),
+        format!("{FISH_DIR}/other.fish"),
+    ] {
+        assert!(root.at(&kept).exists(), "{kept} removed");
+    }
+    assert!(
+        root.read(&format!("{BASH_DIR}/sb.bash"))
+            .starts_with("# sb completion bash sb\n")
+    );
+    assert!(
+        root.read(&format!("{ZSH_DIR}/_sb"))
+            .starts_with("#compdef sb\n# sb completion zsh sb\n")
+    );
+    // Nothing left to do the second time.
+    assert_eq!(lines(&root.install(&Shell::ALL)).len(), 3);
+}
+
+/// A retired name that is still an executable in the bin directories is
+/// kept, as sb-go keeps it.
+#[test]
+fn a_live_executables_file_is_preserved() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    root.all_shells();
+    sb_go_host(&root);
+    root.write("usr/bin/saltbox", "#!/bin/sh\n", 0o755);
+    let report = root.install(&[Shell::Bash]);
+    let reason = "preserved completion for a live executable outside this installation";
+    let preserved = |path: String| {
+        format!(
+            "Preserved bash completion: {}; {reason}",
+            root.at(&path).display()
+        )
+    };
+    let got = lines(&report);
+    assert!(
+        got.contains(&preserved(format!("{BASH_DIR}/saltbox.bash"))),
+        "{got:#?}"
+    );
+    assert!(
+        got.contains(&preserved(format!("{BASH_LEGACY}/saltbox"))),
+        "{got:#?}"
+    );
+    assert!(root.at(&format!("{BASH_DIR}/saltbox.bash")).exists());
+}
+
+/// A shell that isn't installed, or whose probe fails, still has its
+/// known directories cleaned; fish's directory is known only from its
+/// probe, so nothing of fish's is touched then.
+#[test]
+fn a_skipped_shell_still_retires_old_files() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    sb_go_host(&root);
+    root.shell("zsh", "exit 1");
+    let report = root.install(&Shell::ALL);
+    let got = lines(&report);
+    let at = |path: String| root.at(&path).display().to_string();
+    assert_eq!(got[0], "Skipped bash completion: shell is not installed");
+    assert!(
+        got.contains(&format!(
+            "Removed obsolete bash completion: {}",
+            at(format!("{BASH_LEGACY}/saltbox"))
+        )),
+        "{got:#?}"
+    );
+    assert!(
+        got.contains(&format!(
+            "Removed obsolete zsh completion: {}",
+            at(format!("{ZSH_DIR}/_saltbox"))
+        )),
+        "{got:#?}"
+    );
+    assert!(
+        got.contains(&"Skipped fish completion: shell is not installed".to_owned()),
+        "{got:#?}"
+    );
+    // sb's own files stay: they are only replaced by an install.
+    assert!(root.at(&format!("{BASH_DIR}/sb.bash")).exists());
+    assert!(root.at(&format!("{BASH_LEGACY}/sb")).exists());
+    assert!(root.at(&format!("{FISH_DIR}/saltbox.fish")).exists());
+}
+
+/// Two names where one is the other's `.bash` (`saltbox`, `saltbox.bash`):
+/// the bare-name file `saltbox.bash` is `saltbox`'s own file, so it isn't
+/// removed as `saltbox.bash`'s old output.
+#[test]
+fn a_bare_name_that_is_another_names_file_stays() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    root.all_shells();
+    std::fs::create_dir_all(root.at("usr/local/bin")).expect("dir");
+    for name in ["saltbox", "saltbox.bash"] {
+        std::os::unix::fs::symlink(root.executable(), root.at(&format!("usr/local/bin/{name}")))
+            .expect("link");
+    }
+    let report = root.install(&[Shell::Bash]);
+    assert_eq!(report.failures, Vec::<String>::new());
+    assert!(
+        !lines(&report)
+            .iter()
+            .any(|line| line.starts_with("Removed")),
+        "{:#?}",
+        lines(&report)
+    );
+    let file = root.read(&format!("{BASH_DIR}/saltbox.bash"));
+    assert!(file.starts_with("# sb completion bash saltbox\n"), "{file}");
+    assert!(root.at(&format!("{BASH_DIR}/saltbox.bash.bash")).exists());
+}
+
+/// A name's old outputs go only after its new file is written (sb-go's
+/// `TestFailedReplacementKeepsActiveLegacyFile`): a write that fails keeps
+/// them, and fails that name.
+#[test]
+fn a_failed_write_keeps_the_old_outputs() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    root.all_shells();
+    sb_go_host(&root);
+    for dir in [format!("{BASH_DIR}/sb.bash"), format!("{ZSH_DIR}/_sb")] {
+        std::fs::remove_file(root.at(&dir)).expect("remove");
+        std::fs::create_dir(root.at(&dir)).expect("a directory in the file's place");
+    }
+    let report = root.install(&[Shell::Bash, Shell::Zsh]);
+    let got = lines(&report);
+    assert!(
+        got.iter()
+            .any(|line| line.starts_with("Failed bash completion: replace completion ")),
+        "{got:#?}"
+    );
+    assert!(
+        got.iter()
+            .any(|line| line.starts_with("Failed zsh completion: replace completion ")),
+        "{got:#?}"
+    );
+    assert!(
+        !got.iter().any(|line| line.starts_with("Removed old")),
+        "{got:#?}"
+    );
+    assert_eq!(report.failures.len(), 2, "{:#?}", report.failures);
+    assert!(root.at(&format!("{BASH_LEGACY}/sb")).exists());
+    assert!(root.at(&format!("{BASH_DIR}/sb")).exists());
+    assert!(root.at(&format!("{ZSH_LEGACY}/_sb")).exists());
+}
+
+/// An old output that can't be removed fails its name, after the new file
+/// is in place (a directory where the bare-name file would be).
+#[test]
+fn an_old_output_that_cant_be_removed_fails_its_name() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    root.all_shells();
+    std::fs::create_dir_all(root.at(&format!("{BASH_DIR}/sb"))).expect("a directory");
+    let report = root.install(&[Shell::Bash]);
+    let bare = root.at(&format!("{BASH_DIR}/sb")).display().to_string();
+    let reason = format!("remove obsolete completion {bare}: Is a directory (os error 21)");
+    assert_eq!(
+        lines(&report),
+        [format!("Failed bash completion: {reason}")]
+    );
+    assert_eq!(
+        report.failures,
+        [format!("install bash completion for sb: {reason}")]
+    );
+    assert!(root.at(&format!("{BASH_DIR}/sb.bash")).exists());
+}
+
+/// A legacy directory that is a file: removing sb's old output there
+/// fails sb's name (not "nothing there", as sb-go's `removeCompletion`),
+/// and the cleanup that can't list it is one more failure and line; the
+/// shell's own directory is still cleaned.
+#[test]
+fn a_directory_the_cleanup_cant_list_fails() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    root.all_shells();
+    root.write(
+        &format!("{BASH_DIR}/saltbox.bash"),
+        &fixture("current/bash/saltbox.bash"),
+        0o644,
+    );
+    root.write(BASH_LEGACY, "not a directory\n", 0o644);
+    let report = root.install(&[Shell::Bash]);
+    let legacy = root.at(&format!("{BASH_LEGACY}/sb")).display().to_string();
+    let removing = format!("remove obsolete completion {legacy}: Not a directory (os error 20)");
+    let listing = "inspect obsolete bash completions: Not a directory (os error 20)";
+    assert_eq!(
+        lines(&report),
+        [
+            format!("Failed bash completion: {removing}"),
+            format!(
+                "Removed obsolete bash completion: {}",
+                root.at(&format!("{BASH_DIR}/saltbox.bash")).display()
+            ),
+            format!("Failed bash completion: {listing}"),
+        ]
+    );
+    assert_eq!(
+        report.failures,
+        [
+            format!("install bash completion for sb: {removing}"),
+            listing.to_owned()
+        ]
+    );
 }

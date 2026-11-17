@@ -101,6 +101,37 @@ impl Paths {
         self.at("/usr/local/share/zsh/site-functions")
     }
 
+    /// Where sb-go's scripts before 0.1.2 put bash's files (sb-go's
+    /// `BashLegacyDir`), read at startup by bash-completion.
+    fn bash_legacy_dir(&self) -> PathBuf {
+        self.at("/etc/bash_completion.d")
+    }
+
+    /// Where they put zsh's (sb-go's `ZshLegacyDir`).
+    fn zsh_legacy_dir(&self) -> PathBuf {
+        self.at("/usr/share/zsh/vendor-completions")
+    }
+
+    /// `shell`'s directory sb-go's older scripts used, if any.
+    fn legacy_dir(&self, shell: Shell) -> Option<PathBuf> {
+        match shell {
+            Shell::Bash => Some(self.bash_legacy_dir()),
+            Shell::Zsh => Some(self.zsh_legacy_dir()),
+            Shell::Fish => None,
+        }
+    }
+
+    /// `shell`'s directory when no probe said where (sb-go's `directory`
+    /// with no detection): bash's and zsh's are fixed, fish's comes only
+    /// from its probe.
+    fn known_dir(&self, shell: Shell) -> Option<PathBuf> {
+        match shell {
+            Shell::Bash => Some(self.bash_dir()),
+            Shell::Zsh => Some(self.zsh_dir()),
+            Shell::Fish => None,
+        }
+    }
+
     /// bash-completion itself, which bash's files need.
     fn bash_framework(&self) -> PathBuf {
         self.at("/usr/share/bash-completion/bash_completion")
@@ -290,11 +321,14 @@ enum Detection {
 /// `Manager.Install`): a shell that isn't installed, or can't load sb's
 /// file, is skipped with its reason; a failure is reported and the other
 /// shells and names go on. Each shell once; a cancelled `token` stops at
-/// the next step.
+/// the next step. Then, wherever the shell's directory is known, sb-go's
+/// cleanup ([`retire`]): `own_dir`, sb's executable's directory, is one
+/// of the places a live executable of a retired name is looked for.
 pub async fn install(
     paths: &Paths,
     shells: &[Shell],
     names: &[Name],
+    own_dir: &Path,
     token: &CancellationToken,
 ) -> Report {
     let mut report = Report::default();
@@ -308,21 +342,29 @@ pub async fn install(
             continue;
         }
         done.push(shell);
+        let retired = |report: &mut Report, dir: Option<PathBuf>| {
+            if let Some(dir) = dir {
+                retire(paths, shell, names, &dir, own_dir, token, report);
+            }
+        };
         match detect(paths, shell, token).await {
             Err(reason) => {
                 report
                     .failures
                     .push(format!("detect {}: {reason}", shell.name()));
                 report.lines.push(Line::Failed { shell, reason });
+                retired(&mut report, paths.known_dir(shell));
             }
             Ok(Detection::Missing) => {
                 let reason = "shell is not installed".to_owned();
                 report.unavailable.push((shell, reason.clone()));
                 report.lines.push(Line::Skipped { shell, reason });
+                retired(&mut report, paths.known_dir(shell));
             }
             Ok(Detection::Unavailable(reason)) => {
                 report.unavailable.push((shell, reason.clone()));
                 report.lines.push(Line::Skipped { shell, reason });
+                retired(&mut report, paths.known_dir(shell));
             }
             Ok(Detection::Ready(dir)) if !paths.holds(&dir) => {
                 let reason = format!(
@@ -335,14 +377,21 @@ pub async fn install(
                     .push(format!("install {}: {reason}", shell.name()));
                 report.lines.push(Line::Failed { shell, reason });
             }
-            Ok(Detection::Ready(dir)) => install_shell(shell, &dir, names, token, &mut report),
+            Ok(Detection::Ready(dir)) => {
+                install_shell(paths, shell, &dir, names, token, &mut report);
+                retired(&mut report, Some(dir));
+            }
         }
     }
     report
 }
 
-/// Write `shell`'s file for each of `names` in `dir`.
+/// Write `shell`'s file for each of `names` in `dir`, then remove that
+/// name's old outputs (sb-go's `installOne`): the legacy directory's
+/// file, and for bash a bare-name file that isn't another name's
+/// `.bash` file. Each removal is a line after the file's.
 fn install_shell(
+    paths: &Paths,
     shell: Shell,
     dir: &Path,
     names: &[Name],
@@ -351,14 +400,39 @@ fn install_shell(
 ) {
     for name in names {
         let path = dir.join(file_name(shell, &name.name));
-        let written = if token.is_cancelled() {
+        let mut old = Vec::new();
+        if let Some(legacy) = paths.legacy_dir(shell) {
+            old.push(legacy.join(legacy_file_name(shell, &name.name)));
+        }
+        // sb-go's `bashAliasNames` (refreshing a separate live executable
+        // named `<name>.bash` with this one's files) is left out: spec,
+        // difference 8.
+        let bare_is_another_names = names
+            .iter()
+            .any(|other| name.name.strip_suffix(".bash") == Some(other.name.as_str()));
+        if shell == Shell::Bash && !bare_is_another_names {
+            old.push(dir.join(&name.name));
+        }
+        let mut removed = Vec::new();
+        let done = if token.is_cancelled() {
             Err("interrupted".to_owned())
         } else {
             ensure_dir(dir)
                 .and_then(|()| write_atomic(&path, &content(shell, name, names)))
                 .map_err(|err| err.to_string())
+                .and_then(|()| {
+                    old.into_iter().try_for_each(|old| {
+                        if token.is_cancelled() {
+                            return Err("interrupted".to_owned());
+                        }
+                        if remove(&old)? {
+                            removed.push(old);
+                        }
+                        Ok(())
+                    })
+                })
         };
-        match written {
+        match done {
             Ok(()) => report.lines.push(Line::Installed { shell, path }),
             Err(reason) => {
                 report.failures.push(format!(
@@ -369,7 +443,187 @@ fn install_shell(
                 report.lines.push(Line::Failed { shell, reason });
             }
         }
+        report
+            .lines
+            .extend(removed.into_iter().map(|path| Line::RemovedOld { path }));
     }
+}
+
+/// `name`'s file in a shell's legacy directory (sb-go's `legacyPath`).
+fn legacy_file_name(shell: Shell, name: &str) -> String {
+    match shell {
+        Shell::Bash | Shell::Fish => name.to_owned(),
+        Shell::Zsh => format!("_{name}"),
+    }
+}
+
+/// Remove `path`; whether it was there (sb-go's `removeCompletion`).
+fn remove(path: &Path) -> Result<bool, String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!(
+            "remove obsolete completion {}: {err}",
+            path.display()
+        )),
+    }
+}
+
+/// sb-go's cleanup (`cleanupObsolete`): in `dir` and the shell's legacy
+/// directory, each regular file of a name not in `names` is removed when
+/// it is sb's or sb-go's ([`identifies`]), unless an executable of that
+/// name is still installed, which keeps it. Others' files are never
+/// touched. Its failures are one failure, and one line.
+fn retire(
+    paths: &Paths,
+    shell: Shell,
+    names: &[Name],
+    dir: &Path,
+    own_dir: &Path,
+    token: &CancellationToken,
+    report: &mut Report,
+) {
+    if token.is_cancelled() {
+        report.failures.push("interrupted".to_owned());
+        report.lines.push(Line::Failed {
+            shell,
+            reason: "interrupted".to_owned(),
+        });
+        return;
+    }
+    let mut errors = Vec::new();
+    let dirs = std::iter::once((dir.to_path_buf(), false))
+        .chain(paths.legacy_dir(shell).map(|legacy| (legacy, true)));
+    for (dir, legacy) in dirs {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                errors.push(format!(
+                    "inspect obsolete {} completions: {err}",
+                    shell.name()
+                ));
+                continue;
+            }
+        };
+        let mut files: Vec<_> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        for file in files {
+            let Some(name) = alias_from_file(shell, &file, legacy) else {
+                continue;
+            };
+            if !NAME.is_match(name) || names.iter().any(|known| known.name == name) {
+                continue;
+            }
+            let path = dir.join(&file);
+            let data = match std::fs::read(&path) {
+                Ok(data) => data,
+                Err(err) => {
+                    errors.push(format!("read {}: {err}", path.display()));
+                    continue;
+                }
+            };
+            if !identifies(&data, shell, name) {
+                continue;
+            }
+            match name_in_use(paths, own_dir, name) {
+                Err(err) => errors.push(format!(
+                    "check obsolete completion executable {name}: {err}"
+                )),
+                Ok(true) => report.lines.push(Line::Preserved {
+                    shell,
+                    path,
+                    reason: "preserved completion for a live executable outside this installation"
+                        .to_owned(),
+                }),
+                Ok(false) => match remove(&path) {
+                    Ok(true) => report.lines.push(Line::RemovedObsolete { shell, path }),
+                    Ok(false) => {}
+                    Err(err) => errors.push(err),
+                },
+            }
+        }
+    }
+    if !errors.is_empty() {
+        let reason = errors.join("\n");
+        report.failures.push(reason.clone());
+        report.lines.push(Line::Failed { shell, reason });
+    }
+}
+
+/// The name a file in a shell's directory is for (sb-go's
+/// `aliasFromFile`): `<name>.bash` (a legacy bash file is the bare name),
+/// `_<name>`, `<name>.fish`.
+fn alias_from_file(shell: Shell, file: &str, legacy: bool) -> Option<&str> {
+    let name = match shell {
+        Shell::Bash if legacy => Some(file),
+        Shell::Bash => file.strip_suffix(".bash"),
+        Shell::Zsh => file.strip_prefix('_'),
+        Shell::Fish => file.strip_suffix(".fish"),
+    };
+    name.filter(|name| !name.is_empty())
+}
+
+/// Whether `data` is sb's or sb-go's file for `name` (sb-go's
+/// `identifiesCompletion`, aliases.go): sb's marker, sb-go's two markers,
+/// or the text of sb-go's scripts before 0.1.2.
+fn identifies(data: &[u8], shell: Shell, name: &str) -> bool {
+    // Go's `bytes.Contains`; std has no substring search on bytes.
+    // https://docs.rs/memchr/2.8.3/memchr/memmem/fn.find.html
+    let has = |text: &str| memchr::memmem::find(data, text.as_bytes()).is_some();
+    let shell_name = shell.name();
+    if has(&marker(shell, name))
+        || has(&format!("# sb-go completion {shell_name} {name}\n"))
+        || has(&format!(
+            "# sb-go managed completion v1 {shell_name} {name} "
+        ))
+    {
+        return true;
+    }
+    if has("# Custom tag completion for 'install' command with comma-separated support")
+        && has(&format!("_{name}_custom_install_tags()"))
+    {
+        return true;
+    }
+    match shell {
+        Shell::Bash => {
+            data.starts_with(format!("# bash completion for {name} ").as_bytes())
+                && has(&format!("_{name}_install_completion()"))
+        }
+        Shell::Zsh => {
+            data.starts_with(
+                format!("#compdef {name}\n\n# {name} zsh completion script\n").as_bytes(),
+            ) && has(&format!("_{name}_install_tags()"))
+        }
+        Shell::Fish => false,
+    }
+}
+
+/// Whether `name` is an executable regular file in the bin directories or
+/// `own_dir` (sb-go's `executableNameInUse`): a retired alias that is
+/// still some program's name keeps its file. Why not the `is_executable`
+/// crate: it reads every metadata error as "not executable", where sb-go
+/// reports one, so a file isn't removed on a check that couldn't be made.
+fn name_in_use(paths: &Paths, own_dir: &Path, name: &str) -> Result<bool, String> {
+    let mut dirs = paths.bin_dirs().to_vec();
+    if !dirs.iter().any(|dir| dir == own_dir) {
+        dirs.push(own_dir.to_path_buf());
+    }
+    for dir in dirs {
+        match std::fs::metadata(dir.join(name)) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.to_string()),
+            Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => {
+                return Ok(true);
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(false)
 }
 
 /// `name`'s file in a shell's directory (sb-go's `fileName`).
@@ -702,6 +956,120 @@ mod tests {
         assert!(!paths.holds(Path::new("/etc/fish/completions")));
         assert!(!paths.holds(Path::new("/tmp/rootx/completions")));
         assert!(!paths.holds(Path::new("/tmp/root/../etc/completions")));
+    }
+
+    /// sb-go's `identifiesCompletion` cases: each marker for its shell and
+    /// name only; the old scripts' text needs both its parts.
+    #[test]
+    fn sb_and_sb_go_files_are_recognised() {
+        let yes =
+            |data: &str, shell, name| assert!(identifies(data.as_bytes(), shell, name), "{data:?}");
+        let no = |data: &str, shell, name| {
+            assert!(!identifies(data.as_bytes(), shell, name), "{data:?}");
+        };
+        yes("x\n# sb completion zsh old\n", Shell::Zsh, "old");
+        no("# sb completion zsh old\n", Shell::Bash, "old");
+        no("# sb completion zsh older\n", Shell::Zsh, "old");
+        no("# sb completion zsh old", Shell::Zsh, "old");
+        yes("# sb-go completion fish sbx\n", Shell::Fish, "sbx");
+        no("# sb-go completion fish sbx2\n", Shell::Fish, "sbx");
+        yes(
+            "# sb-go managed completion v1 bash sbx 0123\n",
+            Shell::Bash,
+            "sbx",
+        );
+        no(
+            "# sb-go managed completion v1 bash sbx\n",
+            Shell::Bash,
+            "sbx",
+        );
+        let custom = "# Custom tag completion for 'install' command with comma-separated support\n";
+        yes(
+            &format!("{custom}_sbx_custom_install_tags() {{"),
+            Shell::Fish,
+            "sbx",
+        );
+        no(custom, Shell::Zsh, "sbx");
+        no("_sbx_custom_install_tags() {", Shell::Zsh, "sbx");
+        yes(
+            "# bash completion for sbx -*- shell-script -*-\n_sbx_install_completion() {",
+            Shell::Bash,
+            "sbx",
+        );
+        no("# bash completion for sbx -*-\n", Shell::Bash, "sbx");
+        no(
+            "x# bash completion for sbx \n_sbx_install_completion()",
+            Shell::Bash,
+            "sbx",
+        );
+        no(
+            "# bash completion for sbx \n_sbx_install_completion()",
+            Shell::Zsh,
+            "sbx",
+        );
+        yes(
+            "#compdef sbx\n\n# sbx zsh completion script\n_sbx_install_tags() {",
+            Shell::Zsh,
+            "sbx",
+        );
+        no(
+            "#compdef sbx\n# sbx zsh completion script\n_sbx_install_tags()",
+            Shell::Zsh,
+            "sbx",
+        );
+        no(
+            "#compdef sbx\n\n# sbx zsh completion script\n",
+            Shell::Zsh,
+            "sbx",
+        );
+        no("", Shell::Fish, "sbx");
+    }
+
+    #[test]
+    fn a_files_name_is_sb_gos_alias() {
+        assert_eq!(alias_from_file(Shell::Bash, "sbx.bash", false), Some("sbx"));
+        assert_eq!(alias_from_file(Shell::Bash, "sbx", false), None);
+        assert_eq!(alias_from_file(Shell::Bash, ".bash", false), None);
+        assert_eq!(alias_from_file(Shell::Bash, "sbx", true), Some("sbx"));
+        assert_eq!(alias_from_file(Shell::Zsh, "_sbx", false), Some("sbx"));
+        assert_eq!(alias_from_file(Shell::Zsh, "_", true), None);
+        assert_eq!(alias_from_file(Shell::Zsh, "sbx", false), None);
+        assert_eq!(alias_from_file(Shell::Fish, "sbx.fish", false), Some("sbx"));
+        assert_eq!(alias_from_file(Shell::Fish, "sbx", false), None);
+        assert_eq!(legacy_file_name(Shell::Bash, "sbx"), "sbx");
+        assert_eq!(legacy_file_name(Shell::Zsh, "sbx"), "_sbx");
+    }
+
+    /// A live executable is an executable regular file of that name in the
+    /// bin directories or sb's own; a plain file or a directory isn't.
+    #[test]
+    fn a_live_executable_is_an_executable_file() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::under(root.path());
+        let own = root.path().join("own");
+        std::fs::create_dir_all(root.path().join("usr/bin/dir")).expect("dirs");
+        std::fs::create_dir_all(&own).expect("own");
+        let write = |path: &Path, mode| {
+            std::fs::write(path, "").expect("write");
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        };
+        write(&root.path().join("usr/bin/plain"), 0o644);
+        write(&root.path().join("usr/bin/live"), 0o755);
+        write(&own.join("mine"), 0o700);
+        assert_eq!(name_in_use(&paths, &own, "live"), Ok(true));
+        assert_eq!(name_in_use(&paths, &own, "mine"), Ok(true));
+        assert_eq!(name_in_use(&paths, &own, "plain"), Ok(false));
+        assert_eq!(name_in_use(&paths, &own, "dir"), Ok(false));
+        assert_eq!(name_in_use(&paths, &own, "none"), Ok(false));
+        assert_eq!(
+            name_in_use(&paths, &root.path().join("usr/bin"), "mine"),
+            Ok(false)
+        );
+        // A directory that is a file: an error, not "not installed".
+        assert_eq!(
+            name_in_use(&paths, &root.path().join("usr/bin/plain"), "mine"),
+            Err("Not a directory (os error 20)".to_owned())
+        );
     }
 
     /// A path the stubs can't carry as it is fails the install.

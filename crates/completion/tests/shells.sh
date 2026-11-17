@@ -49,6 +49,7 @@ for rel in "${releases[@]}"; do
     --pids-limit 512 \
     -v "$bin:/usr/local/bin/sb:ro" \
     -v "$here/shells-inside.sh:/check/inside.sh:ro" \
+    -v "$here/fixtures/sb-go:/check/sb-go:ro" \
     -v "$out:/out" \
     ${SBC_DOCKER_OPTS:-} \
     "ubuntu:$rel" bash /check/inside.sh "$rel" >"$out/run.log" 2>&1 || status=1

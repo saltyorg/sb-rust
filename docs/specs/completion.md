@@ -197,6 +197,12 @@ command's failure (sb-go's `runner.Warning`). `ops` calls it.
    the candidate); sb-go's bash script offered nothing there. zsh and
    fish pass the quote to sb, which offers nothing, as sb-go. Found in
    module build M57.
+8. sb-go's `bashAliasNames` isn't kept: when another executable of its
+   own, not a symlink to this sb, is named `<name>.bash` (or `<name>`
+   for a name ending `.bash`), sb-go rewrites that executable's bash
+   file with this binary's, or fails on a name collision; sb leaves the
+   other executable's file (a retired one is preserved as live). No
+   Saltbox name ends in `.bash`. Module build M59.
 
 ### Scope
 

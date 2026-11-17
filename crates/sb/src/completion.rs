@@ -40,7 +40,10 @@ fn install(shells: &[Shell], explicit: bool, shutdown: &Shutdown) -> anyhow::Res
     let names = install::names(&paths, &executable).map_err(anyhow::Error::msg)?;
     let _children = sb_exec::on_forced_exit(shutdown);
     let token = shutdown.token();
-    let report = crate::block_on(install::install(&paths, shells, &names, &token))?;
+    // sb-go's `os.Executable` directory: where a live executable of a
+    // retired name is looked for besides the bin directories.
+    let own_dir = executable.parent().unwrap_or(std::path::Path::new("/"));
+    let report = crate::block_on(install::install(&paths, shells, &names, own_dir, &token))?;
     let mut out = std::io::stdout().lock();
     for line in &report.lines {
         writeln!(out, "{line}").map_err(exit::output_error)?;

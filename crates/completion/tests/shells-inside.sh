@@ -80,11 +80,26 @@ for file in sb.bash sb; do
 done
 rm -f "$bash_dir/sb" "$bash_dir/sb.bash"
 
+# A host sb-go completed on (sb-go-written files, tests/fixtures/sb-go):
+# its old scripts in the legacy directories, which bash-completion reads
+# at startup and which call `sb __complete`, and its current files.
+mkdir -p /etc/bash_completion.d /usr/share/zsh/vendor-completions "$zsh_dir" "$fish_dir"
+cp /check/sb-go/old/legacy-bash/sb /etc/bash_completion.d/sb
+cp /check/sb-go/old/legacy-zsh/_sb /usr/share/zsh/vendor-completions/_sb
+cp /check/sb-go/current/bash/sb.bash "$bash_dir/sb.bash"
+cp /check/sb-go/current/zsh/_sb "$zsh_dir/_sb"
+cp /check/sb-go/current/fish/sb.fish "$fish_dir/sb.fish"
+
 # `sb completion install` as root, with a second name, a symlink to sb:
 # every shell's file for each name, each calling its own path
-# (verification items 2 and 5).
+# (verification items 2 and 5); sb-go's files replaced in place and its
+# old scripts removed (migration, M59).
 ln -s sb /usr/local/bin/saltbox
 sb completion install >/out/install.txt 2>&1 || fail "completion install: $(cat /out/install.txt)"
+for old in /etc/bash_completion.d/sb /usr/share/zsh/vendor-completions/_sb; do
+  [ ! -e "$old" ] || fail "$old is still there"
+  grep -qx "Removed old completion: $old" /out/install.txt || fail "no line for removing $old"
+done
 for name in sb saltbox; do
   for file in "$bash_dir/$name.bash" "$zsh_dir/_$name" "$fish_dir/$name.fish"; do
     grep -qx "Installed .* completion: $file" /out/install.txt || fail "no line for $file"

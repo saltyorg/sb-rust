@@ -69,7 +69,14 @@ The same on all three releases.
    that name's own path (`/usr/local/bin/saltbox` for the symlink, not
    the installing run's `argv[0]`); each bash file registers every name,
    each calling its own path. Every file is 0644 and carries its marker.
-6. **Startup budget (item 6):** a request for `sb install tag2` against a
+6. **An upgrade from sb-go (module build M59):** with sb-go's own files
+   in place first (its scripts before 0.1.2 in `/etc/bash_completion.d`
+   and `/usr/share/zsh/vendor-completions`, which call `sb __complete`,
+   and its current files in the new directories;
+   crates/completion/tests/fixtures/sb-go), `sb completion install`
+   replaced the current ones in place and removed the old scripts, and
+   every Tab case above passed after it, on all three releases.
+7. **Startup budget (item 6):** a request for `sb install tag2` against a
    cache of 300 Saltbox and 100 Sandbox tags, release build,
    `hyperfine -N --warmup 5 --runs 50`: about 4 ms mean, as `sb version`
    on the same machine; the budget is 10 ms (CONSTRAINTS.md, Startup).
