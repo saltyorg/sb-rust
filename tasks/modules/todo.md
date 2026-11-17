@@ -2129,6 +2129,13 @@ calling it from `update` and `setup`, and the completion refresh.*
 
 ## Follow-ups found during the build
 
+- [ ] **Paste arrives as one input** (lane 6 after M56; the maintainer,
+      2026-11-16). Bracketed paste is off in sb-tui's shared screen
+      setup, so a paste reaches every text box as keystrokes and a
+      pasted newline stages a value early. Turn it on (crossterm's
+      `EnableBracketedPaste`, off again on every way out) and insert a
+      paste whole (ratatui-textarea's `insert_str`) on every screen that
+      takes text.
 - [x] **First sight far right meets 5 ms** (the maintainer, 2026-11-16).
       With wrap off far to the right, a line the viewer has never drawn
       there (paging to new lines, a jump from far away) is still parsed
