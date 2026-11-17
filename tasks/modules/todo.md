@@ -2116,13 +2116,13 @@ through `validate_file` with `Checks::Run`, the runtime through
 the branch commands gain runtime and tags too.
 
 **Acceptance criteria:**
-- [ ] Validation issues show as validate-config shows them.
-- [ ] The venv and the tag cache refresh after each pull.
-- [ ] New announcements print inline.
+- [x] Validation issues show as validate-config shows them.
+- [x] The venv and the tag cache refresh after each pull.
+- [x] New announcements print inline.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M84, M48, M17, M32
 **Files:** `crates/ops/src/{update.rs,branch.rs}`, `crates/sb/tests/update.rs`
@@ -2136,13 +2136,13 @@ the branch commands gain runtime and tags too.
 `--migrations`), ansible's `run` by tag per repository.
 
 **Acceptance criteria:**
-- [ ] All or none; declined ones are warned about by name.
-- [ ] A failing migration stops with the spec's text and exit 1.
-- [ ] `--migrations` answers the confirm.
+- [x] All or none; declined ones are warned about by name.
+- [x] A failing migration stops with the spec's text and exit 1.
+- [x] `--migrations` answers the confirm.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb` with the fake playbook.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb` with the fake playbook.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M85, M31
 **Files:** `crates/ops/src/{update.rs,announcements.rs}`, `crates/sb/tests/update.rs`
