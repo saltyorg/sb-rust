@@ -156,6 +156,18 @@ enum Command {
     // No `--verbose/-v` (python-env decision 9).
     #[command(long_about = "Reinstall the Rust saltbox.fact file")]
     ReinstallFacts,
+    /// Install shell completion for sb
+    // Hidden, as sb-go's (completion spec, "`sb completion`").
+    #[command(
+        long_about = COMPLETION_LONG,
+        hide = true,
+        arg_required_else_help = true,
+        disable_help_subcommand = true
+    )]
+    Completion {
+        #[command(subcommand)]
+        command: CompletionCommand,
+    },
     /// Display announcements from announcement files
     // Shown, not hidden as sb-go's test harness was: it reads
     // announcements now, and migrations stay with `update` (ops decision
@@ -171,6 +183,29 @@ enum Command {
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
 const UPDATE_VENV_ABOUT: &str = "Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git repositories";
+
+/// `sb completion`'s help (sb-go cmd/completion.go, `Long`).
+const COMPLETION_LONG: &str =
+    "Install system-wide completion for installed Bash, Zsh, and Fish shells.
+
+Bash requires the bash-completion package. Scripts use each shell's shared
+loading directory. Generated legacy files are migrated after successful installation.
+
+Restart an existing shell, or source its installed file.
+Use \"completion generate <shell>\" to write a script to standard output.";
+
+/// `sb completion`'s subcommands (completion spec).
+#[derive(Subcommand, Clone, Copy)]
+enum CompletionCommand {
+    /// Write a completion script to standard output
+    #[command(long_about = "Write a completion script to standard output")]
+    Generate {
+        /// The shell to write it for
+        // sb-go's hint, `<bash|zsh|fish>`; another shell is a usage error.
+        #[arg(value_name = "bash|zsh|fish")]
+        shell: sb_completion::Shell,
+    },
+}
 
 /// `sb announcements`' long help: what it reads now that it is shown
 /// (ops spec, "`sb announcements`").
@@ -359,6 +394,9 @@ impl Command {
             Command::ReinstallFacts => "reinstall-facts",
             Command::Announcements => "announcements",
             Command::Restore(_) => "restore",
+            Command::Completion {
+                command: CompletionCommand::Generate { .. },
+            } => "completion generate",
         }
     }
 
@@ -366,7 +404,12 @@ impl Command {
     /// decides here, with no wildcard arm, so a new one can't skip it.
     fn needs_root(&self) -> bool {
         match self {
-            Command::Version { .. } => false,
+            // `completion generate` prints a stub and reads nothing
+            // (completion spec, decision 4).
+            Command::Version { .. }
+            | Command::Completion {
+                command: CompletionCommand::Generate { .. },
+            } => false,
             // The Docker socket, and sb's rule that only version and
             // completion run unprivileged (cli-core decision 3); Saltbox's
             // config is root's to read (config spec); the Saltbox and
@@ -411,6 +454,11 @@ impl Command {
 }
 
 fn main() -> RunEnd {
+    // A completion request first, before anything is printed or read
+    // (clap_complete's rule; completion spec, "Tab completion"): it prints
+    // only candidates, as the calling user, and is never logged (cli-core
+    // spec, startup). Any other run returns at once.
+    sb_completion::complete(completion_tree);
     // Colour and theme first (from the arguments, the environment and the
     // theme file), so every message below follows `--color` and the
     // profile. The colour
@@ -503,6 +551,17 @@ fn main() -> RunEnd {
     }
     let pointer = log.as_ref().map(RunLog::pointer);
     exit::finish_run(&ending, error, pointer.as_deref(), &mut anstream::stderr())
+}
+
+/// sb's tree for a completion request: the tag completer on `install`'s
+/// tags (completion spec, "Tags for `sb install`"). Added here, not in
+/// `InstallArgs`: the completer reads ansible's cache, so sb-ansible can't
+/// depend on it.
+fn completion_tree() -> clap::Command {
+    use sb_completion::tags;
+    Cli::command().mut_subcommand(tags::INSTALL, |install| {
+        install.mut_arg(tags::TAGS, |arg| arg.add(tags::completer(Cli::command)))
+    })
 }
 
 /// The theme file's choice (`SB_CONFIG`, else
@@ -678,6 +737,16 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Docker {
             command: DockerCommand::Restart { ref ignore },
         } => docker_control(command.name(), &Control::Restart(ignore), shutdown, log)?,
+        Command::Completion {
+            command: CompletionCommand::Generate { shell },
+        } => {
+            // `sb`, looked up on `PATH` at Tab time (completion spec,
+            // "`sb completion generate`").
+            let mut out = std::io::stdout().lock();
+            out.write_all(&shell.registration("sb", "sb"))
+                .map_err(exit::output_error)?;
+            out.flush().map_err(exit::output_error)?;
+        }
         Command::Version { json } => {
             let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
             let mut out = std::io::stdout().lock();

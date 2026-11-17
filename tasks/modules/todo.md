@@ -1447,7 +1447,7 @@ two-emulator check (Shift-drag selection) and the maintainer's look.
 
 ## Task M57: completion: `CompleteEnv`, the tag completer, `generate`
 
-**Lane:** 3 · **Gate:** paused (the proto-complete review) · **Shared files:** yes (new crate sb-completion; clap_complete =4.6.11 with `unstable-dynamic`; deny.toml)
+**Lane:** 3 · **Gate:** unpaused by the maintainer, 2026-11-17 (they test sb's real completion once the CLI is complete, instead of reviewing proto-complete first) · **Shared files:** yes (new crate sb-completion; clap_complete =4.6.11 with `unstable-dynamic`; deny.toml)
 
 **Description:** Completion's slice 1: `CompleteEnv` first in `main`
 (the cli-core amendment), the tag completer with sb-go's cases,
@@ -1457,7 +1457,7 @@ settling verification items 1-6.
 **Acceptance criteria:**
 - [ ] A run with `SB_COMPLETE` prints only candidates and is never logged.
 - [ ] The tag completer reads ansible's cache and answers sb-go's cases.
-- [ ] Verification items 1-6 settled in each shell's container.
+- [ ] Verification items 1-6 settled in each shell's container (2's symlink name and 5, the completer path, need `completion install`: settled with M58).
 
 **Verification:**
 - [ ] `cargo test -p sb-completion -p sb`; `tests/shells.sh` under the cap.

@@ -3432,6 +3432,7 @@ dependencies = [
  "rustix",
  "sb-ansible",
  "sb-cli-core",
+ "sb-completion",
  "sb-config",
  "sb-docker",
  "sb-exec",
@@ -3505,6 +3506,18 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "unicode-width 0.2.3",
+]
+
+[[package]]
+name = "sb-completion"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "sb-ansible",
+ "sb-cli-core",
+ "shlex",
+ "tempfile",
 ]
 
 [[package]]

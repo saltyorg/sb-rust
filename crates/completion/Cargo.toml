@@ -1,0 +1,28 @@
+[package]
+name = "sb-completion"
+version = "0.1.0"
+description = "Tab completion for bash, zsh and fish, and the commands that install it (capability map, completion)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The command tree the engine completes, and the earlier words' parse.
+clap.workspace = true
+# The engine and the shells' registration stubs: `unstable-dynamic`,
+# pinned exactly (ADR-001; completion spec, decision 1).
+clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
+# The Saltbox root and the inventory's appdata root (the cache's keys).
+sb-cli-core.workspace = true
+# The tag cache's reader (`TagCache::load`, `cached_tags`).
+sb-ansible.workspace = true
+# The earlier words unquoted as the shell passes them (bash and zsh pass
+# them as typed).
+shlex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

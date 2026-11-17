@@ -19,7 +19,10 @@ The research is spec-research/B-ansible.md, sections 2 ("Completion"), 6
 of proto-complete's look and feel (capability map, open items, "Shell
 completion": "review it before the `completion` module spec"; recorded in
 B-ansible.md 7b). This spec is written so the review can change it; its
-slices stay paused until that review (slice 0).
+slices stay paused until that review (slice 0). Unpaused by the
+maintainer, 2026-11-17: they test sb's real completion once the CLI is
+complete, instead of reviewing proto-complete first (tasks/modules/todo.md,
+M57).
 
 ## Assumptions
 
@@ -181,6 +184,19 @@ command's failure (sb-go's `runner.Warning`). `ops` calls it.
 5. Should a shell pass earlier words in a way the completer can't read
    (above, `UNVERIFIED`), the earlier-word rule is dropped for that shell.
    Listed here so it isn't a silent change; expected to be empty.
+   *Empty (module build M57):* every shell passes them
+   (docs/platform-notes/shell-completion.md); bash and zsh pass them as
+   typed, so the completer unquotes each (shlex) before reading it; bash
+   splits `--flag=value` at the `=`, so a word after a lone `=` gets no
+   tags and the earlier words are joined again at each `=`.
+6. On an empty word after `install` or a tag, the flags are offered as
+   well as the tags (clap_complete's engine offers flags on an empty
+   word; sb-go's only after a `-`). Found in module build M57.
+7. In bash, an open quote completes: `'plex, so<Tab>` becomes `'plex,
+   sonarr'` (readline takes the quote off the word and closes it after
+   the candidate); sb-go's bash script offered nothing there. zsh and
+   fish pass the quote to sb, which offers nothing, as sb-go. Found in
+   module build M57.
 
 ### Scope
 

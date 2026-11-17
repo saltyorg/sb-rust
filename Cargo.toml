@@ -24,6 +24,7 @@ sb-motd = { path = "crates/motd" }
 sb-ansible = { path = "crates/ansible" }
 sb-python-env = { path = "crates/python-env" }
 sb-ops = { path = "crates/ops" }
+sb-completion = { path = "crates/completion" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 colorchoice-clap = "1.0.8"

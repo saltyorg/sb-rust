@@ -539,3 +539,5 @@ assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(cell(buffer, 13, 23), 
 assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(cell(buffer, 24, 23), on);	the buttons moved (M55): the same test asserts Add and Delete lit at their columns, 13 and 45
 assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(cell(buffer, 13, 23), on);	the buttons moved (M55): the same test asserts Edit, Copy and Show lit on a secret at their columns, 2, 23 and 34
 assertion-removed	crates/tui/src/fact/tests.rs	assert!(rows[usize::from(at.y) + 1].contains("Show"), "{rows:?}");	the menu opens one row lower now, under the clicked row (the maintainer, 2026-11-17): the same test asserts the row's name on its line, the menu's edge on the next and Show on the one after
+wrappers-widened	deny.toml	sb-cli-core: sb-completion added	the capability map's completion row depends on cli-core, exec, term-ui and ansible (completion spec, amendment 1; module build M57)
+wrappers-widened	deny.toml	sb-ansible: sb-completion added	the capability map's completion row depends on ansible, the tag cache's reader (completion spec, amendment 1; module build M57)

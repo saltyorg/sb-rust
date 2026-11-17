@@ -136,6 +136,24 @@ impl TagCache {
         serde_json::from_value(value.clone()).ok()
     }
 
+    /// The strings in `repo`'s entry's `tags`, whatever its commit, any
+    /// other value skipped (sb-go `cmd/tag_completion.go`,
+    /// `cachedTagStrings`): completion's read, which offers the last tags
+    /// written and runs no listing (completion spec, Tab completion).
+    #[must_use]
+    pub fn cached_tags(&self, repo: &Repo) -> Vec<String> {
+        self.entries
+            .get(&key(repo))
+            .and_then(|entry| entry.get("tags"))
+            .and_then(Value::as_array)
+            .map_or_default(|tags| {
+                tags.iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect()
+            })
+    }
+
     /// `repo`'s cached tags if they are valid for `head`: the entry exists,
     /// its tags aren't empty and its commit is `head` (spec, "Valid";
     /// invalidated by commit only, sb-go e8e7341).
@@ -837,6 +855,36 @@ mod tests {
         let text = logged(unreadable.path());
         assert!(text.contains("tags cache is unreadable"), "{text}");
         assert_eq!(logged(root_with(None).path()), "");
+    }
+
+    /// Completion's read (sb-go `cmd/tag_completion.go`, `cachedTagStrings`):
+    /// the strings in an entry's `tags`, whatever its commit, others
+    /// skipped; nothing for a missing entry, or one whose `tags` isn't a
+    /// list.
+    #[test]
+    fn cached_tags_are_an_entrys_strings_whatever_its_commit() {
+        let dir = root_with(Some(
+            r#"{"/srv/git/saltbox": {"tags": ["plex", 42, "sonarr", null]},
+                "/opt/sandbox": {"commit": "abc", "tags": "plex"},
+                "/opt/saltbox_mod": {"commit": "abc", "tags": ["custom"]}}"#,
+        ));
+        let cache = TagCache::load(dir.path());
+        assert_eq!(
+            cache.cached_tags(&Repo::saltbox(Path::new("/srv/git/saltbox"))),
+            strings(&["plex", "sonarr"])
+        );
+        assert_eq!(
+            cache.cached_tags(&Repo::sandbox(Path::new("/opt"))),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            cache.cached_tags(&Repo::saltbox_mod(Path::new("/opt"))),
+            strings(&["custom"])
+        );
+        assert_eq!(
+            cache.cached_tags(&Repo::sandbox(Path::new("/x"))),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

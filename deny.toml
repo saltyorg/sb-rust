@@ -57,7 +57,7 @@ features = [
 # "Depends on" column. Added with each crate.
 deny = [
     # cli-core: every module builds on it.
-    { crate = "sb-cli-core", wrappers = ["sb", "sb-ops", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
+    { crate = "sb-cli-core", wrappers = ["sb", "sb-ops", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates; host's apt streams into its steps.
     { crate = "sb-term-ui", wrappers = ["sb", "sb-ops", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env"] },
@@ -105,7 +105,7 @@ deny = [
     # install, list and diag) over exec, host, repo, term-ui and cli-core
     # (ansible spec, amendment 4), used by the binary (and later
     # completion and ops).
-    { crate = "sb-ansible", wrappers = ["sb", "sb-ops"] },
+    { crate = "sb-ansible", wrappers = ["sb", "sb-ops", "sb-completion"] },
     # python-env: the uv-managed Python, the Ansible venv, deadsnakes and
     # saltbox.fact (python-env spec), over exec, term-ui, host and release;
     # used by the binary and by ops (gha, setup, update). Its own name is
@@ -118,6 +118,10 @@ deny = [
     # its self dev-dependency, which turns `testing` on for its tests (as
     # sb-python-env's).
     { crate = "sb-ops", wrappers = ["sb", "sb-ops"] },
+    # completion: Tab completion through clap_complete's engine, the tag
+    # completer over ansible's cache, and the shells' registration files
+    # (completion spec), used by the binary (and later ops' refresh).
+    { crate = "sb-completion", wrappers = ["sb", "sb-ops"] },
 ]
 
 [sources]
