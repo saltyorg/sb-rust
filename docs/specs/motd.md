@@ -422,6 +422,22 @@ never reach stdout, stderr or the run log.
     failure, where sb-go named boxes first. The banner is toilet's
     stdout alone, where sb-go's `none` type, its boxes-missing path and
     its banner-file path took toilet's stderr into the banner too.
+32. **A queue status that reads oddly after its count is reworded**
+    (the maintainer, 2026-11-17): `warning` reads `with a warning` or
+    `with warnings`, `error` reads `with an error` or `with errors`,
+    and `downloadClientUnavailable` reads `with the download client
+    unavailable` (`radarr: 3 items in queue, 2 downloading, 1 with a
+    warning`). sb-go printed each lowercased as the app named it
+    (`7 warning`, `queue.go:654`). The counted field is the record's
+    `status`: Sonarr's and Radarr's QueueStatus in their OpenAPI
+    documents, which has `warning` and `downloadClientUnavailable` but
+    no `error` (that is TrackedDownloadStatus, a field sb doesn't read);
+    `error` is kept for an app that sends it, as Lidarr's and Readarr's
+    `status` is a free string there. The other QueueStatus values
+    (`unknown`, `queued`, `paused`, `downloading`, `completed`, `failed`,
+    `delay`, which the maintainer kept as named, and `fallback`, as the
+    item is the fallback) and any status sb doesn't know stay as the app
+    names them, lowercased.
 
 ### Scope
 
@@ -1090,7 +1106,8 @@ Nothing touches a real host's state, and every fixture is synthetic.
     page's size while the page number stays, so it asks again for
     records it has; sb keeps the size, and each record counts once.
     Every line is named, sorted across the four apps; statuses are
-    counted, sorted and lowercased as sb-go's; starr's error text is
+    counted, sorted and lowercased as sb-go's, and reworded where they
+    read oddly after their count (Difference 32); starr's error text is
     `api.Get(v3/queue): invalid status code, N >= 300, <message>`.
   - **qBittorrent** logs in with a form (a fixed 1 s), sends back every
     cookie the login set (`SID` up to qBittorrent 5.1, `QBT_SID_<port>`

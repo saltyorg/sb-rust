@@ -263,9 +263,10 @@ fn invalid_status(code: u16, body: &[u8]) -> String {
 const MAX_STATUSES: usize = 20;
 
 /// sb-go's `formatDetailedQueueOutput` line: `N item(s) in queue`, then
-/// each status's count, statuses sorted, lowercased; counts in the value
-/// colour. The statuses are the app's text: one line safe to draw,
-/// credentials hidden, before they are painted.
+/// each status's count, statuses sorted, lowercased and read with their
+/// count ([`counted`]); counts in the value colour. The statuses are the
+/// app's text: one line safe to draw, credentials hidden, before they
+/// are painted.
 fn summary(queue: &Queue, shared: &Shared, paint: &Paint) -> String {
     let noun = if queue.records == 1 { "item" } else { "items" };
     let mut summary = format!(
@@ -286,7 +287,7 @@ fn summary(queue: &Queue, shared: &Shared, paint: &Paint) -> String {
                     &sb_config::secret::REDACTED.to_lowercase(),
                     sb_config::secret::REDACTED,
                 );
-            format!("{} {shown}", paint.value(&n.to_string()))
+            format!("{} {}", paint.value(&n.to_string()), counted(&shown, *n))
         })
         .collect();
     if queue.statuses.len() > MAX_STATUSES {
@@ -296,6 +297,29 @@ fn summary(queue: &Queue, shared: &Shared, paint: &Paint) -> String {
         summary = format!("{summary}, {}", parts.join(", "));
     }
     crate::text::capped(&summary)
+}
+
+/// A status as it reads after its count (the maintainer, 2026-11-17;
+/// Difference 32): a status that is a noun or a state reads oddly there
+/// (`7 warning`), so `warning` and `downloadClientUnavailable` (Sonarr's
+/// and Radarr's `QueueStatus`) read `with a warning` or `with warnings`
+/// and `with the download client unavailable`, and `error` (not in
+/// `QueueStatus`; kept, as the maintainer named it, for an app that
+/// sends it: Lidarr's and Readarr's `status` is a free string in their
+/// `OpenAPI` documents) reads `with an error` or `with errors`. The rest of
+/// `QueueStatus` (`unknown`, `queued`, `paused`, `downloading`,
+/// `completed`, `failed`, `delay`, `fallback`: the maintainer kept
+/// `delay` as named, and a `fallback` item is the fallback) and any
+/// status sb doesn't know stay as the app names them, lowercased.
+fn counted(status: &str, count: usize) -> String {
+    match (status, count) {
+        ("warning", 1) => "with a warning".to_string(),
+        ("warning", _) => "with warnings".to_string(),
+        ("error", 1) => "with an error".to_string(),
+        ("error", _) => "with errors".to_string(),
+        ("downloadclientunavailable", _) => "with the download client unavailable".to_string(),
+        _ => status.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -372,7 +396,7 @@ mod tests {
             "Books:  Error: api.Get(v1/queue): invalid status code, 401 >= 300, Unauthorized\n\
              Lidarr: 1 item in queue, 1 queued\n\
              Radarr: 0 items in queue\n\
-             Sonarr: 150 items in queue, 1 warning, 49 completed, 100 downloading"
+             Sonarr: 150 items in queue, 1 with a warning, 49 completed, 100 downloading"
         );
         let seen = fake.seen();
         let sonarr: Vec<&str> = seen
@@ -536,5 +560,47 @@ mod tests {
             queues(&apps, &shared, &Paint::plain()).await
         };
         assert!(bad.starts_with("S: Error: invalid URL: "), "{bad}");
+    }
+
+    /// The statuses that read oddly after a count are reworded (the
+    /// maintainer, 2026-11-17; Difference 32): `warning`, `error` and
+    /// `downloadClientUnavailable`. The rest stay as the app names them,
+    /// lowercased, `delay` and an unknown one included.
+    #[test]
+    fn odd_statuses_read_with_their_count() {
+        for (status, one, many) in [
+            ("warning", "with a warning", "with warnings"),
+            ("error", "with an error", "with errors"),
+            (
+                "downloadclientunavailable",
+                "with the download client unavailable",
+                "with the download client unavailable",
+            ),
+        ] {
+            assert_eq!(counted(status, 1), one, "{status}");
+            assert_eq!(counted(status, 2), many, "{status}");
+        }
+        for status in [
+            "unknown",
+            "queued",
+            "paused",
+            "downloading",
+            "completed",
+            "failed",
+            "delay",
+            "fallback",
+            "s000",
+            "[REDACTED]",
+        ] {
+            assert_eq!(counted(status, 3), status);
+        }
+        let queue = Queue {
+            records: 3,
+            statuses: [("Downloading".to_string(), 2), ("warning".to_string(), 1)].into(),
+        };
+        assert_eq!(
+            summary(&queue, &shared(&[]), &Paint::plain()),
+            "3 items in queue, 2 downloading, 1 with a warning"
+        );
     }
 }
