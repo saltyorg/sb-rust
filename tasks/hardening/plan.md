@@ -3,7 +3,7 @@
 Findings: [tasks/findings.md](findings.md) (every item, with its id).
 The cut: [tasks/triage.md](triage.md) (every open id's verdict and
 reason). Specs: each crate's spec in `docs/specs/`. Quality bar:
-[CONSTRAINTS.md](../CONSTRAINTS.md). Tasks: [tasks/todo.md](todo.md).
+[CONSTRAINTS.md](../../CONSTRAINTS.md). Tasks: [tasks/todo.md](todo.md).
 Earlier plans are in `tasks/<module>/`.
 
 ## Overview
@@ -199,7 +199,7 @@ Answers at the plan's approval (2026-11-11):
     refused by sb's own check. No new dependency.
 29. **Release builds link glibc, built on the oldest supported release**
     (the maintainer, 2026-11-13; the details are
-    [ADR-020](../docs/decisions/ADR-020-glibc-builds-on-the-oldest-release.md),
+    [ADR-020](../../docs/decisions/ADR-020-glibc-builds-on-the-oldest-release.md),
     accepted as written). It replaces decision 27's "the static musl binary
     stands"; ADR-013 stands. The image is `ubuntu:22.04`, and the gate
     and the journal matrix build in it too. Tasks 53 and 54, in Phase

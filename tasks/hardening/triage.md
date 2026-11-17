@@ -20,7 +20,7 @@ decisions 19 to 22), which change what the tables below say:
 
 On 2026-11-13 the maintainer approved eight module specs (tui, ansible,
 completion, python-env, repo, release, ops and motd, in
-[docs/specs/](../docs/specs/)). The repo spec's exec amendment specifies
+[docs/specs/](../../docs/specs/)). The repo spec's exec amendment specifies
 the fixes for exec-M1 and exec-L2, so both leave the DEFER table's
 waiting state: their rows say where the fix is specified, and each is
 fixed with the repo plan. The tui spec takes up the journal items and

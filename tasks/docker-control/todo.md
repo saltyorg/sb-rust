@@ -242,7 +242,7 @@ wait.
 
 ## Review backlog (taken up when each crate is next touched)
 
-Moved to [tasks/todo.md](../todo.md) (2026-11-06); kept here as it
+Moved to [tasks/todo.md](../hardening/todo.md) (2026-11-06); kept here as it
 stood when the docker start/stop/restart plan closed.
 
 From the whole-codebase review (2026-11-05), moved here from

@@ -1,34 +1,37 @@
 # sb tasks
 
+*Finished and archived on 2026-11-17: every task and Checkpoint C are
+done (tasks/hardening/).*
+
 In progress: hardening after the re-review, cut on 2026-11-12 (the
 plan's decision 18). Plan: [tasks/plan.md](plan.md) (decisions, lanes,
 the traceability table, risks, open questions). Findings, by id:
 [tasks/findings.md](findings.md). The cut, id by id:
 [tasks/triage.md](triage.md). Finished plans:
-- [tasks/journal/](journal/plan.md) (the sb-journal crate);
-- [tasks/docker-control/](docker-control/plan.md) (docker start, stop
+- [tasks/journal/](../journal/plan.md) (the sb-journal crate);
+- [tasks/docker-control/](../docker-control/plan.md) (docker start, stop
   and restart);
-- [tasks/exec/](exec/plan.md);
-- [tasks/config/](config/plan.md);
-- [tasks/docker/](docker/plan.md) (`ps`);
-- [tasks/term-ui/](term-ui/plan.md);
-- [tasks/cli-core/](cli-core/plan.md);
-- [tasks/prototypes/](prototypes/plan.md).
+- [tasks/exec/](../exec/plan.md);
+- [tasks/config/](../config/plan.md);
+- [tasks/docker/](../docker/plan.md) (`ps`);
+- [tasks/term-ui/](../term-ui/plan.md);
+- [tasks/cli-core/](../cli-core/plan.md);
+- [tasks/prototypes/](../prototypes/plan.md).
 
-[docs/specs/host.md](../docs/specs/host.md) (approved 2026-11-08):
+[docs/specs/host.md](../../docs/specs/host.md) (approved 2026-11-08):
 sb-host first held the supported-release check (the cli-core plan's
 Task 4) and the journal reader's wrapper (the sb-journal plan's Task
 10); the module build built the rest of the spec (M1-M4, M9-M11,
-[tasks/modules/](modules/plan.md)).
+[tasks/modules/](../modules/plan.md)).
 
 Approved 2026-11-13 and planned in the module build
-([tasks/modules/plan.md](modules/plan.md), M1-M87): the
-[tui](../docs/specs/tui.md), [ansible](../docs/specs/ansible.md),
-[completion](../docs/specs/completion.md) (its slices paused until the
+([tasks/modules/plan.md](../modules/plan.md), M1-M87): the
+[tui](../../docs/specs/tui.md), [ansible](../../docs/specs/ansible.md),
+[completion](../../docs/specs/completion.md) (its slices paused until the
 maintainer reviews proto-complete's look),
-[python-env](../docs/specs/python-env.md),
-[repo](../docs/specs/repo.md), [release](../docs/specs/release.md),
-[ops](../docs/specs/ops.md) and [motd](../docs/specs/motd.md) specs.
+[python-env](../../docs/specs/python-env.md),
+[repo](../../docs/specs/repo.md), [release](../../docs/specs/release.md),
+[ops](../../docs/specs/ops.md) and [motd](../../docs/specs/motd.md) specs.
 Their amendments to the approved specs are applied; exec-M1 and exec-L2
 were fixed in bdfc7e6 (module task M23; [tasks/triage.md](triage.md)).
 
@@ -1399,7 +1402,7 @@ finding is untested.
 
 **Description:** Replace the static musl build with a glibc build made
 in an `ubuntu:22.04` image (plan decision 29,
-[ADR-020](../docs/decisions/ADR-020-glibc-builds-on-the-oldest-release.md)).
+[ADR-020](../../docs/decisions/ADR-020-glibc-builds-on-the-oldest-release.md)).
 Under "Library first", first check whether `cross` 0.2.5 runs the build
 in a custom 22.04 image (`Cross.toml`'s `image` or `dockerfile`, with
 `pre-build` for the C compiler). If it doesn't, use a `docker run` of
@@ -1572,11 +1575,13 @@ line runs blind. sb-go swallows them (Bubble Tea reads every key while
 live) and apt restores with TCSAFLUSH after dpkg; every prompt flushes
 stale input, as sb's confirm already does (prompt.rs, 4a6b474).
 
-- [ ] term-ui restores the terminal with TCSAFLUSH after a live run, on
+- [x] term-ui restores the terminal with TCSAFLUSH after a live run, on
       every ending, the forced-exit hook included.
-- [ ] A PTY test: keys typed during a run don't reach the shell side.
-- [ ] The term-ui spec records it, and the confirm's flush in Prompts.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] A PTY test: keys typed during a run don't reach the shell side.
+- [x] The term-ui spec records it, and the confirm's flush in Prompts.
+- [x] Review: code-reviewer, library-reviewer. Done: e187700
+      (TCSAFLUSH on every ending, a PTY test, the spec; both reviewers
+      approved).
 
 **Files:** `crates/term-ui/src/tty.rs`, its tests, the term-ui spec
 **Scope:** S
@@ -1598,10 +1603,11 @@ stale input, as sb's confirm already does (prompt.rs, 4a6b474).
       and decisions 37, 39 and 41 kept; Task 19's type-ahead call
       overruled after research (keys typed during a live run are
       discarded when it ends, as sb-go and apt do), which is Task 62.
-- [ ] Every KEEP id in tasks/triage.md is fixed, or declined with the
+- [x] Every KEEP id in tasks/triage.md is fixed, or declined with the
       maintainer's confirmation (decision 18). Then the plan is
-      archived to `tasks/hardening/`. All 36 KEEP ids are fixed on
-      main (checked 2026-11-17); the archive waits for Task 62.
+      archived to `tasks/hardening/`. Done: all 36 KEEP ids are fixed
+      on main (checked 2026-11-17), Task 62 landed as e187700, and the
+      plan is archived (2026-11-17).
 
 ## Proposed declines for the maintainer
 
@@ -1745,7 +1751,7 @@ not here.)
 
 Moved here from the lists above once done, for the record (hardening
 Task 5, docs-L17). The task numbers are the sb-journal plan's
-([tasks/journal/](journal/plan.md)).
+([tasks/journal/](../journal/plan.md)).
 
 - Done: the consumer's wake wait. tokio 1.54.1 deprecates `AsyncFd::new`
   as unsound (tokio PR #8587), and its replacement `AsyncFd::register` is
@@ -1778,7 +1784,7 @@ Task 5, docs-L17). The task numbers are the sb-journal plan's
 ## Review backlog (taken up when each crate is next touched)
 
 From the whole-codebase review (2026-11-05), moved here from
-[tasks/exec/todo.md](exec/todo.md); Optional findings and nits, by
+[tasks/exec/todo.md](../exec/todo.md); Optional findings and nits, by
 crate (the full list, by reviewer finding, is in the commit body named
 in the exec plan's Task 9).
 Headlines:

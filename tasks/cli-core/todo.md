@@ -4,7 +4,7 @@ Plan: [tasks/cli-core/plan.md](plan.md). Spec: [docs/specs/cli-core.md](../../do
 Prototype tasks and their open items: [tasks/prototypes/todo.md](../prototypes/todo.md).
 
 Finished: every task is done; later plans carry its open items
-([tasks/todo.md](../todo.md), "Finished plans").
+([tasks/todo.md](../hardening/todo.md), "Finished plans").
 
 Every task follows CONSTRAINTS.md: test first, `scripts/check.sh fast`
 after edits, `task` before handing back, `full` before committing, a

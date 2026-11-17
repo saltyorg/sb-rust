@@ -659,7 +659,7 @@ It absorbs the backlog's `# Errors`, `#[must_use]` and `Debug` items.
 
 ## Review backlog (taken up when each crate is next touched)
 
-Moved to [tasks/todo.md](../todo.md) (2026-11-06); kept here as it
+Moved to [tasks/todo.md](../hardening/todo.md) (2026-11-06); kept here as it
 stood when the exec plan closed.
 
 From the same review; Optional findings and nits, by crate (the full

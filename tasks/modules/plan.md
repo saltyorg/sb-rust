@@ -23,15 +23,14 @@ reports (lane brief, "Stop and report instead of guessing").
 - [the capability map](../../docs/specs/capability-map.md): the module
   table and build order, the Commands table, "When the binary is
   complete";
-- [tasks/plan.md](../plan.md) (the hardening plan; its tasks are done
-  and its Checkpoint C is open): its
+- [tasks/hardening/plan.md](../hardening/plan.md) (the hardening plan,
+  finished and archived on 2026-11-17): its
   "Lanes and shared files" rules and decisions 30 to 34, which apply here
   unchanged.
 
 Tasks: [todo.md](todo.md), numbered M1 to M87 so they never clash with
 the hardening plan's numbers. This plan and its todo are separate from
-tasks/plan.md and tasks/todo.md, which belong to the hardening plan and
-are not edited by this work.
+the hardening plan's, archived in tasks/hardening/.
 
 ## Overview
 

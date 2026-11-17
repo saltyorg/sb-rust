@@ -3,7 +3,7 @@
 Plan: [tasks/journal/plan.md](plan.md) (its API names, traceability
 table and risks). Spec: [docs/specs/journal.md](../../docs/specs/journal.md).
 Closed at Checkpoint C (maintainer, 2026-11-11). Its open follow-ups are
-in [tasks/todo.md](../todo.md), "Follow-ups from the journal reader".
+in [tasks/todo.md](../hardening/todo.md), "Follow-ups from the journal reader".
 
 Every task follows CLAUDE.md:
 - the skills;
@@ -385,7 +385,7 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
     readable.
   - RLIMIT_NOFILE: each `wake_fd` call adds one descriptor, held by the
     caller; past the limit it fails with `EMFILE` as an `io::Error`. The
-    follow-up in [tasks/todo.md](../todo.md) stands as it was.
+    follow-up in [tasks/todo.md](../hardening/todo.md) stands as it was.
 
 **Dependencies:** Task 6
 **Files:** `crates/journal/src/{follow.rs,lib.rs}`, `crates/journal/examples/journal.rs`, `crates/journal/tests/follow.sh`
