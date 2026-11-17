@@ -297,6 +297,14 @@ pub fn keeps_codes(colour: bool, profile: Profile) -> bool;
   sequence takes the rest of the text, newlines included.
 - Other C0 controls, DEL and C1 are dropped; CAN and SUB end a sequence,
   as in the DEC model. Bidi and zero-width characters pass unmarked.
+- sb requires a UTF-8 terminal, in every profile, `ascii` included: its
+  own tree and table glyphs are UTF-8 already (`├` is E2 94 9C, `─` is
+  E2 94 80). A terminal not in UTF-8 mode can read the bytes 0x80 to
+  0x9F inside a UTF-8 character as C1 controls (`‛`, E2 80 9B, holds a
+  CSI), so untrusted text could drive it; filtering that text alone
+  wouldn't make such a terminal usable, so it isn't filtered for one.
+  *Amended 2026-11-17 (maintainer, the performance pass's security
+  review).*
 
 **Tables** sanitize in `Table::render`, the one place every title,
 heading and cell passes, with colour off: a cell's own SGR codes are dropped (a
