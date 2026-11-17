@@ -63,6 +63,8 @@ listed below.
   --processes --qbittorrent --queues --reboot --rtorrent --sabnzbd
   --sessions --systemd --traefik --uptime`, plus `--all`. As in sb-go,
   `--cpu` means the load averages and `--cpu-info` means the CPU model.
+  `--traefik` also shows the Certificates line (decision 27), so sb-go's
+  flag set stays as it is.
 - **Banner (5):** `--title` (default `Saltbox`), `--type` (default `peek`;
   `none` means no box), `--font` (default `ivrit`), `--banner-file` and
   `--banner-file-toilet`.
@@ -130,7 +132,7 @@ listed below.
    - Results come in sb-go's fixed order: Distribution, Kernel, Uptime,
      Load Averages, Processes, CPU, GPU, Memory Usage, Package Status,
      Reboot Status, User Sessions, Last login, Disk Usage, Services,
-     Docker, Traefik, Download Queues, SABnzbd, NZBGet, qBittorrent,
+     Docker, Traefik, Certificates, Download Queues, SABnzbd, NZBGet, qBittorrent,
      rTorrent, Plex, Emby, Jellyfin. sb adds a `Config:` line, first, when
      motd.yml has issues (decision 3).
    - A section with an empty value is hidden.
@@ -166,6 +168,7 @@ mount points.
 | Services | `sb_host::services(filters)` with motd.yml's `systemd` additions and display names (`motd/systemd.go`) | `host.GetFilteredServices` |
 | Docker | sb-docker's `connect::list` rows (decision 13) | `systemctl is-active docker`, `docker ps -a` |
 | Traefik | the same listing's `traefik` row, then reqwest `GET http://traefik:8080/api/http/routers` with a 3 s connect timeout (decision 15) | `docker ps`, `curl` |
+| Certificates | Traefik's API: `GET /api/overview`'s `certificates` counts and `GET /api/certificates?sortBy=validUntil&per_page=1`'s one certificate, alongside the routers request (decision 27, below) | none (Difference 34) |
 | Download Queues | Sonarr, Radarr, Lidarr and Readarr `/api/v3/queue` (v1 for Lidarr and Readarr), 100 records per page until done, `X-Api-Key` | golift.io/starr |
 | SABnzbd | `GET <url>/api?mode=queue&output=json&apikey=…` | same |
 | NZBGet | JSON-RPC `status` then `listgroups`, with Basic auth | same |
@@ -237,6 +240,51 @@ through a small parser of sb's own (`gpu.rs`):
 
 So the names match lspci's on that host (difference 21), except where
 lspci asks udev's hwdb (differences 22 and 25).
+
+**Certificates** (decision 27; the maintainer, 2026-11-17). One line from
+Traefik's API (v3.7.0 and later; Saltbox pins `traefik:v3.7`), shown with
+`--traefik`. It never reads `acme.json`, which holds the private keys.
+- **Requests**, only when the `traefik` row is up, made alongside the
+  routers request and limited as it is (3 s to connect, 5 s in all, the
+  1 MiB body cap, the same proxy setting):
+  - `GET <base>/api/overview`: its `certificates` object, `{"total",
+    "warnings", "errors"}`. Traefik counts as a warning a certificate
+    with under 30 days left, and as an error one past its `notAfter`
+    (`pkg/api/handler_overview.go`, `getCertificatesSection`; its
+    generated default certificate is never counted).
+  - `GET <base>/api/certificates?sortBy=validUntil&per_page=1`: the one
+    certificate that expires first (Traefik sorts by `notAfter`,
+    ascending by default), for its `notAfter` (RFC 3339, read with jiff).
+    One page of one is all the line needs, so the line pages nothing.
+- **The line**, in the format and colours the Traefik line uses
+  (`summary`'s slots): the counts in the value colour when all are
+  valid; with any expiring, the total and that count in the warning
+  colour; with any expired, the total and that count in the error
+  colour. `valid` is the total less both.
+  - `3 certificates (3 valid), next expires in 38 days`
+  - `3 certificates (2 valid, 1 expiring soon), next expires in 12 days`
+  - `3 certificates (1 valid, 1 expiring soon, 1 expired), earliest expired 3 days ago`
+  - `1 certificate (1 valid), next expires in 61 days` (singular).
+  - The days are whole days to or since the first `notAfter`, against
+    the host's clock, rounded down: `in 1 day`, `in N days`, and `today`
+    when less than a day is left; `1 day ago`, `N days ago`, `today` once
+    it has passed. The number takes its state's colour: value, warning
+    under 30 days, error once passed.
+- **When it shows nothing else:**
+  - The Traefik line already says the container is down or the API isn't
+    accessible: the Certificates line is hidden (empty).
+  - The overview has no `certificates` (Traefik before v3.7.0, or no TLS
+    manager): hidden.
+  - `total` is 0: `Traefik is serving no certificates`.
+  - The overview isn't the expected JSON: `Error: unexpected answer from
+    Traefik (HTTP <code>)` in the error colour (Difference 11's text).
+  - The certificates request fails, or its `notAfter` doesn't parse: the
+    counts alone, without `, next expires …`, and a warning in the run log.
+- **No domain is shown** (no `sans`, no `commonName`), so `--share` has
+  nothing of the line's own to mask; it still runs over the line.
+- **The run log** records the section's outcome and time as every
+  section's (decision 26), and each failed request as a warning without
+  its URL, as Traefik's.
 
 **Secrets** (decision 12). motd.yml's `token`, `apikey` and `password`
 (typed `string` in the schema), and SABnzbd's `apikey` query parameter,
@@ -449,6 +497,11 @@ never reach stdout, stderr or the run log.
     validate-config, which can't fix it. A permission error never claims
     a service is down. motd runs as root (decision 20), so these show
     only where root itself is refused.
+34. **A Certificates line after Traefik's** (the maintainer, 2026-11-17;
+    decision 27): the certificates Traefik serves, how many expire within
+    Traefik's 30 days or have expired, and when the first expires, from
+    Traefik's API. sb-go has no such line. It comes with `--traefik`, so
+    the flag set is sb-go's.
 
 ### Scope
 
@@ -634,6 +687,13 @@ Nothing touches a real host's state, and every fixture is synthetic.
     is.
 - **Docker** on sb-docker's fake Engine API: problem rows, counts, the
   `traefik` row, and an unreachable daemon.
+- **Certificates** on the same fake Traefik, serving `/api/overview` and
+  `/api/certificates` beside the routers, with the clock passed in:
+  insta snapshots of each form (all valid, expiring, expired, singular,
+  today in both directions, no certificates), and the hidden cases (no
+  `certificates` object, Traefik down); a non-JSON overview; a failed
+  certificates request (the counts alone); the request's query
+  (`sortBy=validUntil&per_page=1`).
 - **Children** run as stand-in programs first on `PATH`, as exec's and
   host's tests do: `toilet`, `boxes`, `loginctl`, `last`, `systemctl`.
   update-notifier's absolute paths come from a `Paths` value the tests
@@ -939,6 +999,22 @@ Nothing touches a real host's state, and every fixture is synthetic.
     qBittorrent `maindata` is why its data timeout is 20 s), and a
     tighter bound has no measured need. Decided from
     recorded rules, 2026-11-13.
+27. **Certificates from Traefik's API, never from `acme.json`** (the
+    maintainer, 2026-11-17). Traefik renews an ACME certificate 30 days
+    before it expires ("By default, Traefik manages 90-day certificates
+    and starts renewing them 30 days before their expiry",
+    <https://doc.traefik.io/traefik/reference/install-configuration/tls/certificate-resolvers/acme/>),
+    the moment its API
+    starts counting it as a warning, so a warning that lasts means a
+    renewal that fails. The API has the counts and the dates since v3.7.0
+    (commit 8b17fc166; `pkg/api` at v3.7.16: `certificate.go`,
+    `handler_certificate.go`, `handler_overview.go`, `criterion.go`), and
+    it is the address the Traefik line already asks. `acme.json` holds
+    the private keys, so motd never opens it. The line is part of the
+    Traefik section's flag, with its own key: a new flag would add one to
+    sb-go's set, which the contract test pins. Not chosen: a section of
+    its own (a new flag), and listing domains (they would need `--share`
+    masking, and the count says what needs attention).
 
 ## Known limits
 
