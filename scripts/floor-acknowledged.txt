@@ -435,3 +435,5 @@ gate-line-removed	scripts/floor-guard.test.mjs	assert.equal(runs.length, 3, r.ou
 tool-config-changed	.config/nextest.toml	[profile.release-tests]	A new profile for the gate's new release-build test run (the maintainer, 2026-11-16); the mutants profile is unchanged
 tool-config-changed	.config/nextest.toml	slow-timeout = { period = "30s", terminate-after = 2 }	The release-build test run's per-test end, the same 60 s as the mutation passes' (ADR-021): a hung test fails the gate instead of holding it up
 tool-config-changed	.config/nextest.toml	fail-fast = false	The release-build test run reports every failing test, not only the first; it is a new run, so nothing that ran before is relaxed
+tool-config-changed	.config/nextest.toml	status-level = "slow"	The release-build test run lists only failing and slow tests as it goes (2026-11-17): output only, every test still runs and any failure still fails the gate
+tool-config-changed	.config/nextest.toml	final-status-level = "slow"	The release-build test run's end lists only failing and slow tests with the summary: output only, nothing about what runs or what fails the gate changes
