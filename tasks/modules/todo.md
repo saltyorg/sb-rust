@@ -1182,15 +1182,15 @@ type and font checks, `--banner-file-toilet`'s arguments through shlex.
 9 to 11 measured on the production build.
 
 **Acceptance criteria:**
-- [ ] `--share` hides the spec's candidates (IP addresses confirmed by
+- [x] `--share` hides the spec's candidates (IP addresses confirmed by
       `IpAddr`'s parser, host names, credentials).
-- [ ] The fast path and the 30 s cap meet criteria 9 to 11 on the
+- [x] The fast path and the 30 s cap meet criteria 9 to 11 on the
       production build.
-- [ ] Checkpoint M records the numbers.
+- [x] Checkpoint M records the numbers.
 
 **Verification:**
-- [ ] `cargo test -p sb-motd -p sb`; the timing runs.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-motd -p sb`; the timing runs.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M46
 **Files:** `crates/motd/src/{redact.rs,lib.rs}` (redact.rs holds M44's credential hiding, a66b102), `crates/sb/tests/motd.rs`
