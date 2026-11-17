@@ -370,3 +370,17 @@ and sb-host's tests) under this profile:
   guard's tests check that a stubbed test run can make a directory in
   it, that it is 1777 and root's, and that the host's `/tmp` has no such
   directory after; a pass's mount table shows it as well.
+
+  *Amended 2026-11-18 (Checkpoint O's full gate stopped as a container
+  ended on the host while a sandbox was set up):* the mount table is
+  read front to back without seeking back (`mapfile`): `read` seeks back
+  after each line, and a seek in a table the host is changing starts the
+  next line part way through another, giving mount points that don't
+  exist; a line that doesn't read as an id and a path stops the run. A
+  mount that can't be reached, or made read-only, is left only when its
+  id has gone from a fresh read of the table: the host removed its mount
+  point (docker does as a container ends), which takes it out of the
+  sandbox's namespace too, so nothing is left to protect. The final
+  check that every reachable mount is read-only is unchanged. The floor
+  guard's tests run a stubbed test run while the host mounts and removes
+  tmpfs mounts throughout; it failed before the change.

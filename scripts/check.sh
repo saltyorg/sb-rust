@@ -645,7 +645,7 @@ sandbox_argv() {
 # left writable, or one that can't be reached and isn't shown to be under
 # a later mount: no test runs on a writable host.
 sandbox_inner() {
-  local own=$1 n=$2 d i j mp fields opts points=() writable=()
+  local own=$1 n=$2 d i j mp fields opts err points=() writable=() ids=()
   shift 2
   local dirs=("${@:1:n}")
   shift "$n"
@@ -717,19 +717,43 @@ sandbox_inner() {
     # binfmt_misc automount) stay.
     ((hit == 0))
   }
-  # The mount table's mount points, in order. Field 5 of mountinfo is the
-  # mount point, field 6 its options. A backslash starts a three-digit
-  # octal escape (space, tab, newline, backslash; proc(5)); printf's %b
-  # reads \0NNN, so each gets its 0; -v, not $( ), keeps a trailing
-  # newline.
+  # The mount table's mount points, in order, with their ids. Field 1 of
+  # mountinfo is the mount's id, field 5 its mount point, field 6 its
+  # options. A backslash starts a three-digit octal escape (space, tab,
+  # newline, backslash; proc(5)); printf's %b reads \0NNN, so each gets
+  # its 0; -v, not $( ), keeps a trailing newline. The table is read
+  # front to back without seeking back (mapfile), not a line at a time:
+  # read seeks back to each line's end, and a seek in a table that is
+  # changing (the host removing a container's mounts) starts the next
+  # line part way through another one. A line that still doesn't read as
+  # an id and a path stops the run: a skipped mount below is known by its
+  # id.
   table() {
-    points=() writable=()
-    while read -r -a fields; do
+    points=() writable=() ids=()
+    local line lines
+    mapfile -t lines </proc/self/mountinfo
+    for line in "${lines[@]}"; do
+      read -r -a fields <<<"$line"
       printf -v mp '%b' "${fields[4]//\\/\\0}"
+      [[ ${fields[0]} =~ ^[0-9]+$ && $mp == /* ]] || fail "could not read the mount table: $line"
+      ids+=("${fields[0]}")
       points+=("$mp")
       opts=,${fields[5]},
       if [[ $opts == *,ro,* ]]; then writable+=(0); else writable+=(1); fi
-    done </proc/self/mountinfo
+    done
+  }
+  # Whether mount i has left the namespace since the table was read (a
+  # fresh read of it, on purpose): the
+  # host removed its mount point (as docker does when a container ends),
+  # which takes the mount away here too (mount_namespaces(7)), so there is
+  # nothing left to make read-only.
+  gone() {
+    local line lines
+    mapfile -t lines </proc/self/mountinfo
+    for line in "${lines[@]}"; do
+      [[ ${line%% *} == "${ids[$1]}" ]] && return 1
+    done
+    return 0
   }
   # Whether mount i is under a later one (the same point or one of its
   # directories): hidden, so it can't be reached.
@@ -747,8 +771,14 @@ sandbox_inner() {
     # the namespace's own, an outer sandbox's /run hiding /run/lock).
     kept "$mp" && continue
     covered "$i" && continue
-    [[ -e $mp ]] || fail "can't reach $mp, which no later mount covers"
-    mount -n -o remount,bind,ro "$mp" || fail "could not make $mp read-only"
+    if [[ ! -e $mp ]]; then
+      gone "$i" && continue
+      fail "can't reach $mp, which no later mount covers"
+    fi
+    if ! err=$(mount -n -o remount,bind,ro "$mp" 2>&1); then
+      gone "$i" && continue
+      fail "could not make $mp read-only: $err"
+    fi
   done
   # The kernel's settings through /proc: bound to themselves, read-only.
   for d in /proc/sys /proc/sysrq-trigger; do

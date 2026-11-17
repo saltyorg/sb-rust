@@ -2367,6 +2367,43 @@ test("check.sh: a test can't write a host file or /etc, or reach a host daemon; 
   }
 });
 
+// A host mount that goes while the sandbox is set up (a container ending
+// on the host: docker removes its mount point, which takes the mount out
+// of the sandbox's namespace too) leaves nothing to make read-only, and
+// the run goes on; so does a mount table that changes while it is read.
+// A churn on the host, outside /tmp, mounts and removes tmpfs mounts for
+// the whole stubbed run (in the gate, inside the floor guard tests' own
+// sandbox; run by hand, on the host, where a sandbox set up meanwhile by
+// a gate without this change can stop as Checkpoint O's did). It ends at
+// the stop file, when node is gone, or after 120 s, its mounts removed.
+test("check.sh: host mounts removed while the sandbox is set up don't stop a test run", () => {
+  mkdirSync(join(SCRIPTS, '..', 'target'), { recursive: true });
+  const churn = mkdtempSync(join(SCRIPTS, '..', 'target', 'sandbox-churn-'));
+  const stop = join(churn, 'stop');
+  const script = 'cd "$1" || exit 1; k=0\n'
+    + 'while [ ! -e stop ] && kill -0 "$2" 2>/dev/null && [ "$SECONDS" -lt 120 ]; do\n'
+    + '  for m in $(seq 1 40); do mkdir "m$k-$m" && mount -t tmpfs -o size=1m sb-churn "m$k-$m"; done\n'
+    + '  for m in $(seq 1 40); do umount "m$k-$m"; rmdir "m$k-$m"; done\n'
+    + '  k=$((k + 1))\n'
+    + 'done\n'
+    + ': >done\n';
+  const loop = spawn('bash', ['-c', script, 'churn', churn, String(process.pid)], { stdio: 'ignore' });
+  try {
+    const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+    passes(r, 'task');
+    assert.doesNotMatch(r.output, /check: the sandbox/, r.output);
+  } finally {
+    writeFileSync(stop, '');
+    // Waited for by the file it leaves as it ends, its own mounts removed
+    // (not its pid: it stays a zombie until node's event loop runs).
+    const ended = spawnSync('bash', ['-c', 'for _ in $(seq 1 600); do [ -e "$1/done" ] && exit 0; sleep 0.1; done; exit 1', 'wait', churn]);
+    if (ended.status !== 0) loop.kill('SIGKILL');
+    // Whatever is left, removed without hiding the test's own failure; a
+    // mount still there keeps its directory (nothing is deleted in it).
+    spawnSync('bash', ['-c', 'for m in "$1"/m*; do [ -d "$m" ] || continue; umount -R "$m" 2>/dev/null; rmdir "$m" 2>/dev/null; done; rm -f "$1/stop" "$1/done"; rmdir "$1"', 'clean', churn]);
+  }
+});
+
 // A test that writes /etc fails in the gate: the write is refused, the
 // test fails, and so does the run.
 test('check.sh: a test that writes /etc fails the run', () => {
