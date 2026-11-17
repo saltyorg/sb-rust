@@ -30,9 +30,6 @@ pub const SALTBOX_URL: &str = "https://github.com/saltyorg/saltbox.git";
 /// `SaltboxRepo`).
 pub const DEFAULT_BRANCH: &str = "master";
 
-/// The checkout's name in labels, notices and errors.
-const SALTBOX: &str = "Saltbox";
-
 /// `sb setup`'s flags: sb-go's, persistent as there (`global`), with
 /// `update`'s two branch flags (ops decision 29).
 #[derive(clap::Args, Debug, Clone)]
@@ -174,7 +171,7 @@ pub async fn plan(
             notices: Vec::new(),
         });
     }
-    let repo = Repo::open(SALTBOX, root)?;
+    let repo = Repo::open(crate::Checkout::Saltbox.name(), root)?;
     let current = repo.current_branch(&shutdown.token()).await?;
     let branch::Resolved { branch, notices } =
         branch::resolve(&repo, &current, wanted, answer, ask, shutdown).await?;
@@ -305,15 +302,22 @@ async fn checks(step: &mut Step, setup: &Setup<'_>) -> anyhow::Result<()> {
 async fn saltbox_repo(step: &mut Step, setup: &Setup<'_>, plan: &Plan) -> anyhow::Result<()> {
     match plan.found {
         Found::Nothing => {
-            let _repo = Repo::clone(SALTBOX, setup.root, setup.url, &plan.branch, step).await?;
+            let _repo = Repo::clone(
+                crate::Checkout::Saltbox.name(),
+                setup.root,
+                setup.url,
+                &plan.branch,
+                step,
+            )
+            .await?;
         }
         Found::Directory => {
-            Repo::open(SALTBOX, setup.root)?
+            Repo::open(crate::Checkout::Saltbox.name(), setup.root)?
                 .init_from_remote(setup.url, &plan.branch, step)
                 .await?;
         }
         Found::Checkout => {
-            let repo = Repo::open(SALTBOX, setup.root)?;
+            let repo = Repo::open(crate::Checkout::Saltbox.name(), setup.root)?;
             branch::update(step, &repo, &plan.branch, "root").await?;
         }
     }
