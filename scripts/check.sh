@@ -13,7 +13,8 @@
 #   scripts/check.sh full [base]   before committing (and CI): commit
 #                                  messages after base, then task +
 #                                  project coverage floors, dependencies,
-#                                  architecture, binary size
+#                                  architecture, binary size, the
+#                                  aarch64 build under QEMU
 #
 # base: the commit the work started from (default HEAD = uncommitted work).
 # A change that touches only docs/ and tasks/ ends task and full after the
@@ -1278,6 +1279,43 @@ full() {
       fi
       echo "ubuntu:$release: $out"
     done
+    # arm64 ships too (release spec, "Release channels"): its production
+    # build, from the same image, and its `sb version` under QEMU
+    # user-mode with 22.04's arm64 glibc (build/qemu.Dockerfile), so a
+    # break shows before CI's arm runners. The test suite runs on those
+    # runners only: emulated, it would be several times slower within the
+    # CPU cap, and its timing tests would turn flaky.
+    step "the aarch64 production build, and its sb version under QEMU on 22.04's arm64 glibc (build/qemu.Dockerfile)"
+    CARGO_TARGET_DIR="$cross_target" CROSS_CONTAINER_OPTS='--memory 16g --cpus 8' \
+      cross build --locked --quiet -p sb --profile production \
+        --target aarch64-unknown-linux-gnu
+    local arm="$cross_target/aarch64-unknown-linux-gnu/production/sb"
+    echo "sb (aarch64): $(stat -c %s "$arm") bytes"
+    # The gate's own image, kept as a cache and named by its Dockerfile's
+    # hash, so a change builds a new one; built only when missing
+    # (CONSTRAINTS.md, "Images the gate keeps").
+    local sum qemu_image
+    sum=$(sha256sum build/qemu.Dockerfile)
+    qemu_image="sb-rust-gate/qemu-check:${sum:0:12}"
+    if ! docker image inspect "$qemu_image" >/dev/null 2>&1; then
+      status=0
+      docker build --quiet --tag "$qemu_image" --file build/qemu.Dockerfile build >/dev/null || status=$?
+      if ((status != 0)); then
+        echo "check: docker could not build build/qemu.Dockerfile" >&2
+        exit 2
+      fi
+    fi
+    status=0
+    out=$(docker run --rm --name "sb-check-$$-arm64" --network none -e SB_LOG_DIR=/tmp/sb-log \
+      -v "$arm:/sb:ro" "$qemu_image" qemu-aarch64-static -L /usr/aarch64-linux-gnu /sb version) || status=$?
+    if ((status == 125)); then
+      echo "check: docker could not run the QEMU container" >&2
+      exit 2
+    elif ((status != 0)) || [[ $out != "Saltbox CLI version: "* ]]; then
+      echo "check: the aarch64 production binary doesn't run under QEMU: $out" >&2
+      exit 1
+    fi
+    echo "aarch64 (QEMU): ${out%%$'\n'*}"
   fi
 }
 

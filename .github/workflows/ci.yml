@@ -1,0 +1,119 @@
+# sb's gate on every push and pull request (release spec, "Release
+# channels", CI): `scripts/check.sh task` on each supported Ubuntu release
+# and on arm64, as CONSTRAINTS.md asks of `task` ("before handing work
+# back"). `full` runs on release tags (release.yml).
+#
+# Written locally (2026-11-18) and not yet run: creating saltyorg/sb-rust,
+# pushing and running workflows are remote actions the maintainer
+# authorises separately. GitHub's 26.04 and arm runners are generally
+# available; its 22.04 images are deprecated from 2026-09-17 and
+# unsupported from 2027-04-17, when those two jobs need a plan.
+# https://github.com/actions/runner-images
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  task:
+    name: task / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm64 ships (maintainer, 2026-11-18): its tests run natively on
+        # the arm runners, as emulated runs would be slow and flaky.
+        # actionlint 1.7.12 doesn't know the 26.04 labels yet; GitHub's
+        # runner-images README lists ubuntu-26.04 and ubuntu-26.04-arm.
+        runner:
+          - ubuntu-22.04
+          - ubuntu-24.04
+          - ubuntu-26.04
+          - ubuntu-22.04-arm
+          - ubuntu-24.04-arm
+          - ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+      # The tools at CONSTRAINTS.md's Tools pins, prebuilt (nextest's own
+      # docs point CI at this action:
+      # https://nexte.st/docs/installation/pre-built-binaries/); check.sh
+      # refuses any other version before a stage runs.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0
+      - name: gitleaks and diff-cover
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+          pipx install diff-cover==9.7.2
+          rustup component add llvm-tools
+      # A pull request is checked against what it merges into; a push to
+      # main with no base checks everything (check.sh: nothing changed
+      # since the base runs every step). As root, as check.sh runs its
+      # sandbox.
+      - name: check.sh task
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          base=HEAD
+          if [[ -n ${BASE_REF} ]]; then
+            base=$(git merge-base "origin/${BASE_REF}" HEAD)
+          fi
+          sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME env "PATH=$PATH" \
+            scripts/check.sh task "$base"
+      # The root run leaves root-owned files where rust-cache's post step,
+      # as the runner user, saves from.
+      - name: Hand the build back to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" target "${CARGO_HOME:-$HOME/.cargo}"
+
+  # sb-go's build.yml checks, on a build made the way releases are but
+  # untagged (so on tag pushes too): `version --json` has a valid
+  # uv_version, and with no SB_VERSION self-update is disabled.
+  untagged:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Build without SB_VERSION
+        run: cargo build --locked --release -p sb
+      - name: uv_version is a version
+        run: |
+          target/release/sb version --json | tee version.json
+          jq -e '.uv_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' version.json
+          jq -e '.channel == "none"' version.json
+      - name: Self-update is disabled
+        run: |
+          out=$(sudo SB_LOG_DIR="$RUNNER_TEMP/sb-log" target/release/sb self-update 2>&1)
+          printf '%s\n' "$out"
+          grep -Fq "Self-update is disabled in this build" <<<"$out"

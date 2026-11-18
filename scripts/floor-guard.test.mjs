@@ -15,6 +15,8 @@ import { readdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 // For the processes a killed run's pass left (ADR-021).
 import { spawn } from 'node:child_process';
+// For the gate's QEMU image tag, its Dockerfile's hash.
+import { createHash } from 'node:crypto';
 
 const guard = join(dirname(fileURLToPath(import.meta.url)), 'floor-guard.mjs');
 
@@ -1173,7 +1175,7 @@ const CRATES = {
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
 const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'getconf', 'git', 'grep', 'id', 'mkdir',
-  'ip', 'mktemp', 'mount', 'rm', 'sed', 'setsid', 'sleep', 'sort', 'stat', 'truncate', 'unshare', 'xargs'];
+  'ip', 'mktemp', 'mount', 'rm', 'sed', 'setsid', 'sha256sum', 'sleep', 'sort', 'stat', 'truncate', 'unshare', 'xargs'];
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
@@ -1185,8 +1187,10 @@ const stubs = (versions, arch) => {
   const out = {
     cargo: 'if [ "$1 $2" = "install --list" ]; then printf \'%s\' "' + installed + '"; exit 0; fi\n',
     'cargo-llvm-cov': '', 'cargo-mutants': '', 'cargo-nextest': '', 'cargo-deny': '', hyperfine: '',
-    cross: 'mkdir -p "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production"\n'
-      + 'printf sb >"$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production/sb"\n',
+    // The binary of the --target asked for.
+    cross: 't=x86_64-unknown-linux-gnu; p=; for a in "$@"; do [ "$p" = --target ] && t="$a"; p="$a"; done\n'
+      + 'mkdir -p "$CARGO_TARGET_DIR/$t/production"\n'
+      + 'printf sb >"$CARGO_TARGET_DIR/$t/production/sb"\n',
     'diff-cover': version('diff-cover ' + versions['diff-cover']),
     node: version('v' + versions.node),
     script: version('script from util-linux ' + versions.script),
@@ -1200,7 +1204,7 @@ const stubs = (versions, arch) => {
   // cross's container caps, which a scope around check.sh doesn't reach.
   out.cross += 'printf \'%s\\n\' "${CROSS_CONTAINER_OPTS-unset}" >>"$STUB_LOG.cross-opts"\n';
   // With SIZE_BYTES set, the production binary is that many bytes (ADR-025).
-  out.cross += 'if [ -n "${SIZE_BYTES:-}" ]; then truncate -s "$SIZE_BYTES" "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production/sb"; fi\n';
+  out.cross += 'if [ -n "${SIZE_BYTES:-}" ] && [ "$t" = x86_64-unknown-linux-gnu ]; then truncate -s "$SIZE_BYTES" "$CARGO_TARGET_DIR/$t/production/sb"; fi\n';
   // The coverage run's lcov report (--output-path): a file under crates/
   // with COV_LF lines, COV_LH of them hit, COV_FNF functions and COV_FNH
   // hit (99% of each by default), then a prototype's file with nothing
@@ -1402,7 +1406,12 @@ const stubs = (versions, arch) => {
   // `docker run`: sb version, unless the container is of the release in
   // DOCKER_FAILS, which can't run the binary, or DOCKER_DOWN is set: docker
   // fails itself, with its own status 125.
+  // With QEMU_FAILS set, the aarch64 binary's run under QEMU fails.
   out.docker += 'if [ -n "${DOCKER_DOWN:-}" ]; then echo "Cannot connect to the Docker daemon" >&2; exit 125; fi\n'
+    + 'case " $* " in *" qemu-aarch64-static "*) [ -n "${QEMU_FAILS:-}" ] && { echo "qemu: exec format error" >&2; exit 1; } ;; esac\n'
+    // `docker image inspect`: the gate's QEMU image is there only with
+    // QEMU_IMAGE_PRESENT set.
+    + 'if [ "$1 $2" = "image inspect" ]; then [ -n "${QEMU_IMAGE_PRESENT:-}" ]; exit; fi\n'
     + 'case " $* " in *" ubuntu:${DOCKER_FAILS:-none} "*) echo "sb: GLIBC_2.39 not found" >&2; exit 1 ;; esac\n'
     + 'echo "Saltbox CLI version: 0.1.0"\n';
   return Object.fromEntries(Object.entries(out).filter(([t]) => versions[t] !== null)
@@ -1462,6 +1471,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     git('init', '-q');
     write(repo, {
       'scripts/check.sh': readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'),
+      'build/qemu.Dockerfile': readFileSync(join(SCRIPTS, '../build/qemu.Dockerfile'), 'utf8'),
       'scripts/check-commit-messages.sh': readFileSync(join(SCRIPTS, 'check-commit-messages.sh'), 'utf8'),
       'CONSTRAINTS.md': TOOLS_MD, '.gitignore': '/target/\n', ...CRATES, ...files,
     }, 0o755);
@@ -1618,14 +1628,17 @@ test('check.sh: cargo runs locked, with the target directory its own', () => {
     assert.equal(c.covTarget, 'unset', 'cargo ' + c.args);
     if (!c.args.startsWith('fmt')) assert.match(c.args, /(^| )(--locked|--cargo-arg=--locked)( |$)/, 'cargo ' + c.args);
   }
+  // The production builds: x86_64, then aarch64 (arm64 ships too).
   const cross = r.calls.filter((c) => c.tool === 'cross');
-  assert.equal(cross.length, 1, r.output);
-  assert.equal(cross[0].target, join(r.root, 'target/cross-gnu'));
-  assert.match(cross[0].args, /(^| )--locked( |$)/);
-  assert.match(cross[0].args, /(^| )--target x86_64-unknown-linux-gnu( |$)/);
+  assert.equal(cross.length, 2, r.output);
+  for (const [build, target] of cross.map((c, i) => [c, ['x86_64', 'aarch64'][i]])) {
+    assert.equal(build.target, join(r.root, 'target/cross-gnu'));
+    assert.match(build.args, /(^| )--locked( |$)/);
+    assert.match(build.args, new RegExp('(^| )--target ' + target + '-unknown-linux-gnu( |$)'));
+  }
   // A scope around check.sh doesn't reach cross's container: the caps go
-  // to its `docker run`.
-  assert.equal(r.crossOpts, '--memory 16g --cpus 8\n', r.output);
+  // to its `docker run`, for each build.
+  assert.equal(r.crossOpts, '--memory 16g --cpus 8\n'.repeat(2), r.output);
 });
 
 // Each mutant's tests run under nextest's `mutants` profile, which ends a
@@ -1992,7 +2005,8 @@ test('check.sh: a pass directory kept for a look names no check.sh', () => {
 test('check.sh full: sb version runs in a container of each supported release, the built binary mounted', () => {
   const r = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
   passes(r, 'full');
-  const runs = r.calls.filter((c) => c.tool === 'docker' && c.args.startsWith('run '));
+  // The runs of an ubuntu:<release> image (the QEMU run has its own).
+  const runs = r.calls.filter((c) => c.tool === 'docker' && c.args.startsWith('run ') && c.args.includes(' ubuntu:'));
   assert.deepEqual(runs.map((c) => c.args.match(/ ubuntu:(\S+) /)[1]), ['22.04', '24.04', '26.04'], r.output);
   const bin = join(r.root, 'target/cross-gnu/x86_64-unknown-linux-gnu/production/sb');
   for (const c of runs) {
@@ -2003,6 +2017,36 @@ test('check.sh full: sb version runs in a container of each supported release, t
     assert.match(c.args, / \/sb version$/);
   }
   assert.match(r.output, /ubuntu:26\.04: Saltbox CLI version/, r.output);
+});
+
+// arm64 ships: full builds its production binary in the same image and
+// runs its sb version under QEMU user-mode, with no binfmt handler.
+test('check.sh full: the aarch64 production build runs under QEMU', () => {
+  const r = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+  passes(r, 'full');
+  const builds = r.calls.filter((c) => c.tool === 'cross').map((c) => c.args);
+  assert.ok(builds.some((a) => / --profile production .*--target aarch64-unknown-linux-gnu/.test(a)), builds.join('\n'));
+  assert.ok(builds.some((a) => /--target x86_64-unknown-linux-gnu/.test(a)), builds.join('\n'));
+  const qemu = r.calls.filter((c) => c.tool === 'docker' && c.args.includes('qemu-aarch64-static'));
+  assert.equal(qemu.length, 1, r.output);
+  const bin = join(r.root, 'target/cross-gnu/aarch64-unknown-linux-gnu/production/sb');
+  assert.ok(qemu[0].args.includes(' -v ' + bin + ':/sb:ro '), qemu[0].args);
+  assert.match(qemu[0].args, /(^| )--network none( |$)/);
+  // The gate's own image, named by its Dockerfile's hash, built when
+  // missing and only then.
+  const dockerfile = readFileSync(join(SCRIPTS, '../build/qemu.Dockerfile'));
+  const image = 'sb-rust-gate/qemu-check:' + createHash('sha256').update(dockerfile).digest('hex').slice(0, 12);
+  assert.ok(qemu[0].args.includes(' ' + image + ' qemu-aarch64-static -L /usr/aarch64-linux-gnu /sb version'), qemu[0].args);
+  const imageBuilds = (run) => run.calls.filter((c) => c.tool === 'docker' && c.args.startsWith('build '));
+  assert.deepEqual(imageBuilds(r).map((c) => c.args), ['build --quiet --tag ' + image + ' --file build/qemu.Dockerfile build'], r.output);
+  assert.match(r.output, /aarch64 \(QEMU\): Saltbox CLI version/, r.output);
+  const cached = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { QEMU_IMAGE_PRESENT: '1' } });
+  passes(cached, 'full');
+  assert.deepEqual(imageBuilds(cached), [], cached.output);
+});
+
+test('check.sh full: an aarch64 binary that does not run under QEMU fails the gate', () => {
+  refuses(checkRun('full', { env: { QEMU_FAILS: '1' } }), 1, /aarch64 production binary doesn.t run under QEMU/);
 });
 
 test('check.sh full: a release that cannot run the binary fails the gate, naming it', () => {
@@ -2202,7 +2246,8 @@ test('check.sh full: a document beside any other file, a clean tree, and a docum
     passes(r, 'full');
     assert.doesNotMatch(r.output, /only docs\/ and tasks\/ changed/, r.output);
     for (const sub of ['llvm-cov', 'test', 'nextest', 'build', 'deny']) assert.ok(cargoSubs(r).includes(sub), sub + '\n' + r.output);
-    assert.equal(r.calls.filter((c) => c.tool === 'cross').length, 1, r.output);
+    // The two production builds, x86_64 and aarch64.
+    assert.equal(r.calls.filter((c) => c.tool === 'cross').length, 2, r.output);
   }
 });
 

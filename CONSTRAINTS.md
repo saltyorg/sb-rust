@@ -63,7 +63,7 @@ pass clippy and their tests.
 | Startup | `sb --help` and `sb version` median ≤ 10 ms | `hyperfine --warmup 5 --runs 50`, release build | task | sb-go takes about 18 ms; the prototypes about 2 ms; no per-change row: a millisecond median moves with the host's load, and the budget catches a real regression (maintainer, 2026-11-18, [ADR-025](docs/decisions/ADR-025-ratchet-enforced.md)) |
 | Dependencies | No RustSec vulnerability, no unmaintained or yanked crate, only GPL-3.0-compatible licences, crates.io only | `cargo deny --manifest-path crates/sb/Cargo.toml check` (`deny.toml`) | full | External opinion: the RustSec database |
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`); `check.sh`'s crate check, that each crate but `sb` has its entry (at fast) | full | The compiler can't see the map; cargo-deny can |
-| Binary size | Production glibc binary ≤ 45,711,520 bytes, and `sb version` runs on each release of the host spec's runtime list | `stat` after `cross build --profile production --target x86_64-unknown-linux-gnu` in `build/Dockerfile`'s image of the oldest supported release (`Cross.toml`), in its own target directory (ADR-020); then `docker run` of the binary in an `ubuntu:<release>` container of each release; a host of another architecture skips both with a printed line | full | Never larger than sb-go's binary (2026-10-30); a binary one supported release can't load never ships (ADR-020) |
+| Binary size | Production glibc binary ≤ 45,711,520 bytes, and `sb version` runs on each release of the host spec's runtime list | `stat` after `cross build --profile production --target x86_64-unknown-linux-gnu` in `build/Dockerfile`'s image of the oldest supported release (`Cross.toml`), in its own target directory (ADR-020); then `docker run` of the binary in an `ubuntu:<release>` container of each release; then the aarch64 production build in the same image, and its `sb version` under QEMU user-mode on the oldest release's arm64 glibc (`build/qemu.Dockerfile`, no binfmt handler); a host of another architecture skips them all with a printed line | full | Never larger than sb-go's binary (2026-10-30); a binary one supported release can't load never ships (ADR-020); arm64 ships too, and its build breaking shows before CI's arm runners (maintainer, 2026-11-18) |
 | Production binary size | at most 21693856 bytes; tolerance at most 5% above it, a headroom shared by the changes until the value is reset | `stat` of the same production glibc build, against that size plus the tolerance; the figures printed every run | full | The finished tree's size; Binary size's ceiling above still holds (maintainer, 2026-11-18, [ADR-025](docs/decisions/ADR-025-ratchet-enforced.md)) |
 | Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line when it changes a file outside `docs/` and `tasks/`; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
 | Review line | The body of every commit that changes a file outside `docs/` and `tasks/` says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review, by tier (CLAUDE.md, ADR-016) |
@@ -126,6 +126,21 @@ doesn't fail every run.
 | script (util-linux) | 2.39 | minimum | system package (gives the colour tests a terminal) |
 | cross | 0.2.5 | exact | `cargo install --locked cross --version 0.2.5` (the production glibc build, in the image `Cross.toml` names, ADR-020) |
 | Docker | 29 | minimum | system package (builds and runs cross's image from `build/Dockerfile`, and the `ubuntu:<release>` containers the binary runs in; the first run pulls them) |
+
+## Images the gate keeps
+
+`check.sh full` leaves one Docker image of its own on the host, as a
+cache:
+
+- `sb-rust-gate/qemu-check:<hash>`, the first 12 hex digits of
+  `build/qemu.Dockerfile`'s SHA-256, built only when missing, so a change
+  to the file builds a new one. It runs the aarch64 production binary
+  under QEMU user-mode (Binary size row). Remove it, and older tags left
+  by earlier versions of the file, with
+  `docker images sb-rust-gate/qemu-check --format '{{.Repository}}:{{.Tag}}' | xargs -r docker rmi`.
+
+cross builds and keeps its own images from `build/Dockerfile`
+(`Cross.toml`), and the release runs pull `ubuntu:<release>`.
 
 ## Exceptions
 

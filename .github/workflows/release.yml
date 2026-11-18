@@ -1,0 +1,270 @@
+# A release from a version tag (release spec, "Release channels"): the
+# whole gate, the by-hand container suites, then each asset built with its
+# version, commit and channel baked in, checked, and published.
+#
+# Tags are bare semantic versions: `1.0.0` (stable) or `1.0.0-rc.N` (a
+# prerelease). A stable tag publishes the plain `release` assets and the
+# `_beta` ones, from the same code, so a beta host stays beta across
+# stable releases; a prerelease publishes `_beta` assets only.
+#
+# Written locally (2026-11-18) and not yet run: creating saltyorg/sb-rust,
+# pushing tags and publishing are remote actions the maintainer authorises
+# separately (and the user rules ask for green CI on the exact commit
+# before any tag is pushed).
+name: release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # A release reaches every host on its channel as root (`sb update`
+  # self-updates without a question), so only a commit on main whose ci
+  # run passed is released (the user rules: green CI on the exact commit
+  # before a tag). The tag is semver without leading zeros, as semver
+  # reads it.
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      assets: ${{ steps.plan.outputs.assets }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The commit is on main and its ci passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_SHA is not on main" >&2; exit 1; }
+          passed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success" --jq '.total_count')
+          [[ $passed -gt 0 ]] || { echo "ci.yml has no successful run on $GITHUB_SHA" >&2; exit 1; }
+      - id: plan
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          n='(0|[1-9][0-9]*)'
+          [[ $TAG =~ ^$n\.$n\.$n(-rc\.$n)?$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          echo "version=$TAG" >>"$GITHUB_OUTPUT"
+          if [[ $TAG == *-rc.* ]]; then
+            echo "prerelease=true" >>"$GITHUB_OUTPUT"
+            echo 'assets=[{"arch":"amd64","channel":"beta"},{"arch":"arm64","channel":"beta"}]' >>"$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >>"$GITHUB_OUTPUT"
+            echo 'assets=[{"arch":"amd64","channel":"release"},{"arch":"arm64","channel":"release"},{"arch":"amd64","channel":"beta"},{"arch":"arm64","channel":"beta"}]' >>"$GITHUB_OUTPUT"
+          fi
+
+  # `check.sh full` with no base: every step, the production build's size,
+  # its runs on each release and the aarch64 build under QEMU included.
+  gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,cross@0.2.5
+      - name: gitleaks and diff-cover
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+          pipx install diff-cover==9.7.2
+          rustup component add llvm-tools
+      - name: check.sh full
+        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME env "PATH=$PATH" scripts/check.sh full
+
+  # The test suite on arm64, natively (its full gate's x86_64-only steps
+  # ran above).
+  gate-arm64:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04-arm, ubuntu-24.04-arm, ubuntu-26.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0
+      - name: gitleaks and diff-cover
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+          pipx install diff-cover==9.7.2
+          rustup component add llvm-tools
+      - name: check.sh task
+        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME env "PATH=$PATH" scripts/check.sh task
+
+  # The suites CONSTRAINTS.md and the specs run by hand at each checkpoint:
+  # the completion shells, the journal matrix and, once a stable release
+  # exists for its live --repair cases, the install-script containers.
+  containers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross@0.2.5
+      - name: Completion shells
+        run: |
+          cargo build --locked -p sb
+          crates/completion/tests/shells.sh
+      - name: Journal matrix
+        run: |
+          bin=$(crates/journal/tests/example.sh)
+          for release in 22.04 24.04 26.04; do
+            SBJ_BIN=$bin crates/journal/tests/compare.sh "$release"
+            SBJ_BIN=$bin crates/journal/tests/compat.sh 22.04 20.04 18.04 -- "$release"
+            SBJ_BIN=$bin crates/journal/tests/follow.sh "$release"
+            SBJ_BIN=$bin crates/journal/tests/stress.sh "$release"
+          done
+      # The token only for the probe, not for the build or the suite.
+      - name: A stable release exists
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" >/dev/null 2>&1; then
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "no stable release yet: the --repair cases have nothing to fetch"
+            echo "exists=false" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Install-script containers
+        if: steps.released.outputs.exists == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          SB_VERSION=$TAG SB_GIT_COMMIT=${GITHUB_SHA::7} SB_CHANNEL=release \
+            cargo build --locked --release -p sb
+          SBI_SB=$PWD/target/release/sb install/tests/containers.sh
+
+  build:
+    needs: [plan, gate, gate-arm64, containers]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        asset: ${{ fromJSON(needs.plan.outputs.assets) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross@0.2.5
+      # Cross.toml passes SB_VERSION, SB_GIT_COMMIT and SB_CHANNEL into
+      # cross's container (sb-M4).
+      - name: Build
+        env:
+          SB_VERSION: ${{ needs.plan.outputs.version }}
+          SB_CHANNEL: ${{ matrix.asset.channel }}
+          ARCH: ${{ matrix.asset.arch }}
+        run: |
+          export SB_GIT_COMMIT=${GITHUB_SHA::7}
+          target=x86_64-unknown-linux-gnu
+          [[ $ARCH == arm64 ]] && target=aarch64-unknown-linux-gnu
+          CARGO_TARGET_DIR=$PWD/target/cross-gnu cross build --locked -p sb --profile production --target "$target"
+          name=sb_linux_${ARCH}
+          [[ $SB_CHANNEL == beta ]] && name=${name}_beta
+          mkdir -p dist
+          cp "target/cross-gnu/$target/production/sb" "dist/$name"
+          echo "ASSET=dist/$name" >>"$GITHUB_ENV"
+      # The binary reports the tag's version, its own channel and a valid
+      # uv_version: amd64 run directly, arm64 under QEMU user-mode.
+      - name: Check
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          CHANNEL: ${{ matrix.asset.channel }}
+          ARCH: ${{ matrix.asset.arch }}
+        run: |
+          if [[ $ARCH == arm64 ]]; then
+            sum=$(sha256sum build/qemu.Dockerfile)
+            image="sb-rust-gate/qemu-check:${sum:0:12}"
+            docker build --quiet --tag "$image" --file build/qemu.Dockerfile build
+            json=$(docker run --rm --network none -e SB_LOG_DIR=/tmp/sb-log -v "$PWD/$ASSET:/sb:ro" \
+              "$image" qemu-aarch64-static -L /usr/aarch64-linux-gnu /sb version --json)
+          else
+            json=$(SB_LOG_DIR=$RUNNER_TEMP/sb-log "$ASSET" version --json)
+          fi
+          printf '%s\n' "$json"
+          jq -e --arg v "$VERSION" --arg c "$CHANNEL" \
+            '.version == $v and .channel == $c and (.uv_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' <<<"$json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset.arch }}-${{ matrix.asset.channel }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  # The `release` environment's required reviewers approve each
+  # publication (set up with the repository: a remote setting the
+  # maintainer authorises separately).
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      # GitHub records each asset's sha256 digest, which self-update
+      # requires (release spec, assumption 3); install.sh checks the pinned
+      # URL, the ELF machine, the version and the channel instead.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.version }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+        run: |
+          # No --latest: gh marks the highest stable release latest itself,
+          # so a backport (1.0.5 after 1.1.0) doesn't become install.sh's.
+          flags=(--verify-tag --title "$TAG" --generate-notes)
+          if [[ $PRERELEASE == true ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" "${flags[@]}" --repo "$GITHUB_REPOSITORY" dist/*

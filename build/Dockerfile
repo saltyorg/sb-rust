@@ -4,7 +4,12 @@
 # Cross.toml's `dockerfile` and runs cargo in it with the host's
 # toolchain mounted:
 # https://github.com/cross-rs/cross/blob/v0.2.5/docs/cross_toml.md#targettargetdockerfile
-FROM ubuntu:22.04
+# Pinned by digest (sb-L8): a tag can be moved to another image, a digest
+# can't. It is the multi-architecture index's digest of ubuntu:22.04 as
+# pulled on 2026-11-18 (image created 2026-11-10). It is bumped by hand
+# (or by Renovate once configured), with build/qemu.Dockerfile's beside it.
+# https://docs.docker.com/reference/dockerfile/#from
+FROM ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c
 ARG DEBIAN_FRONTEND=noninteractive
 # gcc and libc6-dev: the C compiler and glibc headers aws-lc-sys builds
 # with, and the linker cargo calls (`cc`).
