@@ -136,7 +136,7 @@ impl Releases {
             wait_divisor,
         } = bases;
         let certificate = reqwest::Certificate::from_der(&certificate)
-            .map_err(|err| Error::Client(err.to_string()))?;
+            .map_err(|err| Error::Client(crate::lookup::causes(err)))?;
         // The later `read_timeout` replaces the production one.
         let builder = builder(user_agent)
             .no_proxy()

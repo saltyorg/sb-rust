@@ -77,7 +77,10 @@ fn client(endpoints: &Endpoints, local: Option<IpAddr>) -> Option<reqwest::Clien
         .local_address(local)
         .build()
         .map_err(reqwest::Error::without_url)
-        .inspect_err(|err| tracing::warn!(error = %err, "client not built"))
+        // With its causes: reqwest's own text is only "builder error".
+        .inspect_err(|err| {
+            tracing::warn!(error = %sb_config::http::error_chain(err), "client not built");
+        })
         .ok()
 }
 

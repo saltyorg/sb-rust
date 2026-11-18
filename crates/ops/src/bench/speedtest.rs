@@ -765,6 +765,57 @@ mod tests {
         );
     }
 
+    /// Speedtest's own error output (docs/platform-notes/speedtest.md,
+    /// "Failure": exit 2, nothing on stdout, a JSON log line on stderr),
+    /// and the same log object on stdout with an exit of 0: the first is
+    /// the row's `Test failed`, the second `Failed to parse results`.
+    #[tokio::test]
+    async fn speedtest_s_error_object_is_test_failed_or_unparsed() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let token = CancellationToken::new();
+        let error = r#"{"type":"log","timestamp":"2026-11-18T00:00:00Z","message":"Configuration - NO-SUCH-HOST","level":"error"}"#;
+        let program = |name: &str, stdout: &str, stderr: &str, code: i32| {
+            let path = dir.path().join(name);
+            let script = format!(
+                "#!/bin/sh\ncat <<'EOF'\n{stdout}\nEOF\ncat >&2 <<'EOF'\n{stderr}\nEOF\nexit {code}\n"
+            );
+            std::fs::write(&path, script).expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+            path
+        };
+        let failed = program("failed", "", error, 2);
+        let failed = run_node(&failed, dir.path(), NODES[1], NODE_TIMEOUT, &token)
+            .await
+            .expect("ran");
+        assert_eq!(failed, Measured::Failed);
+        let logged = program("logged", error, "", 0);
+        let logged = run_node(&logged, dir.path(), NODES[2], NODE_TIMEOUT, &token)
+            .await
+            .expect("ran");
+        assert_eq!(logged, Measured::Unparsed);
+        let text = rendered(&Outcome::Nodes(vec![
+            (NODES[1], failed),
+            (NODES[2], logged),
+        ]));
+        // Each node's row: its name, then the text in the next column.
+        let row = |name: &str| -> Vec<String> {
+            text.lines()
+                .find(|line| line.contains(name))
+                .map_or_default(|line| line.split('│').map(|cell| cell.trim().to_owned()).collect())
+        };
+        assert_eq!(
+            row(NODES[1].name).get(2).map(String::as_str),
+            Some("Test failed"),
+            "{text}"
+        );
+        assert_eq!(
+            row(NODES[2].name).get(2).map(String::as_str),
+            Some("Failed to parse results"),
+            "{text}"
+        );
+    }
+
     #[tokio::test]
     async fn an_interrupted_node_is_an_error() {
         let _spawns = crate::bench::SPAWNS.lock().await;

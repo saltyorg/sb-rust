@@ -208,9 +208,11 @@ impl Releases {
         builder: reqwest::ClientBuilder,
         [proxy, api, download]: [&str; 3],
     ) -> Result<Self, Error> {
+        // With reqwest's causes (cli-core's chain, as every transport
+        // error here): "builder error" alone names none.
         let client = builder
             .build()
-            .map_err(|err| Error::Client(err.to_string()))?;
+            .map_err(|err| Error::Client(lookup::causes(err)))?;
         let parse = |base: &str| {
             Url::parse(base).map_err(|err| Error::Client(format!("base {base}: {err}")))
         };
@@ -267,6 +269,18 @@ fn builder(user_agent: &str) -> reqwest::ClientBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client that can't be built names reqwest's cause, not only its
+    /// "builder error" (in a container without CA certificates, bench's
+    /// Speedtest row said nothing more): a User-Agent that isn't a header
+    /// value makes reqwest's builder fail with a cause of its own.
+    #[test]
+    fn a_client_that_cannot_be_built_names_the_cause() {
+        let Err(Error::Client(text)) = Releases::production("sb/\n1") else {
+            panic!("the client was built");
+        };
+        assert_eq!(text, "builder error: failed to parse header value");
+    }
 
     #[test]
     fn the_architecture_is_std_s_name() {
