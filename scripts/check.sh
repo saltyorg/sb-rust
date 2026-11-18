@@ -12,7 +12,8 @@
 #                                  score, startup budget
 #   scripts/check.sh full [base]   before committing (and CI): commit
 #                                  messages after base, then task +
-#                                  dependencies, architecture, binary size
+#                                  project coverage floors, dependencies,
+#                                  architecture, binary size
 #
 # base: the commit the work started from (default HEAD = uncommitted work).
 # A change that touches only docs/ and tasks/ ends task and full after the
@@ -89,6 +90,13 @@ COVERAGE_MIN=90       # % of changed lines covered
 MUTATION_MIN=80       # % of viable mutants in changed code caught
 STARTUP_MAX_MS=10     # median ms for `sb --help` and `sb version`
 SIZE_MAX_BYTES=45711520 # production glibc binary, at most sb-go's size
+# The ratchet (ADR-025), at full: the finished tree's figures, each failing
+# only past its tolerance.
+PROJECT_LINES_MIN=98.40     # % of the lines under crates/ covered
+PROJECT_FUNCTIONS_MIN=97.66 # % of the functions under crates/ covered
+PROJECT_COVERAGE_TOLERANCE_MAX=0.5 # percentage points below a coverage floor
+SIZE_RATCHET_MAX_BYTES=21693856 # production glibc binary
+SIZE_TOLERANCE_MAX_PCT=5    # % above the size ratchet
 # The releases the production binary must run on: the host spec's runtime
 # list, sb-host's SUPPORTED_RUNTIME_RELEASES. The oldest is the image's
 # (build/Dockerfile, ADR-020).
@@ -1153,6 +1161,47 @@ task() {
   ' "$STARTUP_MAX_MS"
 }
 
+# project_coverage: the ratchet's coverage floors (ADR-025), over the files
+# under crates/ in the coverage run's lcov report: each file's LF and LH
+# (lines found and hit) and FNF and FNH (functions), as cargo-llvm-cov
+# writes them (https://github.com/linux-test-project/lcov/blob/master/man/geninfo.1,
+# "TRACEFILE FORMAT"). Over crates/ these totals are the ones ADR-014's
+# measurement takes from `cargo llvm-cov --json --summary-only`. Compared
+# in hundredths of a percent, as integers (the floors have two decimals):
+# a figure at a floor less its tolerance passes, one below it fails. A
+# file is matched by the root's logical or physical path, whichever the
+# report records.
+project_coverage() {
+  local lcov=target/lcov.info
+  [[ -s $lcov ]] || { echo "check: the coverage run left no $lcov" >&2; exit 2; }
+  if [[ $(id -u) != 0 ]]; then
+    echo "not root: the root tests didn't run, so coverage reads lower than the floors were measured at (ADR-025)"
+  fi
+  awk -v crates="$root/crates/" -v physical="$(cd crates && pwd -P)/" -v lines="$PROJECT_LINES_MIN" \
+    -v functions="$PROJECT_FUNCTIONS_MIN" -v tol="$PROJECT_COVERAGE_TOLERANCE_MAX" '
+    /^SF:/ { on = index(substr($0, 4), crates) == 1 || index(substr($0, 4), physical) == 1; next }
+    !on { next }
+    /^LF:/ { lf += substr($0, 4) }
+    /^LH:/ { lh += substr($0, 4) }
+    /^FNF:/ { fnf += substr($0, 5) }
+    /^FNH:/ { fnh += substr($0, 5) }
+    # One figure, printed; true when it is below its floor less the
+    # tolerance.
+    function judge(name, hit, found, floor,   least, low) {
+      least = int((floor - tol) * 100 + 0.5)
+      low = hit * 10000 < least * found
+      printf "%s: %.3f%% (%d of %d), floor %s%%, failing below %.2f%%%s\n", name, 100 * hit / found, hit, found, floor,
+        least / 100, low ? ": below" : ""
+      return low
+    }
+    END {
+      if (!lf || !fnf) { print "check: the coverage report has nothing under crates/" > "/dev/stderr"; exit 2 }
+      bad = judge("lines", lh, lf, lines)
+      bad += judge("functions", fnh, fnf, functions)
+      exit bad ? 1 : 0
+    }' "$lcov"
+}
+
 full() {
   # First: it takes seconds, so a bad subject fails before any build.
   step "commit messages after $base (scripts/check-commit-messages.sh)"
@@ -1167,12 +1216,16 @@ full() {
     skip "only docs/ and tasks/ changed since $base"
     return
   fi
+  step "project coverage (crates/): lines >= ${PROJECT_LINES_MIN}%, functions >= ${PROJECT_FUNCTIONS_MIN}%, less ${PROJECT_COVERAGE_TOLERANCE_MAX} points"
+  project_coverage
   step "dependencies and architecture (cargo-deny, shipped graph)"
   need cargo-deny
   cargo deny --locked --manifest-path crates/sb/Cargo.toml check
   step "sb's normal build has no testing feature"
   testing_feature_check
-  step "binary size <= ${SIZE_MAX_BYTES} bytes (production glibc, built on ubuntu:${RUNTIME_RELEASES[0]} through cross)"
+  # The ratchet's ceiling: today's size plus its tolerance (ADR-025).
+  local size_ratchet=$((SIZE_RATCHET_MAX_BYTES + SIZE_RATCHET_MAX_BYTES * SIZE_TOLERANCE_MAX_PCT / 100))
+  step "binary size <= ${size_ratchet} bytes (the ratchet's ${SIZE_RATCHET_MAX_BYTES} plus ${SIZE_TOLERANCE_MAX_PCT}%) and <= ${SIZE_MAX_BYTES} (production glibc, built on ubuntu:${RUNTIME_RELEASES[0]} through cross)"
   if [[ $arch != x86_64 ]]; then
     # The image's C compiler builds for its own architecture, and the
     # production build is x86_64 (ADR-020).
@@ -1199,7 +1252,11 @@ full() {
         --target x86_64-unknown-linux-gnu
     local sb="$cross_target/x86_64-unknown-linux-gnu/production/sb"
     size=$(stat -c %s "$sb")
-    echo "sb: ${size} bytes"
+    echo "sb: ${size} bytes; at most ${size_ratchet} bytes (the ratchet), ${SIZE_MAX_BYTES} (the ceiling)"
+    if ((size > size_ratchet)); then
+      echo "check: sb is above the ratchet's ${size_ratchet} bytes (ADR-025)" >&2
+      exit 1
+    fi
     ((size <= SIZE_MAX_BYTES))
     # A binary one release's glibc or loader can't load fails here. No
     # network: `sb version` needs none. The container is removed on exit;

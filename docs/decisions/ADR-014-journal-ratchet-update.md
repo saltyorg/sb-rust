@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-11, sb-journal Checkpoint C)
+Accepted (maintainer, 2026-11-11, sb-journal Checkpoint C); values
+superseded by [ADR-025](ADR-025-ratchet-enforced.md), which enforces the
+rows
 
 ## Date
 

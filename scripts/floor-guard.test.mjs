@@ -1173,7 +1173,7 @@ const CRATES = {
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
 const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'getconf', 'git', 'grep', 'id', 'mkdir',
-  'ip', 'mktemp', 'mount', 'rm', 'sed', 'setsid', 'sleep', 'sort', 'stat', 'unshare', 'xargs'];
+  'ip', 'mktemp', 'mount', 'rm', 'sed', 'setsid', 'sleep', 'sort', 'stat', 'truncate', 'unshare', 'xargs'];
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
@@ -1199,6 +1199,22 @@ const stubs = (versions, arch) => {
   };
   // cross's container caps, which a scope around check.sh doesn't reach.
   out.cross += 'printf \'%s\\n\' "${CROSS_CONTAINER_OPTS-unset}" >>"$STUB_LOG.cross-opts"\n';
+  // With SIZE_BYTES set, the production binary is that many bytes (ADR-025).
+  out.cross += 'if [ -n "${SIZE_BYTES:-}" ]; then truncate -s "$SIZE_BYTES" "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/production/sb"; fi\n';
+  // The coverage run's lcov report (--output-path): a file under crates/
+  // with COV_LF lines, COV_LH of them hit, COV_FNF functions and COV_FNH
+  // hit (99% of each by default), then a prototype's file with nothing
+  // hit, which the project floors must not count (ADR-025). With COV_NONE
+  // set, only the prototype's file.
+  out.cargo += 'if [ "$1" = llvm-cov ]; then\n'
+    + '  o=; for a in "$@"; do [ "$o" = next ] && o="$a"; [ "$a" = --output-path ] && o=next; done\n'
+    + '  if [ -n "$o" ] && [ "$o" != next ]; then\n'
+    + '    : >"$o"\n'
+    + '    if [ -z "${COV_NONE:-}" ]; then printf \'SF:%s/crates/foo/src/lib.rs\\nFNF:%s\\nFNH:%s\\nLF:%s\\nLH:%s\\nend_of_record\\n\' '
+    + '"$PWD" "${COV_FNF:-100}" "${COV_FNH:-99}" "${COV_LF:-1000}" "${COV_LH:-990}" >>"$o"; fi\n'
+    + '    printf \'SF:%s/prototypes/p/src/lib.rs\\nFNF:50\\nFNH:0\\nLF:500\\nLH:0\\nend_of_record\\n\' "$PWD" >>"$o"\n'
+    + '  fi\n'
+    + 'fi\n';
   // The NEXTEST_* and CARGO_MUTANTS_* variables cargo (cargo-mutants, so
   // nextest) is run with.
   out.cargo += 'env | grep -E \'^(NEXTEST|CARGO_MUTANTS)_\' >>"$STUB_LOG.nextest-env" || true\n';
@@ -1998,6 +2014,53 @@ test('check.sh full: a release that cannot run the binary fails the gate, naming
 
 test('check.sh full: docker failing itself (status 125) means the check could not run, not that sb failed', () => {
   refuses(checkRun('full', { env: { DOCKER_DOWN: '1' } }), 2, /docker could not run a ubuntu:22\.04 container/);
+});
+
+// The ratchet (ADR-025): full enforces the project's coverage floors over
+// crates/ from the coverage run's lcov report, and the binary's size
+// ceiling, each with its tolerance; the figures are printed every run.
+const checkConst = (name) => {
+  const m = new RegExp('^' + name + '=(\\S+)', 'm').exec(readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'));
+  assert.ok(m, name + ' in check.sh');
+  return Number(m[1]);
+};
+const crateWork = { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } };
+// Hits out of 10000 at a percentage, rounded to the nearest hundredth.
+const hits = (pct) => String(Math.round(pct * 100));
+test('check.sh full: the project coverage over crates/ is printed, and the prototype is not counted', () => {
+  const r = checkRun('full', crateWork);
+  passes(r, 'full');
+  assert.match(r.output, /^lines: 99\.000% \(990 of 1000\), floor [\d.]+%, failing below [\d.]+%$/m, r.output);
+  assert.match(r.output, /^functions: 99\.000% \(99 of 100\), floor [\d.]+%, failing below [\d.]+%$/m, r.output);
+});
+
+test('check.sh full: coverage at a floor less its tolerance passes, below it fails; task leaves it to full', () => {
+  const tol = checkConst('PROJECT_COVERAGE_TOLERANCE_MAX');
+  for (const [lf, lh, fnf, fnh] of [['COV_LF', 'COV_LH', 'COV_FNF', 'COV_FNH'], ['COV_FNF', 'COV_FNH', 'COV_LF', 'COV_LH']]) {
+    const floor = checkConst(lf === 'COV_LF' ? 'PROJECT_LINES_MIN' : 'PROJECT_FUNCTIONS_MIN');
+    const at = { [lf]: '10000', [lh]: hits(floor - tol), [fnf]: '100', [fnh]: '100' };
+    passes(checkRun('full', { ...crateWork, env: at }), 'full');
+    const below = { ...at, [lh]: String(Number(hits(floor - tol)) - 1) };
+    const [name, other] = lf === 'COV_LF' ? ['lines', 'functions'] : ['functions', 'lines'];
+    const failed = checkRun('full', { ...crateWork, env: below });
+    refuses(failed, 1, new RegExp('^' + name + ': .*: below$', 'm'));
+    assert.match(failed.output, new RegExp('^' + other + ': .*%$', 'm'), failed.output);
+    passes(checkRun('task', { ...crateWork, env: below }), 'task');
+  }
+});
+
+test('check.sh full: a coverage report with nothing under crates/ means the check could not run', () => {
+  refuses(checkRun('full', { ...crateWork, env: { COV_NONE: '1' } }), 2, /nothing under crates\//);
+});
+
+test('check.sh full: the binary at its ratchet ceiling plus the tolerance passes, a byte more fails', () => {
+  const today = checkConst('SIZE_RATCHET_MAX_BYTES'), pct = checkConst('SIZE_TOLERANCE_MAX_PCT');
+  const ceiling = today + Math.floor(today * pct / 100);
+  const at = checkRun('full', { ...crateWork, env: { SIZE_BYTES: String(ceiling) } });
+  passes(at, 'full');
+  assert.match(at.output, new RegExp('sb: ' + ceiling + ' bytes'), at.output);
+  assert.match(at.output, new RegExp('at most ' + ceiling + ' bytes'), at.output);
+  refuses(checkRun('full', { ...crateWork, env: { SIZE_BYTES: String(ceiling + 1) } }), 1, /above the ratchet/);
 });
 
 test('check.sh: diffs are plain whatever git is configured to do', () => {

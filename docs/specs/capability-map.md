@@ -351,11 +351,14 @@ To discuss with the maintainer once every module is done, not before:
   files need improving, or moving away from YAML for a good reason, sb
   may redesign them to fit, but Saltbox then carries both forms until
   sb-go is retired.
-- **The ratchet rows** (CONSTRAINTS.md, "Measured, not yet enforced";
-  maintainer, 2026-11-13). They stay as they are until then. With every
-  command in place they are re-measured, and the maintainer decides how
-  far they can be cut down. The fixed limits (the 10 ms startup budget,
-  the size ceiling) gate every change meanwhile. Last measured on the
+- **The ratchet rows** (maintainer, 2026-11-13; decided 2026-11-18,
+  [ADR-025](../decisions/ADR-025-ratchet-enforced.md)). Re-measured with
+  every command in place, they are now enforced by `check.sh full` at the
+  finished tree's figures: line coverage over `crates/` at least 98.40%
+  and function coverage at least 97.66%, each with 0.5 points of
+  tolerance, and the production binary at most 21,693,856 bytes, with 5%.
+  The `sb --help` row is gone; the 10 ms budget and the size ceiling
+  stay. Last measured on the
   finished tree, main at c5b79ca (2026-11-18, every module task merged,
   glibc build), the way the gate and ADR-014 measure: coverage 98.40% of
   lines (78,292 of 79,565) and 97.66% of functions (9,580 of 9,810) over
