@@ -98,7 +98,7 @@ fn each_file_is_a_row_under_the_prompt_with_its_name_lined_up() {
             "  Inventory Settings     localhost.yml",
         ]
     );
-    assert_eq!(rows[23], "↑↓ move · Enter open · q quit");
+    assert_eq!(rows[23], "↑↓ move · Enter open · / filter · q quit");
 }
 
 /// Too narrow for a title and its name on one row: each name goes under
@@ -170,6 +170,93 @@ fn keys_move_the_selection_and_stop_at_either_end() {
     assert_eq!(p.input(Input::Key(alt_q)), Flow::Unchanged);
     assert_eq!(p.state.selected(), Some(5));
     assert_eq!(p.chosen, None);
+}
+
+/// The page and end keys (tui spec, "Keys: one map for every screen"):
+/// `PgDn` and Space a page down, `PgUp` and `b` up, Home and `g` the first
+/// file, End and `G` the last.
+#[test]
+fn the_page_and_end_keys_move_the_selection() {
+    let mut p = picker();
+    // Four rows of list at 80×7: the title, a blank row, the list, the
+    // footer.
+    drawn(&mut p, 80, 7);
+    for (code, at) in [
+        (KeyCode::PageDown, 4),
+        (KeyCode::Char(' '), 5),
+        (KeyCode::PageUp, 1),
+        (KeyCode::Char('b'), 0),
+        (KeyCode::End, 5),
+        (KeyCode::Home, 0),
+        (KeyCode::Char('G'), 5),
+        (KeyCode::Char('g'), 0),
+    ] {
+        assert_eq!(press(&mut p, code), Flow::Redraw, "{code:?}");
+        assert_eq!(p.state.selected(), Some(at), "{code:?}");
+    }
+}
+
+/// `/` filters the files by title or name, smart case, as the log
+/// picker's filter (sb-go's edit picker had `/`): Enter keeps the filter
+/// and opens the file it leaves selected, Esc clears it, and `q` typed in
+/// the line is the line's.
+#[test]
+fn slash_filters_the_files_and_enter_opens_the_one_shown() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Char('/'));
+    for c in "vlanq".chars() {
+        assert_eq!(press(&mut p, KeyCode::Char(c)), Flow::Redraw);
+    }
+    press(&mut p, KeyCode::Backspace);
+    let rows = screen(&drawn(&mut p, 80, 24));
+    assert_eq!(
+        rows[2], "› Hetzner VLAN Settings  hetzner_vlan.yml",
+        "{rows:?}"
+    );
+    assert_eq!(rows[3], "", "{rows:?}");
+    assert!(rows[23].starts_with(" Filter: vlan"), "{rows:?}");
+    // Enter keeps the filter; a second Enter opens the file.
+    assert_eq!(press(&mut p, KeyCode::Enter), Flow::Redraw);
+    assert_eq!(press(&mut p, KeyCode::Enter), Flow::Quit);
+    assert_eq!(p.chosen, Some(4));
+}
+
+/// Esc goes back one step: it clears a filter in effect, then leaves.
+#[test]
+fn esc_clears_the_filter_then_leaves() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('Y'));
+    press(&mut p, KeyCode::Enter);
+    // Smart case: an upper-case letter matches exactly, so nothing.
+    assert!(
+        !screen(&drawn(&mut p, 80, 24))
+            .iter()
+            .any(|r| r.contains("yml"))
+    );
+    assert_eq!(press(&mut p, KeyCode::Enter), Flow::Unchanged);
+    assert_eq!(press(&mut p, KeyCode::Esc), Flow::Redraw);
+    assert_eq!(
+        screen(&drawn(&mut p, 80, 24))[2],
+        "› Accounts               accounts.yml"
+    );
+    assert_eq!(press(&mut p, KeyCode::Esc), Flow::Quit);
+    assert_eq!(p.chosen, None);
+}
+
+/// A click on a filtered list opens the file shown there, and a paste goes
+/// into the filter line whole.
+#[test]
+fn a_click_on_a_filtered_list_is_the_file_shown() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Char('/'));
+    assert_eq!(p.input(Input::Paste("backup\n".into())), Flow::Redraw);
+    press(&mut p, KeyCode::Enter);
+    drawn(&mut p, 80, 24);
+    let now = Instant::now();
+    p.click(left(4, 2), now);
+    assert_eq!(p.click(left(4, 2), now), Flow::Quit);
+    assert_eq!(p.chosen, Some(3));
 }
 
 #[test]

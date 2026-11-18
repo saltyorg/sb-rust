@@ -903,7 +903,10 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
 - **Picker** (`sb edit` with no subcommand). A ratatui list screen with
   sb-go's prompt line, "Select a Saltbox configuration file to edit:",
   each item's title and shown name, and a key hint line. Keys: Up/Down
-  and `k`/`j` move, Enter opens, `q` and Esc quit with exit 0. Ctrl+C
+  and `k`/`j` move, Enter opens, `q` and Esc quit with exit 0
+  (*amended 2026-11-18,* "Keys: one map for every screen": the page and
+  end keys, and `/` filtering by title or name, Esc clearing it first).
+  Ctrl+C
   quits with 130 (cli-core's `Shutdown`). Mouse: click selects, double
   click or Enter opens, and the wheel moves. Click targets come from the
   rects recorded while drawing (the map's `tui` row). It needs a terminal

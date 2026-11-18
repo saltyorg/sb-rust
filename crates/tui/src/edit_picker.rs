@@ -12,8 +12,12 @@
 //! `select_next` move it, clamped to the last row at once (as the
 //! announcement viewer's list).
 //!
-//! - **Keys:** Up/Down and `k`/`j` move, Enter opens, `q` and Esc leave
-//!   with nothing chosen; Ctrl-C is the event loop's (130).
+//! - **Keys** (tui spec, "Keys: one map for every screen"): Up/Down and
+//!   `k`/`j` move; PgUp/PgDn and `b`/Space a page; Home/End and `g`/`G`
+//!   the first and last file; Enter opens; `/` filters by title or name
+//!   (a ratatui-textarea line, smart case as the log picker's: Enter keeps
+//!   it, Esc clears it); Esc clears a filter in effect, then leaves, as
+//!   `q` does, with nothing chosen; Ctrl-C is the event loop's (130).
 //! - **Mouse:** the wheel moves; a click selects the row under it, and a
 //!   second click on that row within [`DOUBLE_CLICK`] opens it. The row
 //!   under the pointer comes from the list's area and its rows' heights as
@@ -33,6 +37,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line as TextLine, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui_textarea::{CursorMove, TextArea};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::theme::{Role, Theme};
 
@@ -46,6 +51,11 @@ const MARK: &str = "› ";
 
 /// The space between a title and its name on one row.
 const GAP: usize = 2;
+
+/// The label before the filter line, and the hint after it, as the log
+/// picker's.
+const FILTER_LABEL: &str = " Filter: ";
+const FILTER_HINT: &str = "Enter keeps · Esc clears ";
 
 /// How soon a second click on the same row opens it. crossterm reports
 /// presses only (no double click,
@@ -104,6 +114,12 @@ pub async fn pick<T: Copy>(
 struct EditPicker {
     items: Vec<Item>,
     theme: Theme,
+    /// The filter in effect, and the files it shows, by index into `items`.
+    query: String,
+    shown: Vec<usize>,
+    /// The filter line while it is open.
+    editing: Option<TextArea<'static>>,
+    /// The selection, a row of `shown`.
     state: ListState,
     /// The list's area in the last frame.
     area: Rect,
@@ -119,6 +135,9 @@ impl EditPicker {
         Self {
             items: items.to_vec(),
             theme,
+            query: String::new(),
+            shown: (0..items.len()).collect(),
+            editing: None,
             state: ListState::default().with_selected((!items.is_empty()).then_some(0)),
             area: Rect::default(),
             height: 1,
@@ -138,13 +157,42 @@ impl EditPicker {
     }
 
     /// Open the selected file, if one is selected (the selection is
-    /// always a row: [`EditPicker::step`] clamps it, clicks map to rows).
+    /// always a row shown: [`EditPicker::step`] clamps it, clicks map to
+    /// rows, a filter selects its first).
     fn choose(&mut self) -> Flow {
-        let Some(i) = self.state.selected() else {
+        let Some(&i) = self.state.selected().and_then(|row| self.shown.get(row)) else {
             return Flow::Unchanged;
         };
         self.chosen = Some(i);
         Flow::Quit
+    }
+
+    /// The filter is `query` now: the files whose title or name match it
+    /// (the viewer's smart case, `search::matches`), the first selected.
+    fn filter(&mut self, query: String) {
+        let hit = |text: &str| !crate::search::matches(text, &query).is_empty();
+        self.shown = (0..self.items.len())
+            .filter(|&i| query.is_empty() || hit(self.items[i].title) || hit(self.items[i].shown))
+            .collect();
+        self.query = query;
+        self.state.select((!self.shown.is_empty()).then_some(0));
+    }
+
+    /// Move the selection with `ListState`'s own `movement`, then clamp it
+    /// to the rows shown at once (ratatui-widgets 0.3.2 `list/state.rs`
+    /// clamps only at render), as the fact editor does.
+    fn move_selection(&mut self, movement: impl FnOnce(&mut ListState)) {
+        let Some(last) = self.shown.len().checked_sub(1) else {
+            return;
+        };
+        movement(&mut self.state);
+        let at = self.state.selected().map_or(0, |at| at.min(last));
+        self.state.select(Some(at));
+    }
+
+    /// A page: the rows the list showed in the last frame.
+    fn page(&self) -> usize {
+        usize::from(self.area.height / self.height.max(1)).max(1)
     }
 
     /// Move the selection one row, stopping at either end (sb-go's list
@@ -153,7 +201,7 @@ impl EditPicker {
     /// `list/state.rs`), done now, so an Enter or a double click before
     /// that render never sees a row past the end.
     fn step(&mut self, down: bool) {
-        if self.items.is_empty() {
+        if self.shown.is_empty() {
             return;
         }
         if down {
@@ -161,26 +209,105 @@ impl EditPicker {
         } else {
             self.state.select_previous();
         }
-        let last = self.items.len() - 1;
+        let last = self.shown.len() - 1;
         if let Some(i) = self.state.selected() {
             self.state.select(Some(i.min(last)));
         }
     }
 
+    /// The keys that move the selection, with the filter line open or not.
+    fn movement(&mut self, code: KeyCode) -> bool {
+        let page = u16::try_from(self.page()).unwrap_or(u16::MAX);
+        match code {
+            KeyCode::Up => self.step(false),
+            KeyCode::Down => self.step(true),
+            KeyCode::PageUp => self.move_selection(|l| l.scroll_up_by(page)),
+            KeyCode::PageDown => self.move_selection(|l| l.scroll_down_by(page)),
+            _ => return false,
+        }
+        true
+    }
+
     fn key(&mut self, key: KeyEvent) -> Flow {
+        if self.editing.is_some() {
+            return self.edit_key(key);
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             return Flow::Unchanged;
         }
+        if self.movement(key.code) {
+            return Flow::Redraw;
+        }
+        // The aliases every screen shares (tui spec, "Keys: one map for
+        // every screen").
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.step(false),
-            KeyCode::Down | KeyCode::Char('j') => self.step(true),
+            KeyCode::Char('k') => self.step(false),
+            KeyCode::Char('j') => self.step(true),
+            KeyCode::Char('b') => _ = self.movement(KeyCode::PageUp),
+            KeyCode::Char(' ') => _ = self.movement(KeyCode::PageDown),
+            KeyCode::Home | KeyCode::Char('g') => self.move_selection(ListState::select_first),
+            KeyCode::End | KeyCode::Char('G') => self.move_selection(ListState::select_last),
             KeyCode::Enter => return self.choose(),
+            KeyCode::Char('/') => {
+                // The line opens on the filter in effect, the cursor at its
+                // end (ratatui-textarea's `TextArea::new` and
+                // `move_cursor`), as the log picker's.
+                let mut line = TextArea::new(vec![self.query.clone()]);
+                line.move_cursor(CursorMove::End);
+                line.set_cursor_line_style(Style::default());
+                line.set_style(self.style(Role::Text));
+                self.editing = Some(line);
+            }
+            KeyCode::Esc if !self.query.is_empty() => self.filter(String::new()),
             KeyCode::Char('q') | KeyCode::Esc => return Flow::Quit,
             _ => return Flow::Unchanged,
         }
+        Flow::Redraw
+    }
+
+    /// A key while the filter line is open: the list narrows as it is
+    /// typed; Enter keeps the filter, Esc clears it, the arrows and page
+    /// keys still move. Every other key is the line's
+    /// (ratatui-textarea's `TextArea::input`). Enter and Ctrl-M end it, as
+    /// ratatui-textarea's single-line example does
+    /// (<https://github.com/ratatui/ratatui-textarea/blob/v0.9.3/examples/single_line.rs>).
+    fn edit_key(&mut self, key: KeyEvent) -> Flow {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('\n' | '\r') => self.editing = None,
+            KeyCode::Char('m') if ctrl => self.editing = None,
+            KeyCode::Esc => {
+                self.editing = None;
+                self.filter(String::new());
+            }
+            code if self.movement(code) => {}
+            _ => {
+                let Some(line) = self.editing.as_mut() else {
+                    return Flow::Unchanged;
+                };
+                if !line.input(key) {
+                    return Flow::Redraw;
+                }
+                let query = line.lines().join("");
+                self.filter(query);
+            }
+        }
+        Flow::Redraw
+    }
+
+    /// A paste (bracketed paste): into the filter line whole, as one line
+    /// (ratatui-textarea's `insert_str`), as the log picker's; outside the
+    /// line it does nothing, so its letters aren't keys.
+    fn paste(&mut self, text: &str) -> Flow {
+        let Some(line) = self.editing.as_mut() else {
+            return Flow::Unchanged;
+        };
+        line.insert_str(crate::paste::one_line(text));
+        let query = line.lines().join("");
+        self.filter(query);
         Flow::Redraw
     }
 
@@ -223,7 +350,7 @@ impl EditPicker {
         // Why not a ratatui call: ratatui-widgets 0.3.2's `List` keeps no
         // row rects, only the offset (the log picker maps clicks so too).
         let row = self.state.offset() + usize::from((at.y - self.area.y) / self.height.max(1));
-        (row < self.items.len()).then_some(row)
+        (row < self.shown.len()).then_some(row)
     }
 
     /// The title row: the screen's name and sb-go's prompt, wrapped on a
@@ -259,8 +386,9 @@ impl EditPicker {
         let one_row = Span::raw(MARK).width() + title_width + GAP + name_width;
         let narrow = one_row > usize::from(width);
         let rows = self
-            .items
+            .shown
             .iter()
+            .map(|&i| &self.items[i])
             .map(|item| {
                 let title = Span::styled(item.title, self.style(Role::Text));
                 let name = Span::styled(item.shown, self.style(Role::Muted));
@@ -287,9 +415,14 @@ impl EditPicker {
         let key = self.style(Role::Accent);
         let muted = self.style(Role::Muted);
         let mut spans = Vec::new();
-        for (i, (k, what)) in [("↑↓", "move"), ("Enter", "open"), ("q", "quit")]
-            .into_iter()
-            .enumerate()
+        for (i, (k, what)) in [
+            ("↑↓", "move"),
+            ("Enter", "open"),
+            ("/", "filter"),
+            ("q", "quit"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             if i > 0 {
                 spans.push(Span::styled(" · ", self.style(Role::Faint)));
@@ -306,6 +439,7 @@ impl App for EditPicker {
         match input {
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(text) => self.paste(&text),
             // A resize redraws: the rows may change between one and two
             // lines.
             Input::Resize(..) => Flow::Redraw,
@@ -341,7 +475,29 @@ impl App for EditPicker {
             .highlight_symbol(MARK)
             .highlight_style(selected);
         frame.render_stateful_widget(widget, list, &mut self.state);
-        frame.render_widget(Paragraph::new(self.footer()), footer);
+        if let Some(line) = &self.editing {
+            // The log picker's filter line: its label, the line, its hint.
+            let width = |text| u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
+            let [label_area, line_area, hint_area] = Layout::horizontal([
+                Constraint::Length(width(FILTER_LABEL)),
+                Constraint::Fill(1),
+                Constraint::Length(width(FILTER_HINT)),
+            ])
+            .areas(footer);
+            frame.render_widget(
+                Paragraph::new(Span::styled(FILTER_LABEL, self.style(Role::Accent))),
+                label_area,
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(FILTER_HINT, self.style(Role::Muted))),
+                hint_area,
+            );
+            // ratatui-textarea draws itself as a widget
+            // (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html#impl-Widget-for-%26TextArea%3C'_%3E>).
+            frame.render_widget(line, line_area);
+        } else {
+            frame.render_widget(Paragraph::new(self.footer()), footer);
+        }
     }
 }
 
