@@ -300,10 +300,10 @@ of `--help`.
 | `install [tags]` (`-v` to `-vvvv`, `-e`, `--skip-tags`, `--no-cache`) | Runs Saltbox, Sandbox or Saltbox-mod playbooks by tag | ansible | built (module build M31; the tag cache and validation, M32 and M33) | `-v` is counted and passed to `ansible-playbook` as `-v` to `-vvvv` (it stays here, unlike the dropped `-v` elsewhere); `-e` passes each value whole, so JSON reaches Ansible intact (open items below); the tag cache is shared with `list` and completion |
 | `list [query]` (`--include-mod`) | Lists the available tags | ansible | built (module build M34) | |
 | `update` (`--keep-branch`, `--reset-branch`, `--skip-self-update`, `--migrations`) | Updates Saltbox and Sandbox: git, venv, self-update, announcements | ops, repo, release | built (module build M84-M86; M87: the new announcements in tui's viewer on a terminal, and the completion refresh) | *Amended 2026-11-13 by the ops spec.* |
-| `branch <name>` (required) | Switches the branch Saltbox uses | ops, repo | built per slice (module build M79): runtime and tags join in M85 | *Amended 2026-11-13 by the ops spec.* |
-| `branch-sandbox <name>` (required) | Switches the branch Sandbox uses | ops, repo | built per slice (module build M5, on ops since M79): runtime and tags join in M85 | *Amended 2026-11-13 by the ops spec.* |
+| `branch <name>` (required) | Switches the branch Saltbox uses | ops, repo | built (module build M79; the runtime and tags, M85) | *Amended 2026-11-13 by the ops spec.* |
+| `branch-sandbox <name>` (required) | Switches the branch Sandbox uses | ops, repo | built (module build M5, on ops since M79; the runtime and tags, M85) | *Amended 2026-11-13 by the ops spec.* |
 | `diag` | Runs the diagnostics role | ansible | built (module build M30) | *Amended 2026-11-13 by the ansible spec.* |
-| `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | built per slice: Distribution and Kernel, the selection, runner and layout (module build M36); the other sections, motd.yml and `--generate-config` (M37-M45); the banner (M46) and `--share` (M47) follow | spec approved; `-v` dropped (motd decision 9). *Amended 2026-11-13 by the motd spec.* |
+| `motd` (about 30 section and banner flags, `--share`, `--generate-config`) | Shows system, media-server and downloader status | motd | built: Distribution and Kernel, the selection, runner and layout (module build M36); the other sections, motd.yml and `--generate-config` (M37-M45); the banner (M46); `--share` (M47) | spec approved; `-v` dropped (motd decision 9). *Amended 2026-11-13 by the motd spec.* |
 | `reinstall-facts` | Reinstalls the saltbox.fact file | python-env | built (module build M19) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
 | `reinstall-python` | Reinstalls Saltbox's Python (uv) and the Ansible venv | python-env | built (module build M16) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
 | `reinstall-venv` | Reinstalls the Ansible venv | python-env | built (module build M16) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
@@ -318,10 +318,8 @@ of `--help`.
 | `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | built (module build M81) | CI-only |
 
 29 rows: every command sb-go registers, with `docker` and `completion`
-listed by their subcommands. On 2026-11-17, 18 are built, 5 are built
-per slice (`edit`, `branch`, `branch-sandbox`, `motd`, `setup`) and 6
-are specified (`fact`, `update`, `bench`, both `completion` rows and
-`restore`).
+listed by their subcommands. On 2026-11-18 (Checkpoint Z), all 29 are
+built.
 
 ## Upstream note (for the maintainer to raise; no consumer changes here)
 

@@ -2232,11 +2232,27 @@ calling it from `update` and `setup`, and the completion refresh.*
 ## Checkpoint Z: the binary is complete
 - [x] Every M task merged; every Commands row "built". Done: main at
       5ddc2d0 (2026-11-18), M1-M87 ticked.
-- [ ] The by-hand container scripts pass on the final tree: the motd,
+- [x] The by-hand container scripts pass on the final tree: the motd,
       gha and setup matrices, the install-script containers, and
       `crates/sb/tests/hangup-systemd.sh` (hangup's session-scope test on
       a systemd of its own, which the gate's sandbox hides; added
-      2026-11-17).
+      2026-11-17). Done on eac3d6b, 2026-11-18, one at a time:
+      - `hangup-systemd.sh`: `a_session_scope_stop_takes_the_grace`
+        passed on systemd 255;
+      - the motd matrix: every check ok on 22.04 (systemd 249), 24.04
+        (255) and 26.04 (259), 21 of 21;
+      - the gha matrix: passed on 22.04, 24.04 and 26.04 (uv 0.13.4,
+        ansible-core 2.21.2, saltbox.fact 1.1.0);
+      - the setup matrix: passed on 24.04 and 26.04, the guard's refusal
+        and `--force` included;
+      - the install-script containers, with sb built with SB_VERSION
+        0.1.0 and SB_GIT_COMMIT eac3d6b: passed on 22.04, 24.04 and
+        26.04 (`--repair` installed sb-go 0.1.3; a fresh install ran
+        `sb setup` through to ansible-core 2.21.2).
+      The journal matrix (compare, compat, follow, stress) and the fuzz
+      harness passed on ea6c9d1 the same day, with only listed
+      Differences (1, 18, 20, 21) and 9,000 fuzz cases over 8 seeds;
+      crates/journal is unchanged from ea6c9d1 to eac3d6b.
 - [ ] The capability map's "When the binary is complete" items go to the
       maintainer: the schemas' owner, the ratchet rows re-measured, glibc
       and musl side by side (settled 2026-11-17, ahead of the checkpoint:
