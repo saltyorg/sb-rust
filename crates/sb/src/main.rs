@@ -346,8 +346,8 @@ const INSTALL_EXAMPLES: &str = "Examples:
   sb install plex sonarr       # Two Saltbox tags
   sb install plex,sonarr       # The same, with commas
   sb install \"plex, sonarr\"    # Commas and spaces, quoted
-  sb install sandbox-jellyfin  # A Sandbox role: sandbox-<tag>
-  sb install mod-myrole        # A Saltbox mod role: mod-<tag>
+  sb install sandbox-jellyfin  # Sandbox: sandbox-<tag>
+  sb install mod-myrole        # Saltbox mod: mod-<tag>
   sb list                      # Every tag there is";
 
 /// `sb list`'s long help, sb-go's (cmd/list.go).
@@ -998,14 +998,24 @@ fn parse_error(err: clap::Error) -> ! {
 /// `err` with a hint for two mistakes clap can't explain, as one of its
 /// own tips (`ContextKind::Suggested`, which clap renders as `tip:` and
 /// the error block as `hint:`;
-/// <https://docs.rs/clap/4.6.7/clap/error/enum.ContextKind.html#variant.Suggested>):
-/// `sb install` with no tags names `sb list`, and a name given to `sb
-/// docker restart|stop|start`, which act on every Saltbox container,
-/// names Docker's own command for one. `args` is the command line, read
-/// for the subcommands it names.
+/// <https://docs.rs/clap/4.6.7/clap/error/enum.ContextKind.html#variant.Suggested>),
+/// after any tip clap gave: `sb install` with no tags names `sb list`, and
+/// a name given to `sb docker restart|stop|start`, which act on every
+/// Saltbox container, names Docker's own command for one. A typo's
+/// suggested subcommands (`ContextKind::SuggestedSubcommand`) are named
+/// once each, by the command an alias opens: clap suggests hidden aliases
+/// too (`Command::all_subcommand_names`), so `sb edit acounts` would
+/// offer `accounts.yml` beside `accounts`. `args` is the command line.
 fn hinted(mut err: clap::Error, args: &[String]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     let path = command_path(args);
+    if let Some(ContextValue::Strings(names)) = err.get(ContextKind::SuggestedSubcommand) {
+        let names = canonical(&path, names);
+        err.insert(
+            ContextKind::SuggestedSubcommand,
+            ContextValue::Strings(names),
+        );
+    }
     let path: Vec<&str> = path.iter().map(String::as_str).collect();
     let typed = match err.get(ContextKind::InvalidArg) {
         Some(ContextValue::String(value)) => Some(value.clone()),
@@ -1026,28 +1036,62 @@ fn hinted(mut err: clap::Error, args: &[String]) -> clap::Error {
         _ => None,
     };
     if let Some(hint) = hint {
-        err.insert(
-            ContextKind::Suggested,
-            ContextValue::StyledStrs(vec![hint.into()]),
-        );
+        let mut tips = match err.get(ContextKind::Suggested) {
+            Some(ContextValue::StyledStrs(tips)) => tips.clone(),
+            _ => Vec::new(),
+        };
+        tips.push(hint.into());
+        err.insert(ContextKind::Suggested, ContextValue::StyledStrs(tips));
     }
     err
 }
 
-/// The subcommands `args` (sb's command line) names, outermost first, by
-/// their names (an alias read as its command's): each word that is a
-/// subcommand of the one before. Flags and their values are passed over.
+/// The subcommands `args` (sb's command line) names, outermost first:
+/// clap's own partial parse (`Command::ignore_errors`, as cli-core's
+/// colour pre-pass reads the line;
+/// <https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.ignore_errors>),
+/// which records each subcommand by its name, even when the error is
+/// inside it. Empty when even that parse fails.
 fn command_path(args: &[String]) -> Vec<String> {
-    let mut cmd = Cli::command();
+    let Ok(matches) = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(args)
+    else {
+        return Vec::new();
+    };
     let mut path = Vec::new();
-    for arg in args.iter().skip(1) {
-        let Some(sub) = cmd.find_subcommand(arg).cloned() else {
-            continue;
-        };
-        path.push(sub.get_name().to_string());
-        cmd = sub;
+    let mut at = &matches;
+    while let Some((name, sub)) = at.subcommand() {
+        path.push(name.to_string());
+        at = sub;
     }
     path
+}
+
+/// `names`, subcommands of the command at `path` as clap suggests them
+/// (by ascending similarity), each read as its command's own name, once,
+/// where its best match stood.
+fn canonical(path: &[String], names: &[String]) -> Vec<String> {
+    let mut cmd = Cli::command();
+    for name in path {
+        let Some(sub) = cmd.find_subcommand(name).cloned() else {
+            return names.to_vec();
+        };
+        cmd = sub;
+    }
+    let read: Vec<String> = names
+        .iter()
+        .map(|name| {
+            cmd.find_subcommand(name)
+                .map_or_else(|| name.clone(), |sub| sub.get_name().to_string())
+        })
+        .collect();
+    // The last of each, clap's best match last.
+    read.iter()
+        .enumerate()
+        .filter(|(i, name)| !read[i + 1..].contains(name))
+        .map(|(_, name)| name.clone())
+        .collect()
 }
 
 /// Open the run log and make it the process's subscriber; a log that can't
@@ -1664,6 +1708,45 @@ mod tests {
         assert!(!other.contains("hint:"), "{other}");
         let docker = block(&["sb", "docker", "ps", "plex"]);
         assert!(!docker.contains("Saltbox container"), "{docker}");
+        // After flags and `--color`'s own value, the same.
+        let late = block(&["sb", "--color", "never", "docker", "stop", "plex"]);
+        assert!(
+            late.contains("for one container, use 'docker stop plex'"),
+            "{late}"
+        );
+    }
+
+    /// A typo's suggestions name each file once, by its subcommand: the
+    /// hidden file-name aliases (clap suggests every alias) are read as
+    /// the command they open, the best guess still first.
+    #[test]
+    fn suggestions_name_each_command_once() {
+        let block = |args: &[&str]| {
+            let err = Cli::command()
+                .try_get_matches_from(args)
+                .expect_err("a parse error");
+            let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+            help::parse_error_block(hinted(err, &args), &theme::Theme::plain(), help::MAX_WIDTH)
+        };
+        let accounts = block(&["sb", "edit", "acounts"]);
+        assert!(
+            accounts.contains("hint: did you mean 'accounts'?\n"),
+            "{accounts}"
+        );
+        let settings = block(&["sb", "edit", "setings"]);
+        assert!(
+            settings.contains("hint: did you mean 'settings' or 'adv_settings'?\n"),
+            "{settings}"
+        );
+        let inventory = block(&["sb", "edit", "localhst"]);
+        assert!(
+            inventory.contains("did you mean 'inventory'?"),
+            "{inventory}"
+        );
+        assert!(!inventory.contains("'localhost'"), "{inventory}");
+        // Elsewhere clap's own names stay.
+        let version = block(&["sb", "verison"]);
+        assert!(version.contains("did you mean 'version'?"), "{version}");
     }
 
     /// `sb edit` takes each file's own name, and the inventory's

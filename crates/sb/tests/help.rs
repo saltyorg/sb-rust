@@ -287,17 +287,20 @@ fn install_help_shows_the_extra_vars_examples() {
 /// list` (ansible spec, difference 17). `-h` keeps sb-go's one line.
 #[test]
 fn install_help_shows_how_to_name_tags() {
+    // Each example whole on its line down to 60 columns.
+    let narrow = install_help(Some("60"));
     let help = install_help(Some("120"));
     let examples = [
         "  Examples:",
         "    sb install plex sonarr       # Two Saltbox tags",
         "    sb install plex,sonarr       # The same, with commas",
         "    sb install \"plex, sonarr\"    # Commas and spaces, quoted",
-        "    sb install sandbox-jellyfin  # A Sandbox role: sandbox-<tag>",
-        "    sb install mod-myrole        # A Saltbox mod role: mod-<tag>",
+        "    sb install sandbox-jellyfin  # Sandbox: sandbox-<tag>",
+        "    sb install mod-myrole        # Saltbox mod: mod-<tag>",
         "    sb list                      # Every tag there is",
     ];
     let block = examples.join("\n");
+    assert!(narrow.contains(&block), "{narrow}");
     let at = help.find(&block).unwrap_or_else(|| panic!("{help}"));
     let about = help
         .find("  Runs Ansible playbooks with specified tags\n")

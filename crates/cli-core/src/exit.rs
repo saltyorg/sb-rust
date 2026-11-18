@@ -105,27 +105,18 @@ pub fn chain<'a>(
 /// its own output above the block (the maintainer, 2026-11-18). The
 /// caller chooses it for that one error, so every other failure keeps
 /// its `details:` line. It shows as the error it wraps (its message, then
-/// that error's causes): transparent, as thiserror's `#[error(transparent)]`
-/// is, written by hand because a boxed `dyn Error` isn't an `Error` itself.
-#[derive(Debug)]
+/// that error's causes): thiserror's `#[error(transparent)]`.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
 pub struct NoPointer(Box<dyn Error + Send + Sync + 'static>);
 
-impl std::fmt::Display for NoPointer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl Error for NoPointer {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.0.source()
-    }
-}
-
-/// `err` shown without the log pointer ([`NoPointer`]).
+/// `err` shown without the log pointer ([`NoPointer`]). A concrete error
+/// only: an `anyhow::Error` isn't a `std::error::Error`, so it can't come
+/// in boxed in anyhow's private wrapper, where [`chain`] couldn't see the
+/// error it holds.
 #[must_use]
-pub fn no_pointer(err: impl Into<Box<dyn Error + Send + Sync + 'static>>) -> NoPointer {
-    NoPointer(err.into())
+pub fn no_pointer<E: Error + Send + Sync + 'static>(err: E) -> NoPointer {
+    NoPointer(Box::new(err))
 }
 
 /// Whether `err`'s block leaves out the log pointer: a [`NoPointer`]

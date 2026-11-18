@@ -105,7 +105,12 @@ const LONG_HELP_HINT: &str = " (--help shows more details)";
 /// as sb-exec reads it for a PTY.
 #[must_use]
 pub fn width() -> usize {
-    let terminal = rustix::termios::tcgetwinsize(std::io::stdout())
+    width_of(std::io::stdout())
+}
+
+/// [`width`]'s rule for the terminal on `fd`.
+fn width_of(fd: impl rustix::fd::AsFd) -> usize {
+    let terminal = rustix::termios::tcgetwinsize(fd)
         .ok()
         .map(|size| usize::from(size.ws_col));
     layout_width(terminal, std::env::var_os("COLUMNS").as_deref())
@@ -125,7 +130,7 @@ fn layout_width(terminal: Option<usize>, columns: Option<&std::ffi::OsStr>) -> u
         .map_or(MAX_WIDTH, |w| w.min(MAX_WIDTH))
 }
 
-/// One line of plain text wrapped at words to `width` display columns: a
+/// One line of text wrapped at words to `width` display columns: a
 /// line that fits comes back as it is; a longer one goes through tabled's
 /// `Wrap::wrap`
 /// (<https://docs.rs/tabled/0.22.0/tabled/settings/width/struct.Wrap.html#method.wrap>),
@@ -142,8 +147,9 @@ fn layout_width(terminal: Option<usize>, columns: Option<&std::ffi::OsStr>) -> u
 /// Why not textwrap (`Options::subsequent_indent`,
 /// <https://docs.rs/textwrap/0.16.2/textwrap/struct.Options.html#structfield.subsequent_indent>):
 /// it isn't a dependency (a new crate goes to the maintainer), and
-/// tabled's wrap is already in sb's binary. sb's help texts hold no
-/// colour codes: the styles are added to each piece after.
+/// tabled's wrap is already in sb's binary. Help texts hold no colour
+/// codes (the styles are added to each piece after); a parse error's
+/// lines do, which tabled's `ansi` wrap carries across a break.
 fn wrapped(line: &str, width: usize) -> Vec<String> {
     // Measured as tabled measures it: colour codes take no columns.
     if tabled::grid::util::string::get_line_width(line) <= width {
@@ -626,10 +632,7 @@ const ERROR_INDENT: usize = 2;
 /// terminal, where they are printed.
 #[must_use]
 pub fn error_width() -> usize {
-    let terminal = rustix::termios::tcgetwinsize(std::io::stderr())
-        .ok()
-        .map(|size| usize::from(size.ws_col));
-    layout_width(terminal, std::env::var_os("COLUMNS").as_deref())
+    width_of(std::io::stderr())
 }
 
 /// One of clap's tips as a hint. clap's suggestions ("a similar subcommand

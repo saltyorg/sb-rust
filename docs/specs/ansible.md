@@ -74,15 +74,16 @@ checks them):
 
 `sb install --help` (not `-h`, and not the short help the contract
 compares) ends its about with how tags are named, in the style of `sb
-list`'s examples (ux review, 2026-11-18; difference 17):
+list`'s examples, each line whole down to 60 columns (ux review,
+2026-11-18; difference 17):
 
 ```
 Examples:
   sb install plex sonarr       # Two Saltbox tags
   sb install plex,sonarr       # The same, with commas
   sb install "plex, sonarr"    # Commas and spaces, quoted
-  sb install sandbox-jellyfin  # A Sandbox role: sandbox-<tag>
-  sb install mod-myrole        # A Saltbox mod role: mod-<tag>
+  sb install sandbox-jellyfin  # Sandbox: sandbox-<tag>
+  sb install mod-myrole        # Saltbox mod: mod-<tag>
   sb list                      # Every tag there is
 ```
 

@@ -127,8 +127,16 @@ pub struct Report {
     /// Credential checks with no credentials set.
     pub skipped: Vec<Validator>,
     /// Credential checks left out because a value they read from another
-    /// section has an issue: the check and that value's path.
-    pub blocked: Vec<(Validator, &'static str)>,
+    /// section has an issue.
+    pub blocked: Vec<Blocked>,
+}
+
+/// A credential check left out until a value it reads is fixed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Blocked {
+    pub validator: Validator,
+    /// The key path of the value with the issue (`user.domain`).
+    pub reads: &'static str,
 }
 
 /// `root`, the file shown as `file`, checked against `rules`.
@@ -156,7 +164,12 @@ pub fn validate(file: &str, root: &Node, rules: &Rules, validators: &dyn Validat
     report.requests = requests;
     report.blocked = blocked
         .iter()
-        .filter_map(|request| Some((request.validator(), request.login.reads()?)))
+        .filter_map(|request| {
+            Some(Blocked {
+                validator: request.validator(),
+                reads: request.login.reads()?,
+            })
+        })
         .collect();
     walk.report
 }

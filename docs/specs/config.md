@@ -157,7 +157,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   that check is then skipped. The same rule covers a value a check reads
   from another section: an issue on `user.domain`, the zone the
   Cloudflare check asks about, skips that check with the notice
-  `Cloudflare check skipped: fix user.domain first`, so a mistyped
+  `Cloudflare check skipped: fix user.domain first` (validate-config's;
+  `sb edit`, which runs no check, gives its own notice), so a mistyped
   domain isn't reported as a token that can't see its zone. (sb-go starts the checks during the walk,
   loses their results when the walk fails, and reports the structure errors
   from the checks' own steps.)

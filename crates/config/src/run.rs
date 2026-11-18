@@ -233,6 +233,7 @@ pub async fn run(runner: &mut Runner, settings: &Settings, backups: &Path) -> Re
 /// [`run`], and what it found: each file's outcome and issues and each
 /// credential check's, for validate-config's `--json` (spec, Behaviour).
 /// A run that stopped has the results of what ran before.
+#[must_use = "the run's result says whether validation failed"]
 pub async fn run_recording(
     runner: &mut Runner,
     settings: &Settings,
@@ -602,26 +603,26 @@ async fn validate_checked(
             step.info(reason);
         }
     }
-    for (validator, path) in &report.blocked {
-        if let Some((id, name)) = credential_check(*validator) {
-            let reason = format!("{name} check skipped: fix {path} first");
-            check_results.push(CheckResult {
-                check: id,
-                outcome: Outcome::Skipped,
-                detail: Some(reason.clone()),
-            });
-            step.info(reason);
-        }
-    }
     let checks_failed = match checks {
         Checks::Run => {
+            for blocked in &report.blocked {
+                if let Some((id, name)) = credential_check(blocked.validator) {
+                    let reason = format!("{name} check skipped: fix {} first", blocked.reads);
+                    check_results.push(CheckResult {
+                        check: id,
+                        outcome: Outcome::Skipped,
+                        detail: Some(reason.clone()),
+                    });
+                    step.info(reason);
+                }
+            }
             let ran = run_checks(step, settings, &report.requests).await;
             let failed = ran.iter().any(|check| check.outcome == Outcome::Failed);
             check_results.extend(ran);
             failed
         }
         Checks::Skip => {
-            if !report.requests.is_empty() {
+            if !report.requests.is_empty() || !report.blocked.is_empty() {
                 step.info(CHECKS_SKIPPED);
             }
             false
@@ -2092,6 +2093,16 @@ mod tests {
                 },
             ]
         );
+
+        // `sb edit`'s check runs no credential check: its own notice, not
+        // this one.
+        let fake = healthy();
+        let (result, _, screen) =
+            validate_one(root.path(), &fake, "accounts.yml", Checks::Skip).await;
+        assert!(matches!(result, Err(Exit(1))), "{screen}");
+        assert!(screen.contains(CHECKS_SKIPPED), "{screen}");
+        assert!(!screen.contains("check skipped: fix"), "{screen}");
+        assert!(fake.seen().is_empty(), "{screen}");
     }
 
     /// Duplicate keys stop a schema-backed file: no rules, no checks.

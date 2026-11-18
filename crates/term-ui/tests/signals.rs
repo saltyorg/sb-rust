@@ -81,7 +81,7 @@ fn one_sigint_ends_130_with_the_terminal_restored() {
     assert_eq!(plain.matches("✗ interrupted\r\n").count(), 1, "{text:?}");
     // The pointer once, cli-core's: none of the step's own.
     assert!(
-        plain.matches("details: ").count() <= 1 && !plain.contains("── details"),
+        plain.matches("details: ").count() == 1 && !plain.contains("── details"),
         "no pointer of the step's own: {text:?}"
     );
     assert!(echo_restored(&text), "{text:?}");
