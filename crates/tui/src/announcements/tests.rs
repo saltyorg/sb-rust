@@ -603,12 +603,44 @@ fn a_click_on_a_scrolled_list_selects_the_row_under_it() {
 #[test]
 fn the_footer_is_the_key_hints() {
     let mut v = viewer(mixed());
-    let rows = screen(&drawn(&mut v, 100, 24));
-    assert!(
-        rows[23].starts_with("↑↓ announcement · PgUp/PgDn scroll · q close   ● new"),
-        "{}",
-        rows[23]
+    let terminal = drawn(&mut v, 100, 24);
+    let rows = screen(&terminal);
+    assert_eq!(
+        rows[23].trim_end(),
+        format!(
+            "↑↓ choose · PgUp/PgDn scroll · ● new{}? keys · q close",
+            " ".repeat(48)
+        )
     );
+    // The legend's marker in the list's colour (Ok); a narrow screen drops
+    // it first and keeps the tail.
+    let buffer = terminal.backend().buffer();
+    let marker = rows[23].chars().position(|c| c == '●').expect("marker");
+    let x = u16::try_from(marker).expect("column");
+    assert_eq!(
+        buffer[(x, 23)].fg,
+        Style::from(v.theme.style(Role::Ok)).fg.expect("ok colour")
+    );
+    let rows = screen(&drawn(&mut v, 50, 24));
+    assert_eq!(
+        rows[23],
+        "↑↓ choose · PgUp/PgDn scroll      ? keys · q close"
+    );
+}
+
+/// `?` (or F1) opens the keys over the screen; any other key closes them
+/// and does nothing else: `q` doesn't close the viewer then.
+#[test]
+fn question_mark_opens_the_keys() {
+    let mut v = viewer(mixed());
+    assert_eq!(key(&mut v, KeyCode::Char('?')), Flow::Redraw);
+    let all = screen(&drawn(&mut v, 100, 30)).join("\n");
+    assert!(all.contains("Keys: announcements"), "{all}");
+    assert!(all.contains("← → h l"), "{all}");
+    assert_eq!(key(&mut v, KeyCode::Char('q')), Flow::Redraw);
+    assert!(!screen(&drawn(&mut v, 100, 30)).join("\n").contains("Keys:"));
+    assert_eq!(key(&mut v, KeyCode::F(1)), Flow::Redraw);
+    assert!(screen(&drawn(&mut v, 100, 30)).join("\n").contains("Keys:"));
 }
 
 /// The pane's inner width at a 100-column screen, from the last draw.

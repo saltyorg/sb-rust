@@ -1,0 +1,23 @@
+---
+source: crates/tui/src/fact/tests.rs
+expression: "drawn(&mut p, 50, 19).backend()"
+---
+"╭ Saltbox settings ──────────────────────────────╮"
+"│╭ Keys: fact editor ───────────────────────────╮│"
+"╰│ Move                                        ▲│╯"
+"›│  ↑ ↓ k j            a row                   █│ "
+" │  PgUp PgDn b Space  a page                  █│ "
+" │  Home End g G       the first, the last     █│ "
+" │  ← → h l            fold, open the app      █│ "
+" │                                             █│ "
+" │ Find                                        █│ "
+" │  /                  search the names        ║│ "
+" │                                             ║│ "
+" │ Change                                      ║│ "
+" │  Enter              edit, or fold the app   ║│ "
+" │  e                  edit the value          ║│ "
+"╭│  a                  add a setting           ║│╮"
+"││  c                  copy the value          ║││"
+"╰│  d                  delete, or keep         ▼│╯"
+" ╰ ↑↓ scroll · other keys close ────────────────╯ "
+"  Edit (e)   Save (s)   Keys (?)   Quit (q)       "

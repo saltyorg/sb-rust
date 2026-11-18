@@ -329,7 +329,7 @@ fn updates_drive_the_list_then_the_viewer() {
     submit(&mut h, "someone", "pw");
     assert_eq!(key(&mut h, KeyCode::Char('q')), Flow::Unchanged, "running");
     assert_eq!(key(&mut h, KeyCode::Char('c')), Flow::Unchanged, "running");
-    assert!(screen_text(&mut h).contains("Ctrl-C stop"));
+    assert!(screen_text(&mut h).contains("? keys · Ctrl+C stop"));
     h.updates.send(Update::Fetching(0)).expect("send");
     assert_eq!(h.screen.wake(), Flow::Redraw);
     assert!(screen_text(&mut h).contains("accounts.yml         fetching…"));
@@ -366,7 +366,7 @@ fn updates_drive_the_list_then_the_viewer() {
     assert!(text.contains("settings.yml read-only"), "{text}");
     assert!(text.contains("shell: bash"), "{text}");
     assert!(text.contains("Continue"), "{text}");
-    assert!(!text.contains("Ctrl-C stop"), "{text}");
+    assert!(!text.contains("Ctrl+C stop"), "{text}");
 }
 
 /// A failed or ignored file shows why and can't be opened: no content
@@ -758,7 +758,7 @@ fn the_footer_and_the_reason_read_right() {
     );
     let text = screen_text(&mut h);
     assert!(
-        text.contains("↑↓ move · Tab menu, file, Continue · ← → file · q quit"),
+        text.contains("Enter open · Tab part · ← → file · ↑↓ move"),
         "{text}"
     );
     assert!(!text.contains("show"), "{text}");
@@ -840,6 +840,10 @@ fn the_form_marks_its_focus_in_its_cells() {
         footer
             .trim_start()
             .starts_with("Tab next field · Enter next"),
+        "{footer}"
+    );
+    assert!(
+        footer.trim_end().ends_with("F1 keys · Esc cancel"),
         "{footer}"
     );
     assert_eq!(footer.matches(" · ").count(), 2, "{footer}");
@@ -964,4 +968,35 @@ fn a_tall_cursor_line_keeps_its_view() {
         })
         .collect();
     assert_eq!(offsets, [0, 0, 0, 0]);
+}
+
+/// `?` (F1 in the form, where `?` is typed) opens each part's keys; any
+/// other key closes them and does nothing else, so `q` doesn't close the
+/// screen then (tui spec, "Keys: one map for every screen").
+#[test]
+fn the_keys_overlay_opens_in_each_part() {
+    let mut h = harness(Prefill::default());
+    key(&mut h, KeyCode::Char('?'));
+    assert_eq!(h.screen.fields[0].lines(), ["?"]);
+    assert_eq!(key(&mut h, KeyCode::F(1)), Flow::Redraw);
+    assert!(screen_text(&mut h).contains("Keys: restore form"));
+    assert_eq!(
+        key(&mut h, KeyCode::Esc),
+        Flow::Redraw,
+        "closes the keys only"
+    );
+    assert!(!screen_text(&mut h).contains("Keys:"));
+    key(&mut h, KeyCode::Backspace);
+    place(&h, "accounts.yml", "a: 1\n");
+    submit(&mut h, "someone", "pw");
+    key(&mut h, KeyCode::Char('?'));
+    assert!(screen_text(&mut h).contains("Keys: restore run"));
+    key(&mut h, KeyCode::Char('x'));
+    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
+    key(&mut h, KeyCode::Char('?'));
+    let text = screen_text(&mut h);
+    assert!(text.contains("Keys: restore review"), "{text}");
+    assert!(text.contains("Tab Shift-Tab"), "{text}");
+    assert_eq!(key(&mut h, KeyCode::Char('q')), Flow::Redraw);
+    assert_eq!(key(&mut h, KeyCode::Char('q')), Flow::Quit);
 }

@@ -51,6 +51,10 @@
 //!   Dialogs are tui-popup's (<https://docs.rs/tui-popup/0.7.7/tui_popup/>);
 //!   the drift dialog's text scrolls in a tui-scrollview
 //!   (<https://docs.rs/tui-scrollview/0.6.8/tui_scrollview/>).
+//! - **Keys** (tui spec, "Keys: one map for every screen"): `?` or F1
+//!   (F1 alone in a text box), or the Keys button, open the keys overlay
+//!   ([`crate::hints`]); the buttons fit the row by dropping the least
+//!   used first.
 //! - **Never logged:** a fact's value. The run log gets the role, copy and
 //!   key of what is copied and staged, the change's kind, and
 //!   whether the copy was sent; sb-config logs the save.
@@ -87,6 +91,7 @@ use tui_scrollview::ScrollViewState;
 
 use self::changes::{Pending, Target};
 use self::dialog::Popup;
+use crate::hints::{Group, Key, Keys, Meaning, Overlay};
 use crate::term::{App as Screen, Ending, Flow, Tui};
 
 /// The selection's mark, as the pickers draw it: it shows the selection
@@ -179,7 +184,143 @@ enum Action {
     Quit,
     /// Undo the selected row's change (the menu's Undo change).
     Undo,
+    /// The keys overlay.
+    Keys,
 }
+
+/// The editor's keys, for the `?` overlay.
+pub(crate) const KEYS: Keys = Keys {
+    screen: "fact editor",
+    groups: &[
+        Group {
+            title: "Move",
+            keys: &[
+                Key {
+                    keys: &["↑", "↓", "k", "j"],
+                    what: "a row",
+                    meaning: Meaning::Move,
+                },
+                Key {
+                    keys: &["PgUp", "PgDn", "b", "Space"],
+                    what: "a page",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["Home", "End", "g", "G"],
+                    what: "the first, the last",
+                    meaning: Meaning::Ends,
+                },
+                Key {
+                    keys: &["←", "→", "h", "l"],
+                    what: "fold, open the app",
+                    meaning: Meaning::Direction,
+                },
+            ],
+        },
+        Group {
+            title: "Find",
+            keys: &[Key {
+                keys: &["/"],
+                what: "search the names",
+                meaning: Meaning::Find,
+            }],
+        },
+        Group {
+            title: "Change",
+            keys: &[
+                Key {
+                    keys: &["Enter"],
+                    what: "edit, or fold the app",
+                    meaning: Meaning::Open,
+                },
+                Key {
+                    keys: &["e"],
+                    what: "edit the value",
+                    meaning: Meaning::Edit,
+                },
+                Key {
+                    keys: &["a"],
+                    what: "add a setting",
+                    meaning: Meaning::Add,
+                },
+                Key {
+                    keys: &["c"],
+                    what: "copy the value",
+                    meaning: Meaning::Copy,
+                },
+                Key {
+                    keys: &["d"],
+                    what: "delete, or keep",
+                    meaning: Meaning::Delete,
+                },
+                Key {
+                    keys: &["u"],
+                    what: "undo the change",
+                    meaning: Meaning::Undo,
+                },
+                Key {
+                    keys: &["m", "Menu"],
+                    what: "the row's menu",
+                    meaning: Meaning::Menu,
+                },
+            ],
+        },
+        Group {
+            title: "Save",
+            keys: &[Key {
+                keys: &["s", "Ctrl+S"],
+                what: "save the changes",
+                meaning: Meaning::Save,
+            }],
+        },
+        Group {
+            title: "In a box",
+            keys: &[
+                Key {
+                    keys: &["Enter"],
+                    what: "keep",
+                    meaning: Meaning::Open,
+                },
+                Key {
+                    keys: &["Alt+Enter"],
+                    what: "a new line",
+                    meaning: Meaning::NewLine,
+                },
+                Key {
+                    keys: &["Esc"],
+                    what: "cancel",
+                    meaning: Meaning::Back,
+                },
+            ],
+        },
+        Group {
+            title: "Leave",
+            keys: &[
+                Key {
+                    keys: &["Esc"],
+                    what: "clear the search, or quit",
+                    meaning: Meaning::Back,
+                },
+                Key {
+                    keys: &["q"],
+                    what: "quit (asks with changes)",
+                    meaning: Meaning::Leave,
+                },
+                Key {
+                    keys: &["Ctrl+C"],
+                    what: "stop (exit 130)",
+                    meaning: Meaning::Stop,
+                },
+                Key {
+                    keys: &["?", "F1"],
+                    what: "these keys",
+                    meaning: Meaning::Help,
+                },
+            ],
+        },
+    ],
+    mouse: "a click selects, the wheel scrolls, a right click opens the menu",
+};
 
 /// A setting as the page shows it: the catalog's, with its staged value,
 /// or one staged to be added.
@@ -226,6 +367,7 @@ struct Page {
     hits: mouse::Hits,
     /// The right-click menu, when it is open.
     menu: Option<mouse::Menu>,
+    overlay: Overlay,
 }
 
 impl std::fmt::Debug for Page {
@@ -320,6 +462,7 @@ impl Page {
             height: 0,
             hits: mouse::Hits::default(),
             menu: None,
+            overlay: Overlay::default(),
         }
     }
 
@@ -623,6 +766,7 @@ impl Page {
             Action::Undo => self.undo_selected(),
             Action::Add => self.start_add(),
             Action::Delete => self.toggle_delete(),
+            Action::Keys => self.overlay.open(),
             Action::Copy => match self.selected_setting() {
                 Some(id) => self.copy(id),
                 None => "Pick a setting to copy".clone_into(&mut self.status),
@@ -1013,29 +1157,38 @@ impl Page {
             None => false,
         };
         let specs = |save: &'static str| {
-            [
+            vec![
                 ("Edit", "e", Action::Edit, on_setting.is_some() && live),
                 ("Add", "a", Action::Add, can_add),
                 ("Copy", "c", Action::Copy, on_setting.is_some()),
                 (delete, "d", Action::Delete, can_delete),
                 (save, "s", Action::Save, !self.pending.is_empty()),
+                ("Keys", KEYS.help_key(), Action::Keys, true),
                 ("Quit", "q", Action::Quit, true),
             ]
         };
         // Each label, its key, the spaces around it and one between.
-        let needed = |save| -> usize {
-            specs(save)
+        let needed = |specs: &[(&str, &str, Action, bool)]| -> usize {
+            specs
                 .iter()
                 .map(|(label, key, ..)| Span::raw(format!(" {label} ({key}) ")).width() + 1)
                 .sum::<usize>()
                 + 1
         };
-        let save = if needed("Save changes") <= usize::from(width) {
-            "Save changes"
-        } else {
-            "Save"
-        };
-        specs(save)
+        let fits = |specs: &[(&str, &str, Action, bool)]| needed(specs) <= usize::from(width);
+        let mut shown = specs("Save changes");
+        if !fits(&shown) {
+            shown = specs("Save");
+        }
+        // Narrower still, the least used go first (tui spec, "Keys",
+        // Hints); Save, Keys and Quit stay.
+        for dropped in [Action::Copy, Action::Add, Action::Delete, Action::Edit] {
+            if fits(&shown) {
+                break;
+            }
+            shown.retain(|spec| spec.2 != dropped);
+        }
+        shown
             .into_iter()
             .map(|(label, key, action, enabled)| {
                 let style = match (enabled, action) {
@@ -1172,7 +1325,21 @@ impl Screen for Page {
         }
         let before = self.selected().map(|row| self.target(row));
         let status = self.status.clone();
+        // A text box takes `?`; F1 opens the keys there too. A question
+        // dialog or the menu keeps its keys (rule 3).
+        let typing = self.searching
+            || matches!(
+                self.popup,
+                Popup::Edit { .. } | Popup::AddKey { .. } | Popup::AddValue { .. }
+            );
+        let asks = self.menu.is_some() || !(typing || matches!(self.popup, Popup::None));
         let flow = match input {
+            Input::Key(key) if self.overlay.is_open() => self.overlay.key(key),
+            Input::Mouse(mouse) if self.overlay.is_open() => self.overlay.mouse(mouse),
+            Input::Key(key) if !asks && Overlay::opens(&key, typing) => {
+                self.overlay.open();
+                Flow::Redraw
+            }
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
             Input::Paste(text) => self.paste(&text),
@@ -1281,6 +1448,7 @@ impl Screen for Page {
         }
         dialog::draw(self, frame, area);
         self.draw_menu(frame, area);
+        self.overlay.draw(frame, &KEYS, &self.theme);
     }
 }
 

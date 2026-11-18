@@ -17,7 +17,9 @@
 //!   the first and last file; Enter opens; `/` filters by title or name
 //!   (a ratatui-textarea line, smart case as the log picker's: Enter keeps
 //!   it, Esc clears it); Esc clears a filter in effect, then leaves, as
-//!   `q` does, with nothing chosen; Ctrl-C is the event loop's (130).
+//!   `q` does, with nothing chosen; `?` or F1 the keys overlay
+//!   ([`crate::hints`]); Ctrl-C is the event loop's (130). The footer is
+//!   the shared fitted row.
 //! - **Mouse:** the wheel moves; a click selects the row under it, and a
 //!   second click on that row within [`DOUBLE_CLICK`] opens it. The row
 //!   under the pointer comes from the list's area and its rows' heights as
@@ -41,6 +43,7 @@ use ratatui_textarea::{CursorMove, TextArea};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::theme::{Role, Theme};
 
+use crate::hints::{Group, Hint, Key, Keys, Meaning, Overlay};
 use crate::term::{App, Ending, Flow, Tui};
 
 /// sb-go's prompt line (cmd/edit.go, `View`).
@@ -65,6 +68,73 @@ const FILTER_HINT: &str = "Enter keeps · Esc clears ";
 /// (<https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdoubleclicktime>);
 /// GTK's default is 400 ms.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// The picker's keys, for the `?` overlay (tui spec, "Keys: one map for
+/// every screen").
+pub(crate) const KEYS: Keys = Keys {
+    screen: "edit picker",
+    groups: &[
+        Group {
+            title: "Move",
+            keys: &[
+                Key {
+                    keys: &["↑", "↓", "k", "j"],
+                    what: "a file",
+                    meaning: Meaning::Move,
+                },
+                Key {
+                    keys: &["PgUp", "PgDn", "b", "Space"],
+                    what: "a page",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["Home", "End", "g", "G"],
+                    what: "the first, the last",
+                    meaning: Meaning::Ends,
+                },
+            ],
+        },
+        Group {
+            title: "Find",
+            keys: &[Key {
+                keys: &["/"],
+                what: "filter by title or name",
+                meaning: Meaning::Find,
+            }],
+        },
+        Group {
+            title: "Leave",
+            keys: &[
+                Key {
+                    keys: &["Enter"],
+                    what: "edit the file",
+                    meaning: Meaning::Open,
+                },
+                Key {
+                    keys: &["Esc"],
+                    what: "clear the filter, or leave",
+                    meaning: Meaning::Back,
+                },
+                Key {
+                    keys: &["q"],
+                    what: "quit",
+                    meaning: Meaning::Leave,
+                },
+                Key {
+                    keys: &["Ctrl+C"],
+                    what: "stop (exit 130)",
+                    meaning: Meaning::Stop,
+                },
+                Key {
+                    keys: &["?", "F1"],
+                    what: "these keys",
+                    meaning: Meaning::Help,
+                },
+            ],
+        },
+    ],
+    mouse: "a click selects, a second click edits; the wheel moves",
+};
 
 /// One file the picker offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +189,7 @@ struct EditPicker {
     shown: Vec<usize>,
     /// The filter line while it is open.
     editing: Option<TextArea<'static>>,
+    overlay: Overlay,
     /// The selection, a row of `shown`.
     state: ListState,
     /// The list's area in the last frame.
@@ -138,6 +209,7 @@ impl EditPicker {
             query: String::new(),
             shown: (0..items.len()).collect(),
             editing: None,
+            overlay: Overlay::default(),
             state: ListState::default().with_selected((!items.is_empty()).then_some(0)),
             area: Rect::default(),
             height: 1,
@@ -410,33 +482,27 @@ impl EditPicker {
         (rows, if narrow { 2 } else { 1 })
     }
 
-    /// The key hints.
-    fn footer(&self) -> TextLine<'static> {
-        let key = self.style(Role::Accent);
-        let muted = self.style(Role::Muted);
-        let mut spans = Vec::new();
-        for (i, (k, what)) in [
-            ("↑↓", "move"),
-            ("Enter", "open"),
-            ("/", "filter"),
-            ("q", "quit"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if i > 0 {
-                spans.push(Span::styled(" · ", self.style(Role::Faint)));
-            }
-            spans.push(Span::styled(k, key));
-            spans.push(Span::styled(format!(" {what}"), muted));
+    /// The key hints, fitted to `width` (tui spec, "Keys", Hints).
+    fn footer(&self, width: u16) -> TextLine<'static> {
+        let mut hints: Vec<Hint> = vec![("Enter", "edit")];
+        if !self.query.is_empty() {
+            hints.push(("Esc", "clear"));
         }
-        TextLine::from(spans)
+        hints.extend([("/", "filter"), ("↑↓", "move")]);
+        let tail = [(KEYS.help_key(), "keys"), ("q", "quit")];
+        crate::hints::footer(&self.theme, None, &hints, &tail, width)
     }
 }
 
 impl App for EditPicker {
     fn input(&mut self, input: Input) -> Flow {
         match input {
+            Input::Key(key) if self.overlay.is_open() => self.overlay.key(key),
+            Input::Mouse(mouse) if self.overlay.is_open() => self.overlay.mouse(mouse),
+            Input::Key(key) if Overlay::opens(&key, self.editing.is_some()) => {
+                self.overlay.open();
+                Flow::Redraw
+            }
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
             Input::Paste(text) => self.paste(&text),
@@ -496,8 +562,9 @@ impl App for EditPicker {
             // (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html#impl-Widget-for-%26TextArea%3C'_%3E>).
             frame.render_widget(line, line_area);
         } else {
-            frame.render_widget(Paragraph::new(self.footer()), footer);
+            frame.render_widget(Paragraph::new(self.footer(footer.width)), footer);
         }
+        self.overlay.draw(frame, &KEYS, &self.theme);
     }
 }
 

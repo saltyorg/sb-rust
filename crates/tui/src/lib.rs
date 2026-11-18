@@ -18,6 +18,7 @@ pub mod announcements;
 mod columns;
 pub mod edit_picker;
 pub mod fact;
+pub(crate) mod hints;
 pub mod line;
 pub mod markdown;
 mod paste;

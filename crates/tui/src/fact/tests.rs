@@ -270,7 +270,7 @@ fn each_app_is_a_heading_with_its_settings_and_values() {
     );
     assert_eq!(
         rows[23],
-        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Quit (q)"
+        "  Edit (e)   Add (a)   Delete (d)   Save (s)   Keys (?)   Quit (q)"
     );
 }
 
@@ -663,7 +663,7 @@ fn a_narrow_screen_shows_the_changes_panel_at_the_bottom() {
     assert!(rows[27].starts_with("╰─"), "{rows:?}");
     assert_eq!(
         rows[29],
-        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Quit (q)"
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Keys (?)   Quit (q)"
     );
 }
 
@@ -674,9 +674,10 @@ fn buttons_that_cannot_act_are_faint() {
     let mut p = EditStyle::page();
     let faint = colours(p.style(Role::Faint).patch(p.bg(Role::ButtonDisabledBg)));
     let on = colours(p.style(Role::Text).patch(p.bg(Role::ButtonBg)));
-    // On an app's heading: Edit (column 2) and Copy (23) faint; Add
-    // (13, the app has one copy) and Delete (34) not.
-    let terminal = drawn(&mut p, 80, 24);
+    // On an app's heading (at 100 columns, every button shown): Edit
+    // (column 2) and Copy (23) faint; Add (13, the app has one copy) and
+    // Delete (34) not.
+    let terminal = drawn(&mut p, 100, 24);
     let buffer = terminal.backend().buffer();
     assert_eq!(cell(buffer, 2, 23), faint);
     assert_eq!(cell(buffer, 13, 23), on);
@@ -684,7 +685,7 @@ fn buttons_that_cannot_act_are_faint() {
     assert_eq!(cell(buffer, 34, 23), on);
     // On a setting: Edit and Copy can act.
     down(&mut p, 5);
-    let terminal = drawn(&mut p, 80, 24);
+    let terminal = drawn(&mut p, 100, 24);
     let buffer = terminal.backend().buffer();
     assert_eq!(cell(buffer, 2, 23), on);
     assert_eq!(cell(buffer, 23, 23), on);
@@ -1571,7 +1572,7 @@ fn the_save_button_shortens_on_a_narrow_screen() {
     let rows = screen(&drawn(&mut f.page, 70, 40));
     assert_eq!(
         rows[39],
-        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save (s)   Quit (q)"
+        "  Edit (e)   Add (a)   Delete (d)   Save (s)   Keys (?)   Quit (q)"
     );
 }
 
@@ -2365,4 +2366,82 @@ fn with_no_room_below_the_menu_opens_over_the_row() {
     let rows = screen(&drawn(&mut f.page, 100, 19));
     assert!(rows[y].contains("/mnt/local/transcodes2"), "{rows:?}");
     assert_eq!(f.page.hits.menu.bottom(), at.y);
+}
+
+/// The buttons fit the row by dropping the least used first (Copy, Add,
+/// Delete, Edit), "Save changes" shortening to "Save" before any goes;
+/// Save, Keys and Quit always stay (tui spec, "Keys", Hints).
+#[test]
+fn the_buttons_fit_the_width_and_keep_save_keys_and_quit() {
+    let mut p = page();
+    let last = |p: &mut Page, width| screen(&drawn(p, width, 24))[23].clone();
+    assert_eq!(
+        last(&mut p, 120),
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Keys (?)   Quit (q)"
+    );
+    // 80 columns leave 78 for the row: Copy goes first.
+    assert_eq!(
+        last(&mut p, 80),
+        "  Edit (e)   Add (a)   Delete (d)   Save (s)   Keys (?)   Quit (q)"
+    );
+    assert_eq!(
+        last(&mut p, 60),
+        "  Edit (e)   Delete (d)   Save (s)   Keys (?)   Quit (q)"
+    );
+    assert_eq!(
+        last(&mut p, 50),
+        "  Edit (e)   Save (s)   Keys (?)   Quit (q)"
+    );
+    assert_eq!(last(&mut p, 40), "  Save (s)   Keys (?)   Quit (q)");
+}
+
+/// `?` (or F1, or a click on Keys) opens the keys overlay; any other key
+/// closes it and does nothing else, so `q` doesn't quit; in the search box
+/// `?` is typed and F1 still opens it.
+#[test]
+fn question_mark_opens_the_keys() {
+    let mut p = page();
+    assert_eq!(press(&mut p, KeyCode::Char('?')), Flow::Redraw);
+    let all = screen(&drawn(&mut p, 100, 40)).join("\n");
+    assert!(all.contains("Keys: fact editor"), "{all}");
+    assert!(all.contains("s Ctrl+S"), "{all}");
+    assert_eq!(press(&mut p, KeyCode::Char('q')), Flow::Redraw);
+    assert!(
+        !screen(&drawn(&mut p, 100, 40))
+            .join("\n")
+            .contains("Keys: fact")
+    );
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('?'));
+    assert_eq!(p.query, "?");
+    press(&mut p, KeyCode::F(1));
+    assert!(
+        screen(&drawn(&mut p, 100, 40))
+            .join("\n")
+            .contains("Keys: fact")
+    );
+    press(&mut p, KeyCode::Esc);
+    press(&mut p, KeyCode::Esc);
+    press(&mut p, KeyCode::Esc);
+    let at = find(&mut p, "Keys (?)");
+    left_click(&mut p, at);
+    assert!(
+        screen(&drawn(&mut p, 100, 40))
+            .join("\n")
+            .contains("Keys: fact")
+    );
+}
+
+#[test]
+fn snapshot_keys_80x24() {
+    let mut p = page();
+    press(&mut p, KeyCode::Char('?'));
+    assert_snapshot!(drawn(&mut p, 80, 24).backend());
+}
+
+#[test]
+fn snapshot_keys_50x19() {
+    let mut p = page();
+    press(&mut p, KeyCode::Char('?'));
+    assert_snapshot!(drawn(&mut p, 50, 19).backend());
 }

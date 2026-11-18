@@ -25,4 +25,4 @@ expression: terminal.backend()
 "│                                     ││                                                           │"
 "│                                     ││                                                           │"
 "╰─────────────────────────────────────╯╰───────────────────────────────────────────────────────────╯"
-"↑↓ announcement · PgUp/PgDn scroll · q close   ● new                                                "
+"↑↓ choose · PgUp/PgDn scroll · ● new                                                ? keys · q close"

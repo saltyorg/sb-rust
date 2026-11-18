@@ -48,11 +48,147 @@ use tokio::sync::{Notify, mpsc, oneshot};
 use tui_scrollview::ScrollViewState;
 use zeroize::Zeroizing;
 
+use crate::hints::{Group, Hint, Key, Keys, Meaning, Overlay};
 use crate::split;
 use crate::term::{App, Ending, Flow, Tui};
 
 /// The passwords' mask in the form.
 pub const MASK_CHAR: char = '•';
+
+/// The form's keys, for the overlay (F1: the fields take `?`).
+pub(crate) const FORM_KEYS: Keys = Keys {
+    screen: "restore form",
+    groups: &[Group {
+        title: "Fields",
+        keys: &[
+            Key {
+                keys: &["Tab", "Shift-Tab"],
+                what: "the next, previous field",
+                meaning: Meaning::Part,
+            },
+            Key {
+                keys: &["↑", "↓"],
+                what: "the previous, next field",
+                meaning: Meaning::Move,
+            },
+            Key {
+                keys: &["Enter"],
+                what: "the next field; restores from the last",
+                meaning: Meaning::Open,
+            },
+            Key {
+                keys: &["Esc"],
+                what: "cancel the restore",
+                meaning: Meaning::Back,
+            },
+            Key {
+                keys: &["Ctrl+C"],
+                what: "stop (exit 130)",
+                meaning: Meaning::Stop,
+            },
+            Key {
+                keys: &["F1"],
+                what: "these keys",
+                meaning: Meaning::Help,
+            },
+        ],
+    }],
+    mouse: "none in the form",
+};
+
+/// The live list's keys.
+pub(crate) const RUN_KEYS: Keys = Keys {
+    screen: "restore run",
+    groups: &[Group {
+        title: "Leave",
+        keys: &[
+            Key {
+                keys: &["Ctrl+C"],
+                what: "stop the restore (exit 130)",
+                meaning: Meaning::Stop,
+            },
+            Key {
+                keys: &["?", "F1"],
+                what: "these keys",
+                meaning: Meaning::Help,
+            },
+        ],
+    }],
+    mouse: "none while the files come",
+};
+
+/// The viewer's keys.
+pub(crate) const REVIEW_KEYS: Keys = Keys {
+    screen: "restore review",
+    groups: &[
+        Group {
+            title: "Move",
+            keys: &[
+                Key {
+                    keys: &["↑", "↓", "k", "j"],
+                    what: "a file, or a line",
+                    meaning: Meaning::Move,
+                },
+                Key {
+                    keys: &["PgUp", "PgDn", "b", "Space"],
+                    what: "a page of the file",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["Home", "End", "g", "G"],
+                    what: "the first, the last",
+                    meaning: Meaning::Ends,
+                },
+                Key {
+                    keys: &["←", "→", "h", "l"],
+                    what: "the previous, next file",
+                    meaning: Meaning::Direction,
+                },
+            ],
+        },
+        Group {
+            title: "Parts",
+            keys: &[
+                Key {
+                    keys: &["Tab", "Shift-Tab"],
+                    what: "the menu, the file, Continue",
+                    meaning: Meaning::Part,
+                },
+                Key {
+                    keys: &["Enter"],
+                    what: "into the file, or Continue",
+                    meaning: Meaning::Open,
+                },
+                Key {
+                    keys: &["Esc"],
+                    what: "back to the menu, or close",
+                    meaning: Meaning::Back,
+                },
+            ],
+        },
+        Group {
+            title: "Leave",
+            keys: &[
+                Key {
+                    keys: &["q"],
+                    what: "close",
+                    meaning: Meaning::Leave,
+                },
+                Key {
+                    keys: &["Ctrl+C"],
+                    what: "stop (exit 130)",
+                    meaning: Meaning::Stop,
+                },
+                Key {
+                    keys: &["?", "F1"],
+                    what: "these keys",
+                    meaning: Meaning::Help,
+                },
+            ],
+        },
+    ],
+    mouse: "a click selects a file or a line, or presses Continue; the wheel moves",
+};
 
 /// Lines the wheel moves the pane's cursor by.
 const WHEEL_LINES: usize = 3;
@@ -260,6 +396,7 @@ pub(crate) struct Screen {
     menu_area: Rect,
     menu_rows: Rect,
     button: Rect,
+    overlay: Overlay,
 }
 
 impl Screen {
@@ -297,6 +434,7 @@ impl Screen {
             menu_area: Rect::default(),
             menu_rows: Rect::default(),
             button: Rect::default(),
+            overlay: Overlay::default(),
         };
         match (prefill.user, prefill.password) {
             (Some(user), Some(password)) if !user.is_empty() && !password.is_empty() => {
@@ -606,16 +744,10 @@ impl Screen {
         ])
     }
 
-    fn hints(&self, hints: &[(&str, &str)]) -> Line<'static> {
-        let mut spans = Vec::new();
-        for (i, (key, what)) in hints.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(" · ", self.style(Role::Faint)));
-            }
-            spans.push(Span::styled((*key).to_owned(), self.style(Role::Accent)));
-            spans.push(Span::styled(format!(" {what}"), self.style(Role::Muted)));
-        }
-        Line::from(spans)
+    /// The footer: `hints` and `tail`, fitted to `width` (tui spec,
+    /// "Keys", Hints).
+    fn hints(&self, hints: &[Hint], tail: &[Hint], width: u16) -> Line<'static> {
+        crate::hints::footer(&self.theme, None, hints, tail, width)
     }
 
     fn draw_form(&mut self, frame: &mut Frame<'_>, body: Rect, footer: Rect) {
@@ -674,11 +806,14 @@ impl Screen {
             );
         }
         frame.render_widget(
-            Paragraph::new(self.hints(&[
-                ("Tab", "next field"),
-                ("Enter", "next, restore from the last"),
-                ("Esc", "cancel"),
-            ])),
+            Paragraph::new(self.hints(
+                &[
+                    ("Tab", "next field"),
+                    ("Enter", "next (restores on the last)"),
+                ],
+                &[(FORM_KEYS.help_key(), "keys"), ("Esc", "cancel")],
+                footer.width,
+            )),
             footer,
         );
     }
@@ -734,7 +869,14 @@ impl Screen {
             Paragraph::new(Span::styled(" Restoring…", self.style(Role::Muted))),
             summary,
         );
-        frame.render_widget(Paragraph::new(self.hints(&[("Ctrl-C", "stop")])), footer);
+        frame.render_widget(
+            Paragraph::new(self.hints(
+                &[],
+                &[(RUN_KEYS.help_key(), "keys"), ("Ctrl+C", "stop")],
+                footer.width,
+            )),
+            footer,
+        );
     }
 
     /// A menu row: the name, then its mark, a space either side.
@@ -890,12 +1032,19 @@ impl Screen {
         self.button = button;
         frame.render_widget(Paragraph::new(Span::styled(label, style)), button);
         let hints = [
-            ("↑↓", "move"),
-            ("Tab", "menu, file, Continue"),
+            ("Enter", "open"),
+            ("Tab", "part"),
             ("← →", "file"),
-            ("q", "quit"),
+            ("↑↓", "move"),
         ];
-        frame.render_widget(Paragraph::new(self.hints(&hints)), footer);
+        frame.render_widget(
+            Paragraph::new(self.hints(
+                &hints,
+                &[(REVIEW_KEYS.help_key(), "keys"), ("q", "quit")],
+                footer.width,
+            )),
+            footer,
+        );
     }
 }
 
@@ -1057,6 +1206,12 @@ fn read_lines(path: &Path) -> Vec<String> {
 impl App for Screen {
     fn input(&mut self, input: Input) -> Flow {
         match input {
+            Input::Key(key) if self.overlay.is_open() => self.overlay.key(key),
+            Input::Mouse(mouse) if self.overlay.is_open() => self.overlay.mouse(mouse),
+            Input::Key(key) if Overlay::opens(&key, self.mode == Mode::Form) => {
+                self.overlay.open();
+                Flow::Redraw
+            }
             Input::Key(key) => match self.mode {
                 Mode::Form => self.form_key(key),
                 Mode::Run => Flow::Unchanged,
@@ -1117,6 +1272,12 @@ impl App for Screen {
             Mode::Run => self.draw_run(frame, body, footer),
             Mode::Review => self.draw_review(frame, body, footer),
         }
+        let keys = match self.mode {
+            Mode::Form => &FORM_KEYS,
+            Mode::Run => &RUN_KEYS,
+            Mode::Review => &REVIEW_KEYS,
+        };
+        self.overlay.draw(frame, keys, &self.theme);
     }
 }
 

@@ -98,7 +98,10 @@ fn each_file_is_a_row_under_the_prompt_with_its_name_lined_up() {
             "  Inventory Settings     localhost.yml",
         ]
     );
-    assert_eq!(rows[23], "↑↓ move · Enter open · / filter · q quit");
+    assert_eq!(
+        rows[23],
+        "Enter edit · / filter · ↑↓ move                                  ? keys · q quit"
+    );
 }
 
 /// Too narrow for a title and its name on one row: each name goes under
@@ -436,4 +439,55 @@ fn snapshot_80x24() {
 fn snapshot_40x20() {
     let mut p = picker();
     assert_snapshot!(drawn(&mut p, 40, 20).backend());
+}
+
+/// `?` (or F1) opens the keys overlay over the list; any other key closes
+/// it and does nothing else, so `q` doesn't quit; in the filter line `?`
+/// is typed and F1 still opens it (tui spec, "Keys: one map for every
+/// screen").
+#[test]
+fn question_mark_opens_the_keys_and_any_key_closes_them() {
+    let mut p = picker();
+    assert_eq!(press(&mut p, KeyCode::Char('?')), Flow::Redraw);
+    let all = screen(&drawn(&mut p, 80, 24)).join("\n");
+    assert!(all.contains("Keys: edit picker"), "{all}");
+    assert!(
+        all.contains("/                  filter by title or name"),
+        "{all}"
+    );
+    assert_eq!(press(&mut p, KeyCode::Char('q')), Flow::Redraw);
+    assert!(!screen(&drawn(&mut p, 80, 24)).join("\n").contains("Keys:"));
+    assert_eq!(p.chosen, None);
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('?'));
+    assert_eq!(p.query, "?");
+    press(&mut p, KeyCode::F(1));
+    assert!(
+        screen(&drawn(&mut p, 80, 24))
+            .join("\n")
+            .contains("Keys: edit picker")
+    );
+}
+
+/// A filter in effect adds `Esc clear`; a narrow screen keeps the tail.
+#[test]
+fn the_footer_fits_and_names_the_filter_s_esc() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('s'));
+    press(&mut p, KeyCode::Enter);
+    let rows = screen(&drawn(&mut p, 80, 24));
+    assert!(
+        rows[23].starts_with("Enter edit · Esc clear · / filter"),
+        "{rows:?}"
+    );
+    let rows = screen(&drawn(&mut p, 40, 20));
+    assert_eq!(rows[19], "Enter edit · Esc clear   ? keys · q quit");
+}
+
+#[test]
+fn snapshot_keys_80x24() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Char('?'));
+    assert_snapshot!(drawn(&mut p, 80, 24).backend());
 }

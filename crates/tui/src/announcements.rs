@@ -21,6 +21,9 @@
 //!   row from `ListState::offset()`.
 //! - **The text** is the inline form's ([`crate::markdown`]): sanitized
 //!   before and after tui-markdown, in the palette's roles.
+//! - **The keys** are the key map's (tui spec, "Keys: one map for every
+//!   screen"): the footer is the shared fitted row, `?` or F1 the keys
+//!   overlay ([`crate::hints`]).
 
 use std::io;
 
@@ -34,6 +37,7 @@ use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::theme::{Role, Theme};
 use tui_scrollview::ScrollViewState;
 
+use crate::hints::{Group, Hint, Key, Keys, Meaning, Overlay};
 use crate::term::{App, Ending, Flow, Tui};
 use crate::{markdown, split};
 
@@ -109,7 +113,66 @@ pub(crate) struct Viewer {
     /// draw, for the mouse.
     list_area: Rect,
     list_rows: Rect,
+    overlay: Overlay,
 }
+
+/// The viewer's keys, for the `?` overlay.
+pub(crate) const KEYS: Keys = Keys {
+    screen: "announcements",
+    groups: &[
+        Group {
+            title: "Move",
+            keys: &[
+                Key {
+                    keys: &["↑", "↓", "k", "j"],
+                    what: "the previous, next announcement",
+                    meaning: Meaning::Move,
+                },
+                Key {
+                    keys: &["←", "→", "h", "l"],
+                    what: "the previous, next announcement",
+                    meaning: Meaning::Direction,
+                },
+                Key {
+                    keys: &["PgUp", "PgDn", "b", "Space"],
+                    what: "a page of the text",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["Home", "End", "g", "G"],
+                    what: "the text's top, bottom",
+                    meaning: Meaning::Ends,
+                },
+            ],
+        },
+        Group {
+            title: "Leave",
+            keys: &[
+                Key {
+                    keys: &["Esc"],
+                    what: "close",
+                    meaning: Meaning::Back,
+                },
+                Key {
+                    keys: &["q"],
+                    what: "close",
+                    meaning: Meaning::Leave,
+                },
+                Key {
+                    keys: &["Ctrl+C"],
+                    what: "stop (exit 130)",
+                    meaning: Meaning::Stop,
+                },
+                Key {
+                    keys: &["?", "F1"],
+                    what: "these keys",
+                    meaning: Meaning::Help,
+                },
+            ],
+        },
+    ],
+    mouse: "a click on the list chooses; the wheel moves the list or scrolls the text",
+};
 
 impl Viewer {
     /// The viewer over `entries`, newest first (a stable sort: equal dates
@@ -135,6 +198,7 @@ impl Viewer {
             rendered: Vec::new(),
             list_area: Rect::default(),
             list_rows: Rect::default(),
+            overlay: Overlay::default(),
         }
     }
 
@@ -303,30 +367,27 @@ impl Viewer {
         text
     }
 
-    fn footer(&self) -> Line<'static> {
-        let key = self.style(Role::Accent);
-        let muted = self.style(Role::Muted);
-        let mut spans = Vec::new();
-        for (i, (k, what)) in [
-            ("↑↓", "announcement"),
-            ("PgUp/PgDn", "scroll"),
-            ("q", "close"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if i > 0 {
-                spans.push(Span::styled(" · ", self.style(Role::Faint)));
-            }
-            spans.push(Span::styled(k, key));
-            spans.push(Span::styled(format!(" {what}"), muted));
-        }
+    /// The key hints, fitted to `width`, then the `● new` legend when any
+    /// is new, its marker in the list's colour; the legend goes first when
+    /// narrow (tui spec, "Keys", Hints).
+    fn footer(&self, width: u16) -> Line<'static> {
+        let mut hints: Vec<Hint> = vec![("↑↓", "choose"), ("PgUp/PgDn", "scroll")];
         if self.new_count() > 0 {
-            spans.push(Span::raw("   "));
-            spans.push(Span::styled("● ", self.style(Role::Ok)));
-            spans.push(Span::styled("new", muted));
+            hints.push(("●", "new"));
         }
-        Line::from(spans)
+        let mut line = crate::hints::footer(
+            &self.theme,
+            None,
+            &hints,
+            &[(KEYS.help_key(), "keys"), ("q", "close")],
+            width,
+        );
+        for span in &mut line.spans {
+            if span.content == "●" {
+                span.style = self.style(Role::Ok);
+            }
+        }
+        line
     }
 
     fn block(&self) -> Block<'static> {
@@ -390,6 +451,12 @@ impl Viewer {
 impl App for Viewer {
     fn input(&mut self, input: Input) -> Flow {
         match input {
+            Input::Key(key) if self.overlay.is_open() => self.overlay.key(key),
+            Input::Mouse(mouse) if self.overlay.is_open() => self.overlay.mouse(mouse),
+            Input::Key(key) if Overlay::opens(&key, false) => {
+                self.overlay.open();
+                Flow::Redraw
+            }
             Input::Key(key) => self.key(key.code),
             Input::Mouse(mouse) => self.mouse(mouse),
             _ => Flow::Unchanged,
@@ -412,7 +479,8 @@ impl App for Viewer {
             .highlight_style(self.selected());
         frame.render_stateful_widget(list, list_area, &mut self.list);
         self.draw_pane(frame, pane);
-        frame.render_widget(Paragraph::new(self.footer()), footer);
+        frame.render_widget(Paragraph::new(self.footer(footer.width)), footer);
+        self.overlay.draw(frame, &KEYS, &self.theme);
     }
 }
 

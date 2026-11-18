@@ -2033,12 +2033,12 @@ Edit picker
  80 |Enter edit · / filter · ↑↓ move                                  ? keys · q quit|
  50 |Enter edit · / filter · ↑↓ move    ? keys · q quit|
 
-Fact editor (the buttons)
+Fact editor (the buttons; the row is the screen less a column each side)
 120 |  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Keys (?)   Quit (q)                                   |
- 80 |  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save (s)   Keys (?)   Quit (q)   |
+ 80 |  Edit (e)   Add (a)   Delete (d)   Save (s)   Keys (?)   Quit (q)              |
  50 |  Edit (e)   Save (s)   Keys (?)   Quit (q)       |
 
-Announcements (sb update; sb announcements says q quit)
+Announcements (`q close` for both callers: the viewer closes)
 120 |↑↓ choose · PgUp/PgDn scroll · ● new                                                                    ? keys · q close|
  80 |↑↓ choose · PgUp/PgDn scroll · ● new                            ? keys · q close|
  50 |↑↓ choose · PgUp/PgDn scroll      ? keys · q close|
@@ -2054,7 +2054,8 @@ Restore, the form
  50 |Tab next field                F1 keys · Esc cancel|
 ```
 
-`● new` is a legend, not a key, and the first to go. The
+`● new` is a legend, not a key, its marker in the list's Ok colour, and
+the first to go. The
 restore screen ends sb (ops spec: "Restore has no step after it"), so
 its tail says `q quit`.
 
