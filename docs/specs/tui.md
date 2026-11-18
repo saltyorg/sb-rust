@@ -195,6 +195,9 @@ fallback); the viewer itself has no save or print (decision 24).
     journal's first entry for the source, or the container log's start),
     not the oldest loaded line; End/`G` jumps to the newest and resumes
     following. Built on the viewer side after whole-log search lands.
+  - Built (2026-11-18): Home/`g` go to the first line of the whole log
+    and End/`G` to the newest, following, for every kind of source
+    ("Home and End: the log's ends" below).
   - Scrolling up pauses following; End, `G` or `f` resumes it, and so
     does reaching the bottom.
   - `w` toggles wrap, on by default. With wrap off, ←/→, Shift+wheel and
@@ -878,6 +881,62 @@ does on main (measured, "Testing").
   searches again. Counting the buffer again at `t` took 1.4 s on
   20,000 records of 5,000 characters (the frame-cost timing), where `t`
   costs 3 ms today.
+
+### Home and End: the log's ends
+
+Status: the maintainer's follow-up (2026-11-18). One rule for every
+source the viewer shows, a service's journal and a container's log
+alike.
+
+- **Home/`g`** goes to the first line of the whole log, not the oldest
+  line loaded:
+  - When the buffer already holds the log's first line (`--- start of
+    log ---` is loaded), the view moves to the top, as today.
+  - Otherwise the viewer asks the source for the log's first page
+    (`Request::Head`). The buffer starts again with it, as after a jump
+    to a match, and following stops. Scrolling down from there loads
+    newer pages as usual, and the start marker heads the view.
+  - While the page is read, the header shows `going to the start…`.
+    The read is one page, not the whole log (below), so it shows for a
+    frame or two at most.
+- **End/`G`** go to the newest line and follow, as today: when the
+  newest line isn't loaded, the viewer reads the tail first (`Tail`,
+  then `Follow`).
+- **The header at the start:** while the start marker is in view, the
+  header says `at the start · <the first line's time>`, the time as the
+  lines show it (local, to the second).
+- **Journal:** the first page is sb-journal's new `Position::Head`: each
+  file's first matching entry, found by its lists' heads (the match's
+  DATA objects list their entries oldest first), then merged forward as
+  a forward page merges, in the release's order between boots. No scan
+  of the journal: the page reads what a forward page from its first
+  entry would.
+- **Docker:** the first page is sb-docker's new `logs::head`: one read
+  from the container's creation (`since`), stopped after the page's
+  500 lines and one more for `more`, the daemon's stream dropped there.
+  It reads the log's start only.
+- **A re-created container** (the source followed a `start` to a new
+  ID): Home reaches the current container's first line, at its own
+  creation. The old container's log went with it (`docker rm` removes
+  the json-file log), and older pages already stop at the creation the
+  source knows, so there's nothing older to reach.
+- **During a whole-log search,** Home is a jump like `n` and `N`: the
+  search's matches stay, numbered as before.
+
+**Tests:**
+- sb-journal: `Head` on one file, on 8 files of 25,000 entries each
+  across boots in the release's order (22.04, 24.04 and 26.04), with a
+  query, and against a scan's last step (the same entries).
+- sb-docker: `head` against `All`'s first entries, and a log shorter
+  than a page.
+- The viewer: Home loads the head and starts the buffer again, not
+  following; Home with the start loaded only moves; the header's
+  `going to the start…` and `at the start · …`; End resumes following.
+- PTY, for a service and for a container (the fake Engine): Home shows
+  the log's first line and the start header, End the newest line and
+  `following`.
+- **Timing:** the time to reach the start on the 200,000-entry, 8-file
+  journal and on a container log of 30 MiB, recorded with the change.
 
 ### Budget, memory and threads
 

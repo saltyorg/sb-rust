@@ -692,7 +692,7 @@ the caller matches, so the match is the viewer's own (its screen text
 and smart case) and the crate learns nothing about display.
 
 ```rust
-pub enum Position { Tail, Before(Cursor), After(Cursor), AtOrBefore(Cursor) }
+pub enum Position { Tail, Head, Before(Cursor), After(Cursor), AtOrBefore(Cursor) }
 
 impl Journal {
     /// Every entry matching `q` at `at`, newest first, each read once,
@@ -727,6 +727,15 @@ sb-host adds `journal::scan`, the same under `spawn_blocking`.
   older entries). No descriptor is held once `scan` returns. The caller
   stops it by breaking from `each`: the viewer's search does when it is
   stopped or its viewer is gone.
+- **`Head`** is new for `page` (the maintainer, 2026-11-18: the log
+  viewer's Home): the oldest `n` matching entries, oldest first. Each
+  file's matching entries are read from their lists' heads (a DATA
+  object lists its entries oldest first) and merged forward as a page
+  `After` a cursor merges them, in the release's order between boots.
+  So the page reads what a forward page from its first entry would, not
+  the journal. `more_older` is false; `more_newer` says whether more
+  matching entries follow. A scan from `Head` is every entry, as from
+  `Tail`.
 - **`AtOrBefore(cursor)`** is new for `page` too: the page ending with
   the cursor's entry. The viewer's jump to a match reads it and
   `After(c)` to load the match with its surroundings.
