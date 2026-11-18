@@ -459,7 +459,12 @@ mod tests {
     #[test]
     fn the_pins_are_ookla_s_1_2_0_archives() {
         let amd64 = Pin::for_arch(Arch::Amd64);
-        assert_eq!(amd64.url, X86_64_URL);
+        // The URL as a literal, so a version bumped alone (Renovate's,
+        // ADR-026) fails here until the size and digest follow.
+        assert_eq!(
+            amd64.url,
+            "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
+        );
         assert_eq!(amd64.size, 1_106_829);
         assert_eq!(
             amd64.sha256,

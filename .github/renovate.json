@@ -1,0 +1,308 @@
+{
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "description": "sb-rust's dependency updates (ADR-026): patch updates of ordinary crates automerge once CI passes; minor and major updates, the exact pins (ADR-001), the toolchain, the build image and every value outside Cargo always open a PR for review.",
+    "extends": [
+        "config:recommended",
+        ":semanticCommits",
+        ":separateMajorReleases",
+        ":ignoreUnstable",
+        "schedule:weekly"
+    ],
+    "prConcurrentLimit": 0,
+    "prHourlyLimit": 0,
+    "labels": [
+        "dependencies"
+    ],
+    "platformAutomerge": false,
+    "vulnerabilityAlerts": {
+        "enabled": true,
+        "schedule": [
+            "at any time"
+        ],
+        "addLabels": [
+            "security",
+            "vulnerability"
+        ]
+    },
+    "commitMessageAction": "Update",
+    "commitMessageTopic": "{{depName}}",
+    "commitMessageExtra": "to {{newVersion}}",
+    "prBodyTemplate": "{{{header}}}{{{table}}}{{{notes}}}{{{changelogs}}}{{{configDescription}}}{{{controls}}}{{{footer}}}",
+    "lockFileMaintenance": {
+        "enabled": true
+    },
+    "packageRules": [
+        {
+            "description": "Docker images aren't pinned to digests (sb-go's choice), but for the release build image below",
+            "matchCategories": [
+                "docker"
+            ],
+            "pinDigests": false
+        },
+        {
+            "description": "Rust crates: patch updates, grouped, automerged when CI (scripts/check.sh task) passes",
+            "matchManagers": [
+                "cargo"
+            ],
+            "matchUpdateTypes": [
+                "patch"
+            ],
+            "groupName": "rust crates (patch)",
+            "automerge": true,
+            "automergeType": "pr",
+            "labels": [
+                "dependencies",
+                "rust"
+            ]
+        },
+        {
+            "description": "Rust crates: minor updates, grouped, a PR for review",
+            "matchManagers": [
+                "cargo"
+            ],
+            "matchUpdateTypes": [
+                "minor"
+            ],
+            "groupName": "rust crates (minor)",
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "rust"
+            ]
+        },
+        {
+            "description": "Rust crates: major updates, one PR each, for review",
+            "matchManagers": [
+                "cargo"
+            ],
+            "matchUpdateTypes": [
+                "major"
+            ],
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "rust",
+                "major"
+            ]
+        },
+        {
+            "description": "clap_complete and bollard, exact pins (ADR-001; docker spec, \"API version\"): each moves only in its own reviewed PR, with ADR-001's procedure; never grouped, never automerged, the = kept",
+            "matchManagers": [
+                "cargo"
+            ],
+            "matchPackageNames": [
+                "clap_complete",
+                "bollard"
+            ],
+            "groupName": null,
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "rust",
+                "exact-pin"
+            ]
+        },
+        {
+            "description": "ratatui and ratatui-core, exact pins (ADR-001): each ratatui release needs its own ratatui-core, so they move together in one reviewed PR; never automerged, the = kept",
+            "matchManagers": [
+                "cargo"
+            ],
+            "matchPackageNames": [
+                "ratatui",
+                "ratatui-core"
+            ],
+            "groupName": "ratatui (exact pins)",
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "rust",
+                "exact-pin"
+            ]
+        },
+        {
+            "description": "The Rust toolchain (rust-toolchain.toml): a pin CONSTRAINTS.md moves only with an ADR; a PR for review, never automerged",
+            "matchDepNames": [
+                "rust"
+            ],
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "toolchain"
+            ],
+            "matchManagers": [
+                "rust-toolchain"
+            ]
+        },
+        {
+            "description": "The release build image (build/Dockerfile, ADR-020): pinned to its digest, which is then followed; a PR for review, never automerged, never grouped",
+            "matchFileNames": [
+                "build/Dockerfile"
+            ],
+            "matchDatasources": [
+                "docker"
+            ],
+            "pinDigests": true,
+            "groupName": null,
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "build-image"
+            ]
+        },
+        {
+            "description": "The release build image's tag never moves: it is the oldest supported release (ADR-020)",
+            "matchFileNames": [
+                "build/Dockerfile"
+            ],
+            "matchDatasources": [
+                "docker"
+            ],
+            "matchUpdateTypes": [
+                "major",
+                "minor",
+                "patch",
+                "replacement"
+            ],
+            "enabled": false
+        },
+        {
+            "description": "Values outside Cargo (uv, the gate's tools, Speedtest): each a PR for review, never automerged",
+            "matchManagers": [
+                "custom.regex"
+            ],
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "pinned-value"
+            ]
+        },
+        {
+            "description": "Speedtest: Renovate can't update the archives' sizes and SHA-256 digests with the version, so its PR waits for approval on the dependency dashboard and is finished by hand (crates/ops/src/bench/speedtest.rs)",
+            "matchDepNames": [
+                "ookla-speedtest"
+            ],
+            "dependencyDashboardApproval": true
+        },
+        {
+            "description": "The gate's tools: each its own PR, as CONSTRAINTS.md's Tools table pins each exactly; a gitleaks major would also need its Go module path (/v8) changed by hand",
+            "matchFileNames": [
+                "CONSTRAINTS.md"
+            ],
+            "automerge": false,
+            "labels": [
+                "dependencies",
+                "gate-tools"
+            ]
+        },
+        {
+            "description": "GitHub Actions: minor and patch updates, grouped (sb-go's)",
+            "matchManagers": [
+                "github-actions"
+            ],
+            "groupName": "github-actions",
+            "matchUpdateTypes": [
+                "minor",
+                "patch"
+            ],
+            "labels": [
+                "dependencies",
+                "github-actions"
+            ]
+        },
+        {
+            "description": "GitHub Actions: major updates (sb-go's)",
+            "matchManagers": [
+                "github-actions"
+            ],
+            "matchUpdateTypes": [
+                "major"
+            ],
+            "labels": [
+                "dependencies",
+                "github-actions",
+                "major"
+            ]
+        }
+    ],
+    "customManagers": [
+        {
+            "customType": "regex",
+            "description": "The uv sb installs (crates/cli-core/src/build_info.rs, as sb-go's buildinfo)",
+            "managerFilePatterns": [
+                "/(^|/)crates/cli-core/src/build_info\\.rs$/"
+            ],
+            "matchStrings": [
+                "pub const UV_VERSION: &str = \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\";"
+            ],
+            "depNameTemplate": "uv",
+            "datasourceTemplate": "pypi",
+            "versioningTemplate": "pep440"
+        },
+        {
+            "customType": "regex",
+            "description": "Speedtest's version in Ookla's download URLs (crates/ops/src/bench/speedtest.rs); the sizes and digests beside them are updated by hand",
+            "managerFilePatterns": [
+                "/(^|/)crates/ops/src/bench/speedtest\\.rs$/"
+            ],
+            "matchStrings": [
+                "https://install\\.speedtest\\.net/app/cli/ookla-speedtest-(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)-linux-x86_64\\.tgz",
+                "https://install\\.speedtest\\.net/app/cli/ookla-speedtest-(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)-linux-aarch64\\.tgz"
+            ],
+            "depNameTemplate": "ookla-speedtest",
+            "datasourceTemplate": "custom.ookla-speedtest",
+            "versioningTemplate": "semver",
+            "extractVersionTemplate": "ookla-speedtest-(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)-linux-x86_64\\.tgz$"
+        },
+        {
+            "customType": "regex",
+            "description": "The gate's cargo-installed tools (CONSTRAINTS.md's Tools table, exact versions)",
+            "managerFilePatterns": [
+                "/(^|/)CONSTRAINTS\\.md$/"
+            ],
+            "matchStrings": [
+                "\\| (?<depName>cargo-llvm-cov|cargo-mutants|cargo-nextest|cargo-deny|hyperfine) \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
+                "\\| (?<depName>cross) \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
+                "`cargo install --locked (?<depName>cross) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`"
+            ],
+            "datasourceTemplate": "crate",
+            "versioningTemplate": "semver"
+        },
+        {
+            "customType": "regex",
+            "description": "diff-cover (CONSTRAINTS.md's Tools table: its version and its install line)",
+            "managerFilePatterns": [
+                "/(^|/)CONSTRAINTS\\.md$/"
+            ],
+            "matchStrings": [
+                "\\| diff-cover \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
+                "`uv tool install diff-cover==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`"
+            ],
+            "depNameTemplate": "diff-cover",
+            "datasourceTemplate": "pypi",
+            "versioningTemplate": "pep440"
+        },
+        {
+            "customType": "regex",
+            "description": "gitleaks (CONSTRAINTS.md's Tools table: its version and its install line)",
+            "managerFilePatterns": [
+                "/(^|/)CONSTRAINTS\\.md$/"
+            ],
+            "matchStrings": [
+                "\\| gitleaks \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
+                "gitleaks/v8@v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`"
+            ],
+            "depNameTemplate": "gitleaks",
+            "packageNameTemplate": "gitleaks/gitleaks",
+            "datasourceTemplate": "github-releases",
+            "extractVersionTemplate": "^v(?<version>.*)$",
+            "versioningTemplate": "semver"
+        }
+    ],
+    "customDatasources": {
+        "ookla-speedtest": {
+            "defaultRegistryUrlTemplate": "https://www.speedtest.net/apps/cli",
+            "format": "html"
+        }
+    },
+    "osvVulnerabilityAlerts": true
+}
