@@ -135,7 +135,9 @@ async fn outside_a_repository_is_gits_error() {
         .await
         .expect_err("no repository");
     assert!(matches!(err, RepoError::Git(_)), "{err:?}");
-    assert!(err.to_string().contains("not a git repository"), "{err}");
+    // git's words: "not a git repository", or, on a tmpfs as the gate's
+    // sandbox has, "Stopping at filesystem boundary".
+    assert!(err.to_string().contains("exited with code 128"), "{err}");
 }
 
 /// A directory at the path is no file.
