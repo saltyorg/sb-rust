@@ -225,7 +225,7 @@ cmp -s /usr/local/bin/sb "$t/assets/1.0.0/sb_linux_amd64" || fail "the installed
 since "$at" | grep '^svm.saltbox.dev .*saltyorg%2Fsb-go%2Freleases' >/dev/null || fail "sb-go didn't ask through the proxy"
 if grep -q "trying GitHub directly" "$t/go-self-update.log"; then fail "sb-go fell back from the proxy"; fi
 sb version --json >"$t/version.json"
-pass "sb-go's self-update installed sb-rust ($version; $(tr -d '\n' <"$t/version.json"))"
+pass "sb-go's self-update installed sb-rust (${version//$'\n'/; }; $(tr -d '\n' <"$t/version.json"))"
 
 # 4. sb-rust's first update. From here sb-go's list is no longer sb-rust's.
 releases sb-rust 1.0.0
@@ -274,10 +274,10 @@ if grep -q "trying GitHub directly" "$t/rust-self-update.log"; then fail "sb-rus
 sb version | grep -x 'Release channel: release' >/dev/null || fail "sb version names no release channel: $(sb version)"
 sb version --json >"$t/version-next.json"
 grep -q '"channel":"release"' "$t/version-next.json" || fail "sb version --json: $(cat "$t/version-next.json")"
-pass "sb-rust's self-update took 1.0.1's release asset over both rcs ($(tr -d '\n' <"$t/version-next.json"))"
+pass "sb-rust's self-update took 1.0.1's release asset over both rcs (${version//$'\n'/; }; $(tr -d '\n' <"$t/version-next.json"))"
 
 # shellcheck disable=SC1091 # the container's own
-echo "RESULT: $rel ($(. /etc/os-release && echo "$VERSION")): passed; $go_version -> ${version%%$'\n'*}"
+echo "RESULT: $rel ($(. /etc/os-release && echo "$VERSION")): passed; $go_version -> ${version//$'\n'/; }"
 EOS
 
 echo "upgrade.sh: $rel in $prefix-$rel-$$"
