@@ -23,8 +23,10 @@ set -euo pipefail
 
 # The repository sb's releases come from (release spec, "Release
 # channels"; sb's self-update uses the same, crates/sb/src/self_update.rs).
-# The asset is `sb_linux_<arch>`, `_beta` added with --beta; the
-# installed sb then follows its own baked channel.
+# The asset is `sb_linux_amd64`, `_beta` added with --beta; the
+# installed sb then follows its own baked channel. arm64 binaries are
+# published for later, but this script installs on x86_64 only until
+# Saltbox supports arm64 (the maintainer, 2026-11-18).
 readonly GITHUB_REPO="saltyorg/sb-rust"
 readonly BINARY_NAME="sb"
 readonly MIN_BINARY_SIZE=1000000 # 1 MB: a smaller download is an error page
@@ -46,7 +48,6 @@ FORCE_DOWNLOAD_TOOL="" # --force-curl / --force-wget
 REPAIR_MODE=false
 VERBOSE_MODE=false
 BETA_MODE=false # --beta: the beta channel's asset, prereleases included
-ARCH=""         # amd64 or arm64, set by detect_platform
 BRANCH="master"
 TEMP_DIR=""
 STAGED=""
@@ -111,24 +112,20 @@ detect_platform() {
     log_error "This installer only supports Linux"
     exit 1
   fi
-  case ${arch} in
-    x86_64 | amd64) ARCH=amd64 ;;
-    aarch64 | arm64) ARCH=arm64 ;;
-    *)
-      log_error "Unsupported architecture: ${arch}"
-      log_error "This installer only supports x86_64/amd64 and aarch64/arm64"
-      exit 1
-      ;;
-  esac
+  if [[ ${arch} != x86_64 && ${arch} != amd64 ]]; then
+    log_error "Unsupported architecture: ${arch}"
+    log_error "This installer only supports x86_64/amd64"
+    exit 1
+  fi
   log_detail "Detected platform: ${os}/${arch}"
 }
 
-# The release asset for this architecture and channel.
+# The release asset for the channel.
 asset_name() {
   if [[ ${BETA_MODE} == true ]]; then
-    printf 'sb_linux_%s_beta\n' "${ARCH}"
+    printf 'sb_linux_amd64_beta\n'
   else
-    printf 'sb_linux_%s\n' "${ARCH}"
+    printf 'sb_linux_amd64\n'
   fi
 }
 
@@ -322,11 +319,11 @@ download_binary() {
   echo "${temp_binary}"
 }
 
-# The download is an ELF executable of this architecture (x86-64 or
-# aarch64, as `file` names them) of a sane size whose `version`
+# The download is an x86-64 ELF executable of a sane size whose `version`
 # reports the tag (without its `v`, as sb's self-update compares) as the
-# first line of its stdout and the channel asked for as the second; what it writes to stderr (a warning about
-# the host's sb config, say) is shown only when the check fails.
+# first line of its stdout and the channel asked for as the second; what
+# it writes to stderr (a warning about the host's sb config, say) is
+# shown only when the check fails.
 verify_binary() {
   local binary_path="$1" expected_version="$2"
   local file_size file_type version_output channel_output actual_version status=0
@@ -344,9 +341,7 @@ verify_binary() {
   fi
   log_detail "Binary size: ${file_size} bytes"
   file_type=$(file -b "${binary_path}")
-  local machine=x86-64
-  [[ ${ARCH} == arm64 ]] && machine=aarch64
-  if [[ ! ${file_type} =~ ELF\ 64-bit.*executable.*${machine} ]]; then
+  if [[ ! ${file_type} =~ ELF\ 64-bit.*executable.*x86-64 ]]; then
     log_error "Downloaded file is not a valid Linux executable"
     log_error "File type: ${file_type}"
     exit 1

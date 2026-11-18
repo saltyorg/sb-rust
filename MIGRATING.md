@@ -85,8 +85,8 @@ completion files call a command sb doesn't have.
 - **Release channels:** `sb version` shows yours, and
   `sb self-update --channel beta|release` switches once. See the
   [README](README.md#release-channels).
-- **arm64:** sb, self-update and `--repair` run on it; `sb setup` still
-  installs Saltbox on x86_64 only.
+- **arm64 binaries** are published, for when Saltbox supports arm64. The
+  install script and Saltbox are x86_64 only until then.
 - **The run log** at `/var/log/sb/sb.log`.
 - **A log viewer** for `sb logs` and `sb docker logs`: a live picker,
   search, wrap, mouse support and saving to a file.

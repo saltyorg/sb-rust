@@ -241,9 +241,12 @@ The maintainer's decisions of 2026-11-18.
   - `--json` adds a `channel` field after sb-go's three. `version`,
     `git_commit` and `uv_version` are kept for sb-go's
     update-saltbox-python action.
-- **arm64 ships** (maintainer, 2026-11-18): `sb_linux_arm64` and
-  `sb_linux_arm64_beta` beside the amd64 assets, chosen by the build's
-  architecture (decision 9) with `_beta` for the beta channel.
+- **arm64 binaries are published** (maintainer, 2026-11-18):
+  `sb_linux_arm64` and `sb_linux_arm64_beta` beside the amd64 assets, so
+  they are there if Saltbox ever supports arm64. No script uses them
+  until then: install.sh and Saltbox stay x86_64 only. Self-update still
+  chooses by the build's architecture (decision 9), with `_beta` for the
+  beta channel, so a hand-installed arm64 sb updates itself.
   - **Locally,** `check.sh full` cross-builds the aarch64 production
     binary and runs its `sb version` under QEMU user-mode
     (`qemu-aarch64-static -L` on 22.04's arm64 glibc, in a throwaway
@@ -261,9 +264,10 @@ The maintainer's decisions of 2026-11-18.
   included. It ranks with `sort -V`, after mapping a version's `-` to
   `~`, which GNU sort orders before the release it precedes. Either way
   the installed binary then follows its own baked channel. It accepts
-  x86_64 and aarch64, and installs that architecture's asset after the
-  ELF check names the matching machine and the binary's `sb version`
-  names the channel asked for (`Release channel: release`, or `beta`).
+  x86_64 only, as before (the arm64 assets wait for Saltbox), and
+  installs `sb_linux_amd64` (or `_beta`) after the ELF check and the
+  binary's `sb version` naming the channel asked for (`Release channel:
+  release`, or `beta`).
   It checks no digest: a gap from before the channels, which the pinned
   https URL narrows.
 - **On an unsupported Ubuntu release** (not another distribution),

@@ -26,9 +26,6 @@ script="$here/../install.sh"
 # shellcheck source=install/install.sh
 source "$script"
 trap - EXIT
-# The architecture detect_platform would set on this test's x86-64 host;
-# the cases that need another set their own.
-ARCH=amd64
 
 root=$(mktemp -d)
 # shellcheck disable=SC2317 # called by the EXIT trap
@@ -327,29 +324,30 @@ d=$(world beta-option 24.04)
 )
 grep -Fq -- "--beta" <(usage) || fail "usage has no --beta"
 
-# The architecture: x86_64 and aarch64 (and their Debian names) are
-# accepted and name their asset; anything else is refused.
-for pair in x86_64:amd64 amd64:amd64 aarch64:arm64 arm64:arm64; do
-  d=$(world "arch-${pair%%:*}" 24.04)
+# The architecture: x86_64 (and its Debian name) only; arm64 binaries
+# are published for later, but no script installs them until Saltbox
+# supports arm64 (the maintainer, 2026-11-18), so aarch64 is refused with
+# the installer's message, as anything else is.
+for arch in x86_64 amd64; do
+  d=$(world "arch-$arch" 24.04)
   mkdir -p "$d/bin"
   # shellcheck disable=SC2016 # the stand-in's own $1
-  printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; esac\n' "${pair%%:*}" >"$d/bin/uname"
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; esac\n' "$arch" >"$d/bin/uname"
   chmod +x "$d/bin/uname"
-  got=$(
-    PATH="$d/bin:$PATH" detect_platform 2>/dev/null
-    printf '%s' "${ARCH}"
-  )
-  [[ $got == "${pair#*:}" ]] || fail "arch ${pair%%:*}: got '$got'"
+  (PATH="$d/bin:$PATH" detect_platform) >/dev/null 2>"$d/stderr" || fail "arch $arch: $(cat "$d/stderr")"
 done
-# shellcheck disable=SC2016 # the stand-in's own $1
-printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo mips ;; esac\n' >"$d/bin/uname"
-status=0
-(PATH="$d/bin:$PATH" detect_platform) >/dev/null 2>"$d/stderr" || status=$?
-if [[ $status != 1 ]] || ! grep -Fq "Unsupported architecture: mips" "$d/stderr"; then
-  fail "arch mips: $(cat "$d/stderr")"
-fi
-[[ $(ARCH=amd64 BETA_MODE=false asset_name) == sb_linux_amd64 ]] || fail "asset amd64"
-[[ $(ARCH=arm64 BETA_MODE=true asset_name) == sb_linux_arm64_beta ]] || fail "asset arm64 beta"
+for arch in aarch64 arm64 mips; do
+  # shellcheck disable=SC2016 # the stand-in's own $1
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; esac\n' "$arch" >"$d/bin/uname"
+  status=0
+  (PATH="$d/bin:$PATH" detect_platform) >/dev/null 2>"$d/stderr" || status=$?
+  if [[ $status != 1 ]] || ! grep -Fq "Unsupported architecture: $arch" "$d/stderr" \
+    || ! grep -Fq "This installer only supports x86_64/amd64" "$d/stderr"; then
+    fail "arch $arch: status $status, $(cat "$d/stderr")"
+  fi
+done
+[[ $(BETA_MODE=false asset_name) == sb_linux_amd64 ]] || fail "asset amd64"
+[[ $(BETA_MODE=true asset_name) == sb_linux_amd64_beta ]] || fail "asset amd64 beta"
 
 # The download: GitHub's releases path for the tag and the asset only,
 # https only, into the temporary directory; a failing tool is retried,
@@ -379,11 +377,11 @@ EOF
   grep -Fq -- "$d/tmp/sb" "$d/fetches" || fail "download-$tool: not into the temp dir"
   : >"$d/fetches"
   (
-    # shellcheck disable=SC2031 # this subshell's own PATH, as the one above
+    # shellcheck disable=SC2030,SC2031 # this subshell's own PATH, as the one above
     export PATH="$d/bin:$PATH"
-    DOWNLOAD_TOOL=$tool TEMP_DIR="$d/tmp" RETRY_DELAY=0 ARCH=arm64 BETA_MODE=true download_binary 1.1.0-rc.1
+    DOWNLOAD_TOOL=$tool TEMP_DIR="$d/tmp" RETRY_DELAY=0 BETA_MODE=true download_binary 1.1.0-rc.1
   ) >/dev/null 2>&1 || true
-  grep -Fq -- "https://github.com/saltyorg/sb-rust/releases/download/1.1.0-rc.1/sb_linux_arm64_beta" "$d/fetches" \
+  grep -Fq -- "https://github.com/saltyorg/sb-rust/releases/download/1.1.0-rc.1/sb_linux_amd64_beta" "$d/fetches" \
     || fail "download-beta-$tool: $(cat "$d/fetches")"
   grep -Fq "Failed to download binary after 3 attempts" "$d/stderr" || fail "download-$tool: $(cat "$d/stderr")"
 done
@@ -403,6 +401,18 @@ status=0
 (verify_binary "$d/zeros" v1.2.3) >/dev/null 2>"$d/stderr" || status=$?
 if [[ $status != 1 ]] || ! grep -Fq "not a valid Linux executable" "$d/stderr"; then
   fail "verify zeros: $(cat "$d/stderr")"
+fi
+# An ELF executable for another machine (an arm64 sb, say): refused, as
+# the script installs x86-64 only. A `file` stand-in names the machine.
+mkdir -p "$d/fakefile"
+printf '#!/bin/sh\necho "ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked"\n' \
+  >"$d/fakefile/file"
+chmod +x "$d/fakefile/file"
+status=0
+# shellcheck disable=SC2031 # PATH local to this subshell, on purpose
+(PATH="$d/fakefile:$PATH" verify_binary "$d/zeros" v1.2.3) >/dev/null 2>"$d/stderr" || status=$?
+if [[ $status != 1 ]] || ! grep -Fq "not a valid Linux executable" "$d/stderr"; then
+  fail "verify aarch64: $(cat "$d/stderr")"
 fi
 # An ELF executable that isn't sb: bash, run as `bash version`, fails.
 cp "$(command -v bash)" "$d/bash"

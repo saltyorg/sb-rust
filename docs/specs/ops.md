@@ -1160,9 +1160,10 @@ sb-go's `install.sh` plus `-b` (decided.md G-Q5):
   `https://github.com/saltyorg/<repo>/releases/download/<tag>/<asset>`
   only (decided.md D-Q2), retried, then the ELF and size check and `sb
   version` matching the tag; the repository is saltyorg/sb-rust, the
-  asset `sb_linux_<arch>` for x86_64 and aarch64, and `--beta` installs
-  the `_beta` asset of the highest release, prereleases included
-  (maintainer, 2026-11-18; release spec, "Release channels");
+  asset `sb_linux_amd64` (x86_64 only: the arm64 assets wait for Saltbox
+  to support arm64), and `--beta` installs the `_beta` asset of the
+  highest release, prereleases included (maintainer, 2026-11-18; release
+  spec, "Release channels");
 - options: sb-go's `-v/--verbose`, `--force-curl`, `--force-wget`,
   `--repair`, `-h/--help`, plus `-b <branch>` (from the served
   `sb_install.sh`), passed to `sb setup -b <branch>` as one argument;
@@ -1612,7 +1613,7 @@ the real services.
     (size 1082287, sha256
     `3953d231da3783e2bf8904b6dd72767c5c6e533e163d3742fd0437affa431bd3`,
     taken from Ookla's download at M78; docs/platform-notes/speedtest.md).
-    sb ships arm64 (map decision 6).
+    arm64 sb binaries are published (map decision 6).
 14. **No disk-space check is added to setup or gha.** sb-go has none;
     adding one would be an unrequested difference.
 15. **restore keeps creating a missing Saltbox root** (sb-go). The docs

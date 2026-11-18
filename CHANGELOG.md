@@ -18,9 +18,9 @@ you could trip over.
 - **Release channels:** `release` follows stable releases, and `beta`
   follows prereleases too. `sb self-update --channel` switches once, and
   `install.sh --beta` installs beta.
-- **arm64 builds** of sb, for running it, self-update and `--repair`, and
-  of what it installs: uv, the saltbox facts and the benchmark's
-  Speedtest. `sb setup` still installs Saltbox on x86_64 only.
+- **arm64 builds** of sb, published for when Saltbox supports arm64. The
+  install script and Saltbox stay x86_64 only until then; a hand-installed
+  arm64 sb updates itself on its channel.
 - **A run log,** `/var/log/sb/sb.log`, for every root run, with a run id in
   each record and a pointer to it when a command fails.
 - **A new log viewer** for `sb logs` and `sb docker logs`: one live picker

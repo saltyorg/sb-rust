@@ -376,7 +376,9 @@ To discuss with the maintainer once every module is done, not before:
   saltyorg/sb-rust from 1.0.0, with `1.0.0-rc.N` prereleases.
   - The channel is baked in at build time (`SB_CHANNEL`: `release`,
     `beta` or `none`), with `--channel` to switch once.
-  - amd64 and arm64 ship, each as a plain and a `_beta` asset.
+  - amd64 and arm64 binaries are published, each as a plain and a
+    `_beta` asset. The arm64 ones are there for when Saltbox supports
+    arm64: until then the install script and Saltbox are x86_64 only.
   - `version` and `self-update` run on an unsupported Ubuntu release,
     with a warning.
   - The CI and release workflows are written locally. Creating the

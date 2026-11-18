@@ -7,9 +7,10 @@ container logs. It is a rewrite in Rust of
 [sb-go](https://github.com/saltyorg/sb-go), with the same commands; see
 [MIGRATING.md](MIGRATING.md) for what changed.
 
-sb runs on Ubuntu 22.04, 24.04 and 26.04, on x86_64 and arm64. A new
-Saltbox install needs x86_64 and Ubuntu 24.04 or 26.04: `sb setup` doesn't
-install on arm64 yet.
+sb runs on x86_64 Ubuntu 22.04, 24.04 and 26.04; a new Saltbox install
+needs 24.04 or 26.04. arm64 binaries are published too, ready for when
+Saltbox supports arm64. Until then the install script and Saltbox are
+x86_64 only; a hand-installed arm64 sb updates itself on its channel.
 
 ## Install
 
