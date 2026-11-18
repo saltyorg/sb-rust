@@ -63,6 +63,8 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             target,
             yes: true,
             force: false,
+            // `sb update` follows the baked channel; it never switches.
+            switch_to: None,
             message: Some(RERUN),
             shutdown,
         });

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use sb_ansible::Ansible;
 use sb_ansible::TagCache;
-use sb_cli_core::build_info::BuildInfo;
+use sb_cli_core::build_info::{BuildInfo, Channel};
 use sb_cli_core::cancel::Shutdown;
 use sb_completion::install::Paths;
 use sb_config::run::Settings;
@@ -37,7 +37,7 @@ static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// sb's releases, as the binary has them.
 const REPO: GithubRepo = GithubRepo {
     owner: "saltyorg",
-    name: "sb-go",
+    name: "sb-rust",
 };
 
 /// The harness's Saltbox host, each checkout on a branch, and a fake
@@ -882,8 +882,8 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
     let _spawns = SPAWNS.lock().await;
     let world = World::new("master", "master");
     let body = stand_in("99.0.0");
-    let asset = sb_release::asset_name().expect("an architecture with an asset");
-    let path = format!("/saltyorg/sb-go/releases/download/v99.0.0/{asset}");
+    let asset = sb_release::asset_name(Channel::Release).expect("an architecture with an asset");
+    let path = format!("/saltyorg/sb-rust/releases/download/v99.0.0/{asset}");
     world.fake.script(
         "/version",
         Answer::json(format!(
@@ -896,7 +896,7 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
     world.fake.script(&path, Answer::new(200, body.clone()));
     let target = world.backups.path().join("sb");
     std::fs::write(&target, b"old sb").expect("target");
-    let released = BuildInfo::from_env("0.1.0", Some("1.0.0"), Some("abc1234"), None);
+    let released = BuildInfo::from_env("0.1.0", Some("1.0.0"), Some("abc1234"), Channel::Release);
     let shutdown = Shutdown::new();
     let replace = SelfUpdate {
         repo: REPO,
@@ -904,6 +904,7 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
         target: &target,
         yes: true,
         force: false,
+        switch_to: None,
         message: Some(update::RERUN),
         shutdown: &shutdown,
     };
@@ -930,7 +931,7 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
     assert!(!ran.screen.contains("Updating Saltbox"), "{}", ran.screen);
 
     let world = World::new("master", "master");
-    let raw = BuildInfo::from_env("0.1.0", None, None, None);
+    let raw = BuildInfo::from_env("0.1.0", None, None, Channel::Release);
     let shutdown = Shutdown::new();
     let off = SelfUpdate {
         build: &raw,

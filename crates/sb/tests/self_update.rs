@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use sb_release::testing::{Answer, Fake, stand_in};
+use sb_cli_core::build_info::Channel;
+use sb_release::testing::{Answer, Fake, stand_in, stand_in_on};
 use sha2::{Digest, Sha256};
 
 /// The running test build's version (a raw build: the package's).
@@ -38,13 +39,20 @@ fn setup(tag: &str, body: &[u8]) -> Setup {
 
 /// [`setup`] with the asset served as `answer`.
 fn setup_serving(tag: &str, body: &[u8], answer: Answer) -> Setup {
+    setup_on(Channel::Release, tag, body, answer)
+}
+
+/// [`setup_serving`], the asset `channel`'s, its release a prerelease on
+/// the beta channel.
+fn setup_on(channel: Channel, tag: &str, body: &[u8], answer: Answer) -> Setup {
     let fake = Fake::start().expect("fake");
-    let asset = sb_release::asset_name().expect("an architecture with an asset");
-    let path = format!("/saltyorg/sb-go/releases/download/{tag}/{asset}");
+    let asset = sb_release::asset_name(channel).expect("an architecture with an asset");
+    let prerelease = channel == Channel::Beta;
+    let path = format!("/saltyorg/sb-rust/releases/download/{tag}/{asset}");
     fake.script(
         "/version",
         Answer::json(format!(
-            r#"[{{"tag_name":"{tag}","draft":false,"prerelease":false,"assets":[{{"name":"{asset}","size":{},"digest":"sha256:{}","browser_download_url":"{}{path}"}}]}}]"#,
+            r#"[{{"tag_name":"{tag}","draft":false,"prerelease":{prerelease},"assets":[{{"name":"{asset}","size":{},"digest":"sha256:{}","browser_download_url":"{}{path}"}}]}}]"#,
             body.len(),
             hex::encode(Sha256::digest(body)),
             fake.url()
@@ -341,9 +349,30 @@ fn on_a_terminal(setup: &Setup, prefix: &str, keys: &str) -> String {
 
 /// [`on_a_terminal`], `early` typed at once, before the question.
 fn on_a_terminal_typing(setup: &Setup, prefix: &str, early: &str, keys: &str) -> String {
+    on_a_terminal_asking(
+        setup,
+        prefix,
+        "",
+        early,
+        "Do you want to update [y/N]",
+        keys,
+    )
+}
+
+/// [`on_a_terminal_typing`], `extra` after `--force-update`, `keys`
+/// typed once `question` shows.
+fn on_a_terminal_asking(
+    setup: &Setup,
+    prefix: &str,
+    extra: &str,
+    early: &str,
+    question: &str,
+    keys: &str,
+) -> String {
     use std::io::Write;
-    let shell =
-        format!("{prefix}\"$SB\" self-update --force-update --color=never & wait $!; echo EXIT=$?");
+    let shell = format!(
+        "{prefix}\"$SB\" self-update --force-update {extra} --color=never & wait $!; echo EXIT=$?"
+    );
     let mut script = setup.command("timeout");
     script
         .args(["30", "script", "-qec", &shell, "/dev/null"])
@@ -374,11 +403,7 @@ fn on_a_terminal_typing(setup: &Setup, prefix: &str, early: &str, keys: &str) ->
     };
     if !keys.is_empty() {
         let start = std::time::Instant::now();
-        while !shown
-            .lock()
-            .expect("shown")
-            .contains("Do you want to update [y/N]")
-        {
+        while !shown.lock().expect("shown").contains(question) {
             assert!(start.elapsed() < Duration::from_secs(20), "no question");
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -463,4 +488,73 @@ fn an_asset_that_is_not_an_elf_is_refused() {
     }
     assert_eq!(setup.sb_bytes(), before);
     assert_eq!(setup.leftovers(), Vec::<String>::new());
+}
+
+/// `--channel beta`, forced in this raw build: the beta channel's newest
+/// release, an rc, and its `_beta` asset, installed though the switch
+/// says so first.
+#[test]
+fn channel_beta_installs_the_beta_asset() {
+    if !root_gate::requested() {
+        return;
+    }
+    let body = stand_in_on("99.0.0-rc.1", "beta");
+    let setup = setup_on(
+        Channel::Beta,
+        "99.0.0-rc.1",
+        &body,
+        Answer::new(200, body.clone()),
+    );
+    let out = setup.run(&["--force-update", "--channel", "beta", "--yes"]);
+    let shown = text(&out);
+    assert!(out.status.success(), "{shown}");
+    assert!(
+        shown.contains(&format!(
+            "Switching sb CLI to the beta channel: 99.0.0-rc.1 (current: {CURRENT}, none)"
+        )),
+        "{shown}"
+    );
+    assert_eq!(setup.sb_bytes(), body);
+    // Only the two channels can be asked for: a usage error otherwise,
+    // `none` included.
+    for value in ["stable", "none"] {
+        let out = common::sb()
+            .args(["self-update", "--channel", value])
+            .output()
+            .expect("run sb");
+        assert_eq!(out.status.code(), Some(2), "{value}: {}", text(&out));
+    }
+}
+
+/// A switch to a lower version says so before its own question, "Do you
+/// want to switch"; declined, sb is left as it was.
+#[test]
+fn a_lower_switch_is_said_before_its_question() {
+    if !root_gate::requested() {
+        return;
+    }
+    let body = stand_in_on("0.0.1-rc.1", "beta");
+    let setup = setup_on(
+        Channel::Beta,
+        "0.0.1-rc.1",
+        &body,
+        Answer::new(200, body.clone()),
+    );
+    let before = setup.sb_bytes();
+    let out = on_a_terminal_asking(
+        &setup,
+        "",
+        "--channel beta",
+        "",
+        "Do you want to switch [y/N]",
+        "n\r",
+    );
+    let older = out.find(&format!("0.0.1-rc.1 is older than the running {CURRENT}"));
+    let question = out.find("Do you want to switch [y/N]");
+    assert!(
+        older.is_some() && question.is_some() && older < question,
+        "{out}"
+    );
+    assert!(out.contains("Update of sb CLI cancelled"), "{out}");
+    assert_eq!(setup.sb_bytes(), before);
 }

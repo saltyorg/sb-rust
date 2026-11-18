@@ -8,7 +8,7 @@
 use std::io::Write;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-use sb_cli_core::build_info::BuildInfo;
+use sb_cli_core::build_info::{BuildInfo, Channel};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::colour;
 use sb_cli_core::config;
@@ -123,6 +123,9 @@ enum Command {
         /// Automatically accept update without confirmation
         #[arg(short, long)]
         yes: bool,
+        /// Switch to this release channel (the new binary keeps it)
+        #[arg(long, value_enum)]
+        channel: Option<Channel>,
         /// Set from `--force-update` when this build has it.
         #[arg(skip)]
         force_update: bool,
@@ -336,6 +339,28 @@ Examples:
   sb list plex           # Search for tags matching \"plex\"
   sb list arr            # Search for tags matching \"arr\"";
 
+/// The host check's verdict for this run: an unsupported *Ubuntu
+/// release* lets `version` and the standalone `self-update` through
+/// (`allowed`), with a warning saying so, since self-update is how such a
+/// host reaches a binary that supports it (maintainer, 2026-11-18;
+/// cli-core spec, startup step 1). Anything else stands.
+fn allow_unsupported_release(
+    support: Result<(), sb_host::Unsupported>,
+    allowed: bool,
+    warnings: &mut Vec<String>,
+) -> Result<(), sb_host::Unsupported> {
+    match support {
+        Err(sb_host::Unsupported::Release { found, supported }) if allowed => {
+            warnings.push(format!(
+                "Ubuntu {found} isn't a supported release (supported versions: {supported}); \
+                 sb self-update may bring a version that supports it"
+            ));
+            Ok(())
+        }
+        other => other,
+    }
+}
+
 /// `--force-update`, sb-go's flag in builds with self-update disabled
 /// (cmd/selfUpdate.go): added to the parsed tree only in such builds, so
 /// the tree of a release build is sb-go's. Why not a clap `hide`: a
@@ -511,6 +536,13 @@ impl Command {
         }
     }
 
+    /// Whether the command runs on an unsupported Ubuntu release, with a
+    /// warning: `version` and the standalone `self-update` only (cli-core
+    /// spec, startup step 1). `update` keeps refusing: it changes the host.
+    fn runs_on_unsupported_release(&self) -> bool {
+        matches!(self, Self::Version { .. } | Self::SelfUpdate { .. })
+    }
+
     /// Whether the command needs root (spec: startup step 3). Every command
     /// decides here, with no wildcard arm, so a new one can't skip it.
     fn needs_root(&self) -> bool {
@@ -602,8 +634,14 @@ fn main() -> RunEnd {
     // run hands over to a root run through sudo, which then reads its own
     // settings and warns about those: a run about to relaunch leaves the
     // startup warnings to it.
-    let support = sb_host::check_support();
     let parsed = parse(profile);
+    let support = allow_unsupported_release(
+        sb_host::check_support(),
+        parsed
+            .as_ref()
+            .is_ok_and(|cli| cli.command.runs_on_unsupported_release()),
+        &mut warnings,
+    );
     let relaunching = support.is_ok()
         && parsed
             .as_ref()
@@ -877,8 +915,12 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         },
         Command::Restore(ref args) => restore::restore(args, shutdown)?,
         Command::Bench => bench::bench(shutdown, log)?,
-        Command::SelfUpdate { yes, force_update } => {
-            self_update::self_update(yes, force_update, shutdown, log)?;
+        Command::SelfUpdate {
+            yes,
+            channel,
+            force_update,
+        } => {
+            self_update::self_update(yes, force_update, channel, shutdown, log)?;
         }
         Command::Logs => logs::logs(shutdown)?,
         Command::Docker {
@@ -1170,7 +1212,7 @@ mod tests {
                 walk(sub, texts);
             }
         }
-        let raw = BuildInfo::from_env("0.1.0", None, None, None);
+        let raw = BuildInfo::from_env("0.1.0", None, None, Channel::None);
         let cmd = help::apply(
             force_update_arg(Cli::command(), &raw),
             &sb_cli_core::theme::Theme::plain(),
@@ -1200,10 +1242,12 @@ mod tests {
                 .get_arguments()
                 .any(|arg| arg.get_long() == Some("force-update"))
         };
-        let release = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, None);
-        let disabled = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Some("true"));
-        let raw = BuildInfo::from_env("0.1.0", None, None, None);
+        let release = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Channel::Release);
+        let beta = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Channel::Beta);
+        let disabled = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Channel::None);
+        let raw = BuildInfo::from_env("0.1.0", None, None, Channel::Release);
         assert!(!has_it(&release));
+        assert!(!has_it(&beta));
         assert!(has_it(&disabled));
         assert!(has_it(&raw));
         let cmd = Cli::command();
@@ -1214,6 +1258,7 @@ mod tests {
         );
         let update = Command::SelfUpdate {
             yes: false,
+            channel: None,
             force_update: false,
         };
         assert!(update.needs_root());
@@ -1226,7 +1271,7 @@ mod tests {
     fn a_given_force_update_is_read() {
         let cmd = force_update_arg(
             Cli::command(),
-            &BuildInfo::from_env("0.1.0", None, None, None),
+            &BuildInfo::from_env("0.1.0", None, None, Channel::None),
         );
         let matches = cmd
             .clone()

@@ -5,16 +5,17 @@
 //! builds it with the `testing` feature only; `testing::stand_in` patches
 //! the version. Not part of sb.
 //!
-//! `version --json` prints the version as `sb version --json` does;
-//! anything else prints `stand-in sb <version>`.
+//! `version --json` prints the version and the channel as `sb version
+//! --json` does; anything else prints `stand-in sb <version>`. The field
+//! holds `<version>,<channel>`.
 
 /// The marker's length, as `testing::stand_in` knows it
 /// (`STAND_IN_MARKER`, followed by `STAND_IN_WIDTH` bytes of version).
 const MARKER_LEN: usize = 20;
 
-/// The marker `testing::stand_in` looks for, then the version, padded
-/// with spaces to a fixed width.
-static VERSION: [u8; 40] = *b"SB-STAND-IN-VERSION=                    ";
+/// The marker `testing::stand_in` looks for, then `<version>,<channel>`,
+/// padded with spaces to a fixed width (`STAND_IN_WIDTH`, 32).
+static VERSION: [u8; 52] = *b"SB-STAND-IN-VERSION=                                ";
 
 fn main() {
     // Read through `black_box`, so the bytes are read when it runs and a
@@ -26,12 +27,13 @@ fn main() {
     // program's own file: the marker to search for would be a second copy
     // in the binary, which `testing::stand_in` refuses.
     let field = std::hint::black_box(&VERSION);
-    let version = std::str::from_utf8(&field[MARKER_LEN..])
+    let patched = std::str::from_utf8(&field[MARKER_LEN..])
         .unwrap_or_default()
         .trim_end();
+    let (version, channel) = patched.split_once(',').unwrap_or((patched, ""));
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["version", "--json"] {
-        println!("{{\"version\":\"{version}\"}}");
+        println!("{{\"version\":\"{version}\",\"channel\":\"{channel}\"}}");
     } else {
         println!("stand-in sb {version}");
     }

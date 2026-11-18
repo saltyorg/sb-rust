@@ -17,6 +17,15 @@ use std::process::{Command, Output};
 /// Only called when the root tests were asked for, so a namespace that
 /// can't be made is a failure.
 fn sb_with_os_release(content: &str, args: &[&str]) -> Output {
+    sb_with_os_release_env(content, args, &[])
+}
+
+/// [`sb_with_os_release`], with `env` set for sb.
+fn sb_with_os_release_env(
+    content: &str,
+    args: &[&str],
+    env: &[(&str, &std::path::Path)],
+) -> Output {
     let probe = Command::new("unshare")
         .args(["--mount", "true"])
         .output()
@@ -27,6 +36,9 @@ fn sb_with_os_release(content: &str, args: &[&str]) -> Output {
     let script = r#"mount --bind "$1" /etc/os-release && shift && exec "$@""#;
     let mut cmd = Command::new("unshare");
     common::apply_sb_env(&mut cmd);
+    for (name, value) in env {
+        cmd.env(name, value);
+    }
     cmd.args([
         "--mount",
         "--propagation",
@@ -43,12 +55,14 @@ fn sb_with_os_release(content: &str, args: &[&str]) -> Output {
     .expect("run unshare")
 }
 
+/// Every command but `version` and `self-update` (cli-core spec, startup
+/// step 1): `--help` and `update` included.
 #[test]
-fn an_unsupported_release_refuses_every_command() {
+fn an_unsupported_release_refuses_every_other_command() {
     if !root_gate::requested() {
         return;
     }
-    for args in [&["version"][..], &["--help"][..]] {
+    for args in [&["--help"][..], &["update"][..], &["motd"][..]] {
         let out = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"20.04\"\n", args);
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert_eq!(
@@ -58,6 +72,49 @@ fn an_unsupported_release_refuses_every_command() {
         );
         assert!(out.stdout.is_empty(), "{args:?}");
     }
+}
+
+/// `version` and the standalone `self-update` run on an unsupported Ubuntu
+/// release, after a warning naming it (maintainer, 2026-11-18).
+#[test]
+fn version_and_self_update_run_on_an_unsupported_release() {
+    if !root_gate::requested() {
+        return;
+    }
+    let warning = "warning: Ubuntu 20.04 isn't a supported release (supported versions: 22.04, 24.04, 26.04); sb self-update may bring a version that supports it\n";
+    let out = sb_with_os_release(
+        "ID=ubuntu\nVERSION_ID=\"20.04\"\n",
+        &["--color=never", "version"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8(out.stderr).expect("utf-8"), warning);
+    assert!(
+        String::from_utf8(out.stdout)
+            .expect("utf-8")
+            .starts_with("Saltbox CLI version: ")
+    );
+    // A raw build: self-update is off, and says so after the warning. A
+    // test build reads the fake GitHub's bases even so.
+    let fake = sb_release::testing::Fake::start().expect("fake");
+    let dir = tempfile::tempdir().expect("dir");
+    let bases = dir.path().join("bases.json");
+    fake.write_bases(&bases).expect("bases");
+    let out = sb_with_os_release_env(
+        "ID=ubuntu\nVERSION_ID=\"20.04\"\n",
+        &["--color=never", "self-update"],
+        &[(sb_release::testing::BASES_VARIABLE, &bases)],
+    );
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(0), "{shown}");
+    assert!(shown.starts_with(warning), "{shown}");
+    assert!(
+        shown.contains("Self-update is disabled in this build"),
+        "{shown}"
+    );
 }
 
 #[test]

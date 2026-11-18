@@ -233,7 +233,7 @@ mod tests {
 
     const REPO: GithubRepo = GithubRepo {
         owner: "saltyorg",
-        name: "sb-go",
+        name: "sb-rust",
     };
     const DIGEST: &str = "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
@@ -250,7 +250,8 @@ mod tests {
         }
     }
 
-    const GOOD: &str = "https://github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64";
+    const GOOD: &str =
+        "https://github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64";
 
     fn check(raw: &RawAsset) -> Result<Asset, String> {
         Asset::check(raw, &github(), REPO, "v1.2.3").map_err(|err| err.to_string())
@@ -318,27 +319,27 @@ mod tests {
     #[test]
     fn the_url_is_the_releases_own_path_on_github() {
         let refused = "release asset \"sb_linux_amd64\" is not served from \
-                       https://github.com/saltyorg/sb-go/releases/download/";
+                       https://github.com/saltyorg/sb-rust/releases/download/";
         for url in [
             // Wrong owner, repository, tag, name.
-            "https://github.com/someone/sb-go/releases/download/v1.2.3/sb_linux_amd64",
+            "https://github.com/someone/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
             "https://github.com/saltyorg/sb/releases/download/v1.2.3/sb_linux_amd64",
-            "https://github.com/saltyorg/sb-go/releases/download/v1.2.4/sb_linux_amd64",
-            "https://github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_arm64",
-            "https://github.com/saltyorg/sb-go/releases/download/V1.2.3/sb_linux_amd64",
+            "https://github.com/saltyorg/sb-rust/releases/download/v1.2.4/sb_linux_amd64",
+            "https://github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_arm64",
+            "https://github.com/saltyorg/sb-rust/releases/download/V1.2.3/sb_linux_amd64",
             // Host, port, scheme, user info, query, fragment.
-            "https://objects.githubusercontent.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64",
-            "https://github.com:8443/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64",
-            "http://github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64",
-            "https://u@github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64",
-            "https://:p@github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64",
-            "https://github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64?x=1",
-            "https://github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64#x",
+            "https://objects.githubusercontent.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
+            "https://github.com:8443/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
+            "http://github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
+            "https://u@github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
+            "https://:p@github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
+            "https://github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64?x=1",
+            "https://github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64#x",
             // Other paths: shorter, longer, an encoded `/`, another kind.
-            "https://github.com/saltyorg/sb-go/releases/download/sb_linux_amd64",
-            "https://github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64/x",
-            "https://github.com/saltyorg/sb-go/releases/download/v1.2.3%2Fsb_linux_amd64",
-            "https://github.com/saltyorg/sb-go/archive/download/v1.2.3/sb_linux_amd64",
+            "https://github.com/saltyorg/sb-rust/releases/download/sb_linux_amd64",
+            "https://github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64/x",
+            "https://github.com/saltyorg/sb-rust/releases/download/v1.2.3%2Fsb_linux_amd64",
+            "https://github.com/saltyorg/sb-rust/archive/download/v1.2.3/sb_linux_amd64",
             // Not a URL.
             "",
             "not a url",
@@ -352,9 +353,9 @@ mod tests {
     #[test]
     fn owner_and_repository_compare_without_case() {
         for url in [
-            "https://github.com/SaltyOrg/SB-GO/releases/download/v1.2.3/sb_linux_amd64",
-            "https://github.com:443/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64",
-            "https://GITHUB.COM/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64",
+            "https://github.com/SaltyOrg/SB-RUST/releases/download/v1.2.3/sb_linux_amd64",
+            "https://github.com:443/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
+            "https://GITHUB.COM/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64",
         ] {
             assert!(check(&raw(url)).is_ok(), "{url}");
         }

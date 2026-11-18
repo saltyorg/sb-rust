@@ -16,12 +16,12 @@ use sha2::{Digest, Sha256};
 
 const SB: GithubRepo = GithubRepo {
     owner: "saltyorg",
-    name: "sb-go",
+    name: "sb-rust",
 };
 const ASSET: &str = "sb_linux_amd64";
 const AGENT: &str = "sb/0.0.0-test";
 const TAG: &str = "v1.2.3";
-const PATH: &str = "/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64";
+const PATH: &str = "/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64";
 const PREFIX: &str = ".sb-update-";
 
 fn sha256_hex(body: &[u8]) -> String {
@@ -478,7 +478,7 @@ async fn a_trickling_proxy_times_out() {
         Answer::json(listing.clone()).trickled(listing.len() / 30 + 1, Duration::from_millis(100)),
     );
     fake.script(
-        "/api/repos/saltyorg/sb-go/releases/latest",
+        "/api/repos/saltyorg/sb-rust/releases/latest",
         Answer::json(listing),
     );
     let mut bases = fake.bases();

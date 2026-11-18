@@ -27,6 +27,27 @@ const MAX_ERROR_BODY: usize = 64 << 10;
 /// `cleanDetail`).
 const MAX_DETAIL: usize = 240;
 
+/// The releases a lookup follows (release spec, "Release channels").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Track {
+    /// Stable releases only: GitHub's `prerelease` flag off *and* no
+    /// semver prerelease part, so a mislabelled rc is skipped too.
+    Stable,
+    /// Every release, prereleases included.
+    Prereleases,
+}
+
+impl Track {
+    /// Whether a release GitHub flags `prerelease`, tagged `version`, is
+    /// one this track follows.
+    fn follows(self, prerelease: bool, version: &Version) -> bool {
+        match self {
+            Self::Stable => !prerelease && version.pre.is_empty(),
+            Self::Prereleases => true,
+        }
+    }
+}
+
 /// Which release of a repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Query {
@@ -216,34 +237,45 @@ impl Releases {
         .await
     }
 
-    /// The newest stable release of `repo` (drafts and prereleases
-    /// skipped, tags with an optional `v` read as semantic versions, others
+    /// The newest release of `repo` that `track` follows (drafts always
+    /// skipped; tags with an optional `v` read as semantic versions, others
     /// skipped), with `asset` checked; `None` when it isn't newer than
-    /// `current`. The list is GitHub's first page, newest first.
+    /// `current` (no `current`: the newest, whatever its version, as a
+    /// channel switch asks). The list is GitHub's first page, newest first.
     ///
     /// # Errors
     ///
-    /// As [`Releases::release`], and [`Error::NoStable`] when no release
-    /// is stable with a semantic version.
+    /// As [`Releases::release`]; [`Error::NoStable`] or, for
+    /// [`Track::Prereleases`], [`Error::NoRelease`] when no release the
+    /// track follows has a semantic version.
     pub async fn newest(
         &self,
         repo: GithubRepo,
-        current: &Version,
+        track: Track,
+        current: Option<&Version>,
         asset: &str,
         step: &mut Step,
     ) -> Result<Option<Release>, Error> {
         self.fetch(repo, &["releases"], step, |raws: Vec<RawRelease>| {
             let (raw, version) = raws
                 .into_iter()
-                .filter(|raw| !raw.draft && !raw.prerelease)
+                .filter(|raw| !raw.draft)
                 .filter_map(|raw| tag_version(&raw.tag_name).map(|version| (raw, version)))
+                .filter(|(raw, version)| track.follows(raw.prerelease, version))
                 .max_by(|(_, a), (_, b)| a.cmp_precedence(b))
-                .ok_or(Error::NoStable)?;
+                .ok_or(match track {
+                    Track::Stable => Error::NoStable,
+                    Track::Prereleases => Error::NoRelease,
+                })?;
             let release = self.pick(raw, repo, asset)?;
             // Precedence, as sb-go's `GreaterThan`: build metadata doesn't
             // make a release newer
             // (<https://docs.rs/semver/1.0.28/semver/struct.Version.html#method.cmp_precedence>).
-            Ok((version.cmp_precedence(current) == std::cmp::Ordering::Greater).then_some(release))
+            Ok(current
+                .is_none_or(|current| {
+                    version.cmp_precedence(current) == std::cmp::Ordering::Greater
+                })
+                .then_some(release))
         })
         .await
     }

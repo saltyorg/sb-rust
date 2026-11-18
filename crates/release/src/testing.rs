@@ -58,25 +58,39 @@ pub(crate) fn from_env(user_agent: &str) -> Result<Releases, Error> {
 
 /// The stand-in sb's version marker and the field after it (`stand_in.rs`).
 const STAND_IN_MARKER: &[u8] = b"SB-STAND-IN-VERSION=";
-const STAND_IN_WIDTH: usize = 20;
+const STAND_IN_WIDTH: usize = 32;
 
-/// A stand-in sb, an ELF of this build's architecture built by sb-release's
-/// build script (`stand_in.rs`), that reports `version` (`{"version":
-/// "<version>"}` for `version --json`, `stand-in sb <version>` otherwise):
-/// self-update's tests serve it as a release asset (release spec, "Testing
-/// strategy"). The version is patched into its fixed-width field, so one
-/// build serves every version.
+/// A stand-in sb of the `release` channel ([`stand_in_on`]).
 ///
 /// # Panics
 ///
-/// When `version` is empty, holds a space or is longer than the field, or
-/// the build's stand-in doesn't hold the marker exactly once.
+/// As [`stand_in_on`].
 #[must_use]
 pub fn stand_in(version: &str) -> Vec<u8> {
+    stand_in_on(version, "release")
+}
+
+/// A stand-in sb, an ELF of this build's architecture built by sb-release's
+/// build script (`stand_in.rs`), that reports `version` and `channel`
+/// (`{"version":"<version>","channel":"<channel>"}` for `version --json`,
+/// `stand-in sb <version>` otherwise): self-update's tests serve it as a
+/// release asset (release spec, "Testing strategy"). Both are patched into
+/// its fixed-width field, so one build serves every version.
+///
+/// # Panics
+///
+/// When `version` or `channel` is empty or holds a space or a comma, they
+/// don't fit the field, or the build's stand-in doesn't hold the marker
+/// exactly once.
+#[must_use]
+pub fn stand_in_on(version: &str, channel: &str) -> Vec<u8> {
+    let value = format!("{version},{channel}");
+    let plain = |s: &str| !s.is_empty() && !s.contains([' ', ',']);
     assert!(
-        !version.is_empty() && version.len() <= STAND_IN_WIDTH && !version.contains(' '),
-        "a stand-in version fits its field: {version:?}"
+        plain(version) && plain(channel) && value.len() <= STAND_IN_WIDTH,
+        "a stand-in version and channel fit its field: {value:?}"
     );
+    let version = value.as_str();
     let mut bytes = include_bytes!(concat!(env!("OUT_DIR"), "/stand-in")).to_vec();
     let mut found = bytes
         .windows(STAND_IN_MARKER.len())

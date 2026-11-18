@@ -1,7 +1,8 @@
 //! `sb self-update`'s flow (release spec, "`sb self-update`"), sb-go's
-//! `selfupdate.Run` with the spec's decisions: off in builds with
-//! self-update disabled and in raw builds unless forced; the newest
-//! stable release looked up; the user asked on the terminal (or `--yes`);
+//! `selfupdate.Run` with the spec's decisions: off on the `none` channel
+//! and in raw builds unless forced; the newest release of the build's
+//! channel looked up, or of another one asked for once (`--channel`,
+//! "Release channels"); the user asked on the terminal (or `--yes`);
 //! the asset downloaded and verified next to the target, checked as a
 //! binary of this architecture that reports the release's version
 //! (decision 12), then put in its place. Runner steps show it: one runner
@@ -14,17 +15,19 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use sb_cli_core::build_info::BuildInfo;
+use sb_cli_core::build_info::{BuildInfo, Channel};
 use sb_cli_core::cancel::Shutdown;
 use sb_exec::Cmd;
 use sb_term_ui::{Labels, Runner, Step};
 use semver::Version;
 
 use crate::lookup::cut;
-use crate::{Arch, ElfError, GithubRepo, Release, Releases, Stage, activate, check_elf};
+use crate::{Arch, ElfError, GithubRepo, Release, Releases, Stage, Track, activate, check_elf};
 
 /// The question, as sb-go asks it.
 const QUESTION: &str = "Do you want to update";
+/// The question when `--channel` switches to another channel.
+const SWITCH_QUESTION: &str = "Do you want to switch";
 /// The staged file's name before it replaces sb (sb-go's pattern).
 const PREFIX: &str = ".sb-update-";
 /// The largest sb binary accepted (sb-go's cap).
@@ -46,6 +49,10 @@ pub struct SelfUpdate<'a> {
     pub yes: bool,
     /// `--force-update`: run although this build has self-update off.
     pub force: bool,
+    /// `--channel`: the channel to follow this once (the build's own when
+    /// `None`); another than the build's installs that channel's newest
+    /// release whatever its version.
+    pub switch_to: Option<Channel>,
     /// Shown as a warning after a successful update (`sb update`'s).
     pub message: Option<&'a str>,
     /// The run's shutdown, which a Ctrl-C at the question interrupts: the
@@ -67,19 +74,46 @@ pub enum Outcome {
     Updated(Version),
 }
 
-/// The asset for this build's architecture (release spec, decision 9).
+/// The asset for this build's architecture on `channel` (release spec,
+/// decision 9 and "Release channels"): `sb_linux_<arch>`, with `_beta` on
+/// the beta channel.
 ///
 /// # Errors
 ///
 /// An architecture with no sb release.
-pub fn asset_name() -> anyhow::Result<&'static str> {
-    Ok(asset_for(Arch::current()?))
+pub fn asset_name(channel: Channel) -> anyhow::Result<&'static str> {
+    Ok(asset_for(Arch::current()?, channel))
 }
 
-fn asset_for(arch: Arch) -> &'static str {
-    match arch {
-        Arch::Amd64 => "sb_linux_amd64",
-        Arch::Arm64 => "sb_linux_arm64",
+fn asset_for(arch: Arch, channel: Channel) -> &'static str {
+    match (arch, channel == Channel::Beta) {
+        (Arch::Amd64, false) => "sb_linux_amd64",
+        (Arch::Amd64, true) => "sb_linux_amd64_beta",
+        (Arch::Arm64, false) => "sb_linux_arm64",
+        (Arch::Arm64, true) => "sb_linux_arm64_beta",
+    }
+}
+
+/// The channel a self-update follows: `--channel`'s, else the build's; a
+/// forced update of a `none` build follows `release`.
+fn followed(update: &SelfUpdate<'_>) -> Channel {
+    match asked(update).unwrap_or(update.build.channel) {
+        Channel::None => Channel::Release,
+        channel => channel,
+    }
+}
+
+/// `--channel`'s channel; `none` asks for no channel, so it is no switch.
+fn asked(update: &SelfUpdate<'_>) -> Option<Channel> {
+    update.switch_to.filter(|channel| *channel != Channel::None)
+}
+
+/// The track a channel's lookup follows.
+fn track(channel: Channel) -> Track {
+    if channel == Channel::Beta {
+        Track::Prereleases
+    } else {
+        Track::Stable
     }
 }
 
@@ -120,9 +154,22 @@ pub async fn self_update(
                     )
                 })?;
                 let arch = Arch::current().context("check for updates")?;
-                let asset = asset_for(arch);
+                let channel = followed(&update);
+                // A switch is `--channel` naming another channel than the
+                // build's; a forced update of a `none` build follows
+                // `release` as an update does.
+                let switching = asked(&update).is_some_and(|asked| asked != build.channel);
+                let asset = asset_for(arch, channel);
+                // A switch installs the channel's newest whatever its
+                // version: back to `release` from a newer rc is lower.
                 let Some(newest) = releases
-                    .newest(update.repo, &current, asset, step)
+                    .newest(
+                        update.repo,
+                        track(channel),
+                        (!switching).then_some(&current),
+                        asset,
+                        step,
+                    )
                     .await
                     .context("check for updates")?
                 else {
@@ -136,13 +183,26 @@ pub async fn self_update(
                 let version = newest.version.clone().with_context(|| {
                     format!("check for updates: release {} has no version", newest.tag)
                 })?;
-                step.info(format!(
-                    "New sb CLI version available: {version} (current: {current})"
-                ));
+                if switching {
+                    step.info(format!(
+                        "Switching sb CLI to the {} channel: {version} (current: {current}, {})",
+                        channel.name(),
+                        build.channel.name()
+                    ));
+                    if version.cmp_precedence(&current) == std::cmp::Ordering::Less {
+                        step.warn(format!("{version} is older than the running {current}"));
+                    }
+                } else {
+                    step.info(format!(
+                        "New sb CLI version available: {version} (current: {current})"
+                    ));
+                }
                 Ok(Some(Found {
                     release: newest,
                     version,
                     arch,
+                    channel,
+                    switching,
                 }))
             },
         )
@@ -156,7 +216,11 @@ pub async fn self_update(
         });
     };
     if !sb_term_ui::confirm(
-        QUESTION,
+        if found.switching {
+            SWITCH_QUESTION
+        } else {
+            QUESTION
+        },
         update.yes.then_some(true),
         "--yes",
         update.shutdown,
@@ -167,12 +231,14 @@ pub async fn self_update(
     Ok(Outcome::Updated(found.version))
 }
 
-/// The newer release the lookup found, its version, and the architecture
-/// its asset was chosen for.
+/// The release the lookup found, its version, and the architecture and
+/// channel its asset was chosen for; whether it switches channel.
 struct Found {
     release: Release,
     version: Version,
     arch: Arch,
+    channel: Channel,
+    switching: bool,
 }
 
 /// Download the release's asset next to the target, check it as a binary
@@ -188,6 +254,8 @@ async fn install(
         release: newest,
         version,
         arch,
+        channel,
+        ..
     } = found;
     let done = updating
         .step(
@@ -223,7 +291,7 @@ async fn install(
                 step.step(
                     Labels::new("Checking the new binary", "Checked the new binary"),
                     async |step| {
-                        check_new(staged.path(), *arch, &newest.tag, step)
+                        check_new(staged.path(), *arch, &newest.tag, *channel, step)
                             .await
                             .context("binary update failed validation")
                     },
@@ -248,8 +316,15 @@ async fn install(
 /// The staged binary's checks before it replaces sb (decision 12,
 /// decided.md D-Q5): an ELF for `arch`; then, made executable, its own
 /// `version --json`, run with an empty environment and a timeout, must
-/// report `tag` without its `v`.
-async fn check_new(staged: &Path, arch: Arch, tag: &str, step: &mut Step) -> anyhow::Result<()> {
+/// report `tag` without its `v`, and `channel` ("Release channels"), so a
+/// mislabelled asset can't switch a host's channel.
+async fn check_new(
+    staged: &Path,
+    arch: Arch,
+    tag: &str,
+    channel: Channel,
+    step: &mut Step,
+) -> anyhow::Result<()> {
     check_elf(staged, arch).map_err(|err| anyhow::anyhow!(elf_text(err)))?;
     std::fs::set_permissions(staged, Permissions::from_mode(0o755))
         .context("set the new binary's permissions")?;
@@ -261,7 +336,7 @@ async fn check_new(staged: &Path, arch: Arch, tag: &str, step: &mut Step) -> any
         .capture(&step.token())
         .await?
         .check()?;
-    reports(&ran.stdout, tag).map_err(anyhow::Error::msg)
+    reports(&ran.stdout, tag, channel).map_err(anyhow::Error::msg)
 }
 
 /// sb-go's texts for a binary that isn't this architecture's
@@ -278,20 +353,31 @@ fn elf_text(err: ElfError) -> String {
     }
 }
 
-/// Whether `stdout`, a `version --json`, reports `tag` without its `v`;
-/// else why not, naming what it printed (made safe and cut).
-fn reports(stdout: &str, tag: &str) -> Result<(), String> {
-    /// The one field read; sb's others are ignored.
+/// Whether `stdout`, a `version --json`, reports `tag` without its `v`
+/// and `channel`; else why not, naming what it printed (made safe and
+/// cut).
+fn reports(stdout: &str, tag: &str, channel: Channel) -> Result<(), String> {
+    /// The fields read; sb's others are ignored. Why not `Channel` with
+    /// serde: an unknown value would be a parse error, and the refusal
+    /// would lose the value it names.
     #[derive(serde::Deserialize)]
     struct Reported {
         version: String,
+        channel: Option<String>,
     }
     let want = tag.strip_prefix('v').unwrap_or(tag);
     match serde_json::from_str::<Reported>(stdout) {
-        Ok(got) if got.version == want => Ok(()),
-        Ok(got) => Err(format!(
+        Ok(got) if got.version != want => Err(format!(
             "the new binary reports version {}, not {want}",
             cut(&got.version)
+        )),
+        Ok(got) if got.channel.as_deref() == Some(channel.name()) => Ok(()),
+        Ok(got) => Err(format!(
+            "the new binary reports channel {}, not {}",
+            got.channel
+                .as_deref()
+                .map_or_else(|| "none given".to_owned(), cut),
+            channel.name()
         )),
         Err(_) if stdout.trim().is_empty() => {
             Err("the new binary's version --json printed nothing".to_owned())
@@ -307,27 +393,105 @@ fn reports(stdout: &str, tag: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// The asset follows the architecture, and the beta channel adds
+    /// `_beta`; `none` (a forced update) asks for the plain one.
     #[test]
-    fn the_asset_follows_the_architecture() {
-        assert_eq!(asset_for(Arch::Amd64), "sb_linux_amd64");
-        assert_eq!(asset_for(Arch::Arm64), "sb_linux_arm64");
+    fn the_asset_follows_the_architecture_and_the_channel() {
+        assert_eq!(asset_for(Arch::Amd64, Channel::Release), "sb_linux_amd64");
+        assert_eq!(asset_for(Arch::Arm64, Channel::Release), "sb_linux_arm64");
+        assert_eq!(asset_for(Arch::Amd64, Channel::Beta), "sb_linux_amd64_beta");
+        assert_eq!(asset_for(Arch::Arm64, Channel::Beta), "sb_linux_arm64_beta");
+        assert_eq!(asset_for(Arch::Amd64, Channel::None), "sb_linux_amd64");
+        assert_eq!(track(Channel::Release), Track::Stable);
+        assert_eq!(track(Channel::Beta), Track::Prereleases);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn an_x86_64_build_asks_for_the_amd64_asset() {
-        assert_eq!(asset_name().expect("this build's"), "sb_linux_amd64");
+        assert_eq!(
+            asset_name(Channel::Release).expect("this build's"),
+            "sb_linux_amd64"
+        );
+        assert_eq!(
+            asset_name(Channel::Beta).expect("this build's"),
+            "sb_linux_amd64_beta"
+        );
     }
 
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn an_aarch64_build_asks_for_the_arm64_asset() {
-        assert_eq!(asset_name().expect("this build's"), "sb_linux_arm64");
+        assert_eq!(
+            asset_name(Channel::Release).expect("this build's"),
+            "sb_linux_arm64"
+        );
+        assert_eq!(
+            asset_name(Channel::Beta).expect("this build's"),
+            "sb_linux_arm64_beta"
+        );
+    }
+
+    /// `--channel none` is no switch: the build's channel is followed,
+    /// `release` for a forced `none` build.
+    #[test]
+    fn asking_for_none_is_no_switch() {
+        let shutdown = Shutdown::new();
+        let update = |build: &BuildInfo, switch_to| {
+            let update = SelfUpdate {
+                repo: GithubRepo {
+                    owner: "o",
+                    name: "r",
+                },
+                build,
+                target: Path::new("/x"),
+                yes: true,
+                force: false,
+                switch_to,
+                message: None,
+                shutdown: &shutdown,
+            };
+            (asked(&update), followed(&update))
+        };
+        let beta = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Channel::Beta);
+        assert_eq!(update(&beta, Some(Channel::None)), (None, Channel::Beta));
+        assert_eq!(
+            update(&beta, Some(Channel::Release)),
+            (Some(Channel::Release), Channel::Release)
+        );
+        assert_eq!(update(&beta, None), (None, Channel::Beta));
+        let none = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Channel::None);
+        assert_eq!(update(&none, Some(Channel::None)), (None, Channel::Release));
+    }
+
+    /// The new binary must report the tag's version and the channel asked
+    /// for: a mislabelled asset can't switch a host's channel.
+    #[test]
+    fn the_new_binary_must_report_the_channel() {
+        let beta = r#"{"version":"2.0.0","channel":"beta"}"#;
+        assert_eq!(reports(beta, "2.0.0", Channel::Beta), Ok(()));
+        assert_eq!(
+            reports(beta, "2.0.0", Channel::Release),
+            Err("the new binary reports channel beta, not release".to_owned())
+        );
+        assert_eq!(
+            reports(r#"{"version":"2.0.0"}"#, "2.0.0", Channel::Release),
+            Err("the new binary reports channel none given, not release".to_owned())
+        );
+        let err = reports(
+            r#"{"version":"2.0.0","channel":"\u001b[2Jx"}"#,
+            "2.0.0",
+            Channel::Beta,
+        )
+        .expect_err("other");
+        assert!(!err.contains('\u{1b}'), "{err:?}");
     }
 
     #[test]
     fn the_new_binary_must_report_the_tag() {
-        let json = r#"{"version":"2.0.0","commit":"abc1234","uv_version":"0.9.0"}"#;
+        let json =
+            r#"{"version":"2.0.0","commit":"abc1234","uv_version":"0.9.0","channel":"release"}"#;
+        let reports = |stdout: &str, tag: &str| reports(stdout, tag, Channel::Release);
         assert_eq!(reports(json, "v2.0.0"), Ok(()));
         assert_eq!(reports(&format!("{json}\n"), "2.0.0"), Ok(()));
         assert_eq!(
@@ -362,6 +526,7 @@ mod tests {
     /// What it printed reaches the error made safe: no escape sequence.
     #[test]
     fn what_it_printed_is_made_safe() {
+        let reports = |stdout: &str, tag: &str| reports(stdout, tag, Channel::Release);
         let err = reports("\u{1b}[31mred\u{1b}[0m", "v2.0.0").expect_err("not JSON");
         assert!(!err.contains('\u{1b}'), "{err:?}");
         let err = reports(r#"{"version":"\u001b[2Jx"}"#, "v2.0.0").expect_err("other");

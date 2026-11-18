@@ -1,24 +1,23 @@
 //! `sb self-update` (release spec, "`sb self-update`"): sb-release's flow
 //! on sb's own executable, under term-ui's runner.
 
-use sb_cli_core::build_info::BuildInfo;
+use sb_cli_core::build_info::{BuildInfo, Channel};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::log::RunLog;
 use sb_release::{GithubRepo, Outcome, Releases, SelfUpdate};
 
-/// The repository sb's releases come from. Until release preparation
-/// decides the channel, sb-go's, the only one there is (release spec,
-/// assumption 2): a raw sb-rust build is self-update disabled, so it
-/// can't replace itself from it by accident.
+/// The repository sb's releases come from (release spec, assumption 2:
+/// the maintainer, 2026-11-18). install/install.sh names the same.
 pub(crate) const SB_REPO: GithubRepo = GithubRepo {
     owner: "saltyorg",
-    name: "sb-go",
+    name: "sb-rust",
 };
 
-/// `sb self-update [--yes] [--force-update]`.
+/// `sb self-update [--yes] [--channel beta|release] [--force-update]`.
 pub(crate) fn self_update(
     yes: bool,
     force: bool,
+    switch_to: Option<Channel>,
     shutdown: &Shutdown,
     log: Option<&RunLog>,
 ) -> anyhow::Result<()> {
@@ -31,6 +30,7 @@ pub(crate) fn self_update(
         target: &target,
         yes,
         force,
+        switch_to,
         message: None,
         shutdown,
     };

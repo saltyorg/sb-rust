@@ -1,6 +1,13 @@
 # cross builds release binaries in the repository's ubuntu:22.04 image
 # (ADR-020), for both architectures:
 # https://github.com/cross-rs/cross/blob/v0.2.5/docs/cross_toml.md#targettargetdockerfile
+# The release variables build_info reads with `option_env!`: cross runs
+# cargo in its container, which sees a host variable only when it is
+# passed through (sb-M4; a cli-core test holds this list to build_info's):
+# https://github.com/cross-rs/cross/blob/v0.2.5/docs/cross_toml.md#buildenv
+[build.env]
+passthrough = ["SB_VERSION", "SB_GIT_COMMIT", "SB_CHANNEL"]
+
 [target.x86_64-unknown-linux-gnu.dockerfile]
 file = "build/Dockerfile"
 context = "build"

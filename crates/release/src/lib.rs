@@ -32,7 +32,7 @@ use reqwest::Url;
 pub use activate::{ElfError, activate, check_elf};
 pub use asset::{Asset, sha256_file};
 pub use download::{Stage, Staged};
-pub use lookup::{Failure, Query, Release};
+pub use lookup::{Failure, Query, Release, Track};
 pub use self_update::{Outcome, SelfUpdate, asset_name, self_update};
 
 /// A GitHub repository: the owner is a parameter (sb's and the fact's
@@ -111,6 +111,10 @@ pub enum Error {
     /// No release in the list is stable with a semantic version.
     #[error("no stable releases with valid semantic versions")]
     NoStable,
+    /// No release in the list, prereleases included, has a semantic
+    /// version (the beta channel's lookup).
+    #[error("no releases with valid semantic versions")]
+    NoRelease,
     /// A tag query was answered with another release (the tag made safe).
     #[error("release {asked} answered as {got}")]
     OtherTag { asked: String, got: String },

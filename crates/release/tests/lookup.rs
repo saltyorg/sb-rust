@@ -6,13 +6,13 @@
 use indicatif::InMemoryTerm;
 use sb_cli_core::cancel::Shutdown;
 use sb_release::testing::{Answer, Fake};
-use sb_release::{Error, GithubRepo, Query, Release, Releases};
+use sb_release::{Error, GithubRepo, Query, Release, Releases, Track};
 use sb_term_ui::{Labels, Options, Runner, Step, Target};
 use semver::Version;
 
 const SB: GithubRepo = GithubRepo {
     owner: "saltyorg",
-    name: "sb-go",
+    name: "sb-rust",
 };
 const ASSET: &str = "sb_linux_amd64";
 const AGENT: &str = "sb/0.0.0-test";
@@ -53,7 +53,7 @@ fn refused() -> (tokio::net::TcpSocket, std::net::SocketAddr) {
 /// An asset entry as GitHub's API lists it, served from `fake`.
 fn asset(fake: &Fake, tag: &str, name: &str, digest: &str) -> String {
     format!(
-        r#"{{"name":"{name}","size":12,"digest":"{digest}","browser_download_url":"{}/saltyorg/sb-go/releases/download/{tag}/{name}","id":1}}"#,
+        r#"{{"name":"{name}","size":12,"digest":"{digest}","browser_download_url":"{}/saltyorg/sb-rust/releases/download/{tag}/{name}","id":1}}"#,
         fake.url()
     )
 }
@@ -100,7 +100,7 @@ fn notices(screen: &str) -> (usize, usize) {
     )
 }
 
-const LATEST: &str = "/api/repos/saltyorg/sb-go/releases/latest";
+const LATEST: &str = "/api/repos/saltyorg/sb-rust/releases/latest";
 
 #[tokio::test]
 async fn the_proxy_answers_first() {
@@ -203,7 +203,7 @@ async fn an_unusable_proxy_answer_falls_back() {
                 false,
                 &[asset(fake, "v1.2.3", ASSET, DIGEST)],
             )
-            .replace("/saltyorg/sb-go/", "/someone/sb-go/")
+            .replace("/saltyorg/sb-rust/", "/someone/sb-rust/")
         },
     ] {
         let fake = Fake::start().expect("fake");
@@ -357,7 +357,7 @@ async fn a_tag_is_asked_for_by_name() {
     assert_eq!(found.tag, "0.9.1");
     let target = &fake.seen()[0].target;
     assert!(
-        target.ends_with("%2Fapi%2Frepos%2Fsaltyorg%2Fsb-go%2Freleases%2Ftags%2F0.9.1"),
+        target.ends_with("%2Fapi%2Frepos%2Fsaltyorg%2Fsb-rust%2Freleases%2Ftags%2F0.9.1"),
         "{target}"
     );
 }
@@ -394,9 +394,13 @@ async fn the_newest_stable_release_is_chosen() {
     let newest = |current: Version| {
         let releases = &releases;
         async move {
-            in_step(async |step| releases.newest(SB, &current, ASSET, step).await)
-                .await
-                .0
+            in_step(async |step| {
+                releases
+                    .newest(SB, Track::Stable, Some(&current), ASSET, step)
+                    .await
+            })
+            .await
+            .0
         }
     };
     let found = newest(Version::new(1, 4, 0))
@@ -434,11 +438,11 @@ async fn a_list_without_a_usable_newest_release_fails() {
         let fake = Fake::start().expect("fake");
         let list = format!("[{}]", list.join(","));
         fake.script("/version", Answer::json(list.clone()));
-        fake.script("/api/repos/saltyorg/sb-go/releases", Answer::json(list));
+        fake.script("/api/repos/saltyorg/sb-rust/releases", Answer::json(list));
         let releases = fake.releases(AGENT).expect("client");
         let (found, screen) = in_step(async |step| {
             releases
-                .newest(SB, &Version::new(0, 1, 0), ASSET, step)
+                .newest(SB, Track::Stable, Some(&Version::new(0, 1, 0)), ASSET, step)
                 .await
         })
         .await;
@@ -529,7 +533,7 @@ async fn a_tag_query_takes_only_that_tag() {
             &[asset(&fake, "0.1.0", ASSET, DIGEST)],
         )),
     );
-    let tagged = "/api/repos/saltyorg/sb-go/releases/tags/0.9.1";
+    let tagged = "/api/repos/saltyorg/sb-rust/releases/tags/0.9.1";
     fake.script(
         tagged,
         Answer::json(release(
@@ -607,7 +611,7 @@ async fn build_metadata_is_not_newer() {
     let releases = fake.releases(AGENT).expect("client");
     let (found, _) = in_step(async |step| {
         releases
-            .newest(SB, &Version::new(1, 2, 3), ASSET, step)
+            .newest(SB, Track::Stable, Some(&Version::new(1, 2, 3)), ASSET, step)
             .await
     })
     .await;
@@ -866,4 +870,145 @@ async fn a_broken_body_is_retried() {
     assert_eq!(found.expect("found").tag, "v1.2.3");
     assert_eq!(notices(&screen), (0, 0), "{screen}");
     assert_eq!(releases.waits(), [SECOND]);
+}
+
+/// The channels' tracks (release spec, "Release channels"): `Stable` skips
+/// prereleases, flagged ones and stable-flagged rc tags alike; `Prereleases`
+/// takes the highest version, rc included; without a current version the
+/// newest is returned whatever it is, as a channel switch asks.
+#[tokio::test]
+async fn each_track_takes_its_newest_release() {
+    const BETA: &str = "sb_linux_amd64_beta";
+    let fake = Fake::start().expect("fake");
+    let both = |tag: &str| {
+        vec![
+            asset(&fake, tag, ASSET, DIGEST),
+            asset(&fake, tag, BETA, DIGEST),
+        ]
+    };
+    let list = format!(
+        "[{}]",
+        [
+            release(
+                "1.1.0-rc.1",
+                false,
+                true,
+                &[asset(&fake, "1.1.0-rc.1", BETA, DIGEST)]
+            ),
+            // An rc tag GitHub doesn't flag: still not stable.
+            release(
+                "1.1.0-rc.0",
+                false,
+                false,
+                &[asset(&fake, "1.1.0-rc.0", BETA, DIGEST)]
+            ),
+            release("1.2.0", true, false, &both("1.2.0")),
+            release("1.0.0", false, false, &both("1.0.0")),
+            release(
+                "1.0.0-rc.2",
+                false,
+                true,
+                &[asset(&fake, "1.0.0-rc.2", BETA, DIGEST)]
+            ),
+        ]
+        .join(",")
+    );
+    fake.script("/version", Answer::json(list));
+    let releases = fake.releases(AGENT).expect("client");
+    let newest = |track: Track, current: Option<Version>, asset: &'static str| {
+        let releases = &releases;
+        async move {
+            in_step(async |step| {
+                releases
+                    .newest(SB, track, current.as_ref(), asset, step)
+                    .await
+            })
+            .await
+            .0
+            .expect("ok")
+            .map(|found| (found.tag, found.asset.name().to_owned()))
+        }
+    };
+    let tag = |t: &str, a: &str| Some((t.to_owned(), a.to_owned()));
+    let rc2 = Version::parse("1.0.0-rc.2").expect("version");
+    assert_eq!(
+        newest(Track::Stable, Some(Version::new(0, 9, 0)), ASSET).await,
+        tag("1.0.0", ASSET)
+    );
+    assert_eq!(
+        newest(Track::Stable, Some(Version::new(1, 0, 0)), ASSET).await,
+        None
+    );
+    assert_eq!(
+        newest(Track::Prereleases, Some(Version::new(1, 0, 0)), BETA).await,
+        tag("1.1.0-rc.1", BETA)
+    );
+    // A beta host at an older rc takes the newest rc too.
+    assert_eq!(
+        newest(Track::Prereleases, Some(rc2.clone()), BETA).await,
+        tag("1.1.0-rc.1", BETA)
+    );
+    // No current version: the newest, lower or not.
+    assert_eq!(
+        newest(Track::Stable, None, ASSET).await,
+        tag("1.0.0", ASSET)
+    );
+}
+
+/// A stable release published after an rc gives a beta host at that rc
+/// the stable release's `_beta` asset, and a release host the plain one.
+#[tokio::test]
+async fn a_stable_release_after_an_rc_reaches_beta_hosts() {
+    const BETA: &str = "sb_linux_amd64_beta";
+    let fake = Fake::start().expect("fake");
+    let list = format!(
+        "[{}]",
+        [
+            release(
+                "1.0.0",
+                false,
+                false,
+                &[
+                    asset(&fake, "1.0.0", ASSET, DIGEST),
+                    asset(&fake, "1.0.0", BETA, DIGEST)
+                ]
+            ),
+            release(
+                "1.0.0-rc.2",
+                false,
+                true,
+                &[asset(&fake, "1.0.0-rc.2", BETA, DIGEST)]
+            ),
+        ]
+        .join(",")
+    );
+    fake.script("/version", Answer::json(list));
+    let releases = fake.releases(AGENT).expect("client");
+    let rc2 = Version::parse("1.0.0-rc.2").expect("version");
+    let (found, _) = in_step(async |step| {
+        releases
+            .newest(SB, Track::Prereleases, Some(&rc2), BETA, step)
+            .await
+    })
+    .await;
+    let found = found.expect("ok").expect("newer");
+    assert_eq!((found.tag.as_str(), found.asset.name()), ("1.0.0", BETA));
+    // The beta track with no versioned release: its own error.
+    let fake = Fake::start().expect("fake");
+    fake.script("/version", Answer::json("[]".to_owned()));
+    fake.script(
+        "/api/repos/saltyorg/sb-rust/releases",
+        Answer::json("[]".to_owned()),
+    );
+    let releases = fake.releases(AGENT).expect("client");
+    let (found, _) = in_step(async |step| {
+        releases
+            .newest(SB, Track::Prereleases, Some(&rc2), BETA, step)
+            .await
+    })
+    .await;
+    assert_eq!(
+        found.expect_err("none").to_string(),
+        "no releases with valid semantic versions"
+    );
 }
