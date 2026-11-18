@@ -589,6 +589,8 @@ signal, the disk test's file and the temporary directory removed.
 | `branch <name>` | the branch, required | no |
 | `branch-sandbox <name>` | the branch, required | no |
 | `announcements` | none (decision 27, amended 2026-11-17: sb-go's `--before`, `--after` and `--repo` removed, difference 45) | no |
+| `announcements preview` | `--since <ref>` (default `HEAD`), `--repo <saltbox\|sandbox>`, `--run-migrations` (decision 34, 2026-11-18) | yes |
+| `announcements check` | `[file]`, `--repo <saltbox\|sandbox>` (decision 35, 2026-11-18) | yes |
 
 Help texts are sb-go's (`Change the branch used by Saltbox`, and the
 others from cmd/). No `-v` anywhere (decision 18). sb-go's usage line
@@ -771,6 +773,112 @@ No migration table, no confirm and no `--migrations`: migrations run in
 announcements skipped: error loading announcement file '<path>':
 <issue>`, and the other repository's announcements show, exit 0, as in
 `update` and for a missing checkout (decision 31).
+
+`sb announcements` keeps its help: its two subcommands below are hidden
+(clap's `hide`; cli-core's help lists only shown subcommands), so its
+usage line, flags and text stay as they are, and a word after it that
+isn't one of them is clap's error, exit 2.
+
+#### `sb announcements preview` (hidden)
+
+A developer's view of what the next `sb update` would show (the
+maintainer, 2026-11-18; decision 34, difference 60). "Before" is each
+checkout's `announcements.yml` at the git ref `--since` names (default
+`HEAD`, so uncommitted edits count as new); "after" is the file in the
+working tree. `--since origin/master` shows everything not yet on master
+as new. Everything after that is `update`'s own code:
+
+1. One runner step per checkout, `Reading <Repo> announcements at
+   <ref>` / `Read <Repo> announcements at <ref>`: repo's
+   `file_at(ref, "announcements.yml")` (git's `rev-parse --verify` and
+   `cat-file`, through sb-exec as repo's other reads, within 10 s): the
+   file's text, or none when the ref has no such file (then every entry
+   is new, as `update` with no before file). Its text is held to
+   cli-core's 1 MiB and UTF-8 rules, as `read_small`, and loaded by the
+   same loader. A ref git doesn't know fails the step: `error reading
+   <Repo> announcements at '<ref>': '<ref>' isn't a commit in <path>`,
+   exit 1. Without `--repo` both checkouts, as `update`; a checkout that
+   isn't there is skipped silently (a server without Sandbox), unless
+   `--repo` names it (repo's `inspect required directory` error, exit
+   1).
+2. `update`'s step "Checking for new announcements" / "Checked for new
+   announcements" (the same function): the diff, the gate and the sort;
+   a file that can't be loaded at the ref or in the tree is `update`'s
+   warning and skips that checkout; `Displaying new announcements` when
+   there are some. The step adds one info line per checkout, `<Repo>: <n>
+   new since <ref>`.
+3. Shown as `update` shows them: on a terminal, tui's announcement
+   viewer, every entry that applies listed and the new ones marked;
+   piped, the new ones inline. Nothing new: nothing is shown, exit 0.
+   Ctrl-C on the viewer ends with 130; nothing was going to run, so no
+   warning names the migrations.
+4. The migrations, `update`'s table and its confirm `Run all migration
+   tags?` (default no):
+   - without `--run-migrations` (a dry run): yes prints `Would run: sb
+     install <tag>` for each (Saltbox's tag as it is, Sandbox's as
+     `sandbox-<tag>`, the lines `update` names for running by hand), then
+     `Dry run: nothing was run; --run-migrations runs them.`; no prints
+     `update`'s warning `Skipped migrations: <repo> <tag>, ...`;
+   - with `--run-migrations`: yes runs them through `update`'s migration
+     runner, its lines, failure (exit 1, the `sb install` lines of the
+     ones left) and interrupt handling (decision 22, difference 43); no
+     is `update`'s warning.
+   - without a terminal no question is asked (term-ui's `can_ask`):
+     without `--run-migrations` the would-run lines print as for yes,
+     then the dry-run line; with it they run, the flag being the answer,
+     as `update`'s `--migrations run` is.
+
+sb's lines (the would-run lines, the dry-run line, the warnings) go to
+stderr as `update`'s do, the table and the inline form to stdout. The run
+log records the ref, each file's outcome, the counts and the migrations
+decided, as `update` records them.
+
+#### `sb announcements check` (hidden)
+
+A linter for announcement files, for developers and Saltbox's CI (the
+maintainer, 2026-11-18; decision 35). With a file, that file; without,
+both checkouts' own files (a checkout without its file: `<Repo> has no
+announcements file: <path>`, as `sb announcements` says it; neither file
+there: the error `no announcements file to check`, exit 1). Each file is
+loaded by the loader above; a file that doesn't load is its problems, in
+the loader's words (`error reading announcement file: ...`, or one
+`error parsing announcement YAML: <issue>` per issue, with its
+position), and no entry is checked. Otherwise every entry, numbered
+from 1:
+
+- `date`, `title` and `message` are set: `` `<field>` is missing ``;
+- `date` is a real date as `YYYY-MM-DD` (the heading's rule): `` `date`
+  '<text>' isn't a date as YYYY-MM-DD ``;
+- `required_folder` and `required_file`, when set, are absolute paths
+  without a `..` component: `` `<field>` '<path>' isn't an absolute path
+  ``, `` `<field>` '<path>' has a '..' component ``;
+- the message renders: no HTML (tui's Markdown shows it as text: ``
+  `message` has HTML, which sb shows as text: '<html>' ``) and no
+  reference link without its definition (`` `message` links to
+  '[<label>]', which it doesn't define ``), as pulldown-cmark's events
+  and its broken-link callback find them;
+- a `migration.required` entry has a tag: `` `migration.required` is
+  true and `migration.tag` is empty ``;
+- a migration tag is one of the repository's tags (sb-ansible's install
+  validation over the tags cache, its hints): `` `migration.tag` '<tag>'
+  isn't one of <Repo>'s tags ``, then `; did you mean '<near>'?` for one
+  within two edits, or `; it is <Other>'s tag` when the other
+  repository has it. The cache is read, never rebuilt: when the
+  repository's entry is missing, empty, or at another commit than its
+  checkout's HEAD, the check is skipped with `note: migration tags not
+  checked: no cached tags for <Repo> at its checkout's commit (sb list
+  caches them)`;
+- no two entries share `date` and `title` (`update` tells entries apart
+  by them): `same date and title as entry <n>`.
+
+The repository of a given file is `--repo`'s; without it, Sandbox when
+the file is Sandbox's own file, else Saltbox. Output on stdout: each file
+as a line `<path>:`, then each problem as `  entry <n> (<date>, "<title>"):
+<problem>` (`no date` and `no title` for a missing one), the notes as
+`  note: ...`, then `  <n> problems` or `  no problems`. Any problem:
+sb's error `announcements check found <n> problems`, exit 1; none, exit 0.
+Every text from the file is escaped as sb's other output (cli-core's
+`escaped`).
 
 ## Differences from sb-go (the complete list)
 
@@ -1003,6 +1111,15 @@ announcements skipped: error loading announcement file '<path>':
     warning under a step, and the refresh's failure is one. sb-go ran
     the refresh at the runner's top level (cmd/completion.go:182).
 
+`announcements`, its hidden subcommands (the maintainer, 2026-11-18):
+60. sb-go's harness for trying announcements (`--before`, `--after`,
+    gone with difference 45) is replaced by `sb announcements preview`:
+    the before file is the checkout's own at a git ref, not a file given
+    by path, and what follows is `update`'s own diff, viewer and
+    migration list, the migrations a dry run unless `--run-migrations`.
+61. `sb announcements check` is new: sb-go had no check of an
+    announcement file but its loader.
+
 ## Scope
 
 **In:**
@@ -1118,7 +1235,10 @@ crates/ops/                 sb-ops
   src/branch.rs             branch, branch-sandbox
   src/announcements.rs      load, diff, gate, sort, the migration list (pure
                             functions over paths and parsed files), and the
-                            hidden command
+                            command
+  src/announcements/preview.rs  the hidden preview: the file at a ref, then
+                            update's step, viewer and migrations
+  src/announcements/check.rs    the hidden check
   src/restore/              key, crypto, fetch, place, answers
   src/bench/                system, disk, speedtest, network
   src/testing.rs            fakes: restore service, ipinfo/icanhazip (`testing` feature)
@@ -1325,6 +1445,32 @@ the real services.
     `q` closes it (exit 0) and Ctrl-C ends with 130, the terminal
     restored; tui's snapshots of the list and pane with both
     repositories, marked (`update`) and not.
+  - **`announcements preview`** (2026-11-18): temp git checkouts made
+    with the host's git (a commit holding the before file, then the
+    working tree's edit): piped, the new entries inline and the step's
+    `<Repo>: <n> new since <ref>` line; `--since` a branch, a ref
+    without the file (every entry new), and a bad ref (the error naming
+    it, exit 1); `--repo` each, and a missing Sandbox checkout skipped
+    without it; an invalid file at the ref (`update`'s warning); the
+    migrations piped: the table, the would-run lines and the dry-run
+    line, the stand-in `ansible-playbook` not run; `--run-migrations`
+    piped: the stand-in records `--tags <tag>` in each checkout, and a
+    failing one gives `update`'s error with its `sb install` lines; on a
+    PTY: the viewer with the new entries marked, `q`, then the table and
+    the question, `y` giving the would-run lines and nothing run, and
+    with `--run-migrations` `y` running them; Ctrl-C on the viewer, 130.
+    Units: repo's `file_at` (a file, no file at the ref, a bad ref, a
+    ref starting with `-` refused, a file over 1 MiB, not UTF-8).
+  - **`announcements check`:** a good file (`no problems`, exit 0); a
+    bad one with each problem above once (exit 1, each line with its
+    entry, date and title); a file that doesn't parse (the loader's
+    issues); a near tag's `did you mean` and the other repository's tag
+    from a tags cache at the checkout's commit, and the skip note with
+    no cache and with a stale one; both checkouts without a file
+    argument, one without its file; `--repo`; text from the file
+    escaped. Units in sb-ops for each rule, and in sb-tui for the
+    Markdown checks (HTML block and inline, a broken reference link, a
+    defined one, a code span holding `<b>`).
 
 ## Boundaries
 
@@ -1580,6 +1726,22 @@ the real services.
     the network rows and Speedtest, differences 17 and 20 already
     listed).
 
+34. **A hidden `sb announcements preview`** replaces sb-go's
+    before/after harness (the maintainer, 2026-11-18, who didn't like
+    it): the file at a git ref against the working tree, through
+    `update`'s code, so what a developer sees is what `update` will
+    show; migrations a dry run unless `--run-migrations`. Without a
+    terminal no question is asked and nothing runs without the flag
+    (the coordinator's suggestion, taken: `update`'s rule that an
+    unanswered question needs its flag).
+35. **A hidden `sb announcements check [file]`** for developers and
+    Saltbox's CI (the maintainer, 2026-11-18): every problem with its
+    entry, exit 1 on any; the tag check from the tags cache only,
+    skipped when it isn't fresh, rather than guessed; the loader's own
+    words where they overlap. `--repo` names a given file's repository
+    for the tag check (an addition: a Sandbox file outside its
+    checkout can't be told by its path).
+
 ## Known limits
 
 - The viewer reads the placed file again, as root, following a link,
@@ -1634,6 +1796,21 @@ with no terminal) were decided on 2026-11-13 from recorded rules:
 decisions 28 and 29.
 
 ## Amendments to other specs
+
+**Repo spec (2026-11-18, `announcements preview`):** `Repo::file_at(ref,
+path)`, a local read: `git rev-parse --verify --quiet <ref>^{commit}`
+(a ref starting with `-` refused first, as branch names are), then
+`git cat-file -s` and `git cat-file blob <commit>:<path>` within 10 s;
+the file's text, `None` when the commit has no such path, held to 1 MiB
+and UTF-8; `RepoError::Ref` (`'<ref>' isn't a commit in <path>`) for a
+ref git doesn't know.
+
+**Tui spec (2026-11-18, `announcements check`):** `markdown::problems(message)`,
+what the announcement's Markdown can't show: HTML (block and inline,
+pulldown-cmark's `Html` and `InlineHtml` events) and reference links
+without a definition (its broken-link callback). pulldown-cmark becomes
+a direct dependency of sb-tui at tui-markdown's version (0.13.6, already
+in the tree through it), default features off.
 
 **Capability map, "Open items carried into module specs", the "Install
 script" item** (stale: the served installer no longer captures output).
