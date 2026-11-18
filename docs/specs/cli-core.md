@@ -156,6 +156,14 @@ restore\tlocal\tuser`, `flag\tsb restore\tlocal\tpassword-file`,
 setup\tglobal\treset-branch`); and the new `--migrations` on `sb update`
 (`flag\tsb update\tlocal\tmigrations`). `sb announcements` is shown where
 sb-go hid it (ops decision 27): a `REWORDED` entry for its command line.
+sb-go's `-v/--verbose` on the 14 commands where sb has no verbose mode
+(all but `install`, whose `-v` is Ansible's, and `setup`, whose is
+hidden and silent) is accepted, hidden, and changes nothing but a
+notice on stderr naming the run log: a `REWORDED` entry each, the flag
+hidden on sb's side (the maintainer, 2026-11-18; crates/sb/src/verbose.rs).
+The notice names this run in the log as the error block does (`<file>
+(run <id>)`); a run whose log couldn't open, already warned about,
+says `-v isn't needed: sb has no verbose output`.
 The completion run (`CompleteEnv` with `SB_COMPLETE`) comes before
 startup, above. *Amended 2026-11-13 by the ops and completion specs,
 2026-11-15 by the ops spec.*
@@ -293,7 +301,8 @@ the value you typed in the problem colour, clap's tips as `hint:` lines
 mean 'x'?") and its context lines (possible values in green), with no
 pointer to help, as sb-go. They go to stderr and exit 2, the usage-error
 convention (sb-go exits 1; a deliberate difference). Run errors keep sb's
-`✗` block.
+`✗` block. `-v` on a command sb-go gave it is no parse error (the
+maintainer, 2026-11-18; above); on one sb-go didn't, it still is.
 
 **Build info:** version, git commit and the pinned uv version are set at
 build time; release builds can switch self-update off. `sb version` prints

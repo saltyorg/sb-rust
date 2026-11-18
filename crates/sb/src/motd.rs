@@ -474,7 +474,9 @@ mod tests {
         assert!(parse(&["--all", "--share"]).unwrap().options().share);
     }
 
-    /// No `-v` (motd decision 9), and no arguments (`cobra.NoArgs`).
+    /// No `-v` in motd's own arguments (motd decision 9): sb's tree adds
+    /// sb-go's hidden one (`verbose`, the maintainer, 2026-11-18), which
+    /// motd never sees; and no arguments (`cobra.NoArgs`).
     #[test]
     fn verbose_and_arguments_are_parse_errors() {
         for args in [&["-v"][..], &["--verbose"], &["extra"]] {

@@ -203,7 +203,7 @@ section says what follows.
    accepts, in any case with spaces around trimmed, and anything else
    declines (term-ui "Prompts"). *Amended 2026-11-13 with M26.* sb-go read stdin, and EOF was an error.
 9. The lookup and the update are runner steps; sb-go printed lines only.
-10. No `-v` (decision 13).
+10. No `-v` (decision 13). *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 11. The proxy's usability check covers uv's and the fact's assets too,
     not only sb's (assumption 4; sb-go checked only sb's list).
 

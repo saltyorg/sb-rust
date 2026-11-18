@@ -306,7 +306,7 @@ nothing from ops, so it lands here.
    children (exec decisions 2 and 5).
 7. `-v` turns on no sb-side debug lines (sb-go: `terminal.Debug` lines);
    the run log always has them (capability map decision 11).
-8. `sb list` has no `-v` (exit 2).
+8. `sb list` has no `-v` (exit 2). *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 9. A cache rebuild in `install` and `list` shows as a step, labelled as
    in `update` and `branch` (`Updating <Repo> tags cache`), also when
    only the commit changed (sb-go's `install`: `INFO: Cache missing or

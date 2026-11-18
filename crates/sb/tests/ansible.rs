@@ -1203,11 +1203,16 @@ fn list_with_a_query_searches_every_repo() {
     assert_eq!(stdout(&output), "No tags found matching 'zzzzzz'\n");
 }
 
-/// `sb list` has no `-v` (spec, difference 8): a usage error, exit 2.
+/// `sb list` has no verbose mode (spec, difference 8), but takes sb-go's
+/// `-v` (its amendment, the maintainer, 2026-11-18): `--help` after it
+/// parses only if it does, and runs nothing.
 #[test]
-fn list_has_no_verbose_flag() {
-    let output = common::sb().args(["list", "-v"]).output().expect("run sb");
-    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+fn list_takes_verbose_as_a_no_op() {
+    let output = common::sb()
+        .args(["list", "-v", "--help"])
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
 
 /// `saltbox_mod`'s failures are its own: a listing that fails, or a

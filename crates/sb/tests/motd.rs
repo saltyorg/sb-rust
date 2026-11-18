@@ -1,7 +1,7 @@
 //! `sb motd` through the built binary (motd spec, Testing strategy, "End
 //! to end"; module build M36, M37): the layout of the system sections,
 //! colour under Saltbox's `CLICOLOR_FORCE=1` with stdout piped, the
-//! selection error and `-v`'s parse error; the banner through stand-in
+//! selection error, an argument's parse error and `-v`'s notice; the banner through stand-in
 //! toilet and boxes first on `PATH` (M46). Root runs (`SB_TEST_ROOT=1`),
 //! each with its own log directory; a run as another user would relaunch
 //! through sudo. The system sections read the host's os-release, /proc
@@ -212,18 +212,43 @@ fn share_masks_the_last_login_source() {
     );
 }
 
-/// `-v` is clap's parse error, exit 2 (motd decision 9), as is an
-/// argument (`cobra.NoArgs`).
+/// An argument is clap's parse error, exit 2 (`cobra.NoArgs`). sb-go's
+/// `-v` is accepted (the maintainer, 2026-11-18; motd decision 9's
+/// amendment): the same output, and one notice on stderr; without it, as
+/// the login runs motd, no notice.
 #[test]
-fn verbose_and_arguments_are_parse_errors() {
+fn arguments_are_parse_errors_and_verbose_a_notice() {
     if !root_gate::requested() {
         return;
     }
     let logs = temp();
-    for args in [&["--all", "-v"][..], &["--all", "extra"]] {
-        let out = motd(args, logs.path(), &[]);
-        assert_eq!(out.status.code(), Some(2), "{args:?}");
-        assert_eq!(text(&out.stdout), "", "{args:?}");
+    let out = motd(&["--all", "extra"], logs.path(), &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(text(&out.stdout), "");
+    let login = motd(&["--kernel"], logs.path(), &[]);
+    assert_eq!(login.status.code(), Some(0), "{}", text(&login.stderr));
+    assert!(
+        !text(&login.stderr).contains("isn't needed"),
+        "{}",
+        text(&login.stderr)
+    );
+    for flag in ["-v", "-vv", "--verbose"] {
+        let asked = motd(&["--kernel", flag], logs.path(), &[]);
+        assert_eq!(
+            asked.status.code(),
+            Some(0),
+            "{flag}: {}",
+            text(&asked.stderr)
+        );
+        assert_eq!(text(&asked.stdout), text(&login.stdout), "{flag}");
+        let stderr = text(&asked.stderr);
+        assert_eq!(
+            stderr
+                .matches("! -v isn't needed: sb logs full detail to ")
+                .count(),
+            1,
+            "{flag}: {stderr}"
+        );
     }
 }
 

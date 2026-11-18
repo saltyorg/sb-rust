@@ -307,7 +307,8 @@ places it in the Saltbox root. Saltbox's backup role uploads it
 script, restore, `sb install preinstall`, `sb install restore`.
 
 **Flags:** `--user <name>` and `--password-file <path|->` (decision 8).
-No password flag and no `-v`. Help texts are sb-go's for the command;
+No password flag and no `-v` (*amended 2026-11-18: `-v` accepted hidden,
+with a notice: the maintainer's decision of 2026-11-18*). Help texts are sb-go's for the command;
 the two flags' help: `Restore service user name (asked on a terminal
 when not given)` and `Read the password from this file, or stdin with
 '-' (asked on a terminal when not given)`.
@@ -870,7 +871,7 @@ announcements skipped: error loading announcement file '<path>':
     asked about them and printed what it would run. There is no migration
     table, confirm or `--migrations` on it (the maintainer, 2026-11-15;
     decision 27).
-32. No `-v` on `update` or `announcements` (decision 18).
+32. No `-v` on `update` or `announcements` (decision 18). *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 33. Parse errors (both branch flags) exit 2 (cli-core's parse errors);
     sb-go exited 1.
 34. The repo and release specs' differences apply (branch-name checks,
@@ -1414,7 +1415,9 @@ the real services.
    setup its `--branch/-b` and `--force`.** Map decisions 1 and 2;
    Saltbox's CI calls `sb gha`, the installer `sb setup -b`.
 3. **gha and restore have no `-v`.** Term-ui decision 9, config decision
-   1, docker decision 6.
+   1, docker decision 6. *Amended 2026-11-18: restore, which sb-go gave
+   `-v`, accepts it hidden with a notice (the maintainer, 2026-11-18);
+   gha, which sb-go didn't, still refuses it.*
 4. **setup's phase order and texts, `--force`'s meaning and gha's order
    are sb-go's.** sb-go is the reference (map); host spec for the
    checks.
@@ -1468,7 +1471,7 @@ the real services.
     script; the asset names wait for release preparation. decided.md
     D-Q2 and D-Q3.
 18. **No `-v`** on `update` and `announcements` (config decision 1,
-    docker decision 6; research D §6.1).
+    docker decision 6; research D §6.1). *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 19. **Every prompt has a flag:** `--keep-branch`/`--reset-branch`
     (sb-go's), `--migrations run|skip` (new), self-update answered inside
     `update` (term-ui "Prompts"; research D §6.2, §6.14). Without a

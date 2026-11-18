@@ -45,8 +45,10 @@ const EXTENSIONS: &[&str] = &[
 /// a short help that wrapped in `sb --help` at fang's 120 columns (the
 /// maintainer, 2026-11-14), a command sb shows that sb-go hid (the
 /// maintainer, 2026-11-15), setup's `-v`, accepted but hidden and
-/// ignored, and `sb bench`'s help, as bench is rewritten in Rust (the ops
-/// spec lists `command\tsb bench` as an extension; a rewording is the
+/// ignored, the other commands' `-v`, accepted, hidden and noticed (the
+/// maintainer, 2026-11-18), and `sb bench`'s help, as bench is rewritten
+/// in Rust (the ops spec lists `command\tsb bench` as an extension; a
+/// rewording is the
 /// stricter check, as only the help text differs). Each is a difference
 /// in the spec that owns the command (python-env difference 15, ops
 /// differences 31, 1 and 15).
@@ -67,11 +69,69 @@ const REWORDED: &[(&str, &str)] = &[
         "command\tsb bench\tfalse\tRuns bench.sh benchmark",
         "command\tsb bench\tfalse\tBenchmarks this server's system, disk and network",
     ),
+    // sb-go's `-v` where sb has no verbose mode: accepted, hidden, a
+    // notice (the maintainer, 2026-11-18; crate::verbose).
+    (
+        "flag\tsb announcements\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb announcements\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb docker restart\tlocal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb docker restart\tlocal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb docker start\tlocal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb docker start\tlocal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb docker stop\tlocal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb docker stop\tlocal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb list\tlocal\tverbose\tv\tswitch\tfalse\tIncrease verbosity level (can be used multiple times, e.g. -vvv)",
+        "flag\tsb list\tlocal\tverbose\tv\tswitch\ttrue\tIncrease verbosity level (can be used multiple times, e.g. -vvv)",
+    ),
+    (
+        "flag\tsb motd\tlocal\tverbose\tv\tswitch\tfalse\tIncrease verbosity level (can be used multiple times, e.g. -vvv)",
+        "flag\tsb motd\tlocal\tverbose\tv\tswitch\ttrue\tIncrease verbosity level (can be used multiple times, e.g. -vvv)",
+    ),
+    (
+        "flag\tsb reinstall-facts\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb reinstall-facts\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb reinstall-python\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb reinstall-python\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb reinstall-venv\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb reinstall-venv\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb restore\tlocal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb restore\tlocal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb self-update\tlocal\tverbose\tv\tswitch\tfalse\tEnable verbose debug output",
+        "flag\tsb self-update\tlocal\tverbose\tv\tswitch\ttrue\tEnable verbose debug output",
+    ),
+    (
+        "flag\tsb update\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb update\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb update-venv\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb update-venv\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
+    (
+        "flag\tsb validate-config\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
+        "flag\tsb validate-config\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output",
+    ),
 ];
 
 /// sb's commands and flags in the fixture's line format.
 fn sb_tree() -> Vec<String> {
-    tree(&Cli::command())
+    tree(&crate::verbose::with_flags(Cli::command()))
 }
 
 /// `root`'s commands and flags in the fixture's line format.
@@ -178,10 +238,11 @@ fn the_walk_covers_the_tree() {
     );
 }
 
-/// `sb motd` has every flag of sb-go's (cmd/motd.go:68-100) but `-v`,
-/// dropped with a parse error (motd decision 9).
+/// `sb motd` has every flag of sb-go's (cmd/motd.go:68-100), `-v`
+/// hidden: accepted with a notice, as sb has no verbose mode (motd
+/// decision 9, the maintainer, 2026-11-18).
 #[test]
-fn motd_has_every_sb_go_flag_but_verbose() {
+fn motd_has_every_sb_go_flag_verbose_hidden() {
     let tree = sb_tree();
     let sb_go: Vec<&str> = SB_GO_TREE
         .lines()
@@ -200,10 +261,13 @@ fn motd_has_every_sb_go_flag_but_verbose() {
             "flag\tsb motd\tlocal\tverbose\tv\tswitch\tfalse\tIncrease verbosity level (can be used multiple times, e.g. -vvv)"
         ]
     );
+    assert!(tree.iter().any(|ours| ours
+        == "flag\tsb motd\tlocal\tverbose\tv\tswitch\ttrue\tIncrease verbosity level (can be used multiple times, e.g. -vvv)"));
 }
 
-/// `sb announcements` has none of sb-go's flags (cmd/announcements.go) and
-/// none of its own: each of sb-go's is missing on purpose.
+/// `sb announcements` has none of sb-go's flags (cmd/announcements.go)
+/// but a hidden `-v`, and none of its own: each of sb-go's other flags is
+/// missing on purpose.
 #[test]
 fn announcements_has_no_flag_of_its_own() {
     let tree = sb_tree();
@@ -224,15 +288,20 @@ fn announcements_has_no_flag_of_its_own() {
             // Both repositories are always shown (the maintainer,
             // 2026-11-17; ops difference 45).
             "flag\tsb announcements\tglobal\trepo\tr\tvalue\tfalse\tRepository name (Saltbox or Sandbox)",
-            // sb has no verbose mode (ops decision 18).
+            // sb has no verbose mode (ops decision 18): `-v` is accepted
+            // hidden, with a notice (the maintainer, 2026-11-18).
             "flag\tsb announcements\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output",
         ]
     );
-    let ours = tree
+    let ours: Vec<&String> = tree
         .iter()
         .filter(|line| line.starts_with("flag\tsb announcements\t"))
-        .count();
-    assert_eq!(ours, 0, "no flag of its own");
+        .collect();
+    assert_eq!(
+        ours,
+        ["flag\tsb announcements\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output"],
+        "no flag of its own"
+    );
 }
 
 /// A flag with only a short name, or one sb-go lacks, is reported, not
@@ -253,10 +322,11 @@ fn flags_sb_go_lacks_are_reported() {
     );
 }
 
-/// python-env's commands are sb-go's, `update-venv` hidden, but for `-v`
-/// (python-env decision 9; success criterion 11).
+/// python-env's commands are sb-go's, `update-venv` hidden, `-v` hidden
+/// too (python-env decision 9 and its 2026-11-18 amendment; success
+/// criterion 11).
 #[test]
-fn python_env_commands_have_every_sb_go_flag_but_verbose() {
+fn python_env_commands_have_every_sb_go_flag() {
     let tree = sb_tree();
     for (name, hidden, about) in [
         (
@@ -286,11 +356,13 @@ fn python_env_commands_have_every_sb_go_flag_but_verbose() {
             .filter(|line| !REWORDED.iter().any(|(theirs, _)| line == theirs))
             .filter(|line| !tree.iter().any(|ours| ours == line))
             .collect();
-        assert_eq!(
-            missing,
-            [format!(
-                "flag\tsb {name}\tglobal\tverbose\tv\tswitch\tfalse\tEnable verbose output"
-            )],
+        // `-v` is reworded hidden (the maintainer, 2026-11-18), so none
+        // is missing.
+        assert_eq!(missing, Vec::<&str>::new(), "{name}");
+        assert!(
+            tree.contains(&format!(
+                "flag\tsb {name}\tglobal\tverbose\tv\tswitch\ttrue\tEnable verbose output"
+            )),
             "{name}"
         );
         assert!(

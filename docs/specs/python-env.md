@@ -408,7 +408,7 @@ moved), so `ops` callers and the tests can read them.
 
 1. **No `-v/--verbose`** on any of the four (decision 9). uv and apt output
    always streams into the step and the run log keeps every line; sb-go
-   discarded uv output (but `pip sync`'s) unless verbose.
+   discarded uv output (but `pip sync`'s) unless verbose. *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 2. **The fact's digest rule:** at an equal version, a fact whose sha256
    differs from its release's digest is reinstalled. sb-go keeps it.
 3. **The wider Python check** (`import encodings, ssl, sqlite3, ctypes`).

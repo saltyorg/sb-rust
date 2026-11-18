@@ -158,18 +158,24 @@ fn help_texts_are_sb_gos() {
     );
 }
 
-/// No `-v`/`--verbose` (docker decision 6), and no positional arguments:
-/// parse errors, exit 2, before anything runs.
+/// No positional arguments: parse errors, exit 2, before anything runs.
+/// sb-go's `-v`/`--verbose` is accepted (the maintainer, 2026-11-18;
+/// docker decision 6's amendment): `--help` after it parses only if it
+/// does, and runs nothing.
 #[test]
-fn verbose_and_arguments_are_refused() {
+fn arguments_are_refused_and_verbose_parses() {
     for args in [
-        &["docker", "start", "-v"][..],
-        &["docker", "stop", "--verbose"],
-        &["docker", "restart", "-v"],
-        &["docker", "start", "plex"],
+        &["docker", "start", "plex"][..],
         &["docker", "start", "--ignore", "plex"],
     ] {
         common::sb().args(args).assert().code(2);
+    }
+    for args in [
+        &["docker", "start", "-v", "--help"][..],
+        &["docker", "stop", "--verbose", "--help"],
+        &["docker", "restart", "-v", "--help"],
+    ] {
+        common::sb().args(args).assert().success();
     }
 }
 

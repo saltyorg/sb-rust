@@ -499,7 +499,7 @@ value as one CSV record (quotes stripped, a stray quote an error); Docker
 names can't hold a comma or a quote (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`), so for
 every real name the split is cobra's result. No positional arguments.
 Needs root, as every command but `version`, completion and help.
-`-v`/`--verbose` is a parse error (exit 2), as config's.
+`-v`/`--verbose` is a parse error (exit 2), as config's. *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 
 ### Steps and labels (term-ui's runner)
 

@@ -163,7 +163,12 @@ fn update_is_shown_with_sb_gos_flags_and_migrations() {
         .args(["update", "--migrations", "maybe"])
         .assert()
         .code(2);
-    common::sb().args(["update", "-v"]).assert().code(2);
+    // sb-go's `-v`, accepted (the maintainer, 2026-11-18): `--help` after
+    // it parses only if it does, and runs nothing.
+    common::sb()
+        .args(["update", "-v", "--help"])
+        .assert()
+        .success();
 }
 
 /// Piped with every flag, every step in sb-go's order: self-update off

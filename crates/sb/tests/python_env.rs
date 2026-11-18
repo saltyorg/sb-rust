@@ -31,7 +31,12 @@ fn update_venv_is_hidden_and_takes_no_arguments() {
             "  Update the Ansible virtual environment from the current Saltbox checkout and refresh saltbox.fact without updating Git\n  repositories\n",
         ));
     common::sb().args(["update-venv", "extra"]).assert().code(2);
-    common::sb().args(["update-venv", "-v"]).assert().code(2);
+    // sb-go's `-v`, accepted (the maintainer, 2026-11-18): `--help` after
+    // it parses only if it does, and runs nothing.
+    common::sb()
+        .args(["update-venv", "-v", "--help"])
+        .assert()
+        .success();
 }
 
 /// The tree with accounts.yml naming `user` in its checkout.
@@ -169,7 +174,7 @@ fn the_reinstall_commands_take_no_arguments() {
             .success()
             .stdout(predicate::str::contains(about));
         common::sb().args([name, "extra"]).assert().code(2);
-        common::sb().args([name, "-v"]).assert().code(2);
+        common::sb().args([name, "-v", "--help"]).assert().success();
     }
 }
 
@@ -330,9 +335,9 @@ fn reinstall_facts_takes_no_arguments() {
         .assert()
         .code(2);
     common::sb()
-        .args(["reinstall-facts", "-v"])
+        .args(["reinstall-facts", "-v", "--help"])
         .assert()
-        .code(2);
+        .success();
 }
 
 /// `sb reinstall-facts` replaces even an up-to-date fact, with

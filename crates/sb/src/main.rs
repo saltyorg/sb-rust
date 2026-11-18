@@ -19,7 +19,10 @@ use sb_cli_core::root;
 use sb_cli_core::theme;
 use sb_ops::Checkout;
 
-/// Saltbox CLI
+/// Saltbox CLI. Its derived tree lacks sb-go's hidden `-v` on 14 commands:
+/// every parse goes through `verbose::with_flags` (the real parse, the
+/// colour pre-pass, the completion tree, the contract test); a
+/// `Cli::parse()` or `Cli::command()` alone refuses `-v`.
 #[derive(Parser)]
 #[command(name = "sb", about = "Saltbox CLI")]
 struct Cli {
@@ -28,6 +31,10 @@ struct Cli {
     color: colour::Color,
     #[command(subcommand)]
     command: Command,
+    /// Whether sb-go's `-v/--verbose` was given where sb has no verbose
+    /// mode (`verbose`; the maintainer, 2026-11-18).
+    #[arg(skip)]
+    verbose_given: bool,
 }
 
 /// Why not clap's `#[command(version)]`: it adds a `--version` flag that
@@ -56,7 +63,8 @@ enum Command {
         command: DockerCommand,
     },
     /// Validate Saltbox configuration files
-    // No `--verbose/-v`: the run log has the detail (config decision 1).
+    // No verbose mode: the run log has the detail (config decision 1);
+    // sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = "Validate Saltbox configuration files")]
     ValidateConfig,
     /// Change the branch used by Saltbox
@@ -72,8 +80,8 @@ enum Command {
         name: String,
     },
     /// Update Saltbox & Sandbox
-    // sb-go's flags but `-v` (ops decision 18), and `--migrations` (decision
-    // 19).
+    // sb-go's flags, `-v` only hidden with a notice (ops decision 18,
+    // `verbose`), and `--migrations` (decision 19).
     #[command(long_about = "Update Saltbox & Sandbox")]
     Update(sb_ops::update::UpdateArgs),
     /// Edit Saltbox configuration files
@@ -97,7 +105,7 @@ enum Command {
     #[command(long_about = fact::ABOUT)]
     Fact,
     /// Display system information
-    // No `--verbose/-v` (motd decision 9).
+    // No verbose mode (motd decision 9): sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = motd::ABOUT)]
     Motd(motd::Args),
     /// Display logs of managed systemd services
@@ -106,7 +114,8 @@ enum Command {
     )]
     Logs,
     /// Update Saltbox CLI
-    // Hidden, as sb-go's. No `--verbose/-v` (release spec, decision 13).
+    // Hidden, as sb-go's. No verbose mode (release spec, decision 13):
+    // sb-go's `-v` only hidden, with a notice (`verbose`).
     // `--force-update` exists only in builds with self-update off, raw
     // builds included: `parse` adds it then (`force_update_arg`).
     #[command(long_about = "Update Saltbox CLI", hide = true)]
@@ -134,18 +143,20 @@ enum Command {
     #[command(long_about = "Install Saltbox and its dependencies", hide = true)]
     Setup(sb_ops::setup::SetupArgs),
     /// Update the Ansible virtual environment and saltbox.fact
-    // Hidden, as sb-go's. No `--verbose/-v` (python-env decision 9).
+    // Hidden, as sb-go's. No verbose mode (python-env decision 9):
+    // sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = UPDATE_VENV_ABOUT, hide = true)]
     UpdateVenv,
     /// List available Saltbox, Sandbox or Saltbox-mod tags
     #[command(long_about = LIST_LONG)]
     List(sb_ansible::ListArgs),
     /// Reinstall the Ansible virtual environment
-    // No `--verbose/-v` (python-env decision 9).
+    // No verbose mode (python-env decision 9): sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = "Reinstall the Ansible virtual environment")]
     ReinstallVenv,
     /// Reinstall Saltbox's Python and its Ansible virtual environment using uv
-    // No `--verbose/-v` (python-env decision 9). The short help is
+    // No verbose mode (python-env decision 9): sb-go's `-v` only hidden, with a notice (`verbose`).
+    // The short help is
     // reworded to fit fang's 120 columns (python-env difference 15); the
     // command's own help keeps sb-go's.
     #[command(
@@ -153,7 +164,7 @@ enum Command {
     )]
     ReinstallPython,
     /// Reinstall the Rust saltbox.fact file
-    // No `--verbose/-v` (python-env decision 9).
+    // No verbose mode (python-env decision 9): sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = "Reinstall the Rust saltbox.fact file")]
     ReinstallFacts,
     /// Install shell completion for sb
@@ -167,12 +178,14 @@ enum Command {
     /// Display announcements from announcement files
     // Shown, not hidden as sb-go's test harness was: it reads
     // announcements now, and migrations stay with `update` (ops decision
-    // 27, the maintainer, 2026-11-15). No `--verbose/-v` (ops decision 18).
+    // 27, the maintainer, 2026-11-15). No verbose mode (ops decision 18):
+    // sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = ANNOUNCEMENTS_LONG)]
     Announcements,
     /// Fetches and decrypts files based on username and password
-    // Hidden, as sb-go's (ops decision 2). No `--verbose/-v` (ops
-    // decision 3); `--user` and `--password-file` are new (decision 8).
+    // Hidden, as sb-go's (ops decision 2). No verbose mode (ops decision
+    // 3): sb-go's `-v` only hidden, with a notice (`verbose`); `--user` and `--password-file` are new
+    // (decision 8).
     #[command(long_about = RESTORE_LONG, hide = true)]
     Restore(sb_ops::restore::RestoreArgs),
     /// Benchmarks this server's system, disk and network
@@ -354,7 +367,7 @@ enum DockerCommand {
         json: bool,
     },
     /// Start Docker containers managed by Saltbox
-    // No `--verbose/-v` (docker decision 6).
+    // No verbose mode (docker decision 6): sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = "Start Docker containers managed by Saltbox in dependency order.")]
     Start,
     /// Stop Docker containers managed by Saltbox
@@ -505,7 +518,7 @@ fn main() -> RunEnd {
     // profile. The colour
     // choice must be anstream's global one before the real parse, which
     // prints help (spec: startup steps 5 and 6).
-    colour::early_choice(Cli::command(), std::env::args_os()).write_global();
+    colour::early_choice(verbose::with_flags(Cli::command()), std::env::args_os()).write_global();
     let (choice, mut warnings) = theme_choice();
     let (profile, warning) = theme::Profile::choose(
         std::env::var("SB_COLOR_PROFILE").ok().as_deref(),
@@ -578,6 +591,15 @@ fn main() -> RunEnd {
             &BuildInfo::current(env!("CARGO_PKG_VERSION")).version,
         );
     }
+    // sb-go's `-v`, accepted where sb has no verbose mode: a notice before
+    // the steps, the run otherwise as without it (the maintainer,
+    // 2026-11-18). Only the run that runs the command gets here: a run
+    // handing over to sudo was replaced above.
+    if cli.verbose_given {
+        tracing::info!("-v given: accepted and ignored, sb has no verbose mode");
+        let pointer = log.as_ref().map(RunLog::pointer);
+        notice(verbose::notice(pointer.as_deref()));
+    }
     let shutdown = Shutdown::new();
     let result = shutdown
         .listen_for_signals()
@@ -600,7 +622,7 @@ fn main() -> RunEnd {
 /// depend on it.
 fn completion_tree() -> clap::Command {
     use sb_completion::tags;
-    Cli::command().mut_subcommand(tags::INSTALL, |install| {
+    verbose::with_flags(Cli::command()).mut_subcommand(tags::INSTALL, |install| {
         install.mut_arg(tags::TAGS, |arg| arg.add(tags::completer(Cli::command)))
     })
 }
@@ -658,9 +680,11 @@ fn parse(profile: theme::Profile) -> Result<Cli, clap::Error> {
         profile != theme::Profile::Ascii && sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
     // Before the help's layout, which lists each command's flags.
     let cmd = force_update_arg(cmd, &BuildInfo::current(env!("CARGO_PKG_VERSION")));
+    let cmd = verbose::with_flags(cmd);
     let cmd = help::apply(cmd, theme::current(), colour, help::width());
     cmd.try_get_matches().and_then(|matches| {
         let mut cli = Cli::from_arg_matches(&matches)?;
+        cli.verbose_given = verbose::given(&matches);
         if let Command::SelfUpdate { force_update, .. } = &mut cli.command {
             *force_update = forced(&matches);
         }
@@ -729,6 +753,16 @@ fn warn(message: impl std::fmt::Display) {
     let style = theme::current().style(theme::Role::Warn);
     let message = exit::escaped(&message.to_string());
     let _ = writeln!(anstream::stderr(), "{style}warning:{style:#} {message}");
+}
+
+/// A notice line on stderr before any step, as term-ui marks a warning
+/// notice under a step (an orange `!`, the theme's warn colour), through
+/// anstream so `--color` and `NO_COLOR` are honoured; escaped, as
+/// [`warn`].
+fn notice(message: impl std::fmt::Display) {
+    let style = theme::current().style(theme::Role::Warn);
+    let message = exit::escaped(&message.to_string());
+    let _ = writeln!(anstream::stderr(), "{style}!{style:#} {message}");
 }
 
 fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
@@ -1024,6 +1058,7 @@ mod screen;
 mod self_update;
 mod setup;
 mod update;
+mod verbose;
 
 #[cfg(test)]
 mod contract;

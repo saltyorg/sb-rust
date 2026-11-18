@@ -70,7 +70,7 @@ listed below.
   `--banner-file-toilet`.
 - **Other:** `--share` and `--generate-config`. No `-v/--verbose`
   (decision 9): `-v` is clap's parse error, exit 2, as in every command
-  but `install` and `setup`.
+  but `install` and `setup`. *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 - No arguments (`cobra.NoArgs`). The help texts are sb-go's.
 
 ### Command flow
@@ -321,7 +321,8 @@ never reach stdout, stderr or the run log.
 
 1. **No `-v`** (decision 9): it is a parse error, exit 2, and the detail
    goes to the run log. sb-go printed DEBUG lines to stdout, so they
-   ended up in the login MOTD itself.
+   ended up in the login MOTD itself. *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).* The login's
+   `sb motd` passes no `-v`, so its output is unchanged.
 2. **An invalid motd.yml** prints `Config:  motd.yml has N issue(s); run
    sb validate-config` and skips only the config-driven parts: the HTTP
    sections, the colours, and Services' additions (decision 3). sb-go hid

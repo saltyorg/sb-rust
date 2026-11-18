@@ -415,6 +415,7 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   cloudflare-go waits as long as the server says, so one answer could
   hold the step for an hour).
 - No `--verbose/-v` (decision 1): `-v` is a parse error, exit 2.
+  *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 - No `validate_rclone_remote` (decision 6): a schema naming it fails
   loading, naming it.
 

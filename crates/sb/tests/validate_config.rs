@@ -41,9 +41,10 @@ fn validate(root: &std::path::Path, fake: &Fake) -> std::process::Output {
         .expect("run sb")
 }
 
-/// sb-go's help text; no `--verbose` (config decision 1).
+/// sb-go's help text; `--verbose` hidden (config decision 1, the
+/// maintainer, 2026-11-18).
 #[test]
-fn help_is_sb_gos_and_verbose_is_gone() {
+fn help_is_sb_gos_and_verbose_is_hidden() {
     // The whole layout, as sb-go's help (cli-core's renderer).
     let help = common::sb()
         .args(["validate-config", "--help", "--color=never"])
@@ -56,9 +57,13 @@ fn help_is_sb_gos_and_verbose_is_gone() {
         "validate_config_help",
         String::from_utf8_lossy(&help.get_output().stdout)
     );
-    for args in [&["validate-config", "-v"][..], &["validate-config", "x"]] {
-        common::sb().args(args).assert().code(2);
-    }
+    common::sb().args(["validate-config", "x"]).assert().code(2);
+    // sb-go's `-v`, accepted (the maintainer, 2026-11-18): `--help` after
+    // it parses only if it does, and runs nothing.
+    common::sb()
+        .args(["validate-config", "-v", "--help"])
+        .assert()
+        .success();
 }
 
 /// A valid set: every step done, both checks sent, exit 0.
