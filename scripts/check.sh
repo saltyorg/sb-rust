@@ -848,6 +848,33 @@ test_tmp_sweep_stale() {
   done
 }
 
+# stale_snapshots: fails the gate on any insta pending snapshot under
+# crates/ (a `.pending-snap` or `.snap.new`, gitignored), left by an
+# earlier run whose snapshot differed. When the assertion passes, insta
+# cleans them up: it writes to an existing `.pending-snap` (which fails
+# with "Read-only file system" in the sandbox's read-only worktree,
+# test_sandbox, and fails the test) and removes the `.snap.new` (which
+# fails there too, unreported, and leaves it stale): insta 1.49.0's
+# cleanup_passing,
+# https://docs.rs/insta/1.49.0/src/insta/runtime.rs.html
+# They are the developer's to review or remove, so the gate names them
+# and leaves them.
+stale_snapshots() {
+  local stale
+  mapfile -t stale < <(find crates -type f \( -name '*.pending-snap' -o -name '*.snap.new' \) | sort)
+  if ((${#stale[@]})); then
+    {
+      echo "check: insta's pending snapshots, left by an earlier run, are under crates/:"
+      printf '  %s\n' "${stale[@]}"
+      echo "The tests run with the worktree read-only, where insta can't clean these up: a .pending-snap fails the test that owns it, and a .snap.new stays stale."
+      echo "Review them (cargo insta review) or remove them, then run the gate again:"
+      echo "  find crates -type f \\( -name '*.pending-snap' -o -name '*.snap.new' \\) -delete"
+    } >&2
+    exit 1
+  fi
+  echo "none"
+}
+
 # test_sandbox CMD...: sets `sandboxed` to CMD in the sandbox for a test
 # step: writable are the run's temp directory (the tests' TMPDIR), the
 # worktree's target/ (the builds and coverage data) and the tests' log
@@ -1051,6 +1078,10 @@ task() {
     skip "only docs/ and tasks/ changed since $base"
     return
   fi
+  # Before any test run: a stale pending snapshot fails its tests in the
+  # sandbox (stale_snapshots).
+  step "no insta pending snapshots under crates/"
+  stale_snapshots
   # The crates' unit and integration tests run once, under coverage: a
   # failing test fails cargo-llvm-cov as it fails cargo test
   # (https://github.com/taiki-e/cargo-llvm-cov#usage: "cargo llvm-cov" runs

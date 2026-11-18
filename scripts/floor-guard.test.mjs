@@ -2187,6 +2187,26 @@ test('check.sh task: the crates\' tests run once under coverage, then the doc te
   assert.ok(!none.calls.some((c) => c.tool === 'cargo' && /^test (?!.*--doc)/.test(c.args)), none.output);
 });
 
+// insta removes a stale pending snapshot when a test runs, which fails in
+// the sandbox's read-only worktree; the gate names them before any test.
+test('check.sh task: a stale insta .pending-snap or .snap.new under crates/ fails before the tests, naming it', () => {
+  const ignore = { '.gitignore': '/target/\n*.pending-snap\n*.snap.new\n' };
+  const stale = {
+    'crates/foo/src/lib.rs': 'pub fn f() {}\n',
+    'crates/foo/src/.lib.rs.pending-snap': '{}\n',
+    'crates/foo/src/snapshots/foo__a.snap.new': '---\n',
+  };
+  const r = checkRun('task', { files: ignore, work: stale });
+  refuses(r, 1, /crates\/foo\/src\/\.lib\.rs\.pending-snap/);
+  assert.match(r.output, /crates\/foo\/src\/snapshots\/foo__a\.snap\.new/, r.output);
+  assert.match(r.output, /read-only/, r.output);
+  assert.match(r.output, /find crates -type f \\\( -name '\*\.pending-snap' -o -name '\*\.snap\.new' \\\) -delete/, r.output);
+  assert.ok(!r.calls.some((c) => c.tool === 'cargo' && /^(llvm-cov|test|nextest) /.test(c.args)), r.output);
+  // Without them the same change passes, and fast runs no tests to check.
+  passes(checkRun('task', { files: ignore, work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } }), 'task');
+  passes(checkRun('fast', { files: ignore, work: stale }), 'fast');
+});
+
 // reviewRun(files, message): check-commit-messages.sh over one commit that
 // adds the files, after a base that holds the script (the Review rule
 // applies from the commit after the one that introduced it).
