@@ -397,6 +397,10 @@ pub fn more(whole: &str, page: &str, at: &Position) -> Result<More, ToolError> {
             older: true,
             newer: at_cursor(c)? + 1 < whole.len(),
         },
+        Position::AtOrBefore(c) => More {
+            older: at_cursor(c)? > 0,
+            newer: at_cursor(c)? + 1 < whole.len(),
+        },
     })
 }
 

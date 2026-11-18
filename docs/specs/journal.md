@@ -684,78 +684,72 @@ as it does for journalctl.
 ### Search (the "budgeted, resumable search" slice)
 
 Status: approved with the tui spec's "Whole-log search, save and
-print" (the maintainer, 2026-11-18).
+print" (the maintainer, 2026-11-18). The API below replaces the draft's
+`Journal::search`, measured before it was built (see "Why one scan").
 
-The log viewer's whole-journal search reads a unit's journal outward
-from what it has loaded, in steps that each fit a budget, and goes on
-from where the last step stopped. The crate scans and the caller
-matches, so the match is the viewer's own (its screen text and smart
-case) and the crate learns nothing about display.
+The log viewer's whole-journal search, and its save's cap, read a
+unit's journal outward from what the viewer holds. The crate scans and
+the caller matches, so the match is the viewer's own (its screen text
+and smart case) and the crate learns nothing about display.
 
 ```rust
-pub enum Position { Tail, Before(Cursor), After(Cursor), From(Cursor) }
-
-/// How much one step may read: entries examined and message bytes,
-/// whichever runs out first; built through a constructor that caps both.
-pub struct Budget { /* private */ }
-
-pub struct SearchStep {
-    /// The matching entries in the order read: newest first going back
-    /// (`Before`), oldest first going on (`After`).
-    pub hits: Vec<Hit>,
-    /// Where the next step starts; `None` when the step reached the end
-    /// of the journal in its direction.
-    pub resume: Option<Position>,
-    /// The last entry examined's time, for the caller's progress.
-    pub reached: Option<jiff::Timestamp>,
-    pub errors: ReadErrors,
-}
-
-pub struct Hit {
-    pub cursor: Cursor,
-    pub realtime: Option<jiff::Timestamp>,
-    /// What `matches` returned for it (the viewer's match count).
-    pub count: usize,
-}
+pub enum Position { Tail, Before(Cursor), After(Cursor), AtOrBefore(Cursor) }
 
 impl Journal {
-    /// Entries of `q` from `from` (`Before` or `After`), each given to
-    /// `matches`, until `budget` runs out or the journal ends. An entry
-    /// for which `matches` returns more than 0 is a hit. `Tail` and
-    /// `From` are refused (`SearchStep` with no hits and `resume` as
-    /// given).
-    pub fn search(
+    /// Every entry matching `q` at `at`, newest first, each read once,
+    /// handed to `each` a step of at most `step` records at a time with
+    /// that step's read errors, until `each` breaks or the journal ends.
+    pub fn scan(
         &self,
         q: &Query,
-        from: &Position,
-        budget: &Budget,
+        at: &Position,
+        step: usize,
         limits: &Limits,
-        matches: &mut dyn FnMut(&Record) -> usize,
-    ) -> SearchStep;
+        each: &mut dyn FnMut(Vec<Record>, ReadErrors) -> ControlFlow<()>,
+    ) -> ControlFlow<()>;
 }
 ```
 
-- **The same reading as `page`:** the same file listing, the boot order
-  (decision 11), the cycle guard, the output limit per entry and the
-  read errors (ten distinct, then a count). A search step and a page
-  over the same entries see the same ones in the same order (tested).
-- **`From(cursor)`** is new for `page`: the entry at the cursor and
-  those after it. The viewer's jump to a match reads `Before(c)` and
-  `From(c)` to load the match with its surroundings.
-- **Resumable:** `resume` is a `Before` or `After` of the last entry
-  examined, whether it matched or not, so the next step neither repeats
-  nor skips one. No descriptor is held between steps, as for `page`.
-- **The budget's defaults** (the viewer's): 5,000 entries or 16 MiB of
-  message bytes per step; a step is measured on the release build to
-  stay under 20 ms on the blocking pool (recorded with the frame
-  timings).
+sb-host adds `journal::scan`, the same under `spawn_blocking`.
+
+- **The positions:** `Tail` is every entry, `Before(c)` the entries
+  before `c`, `AtOrBefore(c)` those and `c`, `After(c)` the entries
+  after `c`, each by the page's order (`Cursor::order`, decision 11).
+  So a scan never cycles where paging forward can (Difference 20).
+- **The same reading as `page`:** the same file listing, the boot order,
+  the output limit per step (an entry over it is that step's error and
+  is skipped, as a page leaves it out), and the read errors (ten
+  distinct, then a count). A scan and a page over the same entries give
+  the same ones in the same order (tested on every release).
+- **One walk:** the files are listed and opened once, and one backward
+  walk and merge go on from step to step, so a scan of the whole journal
+  reads about what one page of all of it does. Like `Before`, every
+  position reads its way from each file's tail (`After` skipping the
+  older entries). No descriptor is held once `scan` returns. The caller
+  stops it by breaking from `each`: the viewer's search does when it is
+  stopped or its viewer is gone.
+- **`AtOrBefore(cursor)`** is new for `page` too: the page ending with
+  the cursor's entry. The viewer's jump to a match reads it and
+  `After(c)` to load the match with its surroundings.
+- **The step:** the viewer's is 5,000 entries under a 16 MiB output
+  limit.
 - **No regex and no matching in the crate:** the matcher is the
   caller's (Scope, Out: regex).
-- **Tests:** on the testing writer's journals: a step over each file and
-  boot boundary, resume without gaps or repeats on 200,000 entries in
-  steps of every budget from 1 entry up, the budget's byte limit on a
-  large entry, `From` against `Before` and `After`, read errors in a
-  step, and the same entries as `page`.
+
+**Why one scan** (measured 2026-11-18, release build, a crafted journal
+of 200,000 entries, 5,000 a step): a page `Before(c)` reads every entry
+from the tail back to `c`, so stepping back with pages took 26 ms near
+the tail and 260 ms at 195,000 entries back, about 6 s for the whole
+journal, each step longer than the last. A page `After(c)` took about
+20 ms wherever `c` was. One scan walks back once: about what one page
+of everything costs, checked by the pread counter in the tests.
+
+- **Tests:** on the testing writer's journals: every entry once, newest
+  first, in steps of 1, 7, 100, the whole journal and more; `Before`
+  and `After` against the entries a page gives; boots across two files
+  in the page's order on 22.04, 24.04 and 26.04; a break ending the
+  scan; the scan's preads against one page of everything; `AtOrBefore`
+  at a middle and at the first entry.
 
 ### Capability map correction
 

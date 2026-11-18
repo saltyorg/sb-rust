@@ -67,6 +67,7 @@
 //! ```
 
 use std::io;
+use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
@@ -174,6 +175,34 @@ fn uid_with(
 /// `JoinError::into_panic` panic).
 pub async fn page(journal: Arc<Journal>, q: Query, at: Position, n: usize, limits: Limits) -> Page {
     blocking(move || journal.page(&q, &at, n, &limits)).await
+}
+
+/// [`Journal::scan`] under `spawn_blocking`: every entry matching `q` at
+/// `at`, newest first, handed to `each` on the blocking pool a step of at
+/// most `step` records at a time, until `each` breaks or the journal ends.
+///
+/// # Cancel safety
+///
+/// Dropping this future doesn't stop the scan: it runs on the blocking
+/// pool until `each` breaks or the journal ends. A caller that may go
+/// away breaks from `each` (the log viewer's search does once its viewer
+/// is gone or the search is stopped).
+///
+/// # Panics
+///
+/// As [`page`].
+pub async fn scan<F>(
+    journal: Arc<Journal>,
+    q: Query,
+    at: Position,
+    step: usize,
+    limits: Limits,
+    mut each: F,
+) -> ControlFlow<()>
+where
+    F: FnMut(Vec<Record>, ReadErrors) -> ControlFlow<()> + Send + 'static,
+{
+    blocking(move || journal.scan(&q, &at, step, &limits, &mut each)).await
 }
 
 /// [`Follower::drain`] under `spawn_blocking`: the follower moves in and

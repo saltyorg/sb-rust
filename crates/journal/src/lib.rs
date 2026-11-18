@@ -14,6 +14,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::io;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -407,6 +408,10 @@ pub enum Position {
     Before(Cursor),
     /// The entries after this one, which isn't shown.
     After(Cursor),
+    /// The entries before this one, and this one: a page that ends with
+    /// it, as `Before` reads them (the log viewer's jump to a match reads
+    /// this and `After`).
+    AtOrBefore(Cursor),
 }
 
 /// A page of entries, oldest first, and what went wrong reading it.
@@ -860,6 +865,46 @@ impl Journal {
             end,
             errors,
         }
+    }
+
+    /// Every entry matching `q` at `at`, newest first, each read once:
+    /// handed to `each` a step of at most `step` records at a time (with
+    /// the step's read errors), until `each` breaks or the journal ends.
+    /// The log viewer's whole-log search and its save's cap (journal spec,
+    /// "Search"; tui spec, "Whole-log search, save and print").
+    ///
+    /// `Tail` is every entry; `Before(c)` the entries before `c`,
+    /// `AtOrBefore(c)` those and `c`, and `After(c)` the entries after it,
+    /// each by the page's order (`Cursor::order`, decision 11), so a scan
+    /// never cycles where paging forward can. The files are listed and
+    /// opened once, and one backward walk goes on from step to step, so a
+    /// scan of the whole journal reads about what one page of all of it
+    /// does, where pages back read their distance from the tail each time.
+    /// Like `Before`, every position reads its way from each file's tail
+    /// (`After` skipping the older entries). Each step's records are read
+    /// within `limits`' output limit: an entry that doesn't fit is
+    /// reported in that step's errors and skipped, as a page leaves it
+    /// out. No descriptor is held once it returns.
+    pub fn scan(
+        &self,
+        q: &Query,
+        at: &Position,
+        step: usize,
+        limits: &Limits,
+        each: &mut dyn FnMut(Vec<Record>, ReadErrors) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        let mut errors = ReadErrors::default();
+        let files = walk::open_listed(|| self.list(), &self.opener, limits.output(), &mut errors);
+        let bounds = walk::Bounds {
+            payload: limits.output(),
+            held: limits.output(),
+        };
+        let lasts = walk::lasts(&files, &mut errors);
+        let boots = boot_order(self.release.boot_rule(), &files, &lasts);
+        if !errors.is_empty() {
+            each(Vec::new(), errors)?;
+        }
+        walk::scan_back(&files, q.groups(), at, step.max(1), bounds, &boots, each)
     }
 
     fn list(&self) -> walk::Listing {
@@ -3377,5 +3422,171 @@ mod tests {
         for v in ["24.04", "26.04"] {
             assert_eq!(costs(&release(v), 5), (61, 71, 107), "{v}");
         }
+    }
+    /// What a scan of `j` at `at` in steps of `step` gives: each step's
+    /// messages, newest first.
+    fn scanned(j: &Journal, q: &Query, at: &Position, step: usize) -> Vec<Vec<String>> {
+        let mut steps = Vec::new();
+        let ended = j.scan(q, at, step, &Limits::default(), &mut |records, _errors| {
+            steps.push(
+                records
+                    .iter()
+                    .map(|r| String::from_utf8_lossy(r.message().expect("a message")).into_owned())
+                    .collect(),
+            );
+            std::ops::ControlFlow::Continue(())
+        });
+        assert_eq!(ended, std::ops::ControlFlow::Continue(()));
+        steps
+    }
+
+    /// The whole-log search's scan (journal spec, "Search"): every entry at
+    /// the position, newest first, each once, in steps of at most `step`,
+    /// the same entries as a page over them; `Tail` is every entry,
+    /// `Before` the older ones, `After` the newer ones.
+    #[test]
+    fn a_scan_gives_every_entry_newest_first_in_steps() {
+        let (mut c, _l) = crafted::journal(1_234);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let all: Vec<String> = (0..1_234).rev().map(|i| format!("m{i}")).collect();
+        for step in [1, 7, 100, 1_234, 5_000] {
+            let steps = scanned(&j, &q, &Position::Tail, step);
+            assert!(
+                steps.iter().all(|s| !s.is_empty() && s.len() <= step),
+                "{step}"
+            );
+            assert_eq!(steps.concat(), all, "{step}");
+        }
+        let page = tail(&j, &q, 1_234);
+        let c600 = page.records[600].cursor();
+        let before: Vec<String> = (0..600).rev().map(|i| format!("m{i}")).collect();
+        assert_eq!(
+            scanned(&j, &q, &Position::Before(c600), 50).concat(),
+            before
+        );
+        let after: Vec<String> = (601..1_234).rev().map(|i| format!("m{i}")).collect();
+        assert_eq!(scanned(&j, &q, &Position::After(c600), 50).concat(), after);
+        let first = page.records[0].cursor();
+        assert_eq!(
+            scanned(&j, &q, &Position::Before(first), 50),
+            Vec::<Vec<String>>::new()
+        );
+    }
+
+    /// A scan stops when its caller says so, and reads no further step.
+    #[test]
+    fn a_scan_stops_when_asked() {
+        let (mut c, _l) = crafted::journal(100);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let mut calls = 0;
+        let ended = j.scan(
+            &Query::every(),
+            &Position::Tail,
+            10,
+            &Limits::default(),
+            &mut |_, _| {
+                calls += 1;
+                if calls == 3 {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            },
+        );
+        assert_eq!(ended, std::ops::ControlFlow::Break(()));
+        assert_eq!(calls, 3);
+    }
+
+    /// Across files and boots a scan's order is the page's (decision 11),
+    /// on every release.
+    #[test]
+    fn a_scan_orders_boots_as_a_page_does() {
+        let (a, b) = (boot_file(1, 9, BOOT_A, true), boot_file(2, 9, BOOT_B, true));
+        let paths = [a.path(), b.path()];
+        for v in ["22.04", "24.04", "26.04"] {
+            let j = files_on(&release(v), &paths);
+            let q = Query::every();
+            let mut paged = who(&j.page(&q, &Position::Tail, 10, &Limits::default()));
+            paged.reverse();
+            let mut steps = Vec::new();
+            let _ = j.scan(
+                &q,
+                &Position::Tail,
+                1,
+                &Limits::default(),
+                &mut |records, _| {
+                    steps.extend(records.iter().map(|r| {
+                        String::from_utf8_lossy(r.field(&name("WHO")).expect("WHO")).into_owned()
+                    }));
+                    std::ops::ControlFlow::Continue(())
+                },
+            );
+            assert_eq!(steps, paged, "{v}");
+        }
+    }
+
+    /// A scan reads each entry once, wherever it goes on from: a scan of
+    /// the whole journal in steps of 100 costs about what one page of all
+    /// of it does, where pages back from each step's oldest entry cost
+    /// their distance from the tail each time.
+    #[test]
+    fn a_scans_reads_grow_with_the_journal_not_its_square() {
+        let (mut c, _l) = crafted::journal(2_000);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let preads = || crate::testing::counts(&j).preads;
+        let start = preads();
+        let _ = tail(&j, &q, 2_000);
+        let one_page = preads() - start;
+        let start = preads();
+        let mut seen = 0;
+        let _ = j.scan(
+            &q,
+            &Position::Tail,
+            100,
+            &Limits::default(),
+            &mut |records, _| {
+                seen += records.len();
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        let scan = preads() - start;
+        assert_eq!(seen, 2_000);
+        assert!(
+            scan <= one_page + one_page / 4,
+            "{scan} preads, one page {one_page}"
+        );
+    }
+
+    /// `AtOrBefore(c)`: the page ending at `c`, `c` included; the viewer's
+    /// jump to a match reads it and `After(c)`.
+    #[test]
+    fn a_page_at_or_before_a_cursor_ends_with_it() {
+        let (mut c, _l) = crafted::journal(20);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::every();
+        let all = tail(&j, &q, 20);
+        let at = j.page(
+            &q,
+            &Position::AtOrBefore(all.records[10].cursor()),
+            3,
+            &Limits::default(),
+        );
+        assert_eq!(messages_of(&at), ["m8", "m9", "m10"]);
+        assert!(at.more_older);
+        assert!(at.more_newer);
+        let first = j.page(
+            &q,
+            &Position::AtOrBefore(all.records[0].cursor()),
+            3,
+            &Limits::default(),
+        );
+        assert_eq!(messages_of(&first), ["m0"]);
+        assert!(!first.more_older);
     }
 }

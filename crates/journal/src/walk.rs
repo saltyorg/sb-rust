@@ -22,6 +22,7 @@ use itertools::{Either, Itertools};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, hash_map};
 use std::ffi::OsStr;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 type Result<T, E = ReadError> = std::result::Result<T, E>;
@@ -276,6 +277,19 @@ pub(crate) fn page(
             let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
             (picked, more, beyond.get(), End::Newest, counts)
         }
+        Position::AtOrBefore(c) => {
+            let step = |l: &Cursor| {
+                if l.order(c, boots).is_gt() {
+                    beyond.set(true);
+                    Step::Skip
+                } else {
+                    Step::Take
+                }
+            };
+            let (walks, counts) = walks(files, groups, step, errors);
+            let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
+            (picked, more, beyond.get(), End::Newest, counts)
+        }
         Position::After(c) => {
             let fwd = crate::forward::after(files, groups, n, c, held, boots, errors);
             let (picked, older, newer) = (fwd.picked, fwd.more_older, fwd.more_newer);
@@ -291,6 +305,49 @@ pub(crate) fn page(
         files: record_files,
         oldest_chosen: reached.oldest,
         newest_chosen: reached.newest,
+    }
+}
+
+/// `Journal::scan`: the entries at `at`, newest first, in steps of at
+/// most `step`, from one backward walk per file (`walks`) and one merge
+/// that goes on from step to step (`newest` stops before the head it
+/// would take next, which the merge keeps), each step decoded within the
+/// output limit (`decode`, from the newest end) and handed to `each` with
+/// the errors met since the last step. A step that found nothing is
+/// handed on only when it has errors.
+pub(crate) fn scan_back(
+    files: &[JournalFile],
+    groups: &[Group],
+    at: &Position,
+    step: usize,
+    bounds: Bounds,
+    boots: &BootOrder,
+    each: &mut dyn FnMut(Vec<Record>, ReadErrors) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    let mut errors = ReadErrors::default();
+    let held = bounds.held / std::mem::size_of::<Candidate>();
+    let keep = |l: &Cursor| {
+        let take = match at {
+            Position::Tail => true,
+            Position::Before(c) => l.order(c, boots).is_lt(),
+            Position::AtOrBefore(c) => !l.order(c, boots).is_gt(),
+            Position::After(c) => l.order(c, boots).is_gt(),
+        };
+        if take { Step::Take } else { Step::Skip }
+    };
+    let (walks, _counts) = walks(files, groups, keep, &mut errors);
+    let mut merge = Merge::new(walks, boots);
+    loop {
+        let (picked, more) = newest(&mut merge, step, held, &mut errors);
+        let (mut records, _files, _reached) =
+            decode(files, &picked, End::Newest, bounds.payload, &mut errors);
+        records.reverse();
+        if !records.is_empty() || !errors.is_empty() {
+            each(records, std::mem::take(&mut errors))?;
+        }
+        if !more {
+            return ControlFlow::Continue(());
+        }
     }
 }
 

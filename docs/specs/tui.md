@@ -900,14 +900,16 @@ The runtime is current-thread tokio (Assumption 5): the screen and the
 sources share one thread, so a search works in bounded steps and the
 screen runs between them.
 
-- **Journal.** Each step is one call of sb-journal's `Journal::search`
-  on the blocking pool (sb-host's `spawn_blocking` helper, as pages
-  are), off the screen's thread. A step reads at most 5,000 entries or
-  16 MiB of message bytes, whichever comes first, and returns the
-  matches' cursors and times and where to go on from. The source task
-  takes its next step only after serving any page or follow request
-  waiting, so paging and following go first. On the screen's thread a
-  step costs one event: its matches joined to the list.
+- **Journal.** Each side of a search is one sb-journal `Journal::scan`
+  (journal spec, "Search") on the blocking pool (sb-host's
+  `journal::scan`), off the screen's thread and beside the source's
+  pages, which run on the pool's other threads, so paging and following
+  don't wait for it. Each step of 5,000 entries (16 MiB at most) is
+  matched there and sent as one event: its matches, and the time
+  reached. A scan walks newest first, so the older side's matches come
+  nearest first. The newer side's come farthest first: an `n` into it
+  waits for that side to finish. On the screen's thread a step costs
+  one event: its matches joined to the list.
 - **Docker.** The Engine API has no search and no index:
   `/containers/{id}/logs` takes only `follow`, `stdout`, `stderr`,
   `since`, `until`, `timestamps` and `tail` (bollard 0.21.1's
@@ -924,12 +926,12 @@ screen runs between them.
   after every 256 KiB of log text. A container's nearest older match is
   known only when the read reaches the buffer, so an `N` waits for the
   read to finish.
-- **Matches kept:** at most 10,000, each its position, time and count
-  (about 200 bytes for a journal cursor, so about 2 MiB). They are the
-  10,000 nearest the buffer: the journal search reads outward from the
-  buffer and stops there; the Docker read keeps the newest 10,000 of the
-  older part as it goes. The header then shows `stopped at 10,000
-  matches`.
+- **Matches kept:** at most 10,000 on each side of the buffer, each its
+  position, time and count (about 200 bytes for a journal cursor, so
+  about 2 MiB a side), with the buffer's own. They are the 10,000
+  nearest the buffer: a side whose matches come nearest first stops at
+  10,000; one whose matches come farthest first keeps the last 10,000
+  as it goes. The header then shows `stopped at 10,000 matches`.
 - **Frame budget:** the 5 ms per frame at 240×70 holds while a search
   runs. A frame draws only the window, as today, and the count and
   progress are a few header cells. The screen's per-step work is
@@ -973,6 +975,12 @@ screen runs between them.
    newest; Esc stops a save.
 6. Docker searches by one streamed read, with no daemon-side search to
    use; it's bounded by Saltbox's 30 MiB.
+
+Built as (2026-11-18): decision 4's cap applies on each side of the
+buffer ("Matches kept"), since the two sides are read apart and their
+matches come in different orders; and the journal's side is one scan
+per side, not budgeted calls ("Journal" above; journal spec, "Why one
+scan").
 
 ## Editors: `sb edit` and `sb fact`
 
