@@ -1671,7 +1671,8 @@ scrolling past its end, and can still read the ones they missed before.
 
 ### Keys and mouse
 
-- ↑/`k`, ↓/`j`: the previous and next entry. PgDn/Space, PgUp/`b`: a page
+- ↑/`k`, ↓/`j`, and ←/`h`, →/`l` (sb-go's; *amended 2026-11-18,* "Keys:
+  one map for every screen"): the previous and next entry. PgDn/Space, PgUp/`b`: a page
   of the announcement. Home/`g`, End/`G`: its top and bottom. `q` and
   Esc close the viewer (exit 0); Ctrl-C closes it with 130, as the log
   screens.

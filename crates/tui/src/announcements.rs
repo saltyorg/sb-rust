@@ -171,8 +171,14 @@ impl Viewer {
     fn key(&mut self, code: KeyCode) -> Flow {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => Flow::Quit,
-            KeyCode::Down | KeyCode::Char('j') => self.move_list(ListState::select_next),
-            KeyCode::Up | KeyCode::Char('k') => self.move_list(ListState::select_previous),
+            // ← → and `h` `l` too: sb-go's previous and next announcement
+            // (tui spec, "Keys: one map for every screen", rule 7).
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
+                self.move_list(ListState::select_next)
+            }
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => {
+                self.move_list(ListState::select_previous)
+            }
             KeyCode::PageDown | KeyCode::Char(' ') => {
                 self.scroll(ScrollViewState::scroll_page_down)
             }

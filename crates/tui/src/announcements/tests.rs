@@ -194,6 +194,27 @@ fn switching_announcement_starts_at_its_top() {
     assert_eq!(v.list.selected(), Some(0));
 }
 
+/// ← → and `h` `l` choose the previous and next entry, as ↑ ↓ do: sb-go's
+/// keys for its previous and next announcement (tui spec, "Keys: one map
+/// for every screen", rule 7).
+#[test]
+fn left_right_h_and_l_choose_the_entry() {
+    let mut v = viewer(vec![
+        entry("2026-02-01", "First", "one", true),
+        entry("2026-01-01", "Second", "two", true),
+    ]);
+    drawn(&mut v, 100, 30);
+    for (code, at) in [
+        (KeyCode::Right, 1),
+        (KeyCode::Left, 0),
+        (KeyCode::Char('l'), 1),
+        (KeyCode::Char('h'), 0),
+    ] {
+        assert_eq!(key(&mut v, code), Flow::Redraw, "{code:?}");
+        assert_eq!(v.list.selected(), Some(at), "{code:?}");
+    }
+}
+
 #[test]
 fn moving_past_the_last_announcement_keeps_the_scroll_position() {
     let mut v = viewer(vec![
