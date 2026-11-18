@@ -1100,7 +1100,12 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     (sb-config's `facts::secret::is_secret`), and gains the words
     `apprise`, `auth`, `credential` and `hook`, and a value whose first
     word is a URL with a user, a password, or a query parameter named by
-    a secret word or `sig`.
+    a secret word or `sig`. *Amended 2026-11-18 (the maintainer, after a
+    survey of every `saltbox_facts` key in Saltbox and Sandbox):* it
+    gains the words `hmac` and `claim`, and `kid` and `eab` as a whole
+    word of the name (split at anything but a letter or digit), for
+    ZeroSSL's EAB key id `kid` and HMAC key `hmacencoded` and Sandbox
+    tracearr's `claim_code`.
   - **Show** reveals the selected value only, until the selection moves.
     **Copy** sends it through crossterm's OSC 52 `CopyToClipboard`
     without showing it. The status line says "Copied <key> (if your
@@ -1524,7 +1529,10 @@ the test's directory.
   guard against it (2026-11-15, after the security
   review).
 - The masking list is a guess by name. A secret under another name (for
-  example `cookie`) shows until it is added to the list.
+  example `cookie`) shows until it is added to the list. Every secret
+  Saltbox's and Sandbox's roles stored through `saltbox_facts` on
+  2026-11-18 is on it; a camel-case `eabKid` is not split, so its `kid`
+  isn't a word.
 - `sb edit` validates the file after it is saved. A broken file is on
   disk until the user fixes it (F-Q1's option B, chosen over C).
 - Drift is found at Save, perhaps long after the change was staged; the

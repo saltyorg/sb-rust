@@ -352,12 +352,14 @@ screen: the line form, as without a terminal.
     menu) closes the screen. Restore has no step after it, so Continue
     ends sb restore; a later step of a flow would follow it.
 - **The masking rule** is sb-config's, shared with the fact editor
-  (`facts::secret::is_secret`): a key whose name contains `pass`,
-  `secret`, `token`, `key`, `api`, `apprise`, `auth`, `credential` or
-  `hook`, in any case, or a value whose first word (a comment after it
-  ignored) is a URL with a user or password in it, or with a query
-  parameter named by such a word or `sig` (an Azure SAS signature). A
-  bare URL, a list item's or a whole line's, is judged as a value too.
+  (`facts::secret::is_secret`): a key whose name, in any case, contains
+  `pass`, `secret`, `token`, `key`, `api`, `apprise`, `auth`,
+  `credential`, `hook`, `hmac` or `claim`, or has `kid` or `eab` as a
+  whole word (amended 2026-11-18, tui spec's Secrets), or a value whose
+  first word (a comment after it ignored) is a URL with a user or
+  password in it, or with a query parameter named by such a word or
+  `sig` (an Azure SAS signature). A bare URL, a list item's or a whole
+  line's, is judged as a value too.
   When the screen closes, every shown value is hidden again and one more
   frame drawn, so a terminal without an alternate screen (GNU screen's
   default) keeps a masked frame. The run
