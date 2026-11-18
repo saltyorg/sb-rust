@@ -346,6 +346,11 @@ To discuss with the maintainer once every module is done, not before:
   sb-go supported it the same day), and two cheaper fixes for it: a
   `schema_version` key inside the schema files, or a scheduled sb-side
   check that loads upstream's schemas strictly.
+  *Decided 2026-11-18 (the maintainer, at Checkpoint Z):* today's setup
+  stays, Saltbox's `schema/` read strictly at run time. If the schema
+  files need improving, or moving away from YAML for a good reason, sb
+  may redesign them to fit, but Saltbox then carries both forms until
+  sb-go is retired.
 - **The ratchet rows** (CONSTRAINTS.md, "Measured, not yet enforced";
   maintainer, 2026-11-13). They stay as they are until then. With every
   command in place they are re-measured, and the maintainer decides how
