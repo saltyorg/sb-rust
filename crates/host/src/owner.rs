@@ -57,7 +57,7 @@ pub enum OwnerError {
 ///
 /// The user is looked up with nix's `User::from_name`, glibc's
 /// `getpwnam_r` through NSS
-/// (<https://docs.rs/nix/0.28.0/nix/unistd/struct.User.html#method.from_name>;
+/// (<https://docs.rs/nix/0.31.3/nix/unistd/struct.User.html#method.from_name>;
 /// host spec, decision 2). It blocks, as an NSS lookup can: on a runtime,
 /// run it under `spawn_blocking`.
 ///

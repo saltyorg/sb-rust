@@ -3614,7 +3614,7 @@ dependencies = [
  "anyhow",
  "indicatif",
  "jiff",
- "nix 0.28.0",
+ "nix 0.31.3",
  "rustix",
  "sb-cli-core",
  "sb-exec",

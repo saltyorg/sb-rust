@@ -337,11 +337,11 @@ Until it is verified, the code marks difference 1 UNVERIFIED.
   - A symlinked root changes only the link.
   - An entry that disappears mid-walk is skipped, and the walk goes on.
     sb-go ended the whole walk silently there (difference 11).
-- **User lookup:** `nix::unistd::User::from_name` (decision 2), at the
-  nix version portable-pty already links (0.28), with its `user` feature.
-  This adds no second nix to the binary. *Since exec decision 15
-  (2026-11-18) portable-pty is in test builds only, where the one copy
-  holds; sb-host is nix 0.28's one production user.* glibc's `getpwnam_r` goes
+- **User lookup:** `nix::unistd::User::from_name` (decision 2), with
+  nix's `user` feature, at 0.31 (*amended 2026-11-18, the maintainer*:
+  first the 0.28 portable-pty linked, so no second copy; since exec
+  decision 15 portable-pty is in test builds only, so the binary has
+  nix 0.31 alone and test builds carry both). glibc's `getpwnam_r` goes
   through NSS (`/etc/nsswitch.conf`, `files` first on Ubuntu), as every
   other program on the host does (ADR-020; musl's read `/etc/passwd` and
   asked nscd only if one ran). sb-go's pure-Go lookup reads `/etc/passwd`
@@ -543,9 +543,9 @@ what both do.
     (sb-host's own; the workspace entry is unchanged): the follow's wake
     wait, `journal::FollowWait` (journal spec, decision 12).
 - **walkdir 2.5:** new to the binary, already in the lockfile
-- **nix 0.28,** `user`: already linked through portable-pty; gains the
-  feature. Also the systemd-coredump user's uid for the journal's unit
-  query (`journal::coredump_uid`, `look up user <u>: <cause>`)
+- **nix 0.31,** `user` (*amended 2026-11-18, the maintainer*: was 0.28,
+  the version portable-pty linked; see Ownership). Also the
+  systemd-coredump user's uid for the journal's unit query (`journal::coredump_uid`, `look up user <u>: <cause>`)
 - **tokio 1.54** (the workspace entry; host uses `rt`): the blocking pool,
   through cli-core's `spawn` (which carries the run's span; *amended
   2026-11-16*), for the journal's blocking reads, `journal::page` and `journal::drain`

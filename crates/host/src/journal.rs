@@ -120,7 +120,7 @@ impl UserLookupError {
 /// coredump term (journal spec, decisions 1 and 4).
 ///
 /// The lookup is nix's `User::from_name`, `getpwnam_r`
-/// (<https://docs.rs/nix/0.28.0/nix/unistd/struct.User.html#method.from_name>;
+/// (<https://docs.rs/nix/0.31.3/nix/unistd/struct.User.html#method.from_name>;
 /// host spec, decision 2). It blocks, as an NSS lookup can (a network
 /// backend most of all): on a runtime, run it under `spawn_blocking`, as
 /// [`Journal::open`] and [`Journal::follow`] are run.
@@ -139,8 +139,8 @@ pub fn coredump_uid() -> Result<Option<Uid>, UserLookupError> {
 /// `user`'s uid from the system's user database. Why not sysinfo's
 /// `Users`: it parses /etc/passwd itself, where `getpwnam_r` is what the
 /// rest of the system answers with (host spec, Ownership and decision 2).
-/// The lookup moves to a host-level module when ownership (owner.rs) needs
-/// it with the gid.
+/// owner.rs has its own lookup, with the gid; both are one call to nix's
+/// `User::from_name`.
 fn uid_of(user: &str) -> Result<Option<Uid>, UserLookupError> {
     uid_with(user, |name| {
         User::from_name(name).map(|found| found.map(|user| user.uid.as_raw()))

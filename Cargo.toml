@@ -101,10 +101,11 @@ procfs = { version = "0.18.0", default-features = false }
 # rTorrent's XML-RPC in sb motd (motd spec, Tech Stack; plan decision 8).
 quick-xml = "0.42.0"
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
-# The systemd-coredump user's uid (host spec, decision 2), with only
-# `user`: the version portable-pty links, which since exec decision 15
-# keeps one copy in test builds only (sb-host is its one production user).
-nix = { version = "0.28.0", default-features = false, features = ["user"] }
+# The systemd-coredump user's uid and the ownership user's ids (host spec,
+# decision 2), with only `user`. 0.31 since 2026-11-18 (the maintainer):
+# portable-pty, a test dependency only since exec decision 15, keeps its
+# own 0.28 in test builds; the binary has this one.
+nix = { version = "0.31.3", default-features = false, features = ["user"] }
 # The recursive ownership walk (host spec, decision 2 and assumption 3);
 # already in the lockfile.
 walkdir = "2.5.0"
