@@ -37,21 +37,42 @@ pub fn complete(command: fn() -> clap::Command) {
         .complete();
 }
 
-/// The line after clap's zsh stub (spec, verification item 1). compinit
-/// autoloads the file `_<name>` from `fpath` as the body of a function of
-/// that name (zshcompsys(1), "Autoloaded files"), so on the first Tab the
-/// stub only defines clap's completer and registers it, and completes
-/// nothing; tests/shells.sh showed that on Ubuntu 24.04's zsh 5.9. When the
-/// file runs as that function, this calls the completer as well, as
-/// zsh's own `#compdef` functions do and clap's static zsh script does
-/// (`funcstack[1]`). Why not clap's stub alone: it is written for
-/// `source`, where this line does nothing. `FILE` is the file's name,
-/// `FUNCTION` clap's completer (`_clap_dynamic_completer_<name>`, `-` as
-/// `_`, `clap_complete` 4.6.11, `env/shells.rs`).
-const ZSH_FIRST_LOAD: &str = r#"if [[ "${funcstack[1]}" == "FILE" ]]; then
-    FUNCTION "$@"
+/// What replaces clap's zsh stub's last line, `compdef <function> <name>`
+/// (spec, verification item 1). compinit autoloads the file
+/// `_<name>` from `fpath` as the body of a function of that name: "the
+/// function body ... is taken to be the complete contents of the file"
+/// (zshmisc(1), "Autoloading Functions",
+/// <https://zsh.sourceforge.io/Doc/Release/Functions.html#Autoloading-Functions>;
+/// zshcompsys(1), "Autoloaded files",
+/// <https://zsh.sourceforge.io/Doc/Release/Completion-System.html#Autoloaded-files>).
+/// So on the first Tab clap's stub only defines its completer and runs
+/// `compdef`, completing nothing, and the `compdef` remaps the name to a
+/// function no file in `fpath` defines, which a rebuilt `.zcompdump`
+/// keeps: later shells then have no completion for the name (clap
+/// <https://github.com/clap-rs/clap/issues/6566>; both seen in
+/// tests/shells.sh). Run as that function (`funcstack[1]` is its name,
+/// zshmodules(1), zsh/parameter,
+/// <https://zsh.sourceforge.io/Doc/Release/Zsh-Modules.html#index-funcstack>),
+/// the file calls the completer and leaves the mapping alone; sourced, it
+/// runs clap's `compdef`, as clap's static zsh script does
+/// (`clap_complete` 4.6.11, `aot/shells/zsh.rs`). Why not clap's stub as
+/// it is: it is written for `source` only (clap's reply on #6566; its
+/// view of installs outside `source`:
+/// <https://github.com/clap-rs/clap/issues/5668>).
+/// `file` is the file's name, `function` clap's completer
+/// (`_clap_dynamic_completer_<name>`, `-` as `_`), `name` the command
+/// (`clap_complete` 4.6.11, `env/shells.rs`). Written with `format!`, not
+/// a template's `replace`, so a name can't be rewritten.
+fn zsh_guard(file: &str, function: &str, name: &str) -> String {
+    format!(
+        r#"if [[ "${{funcstack[1]}}" == "{file}" ]]; then
+    {function} "$@"
+else
+    compdef {function} {name}
 fi
-"#;
+"#
+    )
+}
 
 /// Refresh the shells' files, for ops' `update` and `setup` (spec,
 /// "Refresh for `update` and `setup`"): [`refresh_with`] `executable`,
@@ -194,8 +215,8 @@ impl Shell {
     /// or a name looked up on `PATH`) at Tab time with [`VAR`] set
     /// (<https://docs.rs/clap_complete/4.6.11/clap_complete/env/trait.EnvCompleter.html#tymethod.write_registration>;
     /// `unstable-dynamic`, ADR-001). No script of sb's own: the stub only
-    /// calls sb (spec, difference 1); zsh's gets one `if` after it
-    /// ([`ZSH_FIRST_LOAD`]).
+    /// calls sb (spec, difference 1); zsh's last line is guarded
+    /// ([`zsh_guard`]).
     ///
     /// # Panics
     ///
@@ -209,12 +230,15 @@ impl Shell {
             .expect("a stub in memory");
         if self == Self::Zsh {
             let function = format!("_clap_dynamic_completer_{}", name.replace('-', "_"));
-            stub.extend(
-                ZSH_FIRST_LOAD
-                    .replace("FILE", &format!("_{name}"))
-                    .replace("FUNCTION", &function)
-                    .as_bytes(),
-            );
+            let compdef = format!("compdef {function} {name}\n");
+            let guard = zsh_guard(&format!("_{name}"), &function, name);
+            // The stub ends with that line (clap_complete 4.6.11, pinned
+            // exactly: ADR-001; the tests check it).
+            if let Some(body) = stub.strip_suffix(compdef.as_bytes()) {
+                let mut guarded = body.to_vec();
+                guarded.extend_from_slice(guard.as_bytes());
+                stub = guarded;
+            }
         }
         stub
     }
@@ -224,8 +248,9 @@ impl Shell {
 mod tests {
     use super::*;
 
-    /// Each shell's stub registers `name`, calls `completer` with sb's
-    /// variable, and is clap's (the same as `CompleteEnv` prints).
+    /// Each shell's stub registers `name` and calls `completer` with sb's
+    /// variable: clap's, as `CompleteEnv` prints it, but for zsh's last
+    /// line (`zsh_guard`).
     #[test]
     fn each_stub_is_claps_for_the_name_and_completer() {
         for shell in Shell::ALL {
@@ -253,19 +278,44 @@ mod tests {
     fn the_zsh_stub_completes_on_its_first_load() {
         let zsh = String::from_utf8(Shell::Zsh.registration("sb-x", "/usr/local/bin/sb-x"))
             .expect("UTF-8");
-        assert!(
-            zsh.contains("compdef _clap_dynamic_completer_sb_x sb-x\n"),
+        // clap's trailing `compdef` is replaced, not followed: when the
+        // file is autoloaded it would remap `sb-x` to a function with no
+        // file (clap #6566).
+        let guard = "\nif [[ \"${funcstack[1]}\" == \"_sb-x\" ]]; then\n    _clap_dynamic_completer_sb_x \"$@\"\nelse\n    compdef _clap_dynamic_completer_sb_x sb-x\nfi\n";
+        assert!(zsh.ends_with(guard), "{zsh}");
+        assert_eq!(
+            zsh.matches("compdef _clap_dynamic_completer_sb_x sb-x")
+                .count(),
+            1,
             "{zsh}"
         );
+        assert!(!zsh.contains("\ncompdef "), "an unguarded compdef: {zsh}");
+        assert!(zsh.starts_with("#compdef sb-x\n"), "{zsh}");
         assert!(
-            zsh.ends_with(
-                "\nif [[ \"${funcstack[1]}\" == \"_sb-x\" ]]; then\n    _clap_dynamic_completer_sb_x \"$@\"\nfi\n"
-            ),
+            zsh.contains("function _clap_dynamic_completer_sb_x() {"),
             "{zsh}"
         );
         for shell in [Shell::Bash, Shell::Fish] {
             let stub = String::from_utf8(shell.registration("sb", "sb")).expect("UTF-8");
             assert!(!stub.contains("funcstack"), "{shell:?}: {stub}");
+        }
+    }
+
+    /// The guard replaces clap's last line for the names sb writes
+    /// (`generate`'s `sb`, a Saltbox alias, and the name pattern's other
+    /// characters): a name whose `compdef` line didn't match would leave
+    /// clap's unguarded stub.
+    #[test]
+    fn every_name_gets_the_guard() {
+        for name in ["sb", "saltbox", "sb.2", "sb_x-2"] {
+            let zsh = String::from_utf8(Shell::Zsh.registration(name, "/usr/local/bin/sb"))
+                .expect("UTF-8");
+            let function = format!("_clap_dynamic_completer_{}", name.replace('-', "_"));
+            assert!(
+                zsh.ends_with(&zsh_guard(&format!("_{name}"), &function, name)),
+                "{zsh}"
+            );
+            assert!(!zsh.contains("\ncompdef "), "{name}: {zsh}");
         }
     }
 

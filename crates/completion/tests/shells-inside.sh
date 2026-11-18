@@ -192,5 +192,51 @@ for shell in /bin/bash /usr/bin/zsh /usr/bin/fish; do
     "saltbox install plex,so" "saltbox install plex,sonarr"
 done
 
+# zsh's dump rebuilt after a completion (clap #6566): in one login shell,
+# complete sb, then rebuild ~/.zcompdump as a later compinit does; a new
+# login shell must still complete sb from that dump, its first Tab
+# included. clap's stub alone would have remapped sb to a function no
+# file defines.
+# wait_for TEST...: up to 10 s for the test to hold.
+wait_for() {
+  for _ in $(seq 100); do
+    "$@" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+captured_lines() { [ "$(wc -l <"$home/captured" 2>/dev/null || echo 0)" -ge "$1" ]; }
+
+zsh_dump_rebuild() {
+  rm -f "$home/captured" "$home/mapping" "$home"/.zcompdump*
+  tmux kill-server 2>/dev/null || true
+  tmux new-session -d -s t -x 200 -y 50 "su - sbuser -s /usr/bin/zsh"
+  sleep 3
+  tmux send-keys -t t -l "sb vers"; tmux send-keys -t t Tab; sleep 1.5; tmux send-keys -t t C-x
+  wait_for captured_lines 1 || true
+  # shellcheck disable=SC2016 # zsh expands it, in the user's shell
+  tmux send-keys -t t -l 'rm -f ~/.zcompdump*; compinit; print -r -- "${_comps[sb]}" >~/mapping; exit'
+  tmux send-keys -t t Enter
+  wait_for test -s "$home/mapping" || true
+  tmux kill-server 2>/dev/null || true
+  tmux new-session -d -s t -x 200 -y 50 "su - sbuser -s /usr/bin/zsh"
+  sleep 3
+  tmux send-keys -t t -l "sb vers"; tmux send-keys -t t Tab; sleep 1.5; tmux send-keys -t t C-x
+  wait_for captured_lines 2 || true
+  tmux capture-pane -t t -p >/out/screen-zsh-dump.txt
+  tmux kill-server 2>/dev/null || true
+  local mapping got
+  mapping=$(cat "$home/mapping" 2>/dev/null) || true
+  got=$(sed 's/[[:space:]]*$//' "$home/captured" 2>/dev/null | tr '\n' '|') || true
+  if [ "$mapping" = _sb ] && [ "$got" = "sb version|sb version|" ] &&
+    grep -q "^'sb' '_sb'" "$home"/.zcompdump*; then
+    echo "PASS: zsh-dump: sb stays _sb through a rebuilt dump; [$got]"
+  else
+    echo "FAIL: zsh-dump: mapping [$mapping], lines [$got], dump: $(grep "^'sb'" "$home"/.zcompdump* 2>/dev/null)"
+    failures=$((failures + 1))
+  fi
+}
+zsh_dump_rebuild
+
 [ "$failures" -eq 0 ] || fail "$failures case(s) failed"
 echo "RESULT: $rel: passed"

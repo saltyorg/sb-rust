@@ -158,7 +158,8 @@ it).
 ### `sb completion generate <bash|zsh|fish>`
 
 Writes clap's registration stub for `sb` to stdout (`bin` and
-`completer` both `sb`, looked up on `PATH` at Tab time). No probe, no
+`completer` both `sb`, looked up on `PATH` at Tab time; zsh's last line
+guarded, verification item 1). No probe, no
 cache read, no root. A usage error for another shell (exit 2).
 
 ### Refresh for `update` and `setup`
@@ -320,6 +321,17 @@ the test's directory.
    a documented line after the stub (calling the completer when the file
    runs as the autoloaded function), recorded with a "why not" in the
    code and an upstream clap issue proposed to the maintainer.
+   *Settled (module builds M57 and M58, and the follow-up after M60):*
+   confirmed. The same stub's trailing `compdef` also remaps `sb` to
+   `_clap_dynamic_completer_sb`, which no file in `fpath` defines, when
+   the file is autoloaded. A `.zcompdump` rebuilt after a completion
+   keeps that mapping, and every later shell then has no sb completion
+   (clap issue #6566, where clap answers that `fpath` installs aren't
+   supported yet). So sb replaces that last line with clap's static
+   script's guard: as the autoloaded `_sb`, the file calls the completer
+   and leaves the mapping; sourced, it runs the `compdef`. Checked by
+   tests/shells.sh, including a dump rebuilt after a completion. The
+   comment for #6566 is drafted for the maintainer, not posted.
 2. **bash loader.** clap's stub is a plain `complete -F` with no
    bash-completion helpers; the file is found only through
    bash-completion's lazy loader in

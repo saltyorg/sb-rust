@@ -40,10 +40,23 @@ The same on all three releases.
    release run (`sb vers` stayed, and so did `sb install so` when it came
    first); later Tabs worked. compinit
    autoloads the file as the body of `_sb`, which only defines and
-   registers clap's completer. With the `funcstack[1]` line sb adds after
-   the stub (`ZSH_FIRST_LOAD`, crates/completion/src/lib.rs), the first
-   Tab completes, on all three releases. Upstream clap issue to propose: the zsh stub is written
-   for `source`, not for an autoloaded `fpath` file.
+   registers clap's completer. That stub's last line, `compdef
+   _clap_dynamic_completer_sb sb`, also remaps sb when the file is
+   autoloaded. A dump rebuilt in that shell (`rm ~/.zcompdump; compinit`)
+   then records `'sb' '_clap_dynamic_completer_sb'`, and every new shell
+   fails with "_clap_dynamic_completer_sb: function definition file not
+   found". This was seen with sb's first fix too, which only added a call
+   after the `compdef`; it is clap issue #6566. sb replaces that line
+   with a `funcstack[1]` guard (`zsh_guard`,
+   crates/completion/src/lib.rs): when the file runs as `_sb` it calls
+   the completer, and only when it is sourced does it run the `compdef`.
+   On all three releases the first Tab completes, and a new login shell
+   still completes sb after the dump was rebuilt following a completion,
+   with the dump keeping `'sb' '_sb'`. A dump that already records
+   `'sb' '_clap_dynamic_completer_sb'` keeps it after the new file is
+   installed: compinit rebuilds its dump only when the number of files
+   in `fpath` changes. Only a host where an earlier sb build was
+   installed can have one, and removing `~/.zcompdump*` clears it.
 2. **bash loader (item 2):** bash-completion's loader finds the file as
    `sb.bash` and as `sb` in `/usr/local/share/bash-completion/completions`
    on 2.11 and 2.16; sb writes `sb.bash`, as sb-go. A login shell loads
