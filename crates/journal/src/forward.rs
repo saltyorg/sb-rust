@@ -927,6 +927,79 @@ fn older_than_starts(
     older
 }
 
+/// The head page: the oldest `n` matching entries (or `held`, when that
+/// is less), oldest first, ordered with `boots`. Each file's matching
+/// entries from their lists' heads (`all_matches_from(0)`: a DATA object
+/// lists its entries oldest first), merged as a forward page goes on
+/// after its first step (`lowest`, `advance`): `sd_journal_seek_head`
+/// then `next`, without a cursor to land on. It reads what a forward
+/// page from the journal's first entry would, not the journal.
+pub(crate) fn head(
+    files: &[JournalFile],
+    groups: &[Group],
+    n: usize,
+    held: usize,
+    boots: &BootOrder,
+    errors: &mut ReadErrors,
+) -> Forward {
+    let queries: Vec<FileQuery<'_>> = files
+        .iter()
+        .map(|f| FileQuery::new(f, groups, errors))
+        .collect();
+    let mut heads: Vec<Head<'_>> = queries
+        .iter()
+        .map(|q| Head {
+            head: None,
+            rest: Some(q.all_matches_from(0)),
+        })
+        .collect();
+    fill(&mut heads, errors);
+    let keep = n.min(held);
+    let mut out = Vec::new();
+    let mut more = false;
+    while let Some(best) = lowest(&heads, boots) {
+        if out.len() >= keep {
+            more = true;
+            break;
+        }
+        let c = heads[best].head.take().expect("`lowest` names a head");
+        let last = c.location;
+        out.push(c);
+        advance(&mut heads, &last, boots, errors);
+    }
+    if more && keep < n {
+        errors.add(ReadError::of_page(ReadErrorKind::HeldLimitNewer));
+    }
+    Forward {
+        picked: out,
+        more_older: false,
+        more_newer: more,
+        counts: queries.iter().map(|q| q.count).collect(),
+    }
+}
+
+/// Each file's first entry as its head, the errors before it reported.
+fn fill(heads: &mut [Head<'_>], errors: &mut ReadErrors) {
+    for (i, h) in heads.iter_mut().enumerate() {
+        while h.head.is_none() {
+            match h.rest.as_mut().and_then(Iterator::next) {
+                Some(Ok((offset, location))) => {
+                    h.head = Some(Candidate {
+                        location,
+                        file: i,
+                        offset,
+                    });
+                }
+                Some(Err(e)) => errors.add(e),
+                None => {
+                    h.rest = None;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// The forward page after `c`: at most `n` matching entries (or `held`,
 /// when that is less), oldest first, ordered with `boots`.
 pub(crate) fn after(

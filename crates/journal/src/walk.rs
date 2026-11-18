@@ -290,6 +290,11 @@ pub(crate) fn page(
             let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
             (picked, more, beyond.get(), End::Newest, counts)
         }
+        Position::Head => {
+            let fwd = crate::forward::head(files, groups, n, held, boots, errors);
+            let (picked, older, newer) = (fwd.picked, fwd.more_older, fwd.more_newer);
+            (picked, older, newer, End::Oldest, fwd.counts)
+        }
         Position::After(c) => {
             let fwd = crate::forward::after(files, groups, n, c, held, boots, errors);
             let (picked, older, newer) = (fwd.picked, fwd.more_older, fwd.more_newer);
@@ -328,7 +333,7 @@ pub(crate) fn scan_back(
     let held = bounds.held / std::mem::size_of::<Candidate>();
     let keep = |l: &Cursor| {
         let take = match at {
-            Position::Tail => true,
+            Position::Tail | Position::Head => true,
             Position::Before(c) => l.order(c, boots).is_lt(),
             Position::AtOrBefore(c) => !l.order(c, boots).is_gt(),
             Position::After(c) => l.order(c, boots).is_gt(),

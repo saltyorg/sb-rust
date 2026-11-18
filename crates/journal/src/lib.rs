@@ -404,6 +404,10 @@ pub enum Source {
 pub enum Position {
     /// The newest entries.
     Tail,
+    /// The oldest entries: each file's matching entries from their lists'
+    /// heads, merged forward as `After` merges them (the log viewer's
+    /// Home).
+    Head,
     /// The entries before this one, which isn't shown.
     Before(Cursor),
     /// The entries after this one, which isn't shown.
@@ -3625,5 +3629,108 @@ mod tests {
         let all: Vec<String> = (0..100).rev().map(|i| format!("m{i}")).collect();
         assert_eq!(seen, all);
         assert_eq!(limit_errors, 0, "nothing was left out");
+    }
+    /// The log viewer's Home (journal spec, "Search": `Head`): the oldest
+    /// entries, oldest first, more newer when there are.
+    #[test]
+    fn a_head_page_is_the_oldest_entries() {
+        let (mut c, _l) = crafted::journal(20);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::field(&name("U"), b"x");
+        let head = j.page(&q, &Position::Head, 5, &Limits::default());
+        assert_eq!(messages_of(&head), ["m0", "m1", "m2", "m3", "m4"]);
+        assert!(!head.more_older);
+        assert!(head.more_newer);
+        assert_eq!(head.oldest_chosen, Some(head.records[0].cursor()));
+        let all = j.page(&q, &Position::Head, 50, &Limits::default());
+        assert_eq!(all.records.len(), 20);
+        assert!(!all.more_newer);
+        // A forward page from the head's last entry goes on from there.
+        let on = j.page(
+            &q,
+            &Position::After(head.records[4].cursor()),
+            3,
+            &Limits::default(),
+        );
+        assert_eq!(messages_of(&on), ["m5", "m6", "m7"]);
+    }
+
+    /// `n` files of `per` entries, one boot each, the boots one after
+    /// another in time: file `k`'s entries `k-<i>`.
+    fn boots_in_files(n: u8, per: u64, matching: bool) -> Vec<tempfile::NamedTempFile> {
+        (0..n)
+            .map(|k| {
+                let names: Vec<String> = (0..per).map(|i| format!("{k}-{i}")).collect();
+                let rows: Vec<(&str, u8, u64, u64)> = names
+                    .iter()
+                    .zip(0..)
+                    .map(|(who, i)| {
+                        (
+                            who.as_str(),
+                            k + 1,
+                            i + 1,
+                            u64::from(k) * 1_000_000 + i * 10 + 5,
+                        )
+                    })
+                    .collect();
+                boot_file(k + 1, 9, &rows, matching)
+            })
+            .collect()
+    }
+
+    /// Across files and boots a head page is a scan's oldest entries, in
+    /// the release's order, and costs about what a tail page does: it
+    /// reads from the lists' heads, not the whole journal.
+    #[test]
+    fn a_head_across_files_is_the_oldest_in_the_releases_order() {
+        let ts = boots_in_files(8, 300, true);
+        let paths: Vec<&Path> = ts.iter().map(tempfile::NamedTempFile::path).collect();
+        for v in ["22.04", "24.04", "26.04"] {
+            let j = files_on(&release(v), &paths);
+            let q = Query::every();
+            let mut scanned = Vec::new();
+            let _ = j.scan(
+                &q,
+                &Position::Tail,
+                500,
+                &Limits::default(),
+                &mut |records, _| {
+                    scanned.extend(records.iter().map(|r| {
+                        String::from_utf8_lossy(r.field(&name("WHO")).expect("WHO")).into_owned()
+                    }));
+                    std::ops::ControlFlow::Continue(())
+                },
+            );
+            scanned.reverse();
+            let head = j.page(&q, &Position::Head, 400, &Limits::default());
+            assert_eq!(who(&head), scanned[..400], "{v}");
+            assert!(head.more_newer, "{v}");
+            let preads = || crate::testing::counts(&j).preads;
+            let start = preads();
+            let _ = j.page(&q, &Position::Tail, 400, &Limits::default());
+            let tail = preads() - start;
+            let start = preads();
+            let _ = j.page(&q, &Position::Head, 400, &Limits::default());
+            let head = preads() - start;
+            assert!(head <= 2 * tail, "{v}: head {head} preads, tail {tail}");
+        }
+    }
+
+    /// A query's head leaves out the entries that don't match.
+    #[test]
+    fn a_heads_query_leaves_others_out() {
+        let mut ts = boots_in_files(1, 3, false);
+        ts.extend(boots_in_files(2, 4, true).into_iter().skip(1));
+        let paths: Vec<&Path> = ts.iter().map(tempfile::NamedTempFile::path).collect();
+        let j = files_on(&release("24.04"), &paths);
+        let head = j.page(
+            &Query::field(&name("U"), b"x"),
+            &Position::Head,
+            10,
+            &Limits::default(),
+        );
+        assert_eq!(who(&head), ["1-0", "1-1", "1-2", "1-3"]);
+        assert!(!head.more_newer);
     }
 }

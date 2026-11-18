@@ -421,6 +421,37 @@ pub async fn scan(
     Ok(ControlFlow::Continue(()))
 }
 
+/// The first `n` entries of the log (the log viewer's Home, tui spec,
+/// "Home and End"): one read from the creation (when known, else the
+/// log's start), stopped at one more than `n` (which sets `more`), the
+/// daemon's stream dropped there, so only the log's start is read.
+///
+/// # Errors
+///
+/// The daemon's error (its message kept), or a broken stream.
+pub async fn head(
+    daemon: &Daemon,
+    id: &str,
+    n: usize,
+    created: Option<Timestamp>,
+) -> anyhow::Result<Page> {
+    let start = created.map_or(1, |created| floor_secs(created.as_nanosecond()).max(1));
+    let mut lines = Vec::new();
+    let options = options().since(api_secs(start)).build();
+    read(daemon, id, options, |line| {
+        lines.push(line);
+        if lines.len() > n {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .await?;
+    let more = lines.len() > n;
+    lines.truncate(n);
+    Ok(Page { lines, more })
+}
+
 /// The entries after `after` as they come: [`newer`]'s read with
 /// `follow`, until the daemon ends the stream (the container stopped) or
 /// fails, which is the stream's last item.
@@ -1253,5 +1284,34 @@ mod tests {
         .expect("scan");
         assert_eq!(ended, ControlFlow::Break(()));
         assert_eq!(n, 5);
+    }
+
+    /// The log viewer's Home (tui spec, "Home and End"): the log's first
+    /// `n` entries from the creation, with the positions every read
+    /// gives; `more` when the log goes on; a log shorter than a page whole.
+    #[tokio::test]
+    async fn a_head_is_the_logs_first_entries() {
+        let log = long_log(400);
+        let engine = engine(log.clone());
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let created = Some(second(0));
+        let mut all = Vec::new();
+        let _ = scan(&daemon, ID, Range::All, created, |line| {
+            all.push(line);
+            ControlFlow::Continue(())
+        })
+        .await
+        .expect("scan");
+        let first = head(&daemon, ID, 50, created).await.expect("head");
+        assert_eq!(first.lines, all[..50]);
+        assert!(first.more);
+        let whole = head(&daemon, ID, 1_000, created).await.expect("head");
+        assert_eq!(whole.lines, all);
+        assert!(!whole.more);
+        // A page after the head's last entry goes on from there.
+        let on = newer(&daemon, ID, first.lines[49].position, 5)
+            .await
+            .expect("newer");
+        assert_eq!(on.lines, all[50..55]);
     }
 }
