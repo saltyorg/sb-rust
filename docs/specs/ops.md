@@ -1217,7 +1217,7 @@ of the new crates is measured in their task against the ratchet.
 Check:   scripts/check.sh fast | task | full
 Test:    cargo test -p sb-ops -p sb
 Matrix:  SB_LOG_DIR=<scratch> systemd-run --scope -p MemoryMax=4G -p CPUQuota=200% crates/ops/tests/gha-matrix.sh
-Install: SBI_SB=<sb built with SB_VERSION and SB_GIT_COMMIT> install/tests/containers.sh (policy.sh runs inside)
+Install: SBI_SB=<sb built with SB_VERSION, SB_GIT_COMMIT and SB_CHANNEL=release> install/tests/containers.sh (policy.sh runs inside)
 Lint:    shellcheck install/install.sh install/tests/*.sh crates/ops/tests/*.sh
 Try:     the production build of sb, run as root with SB_LOG_DIR set
 ```

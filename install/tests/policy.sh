@@ -26,6 +26,9 @@ script="$here/../install.sh"
 # shellcheck source=install/install.sh
 source "$script"
 trap - EXIT
+# The architecture detect_platform would set on this test's x86-64 host;
+# the cases that need another set their own.
+ARCH=amd64
 
 root=$(mktemp -d)
 # shellcheck disable=SC2317 # called by the EXIT trap
@@ -278,7 +281,7 @@ for tool in curl wget; do
   stub_fetch "$d" '{"tag_name":"v1.2.3","name":"x"}' ''
   got=$(PATH="$d/bin:$PATH" DOWNLOAD_TOOL=$tool get_latest_version 2>"$d/stderr")
   [[ $got == v1.2.3 ]] || fail "tag-proxy-$tool: got '$got'"
-  grep -q -- "https://svm.saltbox.dev/version?url=https://api.github.com/repos/saltyorg/sb-go/releases/latest" \
+  grep -q -- "https://svm.saltbox.dev/version?url=https://api.github.com/repos/saltyorg/sb-rust/releases/latest" \
     "$d/fetches" || fail "tag-proxy-$tool: $(cat "$d/fetches")"
   d=$(world "tag-github-$tool" 24.04)
   stub_fetch "$d" '' '{ "tag_name": "v1.2.4", "name": "x" }'
@@ -301,6 +304,53 @@ for tool in curl wget; do
   fi
 done
 
+# --beta: the highest version in the release list, prereleases included
+# (rc.10 above rc.2, a release above its own rc, a tag that isn't a version
+# dropped), from the list's URL, not latest's.
+for tool in curl wget; do
+  d=$(world "tag-beta-$tool" 24.04)
+  stub_fetch "$d" '[{"tag_name":"1.0.0"},{"tag_name":"1.1.0-rc.2"},{"tag_name":"nightly"},{"tag_name":"1.1.0-rc.10"},{"tag_name":"1.0.1"}]' ''
+  got=$(PATH="$d/bin:$PATH" DOWNLOAD_TOOL=$tool BETA_MODE=true get_latest_version 2>"$d/stderr")
+  [[ $got == 1.1.0-rc.10 ]] || fail "tag-beta-$tool: got '$got'"
+  grep -q -- "https://svm.saltbox.dev/version?url=https://api.github.com/repos/saltyorg/sb-rust/releases " "$d/fetches" \
+    || grep -q -- "https://svm.saltbox.dev/version?url=https://api.github.com/repos/saltyorg/sb-rust/releases$" "$d/fetches" \
+    || fail "tag-beta-$tool: $(cat "$d/fetches")"
+  d=$(world "tag-beta-stable-$tool" 24.04)
+  stub_fetch "$d" '[{"tag_name":"1.0.0"},{"tag_name":"1.0.0-rc.2"}]' ''
+  got=$(PATH="$d/bin:$PATH" DOWNLOAD_TOOL=$tool BETA_MODE=true get_latest_version 2>"$d/stderr")
+  [[ $got == 1.0.0 ]] || fail "tag-beta-stable-$tool: got '$got'"
+done
+d=$(world beta-option 24.04)
+(
+  parse_args --beta -v
+  [[ ${BETA_MODE} == true ]] || fail "--beta not read"
+)
+grep -Fq -- "--beta" <(usage) || fail "usage has no --beta"
+
+# The architecture: x86_64 and aarch64 (and their Debian names) are
+# accepted and name their asset; anything else is refused.
+for pair in x86_64:amd64 amd64:amd64 aarch64:arm64 arm64:arm64; do
+  d=$(world "arch-${pair%%:*}" 24.04)
+  mkdir -p "$d/bin"
+  # shellcheck disable=SC2016 # the stand-in's own $1
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; esac\n' "${pair%%:*}" >"$d/bin/uname"
+  chmod +x "$d/bin/uname"
+  got=$(
+    PATH="$d/bin:$PATH" detect_platform 2>/dev/null
+    printf '%s' "${ARCH}"
+  )
+  [[ $got == "${pair#*:}" ]] || fail "arch ${pair%%:*}: got '$got'"
+done
+# shellcheck disable=SC2016 # the stand-in's own $1
+printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo mips ;; esac\n' >"$d/bin/uname"
+status=0
+(PATH="$d/bin:$PATH" detect_platform) >/dev/null 2>"$d/stderr" || status=$?
+if [[ $status != 1 ]] || ! grep -Fq "Unsupported architecture: mips" "$d/stderr"; then
+  fail "arch mips: $(cat "$d/stderr")"
+fi
+[[ $(ARCH=amd64 BETA_MODE=false asset_name) == sb_linux_amd64 ]] || fail "asset amd64"
+[[ $(ARCH=arm64 BETA_MODE=true asset_name) == sb_linux_arm64_beta ]] || fail "asset arm64 beta"
+
 # The download: GitHub's releases path for the tag and the asset only,
 # https only, into the temporary directory; a failing tool is retried,
 # then refused.
@@ -315,6 +365,7 @@ EOF
   chmod +x "$d/bin/$tool"
   status=0
   (
+    # shellcheck disable=SC2030 # PATH local to the subshell, on purpose
     PATH="$d/bin:$PATH"
     DOWNLOAD_TOOL=$tool
     TEMP_DIR="$d/tmp"
@@ -323,9 +374,17 @@ EOF
   ) >"$d/stdout" 2>"$d/stderr" || status=$?
   [[ $status == 1 ]] || fail "download-$tool: status $status"
   [[ $(wc -l <"$d/fetches") == 3 ]] || fail "download-$tool: tries $(cat "$d/fetches")"
-  grep -Fq -- "https://github.com/saltyorg/sb-go/releases/download/v1.2.3/sb_linux_amd64" "$d/fetches" \
+  grep -Fq -- "https://github.com/saltyorg/sb-rust/releases/download/v1.2.3/sb_linux_amd64" "$d/fetches" \
     || fail "download-$tool: $(cat "$d/fetches")"
   grep -Fq -- "$d/tmp/sb" "$d/fetches" || fail "download-$tool: not into the temp dir"
+  : >"$d/fetches"
+  (
+    # shellcheck disable=SC2031 # this subshell's own PATH, as the one above
+    export PATH="$d/bin:$PATH"
+    DOWNLOAD_TOOL=$tool TEMP_DIR="$d/tmp" RETRY_DELAY=0 ARCH=arm64 BETA_MODE=true download_binary 1.1.0-rc.1
+  ) >/dev/null 2>&1 || true
+  grep -Fq -- "https://github.com/saltyorg/sb-rust/releases/download/1.1.0-rc.1/sb_linux_arm64_beta" "$d/fetches" \
+    || fail "download-beta-$tool: $(cat "$d/fetches")"
   grep -Fq "Failed to download binary after 3 attempts" "$d/stderr" || fail "download-$tool: $(cat "$d/stderr")"
 done
 
@@ -358,13 +417,13 @@ grep -Fq "Binary failed to execute" "$d/stderr" || fail "verify bash: $(cat "$d/
 # config) doesn't spoil the line; another version or another line is
 # refused.
 version_case() {
-  local name="$1" stdout="$2" tag="$3"
+  local name="$1" stdout="$2" tag="$3" channel="${4:-Release channel: release}" beta="${5:-false}"
   local dir="$root/version-$name"
   mkdir -p "$dir"
-  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\necho "warning: theme config is broken" >&2\n' "$stdout" \
+  printf '#!/bin/sh\nprintf "%%s\\n%%s\\n" "%s" "%s"\necho "warning: theme config is broken" >&2\n' "$stdout" "$channel" \
     >"$dir/version"
   status=0
-  (cd "$dir" && TEMP_DIR="$dir" verify_binary "$d/bash" "$tag") >"$dir/out" 2>"$dir/err" || status=$?
+  (cd "$dir" && TEMP_DIR="$dir" BETA_MODE="$beta" verify_binary "$d/bash" "$tag") >"$dir/out" 2>"$dir/err" || status=$?
   echo "$status"
 }
 [[ $(version_case good "Saltbox CLI version: 1.2.3 (commit: abc1234)" v1.2.3) == 0 ]] \
@@ -381,6 +440,14 @@ grep -Fq "warning: theme config is broken" "$root/version-format/err" \
   || fail "verify format: stderr not shown"
 [[ $(version_case no-commit "Saltbox CLI version: 1.2.3 (commit: )" v1.2.3) == 1 ]] \
   || fail "verify a raw build passed"
+# The channel: release by default, beta with --beta; another is refused.
+[[ $(version_case beta "Saltbox CLI version: 1.2.3 (commit: abc1234)" 1.2.3 "Release channel: beta" true) == 0 ]] \
+  || fail "verify beta: $(cat "$root/version-beta/err")"
+[[ $(version_case wrong-channel "Saltbox CLI version: 1.2.3 (commit: abc1234)" 1.2.3 "Release channel: beta") == 1 ]] \
+  || fail "verify a beta binary as release passed"
+grep -Fq "Channel mismatch!" "$root/version-wrong-channel/err" || fail "verify channel: $(cat "$root/version-wrong-channel/err")"
+[[ $(version_case none-channel "Saltbox CLI version: 1.2.3 (commit: abc1234)" 1.2.3 "Release channel: none (self-update disabled)") == 1 ]] \
+  || fail "verify a none binary passed"
 
 # A download cut short under `curl ... | bash`: the brace group around the
 # script makes every cut a syntax error, never a run that exits 0 with

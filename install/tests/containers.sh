@@ -28,8 +28,8 @@
 #     install/tests/containers.sh [RELEASE]...
 #
 # Default releases: 22.04 24.04 26.04. SBI_SB is an sb built without the
-# `testing` feature and with SB_VERSION and SB_GIT_COMMIT set (the script
-# checks `sb version` against the tag), on a glibc no newer than 24.04's
+# `testing` feature and with SB_VERSION, SB_GIT_COMMIT and SB_CHANNEL=release
+# set (the script checks `sb version` against the tag and the channel), on a glibc no newer than 24.04's
 # (22.04 only refuses a fresh install, so it never runs SBI_SB).
 #
 # Each container, $SBI_PREFIX-<release>-<pid> (sbinstall-... by default),

@@ -10,6 +10,7 @@
 #
 #   curl -sL https://install.saltbox.dev | sudo -H bash && cd /srv/git/saltbox
 #   curl -sL https://install.saltbox.dev | sudo -H bash -s -- -b develop -v
+#   curl -sL https://install.saltbox.dev | sudo -H bash -s -- --beta
 #
 # (or `wget -qO-` for `curl -sL`). Nothing here reads stdin, which under
 # `curl ... | bash` is the rest of this script; `sb setup` runs attached
@@ -20,11 +21,11 @@
 
 set -euo pipefail
 
-# The repository and asset sb's releases come from: sb-go's, the only
-# channel there is, until release preparation names sb-rust's (decided.md
-# D-Q3; sb's self-update uses the same, crates/sb/src/self_update.rs).
-readonly GITHUB_REPO="saltyorg/sb-go"
-readonly DOWNLOAD_BINARY_NAME="sb_linux_amd64"
+# The repository sb's releases come from (release spec, "Release
+# channels"; sb's self-update uses the same, crates/sb/src/self_update.rs).
+# The asset is `sb_linux_<arch>`, `_beta` added with --beta; the
+# installed sb then follows its own baked channel.
+readonly GITHUB_REPO="saltyorg/sb-rust"
 readonly BINARY_NAME="sb"
 readonly MIN_BINARY_SIZE=1000000 # 1 MB: a smaller download is an error page
 readonly FRESH_INSTALL_UBUNTU_VERSIONS="24.04, 26.04"
@@ -44,6 +45,8 @@ DOWNLOAD_TOOL=""       # set by check_dependencies
 FORCE_DOWNLOAD_TOOL="" # --force-curl / --force-wget
 REPAIR_MODE=false
 VERBOSE_MODE=false
+BETA_MODE=false # --beta: the beta channel's asset, prereleases included
+ARCH=""         # amd64 or arm64, set by detect_platform
 BRANCH="master"
 TEMP_DIR=""
 STAGED=""
@@ -108,12 +111,25 @@ detect_platform() {
     log_error "This installer only supports Linux"
     exit 1
   fi
-  if [[ ${arch} != x86_64 && ${arch} != amd64 ]]; then
-    log_error "Unsupported architecture: ${arch}"
-    log_error "This installer only supports x86_64/amd64"
-    exit 1
-  fi
+  case ${arch} in
+    x86_64 | amd64) ARCH=amd64 ;;
+    aarch64 | arm64) ARCH=arm64 ;;
+    *)
+      log_error "Unsupported architecture: ${arch}"
+      log_error "This installer only supports x86_64/amd64 and aarch64/arm64"
+      exit 1
+      ;;
+  esac
   log_detail "Detected platform: ${os}/${arch}"
+}
+
+# The release asset for this architecture and channel.
+asset_name() {
+  if [[ ${BETA_MODE} == true ]]; then
+    printf 'sb_linux_%s_beta\n' "${ARCH}"
+  else
+    printf 'sb_linux_%s\n' "${ARCH}"
+  fi
 }
 
 # A value from os-release, read without running the file as shell code.
@@ -232,15 +248,35 @@ tag_from_json() {
   fi
 }
 
+# The highest version among the release list's tags on stdin
+# (--beta: prereleases included). GNU sort's version order puts `~`
+# before anything, even the end of the string, so a prerelease's `-`
+# written as `~` sorts below its release, as semver orders them
+# (https://www.gnu.org/software/coreutils/manual/html_node/Version_002dsort-ordering-rules.html).
+# Tags that aren't versions are dropped.
+highest_tag() {
+  local tag
+  grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | while IFS= read -r tag; do
+    if [[ ${tag} =~ ${TAG_PATTERN} ]]; then
+      printf '%s %s\n' "$(printf '%s' "${tag#v}" | sed 's/-/~/')" "${tag}"
+    fi
+  done | sort -V -k1,1 | tail -n 1 | cut -d' ' -f2
+}
+
 # The latest release's tag: the svm proxy first (cached, no rate limit),
-# then GitHub's API.
+# then GitHub's API. With --beta, the highest of the release list,
+# prereleases included; else GitHub's latest stable release.
 get_latest_version() {
-  local version=""
+  local version="" pick=tag_from_json
   local github_api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
-  version=$(fetch "https://svm.saltbox.dev/version?url=${github_api_url}" 2>/dev/null | tag_from_json || true)
+  if [[ ${BETA_MODE} == true ]]; then
+    github_api_url="https://api.github.com/repos/${GITHUB_REPO}/releases"
+    pick=highest_tag
+  fi
+  version=$(fetch "https://svm.saltbox.dev/version?url=${github_api_url}" 2>/dev/null | "${pick}" || true)
   if [[ -z ${version} ]]; then
     log_warn "SVM proxy unavailable, falling back to GitHub API"
-    version=$(fetch "${github_api_url}" 2>/dev/null | tag_from_json || true)
+    version=$(fetch "${github_api_url}" 2>/dev/null | "${pick}" || true)
     if [[ -z ${version} ]]; then
       log_error "Failed to fetch latest release version from both SVM and GitHub API"
       exit 1
@@ -255,7 +291,9 @@ get_latest_version() {
 # path on stdout.
 download_binary() {
   local version="$1"
-  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${DOWNLOAD_BINARY_NAME}"
+  local asset
+  asset=$(asset_name)
+  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset}"
   local temp_binary="${TEMP_DIR}/${BINARY_NAME}"
   local attempt=1
   log_info "Downloading ${BINARY_NAME} version ${version}..."
@@ -284,13 +322,14 @@ download_binary() {
   echo "${temp_binary}"
 }
 
-# The download is an x86-64 ELF executable of a sane size whose `version`
+# The download is an ELF executable of this architecture (x86-64 or
+# aarch64, as `file` names them) of a sane size whose `version`
 # reports the tag (without its `v`, as sb's self-update compares) as the
-# first line of its stdout; what it writes to stderr (a warning about
+# first line of its stdout and the channel asked for as the second; what it writes to stderr (a warning about
 # the host's sb config, say) is shown only when the check fails.
 verify_binary() {
   local binary_path="$1" expected_version="$2"
-  local file_size file_type version_output actual_version status=0
+  local file_size file_type version_output channel_output actual_version status=0
   local errors="${TEMP_DIR}/version.stderr"
   log_info "Verifying downloaded binary..."
   if [[ ! -f ${binary_path} ]]; then
@@ -305,7 +344,9 @@ verify_binary() {
   fi
   log_detail "Binary size: ${file_size} bytes"
   file_type=$(file -b "${binary_path}")
-  if [[ ! ${file_type} =~ ELF\ 64-bit.*executable.*x86-64 ]]; then
+  local machine=x86-64
+  [[ ${ARCH} == arm64 ]] && machine=aarch64
+  if [[ ! ${file_type} =~ ELF\ 64-bit.*executable.*${machine} ]]; then
     log_error "Downloaded file is not a valid Linux executable"
     log_error "File type: ${file_type}"
     exit 1
@@ -322,6 +363,8 @@ verify_binary() {
     log_error "Output: ${version_output} $(cat -- "${errors}")"
     exit 1
   fi
+  # The second line names the binary's release channel.
+  channel_output=$(printf '%s\n' "${version_output}" | sed -n 2p)
   version_output="${version_output%%$'\n'*}"
   log_detail "Version output: ${version_output}"
   # `Saltbox CLI version: X.Y.Z (commit: abc1234)`, sb's and sb-go's line.
@@ -338,7 +381,17 @@ verify_binary() {
     log_error "Binary reports version: ${actual_version}"
     exit 1
   fi
-  log_success "Binary verification passed (version: ${actual_version})"
+  # The channel asked for (release, or beta with --beta): a mislabelled
+  # asset would set the host's channel, which it then follows.
+  local channel=release
+  [[ ${BETA_MODE} == true ]] && channel=beta
+  if [[ ${channel_output} != "Release channel: ${channel}" ]]; then
+    log_error "Channel mismatch!"
+    log_error "Expected: Release channel: ${channel}"
+    log_error "Binary reports: ${channel_output}"
+    exit 1
+  fi
+  log_success "Binary verification passed (version: ${actual_version}, channel: ${channel})"
 }
 
 # The binary into INSTALL_PATH, root's and 0755, by a rename in its
@@ -392,6 +445,7 @@ Options:
   --force-curl       Force using curl for downloads
   --force-wget       Force using wget for downloads
   --repair           Restore only the sb binary on an existing installation
+  --beta             Install the beta channel (prereleases included)
   -h, --help         Show this help message
 EOF
 }
@@ -423,6 +477,10 @@ parse_args() {
         ;;
       --repair)
         REPAIR_MODE=true
+        shift
+        ;;
+      --beta)
+        BETA_MODE=true
         shift
         ;;
       -h | --help)
