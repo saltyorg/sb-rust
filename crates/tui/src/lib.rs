@@ -51,7 +51,6 @@ use sb_term_ui::DisplayText;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
-pub use picker::Filter;
 pub use term::{App, Ending, Flow, Tui, raise_open_files};
 
 use crate::line::Format;
@@ -59,18 +58,14 @@ use crate::picker::{Choice, ListServices, Picker};
 use crate::source::{Event, Generation, Notice, Outbox, Request, SourceHandle};
 use crate::viewer::{Kind, Leave, Viewer};
 
-/// What `sb logs` and `sb docker logs` show: the services and containers
-/// listed before the screen, the run's one journal (tui spec, "Sources":
-/// one `Journal::open` per run) and its Docker daemon.
+/// What `sb logs` shows: the services and containers listed before the
+/// screen, the run's one journal (tui spec, "Sources": one `Journal::open`
+/// per run) and its Docker daemon.
 #[derive(Debug)]
 pub struct Logs {
-    /// The services, with the journal their logs are read from, or why
-    /// they couldn't be listed (`sb docker logs` shows that as the
-    /// Services section's one row; `sb logs` ends before the screen).
-    pub services: Result<Services, String>,
+    /// The services, with the journal their logs are read from.
+    pub services: Services,
     pub docker: Docker,
-    /// The kinds shown.
-    pub filter: Filter,
     /// The run's theme: the screens' roles and the log spans' profile.
     pub theme: Theme,
     /// The zone line times are shown in (`line::local_zone`).
@@ -181,7 +176,7 @@ type Open = Box<dyn FnOnce(Outbox) -> SourceHandle>;
 /// life: its drop ends the watch).
 struct Screens {
     picker: Picker,
-    journal: Option<Arc<Journal>>,
+    journal: Arc<Journal>,
     coredump_uid: Option<Uid>,
     daemon: Option<Arc<Daemon>>,
     _watcher: Option<source::docker::Watcher>,
@@ -193,17 +188,11 @@ impl Screens {
     /// The picker of `logs` on `tui`; `token` is the run's.
     fn new(tui: &Tui, logs: Logs, token: CancellationToken) -> Self {
         let now = Timestamp::now();
-        let (services, journal, coredump_uid, no_services) = match logs.services {
-            Ok(s) => (s.list, Some(Arc::new(s.journal)), s.coredump_uid, None),
-            Err(cause) => (Vec::new(), None, None, Some(cause)),
-        };
-        let mut picker = Picker::new(&services, now, logs.theme.clone());
-        picker = match no_services {
-            // The list is read again every 5 s while the picker shows (tui
-            // spec, "Live updates").
-            None => picker.with_refresh(list_services(token), tui.waker()),
-            Some(cause) => picker.with_no_services(&cause),
-        };
+        let services = logs.services;
+        // The list is read again every 5 s while the picker shows (tui
+        // spec, "Live updates").
+        let mut picker = Picker::new(&services.list, now, logs.theme.clone())
+            .with_refresh(list_services(token), tui.waker());
         let (daemon, watcher) = match logs.docker {
             Docker::Listed { daemon, rows } => {
                 let (watcher, updates) = source::docker::watch(Arc::clone(&daemon), tui.waker());
@@ -216,9 +205,9 @@ impl Screens {
             }
         };
         Self {
-            picker: picker.with_filter(logs.filter),
-            journal,
-            coredump_uid,
+            picker,
+            journal: Arc::new(services.journal),
+            coredump_uid: services.coredump_uid,
             daemon,
             _watcher: watcher,
             format: Format::new(logs.zone, logs.theme),
@@ -247,10 +236,7 @@ impl Screens {
                 // A name the journal's rule refuses can't be read;
                 // systemd's own names all pass.
                 let unit = unit_of(&name).map_err(io::Error::other)?;
-                let journal = self
-                    .journal
-                    .clone()
-                    .ok_or_else(|| io::Error::other("no journal"))?;
+                let journal = Arc::clone(&self.journal);
                 let coredump_uid = self.coredump_uid;
                 let open: Open =
                     Box::new(move |o| source::spawn_journal(journal, &unit, coredump_uid, o));

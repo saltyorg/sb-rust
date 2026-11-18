@@ -76,10 +76,10 @@ const REFRESH: Duration = Duration::from_secs(5);
 const FILTER_LABEL: &str = " Filter: ";
 const FILTER_HINT: &str = "Enter keeps · Esc clears ";
 
-/// The kinds the picker shows (tui spec, "Entry points": `sb logs` all,
-/// `sb docker logs` containers; `Tab` cycles them).
+/// The kinds the picker shows (tui spec, "Entry points": `sb logs` opens
+/// on all; `Tab` cycles them).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Filter {
+pub(crate) enum Filter {
     #[default]
     All,
     Services,
@@ -168,10 +168,9 @@ enum Row {
     Heading(Section),
     /// The source at this index of the entries, in that section.
     Source(Section, usize),
-    /// A kind's section's one row when its list couldn't be read (Docker
-    /// unreachable, or the services for `sb docker logs`); the selection
-    /// skips it.
-    Unavailable(Kind),
+    /// The Containers section's one row when Docker couldn't be reached;
+    /// the selection skips it.
+    Unreachable,
 }
 
 /// A refresh that keeps failing (maintainer, 2026-11-14; tui spec,
@@ -263,9 +262,6 @@ pub struct Picker {
     docker: bool,
     /// Why Docker couldn't be reached, shown as the section's one row.
     unreachable: Option<String>,
-    /// Why the services couldn't be listed, shown as the section's one
-    /// row.
-    no_services: Option<String>,
     /// The Containers section's live list.
     updates: Option<watch::Receiver<Snapshot>>,
     /// Why the containers may be out of date, in the footer.
@@ -287,10 +283,9 @@ impl Picker {
     /// The picker on `services`, their status as at `now`, sorted by name
     /// (tui spec, "Sections"), the first row selected; no Containers
     /// section until [`Picker::with_containers`] or
-    /// [`Picker::with_unreachable`]. [`Picker::with_containers`],
-    /// [`Picker::with_unreachable`], [`Picker::with_no_services`] and
-    /// [`Picker::with_filter`] select the first row again: they build the
-    /// picker the screen opens on.
+    /// [`Picker::with_unreachable`]. [`Picker::with_containers`] and
+    /// [`Picker::with_unreachable`] select the first row again: they build
+    /// the picker the screen opens on.
     #[must_use]
     pub fn new(services: &[Service], now: Timestamp, theme: Theme) -> Self {
         let mut picker = Self {
@@ -305,7 +300,6 @@ impl Picker {
             editing: None,
             docker: false,
             unreachable: None,
-            no_services: None,
             updates: None,
             trouble: None,
             refresh: None,
@@ -336,26 +330,6 @@ impl Picker {
     pub fn with_unreachable(mut self, cause: &str) -> Self {
         self.docker = true;
         self.unreachable = Some(one_line(cause));
-        self.state.select(None);
-        self.lay_out();
-        self
-    }
-
-    /// The Services section as one notice row: the services couldn't be
-    /// listed, for `cause` (`sb docker logs`, whose services show after
-    /// `Tab`).
-    #[must_use]
-    pub fn with_no_services(mut self, cause: &str) -> Self {
-        self.no_services = Some(one_line(cause));
-        self.state.select(None);
-        self.lay_out();
-        self
-    }
-
-    /// Show only the kinds `filter` lets through.
-    #[must_use]
-    pub fn with_filter(mut self, filter: Filter) -> Self {
-        self.filter = filter;
         self.state.select(None);
         self.lay_out();
         self
@@ -511,22 +485,14 @@ impl Picker {
                     .map(|(i, _)| Row::Source(section, i)),
             );
             // A name filter hides the notice row too: it names no source.
-            if self.unavailable(kind).is_some() && self.query.is_empty() {
-                rows.push(Row::Unavailable(kind));
+            if kind == Kind::Container && self.unreachable.is_some() && self.query.is_empty() {
+                rows.push(Row::Unreachable);
             }
             if rows.len() > start {
                 rows.insert(start, Row::Heading(section));
             }
         }
         rows
-    }
-
-    /// Why `kind`'s list couldn't be read.
-    fn unavailable(&self, kind: Kind) -> Option<&str> {
-        match kind {
-            Kind::Service => self.no_services.as_deref(),
-            Kind::Container => self.unreachable.as_deref(),
-        }
     }
 
     /// The selected row's section, kind and name.
@@ -813,7 +779,7 @@ impl Picker {
             Span::raw("  "),
         ];
         let faint = self.style(Role::Faint);
-        if self.no_services.is_none() && self.filter.shows(Kind::Service) {
+        if self.filter.shows(Kind::Service) {
             let services = counted(self.count(Kind::Service), "service", "services");
             spans.push(Span::styled(services, self.style(Role::Service)));
             spans.push(Span::styled(" · ", faint));
@@ -926,16 +892,13 @@ impl Picker {
                     }
                     ListItem::new(TextLine::from(spans))
                 }
-                Row::Unavailable(kind) => {
-                    let what = match kind {
-                        Kind::Service => "Services unavailable",
-                        Kind::Container => "Docker unreachable",
-                    };
-                    ListItem::new(TextLine::styled(
-                        format!("{what}: {}", self.unavailable(kind).unwrap_or_default()),
-                        self.style(Role::Problem),
-                    ))
-                }
+                Row::Unreachable => ListItem::new(TextLine::styled(
+                    format!(
+                        "Docker unreachable: {}",
+                        self.unreachable.as_deref().unwrap_or_default()
+                    ),
+                    self.style(Role::Problem),
+                )),
             })
             .collect()
     }

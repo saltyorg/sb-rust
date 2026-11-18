@@ -297,6 +297,16 @@ fn both() -> Picker {
     picker(&services()[..2]).with_containers(&containers(), now())
 }
 
+/// `p` with `Tab` pressed twice: the containers only, the first row
+/// selected (Home), as a user reaches them.
+fn containers_only(mut p: Picker) -> Picker {
+    press(&mut p, KeyCode::Tab);
+    press(&mut p, KeyCode::Tab);
+    assert_eq!(p.filter, Filter::Containers);
+    press(&mut p, KeyCode::Home);
+    p
+}
+
 fn names(p: &Picker) -> Vec<String> {
     p.rows
         .iter()
@@ -338,7 +348,7 @@ fn containers_follow_the_services_with_their_picker_status() {
 
 #[test]
 fn the_containers_filter_shows_only_containers() {
-    let mut p = both().with_filter(Filter::Containers);
+    let mut p = containers_only(both());
     let rows = screen(&drawn(&mut p, 80, 16));
     assert_eq!(rows[0], " ◆ Logs   6 containers · 3 need attention");
     assert!(rows[2].starts_with("  Needs attention (3) ───"), "{rows:?}");
@@ -480,7 +490,7 @@ fn snapshot_services_and_containers_120x40() {
 
 #[test]
 fn snapshot_containers_80x24() {
-    let mut p = both().with_filter(Filter::Containers);
+    let mut p = containers_only(both());
     press(&mut p, KeyCode::Down);
     assert_snapshot!(drawn(&mut p, 80, 24).backend());
 }
@@ -627,25 +637,6 @@ fn tab_cycles_the_kind_filter() {
     assert_eq!(names(&p).len(), 11);
 }
 
-/// `sb docker logs` opens on the containers; `Tab` shows every kind, the
-/// filter cleared.
-#[test]
-fn the_containers_filter_clears_with_tab() {
-    let mut p = picker(&services())
-        .with_containers(&containers(), now())
-        .with_filter(Filter::Containers);
-    let rows = screen(&drawn(&mut p, 80, 8));
-    assert!(
-        rows[3].starts_with("› 0123456789ab"),
-        "the first row: {rows:?}"
-    );
-    let mut p = both().with_filter(Filter::Containers);
-    assert!(!names(&p).contains(&"docker".to_owned()));
-    press(&mut p, KeyCode::Tab);
-    assert!(names(&p).contains(&"docker".to_owned()));
-    assert_eq!(selected(&p).as_deref(), Some("0123456789ab"));
-}
-
 /// `/` opens the filter line; the list narrows as it is typed, ignoring
 /// case; Enter keeps the filter, which the title then shows, and the
 /// footer its Esc; Esc clears it, and a second Esc quits.
@@ -753,8 +744,7 @@ fn an_empty_kind_says_so() {
     press(&mut p, KeyCode::Tab);
     let rows = screen(&drawn(&mut p, 80, 6));
     assert_eq!(rows[2], "No containers found.");
-    let mut p = picker(&services()[..1]).with_filter(Filter::Containers);
-    p.filter = Filter::All;
+    let mut p = picker(&services()[..1]);
     p.query = "zz".into();
     p.lay_out();
     p.query.clear();
@@ -763,25 +753,6 @@ fn an_empty_kind_says_so() {
         rows[2],
         "No matching systemd services or Docker containers found."
     );
-}
-
-/// `sb docker logs` with no service list: the Services section's one
-/// row, skipped by the selection, and no service count in the title.
-#[test]
-fn services_that_couldnt_be_listed_are_the_sections_one_row() {
-    let mut p = picker(&[])
-        .with_no_services("failed to list systemd services:\u{1b}[31m gone\nx")
-        .with_containers(&containers()[1..2], now());
-    let rows = screen(&drawn(&mut p, 80, 10));
-    assert_eq!(rows[0], " ◆ Logs   1 container · all healthy");
-    assert!(rows[2].starts_with("  Services ───"), "{rows:?}");
-    assert_eq!(
-        rows[3],
-        "  Services unavailable: failed to list systemd services: gone"
-    );
-    assert_eq!(selected(&p).as_deref(), Some("authelia"));
-    press(&mut p, KeyCode::Home);
-    assert_eq!(selected(&p).as_deref(), Some("authelia"));
 }
 
 /// The wheel moves the selection; a click selects a source's row, a
@@ -902,8 +873,8 @@ async fn the_services_are_read_again_every_five_seconds() {
     assert!(rows[9].starts_with("↑↓ move"), "{rows:?}");
 }
 
-/// The tick works the statuses out again without a refresh (`sb docker
-/// logs` with no services): times move on. The rows were listed as at
+/// The tick works the statuses out again without a refresh (a picker
+/// built without one): times move on. The rows were listed as at
 /// 2026-11-13, so the tick's now (the clock's) moves every time.
 #[tokio::test(start_paused = true)]
 async fn the_tick_restates_the_times() {
@@ -937,14 +908,12 @@ async fn a_read_that_ended_without_a_result_is_tried_again() {
     );
 }
 
-/// Under the containers filter (`sb docker logs`) the services aren't
-/// shown, so they aren't read again until `Tab` shows them.
+/// Under the containers filter (`Tab` twice) the services aren't shown,
+/// so they aren't read again until `Tab` shows them.
 #[tokio::test(start_paused = true)]
 async fn hidden_services_are_not_read_again() {
     let (list, reads) = lister(vec![Ok(Vec::new()), Ok(Vec::new())]);
-    let mut p = picker(&[])
-        .with_refresh(list, Arc::new(Notify::new()))
-        .with_filter(Filter::Containers);
+    let mut p = containers_only(picker(&[]).with_refresh(list, Arc::new(Notify::new())));
     tokio::time::advance(Duration::from_secs(5)).await;
     p.tick();
     assert_eq!(*reads.lock().expect("count"), 0);
@@ -958,9 +927,7 @@ async fn hidden_services_are_not_read_again() {
 /// matches nothing says so.
 #[test]
 fn a_filter_hides_the_notice_rows() {
-    let mut p = picker(&[])
-        .with_unreachable("down")
-        .with_no_services("gone");
+    let mut p = picker(&[]).with_unreachable("down");
     press(&mut p, KeyCode::Char('/'));
     type_text(&mut p, "x");
     let rows = screen(&drawn(&mut p, 80, 6));
@@ -1065,35 +1032,31 @@ fn a_paste_goes_into_the_filter_line_whole() {
     assert_eq!(names(&p), ["radarr", "radarr"]);
 }
 
-/// Every container gone while the last one is selected, with the
-/// services unavailable: the row at its place is the services' notice,
+/// Every service gone while the last one is selected, with Docker
+/// unreachable: the row at its place is the Containers section's notice,
 /// and nothing above it is a source, so nothing is selected and Enter
 /// chooses nothing.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn nothing_is_selected_when_no_source_is_left() {
-    let (tx, rx) = watch::channel(Snapshot::default());
-    let mut p = picker(&[])
-        .with_no_services("gone")
-        .with_containers(&containers(), now())
-        .with_updates(rx);
+    let (list, _) = lister(vec![Ok(Vec::new())]);
+    let waker = Arc::new(Notify::new());
+    let mut p = picker(&services()[..1])
+        .with_unreachable("down")
+        .with_refresh(list, Arc::clone(&waker));
     press(&mut p, KeyCode::End);
-    assert_eq!(selected(&p).as_deref(), Some("sonarr"));
-    tx.send_replace(Snapshot {
-        rows: Some(Vec::new()),
-        trouble: None,
-    });
+    assert_eq!(selected(&p).as_deref(), Some("saltbox_managed_web"));
+    tokio::time::advance(Duration::from_secs(5)).await;
+    p.tick();
+    waker.notified().await;
     assert_eq!(p.wake(), Flow::Redraw);
     assert_eq!(names(&p), Vec::<String>::new());
-    // What is left: the Services section's notice, unindented as no row
-    // is selected; the empty Containers section is left out.
+    // What is left: the Containers section's notice, unindented as no row
+    // is selected; the empty Services section is left out.
     let rows = screen(&drawn(&mut p, 80, 8));
-    assert_eq!(rows[0], " ◆ Logs   0 containers · all healthy");
-    assert!(rows[2].starts_with("Services ───"), "{rows:?}");
-    assert_eq!(rows[3], "Services unavailable: gone");
-    assert!(
-        !rows.iter().any(|row| row.contains("Containers")),
-        "{rows:?}"
-    );
+    assert_eq!(rows[0], " ◆ Logs   0 services · all healthy");
+    assert!(rows[2].starts_with("Containers ───"), "{rows:?}");
+    assert_eq!(rows[3], "Docker unreachable: down");
+    assert!(!rows.iter().any(|row| row.contains("Services")), "{rows:?}");
     assert_eq!(p.state.selected(), None);
     assert_eq!(press(&mut p, KeyCode::Enter), Flow::Unchanged);
     assert_eq!(p.take_choice(), None);

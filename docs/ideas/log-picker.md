@@ -27,6 +27,8 @@ live while open.
 
 sb-go's split into `sb logs` and `sb docker logs` goes away. The old
 command names can open the same picker pre-filtered to one kind.
+*2026-11-18 (maintainer): `sb docker logs` is removed; `sb logs` is the
+one name (tui spec decision 1).*
 
 ## Key Assumptions to Validate
 

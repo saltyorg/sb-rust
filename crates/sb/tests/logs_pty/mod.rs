@@ -1,5 +1,5 @@
-//! Shared by the logs commands' end-to-end tests (`logs.rs`,
-//! `logs_docker.rs`): a test's world (a stand-in `systemctl`, the journal
+//! Shared by `sb logs`' end-to-end tests (`logs.rs` and its
+//! `logs_containers` module): a test's world (a stand-in `systemctl`, the journal
 //! and run log directories, the Docker daemon), and sb on a PTY of 100×30
 //! (portable-pty), its screen parsed through vt100 as it arrives.
 

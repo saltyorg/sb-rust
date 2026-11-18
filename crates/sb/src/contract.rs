@@ -397,6 +397,11 @@ fn python_env_commands_have_every_sb_go_flag() {
 /// reason (the spec that owns the command).
 const REMOVED: &[(&str, &str)] = &[
     (
+        "command\tsb docker logs\tfalse\tDisplay logs of Docker containers",
+        "sb logs shows Saltbox's services and Docker containers in one picker; sb docker logs is \
+         a parse error with a hint naming sb logs (the maintainer, 2026-11-18; tui decision 1)",
+    ),
+    (
         "flag\tsb announcements\tglobal\tafter\ta\tvalue\tfalse\tPath to the after announcements.yml file",
         "\"new\" is sb update's alone (ops difference 45)",
     ),
@@ -599,13 +604,21 @@ fn sb_takes(path: &str, words: &str) -> &'static str {
 /// (cmd/docker.go): sb's `help` there is sb-go's `ok`.
 const HELP_ALONE: &[&str] = &["sb docker"];
 
-/// Where sb takes positional arguments sb-go's `Args` check takes, but
-/// refuses them, on purpose: (path, counts, reason).
-const ARGS_DIFFER: &[(&str, &[usize], &str)] = &[(
-    "sb docker",
-    &[1, 2, 3],
-    "sb-go's Args takes them and its RunE refuses them, `unknown command`, exit 1; sb's parse error, exit 2 (docker spec, Differences, `sb docker <unknown>`)",
-)];
+/// Where sb refuses positional arguments sb-go's `Args` check takes, on
+/// purpose, or has no such command (a `REMOVED` one): (path, counts,
+/// reason).
+const ARGS_DIFFER: &[(&str, &[usize], &str)] = &[
+    (
+        "sb docker",
+        &[1, 2, 3],
+        "sb-go's Args takes them and its RunE refuses them, `unknown command`, exit 1; sb's parse error, exit 2 (docker spec, Differences, `sb docker <unknown>`)",
+    ),
+    (
+        "sb docker logs",
+        &[0],
+        "removed: `sb docker logs` is a parse error naming `sb logs` (REMOVED; tui decision 1)",
+    ),
+];
 
 /// Every runnable sb-go command takes as many positional arguments in sb
 /// (0 to 3, cobra's check of the fixture's words against clap's parse of

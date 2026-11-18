@@ -1,18 +1,15 @@
-//! `sb docker logs`, and `sb logs`' Containers section, through the built
-//! binary on the fake Engine API (tui spec, Testing Strategy, "End to
-//! end"; `DOCKER_HOST` at the fake, never the host's daemon): the empty,
-//! unreachable and no-terminal cases before the screen; on a PTY, the
-//! picker's containers, a container's log that follows across a restart,
-//! the section reloaded by an event, `q` and Ctrl-C with the terminal
-//! restored, and no log content in the run log.
-
-mod common;
-mod logs_pty;
+//! `sb logs`' Containers section, a module of logs.rs (which has the
+//! services), through the built binary on the fake Engine API (tui spec,
+//! Testing Strategy, "End to end"; `DOCKER_HOST` at the fake, never the
+//! host's daemon): on a PTY, the picker's containers, a container's log
+//! that follows across a restart, the section reloaded by an event, the
+//! kind filter, `q` and Ctrl-C with the terminal restored, and no log
+//! content in the run log. `sb docker logs` is gone (tui decision 1): its
+//! parse error is in docker.rs.
 
 use std::collections::HashMap;
 
-use assert_cmd::prelude::*;
-use logs_pty::{Pty, World};
+use crate::logs_pty::{self, Pty, World};
 use sb_docker::testing::{FakeEngine, FakeEntry, FakeLog, Options, container_event};
 use serde_json::{Value, json};
 
@@ -60,72 +57,15 @@ fn world(engine: &FakeEngine) -> World {
     World::new("[]", "[]").on_docker(engine.host())
 }
 
-/// sb-go's short text stays (the command contract); the long one
-/// describes the picker (tui spec, "Help texts").
-#[test]
-fn help_is_pinned() {
-    let help = common::sb()
-        .args(["docker", "logs", "--help", "--color=never"])
-        .assert()
-        .success();
-    insta::assert_snapshot!(
-        "docker_logs_help",
-        String::from_utf8_lossy(&help.get_output().stdout)
-    );
-    common::sb().args(["docker", "logs", "x"]).assert().code(2);
-}
-
-/// No containers: the message, exit 0, before any screen.
-#[test]
-fn no_containers_print_the_message_and_exit_0() {
-    let engine = FakeEngine::start(Options {
-        inspects: Vec::new(),
-        ..Options::default()
-    })
-    .expect("the fake Engine API");
-    let out = world(&engine).piped(&["docker", "logs"]);
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "No containers found.\n"
-    );
-    assert!(out.status.success(), "{out:?}");
-}
-
-/// No daemon: the error block, exit 1, as `sb docker ps`.
-#[test]
-fn an_unreachable_daemon_is_an_error() {
-    let world = World::new("[]", "[]");
-    let out = world.piped(&["docker", "logs"]);
-    assert_eq!(out.status.code(), Some(1), "{out:?}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("couldn't reach Docker at"), "{stderr}");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
-}
-
-/// Containers but no terminal at all (no `/dev/tty`, stdout a pipe): the
-/// error, exit 1, nothing on stdout.
-#[test]
-fn no_terminal_is_an_error_with_nothing_on_stdout() {
-    let engine = engine();
-    let out = world(&engine).without_terminal(&["docker", "logs"]);
-    assert_eq!(out.status.code(), Some(1), "{out:?}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("sb docker logs needs a terminal to choose a log"),
-        "{stderr}"
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
-}
-
-/// The picker lists the containers only; Enter opens one's log, which
-/// follows across a restart; Esc goes back to a picker an event has
-/// reloaded; `q` exits 0 with the terminal restored; the run log has the
-/// source and none of its content.
+/// With no services the picker lists the containers only; Enter opens
+/// one's log, which follows across a restart; Esc goes back to a picker
+/// an event has reloaded; `q` exits 0 with the terminal restored; the run
+/// log has the source and none of its content.
 #[test]
 fn a_containers_log_follows_across_a_restart() {
     let engine = engine();
     let world = world(&engine);
-    let mut pty = Pty::spawn(&["docker", "logs"], world.envs());
+    let mut pty = Pty::spawn(&["logs"], world.envs());
     assert!(pty.showing("Containers (2)"), "{}", pty.contents());
     let screen = pty.contents();
     assert!(screen.contains("› cache"), "{screen}");
@@ -199,7 +139,7 @@ fn a_containers_log_follows_across_a_restart() {
 fn ctrl_c_exits_130_with_the_terminal_restored() {
     let engine = engine();
     let world = world(&engine);
-    let mut pty = Pty::spawn(&["docker", "logs"], world.envs());
+    let mut pty = Pty::spawn(&["logs"], world.envs());
     assert!(pty.showing("Containers (2)"), "{}", pty.contents());
     pty.send(b"j\r");
     assert!(pty.showing("web ready"), "{}", pty.contents());
@@ -207,31 +147,6 @@ fn ctrl_c_exits_130_with_the_terminal_restored() {
     let status = pty.exit();
     assert_eq!(status.exit_code(), 130, "{}", pty.contents());
     pty.assert_restored();
-}
-
-/// `sb docker logs` raises the soft `RLIMIT_NOFILE` too, as `sb logs`.
-#[test]
-fn the_open_files_limit_is_raised() {
-    let engine = engine();
-    let world = world(&engine);
-    let mut pty = Pty::spawn_shell(
-        r#"ulimit -Sn 1024 && exec "$0" docker logs"#,
-        &[],
-        world.envs(),
-    );
-    assert!(pty.showing("Containers (2)"), "{}", pty.contents());
-    let (soft, hard) = pty.open_files_limit();
-    assert_eq!(
-        soft,
-        Some(logs_pty::raised_open_files(hard)),
-        "hard {hard:?}"
-    );
-    // Raised from the shell's 1024, where the hard limit allows it.
-    if hard.is_none_or(|hard| hard > 1024) {
-        assert_ne!(soft, Some(1024));
-    }
-    pty.send(b"q");
-    assert!(pty.exit().success());
 }
 
 /// `sb logs` lists both kinds, services first, and opens a container's
@@ -259,43 +174,44 @@ fn sb_logs_lists_services_and_containers() {
     pty.assert_restored();
 }
 
-/// `sb docker logs` opens on the containers; `Tab` clears the filter, so
-/// the services show too (tui spec, "Entry points").
+/// `Tab` shows the services only, then the containers only (tui spec,
+/// "Entry points").
 #[test]
-fn tab_shows_the_services_too() {
+fn tab_shows_one_kind_at_a_time() {
     let units = r#"[{"unit":"docker.service","load":"loaded","active":"active","sub":"running","description":"Docker"}]"#;
     let files = r#"[{"unit_file":"docker.service","state":"enabled","vendor_preset":null}]"#;
     let engine = engine();
     let world = World::new(units, files).on_docker(engine.host());
-    let mut pty = Pty::spawn(&["docker", "logs"], world.envs());
+    let mut pty = Pty::spawn(&["logs"], world.envs());
     assert!(pty.showing("Containers (2)"), "{}", pty.contents());
-    assert!(!pty.contents().contains("Services"), "{}", pty.contents());
-    pty.send(b"\t");
-    assert!(pty.showing("Services (1)"), "{}", pty.contents());
     assert!(
-        pty.contents().contains("1 service · 2 containers"),
+        pty.contents().contains("Services (1)"),
+        "{}",
+        pty.contents()
+    );
+    pty.send(b"\t");
+    assert!(pty.showing("1 service · all healthy"), "{}", pty.contents());
+    assert!(
+        pty.contents().contains("Services (1)"),
+        "{}",
+        pty.contents()
+    );
+    assert!(
+        !pty.contents().contains("Containers ("),
+        "{}",
+        pty.contents()
+    );
+    pty.send(b"\t");
+    assert!(pty.showing("Containers (2)"), "{}", pty.contents());
+    assert!(!pty.contents().contains("Services ("), "{}", pty.contents());
+    assert!(
+        !pty.contents().contains("1 service ·"),
         "{}",
         pty.contents()
     );
     pty.send(b"q");
     assert!(pty.exit().success());
     pty.assert_restored();
-}
-
-/// A service list that fails doesn't end `sb docker logs`: the Services
-/// section, after `Tab`, is the one row saying why.
-#[test]
-fn a_failing_service_list_is_the_services_row() {
-    let engine = engine();
-    let world = World::with_script("echo 'systemd is down' >&2\nexit 3\n").on_docker(engine.host());
-    let mut pty = Pty::spawn(&["docker", "logs"], world.envs());
-    assert!(pty.showing("Containers (2)"), "{}", pty.contents());
-    pty.send(b"\t");
-    assert!(pty.showing("Services unavailable: "), "{}", pty.contents());
-    pty.send(b"q");
-    assert!(pty.exit().success());
-    let log = world.log();
-    assert!(log.contains("services unavailable"), "{log}");
 }
 
 /// Piped stdout: the picker on the terminal, then the container's log on
@@ -308,7 +224,7 @@ fn piped_stdout_streams_a_containers_log_across_a_restart() {
     let out = world.dir.path().join("out.txt");
     let err = world.dir.path().join("err.txt");
     let args = [out.display().to_string(), err.display().to_string()];
-    let script = r#"exec "$0" docker logs > "$1" 2> "$2""#;
+    let script = r#"exec "$0" logs > "$1" 2> "$2""#;
     let mut pty = Pty::spawn_shell(script, &[&args[0], &args[1]], world.envs());
     assert!(pty.showing("Containers (2)"), "{}", pty.contents());
     pty.send(b"j\r");

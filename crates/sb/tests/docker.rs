@@ -49,6 +49,40 @@ fn a_missing_or_unknown_subcommand_is_a_parse_error() {
     }
 }
 
+/// `sb docker logs` is gone (the maintainer, 2026-11-18; tui decision 1):
+/// clap's unknown-subcommand error, exit 2, with a hint naming `sb logs`,
+/// with or without an argument or `--help` after it.
+#[test]
+fn docker_logs_is_gone_and_names_sb_logs() {
+    for args in [
+        &["docker", "logs"][..],
+        &["docker", "logs", "--help"],
+        &["docker", "logs", "plex"],
+    ] {
+        let out = common::sb().args(args).output().expect("run sb");
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("unrecognized subcommand 'logs'"),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(
+                "\n  hint: for container logs, use 'sb logs': it shows Saltbox's services \
+                 and Docker containers\n"
+            ),
+            "{args:?}: {stderr}"
+        );
+        assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
+    }
+    let help = common::sb()
+        .args(["docker", "--help", "--color=never"])
+        .output()
+        .expect("run sb");
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(!text.contains("logs"), "{text}");
+}
+
 /// The help texts: sb-go's short and long ones.
 #[test]
 fn help_texts_are_sb_gos() {

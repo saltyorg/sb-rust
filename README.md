@@ -75,7 +75,7 @@ The main ones:
 | `sb edit <file>` | Edit a config file (`accounts` or `accounts.yml`), then validate it |
 | `sb fact` | Browse and edit the saltbox facts |
 | `sb motd` | The status screen: system, media servers, downloaders, certificates |
-| `sb logs`, `sb docker logs` | Browse service and container logs, live, with search |
+| `sb logs` | Browse service and container logs, live, with search |
 | `sb docker ps`, `start`, `stop`, `restart` | List and control Saltbox's containers |
 | `sb announcements` | Saltbox's and Sandbox's news |
 | `sb bench` | A system and network benchmark |

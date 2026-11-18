@@ -32,7 +32,8 @@ so the boundaries are right, and are built later (see Scope).
    loopback address sb-go's `layout.DockerControllerAPIURL` names (a job,
    then polling `job_status/<id>` every 5 s, at most 60 times; 10 s HTTP
    timeout, 1 MiB response cap). `logs` streams through bollard into the
-   tui log viewer. The capability map's `docker` row is corrected
+   tui log viewer (`sb logs`; sb-go's `sb docker logs` is removed, tui
+   decision 1, amended 2026-11-18). The capability map's `docker` row is corrected
    accordingly (term-ui decision 6), below.
 
 ## Objective
@@ -239,6 +240,13 @@ logging levels end to end.
   `unknown command`, exit 1), as for every sb command; `sb docker` with
   only a global flag is a missing-subcommand error, exit 2 (sb-go: help,
   exit 0).
+- **`sb docker logs` is gone** (the maintainer, 2026-11-18; tui decision
+  1): `sb logs` shows Saltbox's systemd services and Docker containers in
+  one picker. `sb docker logs` is clap's unknown-subcommand error, exit
+  2, with the hint `for container logs, use 'sb logs': it shows
+  Saltbox's services and Docker containers`. `sb docker` keeps `ps`,
+  `start`, `stop` and `restart`; the contract test lists the command in
+  `REMOVED`.
 
 ### Scope
 

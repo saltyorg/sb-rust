@@ -39,6 +39,9 @@ completion files call a command sb doesn't have.
 - **`-v`/`--verbose`** is accepted on the commands that had it and ignored,
   with a note: the run log has the detail now. `install` keeps `-v` to
   `-vvvv`, which it passes to Ansible.
+- **`sb docker logs` is gone** (exit 2): use `sb logs`, which shows
+  Saltbox's services and Docker containers in one picker (`Tab` twice
+  shows the containers alone). The error names it too.
 - **`sb announcements`' `-b`, `-a` and `-r` are gone** (exit 2).
 - **`sb branch` switches without asking.**
 - **`sb edit` exits 1** when the file you edited has issues.
@@ -89,8 +92,8 @@ completion files call a command sb doesn't have.
 - **arm64 binaries** are published, for when Saltbox supports arm64. The
   install script and Saltbox are x86_64 only until then.
 - **The run log** at `/var/log/sb/sb.log`.
-- **A log viewer** for `sb logs` and `sb docker logs`: a live picker,
-  search, wrap, mouse support and saving to a file.
+- **A log viewer** for `sb logs`, services and containers together: a
+  live picker, search, wrap, mouse support and saving to a file.
 - **Editors:** `sb edit` validates after editing, and `sb fact` masks
   credentials, with Show and Copy.
 - **motd** gains a Certificates line (with `--traefik`) and a safer

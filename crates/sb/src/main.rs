@@ -477,14 +477,11 @@ impl EditCommand {
     }
 }
 
-/// `sb docker`'s subcommands (docker spec; `logs`, the tui spec).
+/// `sb docker`'s subcommands (docker spec). sb-go's `logs` is gone:
+/// `sb logs` shows the containers too (the maintainer, 2026-11-18; tui
+/// decision 1), and `hinted` names it.
 #[derive(Subcommand)]
 enum DockerCommand {
-    /// Display logs of Docker containers
-    #[command(
-        long_about = "Shows Saltbox's systemd services and Docker containers, and the log of the one you choose, starting with the Docker containers."
-    )]
-    Logs,
     /// List Docker containers with port mappings
     #[command(
         long_about = "List all Docker containers and their status, displaying their internal\nports (as potentially exposed by Traefik labels) and their external port bindings."
@@ -523,7 +520,6 @@ impl Command {
         match self {
             Command::Version { .. } => "version",
             Command::Docker { command } => match command {
-                DockerCommand::Logs => "docker logs",
                 DockerCommand::Ps { .. } => "docker ps",
                 DockerCommand::Start => "docker start",
                 DockerCommand::Stop { .. } => "docker stop",
@@ -995,17 +991,21 @@ fn parse_error(err: clap::Error) -> ! {
     std::process::exit(code)
 }
 
-/// `err` with a hint for two mistakes clap can't explain, as one of its
+/// `err` with a hint for three mistakes clap can't explain, as one of its
 /// own tips (`ContextKind::Suggested`, which clap renders as `tip:` and
 /// the error block as `hint:`;
 /// <https://docs.rs/clap/4.6.7/clap/error/enum.ContextKind.html#variant.Suggested>),
-/// after any tip clap gave: `sb install` with no tags names `sb list`, and
-/// a name given to `sb docker restart|stop|start`, which act on every
-/// Saltbox container, names Docker's own command for one. A typo's
-/// suggested subcommands (`ContextKind::SuggestedSubcommand`) are named
-/// once each, by the command an alias opens: clap suggests hidden aliases
-/// too (`Command::all_subcommand_names`), so `sb edit acounts` would
-/// offer `accounts.yml` beside `accounts`. `args` is the command line.
+/// after any tip clap gave: `sb install` with no tags names `sb list`, a
+/// name given to `sb docker restart|stop|start`, which act on every
+/// Saltbox container, names Docker's own command for one, and sb-go's
+/// `sb docker logs`, which sb doesn't have, names `sb logs` (tui decision
+/// 1; the word typed is clap's `ContextKind::InvalidSubcommand`,
+/// <https://docs.rs/clap/4.6.7/clap/error/enum.ContextKind.html#variant.InvalidSubcommand>).
+/// A typo's suggested subcommands (`ContextKind::SuggestedSubcommand`) are
+/// named once each, by the command an alias opens: clap suggests hidden
+/// aliases too (`Command::all_subcommand_names`), so `sb edit acounts`
+/// would offer `accounts.yml` beside `accounts`. `args` is the command
+/// line.
 fn hinted(mut err: clap::Error, args: &[String]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     let path = command_path(args);
@@ -1017,7 +1017,10 @@ fn hinted(mut err: clap::Error, args: &[String]) -> clap::Error {
         );
     }
     let path: Vec<&str> = path.iter().map(String::as_str).collect();
-    let typed = match err.get(ContextKind::InvalidArg) {
+    let typed = match err
+        .get(ContextKind::InvalidArg)
+        .or_else(|| err.get(ContextKind::InvalidSubcommand))
+    {
         Some(ContextValue::String(value)) => Some(value.clone()),
         _ => None,
     };
@@ -1033,6 +1036,11 @@ fn hinted(mut err: clap::Error, args: &[String]) -> clap::Error {
             "sb docker {action} acts on every Saltbox container; for one container, use \
                  'docker {action} {name}'"
         )),
+        (["docker"], ErrorKind::InvalidSubcommand, Some(name)) if name == "logs" => Some(
+            "for container logs, use 'sb logs': it shows Saltbox's services and Docker \
+             containers"
+                .to_string(),
+        ),
         _ => None,
     };
     if let Some(hint) = hint {
@@ -1181,9 +1189,6 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             self_update::self_update(yes, force_update, channel, shutdown, log)?;
         }
         Command::Logs => logs::logs(shutdown)?,
-        Command::Docker {
-            command: DockerCommand::Logs,
-        } => docker_logs::docker_logs(shutdown)?,
         Command::Diag => ansible::diag(shutdown)?,
         Command::Install(ref args) => ansible::install(args, shutdown, log)?,
         Command::List(ref args) => ansible::list(args, shutdown, log)?,
@@ -1298,7 +1303,7 @@ fn docker_control(
 /// signal, and nothing reaches stdout.
 fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
     use sb_docker::connect;
-    let address = docker_logs::address()?;
+    let address = docker::address()?;
     let listing = block_on(shutdown.token().run_until_cancelled(async {
         let daemon = connect::connect(&address).await?;
         connect::list(&daemon).await
@@ -1457,7 +1462,7 @@ mod ansible;
 mod bench;
 mod branch;
 mod completion;
-mod docker_logs;
+mod docker;
 mod edit;
 mod fact;
 mod gha;
@@ -1673,9 +1678,9 @@ mod tests {
         }
     }
 
-    /// `sb install` with no tags, and `sb docker restart|stop|start` given a
-    /// name, get a hint naming the next command; other errors keep
-    /// clap's own lines.
+    /// `sb install` with no tags, `sb docker restart|stop|start` given a
+    /// name, and sb-go's `sb docker logs` get a hint naming the next
+    /// command; other errors keep clap's own lines.
     #[test]
     fn context_hints_name_the_next_command() {
         let block = |args: &[&str]| {
@@ -1704,6 +1709,20 @@ mod tests {
         }
         let flag = block(&["sb", "docker", "restart", "--bogus"]);
         assert!(!flag.contains("Saltbox container"), "{flag}");
+        // `sb docker logs` is gone (tui decision 1): `sb logs` shows both.
+        let sb_logs = "\n  hint: for container logs, use 'sb logs': it shows Saltbox's services \
+                       and Docker containers\n";
+        for args in [
+            &["sb", "docker", "logs"][..],
+            &["sb", "--color=never", "docker", "logs", "--help"],
+        ] {
+            let gone = block(args);
+            assert!(gone.contains(sb_logs), "{args:?}: {gone}");
+        }
+        let unknown = block(&["sb", "docker", "nope"]);
+        assert!(!unknown.contains("sb logs"), "{unknown}");
+        let elsewhere = block(&["sb", "logs", "logs"]);
+        assert!(!elsewhere.contains("hint:"), "{elsewhere}");
         let other = block(&["sb", "version", "plex"]);
         assert!(!other.contains("hint:"), "{other}");
         let docker = block(&["sb", "docker", "ps", "plex"]);
@@ -1881,7 +1900,6 @@ mod tests {
             &["list"],
             &["logs"],
             &["docker", "ps"],
-            &["docker", "logs"],
             &["docker", "start"],
             &["docker", "stop"],
             &["docker", "restart"],

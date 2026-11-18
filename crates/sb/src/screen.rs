@@ -1,6 +1,6 @@
 //! What sb's full-screen commands share around sb-tui's screens (`sb
-//! logs`, `sb docker logs`, `sb edit`'s picker, `sb fact`): the theme they
-//! draw with and the run's result once a screen has closed.
+//! logs`, `sb edit`'s picker, `sb fact`): the theme they draw with and the
+//! run's result once a screen has closed.
 
 use sb_cli_core::exit::Exit;
 use sb_cli_core::theme;

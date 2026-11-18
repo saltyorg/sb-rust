@@ -152,7 +152,9 @@ and no `--version` flag (`version` is a command). Deliberate extensions:
 help (sb-go removes its help command; maintainer, 2026-10-30, Checkpoint
 C); and `sb docker ps --json` (maintainer, 2026-11-03, docker spec
 decision 2). A test compares the tree with sb-go's command
-list (walked before clap adds `help`).
+list (walked before clap adds `help`). One deliberate removal: `sb docker
+logs` (the maintainer, 2026-11-18; tui decision 1), whose containers `sb
+logs` shows; the test's `REMOVED` lists it with that reason.
 
 Further deliberate extensions (ops spec): `sb restore --user` and
 `--password-file`, `sb setup`'s hidden `--verbose`, and `sb bench`'s help
@@ -236,7 +238,7 @@ run one at a time. Each command decides in an exhaustive match
   `announcements preview --run-migrations`, which runs the migrations
   as `update` does (ops decision 34).
 - **Never takes it:** the rest. `motd`, `list`, `logs`, `docker ps`,
-  `docker logs`, `validate-config`, `announcements` (its `preview`
+  `validate-config`, `announcements` (its `preview`
   without `--run-migrations`, and `check`), `edit`, `fact`,
   `bench`, `completion` and `version` only read or are interactive;
   `motd` must never wait (pam_motd runs it at login). `diag` is left
@@ -452,11 +454,14 @@ mean 'x'?", several names the best guess first, where clap lists it
 last) and its context lines (possible values in green), with no
 pointer to help, as sb-go. Each line wraps at words to stderr's width
 (the help's rule, for stderr's terminal), its later rows under its
-two-space indent. Two mistakes get a hint of sb's own, as one of
+two-space indent. Three mistakes get a hint of sb's own, as one of
 clap's tips: `sb install` with no tags (`to see the tags, use 'sb
-list'`), and a name given to `sb docker restart|stop|start`, which act
+list'`), a name given to `sb docker restart|stop|start`, which act
 on every Saltbox container (`... for one container, use 'docker
-restart <name>'`). They go to stderr and exit 2, the usage-error
+restart <name>'`), and sb-go's `sb docker logs`, removed (tui decision 1,
+amended 2026-11-18), which gets `for container logs, use 'sb logs': it shows
+Saltbox's services and Docker containers` after clap's
+unknown-subcommand message. They go to stderr and exit 2, the usage-error
 convention (sb-go exits 1; a deliberate difference). Run errors keep sb's
 `✗` block. `-v` on a command sb-go gave it is no parse error (the
 maintainer, 2026-11-18; above); on one sb-go didn't, it still is.

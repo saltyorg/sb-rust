@@ -24,7 +24,7 @@ use sb_cli_core::theme;
 use sb_host::journal::{self, Journal, Source};
 use sb_host::systemd::{Service, Systemd, default_filters};
 
-use crate::{block_on, docker_logs, screen, set_override};
+use crate::{block_on, docker, screen, set_override};
 
 /// sb-go's message for an empty list, extended to both kinds (tui spec,
 /// "First load before the screen").
@@ -57,9 +57,9 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
     }
     // An unreachable daemon isn't an error here: the Containers section
     // says so (tui spec, "First load before the screen").
-    let listed = match docker_logs::address() {
+    let listed = match docker::address() {
         Ok(address) => token
-            .run_until_cancelled(docker_logs::containers(&address))
+            .run_until_cancelled(docker::containers(&address))
             .await
             .ok_or_else(|| anyhow::anyhow!("interrupted"))?,
         Err(err) => Err(err),
@@ -79,21 +79,14 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
         out.flush().map_err(exit::output_error)?;
         return Ok(());
     }
-    let terminal = terminal(NO_TERMINAL)?;
+    let terminal = terminal()?;
     let services = with_journal(services).await?;
-    show(
-        shutdown,
-        terminal,
-        Ok(services),
-        docker,
-        sb_tui::Filter::All,
-    )
-    .await
+    show(shutdown, terminal, services, docker).await
 }
 
 /// Where the picker draws.
 #[derive(Debug)]
-pub enum Terminal {
+enum Terminal {
     /// stdout is the terminal: the screens.
     Screen,
     /// stdout isn't: the picker on this tty, then the log on stdout.
@@ -106,9 +99,9 @@ pub enum Terminal {
 ///
 /// # Errors
 ///
-/// `no_terminal` when stdout isn't a terminal and there is no `/dev/tty`
-/// (no controlling terminal); the cause goes to the run log.
-pub fn terminal(no_terminal: &'static str) -> anyhow::Result<Terminal> {
+/// [`NO_TERMINAL`] when stdout isn't a terminal and there is no
+/// `/dev/tty` (no controlling terminal); the cause goes to the run log.
+fn terminal() -> anyhow::Result<Terminal> {
     if std::io::stdout().is_terminal() {
         return Ok(Terminal::Screen);
     }
@@ -116,30 +109,28 @@ pub fn terminal(no_terminal: &'static str) -> anyhow::Result<Terminal> {
         Ok(tty) => Ok(Terminal::Tty(tty)),
         Err(err) => {
             tracing::info!(error = %err, "no terminal: /dev/tty not opened");
-            anyhow::bail!(no_terminal)
+            anyhow::bail!(NO_TERMINAL)
         }
     }
 }
 
-/// The logs commands' screens on `terminal`, then the run's result
-/// ([`ended`]).
+/// The screens on `terminal`, then the run's result
+/// (`screen::ended`).
 ///
 /// # Errors
 ///
 /// A screen that fails, a write to stdout that fails (a broken pipe is
 /// cli-core's quiet 141), a follow the stream can't start; `Exit(130)`
 /// after Ctrl-C on a screen.
-pub async fn show(
+async fn show(
     shutdown: &Shutdown,
     terminal: Terminal,
-    services: Result<sb_tui::Services, String>,
+    services: sb_tui::Services,
     docker: sb_tui::Docker,
-    filter: sb_tui::Filter,
 ) -> anyhow::Result<()> {
     let logs = |theme| sb_tui::Logs {
         services,
         docker,
-        filter,
         theme,
         zone: sb_tui::line::local_zone(),
         save_dir: log::log_dir(std::env::var_os("SB_LOG_DIR")),
@@ -168,7 +159,7 @@ pub async fn show(
 /// # Errors
 ///
 /// An unknown release, or a journal that can't be opened.
-pub async fn with_journal(list: Vec<Service>) -> anyhow::Result<sb_tui::Services> {
+async fn with_journal(list: Vec<Service>) -> anyhow::Result<sb_tui::Services> {
     let release = sb_host::ubuntu_release()?;
     let source = journal_source(set_override(std::env::var_os("SB_JOURNAL_DIR")));
     // The run's span goes along to each thread (cli-core's `spawn`).

@@ -9,6 +9,7 @@
 //! canonical mode with echo), and no log content in the run log.
 
 mod common;
+mod logs_containers;
 mod logs_pty;
 
 use std::path::Path;

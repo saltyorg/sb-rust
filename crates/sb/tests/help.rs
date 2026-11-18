@@ -88,7 +88,7 @@ fn help_starts_with_one_blank_line() {
         &["install", "--help"],
         &["install", "-h"],
         &["docker", "--help"],
-        &["docker", "logs", "--help"],
+        &["docker", "ps", "--help"],
         &["reinstall-python", "--help"],
     ] {
         let out = sb().args(args).assert().success();
@@ -151,7 +151,7 @@ fn no_short_help_wraps_at_120_columns() {
         seen.push(args.join(" "));
     }
     // The walk reaches the nested commands, not only the root's.
-    for nested in ["docker logs", "docker ps", "edit", "reinstall-python"] {
+    for nested in ["docker ps", "docker stop", "edit", "reinstall-python"] {
         assert!(seen.iter().any(|p| p == nested), "{nested}: {seen:?}");
     }
     assert!(

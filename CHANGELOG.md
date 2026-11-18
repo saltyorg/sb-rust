@@ -24,9 +24,9 @@ you could trip over.
 - **A run log,** `/var/log/sb/sb.log`, for every root run, with a run id in
   each record and a pointer to it when a command fails (not under a
   failed playbook, whose own output on the screen says why).
-- **A new log viewer** for `sb logs` and `sb docker logs`: one live picker
-  for services and containers, search, wrap, mouse support, and saving
-  the view to a file.
+- **A new log viewer** for `sb logs`: one live picker for services and
+  containers, search, wrap, mouse support, and saving the view to a
+  file.
 - **`sb fact`'s editor** masks credentials, with Show and Copy (clipboard
   through OSC 52).
 - **`sb edit` validates the file you edited** and offers to edit it again.
@@ -81,6 +81,8 @@ you could trip over.
 
 ### Removed
 
+- **`sb docker logs`.** `sb logs` shows Saltbox's services and Docker
+  containers in one picker; `sb docker logs` is an error that names it.
 - **`sb announcements`' `-b`, `-a` and `-r`.**
 - **`DOCKER_HOST` with TLS or ssh,** and `DOCKER_API_VERSION`.
 

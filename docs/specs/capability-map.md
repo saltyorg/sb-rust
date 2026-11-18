@@ -293,7 +293,7 @@ of `--help`.
 | `docker start` | Starts Saltbox's containers through the Docker controller | docker | built | `-v` dropped (docker decision 6) |
 | `docker stop` (`--ignore`) | Stops them | docker | built | as above |
 | `docker restart` (`--ignore`) | Restarts them | docker | built | as above |
-| `docker logs` | Shows container logs | tui, docker | built (module build M69; the unified picker, M70) | one picker for docker and journal logs (journal spec decision 8; idea: [log-picker](../ideas/log-picker.md)). *Amended 2026-11-13 by the tui spec.* |
+| `docker logs` | Shows container logs | tui, docker | removed (the maintainer, 2026-11-18): `sb logs` shows the containers | one picker for docker and journal logs (journal spec decision 8; idea: [log-picker](../ideas/log-picker.md)); built as `sb logs` filtered to containers (M69, M70), then removed: `sb docker logs` is a parse error with a hint naming `sb logs` (tui spec decision 1). *Amended 2026-11-13 by the tui spec; 2026-11-18.* |
 | `logs` | Shows logs of Saltbox's systemd services | tui, host, journal | built: services (module build M68), containers (M69), the unified picker's filters (M70) and the inline fallback (M72) | as above; sb-journal and sb-host's follow are built. *Amended 2026-11-13 by the tui spec.* |
 | `fact` | Browses and edits saltbox facts interactively | tui | built (module build M54-M56: the page, changes and saving, the mouse and the menu); the manual two-emulator check waits for the maintainer | edits `<appdata>/saltbox/<role>.ini`, not `saltbox.fact`; the role lock only at Save (tui spec decision 38; idea: [fact-editor](../ideas/fact-editor.md)). *Amended 2026-11-13 by the tui spec.* |
 | `edit <file>` | Opens one config file in an editor: `accounts`, `adv_settings`, `backup_config`, `hetzner_vlan`, `settings`, `inventory` | tui (edit picker) | built (module build M49, M50; the picker of bare `sb edit`, M53) | validates the file after the editor exits (tui spec). *Amended 2026-11-13 by the tui spec.* |
@@ -319,7 +319,8 @@ of `--help`.
 
 29 rows: every command sb-go registers, with `docker` and `completion`
 listed by their subcommands. On 2026-11-18 (Checkpoint Z), all 29 are
-built.
+built; later that day the maintainer removed `docker logs`, whose
+containers `sb logs` shows, so sb has 28 of them.
 
 ## Upstream note (for the maintainer to raise; no consumer changes here)
 

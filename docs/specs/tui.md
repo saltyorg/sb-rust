@@ -6,16 +6,18 @@ task.
 
 Module of the approved capability map (`tui`, build step 6): sb's
 full-screen screens, above `docker`, `host` and `config`. This spec covers
-the module's first part, the log picker and viewer behind `sb logs` and
-`sb docker logs`: one picker for Saltbox's systemd services and Docker
-containers, one viewer for both, and the inline fallback when stdout
-isn't a terminal. It is the first consumer of `sb-journal` (journal spec,
+the module's first part, the log picker and viewer behind `sb logs`: one
+picker for Saltbox's systemd services and Docker containers, one viewer
+for both, and the inline fallback when stdout isn't a terminal. It is the first consumer of `sb-journal` (journal spec,
 decision 8) and of sb-host's service list (host decision 1), and the
 first screen in sb's binary, so it brings ratatui and crossterm in. The
 editors (`sb edit`, `sb fact`) are the second part of this spec
 ("Editors: `sb edit` and `sb fact`", with its own plan); the
 announcement viewer is the third ("The announcement viewer", written
-2026-11-15 from proto-markdown's reviewed design).
+2026-11-15 from proto-markdown's reviewed design). *Amended 2026-11-18
+(maintainer): `sb docker logs` is removed; `sb logs` is the one entry
+point (decision 1).* It was built as the picker filtered to containers
+(M69, M70); the text below describes `sb logs` alone.
 
 The behaviour comes from sb-go 35a7acc (2026-10-28), `cmd/logs.go`,
 `cmd/dockerLogs.go` and `host/systemd.go`, redesigned as capability map
@@ -24,11 +26,12 @@ decision 3 asks, from proto-logs (reviewed 2026-10-29) and
 
 ## Assumptions
 
-1. **Both commands keep their names and take no arguments** (capability
-   map decision 1; sb-go `cobra.NoArgs`, logs.go:27-37,
-   dockerLogs.go:27-37). No source is named on the command line (journal
-   decision 8; log-picker.md, "Not Doing").
-2. **Both need root,** as every command but `version`, help and
+1. **`sb logs` keeps its name and takes no arguments** (capability map
+   decision 1; sb-go `cobra.NoArgs`, logs.go:27-37). No source is named
+   on the command line (journal decision 8; log-picker.md, "Not Doing").
+   *Amended 2026-11-18:* sb-go's `sb docker logs` (dockerLogs.go) is
+   removed, its containers shown by `sb logs` (decision 1).
+2. **`sb logs` needs root,** as every command but `version`, help and
    completion (cli-core decision 3). Journal files and the Docker socket
    are root's.
 3. **The journal side is sb-host's journal API** (`page`, `drain`,
@@ -58,24 +61,24 @@ what is broken, and can hand complete, plain text to a support request,
 which Saltbox's support page asks for (saltyorg/docs
 docs/community/support.md:34) and sb-go's screens can't give.
 
-### The picker (`sb logs`, `sb docker logs`)
+### The picker (`sb logs`)
 
 - **Entry points** (decided.md A-Q1): `sb logs` opens the picker on every
-  kind. `sb docker logs` opens it filtered to containers. `Tab` cycles the
-  kind filter (all, services, containers), so either filter can be
-  cleared.
+  kind. `Tab` cycles the kind filter (all, services, containers).
+  *Amended 2026-11-18 (maintainer):* sb-go's `sb docker logs`, which
+  opened the picker filtered to containers, is removed (decision 1).
+  `sb docker logs` is clap's unknown-subcommand error, exit 2, with the
+  hint `for container logs, use 'sb logs': it shows Saltbox's services
+  and Docker containers` (cli-core spec, "Help and parse errors").
 - **First load before the screen.** The service list and the container
   list load before the alternate screen opens (proto-logs measured about
   20 ms on a real install). Then:
   - `sb logs` with no services and no containers prints `No matching
     systemd services or Docker containers found.` and exits 0 (sb-go's
     message, extended to both kinds; logs.go:1089-1091).
-  - `sb docker logs` with no containers prints `No containers found.`
-    and exits 0 (sb-go: `No running containers found.`).
   - A failed service list ends `sb logs` with host's `failed to list
     systemd services: <cause>` in cli-core's error block, exit 1.
-  - An unreachable Docker daemon ends `sb docker logs` as `sb docker ps`
-    does (docker spec, "Errors"), exit 1. `sb logs` opens without
+  - An unreachable Docker daemon doesn't end `sb logs`: it opens without
     containers, with the Containers section showing one notice row:
     `Docker unreachable: <cause>`.
 - **Sections** (log-picker.md; proto-logs), in this order, each with its
@@ -353,21 +356,23 @@ docs/community/support.md:34) and sb-go's screens can't give.
 
 ### Help texts
 
-`sb logs` and `sb docker logs` keep sb-go's short texts, so the command
-contract test passes unchanged ("Display logs of managed systemd
-services"; "Display logs of Docker containers"). The long texts describe
-the picker: `Shows Saltbox's systemd services and Docker containers, and
-the log of the one you choose.` (`sb docker logs`: `... starting with
-the Docker containers.`). A snapshot test pins them.
+`sb logs` keeps sb-go's short text, so the command contract test passes
+unchanged ("Display logs of managed systemd services"). The long text
+describes the picker: `Shows Saltbox's systemd services and Docker
+containers, and the log of the one you choose.` A snapshot test pins
+it. (`sb docker logs`, removed 2026-11-18, kept sb-go's "Display logs of
+Docker containers"; the contract test lists it as removed.)
 
 ### Differences from sb-go (the complete list)
 
-1. **One picker for both kinds:** `sb logs` lists containers too, and
-   `sb docker logs` opens the same picker filtered to containers, a
-   filter the user can clear (decided.md A-Q1).
+1. **One picker for both kinds:** `sb logs` lists containers too
+   (decided.md A-Q1). *Amended 2026-11-18 (maintainer):* `sb docker
+   logs` is gone (decision 1): `sb docker logs` is a parse error, exit 2,
+   with a hint naming `sb logs` (sb-go: its own container picker). The
+   contract test lists it in `REMOVED`.
 2. **Stopped containers are listed** (sb-go: running only,
-   dockerLogs.go:1092-1100), and the empty message reads `No containers
-   found.`
+   dockerLogs.go:1092-1100), and the containers filter's empty list reads
+   `No containers found.`
 3. **Needs attention** and the status words, symbols and roles above
    (sb-go: `✓ active/running • 2h 15m` per row, colour by a fixed code).
    Disabled leftover units are listed (host difference 6).
@@ -418,7 +423,8 @@ the Docker containers.`). A snapshot test pins them.
   - the `sb-tui` crate and the workspace entries for ratatui, crossterm,
     ansi-to-tui and ratatui-textarea;
   - the picker, the viewer, the two adapters and the inline fallback;
-  - `sb logs` and `sb docker logs` in sb;
+  - `sb logs` and `sb docker logs` in sb (`sb docker logs` removed
+    2026-11-18, decision 1);
   - the amendments below, in their modules: sb-host's `services(filters, token)`
     with `StateChangeTimestamp`; sb-docker's `Row` fields, picker status, logs
     and events; `Journal::unit_query`;
@@ -508,7 +514,7 @@ crates/docker/src/ps.rs    Row's new fields, the picker status
 crates/docker/src/logs.rs  positions, tail, older, newer, follow
 crates/docker/src/events.rs container events
 crates/journal/src/lib.rs  Journal::unit_query
-crates/sb/src/main.rs      `logs`, `docker logs`
+crates/sb/src/main.rs      `logs` (`docker logs` removed 2026-11-18)
 crates/sb/tests/logs*.rs   end to end on crafted journals and the fake Engine API
 docs/platform-notes/docker-logs.md  the daemon probe
 docs/decisions/            the size ADR
@@ -638,8 +644,9 @@ no real systemctl.
 
 ## Success Criteria
 
-1. `sb logs` and `sb docker logs` open the picker on all kinds and on
-   containers respectively, and `Tab` clears the filter (PTY test).
+1. `sb logs` opens the picker on all kinds, and `Tab` cycles the kind
+   filter (PTY test). *Amended 2026-11-18:* `sb docker logs` is a parse
+   error naming `sb logs` (decision 1).
 2. Every row of the service status table and of sb-docker's picker
    status has a test that failed against a stub first; the words alone
    tell the states apart (a snapshot with colour off).
@@ -681,6 +688,16 @@ no real systemctl.
 
 1. **`sb logs` opens the picker on all kinds, `sb docker logs` filtered
    to containers, clearable** (decided.md A-Q1; journal decision 8).
+   *Amended 2026-11-18 (maintainer): `sb docker logs` is removed.* `sb
+   logs` already shows Saltbox's systemd services and Docker containers
+   in one picker, so the docker subcommand goes; `sb docker` keeps `ps`,
+   `restart`, `start` and `stop`. `sb docker logs` is clap's
+   unknown-subcommand error with a hint naming `sb logs`; the contract
+   test records it in `REMOVED` (capability map decision 1: a change of
+   sb-go's command tree is recorded in the module spec). The picker's
+   containers-first entry (`Picker::with_filter`) and its Services
+   notice row (`with_no_services`), which only `sb docker logs` used, go
+   with it; `Tab`'s containers filter stays.
 2. **Docker positions are time windows with no tail,** a nanosecond
    timestamp plus an ordinal among equal timestamps, after a daemon probe
    (decided.md A-Q2).
@@ -1853,7 +1870,8 @@ modes.
   - `sb logs` with no services and Docker unreachable opens the picker
     with the Containers section's one row: the containers weren't
     seen, so `No matching ... found.` would not be true.
-  - `sb docker logs` lists the containers only until `Tab` comes (M70).
+  - `sb docker logs` lists the containers only until `Tab` comes (M70;
+    the command removed 2026-11-18, decision 1).
 
 - **The refresh's run log (maintainer, 2026-11-14):** the picker's 5 s
   read of the services runs with no tracing subscriber (tracing's
@@ -2047,7 +2065,8 @@ modes.
     The Testing Strategy's "no named colour under truecolor" is read as
     sb's own colours: a log's own named colour (SGR 31) is the user's
     terminal palette and passes as it came.
-  - RLIMIT_NOFILE: `sb logs` and `sb docker logs` call
+  - RLIMIT_NOFILE: `sb logs` (and `sb docker logs` until its removal,
+    2026-11-18) call
     `sb_tui::raise_open_files` first; the soft limit goes up to min(hard,
     262144) and never down, the hard limit unchanged (journalctl, as
     root, sets both; the hard limit is above 262144 on a stock Ubuntu
@@ -2217,6 +2236,8 @@ Editors)".
 
 - The `docker logs` and `logs` rows: "tui, docker" and "tui, host,
   journal" stay; sb-rust "specified (tui)", then "built" per slice.
+  *Amended 2026-11-18:* the `docker logs` row reads "removed"
+  (decision 1).
 - The stack table's ratatui row gains `ratatui-core` `anstyle` and the
   exact pins; `ratatui-textarea` stays at 0.9.3.
 - The stack table gains a row "Dialogs | `tui-popup` (ratatui org) |
@@ -2261,7 +2282,8 @@ Editors)".
    `Row`'s fields and `picker_status`; `logs.rs` with the positions and
    the fake Engine API's logs endpoint; the docker adapter with follow
    across restarts; `events.rs`; the Containers section with live
-   reloads; `sb docker logs`; the Docker-unreachable row.
+   reloads; `sb docker logs` (removed 2026-11-18, decision 1); the
+   Docker-unreachable row.
 3. **The unified picker (S):** Needs attention, the name filter
    (ratatui-textarea), the kind filter and `Tab`, mouse on both screens,
    the services' 5 s refresh.
