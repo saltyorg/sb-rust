@@ -1,12 +1,15 @@
 //! Talking to the daemon (docker spec, "Daemon", "API version", "Rows",
-//! "Errors"): which address `DOCKER_HOST` names, the connection and its
-//! one `version()` call, and the list with an inspect per container.
+//! "Errors"): which address `DOCKER_HOST` names, the connection, the API
+//! version its version call chooses for every request, and the list with
+//! an inspect per container.
 
 use anyhow::Context;
-use bollard::Docker;
 use bollard::errors::Error;
 use bollard::query_parameters::{InspectContainerOptions, ListContainersOptionsBuilder};
+use bollard::{API_DEFAULT_VERSION, BollardRequest, ClientVersion, Docker};
 use futures_util::stream::{self, StreamExt};
+use http::Uri;
+use http::uri::PathAndQuery;
 
 use crate::ps::{Row, short_id, sorted};
 
@@ -62,42 +65,170 @@ pub fn address(
     }
 }
 
-/// A connected daemon: the client, its address and what its one
-/// `version()` call said.
+/// A connected daemon: the client, its address, what its version call
+/// said, and the API version every request is sent at.
 #[derive(Debug)]
 pub struct Daemon {
+    /// bollard's client, its every request's path prefixed with
+    /// [`Daemon::request_version`].
     pub docker: Docker,
     pub address: String,
     pub version: Option<String>,
+    /// The daemon's own (its newest) API version, as it said.
     pub api_version: Option<String>,
+    /// The API version sb's requests are sent at.
+    pub request_version: ClientVersion,
 }
 
-/// Connect to `address` and ask the daemon its version once (docker spec,
-/// "API version": bollard 0.21.1 sends unversioned paths, so no version is
-/// negotiated; the answer goes to the run log). A failed call ends the run
-/// as an unreachable daemon does.
+/// An API version as Docker writes it, `<major>.<minor>`, as bollard's
+/// `ClientVersion` (its own parser is crate-private).
+fn api_version(text: &str) -> Option<ClientVersion> {
+    let (major, minor) = text.split_once('.')?;
+    Some(ClientVersion {
+        major_version: major.parse().ok()?,
+        minor_version: minor.parse().ok()?,
+    })
+}
+
+/// `uri` with `/v<version>` before its path, unless the path has a
+/// version prefix already: its parts rebuilt, as bollard's
+/// `connect_with_custom_transport` example prefixes a path
+/// (<https://docs.rs/bollard/0.21.1/bollard/struct.Docker.html#method.connect_with_custom_transport>,
+/// <https://docs.rs/http/1.5.0/http/uri/struct.Uri.html#method.into_parts>).
+fn prefixed(uri: Uri, version: &ClientVersion) -> Result<Uri, http::Error> {
+    let path = uri.path();
+    if path.starts_with("/v") && path[2..].starts_with(|c: char| c.is_ascii_digit()) {
+        return Ok(uri);
+    }
+    let mut parts = uri.into_parts();
+    let rest = parts
+        .path_and_query
+        .as_ref()
+        .map_or("/", PathAndQuery::as_str);
+    parts.path_and_query = Some(PathAndQuery::try_from(format!("/v{version}{rest}"))?);
+    Ok(Uri::from_parts(parts)?)
+}
+
+/// `docker` with every request's path prefixed with `/v<version>`:
+/// bollard 0.21.1 sends unversioned paths (its `Uri::parse` joins the
+/// path over the `/v1.53` it formats), which Docker has deprecated
+/// (docker spec, "API version"), and its documented request modifier is
+/// the way to version them
+/// (<https://docs.rs/bollard/0.21.1/bollard/struct.Docker.html#method.with_request_modifier>).
+/// A URI that can't be rebuilt goes as it was, with a warning: bollard
+/// builds none such, so that would be sb's bug, seen in the run log.
+fn versioned(docker: Docker, version: ClientVersion) -> Docker {
+    docker.with_request_modifier(move |mut request: BollardRequest| {
+        match prefixed(request.uri().clone(), &version) {
+            Ok(uri) => *request.uri_mut() = uri,
+            Err(err) => tracing::warn!(uri = %request.uri(), error = %err, "request not versioned"),
+        }
+        request
+    })
+}
+
+/// The oldest version a 400's message names, as dockerd writes it
+/// (`client version X is too old. Minimum supported API version is Y`,
+/// its `version.go`; docs/platform-notes/docker-engine-api.md).
+fn too_old(err: &Error) -> Option<&str> {
+    let Error::DockerResponseServerError {
+        status_code: 400,
+        message,
+    } = err
+    else {
+        return None;
+    };
+    message
+        .contains("is too old")
+        .then(|| message.rsplit("Minimum supported API version is ").next())
+        .flatten()
+        .map(str::trim)
+}
+
+/// Connect to `address` and choose the API version (docker spec, "API
+/// version"): the daemon is asked its version at bollard's own
+/// (`/v1.53/version`); a daemon that refuses that (400: older than it, or
+/// with its oldest above it) is asked at `/version`, unversioned. Every
+/// later request is sent at the daemon's version capped at bollard's; a
+/// daemon whose oldest version is above that needs a newer sb. The answer
+/// goes to the run log. A failed call ends the run as an unreachable
+/// daemon does.
+///
+/// Why not bollard's `Docker::negotiate_version`: it discards the
+/// `/version` answer (sb logs its `Version`), never reads `MinAPIVersion`,
+/// and the version it stores changes nothing on the wire in 0.21.1.
 ///
 /// # Errors
 ///
-/// When the client can't be made for `address` or the version call fails.
+/// When the client can't be made for `address`, the version can't be
+/// had, or the daemon's oldest version is newer than bollard's.
 pub async fn connect(address: &str) -> anyhow::Result<Daemon> {
-    let docker = Docker::connect_with_host(address)
+    let plain = Docker::connect_with_host(address)
         .with_context(|| format!("couldn't reach Docker at {address}"))?;
-    let answer = docker
-        .version()
-        .await
-        .with_context(|| format!("couldn't get Docker's version at {address}"))?;
+    let ours = *API_DEFAULT_VERSION;
+    let newer_sb = |min: &str| {
+        anyhow::anyhow!(
+            "Docker's API at {address} starts at {min}, newer than sb's {ours}: a newer sb is needed"
+        )
+    };
+    let asked = versioned(plain.clone(), ours).version().await;
+    let (answer, fell_back) = match asked {
+        Ok(answer) => (answer, false),
+        // Refused at bollard's version: the unversioned path, which
+        // daemons outside it serve, names the daemon's own.
+        Err(
+            first @ Error::DockerResponseServerError {
+                status_code: 400, ..
+            },
+        ) => {
+            match plain.version().await {
+                Ok(answer) => (answer, true),
+                // A daemon past bollard's that serves no unversioned path:
+                // its first refusal said how old sb is.
+                Err(_) if too_old(&first).is_some() => {
+                    return Err(newer_sb(too_old(&first).unwrap_or_default()));
+                }
+                Err(second) => {
+                    return Err(anyhow::Error::new(second)
+                        .context(format!("refused at API {ours} ({first}), then unversioned"))
+                        .context(format!("couldn't get Docker's version at {address}")));
+                }
+            }
+        }
+        Err(err) => {
+            return Err(anyhow::Error::new(err)
+                .context(format!("couldn't get Docker's version at {address}")));
+        }
+    };
+    let theirs = answer.api_version.as_deref().and_then(api_version);
+    let chosen = match theirs {
+        Some(theirs) if theirs < ours => theirs,
+        // The daemon refused bollard's version and named none of its own:
+        // no version would be served.
+        None if fell_back => {
+            anyhow::bail!("Docker at {address} refused API {ours} and didn't say which it serves")
+        }
+        // Newer than bollard's, or not said (and bollard's was served).
+        Some(_) | None => ours,
+    };
+    if let Some(min) = answer.min_api_version.as_deref()
+        && api_version(min).is_some_and(|oldest| oldest > chosen)
+    {
+        return Err(newer_sb(min));
+    }
     tracing::info!(
         address,
         version = answer.version.as_deref().unwrap_or("unknown"),
         api_version = answer.api_version.as_deref().unwrap_or("unknown"),
+        requests = %chosen,
         "docker daemon"
     );
     Ok(Daemon {
-        docker,
+        docker: versioned(plain, chosen),
         address: address.to_string(),
         version: answer.version,
         api_version: answer.api_version,
+        request_version: chosen,
     })
 }
 
@@ -280,11 +411,12 @@ mod tests {
     }
 
     /// Every fixture container, sorted by name, from one version call, a
-    /// list and an inspect each, all unversioned (docker spec, "Guarding
-    /// that behaviour": if this fails, a bollard upgrade changed the paths;
-    /// re-check the spec's API version bullet before moving the pin).
+    /// list and an inspect each, every path prefixed with the version
+    /// chosen (docker spec, "API version": bollard's 1.53 on a daemon that
+    /// serves it; if this fails after a bollard upgrade, re-check the
+    /// spec's bullet before moving the pin).
     #[tokio::test]
-    async fn every_container_is_listed_and_inspected_unversioned() {
+    async fn every_container_is_listed_and_inspected_versioned() {
         let engine = fake(Options::default());
         let listing = ps(&engine).await.expect("ps");
         assert_eq!(
@@ -300,13 +432,13 @@ mod tests {
         );
         assert_eq!(listing.failures, [] as [Failure; 0]);
         let paths = engine.paths();
-        assert_eq!(paths[0], "/version");
+        assert_eq!(paths[0], "/v1.53/version");
         // Every container, running or not.
-        assert_eq!(paths[1], "/containers/json?all=true&size=false");
+        assert_eq!(paths[1], "/v1.53/containers/json?all=true&size=false");
         assert_eq!(paths.len(), 2 + 6);
         assert!(
-            paths.iter().all(|p| !p.starts_with("/v1.")),
-            "versioned paths (see the docker spec's API version bullet): {paths:?}"
+            paths.iter().all(|p| p.starts_with("/v1.53/")),
+            "unversioned paths (see the docker spec's API version bullet): {paths:?}"
         );
     }
 
@@ -320,25 +452,59 @@ mod tests {
         });
         let daemon = connect(&engine.host()).await.expect("connect");
         assert_eq!(daemon.api_version.as_deref(), Some("1.55"));
+        // Asked at bollard's own version, which the daemon serves.
+        assert_eq!(daemon.request_version.to_string(), "1.53");
         assert_eq!(daemon.version.as_deref(), Some("0.0.0-fake"));
         assert_eq!(daemon.docker.timeout(), std::time::Duration::from_secs(120));
     }
 
-    /// An older daemon (refusing versions above its own) still answers.
+    /// An older daemon (refusing versions above its own) refuses bollard's
+    /// 1.53; its unversioned `/version` names its own, which every later
+    /// request uses.
     #[tokio::test]
-    async fn an_old_daemon_answers() {
+    async fn an_old_daemon_answers_at_its_own_version() {
         let engine = fake(Options {
             api_versions: ((1, 40), (1, 41)),
             ..Options::default()
         });
         assert_eq!(ps(&engine).await.expect("ps").rows.len(), 6);
+        let paths = engine.paths();
+        assert_eq!(
+            paths[..3],
+            [
+                "/v1.53/version",
+                "/version",
+                "/v1.41/containers/json?all=true&size=false"
+            ]
+        );
+        assert!(
+            paths[3..].iter().all(|p| p.starts_with("/v1.41/")),
+            "{paths:?}"
+        );
     }
 
-    /// A daemon refusing unversioned paths (Docker's planned removal) is
-    /// an error, not a panic or an empty table.
+    /// A daemon refusing unversioned paths (Docker's planned removal)
+    /// answers every request: none is unversioned.
     #[tokio::test]
-    async fn a_daemon_refusing_unversioned_paths_is_an_error() {
+    async fn a_daemon_refusing_unversioned_paths_answers() {
         let engine = fake(Options {
+            refuse_unversioned: true,
+            ..Options::default()
+        });
+        assert_eq!(ps(&engine).await.expect("ps").rows.len(), 6);
+        assert!(
+            engine.paths().iter().all(|p| p.starts_with("/v1.53/")),
+            "{:?}",
+            engine.paths()
+        );
+    }
+
+    /// An old daemon that also refuses unversioned paths can't be asked
+    /// its version: an error with both refusals, nothing sent after.
+    #[tokio::test]
+    async fn an_old_daemon_refusing_unversioned_paths_is_an_error() {
+        let engine = fake(Options {
+            api_versions: ((1, 40), (1, 41)),
             refuse_unversioned: true,
             ..Options::default()
         });
@@ -351,8 +517,115 @@ mod tests {
             err.contains("API without a version prefix is not supported"),
             "{err}"
         );
-        // Nothing is sent after the failed version call.
-        assert_eq!(engine.paths(), ["/version"]);
+        assert!(err.contains("client version 1.53 is too new"), "{err}");
+        assert_eq!(engine.paths(), ["/v1.53/version", "/version"]);
+    }
+
+    /// A daemon whose oldest version is newer than bollard's: an error
+    /// naming both and that a newer sb is needed, nothing listed.
+    #[tokio::test]
+    async fn a_daemon_newer_than_bollard_allows_is_an_error() {
+        let engine = fake(Options {
+            api_versions: ((1, 54), (1, 55)),
+            ..Options::default()
+        });
+        let err = format!("{:#}", ps(&engine).await.expect_err("an error"));
+        assert!(
+            err.contains("Docker's API at unix://")
+                && err.contains("starts at 1.54, newer than sb's 1.53: a newer sb is needed"),
+            "{err}"
+        );
+        assert_eq!(engine.paths(), ["/v1.53/version", "/version"]);
+    }
+
+    /// The version text: two numbers, compared as numbers; a path gets
+    /// the prefix before it, its query kept, unless it has one already.
+    #[test]
+    fn versions_are_parsed_and_paths_prefixed() {
+        let v = |major, minor| ClientVersion {
+            major_version: major,
+            minor_version: minor,
+        };
+        assert_eq!(api_version("1.41"), Some(v(1, 41)));
+        assert_eq!(api_version("1.5"), Some(v(1, 5)));
+        assert!(api_version("1.5") < api_version("1.41"));
+        for bad in ["", "1", "1.x", "v1.41", "1.41.0"] {
+            assert_eq!(api_version(bad), None, "{bad}");
+        }
+        let at = |uri: &str, version| {
+            prefixed(uri.parse().expect("a URI"), &version)
+                .expect("rebuilt")
+                .to_string()
+        };
+        assert_eq!(
+            at("unix://2f74:0/containers/json?all=true", v(1, 41)),
+            "unix://2f74:0/v1.41/containers/json?all=true"
+        );
+        assert_eq!(
+            at("http://localhost:2375/version", v(1, 53)),
+            "http://localhost:2375/v1.53/version"
+        );
+        assert_eq!(
+            at("http://localhost:2375/v1.41/version", v(1, 53)),
+            "http://localhost:2375/v1.41/version"
+        );
+        assert_eq!(
+            at("http://localhost:2375/volumes", v(1, 53)),
+            "http://localhost:2375/v1.53/volumes"
+        );
+    }
+
+    /// dockerd's "too old" 400 names its oldest version; anything else
+    /// isn't one.
+    #[test]
+    fn a_too_old_refusal_names_the_oldest() {
+        let refusal = |status_code, message: &str| Error::DockerResponseServerError {
+            status_code,
+            message: message.to_owned(),
+        };
+        let old = refusal(
+            400,
+            "client version 1.53 is too old. Minimum supported API version is 1.54",
+        );
+        assert_eq!(too_old(&old), Some("1.54"));
+        let new = refusal(
+            400,
+            "client version 1.53 is too new. Maximum supported API version is 1.41",
+        );
+        assert_eq!(too_old(&new), None);
+        let other = refusal(
+            500,
+            "client version 1.53 is too old. Minimum supported API version is 1.54",
+        );
+        assert_eq!(too_old(&other), None);
+    }
+
+    /// A daemon past bollard's that serves no unversioned path either: its
+    /// first refusal said how old sb is, so the error is the newer-sb one.
+    #[tokio::test]
+    async fn a_newer_daemon_refusing_unversioned_paths_needs_a_newer_sb() {
+        let engine = fake(Options {
+            api_versions: ((1, 54), (1, 55)),
+            refuse_unversioned: true,
+            ..Options::default()
+        });
+        let err = format!("{:#}", ps(&engine).await.expect_err("an error"));
+        assert!(
+            err.contains("starts at 1.54, newer than sb's 1.53: a newer sb is needed"),
+            "{err}"
+        );
+        assert_eq!(engine.paths(), ["/v1.53/version", "/version"]);
+    }
+
+    /// A daemon whose oldest version is exactly bollard's is served.
+    #[tokio::test]
+    async fn a_daemon_starting_at_bollards_version_is_served() {
+        let engine = fake(Options {
+            api_versions: ((1, 53), (1, 55)),
+            ..Options::default()
+        });
+        assert_eq!(ps(&engine).await.expect("ps").rows.len(), 6);
+        assert!(engine.paths().iter().all(|p| p.starts_with("/v1.53/")));
     }
 
     #[tokio::test]

@@ -17,6 +17,9 @@ testing = ["dep:axum", "dep:tempfile", "dep:form_urlencoded", "tokio/net", "toki
 sb-cli-core.workspace = true
 sb-term-ui.workspace = true
 bollard.workspace = true
+# The versioned request paths, rebuilt from bollard's `http::Uri` parts
+# (docker spec, "API version").
+http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

@@ -219,7 +219,7 @@ mod tests {
         engine.end_events();
         assert!(next(&mut events).await.is_none());
         let path = engine.paths().pop().expect("a request");
-        assert!(path.starts_with("/events?"), "{path}");
+        assert!(path.starts_with("/v1.53/events?"), "{path}");
         let query = path.split_once('?').map_or("", |(_, q)| q);
         let filters: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
             .into_owned()
@@ -234,12 +234,14 @@ mod tests {
             ..Options::default()
         })
         .expect("fake Engine API");
-        // `connect` would fail on its version call, refused the same way.
+        // A client left unversioned on purpose (`connect` versions every
+        // request), so the daemon refuses its `/events`.
         let daemon = Daemon {
             docker: bollard::Docker::connect_with_host(&engine.host()).expect("client"),
             address: engine.host(),
             version: None,
             api_version: None,
+            request_version: *bollard::API_DEFAULT_VERSION,
         };
         let mut events = std::pin::pin!(container_events(&daemon));
         let err = next(&mut events)

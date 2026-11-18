@@ -70,45 +70,45 @@ logging levels end to end.
   `DOCKER_TLS_VERIFY` or `DOCKER_CERT_PATH` stop with an error naming the
   unsupported setting: without TLS compiled in, bollard would otherwise
   connect `tcp://` in plain text where sb-go uses TLS.
-- **API version:** bollard 0.21.1 sends every request without a version
-  prefix (its `Url::join` replaces the `/v1.53` it formats), which the
-  daemon serves at its own current API version, so daemons older and newer
-  than bollard's 1.53 both work; a fixed floor version wouldn't (Docker 29
-  refuses anything below 1.40 by default). A newer daemon answers in its
-  own, newer shape; bollard's models are mostly optional fields, which
-  tolerate that. sb calls bollard's `version()` once after connecting and
-  logs the daemon's `Version` and `ApiVersion` (bollard's
+- **API version** (amended 2026-11-18: versioned paths, as Docker has
+  deprecated unversioned ones). bollard 0.21.1 sends every request
+  without a version prefix (its `Url::join` replaces the `/v1.53` it
+  formats); sb puts the version back with bollard's documented
+  `Docker::with_request_modifier`, prefixing each request's path with
+  `/v<version>`. The version is chosen once, on connecting: the daemon is
+  asked `/v1.53/version` (bollard's own version); a daemon that refuses
+  that with a 400 (older than 1.53, or its oldest above it) is asked the
+  unversioned `/version`, which such daemons serve. Every later request
+  goes at the daemon's `ApiVersion` capped at bollard's 1.53, so daemons
+  older and newer than bollard's both work, each answering in that
+  version's shape. A daemon whose `MinAPIVersion` is above that version,
+  or whose 400 for `/v1.53/version` says 1.53 is too old while it serves
+  no unversioned path either (a Docker newer than this sb after the
+  removal), is an error, `Docker's API at <address> starts at <min>,
+  newer than sb's 1.53: a newer sb is needed`; a daemon that refuses both
+  version calls otherwise is the error naming both refusals, and one that
+  refused 1.53 without naming its own version an error saying so. The
+  path is rebuilt from bollard's `http::Uri` parts, as bollard's
+  `connect_with_custom_transport` example prefixes one; bollard's
+  `negotiate_version()` isn't used (below). The run log gets the daemon's `Version` and
+  `ApiVersion` and the version sb's requests use (bollard's
   `negotiate_version()` is not used: it discards the response and changes
-  nothing on the wire). A failed `version()` call (unreachable, a 4xx or 5xx
-  answer) ends the run as an unreachable daemon does: error block, exit 1. A
-  good answer without `Version` or `ApiVersion` (both optional in bollard's
-  model) logs them as unknown and the run goes on. `DOCKER_API_VERSION` is
-  not read: with this bollard a pinned version never reaches the daemon (a
-  difference, below). Requests keep bollard's 120 s timeout (sb-go has
-  none). Evidence: docs/platform-notes/docker-engine-api.md (Checkpoint A).
+  nothing on the wire). A failed version call (unreachable, a 4xx or 5xx
+  answer) ends the run as an unreachable daemon does: error block, exit
+  1. A good answer without `Version` or `ApiVersion` (both optional in
+  bollard's model) logs them as unknown and the requests use bollard's
+  1.53. `DOCKER_API_VERSION` is not read (a difference, below). Requests
+  keep bollard's 120 s timeout (sb-go has none). Evidence:
+  docs/platform-notes/docker-engine-api.md (Checkpoint A).
 - **Guarding that behaviour:** bollard is pinned to exactly 0.21.1
-  (`=0.21.1`), since a compatible release could start prefixing versions;
-  the fake Engine API records the paths it is sent and a test asserts
-  they are unversioned, its failure message pointing here. A bollard
-  upgrade re-checks what paths it sends and how a version would be
-  chosen; if it prefixes them, sb chooses the version itself: the
-  daemon's `ApiVersion` from an unversioned `/version` (or the
-  `Api-Version` header every answer carries), capped at bollard's, passed
-  as the `ClientVersion` to `connect_with_unix` / `connect_with_http`
-  (`connect_with_host` takes none). A daemon whose minimum is above
-  bollard's version needs a bollard upgrade either way.
-- **Docker removing unversioned paths** (deprecated in moby's API
-  description, "will be removed in a future release") would break this
-  bollard against every daemon: each request would get the daemon's 4xx,
-  shown in cli-core's error block, exit 1. The response then is a bollard
-  release that prefixes versions or, until one exists, bollard's documented
-  `Docker::with_request_modifier` adding the prefix. Without unversioned
-  paths the daemon's version can't come from an unversioned `/version`; it
-  would come from the `Api-Version` header, which the daemon sets on every
-  answer including the 400 for a too-new version (whose message also names
-  the maximum). Which of the two is read is decided then, with evidence. A
-  fake Engine API variant that refuses unversioned paths shows that failure
-  mode in a test.
+  (`=0.21.1`): a release that prefixes versions itself would override
+  the version sb chose (the modifier leaves a path that has a prefix
+  already as it is), so an older daemon would refuse every request;
+  `an_old_daemon_answers_at_its_own_version` fails if that happens.
+  The fake Engine API records the paths it is sent and the tests assert
+  them versioned, `/v1.53/` on a daemon that serves it and the daemon's
+  own on an older one. A bollard upgrade re-checks what paths it sends
+  and how a version would be chosen.
 - **Rows:** every container from the list endpoint (`all=true`), each
   inspected by ID (as sb-go) for state, health, exit code, labels and
   bindings, at most 16 at a time (`futures-util`'s `buffer_unordered`,
@@ -389,10 +389,12 @@ pub fn status(state: &ContainerState) -> (String, Role) {
   daemon (unversioned paths served at its own older version, versioned
   paths above it refused with 400, as dockerd does, and its responses in
   that version's shape, so bollard's models are shown to parse them; the
-  fake records the paths it was sent and the test asserts they are
-  unversioned); a newer daemon (a field bollard expects left out, an
-  unknown field added); a daemon refusing unversioned paths (the error
-  block, exit 1); `DOCKER_TLS_VERIFY` set and an
+  fake records the paths it was sent and the test asserts `/v1.53/version`
+  refused, `/version`, then every request at the daemon's version); a
+  newer daemon (a field bollard expects left out, an unknown field added);
+  a daemon refusing unversioned paths (answered: every path versioned); an
+  old one refusing them too (the error naming both refusals); a daemon
+  whose oldest version is above bollard's (the newer-sb error); `DOCKER_TLS_VERIFY` set and an
   `https://` host (errors); an empty `DOCKER_HOST`; an
   inspect held open while the test sends SIGINT, then SIGTERM; piped and
   on a PTY; the log records. The server is axum 0.8 on a Unix listener

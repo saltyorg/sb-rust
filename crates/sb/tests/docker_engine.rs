@@ -99,8 +99,9 @@ fn a_vanished_container_is_left_out() {
     assert_eq!(json_len(&json.stdout), Some(5), "{json:?}");
 }
 
-/// An older daemon that refuses versioned paths above its own answers
-/// sb's unversioned requests: the table and the JSON, exit 0. Its answers
+/// An older daemon that refuses versioned paths above its own: sb asks its
+/// version unversioned once, then sends every request at the daemon's
+/// own: the table and the JSON, exit 0. Its answers
 /// keep today's shape: no field sb reads postdates API 1.41, and a newer
 /// daemon's shape (fields missing or added) is sb-docker's test.
 #[test]
@@ -123,9 +124,24 @@ fn an_old_daemon_answers() {
     assert_eq!(json.status.code(), Some(0), "{json:?}");
     assert_eq!(json_len(&json.stdout), Some(6), "{json:?}");
     assert!(json.stderr.is_empty(), "{json:?}");
+    // Each of the two runs: refused at bollard's version, asked
+    // unversioned once, then every request at the daemon's own.
     let paths = engine.paths();
+    assert_eq!(paths[..2], ["/v1.53/version", "/version"], "{paths:?}");
+    assert_eq!(
+        paths.iter().filter(|p| *p == "/v1.53/version").count(),
+        2,
+        "{paths:?}"
+    );
+    assert_eq!(
+        paths.iter().filter(|p| *p == "/version").count(),
+        2,
+        "{paths:?}"
+    );
     assert!(
-        !paths.is_empty() && paths.iter().all(|p| !p.starts_with("/v1.")),
+        paths
+            .iter()
+            .all(|p| p == "/v1.53/version" || p == "/version" || p.starts_with("/v1.41/")),
         "{paths:?}"
     );
 }
@@ -278,7 +294,7 @@ fn the_run_log_records_the_daemon_and_the_counts() {
     let host = engine.host();
     assert!(
         line("docker daemon").contains(&format!(
-            r#"sb_docker::connect: docker daemon address="{host}" version="0.0.0-fake" api_version="1.55""#
+            r#"sb_docker::connect: docker daemon address="{host}" version="0.0.0-fake" api_version="1.55" requests=1.53"#
         )),
         "{log}"
     );

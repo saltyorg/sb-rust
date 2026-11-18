@@ -3568,6 +3568,7 @@ dependencies = [
  "console",
  "form_urlencoded",
  "futures-util",
+ "http",
  "indicatif",
  "insta",
  "jiff",

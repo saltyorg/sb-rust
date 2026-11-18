@@ -189,6 +189,10 @@ pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 sha1 = "0.11.0"
 # sb restore's body cap (`Limited`); already in the tree through reqwest.
 http-body-util = "0.1.5"
+# sb-docker's request paths, versioned through bollard's request modifier
+# (docker spec, "API version"): the `http` crate bollard's requests are
+# made of, already in the tree through it and hyper.
+http = "1.5.0"
 # Clears the password, key, IV and plaintext buffers on drop
 # (RustCrypto's own; already in the tree).
 zeroize = "1.9.1"
