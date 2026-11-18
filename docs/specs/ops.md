@@ -1159,8 +1159,10 @@ sb-go's `install.sh` plus `-b` (decided.md G-Q5):
 - the latest tag through the svm proxy, then GitHub; the download from
   `https://github.com/saltyorg/<repo>/releases/download/<tag>/<asset>`
   only (decided.md D-Q2), retried, then the ELF and size check and `sb
-  version` matching the tag; the repository and asset names are
-  parameters until release preparation (decided.md D-Q3);
+  version` matching the tag; the repository is saltyorg/sb-rust, the
+  asset `sb_linux_<arch>` for x86_64 and aarch64, and `--beta` installs
+  the `_beta` asset of the highest release, prereleases included
+  (maintainer, 2026-11-18; release spec, "Release channels");
 - options: sb-go's `-v/--verbose`, `--force-curl`, `--force-wget`,
   `--repair`, `-h/--help`, plus `-b <branch>` (from the served
   `sb_install.sh`), passed to `sb setup -b <branch>` as one argument;
@@ -1620,8 +1622,9 @@ the real services.
     as a separate, authorised step. decided.md G-Q5; the map's open
     item; tasks/prototypes/todo.md, "Install script".
 17. **Download URLs are pinned** to GitHub's releases path in the
-    script; the asset names wait for release preparation. decided.md
-    D-Q2 and D-Q3.
+    script; saltyorg/sb-rust's `sb_linux_<arch>` and `_beta` assets
+    (decided.md D-Q2; D-Q3 settled 2026-11-18, release spec, "Release
+    channels").
 18. **No `-v`** on `update` and `announcements` (config decision 1,
     docker decision 6; research D §6.1). *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 19. **Every prompt has a flag:** `--keep-branch`/`--reset-branch`

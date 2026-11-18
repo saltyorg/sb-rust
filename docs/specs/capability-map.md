@@ -312,7 +312,7 @@ of `--help`.
 | `completion generate <shell>` | Writes a completion script to stdout | completion | built (module build M57; Tab completion with it) | as above. *Amended 2026-11-13 by the completion spec.* |
 | `setup` (hidden; `--branch`, `--force`, `--keep-branch`, `--reset-branch`, `-v` hidden and ignored) | Installs Saltbox and its dependencies | ops | built (module build M82; M87: the completion refresh) | the first command on a new host. *Amended 2026-11-13 by the ops spec.* |
 | `update-venv` (hidden) | Updates the Ansible venv and saltbox.fact | python-env | built (module build M14-M20: a healthy venv kept, the rebuild, uv's install, the fact and deadsnakes) | forced variants; the normal path heals itself (python-env decisions 1-3). *Amended 2026-11-13 by the python-env spec.* |
-| `self-update` (hidden; `--yes`, and `--force-update` in builds with self-update disabled, raw builds included) | Updates the CLI itself | release | built | sends a User-Agent; keeps the digest check (stack table). *Amended 2026-11-13 by the release spec.* |
+| `self-update` (hidden; `--yes`, `--channel beta\|release`, and `--force-update` in builds with self-update disabled, raw builds included) | Updates the CLI itself, on the channel baked in at build time (`SB_CHANNEL`) | release | built | sends a User-Agent; keeps the digest check (stack table). *Amended 2026-11-13 by the release spec; channels 2026-11-18.* |
 | `announcements` (no flags) | Shows Saltbox's and Sandbox's announcements, each labelled with its repository | ops, tui | built (module build M74: the inline form, then tui's viewer on a terminal, M87's viewer half) | reads Saltbox's and Sandbox's announcements, every one that applies: tui's viewer on a terminal, inline otherwise; "new" and migrations stay with update (ops spec, decisions 27 and 30, difference 45). *Amended 2026-11-13 by the ops spec, 2026-11-15, 2026-11-17 (no flags, both repositories, labelled).* |
 | `restore` (hidden) | Fetches and decrypts a user's backed-up files | ops | built (module build M75, M76) | RustCrypto stack (stack table); --user and --password-file, no -v (ops spec). On a terminal tui's restore screen: the form, the live list, the file view (ops decision 32). *Amended 2026-11-17.* |
 | `gha` (hidden) | Installs the dependencies Saltbox's GitHub Actions jobs need | ops | built (module build M81) | CI-only |
@@ -371,6 +371,17 @@ To discuss with the maintainer once every module is done, not before:
   Checkpoint B (2026-11-13, 964f963): 98.63% of lines, 98.119% of
   functions, 11,843,920 bytes, `sb --help` 2.30 ms. The rows' own
   figures came from older hardware.
+- **Release channels and the repository** (decided 2026-11-18, [release
+  spec](release.md), "Release channels"). Releases come from
+  saltyorg/sb-rust from 1.0.0, with `1.0.0-rc.N` prereleases.
+  - The channel is baked in at build time (`SB_CHANNEL`: `release`,
+    `beta` or `none`), with `--channel` to switch once.
+  - amd64 and arm64 ship, each as a plain and a `_beta` asset.
+  - `version` and `self-update` run on an unsupported Ubuntu release,
+    with a warning.
+  - The CI and release workflows are written locally. Creating the
+    repository, pushing and publishing wait for the maintainer's
+    authorisation.
 - **musl or glibc** (maintainer, 2026-11-13). glibc and musl builds of
   the feature-complete CLI are measured side by side on one host
   (startup, peak memory, the commands' own run times), and the

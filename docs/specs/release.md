@@ -2,7 +2,8 @@
 
 Approved by the maintainer as drafted (2026-11-13); a change after the
 maintainer's read-through becomes a fix
-task.
+task. *Amended 2026-11-18 with the maintainer's release decisions:
+the repository, versions, channels and CI ("Release channels").*
 
 Module of the approved capability map (`release`), build order step 2
 (`host` → `repo`, `release`). It looks up GitHub releases (through the
@@ -18,12 +19,12 @@ the pinned Speedtest. It builds term-ui's prompts, whose first user it is
 1. **sb-go's release and selfupdate packages are the reference**
    (release/asset.go, release/retry.go, selfupdate/update.go,
    cmd/selfUpdate.go), with the decisions below.
-2. **The release channel isn't decided yet** (decided.md D-Q3). The
-   GitHub repository and the asset names are parameters; sb's binary
-   names one repository in a single constant. Until release preparation
-   ("When the binary is complete") that is `saltyorg/sb-go`, the only
-   channel that exists, and no sb-rust build can self-update from it by
-   accident (decision 11).
+2. **Releases come from `saltyorg/sb-rust`** (maintainer, 2026-11-18,
+   settling D-Q3), not saltyorg/sb-go. sb's binary names it in one
+   constant, and install.sh names the same. sb-go later gets a final
+   release whose self-update fetches sb-rust's newest release, once
+   sb-rust is declared production-ready: that is sb-go's change, not
+   this repository's.
 3. **GitHub's per-asset `digest`** (`sha256:<hex>`, published since
    2025-06-03:
    https://github.blog/changelog/2025-06-03-releases-now-expose-digests-for-release-assets/)
@@ -140,18 +141,21 @@ binary` (saltbox/fact.go:78-82). sb-go checks amd64 only
 
 ### `sb self-update` (hidden)
 
-Flags: `-y/--yes`; `--force-update` only in builds where self-update is
-off (cmd/selfUpdate.go:51-53). No `-v` (decision 13).
+Flags: `-y/--yes`; `--channel beta|release` (2026-11-18, "Release
+channels"); `--force-update` only in builds where self-update is off
+(cmd/selfUpdate.go:51-53). No `-v` (decision 13).
 
-1. **Off:** a build with `SB_DISABLE_SELF_UPDATE=true`, or a raw build
-   (no `SB_VERSION` at build time; decision 11). Without
+1. **Off:** a build whose channel is `none` (`SB_CHANNEL` unset or
+   `none`), or a raw build (no `SB_VERSION` at build time; decision 11).
+   *Amended 2026-11-18: `SB_CHANNEL` replaces `SB_DISABLE_SELF_UPDATE`.* Without
    `--force-update`: warning `Self-update is disabled in this build`,
    info `Use --force-update to override this restriction`, exit 0 (the
    text sb-go's CI greps, build.yml:108-113). With it: info `Forcing
    self-update despite build configuration`, then on.
 2. **Look up:** step "Checking for sb CLI updates": `list` for the
-   configured repository; drafts and prereleases skipped; tags with an
-   optional `v` parsed with `semver`, others skipped; the newest kept.
+   configured repository; drafts skipped, and prereleases for the
+   `release` channel ("Release channels"); tags with an optional `v`
+   parsed with `semver`, others skipped; the newest kept.
    Not newer than the running version: info `Current binary is the latest
    version: <v>`, exit 0. The asset is `sb_linux_amd64` or
    `sb_linux_arm64` by `std::env::consts::ARCH` (decision 9); missing:
@@ -180,6 +184,115 @@ off (cmd/selfUpdate.go:51-53). No `-v` (decision 13).
 `autoUpdate=true`), and the off case only warns and goes on; ops' update
 section says what follows.
 
+### Release channels
+
+The maintainer's decisions of 2026-11-18.
+
+- **Versions** start at `1.0.0`, with `1.0.0-rc.N` prereleases. Tags
+  are bare (`1.0.0`, `1.0.0-rc.1`), as sb-go's; `v` stays optional when
+  read. The version comes from `SB_VERSION` at build time. A raw build
+  reports its package version and is self-update disabled. No code
+  compares the version with `0.x`.
+- **The channel is baked in at build time,** as sb-go's
+  `disableSelfUpdate` is, through `SB_CHANNEL`. It replaces
+  `SB_DISABLE_SELF_UPDATE`, which is gone.
+  - Its values are `release`, `beta` and `none`. Unset means `none`, so
+    local and raw builds have self-update off, as they do today. Any
+    other value fails the build, so a typo can't ship a binary that
+    quietly never updates.
+  - `BuildInfo::channel` holds it. Self-update is off when the channel
+    is `none` or the build isn't released (decision 11).
+- **What each channel follows:**
+  - **`release`:** the newest **stable** release, and its plain asset
+    `sb_linux_<arch>`. Stable means GitHub's `prerelease` flag is off
+    *and* the tag has no semver prerelease part, so a mislabelled rc is
+    invisible too.
+  - **`beta`:** the newest release **including prereleases** (drafts
+    still skipped), by semver precedence, and its `sb_linux_<arch>_beta`
+    asset. Every stable release publishes both assets, built from the
+    same code; a prerelease publishes only `_beta` assets. So a beta
+    host moves from `1.0.0-rc.2` to `1.0.0`'s `_beta` asset and stays
+    beta.
+  - **`none`:** self-update off, with today's two lines
+    (`Self-update is disabled in this build`, `Use --force-update to
+    override this restriction`).
+- **Switching:** `sb self-update --channel beta|release`.
+  - When the asked channel isn't the baked one, it looks up that
+    channel's newest release and installs its asset once, whether or
+    not its version is higher. It says `Switching sb CLI to the
+    <channel> channel: <new> (current: <cur>, <channel>)`.
+  - A lower version is said before the question (warning `<new> is
+    older than the running <cur>`), and the question becomes `Do you
+    want to switch`.
+  - From then on the new binary's own baked channel decides; nothing is
+    stored on the host.
+  - `--channel` naming the baked channel is a normal update. In a
+    `none` or raw build, `--channel` takes effect only with
+    `--force-update`; forced without `--channel`, it follows `release`.
+- **The staged binary** must report, in its own `version --json`, the
+  tag's version (decision 12) and the channel that was asked for.
+  Otherwise the swap is refused: `the new binary reports channel <c>,
+  not <want>`. A mislabelled asset can't switch a host's channel.
+- **`sb update`'s self-update step** follows the baked channel, with no
+  switching.
+- **Reporting:**
+  - `sb version` prints sb-go's line, then `Release channel: <channel>`
+    (with ` (self-update disabled)` for `none`).
+  - `--json` adds a `channel` field after sb-go's three. `version`,
+    `git_commit` and `uv_version` are kept for sb-go's
+    update-saltbox-python action.
+- **arm64 ships** (maintainer, 2026-11-18): `sb_linux_arm64` and
+  `sb_linux_arm64_beta` beside the amd64 assets, chosen by the build's
+  architecture (decision 9) with `_beta` for the beta channel.
+  - **Locally,** `check.sh full` cross-builds the aarch64 production
+    binary and runs its `version --json` under QEMU user-mode
+    (`qemu-aarch64-static -L` on 22.04's arm64 glibc, in a throwaway
+    amd64 container). That needs no binfmt handler on the host.
+  - **The test suite stays CI-only for arm64,** on GitHub's native arm
+    runners (`ubuntu-22.04-arm`, `ubuntu-24.04-arm`). Under emulation it
+    would run several times slower within the CPU cap, and the
+    timing-sensitive PTY and process tests would turn flaky. Native
+    runners also run the root and namespace tests as they run on amd64.
+- **The install script** installs `release` by default:
+  `/releases/latest` and the plain asset. `--beta` installs the `_beta`
+  asset of the highest version in the release list, prereleases
+  included. It ranks with `sort -V`, after mapping a version's `-` to
+  `~`, which GNU sort orders before the release it precedes. Either way
+  the installed binary then follows its own baked channel. It accepts
+  x86_64 and aarch64, and installs that architecture's asset after the
+  ELF check names the matching machine.
+- **On an unsupported Ubuntu release** (not another distribution),
+  `sb version` and the standalone `sb self-update` run with a warning;
+  every other command, `--help` and `sb update` included, still refuses.
+  The warning is `Ubuntu <found> isn't a supported release (supported
+  versions: <list>); sb self-update may bring a version that supports
+  it`. Self-update is how such a host reaches a binary that supports
+  its release (cli-core, startup step 1).
+- **CI** in saltyorg/sb-rust, written locally only. Creating the
+  repository, pushing and running workflows are remote actions the
+  maintainer authorises separately.
+  - `.github/workflows/ci.yml` runs `check.sh task` on every push and
+    pull request on 22.04, 24.04 and 26.04.
+  - `.github/workflows/release.yml`, on a version tag:
+    - runs `check.sh full` and the by-hand container suites (completion
+      shells, the install-script containers, the journal matrix);
+    - runs `check.sh task` on the arm runners;
+    - builds each asset with cross's production profile, setting
+      `SB_VERSION` (the tag), `SB_GIT_COMMIT` and `SB_CHANNEL` per asset
+      (stable tags: plain `release` and `_beta` assets for both
+      architectures; prerelease tags: `_beta` only);
+    - checks each binary's `version --json` (the tag's version, the
+      asset's channel, a valid `uv_version`);
+    - checks that a build without `SB_VERSION` has self-update disabled,
+      mirroring sb-go's build.yml;
+    - publishes the release, as a prerelease for rc tags.
+  - **Closing findings:**
+    - **sb-M4:** `Cross.toml`'s `[build.env] passthrough` names
+      `SB_VERSION`, `SB_GIT_COMMIT` and `SB_CHANNEL`, so cross's
+      container sees them. A test reads Cross.toml against the variables
+      build_info reads.
+    - **sb-L8:** `build/Dockerfile`'s base is pinned by digest.
+
 ### Differences from sb-go (the complete list)
 
 1. A `User-Agent` on every request (decision 4).
@@ -206,16 +319,28 @@ section says what follows.
 10. No `-v` (decision 13). *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 11. The proxy's usability check covers uv's and the fact's assets too,
     not only sb's (assumption 4; sb-go checked only sb's list).
+12. Release channels (`release`, `beta`, `none`) baked in at build time,
+    `--channel` to switch, a `_beta` asset per release; sb-go had a
+    stable channel and a disable flag ("Release channels").
+13. `sb version` adds a `Release channel:` line and `--json` a `channel`
+    field after sb-go's three.
+14. The staged binary's `version --json` must also report the channel
+    asked for.
+15. `version` and the standalone `self-update` run on an unsupported
+    Ubuntu release, with a warning; sb-go refused every command there
+    (maintainer, 2026-11-18).
 
 ### Scope
 
 - **Here:** the lookup, the checks, the download, activation, the ELF
   check, `sb self-update`, term-ui's confirm prompt (term-ui decision 1),
   the API python-env needs (below).
-- **Later:** signed checksums (minisign or sigstore) and the release
-  channel, cutover, workflow and asset publishing: "When the binary is
-  complete" (decided.md D-Q2, D-Q3), with sb-M1, sb-M4 and sb-L8
-  (triage DEFER). The `update` integration is ops'.
+- **Here since 2026-11-18:** the channels, the repository, the local
+  CI and release workflows, sb-M4 and sb-L8 ("Release channels").
+- **Later:** signed checksums (minisign or sigstore; decided.md D-Q2)
+  and sb-M1 (triage DEFER); creating saltyorg/sb-rust, pushing and
+  publishing, each authorised separately. The `update` integration is
+  ops'.
 
 ### The interface python-env needs
 
@@ -415,6 +540,20 @@ No test reaches the network or replaces an installed sb.
   interrupted with Ctrl-C, with a background process group and with no
   terminal. *Amended 2026-11-13 with M26: rexpect was dropped for
   `script` with term-ui's tests.*
+- **Channels** (2026-11-18), on the fake GitHub:
+  - `release` takes the newest stable release and its plain asset, with
+    prereleases invisible, both flagged ones and stable-flagged rc tags;
+  - `beta` takes the newest release, rc included, and its `_beta` asset;
+  - a stable release published after an rc gives a beta host at that rc
+    `1.0.0`'s `_beta` asset;
+  - `--channel` switches both ways (a lower version said before the
+    question; the staged binary's channel checked);
+  - `none` and raw builds are off.
+  - Unit tests cover `SB_CHANNEL`'s values, the version line and the
+    `--json` field. sb's own tests cover the unsupported-release
+    warning for `version` and `self-update`, and the refusal of
+    another command. install/tests/policy.sh covers `--beta`'s choice
+    and its asset URL.
 - **Gates:** CONSTRAINTS.md as always; the binary-size row records
   object's and dialoguer's cost.
 
@@ -484,19 +623,24 @@ No test reaches the network or replaces an installed sb.
 12. **The staged binary passes an ELF check and its own `version --json`
     equal to the tag** before activation (decided.md D-Q5).
 13. **No `-v`** (config decision 1, docker decision 6; research D §6.1).
-14. **The repository and asset are parameters;** the channel and the
-    cutover wait for release preparation, with the version-continuity
-    constraint below (decided.md D-Q3).
+14. **saltyorg/sb-rust, from 1.0.0, with channels baked in** (the
+    maintainer, 2026-11-18, settling D-Q3): `SB_CHANNEL`
+    `release|beta|none`, unset `none`; `release` follows stable releases
+    and the plain asset, `beta` every release and the `_beta` asset;
+    `--channel` switches once ("Release channels").
 15. **term-ui's confirm is built here** (term-ui decision 1).
 
 ## Known limits
 
-- **Version continuity (D-Q3):** if sb-rust publishes to saltyorg/sb-go,
-  its first release must be semver-greater than sb-go's last (0.1.3 on
-  2026-11-13), keep bare tags and the `sb_linux_amd64` name, and keep
-  `version --json`'s `uv_version` (the update-saltbox-python action reads
-  it). If it publishes elsewhere, a last sb-go release must point its
-  self-update at the new repository. Release preparation decides.
+- **The cutover from sb-go (D-Q3):** sb-rust publishes to its own
+  repository, so sb-go hosts reach it only through sb-go's final
+  release, which fetches sb-rust's newest release (sb-go's change).
+  sb-rust keeps `version --json`'s `uv_version` and bare tags, as the
+  update-saltbox-python action reads sb's version that way.
+- **The workflows are unrun:** written locally, never pushed. The
+  26.04 job runs in an `ubuntu:26.04` container on GitHub's 24.04
+  runner (`UNVERIFIED`: GitHub's image list had no 26.04 runner when
+  this was written).
 - The proxy and GitHub are trusted for the digest; a compromised GitHub
   release isn't caught until signed checksums.
 - If sb's file was replaced while it ran, `/proc/self/exe` ends in

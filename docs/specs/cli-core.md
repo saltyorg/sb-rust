@@ -36,7 +36,14 @@ logged. *Amended 2026-11-13 by the completion spec.*
 1. **Host support check.** Refuse to run on anything but a supported
    Ubuntu release, for every command including `--help` and `version`, as
    sb-go does (maintainer, 2026-10-29). It reads `/etc/os-release` and
-   needs no root. The supported releases list belongs to `host`;
+   needs no root. **One exception** (maintainer, 2026-11-18; a
+   difference from sb-go): on an unsupported *Ubuntu release*, `version`
+   and the standalone `self-update` run after a warning, `Ubuntu <found>
+   isn't a supported release (supported versions: <list>); sb
+   self-update may bring a version that supports it`. Self-update is how
+   such a host reaches a binary that supports it. Another distribution,
+   and every other command (`--help` and `sb update` included), still
+   refuse. The supported releases list belongs to `host`;
    `cli-core` calls it through a startup hook so the dependency stays
    one-way (see Project structure).
 2. **Parse arguments** with clap. Parse errors and help are printed here,
@@ -304,10 +311,15 @@ convention (sb-go exits 1; a deliberate difference). Run errors keep sb's
 `✗` block. `-v` on a command sb-go gave it is no parse error (the
 maintainer, 2026-11-18; above); on one sb-go didn't, it still is.
 
-**Build info:** version, git commit and the pinned uv version are set at
-build time; release builds can switch self-update off. `sb version` prints
-`Saltbox CLI version: <v> (commit: <c>)`, and `--json` prints
-`{"version", "git_commit", "uv_version"}`, as sb-go.
+**Build info:** version, git commit, the release channel and the pinned
+uv version are set at build time (`SB_VERSION`, `SB_GIT_COMMIT`,
+`SB_CHANNEL`: `release`, `beta` or `none`, unset `none`, anything else a
+build error; release spec, "Release channels"). `sb version` prints
+`Saltbox CLI version: <v> (commit: <c>)`, as sb-go, then `Release
+channel: <channel>` (` (self-update disabled)` for `none`), and `--json`
+prints `{"version", "git_commit", "uv_version", "channel"}`, sb-go's
+three first. *Amended 2026-11-18: the channel replaces
+`SB_DISABLE_SELF_UPDATE`.*
 `BuildInfo::released`: true when `SB_VERSION` was set at build time.
 Self-update treats a build that isn't released as disabled (release spec,
 decision 11); `sb version` is unchanged. *Amended 2026-11-13 by the
@@ -420,7 +432,8 @@ boundaries that callers match on.
    completion runs without sudo and offers commands, flags and Ansible
    tags.
 2. On an unsupported host every command, including `--help`, exits 1 with
-   sb-go's message, as sb-rust's error block on stderr (`✗ <message>`;
+   sb-go's message (but `version` and `self-update` on an unsupported
+   Ubuntu release: startup step 1), as sb-rust's error block on stderr (`✗ <message>`;
    sb-go prints it plainly to stdout; maintainer, 2026-10-30).
 3. Every other command run as a normal user execs `sudo` with `VISUAL`
    and `EDITOR` kept, and its exit code is the command's own. If sudo
