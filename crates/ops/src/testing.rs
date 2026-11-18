@@ -492,9 +492,22 @@ pub fn ansible_playbook(dir: &Path) -> PathBuf {
     path
 }
 
+/// The stand-in `ansible-playbook`'s script on the Saltbox host: in a
+/// checkout holding `tags.txt` (a remote commits one to change what the
+/// listing gives), a `--list-tags` line of its text (`a, b, c`); in any
+/// other, [`LIST_TAGS`].
+#[must_use]
+pub fn list_tags_script() -> String {
+    format!(
+        "if [ -f tags.txt ]; then\n  printf '      TASK TAGS: [%s]\\n' \"$(cat tags.txt)\"\n\
+         else\n  cat <<'LIST'\n{LIST_TAGS}LIST\nfi"
+    )
+}
+
 /// A Saltbox host for `update` and the branch commands, on a temporary
 /// root: the stand-in [`Host`] (apt, the locale programs, bash) with a
-/// stand-in `ansible-playbook` listing [`LIST_TAGS`]; python-env's stand-in
+/// stand-in `ansible-playbook` listing [`LIST_TAGS`], or a checkout's
+/// `tags.txt` ([`list_tags_script`]); python-env's stand-in
 /// tree with a healthy venv and its fake GitHub; Saltbox's checkout at the
 /// tree's checkout, a clone of its own [`Remote`] holding the tree's pins
 /// and lock and Saltbox's pinned schemas, with sb-config's `valid` config
@@ -520,10 +533,7 @@ impl Saltbox {
     #[must_use]
     pub fn new(saltbox: &str, sandbox: &str) -> Self {
         let host = Host::new();
-        let _ = host.stand_in(
-            "ansible-playbook",
-            &format!("cat <<'LIST'\n{LIST_TAGS}LIST"),
-        );
+        let _ = host.stand_in("ansible-playbook", &list_tags_script());
         let tree = sb_python_env::testing::Tree::new();
         let _ = tree.healthy();
         let layout = &tree.layout;

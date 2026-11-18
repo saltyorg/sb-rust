@@ -194,14 +194,15 @@ async fn switch(
                 &checkout.playbooks(root),
                 repo,
             )
-            .await
+            .await?;
+            Ok(())
         })
         .await
 }
 
 /// The checkout's tags rebuilt into the cache (ansible's
 /// `TagCache::refresh`, under its "Updating <Repo> tags cache" sub-step),
-/// sb-go's words around a failure.
+/// sb-go's words around a failure; the tags listed.
 ///
 /// # Errors
 ///
@@ -212,12 +213,11 @@ pub(crate) async fn tags(
     ansible: &Ansible,
     playbooks: &sb_ansible::Repo,
     repo: &Repo,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<String>> {
     cache
         .refresh(ansible, playbooks, repo, step)
         .await
-        .context("error running and caching ansible tags")?;
-    Ok(())
+        .context("error running and caching ansible tags")
 }
 
 /// "Updating <Repo> repository" (success "<Repo> repository updated

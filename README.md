@@ -92,6 +92,19 @@ so.
 Questions are asked on the terminal. Each one has a flag that answers it,
 so `sb update --keep-branch --migrations run` runs without a terminal.
 
+`sb update` ends with what moved and what to do next:
+
+```
+Saltbox  a1b2c3d → e4f5a6b
+Sandbox  0f9e8d7 → c6b5a49
+  New tags:      sandbox-karakeep
+  Removed tags:  sandbox-hoarder
+
+Saltbox's files are updated; your server and apps are not yet. To apply it:
+  sb install saltbox         your main tag (or mediabox, feederbox); includes core
+  sb install core,<apps>     the minimum: core plus the apps you run
+```
+
 ## The run log
 
 Every root run is logged to `/var/log/sb/sb.log`, rotated by logrotate.

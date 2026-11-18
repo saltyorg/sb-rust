@@ -100,6 +100,12 @@ completion files call a command sb doesn't have.
   `--share`.
 - **A theme file** for sb's colours.
 - **`sb docker ps --json`.**
+- **`sb update` ends with what moved:** each checkout's commits
+  (`Saltbox  a1b2c3d → e4f5a6b`, or `already up to date`), the tags the
+  pull added or removed (when the tag cache held the old commit's
+  tags), and how to apply the update: `sb install saltbox` (or your main
+  tag), or at least `sb install core` plus your apps; Sandbox's apps by
+  their `sandbox-` tags. sb-go printed none of this.
 - **Restore** shows a live per-file list and a viewer of the restored
   files with secrets masked, and decrypts in memory.
 - **`version` and `self-update` run on an unsupported Ubuntu release,**

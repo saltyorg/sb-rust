@@ -27,6 +27,7 @@ use crate::announcements::{self, Announcement, Pending};
 use crate::branch::{self, Resolved};
 pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
 use crate::completions::{self, Refresh};
+use crate::moved::{self, Moved, TagDiff};
 use crate::{Checkout, configs};
 
 /// The branch `update` resets to, unless the user keeps another (sb-go's
@@ -172,7 +173,11 @@ struct Opened {
 ///    else the new ones inline; then their [`migrations`];
 /// 7. a runner of its own: validate-config's checks (sb-config's `run`),
 ///    then, when they passed, the completion refresh ([`completions`],
-///    a failure a warning).
+///    a failure a warning);
+/// 8. what moved, on `lines` (ops spec, "What moved, and the closing
+///    hint"): each checkout whose pull finished, and the closing hint
+///    when the run ended well; after a failure from step 5 on too, once
+///    its runner is done, without the hint (decision 38).
 ///
 /// # Errors
 ///
@@ -226,6 +231,48 @@ pub async fn run(
     }
     let saltbox = plan(saltbox, answer, &mut ask, shutdown).await?;
     let sandbox = plan(sandbox, answer, &mut ask, shutdown).await?;
+    // What moved, once the last runner is done, whatever ended the run
+    // (ops spec, "What moved, and the closing hint"): the checkouts whose
+    // pull finished, the hint only after a finished run (decision 38).
+    let mut pulled = Vec::new();
+    let result = checkouts_onward(
+        update,
+        [saltbox, sandbox],
+        confirm,
+        &mut runner,
+        shutdown,
+        lines,
+        &mut pulled,
+    )
+    .await;
+    let block = moved::render(&pulled, result.is_ok(), theme::current());
+    let written = if block.is_empty() {
+        Ok(())
+    } else {
+        // `lines` is anstream's stderr in sb: plain when colour is off.
+        lines
+            .write_all(block.as_bytes())
+            .and_then(|()| lines.flush())
+            .map_err(|err| exit::output_error(err).into())
+    };
+    result.and(written)
+}
+
+/// update's steps once the questions are answered (`run`'s 5 to 7), each
+/// checkout whose pull finished recorded in `pulled`.
+///
+/// # Errors
+///
+/// As `run`'s, from its step 5 on.
+async fn checkouts_onward(
+    update: &Update<'_>,
+    [saltbox, sandbox]: [anyhow::Result<(Repo, Resolved)>; 2],
+    confirm: impl FnOnce(&str) -> Result<bool, PromptError>,
+    runner: &mut impl FnMut() -> Runner,
+    shutdown: &Shutdown,
+    lines: &mut impl Write,
+    pulled: &mut Vec<Moved>,
+) -> anyhow::Result<()> {
     let mut steps = runner();
     let result = async {
         apt_cache(&mut steps, update.apt).await?;
@@ -235,7 +282,11 @@ pub async fn run(
             .into_iter()
             .map(|checkout| announcements::load(&announcements::own_file(checkout, update.root)))
             .collect();
-        let mut cache = TagCache::load(update.root);
+        let mut tags = TagCache::load(update.root);
+        let mut cache = Cache {
+            tags: &mut tags,
+            pulled,
+        };
         checkout_step(&mut steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
         secure_step(&mut steps, update.root).await?;
         checkout_step(&mut steps, Checkout::Sandbox, sandbox, update, &mut cache).await?;
@@ -564,21 +615,30 @@ async fn apt_cache(runner: &mut Runner, apt: &Apt) -> Result<(), Exit> {
         .await
 }
 
+/// The tags cache the checkout steps rebuild, and what their pulls moved.
+struct Cache<'a> {
+    tags: &'a mut TagCache,
+    pulled: &'a mut Vec<Moved>,
+}
+
 /// "Updating <Repo>" (success "<Repo> updated"), sb-go's sub-steps: the
 /// branch notices, the Saltbox user from the Saltbox root's accounts.yml,
 /// the HEAD commit, the checkout fetched and reset to the resolved branch
-/// and owned by that user, for Saltbox python-env's `reconcile_runtime`
-/// (deadsnakes, venv, fact, as `update-venv`), the HEAD commit again, and
+/// and owned by that user, the HEAD commit again (the pull recorded in
+/// `cache.pulled`, and in the run log), for Saltbox python-env's
+/// `reconcile_runtime` (deadsnakes, venv, fact, as `update-venv`), and
 /// the tags cache rebuilt when the commit moved or the cache has no tags
-/// for the checkout. A checkout that couldn't be opened fails here with
-/// its error (sb-go's `error updating <Repo>: inspect required directory
-/// ...`).
+/// for the checkout: the old entry, when valid for the HEAD before the
+/// pull (ansible's `fresh`), read before the rebuild writes over it, and
+/// the tags compared (ops spec, "What moved, and the closing hint"). A
+/// checkout that couldn't be opened fails here with its error (sb-go's
+/// `error updating <Repo>: inspect required directory ...`).
 async fn checkout_step(
     runner: &mut Runner,
     checkout: Checkout,
     plan: anyhow::Result<(Repo, Resolved)>,
     update: &Update<'_>,
-    cache: &mut TagCache,
+    cache: &mut Cache<'_>,
 ) -> Result<(), Exit> {
     let name = checkout.name();
     let labels = Labels::new(format!("Updating {name}"), format!("{name} updated"))
@@ -597,23 +657,54 @@ async fn checkout_step(
                 .await
                 .context("error getting old commit hash")?;
             branch::update(step, &repo, &resolved.branch, &user).await?;
-            if checkout == Checkout::Saltbox {
-                reconcile_runtime(step, update.python, Some(&user)).await?;
-            }
+            // Read before the runtime: HEAD doesn't move there, and what
+            // moved is then known if the runtime fails (decision 38).
             let new = repo
                 .head(&token)
                 .await
                 .context("error getting new commit hash")?;
+            tracing::info!(repo = name, old = %old, new = %new, "checkout pulled");
+            let at = cache.pulled.len();
+            cache.pulled.push(Moved {
+                checkout,
+                old: old.clone(),
+                new: new.clone(),
+                tags: None,
+            });
+            if checkout == Checkout::Saltbox {
+                reconcile_runtime(step, update.python, Some(&user)).await?;
+            }
             let playbooks = checkout.playbooks(update.root);
             // sb-go's rule for update (ops spec, step 7): rebuilt when the
             // commit moved or no tags are cached. Why not `TagCache::tags`,
             // which also rebuilds an entry cached at another commit: that
             // isn't sb-go's update rule.
             let cached = cache
+                .tags
                 .entry(&playbooks)
                 .is_some_and(|entry| !entry.tags.is_empty());
             if old != new || !cached {
-                branch::tags(step, cache, update.ansible, &playbooks, &repo).await?;
+                // The old entry only when valid for the commit before the
+                // pull (decision 37), read before the rebuild writes over it.
+                let before = cache.tags.fresh(&playbooks, &old);
+                let after =
+                    branch::tags(step, cache.tags, update.ansible, &playbooks, &repo).await?;
+                if let Some(before) = before {
+                    let diff = TagDiff::between(checkout, &before, &after);
+                    tracing::info!(
+                        repo = name,
+                        added = %diff.added.join(", "),
+                        removed = %diff.removed.join(", "),
+                        "tags compared"
+                    );
+                    cache.pulled[at].tags = Some(diff);
+                } else {
+                    tracing::info!(
+                        repo = name,
+                        reason = "no valid cache entry for the old commit",
+                        "tags not compared"
+                    );
+                }
             }
             Ok(())
         })

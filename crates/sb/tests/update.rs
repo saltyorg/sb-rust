@@ -703,3 +703,55 @@ fn an_interrupted_migration_names_what_is_left_and_ends_by_the_signal() {
     let log = run_log(&world);
     assert!(log.contains("migrations interrupted"), "{log}");
 }
+
+/// What moved (ops spec, "What moved, and the closing hint"; decisions
+/// 36 and 37), piped: after the last tree, on stderr and plain, Saltbox
+/// up to date and Sandbox's range with the tags its pull added and
+/// removed, then Sandbox's hint; the run log keeps both commits and the
+/// tag diff.
+#[test]
+fn what_moved_and_the_hint_end_the_run_and_reach_the_run_log() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("master", "master");
+    let out = world.update(&["--migrations", "skip"]);
+    assert!(out.status.success(), "{out:?}");
+    let short = |path: &Path| sb_ops::testing::git(path, &["rev-parse", "HEAD"])[..7].to_owned();
+    let (saltbox, sandbox) = (short(&world.saltbox()), short(&world.sandbox()));
+    let remote = &world.sb.sandbox_remote;
+    let _ = sb_ops::testing::git(&remote.work(), &["checkout", "--quiet", "master"]);
+    remote.commit(
+        "tags.txt",
+        "always, authelia, docker, karakeep, plex, sanity-check, sonarr, tracearr",
+    );
+    let out = world.update(&["--migrations", "skip"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let moved = short(&world.sandbox());
+    let block = format!(
+        "\nSaltbox  already up to date ({saltbox})\nSandbox  {sandbox} → {moved}\n  \
+         New tags:      sandbox-karakeep, sandbox-tracearr\n  \
+         Removed tags:  sandbox-traefik\n\n\
+         Sandbox's files are updated; your Sandbox apps are not yet. To apply it:\n  \
+         sb install sandbox-<app>   each Sandbox app you run\n  \
+         sb install sandbox-roles   the apps you list in sandbox_roles\n"
+    );
+    assert!(stderr.ends_with(&block), "{stderr}");
+    assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
+    in_order(&stderr, &["Shell completions checked", "Sandbox  "]);
+    let log = run_log(&world);
+    let sandbox_full = sb_ops::testing::git(&world.sandbox(), &["rev-parse", "HEAD"]);
+    assert!(
+        log.lines().any(|line| line.contains("checkout pulled")
+            && line.contains("Sandbox")
+            && line.contains(&sandbox_full)),
+        "{log}"
+    );
+    assert!(
+        log.lines().any(|line| line.contains("tags compared")
+            && line.contains("sandbox-karakeep, sandbox-tracearr")
+            && line.contains("sandbox-traefik")),
+        "{log}"
+    );
+}

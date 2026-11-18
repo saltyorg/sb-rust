@@ -1561,8 +1561,9 @@ the real services.
     decision 37: no cache file (the first update), no entry, an
     unreadable file, a corrupt file, an entry of another shape, an entry
     for another commit, empty tags, a failed rebuild (with the run's
-    error, and no hint); a failure after Saltbox's pull (the Saltbox
-    line, no Sandbox line, no hint).
+    error, and no hint); Saltbox's runtime failing after its pull (the
+    range, no hint); a failure after Saltbox's pull (the Saltbox line,
+    no Sandbox line, no hint).
   - **Units** for the block: the layout of each line kind, the 80-column
     wrap, the two-line cap and its `and <n> more (sb list)`, a list that
     fits exactly two lines, the colours by role and plain with the plain

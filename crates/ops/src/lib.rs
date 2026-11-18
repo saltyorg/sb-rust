@@ -24,6 +24,7 @@ pub mod configs;
 pub mod gha;
 pub mod hooks;
 pub mod locale;
+mod moved;
 pub mod prereq;
 pub mod restore;
 pub mod setup;

@@ -513,7 +513,11 @@ impl Perform for Sink<'_> {
 /// colour would run into the next row's guide lines; and its indent is
 /// one plain string, where the tree paints each row's lead in its own
 /// role.
-pub(crate) fn wrap_line(line: &str, width: usize, words: bool) -> Vec<String> {
+///
+/// Public for `sb update`'s tag lists (ops spec, "What moved, and the
+/// closing hint"), which wrap under their label as the tree's rows do.
+#[must_use]
+pub fn wrap_line(line: &str, width: usize, words: bool) -> Vec<String> {
     if console::measure_text_width(line) <= width {
         return vec![line.to_owned()];
     }

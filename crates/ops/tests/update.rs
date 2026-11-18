@@ -1217,3 +1217,310 @@ async fn a_failing_migration_stops_with_its_words() {
         ran.screen
     );
 }
+
+/// Saltbox's closing hint (ops spec, "What moved, and the closing hint":
+/// hint H2), as the block's plain text.
+const SALTBOX_HINT: &str = "\
+Saltbox's files are updated; your server and apps are not yet. To apply it:
+  sb install saltbox         your main tag (or mediabox, feederbox); includes core
+  sb install core,<apps>     the minimum: core plus the apps you run
+";
+
+/// Sandbox's closing hint, when only Sandbox moved.
+const SANDBOX_HINT: &str = "\
+Sandbox's files are updated; your Sandbox apps are not yet. To apply it:
+  sb install sandbox-<app>   each Sandbox app you run
+  sb install sandbox-roles   the apps you list in sandbox_roles
+";
+
+/// The tags the stand-in lists in a checkout without `tags.txt`
+/// (sb-ops' `LIST_TAGS`).
+const DEFAULT_TAGS: &str = "always, authelia, docker, plex, sanity-check, sonarr, traefik";
+
+/// A checkout's HEAD as the block shows it: its first 7 characters.
+fn short(path: &Path) -> String {
+    sb_ops::testing::git(path, &["rev-parse", "HEAD"])[..7].to_owned()
+}
+
+/// `remote`'s master gets `tags.txt` holding `tags` (`a, b`), so the next
+/// pull moves the checkout and its listing gives those tags.
+fn retag(remote: &sb_ops::testing::Remote, tags: &str) {
+    let _ = sb_ops::testing::git(&remote.work(), &["checkout", "--quiet", "master"]);
+    remote.commit("tags.txt", tags);
+}
+
+/// What moved (ops spec, "What moved, and the closing hint"; decisions 36
+/// and 37), on `lines` after the last tree: a first update with nothing
+/// to pull, both up to date and no hint; Sandbox's pull adding two tags
+/// and removing one, its range, the tags with `sandbox-`, and Sandbox's
+/// hint; Saltbox's pull with the same tags, `, no tag changes` and H2;
+/// both moving, Saltbox's tags as typed and H2 alone.
+#[tokio::test]
+async fn what_moved_shows_each_range_the_tags_a_pull_changed_and_the_hint() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let (flags, disk) = (args(&PIPED), roomy());
+    let run = || world.run(&flags, Err("piped".to_owned()), &[], None, &disk);
+    let ran = run().await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let (saltbox, sandbox) = (short(&world.saltbox()), short(&world.sandbox()));
+    assert_eq!(
+        ran.lines,
+        format!(
+            "\nSaltbox  already up to date ({saltbox})\nSandbox  already up to date ({sandbox})\n"
+        )
+    );
+
+    retag(
+        &world.sb.sandbox_remote,
+        "always, authelia, docker, karakeep, plex, sanity-check, sonarr, tracearr",
+    );
+    let ran = run().await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let moved = short(&world.sandbox());
+    assert_eq!(
+        ran.lines,
+        format!(
+            "\nSaltbox  already up to date ({saltbox})\nSandbox  {sandbox} → {moved}\n  \
+             New tags:      sandbox-karakeep, sandbox-tracearr\n  \
+             Removed tags:  sandbox-traefik\n\n{SANDBOX_HINT}"
+        )
+    );
+    let sandbox = moved;
+
+    retag(&world.sb.saltbox_remote, DEFAULT_TAGS);
+    let ran = run().await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let moved = short(&world.saltbox());
+    assert_eq!(
+        ran.lines,
+        format!(
+            "\nSaltbox  {saltbox} → {moved}, no tag changes\n\
+             Sandbox  already up to date ({sandbox})\n\n{SALTBOX_HINT}"
+        )
+    );
+    let saltbox = moved;
+
+    retag(
+        &world.sb.saltbox_remote,
+        "always, docker, plex, sanity-check, sonarr, traefik",
+    );
+    retag(&world.sb.sandbox_remote, "always, karakeep");
+    let ran = run().await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let (saltbox_now, sandbox_now) = (short(&world.saltbox()), short(&world.sandbox()));
+    assert_eq!(
+        ran.lines,
+        format!(
+            "\nSaltbox  {saltbox} → {saltbox_now}\n  Removed tags:  authelia\n\
+             Sandbox  {sandbox} → {sandbox_now}\n  Removed tags:  sandbox-authelia, \
+             sandbox-docker, sandbox-plex,\n                 sandbox-sanity-check, \
+             sandbox-sonarr, sandbox-tracearr\n\n{SALTBOX_HINT}"
+        )
+    );
+}
+
+/// The first update on a host with no cache (decision 37): the pull's
+/// range, never every tag as new.
+#[tokio::test]
+async fn the_first_update_on_a_host_with_no_cache_shows_only_the_range() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    assert!(!world.saltbox().join("cache.json").exists());
+    let saltbox = short(&world.saltbox());
+    retag(&world.sb.saltbox_remote, "plex, sonarr");
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(
+        ran.lines,
+        format!(
+            "\nSaltbox  {saltbox} → {}\nSandbox  already up to date ({})\n\n{SALTBOX_HINT}",
+            short(&world.saltbox()),
+            short(&world.sandbox())
+        )
+    );
+}
+
+/// The tags show only when the old entry was valid for the commit before
+/// the pull (decision 37): a valid entry written by hand, as sb-go writes
+/// one, shows them; each other case shows the range only: no file, no
+/// entry, an unreadable file (over cli-core's 1 MiB), a corrupt file, an
+/// entry of another shape, an entry for another commit, empty tags.
+#[tokio::test]
+async fn the_tags_show_only_from_an_old_entry_valid_for_the_commit_before_the_pull() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let flags = args(&PIPED);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let file = world.saltbox().join("cache.json");
+    let key = serde_json::to_string(&world.saltbox().display().to_string()).expect("key");
+    let entry = |value: &str| format!("{{{key}:{value}}}");
+    let cases = [
+        "a valid entry",
+        "no file",
+        "no entry",
+        "an unreadable file",
+        "a corrupt file",
+        "another shape",
+        "another commit",
+        "empty tags",
+    ];
+    for (at, case) in cases.into_iter().enumerate() {
+        let old = sb_ops::testing::git(&world.saltbox(), &["rev-parse", "HEAD"]);
+        // The file's text, or none.
+        let text = match case {
+            "a valid entry" => Some(entry(&format!(r#"{{"commit":"{old}","tags":["plex"]}}"#))),
+            "no file" => None,
+            "no entry" => Some("{}".to_owned()),
+            "an unreadable file" => Some(" ".repeat(1024 * 1024 + 1)),
+            "a corrupt file" => Some("{not json".to_owned()),
+            "another shape" => Some(entry(&format!(r#"{{"commit":"{old}","tags":"plex"}}"#))),
+            "another commit" => Some(entry(&format!(
+                r#"{{"commit":"{}","tags":["plex"]}}"#,
+                "0".repeat(40)
+            ))),
+            "empty tags" => Some(entry(&format!(r#"{{"commit":"{old}","tags":[]}}"#))),
+            _ => unreachable!("{case}"),
+        };
+        match text {
+            Some(text) => std::fs::write(&file, text).expect("cache"),
+            None => {
+                let _ = std::fs::remove_file(&file);
+            }
+        }
+        retag(&world.sb.saltbox_remote, &format!("plex, case-{at}"));
+        let ran = world
+            .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+            .await;
+        assert_eq!(ran.error, None, "{case}: {}", ran.screen);
+        let range = format!("Saltbox  {} → {}\n", &old[..7], short(&world.saltbox()));
+        if case == "a valid entry" {
+            assert!(
+                ran.lines
+                    .contains(&format!("\n{range}  New tags:      case-{at}\n")),
+                "{case}: {}",
+                ran.lines
+            );
+            assert!(
+                !ran.lines.contains("Removed tags:"),
+                "{case}: {}",
+                ran.lines
+            );
+        } else {
+            assert!(
+                ran.lines.contains(&format!("\n{range}Sandbox  ")),
+                "{case}: {}",
+                ran.lines
+            );
+            assert!(!ran.lines.contains("tags:"), "{case}: {}", ran.lines);
+        }
+        assert!(ran.lines.ends_with(SALTBOX_HINT), "{case}: {}", ran.lines);
+    }
+}
+
+/// A rebuild that fails after the pull (decisions 37 and 38): the run's
+/// error, the range only, no hint.
+#[tokio::test]
+async fn a_failed_rebuild_shows_the_range_only_and_no_hint() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let flags = args(&PIPED);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let saltbox = short(&world.saltbox());
+    retag(&world.sb.saltbox_remote, "plex, sonarr");
+    world.host.fail("ansible-playbook");
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(
+        ran.screen.contains("Updating Saltbox tags cache"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(
+        ran.lines,
+        format!("\nSaltbox  {saltbox} → {}\n", short(&world.saltbox()))
+    );
+}
+
+/// Saltbox's runtime failing after its pull (decision 38): the pull is
+/// named (its HEAD is read before the runtime), the range only, no
+/// Sandbox line, no hint.
+#[tokio::test]
+async fn a_runtime_failure_after_the_pull_still_names_it() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let flags = args(&PIPED);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let saltbox = short(&world.saltbox());
+    // The pull brings a new lock, so the venv is rebuilt, and its sync
+    // fails (python-env's stand-in uv).
+    retag(&world.sb.saltbox_remote, "plex, sonarr");
+    let layout = &world.sb.tree.layout;
+    let lock = layout
+        .lock
+        .strip_prefix(&layout.checkout)
+        .expect("in the checkout");
+    world.sb.saltbox_remote.commit(
+        &lock.display().to_string(),
+        "ansible==12.1.0 --hash=sha256:01\n",
+    );
+    world.sb.tree.fail("pip-sync");
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(
+        !ran.screen.contains("Updating Saltbox tags cache"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(
+        ran.lines,
+        format!("\nSaltbox  {saltbox} → {}\n", short(&world.saltbox()))
+    );
+}
+
+/// A failure after Saltbox's pull (decision 38): the Saltbox checkout
+/// that moved is named, the Sandbox step that failed isn't, no hint.
+#[tokio::test]
+async fn a_failure_after_saltboxs_pull_shows_what_moved_without_the_hint() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    let flags = args(&PIPED);
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let saltbox = short(&world.saltbox());
+    retag(&world.sb.saltbox_remote, DEFAULT_TAGS);
+    std::fs::remove_dir_all(world.sandbox()).expect("remove sandbox");
+    let ran = world
+        .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(
+        ran.screen.contains("error updating Sandbox"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(
+        ran.lines,
+        format!(
+            "\nSaltbox  {saltbox} → {}, no tag changes\n",
+            short(&world.saltbox())
+        )
+    );
+}

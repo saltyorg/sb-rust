@@ -16,7 +16,7 @@ pub use runner::{
     Group, GroupAll, Labels, Line, Options, Runner, Step, Target, keeps_codes, runner_live,
 };
 pub use table::{Cell, Table};
-pub use text::{DisplayText, Resume};
+pub use text::{DisplayText, Resume, wrap_line};
 
 use anstream::{AutoStream, ColorChoice};
 use sb_cli_core::theme::Profile;

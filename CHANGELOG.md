@@ -35,6 +35,10 @@ you could trip over.
 - **A theme file,** `<appdata>/sb/config.toml`: the built-in theme, with
   the colour depth and colours per role.
 - **`sb docker ps --json`.**
+- **`sb update` says what moved:** each checkout's commit range, the
+  tags its pull added or removed, and how to apply the update (`sb
+  install saltbox`, or `core` plus your apps). The run log keeps the
+  commits and the tag changes.
 - **Flags for every question,** so commands run unattended:
   `update --migrations`, `setup --keep-branch` and `--reset-branch`,
   `restore --user` and `--password-file`, `edit --no-edit-again`.
