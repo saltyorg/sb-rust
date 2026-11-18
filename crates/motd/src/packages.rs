@@ -722,4 +722,35 @@ pub(crate) mod tests {
         );
         assert_eq!(first_number("no number"), None);
     }
+
+    /// Package Status's `--json` value for each answer: the line's count,
+    /// 0 for `System is up to date`, `null` when the status is unknown.
+    #[tokio::test]
+    async fn the_package_value_counts_each_answer() {
+        use crate::Json;
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let value = |updates: serde_json::Value, text: &str| {
+            Json::Value(json!({ "updates": updates, "text": text }))
+        };
+        assert_eq!(
+            packages_out(&paths, &Paint::plain()).await.json,
+            value(serde_json::Value::Null, UNKNOWN)
+        );
+        std::fs::write(&paths.updates_available, "Your system is up to date\n").unwrap();
+        assert_eq!(
+            packages_out(&paths, &Paint::plain()).await.json,
+            value(json!(0), "System is up to date")
+        );
+        std::fs::write(
+            &paths.updates_available,
+            "3 updates can be applied immediately.\n",
+        )
+        .unwrap();
+        assert_eq!(
+            packages_out(&paths, &Paint::plain()).await.json,
+            value(json!(3), "3 updates can be applied immediately.")
+        );
+    }
 }
