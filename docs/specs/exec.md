@@ -107,7 +107,7 @@ group, within the grace period plus one second.
 | `capture(&token)` | Capture, Combined, Discard | stdout and stderr collected separately, up to 1 MiB each (cli-core's cap for text sb reads), returned | `systemctl is-active`, `git rev-parse`, `uv --version`, `dpkg-query` |
 | `stream(&mut step)` | Stream, managed output | each line to the step as it arrives (stdout and stderr); stderr's last 64 KiB kept for the caller (apt's retry match) | `apt-get update`, `git pull` under the runner |
 | `pty(&mut step)` | `WithPseudoTerminal` | under a pseudo-terminal of sb's terminal size (24×120 when stderr isn't one, as sb-go), lines to the step; the child sees a TTY; stdin refused; echo off, and the end-of-file character written at start so a reading child's first read is end of file (a child that flushes its input before prompting, as a password prompt does, still waits: a PTY child must not prompt, so it gets a non-interactive flag or a timeout) | tools that colour or show progress only on a TTY |
-| `attached(&shutdown)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged; `stdin(bytes)` refused before spawning (decision 11); cli-core's hold on SIGINT and SIGQUIT while it runs (decision 2; the `Shutdown`, decision 13) | an editor, an `ansible-playbook` run shown as it is |
+| `attached(&shutdown)` | Interactive | sb's own stdin, stdout and stderr; nothing collected, output not logged; `stdin(bytes)` refused before spawning (decision 11); cli-core's hold on SIGINT and SIGQUIT while it runs (decision 2; the `Shutdown`, decision 13); not started in a run already interrupted, looked at before the hold and again once it has started, as a signal delivered just before the hold is decided then (exec-L6, 2026-11-18) | an editor, an `ansible-playbook` run shown as it is |
 
 `stream` and `pty` take the step's token (term-ui's `Step::token`, a
 child of cli-core's shared token); `capture` takes one; `attached` takes
@@ -252,8 +252,14 @@ even if the child then exits 0 within the grace period.
   exits normally before sb's own copy of it is delivered (extreme load:
   the child's handling and exit and sb's reap all run first) leaves that
   copy to be decided outside the hold: a Ctrl-C then cancels the run, a
-  Ctrl-\ is the hard escape. `attached` checks once, before the
-  spawn, that no term-ui runner is live; nothing stops a runner starting
+  Ctrl-\ is the hard escape. A Ctrl-C between the hold's start and
+  the child's `execve` (one spawn, well under a millisecond) is noted as
+  held, and the child never sees it: it starts, and the user presses
+  Ctrl-C again. A SIGTERM or SIGHUP isn't settled by the hold (only the
+  held signals are), so one delivered just before it can let the child
+  start and be stopped at once: accepted, as SIGTERM means stop.
+  `attached` checks once, before the spawn, that no term-ui runner is
+  live; nothing stops a runner starting
   while an attached child runs (commands don't). A root attached child is
   dumpable again after `execve` (the kernel resets sb's setting), so its
   core follows the host's own (as from a shell). One started in the 500 ms

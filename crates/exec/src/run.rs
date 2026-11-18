@@ -234,18 +234,28 @@ impl Cmd {
             return Err(self.not_started(cause));
         }
         // An interactive child started only to be stopped at once (an
-        // editor flashing up): not started, the outcome interrupted.
-        if shutdown.token().is_cancelled() {
+        // editor flashing up): not started, the outcome interrupted. Looked
+        // at again once the hold has started: a signal delivered just
+        // before it is decided as it starts (cli-core's `Shutdown::hold`),
+        // and a Ctrl-C then has cancelled the run (hardening finding
+        // exec-L6).
+        let interrupted = |command: String| {
             tracing::info!(command, "child not started: the run was interrupted");
-            return Ok(Ran {
+            Ran {
                 outcome: Outcome {
                     ending: Ending::Interrupted,
                     elapsed: Duration::ZERO,
                 },
                 command,
-            });
+            }
+        };
+        if shutdown.token().is_cancelled() {
+            return Ok(interrupted(command));
         }
         let hold = shutdown.hold();
+        if shutdown.token().is_cancelled() {
+            return Ok(interrupted(command));
+        }
         let (mut child, _) = self.spawn(Way::Attached)?;
         let registered = AttachedPid::new(child.id());
         let start = Instant::now();

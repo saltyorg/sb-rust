@@ -128,6 +128,7 @@ the module build fixed each when its consumer arrived (the rows below).
 | follow-L1 | Low | journal | 40 | A waited read is retried only at the next inotify event | The retry timing belongs to the viewer's wake loop; decide it there; **fixed 2026-11-15 in 24a7f01** (module task M73) |  |
 | follow-L4 | Low | journal | 40 | Follow fails outright on inotify exhaustion | Correct behaviour; only the viewer's wording was open; **fixed 2026-11-15 in 24a7f01** (module task M73) |  |
 | page-L5 | Low | journal | 39 | Release and source passed twice, nothing ties them | An API addition with no consumer then (decision 10 names it); **fixed 2026-11-13 in 172d0b1** (module task M65: `Journal::unit_query`) |  |
+| exec-L6 | Low | exec | 15 | `attached` doesn't re-check the token after the hold | Deferred until `attached` had a caller. **Re-triaged 2026-11-18**: reachable now, as `sb edit` and ansible's `install` and `diag` runs are attached: a Ctrl-C delivered just before the hold is decided as the hold starts (`Shutdown::hold` settles it), and the editor or playbook was then started and stopped at once. **Fixed 2026-11-18** (`fix(exec): start no attached child once the hold sees an interrupt`; `tests/attached_late_signal.rs`) |  |
 
 ## DEFER (waits for its consumer)
 
@@ -135,16 +136,15 @@ the module build fixed each when its consumer arrived (the rows below).
 
 | id | severity | crate | task | description | reason | was unsure |
 |---|---|---|---|---|---|---|
-| exec-M2 | Medium | exec | 11 | A secret split by an escape evades the mask | No command registers a secret with exec or streams child output yet |  |
-| san-L3 | Low | exec | 11 | Mask runs before sanitizing | Same defect as exec-M2 |  |
+| exec-M2 | Medium | exec | 11 | A secret split by an escape evades the mask | No command registers a secret with exec or streams child output yet. 2026-11-18: commands stream child output now (apt, git, uv, the hooks), but none registers a secret with exec |  |
+| san-L3 | Low | exec | 11 | Mask runs before sanitizing | Same defect as exec-M2 (and its 2026-11-18 note) |  |
 | exec-M3 | Medium | exec | 15 | `pty` with a cleared environment can't find a bare program name | No command uses `pty` yet |  |
-| exec-L6 | Low | exec | 15 | `attached` doesn't re-check the token after the hold | No command uses `attached` yet |  |
 | exec-L4 | Low | exec | 23 | A PTY child that reads twice hangs until its timeout | No command uses `pty` yet; a doc line when one does |  |
 | exec-L5 | Low | exec | 23 | No mask for a secret sent on stdin | An API addition with no consumer |  |
-| san-L2 | Low | term-ui | 25 | Kept SGR codes include font select and aren't always closed | Only through streamed child output, which no command produces yet (decision 17 already says how) |  |
+| san-L2 | Low | term-ui | 25 | Kept SGR codes include font select and aren't always closed | Only through streamed child output, which no command produced then (decision 17 already says how). **Re-triaged 2026-11-18**: still not reached in practice. The streamed children (git, apt-get and the dpkg maintainer scripts its install, remove and autoremove run, uv, the Git hooks command) relay text only from sources that already run as root on the server (Ubuntu's packages, Saltbox's repository and its commit subjects, the pinned requirements) or from GitHub over TLS (git's `remote:` lines); their own colour, when a config file or a root shell forces it on a pipe, is closed standard codes. Only SGR codes reach the screen, and only with sb's colour on; the run log escapes every line. Stays deferred, with findings.md's fix, for a child relaying coloured text from an untrusted source |  |
 | san-I1 | unrated | term-ui | 21 | Step labels and titles drawn unsanitized | Every caller passes constants or escaped paths; matters with the first caller that passes foreign text |  |
 | ui-L1 | Low | term-ui | 21 | Labels and title unsanitized | Same as san-I1 |  |
-| ui-L5 | Low | term-ui | 21 | Long output lines stored whole and re-measured each frame | Only through streamed child output |  |
+| ui-L5 | Low | term-ui | 21 | Long output lines stored whole and re-measured each frame | Only through streamed child output. **Re-triaged 2026-11-18**: not reachable through exec: every streamed line is cut to 4 KiB (exec's `LINE`) before it reaches `Step::output`, and the only other caller (completion's refresh) passes sb's own short lines. Stays deferred for a caller of `Step::output` with unbounded foreign text |  |
 | page-L9 | Low | journal | 39 | API ergonomics (PartialEq, constructors, cursor parsing) | API changes with no consumer |  |
 | sb-M1 | Medium | sb | 48 | No gate runs the production musl binary | Gate work, but it guards what users will actually run; do it when the first release is prepared | yes |
 | sb-M4 | Medium | sb | 48 | The cross build drops the version variables | Bites at the first release build (wrong `sb version`); no release pipeline exists yet |  |
