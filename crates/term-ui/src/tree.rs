@@ -549,12 +549,13 @@ impl Tree {
                     .map(|text| format!("{lead}{}", d.paint(Role::Muted, text))),
             );
         }
-        // Then where the full output is, when the run is logged; its
+        // Then where the full output is, when the run is logged, under
+        // cli-core's error-block label; its
         // continuation rows start under its text, past the branch.
         if let (Status::Failed, Some(pointer)) = (node.status, &self.pointer) {
             let branch = format!("{}{}", GLYPHS.last_item, GLYPHS.item_indent);
             let under = " ".repeat(width(&branch));
-            let texts = fit(&format!("full output: {pointer}"), room.saturating_sub(4));
+            let texts = fit(&format!("details: {pointer}"), room.saturating_sub(4));
             for (i, text) in texts.iter().enumerate() {
                 let branch = if i == 0 { &branch } else { &under };
                 lines.push(format!(
@@ -1172,7 +1173,7 @@ mod tests {
             line 9
             line 10
             line 11
-            ╰── full output: /var/log/sb/sb.log (run 1a2b)
+            ╰── details: /var/log/sb/sb.log (run 1a2b)
         ");
         // Live, a long pointer is cut to the screen; printed, it is whole.
         let mut live = Tree::default();
@@ -1202,7 +1203,7 @@ mod tests {
         again.end();
         let printed = again.take_printable(&draw(&theme, t0));
         assert!(
-            !printed.iter().any(|l| l.contains("full output")),
+            !printed.iter().any(|l| l.contains("details:")),
             "{printed:?}"
         );
     }
@@ -1267,8 +1268,8 @@ mod tests {
                 Pulling ghcr.io/hotio/plex:release
                 Error response from daemon: Head
                 "https://ghcr.io/v2/hotio/plex/manifests/release": denied: denied
-                ╰── full output: /var/log/sb/a-long-folder-name/for-the-run-logs/sb.log
-                    (run 1a2b)
+                ╰── details: /var/log/sb/a-long-folder-name/for-the-run-logs/sb.log (run
+                    1a2b)
         "#);
     }
 

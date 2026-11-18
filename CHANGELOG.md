@@ -50,7 +50,9 @@ you could trip over.
   answering flag, sb stops and names the flag.
 - **validate-config is stricter.** It checks every schema rule
   (`pattern`, `additionalProperties`), refuses YAML that libyaml refuses,
-  and reports each issue with its position.
+  and reports each issue with its position. A failed run ends with the
+  `sb edit` command for each file with issues (`Fix with: sb edit
+  accounts`).
 - **Parse errors exit 2** (sb-go exited 1).
 - **A failed playbook exits with Ansible's own code** (sb-go exited 1), and
   Ctrl-C during one exits 99, Ansible's (sb-go exited 130): `sb install`

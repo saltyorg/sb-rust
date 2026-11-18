@@ -79,8 +79,9 @@ fn one_sigint_ends_130_with_the_terminal_restored() {
     // cli-core's block, once (its colour codes left out).
     let plain = console::strip_ansi_codes(&text);
     assert_eq!(plain.matches("✗ interrupted\r\n").count(), 1, "{text:?}");
+    // The pointer once, cli-core's: none of the step's own.
     assert!(
-        !text.contains("full output"),
+        plain.matches("details: ").count() <= 1 && !plain.contains("── details"),
         "no pointer of the step's own: {text:?}"
     );
     assert!(echo_restored(&text), "{text:?}");

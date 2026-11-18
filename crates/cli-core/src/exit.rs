@@ -242,6 +242,16 @@ pub fn escaped(text: &str) -> String {
     crate::config::escape(text, true)
 }
 
+/// The log pointer on a line of its own, `details: <pointer>`, labelled
+/// and escaped as in the error block: for a command whose failures are
+/// shown in a step tree and whose pointer comes once after it
+/// (validate-config, `sb edit`).
+#[must_use]
+pub fn pointer_line(pointer: &str, theme: &Theme) -> String {
+    let label = theme.style(Role::Muted);
+    format!("{label}details:{label:#} {}\n", escaped(pointer))
+}
+
 fn block(
     headline: &str,
     causes: impl IntoIterator<Item = String>,
@@ -442,6 +452,27 @@ mod tests {
             text,
             "✗ step failed\n  details: /var/log/sb/sb.2026-10-30.log (run 1a2b3c4d)\n"
         );
+    }
+
+    /// The pointer alone, for a command that shows it once after its
+    /// tree: the block's label and escaping, at the margin.
+    #[test]
+    fn the_pointer_line_has_the_blocks_label() {
+        let plain = crate::theme::Theme::plain();
+        assert_eq!(
+            pointer_line("/var/log/sb/x\x1b[1A.log (run 1)", &plain),
+            "details: /var/log/sb/x\\u{1b}[1A.log (run 1)\n"
+        );
+        let theme = crate::theme::Theme::resolve(
+            &crate::theme::Palette::default(),
+            crate::theme::Profile::Ansi,
+        );
+        let shown = pointer_line("/x (run 1)", &theme);
+        assert_eq!(
+            anstream::adapter::strip_str(&shown).to_string(),
+            "details: /x (run 1)\n"
+        );
+        assert!(shown.starts_with('\x1b'), "{shown:?}");
     }
 
     /// A cause the user reads on the terminal (an attached playbook run's

@@ -172,14 +172,20 @@ fn a_broken_set_fails_with_its_issues() {
     assert!(!text.contains("s3cret-pass"), "{text}");
     // The decode error stops accounts.yml's rules: the email isn't checked.
     assert!(!text.contains("user.email"), "{text}");
-    // Each issue once, in its file's block, with the log's pointer; not
-    // repeated by cli-core.
+    // Each issue once, in its file's block; not repeated by cli-core.
     assert_eq!(
         text.matches("user.pass: cannot decode").count(),
         1,
         "{text}"
     );
-    assert!(text.contains("full output: "), "{text}");
+    // The log's pointer once, after the tree, then the edit that fixes
+    // the file with issues (not the missing one, which sb edit can't
+    // open).
+    assert_eq!(text.matches("details: ").count(), 1, "{text}");
+    let end: Vec<&str> = text.trim_end().lines().rev().take(2).collect();
+    assert_eq!(end[0], "Fix with: sb edit accounts", "{text}");
+    assert!(end[1].starts_with("details: "), "{text}");
+    assert!(end[1].contains("(run "), "{text}");
 }
 
 /// Without a fake, both checks go to the harness's refused loopback port
@@ -307,10 +313,21 @@ fn both_checks_finish_when_one_fails() {
         "docker hub authentication failed (HTTP 401): Incorrect authentication credentials",
         "✓ Cloudflare API credentials validated",
         "✗ Validating accounts.yml   sub-step failed",
-        "full output: ",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
+    // The pointer once, at the end; a failed check alone is no file's
+    // issue, so no `Fix with:` line.
+    assert_eq!(text.matches("details: ").count(), 1, "{text}");
+    assert!(
+        text.trim_end()
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .starts_with("details: "),
+        "{text}"
+    );
+    assert!(!text.contains("Fix with:"), "{text}");
     // The failure is shown once: in its block, not again by cli-core.
     assert_eq!(
         text.matches("Incorrect authentication credentials").count(),
@@ -588,4 +605,17 @@ fn json_reports_issues_with_their_positions() {
         "{stdout}"
     );
     assert!(!stdout.contains("s3cret-pass"), "{stdout}");
+    // stdout is the document alone, one line of JSON; the closing lines
+    // stay on stderr with the steps.
+    let document: serde_json::Value = serde_json::from_str(&stdout).expect("JSON alone");
+    assert_eq!(document["schema"], 1, "{stdout}");
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        !stdout.contains("Fix with:") && !stdout.contains("details:"),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let end: Vec<&str> = stderr.trim_end().lines().rev().take(2).collect();
+    assert_eq!(end[0], "Fix with: sb edit accounts", "{stderr}");
+    assert!(end[1].starts_with("details: "), "{stderr}");
 }

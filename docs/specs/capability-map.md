@@ -130,7 +130,7 @@ Rust libraries in place of sb-go's internals.
       hold, by default, everything needed to debug odd behaviour: every
       module logs the detail a debug flag would otherwise have turned on.
       Ansible's own verbosity for installs is passed through separately.
-      Only logrotate retires old copies. A failed step's `full output:` line
+      Only logrotate retires old copies. A failed step's `details:` line
       points at the log and the run id. Proved in proto-runner.
     - **Format:** to be decided in the spec. tracing-subscriber's readable
       key=value format suits users reading the file; its JSON format suits

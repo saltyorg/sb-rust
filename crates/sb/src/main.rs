@@ -1215,10 +1215,21 @@ fn validate_config(json: bool, shutdown: &Shutdown, log: Option<&RunLog>) -> any
     // The runtime's error first (`?`), then the run's, as the result.
     block_on(async {
         let options = sb_term_ui::Options::default();
-        let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
+        // No log: the pointer comes once, after the tree, then the edits
+        // that fix the files with issues (`edit::print_closing`), on
+        // stderr with the steps; `--json`'s stdout holds the document
+        // alone.
+        let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, None, options);
         let (result, results) =
             sb_config::run::run_recording(&mut runner, &settings, &backups_dir()).await;
         runner.finish();
+        if result.is_err() {
+            let fix: Vec<edit::File> = results
+                .with_issues()
+                .filter_map(edit::File::of_path)
+                .collect();
+            edit::print_closing(log, &fix, shutdown);
+        }
         if let Some(document) = json_document(json, shutdown.token().is_cancelled(), &results) {
             let mut out = std::io::stdout().lock();
             out.write_all(document.as_bytes())
@@ -1531,6 +1542,25 @@ mod tests {
             let command = Cli::try_parse_from(args).expect("parses").command;
             assert!(command.needs_root(), "{name}");
             assert_eq!(command.name(), name);
+        }
+    }
+
+    /// Each file's `sb edit` name, as a `Fix with:` line gives it, parses
+    /// to the subcommand that opens that file.
+    #[test]
+    fn each_files_edit_name_opens_it() {
+        for file in edit::File::ALL {
+            let parsed = Cli::try_parse_from(["sb", "edit", file.command()])
+                .expect("parses")
+                .command;
+            let Command::Edit {
+                command: Some(command),
+                ..
+            } = parsed
+            else {
+                panic!("{}: not an edit subcommand", file.command());
+            };
+            assert_eq!(command.file(), file, "{}", file.command());
         }
     }
 

@@ -128,8 +128,10 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   every sibling finish: decision 10.
 - **Failure:** the failed step prints ✗, the failure label, the error
   (every line of a multi-line error, indented under it) and its last 10
-  output lines, then the log pointer (`╰── full output: <file> (run <id>)`,
-  from cli-core's `RunLog::pointer`, when the run is logged). The run then
+  output lines, then the log pointer (`╰── details: <file> (run <id>)`,
+  cli-core's error-block label, from cli-core's `RunLog::pointer`, when
+  the run is logged and the caller passed the log: validate-config and
+  `sb edit` pass none and print the pointer once after the tree). The run then
   ends with a quiet `Exit(1)`, so cli-core doesn't repeat the error
   (cli-core spec: errors already shown exit quietly). The step's own log
   record carries the error and its causes, since the run record then only

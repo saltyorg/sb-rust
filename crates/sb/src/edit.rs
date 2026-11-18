@@ -7,6 +7,7 @@
 //! spec, Difference 38).
 
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 
@@ -80,6 +81,29 @@ impl File {
             Self::Motd => "motd.yml",
             Self::Providers => "providers.yml",
         }
+    }
+
+    /// Its `sb edit` subcommand's name (sb-go's, underscores kept), as a
+    /// `Fix with:` line gives it.
+    pub fn command(self) -> &'static str {
+        match self {
+            Self::Accounts => "accounts",
+            Self::Settings => "settings",
+            Self::AdvSettings => "adv_settings",
+            Self::BackupConfig => "backup_config",
+            Self::HetznerVlan => "hetzner_vlan",
+            Self::Inventory => "inventory",
+            Self::Motd => "motd",
+            Self::Providers => "providers",
+        }
+    }
+
+    /// The file `sb edit` opens for the one validate-config checks at
+    /// `path` (its entry's path in `run::FILES`), if any.
+    pub fn of_path(path: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|file| file.checked_as().path == path)
     }
 
     /// Its path under the Saltbox `root`: the inventory where cli-core
@@ -254,18 +278,56 @@ pub fn edit(
             Ending::Interrupted => bail!("interrupted"),
             ending => bail!("error opening editor: {ending}"),
         }
-        let failed = match super::block_on(validate(file, &settings, shutdown, log))?? {
-            Validated::Clean => return Ok(()),
-            Validated::Issues(failed) => failed,
+        let failed = match super::block_on(validate(file, &settings, shutdown))? {
+            Ok(Validated::Clean) => return Ok(()),
+            Ok(Validated::Issues(failed)) => failed,
+            Err(failed) => {
+                print_closing(log, &[], shutdown);
+                return Err(failed.into());
+            }
         };
         // A signal during the validation ends the run, unasked.
         if shutdown.token().is_cancelled() {
             bail!("interrupted");
         }
         if !ask_again(&question, no_edit_again, shutdown)? {
+            print_closing(log, &[file], shutdown);
             return Err(failed.into());
         }
     }
+}
+
+/// The lines after a failed validation's tree, for validate-config and
+/// `sb edit`, whose runners draw no pointer under each failed step: the
+/// run log's `pointer` once (cli-core's `details:` line), then `Fix with:`
+/// and the `sb edit` line for each of `fix`, the files with issues.
+pub(crate) fn closing(
+    pointer: Option<&str>,
+    fix: &[File],
+    theme: &sb_cli_core::theme::Theme,
+) -> String {
+    let mut text =
+        pointer.map_or_default(|pointer| sb_cli_core::exit::pointer_line(pointer, theme));
+    if !fix.is_empty() {
+        let lines: Vec<String> = fix
+            .iter()
+            .map(|file| format!("sb edit {}", file.command()))
+            .collect();
+        let _ = writeln!(text, "Fix with: {}", lines.join(", "));
+    }
+    text
+}
+
+/// [`closing`] on stderr, after a failed validation that `shutdown`
+/// didn't end (an interrupted run's pointer is cli-core's block's).
+pub(crate) fn print_closing(log: Option<&RunLog>, fix: &[File], shutdown: &Shutdown) {
+    if shutdown.token().is_cancelled() {
+        return;
+    }
+    let pointer = log.map(RunLog::pointer);
+    let text = closing(pointer.as_deref(), fix, sb_cli_core::theme::current());
+    // As cli-core's block: nothing better to do if stderr itself fails.
+    let _ = std::io::Write::write_all(&mut anstream::stderr(), text.as_bytes());
 }
 
 /// term-ui's confirm for `question`, `no_edit_again` answering no.
@@ -343,11 +405,11 @@ async fn validate(
     file: File,
     settings: &run::Settings,
     shutdown: &Shutdown,
-    log: Option<&RunLog>,
 ) -> Result<Validated, Exit> {
     let checked = file.checked_as();
+    // No log: the pointer comes once, after the run ([`print_closing`]).
     let mut runner =
-        sb_term_ui::Runner::start("sb edit", shutdown, log, sb_term_ui::Options::default());
+        sb_term_ui::Runner::start("sb edit", shutdown, None, sb_term_ui::Options::default());
     let mut issues = None;
     let result = runner
         .step(run::file_labels(checked), async |step| {
@@ -518,6 +580,41 @@ mod tests {
             program: program.to_string(),
             args: args.iter().map(ToString::to_string).collect(),
         }
+    }
+
+    /// After a failed validation: the pointer once, then the `sb edit`
+    /// lines for the files with issues; neither when there is nothing to
+    /// say. validate-config's files map to the subcommand that opens each.
+    #[test]
+    fn the_closing_lines_point_once_and_name_the_fix() {
+        let plain = sb_cli_core::theme::Theme::plain();
+        let pointer = Some("/var/log/sb/sb.log (run 1a2b)");
+        assert_eq!(
+            closing(pointer, &[File::Accounts, File::Settings], &plain),
+            "details: /var/log/sb/sb.log (run 1a2b)\nFix with: sb edit accounts, sb edit settings\n"
+        );
+        assert_eq!(
+            closing(None, &[File::Inventory], &plain),
+            "Fix with: sb edit inventory\n"
+        );
+        assert_eq!(
+            closing(pointer, &[], &plain),
+            "details: /var/log/sb/sb.log (run 1a2b)\n"
+        );
+        assert_eq!(closing(None, &[], &plain), "");
+        let checked: Vec<Option<File>> = run::FILES.iter().map(|f| File::of_path(f.path)).collect();
+        assert_eq!(
+            checked,
+            [
+                Some(File::Accounts),
+                Some(File::AdvSettings),
+                Some(File::BackupConfig),
+                Some(File::HetznerVlan),
+                Some(File::Settings),
+                Some(File::Motd),
+                Some(File::Inventory),
+            ]
+        );
     }
 
     /// sb-go's `edit_test.go` cases: `VISUAL` before `EDITOR`, blank values

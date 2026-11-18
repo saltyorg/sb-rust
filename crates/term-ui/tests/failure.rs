@@ -40,7 +40,7 @@ fn a_failure_is_shown_once_with_its_error_and_pointer() {
     assert_eq!(lines[0], "  the Cloudflare token was refused");
     assert_eq!(lines[1], "  HTTP 403 from the Cloudflare API");
     assert_eq!(lines[2], "  the token lacks Zone:Read");
-    let pointer = format!("  full output: {}", dir.path().join("sb.log").display());
+    let pointer = format!("  details: {}", dir.path().join("sb.log").display());
     assert!(lines[3].starts_with(&pointer), "{text}");
     // Then the sibling it stopped (which may print a last line before it
     // sees the stop) and their parent, last.
@@ -55,7 +55,7 @@ fn a_failure_is_shown_once_with_its_error_and_pointer() {
     assert_eq!(text.matches("the Cloudflare token was refused").count(), 1);
     // One failure block: the sub-step inside the stopped sibling reads
     // "stopped" with no block (and no pointer) of its own.
-    assert_eq!(text.matches("full output").count(), 1, "{text}");
+    assert_eq!(text.matches("details:").count(), 1, "{text}");
     assert!(
         text.contains("\nChecking Docker Hub login: ✗ Logging in   stopped · "),
         "{text}"
@@ -89,7 +89,7 @@ fn no_pointer_without_a_log() {
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(text.contains("  the token lacks Zone:Read\n"), "{text}");
-    assert!(!text.contains("full output"), "{text}");
+    assert!(!text.contains("details:"), "{text}");
 }
 
 /// On a terminal: exit 1, the block and its pointer drawn, no cli-core
@@ -101,7 +101,7 @@ fn a_failure_on_a_terminal_exits_1_with_the_block() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("the token lacks Zone:Read"), "{text:?}");
-    assert!(text.contains("full output: "), "{text:?}");
+    assert!(text.contains("details: "), "{text:?}");
     assert!(
         !text.contains("caused by:"),
         "cli-core repeated it: {text:?}"
@@ -122,7 +122,7 @@ fn a_panic_shows_no_failure_block() {
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(text.contains("the demo was asked to panic"), "{text}");
     assert!(text.contains("✗ Checking credentials "), "{text}");
-    assert!(!text.contains("full output"), "{text}");
+    assert!(!text.contains("details:"), "{text}");
 }
 
 /// A group sibling's panic on a terminal (ui-M3): std's message is the

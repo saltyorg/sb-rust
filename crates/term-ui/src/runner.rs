@@ -795,7 +795,7 @@ impl Ending {
                         state.plain(held, format!("  {line}"));
                     }
                     if let Some(pointer) = state.tree.pointer().map(str::to_owned) {
-                        state.plain(held, format!("  full output: {pointer}"));
+                        state.plain(held, format!("  details: {pointer}"));
                     }
                 }
             }

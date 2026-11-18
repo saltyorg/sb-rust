@@ -942,8 +942,10 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   - **Issues:** the runner finishes, then term-ui's confirm prompt asks
     `Edit <shown name> again?` (default no). Yes runs the editor on the
     same file again, then validates again, as many times as the user
-    says yes. No exits 1. The file stays as the editor saved it either
-    way.
+    says yes. No exits 1, after validate-config's closing lines: the run
+    log's `details:` pointer once (the step itself draws none), then
+    `Fix with: sb edit <name>`. A file that couldn't be checked gets the
+    pointer alone. The file stays as the editor saved it either way.
   - **Non-interactive answer:** `--no-edit-again` (on `edit` and each
     subcommand) reports the issues and exits 1 without asking. With no
     terminal and no flag, term-ui's prompt rule applies: an error naming

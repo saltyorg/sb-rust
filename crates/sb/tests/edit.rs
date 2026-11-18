@@ -585,6 +585,12 @@ fn issues_show_as_validate_config_shows_them() {
     assert_eq!(output.status.code(), Some(1), "{edit}");
     assert!(edit.contains("✗ Validation of settings.yml"), "{edit}");
     assert!(!edit.contains("again?"), "{edit}");
+    // The run log's pointer once, after the tree, then the edit that
+    // fixes it later.
+    assert_eq!(edit.matches("details: ").count(), 1, "{edit}");
+    let end: Vec<&str> = edit.trim_end().lines().rev().take(2).collect();
+    assert_eq!(end[0], "Fix with: sb edit settings", "{edit}");
+    assert!(end[1].starts_with("details: "), "{edit}");
     assert_eq!(world.runs(), 1);
     assert_eq!(world.text("settings.yml"), broken);
 
@@ -734,6 +740,17 @@ fn a_file_that_cannot_be_checked_is_not_offered_again() {
     assert_eq!(output.status.code(), Some(1), "{text}");
     assert!(text.contains("schema file not found: "), "{text}");
     assert!(!text.contains("again?"), "{text}");
+    // The pointer once, at the end; no edit fixes it, so no `Fix with:`.
+    assert_eq!(text.matches("details: ").count(), 1, "{text}");
+    assert!(
+        text.trim_end()
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .starts_with("details: "),
+        "{text}"
+    );
+    assert!(!text.contains("Fix with:"), "{text}");
     assert!(
         !world.log().contains("edited file validated"),
         "{}",

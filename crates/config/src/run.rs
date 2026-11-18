@@ -277,6 +277,18 @@ pub struct Results {
     pub checks: Vec<CheckResult>,
 }
 
+impl Results {
+    /// The files with issues (an edit fixes those), in [`FILES`]' order:
+    /// validate-config's `Fix with:` line. A missing or unreadable file,
+    /// or one whose credential check alone failed, has none.
+    pub fn with_issues(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.files
+            .iter()
+            .filter(|file| !file.issues.is_empty())
+            .map(|file| file.file)
+    }
+}
+
 /// A file's outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileResult {
@@ -1995,6 +2007,47 @@ mod tests {
         assert!(!screen.contains("Cloudflare API credentials"), "{screen}");
         assert!(!screen.contains("not-a-real-key"), "{screen}");
         assert_eq!(fake.seen().len(), 1);
+    }
+
+    /// The files with issues, in validate-config's order, for the
+    /// caller's `Fix with:` line: not a missing one (`sb edit` can't open
+    /// it), nor one whose only failure is a credential check.
+    #[tokio::test]
+    async fn the_files_with_issues_are_named() {
+        let root = saltbox_root("valid").expect("root");
+        let accounts = std::fs::read_to_string(root.path().join("accounts.yml")).expect("read");
+        write(
+            root.path(),
+            "accounts.yml",
+            &accounts.replace("email: seed@example.com", "email: nope"),
+        );
+        let motd = std::fs::read_to_string(root.path().join("motd.yml")).expect("read");
+        write(root.path(), "motd.yml", &format!("{motd}bogus_key: 1\n"));
+        std::fs::remove_file(root.path().join("backup_config.yml")).expect("remove");
+        let fake = healthy();
+        let term = indicatif::InMemoryTerm::new(80, 140);
+        let options = Options {
+            target: Target::InMemory {
+                term: term.clone(),
+                colour: false,
+            },
+        };
+        let mut runner = Runner::start("sb validate-config", &Shutdown::new(), None, options);
+        let settings = Settings {
+            root: root.path().to_path_buf(),
+            zoneinfo: Vec::new(),
+            http: Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client"),
+            cloudflare_url: format!("{}/client/v4/", fake.url()),
+            dockerhub_url: format!("{}/v2/users/login/", fake.url()),
+            backoff: no_wait,
+        };
+        let (result, results) =
+            run_recording(&mut runner, &settings, &root.path().join("backups")).await;
+        runner.finish();
+        let screen = term.contents();
+        assert!(matches!(result, Err(Exit(1))), "{screen}");
+        let paths: Vec<&str> = results.with_issues().collect();
+        assert_eq!(paths, ["accounts.yml", "motd.yml"], "{screen}");
     }
 
     /// A `user.domain` with an issue skips the Cloudflare check, whose zone
