@@ -1230,8 +1230,11 @@ type and font checks, `--banner-file-toilet`'s arguments through shlex.
       - The container matrix (`crates/motd/tests/matrix.sh`) passed on
         22.04, 24.04 and 26.04, after its `sb motd` calls took
         `--title ''` (M46's banner was in their values).
-- [ ] Look: `sb motd --all` with every section (M36, M38, M42, M46 seen
-      at their tasks; the rest here).
+- [x] Look: `sb motd --all` with every section (M36, M38, M42, M46 seen
+      at their tasks; the rest here). Done: accepted by the
+      maintainer, 2026-11-17, its colours open to change
+      later (the colours are noted in the capability map's
+      output-design phase).
 
 ---
 
@@ -1364,14 +1367,14 @@ mouse, restore, and the hand-off to M49's path, so `sb edit` without a
 file shows the picker.
 
 **Acceptance criteria:**
-- [ ] The picker returns the chosen file and restores the terminal; sb's
+- [x] The picker returns the chosen file and restores the terminal; sb's
       `edit.rs` runs the editor, so both paths share one.
-- [ ] Mouse and keys choose a row; Esc and `q` leave.
-- [ ] Screenshots of `sb edit`.
+- [x] Mouse and keys choose a row; Esc and `q` leave.
+- [x] Screenshots of `sb edit`.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb` with TestBackend snapshots.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui -p sb` with TestBackend snapshots.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M52, M74 (crates/tui handoff)
 **Files:** `crates/tui/src/{edit_picker.rs,lib.rs}` (`picker.rs` is the log viewer's, M70), `crates/sb/src/edit.rs`, `crates/sb/tests/edit.rs`
@@ -1385,13 +1388,13 @@ file shows the picker.
 and shows headings, search, folding, masking, Show and Copy.
 
 **Acceptance criteria:**
-- [ ] Secrets are masked by `is_secret_key` until Show.
-- [ ] Search and folding as the spec says.
-- [ ] Screenshots of `sb fact` on fixture role files.
+- [x] Secrets are masked by `is_secret_key` until Show.
+- [x] Search and folding as the spec says.
+- [x] Screenshots of `sb fact` on fixture role files.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb` with TestBackend snapshots.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui -p sb` with TestBackend snapshots.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M53
 **Files:** `crates/tui/{Cargo.toml,src/fact/}`, `crates/sb/src/{main.rs,fact.rs}`, `Cargo.toml`, `Cargo.lock`
@@ -1406,14 +1409,14 @@ levels, the changes panel with undo, save, quit, and the lock-wait,
 drift and outcome dialogs.
 
 **Acceptance criteria:**
-- [ ] Each change shows in the panel and undoes.
-- [ ] Save goes through M52's apply; each outcome has its dialog.
-- [ ] Screenshots of the panel and each dialog. If it grows past M, the
+- [x] Each change shows in the panel and undoes.
+- [x] Save goes through M52's apply; each outcome has its dialog.
+- [x] Screenshots of the panel and each dialog. If it grows past M, the
       delete levels split into a task of their own.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M54
 **Files:** `crates/tui/src/fact/`, `crates/sb/tests/fact.rs`
@@ -1428,22 +1431,39 @@ rects, the right-click menu, the PTY smoke test, then the manual
 two-emulator check (Shift-drag selection) and the maintainer's look.
 
 **Acceptance criteria:**
-- [ ] Clicks and the menu act on the rows under them.
-- [ ] The PTY smoke test drives `sb fact` end to end.
-- [ ] The two-emulator check is recorded; screenshots of the menu.
+- [x] Clicks and the menu act on the rows under them.
+- [x] The PTY smoke test drives `sb fact` end to end.
+- [x] The two-emulator check is recorded; screenshots of the menu.
 
 **Verification:**
-- [ ] `cargo test -p sb-tui -p sb`; `crates/sb/tests/fact.rs`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-tui -p sb`; `crates/sb/tests/fact.rs`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M55
 **Files:** `crates/tui/src/fact/`, `crates/sb/tests/fact.rs`
 **Scope:** M
 
 ## Checkpoint E: editors
-- [ ] M48-M56 merged; `check.sh full`.
+- [x] M48-M56 merged; `check.sh full`. Done: full passed on main's
+      tree at f1c496b (2026-11-18): every step over the whole
+      workspace, 3470 tests in the release-build run, all passed, the
+      editors' among them (`sb edit`'s picker, report and "edit again?"
+      and `sb fact`'s open errors, page, save, paste and PTY smoke test
+      in crates/sb/tests/edit.rs and fact.rs, 42 tests; the edit
+      picker's and the fact editor's 120 sb-tui tests with their
+      TestBackend snapshots). Project coverage from the run's lcov:
+      98.39% of the crates' lines, 97.60% of their functions. With no
+      base the mutation step has no changed code to mutate; the
+      editors' commits were mutated in their own gates on the way in
+      (96.2%, 91.3% and 100% caught, each at or above 80%). The
+      follow-ons merged with them: the copy and delete notes fitted to
+      80 columns, bracketed paste in every text box, and the menu
+      opening by its row (the maintainer, 2026-11-16 and 17).
 - [ ] Look: the post-edit report (M50), the edit picker (M53), the fact
-      editor's page, panel, dialogs and menu (M54-M56).
+      editor's page, panel, dialogs and menu (M54-M56), from captures at
+      80x24 and 120x32, plain and colour; with it, M56's manual check in
+      two terminal emulators: mouse, Shift-drag selection, wide
+      characters after overwrites, a paste, and the folding threshold.
 
 ## Task M57: completion: `CompleteEnv`, the tag completer, `generate`
 
@@ -1455,13 +1475,13 @@ two-emulator check (Shift-drag selection) and the maintainer's look.
 settling verification items 1-6.
 
 **Acceptance criteria:**
-- [ ] A run with `SB_COMPLETE` prints only candidates and is never logged.
-- [ ] The tag completer reads ansible's cache and answers sb-go's cases.
-- [ ] Verification items 1-6 settled in each shell's container (2's symlink name and 5, the completer path, needed `completion install`: settled with M58).
+- [x] A run with `SB_COMPLETE` prints only candidates and is never logged.
+- [x] The tag completer reads ansible's cache and answers sb-go's cases.
+- [x] Verification items 1-6 settled in each shell's container (2's symlink name and 5, the completer path, needed `completion install`: settled with M58).
 
 **Verification:**
-- [ ] `cargo test -p sb-completion -p sb`; `tests/shells.sh` under the cap.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-completion -p sb`; `tests/shells.sh` under the cap.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** the maintainer's proto-complete review; M32
 **Files:** `crates/completion/{Cargo.toml,src/lib.rs,src/tags.rs,tests/}`, `crates/sb/src/main.rs`, `crates/sb/Cargo.toml`, `deny.toml`, `.claude/hooks/library-check.sh`, `Cargo.toml`, `Cargo.lock`
@@ -1475,13 +1495,13 @@ settling verification items 1-6.
 atomic writes, result lines, `--allow-unavailable`, the three spellings.
 
 **Acceptance criteria:**
-- [ ] Each shell's stub lands where its probe says, atomically.
-- [ ] Markers and result lines as the spec says.
-- [ ] `--allow-unavailable` and the three spellings behave as specified.
+- [x] Each shell's stub lands where its probe says, atomically.
+- [x] Markers and result lines as the spec says.
+- [x] `--allow-unavailable` and the three spellings behave as specified.
 
 **Verification:**
-- [ ] `cargo test -p sb-completion -p sb` under a temporary `Paths` root.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor (files
+- [x] `cargo test -p sb-completion -p sb` under a temporary `Paths` root.
+- [x] Review: code-reviewer, library-reviewer, security-auditor (files
       written as root into shell directories).
 
 **Dependencies:** M57
@@ -1496,13 +1516,13 @@ atomic writes, result lines, `--allow-unavailable`, the three spellings.
 live-executable preservation, from sb-go-written fixtures.
 
 **Acceptance criteria:**
-- [ ] sb-go's files are found and replaced as the spec says.
-- [ ] A live executable is never removed.
-- [ ] The fixtures are sb-go-written.
+- [x] sb-go's files are found and replaced as the spec says.
+- [x] A live executable is never removed.
+- [x] The fixtures are sb-go-written.
 
 **Verification:**
-- [ ] `cargo test -p sb-completion`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-completion`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M58
 **Files:** `crates/completion/src/install.rs`, `crates/completion/tests/`
@@ -1516,13 +1536,13 @@ live-executable preservation, from sb-go-written fixtures.
 and `setup`, with a warning on failure.
 
 **Acceptance criteria:**
-- [ ] One step per shell (every shell, as sb-go; one not installed is checked).
-- [ ] A failure warns and doesn't fail the caller.
-- [ ] `refresh(step)` is public as ops calls it.
+- [x] One step per shell (every shell, as sb-go; one not installed is checked).
+- [x] A failure warns and doesn't fail the caller.
+- [x] `refresh(step)` is public as ops calls it.
 
 **Verification:**
-- [ ] `cargo test -p sb-completion`.
-- [ ] Review: code-reviewer.
+- [x] `cargo test -p sb-completion`.
+- [x] Review: code-reviewer.
 
 **Dependencies:** M59
 **Files:** `crates/completion/src/lib.rs`
@@ -1934,15 +1954,15 @@ test, and the one read-only check of the real service's 404.
 text.
 
 **Acceptance criteria:**
-- [ ] The system rows and Total Disk found as bench.sh finds them (ops
+- [x] The system rows and Total Disk found as bench.sh finds them (ops
       decision 33); cpuinfo parsed from fixtures.
-- [ ] The disk test writes in-process with the spec's sizes
+- [x] The disk test writes in-process with the spec's sizes
       and cleans up.
-- [ ] Screenshots of `sb bench` without the network part.
+- [x] Screenshots of `sb bench` without the network part.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M4 (M76 was lane order, dropped with the lane change of 2026-11-16)
 **Files:** `crates/ops/src/bench/{mod.rs,system.rs,disk.rs}`, `crates/sb/src/{main.rs,bench.rs}`, `Cargo.toml`, `Cargo.lock`
@@ -1958,14 +1978,14 @@ the Speedtest JSON with its platform note from one run, icanhazip and
 ipinfo.
 
 **Acceptance criteria:**
-- [ ] The Speedtest asset is pinned and verified before it runs.
-- [ ] The JSON parse matches the platform note's recorded shape
+- [x] The Speedtest asset is pinned and verified before it runs.
+- [x] The JSON parse matches the platform note's recorded shape
       (version, method, no environment details).
-- [ ] Screenshots of a full `sb bench`.
+- [x] Screenshots of a full `sb bench`.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops` with the `testing` fakes; one real run.
-- [ ] Review: code-reviewer, library-reviewer, security-auditor (a
+- [x] `cargo test -p sb-ops` with the `testing` fakes; one real run.
+- [x] Review: code-reviewer, library-reviewer, security-auditor (a
       downloaded program run as root).
 
 **Dependencies:** M77, M29
@@ -2158,26 +2178,42 @@ in tui's viewer on a terminal and refresh completion, once both exist.
 calling it from `update` and `setup`, and the completion refresh.*
 
 **Acceptance criteria:**
-- [ ] On a terminal, `update` opens the announcement viewer; piped, the
+- [x] On a terminal, `update` opens the announcement viewer; piped, the
       inline form stays.
-- [ ] `update` and `setup` call `refresh(step)`.
-- [ ] A refresh failure warns only.
+- [x] `update` and `setup` call `refresh(step)`.
+- [x] A refresh failure warns only.
 
 **Verification:**
-- [ ] `cargo test -p sb-ops -p sb`.
-- [ ] Review: code-reviewer, library-reviewer.
+- [x] `cargo test -p sb-ops -p sb`.
+- [x] Review: code-reviewer, library-reviewer.
 
 **Dependencies:** M86, M60 (the announcement viewer's spec section and build came with M74: 397f079, c8f73c7)
 **Files:** `crates/ops/src/{update.rs,setup.rs}`
 **Scope:** S
 
 ## Checkpoint O: ops
-- [ ] M74-M87 merged; `check.sh full`; the gha matrix and install-script
-      containers pass.
+- [x] M74-M87 merged; `check.sh full`; the gha matrix and install-script
+      containers pass. Done (2026-11-18): full passed on main's tree at
+      ea6c9d1 (every test run in the sandbox, its private /tmp and
+      mount-table fix included; 3470 tests in the release-build run;
+      startup 4.00 ms for `--help`, 4.52 ms for `version`; sb
+      21,623,392 bytes); M87's completion refresh followed in the chain
+      gated by full on fccf7af (147 of 153 viable mutants caught). The
+      gha matrix passed on 22.04, 24.04 and 26.04 and the setup matrix
+      on 24.04 and 26.04 (both on f1c496b, rerun after afbbdd1), the
+      install-script containers on 22.04, 24.04 and 26.04 (f1c496b,
+      `--repair` and a fresh install through `sb setup`). Restore
+      against sb-go (by hand, once, 2026-11-17: sb 84b21cb and sb-go
+      35a7acc against one fake service in a container): the same
+      [DONE]/[IGNORED]/[FAIL] lines and notes, and the same placed
+      files, modes and bytes. Each item of bench's Testing Strategy has
+      its tests in the gate; Speedtest's own error object was added in
+      3d76138, with reqwest's cause kept when a client can't be built.
 - [ ] Look: restore's prompts (M76), bench's format (M77, M78).
 
 ## Checkpoint Z: the binary is complete
-- [ ] Every M task merged; every Commands row "built".
+- [x] Every M task merged; every Commands row "built". Done: main at
+      5ddc2d0 (2026-11-18), M1-M87 ticked.
 - [ ] The by-hand container scripts pass on the final tree: the motd,
       gha and setup matrices, the install-script containers, and
       `crates/sb/tests/hangup-systemd.sh` (hangup's session-scope test on
@@ -2190,13 +2226,15 @@ calling it from `update` and `setup`, and the completion refresh.*
 
 ## Follow-ups found during the build
 
-- [ ] **Paste arrives as one input** (lane 6 after M56; the maintainer,
+- [x] **Paste arrives as one input** (lane 6 after M56; the maintainer,
       2026-11-16). Bracketed paste is off in sb-tui's shared screen
       setup, so a paste reaches every text box as keystrokes and a
       pasted newline stages a value early. Turn it on (crossterm's
       `EnableBracketedPaste`, off again on every way out) and insert a
       paste whole (ratatui-textarea's `insert_str`) on every screen that
       takes text.
+      Done: 95cfff8 (crossterm's bracketed paste on and off with every
+      screen; a paste inserted whole in every text box).
 - [x] **First sight far right meets 5 ms** (the maintainer, 2026-11-16).
       With wrap off far to the right, a line the viewer has never drawn
       there (paging to new lines, a jump from far away) is still parsed
@@ -2205,10 +2243,12 @@ calling it from `update` and `setup`, and the completion refresh.*
       frame under 5 ms too, for example by parsing places ahead in the
       background.
       Done: 37aceeb (a page up, Home or End far right 1.8 to 4.8 ms).
-- [ ] **One enum for ops' two repositories** (found by lane 1's M79,
+- [x] **One enum for ops' two repositories** (found by lane 1's M79,
       2026-11-16). `branch::Checkout` (M79) and `announcements::Repo` (M74)
       both name Saltbox and Sandbox. Merge them when update needs both
       (M84 or M85).
+      Done: 4da91b7 (M85, crates/ops/src/checkout.rs merges both);
+      setup's leftover name constant went in afbbdd1.
 - [x] **"Refused" test ports stay reserved** (found by lane 3's gate,
       2026-11-16). `refused()` in crates/sb/tests/docker_control.rs and
       crates/config/tests/run_log.rs binds port 0, drops the listener and

@@ -431,6 +431,10 @@ To discuss with the maintainer once every module is done, not before:
   `sb list`'s design was taken forward on 2026-11-16, at the
   maintainer's request: the ansible spec's `sb list` and its decision
   19 have the layout and the maintainer's changes to the canvas.
+  `sb motd`'s colours may be revisited in this phase (the maintainer,
+  2026-11-17, at Checkpoint M's look: the functionality is approved,
+  the colours might change later); its slot tables change them without
+  touching the sections' code.
 - **Tests on a real machine** (maintainer, 2026-11-13). Every test of
   sb's host-changing commands uses stand-ins (apt-get, ansible-playbook,
   systemctl on `PATH`, a fake GitHub and Engine API), and the by-hand
