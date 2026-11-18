@@ -828,3 +828,195 @@ fn the_footer_and_the_reason_read_right() {
         "{text}"
     );
 }
+
+/// The drawn buffer, for its cells' styles.
+fn buffer(h: &mut Harness, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("backend");
+    terminal.draw(|f| h.screen.draw(f)).expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+/// The first cell of the first row holding `text`: its position.
+fn find(buffer: &ratatui::buffer::Buffer, text: &str) -> Option<(u16, u16)> {
+    (0..buffer.area.height).find_map(|y| {
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        let at = row.find(text)?;
+        // Columns by characters: the border's glyphs are one column each.
+        let column = row[..at].chars().count();
+        Some((u16::try_from(column).ok()?, y))
+    })
+}
+
+/// The row holding `text`, as text.
+fn row_of(buffer: &ratatui::buffer::Buffer, text: &str) -> String {
+    let (_, y) = find(buffer, text).unwrap_or_else(|| panic!("no {text:?}"));
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect()
+}
+
+/// The form's cells: the title in the accent's colours, the focused
+/// field's label in the accent and bold, the others in the text's; the
+/// fields two rows apart from the block's second row; the keys separated
+/// between, not before the first.
+#[test]
+fn the_form_marks_its_focus_in_its_cells() {
+    let mut h = harness(Prefill::default());
+    let b = buffer(&mut h, 100, 30);
+    let (x, y) = find(&b, "◆ Restore").expect("the title");
+    assert_eq!(
+        b[(x, y)].fg,
+        h.screen.style(Role::OnAccent).fg.expect("a colour")
+    );
+    assert_eq!(
+        b[(x, y)].bg,
+        h.screen.bg(Role::Accent).bg.expect("a colour")
+    );
+    // `expect`: a style without a colour (a mutant's default) fails here.
+    let accent = h.screen.style(Role::Accent).fg.expect("a colour");
+    let text = h.screen.style(Role::Text).fg.expect("a colour");
+    assert_ne!(accent, text, "the palette tells them apart");
+    let (ux, uy) = find(&b, " Username").expect("the user's label");
+    let (_, py) = find(&b, " Password").expect("the password's label");
+    let (_, ry) = find(&b, " Repeat password").expect("the repeat's label");
+    let (_, top) = find(&b, "Saltbox's restore service").expect("the block");
+    assert_eq!(
+        (uy, py, ry),
+        (top + 2, top + 4, top + 6),
+        "a field every second row"
+    );
+    assert_eq!(b[(ux + 1, uy)].fg, accent, "the focused label");
+    assert!(b[(ux + 1, uy)].modifier.contains(Modifier::BOLD));
+    assert_eq!(b[(ux + 1, py)].fg, text, "a label not focused");
+    assert!(!b[(ux + 1, py)].modifier.contains(Modifier::BOLD));
+    let footer = row_of(&b, "next field");
+    assert!(
+        footer
+            .trim_start()
+            .starts_with("Tab next field · Enter next"),
+        "{footer}"
+    );
+    assert_eq!(footer.matches(" · ").count(), 2, "{footer}");
+    // The focus moves with Tab: the password's label takes the accent.
+    key(&mut h, KeyCode::Tab);
+    let b = buffer(&mut h, 100, 30);
+    assert_eq!(b[(ux + 1, py)].fg, accent);
+    assert_eq!(b[(ux + 1, uy)].fg, text);
+}
+
+/// The viewer's borders: the focused block's in the accent, the other's
+/// the border's, as the focus moves from the menu to the file.
+#[test]
+fn the_focused_block_has_the_accents_border() {
+    let mut h = harness(Prefill::default());
+    place(&h, "accounts.yml", "a: 1\n");
+    submit(&mut h, "someone", "pw");
+    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
+    let accent = h.screen.style(Role::Accent).fg.expect("a colour");
+    let border = h.screen.style(Role::Border).fg.expect("a colour");
+    assert_ne!(accent, border, "the palette tells them apart");
+    let b = buffer(&mut h, 100, 30);
+    let menu = h.screen.menu_area;
+    let pane = h.screen.pane.as_ref().expect("pane").inner;
+    // Each block's left border, a row into it: the first `│` left of
+    // the pane's inside.
+    let menu_edge = (menu.x, menu.y + 1);
+    let pane_edge = (
+        (0..pane.x)
+            .rev()
+            .find(|x| b[(*x, pane.y)].symbol() == "│")
+            .expect("the pane's border"),
+        pane.y,
+    );
+    assert_eq!(b[menu_edge].symbol(), "│");
+    assert_eq!(b[menu_edge].fg, accent, "the menu, focused");
+    assert_eq!(b[pane_edge].fg, border, "the file, not focused");
+    key(&mut h, KeyCode::Enter);
+    assert_eq!(h.screen.focus_on, Focus::File);
+    let b = buffer(&mut h, 100, 30);
+    assert_eq!(b[menu_edge].fg, border, "the menu, not focused");
+    assert_eq!(b[pane_edge].fg, accent, "the file, focused");
+}
+
+/// A value shown with `s` stays shown while the cursor stays (a key
+/// that doesn't move it); it hides once the cursor moves.
+#[test]
+fn a_shown_value_stays_until_the_cursor_moves() {
+    let mut h = harness(Prefill::default());
+    place(&h, "accounts.yml", "token: abc123\nname: x\n");
+    submit(&mut h, "someone", "pw");
+    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
+    key(&mut h, KeyCode::Enter);
+    key(&mut h, KeyCode::Char('s'));
+    assert!(screen_text(&mut h).contains("token: abc123"));
+    // Up on the first line: the cursor stays, and so does the value.
+    key(&mut h, KeyCode::Up);
+    assert!(screen_text(&mut h).contains("token: abc123"), "still shown");
+    key(&mut h, KeyCode::Down);
+    let text = screen_text(&mut h);
+    assert!(
+        text.contains("token: ••••••••") && !text.contains("abc123"),
+        "{text}"
+    );
+}
+
+/// Lines that fill the pane exactly take its whole width: no column goes
+/// to a scrollbar, so a line as wide as the pane stays one row and the
+/// last line shows.
+#[test]
+fn a_file_that_fits_takes_the_whole_width() {
+    let mut h = harness(Prefill::default());
+    place(&h, "accounts.yml", "a: 1\n");
+    submit(&mut h, "someone", "pw");
+    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
+    drawn(&mut h, 100, 30);
+    let inner = h.screen.pane.as_ref().expect("pane").inner;
+    // `inner.height` lines in all, the first as wide as the pane.
+    let wide = "w".repeat(usize::from(inner.width));
+    let mut lines = vec![wide.clone()];
+    lines.extend((2..usize::from(inner.height)).map(|i| format!("line{i}: x")));
+    lines.push("last: here".into());
+    place(&h, "accounts.yml", &(lines.join("\n") + "\n"));
+    h.screen.load();
+    let text = screen_text(&mut h);
+    assert!(text.contains("last: here"), "{text}");
+    assert!(text.contains(&wide), "{text}");
+}
+
+/// Loading a file with nothing to show takes the focus off the file
+/// only: on Continue it stays there.
+#[test]
+fn loading_keeps_a_focus_off_the_file() {
+    let mut h = harness(Prefill::default());
+    place(&h, "accounts.yml", "a: 1\n");
+    submit(&mut h, "someone", "pw");
+    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
+    h.screen.focus_on = Focus::Continue;
+    h.screen.menu.select(Some(1));
+    h.screen.load();
+    assert!(h.screen.pane.is_none());
+    assert_eq!(h.screen.focus_on, Focus::Continue);
+}
+
+/// `Debug` writes the prefill's shape with each answer redacted.
+#[test]
+fn debug_writes_the_prefills_shape() {
+    let prefill = Prefill {
+        user: Some("someone".into()),
+        password: Some(Zeroizing::new(b"pw".to_vec())),
+    };
+    assert_eq!(
+        format!("{prefill:?}"),
+        r#"Prefill { user: Some("[REDACTED]"), password: Some("[REDACTED]") }"#
+    );
+    let given = Prefill {
+        user: None,
+        password: None,
+    };
+    assert_eq!(
+        format!("{given:?}"),
+        "Prefill { user: None, password: None }"
+    );
+}

@@ -460,6 +460,44 @@ async fn body(response: reqwest::Response) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    /// A body cut short mid-way is the transfer's error, not the size
+    /// cap's: only a body over [`MAX_BODY`] is "over"; one at it is read
+    /// whole.
+    #[tokio::test]
+    async fn only_an_oversized_body_is_over_the_cap() {
+        let service = crate::testing::restore::RestoreService::start().expect("fake");
+        service.reply(
+            "/cut",
+            // Enough sent that the answer's head reaches the client before
+            // the cut here (with a few bytes it didn't, in-process): the
+            // body, not the request, fails.
+            crate::testing::restore::Reply::Cut {
+                sent: vec![b'x'; 1 << 20],
+                len: 2 << 20,
+            },
+        );
+        service.reply(
+            "/big",
+            crate::testing::restore::Reply::Body(vec![b'x'; MAX_BODY + 1]),
+        );
+        service.reply(
+            "/full",
+            crate::testing::restore::Reply::Body(vec![b'x'; MAX_BODY]),
+        );
+        let client = client("sb-test").expect("client");
+        let get = async |path: &str| {
+            let url = format!("{}{path}", service.url());
+            body(client.get(url).send().await.expect("answered")).await
+        };
+        let cut = get("/cut").await.expect_err("cut");
+        assert_ne!(cut, format!("the file is over {MAX_BODY} bytes"));
+        assert_eq!(
+            get("/big").await.expect_err("big"),
+            format!("the file is over {MAX_BODY} bytes")
+        );
+        assert_eq!(get("/full").await.expect("full").len(), MAX_BODY);
+    }
+
     /// The run log's URL: the key and the base's credentials and secret
     /// query values out.
     #[test]
