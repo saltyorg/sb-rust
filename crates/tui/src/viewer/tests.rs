@@ -1063,7 +1063,8 @@ fn matches_are_counted_as_lines_come_and_go() {
     h.search("m");
     assert!(h.header().contains("/m 12/12"), "{}", h.header());
     // Paging back drops the newest end, the current match with it.
-    h.key(KeyCode::Char('g'));
+    h.key(KeyCode::PageUp);
+    h.key(KeyCode::PageUp);
     h.send(older(30..40, true));
     assert!(h.header().contains("/m -/12"), "{}", h.header());
 }
@@ -2711,4 +2712,95 @@ fn back_at_the_end_a_search_reads_older_only() {
     };
     assert_eq!(search.newer, None);
     assert_eq!(search.older, Some(position(40)));
+}
+
+// --- Home and End (tui spec, "Home and End: the log's ends") ---
+
+fn head_page(range: std::ops::Range<u64>, more_newer: bool) -> Event {
+    let ls = lines(range);
+    Event::Page {
+        kind: PageKind::Head,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: false,
+        more_newer,
+    }
+}
+
+/// With the log's first line loaded, Home only moves to the top.
+#[test]
+fn home_with_the_start_loaded_moves_to_the_top() {
+    let mut h = open(60, 8, Limits::default());
+    h.send(tail(1..20, false));
+    h.requests();
+    h.key(KeyCode::Home);
+    assert!(
+        !h.requests().contains(&Request::Head),
+        "the start is loaded"
+    );
+    assert_eq!(h.log()[0], "--- start of log ---");
+    assert!(h.header().contains("at the start"), "{}", h.header());
+}
+
+/// Home past the buffer: the source's first page, the buffer started
+/// again there, not following, the start marker at the top; End reads
+/// the tail again and follows.
+#[test]
+fn home_loads_the_logs_first_page_and_end_goes_back() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.requests();
+    h.key(KeyCode::Char('g'));
+    assert!(h.requests().contains(&Request::Head));
+    assert!(h.header().contains("going to the start…"), "{}", h.header());
+    assert!(!h.viewer.following());
+    // One ask at a time.
+    h.key(KeyCode::Home);
+    assert!(!h.requests().contains(&Request::Head));
+    h.send(head_page(0..10, true));
+    assert_eq!(h.log()[0], "--- start of log ---");
+    assert_eq!(h.log()[1], "m0");
+    assert!(h.header().contains("at the start"), "{}", h.header());
+    assert!(!h.header().contains("going to"), "{}", h.header());
+    assert!(!h.viewer.following());
+    h.key(KeyCode::End);
+    let requests = h.requests();
+    assert!(requests.contains(&Request::Tail), "{requests:?}");
+    assert!(requests.contains(&Request::Follow(true)), "{requests:?}");
+}
+
+/// The start's header names the first line's time, as the lines show it.
+#[test]
+fn the_start_header_names_the_first_lines_time() {
+    let mut h = open(100, 8, Limits::default());
+    let mut first = line(0, "m0");
+    first.time = Some("2026-11-13T09:04:05Z".parse().expect("a time"));
+    h.send(Event::Page {
+        kind: PageKind::Head,
+        oldest: Some(position(0)),
+        newest: Some(position(1)),
+        lines: vec![first, line(1, "m1")],
+        more_older: false,
+        more_newer: false,
+    });
+    assert!(
+        h.header()
+            .contains("at the start · 2026-11-13T09:04:05+0000"),
+        "{}",
+        h.header()
+    );
+}
+
+/// A first page that couldn't be read leaves the view, the ask given up.
+#[test]
+fn a_head_that_cant_be_read_gives_up_the_ask() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Home);
+    h.send(Event::Notice(Notice::ReadFailed("gone".into())));
+    assert!(!h.header().contains("going to"), "{}", h.header());
+    h.requests();
+    h.key(KeyCode::Home);
+    assert!(h.requests().contains(&Request::Head));
 }

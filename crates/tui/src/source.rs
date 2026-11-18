@@ -132,6 +132,10 @@ pub enum Request {
     Search(Search),
     /// Stop the search in progress, if any.
     StopSearch,
+    /// The log's first entries (tui spec, "Home and End"), as an
+    /// [`Event::Page`] of [`PageKind::Head`]. It ends a follow, and the
+    /// source forgets the lines it sent, as `Tail` does.
+    Head,
 }
 
 /// The most matches a side of a search keeps (tui spec, "Matches
@@ -237,6 +241,9 @@ pub enum PageKind {
     /// An entry and its surroundings ([`Request::Around`]): the buffer
     /// starts again with these, not following.
     Around,
+    /// The log's first entries ([`Request::Head`]): the buffer starts
+    /// again with these, not following.
+    Head,
 }
 
 /// What a source sends the viewer.

@@ -902,9 +902,11 @@ alike.
 - **End/`G`** go to the newest line and follow, as today: when the
   newest line isn't loaded, the viewer reads the tail first (`Tail`,
   then `Follow`).
-- **The header at the start:** while the start marker is in view, the
-  header says `at the start · <the first line's time>`, the time as the
-  lines show it (local, to the second).
+- **The header at the start:** while the start marker is in view and
+  the view isn't following at the bottom (there a log whose start shows
+  is short, and the header has nothing to add), the header says `at the
+  start · <the first line's time>`, the time as the lines show it
+  (local, to the second).
 - **Journal:** the first page is sb-journal's new `Position::Head`: each
   file's first matching entry, found by its lists' heads (the match's
   DATA objects list their entries oldest first), then merged forward as

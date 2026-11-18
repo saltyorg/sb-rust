@@ -267,6 +267,7 @@ impl Adapter {
             // Another source's position: none of this one's lines.
             Request::Around(Position(Inner::Docker(at))) => self.around(at).await,
             Request::Older(_) | Request::Newer(_) | Request::Around(_) => true,
+            Request::Head => self.head().await,
             Request::Search(search) => {
                 self.start_search(search);
                 true
@@ -377,6 +378,42 @@ impl Adapter {
             after.more,
             started,
         ))
+    }
+
+    /// The log's first entries (`Request::Head`): one read from the
+    /// container's creation, stopped after a page, as a page that starts a
+    /// new buffer, not following. A read that fails is a notice only: the
+    /// buffer stays as it was. A re-created container's first entries are
+    /// the current container's (tui spec, "Home and End").
+    async fn head(&mut self) -> bool {
+        self.stop_following();
+        let started = Instant::now();
+        let read = logs::head(
+            &self.daemon,
+            &self.container.id,
+            self.settings.page,
+            self.container.created,
+        )
+        .await;
+        match read {
+            Ok(found) => {
+                if !found.more {
+                    self.follow_from = Some(found.lines.last().map_or(START, |l| l.position));
+                }
+                self.outbox.send(page(
+                    PageKind::Head,
+                    &found.lines,
+                    false,
+                    found.more,
+                    started,
+                ))
+            }
+            Err(err) => {
+                let cause = format!("{err:#}");
+                tracing::warn!(direction = ?PageKind::Head, error = %cause, "container log page failed");
+                self.outbox.send(Event::Notice(Notice::ReadFailed(cause)))
+            }
+        }
     }
 
     /// A search's sides, each one read of the log in a task of its own

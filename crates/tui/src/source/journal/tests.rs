@@ -925,3 +925,17 @@ async fn a_search_sides_read_errors_are_one_notice_before_its_end() {
     assert!(first.contains("a.journal"), "{first}");
     assert_eq!(*others, 1);
 }
+
+/// Home's page: the log's first entries, a new buffer, not following.
+#[tokio::test]
+async fn a_head_page_is_the_journals_first_entries() {
+    let (_t, j) = journal_of(1_000);
+    let mut v = Viewer::on(Arc::clone(&j), every_entry(), small(5));
+    let _ = v.page(Request::Tail).await;
+    let head = v.page(Request::Head).await;
+    assert_eq!(head.kind, PageKind::Head);
+    assert_eq!(head.messages, names(0..5));
+    assert!(!head.more_older && head.more_newer, "{head:?}");
+    let on = v.page(Request::Newer(head.newest.expect("an edge"))).await;
+    assert_eq!(on.messages, names(5..10));
+}

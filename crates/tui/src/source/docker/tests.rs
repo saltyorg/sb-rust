@@ -805,3 +805,23 @@ async fn a_log_that_cant_be_read_fails_the_search() {
         }
     }
 }
+
+/// Home's page: the container log's first lines, a new buffer; a read
+/// that fails is a notice only.
+#[tokio::test]
+async fn a_head_page_is_the_containers_first_lines() {
+    let fake = engine(HashMap::from([(ID.into(), log_of(300))]));
+    let mut v = Viewer::on(&fake, container(), small(50)).await;
+    let head = v.page(Request::Head).await;
+    assert_eq!(head.kind, PageKind::Head);
+    let expected: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+    assert_eq!(head.messages, expected);
+    assert!(!head.more_older && head.more_newer, "{head:?}");
+
+    let empty = engine(HashMap::new());
+    let mut v = Viewer::on(&empty, container(), small(50)).await;
+    match v.ask(Request::Head).await {
+        Event::Notice(Notice::ReadFailed(_)) => {}
+        other => panic!("{other:?}"),
+    }
+}

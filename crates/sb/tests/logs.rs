@@ -640,3 +640,28 @@ fn a_search_reaches_a_match_outside_the_loaded_lines() {
     assert!(log.contains("journal search started"), "{log}");
     assert!(!log.contains("needle"), "{log}");
 }
+
+/// Home and End in a service's log (tui spec, "Home and End: the log's
+/// ends"), as for a container's: `g` the log's first line, read from the
+/// start, the header saying so, not following; `G` the newest line,
+/// following again.
+#[test]
+fn home_and_end_reach_a_services_ends() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_long_journal(3_000);
+    let mut pty = Pty::spawn(&["logs"], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    pty.send(b"jj\r");
+    assert!(pty.showing("app[42]: line 2999"), "{}", pty.contents());
+    pty.send(b"g");
+    assert!(pty.showing("app[42]: line 0"), "{}", pty.contents());
+    assert!(pty.showing("--- start of log ---"), "{}", pty.contents());
+    assert!(pty.showing("at the start · "), "{}", pty.contents());
+    assert!(!pty.contents().contains("following"), "{}", pty.contents());
+    pty.send(b"G");
+    assert!(pty.showing("app[42]: line 2999"), "{}", pty.contents());
+    assert!(pty.showing("following"), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    pty.assert_restored();
+}

@@ -364,7 +364,7 @@ pub(crate) fn meta(line: &Line, format: &Format) -> String {
 }
 
 /// `time` in `zone` to the second, with its offset: `short-iso`.
-fn local(time: Timestamp, zone: &TimeZone) -> String {
+pub(crate) fn local(time: Timestamp, zone: &TimeZone) -> String {
     time.to_zoned(zone.clone())
         .strftime("%Y-%m-%dT%H:%M:%S%z")
         .to_string()

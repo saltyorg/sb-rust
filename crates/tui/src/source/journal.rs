@@ -325,6 +325,12 @@ impl Adapter {
             Request::Around(Position(Inner::Journal(cursor))) => self.around(cursor).await,
             // Another source's position: none of this one's entries.
             Request::Older(_) | Request::Newer(_) | Request::Around(_) => true,
+            Request::Head => {
+                // A new buffer, as for a tail.
+                self.stop_following();
+                self.sent.clear();
+                self.page(PageKind::Head, journal::Position::Head).await
+            }
             Request::Search(search) => {
                 self.start_search(search);
                 true
@@ -369,7 +375,8 @@ impl Adapter {
                 tracing::info!("journal forward page returned to shown entries; paging ends");
             }
         }
-        if kind == PageKind::Tail || (kind == PageKind::Newer && !page.more_newer) {
+        let to_the_end = matches!(kind, PageKind::Newer | PageKind::Head) && !page.more_newer;
+        if kind == PageKind::Tail || to_the_end {
             self.follow_from = Some(page.end);
         }
         tracing::info!(

@@ -426,6 +426,8 @@ pub struct Viewer {
     /// The match a jump asked the source's surroundings of
     /// (`Request::Around`), and the match within its entry to show.
     around: Option<(Position, usize)>,
+    /// Home asked the source for the log's first page (`Request::Head`).
+    heading: bool,
     /// Log lines measured since the count was last taken: the frame-cost
     /// test's (tui spec, Testing Strategy, "Frame cost").
     #[cfg(test)]
@@ -512,6 +514,7 @@ impl Viewer {
             searches: 0,
             waiting: None,
             around: None,
+            heading: false,
             #[cfg(test)]
             measured: Cell::new(0),
             #[cfg(test)]
@@ -579,6 +582,7 @@ impl Viewer {
                 // A jump whose page couldn't be read: the view stays.
                 if matches!(notice, Notice::ReadFailed(_)) {
                     self.around = None;
+                    self.heading = false;
                 }
                 // The follow has stopped or never started (follow-L4): the
                 // view stays where it is, paged, and `f` retries.
@@ -614,9 +618,10 @@ impl Viewer {
     ) {
         self.last_page = Some(kind);
         match kind {
-            PageKind::Tail | PageKind::Around => {
-                if kind == PageKind::Around {
-                    // A jump's page: the view is paged where the match is.
+            PageKind::Tail | PageKind::Around | PageKind::Head => {
+                if kind != PageKind::Tail {
+                    // A jump's page, or the log's first: the view is paged
+                    // there.
                     self.follow = Follow::Off;
                 }
                 self.entries.clear();
@@ -654,6 +659,17 @@ impl Viewer {
                         // The newest lines: any match new since the search
                         // goes at its newest end.
                         self.follow_matches(0);
+                    }
+                } else if kind == PageKind::Head {
+                    // Home's page: the start marker at the window's top,
+                    // the first match from there.
+                    self.heading = false;
+                    self.anchor = Anchor {
+                        item: self.first_item(),
+                        skip: 0,
+                    };
+                    if !self.query.is_empty() {
+                        self.current = self.hit_from(0);
                     }
                 } else if let Some((position, k)) = self.around.take() {
                     self.current = self
@@ -1504,6 +1520,56 @@ impl Viewer {
         rows + at.skip.saturating_sub(skip) < self.height
     }
 
+    /// Home/`g` (tui spec, "Home and End"): the log's first line. With it
+    /// loaded the view goes to the top; else the source is asked for the
+    /// log's first page (`Request::Head`), which starts the buffer again,
+    /// not following. One ask at a time.
+    fn home(&mut self) {
+        if !self.loaded || !self.older.more {
+            self.move_to(Anchor {
+                item: self.first_item(),
+                skip: 0,
+            });
+            return;
+        }
+        if self.heading {
+            return;
+        }
+        if self.following() {
+            if self.stuck() {
+                self.anchor = self.bottom_anchor();
+            }
+            self.follow = Follow::Off;
+        }
+        self.heading = true;
+        self.around = None;
+        self.waiting = None;
+        self.source.send(Request::Head);
+    }
+
+    /// The header's part on the log's start: `going to the start…` while
+    /// Home's page is read, `at the start · <time>` while the start marker
+    /// is in view, unless the view follows at the bottom, the first line's
+    /// time as the lines show it.
+    fn start_state(&self) -> String {
+        if self.heading {
+            return "  going to the start…".to_string();
+        }
+        // Not at the bottom following: there a log whose start is in view
+        // is short, and the header has nothing to add.
+        if !self.loaded || self.older.more || self.stuck() || self.top().item != -1 {
+            return String::new();
+        }
+        let first = self.entries.iter().find_map(|entry| match entry {
+            Entry::Line(line, _, _) => Some(line),
+            Entry::Notice(_) => None,
+        });
+        match first.and_then(|line| line.time) {
+            Some(time) => format!("  at the start · {}", line::local(time, &self.format.zone)),
+            None => "  at the start".to_string(),
+        }
+    }
+
     /// The search line open: Enter searches (an empty line clears the
     /// search), Esc closes it and clears the search, and every other key
     /// is the line's (ratatui-textarea's `TextArea::input`). Enter and
@@ -1584,10 +1650,7 @@ impl Viewer {
             KeyCode::Down | KeyCode::Char('j') => self.scroll_down(1),
             KeyCode::PageUp | KeyCode::Char('u') => self.scroll_up(page),
             KeyCode::PageDown | KeyCode::Char('d') => self.scroll_down(page),
-            KeyCode::Home | KeyCode::Char('g') => self.move_to(Anchor {
-                item: self.first_item(),
-                skip: 0,
-            }),
+            KeyCode::Home | KeyCode::Char('g') => self.home(),
             KeyCode::End | KeyCode::Char('G') => self.resume(),
             KeyCode::Char('f') => {
                 if self.stuck() {
@@ -1872,7 +1935,10 @@ impl Viewer {
         TextLine::from(vec![
             Span::styled(self.name.clone(), self.format.style(self.kind.role())),
             Span::styled(format!("  {}", self.kind.word()), muted),
-            Span::styled(format!("{state}{wrap}"), self.format.style(Role::Accent)),
+            Span::styled(
+                format!("{state}{}{wrap}", self.start_state()),
+                self.format.style(Role::Accent),
+            ),
             Span::styled(self.search_state(), self.format.style(Role::Highlight)),
             Span::styled(format!("   {keys}"), muted),
         ])

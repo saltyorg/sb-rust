@@ -255,3 +255,55 @@ fn piped_stdout_streams_a_containers_log_across_a_restart() {
     pty.assert_restored();
     assert!(!world.log().contains(MARKER), "{}", world.log());
 }
+
+/// Home and End in a container's log (tui spec, "Home and End: the
+/// log's ends"), as for a service's: `g` the log's first line, read from
+/// the start, the header saying so, not following; `G` the newest line,
+/// following again.
+#[test]
+fn home_and_end_reach_a_containers_ends() {
+    // One a second from 10:00:00 on 2026-11-13, UTC.
+    let entries = (0..3_000_u32)
+        .map(|i| {
+            let time = format!(
+                "2026-11-13T{:02}:{:02}:{:02}Z",
+                10 + i / 3_600,
+                i / 60 % 60,
+                i % 60
+            );
+            FakeEntry::new(time.parse().expect("a time"), format!("line {i}\n"))
+        })
+        .collect();
+    let engine = FakeEngine::start(Options {
+        inspects: vec![inspect(ID, "web", "running")],
+        logs: HashMap::from([(
+            ID.into(),
+            FakeLog {
+                tty: false,
+                entries,
+            },
+        )]),
+        ..Options::default()
+    })
+    .expect("the fake Engine API");
+    let world = world(&engine);
+    let mut pty = Pty::spawn(&["logs"], world.envs());
+    assert!(pty.showing("Containers (1)"), "{}", pty.contents());
+    pty.send(b"\r");
+    assert!(pty.showing("stdout: line 2999"), "{}", pty.contents());
+    pty.send(b"g");
+    assert!(pty.showing("stdout: line 0"), "{}", pty.contents());
+    assert!(pty.showing("--- start of log ---"), "{}", pty.contents());
+    assert!(
+        pty.showing("at the start · 2026-11-13T"),
+        "{}",
+        pty.contents()
+    );
+    assert!(!pty.contents().contains("following"), "{}", pty.contents());
+    pty.send(b"G");
+    assert!(pty.showing("stdout: line 2999"), "{}", pty.contents());
+    assert!(pty.showing("following"), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    pty.assert_restored();
+}
