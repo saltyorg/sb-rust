@@ -25,6 +25,9 @@
 //! Why not sysinfo's `Disks`: it gives no `f_bfree`, so df's percent
 //! can't be made (motd spec, Tech Stack, "Considered and not used").
 
+use serde_json::json;
+
+use crate::Out;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Read as _;
@@ -269,6 +272,8 @@ struct Row {
     point: String,
     percent: u8,
     size: String,
+    /// The size in bytes, for `--json`.
+    bytes: u64,
 }
 
 /// The rows for `mounts`: df's choice, its usage from `usage` (none for
@@ -295,10 +300,12 @@ fn rows(
             if usage.blocks == 0 {
                 return None;
             }
+            let bytes = usage.blocks.saturating_mul(usage.frsize);
             Some(Row {
                 point,
                 percent: percent(usage)?,
-                size: si_size(usage.blocks.saturating_mul(usage.frsize)),
+                size: si_size(bytes),
+                bytes,
             })
         })
         .collect()
@@ -310,11 +317,20 @@ fn rows(
 /// from 90; the bar is in `progress_bar`'s low, high or critical colour,
 /// sb's Ok, Warn and Problem (motd decision 5). No row reads `No valid
 /// disk partitions found`.
-fn render(rows: &[Row], paint: &Paint) -> String {
+///
+/// Its `--json` value (motd spec, `--json`) is `{mounts: [{target,
+/// used_percent, size_bytes, level}]}`, the level `low`, `high` or
+/// `critical` as the bar's colour; none is an empty list.
+fn render(rows: &[Row], paint: &Paint) -> Out {
     if rows.is_empty() {
-        return "No valid disk partitions found".to_string();
+        return Out::value(
+            "No valid disk partitions found".to_string(),
+            json!({ "mounts": [] }),
+        );
     }
-    rows.iter()
+    let mut mounts = Vec::with_capacity(rows.len());
+    let line = rows
+        .iter()
         .map(|row| {
             let shown = format!("{:>3}%", row.percent);
             let (percent, level) = match row.percent {
@@ -322,6 +338,12 @@ fn render(rows: &[Row], paint: &Paint) -> String {
                 80..90 => (paint.warning(&shown), Level::High),
                 _ => (paint.error(&shown), Level::Critical),
             };
+            mounts.push(json!({
+                "target": row.point,
+                "used_percent": row.percent,
+                "size_bytes": row.bytes,
+                "level": level,
+            }));
             let size = paint.value(&format!("{:>4}", row.size));
             format!(
                 "{:<30}{percent} used out of {size}\n{}",
@@ -330,7 +352,8 @@ fn render(rows: &[Row], paint: &Paint) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    Out::value(line, json!({ "mounts": mounts }))
 }
 
 /// The mounts in mountinfo's `text`, as gnulib reads them: each line on
@@ -379,7 +402,7 @@ fn read_capped(path: &Path) -> std::io::Result<Vec<u8>> {
 
 /// Disk Usage on this host: mountinfo, then each file system's `stat(2)`
 /// and `statvfs(3)`.
-pub async fn disk_here(paint: &Paint) -> String {
+pub async fn disk_here(paint: &Paint) -> Out {
     disk_within(CHILD_TIMEOUT, paint, || {
         let text = read_capped(Path::new("/proc/self/mountinfo"))?;
         Ok(rows(&mounts(&text), stat_device, statvfs_usage))
@@ -397,21 +420,21 @@ async fn disk_within(
     limit: Duration,
     paint: &Paint,
     read: impl FnOnce() -> std::io::Result<Vec<Row>> + Send + 'static,
-) -> String {
+) -> Out {
     // The run's span goes along (cli-core's `spawn`).
     match tokio::time::timeout(limit, sb_cli_core::spawn::blocking(read)).await {
         Ok(Ok(Ok(rows))) => render(&rows, paint),
         Ok(Ok(Err(err))) => {
             tracing::warn!("mountinfo not read: {err}");
-            NOT_AVAILABLE.to_string()
+            Out::error(NOT_AVAILABLE.to_string())
         }
         Ok(Err(join)) => match join.try_into_panic() {
             Ok(payload) => std::panic::resume_unwind(payload),
-            Err(_) => NOT_AVAILABLE.to_string(),
+            Err(_) => Out::error(NOT_AVAILABLE.to_string()),
         },
         Err(_) => {
             tracing::warn!("disk usage past {} ms", limit.as_millis());
-            NOT_AVAILABLE.to_string()
+            Out::error(NOT_AVAILABLE.to_string())
         }
     }
 }
@@ -784,7 +807,8 @@ mod tests {
             [Row {
                 point: "/kept".to_string(),
                 percent: 50,
-                size: "100k".to_string()
+                size: "100k".to_string(),
+                bytes: 100_000,
             }]
         );
     }
@@ -808,6 +832,7 @@ mod tests {
             point: point.to_string(),
             percent,
             size: size.to_string(),
+            bytes: 0,
         }
     }
 
@@ -815,7 +840,7 @@ mod tests {
     #[test]
     fn each_row_is_sb_gos_line_and_its_bar() {
         let plain = Paint::plain();
-        let text = render(&[row("/", 64, "21G"), row("/boot/efi", 3, "536M")], &plain);
+        let text = render(&[row("/", 64, "21G"), row("/boot/efi", 3, "536M")], &plain).text;
         assert_eq!(
             text,
             format!(
@@ -827,9 +852,9 @@ mod tests {
                 "░".repeat(48),
             )
         );
-        let long = render(&[row(&"/x".repeat(20), 100, "2.0T")], &plain);
+        let long = render(&[row(&"/x".repeat(20), 100, "2.0T")], &plain).text;
         assert!(long.starts_with(&format!("{}100% used out of 2.0T\n", "/x".repeat(20))));
-        assert_eq!(render(&[], &plain), "No valid disk partitions found");
+        assert_eq!(render(&[], &plain).text, "No valid disk partitions found");
     }
 
     /// Below 80 the value and Ok colours, below 90 Warn, from 90 Problem.
@@ -848,7 +873,7 @@ mod tests {
             (100, Role::Problem, Level::Critical),
         ] {
             assert_eq!(
-                render(&[row("/", percent, "1.0T")], &paint),
+                render(&[row("/", percent, "1.0T")], &paint).text,
                 format!(
                     "{:<30}{} used out of {}\n{}",
                     "/",
@@ -868,13 +893,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(300));
             Ok(Vec::new())
         });
-        assert_eq!(slow.await, "Not available");
+        assert_eq!(slow.await.text, "Not available");
         let failed = disk_within(CHILD_TIMEOUT, &plain, || {
             Err(std::io::Error::other("no mountinfo"))
         });
-        assert_eq!(failed.await, "Not available");
+        assert_eq!(failed.await.text, "Not available");
         let none = disk_within(CHILD_TIMEOUT, &plain, || Ok(Vec::new()));
-        assert_eq!(none.await, "No valid disk partitions found");
+        assert_eq!(none.await.text, "No valid disk partitions found");
     }
 
     #[tokio::test]
@@ -889,17 +914,49 @@ mod tests {
             &crate::redact::Secrets::default(),
         )
         .await;
-        assert_eq!(results[0].1, "Error: panic occurred (bad read)");
+        assert_eq!(results[0].1.text, "Error: panic occurred (bad read)");
     }
 
     /// The host's own mounts (read-only): a line per file system or
     /// sb-go's text for none.
     #[tokio::test]
     async fn the_hosts_disks_are_read() {
-        let text = disk_here(&Paint::plain()).await;
+        let text = disk_here(&Paint::plain()).await.text;
         assert!(
             text == "No valid disk partitions found" || text.contains("% used out of "),
             "{text}"
+        );
+    }
+
+    /// Disk Usage's `--json` value (motd spec, `--json`): each row's mount
+    /// point, percent, size in bytes and the bar's level.
+    #[test]
+    fn the_value_lists_each_mount() {
+        let rows = [
+            Row {
+                bytes: 21_000_000_000,
+                ..row("/", 64, "21G")
+            },
+            Row {
+                bytes: 536_000_000,
+                ..row("/boot/efi", 85, "536M")
+            },
+            Row {
+                bytes: 1,
+                ..row("/full", 90, "1")
+            },
+        ];
+        assert_eq!(
+            render(&rows, &Paint::plain()).json,
+            crate::Json::Value(json!({"mounts": [
+                {"target": "/", "used_percent": 64, "size_bytes": 21_000_000_000_u64, "level": "low"},
+                {"target": "/boot/efi", "used_percent": 85, "size_bytes": 536_000_000, "level": "high"},
+                {"target": "/full", "used_percent": 90, "size_bytes": 1, "level": "critical"},
+            ]}))
+        );
+        assert_eq!(
+            render(&[], &Paint::plain()).json,
+            crate::Json::Value(json!({"mounts": []}))
         );
     }
 }

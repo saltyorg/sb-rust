@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, Texts, send};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, Texts, send};
 use crate::config::{AppSection, Instance};
 use crate::text::first_line;
+use crate::{Out, Paint};
 
 const TEXTS: Texts = Texts {
     app: "SABnzbd",
@@ -19,7 +19,7 @@ const TEXTS: Texts = Texts {
 };
 
 /// `SABnzbd`'s section value.
-pub async fn sabnzbd(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> String {
+pub async fn sabnzbd(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> Out {
     let paint_each = paint.clone();
     let answers = super::ask_each(
         "sabnzbd",
@@ -53,7 +53,13 @@ struct Queue {
 async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
-        .map(|queue| summary(&queue, shared, paint))
+        .map(|queue| {
+            let fields = Fields::of(&queue, shared);
+            Summary {
+                text: fields.summary(paint),
+                value: fields.value(),
+            }
+        })
         .map_err(|err| shared.error_text(&err))
 }
 
@@ -100,26 +106,51 @@ async fn fetch(shared: &Shared, instance: &Instance) -> Result<Queue, String> {
     Ok(answered.queue.unwrap_or_default())
 }
 
-/// sb-go's `formatSabnzbdSummary`: `Paused, …` when the status says so,
-/// else the speed with `/s` unless it has a `/`. The fields are `SABnzbd`'s
-/// text, shown as they came: one line safe to draw, credentials hidden,
-/// cut to sb-config's limit, before they are painted.
-fn summary(queue: &Queue, shared: &Shared, paint: &Paint) -> String {
-    let text = |value: &Option<String>| {
-        shared.remote(&first_line(value.as_deref().unwrap_or_default().as_bytes()))
-    };
-    let paused = text(&queue.status).to_lowercase() == "paused";
-    let mut speed = text(&queue.speed);
-    if !speed.contains('/') {
-        speed.push_str("/s");
+/// The queue's fields as the line and `--json` show them (sb-go's
+/// `formatSabnzbdSummary`): `Paused, …` when the status says so, else
+/// the speed with `/s` unless it has a `/`. They are `SABnzbd`'s text,
+/// shown as they came: one line safe to draw, credentials hidden, cut to
+/// sb-config's limit, before they are painted. Read once, for both.
+struct Fields {
+    items: i64,
+    left: String,
+    size: String,
+    /// `None` when paused.
+    speed: Option<String>,
+}
+
+impl Fields {
+    fn of(queue: &Queue, shared: &Shared) -> Self {
+        let text = |value: &Option<String>| {
+            shared.remote(&first_line(value.as_deref().unwrap_or_default().as_bytes()))
+        };
+        let paused = text(&queue.status).to_lowercase() == "paused";
+        let mut speed = text(&queue.speed);
+        if !speed.contains('/') {
+            speed.push_str("/s");
+        }
+        Self {
+            items: queue.noofslots_total.unwrap_or(0),
+            left: text(&queue.sizeleft),
+            size: text(&queue.size),
+            speed: (!paused).then_some(speed),
+        }
     }
-    super::queue(
-        paint,
-        queue.noofslots_total.unwrap_or(0),
-        &text(&queue.sizeleft),
-        &text(&queue.size),
-        (!paused).then_some(speed.as_str()),
-    )
+
+    fn summary(&self, paint: &Paint) -> String {
+        super::queue(
+            paint,
+            self.items,
+            &self.left,
+            &self.size,
+            self.speed.as_deref(),
+        )
+    }
+
+    /// The `--json` value (motd spec, `--json`).
+    fn value(&self) -> serde_json::Value {
+        super::queue_value(self.items, &self.left, &self.size, self.speed.as_deref())
+    }
 }
 
 #[cfg(test)]
@@ -128,6 +159,11 @@ mod tests {
 
     use super::*;
     use crate::providers::tests::{instance, painted, refused, section, shared};
+
+    /// The line for `queue`, as the job draws it.
+    fn summary(queue: &Queue, shared: &Shared, paint: &Paint) -> String {
+        Fields::of(queue, shared).summary(paint)
+    }
 
     fn with_key(name: &str, url: &str, key: &str) -> Instance {
         Instance {
@@ -166,7 +202,13 @@ mod tests {
             ),
         );
         let one = section(vec![with_key("SABnzbd", fake.url(), "sab-key-canary")]);
-        let text = sabnzbd(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let out = sabnzbd(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let text = out.text.clone();
+        // `--json` (motd spec): the same answer, typed.
+        assert_eq!(
+            crate::providers::tests::instances(&out),
+            r#"[{"name":"SABnzbd","value":{"items":2,"left":"1.0 GB","paused":false,"size":"3.0 GB","speed":"1.2 M/s"}}]"#
+        );
         assert_eq!(
             text,
             "Downloading at 1.2 M/s, 2 items in queue (1.0 GB remaining / 3.0 GB total)"
@@ -255,11 +297,11 @@ mod tests {
         let shared = shared(&["sab-key-canary"]);
         let one = section(vec![with_key("SABnzbd", fake.url(), "sab-key-canary")]);
         assert_eq!(
-            sabnzbd(Some(&one), &shared, &Paint::plain()).await,
+            sabnzbd(Some(&one), &shared, &Paint::plain()).await.text,
             "Error: SABnzbd API returned status code 403"
         );
         let gone = section(vec![with_key("SABnzbd", &refused(), "sab-key-canary")]);
-        let text = sabnzbd(Some(&gone), &shared, &Paint::plain()).await;
+        let text = sabnzbd(Some(&gone), &shared, &Paint::plain()).await.text;
         assert!(
             text.starts_with("Error: failed to connect to SABnzbd: "),
             "{text}"
@@ -269,10 +311,15 @@ mod tests {
             instance("SABnzbd", fake.url()),
             with_key("S", "", "k"),
         ]);
-        assert_eq!(sabnzbd(Some(&unusable), &shared, &Paint::plain()).await, "");
+        assert_eq!(
+            sabnzbd(Some(&unusable), &shared, &Paint::plain())
+                .await
+                .text,
+            ""
+        );
         fake.script("/x/api", Reply::json(200, "nope"));
         let bad = section(vec![with_key("S", &format!("{}/x", fake.url()), "k")]);
-        let text = sabnzbd(Some(&bad), &shared, &Paint::plain()).await;
+        let text = sabnzbd(Some(&bad), &shared, &Paint::plain()).await.text;
         assert!(
             text.starts_with("Error: failed to parse SABnzbd response: "),
             "{text}"

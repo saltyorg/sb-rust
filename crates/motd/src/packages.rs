@@ -11,6 +11,9 @@
 //! `DisplayText`. The texts are update-notifier's own, so they are
 //! matched as sb-go matches them, not parsed: no crate reads them.
 
+use serde_json::json;
+
+use crate::Out;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -69,9 +72,11 @@ impl Paths {
 ///   empty or saying `No reboot`, and in the warning colour when it says
 ///   `reboot required`;
 /// - otherwise nothing, so the line is hidden.
-pub async fn reboot(paths: &Paths, paint: &Paint) -> String {
+pub async fn reboot(paths: &Paths, paint: &Paint) -> Out {
     if paths.reboot_required.exists() {
-        return paint.warning(&required(&paths.reboot_packages));
+        let (line, packages) = required(&paths.reboot_packages);
+        let value = json!({ "required": true, "packages": packages, "text": line });
+        return Out::value(paint.warning(&line), value);
     }
     let output = child_output(
         Cmd::new(paths.motd_reboot_script.as_os_str()),
@@ -79,22 +84,25 @@ pub async fn reboot(paths: &Paths, paint: &Paint) -> String {
     )
     .await;
     if output.is_empty() || output.contains("No reboot") {
-        return String::new();
+        return Out::value(String::new(), json!({}));
     }
-    if output.to_lowercase().contains("reboot required") {
-        output
+    let required = output.to_lowercase().contains("reboot required");
+    let value = json!({ "required": required, "packages": [], "text": output });
+    if required {
+        let line = output
             .lines()
             .map(|line| paint.warning(line))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        Out::value(line, value)
     } else {
-        output
+        Out::value(output, value)
     }
 }
 
-/// The flag file's text: the packages from `.pkgs`, read with cli-core's
-/// 1 MiB cap.
-fn required(packages: &Path) -> String {
+/// The flag file's text and the packages from `.pkgs`, read with
+/// cli-core's 1 MiB cap, each made safe to draw.
+fn required(packages: &Path) -> (String, Vec<String>) {
     let text = match sb_cli_core::config::read_small(packages) {
         Ok(text) => text.unwrap_or_default(),
         Err(err) => {
@@ -102,12 +110,17 @@ fn required(packages: &Path) -> String {
             String::new()
         }
     };
-    let names: Vec<&str> = text.split('\n').filter(|name| !name.is_empty()).collect();
-    match names.as_slice() {
+    let names: Vec<String> = text
+        .split('\n')
+        .filter(|name| !name.is_empty())
+        .map(|name| one_line(name.as_bytes()))
+        .collect();
+    let line = match names.as_slice() {
         [] => "Reboot required".to_string(),
-        [one] => format!("Reboot required (package: {})", one_line(one.as_bytes())),
+        [one] => format!("Reboot required (package: {one})"),
         many => format!("Reboot required ({} packages)", many.len()),
-    }
+    };
+    (line, names)
 }
 
 /// The child's stdout, trimmed and made safe to draw, or empty when it
@@ -137,6 +150,33 @@ pub(crate) async fn child_output(cmd: Cmd, what: &str) -> String {
 
 /// sb-go's last answer when no source says anything.
 const UNKNOWN: &str = "Update status unknown";
+
+/// Package Status, and its `--json` value `{updates, text}` (motd spec,
+/// `--json`): the line's first number, 0 for `System is up to date`, `null`
+/// when the status is unknown. Read from the line, which is plain in a
+/// `--json` run.
+pub async fn packages_out(paths: &Paths, paint: &Paint) -> Out {
+    let line = packages(paths, paint).await;
+    let updates = if line == UNKNOWN {
+        None
+    } else if line == "System is up to date" {
+        Some(0)
+    } else {
+        first_number(&line)
+    };
+    let value = json!({ "updates": updates, "text": line });
+    Out::value(line, value)
+}
+
+/// The first run of ASCII digits in `line`, as a number.
+fn first_number(line: &str) -> Option<u64> {
+    let start = line.find(|c: char| c.is_ascii_digit())?;
+    let digits: String = line[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
 
 /// Package Status: the first source that answers, as sb-go asks them.
 pub async fn packages(paths: &Paths, paint: &Paint) -> String {
@@ -324,7 +364,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "*** System restart required ***\n").unwrap();
         std::fs::write(&paths.reboot_packages, "linux-base\n").unwrap();
         assert_eq!(
-            reboot(&paths, &Paint::plain()).await,
+            reboot(&paths, &Paint::plain()).await.text,
             "Reboot required (package: linux-base)"
         );
     }
@@ -337,7 +377,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "").unwrap();
         std::fs::write(&paths.reboot_packages, "linux-base\n\nlibc6\ndbus\n").unwrap();
         assert_eq!(
-            reboot(&paths, &Paint::plain()).await,
+            reboot(&paths, &Paint::plain()).await.text,
             "Reboot required (3 packages)"
         );
     }
@@ -349,12 +389,21 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
         std::fs::write(&paths.reboot_required, "").unwrap();
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "Reboot required");
+        assert_eq!(
+            reboot(&paths, &Paint::plain()).await.text,
+            "Reboot required"
+        );
         std::fs::write(&paths.reboot_packages, "\n\n").unwrap();
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "Reboot required");
+        assert_eq!(
+            reboot(&paths, &Paint::plain()).await.text,
+            "Reboot required"
+        );
         std::fs::remove_file(&paths.reboot_packages).unwrap();
         std::fs::create_dir(&paths.reboot_packages).unwrap();
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "Reboot required");
+        assert_eq!(
+            reboot(&paths, &Paint::plain()).await.text,
+            "Reboot required"
+        );
     }
 
     #[tokio::test]
@@ -365,7 +414,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "").unwrap();
         std::fs::write(&paths.reboot_packages, "evil\x1b]0;title\x07pkg\n").unwrap();
         assert_eq!(
-            reboot(&paths, &Paint::plain()).await,
+            reboot(&paths, &Paint::plain()).await.text,
             "Reboot required (package: evilpkg)"
         );
     }
@@ -378,7 +427,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "").unwrap();
         let paint = painted();
         assert_eq!(
-            reboot(&paths, &paint).await,
+            reboot(&paths, &paint).await.text,
             paint.warning("Reboot required")
         );
         assert_ne!(paint.warning("Reboot required"), "Reboot required");
@@ -390,13 +439,13 @@ pub(crate) mod tests {
         let _spawns = SPAWNS.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "");
+        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
         script(&paths, "echo 'reboot required'; exit 1");
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "");
+        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
         script(&paths, "printf '  \\n'");
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "");
+        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
         script(&paths, "echo 'No reboot needed'");
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "");
+        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
     }
 
     /// The script's own text is shown, made safe, in the warning colour
@@ -412,7 +461,7 @@ pub(crate) mod tests {
         );
         let paint = painted();
         assert_eq!(
-            reboot(&paths, &paint).await,
+            reboot(&paths, &paint).await.text,
             format!(
                 "{}\n{}",
                 paint.warning("*** System Reboot Required ***"),
@@ -421,7 +470,7 @@ pub(crate) mod tests {
         );
         script(&paths, "echo '*** System restart required ***'");
         assert_eq!(
-            reboot(&paths, &paint).await,
+            reboot(&paths, &paint).await.text,
             "*** System restart required ***"
         );
     }
@@ -434,7 +483,7 @@ pub(crate) mod tests {
         let paths = paths(dir.path());
         script(&paths, "echo 'reboot required'; exec sleep 60");
         let start = std::time::Instant::now();
-        assert_eq!(reboot(&paths, &Paint::plain()).await, "");
+        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
         let took = start.elapsed();
         assert!(took >= CHILD_TIMEOUT, "{took:?}");
         assert!(took < Duration::from_secs(20), "{took:?}");
@@ -647,5 +696,30 @@ pub(crate) mod tests {
         let took = start.elapsed();
         assert!(took >= CHILD_TIMEOUT, "{took:?}");
         assert!(took < Duration::from_secs(20), "{took:?}");
+    }
+
+    /// Reboot Status's and Package Status's `--json` values (motd spec,
+    /// `--json`): the flag file's packages; the line's count.
+    #[tokio::test]
+    async fn the_values_carry_the_packages_and_the_count() {
+        use crate::Json;
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        std::fs::write(&paths.reboot_required, "").unwrap();
+        std::fs::write(&paths.reboot_packages, "linux-image\nlibc6\n").unwrap();
+        assert_eq!(
+            reboot(&paths, &Paint::plain()).await.json,
+            Json::Value(json!({
+                "required": true,
+                "packages": ["linux-image", "libc6"],
+                "text": "Reboot required (2 packages)"
+            }))
+        );
+        assert_eq!(
+            first_number("12 updates can be applied immediately."),
+            Some(12)
+        );
+        assert_eq!(first_number("no number"), None);
     }
 }

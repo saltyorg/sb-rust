@@ -91,11 +91,14 @@ fn a_timeout_a_panic_and_an_empty_value_are_logged_as_such() {
             Section::Distribution,
             Box::pin(async {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
-                String::new()
+                sb_motd::Out::from(String::new())
             }),
         ),
         (Section::Kernel, Box::pin(async { panic!("boom") })),
-        (Section::Uptime, Box::pin(async { String::new() })),
+        (
+            Section::Uptime,
+            Box::pin(async { sb_motd::Out::from(String::new()) }),
+        ),
     ];
     let token = tokio_util::sync::CancellationToken::new();
     let (_, text) = logged(run::collect(

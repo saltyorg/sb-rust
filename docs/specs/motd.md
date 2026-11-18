@@ -68,7 +68,8 @@ listed below.
 - **Banner (5):** `--title` (default `Saltbox`), `--type` (default `peek`;
   `none` means no box), `--font` (default `ivrit`), `--banner-file` and
   `--banner-file-toilet`.
-- **Other:** `--share` and `--generate-config`. No `-v/--verbose`
+- **Other:** `--share` and `--generate-config`; `--json`, new in sb
+  (decision 28; the contract test lists it as an extension). No `-v/--verbose`
   (decision 9): `-v` is clap's parse error, exit 2, as in every command
   but `install` and `setup`. *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 - No arguments (`cobra.NoArgs`). The help texts are sb-go's.
@@ -142,6 +143,74 @@ listed below.
    - Exit 0, whatever a section shows (decision 23).
 8. **`--share`** runs one filter over every value line before it is printed
    (decision 7).
+
+### `--json` (decision 28)
+
+`sb motd --json` prints the chosen sections as one line of JSON on
+stdout, for scripts and status pages. The conventions are sb's for
+every `--json` (`sb docker ps`, `sb list`, `sb validate-config`):
+`"schema": 1` first, fields only ever added within a schema, stdout
+pure JSON (cli-core's `json::line`, C0, C1 and DEL escaped), and a run
+that stops (Ctrl-C, an error) writes nothing to stdout.
+
+- **Selection:** the same section flags and `--all`. No section chosen
+  is the selection's error, exit 1. No banner is drawn, and its flags
+  aren't read, so an unknown `--type` or `--font` isn't checked.
+  `--json` with `--generate-config` is a usage error, exit 2.
+- **Values are plain:** no colour, whatever `--color` or
+  `CLICOLOR_FORCE` say. `--share` masks every string in the document:
+  values, instance names and errors.
+- **motd.yml's issues** (the `Config:` line on screen) go to stderr as a
+  warning.
+- **The document:**
+  `{"schema":1,"sections":[{"section":"<name>","state":"<state>",...}]}`,
+  the sections in display order. `state` is `shown` (with `value`, or
+  `instances` for the HTTP providers), `empty` (the line is hidden:
+  nothing to show, or a provider section with no usable instance), or
+  `error` (with `error`, the line's text: `Not available`, `Error: …`,
+  or a section's sb-go sentence for no answer). Each instance is
+  `{"name","value"}` or `{"name","error"}`, sorted by name as on screen.
+
+Each section's `value` (counts are numbers, sizes in bytes where the
+source gives bytes; a `text` field is the line as shown, plain):
+
+| `section` | `value` |
+|---|---|
+| `distribution` | `name`, `codename` (`null` when none) |
+| `kernel` | `release` |
+| `uptime` | `seconds`, `text` |
+| `load_averages` | `one`, `five`, `fifteen` |
+| `processes` | `count` |
+| `cpu` | `model`, `sockets`, `cores`, `threads` (cores and threads per socket) |
+| `gpu` | `devices`: `[{name}]`; none is `empty` |
+| `memory` | `used_bytes`, `free_bytes`, `cached_bytes`, `available_bytes`, `total_bytes` |
+| `packages` | `updates` (0 when up to date, `null` when unknown), `text` |
+| `reboot` | `required`, `packages` (from the flag file's `.pkgs`), `text`; no reboot is `empty` |
+| `sessions` | `active` |
+| `last_login` | `user`, `from` (`null` with no login), `text` |
+| `disk` | `mounts`: `[{target, used_percent, size_bytes, level}]`, `level` `low`, `high` or `critical` as the bar's colour |
+| `services` | `services`: `[{name, display, state, status}]`: the unit, the name shown, systemd's active state, the status as shown |
+| `docker` | `total`, `running`, `need_attention`: `[{name, status}]` |
+| `traefik` | `running`, `total`, `active`, `need_attention`: `[{name, problem}]`, `text`; the counts `null` when the container isn't up |
+| `certificates` | `total`, `valid`, `expiring_soon`, `expired`, `first_not_after` (RFC 3339), `days` (whole days to it, rounded down, so below 0 from the moment it passes: -1 within its first day); the last two `null` when not known; hidden is `empty` |
+| `plex`, `emby`, `jellyfin` | per instance: `active`, then each kind the line counts, in snake case (`direct_play`, `transcode`, `direct_stream`, and Plex's `other`, Jellyfin's `remux`) |
+| `sabnzbd`, `nzbget` | per instance: `items`, `left`, `size`, `speed` (as shown; `null` when paused), `paused` |
+| `qbittorrent`, `rtorrent` | per instance: `down`, `up` (as shown), `downloading`, `seeding`, `stopped`, `errored` |
+| `queues` | per instance: `app` (`sonarr`, `radarr`, `lidarr`, `readarr`), `items`, `statuses` (each status's count, the app's text) |
+
+An example, `sb motd --kernel --memory --plex --json` (one line,
+wrapped here):
+
+```json
+{"schema":1,"sections":[
+ {"section":"kernel","state":"shown","value":{"release":"6.8.0-90-generic"}},
+ {"section":"memory","state":"shown","value":{"available_bytes":10737418240,
+  "cached_bytes":6979321856,"free_bytes":1264197632,
+  "total_bytes":16694575104,"used_bytes":5957156864}},
+ {"section":"plex","state":"shown","instances":[
+  {"name":"Plex","value":{"active":1,"direct_play":1,"direct_stream":0,
+   "other":0,"transcode":0}}]}]}
+```
 
 ### Sections
 
@@ -512,6 +581,8 @@ never reach stdout, stderr or the run log.
     Traefik's 30 days or have expired, and when the first expires, from
     Traefik's API. sb-go has no such line. It comes with `--traefik`, so
     the flag set is sb-go's.
+35. **`--json`** (the maintainer, 2026-11-18; decision 28): the chosen
+    sections as JSON, typed. sb-go has no such flag.
 
 ### Scope
 
@@ -1025,6 +1096,18 @@ Nothing touches a real host's state, and every fixture is synthetic.
     sb-go's set, which the contract test pins. Not chosen: a section of
     its own (a new flag), and listing domains (they would need `--share`
     masking, and the count says what needs attention).
+28. **`--json` prints the sections as a typed document** (the
+    maintainer, 2026-11-18, approving the shape as proposed). One shape
+    for every section: its name, its state and a typed value, so a
+    script reads a count without parsing the line, and a new field
+    never breaks one (add-only within `"schema": 1`). The values come
+    from the same reads as the lines, in the same run, so the two never
+    disagree. The providers give one value or error per instance, as the
+    screen gives one line each. The banner is left out: it is decoration.
+    Keys inside a value are sorted (serde_json's map); the document's
+    and each section's keys keep the order above. Not chosen: the lines
+    as strings (a script would parse sb-go's sentences), and a section
+    left out when hidden (`empty` says it ran).
 
 ## Known limits
 

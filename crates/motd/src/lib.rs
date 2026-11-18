@@ -13,6 +13,7 @@ mod docker;
 pub mod gpu;
 mod layout;
 mod logins;
+mod out;
 mod packages;
 mod providers;
 pub mod redact;
@@ -34,12 +35,18 @@ use crate::config::Slot;
 /// takes (Traefik's and the providers').
 #[doc(inline)]
 pub use docker::Settings as DockerSettings;
+#[doc(inline)]
+pub use out::{Json, Out};
 
 /// One of sb-go's 24 sections, in its fixed display order
 /// (`cmd/motd.go:202-339`, `displayMotd`'s `sources`), and sb's
 /// Certificates line after Traefik's (decision 27), which `--traefik`
 /// shows: it has no flag of its own, so it isn't in [`Section::ALL`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Its `--json` name is serde's `snake_case` of the variant
+/// (<https://serde.rs/container-attrs.html#rename_all>).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Section {
     Distribution,
     Kernel,
@@ -395,8 +402,10 @@ impl Paint {
     }
 }
 
-/// motd.yml's three `progress_bar` levels (motd decision 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// motd.yml's three `progress_bar` levels (motd decision 5); Disk
+/// Usage's `--json` `level` is serde's `lowercase` of the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Level {
     Low,
     High,
@@ -488,11 +497,56 @@ async fn report_with(
     load: impl FnOnce() -> config::Loaded,
     share: bool,
 ) -> Result<String, Error> {
+    let gathered = gather(chosen, Some(colours), sources, load, share).await;
+    let paint = gathered.paint;
+    let config = gathered
+        .config
+        .map(|line| (CONFIG_KEY, paint.warning(&line)));
+    let share = gathered.share;
+    let lines: Vec<(&str, String)> = config
+        .into_iter()
+        .chain(gathered.results.into_iter().map(|(section, out)| {
+            // Traefik's routers name hosts sb wasn't given (a rule's).
+            let traefik = section == Section::Traefik;
+            let value = out.text;
+            match &share {
+                Some(share) => (section.key(), share.mask(&value, traefik)),
+                None => (section.key(), value),
+            }
+        }))
+        .collect();
+    Ok(layout::render(&lines, |key| paint.label(key)))
+}
+
+/// What the chosen sections gave, with what drawing and masking them
+/// needs.
+struct Gathered {
+    paint: Paint,
+    /// The `Config:` line's text, when motd.yml has issues.
+    config: Option<String>,
+    results: Vec<(Section, Out)>,
+    share: Option<redact::Share>,
+}
+
+/// The chosen sections collected in parallel under the runner's cap,
+/// motd.yml read once by `load`, at the first poll (see [`report_with`]),
+/// painted with `colours` and motd.yml's colours, or plain without them
+/// (`--json`). The run log gets the sections chosen.
+async fn gather(
+    chosen: Vec<Section>,
+    colours: Option<Colours<'_>>,
+    sources: Sources,
+    load: impl FnOnce() -> config::Loaded,
+    share: bool,
+) -> Gathered {
     let loaded = load();
     let names: Vec<&str> = chosen.iter().map(|s| s.flag()).collect();
     tracing::info!(sections = names.join(","), "motd sections chosen");
     let motd_colours = loaded.motd.as_ref().map_or_default(|motd| motd.colours);
-    let paint = Paint::with(colours.theme, colours.on, &motd_colours);
+    let paint = match colours {
+        Some(colours) => Paint::with(colours.theme, colours.on, &motd_colours),
+        None => Paint::plain(),
+    };
     let secrets = loaded.motd.as_ref().map_or_default(redact::Secrets::of);
     let share = share.then(|| {
         redact::Share::of(
@@ -529,20 +583,158 @@ async fn report_with(
         .map(|section| (section, job(section, &context)))
         .collect();
     let results = run::collect(jobs, run::CAP, &context.token, &secrets).await;
-    let paint = context.paint;
-    let config = loaded.line.map(|line| (CONFIG_KEY, paint.warning(&line)));
-    let lines: Vec<(&str, String)> = config
-        .into_iter()
-        .chain(results.into_iter().map(|(section, value)| {
-            // Traefik's routers name hosts sb wasn't given (a rule's).
-            let traefik = section == Section::Traefik;
-            match &share {
-                Some(share) => (section.key(), share.mask(&value, traefik)),
-                None => (section.key(), value),
+    Gathered {
+        paint: context.paint,
+        config: loaded.line,
+        results,
+        share,
+    }
+}
+
+/// `sb motd --json`'s document for `options` (motd spec, `--json`;
+/// decision 28): the chosen sections, no banner (its flags aren't read),
+/// no colour, `--share`'s masking over every text in them. motd.yml's
+/// `Config:` line is the report's warning, for stderr.
+///
+/// # Errors
+///
+/// [`Error::NothingSelected`] when no section is chosen.
+pub async fn report_json(
+    options: &Options,
+    load: impl FnOnce() -> config::Loaded,
+) -> Result<Report, Error> {
+    let sources = Sources {
+        docker: DockerSettings::from_env(),
+        systemd: Systemd::new(),
+        banner: banner::Tools::system(),
+    };
+    report_json_from(options, sources, load).await
+}
+
+/// [`report_json`] with its sources given (the tests' fakes).
+///
+/// # Errors
+///
+/// As [`report_json`].
+pub async fn report_json_from(
+    options: &Options,
+    sources: Sources,
+    load: impl FnOnce() -> config::Loaded,
+) -> Result<Report, Error> {
+    let chosen = options.chosen()?;
+    let gathered = gather(chosen, None, sources, load, options.share).await;
+    Ok(Report {
+        text: document(&gathered.results, gathered.share.as_ref()),
+        warnings: gathered.config.into_iter().collect(),
+    })
+}
+
+/// The document: schema 1 and each section in display order with its
+/// state (`shown` with a `value` or `instances`, `empty`, or `error`).
+/// The document's and each section's keys in this order; a value's keys
+/// in `serde_json`'s order, sorted. Fields are only ever added.
+fn document(results: &[(Section, Out)], share: Option<&redact::Share>) -> String {
+    #[derive(serde::Serialize)]
+    struct Document {
+        schema: u32,
+        sections: Vec<SectionJson>,
+    }
+    #[derive(serde::Serialize)]
+    struct SectionJson {
+        section: Section,
+        state: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instances: Option<Vec<InstanceJson>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+    #[derive(serde::Serialize)]
+    struct InstanceJson {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+    let sections = results
+        .iter()
+        .map(|(section, out)| {
+            let traefik = *section == Section::Traefik;
+            let masked = |text: &str| {
+                share.map_or_else(|| text.to_owned(), |share| share.mask(text, traefik))
+            };
+            let value = |value: &serde_json::Value| {
+                let mut value = value.clone();
+                if let Some(share) = share {
+                    mask_strings(&mut value, share, traefik);
+                }
+                value
+            };
+            let mut json = SectionJson {
+                section: *section,
+                state: "shown",
+                value: None,
+                instances: None,
+                error: None,
+            };
+            match &out.json {
+                Json::Value(shown) => json.value = Some(value(shown)),
+                Json::Instances(instances) => {
+                    json.instances = Some(
+                        instances
+                            .iter()
+                            .map(|(name, answer)| InstanceJson {
+                                // As on screen, where a failed instance's
+                                // line holds `Error: `: its name is masked
+                                // as a host may be.
+                                name: share.map_or_else(
+                                    || name.clone(),
+                                    |share| share.mask(name, traefik || answer.is_err()),
+                                ),
+                                value: answer.as_ref().ok().map(value),
+                                error: answer.as_ref().err().map(|error| masked(error)),
+                            })
+                            .collect(),
+                    );
+                }
+                Json::Empty => json.state = "empty",
+                Json::Error(error) => {
+                    json.state = "error";
+                    json.error = Some(masked(error));
+                }
             }
-        }))
+            json
+        })
         .collect();
-    Ok(layout::render(&lines, |key| paint.label(key)))
+    sb_cli_core::json::line(&Document {
+        schema: 1,
+        sections,
+    })
+}
+
+/// `--share`'s masking over every string in `value`, keys included.
+fn mask_strings(value: &mut serde_json::Value, share: &redact::Share, traefik: bool) {
+    match value {
+        serde_json::Value::String(text) => *text = share.mask(text, traefik),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                mask_strings(item, share, traefik);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            // The keys too: a queue's statuses are the app's text.
+            *map = std::mem::take(map)
+                .into_iter()
+                .map(|(key, mut item)| {
+                    mask_strings(&mut item, share, traefik);
+                    (share.mask(&key, traefik), item)
+                })
+                .collect();
+        }
+        _ => {}
+    }
 }
 
 /// Whether a chosen section asks a provider: an app it reads is on in
@@ -591,38 +783,45 @@ struct Context {
 /// Disk Usage and GPU do.
 fn job(section: Section, context: &Context) -> run::Job {
     let paint = context.paint.clone();
-    let containers = Arc::clone(&context.containers);
-    let job: run::Job = match section {
+    // A provider of one app: `providers::<module>::<module>` with its
+    // motd.yml section.
+    macro_rules! app {
+        ($module:ident, $app:ident) => {{
+            let (apps, shared) = provider(context);
+            Box::pin(async move {
+                let section = apps.get(&config::App::$app);
+                providers::$module::$module(section, &shared, &paint).await
+            })
+        }};
+    }
+    match section {
         Section::Distribution => Box::pin(async { system::distribution_here() }),
         Section::Kernel => Box::pin(async { system::kernel_here() }),
         Section::Uptime => Box::pin(async move { system::uptime_here(&paint) }),
         Section::LoadAverages => Box::pin(async move { system::load_averages_here(&paint) }),
         Section::Processes => Box::pin(async move { system::processes_here(&paint) }),
         Section::Cpu => Box::pin(async move { system::cpu_here(&paint) }),
-        Section::Gpu => Box::pin(gpu::gpu_here()),
         Section::Memory => Box::pin(async move { system::memory_here(&paint) }),
+        Section::Gpu => Box::pin(gpu::gpu_here_out()),
         Section::Packages => {
-            Box::pin(async move { packages::packages(&packages::Paths::system(), &paint).await })
-        }
-        Section::Disk => Box::pin(async move { disk::disk_here(&paint).await }),
-        Section::Sessions => Box::pin(async move {
-            let release = system::version_id_here();
-            logins::sessions(&logins::Tools::system(), release.as_deref(), &paint).await
-        }),
-        Section::LastLogin => {
-            let share = context.share;
             Box::pin(
-                async move { logins::last_login(&logins::Tools::system(), &paint, share).await },
+                async move { packages::packages_out(&packages::Paths::system(), &paint).await },
             )
-        }
-        Section::Docker => Box::pin(async move { docker::docker(&containers, &paint).await }),
-        Section::Traefik => Box::pin(async move { docker::traefik(&containers, &paint).await }),
-        Section::Certificates => {
-            Box::pin(async move { docker::certificates(&containers, &paint).await })
         }
         Section::Reboot => {
             Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
         }
+        Section::Sessions => Box::pin(async move {
+            let release = system::version_id_here();
+            logins::sessions_out(&logins::Tools::system(), release.as_deref(), &paint).await
+        }),
+        Section::LastLogin => {
+            let share = context.share;
+            Box::pin(async move {
+                logins::last_login_out(&logins::Tools::system(), &paint, share).await
+            })
+        }
+        Section::Disk => Box::pin(async move { disk::disk_here(&paint).await }),
         Section::Services => {
             let systemd = Arc::clone(&context.systemd);
             let settings = context.systemd_settings.clone();
@@ -631,61 +830,30 @@ fn job(section: Section, context: &Context) -> run::Job {
                 services::services(&systemd, settings.as_deref(), &paint, &token).await
             })
         }
-        Section::Plex => {
-            let (apps, shared) = provider(context);
-            Box::pin(async move {
-                providers::plex::plex(apps.get(&config::App::Plex), &shared, &paint).await
-            })
+        Section::Docker => {
+            let containers = Arc::clone(&context.containers);
+            Box::pin(async move { docker::docker(&containers, &paint).await })
         }
-        Section::Emby => {
-            let (apps, shared) = provider(context);
-            Box::pin(async move {
-                providers::emby::emby(apps.get(&config::App::Emby), &shared, &paint).await
-            })
+        Section::Traefik => {
+            let containers = Arc::clone(&context.containers);
+            Box::pin(async move { docker::traefik(&containers, &paint).await })
         }
-        Section::Jellyfin => {
-            let (apps, shared) = provider(context);
-            Box::pin(async move {
-                providers::jellyfin::jellyfin(apps.get(&config::App::Jellyfin), &shared, &paint)
-                    .await
-            })
+        Section::Certificates => {
+            let containers = Arc::clone(&context.containers);
+            Box::pin(async move { docker::certificates(&containers, &paint).await })
         }
-        Section::Sabnzbd => {
-            let (apps, shared) = provider(context);
-            Box::pin(async move {
-                providers::sabnzbd::sabnzbd(apps.get(&config::App::Sabnzbd), &shared, &paint).await
-            })
-        }
-        Section::Nzbget => {
-            let (apps, shared) = provider(context);
-            Box::pin(async move {
-                providers::nzbget::nzbget(apps.get(&config::App::Nzbget), &shared, &paint).await
-            })
-        }
-        Section::Qbittorrent => {
-            let (apps, shared) = provider(context);
-            Box::pin(async move {
-                providers::qbittorrent::qbittorrent(
-                    apps.get(&config::App::Qbittorrent),
-                    &shared,
-                    &paint,
-                )
-                .await
-            })
-        }
-        Section::Rtorrent => {
-            let (apps, shared) = provider(context);
-            Box::pin(async move {
-                providers::rtorrent::rtorrent(apps.get(&config::App::Rtorrent), &shared, &paint)
-                    .await
-            })
-        }
+        Section::Plex => app!(plex, Plex),
+        Section::Emby => app!(emby, Emby),
+        Section::Jellyfin => app!(jellyfin, Jellyfin),
+        Section::Sabnzbd => app!(sabnzbd, Sabnzbd),
+        Section::Nzbget => app!(nzbget, Nzbget),
+        Section::Qbittorrent => app!(qbittorrent, Qbittorrent),
+        Section::Rtorrent => app!(rtorrent, Rtorrent),
         Section::Queues => {
             let (apps, shared) = provider(context);
             Box::pin(async move { providers::arr::queues(&apps, &shared, &paint).await })
         }
-    };
-    job
+    }
 }
 
 /// What a provider section's job holds: motd.yml's apps and the
@@ -1433,5 +1601,159 @@ esac"#,
             report(&Options::default(), colours, || unreachable!()).await,
             Err(Error::NothingSelected)
         );
+    }
+
+    // --- `--json` (motd spec, `--json`; decision 28) ---
+
+    /// Results of each kind: a value, an empty line, an error and a
+    /// provider's instances.
+    fn each_kind() -> Vec<(Section, Out)> {
+        vec![
+            (
+                Section::Kernel,
+                Out::value("6.8.0".into(), serde_json::json!({ "release": "6.8.0" })),
+            ),
+            (
+                Section::Reboot,
+                Out::value(String::new(), serde_json::json!({})),
+            ),
+            (Section::Disk, Out::error("Not available".into())),
+            (
+                Section::Plex,
+                Out {
+                    text: "unused".into(),
+                    json: Json::Instances(vec![
+                        ("4K".into(), Err("Error: x at 192.0.2.7".into())),
+                        ("Plex".into(), Ok(serde_json::json!({ "active": 0 }))),
+                    ]),
+                },
+            ),
+        ]
+    }
+
+    /// The document as the spec writes it: schema first, each section in
+    /// order with its state, keys in this order, one line.
+    #[test]
+    fn the_document_is_the_specs() {
+        assert_eq!(
+            document(&each_kind(), None),
+            concat!(
+                r#"{"schema":1,"sections":["#,
+                r#"{"section":"kernel","state":"shown","value":{"release":"6.8.0"}},"#,
+                r#"{"section":"reboot","state":"empty"},"#,
+                r#"{"section":"disk","state":"error","error":"Not available"},"#,
+                r#"{"section":"plex","state":"shown","instances":["#,
+                r#"{"name":"4K","error":"Error: x at 192.0.2.7"},"#,
+                r#"{"name":"Plex","value":{"active":0}}]}]}"#,
+                "\n"
+            )
+        );
+    }
+
+    /// Schema 1's keys stay: a field may be added, never removed or
+    /// renamed (motd spec, `--json`).
+    #[test]
+    fn the_document_keeps_schema_1s_keys() {
+        let document: serde_json::Value =
+            serde_json::from_str(&document(&each_kind(), None)).unwrap();
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value.as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(keys(&document), ["schema", "sections"]);
+        assert_eq!(document["schema"], 1);
+        let sections = document["sections"].as_array().unwrap();
+        let expected: [&[&str]; 4] = [
+            &["section", "state", "value"],
+            &["section", "state"],
+            &["error", "section", "state"],
+            &["instances", "section", "state"],
+        ];
+        for (section, expected) in sections.iter().zip(expected) {
+            assert_eq!(keys(section), expected, "{section}");
+        }
+        for instance in sections[3]["instances"].as_array().unwrap() {
+            assert!(keys(instance).contains(&"name".to_string()), "{instance}");
+        }
+    }
+
+    /// `--share` masks every text: values, instance names and errors.
+    #[test]
+    fn share_masks_every_text_in_the_document() {
+        let mut results = each_kind();
+        results[0].1 = Out::value(
+            "x".into(),
+            serde_json::json!({ "nested": ["from 192.0.2.7"], "n": 1, "at 198.51.100.4": 2 }),
+        );
+        if let Json::Instances(instances) = &mut results[3].1.json {
+            instances[0].0 = "nas.home.lan".into();
+            instances[1].0 = "media.home.lan".into();
+        }
+        let shared = document(&results, Some(&redact::Share::default()));
+        assert!(!shared.contains("192.0.2.7"), "{shared}");
+        assert!(shared.contains(r#""at xxx.xxx.xxx.xxx":2"#), "{shared}");
+        // A failed instance's name is masked as its line on screen is; an
+        // answering one's is kept.
+        assert!(shared.contains(r#"{"name":"[HOST]","error":"#), "{shared}");
+        assert!(
+            shared.contains(r#"{"name":"media.home.lan","value":"#),
+            "{shared}"
+        );
+        assert!(
+            shared.contains(r#""nested":["from xxx.xxx.xxx.xxx"]"#),
+            "{shared}"
+        );
+        assert!(shared.contains("Error: x at xxx.xxx.xxx.xxx"), "{shared}");
+        assert!(shared.contains(r#""n":1"#), "{shared}");
+    }
+
+    /// Every section has its own `--json` name, in snake case.
+    #[test]
+    fn each_section_has_its_own_json_name() {
+        let mut every = Section::ALL.to_vec();
+        every.push(Section::Certificates);
+        let id = |section: &Section| {
+            serde_json::to_value(section)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let ids: std::collections::BTreeSet<String> = every.iter().map(id).collect();
+        assert_eq!(ids.len(), 25);
+        for id in ids {
+            assert!(
+                id.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{id}"
+            );
+        }
+        assert_eq!(id(&Section::LoadAverages), "load_averages");
+        assert_eq!(id(&Section::LastLogin), "last_login");
+        assert_eq!(id(&Section::Qbittorrent), "qbittorrent");
+    }
+
+    /// The report: the chosen sections without a banner, motd.yml's
+    /// issues as its warning; none chosen is the same error.
+    #[tokio::test]
+    async fn the_json_report_has_the_sections_and_the_config_warning() {
+        let options = Options {
+            sections: vec![Section::Kernel],
+            ..Options::default()
+        };
+        let loaded = || config::Loaded {
+            motd: None,
+            line: Some("motd.yml has 1 issue".into()),
+        };
+        let report = report_json_from(&options, kernel_only(), loaded)
+            .await
+            .unwrap();
+        assert_eq!(report.warnings, ["motd.yml has 1 issue"]);
+        let document: serde_json::Value = serde_json::from_str(&report.text).unwrap();
+        assert_eq!(document["sections"][0]["section"], "kernel");
+        assert_eq!(document["sections"][0]["state"], "shown");
+        assert!(document["sections"][0]["value"]["release"].is_string());
+        assert_eq!(document["sections"].as_array().unwrap().len(), 1);
+        let none =
+            report_json_from(&Options::default(), kernel_only(), config::Loaded::default).await;
+        assert!(matches!(none, Err(Error::NothingSelected)));
     }
 }

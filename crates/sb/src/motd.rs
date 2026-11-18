@@ -33,6 +33,9 @@ pub struct Args {
     /// Print an example MOTD configuration file to stdout
     #[arg(long = "generate-config")]
     generate_config: bool,
+    /// `--json`.
+    #[command(flatten)]
+    json: JsonFlag,
     // Every value flag takes the next word whatever it is, as pflag does,
     // so `--title '-x-'` and `--banner-file-toilet '-f x'` work as in
     // sb-go (<https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.allow_hyphen_values>).
@@ -87,6 +90,17 @@ impl Args {
 struct FontFlag {
     font: String,
     given: bool,
+}
+
+/// `--json`, new in sb (motd spec, `--json`; decision 28): the chosen
+/// sections, no banner; never with `--generate-config`, which prints
+/// YAML. A struct of its own, as `Args` has three switches already
+/// (clippy's `struct_excessive_bools`).
+#[derive(clap::Args, Clone, Debug, Default, PartialEq, Eq)]
+struct JsonFlag {
+    /// Print the sections as JSON
+    #[arg(long, conflicts_with = "generate_config")]
+    json: bool,
 }
 
 /// `--font`'s id and name.
@@ -214,6 +228,9 @@ pub fn motd(args: &Args, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::R
         return generate_config();
     }
     let options = args.options();
+    if args.json.json {
+        return json(&options, shutdown);
+    }
     let colours = Colours {
         theme: theme::current(),
         on: sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
@@ -230,6 +247,29 @@ pub fn motd(args: &Args, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::R
         Ok(report) => report,
         Err(err) => return Err(listed(err, log)),
     };
+    for warning in &report.warnings {
+        super::warn(warning);
+    }
+    let mut out = std::io::stdout().lock();
+    out.write_all(report.text.as_bytes())
+        .map_err(exit::output_error)?;
+    out.flush().map_err(exit::output_error)?;
+    Ok(())
+}
+
+/// `sb motd --json` (motd spec, `--json`): the document on stdout,
+/// motd.yml's issues on stderr. A run that stops writes nothing; no
+/// section chosen is the same error as without `--json`.
+fn json(options: &sb_motd::Options, shutdown: &Shutdown) -> anyhow::Result<()> {
+    let text = super::block_on(
+        shutdown
+            .token()
+            .run_until_cancelled(sb_motd::report_json(options, sb_motd::config::load_here)),
+    )?;
+    let Some(report) = text else {
+        anyhow::bail!("interrupted");
+    };
+    let report = report?;
     for warning in &report.warnings {
         super::warn(warning);
     }

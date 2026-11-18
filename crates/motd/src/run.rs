@@ -22,14 +22,15 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::Section;
 use crate::redact::Secrets;
+use crate::{Out, Section};
 
 /// sb-go's `defaultProviderTimeout` (`motd/parallel.go`), per section.
 pub const CAP: Duration = Duration::from_secs(30);
 
-/// One section's collection: its value, empty to hide the line.
-pub type Job = Pin<Box<dyn Future<Output = String> + Send + 'static>>;
+/// One section's collection: its line (empty to hide it) and its
+/// `--json` form.
+pub type Job = Pin<Box<dyn Future<Output = Out> + Send + 'static>>;
 
 /// Each job run as its own task under `cap`, its value or error line
 /// returned in display order (the jobs' `Section` order). `token` is
@@ -40,7 +41,7 @@ pub async fn collect(
     cap: Duration,
     token: &CancellationToken,
     secrets: &Secrets,
-) -> Vec<(Section, String)> {
+) -> Vec<(Section, Out)> {
     let start = Instant::now();
     let deadline = start + cap;
     let mut tasks: Vec<_> = jobs
@@ -58,20 +59,24 @@ pub async fn collect(
     for (section, mut handle) in tasks {
         let value = match tokio::time::timeout_at(deadline, &mut handle).await {
             Ok(Ok((value, elapsed))) => {
-                let outcome = if value.is_empty() { "empty" } else { "shown" };
+                let outcome = if value.text.is_empty() {
+                    "empty"
+                } else {
+                    "shown"
+                };
                 log(section, outcome, elapsed);
                 value
             }
             Ok(Err(err)) => {
                 log(section, "panicked", start.elapsed());
-                panicked(err.try_into_panic().ok().as_deref(), secrets)
+                Out::error(panicked(err.try_into_panic().ok().as_deref(), secrets))
             }
             Err(_) => {
                 token.cancel();
                 // Dropping a JoinHandle leaves its task running: abort it.
                 handle.abort();
                 log(section, "timed out", cap);
-                timed_out(cap)
+                Out::error(timed_out(cap))
             }
         };
         results.push((section, value));
@@ -124,10 +129,18 @@ pub(crate) fn panic_message(payload: Option<&(dyn Any + Send)>) -> &str {
 mod tests {
     use super::*;
 
+    /// Each section's line, as the screen gets it.
+    fn texts(results: Vec<(Section, Out)>) -> Vec<(Section, String)> {
+        results
+            .into_iter()
+            .map(|(section, out)| (section, out.text))
+            .collect()
+    }
+
     fn job(value: &'static str, after: Duration) -> Job {
         Box::pin(async move {
             tokio::time::sleep(after).await;
-            value.to_string()
+            Out::from(value.to_string())
         })
     }
 
@@ -138,7 +151,8 @@ mod tests {
             (Section::Distribution, job("d", Duration::from_secs(2))),
             (Section::Uptime, job("", Duration::ZERO)),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
+        let results =
+            texts(collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await);
         assert_eq!(
             results,
             [
@@ -157,7 +171,8 @@ mod tests {
             (Section::Kernel, job("never", Duration::from_secs(3600))),
             (Section::Uptime, job("u", Duration::from_secs(1))),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
+        let results =
+            texts(collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await);
         assert_eq!(
             results,
             [
@@ -182,13 +197,13 @@ mod tests {
         let seen = token.clone();
         let watcher: Job = Box::pin(async move {
             seen.cancelled().await;
-            "never shown".to_string()
+            Out::from("never shown".to_string())
         });
         let jobs = vec![
             (Section::Services, watcher),
             (Section::Kernel, job("k", Duration::from_secs(1))),
         ];
-        let results = collect(jobs, CAP, &token, &Secrets::default()).await;
+        let results = texts(collect(jobs, CAP, &token, &Secrets::default()).await);
         assert!(token.is_cancelled());
         assert_eq!(results[0].1, "k");
         assert_eq!(results[1].1, "Error: provider timed out after 30s");
@@ -210,7 +225,8 @@ mod tests {
             (Section::Distribution, job("x", Duration::from_secs(3600))),
             (Section::Kernel, job("y", Duration::from_secs(3600))),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
+        let results =
+            texts(collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await);
         assert!(results.iter().all(|(_, v)| v.contains("timed out")));
         assert_eq!(start.elapsed(), CAP);
     }
@@ -226,13 +242,17 @@ mod tests {
                 Section::Kernel,
                 Box::pin(async { std::panic::panic_any(format!("owned {}", 7)) }),
             ),
-            (Section::Uptime, Box::pin(async { "u".to_string() })),
+            (
+                Section::Uptime,
+                Box::pin(async { Out::from("u".to_string()) }),
+            ),
             (
                 Section::Processes,
                 Box::pin(async { std::panic::panic_any(7_u8) }),
             ),
         ];
-        let results = collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await;
+        let results =
+            texts(collect(jobs, CAP, &CancellationToken::new(), &Secrets::default()).await);
         assert_eq!(
             results,
             [
@@ -262,7 +282,7 @@ mod tests {
             Box::pin(async { panic!("token run-canary-42 and run-\x07canary-42") }),
         )];
         let secrets = Secrets::from_values(["run-canary-42"]);
-        let results = collect(jobs, CAP, &CancellationToken::new(), &secrets).await;
+        let results = texts(collect(jobs, CAP, &CancellationToken::new(), &secrets).await);
         assert_eq!(
             results[0].1,
             "Error: panic occurred (token [REDACTED] and [REDACTED])"

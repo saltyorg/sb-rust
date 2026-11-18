@@ -6,6 +6,9 @@
 //! types, which the tests read from fixtures with `FromRead`
 //! (<https://docs.rs/procfs/0.18.0/procfs/trait.FromRead.html>).
 
+use serde_json::json;
+
+use crate::Out;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -29,8 +32,8 @@ const OS_RELEASE: [&str; 2] = ["/etc/os-release", "/usr/lib/os-release"];
 /// Distribution on this host: [`distribution`] of the first os-release
 /// that exists.
 #[must_use]
-pub fn distribution_here() -> String {
-    distribution(read_os_release(&OS_RELEASE.map(Path::new)).as_deref())
+pub fn distribution_here() -> Out {
+    distribution_out(read_os_release(&OS_RELEASE.map(Path::new)).as_deref())
 }
 
 /// The first of `places` that exists, read with cli-core's 1 MiB cap. A
@@ -55,10 +58,12 @@ fn read_os_release(places: &[&Path]) -> Option<String> {
 /// as sb-go joins `lsb_release -ds` and `-cs` (`motd/info.go:85-93`);
 /// without a codename, the name alone; without a name or the file, `Not
 /// available`.
+/// Its `--json` value `{name, codename}` (the
+/// codename `null` when there is none).
 #[must_use]
-pub fn distribution(os_release: Option<&str>) -> String {
+pub fn distribution_out(os_release: Option<&str>) -> Out {
     let Some(text) = os_release else {
-        return NOT_AVAILABLE.to_string();
+        return Out::error(NOT_AVAILABLE.to_string());
     };
     // Made safe first, so a value of escapes or spaces alone is absent.
     let shown = |key| {
@@ -67,12 +72,14 @@ pub fn distribution(os_release: Option<&str>) -> String {
             .filter(|value| !value.is_empty())
     };
     let Some(name) = shown("PRETTY_NAME") else {
-        return NOT_AVAILABLE.to_string();
+        return Out::error(NOT_AVAILABLE.to_string());
     };
-    match shown("VERSION_CODENAME") {
+    let codename = shown("VERSION_CODENAME");
+    let line = match &codename {
         Some(codename) => format!("{name} ({codename})"),
-        None => name,
-    }
+        None => name.clone(),
+    };
+    Out::value(line, json!({ "name": name, "codename": codename }))
 }
 
 /// `key`'s value in os-release's format
@@ -146,19 +153,20 @@ fn unquote(value: &str) -> String {
 /// Kernel on this host: `uname(2)`'s release, as `uname -r` prints it
 /// (<https://docs.rs/rustix/1.1.6/rustix/system/fn.uname.html>).
 #[must_use]
-pub fn kernel_here() -> String {
-    kernel(rustix::system::uname().release().to_bytes())
+pub fn kernel_here() -> Out {
+    kernel_out(rustix::system::uname().release().to_bytes())
 }
 
 /// Kernel from the release bytes, made safe to draw; empty is `Not
 /// available`.
+/// Its `--json` value `{release}`.
 #[must_use]
-pub fn kernel(release: &[u8]) -> String {
+pub fn kernel_out(release: &[u8]) -> Out {
     let shown = one_line(release);
     if shown.is_empty() {
-        NOT_AVAILABLE.to_string()
+        Out::error(NOT_AVAILABLE.to_string())
     } else {
-        shown
+        Out::value(shown.clone(), json!({ "release": shown }))
     }
 }
 
@@ -258,14 +266,20 @@ pub fn uptime_pretty(uptime: Duration, form: Procps) -> String {
 /// Uptime: procps' text without `up ` in the value colour, as sb-go trims
 /// `uptime -p`'s output (`motd/info.go:101-113`; a line of `up ` alone
 /// trims to `up` and stays); no uptime is `Not available`.
+/// Its `--json` value `{seconds, text}` (whole seconds,
+/// and the line's text).
 #[must_use]
-pub fn uptime(uptime: Option<Duration>, form: Procps, paint: &Paint) -> String {
+pub fn uptime_out(uptime: Option<Duration>, form: Procps, paint: &Paint) -> Out {
     let Some(uptime) = uptime else {
-        return NOT_AVAILABLE.to_string();
+        return Out::error(NOT_AVAILABLE.to_string());
     };
     let line = uptime_pretty(uptime, form);
     let line = line.trim();
-    paint.value(line.strip_prefix("up ").unwrap_or(line))
+    let text = line.strip_prefix("up ").unwrap_or(line);
+    Out::value(
+        paint.value(text),
+        json!({ "seconds": uptime.as_secs(), "text": text }),
+    )
 }
 
 /// This host's os-release `VERSION_ID`, which picks Uptime's form and
@@ -279,10 +293,10 @@ pub fn version_id_here() -> Option<String> {
 
 /// Uptime on this host: /proc/uptime, in the form of the host's release.
 #[must_use]
-pub fn uptime_here(paint: &Paint) -> String {
+pub fn uptime_here(paint: &Paint) -> Out {
     let form = Procps::for_release(version_id_here().as_deref());
     let now = current::<Uptime>("uptime").map(|up| up.uptime_duration());
-    uptime(now, form, paint)
+    uptime_out(now, form, paint)
 }
 
 /// The host's `T` from /proc, or none with the reason in the run log.
@@ -295,33 +309,53 @@ fn current<T: Current>(name: &str) -> Option<T> {
 /// Load Averages: sb-go's `1 min: a | 5 min: b | 15 min: c`, the numbers
 /// with the two decimals /proc/loadavg prints, in the value colour
 /// (`motd/info.go:115-127`).
+/// Its `--json` value `{one, five, fifteen}`, the
+/// numbers as /proc/loadavg gives them.
 #[must_use]
-pub fn load_averages(load: Option<&LoadAverage>, paint: &Paint) -> String {
+pub fn load_averages_out(load: Option<&LoadAverage>, paint: &Paint) -> Out {
     let Some(load) = load else {
-        return NOT_AVAILABLE.to_string();
+        return Out::error(NOT_AVAILABLE.to_string());
     };
     let shown = |value: f32| paint.value(&format!("{value:.2}"));
-    format!(
+    let line = format!(
         "1 min: {} | 5 min: {} | 15 min: {}",
         shown(load.one),
         shown(load.five),
         shown(load.fifteen)
+    );
+    Out::value(
+        line,
+        json!({
+            "one": two_decimals(load.one),
+            "five": two_decimals(load.five),
+            "fifteen": two_decimals(load.fifteen),
+        }),
     )
+}
+
+/// `value` to the line's two decimals, as an `f64`: an `f32` widened as
+/// it is reads `57.650001525878906` in JSON.
+fn two_decimals(value: f32) -> f64 {
+    (f64::from(value) * 100.0).round() / 100.0
 }
 
 /// Load Averages on this host.
 #[must_use]
-pub fn load_averages_here(paint: &Paint) -> String {
-    load_averages(current::<LoadAverage>("loadavg").as_ref(), paint)
+pub fn load_averages_here(paint: &Paint) -> Out {
+    load_averages_out(current::<LoadAverage>("loadavg").as_ref(), paint)
 }
 
 /// Processes: `N running processes`, N in the value colour, counted as
 /// sb-go counts /proc's numeric entries (`motd/info.go:334-351`).
+/// Its `--json` value `{count}`.
 #[must_use]
-pub fn processes(count: Option<usize>, paint: &Paint) -> String {
+pub fn processes_out(count: Option<usize>, paint: &Paint) -> Out {
     match count {
-        Some(count) => format!("{} running processes", paint.value(&count.to_string())),
-        None => NOT_AVAILABLE.to_string(),
+        Some(count) => Out::value(
+            format!("{} running processes", paint.value(&count.to_string())),
+            json!({ "count": count }),
+        ),
+        None => Out::error(NOT_AVAILABLE.to_string()),
     }
 }
 
@@ -339,8 +373,8 @@ fn count_processes(root: &Path) -> Option<usize> {
 
 /// Processes on this host.
 #[must_use]
-pub fn processes_here(paint: &Paint) -> String {
-    processes(count_processes(Path::new("/proc")), paint)
+pub fn processes_here(paint: &Paint) -> Out {
+    processes_out(count_processes(Path::new("/proc")), paint)
 }
 
 /// CPU: sb-go's model and counts (`motd/info.go:625-773`): the model
@@ -350,10 +384,12 @@ pub fn processes_here(paint: &Paint) -> String {
 /// (at least one); cores are `cpu cores` per socket when given, else the
 /// distinct (socket, `core id`) pairs, else the threads; threads are the
 /// processors. Without a model name it is `Not available`.
+/// Its `--json` value `{model, sockets, cores, threads}`, the
+/// cores and threads per socket as the line counts them.
 #[must_use]
-pub fn cpu(info: Option<&CpuInfo>, paint: &Paint) -> String {
+pub fn cpu_out(info: Option<&CpuInfo>, paint: &Paint) -> Out {
     let Some(info) = info else {
-        return NOT_AVAILABLE.to_string();
+        return Out::error(NOT_AVAILABLE.to_string());
     };
     let field = |cpu: usize, key: &str| info.get_field(cpu, key);
     let cpus = 0..info.num_cores();
@@ -388,7 +424,7 @@ pub fn cpu(info: Option<&CpuInfo>, paint: &Paint) -> String {
         |per_socket| per_socket * sockets,
     );
     let Some(model) = model.map(model_name).filter(|model| !model.is_empty()) else {
-        return NOT_AVAILABLE.to_string();
+        return Out::error(NOT_AVAILABLE.to_string());
     };
     // sb-go's one-socket and many-socket forms are the same with one
     // socket: the counts per socket, one line per socket.
@@ -402,7 +438,11 @@ pub fn cpu(info: Option<&CpuInfo>, paint: &Paint) -> String {
     } else {
         format!("({} cores)", paint.value(&cores.to_string()))
     };
-    vec![format!("{model} {counts}"); sockets].join("\n")
+    let line = vec![format!("{model} {counts}"); sockets].join("\n");
+    Out::value(
+        line,
+        json!({ "model": model, "sockets": sockets, "cores": cores, "threads": threads }),
+    )
 }
 
 /// The model as sb-go shows it: everything from the first ` N-Core` on
@@ -418,8 +458,8 @@ fn model_name(raw: &str) -> String {
 
 /// CPU on this host.
 #[must_use]
-pub fn cpu_here(paint: &Paint) -> String {
-    cpu(current::<CpuInfo>("cpuinfo").as_ref(), paint)
+pub fn cpu_here(paint: &Paint) -> Out {
+    cpu_out(current::<CpuInfo>("cpuinfo").as_ref(), paint)
 }
 
 /// Memory Usage: sb-go's `U used, F free, C cached, A available, T total`
@@ -427,10 +467,12 @@ pub fn cpu_here(paint: &Paint) -> String {
 /// (`motd/info.go:849-913`). Cached counts the buffers; available is
 /// `MemAvailable`, or free plus cached without it; used is total less
 /// available.
+/// Its `--json` value in bytes: `{used_bytes, free_bytes,
+/// cached_bytes, available_bytes, total_bytes}`.
 #[must_use]
-pub fn memory(info: Option<&Meminfo>, paint: &Paint) -> String {
+pub fn memory_out(info: Option<&Meminfo>, paint: &Paint) -> Out {
     let Some(info) = info else {
-        return NOT_AVAILABLE.to_string();
+        return Out::error(NOT_AVAILABLE.to_string());
     };
     let cached = info.cached.saturating_add(info.buffers);
     let available = info
@@ -438,13 +480,23 @@ pub fn memory(info: Option<&Meminfo>, paint: &Paint) -> String {
         .unwrap_or_else(|| info.mem_free.saturating_add(cached));
     let used = info.mem_total.saturating_sub(available);
     let shown = |bytes: u64| paint.value(&gibibytes(bytes));
-    format!(
+    let line = format!(
         "{} used, {} free, {} cached, {} available, {} total",
         shown(used),
         shown(info.mem_free),
         shown(cached),
         shown(available),
         shown(info.mem_total)
+    );
+    Out::value(
+        line,
+        json!({
+            "used_bytes": used,
+            "free_bytes": info.mem_free,
+            "cached_bytes": cached,
+            "available_bytes": available,
+            "total_bytes": info.mem_total,
+        }),
     )
 }
 
@@ -464,13 +516,42 @@ fn gibibytes(bytes: u64) -> String {
 
 /// Memory Usage on this host.
 #[must_use]
-pub fn memory_here(paint: &Paint) -> String {
-    memory(current::<Meminfo>("meminfo").as_ref(), paint)
+pub fn memory_here(paint: &Paint) -> Out {
+    memory_out(current::<Meminfo>("meminfo").as_ref(), paint)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The lines, as the screen gets them.
+    fn distribution(os_release: Option<&str>) -> String {
+        distribution_out(os_release).text
+    }
+
+    fn kernel(release: &[u8]) -> String {
+        kernel_out(release).text
+    }
+
+    fn uptime(uptime: Option<Duration>, form: Procps, paint: &Paint) -> String {
+        uptime_out(uptime, form, paint).text
+    }
+
+    fn load_averages(load: Option<&LoadAverage>, paint: &Paint) -> String {
+        load_averages_out(load, paint).text
+    }
+
+    fn processes(count: Option<usize>, paint: &Paint) -> String {
+        processes_out(count, paint).text
+    }
+
+    fn cpu(info: Option<&CpuInfo>, paint: &Paint) -> String {
+        cpu_out(info, paint).text
+    }
+
+    fn memory(info: Option<&Meminfo>, paint: &Paint) -> String {
+        memory_out(info, paint).text
+    }
 
     use procfs::FromRead;
 
@@ -822,24 +903,24 @@ mod tests {
     fn the_host_sections_read_its_proc() {
         let plain = Paint::plain();
         assert_eq!(
-            load_averages_here(&plain).split(" | ").count(),
+            load_averages_here(&plain).text.split(" | ").count(),
             3,
             "{}",
-            load_averages_here(&plain)
+            load_averages_here(&plain).text
         );
-        assert!(processes_here(&plain).ends_with(" running processes"));
-        let memory = memory_here(&plain);
+        assert!(processes_here(&plain).text.ends_with(" running processes"));
+        let memory = memory_here(&plain).text;
         assert!(
             memory.contains("G used, ") && memory.ends_with("G total"),
             "{memory}"
         );
         assert_eq!(
-            cpu_here(&plain),
+            cpu_here(&plain).text,
             cpu(Some(&CpuInfo::current().unwrap()), &plain)
         );
         // procps' parts, each `N unit`, or the bare `up` of 4.0.4's
         // exact minute.
-        let uptime = uptime_here(&plain);
+        let uptime = uptime_here(&plain).text;
         let units = [
             "decade", "decades", "year", "years", "week", "weeks", "day", "days", "hour", "hours",
             "minute", "minutes",
@@ -944,7 +1025,7 @@ UBUNTU_CODENAME=noble\n";
     fn kernel_here_is_unames_release() {
         let release = rustix::system::uname();
         assert_eq!(
-            kernel_here(),
+            kernel_here().text,
             String::from_utf8_lossy(release.release().to_bytes())
         );
     }
@@ -955,7 +1036,7 @@ UBUNTU_CODENAME=noble\n";
         let text = ["/etc/os-release", "/usr/lib/os-release"]
             .iter()
             .find_map(|place| std::fs::read_to_string(place).ok());
-        assert_eq!(distribution_here(), distribution(text.as_deref()));
+        assert_eq!(distribution_here().text, distribution(text.as_deref()));
     }
 
     #[test]
@@ -984,5 +1065,82 @@ UBUNTU_CODENAME=noble\n";
         let lib = dir.path().join("lib");
         std::fs::write(&lib, "PRETTY_NAME=lib\n").unwrap();
         assert_eq!(read_os_release(&[dir.path(), &lib]), None);
+    }
+
+    /// The system sections' `--json` values (motd spec, `--json`): typed,
+    /// from the same numbers as the lines; `Not available` is an error.
+    #[test]
+    fn the_values_are_the_lines_numbers() {
+        use crate::Json;
+        use serde_json::json;
+        let plain = Paint::plain();
+        let value = |out: Out| match out.json {
+            Json::Value(value) => value,
+            other => panic!("not a value: {other:?}"),
+        };
+        assert_eq!(
+            value(memory_out(Some(&fixture::<Meminfo>("meminfo")), &plain)),
+            json!({
+                "used_bytes": 5_957_156_864_u64,
+                "free_bytes": 1_264_197_632_u64,
+                "cached_bytes": 6_979_321_856_u64,
+                "available_bytes": 10_737_418_240_u64,
+                "total_bytes": 16_694_575_104_u64,
+            })
+        );
+        assert_eq!(
+            value(cpu_out(
+                Some(&fixture::<CpuInfo>("cpuinfo-two-sockets")),
+                &plain
+            )),
+            json!({"model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz", "sockets": 2, "cores": 4, "threads": 8})
+        );
+        let load = LoadAverage::from_read(&b"0.07 1.50 12.34 2/1234 5678\n"[..]).unwrap();
+        // The line's numbers, not an `f32` widened (`0.07000000029802322`).
+        assert_eq!(
+            value(load_averages_out(Some(&load), &plain)).to_string(),
+            r#"{"fifteen":12.34,"five":1.5,"one":0.07}"#
+        );
+        let busy = LoadAverage::from_read(
+            &b"57.65 0.01 100.99 2/1234 5678
+"[..],
+        )
+        .unwrap();
+        assert_eq!(
+            value(load_averages_out(Some(&busy), &plain)).to_string(),
+            r#"{"fifteen":100.99,"five":0.01,"one":57.65}"#
+        );
+        assert_eq!(
+            value(processes_out(Some(412), &plain)),
+            json!({"count": 412})
+        );
+        assert_eq!(
+            value(uptime_out(
+                Some(Duration::from_secs(90_061)),
+                Procps::V4,
+                &plain
+            )),
+            json!({"seconds": 90_061, "text": uptime(Some(Duration::from_secs(90_061)), Procps::V4, &plain)})
+        );
+        assert_eq!(
+            value(kernel_out(b"6.8.0-100-generic")),
+            json!({"release": "6.8.0-100-generic"})
+        );
+        assert_eq!(
+            value(distribution_out(Some(NOBLE))),
+            json!({"name": "Ubuntu 24.04.1 LTS", "codename": "noble"})
+        );
+        assert_eq!(
+            value(distribution_out(Some("PRETTY_NAME=Debian\n"))),
+            json!({"name": "Debian", "codename": null})
+        );
+        for out in [
+            memory_out(None, &plain),
+            cpu_out(None, &plain),
+            kernel_out(b""),
+            distribution_out(None),
+        ] {
+            assert_eq!(out.json, Json::Error("Not available".to_owned()));
+        }
     }
 }

@@ -32,9 +32,9 @@ use std::time::Duration;
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, bytes, rate_bytes, torrents_summary};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, bytes, rate_bytes, torrents_summary};
 use crate::config::{AppSection, Instance};
+use crate::{Out, Paint};
 
 /// sb-go's limit for the main data, after the 1 s login.
 pub const DATA_TIMEOUT: Duration = Duration::from_secs(20);
@@ -44,11 +44,7 @@ pub const DATA_TIMEOUT: Duration = Duration::from_secs(20);
 pub const MAX_DATA: usize = 64 << 20;
 
 /// qBittorrent's section value.
-pub async fn qbittorrent(
-    section: Option<&AppSection>,
-    shared: &Arc<Shared>,
-    paint: &Paint,
-) -> String {
+pub async fn qbittorrent(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> Out {
     let paint_each = paint.clone();
     let answers = super::ask_each(
         "qbittorrent",
@@ -72,7 +68,10 @@ pub async fn qbittorrent(
 async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
-        .map(|counts| counts.summary(paint))
+        .map(|counts| Summary {
+            text: counts.summary(paint),
+            value: counts.value(),
+        })
         .map_err(|err| shared.error_text(&err))
 }
 
@@ -160,6 +159,16 @@ impl Counts {
         let speed = |rate: i64| format!("{}/s", bytes(rate_bytes(rate)));
         torrents_summary(
             paint,
+            [self.downloading, self.seeding, self.stopped, self.errored],
+            &speed(self.down),
+            &speed(self.up),
+        )
+    }
+
+    /// The `--json` value (motd spec, `--json`).
+    fn value(&self) -> serde_json::Value {
+        let speed = |rate: i64| format!("{}/s", bytes(rate_bytes(rate)));
+        super::torrents_value(
             [self.downloading, self.seeding, self.stopped, self.errored],
             &speed(self.down),
             &speed(self.up),
@@ -334,7 +343,13 @@ mod tests {
         fake.script("/qb/api/v2/sync/maindata", Reply::json(200, maindata()));
         let url = format!("{}/qb/", fake.url());
         let one = section(vec![with_login(&url)]);
-        let text = qbittorrent(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let out = qbittorrent(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let text = out.text.clone();
+        // `--json` (motd spec): the same answer, typed.
+        assert_eq!(
+            crate::providers::tests::instances(&out),
+            r#"[{"name":"qBittorrent","value":{"down":"3.0 MB/s","downloading":8,"errored":3,"seeding":5,"stopped":5,"up":"512 B/s"}}]"#
+        );
         assert_eq!(
             text,
             "↓3.0 MB/s ↑512 B/s | 8 Downloading | 5 Seeding | 5 Stopped | 3 Error"
@@ -365,7 +380,9 @@ mod tests {
         fake.script("/api/v2/sync/maindata", Reply::json(200, "{}"));
         let one = section(vec![with_login(fake.url())]);
         assert_eq!(
-            qbittorrent(Some(&one), &shared(&[]), &Paint::plain()).await,
+            qbittorrent(Some(&one), &shared(&[]), &Paint::plain())
+                .await
+                .text,
             "No torrents present"
         );
         let seen = fake.seen();
@@ -387,7 +404,8 @@ mod tests {
             &shared(&[]),
             &Paint::plain(),
         )
-        .await;
+        .await
+        .text;
         let took = start.elapsed();
         assert!(
             text.starts_with("Error: failed to login to qbittorrent: login error: "),
@@ -407,7 +425,9 @@ mod tests {
             crate::redact::Secrets::default(),
         );
         let start = tokio::time::Instant::now();
-        let text = qbittorrent(Some(&section(vec![slow])), &near, &Paint::plain()).await;
+        let text = qbittorrent(Some(&section(vec![slow])), &near, &Paint::plain())
+            .await
+            .text;
         assert!(
             text.starts_with("Error: could not sync main data: "),
             "{text}"
@@ -491,7 +511,7 @@ mod tests {
             let shared = Arc::clone(&shared);
             async move {
                 let one = section(vec![with_login(&url)]);
-                qbittorrent(Some(&one), &shared, &Paint::plain()).await
+                qbittorrent(Some(&one), &shared, &Paint::plain()).await.text
             }
         };
         fake.script("/a/api/v2/auth/login", Reply::new(403, "banned"));
@@ -539,7 +559,9 @@ mod tests {
         );
         assert!(!text.contains("canary"), "{text}");
         let gone = section(vec![with_login(&refused())]);
-        let text = qbittorrent(Some(&gone), &shared, &Paint::plain()).await;
+        let text = qbittorrent(Some(&gone), &shared, &Paint::plain())
+            .await
+            .text;
         assert!(
             text.starts_with("Error: failed to login to qbittorrent: login error: "),
             "{text}"
@@ -549,13 +571,16 @@ mod tests {
             ..with_login("http://qb")
         }]);
         assert_eq!(
-            qbittorrent(Some(&partial), &shared, &Paint::plain()).await,
+            qbittorrent(Some(&partial), &shared, &Paint::plain())
+                .await
+                .text,
             ""
         );
         let bad = section(vec![with_login("qb")]);
         assert!(
             qbittorrent(Some(&bad), &shared, &Paint::plain())
                 .await
+                .text
                 .starts_with("Error: failed to login to qbittorrent: invalid URL: ")
         );
     }

@@ -626,3 +626,69 @@ fn an_unknown_type_or_font_is_refused() {
     );
     assert!(stderr.contains("term"), "{stderr}");
 }
+
+/// `--json` (motd spec, `--json`; decision 28): one line of JSON on
+/// stdout, the chosen sections in order, no banner and no colour even
+/// under `CLICOLOR_FORCE=1`; motd.yml's issues on stderr.
+#[test]
+fn json_prints_the_sections_document() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let bare = saltbox(Some(
+        "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: t\ncolors:\n  text:\n    label: pink\n",
+    ));
+    let out = motd(
+        // The banner's flags aren't read: an unknown type is no error.
+        &[
+            "--kernel", "--distro", "--json", "--title", "Saltbox", "--type", "bogus",
+        ],
+        logs.path(),
+        &[("CLICOLOR_FORCE", "1"), root_env(&bare)],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.ends_with('\n') && stdout.lines().count() == 1,
+        "{stdout:?}"
+    );
+    assert!(!out.stdout.contains(&0x1b), "{stdout:?}");
+    let document: serde_json::Value = serde_json::from_str(&stdout).expect("JSON");
+    assert_eq!(document["schema"], 1);
+    let sections = document["sections"].as_array().expect("sections");
+    let names: Vec<&str> = sections
+        .iter()
+        .map(|s| s["section"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["distribution", "kernel"]);
+    let release = rustix::system::uname();
+    let kernel = String::from_utf8_lossy(release.release().to_bytes()).into_owned();
+    assert_eq!(sections[1]["value"]["release"], kernel.as_str());
+    assert!(
+        text(&out.stderr).contains("motd.yml has 2 issues; run sb validate-config"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// `--json` takes the selection's error, with nothing on stdout, and
+/// never goes with `--generate-config` (a usage error).
+#[test]
+fn json_without_sections_or_with_generate_config_fails() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let none = motd(&["--json"], logs.path(), &[]);
+    assert_eq!(none.status.code(), Some(1));
+    assert_eq!(text(&none.stdout), "");
+    assert!(
+        text(&none.stderr).contains("no information selected to display"),
+        "{}",
+        text(&none.stderr)
+    );
+    let both = motd(&["--json", "--generate-config"], logs.path(), &[]);
+    assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
+    assert_eq!(text(&both.stdout), "");
+}

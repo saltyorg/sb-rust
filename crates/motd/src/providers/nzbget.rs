@@ -9,9 +9,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, Texts, bytes, send};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, Texts, bytes, send};
 use crate::config::{AppSection, Instance};
+use crate::{Out, Paint};
 
 const TEXTS: Texts = Texts {
     app: "NZBGet",
@@ -20,7 +20,7 @@ const TEXTS: Texts = Texts {
 };
 
 /// `NZBGet`'s section value.
-pub async fn nzbget(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> String {
+pub async fn nzbget(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> Out {
     let paint_each = paint.clone();
     let answers = super::ask_each(
         "nzbget",
@@ -75,7 +75,10 @@ struct Group {
 async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
-        .map(|queue| queue.summary(paint))
+        .map(|queue| Summary {
+            text: queue.summary(paint),
+            value: queue.value(),
+        })
         .map_err(|err| shared.error_text(&shared.hide_login(instance, &err)))
 }
 
@@ -176,6 +179,17 @@ impl Queue {
             (!self.paused).then_some(speed.as_str()),
         )
     }
+
+    /// The `--json` value (motd spec, `--json`).
+    fn value(&self) -> serde_json::Value {
+        let speed = format!("{}/s", bytes(self.rate));
+        super::queue_value(
+            i64::try_from(self.items).unwrap_or(i64::MAX),
+            &bytes(self.remaining),
+            &bytes(self.size),
+            (!self.paused).then_some(speed.as_str()),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -244,7 +258,13 @@ mod tests {
             ),
         );
         let one = section(vec![with_login("NZBGet", fake.url())]);
-        let text = nzbget(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let out = nzbget(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let text = out.text.clone();
+        // `--json` (motd spec): the same answer, typed.
+        assert_eq!(
+            crate::providers::tests::instances(&out),
+            r#"[{"name":"NZBGet","value":{"items":2,"left":"1.0 GB","paused":false,"size":"2.0 GB","speed":"2.0 MB/s"}}]"#
+        );
         assert_eq!(
             text,
             "Downloading at 2.0 MB/s, 2 items in queue (1.0 GB remaining / 2.0 GB total)"
@@ -317,7 +337,7 @@ mod tests {
             let shared = Arc::clone(&shared);
             async move {
                 let one = section(vec![with_login("NZBGet", &url)]);
-                nzbget(Some(&one), &shared, &Paint::plain()).await
+                nzbget(Some(&one), &shared, &Paint::plain()).await.text
             }
         };
         assert_eq!(
@@ -341,6 +361,9 @@ mod tests {
             ..with_login("NZBGet", fake.url())
         };
         let unusable = section(vec![no_password, no_user, with_login("NZBGet", "")]);
-        assert_eq!(nzbget(Some(&unusable), &shared, &Paint::plain()).await, "");
+        assert_eq!(
+            nzbget(Some(&unusable), &shared, &Paint::plain()).await.text,
+            ""
+        );
     }
 }

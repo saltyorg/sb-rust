@@ -100,6 +100,21 @@ pub async fn gpu_here() -> String {
     gpu_at(Sources::system()).await
 }
 
+/// GPU on this host, and its `--json` value `{devices: [{name}]}`, one
+/// per line (motd spec, `--json`); none is `empty`.
+pub async fn gpu_here_out() -> crate::Out {
+    gpu_out(gpu_here().await)
+}
+
+/// The value of GPU's `text`: each line a device's name.
+fn gpu_out(text: String) -> crate::Out {
+    let devices: Vec<serde_json::Value> = text
+        .lines()
+        .map(|name| serde_json::json!({ "name": name }))
+        .collect();
+    crate::Out::value(text, serde_json::json!({ "devices": devices }))
+}
+
 /// GPU from `sources`, read on tokio's blocking pool: pci.ids is a large
 /// file, and the runtime is current-thread
 /// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
@@ -603,5 +618,18 @@ mod tests {
         );
         // This host's line is the same read as the blocking one.
         assert_eq!(gpu_here().await, gpu(&Sources::system()));
+    }
+
+    /// GPU's `--json` value (motd spec, `--json`): a device per line;
+    /// none is `empty`.
+    #[test]
+    fn the_value_lists_each_device() {
+        assert_eq!(
+            gpu_out("NVIDIA GA102\nIntel UHD 630".to_string()).json,
+            crate::Json::Value(serde_json::json!({
+                "devices": [{"name": "NVIDIA GA102"}, {"name": "Intel UHD 630"}]
+            }))
+        );
+        assert_eq!(gpu_out(String::new()).json, crate::Json::Empty);
     }
 }

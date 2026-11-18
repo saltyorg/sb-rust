@@ -27,14 +27,17 @@ use std::time::Duration;
 
 use sb_config::http::Proxy;
 use sb_docker::connect::Listing;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
-use crate::Paint;
 use crate::text::one_line;
+use crate::{Out, Paint};
 
 /// Traefik's API where Saltbox serves it, the base sb-go's `curl` asked.
 const TRAEFIK_BASE: &str = "http://traefik:8080";
+
+/// sb-go's line for a Traefik container that isn't up.
+const TRAEFIK_DOWN: &str = "Traefik container is not running";
 
 /// sb-go's `curl --connect-timeout 3` (decision 11).
 const TRAEFIK_CONNECT: Duration = Duration::from_secs(3);
@@ -154,18 +157,14 @@ impl Containers {
             Ok(listing) => listing,
             Err(Down::Unreachable(_)) => return Err("Docker service is not running".into()),
             Err(Down::Denied(resource)) => return Err(denied(resource, paint)),
-            Err(Down::NoList) => return Err("Traefik container is not running".into()),
+            Err(Down::NoList) => return Err(TRAEFIK_DOWN.into()),
         };
         // `docker ps` without `-a` lists paused and restarting containers too.
         let up = listing.rows.iter().any(|row| {
             row.name == "traefik"
                 && matches!(row.state.as_str(), "running" | "paused" | "restarting")
         });
-        if up {
-            Ok(())
-        } else {
-            Err("Traefik container is not running".into())
-        }
+        if up { Ok(()) } else { Err(TRAEFIK_DOWN.into()) }
     }
 
     /// `path` under Traefik's base URL.
@@ -256,18 +255,26 @@ async fn list(settings: &Settings) -> Result<Listing, Down> {
 /// ones need attention is Difference 10's: the Problem and Warn roles).
 /// A container whose inspect failed needs attention too. An unreachable
 /// daemon reads `Error: <cause>` in the error colour.
-pub async fn docker(containers: &Containers, paint: &Paint) -> String {
+///
+/// Its `--json` value (motd spec, `--json`) is `{total, running,
+/// need_attention: [{name, status}]}`; no daemon, or no list, is an error.
+pub async fn docker(containers: &Containers, paint: &Paint) -> Out {
     let listing = match containers.listing().await {
         Ok(listing) => listing,
         Err(Down::Unreachable(cause)) => {
-            return paint.error(&format!("Error: {}", one_line(cause.as_bytes())));
+            return Out::error(paint.error(&format!("Error: {}", one_line(cause.as_bytes()))));
         }
-        Err(Down::Denied(resource)) => return denied(resource, paint),
-        Err(Down::NoList) => return "Docker is running but container list is unavailable".into(),
+        Err(Down::Denied(resource)) => return Out::error(denied(resource, paint)),
+        Err(Down::NoList) => {
+            return Out::error("Docker is running but container list is unavailable".into());
+        }
     };
     let total = listing.rows.len() + listing.failures.len();
     if total == 0 {
-        return "Docker is running but no containers found".into();
+        return Out::value(
+            "Docker is running but no containers found".into(),
+            json!({ "total": 0, "running": 0, "need_attention": [] }),
+        );
     }
     let running = listing
         .rows
@@ -297,6 +304,14 @@ pub async fn docker(containers: &Containers, paint: &Paint) -> String {
         )
     }));
     attention.sort();
+    let value = json!({
+        "total": total,
+        "running": running,
+        "need_attention": attention
+            .iter()
+            .map(|(name, status)| json!({ "name": name, "status": status }))
+            .collect::<Vec<_>>(),
+    });
     let summary = summary(
         total,
         running,
@@ -305,7 +320,7 @@ pub async fn docker(containers: &Containers, paint: &Paint) -> String {
         "running",
         paint,
     );
-    lines(summary, &attention, paint)
+    Out::value(lines(summary, &attention, paint), value)
 }
 
 /// sb-go's summary line: the total and the good count in the value
@@ -360,16 +375,31 @@ struct Router {
 /// Traefik: with its container running, its routers counted, sb-go's
 /// texts for each way there is no count (Difference 11 for an answer
 /// that isn't JSON).
-pub async fn traefik(containers: &Containers, paint: &Paint) -> String {
+///
+/// Its `--json` value (motd spec, `--json`) is `{running, total, active,
+/// need_attention: [{name, problem}], text}`: `running` false, and the
+/// counts `null`, when Traefik's container isn't up; no daemon, no API
+/// and an answer that isn't the routers are errors.
+pub async fn traefik(containers: &Containers, paint: &Paint) -> Out {
     if let Err(line) = containers.traefik_up(paint).await {
-        return line;
+        if line == TRAEFIK_DOWN {
+            let value = json!({
+                "running": false,
+                "total": null,
+                "active": null,
+                "need_attention": [],
+                "text": line,
+            });
+            return Out::value(line, value);
+        }
+        return Out::error(line);
     }
     let url = containers.traefik_url("/api/http/routers");
     let (status, body) = match fetch(containers, &url).await {
         Ok(answer) => answer,
         Err(err) => {
             tracing::warn!(error = %err, "traefik's api not reached");
-            return "Traefik container is running but API is not accessible".into();
+            return Out::error("Traefik container is running but API is not accessible".into());
         }
     };
     routers(status, &body, paint)
@@ -411,6 +441,9 @@ fn traefik_client(proxy: &Proxy) -> Result<reqwest::Client, String> {
         .map_err(|err| sb_config::http::error_chain(&err))
 }
 
+/// A day's seconds, for `--json`'s `days`.
+const DAY_SECONDS: i64 = 86_400;
+
 /// Traefik's warning: a certificate with under 30 days left
 /// (`getCertificateStatus`, `pkg/api/certificate.go` at v3.7.16).
 const SOON: jiff::SignedDuration = jiff::SignedDuration::from_hours(30 * 24);
@@ -434,7 +467,12 @@ struct Overview {
 
 /// Certificates (motd spec, Certificates; decision 27): the certificates
 /// Traefik serves, from its API, never from `acme.json`.
-pub async fn certificates(containers: &Containers, paint: &Paint) -> String {
+///
+/// Its `--json` value (motd spec, `--json`) is `{total, valid,
+/// expiring_soon, expired, first_not_after, days}`: the first
+/// certificate's `notAfter` and the whole days to it (below 0 once
+/// passed), `null` when not known; hidden is `empty`.
+pub async fn certificates(containers: &Containers, paint: &Paint) -> Out {
     certificates_at(containers, paint, jiff::Timestamp::now()).await
 }
 
@@ -442,9 +480,10 @@ pub async fn certificates(containers: &Containers, paint: &Paint) -> String {
 /// isn't reached (the Traefik line says which), else the line from the
 /// overview's counts and the first certificate to expire, both asked at
 /// once.
-async fn certificates_at(containers: &Containers, paint: &Paint, now: jiff::Timestamp) -> String {
+async fn certificates_at(containers: &Containers, paint: &Paint, now: jiff::Timestamp) -> Out {
+    let hidden = || Out::value(String::new(), json!({}));
     if containers.traefik_up(paint).await.is_err() {
-        return String::new();
+        return hidden();
     }
     let overview = containers.traefik_url("/api/overview");
     let first = containers.traefik_url("/api/certificates?sortBy=validUntil&per_page=1");
@@ -453,7 +492,7 @@ async fn certificates_at(containers: &Containers, paint: &Paint, now: jiff::Time
         Ok(answer) => answer,
         Err(err) => {
             tracing::warn!(error = %err, "traefik's overview not reached");
-            return String::new();
+            return hidden();
         }
     };
     let first = match first {
@@ -494,18 +533,29 @@ fn certificates_line(
     first: Option<jiff::Timestamp>,
     now: jiff::Timestamp,
     paint: &Paint,
-) -> (String, bool) {
+) -> (Out, bool) {
     let Ok(overview) = serde_json::from_slice::<Overview>(body) else {
         let line = paint.error(&format!(
             "Error: unexpected answer from Traefik (HTTP {status})"
         ));
-        return (line, false);
+        return (Out::error(line), false);
     };
     let Some(counted) = overview.certificates else {
-        return (String::new(), false);
+        return (Out::value(String::new(), json!({})), false);
     };
     if counted.total == 0 {
-        return ("Traefik is serving no certificates".into(), false);
+        let value = json!({
+            "total": 0,
+            "valid": 0,
+            "expiring_soon": 0,
+            "expired": 0,
+            "first_not_after": null,
+            "days": null,
+        });
+        return (
+            Out::value("Traefik is serving no certificates".into(), value),
+            false,
+        );
     }
     let valid = counted
         .total
@@ -547,7 +597,16 @@ fn certificates_line(
         line.push_str(", ");
         line.push_str(&expiry(now.duration_until(at), paint));
     }
-    (line, true)
+    let value = json!({
+        "total": counted.total,
+        "valid": valid,
+        "expiring_soon": counted.warnings,
+        "expired": counted.errors,
+        "first_not_after": first.map(|at| at.to_string()),
+        // Whole days, rounded down: below 0 from the moment it passes.
+        "days": first.map(|at| now.duration_until(at).as_secs().div_euclid(DAY_SECONDS)),
+    });
+    (Out::value(line, value), true)
 }
 
 /// When the first certificate expires, `left` from now: whole 24-hour
@@ -581,19 +640,30 @@ fn expiry(left: jiff::SignedDuration, paint: &Paint) -> String {
 
 /// The routers line for Traefik's answer: each router with an error, or
 /// disabled, needs attention (sb-go's `GetTraefikInfo`).
-fn routers(status: u16, body: &[u8], paint: &Paint) -> String {
+fn routers(status: u16, body: &[u8], paint: &Paint) -> Out {
+    let none = || {
+        let line = "Traefik is running with no routers configured".to_string();
+        let value = json!({
+            "running": true,
+            "total": 0,
+            "active": 0,
+            "need_attention": [],
+            "text": line,
+        });
+        Out::value(line, value)
+    };
     let text = String::from_utf8_lossy(body);
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed == "[]" {
-        return "Traefik is running with no routers configured".into();
+        return none();
     }
     let Ok(routers) = serde_json::from_str::<Vec<Router>>(trimmed) else {
-        return paint.error(&format!(
+        return Out::error(paint.error(&format!(
             "Error: unexpected answer from Traefik (HTTP {status})"
-        ));
+        )));
     };
     if routers.is_empty() {
-        return "Traefik is running with no routers configured".into();
+        return none();
     }
     let mut attention = Vec::new();
     for router in &routers {
@@ -614,7 +684,18 @@ fn routers(status: u16, body: &[u8], paint: &Paint) -> String {
         "active",
         paint,
     );
-    lines(summary, &attention, paint)
+    let line = lines(summary, &attention, paint);
+    let value = json!({
+        "running": true,
+        "total": routers.len(),
+        "active": healthy,
+        "need_attention": attention
+            .iter()
+            .map(|(name, problem)| json!({ "name": name, "problem": problem }))
+            .collect::<Vec<_>>(),
+        "text": line,
+    });
+    Out::value(line, value)
 }
 
 /// A router's `error` as sb-go's `extractTraefikRouterError` reads it: a
@@ -777,7 +858,9 @@ mod tests {
         let mut proxied = settings(&engine, api.url());
         proxied.proxy = Proxy::Via("http://proxy.invalid:1".into());
         assert_eq!(
-            traefik(&Containers::new(proxied), &Paint::plain()).await,
+            traefik(&Containers::new(proxied), &Paint::plain())
+                .await
+                .text,
             "Traefik container is running but API is not accessible"
         );
         assert_eq!(api.seen(), Vec::new());
@@ -815,7 +898,7 @@ mod tests {
         ]);
         let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
         assert_eq!(
-            docker(&containers, &Paint::plain()).await,
+            docker(&containers, &Paint::plain()).await.text,
             "9 containers (3 running, 5 need attention)\n\
              authelia: running (unhealthy)\n\
              bazarr: restarting\n\
@@ -824,7 +907,7 @@ mod tests {
              sonarr: exited (code 1)"
         );
         let paint = painted();
-        let text = docker(&containers, &paint).await;
+        let text = docker(&containers, &paint).await.text;
         assert!(text.starts_with(&format!(
             "{} containers ({} running, {} need attention)\n",
             paint.warning("9"),
@@ -843,7 +926,7 @@ mod tests {
         let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
         let paint = painted();
         assert_eq!(
-            docker(&containers, &paint).await,
+            docker(&containers, &paint).await.text,
             format!(
                 "{} containers ({} running)",
                 paint.value("2"),
@@ -857,7 +940,7 @@ mod tests {
         let engine = engine(Vec::new());
         let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
         assert_eq!(
-            docker(&containers, &Paint::plain()).await,
+            docker(&containers, &Paint::plain()).await.text,
             "Docker is running but no containers found"
         );
     }
@@ -875,7 +958,7 @@ mod tests {
         .unwrap();
         let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
         assert_eq!(
-            docker(&containers, &Paint::plain()).await,
+            docker(&containers, &Paint::plain()).await.text,
             "2 containers (1 running, 1 need attention)\n020202020202: inspect failed"
         );
     }
@@ -889,11 +972,11 @@ mod tests {
         .unwrap();
         let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
         assert_eq!(
-            docker(&containers, &Paint::plain()).await,
+            docker(&containers, &Paint::plain()).await.text,
             "Docker is running but container list is unavailable"
         );
         assert_eq!(
-            traefik(&containers, &Paint::plain()).await,
+            traefik(&containers, &Paint::plain()).await.text,
             "Traefik container is not running"
         );
     }
@@ -912,11 +995,11 @@ mod tests {
             limit: LIMIT,
         };
         let text = "Error: permission denied on Docker's socket (/run/docker.sock)";
-        assert_eq!(docker(&containers, &Paint::plain()).await, text);
-        assert_eq!(traefik(&containers, &Paint::plain()).await, text);
+        assert_eq!(docker(&containers, &Paint::plain()).await.text, text);
+        assert_eq!(traefik(&containers, &Paint::plain()).await.text, text);
         let paint = painted();
-        assert_eq!(docker(&containers, &paint).await, paint.error(text));
-        assert_eq!(traefik(&containers, &paint).await, paint.error(text));
+        assert_eq!(docker(&containers, &paint).await.text, paint.error(text));
+        assert_eq!(traefik(&containers, &paint).await.text, paint.error(text));
     }
 
     /// A failed connection to a Unix socket is a permission error when
@@ -966,15 +1049,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let containers = Containers::new(nowhere(&dir));
         let paint = painted();
-        let text = docker(&containers, &Paint::plain()).await;
+        let text = docker(&containers, &Paint::plain()).await.text;
         assert!(
             text.starts_with("Error: couldn't reach Docker at unix://"),
             "{text}"
         );
         assert!(!text.contains('\n'));
-        assert!(docker(&containers, &paint).await.starts_with("\x1b["));
+        assert!(docker(&containers, &paint).await.text.starts_with("\x1b["));
         assert_eq!(
-            traefik(&containers, &Paint::plain()).await,
+            traefik(&containers, &Paint::plain()).await.text,
             "Docker service is not running"
         );
         let refused = Containers::new(Settings {
@@ -982,7 +1065,7 @@ mod tests {
             ..Settings::default()
         });
         assert_eq!(
-            docker(&refused, &Paint::plain()).await,
+            docker(&refused, &Paint::plain()).await.text,
             "Error: DOCKER_TLS_VERIFY is set, but sb talks to Docker without TLS"
         );
     }
@@ -995,8 +1078,8 @@ mod tests {
         let plain = Paint::plain();
         let (shown, routers) =
             tokio::join!(docker(&containers, &plain), traefik(&containers, &plain));
-        assert_eq!(shown, "1 containers (1 running)");
-        assert_eq!(routers, "Traefik container is not running");
+        assert_eq!(shown.text, "1 containers (1 running)");
+        assert_eq!(routers.text, "Traefik container is not running");
         let lists = engine
             .paths()
             .iter()
@@ -1023,11 +1106,11 @@ mod tests {
         );
         let start = std::time::Instant::now();
         assert_eq!(
-            docker(&containers, &Paint::plain()).await,
+            docker(&containers, &Paint::plain()).await.text,
             "Docker is running but container list is unavailable"
         );
         assert_eq!(
-            traefik(&containers, &Paint::plain()).await,
+            traefik(&containers, &Paint::plain()).await.text,
             "Traefik container is not running"
         );
         assert!(
@@ -1047,7 +1130,7 @@ mod tests {
             let (_held, url) = refused();
             let containers = Containers::new(settings(&engine, &url));
             assert_eq!(
-                traefik(&containers, &Paint::plain()).await,
+                traefik(&containers, &Paint::plain()).await.text,
                 "Traefik container is running but API is not accessible",
                 "{state}"
             );
@@ -1068,7 +1151,7 @@ mod tests {
             let engine = engine(inspects);
             let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
             assert_eq!(
-                traefik(&containers, &Paint::plain()).await,
+                traefik(&containers, &Paint::plain()).await.text,
                 "Traefik container is not running"
             );
         }
@@ -1095,7 +1178,7 @@ mod tests {
         );
         let containers = Containers::new(settings(&engine, &format!("{}/", api.url())));
         assert_eq!(
-            traefik(&containers, &Paint::plain()).await,
+            traefik(&containers, &Paint::plain()).await.text,
             "5 routers (2 active, 3 need attention)\n\
              sonarr@docker: middleware \"x\" does not exist\n\
              radarr@docker: router is disabled\n\
@@ -1124,7 +1207,7 @@ mod tests {
             ),
         );
         let containers = Containers::new(settings(&engine, &format!("{}/", api.url())));
-        let line = traefik(&containers, &Paint::plain()).await;
+        let line = traefik(&containers, &Paint::plain()).await.text;
         assert_eq!(
             crate::redact::Share::default().mask(&line, true),
             "1 routers (0 active, 1 need attention)\n\
@@ -1146,7 +1229,7 @@ mod tests {
         let containers = Containers::new(settings(&engine, api.url()));
         let paint = painted();
         assert_eq!(
-            traefik(&containers, &paint).await,
+            traefik(&containers, &paint).await.text,
             format!("{} routers ({} active)", paint.value("2"), paint.value("2"))
         );
     }
@@ -1169,24 +1252,24 @@ mod tests {
         api.script("/api/http/routers", Answer::json(200, r#"[{"name":5}]"#));
         for body in ["[]", "  \n", ""] {
             assert_eq!(
-                traefik(&containers, &Paint::plain()).await,
+                traefik(&containers, &Paint::plain()).await.text,
                 "Traefik is running with no routers configured",
                 "{body:?}"
             );
         }
         assert_eq!(
-            traefik(&containers, &Paint::plain()).await,
+            traefik(&containers, &Paint::plain()).await.text,
             "Error: unexpected answer from Traefik (HTTP 404)"
         );
         let paint = painted();
         assert_eq!(
-            traefik(&containers, &paint).await,
+            traefik(&containers, &paint).await.text,
             paint.error("Error: unexpected answer from Traefik (HTTP 200)")
         );
         let (_held, url) = refused();
         let refused = Containers::new(settings(&engine, &url));
         assert_eq!(
-            traefik(&refused, &Paint::plain()).await,
+            traefik(&refused, &Paint::plain()).await.text,
             "Traefik container is running but API is not accessible"
         );
     }
@@ -1259,7 +1342,7 @@ mod tests {
     async fn certificate_line(api: &Fake, paint: &Paint) -> String {
         let engine = engine(vec![running(1, "traefik")]);
         let containers = Containers::new(settings(&engine, api.url()));
-        certificates_at(&containers, paint, now()).await
+        certificates_at(&containers, paint, now()).await.text
     }
 
     /// Each form of the line (the motd spec, Certificates): all valid,
@@ -1354,7 +1437,9 @@ mod tests {
         let api = certificate_api(&counts(3, 0, 0), Some(&after(38 * DAY)));
         let containers = Containers::new(settings(&idle, api.url()));
         assert_eq!(
-            certificates_at(&containers, &Paint::plain(), now()).await,
+            certificates_at(&containers, &Paint::plain(), now())
+                .await
+                .text,
             ""
         );
         assert_eq!(api.seen(), [] as [sb_config::testing::Seen; 0]);
@@ -1363,7 +1448,9 @@ mod tests {
         let up = engine(vec![running(1, "traefik")]);
         let containers = Containers::new(settings(&up, &url));
         assert_eq!(
-            certificates_at(&containers, &Paint::plain(), now()).await,
+            certificates_at(&containers, &Paint::plain(), now())
+                .await
+                .text,
             ""
         );
     }
@@ -1434,7 +1521,7 @@ mod tests {
         let engine = engine(vec![running(1, "traefik")]);
         let containers = Containers::new(settings(&engine, api.url()));
         assert_eq!(
-            certificates(&containers, &Paint::plain()).await,
+            certificates(&containers, &Paint::plain()).await.text,
             "1 certificate (1 valid), next expires in 400 days"
         );
     }
@@ -1471,5 +1558,128 @@ mod tests {
         certificates_at(&containers, &Paint::plain(), now()).await;
         let second: *const reqwest::Client = containers.client().await.as_ref().unwrap();
         assert_eq!(first, second);
+    }
+
+    // --- `--json` (motd spec, `--json`) ---
+
+    /// Docker's value: the counts and each container needing attention.
+    #[tokio::test]
+    async fn dockers_value_counts_and_lists_attention() {
+        let failing = running(2, "sonarr");
+        let id = failing["Id"].as_str().unwrap().to_string();
+        let engine = FakeEngine::start(Options {
+            inspects: vec![running(1, "plex"), failing],
+            failing: [id].into_iter().collect(),
+            ..Options::default()
+        })
+        .unwrap();
+        let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
+        assert_eq!(
+            docker(&containers, &Paint::plain()).await.json,
+            crate::Json::Value(json!({
+                "total": 2,
+                "running": 1,
+                "need_attention": [{"name": "020202020202", "status": "inspect failed"}],
+            }))
+        );
+        let plain = Paint::plain();
+        let (_, routers) = tokio::join!(docker(&containers, &plain), traefik(&containers, &plain));
+        assert_eq!(
+            routers.json,
+            crate::Json::Value(json!({
+                "running": false,
+                "total": null,
+                "active": null,
+                "need_attention": [],
+                "text": "Traefik container is not running",
+            }))
+        );
+    }
+
+    /// Traefik's value: the routers counted, each needing attention with
+    /// its problem; an answer that isn't the routers is an error.
+    #[test]
+    fn traefiks_value_counts_the_routers() {
+        let body =
+            br#"[{"name":"a@docker","status":"enabled"},{"name":"b@docker","status":"disabled"}]"#;
+        assert_eq!(
+            routers(200, body, &Paint::plain()).json,
+            crate::Json::Value(json!({
+                "running": true,
+                "total": 2,
+                "active": 1,
+                "need_attention": [{"name": "b@docker", "problem": "router is disabled"}],
+                "text": "2 routers (1 active, 1 need attention)\nb@docker: router is disabled",
+            }))
+        );
+        assert_eq!(
+            routers(502, b"<html>", &Paint::plain()).json,
+            crate::Json::Error("Error: unexpected answer from Traefik (HTTP 502)".to_owned())
+        );
+        assert!(matches!(
+            routers(200, b"[]", &Paint::plain()).json,
+            crate::Json::Value(value) if value["total"] == 0
+        ));
+    }
+
+    /// Certificates' value: the counts, the first `notAfter` and the days
+    /// to it, below 0 once passed; none served has no date.
+    #[test]
+    fn certificates_value_has_the_counts_and_the_first_date() {
+        let overview = br#"{"certificates":{"total":3,"warnings":1,"errors":1}}"#;
+        let first: jiff::Timestamp = after(-2 * DAY - 60).parse().unwrap();
+        let (out, counted) = certificates_line(200, overview, Some(first), now(), &Paint::plain());
+        assert!(counted);
+        assert_eq!(
+            out.json,
+            crate::Json::Value(json!({
+                "total": 3,
+                "valid": 1,
+                "expiring_soon": 1,
+                "expired": 1,
+                "first_not_after": first.to_string(),
+                // Rounded down: 2 days and a minute ago is -3.
+                "days": -3,
+            }))
+        );
+        let days = |seconds: i64| {
+            let at: jiff::Timestamp = after(seconds).parse().unwrap();
+            certificates_line(200, overview, Some(at), now(), &Paint::plain())
+                .0
+                .json
+        };
+        for (seconds, expected) in [
+            (-12 * 3600, -1),
+            (-1, -1),
+            (0, 0),
+            (DAY - 1, 0),
+            (38 * DAY, 38),
+        ] {
+            assert!(
+                matches!(days(seconds), crate::Json::Value(ref v) if v["days"] == expected),
+                "{seconds}: {:?}",
+                days(seconds)
+            );
+        }
+        let none = br#"{"certificates":{"total":0,"warnings":0,"errors":0}}"#;
+        assert_eq!(
+            certificates_line(200, none, None, now(), &Paint::plain())
+                .0
+                .json,
+            crate::Json::Value(json!({
+                "total": 0,
+                "valid": 0,
+                "expiring_soon": 0,
+                "expired": 0,
+                "first_not_after": null,
+                "days": null,
+            }))
+        );
+        assert_eq!(
+            certificates_line(200, b"{}", None, now(), &Paint::plain())
+                .0
+                .json,
+            crate::Json::Empty
+        );
     }
 }

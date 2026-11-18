@@ -7,12 +7,12 @@
 
 use std::sync::Arc;
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, streams};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, streams};
 use crate::config::{AppSection, Instance};
+use crate::{Out, Paint};
 
 /// Jellyfin's section value.
-pub async fn jellyfin(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> String {
+pub async fn jellyfin(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> Out {
     let paint_each = paint.clone();
     let answers = super::ask_each(
         "jellyfin",
@@ -38,7 +38,10 @@ type Session = serde_json::Map<String, serde_json::Value>;
 async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
-        .map(|counts| counts.summary(paint))
+        .map(|counts| Summary {
+            text: counts.summary(paint),
+            value: counts.value(),
+        })
         .map_err(|err| shared.error_text(&format!("failed to get sessions: {err}")))
 }
 
@@ -105,16 +108,22 @@ impl Counts {
         if self.active == 0 {
             return "No active streams".to_string();
         }
-        streams(
-            paint,
-            self.active,
-            &[
-                (self.direct_play, "direct play"),
-                (self.remux, "remux"),
-                (self.direct_stream, "direct stream"),
-                (self.transcode, "transcode"),
-            ],
-        )
+        streams(paint, self.active, &self.kinds())
+    }
+
+    /// The kinds the line counts, in its order.
+    fn kinds(&self) -> [(usize, &'static str); 4] {
+        [
+            (self.direct_play, "direct play"),
+            (self.remux, "remux"),
+            (self.direct_stream, "direct stream"),
+            (self.transcode, "transcode"),
+        ]
+    }
+
+    /// The `--json` value (motd spec, `--json`).
+    fn value(&self) -> serde_json::Value {
+        super::streams_value(self.active, &self.kinds())
     }
 }
 
@@ -143,7 +152,13 @@ mod tests {
             ),
         );
         let one = section(vec![with_token("Jellyfin", fake.url(), "jf-token-canary")]);
-        let text = jellyfin(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let out = jellyfin(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let text = out.text.clone();
+        // `--json` (motd spec): the same answer, typed.
+        assert_eq!(
+            crate::providers::tests::instances(&out),
+            r#"[{"name":"Jellyfin","value":{"active":7,"direct_play":2,"direct_stream":1,"remux":1,"transcode":3}}]"#
+        );
         assert_eq!(
             text,
             "7 active streams (2 direct play, 1 remux, 1 direct stream, 3 transcode)"
@@ -167,7 +182,7 @@ mod tests {
             let shared = Arc::clone(&shared);
             async move {
                 let one = section(vec![with_token("Jellyfin", &url, "t")]);
-                jellyfin(Some(&one), &shared, &Paint::plain()).await
+                jellyfin(Some(&one), &shared, &Paint::plain()).await.text
             }
         };
         assert_eq!(

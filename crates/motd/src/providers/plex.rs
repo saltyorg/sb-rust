@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, Texts, send, streams};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, Texts, send, streams};
 use crate::config::{AppSection, Instance};
+use crate::{Out, Paint};
 
 const TEXTS: Texts = Texts {
     app: "Plex",
@@ -17,7 +17,7 @@ const TEXTS: Texts = Texts {
 };
 
 /// Plex's section value.
-pub async fn plex(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> String {
+pub async fn plex(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> Out {
     let paint_each = paint.clone();
     let answers = super::ask_each(
         "plex",
@@ -87,7 +87,10 @@ struct Player {
 async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
-        .map(|counts| counts.summary(paint))
+        .map(|counts| Summary {
+            text: counts.summary(paint),
+            value: counts.value(),
+        })
         .map_err(|err| shared.error_text(&err))
 }
 
@@ -178,16 +181,22 @@ impl Counts {
         if self.active == 0 {
             return "No active streams".to_string();
         }
-        streams(
-            paint,
-            self.active,
-            &[
-                (self.direct_play, "direct play"),
-                (self.transcode, "transcode"),
-                (self.direct_stream, "direct stream"),
-                (self.other, "other"),
-            ],
-        )
+        streams(paint, self.active, &self.kinds())
+    }
+
+    /// The kinds the line counts, in its order.
+    fn kinds(&self) -> [(usize, &'static str); 4] {
+        [
+            (self.direct_play, "direct play"),
+            (self.transcode, "transcode"),
+            (self.direct_stream, "direct stream"),
+            (self.other, "other"),
+        ]
+    }
+
+    /// The `--json` value (motd spec, `--json`).
+    fn value(&self) -> serde_json::Value {
+        super::streams_value(self.active, &self.kinds())
     }
 }
 
@@ -216,10 +225,24 @@ mod tests {
         fake.script("/plex/status/sessions", Reply::json(200, SESSIONS));
         let url = format!("{}/plex", fake.url());
         let one = section(vec![with_token("Plex", &url, "plex-token-canary")]);
-        let text = plex(Some(&one), &shared(&["plex-token-canary"]), &Paint::plain()).await;
+        let out = plex(Some(&one), &shared(&["plex-token-canary"]), &Paint::plain()).await;
         assert_eq!(
-            text,
+            out.text,
             "6 active streams (2 direct play, 2 transcode, 1 direct stream, 1 other)"
+        );
+        // `--json` (motd spec): the counts by kind.
+        assert_eq!(
+            out.json,
+            crate::Json::Instances(vec![(
+                "Plex".to_string(),
+                Ok(serde_json::json!({
+                    "active": 6,
+                    "direct_play": 2,
+                    "transcode": 2,
+                    "direct_stream": 1,
+                    "other": 1,
+                }))
+            )])
         );
         let seen = fake.seen();
         assert_eq!(seen.len(), 1);
@@ -272,7 +295,7 @@ mod tests {
             let shared = Arc::clone(&shared);
             async move {
                 let one = section(vec![with_token("Plex", &url, "plex-token-canary")]);
-                plex(Some(&one), &shared, &Paint::plain()).await
+                plex(Some(&one), &shared, &Paint::plain()).await.text
             }
         };
         assert_eq!(
@@ -303,15 +326,18 @@ mod tests {
     #[tokio::test]
     async fn nothing_to_ask_hides_the_section() {
         let shared = shared(&[]);
-        assert_eq!(plex(None, &shared, &Paint::plain()).await, "");
+        assert_eq!(plex(None, &shared, &Paint::plain()).await.text, "");
         let mut off = section(vec![with_token("Plex", "http://x", "t")]);
         off.enabled = false;
-        assert_eq!(plex(Some(&off), &shared, &Paint::plain()).await, "");
+        assert_eq!(plex(Some(&off), &shared, &Paint::plain()).await.text, "");
         let unusable = section(vec![
             with_token("Plex", "", "t"),
             with_token("Plex", "http://x", ""),
             crate::providers::tests::instance("Plex", "http://x"),
         ]);
-        assert_eq!(plex(Some(&unusable), &shared, &Paint::plain()).await, "");
+        assert_eq!(
+            plex(Some(&unusable), &shared, &Paint::plain()).await.text,
+            ""
+        );
     }
 }

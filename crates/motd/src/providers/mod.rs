@@ -49,10 +49,10 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::Instrument as _;
 
-use crate::Paint;
 use crate::config::{AppSection, Instance};
 use crate::redact::Secrets;
 use crate::text::{capped, first_line, one_line};
+use crate::{Out, Paint};
 
 /// How a run's client is built: [`build`], or the tests' stand-ins.
 type Build = fn(&Proxy) -> Result<Http, String>;
@@ -261,9 +261,17 @@ pub fn secret_header(value: &str) -> Result<HeaderValue, String> {
     Ok(header)
 }
 
-/// One instance's answer: its summary (already painted), or the error
-/// text to show in the error colour.
-pub type Answer = Result<String, String>;
+/// One instance's answer: its summary, or the error text to show in the
+/// error colour.
+pub type Answer = Result<Summary, String>;
+
+/// An instance's summary: its line (already painted) and its `--json`
+/// value (motd spec, `--json`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Summary {
+    pub text: String,
+    pub value: serde_json::Value,
+}
 
 /// Each enabled instance of `section` that `usable` accepts, asked by
 /// `ask` as its own task at once, each answer with the instance's name
@@ -409,44 +417,59 @@ fn instance_name(name: &str, fallback: &str) -> String {
 /// instance's summary alone; several, each on its own line after its
 /// `Name:`, padded to the longest name (by bytes, as Go's `len`), in the
 /// app name colour. Errors in the error colour. Empty for none.
+///
+/// Its `--json` form is each instance's value or error, in the same
+/// order; none is `empty`.
 #[must_use]
-pub fn listing(answers: Vec<(String, Answer)>, paint: &Paint) -> String {
+pub fn listing(answers: Vec<(String, Answer)>, paint: &Paint) -> Out {
     lines(answers, paint, false)
 }
 
 /// [`listing`] with every line named, one instance too (the Arr queues:
 /// sb-go's `formatDetailedQueueOutput`).
 #[must_use]
-pub fn named_listing(answers: Vec<(String, Answer)>, paint: &Paint) -> String {
+pub fn named_listing(answers: Vec<(String, Answer)>, paint: &Paint) -> Out {
     lines(answers, paint, true)
 }
 
-fn lines(mut answers: Vec<(String, Answer)>, paint: &Paint, always_named: bool) -> String {
+fn lines(mut answers: Vec<(String, Answer)>, paint: &Paint, always_named: bool) -> Out {
     answers.sort_by(|a, b| a.0.cmp(&b.0));
     let shown = |answer: &Answer| match answer {
-        Ok(summary) => summary.clone(),
+        Ok(summary) => summary.text.clone(),
         Err(error) => paint.error(error),
     };
-    if !always_named && let [(_, answer)] = answers.as_slice() {
-        return shown(answer);
+    let text = if !always_named && let [(_, answer)] = answers.as_slice() {
+        shown(answer)
+    } else {
+        let width = answers
+            .iter()
+            .map(|(name, _)| name.len())
+            .max()
+            .unwrap_or(0);
+        answers
+            .iter()
+            .map(|(name, answer)| {
+                let pad = " ".repeat(width - name.len() + 1);
+                format!(
+                    "{}{}",
+                    paint.app_name(&format!("{name}:{pad}")),
+                    shown(answer)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if answers.is_empty() {
+        return Out::from(text);
     }
-    let width = answers
-        .iter()
-        .map(|(name, _)| name.len())
-        .max()
-        .unwrap_or(0);
-    answers
-        .iter()
-        .map(|(name, answer)| {
-            let pad = " ".repeat(width - name.len() + 1);
-            format!(
-                "{}{}",
-                paint.app_name(&format!("{name}:{pad}")),
-                shown(answer)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let instances = answers
+        .into_iter()
+        .map(|(name, answer)| (name, answer.map(|summary| summary.value)))
+        .collect();
+    Out {
+        text,
+        json: crate::Json::Instances(instances),
+    }
 }
 
 /// How a provider names its API in sb-go's errors.
@@ -516,6 +539,31 @@ fn streams(paint: &Paint, active: usize, kinds: &[(usize, &str)]) -> String {
         summary = format!("{summary} ({})", parts.join(", "));
     }
     summary
+}
+
+/// The media servers' `--json` value: `active`, then each kind's count
+/// under its name in snake case (`direct_play`), as [`streams`] reads
+/// them.
+fn streams_value(active: usize, kinds: &[(usize, &str)]) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert("active".to_owned(), active.into());
+    for (n, kind) in kinds {
+        value.insert(kind.replace(' ', "_"), (*n).into());
+    }
+    serde_json::Value::Object(value)
+}
+
+/// The downloaders' `--json` value: `{items, left, size, speed, paused}`,
+/// the sizes and speed as the line shows them, `speed` `null` when
+/// paused.
+fn queue_value(items: i64, left: &str, size: &str, speed: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "items": items,
+        "left": left,
+        "size": size,
+        "speed": speed,
+        "paused": speed.is_none(),
+    })
 }
 
 /// sb-go's downloader summary: `Queue is empty`, or `Paused, …` or
@@ -592,6 +640,20 @@ pub(crate) fn torrents_summary(paint: &Paint, counts: [usize; 4], down: &str, up
         parts.push(paint.error(&format!("{errored} Error")));
     }
     parts.join(" | ")
+}
+
+/// The torrent clients' `--json` value: `{down, up, downloading,
+/// seeding, stopped, errored}`, the speeds as the line shows them.
+pub(crate) fn torrents_value(counts: [usize; 4], down: &str, up: &str) -> serde_json::Value {
+    let [downloading, seeding, stopped, errored] = counts;
+    serde_json::json!({
+        "down": down,
+        "up": up,
+        "downloading": downloading,
+        "seeding": seeding,
+        "stopped": stopped,
+        "errored": errored,
+    })
 }
 
 #[cfg(test)]

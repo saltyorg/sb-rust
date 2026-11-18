@@ -66,6 +66,30 @@ pub(crate) fn painted() -> Paint {
     Paint::new(&theme, true)
 }
 
+/// A provider section's `--json` instances as compact JSON, each
+/// `{"name", "value"}` or `{"name", "error"}`, for the tests' exact text.
+pub(crate) fn instances(out: &crate::Out) -> String {
+    let crate::Json::Instances(instances) = &out.json else {
+        panic!("not instances: {:?}", out.json);
+    };
+    let listed: Vec<serde_json::Value> = instances
+        .iter()
+        .map(|(name, answer)| match answer {
+            Ok(value) => serde_json::json!({ "name": name, "value": value }),
+            Err(error) => serde_json::json!({ "name": name, "error": error }),
+        })
+        .collect();
+    serde_json::Value::Array(listed).to_string()
+}
+
+/// An instance's summary that is its line alone.
+pub(crate) fn line(text: &str) -> super::Summary {
+    super::Summary {
+        text: text.to_owned(),
+        value: serde_json::json!({ "line": text }),
+    }
+}
+
 #[test]
 fn the_timeout_is_the_instances_or_the_default_cut_to_the_deadline() {
     let shared = shared(&[]);
@@ -110,29 +134,26 @@ fn error_text_hides_credentials_and_keeps_one_line() {
 #[test]
 fn one_instance_shows_alone_and_several_with_their_names() {
     let plain = Paint::plain();
-    assert_eq!(listing(Vec::new(), &plain), "");
+    assert_eq!(listing(Vec::new(), &plain).text, "");
     assert_eq!(
-        listing(
-            vec![("Plex".into(), Ok("No active streams".into()))],
-            &plain
-        ),
+        listing(vec![("Plex".into(), Ok(line("No active streams")))], &plain).text,
         "No active streams"
     );
     assert_eq!(
-        listing(vec![("Plex".into(), Err("Error: x".into()))], &plain),
+        listing(vec![("Plex".into(), Err("Error: x".into()))], &plain).text,
         "Error: x"
     );
     let answers = vec![
         ("Plex 4K".to_string(), Err("Error: x".to_string())),
-        ("Plëx".to_string(), Ok("No active streams".to_string())),
-        ("Ab".to_string(), Ok("1".to_string())),
+        ("Plëx".to_string(), Ok(line("No active streams"))),
+        ("Ab".to_string(), Ok(line("1"))),
     ];
     assert_eq!(
-        listing(answers.clone(), &plain),
+        listing(answers.clone(), &plain).text,
         "Ab:      1\nPlex 4K: Error: x\nPlëx:   No active streams"
     );
     let paint = painted();
-    let text = listing(answers, &paint);
+    let text = listing(answers, &paint).text;
     let first = text.lines().next().unwrap();
     assert_eq!(first, format!("{}1", paint.app_name("Ab:      ")));
     assert!(text.contains(&paint.error("Error: x")), "{text:?}");
@@ -180,7 +201,7 @@ async fn instances_are_asked_at_once_and_only_when_usable() {
                 },
             )
             .await
-            .map(|_| "ok".to_string())
+            .map(|_| line("ok"))
             .map_err(|err| shared.error_text(&err))
         },
     )
@@ -210,7 +231,7 @@ async fn instances_are_asked_at_once_and_only_when_usable() {
         "F",
         &shared,
         |_| true,
-        |_, _| async { Ok(String::new()) },
+        |_, _| async { Ok(line("")) },
     )
     .await;
     assert_eq!(none.len(), 0);
@@ -220,7 +241,7 @@ async fn instances_are_asked_at_once_and_only_when_usable() {
         "F",
         &shared,
         |_| true,
-        |_, _| async { Ok(String::new()) },
+        |_, _| async { Ok(line("")) },
     )
     .await;
     assert_eq!(none.len(), 0);
@@ -243,7 +264,7 @@ async fn a_panicking_instance_is_its_own_error_line() {
         |_| true,
         |_, instance| async move {
             assert!(instance.name != "Bad", "with panic-canary-123 inside");
-            Ok("fine".to_string())
+            Ok(line("fine"))
         },
     )
     .await;
@@ -254,7 +275,7 @@ async fn a_panicking_instance_is_its_own_error_line() {
                 "Bad".to_string(),
                 Err("Error: panic: with [REDACTED] inside".to_string())
             ),
-            ("Good".to_string(), Ok("fine".to_string())),
+            ("Good".to_string(), Ok(line("fine"))),
         ]
     );
 }
@@ -314,7 +335,9 @@ async fn a_hung_instance_ends_at_its_timeout_or_the_deadline() {
     fake.script("/status/sessions", Reply::json(200, "{}").held());
     let hung = section(vec![with_token("Plex", fake.url(), "t")]);
     let start = Instant::now();
-    let text = plex::plex(Some(&hung), &shared(&[]), &Paint::plain()).await;
+    let text = plex::plex(Some(&hung), &shared(&[]), &Paint::plain())
+        .await
+        .text;
     let took = start.elapsed();
     assert!(
         text.starts_with("Error: failed to connect to Plex: "),
@@ -333,7 +356,9 @@ async fn a_hung_instance_ends_at_its_timeout_or_the_deadline() {
         Secrets::default(),
     );
     let start = Instant::now();
-    let text = plex::plex(Some(&section(vec![slow])), &near, &Paint::plain()).await;
+    let text = plex::plex(Some(&section(vec![slow])), &near, &Paint::plain())
+        .await
+        .text;
     let took = start.elapsed();
     assert!(
         text.starts_with("Error: failed to connect to Plex: "),
@@ -343,7 +368,9 @@ async fn a_hung_instance_ends_at_its_timeout_or_the_deadline() {
     // A refused port ends at once.
     let start = Instant::now();
     let gone = section(vec![with_token("Plex", &refused(), "t")]);
-    let text = plex::plex(Some(&gone), &shared(&[]), &Paint::plain()).await;
+    let text = plex::plex(Some(&gone), &shared(&[]), &Paint::plain())
+        .await
+        .text;
     assert!(
         text.starts_with("Error: failed to connect to Plex: "),
         "{text}"
@@ -369,7 +396,7 @@ async fn the_client_is_built_once() {
     );
     let why = broken.client().await.unwrap_err();
     let one = section(vec![with_token("Plex", "http://x", "t")]);
-    let text = plex::plex(Some(&one), &broken, &Paint::plain()).await;
+    let text = plex::plex(Some(&one), &broken, &Paint::plain()).await.text;
     assert_eq!(text, format!("Error: {why}"));
 }
 
@@ -428,7 +455,7 @@ async fn a_client_that_cant_be_built_fails_the_requests() {
     shared.start();
     assert_eq!(shared.client().await.unwrap_err(), "no roots");
     let one = section(vec![with_token("Plex", "http://x", "t")]);
-    let text = plex::plex(Some(&one), &shared, &Paint::plain()).await;
+    let text = plex::plex(Some(&one), &shared, &Paint::plain()).await.text;
     assert_eq!(text, "Error: no roots");
 }
 
@@ -449,10 +476,44 @@ async fn a_build_that_panics_is_the_instances_error() {
     );
     shared.start();
     let one = section(vec![with_token("Plex", "http://x", "t")]);
-    let text = plex::plex(Some(&one), &shared, &Paint::plain()).await;
+    let text = plex::plex(Some(&one), &shared, &Paint::plain()).await.text;
     assert_eq!(text, "Error: panic: build broke");
     let two = section(vec![with_token("Emby", "http://y", "t")]);
-    let text = emby::emby(Some(&two), &shared, &Paint::plain()).await;
+    let text = emby::emby(Some(&two), &shared, &Paint::plain()).await.text;
     assert_eq!(text, "Error: panic: build broke");
     assert_eq!(BUILDS.load(Ordering::SeqCst), 1);
+}
+
+/// The providers' `--json` form (motd spec, `--json`): each instance's
+/// value or error in the listing's order, none `empty`, and the shared
+/// value shapes.
+#[test]
+fn the_listing_is_each_instances_value_or_error() {
+    use serde_json::json;
+    let plain = Paint::plain();
+    let answers = vec![
+        ("Plex 4K".to_string(), Err("Error: x".to_string())),
+        ("Ab".to_string(), Ok(line("1"))),
+    ];
+    assert_eq!(
+        listing(answers, &plain).json,
+        crate::Json::Instances(vec![
+            ("Ab".to_string(), Ok(json!({ "line": "1" }))),
+            ("Plex 4K".to_string(), Err("Error: x".to_string())),
+        ])
+    );
+    assert_eq!(listing(Vec::new(), &plain).json, crate::Json::Empty);
+    assert_eq!(
+        streams_value(2, &[(1, "direct play"), (1, "transcode")]),
+        json!({ "active": 2, "direct_play": 1, "transcode": 1 })
+    );
+    assert_eq!(
+        queue_value(3, "1.0 GB", "2.0 GB", Some("5 MB/s")),
+        json!({ "items": 3, "left": "1.0 GB", "size": "2.0 GB", "speed": "5 MB/s", "paused": false })
+    );
+    assert_eq!(queue_value(1, "1 B", "2 B", None)["paused"], json!(true));
+    assert_eq!(
+        torrents_value([1, 2, 3, 4], "1.0 KB/s", "0 B/s"),
+        json!({ "down": "1.0 KB/s", "up": "0 B/s", "downloading": 1, "seeding": 2, "stopped": 3, "errored": 4 })
+    );
 }

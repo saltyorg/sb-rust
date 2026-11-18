@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::xmlrpc::{self, Value};
-use super::{Answer, DEFAULT_TIMEOUT, Shared, bytes, rate_bytes, torrents_summary};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, bytes, rate_bytes, torrents_summary};
 use crate::config::{AppSection, Instance};
+use crate::{Out, Paint};
 
 /// sb-go's limit for the data, after the 1 s check.
 pub const DATA_TIMEOUT: Duration = Duration::from_secs(20);
@@ -32,7 +32,7 @@ enum Limit {
 }
 
 /// rTorrent's section value.
-pub async fn rtorrent(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> String {
+pub async fn rtorrent(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> Out {
     let paint_each = paint.clone();
     let answers = super::ask_each(
         "rtorrent",
@@ -52,7 +52,10 @@ pub async fn rtorrent(section: Option<&AppSection>, shared: &Arc<Shared>, paint:
 async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
-        .map(|counts| counts.summary(paint))
+        .map(|counts| Summary {
+            text: counts.summary(paint),
+            value: counts.value(),
+        })
         .map_err(|err| shared.error_text(&shared.hide_login(instance, &err)))
 }
 
@@ -72,6 +75,16 @@ impl Counts {
         let speed = |rate: i64| format!("{}/s", bytes(rate_bytes(rate)));
         torrents_summary(
             paint,
+            [self.downloading, self.seeding, self.stopped, self.errored],
+            &speed(self.down),
+            &speed(self.up),
+        )
+    }
+
+    /// The `--json` value (motd spec, `--json`).
+    fn value(&self) -> serde_json::Value {
+        let speed = |rate: i64| format!("{}/s", bytes(rate_bytes(rate)));
+        super::torrents_value(
             [self.downloading, self.seeding, self.stopped, self.errored],
             &speed(self.down),
             &speed(self.up),
@@ -263,7 +276,13 @@ mod tests {
         script(&fake, &rows);
         let url = format!("{}/RPC2", fake.url());
         let one = section(vec![with_login(&url)]);
-        let text = rtorrent(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let out = rtorrent(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let text = out.text.clone();
+        // `--json` (motd spec): the same answer, typed.
+        assert_eq!(
+            crate::providers::tests::instances(&out),
+            r#"[{"name":"rTorrent","value":{"down":"2.0 MB/s","downloading":1,"errored":1,"seeding":2,"stopped":1,"up":"1.5 KB/s"}}]"#
+        );
         assert_eq!(
             text,
             "↓2.0 MB/s ↑1.5 KB/s | 1 Downloading | 2 Seeding | 1 Stopped | 1 Error"
@@ -353,7 +372,7 @@ mod tests {
             let shared = Arc::clone(&shared);
             async move {
                 let one = section(vec![instance("rTorrent", &url)]);
-                rtorrent(Some(&one), &shared, &Paint::plain()).await
+                rtorrent(Some(&one), &shared, &Paint::plain()).await.text
             }
         };
         assert_eq!(ask("/a").await, "No torrents present");
@@ -403,10 +422,13 @@ mod tests {
         assert!(ask("/g").await.starts_with("Error: could not connect to rtorrent: system.hostname XMLRPC call failed: unexpected answer"));
         let refused = refused();
         let gone = section(vec![instance("rTorrent", &refused)]);
-        let text = rtorrent(Some(&gone), &shared, &Paint::plain()).await;
+        let text = rtorrent(Some(&gone), &shared, &Paint::plain()).await.text;
         assert!(text.contains("XMLRPC call failed: POST failed: "), "{text}");
         let none = section(vec![instance("rTorrent", "")]);
-        assert_eq!(rtorrent(Some(&none), &shared, &Paint::plain()).await, "");
+        assert_eq!(
+            rtorrent(Some(&none), &shared, &Paint::plain()).await.text,
+            ""
+        );
     }
 
     /// A server echoing the request's `Authorization` header shows the
@@ -422,7 +444,9 @@ mod tests {
             ),
         );
         let one = section(vec![with_login(&format!("{}/RPC2", fake.url()))]);
-        let text = rtorrent(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let text = rtorrent(Some(&one), &shared(&[]), &Paint::plain())
+            .await
+            .text;
         assert!(
             text.ends_with("fault -1: Authorization: Basic [REDACTED]"),
             "{text}"
@@ -440,7 +464,9 @@ mod tests {
         let mut slow = instance("rTorrent", &format!("{}/RPC2", fake.url()));
         slow.timeout = Some(Duration::from_secs(5));
         let start = tokio::time::Instant::now();
-        let text = rtorrent(Some(&section(vec![slow])), &shared(&[]), &Paint::plain()).await;
+        let text = rtorrent(Some(&section(vec![slow])), &shared(&[]), &Paint::plain())
+            .await
+            .text;
         let took = start.elapsed();
         assert!(
             text.starts_with("Error: could not connect to rtorrent: "),

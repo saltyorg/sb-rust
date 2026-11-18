@@ -16,10 +16,10 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, secret_header};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, secret_header};
 use crate::config::{App, AppSection, Instance};
 use crate::text::first_line;
+use crate::{Out, Paint};
 
 /// One page's size, sb-go's.
 const PAGE: usize = 100;
@@ -76,7 +76,7 @@ pub async fn queues(
     apps: &std::collections::BTreeMap<App, AppSection>,
     shared: &Arc<Shared>,
     paint: &Paint,
-) -> String {
+) -> Out {
     let asks = ARRS.map(|arr| {
         let paint = paint.clone();
         async move {
@@ -131,7 +131,10 @@ struct Record {
 async fn ask(shared: &Shared, instance: &Instance, arr: Arr, paint: &Paint) -> Answer {
     fetch(shared, instance, arr)
         .await
-        .map(|queue| summary(&queue, shared, paint))
+        .map(|queue| Summary {
+            text: summary(&queue, shared, paint),
+            value: value(&queue, arr, shared),
+        })
         .map_err(|err| shared.error_text(&err))
 }
 
@@ -261,6 +264,17 @@ fn invalid_status(code: u16, body: &[u8]) -> String {
 /// have a handful.
 const MAX_STATUSES: usize = 20;
 
+/// The `--json` value (motd spec, `--json`): `{app, items, statuses}`,
+/// each status the app's text made safe as the line's, with its count.
+fn value(queue: &Queue, arr: Arr, shared: &Shared) -> serde_json::Value {
+    let statuses: serde_json::Map<String, serde_json::Value> = queue
+        .statuses
+        .iter()
+        .map(|(status, n)| (shared.remote(&first_line(status.as_bytes())), (*n).into()))
+        .collect();
+    serde_json::json!({ "app": arr.key, "items": queue.records, "statuses": statuses })
+}
+
 /// sb-go's `formatDetailedQueueOutput` line: `N item(s) in queue`, then
 /// each status's count, statuses sorted, lowercased and read with their
 /// count ([`counted`]); counts in the value colour. The statuses are the
@@ -389,7 +403,13 @@ mod tests {
             App::Readarr,
             section(vec![with_key("Books", &format!("{base}/readarr"), "k")]),
         );
-        let text = queues(&apps, &shared(&[]), &Paint::plain()).await;
+        let out = queues(&apps, &shared(&[]), &Paint::plain()).await;
+        let text = out.text.clone();
+        // `--json` (motd spec): the same answer, typed.
+        assert_eq!(
+            crate::providers::tests::instances(&out),
+            r#"[{"error":"Error: api.Get(v1/queue): invalid status code, 401 >= 300, Unauthorized","name":"Books"},{"name":"Lidarr","value":{"app":"lidarr","items":1,"statuses":{"queued":1}}},{"name":"Radarr","value":{"app":"radarr","items":0,"statuses":{}}},{"name":"Sonarr","value":{"app":"sonarr","items":150,"statuses":{"Warning":1,"completed":49,"downloading":100}}}]"#
+        );
         assert_eq!(
             text,
             "Books:  Error: api.Get(v1/queue): invalid status code, 401 >= 300, Unauthorized\n\
@@ -451,7 +471,7 @@ mod tests {
             App::Radarr,
             section(vec![with_key("  Radarr 4K  ", fake.url(), "k")]),
         );
-        let text = queues(&apps, &shared(&[]), &Paint::plain()).await;
+        let text = queues(&apps, &shared(&[]), &Paint::plain()).await.text;
         assert!(
             text.starts_with("Radarr 4K: 100 items in queue, 1 s000, "),
             "{text}"
@@ -464,7 +484,7 @@ mod tests {
         fake2.script("/api/v1/queue", page(0, &[]));
         spaces.insert(App::Lidarr, section(vec![with_key(" ", fake2.url(), "k")]));
         assert_eq!(
-            queues(&spaces, &shared(&[]), &Paint::plain()).await,
+            queues(&spaces, &shared(&[]), &Paint::plain()).await.text,
             "Lidarr: 0 items in queue"
         );
     }
@@ -482,7 +502,7 @@ mod tests {
             section(vec![with_key("Radarr", fake.url(), "k")]),
         );
         let paint = painted();
-        let text = queues(&apps, &shared(&[]), &paint).await;
+        let text = queues(&apps, &shared(&[]), &paint).await.text;
         assert_eq!(
             text,
             format!(
@@ -494,10 +514,13 @@ mod tests {
         );
         assert_eq!(fake.seen().len(), 2);
         let none = BTreeMap::new();
-        assert_eq!(queues(&none, &shared(&[]), &Paint::plain()).await, "");
+        assert_eq!(queues(&none, &shared(&[]), &Paint::plain()).await.text, "");
         let mut unusable = BTreeMap::new();
         unusable.insert(App::Sonarr, section(vec![instance("S", fake.url())]));
-        assert_eq!(queues(&unusable, &shared(&[]), &Paint::plain()).await, "");
+        assert_eq!(
+            queues(&unusable, &shared(&[]), &Paint::plain()).await.text,
+            ""
+        );
     }
 
     /// starr's error texts: a body without a message, an empty one, a
@@ -534,7 +557,7 @@ mod tests {
                     App::Sonarr,
                     section(vec![with_key("S", &url, "arr-key-canary-12345")]),
                 );
-                queues(&apps, &shared, &Paint::plain()).await
+                queues(&apps, &shared, &Paint::plain()).await.text
             }
         };
         assert!(ask("/a").await.starts_with(
@@ -547,7 +570,7 @@ mod tests {
         let gone = {
             let mut apps = BTreeMap::new();
             apps.insert(App::Sonarr, section(vec![with_key("S", &refused(), "k")]));
-            queues(&apps, &shared, &Paint::plain()).await
+            queues(&apps, &shared, &Paint::plain()).await.text
         };
         assert!(
             gone.starts_with("S: Error: api.Get(v3/queue): error sending request"),
@@ -556,7 +579,7 @@ mod tests {
         let bad = {
             let mut apps = BTreeMap::new();
             apps.insert(App::Sonarr, section(vec![with_key("S", "::", "k")]));
-            queues(&apps, &shared, &Paint::plain()).await
+            queues(&apps, &shared, &Paint::plain()).await.text
         };
         assert!(bad.starts_with("S: Error: invalid URL: "), "{bad}");
     }

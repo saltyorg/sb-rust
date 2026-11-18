@@ -9,6 +9,9 @@
 //! the names and states from systemctl go through term-ui's `DisplayText`
 //! (decision 24).
 
+use serde_json::json;
+
+use crate::Out;
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
@@ -53,9 +56,9 @@ pub async fn services(
     settings: Option<&config::Systemd>,
     paint: &Paint,
     token: &CancellationToken,
-) -> String {
+) -> Out {
     if settings.is_some_and(|settings| !settings.enabled) {
-        return String::new();
+        return Out::value(String::new(), json!({}));
     }
     let additional = settings.map_or(&[][..], |s| s.additional_services.as_slice());
     let filters = with_additional(additional);
@@ -66,22 +69,27 @@ pub async fn services(
         }
         Err(err) => {
             tracing::warn!(error = %err, "systemd services not listed");
-            paint.error(&format!(
+            Out::error(paint.error(&format!(
                 "Error: {}",
                 one_line(format!("error getting services: {err}").as_bytes())
-            ))
+            )))
         }
     }
 }
 
 /// One line per service, sorted by display name (byte order, as Go's
 /// `<`), each name padded to the longest; empty for none.
+///
+/// Its `--json` value (motd spec, `--json`) is `{services: [{name,
+/// display, state, status}]}` in the lines' order: the unit's name, the
+/// name shown, systemd's active state and the status as the line shows
+/// it.
 fn lines(
     found: &[Service],
     names: Option<&BTreeMap<String, String>>,
     now: Timestamp,
     paint: &Paint,
-) -> String {
+) -> Out {
     let mut shown: Vec<(String, &Service)> = found
         .iter()
         .map(|service| (display_name(&service.name, names), service))
@@ -91,14 +99,23 @@ fn lines(
     // sb-go pads by bytes (`len`), as here; std's `{:<width$}` would
     // count chars.
     let width = shown.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
-    shown
+    let mut services = Vec::with_capacity(shown.len());
+    let line = shown
         .iter()
         .map(|(name, service)| {
             let pad = " ".repeat(width - name.len());
-            format!("{name}{pad}   {}", status(service, now, paint))
+            let status = status(service, now, paint);
+            services.push(json!({
+                "name": one_line(service.name.as_bytes()),
+                "display": name,
+                "state": one_line(service.active.as_bytes()),
+                "status": status,
+            }));
+            format!("{name}{pad}   {status}")
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    Out::value(line, json!({ "services": services }))
 }
 
 /// sb-go's `getDisplayName`: motd.yml's name, then sb-go's own, then the
@@ -344,31 +361,31 @@ mod tests {
         let mut names = BTreeMap::new();
         names.insert("rclone_vfs".to_string(), "Rclone".to_string());
         assert_eq!(
-            lines(&found, Some(&names), now, &Paint::plain()),
+            lines(&found, Some(&names), now, &Paint::plain()).text,
             "Docker   active/running\nRclone   failed\nweb      inactive"
         );
         assert_eq!(
-            lines(&found, None, now, &Paint::plain()),
+            lines(&found, None, now, &Paint::plain()).text,
             "Docker       active/running\nrclone_vfs   failed\nweb          inactive"
         );
-        assert_eq!(lines(&[], None, now, &Paint::plain()), "");
+        assert_eq!(lines(&[], None, now, &Paint::plain()).text, "");
         // By bytes, as sb-go's `len`: `Plëx` is 5 bytes, 4 characters.
         names.insert("docker".to_string(), "Plëx".to_string());
         assert_eq!(
-            lines(&found[..1], Some(&names), now, &Paint::plain()),
+            lines(&found[..1], Some(&names), now, &Paint::plain()).text,
             "Plëx   active/running"
         );
         let mut two = found[..2].to_vec();
         two[1].name = "docker2".to_string();
         names.insert("docker2".to_string(), "Docker".to_string());
         assert_eq!(
-            lines(&two, Some(&names), now, &Paint::plain()),
+            lines(&two, Some(&names), now, &Paint::plain()).text,
             "Docker   failed\nPlëx    active/running"
         );
         // The name isn't painted (sb-go's `DefaultStyle`), the status is.
         let paint = painted();
         assert_eq!(
-            lines(&found[..1], None, now, &paint),
+            lines(&found[..1], None, now, &paint).text,
             format!("Docker   {}", paint.success("active/running"))
         );
     }
@@ -434,11 +451,13 @@ esac"#,
             &[("rclone_vfs", "Rclone")],
         );
         assert_eq!(
-            services(&systemd, Some(&configured), &plain, &token).await,
+            services(&systemd, Some(&configured), &plain, &token)
+                .await
+                .text,
             "Docker     active/running\nMergerfs   inactive\nRclone     failed"
         );
         assert_eq!(
-            services(&systemd, None, &plain, &token).await,
+            services(&systemd, None, &plain, &token).await.text,
             "Docker     active/running\nMergerfs   inactive"
         );
     }
@@ -453,11 +472,16 @@ esac"#,
         let token = CancellationToken::new();
         let off = settings(false, &[], &[]);
         assert_eq!(
-            services(&systemd, Some(&off), &Paint::plain(), &token).await,
+            services(&systemd, Some(&off), &Paint::plain(), &token)
+                .await
+                .text,
             ""
         );
         let systemd = systemctl(dir.path(), &[("ssh", "active", "running")]);
-        assert_eq!(services(&systemd, None, &Paint::plain(), &token).await, "");
+        assert_eq!(
+            services(&systemd, None, &Paint::plain(), &token).await.text,
+            ""
+        );
     }
 
     /// A list that can't be read is sb-go's error line, first line only,
@@ -470,14 +494,14 @@ esac"#,
         stand_in(&path, "echo 'Failed to connect to bus\nsecond' >&2; exit 1");
         let systemd = Systemd::new().with_program(&path);
         let token = CancellationToken::new();
-        let text = services(&systemd, None, &Paint::plain(), &token).await;
+        let text = services(&systemd, None, &Paint::plain(), &token).await.text;
         assert!(
             text.starts_with("Error: error getting services: failed to list systemd services: "),
             "{text}"
         );
         assert!(!text.contains('\n'), "{text}");
         let paint = painted();
-        let text = services(&systemd, None, &paint, &token).await;
+        let text = services(&systemd, None, &paint, &token).await.text;
         assert!(text.starts_with(&paint.error("Error: ")[..10]), "{text:?}");
         assert!(text.ends_with("\x1b[0m"), "{text:?}");
     }
@@ -505,8 +529,44 @@ esac"#,
             start.elapsed()
         );
         assert!(
-            text.starts_with("Error: error getting services: "),
-            "{text}"
+            text.text.starts_with("Error: error getting services: "),
+            "{}",
+            text.text
+        );
+        assert!(
+            matches!(text.json, crate::Json::Error(_)),
+            "{:?}",
+            text.json
+        );
+    }
+
+    /// Services' `--json` value (motd spec, `--json`): each unit in the
+    /// lines' order, with its name, the name shown, its state and status.
+    #[test]
+    fn the_value_lists_each_service() {
+        let now = Timestamp::from_second(1_000_000).unwrap();
+        let failed = Service {
+            name: "saltbox_managed_docker".to_string(),
+            active: "failed".to_string(),
+            sub: "failed".to_string(),
+            unit_file_state: None,
+            active_enter: None,
+            state_change: None,
+            timer: None,
+        };
+        let out = lines(&[failed], None, now, &Paint::plain());
+        assert_eq!(
+            out.json,
+            crate::Json::Value(json!({"services": [{
+                "name": "saltbox_managed_docker",
+                "display": "docker",
+                "state": "failed",
+                "status": "failed",
+            }]}))
+        );
+        assert_eq!(
+            lines(&[], None, now, &Paint::plain()).json,
+            crate::Json::Empty
         );
     }
 }

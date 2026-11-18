@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use super::{Answer, DEFAULT_TIMEOUT, Shared, Texts, send, streams};
-use crate::Paint;
+use super::{Answer, DEFAULT_TIMEOUT, Shared, Summary, Texts, send, streams};
 use crate::config::{AppSection, Instance};
+use crate::{Out, Paint};
 
 const TEXTS: Texts = Texts {
     app: "Emby",
@@ -17,7 +17,7 @@ const TEXTS: Texts = Texts {
 };
 
 /// Emby's section value.
-pub async fn emby(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> String {
+pub async fn emby(section: Option<&AppSection>, shared: &Arc<Shared>, paint: &Paint) -> Out {
     let paint_each = paint.clone();
     let answers = super::ask_each(
         "emby",
@@ -55,7 +55,10 @@ struct PlayState {
 async fn ask(shared: &Shared, instance: &Instance, paint: &Paint) -> Answer {
     fetch(shared, instance)
         .await
-        .map(|counts| counts.summary(paint))
+        .map(|counts| Summary {
+            text: counts.summary(paint),
+            value: counts.value(),
+        })
         .map_err(|err| shared.error_text(&err))
 }
 
@@ -115,15 +118,21 @@ impl Counts {
         if self.active == 0 {
             return "No active streams".to_string();
         }
-        streams(
-            paint,
-            self.active,
-            &[
-                (self.direct_play, "direct play"),
-                (self.direct_stream, "direct stream"),
-                (self.transcode, "transcode"),
-            ],
-        )
+        streams(paint, self.active, &self.kinds())
+    }
+
+    /// The kinds the line counts, in its order.
+    fn kinds(&self) -> [(usize, &'static str); 3] {
+        [
+            (self.direct_play, "direct play"),
+            (self.direct_stream, "direct stream"),
+            (self.transcode, "transcode"),
+        ]
+    }
+
+    /// The `--json` value (motd spec, `--json`).
+    fn value(&self) -> serde_json::Value {
+        super::streams_value(self.active, &self.kinds())
     }
 }
 
@@ -152,7 +161,13 @@ mod tests {
         );
         let url = format!("{}/", fake.url());
         let one = section(vec![with_token("Emby", &url, "emby-token-canary")]);
-        let text = emby(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let out = emby(Some(&one), &shared(&[]), &Paint::plain()).await;
+        let text = out.text.clone();
+        // `--json` (motd spec): the same answer, typed.
+        assert_eq!(
+            crate::providers::tests::instances(&out),
+            r#"[{"name":"Emby","value":{"active":4,"direct_play":1,"direct_stream":1,"transcode":1}}]"#
+        );
         assert_eq!(
             text,
             "4 active streams (1 direct play, 1 direct stream, 1 transcode)"
@@ -174,7 +189,7 @@ mod tests {
             let shared = Arc::clone(&shared);
             async move {
                 let one = section(vec![with_token("Emby", &url, "t")]);
-                emby(Some(&one), &shared, &Paint::plain()).await
+                emby(Some(&one), &shared, &Paint::plain()).await.text
             }
         };
         assert_eq!(ask(format!("{}/a", fake.url())).await, "No active streams");

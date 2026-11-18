@@ -27,6 +27,9 @@
 //! (why not utmp-rs: stale, and wtmpdb's database is no utmp file; motd
 //! spec, Tech Stack, "Considered and not used").
 
+use serde_json::json;
+
+use crate::Out;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -215,6 +218,38 @@ pub async fn last_login(tools: &Tools, paint: &Paint, share: bool) -> String {
         first_login(&output, paint)
     };
     shown.unwrap_or_else(|| NO_LOGINS.to_string())
+}
+
+/// User Sessions, and its `--json` value `{active}` (motd spec,
+/// `--json`), from the line, which is plain in a `--json` run.
+pub async fn sessions_out(tools: &Tools, version_id: Option<&str>, paint: &Paint) -> Out {
+    let line = sessions(tools, version_id, paint).await;
+    let active = if line == NO_SESSIONS {
+        Some(0)
+    } else {
+        line.split(' ')
+            .next()
+            .and_then(|count| count.parse::<u64>().ok())
+    };
+    match active {
+        Some(active) => Out::value(line, json!({ "active": active })),
+        None => Out::from(line),
+    }
+}
+
+/// Last login, and its `--json` value `{user, from, text}` (motd spec,
+/// `--json`): the user and the source of sb-go's `user at … from <source>`
+/// line, plain in a `--json` run; both `null` for `No recent logins`.
+pub async fn last_login_out(tools: &Tools, paint: &Paint, share: bool) -> Out {
+    let line = last_login(tools, paint, share).await;
+    let user = line.split_once(" at ").map(|(user, _)| user);
+    let from = line.rsplit_once(" from ").map(|(_, from)| from);
+    let value = if line == NO_LOGINS {
+        json!({ "user": null, "from": null, "text": line })
+    } else {
+        json!({ "user": user, "from": from, "text": line })
+    };
+    Out::value(line, value)
 }
 
 /// sb-go's `isSkippableLastLine`, with wtmpdb's `wtmpdb begins` beside
@@ -749,6 +784,45 @@ mod tests {
         assert_eq!(
             last_login(&tools, &Paint::plain(), false).await,
             "evil at Sat Nov 14 23:10 from 192.0.2.9"
+        );
+    }
+
+    /// User Sessions' and Last login's `--json` values (motd spec,
+    /// `--json`): the count; the user and the source, `null` without a
+    /// login.
+    #[tokio::test]
+    async fn the_values_are_the_count_and_the_login() {
+        use crate::Json;
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tools(dir.path());
+        let plain = Paint::plain();
+        stand_in(&tools.loginctl, "echo '[{},{},{}]'");
+        assert_eq!(
+            sessions_out(&tools, Some("22.04"), &plain).await.json,
+            Json::Value(json!({"active": 3}))
+        );
+        stand_in(&tools.loginctl, "echo '[]'");
+        assert_eq!(
+            sessions_out(&tools, Some("22.04"), &plain).await.json,
+            Json::Value(json!({"active": 0}))
+        );
+        stand_in(
+            &tools.last,
+            "echo 'sbuser   pts/0        2001:db8::1:2:3:4 Sat Nov 14 23:10 - 23:52  (00:42)'",
+        );
+        assert_eq!(
+            last_login_out(&tools, &plain, false).await.json,
+            Json::Value(json!({
+                "user": "sbuser",
+                "from": "2001:db8::1:2:3:4",
+                "text": "sbuser at Sat Nov 14 23:10 until 23:52 (00:42) from 2001:db8::1:2:3:4"
+            }))
+        );
+        stand_in(&tools.last, "exit 0");
+        assert_eq!(
+            last_login_out(&tools, &plain, false).await.json,
+            Json::Value(json!({"user": null, "from": null, "text": "No recent logins"}))
         );
     }
 }
