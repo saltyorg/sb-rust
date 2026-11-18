@@ -3595,7 +3595,6 @@ dependencies = [
  "anstream",
  "anyhow",
  "indicatif",
- "portable-pty",
  "rustix",
  "sb-cli-core",
  "sb-term-ui",

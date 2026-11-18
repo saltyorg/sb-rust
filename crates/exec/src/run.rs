@@ -24,17 +24,17 @@ use crate::{Captured, Cmd, Ending, Outcome, Ran, SpawnCause, SpawnError, Streame
 const DRAIN: Duration = Duration::from_secs(2);
 
 /// Bytes read from a pipe at a time.
-pub(crate) const CHUNK: usize = 8 * 1024;
+const CHUNK: usize = 8 * 1024;
 
 /// The longest streamed line; the rest of a longer one is dropped up to
 /// its end (spec, "Lines").
-pub(crate) const LINE: usize = 4 * 1024;
+const LINE: usize = 4 * 1024;
 
 /// How much of stderr `stream` keeps for its caller.
 const STDERR_TAIL: usize = 64 * 1024;
 
 /// Lines read but not yet handed to the step.
-pub(crate) const QUEUED: usize = 64;
+const QUEUED: usize = 64;
 
 /// A stop under way: why (the outcome it gives), and when the group gets
 /// SIGKILL.
@@ -332,7 +332,7 @@ impl Cmd {
     /// of it after the leader's reap, then the output still coming for up
     /// to [`DRAIN`]. Interrupted and timed out win over the child's own
     /// ending.
-    pub(crate) async fn supervise(
+    async fn supervise(
         &self,
         child: &mut impl Leader,
         mut group: Option<Group>,
@@ -410,7 +410,9 @@ impl Cmd {
 
 /// A child's leader as `supervise` needs it: wait for its exit (cancel
 /// safe, as it sits in a `select!`), and SIGKILL its pid while unreaped.
-pub(crate) trait Leader {
+/// tokio's `Child` is its one kind since the PTY's leader went (exec
+/// decision 15); kept as the seam a second way would plug into.
+trait Leader {
     async fn wait(&mut self) -> std::io::Result<ExitStatus>;
     fn kill(&mut self);
     /// SIGTERM (and SIGCONT, as a group's stop) to the leader's pid, for a
@@ -589,7 +591,7 @@ fn keep_line(line: &[u8], mask: &Mask, tail: Option<&mut Kept>) -> Vec<u8> {
 /// A line as the step gets it: cut at [`LINE`], at a character's start
 /// (a character split by the cut is dropped rather than shown as U+FFFD),
 /// secrets taken out over the whole window read.
-pub(crate) fn shown_line(line: &[u8], mask: &Mask) -> Vec<u8> {
+fn shown_line(line: &[u8], mask: &Mask) -> Vec<u8> {
     let mut cut = line.len().min(LINE);
     while cut > 0 && cut < line.len() && line[cut] & 0b1100_0000 == 0b1000_0000 {
         cut -= 1;
@@ -617,7 +619,7 @@ async fn skip_line(reader: &mut BufReader<impl AsyncRead + Unpin>) -> bool {
 }
 
 /// `dir` is an existing directory, or why it can't be the child's.
-pub(crate) fn check_dir(dir: &std::path::Path) -> Result<(), SpawnCause> {
+fn check_dir(dir: &std::path::Path) -> Result<(), SpawnCause> {
     match std::fs::metadata(dir) {
         Ok(meta) if meta.is_dir() => Ok(()),
         Ok(_) => Err(SpawnCause::NoDirectory(dir.to_path_buf())),
@@ -694,7 +696,7 @@ pub(crate) fn ending(status: ExitStatus) -> Ending {
 }
 
 /// The run-log record of a child ending (spec, "Logging").
-pub(crate) fn log_end(command: &str, outcome: &Outcome) {
+fn log_end(command: &str, outcome: &Outcome) {
     tracing::info!(
         command,
         outcome = %outcome.ending,

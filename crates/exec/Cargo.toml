@@ -12,9 +12,6 @@ sb-cli-core.workspace = true
 sb-term-ui.workspace = true
 aho-corasick.workspace = true
 anstream.workspace = true
-# portable-pty's errors are anyhow's.
-anyhow.workspace = true
-portable-pty.workspace = true
 rustix.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true
@@ -23,6 +20,8 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# A test step's error (term-ui's steps return anyhow's).
+anyhow.workspace = true
 indicatif.workspace = true
 sb-term-ui = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

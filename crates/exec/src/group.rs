@@ -1,4 +1,4 @@
-//! A piped or PTY child's process group (spec, "Cancellation, timeouts and
+//! A piped child's process group (spec, "Cancellation, timeouts and
 //! process groups"): SIGTERM and SIGCONT to the group, SIGKILL after the
 //! grace while members remain, the group checked after its leader is
 //! reaped, a SIGKILL when the run is dropped, and one for every live group
@@ -8,8 +8,7 @@
 //! process-wrap's tokio `ProcessGroup` and `KillOnDrop` (10.0.1): its
 //! kill on drop is tokio's `kill_on_drop`, which reaches the pid only
 //! (`src/tokio/kill_on_drop.rs`), it has no SIGTERM, grace and SIGKILL
-//! escalation, and it can't wrap portable-pty's children; its group
-//! signal is the same `killpg`.
+//! escalation; its group signal is the same `killpg`.
 //!
 //! The group's id is the child's pid (`process_group(0)`), so it is never
 //! sb's or the harness's own group. Linux doesn't reuse a group's id while
@@ -147,8 +146,8 @@ impl Group {
         Some(Self::of_pid(Pid::from_raw(i32::try_from(child).ok()?)?))
     }
 
-    /// The group whose id is `leader`'s pid (a session's, for a PTY child).
-    pub(crate) fn of_pid(leader: Pid) -> Self {
+    /// The group whose id is `leader`'s pid.
+    fn of_pid(leader: Pid) -> Self {
         live().insert(leader.as_raw_nonzero().get());
         Self {
             id: leader,

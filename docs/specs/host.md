@@ -339,7 +339,9 @@ Until it is verified, the code marks difference 1 UNVERIFIED.
     sb-go ended the whole walk silently there (difference 11).
 - **User lookup:** `nix::unistd::User::from_name` (decision 2), at the
   nix version portable-pty already links (0.28), with its `user` feature.
-  This adds no second nix to the binary. glibc's `getpwnam_r` goes
+  This adds no second nix to the binary. *Since exec decision 15
+  (2026-11-18) portable-pty is in test builds only, where the one copy
+  holds; sb-host is nix 0.28's one production user.* glibc's `getpwnam_r` goes
   through NSS (`/etc/nsswitch.conf`, `files` first on Ubuntu), as every
   other program on the host does (ADR-020; musl's read `/etc/passwd` and
   asked nscd only if one ran). sb-go's pure-Go lookup reads `/etc/passwd`

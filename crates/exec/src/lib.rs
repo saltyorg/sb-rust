@@ -4,7 +4,6 @@
 
 mod group;
 mod mask;
-mod pty;
 mod run;
 
 pub use group::on_forced_exit;
@@ -96,7 +95,6 @@ impl fmt::Debug for Cmd {
 pub(crate) enum Way {
     Capture,
     Stream,
-    Pty,
     /// sb's own stdin, stdout and stderr, and sb's group; git and ssh may
     /// ask the user, so `GIT_TERMINAL_PROMPT` and ssh's askpass are left
     /// alone.
@@ -108,7 +106,6 @@ impl Way {
         match self {
             Self::Capture => "capture",
             Self::Stream => "stream",
-            Self::Pty => "pty",
             Self::Attached => "attached",
         }
     }
@@ -239,16 +236,16 @@ impl Cmd {
         self.environment_for(way, sb_cli_core::theme::current().profile())
     }
 
-    /// [`Cmd::environment`] for a colour `profile`: a PTY child also gets
-    /// `COLORTERM` from it (decision 3): `truecolor` or `256color`, and an
+    /// [`Cmd::environment`] for a colour `profile`: an attached child also
+    /// gets `COLORTERM` from it (decision 3): `truecolor` or `256color`, and an
     /// inherited one removed for `ansi` and `ascii`, so the child matches
     /// what sb itself draws.
     pub(crate) fn environment_for(&self, way: Way, profile: Profile) -> Environment<'_> {
         let colorterm = match (way, profile) {
             (Way::Capture | Way::Stream, _) => None,
-            (Way::Pty | Way::Attached, Profile::TrueColor) => Some(Some("truecolor")),
-            (Way::Pty | Way::Attached, Profile::Ansi256) => Some(Some("256color")),
-            (Way::Pty | Way::Attached, Profile::Ansi | Profile::Ascii) => Some(None),
+            (Way::Attached, Profile::TrueColor) => Some(Some("truecolor")),
+            (Way::Attached, Profile::Ansi256) => Some(Some("256color")),
+            (Way::Attached, Profile::Ansi | Profile::Ascii) => Some(None),
         };
         let no_prompt = way != Way::Attached;
         let ruled = |name: &str| no_prompt && NO_PROMPTS.iter().any(|(rule, _)| *rule == name);
@@ -452,9 +449,8 @@ fn failure(command: &str, ending: Ending, last_lines: Vec<String>) -> Failed {
     Failed::new(format!("{command} {ending}"), ending.reason(), last_lines)
 }
 
-/// What [`Cmd::pty`] returns: the outcome. A PTY merges stdout and
-/// stderr into the lines the step got, so there is no tail to keep
-/// (exec spec decision 12).
+/// What [`Cmd::attached`] returns: the outcome. Its output went to sb's
+/// own terminal, so there is no tail to keep.
 #[derive(Debug)]
 #[must_use = "exec returns Ok for a child that didn't exit 0: `check()` it, or read its outcome"]
 pub struct Ran {
@@ -464,7 +460,7 @@ pub struct Ran {
 
 impl Ran {
     /// The result if the child exited 0, else [`Failed`] with no lines of
-    /// its own: the step's failure block shows its last 10 lines.
+    /// its own: what it printed is on the terminal already.
     ///
     /// # Errors
     ///
@@ -557,8 +553,8 @@ pub enum SpawnCause {
     /// The working directory isn't an existing directory.
     #[error("no such working directory: {}", .0.display())]
     NoDirectory(PathBuf),
-    /// This way of running takes no stdin bytes (a PTY child reads the
-    /// PTY, which sb closes at once).
+    /// This way of running takes no stdin bytes (an attached child reads
+    /// sb's own stdin).
     #[error("a {0} child takes no stdin bytes")]
     StdinRefused(&'static str),
     /// An attached child can't start while a term-ui runner draws: they
@@ -793,10 +789,10 @@ mod tests {
         assert_eq!(Way::Stream.name(), "stream");
     }
 
-    /// A PTY child gets COLORTERM from the profile, over an inherited or
-    /// given one; the other ways leave it alone.
+    /// An attached child gets COLORTERM from the profile, over an
+    /// inherited or given one; the other ways leave it alone.
     #[test]
-    fn colorterm_follows_the_profile_for_pty_children() {
+    fn colorterm_follows_the_profile_for_attached_children() {
         let cmd = Cmd::new("x").env("COLORTERM", "given");
         let colorterm = |way, profile| {
             cmd.environment_for(way, profile)
@@ -805,29 +801,32 @@ mod tests {
                 .find(|(name, _)| *name == "COLORTERM")
         };
         assert_eq!(
-            colorterm(Way::Pty, Profile::TrueColor),
+            colorterm(Way::Attached, Profile::TrueColor),
             Some(("COLORTERM", Some("truecolor")))
         );
         assert_eq!(
-            colorterm(Way::Pty, Profile::Ansi256),
+            colorterm(Way::Attached, Profile::Ansi256),
             Some(("COLORTERM", Some("256color")))
         );
         assert_eq!(
-            colorterm(Way::Pty, Profile::Ansi),
+            colorterm(Way::Attached, Profile::Ansi),
             Some(("COLORTERM", None))
         );
         assert_eq!(
-            colorterm(Way::Pty, Profile::Ascii),
+            colorterm(Way::Attached, Profile::Ascii),
             Some(("COLORTERM", None))
         );
         assert_eq!(
             colorterm(Way::Stream, Profile::TrueColor),
             Some(("COLORTERM", Some("given")))
         );
-        assert_eq!(Way::Pty.name(), "pty");
+        assert_eq!(
+            colorterm(Way::Capture, Profile::Ansi256),
+            Some(("COLORTERM", Some("given")))
+        );
     }
 
-    /// An attached child gets COLORTERM as a PTY child does, and git may
+    /// An attached child gets COLORTERM, as above, and git may
     /// ask on sb's terminal: no `GIT_TERMINAL_PROMPT=0`, a given one kept.
     #[test]
     fn an_attached_child_gets_colorterm_and_may_prompt() {
@@ -882,7 +881,7 @@ mod tests {
         let cmd = Cmd::new("git")
             .env("SSH_ASKPASS", "/usr/bin/given")
             .env_remove("SSH_ASKPASS_REQUIRE");
-        for way in [Way::Capture, Way::Stream, Way::Pty] {
+        for way in [Way::Capture, Way::Stream] {
             let vars = cmd.environment_for(way, Profile::Ascii).vars;
             assert!(
                 vars.contains(&("SSH_ASKPASS", Some("/bin/false"))),

@@ -467,8 +467,9 @@ the prototypes, which are workspace members).
 
 Tests only: `insta` with ratatui's `TestBackend`
 (https://docs.rs/ratatui/0.30.2/ratatui/backend/struct.TestBackend.html);
-`portable-pty` 0.9.0 and `vt100` 0.16.2 (both in the lock, through exec
-and term-ui's `testing`) for the PTY smoke tests; sb-journal's and
+`portable-pty` 0.9.0 and `vt100` 0.16.2 (both in the lock, through sb's
+tests and term-ui's `testing`; exec's own PTY was removed, exec decision
+15) for the PTY smoke tests; sb-journal's and
 sb-docker's `testing` features (crafted journal files, the fake Engine
 API).
 

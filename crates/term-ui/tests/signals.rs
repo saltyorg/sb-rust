@@ -3,8 +3,8 @@
 //! restore"; success criterion 6). The demo signals itself while its
 //! second step runs. After it, `stty -a` shows whether the terminal's
 //! modes were put back. Terminal runs go through util-linux `script`: why
-//! not portable-pty, a dependency term-ui doesn't have (only sb-exec
-//! does; crates/sb/tests/colour.rs); why not rexpect, the spec settled on
+//! not portable-pty, a dependency term-ui doesn't have (only sb's and
+//! tui's tests do; crates/sb/tests/colour.rs); why not rexpect, the spec settled on
 //! `script` for term-ui's PTY tests (docs/specs/term-ui.md, testing).
 //! The modes are read from `stty -a`'s output by whole token, as the PTY
 //! is `script`'s and the test can't `tcgetattr` it.

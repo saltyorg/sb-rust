@@ -8,9 +8,8 @@
 //! `exec-demo FILE MODE GRACE_MS`: the child writes "leader grandchild"
 //! pids to FILE (the leader's pid is the group's id). MODE `stops` (both
 //! end on SIGTERM), `ignores` (both ignore it, so only a SIGKILL ends
-//! them), `exits` (it ends on its own) or `fails` (it exits 3); a fourth
-//! argument `pty` runs it on a PTY in a term-ui step instead of captured;
-//! the outcome is checked, so a failed child fails the run.
+//! them), `exits` (it ends on its own) or `fails` (it exits 3); the
+//! outcome is checked, so a failed child fails the run.
 //!
 //! `attached` or `passed` as the fourth argument runs an attached child
 //! instead (Task 8b): exec-demo itself as `--child MODE FILE` (see
@@ -23,13 +22,11 @@ use std::time::Duration;
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{RunEnd, finish_run};
 use sb_exec::Cmd;
-use sb_term_ui::{Labels, Options, Runner};
 
 /// How exec-demo runs its child.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Way {
     Captured,
-    Pty,
     /// Attached, its outcome checked (a failure ends exec-demo with 1).
     Attached,
     /// Attached, its own code passed through (decision 5).
@@ -45,14 +42,13 @@ fn main() -> RunEnd {
     }
     let usage = || {
         eprintln!(
-            "usage: exec-demo FILE MODE GRACE_MS [pty|attached|passed]\n       exec-demo --child MODE FILE"
+            "usage: exec-demo FILE MODE GRACE_MS [attached|passed]\n       exec-demo --child MODE FILE"
         );
         RunEnd::Code(2.into())
     };
     let (file, mode, grace, way) = match &args[..] {
         [file, mode, grace] => (file, mode, grace, Way::Captured),
         [file, mode, grace, way] => match way.as_str() {
-            "pty" => (file, mode, grace, Way::Pty),
             "attached" => (file, mode, grace, Way::Attached),
             "passed" => (file, mode, grace, Way::Passed),
             _ => return usage(),
@@ -93,7 +89,6 @@ fn main() -> RunEnd {
             .grace(grace)
     };
     let result: Result<(), Box<dyn Error>> = match (shutdown.listen_for_signals(), runtime) {
-        (Ok(()), Ok(runtime)) if way == Way::Pty => runtime.block_on(on_a_pty(&cmd, &shutdown)),
         (Ok(()), Ok(runtime)) if way == Way::Attached => runtime
             .block_on(cmd.attached(&shutdown))
             .map_err(Box::from)
@@ -177,20 +172,4 @@ fn attached_child(mode: &str, file: &str) -> RunEnd {
         "fails" => RunEnd::Code(3.into()),
         _ => RunEnd::Code(0.into()),
     }
-}
-
-/// `pty`: the child on a PTY, in one step of a term-ui runner (piped here,
-/// so it draws plainly), as a command would run it.
-async fn on_a_pty(cmd: &Cmd, shutdown: &Shutdown) -> Result<(), Box<dyn Error>> {
-    let mut run = Runner::start("exec-demo", shutdown, None, Options::default());
-    let ended = run
-        .step(Labels::new("Running", "ran"), async |step| {
-            // A failed child fails the step: its outcome is checked, not
-            // dropped (the outcome types are `#[must_use]`).
-            let _ = cmd.pty(step).await?.check()?;
-            Ok(())
-        })
-        .await;
-    run.finish();
-    ended.map_err(Box::from)
 }

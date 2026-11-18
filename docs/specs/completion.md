@@ -233,7 +233,7 @@ refresh step) and sb-ansible (the cache reader).
 | Probes | `sb-exec` (`capture`, `env_clear`, `timeout`) | workspace | yes | docs/specs/exec.md |
 | Atomic writes | `tempfile` | 3.27.0 | yes | https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html#method.persist |
 | Name pattern, fish version | `regex` | 1.13.1 | yes | https://docs.rs/regex/1.13.1/regex/ |
-| PTY tests | `portable-pty` (exec's), or `script` as validate_config_signals.rs; the stack table's `rexpect` isn't in Cargo.lock, and adding it is Ask first | 0.9.0 | yes | https://docs.rs/portable-pty/0.9.0/portable_pty/ |
+| PTY tests | `portable-pty` (sb's tests'; exec's PTY was removed, exec decision 15), or `script` as validate_config_signals.rs; the stack table's `rexpect` isn't in Cargo.lock, and adding it is Ask first | 0.9.0 | yes | https://docs.rs/portable-pty/0.9.0/portable_pty/ |
 
 ## Commands
 

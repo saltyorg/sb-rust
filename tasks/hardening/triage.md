@@ -74,9 +74,9 @@ column. The maintainer adopted those as they stand.
 
 | Verdict | High | Medium | Low | unrated | Total | of which was unsure |
 |---|---|---|---|---|---|---|
-| KEEP | 6 | 18 | 11 | 1 | 36 | 11 |
-| DEFER | 0 | 4 | 9 | 1 | 14 | 1 |
-| DROP | 1 | 14 | 80 | 7 | 102 | 8 |
+| KEEP | 6 | 18 | 12 | 1 | 37 | 11 |
+| DEFER | 0 | 3 | 7 | 1 | 11 | 1 |
+| DROP | 1 | 15 | 81 | 7 | 104 | 8 |
 | Total | 7 | 36 | 100 | 9 | 152 | 20 |
 
 On 2026-11-15 (Checkpoint R) exec-M1 and exec-L2 moved from DEFER to KEEP:
@@ -85,6 +85,11 @@ both were fixed in bdfc7e6 (module task M23).
 On 2026-11-17 cli-core's cli-L5, journal's follow-L1, follow-L4 and
 page-L5, and term-ui's san-I4 moved from DEFER to KEEP the same way:
 the module build fixed each when its consumer arrived (the rows below).
+
+On 2026-11-18 exec-L6 moved from DEFER to KEEP, fixed once `attached`
+had callers (`sb edit`, ansible's runs), and exec-M3 and exec-L4 from
+DEFER to DROP: `Cmd::pty` was removed unused (exec decision 15). The
+same day's re-triage kept san-L2 and ui-L5 deferred, with reasons.
 
 ## KEEP (fixed now)
 
@@ -138,8 +143,6 @@ the module build fixed each when its consumer arrived (the rows below).
 |---|---|---|---|---|---|---|
 | exec-M2 | Medium | exec | 11 | A secret split by an escape evades the mask | No command registers a secret with exec or streams child output yet. 2026-11-18: commands stream child output now (apt, git, uv, the hooks), but none registers a secret with exec |  |
 | san-L3 | Low | exec | 11 | Mask runs before sanitizing | Same defect as exec-M2 (and its 2026-11-18 note) |  |
-| exec-M3 | Medium | exec | 15 | `pty` with a cleared environment can't find a bare program name | No command uses `pty` yet |  |
-| exec-L4 | Low | exec | 23 | A PTY child that reads twice hangs until its timeout | No command uses `pty` yet; a doc line when one does |  |
 | exec-L5 | Low | exec | 23 | No mask for a secret sent on stdin | An API addition with no consumer |  |
 | san-L2 | Low | term-ui | 25 | Kept SGR codes include font select and aren't always closed | Only through streamed child output, which no command produced then (decision 17 already says how). **Re-triaged 2026-11-18**: still not reached in practice. The streamed children (git, apt-get and the dpkg maintainer scripts its install, remove and autoremove run, uv, the Git hooks command) relay text only from sources that already run as root on the server (Ubuntu's packages, Saltbox's repository and its commit subjects, the pinned requirements) or from GitHub over TLS (git's `remote:` lines); their own colour, when a config file or a root shell forces it on a pipe, is closed standard codes. Only SGR codes reach the screen, and only with sb's colour on; the run log escapes every line. Stays deferred, with findings.md's fix, for a child relaying coloured text from an untrusted source |  |
 | san-I1 | unrated | term-ui | 21 | Step labels and titles drawn unsanitized | Every caller passes constants or escaped paths; matters with the first caller that passes foreign text |  |
@@ -156,6 +159,8 @@ the module build fixed each when its consumer arrived (the rows below).
 
 | id | severity | crate | task | description | reason | was unsure |
 |---|---|---|---|---|---|---|
+| exec-M3 | Medium | exec | 15 | `pty` with a cleared environment can't find a bare program name | Deferred until `pty` had a user; none came, and `Cmd::pty` was removed unused on 2026-11-18 (the maintainer; exec decision 15): the defect went with the code |  |
+| exec-L4 | Low | exec | 23 | A PTY child that reads twice hangs until its timeout | As exec-M3: `Cmd::pty` removed unused on 2026-11-18 (exec decision 15) |  |
 | docker-L2 | Low | docker | 10 | `DOCKER_HOST` userinfo and control characters echoed | Saltbox uses the local socket; nobody sets a `DOCKER_HOST` with credentials |  |
 | docker-L3 | Low | docker | 24 | `tcp://host` with no port and bare `unix://` passed on | The finding says it is irrelevant on Saltbox |  |
 | docker-L4 | Low | docker | 24 | Keep-alive reuse against the controller's idle timeout | Unconfirmed; docker-M2's tolerance of a few failed polls covers the effect | yes |

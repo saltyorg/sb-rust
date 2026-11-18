@@ -43,18 +43,13 @@ impl Drop for Demo {
     }
 }
 
+/// exec-demo running its child captured.
 fn start(file: &Path, mode: &str, grace_ms: u64) -> Demo {
-    start_way(file, mode, grace_ms, None)
-}
-
-/// exec-demo running its child `way` (`pty`), or captured.
-fn start_way(file: &Path, mode: &str, grace_ms: u64, way: Option<&str>) -> Demo {
     Demo(
         Command::new(env!("CARGO_BIN_EXE_exec-demo"))
             .arg(file)
             .arg(mode)
             .arg(grace_ms.to_string())
-            .args(way)
             // Its "interrupted" block isn\'t the test\'s output.
             .stderr(Stdio::null())
             .spawn()
@@ -218,113 +213,44 @@ fn a_wrong_call_says_how_to_call_it() {
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: exec-demo"));
 }
 
-/// The same through a PTY child (its own session): one signal stops the
-/// session's group and exec-demo dies of it; a second, with the group
-/// ignoring SIGTERM, makes the forced-exit hook SIGKILL it.
+/// A child that fails fails exec-demo's run: its outcome is checked,
+/// never dropped (Task 9).
 #[test]
-fn a_pty_childs_session_is_stopped_and_killed() {
-    subreaper();
-    for (signal, number) in [(Signal::INT, 2), (Signal::TERM, 15)] {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let file = dir.path().join("pids");
-        let mut demo = start_way(&file, "stops", 5000, Some("pty"));
-        let (leader, grandchild) = pids(&file);
-        check_group(leader, grandchild);
-        let reaper = std::thread::spawn(move || reap(grandchild));
-        send(&demo, signal);
-        let status = wait(&mut demo);
-        assert_eq!(status.signal(), Some(number), "{signal:?}: {status:?}");
-        assert_eq!(
-            reaper.join().expect("reaper"),
-            Some(15),
-            "{signal:?}: SIGTERM"
-        );
-        assert!(
-            test_kill_process_group(pid(leader)).is_err(),
-            "{signal:?}: group left"
-        );
-    }
+fn a_failing_child_fails_the_run() {
     let dir = tempfile::tempdir().expect("temp dir");
     let file = dir.path().join("pids");
-    let mut demo = start_way(&file, "ignores", 60_000, Some("pty"));
-    let (leader, grandchild) = pids(&file);
-    check_group(leader, grandchild);
-    let reaper = std::thread::spawn(move || reap(grandchild));
-    send(&demo, Signal::INT);
-    std::thread::sleep(Duration::from_millis(200));
-    send(&demo, Signal::INT);
-    let status = wait(&mut demo);
-    assert_eq!(status.signal(), Some(2), "{status:?}");
-    assert_eq!(
-        reaper.join().expect("reaper"),
-        Some(9),
-        "the grandchild got SIGKILL"
-    );
-    let asked = Instant::now();
-    loop {
-        match waitpid(Some(pid(leader)), WaitOptions::NOHANG) {
-            Ok(Some(_)) | Err(Errno::CHILD) => break,
-            Ok(None) if asked.elapsed() < Duration::from_secs(5) => {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            other => panic!("the leader: {other:?}"),
-        }
-    }
-    assert!(test_kill_process_group(pid(leader)).is_err(), "group left");
-}
-
-/// Through a PTY, a run that ends on its own ends exec-demo with 0.
-#[test]
-fn an_untouched_pty_run_ends_on_its_own() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let file = dir.path().join("pids");
-    let mut demo = start_way(&file, "exits", 5000, Some("pty"));
-    let status = wait(&mut demo);
-    assert_eq!(status.code(), Some(0), "{status:?}");
-}
-
-/// A child that fails fails exec-demo's run, captured or on a PTY (its
-/// step then ends ✗ with the reason): its outcome is checked, never
-/// dropped (Task 9).
-#[test]
-fn a_failing_pty_child_fails_the_run() {
-    for (way, reason) in [(Some("pty"), "exit 3"), (None, "exited with code 3")] {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let file = dir.path().join("pids");
-        let out = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
-            .arg(&file)
-            .args(["fails", "5000"])
-            .args(way)
-            .output()
-            .expect("exec-demo");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(1), "{way:?}: {stderr}");
-        assert!(stderr.contains(reason), "{way:?}: {stderr}");
-        assert!(!stderr.contains('✓'), "{way:?}: {stderr}");
-    }
-}
-
-/// A fourth argument other than `pty` is a usage error; `pty` runs the
-/// child in a step (its end line on stderr), captured runs draw nothing.
-#[test]
-fn the_pty_argument_is_checked_and_draws_a_step() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let file = dir.path().join("pids");
-    let wrong = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
+    let out = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
         .arg(&file)
-        .args(["exits", "5000", "tty"])
+        .args(["fails", "5000"])
         .output()
         .expect("exec-demo");
-    assert_eq!(wrong.status.code(), Some(2), "{wrong:?}");
-    for (way, drawn) in [(Some("pty"), true), (None, false)] {
-        let out = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("exited with code 3"), "{stderr}");
+    assert!(!stderr.contains('✓'), "{stderr}");
+}
+
+/// A fourth argument other than `attached` or `passed` is a usage error
+/// (`pty` among them: the PTY path is gone); a captured run draws
+/// nothing.
+#[test]
+fn the_fourth_argument_is_checked() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let file = dir.path().join("pids");
+    for way in ["tty", "pty"] {
+        let wrong = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
             .arg(&file)
-            .args(["exits", "5000"])
-            .args(way)
+            .args(["exits", "5000", way])
             .output()
             .expect("exec-demo");
-        assert_eq!(out.status.code(), Some(0), "{way:?}: {out:?}");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(stderr.contains("ran"), drawn, "{way:?}: {stderr}");
+        assert_eq!(wrong.status.code(), Some(2), "{way}: {wrong:?}");
     }
+    let out = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
+        .arg(&file)
+        .args(["exits", "5000"])
+        .output()
+        .expect("exec-demo");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("ran"), "{stderr}");
 }

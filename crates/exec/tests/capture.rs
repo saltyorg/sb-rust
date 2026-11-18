@@ -351,7 +351,7 @@ async fn the_environment_follows_the_rules() {
     );
 }
 
-/// `COLORTERM` is set for pty and attached children only (decision 3): a
+/// `COLORTERM` is set for attached children only (decision 3): a
 /// captured child keeps the inherited one as it is. sb's environment is
 /// the re-run child's, set by the parent (the test process's own isn't
 /// changed: `set_var` is unsafe).

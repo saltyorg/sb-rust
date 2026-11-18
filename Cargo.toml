@@ -91,7 +91,7 @@ aho-corasick = "1.1.5"
 # A byte substring search (`memmem::find`), for completion's recognition
 # of sb-go's files; already in the tree through regex and aho-corasick.
 memchr = "2.8.3"
-# PTY children (exec spec, `pty`); its tree checked in exec plan Task 1.
+# sb's and tui's PTY tests (a dev-dependency only since exec decision 15).
 portable-pty = "0.9.0"
 # `system` for sb-host's `uname(2)` (host spec, assumption 3).
 rustix = { version = "1.1.6", features = ["fs", "process", "stdio", "system", "termios"] }
@@ -101,8 +101,9 @@ procfs = { version = "0.18.0", default-features = false }
 # rTorrent's XML-RPC in sb motd (motd spec, Tech Stack; plan decision 8).
 quick-xml = "0.42.0"
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
-# The systemd-coredump user's uid (host spec, decision 2): the version
-# portable-pty already links, so no second copy, with only `user`.
+# The systemd-coredump user's uid (host spec, decision 2), with only
+# `user`: the version portable-pty links, which since exec decision 15
+# keeps one copy in test builds only (sb-host is its one production user).
 nix = { version = "0.28.0", default-features = false, features = ["user"] }
 # The recursive ownership walk (host spec, decision 2 and assumption 3);
 # already in the lockfile.
