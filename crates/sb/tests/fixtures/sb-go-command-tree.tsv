@@ -8,6 +8,11 @@
 # command <TAB> path <TAB> hidden <TAB> short help
 # flag <TAB> path <TAB> local|global <TAB> name <TAB> shorthand <TAB>
 #      switch|value <TAB> hidden <TAB> usage
+# alias <TAB> path <TAB> alias                     (none in 0.1.3)
+# args <TAB> path <TAB> count <TAB> words <TAB> ok|error   each
+#      runnable command's cobra check (ValidateArgs) of 0 to 3 arguments:
+#      arg1..., or its first valid value repeated when it has ValidArgs
+# default <TAB> path <TAB> local|global <TAB> name <TAB> default
 #
 # To regenerate: in an export of the sb-go tag (git archive <tag>), add
 # this test to package cmd and run `DUMP=<out> go test ./cmd -run
@@ -41,9 +46,49 @@
 #               walk(k)
 #           }
 #       }
-#       walk(NewRootCommand(Dependencies{}))
+#       root := NewRootCommand(Dependencies{})
+#       walk(root)
+#       var more func(*cobra.Command)
+#       more = func(c *cobra.Command) {
+#           for _, a := range c.Aliases {
+#               lines = append(lines, fmt.Sprintf("alias\t%s\t%s", c.CommandPath(), a))
+#           }
+#           if c.Runnable() {
+#               for n := 0; n <= 3; n++ {
+#                   args := make([]string, n)
+#                   for i := range args {
+#                       args[i] = fmt.Sprintf("arg%d", i+1)
+#                       if len(c.ValidArgs) > 0 {
+#                           args[i] = c.ValidArgs[0]
+#                       }
+#                   }
+#                   result := "ok"
+#                   if err := c.ValidateArgs(args); err != nil {
+#                       result = "error"
+#                   }
+#                   lines = append(lines, fmt.Sprintf("args\t%s\t%d\t%s\t%s",
+#                       c.CommandPath(), n, strings.Join(args, " "), result))
+#               }
+#           }
+#           def := func(scope string, fs *pflag.FlagSet) {
+#               fs.VisitAll(func(f *pflag.Flag) {
+#                   lines = append(lines, fmt.Sprintf("default\t%s\t%s\t%s\t%s",
+#                       c.CommandPath(), scope, f.Name, clean(f.DefValue)))
+#               })
+#           }
+#           def("local", c.LocalNonPersistentFlags())
+#           def("global", c.PersistentFlags())
+#           kids := append([]*cobra.Command(nil), c.Commands()...)
+#           sort.Slice(kids, func(i, j int) bool { return kids[i].Name() < kids[j].Name() })
+#           for _, k := range kids {
+#               more(k)
+#           }
+#       }
+#       more(root)
 #       os.WriteFile(os.Getenv("DUMP"), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 #   }
+#
+# (Run offline from the module cache: GOPROXY=off GOTOOLCHAIN=local.)
 command	sb	false	Saltbox CLI
 command	sb announcements	true	Display announcements from announcement files
 flag	sb announcements	global	after	a	value	false	Path to the after announcements.yml file
@@ -151,3 +196,229 @@ command	sb validate-config	false	Validate Saltbox configuration files
 flag	sb validate-config	global	verbose	v	switch	false	Enable verbose output
 command	sb version	false	Print Saltbox CLI version
 flag	sb version	local	json		switch	false	Print machine-readable version information
+args	sb announcements	0		ok
+args	sb announcements	1	arg1	error
+args	sb announcements	2	arg1 arg2	error
+args	sb announcements	3	arg1 arg2 arg3	error
+args	sb bench	0		ok
+args	sb bench	1	arg1	error
+args	sb bench	2	arg1 arg2	error
+args	sb bench	3	arg1 arg2 arg3	error
+args	sb branch	0		error
+args	sb branch	1	arg1	ok
+args	sb branch	2	arg1 arg2	error
+args	sb branch	3	arg1 arg2 arg3	error
+args	sb branch-sandbox	0		error
+args	sb branch-sandbox	1	arg1	ok
+args	sb branch-sandbox	2	arg1 arg2	error
+args	sb branch-sandbox	3	arg1 arg2 arg3	error
+args	sb completion	0		ok
+args	sb completion	1	arg1	error
+args	sb completion	2	arg1 arg2	error
+args	sb completion	3	arg1 arg2 arg3	error
+args	sb completion bash	0		ok
+args	sb completion bash	1	arg1	error
+args	sb completion bash	2	arg1 arg2	error
+args	sb completion bash	3	arg1 arg2 arg3	error
+args	sb completion fish	0		ok
+args	sb completion fish	1	arg1	error
+args	sb completion fish	2	arg1 arg2	error
+args	sb completion fish	3	arg1 arg2 arg3	error
+args	sb completion generate	0		error
+args	sb completion generate	1	bash	ok
+args	sb completion generate	2	bash bash	error
+args	sb completion generate	3	bash bash bash	error
+args	sb completion install	0		ok
+args	sb completion install	1	bash	ok
+args	sb completion install	2	bash bash	error
+args	sb completion install	3	bash bash bash	error
+args	sb completion zsh	0		ok
+args	sb completion zsh	1	arg1	error
+args	sb completion zsh	2	arg1 arg2	error
+args	sb completion zsh	3	arg1 arg2 arg3	error
+args	sb diag	0		ok
+args	sb diag	1	arg1	error
+args	sb diag	2	arg1 arg2	error
+args	sb diag	3	arg1 arg2 arg3	error
+args	sb docker	0		ok
+args	sb docker	1	arg1	ok
+args	sb docker	2	arg1 arg2	ok
+args	sb docker	3	arg1 arg2 arg3	ok
+args	sb docker logs	0		ok
+args	sb docker logs	1	arg1	error
+args	sb docker logs	2	arg1 arg2	error
+args	sb docker logs	3	arg1 arg2 arg3	error
+args	sb docker ps	0		ok
+args	sb docker ps	1	arg1	error
+args	sb docker ps	2	arg1 arg2	error
+args	sb docker ps	3	arg1 arg2 arg3	error
+args	sb docker restart	0		ok
+args	sb docker restart	1	arg1	error
+args	sb docker restart	2	arg1 arg2	error
+args	sb docker restart	3	arg1 arg2 arg3	error
+args	sb docker start	0		ok
+args	sb docker start	1	arg1	error
+args	sb docker start	2	arg1 arg2	error
+args	sb docker start	3	arg1 arg2 arg3	error
+args	sb docker stop	0		ok
+args	sb docker stop	1	arg1	error
+args	sb docker stop	2	arg1 arg2	error
+args	sb docker stop	3	arg1 arg2 arg3	error
+args	sb edit	0		ok
+args	sb edit	1	arg1	error
+args	sb edit	2	arg1 arg2	error
+args	sb edit	3	arg1 arg2 arg3	error
+args	sb edit accounts	0		ok
+args	sb edit accounts	1	arg1	error
+args	sb edit accounts	2	arg1 arg2	error
+args	sb edit accounts	3	arg1 arg2 arg3	error
+args	sb edit adv_settings	0		ok
+args	sb edit adv_settings	1	arg1	error
+args	sb edit adv_settings	2	arg1 arg2	error
+args	sb edit adv_settings	3	arg1 arg2 arg3	error
+args	sb edit backup_config	0		ok
+args	sb edit backup_config	1	arg1	error
+args	sb edit backup_config	2	arg1 arg2	error
+args	sb edit backup_config	3	arg1 arg2 arg3	error
+args	sb edit hetzner_vlan	0		ok
+args	sb edit hetzner_vlan	1	arg1	error
+args	sb edit hetzner_vlan	2	arg1 arg2	error
+args	sb edit hetzner_vlan	3	arg1 arg2 arg3	error
+args	sb edit inventory	0		ok
+args	sb edit inventory	1	arg1	error
+args	sb edit inventory	2	arg1 arg2	error
+args	sb edit inventory	3	arg1 arg2 arg3	error
+args	sb edit settings	0		ok
+args	sb edit settings	1	arg1	error
+args	sb edit settings	2	arg1 arg2	error
+args	sb edit settings	3	arg1 arg2 arg3	error
+args	sb fact	0		ok
+args	sb fact	1	arg1	error
+args	sb fact	2	arg1 arg2	error
+args	sb fact	3	arg1 arg2 arg3	error
+args	sb gha	0		ok
+args	sb gha	1	arg1	error
+args	sb gha	2	arg1 arg2	error
+args	sb gha	3	arg1 arg2 arg3	error
+args	sb install	0		error
+args	sb install	1	arg1	ok
+args	sb install	2	arg1 arg2	ok
+args	sb install	3	arg1 arg2 arg3	ok
+args	sb list	0		ok
+args	sb list	1	arg1	ok
+args	sb list	2	arg1 arg2	error
+args	sb list	3	arg1 arg2 arg3	error
+args	sb logs	0		ok
+args	sb logs	1	arg1	error
+args	sb logs	2	arg1 arg2	error
+args	sb logs	3	arg1 arg2 arg3	error
+args	sb motd	0		ok
+args	sb motd	1	arg1	error
+args	sb motd	2	arg1 arg2	error
+args	sb motd	3	arg1 arg2 arg3	error
+args	sb reinstall-facts	0		ok
+args	sb reinstall-facts	1	arg1	error
+args	sb reinstall-facts	2	arg1 arg2	error
+args	sb reinstall-facts	3	arg1 arg2 arg3	error
+args	sb reinstall-python	0		ok
+args	sb reinstall-python	1	arg1	error
+args	sb reinstall-python	2	arg1 arg2	error
+args	sb reinstall-python	3	arg1 arg2 arg3	error
+args	sb reinstall-venv	0		ok
+args	sb reinstall-venv	1	arg1	error
+args	sb reinstall-venv	2	arg1 arg2	error
+args	sb reinstall-venv	3	arg1 arg2 arg3	error
+args	sb restore	0		ok
+args	sb restore	1	arg1	error
+args	sb restore	2	arg1 arg2	error
+args	sb restore	3	arg1 arg2 arg3	error
+args	sb self-update	0		ok
+args	sb self-update	1	arg1	error
+args	sb self-update	2	arg1 arg2	error
+args	sb self-update	3	arg1 arg2 arg3	error
+args	sb setup	0		ok
+args	sb setup	1	arg1	error
+args	sb setup	2	arg1 arg2	error
+args	sb setup	3	arg1 arg2 arg3	error
+args	sb update	0		ok
+args	sb update	1	arg1	error
+args	sb update	2	arg1 arg2	error
+args	sb update	3	arg1 arg2 arg3	error
+args	sb update-venv	0		ok
+args	sb update-venv	1	arg1	error
+args	sb update-venv	2	arg1 arg2	error
+args	sb update-venv	3	arg1 arg2 arg3	error
+args	sb validate-config	0		ok
+args	sb validate-config	1	arg1	error
+args	sb validate-config	2	arg1 arg2	error
+args	sb validate-config	3	arg1 arg2 arg3	error
+args	sb version	0		ok
+args	sb version	1	arg1	error
+args	sb version	2	arg1 arg2	error
+args	sb version	3	arg1 arg2 arg3	error
+default	sb announcements	global	after	
+default	sb announcements	global	before	
+default	sb announcements	global	repo	Saltbox
+default	sb announcements	global	verbose	false
+default	sb completion install	local	allow-unavailable	false
+default	sb docker restart	local	ignore	[]
+default	sb docker restart	local	verbose	false
+default	sb docker start	local	verbose	false
+default	sb docker stop	local	ignore	[]
+default	sb docker stop	local	verbose	false
+default	sb install	local	extra-vars	[]
+default	sb install	local	force-disk-full	false
+default	sb install	local	no-cache	false
+default	sb install	local	skip-tags	[]
+default	sb install	local	verbose	0
+default	sb list	local	include-mod	false
+default	sb list	local	verbose	0
+default	sb motd	local	all	false
+default	sb motd	local	apt	false
+default	sb motd	local	banner-file	
+default	sb motd	local	banner-file-toilet	
+default	sb motd	local	cpu	false
+default	sb motd	local	cpu-info	false
+default	sb motd	local	disk	false
+default	sb motd	local	distro	false
+default	sb motd	local	docker	false
+default	sb motd	local	emby	false
+default	sb motd	local	font	ivrit
+default	sb motd	local	generate-config	false
+default	sb motd	local	gpu	false
+default	sb motd	local	jellyfin	false
+default	sb motd	local	kernel	false
+default	sb motd	local	login	false
+default	sb motd	local	memory	false
+default	sb motd	local	nzbget	false
+default	sb motd	local	plex	false
+default	sb motd	local	processes	false
+default	sb motd	local	qbittorrent	false
+default	sb motd	local	queues	false
+default	sb motd	local	reboot	false
+default	sb motd	local	rtorrent	false
+default	sb motd	local	sabnzbd	false
+default	sb motd	local	sessions	false
+default	sb motd	local	share	false
+default	sb motd	local	systemd	false
+default	sb motd	local	title	Saltbox
+default	sb motd	local	traefik	false
+default	sb motd	local	type	peek
+default	sb motd	local	uptime	false
+default	sb motd	local	verbose	0
+default	sb reinstall-facts	global	verbose	false
+default	sb reinstall-python	global	verbose	false
+default	sb reinstall-venv	global	verbose	false
+default	sb restore	local	verbose	false
+default	sb self-update	local	verbose	false
+default	sb self-update	local	yes	false
+default	sb setup	global	branch	master
+default	sb setup	global	force	false
+default	sb setup	global	verbose	false
+default	sb update	global	keep-branch	false
+default	sb update	global	reset-branch	false
+default	sb update	global	skip-self-update	false
+default	sb update	global	verbose	false
+default	sb update-venv	global	verbose	false
+default	sb validate-config	global	verbose	false
+default	sb version	local	json	false
