@@ -1,0 +1,81 @@
+# Changelog
+
+All notable changes to sb are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and sb uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Prereleases
+are tagged `X.Y.Z-rc.N`.
+
+## [Unreleased]
+
+## [1.0.0] - unreleased
+
+The first release of sb in Rust. It replaces [sb-go](https://github.com/saltyorg/sb-go)
+with the same commands. [MIGRATING.md](MIGRATING.md) lists the changes
+you could trip over.
+
+### Added
+
+- **Release channels:** `release` follows stable releases, and `beta`
+  follows prereleases too. `sb self-update --channel` switches once, and
+  `install.sh --beta` installs beta.
+- **arm64 builds** of sb, for running it, self-update and `--repair`, and
+  of what it installs: uv, the saltbox facts and the benchmark's
+  Speedtest. `sb setup` still installs Saltbox on x86_64 only.
+- **A run log,** `/var/log/sb/sb.log`, for every root run, with a run id in
+  each record and a pointer to it when a command fails.
+- **A new log viewer** for `sb logs` and `sb docker logs`: one live picker
+  for services and containers, search, wrap, mouse support, and saving
+  the view to a file.
+- **`sb fact`'s editor** masks credentials, with Show and Copy (clipboard
+  through OSC 52).
+- **`sb edit` validates the file you edited** and offers to edit it again.
+- **A Certificates line in `sb motd`** (with `--traefik`), from Traefik's
+  API.
+- **A theme file,** `<appdata>/sb/config.toml`: the built-in theme, with
+  the colour depth and colours per role.
+- **`sb docker ps --json`.**
+- **Flags for every question,** so commands run unattended:
+  `update --migrations`, `setup --keep-branch` and `--reset-branch`,
+  `restore --user` and `--password-file`, `edit --no-edit-again`.
+- **Host-changing commands run one at a time.** A second one waits for the
+  first, and says so.
+- **Longer help with examples,** and parse errors laid out with hints.
+- **`version` and `self-update` on an unsupported Ubuntu release,** with a
+  warning, so such a host can still update sb.
+
+### Changed
+
+- **Prompts read the terminal, not stdin.** With no terminal and no
+  answering flag, sb stops and names the flag.
+- **validate-config is stricter.** It checks every schema rule
+  (`pattern`, `additionalProperties`), refuses YAML that libyaml refuses,
+  and reports each issue with its position.
+- **Parse errors exit 2** (sb-go exited 1).
+- **A failed playbook exits with Ansible's own code** (sb-go exited 1), and
+  Ctrl-C during one exits 99, Ansible's (sb-go exited 130): `sb install`
+  and update's migrations.
+- **`-v`/`--verbose` no longer changes the output** of the commands that
+  had it; it is accepted with a note, and the run log keeps the detail.
+  `install` keeps `-v` to `-vvvv` for Ansible.
+- **New layouts** for `sb list`, `sb docker ps`, `sb motd`'s Docker and
+  queue lines, `sb bench` and `sb fact`.
+- **Cancellation:** Ctrl-C and a dropped SSH session stop the whole
+  process group of what sb started, with a grace period, and the run ends
+  by its signal (an attached Ansible run ends with Ansible's own code).
+- **Self-update is stricter.** Downloads come only from the release's own
+  URL, and the new binary must report the release's version and channel
+  before it replaces sb. There is no total timeout for slow links.
+- **`sb branch` switches without asking.**
+- **Redirects are not followed** by motd's providers, the credential
+  checks, the Docker controller or restore.
+- **Restore decrypts in memory** and writes atomically, so a wrong password
+  can't damage files.
+- **Releases come from saltyorg/sb-rust.**
+
+### Removed
+
+- **`sb announcements`' `-b`, `-a` and `-r`.**
+- **`DOCKER_HOST` with TLS or ssh,** and `DOCKER_API_VERSION`.
+
+[Unreleased]: https://github.com/saltyorg/sb-rust/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/saltyorg/sb-rust/releases/tag/1.0.0
