@@ -1808,7 +1808,7 @@ hint row fits on every screen, and `?` shows every key. The motd layout
 and `sb logs <name>` were declined and are not part of this section.
 
 It covers every screen built on the `tui` crate: the log picker and
-viewer (`sb logs`, `sb docker logs`), the edit picker (`sb edit`), the
+viewer (`sb logs`), the edit picker (`sb edit`), the
 fact editor (`sb fact`), the announcement viewer (`sb update`, `sb
 announcements`) and the restore screen (`sb restore`). The whole-log
 keys from "Whole-log search, save and print" (approved
