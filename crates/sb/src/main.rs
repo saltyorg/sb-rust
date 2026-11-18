@@ -179,9 +179,15 @@ enum Command {
     // Shown, not hidden as sb-go's test harness was: it reads
     // announcements now, and migrations stay with `update` (ops decision
     // 27, the maintainer, 2026-11-15). No verbose mode (ops decision 18):
-    // sb-go's `-v` only hidden, with a notice (`verbose`).
-    #[command(long_about = ANNOUNCEMENTS_LONG)]
-    Announcements,
+    // sb-go's `-v` only hidden, with a notice (`verbose`). Its two
+    // subcommands are hidden (ops decisions 34 and 35): its help, usage line
+    // and flags stay as they are (cli-core's help lists only shown
+    // subcommands), and no `help` subcommand is added.
+    #[command(long_about = ANNOUNCEMENTS_LONG, disable_help_subcommand = true)]
+    Announcements {
+        #[command(subcommand)]
+        command: Option<AnnouncementsCommand>,
+    },
     /// Fetches and decrypts files based on username and password
     // Hidden, as sb-go's (ops decision 2). No verbose mode (ops decision
     // 3): sb-go's `-v` only hidden, with a notice (`verbose`); `--user` and `--password-file` are new
@@ -241,6 +247,66 @@ enum CompletionCommand {
         shell: sb_completion::Shell,
     },
 }
+
+/// `sb announcements`' hidden subcommands, for developers (ops spec,
+/// "`sb announcements preview`" and "`sb announcements check`").
+#[derive(Subcommand, Clone)]
+enum AnnouncementsCommand {
+    /// Show what the next sb update would show of the announcements
+    #[command(long_about = PREVIEW_LONG, hide = true)]
+    Preview {
+        /// The git ref the announcements are compared with
+        #[arg(long, value_name = "ref", default_value = "HEAD")]
+        since: String,
+        /// Preview one repository only
+        #[arg(long, value_enum, value_name = "saltbox|sandbox")]
+        repo: Option<RepoArg>,
+        /// Run the migrations when approved, not a dry run
+        #[arg(long)]
+        run_migrations: bool,
+    },
+    /// Check announcement files for problems
+    #[command(long_about = CHECK_LONG, hide = true)]
+    Check {
+        /// The file to check (default: both repositories' own files)
+        file: Option<std::path::PathBuf>,
+        /// The repository the file's migration tags belong to
+        #[arg(long, value_enum, value_name = "saltbox|sandbox")]
+        repo: Option<RepoArg>,
+    },
+}
+
+/// `--repo`'s values.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum RepoArg {
+    Saltbox,
+    Sandbox,
+}
+
+impl RepoArg {
+    fn checkout(self) -> sb_ops::Checkout {
+        match self {
+            Self::Saltbox => sb_ops::Checkout::Saltbox,
+            Self::Sandbox => sb_ops::Checkout::Sandbox,
+        }
+    }
+}
+
+/// `sb announcements preview`'s long help.
+const PREVIEW_LONG: &str = "Show what the next sb update would show of the announcements
+
+Compares each repository's announcements.yml at a git ref (--since,
+HEAD by default, so uncommitted edits count as new) with its working
+tree, as sb update compares them around its pull: the viewer on a
+terminal, the new ones printed when piped, then their migrations. The
+migrations are a dry run unless --run-migrations.";
+
+/// `sb announcements check`'s long help.
+const CHECK_LONG: &str = "Check announcement files for problems
+
+Checks a file, or both repositories' own files: each entry's fields,
+date, paths, Markdown and migration, and its migration tag against the
+repository's cached tags. Exits 1 when there are problems.";
 
 /// `sb announcements`' long help: what it reads now that it is shown
 /// (ops spec, "`sb announcements`").
@@ -427,7 +493,11 @@ impl Command {
             Command::ReinstallVenv => "reinstall-venv",
             Command::ReinstallPython => "reinstall-python",
             Command::ReinstallFacts => "reinstall-facts",
-            Command::Announcements => "announcements",
+            Command::Announcements { command } => match command {
+                None => "announcements",
+                Some(AnnouncementsCommand::Preview { .. }) => "announcements preview",
+                Some(AnnouncementsCommand::Check { .. }) => "announcements check",
+            },
             Command::Restore(_) => "restore",
             Command::Bench => "bench",
             Command::Completion { command } => match command {
@@ -488,7 +558,7 @@ impl Command {
             | Command::ReinstallVenv
             | Command::ReinstallPython
             | Command::ReinstallFacts
-            | Command::Announcements
+            | Command::Announcements { .. }
             | Command::Restore(_)
             | Command::Bench
             // The installing forms write the shells' system directories
@@ -788,7 +858,23 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
         Command::ReinstallFacts => python_env::reinstall_facts(shutdown, log)?,
-        Command::Announcements => announcements::announcements(shutdown, log)?,
+        Command::Announcements { ref command } => match command {
+            None => announcements::announcements(shutdown, log)?,
+            Some(AnnouncementsCommand::Preview {
+                since,
+                repo,
+                run_migrations,
+            }) => announcements::preview(
+                since,
+                repo.map(RepoArg::checkout),
+                *run_migrations,
+                shutdown,
+                log,
+            )?,
+            Some(AnnouncementsCommand::Check { file, repo }) => {
+                announcements::check(file.as_deref(), repo.map(RepoArg::checkout), shutdown)?;
+            }
+        },
         Command::Restore(ref args) => restore::restore(args, shutdown)?,
         Command::Bench => bench::bench(shutdown, log)?,
         Command::SelfUpdate { yes, force_update } => {

@@ -23,7 +23,7 @@ use sb_release::{Outcome, Releases, SelfUpdate};
 use sb_repo::{Answer, Choice, Repo, branch_choice};
 use sb_term_ui::{Labels, PromptError, Runner, Step};
 
-use crate::announcements::{self, Announcement, LoadError, Pending};
+use crate::announcements::{self, Announcement, Pending};
 use crate::branch::{self, Resolved};
 pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
 use crate::completions::{self, Refresh};
@@ -239,11 +239,15 @@ pub async fn run(
         checkout_step(&mut steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
         secure_step(&mut steps, update.root).await?;
         checkout_step(&mut steps, Checkout::Sandbox, sandbox, update, &mut cache).await?;
-        new_announcements(&mut steps, update.root, before).await
+        let before = [Checkout::Saltbox, Checkout::Sandbox]
+            .into_iter()
+            .zip(before)
+            .collect();
+        announcements::compare(&mut steps, update.root, before, None).await
     }
     .await;
     steps.finish();
-    let Found { shown, listed } = result?;
+    let announcements::Found { shown, listed } = result?;
     // Once the runner is done (ops spec, "Shown"): on stdout's terminal
     // the viewer, its every entry that applies, the new ones marked (tui
     // spec, "The announcement viewer", Input); piped, the new ones inline
@@ -309,11 +313,7 @@ async fn migrations(
         Some(Migrations::Skip) => false,
         None => confirm(MIGRATIONS_QUESTION)?,
     };
-    let named = pending
-        .iter()
-        .map(|migration| format!("{} {}", migration.repo.name(), migration.tag))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let named = named(&pending);
     // The run log keeps what was decided and what ran (decision 22), as
     // the runner's notices reach it; these lines aren't a runner's, since
     // the playbooks run attached.
@@ -323,26 +323,78 @@ async fn migrations(
         by_flag = update.args.migrations.is_some(),
         "migrations decided"
     );
-    let write = |lines: &mut dyn Write, text: &str| -> anyhow::Result<()> {
-        writeln!(lines, "{text}")
-            .and_then(|()| lines.flush())
-            .map_err(exit::output_error)?;
-        Ok(())
-    };
     if !approved {
-        tracing::warn!(migrations = %named, "migrations skipped");
-        // sb's `warning:` line, as the binary's own: the theme's warn
-        // colour, which `lines` (anstream's stderr in sb) strips when
-        // colour is off.
-        let style = theme::current().style(theme::Role::Warn);
-        return write(
-            lines,
-            &format!(
-                "{style}warning:{style:#} {}",
-                exit::escaped(&format!("Skipped migrations: {named}"))
-            ),
-        );
+        return warn_skipped(lines, &pending);
     }
+    run_pending(&pending, update.root, update.ansible, shutdown, lines).await
+}
+
+/// `pending`'s names as the warnings and the run log give them: `<Repo>
+/// <tag>`, `, `-joined.
+fn named(pending: &[Pending]) -> String {
+    pending
+        .iter()
+        .map(|migration| format!("{} {}", migration.repo.name(), migration.tag))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `text` as one of sb's lines on `lines`, flushed.
+///
+/// # Errors
+///
+/// cli-core's `OutputError` when `lines` can't be written.
+pub(crate) fn write_line(lines: &mut dyn Write, text: &str) -> anyhow::Result<()> {
+    writeln!(lines, "{text}")
+        .and_then(|()| lines.flush())
+        .map_err(exit::output_error)?;
+    Ok(())
+}
+
+/// The migrations not run, declined or skipped by the flag: the warning
+/// `Skipped migrations: <repo> <tag>, ...` (decision 22), and the run
+/// log's record of them.
+///
+/// # Errors
+///
+/// `lines` that can't be written.
+pub(crate) fn warn_skipped(lines: &mut dyn Write, pending: &[Pending]) -> anyhow::Result<()> {
+    let named = named(pending);
+    tracing::warn!(migrations = %named, "migrations skipped");
+    // sb's `warning:` line, as the binary's own: the theme's warn colour,
+    // which `lines` (anstream's stderr in sb) strips when colour is off.
+    let style = theme::current().style(theme::Role::Warn);
+    write_line(
+        lines,
+        &format!(
+            "{style}warning:{style:#} {}",
+            exit::escaped(&format!("Skipped migrations: {named}"))
+        ),
+    )
+}
+
+/// The migrations `pending`, run (ops spec, "Migrations"; sb-go's
+/// `ExecuteMigrations`): `Starting migration execution`, then for each
+/// `Running migration '<tag>' for <Repo> repository` and ansible's run of
+/// that tag in that checkout's playbook under the Saltbox root `root`,
+/// attached, its lines on stdout as `sb install`'s, then `All migrations
+/// completed successfully`. `update`'s and `announcements preview`'s.
+///
+/// # Errors
+///
+/// A migration that fails (`failed to execute migration '<tag>' for
+/// <Repo> repository (to run by hand: ...): ...`, exit 1, it and the ones
+/// after it named as the lines that run them by hand), or is interrupted
+/// (the same lines in a warning, then exec's quiet exit, sb ending by the
+/// signal); `lines` that can't be written.
+pub(crate) async fn run_pending(
+    pending: &[Pending],
+    root: &Path,
+    ansible: &Ansible,
+    shutdown: &Shutdown,
+    lines: &mut impl Write,
+) -> anyhow::Result<()> {
+    let write = write_line;
     write(lines, "Starting migration execution")?;
     for (at, migration) in pending.iter().enumerate() {
         let name = migration.repo.name();
@@ -367,10 +419,9 @@ async fn migrations(
             )
         };
         // ansible's lines on stdout, as `sb install`'s.
-        let ran = update
-            .ansible
+        let ran = ansible
             .run(
-                &migration.repo.playbooks(update.root),
+                &migration.repo.playbooks(root),
                 Tags::Given(&tags),
                 &RunArgs::default(),
                 shutdown,
@@ -446,7 +497,7 @@ fn warn_unrun(lines: &mut dyn Write, unrun: &str) -> anyhow::Result<()> {
 /// The migrations `left` as the `sb install` lines that run them by
 /// hand, `, `-joined: Saltbox's tag as it is, Sandbox's with its
 /// `sandbox-` prefix, as `sb install` routes tags (ansible spec).
-fn by_hand(left: &[Pending]) -> String {
+pub(crate) fn by_hand(left: &[Pending]) -> String {
     let lines: Vec<String> = left
         .iter()
         .map(|migration| match migration.repo {
@@ -576,78 +627,6 @@ async fn secure_step(runner: &mut Runner, root: &Path) -> Result<(), Exit> {
         .step(labels, async |_| {
             configs::secure_existing_configs(root)
                 .context("error securing Saltbox configuration permissions")
-        })
-        .await
-}
-
-/// What the announcements step found: the new ones that apply, by date,
-/// per checkout (the inline form's and the migrations'), and every one
-/// that applies, marked new or not (the viewer's).
-struct Found {
-    shown: Vec<(Checkout, Vec<Announcement>)>,
-    listed: Vec<(Checkout, Vec<(Announcement, bool)>)>,
-}
-
-/// "Checking for new announcements" (success "Checked for new
-/// announcements"): each checkout's announcements after its pull against
-/// `before` ([`announcements::classify`]): the new ones that apply, by
-/// date (ops spec, "Announcements"), Saltbox's first, with sb-go's info
-/// `Displaying new announcements` when there are any, and every one that
-/// applies for the viewer. A file that can't be loaded, before
-/// or after, is a warning naming it, and that checkout's announcements are
-/// skipped this run (decision 23); a missing file is none.
-///
-/// # Errors
-///
-/// The step's quiet `Exit` (a step that can't fail otherwise).
-async fn new_announcements(
-    runner: &mut Runner,
-    root: &Path,
-    before: Vec<Result<Option<Vec<Announcement>>, LoadError>>,
-) -> Result<Found, Exit> {
-    let labels = Labels::new(
-        "Checking for new announcements",
-        "Checked for new announcements",
-    );
-    runner
-        .step(labels, async |step| {
-            let mut shown = Vec::new();
-            let mut listed = Vec::new();
-            for (checkout, before) in [Checkout::Saltbox, Checkout::Sandbox].into_iter().zip(before) {
-                let path = announcements::own_file(checkout, root);
-                let skipped = |step: &mut Step, which: &str, err: &LoadError| {
-                    step.warn(format!(
-                        "{} announcements skipped: error loading {which} announcement file '{}': {err}",
-                        checkout.name(),
-                        path.display()
-                    ));
-                };
-                let before = match before {
-                    Ok(before) => before,
-                    Err(err) => {
-                        skipped(step, "before", &err);
-                        continue;
-                    }
-                };
-                let after = match announcements::load(&path) {
-                    Ok(after) => after,
-                    Err(err) => {
-                        skipped(step, "after", &err);
-                        continue;
-                    }
-                };
-                let classified = announcements::classify(before.as_deref(), after.as_deref());
-                let new = announcements::only_new(classified.clone());
-                tracing::info!(repo = checkout.name(), new = new.len(), "announcements compared");
-                if !new.is_empty() {
-                    shown.push((checkout, new));
-                }
-                listed.push((checkout, classified));
-            }
-            if !shown.is_empty() {
-                step.info("Displaying new announcements");
-            }
-            Ok(Found { shown, listed })
         })
         .await
 }

@@ -20,7 +20,7 @@ use sb_cli_core::theme::{self, Theme};
 use sb_config::issue::Issue;
 use sb_config::parse;
 use sb_config::scalar::{Value, resolve};
-use sb_term_ui::{Labels, Options, Runner};
+use sb_term_ui::{Labels, Options, Runner, Step};
 use sb_tui::Ending;
 use sb_tui::announcements::Entry;
 use sb_tui::markdown;
@@ -80,7 +80,7 @@ pub fn load(path: &Path) -> Result<Option<Vec<Announcement>>, LoadError> {
         .map_err(|issues| LoadError::Parse(joined(&issues)))
 }
 
-fn joined(issues: &[Issue]) -> String {
+pub(crate) fn joined(issues: &[Issue]) -> String {
     issues
         .iter()
         .map(ToString::to_string)
@@ -579,8 +579,95 @@ pub(crate) async fn view(entries: Vec<Entry>, shutdown: &Shutdown) -> anyhow::Re
     Ok(sb_tui::announcements::view(shutdown, entries, stdout_theme()).await?)
 }
 
+/// What the announcements step found: the new ones that apply, by date,
+/// per checkout (the inline form's and the migrations'), and every one
+/// that applies, marked new or not (the viewer's).
+pub(crate) struct Found {
+    pub(crate) shown: Vec<(Checkout, Vec<Announcement>)>,
+    pub(crate) listed: Vec<(Checkout, Vec<(Announcement, bool)>)>,
+}
+
+/// Each checkout's file before, as `update` read it before its pull or
+/// `preview` at its ref.
+pub(crate) type Before = Result<Option<Vec<Announcement>>, LoadError>;
+
+/// "Checking for new announcements" (success "Checked for new
+/// announcements"), `update`'s step and `preview`'s: each checkout's
+/// announcements now against its `before` ([`classify`]): the new ones
+/// that apply, by date (ops spec, "Announcements"), in the order given,
+/// with sb-go's info `Displaying new announcements` when there are any,
+/// and every one that applies for the viewer. A file that can't be
+/// loaded, before or after, is a warning naming it, and that checkout's
+/// announcements are skipped this run (decision 23); a missing file is
+/// none. With `since` (`preview`'s ref), an info line per checkout counts
+/// its new ones since it.
+///
+/// # Errors
+///
+/// The step's quiet `Exit` (a step that can't fail otherwise).
+pub(crate) async fn compare(
+    runner: &mut Runner,
+    root: &Path,
+    before: Vec<(Checkout, Before)>,
+    since: Option<&str>,
+) -> Result<Found, exit::Exit> {
+    let labels = Labels::new(
+        "Checking for new announcements",
+        "Checked for new announcements",
+    );
+    runner
+        .step(labels, async |step| {
+            let mut shown = Vec::new();
+            let mut listed = Vec::new();
+            for (checkout, before) in before {
+                let path = own_file(checkout, root);
+                let skipped = |step: &mut Step, which: &str, err: &LoadError| {
+                    step.warn(format!(
+                        "{} announcements skipped: error loading {which} announcement file '{}': {err}",
+                        checkout.name(),
+                        path.display()
+                    ));
+                };
+                let before = match before {
+                    Ok(before) => before,
+                    Err(err) => {
+                        skipped(step, "before", &err);
+                        continue;
+                    }
+                };
+                let after = match load(&path) {
+                    Ok(after) => after,
+                    Err(err) => {
+                        skipped(step, "after", &err);
+                        continue;
+                    }
+                };
+                let classified = classify(before.as_deref(), after.as_deref());
+                let new = only_new(classified.clone());
+                tracing::info!(repo = checkout.name(), new = new.len(), "announcements compared");
+                if let Some(since) = since {
+                    step.info(format!(
+                        "{}: {} new since {}",
+                        checkout.name(),
+                        new.len(),
+                        exit::escaped(since)
+                    ));
+                }
+                if !new.is_empty() {
+                    shown.push((checkout, new));
+                }
+                listed.push((checkout, classified));
+            }
+            if !shown.is_empty() {
+                step.info("Displaying new announcements");
+            }
+            Ok(Found { shown, listed })
+        })
+        .await
+}
+
 /// The file each repository keeps its announcements in.
-const FILE: &str = "announcements.yml";
+pub(crate) const FILE: &str = "announcements.yml";
 
 /// `repo`'s own announcements file (ops spec, assumption 7 and
 /// "Announcements"): in its checkout under the Saltbox root `root`.
@@ -693,6 +780,9 @@ pub async fn announcements(
     }
     show(&shown)
 }
+
+pub mod check;
+pub mod preview;
 
 #[cfg(test)]
 mod tests;

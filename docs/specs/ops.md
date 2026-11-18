@@ -853,17 +853,20 @@ from 1:
   without a `..` component: `` `<field>` '<path>' isn't an absolute path
   ``, `` `<field>` '<path>' has a '..' component ``;
 - the message renders: no HTML (tui's Markdown shows it as text: ``
-  `message` has HTML, which sb shows as text: '<html>' ``) and no
-  reference link without its definition (`` `message` links to
-  '[<label>]', which it doesn't define ``), as pulldown-cmark's events
-  and its broken-link callback find them;
+  `message` has HTML, which sb shows as text: '<html>' ``, one for an
+  HTML block) and no reference link (`[text][label]`, `[label][]`)
+  without its definition (`` `message` links to '[<label>]', which it
+  doesn't define ``), as pulldown-cmark's events and its broken-link
+  callback find them; a shortcut (`[label]` alone) isn't flagged, as it
+  is prose as often as a link;
 - a `migration.required` entry has a tag: `` `migration.required` is
   true and `migration.tag` is empty ``;
 - a migration tag is one of the repository's tags (sb-ansible's install
   validation over the tags cache, its hints): `` `migration.tag` '<tag>'
-  isn't one of <Repo>'s tags ``, then `; did you mean '<near>'?` for one
-  within two edits, or `; it is <Other>'s tag` when the other
-  repository has it. The cache is read, never rebuilt: when the
+  isn't one of <Repo>'s tags ``, then, in install's order, `; it is
+  <Other>'s tag` when the other repository has it, `; did you mean
+  '<near>'?` for one of its own within two edits, or `; did you mean
+  <Other>'s '<near>'?` for one of the other's. The cache is read, never rebuilt: when the
   repository's entry is missing, empty, or at another commit than its
   checkout's HEAD, the check is skipped with `note: migration tags not
   checked: no cached tags for <Repo> at its checkout's commit (sb list
@@ -872,7 +875,10 @@ from 1:
   by them): `same date and title as entry <n>`.
 
 The repository of a given file is `--repo`'s; without it, Sandbox when
-the file is Sandbox's own file, else Saltbox. Output on stdout: each file
+the file is Sandbox's own file, else Saltbox. Without a file, `--repo`
+checks that repository's own file alone. Like every ops command it runs
+as root (assumption 2): run by a user, sb relaunches itself through
+sudo, as on Saltbox's CI runners. Output on stdout: each file
 as a line `<path>:`, then each problem as `  entry <n> (<date>, "<title>"):
 <problem>` (`no date` and `no title` for a missing one), the notes as
 `  note: ...`, then `  <n> problems` or `  no problems`. Any problem:
@@ -1799,11 +1805,13 @@ decisions 28 and 29.
 
 **Repo spec (2026-11-18, `announcements preview`):** `Repo::file_at(ref,
 path)`, a local read: `git rev-parse --verify --quiet <ref>^{commit}`
-(a ref starting with `-` refused first, as branch names are), then
-`git cat-file -s` and `git cat-file blob <commit>:<path>` within 10 s;
-the file's text, `None` when the commit has no such path, held to 1 MiB
-and UTF-8; `RepoError::Ref` (`'<ref>' isn't a commit in <path>`) for a
-ref git doesn't know.
+(a ref starting with `-` refused first, as branch names are), `git
+ls-tree <commit> -- <path>`, then `git cat-file -s` and `git cat-file
+blob <commit>:<path>`, each within 10 s; the file's text, `None` when
+the commit has no blob at the path, held to 1 MiB and UTF-8 (exec's
+lossy capture: a U+FFFD counts as not UTF-8); `RepoError::Ref` (`'<ref>'
+isn't a commit in <path>`) when `rev-parse` exits 1, and git's own error
+for any other failure (no repository, its dubious-ownership refusal).
 
 **Tui spec (2026-11-18, `announcements check`):** `markdown::problems(message)`,
 what the announcement's Markdown can't show: HTML (block and inline,

@@ -29,7 +29,9 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 /// `--reset-branch`, update's flags (ops decision 29, difference 6),
 /// `sb update --migrations` (ops decision 19, difference 23), and
 /// `sb restore --user` and `--password-file` (ops spec, decision 8; the
-/// cli-core spec's extensions).
+/// cli-core spec's extensions), and `sb announcements`' hidden `preview`
+/// and `check` with their flags (ops decisions 34 and 35, differences 60
+/// and 61).
 const EXTENSIONS: &[&str] = &[
     "flag\tsb\tglobal\tcolor",
     "flag\tsb docker ps\tlocal\tjson",
@@ -39,6 +41,12 @@ const EXTENSIONS: &[&str] = &[
     "flag\tsb update\tglobal\tmigrations",
     "flag\tsb restore\tlocal\tuser",
     "flag\tsb restore\tlocal\tpassword-file",
+    "command\tsb announcements preview",
+    "flag\tsb announcements preview\tlocal\tsince",
+    "flag\tsb announcements preview\tlocal\trepo",
+    "flag\tsb announcements preview\tlocal\trun-migrations",
+    "command\tsb announcements check",
+    "flag\tsb announcements check\tlocal\trepo",
 ];
 
 /// sb-go's lines sb words differently on purpose, with sb's line for each:

@@ -680,3 +680,588 @@ fn a_checkout_without_its_file_says_so() {
         "{read}"
     );
 }
+
+// `sb announcements preview` and `check` (ops spec, "`sb announcements
+// preview`" and "`sb announcements check`"; decisions 34 and 35): the
+// checkouts made git repositories with the host's git, the file at a ref
+// against the working tree.
+
+/// `git <args>` in `dir`, which must succeed, with none of the host's git
+/// settings (sb-repo's tests' helper).
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "core.excludesFile=/dev/null"])
+        .args(["-c", "core.attributesFile=/dev/null"])
+        .args(["-c", "user.name=sb", "-c", "user.email=sb"])
+        .args(["-c", "init.defaultBranch=master"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("LC_ALL", "C")
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The checkout at `dir` (Saltbox's root, or Sandbox's) a git repository
+/// whose one commit holds `committed` as its announcements.yml (a README
+/// alone when `None`), then `tree` written over it.
+fn repository(dir: &Path, committed: Option<&str>, tree: &str) {
+    std::fs::create_dir_all(dir).expect("checkout");
+    git(dir, &["init", "--quiet"]);
+    let file = dir.join("announcements.yml");
+    if let Some(text) = committed {
+        std::fs::write(&file, text).expect("committed");
+        git(dir, &["add", "announcements.yml"]);
+    } else {
+        std::fs::write(dir.join("README"), "x\n").expect("readme");
+        git(dir, &["add", "README"]);
+    }
+    git(dir, &["commit", "--quiet", "-m", "before"]);
+    std::fs::write(&file, tree).expect("tree");
+}
+
+impl Files {
+    fn saltbox_repository(&self, committed: Option<&str>, tree: &str) {
+        repository(self.dir.path(), committed, tree);
+    }
+
+    fn sandbox_repository(&self, committed: Option<&str>, tree: &str) {
+        repository(&self.path("appdata/sandbox"), committed, tree);
+    }
+
+    /// The playbook stand-in that records `$PWD $@` in `record`, and
+    /// exits `code`.
+    fn recording_playbook(&self, code: i32) {
+        let playbook = self.path("ansible-playbook");
+        std::fs::write(
+            &playbook,
+            format!(
+                "#!/bin/sh\necho \"$PWD $*\" >> '{}'\nexit {code}\n",
+                self.path("record").display()
+            ),
+        )
+        .expect("stand-in");
+        std::fs::set_permissions(&playbook, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    }
+
+    fn recorded(&self) -> String {
+        std::fs::read_to_string(self.path("record")).unwrap_or_default()
+    }
+}
+
+/// Piped: the entries new since `HEAD` (the working tree's edit) inline,
+/// the old one not; the step's count; the migration table, the would-run
+/// line and the dry-run line, nothing run, exit 0; no Sandbox checkout,
+/// none of its lines.
+#[test]
+fn preview_shows_what_update_would_and_dry_runs_the_migrations() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(Some(SALTBOX_ONE), SALTBOX);
+    let out = files.run(&["preview"]);
+    assert!(out.status.success(), "{}", both(&out));
+    let shown = stdout(&out);
+    assert!(
+        shown.starts_with(
+            "# Saltbox Announcement - February 14, 2026\n\n### What changed\n\n```yaml\nnetwork: saltbox\n```\n\n\
+             # Saltbox Announcement - March 2, 2026\n"
+        ),
+        "{}",
+        both(&out)
+    );
+    assert!(!shown.contains("January 10"), "{}", both(&out));
+    assert!(shown.contains(TABLE_LINE), "{}", both(&out));
+    assert!(shown.contains("settings_move"), "{}", both(&out));
+    let err = stderr(&out);
+    for line in [
+        "Saltbox: 2 new since HEAD",
+        "Displaying new announcements",
+        "Would run: sb install settings_move\n",
+        "Dry run: nothing was run; --run-migrations runs them.\n",
+    ] {
+        assert!(err.contains(line), "{line}:\n{}", both(&out));
+    }
+    assert!(!err.contains("Sandbox"), "{}", both(&out));
+    assert!(!files.ran(), "a playbook ran");
+}
+
+/// `--since`: a ref without the file makes every entry new; one git
+/// doesn't know is named, exit 1; nothing new shows nothing.
+#[test]
+fn preview_since_a_ref() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(None, SALTBOX_ONE);
+    let dir = files.dir.path();
+    git(dir, &["tag", "empty"]);
+    git(dir, &["add", "announcements.yml"]);
+    git(dir, &["commit", "--quiet", "-m", "one"]);
+    let out = files.run(&["preview"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(stdout(&out), "", "{}", both(&out));
+    assert!(
+        stderr(&out).contains("Saltbox: 0 new since HEAD"),
+        "{}",
+        both(&out)
+    );
+    let out = files.run(&["preview", "--since", "empty"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(stdout(&out), SALTBOX_ONE_SHOWN, "{}", both(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("Saltbox has no announcements.yml at empty: every entry is new"),
+        "{}",
+        both(&out)
+    );
+    assert!(err.contains("Saltbox: 1 new since empty"), "{}", both(&out));
+    let out = files.run(&["preview", "--since", "nope"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    let wanted = format!(
+        "  error reading Saltbox announcements at 'nope'\n  'nope' isn't a commit in {}\n",
+        dir.display()
+    );
+    assert!(stderr(&out).contains(&wanted), "{wanted}\n{}", both(&out));
+}
+
+/// Both checkouts without `--repo`, Saltbox's first; `--repo` one alone;
+/// `--repo sandbox` without its checkout: the error, exit 1.
+#[test]
+fn preview_one_repository_or_both() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(None, SALTBOX_ONE);
+    files.sandbox_repository(None, SANDBOX);
+    let out = files.run(&["preview"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(
+        stdout(&out),
+        format!("{SALTBOX_ONE_SHOWN}\n{SANDBOX_SHOWN}"),
+        "{}",
+        both(&out)
+    );
+    let out = files.run(&["preview", "--repo", "sandbox"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(stdout(&out), SANDBOX_SHOWN, "{}", both(&out));
+    assert!(!stderr(&out).contains("Saltbox"), "{}", both(&out));
+    std::fs::remove_dir_all(files.path("appdata/sandbox")).expect("remove");
+    let out = files.run(&["preview"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(stdout(&out), SALTBOX_ONE_SHOWN, "{}", both(&out));
+    let out = files.run(&["preview", "--repo", "sandbox"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        stderr(&out).contains("error reading Sandbox announcements at 'HEAD'"),
+        "{}",
+        both(&out)
+    );
+}
+
+/// An invalid file at the ref is `update`'s warning, that checkout
+/// skipped, exit 0.
+#[test]
+fn preview_warns_about_an_invalid_file_at_the_ref() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(Some(INVALID), SALTBOX_ONE);
+    let out = files.run(&["preview"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(stdout(&out), "", "{}", both(&out));
+    assert!(
+        stderr(&out)
+            .contains("Saltbox announcements skipped: error loading before announcement file"),
+        "{}",
+        both(&out)
+    );
+}
+
+/// `--run-migrations` piped: no question; `update`'s runner runs the tag
+/// in its checkout; a failing playbook is `update`'s error with its
+/// `sb install` line, exit 1.
+#[test]
+fn preview_runs_the_migrations_with_the_flag() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(Some(SALTBOX_ONE), SALTBOX);
+    files.recording_playbook(0);
+    let out = files.run(&["preview", "--run-migrations"]);
+    assert!(out.status.success(), "{}", both(&out));
+    let err = stderr(&out);
+    for line in [
+        "Starting migration execution",
+        "Running migration 'settings_move' for Saltbox repository",
+        "All migrations completed successfully",
+    ] {
+        assert!(err.contains(line), "{line}:\n{}", both(&out));
+    }
+    assert!(!err.contains("Would run"), "{}", both(&out));
+    let recorded = files.recorded();
+    assert!(recorded.contains("--tags settings_move"), "{recorded}");
+    files.recording_playbook(2);
+    let out = files.run(&["preview", "--run-migrations"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        stderr(&out).contains(
+            "failed to execute migration 'settings_move' for Saltbox repository \
+             (to run by hand: sb install settings_move)"
+        ),
+        "{}",
+        both(&out)
+    );
+}
+
+/// On a terminal: the viewer with the new entries marked, `q`, the table
+/// and `update`'s question; `y` gives the would-run lines, nothing run.
+#[test]
+fn preview_on_a_terminal_asks_and_dry_runs() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(Some(SALTBOX_ONE), SALTBOX);
+    let mut pty = Pty::spawn(&["announcements", "preview"], &files.pty_envs());
+    assert!(pty.showing("╭ Announcements · "), "{}", pty.contents());
+    let screen = pty.contents();
+    assert!(screen.contains("● "), "no new mark: {screen}");
+    assert!(screen.contains("Old news"), "{screen}");
+    pty.send(b"q");
+    assert!(pty.showing("Run all migration tags?"), "{}", pty.contents());
+    assert!(
+        pty.contents().contains("settings_move"),
+        "{}",
+        pty.contents()
+    );
+    pty.send(b"y\r");
+    assert!(
+        pty.showing("Would run: sb install settings_move"),
+        "{}",
+        pty.contents()
+    );
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}\n{}", pty.contents());
+    assert!(
+        pty.contents().contains("Dry run: nothing was run"),
+        "{}",
+        pty.contents()
+    );
+    pty.assert_restored();
+    assert!(!files.ran(), "a playbook ran");
+}
+
+/// On a terminal with `--run-migrations`: `y` runs them; Ctrl-C on the
+/// viewer ends with 130.
+#[test]
+fn preview_on_a_terminal_runs_when_asked_and_ctrl_c_ends_it() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(Some(SALTBOX_ONE), SALTBOX);
+    files.recording_playbook(0);
+    let mut pty = Pty::spawn(
+        &["announcements", "preview", "--run-migrations"],
+        &files.pty_envs(),
+    );
+    assert!(pty.showing("╭ Announcements · "), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.showing("Run all migration tags?"), "{}", pty.contents());
+    pty.send(b"y\r");
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}\n{}", pty.contents());
+    assert!(
+        files.recorded().contains("--tags settings_move"),
+        "{}",
+        pty.contents()
+    );
+    let mut pty = Pty::spawn(&["announcements", "preview"], &files.pty_envs());
+    assert!(pty.showing("╭ Announcements · "), "{}", pty.contents());
+    pty.send(b"\x03");
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 130, "{}", pty.contents());
+    pty.assert_restored();
+    // Nothing was going to run: no migration is named.
+    assert!(
+        !pty.contents().contains("Migrations interrupted"),
+        "{}",
+        pty.contents()
+    );
+}
+
+/// On a terminal, `n` to the question: `update`'s skipped warning,
+/// nothing run, exit 0.
+#[test]
+fn preview_on_a_terminal_declined() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(Some(SALTBOX_ONE), SALTBOX);
+    let mut pty = Pty::spawn(&["announcements", "preview"], &files.pty_envs());
+    assert!(pty.showing("╭ Announcements · "), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.showing("Run all migration tags?"), "{}", pty.contents());
+    pty.send(b"n\r");
+    assert!(
+        pty.showing("Skipped migrations: Saltbox settings_move"),
+        "{}",
+        pty.contents()
+    );
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}\n{}", pty.contents());
+    assert!(!pty.contents().contains("Would run"), "{}", pty.contents());
+    assert!(!files.ran(), "a playbook ran");
+}
+
+/// A file at the ref that isn't text sb reads (over 1 MiB) is `update`'s
+/// warning for it, that checkout skipped; `--since` a branch.
+#[test]
+fn preview_a_big_file_at_the_ref_and_a_branch() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    let big = format!("announcements: []\n#{}\n", "x".repeat(1 << 20));
+    files.saltbox_repository(Some(&big), SALTBOX_ONE);
+    let out = files.run(&["preview"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert!(
+        stderr(&out)
+            .contains("Saltbox announcements skipped: error loading before announcement file")
+            && stderr(&out).contains("HEAD:announcements.yml is bigger than 1048576 bytes"),
+        "{}",
+        both(&out)
+    );
+    let dir = files.dir.path();
+    git(dir, &["checkout", "--quiet", "-b", "develop"]);
+    git(dir, &["add", "announcements.yml"]);
+    git(dir, &["commit", "--quiet", "-m", "one"]);
+    std::fs::write(dir.join("announcements.yml"), SALTBOX).expect("tree");
+    let out = files.run(&["preview", "--since", "develop"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert!(
+        stderr(&out).contains("Saltbox: 2 new since develop"),
+        "{}",
+        both(&out)
+    );
+}
+
+/// A good file: `no problems`, exit 0. Without a file, both checkouts'
+/// own files; one without its file is named.
+#[test]
+fn check_a_good_file_and_both_checkouts() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_file(SALTBOX_ONE);
+    std::fs::create_dir_all(files.path("appdata/sandbox")).expect("checkout");
+    let out = files.run(&["check"]);
+    assert!(out.status.success(), "{}", both(&out));
+    let saltbox = files.path("announcements.yml");
+    let sandbox = files.path("appdata/sandbox/announcements.yml");
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "note: Sandbox has no announcements file: {}\n{}:\n  no problems\n",
+            sandbox.display(),
+            saltbox.display()
+        ),
+        "{}",
+        both(&out)
+    );
+    files.sandbox_file(SANDBOX);
+    let out = files.run(&["check"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "{}:\n  no problems\n{}:\n  no problems\n",
+            saltbox.display(),
+            sandbox.display()
+        ),
+        "{}",
+        both(&out)
+    );
+    std::fs::remove_file(&saltbox).expect("remove");
+    std::fs::remove_dir_all(files.path("appdata")).expect("remove");
+    let out = files.run(&["check"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        stderr(&out).contains("no announcements file to check"),
+        "{}",
+        both(&out)
+    );
+}
+
+/// A bad file: every problem with its entry, exit 1 and the count; the
+/// migration tag checked against a tags cache fresh for the checkout's
+/// commit, skipped with a note when it isn't; a file that doesn't parse
+/// is the loader's issues.
+#[test]
+fn check_a_bad_file() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    let bad = "announcements:\n  - date: \"2026-02-30\"\n    title: \"Bad\"\n    \
+               message: \"<b>x</b>\"\n    required_folder: relative\n    \
+               migration:\n      required: true\n      tag: plx\n  - title: \"Bad\"\n";
+    files.saltbox_repository(None, SALTBOX_ONE);
+    let file = files.path("bad.yml");
+    std::fs::write(&file, bad).expect("bad");
+    let out = files.run(&["check", file.to_str().expect("utf-8")]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    let note = "  note: migration tags not checked: no cached tags for Saltbox at its \
+                checkout's commit (sb list caches them)\n";
+    let expected = |tag_line: &str, note: &str, count: usize| {
+        format!(
+            "{}:\n  entry 1 (2026-02-30, \"Bad\"): `date` '2026-02-30' isn't a date as YYYY-MM-DD\n  \
+             entry 1 (2026-02-30, \"Bad\"): `required_folder` 'relative' isn't an absolute path\n  \
+             entry 1 (2026-02-30, \"Bad\"): `message` has HTML, which sb shows as text: '<b>'\n  \
+             entry 1 (2026-02-30, \"Bad\"): `message` has HTML, which sb shows as text: '</b>'\n\
+             {tag_line}  entry 2 (no date, \"Bad\"): `date` is missing\n  \
+             entry 2 (no date, \"Bad\"): `message` is missing\n{note}  {count} problems\n",
+            file.display()
+        )
+    };
+    assert_eq!(stdout(&out), expected("", note, 6), "{}", both(&out));
+    assert!(
+        stderr(&out).contains("announcements check found 6 problems"),
+        "{}",
+        both(&out)
+    );
+    // A cache at another commit is stale: still skipped.
+    let cache = files.path("cache.json");
+    let write_cache = |commit: &str| {
+        std::fs::write(
+            &cache,
+            format!(
+                "{{\"{}\": {{\"commit\": \"{commit}\", \"tags\": [\"plex\", \"sonarr\"]}}}}",
+                files.dir.path().display()
+            ),
+        )
+        .expect("cache");
+    };
+    write_cache("0000000000000000000000000000000000000000");
+    let out = files.run(&["check", file.to_str().expect("utf-8")]);
+    assert_eq!(stdout(&out), expected("", note, 6), "{}", both(&out));
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(files.dir.path())
+        .output()
+        .expect("git");
+    write_cache(String::from_utf8_lossy(&head.stdout).trim());
+    let out = files.run(&["check", file.to_str().expect("utf-8")]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    let tag_line = "  entry 1 (2026-02-30, \"Bad\"): `migration.tag` 'plx' isn't one of \
+                    Saltbox's tags; did you mean 'plex'?\n";
+    assert_eq!(stdout(&out), expected(tag_line, "", 7), "{}", both(&out));
+    std::fs::write(&file, INVALID).expect("invalid");
+    let out = files.run(&["check", file.to_str().expect("utf-8")]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        stdout(&out).contains("  error parsing announcement YAML: bad.yml:2:"),
+        "{}",
+        both(&out)
+    );
+    assert!(
+        stderr(&out).contains("announcements check found 1 problem\n"),
+        "{}",
+        both(&out)
+    );
+}
+
+/// `check` with `--repo`, and a given file that is Sandbox's own: the
+/// tags it is checked against are Sandbox's, the other's named; a given
+/// file that isn't there, a directory, and text from the file escaped.
+#[test]
+fn check_a_given_files_repository_and_reading() {
+    if !root_gate::requested() {
+        return;
+    }
+    let files = Files::new();
+    files.saltbox_repository(None, SALTBOX_ONE);
+    files.sandbox_repository(None, SANDBOX);
+    let head = |dir: &Path| {
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    let sandbox = files.path("appdata/sandbox");
+    std::fs::write(
+        files.path("cache.json"),
+        format!(
+            "{{\"{}\": {{\"commit\": \"{}\", \"tags\": [\"plex\"]}}, \
+             \"{}\": {{\"commit\": \"{}\", \"tags\": [\"autobrr\"]}}}}",
+            files.dir.path().display(),
+            head(files.dir.path()),
+            sandbox.display(),
+            head(&sandbox)
+        ),
+    )
+    .expect("cache");
+    let migrating = "announcements:\n  - date: \"2026-01-02\"\n    title: \"Don't miss \\\"this\\\"\"\n    \
+                     message: Text.\n    migration:\n      required: true\n      tag: plex\n";
+    let own = sandbox.join("announcements.yml");
+    std::fs::write(&own, migrating).expect("own");
+    let out = files.run(&["check", own.to_str().expect("utf-8")]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    let line = "  entry 1 (2026-01-02, \"Don't miss \"this\"\"): `migration.tag` 'plex' isn't \
+                one of Sandbox's tags; it is Saltbox's tag\n";
+    assert!(stdout(&out).contains(line), "{line}\n{}", both(&out));
+    let elsewhere = files.path("elsewhere.yml");
+    std::fs::write(&elsewhere, migrating).expect("elsewhere");
+    let out = files.run(&["check", elsewhere.to_str().expect("utf-8")]);
+    assert!(out.status.success(), "{}", both(&out));
+    let out = files.run(&[
+        "check",
+        elsewhere.to_str().expect("utf-8"),
+        "--repo",
+        "sandbox",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(stdout(&out).contains(line), "{}", both(&out));
+    let out = files.run(&["check", "--repo", "sandbox"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        !stdout(&out).contains(&files.path("announcements.yml").display().to_string()),
+        "{}",
+        both(&out)
+    );
+    let missing = files.path("missing.yml");
+    let out = files.run(&["check", missing.to_str().expect("utf-8")]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        stdout(&out).contains(&format!(
+            "  error reading announcement file: {} doesn't exist\n",
+            missing.display()
+        )),
+        "{}",
+        both(&out)
+    );
+    let out = files.run(&["check", files.path("appdata").to_str().expect("utf-8")]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        stdout(&out).contains("  error reading announcement file: isn't a regular file\n"),
+        "{}",
+        both(&out)
+    );
+}
