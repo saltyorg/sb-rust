@@ -71,6 +71,14 @@ pub enum RepoError {
     /// A local git read failed otherwise.
     #[error("{0}")]
     Git(String),
+    /// A ref git doesn't know as a commit, or one starting with `-`
+    /// ([`Repo::file_at`]). The ref is shown escaped.
+    #[error("'{reference}' isn't a commit in {}", path.display())]
+    Ref { reference: String, path: PathBuf },
+    /// A file at a ref that isn't text sb reads ([`Repo::file_at`]):
+    /// over cli-core's 1 MiB, or not UTF-8.
+    #[error("{0}")]
+    Blob(String),
 }
 
 /// The user's answer to "reset to the wanted branch?", from a flag or the
