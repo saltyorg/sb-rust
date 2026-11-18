@@ -67,7 +67,8 @@ fn bench_prints_the_system_and_skips_the_disk_test_without_space() {
         "No ISP detected",
         "Disk write",
         "Not enough space for the disk test",
-        "Speedtest unavailable: a testing build needs SB_BENCH_TEST_NETWORK",
+        // Its whole reason wraps (piped_the_tables_wrap_at_80_columns).
+        "Speedtest unavailable: a testing build needs",
         "Finished in: ",
         "Timestamp:   ",
     ] {
@@ -75,6 +76,39 @@ fn bench_prints_the_system_and_skips_the_disk_test_without_space() {
     }
     // The steps are transient: a run that succeeds leaves no progress.
     assert!(stderr.is_empty(), "{stderr}");
+}
+
+/// The Speedtest table in `stdout`: from the border above its title row
+/// to the line before `Finished in:`.
+fn speedtest_table(stdout: &str) -> String {
+    let lines: Vec<&str> = stdout.lines().collect();
+    let end = lines
+        .iter()
+        .position(|line| line.starts_with("Finished in: "))
+        .expect("finished line");
+    let title = lines[..end]
+        .iter()
+        .rposition(|line| line.trim_matches(['│', ' ']) == "Speedtest")
+        .expect("speedtest title");
+    lines[title - 1..end].join("\n")
+}
+
+/// Piped, every table lays out as at 80 columns, its cells wrapped as on
+/// a terminal (ops spec, "`sb bench`", Results; the maintainer,
+/// 2026-11-18): the Speedtest row's long reason wraps in its cell
+/// instead of drawing the table about 110 columns wide.
+#[test]
+fn piped_the_tables_wrap_at_80_columns() {
+    if !root_gate::requested() {
+        return;
+    }
+    let out = bench_on_small_tmpfs(&[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    for line in stdout.lines() {
+        assert!(console::measure_text_width(line) <= 80, "{line}\n{stdout}");
+    }
+    insta::assert_snapshot!("bench_piped_speedtest", speedtest_table(&stdout));
 }
 
 /// A gzipped tar holding `program` as `speedtest`, served by `fake`, and

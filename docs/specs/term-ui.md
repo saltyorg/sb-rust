@@ -359,7 +359,9 @@ sequence.
   docker spec, differences). Plain or JSON output is decided per command
   (capability map, open items). `Table::spanning_row(text)` adds a bold
   row across every column (`sb list`'s later repos), through tabled's
-  `Span`. *Amended 2026-11-13 by the ansible spec.*
+  `Span`. *Amended 2026-11-13 by the ansible spec.* `sb bench` lays its
+  piped tables out at 80 columns instead (ops spec, "`sb bench`";
+  the maintainer, 2026-11-18).
 - **A title row:** `Table::titled(title, headings)` draws a row across
   every column above the column headings; both are bold and centred, as
   headings are, through the same `Span` (bench's Speedtest table). The

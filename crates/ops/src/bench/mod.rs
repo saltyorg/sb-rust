@@ -113,11 +113,23 @@ fn services(user_agent: &str) -> (Option<Endpoints>, Result<Pin, String>) {
     }
 }
 
-/// Where the tables go: stdout, fitted to its terminal and in colour as
-/// its choice says, as term-ui's `Table::print` does; or a test's buffer.
-/// Why not `Table::print`: it writes to stdout only, and the sections'
-/// order is tested on a buffer; this is `print`'s three calls, from
-/// term-ui's own `render`, `stdout_width` and `colour_on`.
+/// The width bench's tables lay out at when stdout isn't a terminal: a
+/// long cell (a Speedtest that couldn't be prepared, its reason) wraps
+/// as on a terminal this wide, instead of drawing the table at its
+/// natural width (ops spec, "`sb bench`", Results; the maintainer,
+/// 2026-11-18). This is bench's own choice; term-ui's piped tables
+/// otherwise keep their natural width (term-ui spec, "Piped"). Why not
+/// console's `Term::size()`, whose fallback is this width on Unix: that
+/// number is undocumented (console 0.16.6, `unix_term.rs`'s
+/// `DEFAULT_WIDTH`; 79 on Windows), and the spec fixes 80.
+const PIPED_WIDTH: usize = 80;
+
+/// Where the tables go: stdout, fitted to its terminal or, piped, to
+/// [`PIPED_WIDTH`], and in colour as its choice says, as term-ui's
+/// `Table::print` does; or a test's buffer. Why not `Table::print`: it
+/// writes to stdout only and keeps a piped table's natural width, and
+/// the sections' order is tested on a buffer; this is `print`'s three
+/// calls, from term-ui's own `render`, `stdout_width` and `colour_on`.
 #[derive(Debug)]
 pub struct Out<W> {
     writer: W,
@@ -126,13 +138,14 @@ pub struct Out<W> {
 }
 
 impl Out<io::Stdout> {
-    /// Stdout, as [`Table::print`] writes it.
+    /// Stdout, as [`Table::print`] writes it but at [`PIPED_WIDTH`] when
+    /// it isn't a terminal.
     #[must_use]
     pub fn stdout() -> Self {
         Self {
             writer: io::stdout(),
             colour: sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
-            width: sb_term_ui::stdout_width(),
+            width: Some(sb_term_ui::stdout_width().unwrap_or(PIPED_WIDTH)),
         }
     }
 }

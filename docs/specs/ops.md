@@ -475,7 +475,14 @@ and run as code except the digest-pinned Ookla Speedtest.
 Speedtest`, `Speedtest: <node>`), each shown only while it runs (term-ui's
 transient steps), so a run that succeeds leaves only the results; a
 section without steps starts no runner. **Results:** three term-ui tables on stdout, each printed when
-its section ends, then the total time and a timestamp. No `clear`.
+its section ends, then the total time and a timestamp. No `clear`. On a
+terminal the tables fit its width; when stdout isn't a terminal they
+lay out as at 80 columns, their cells wrapped as on a terminal that
+wide, so a long cell (a Speedtest that couldn't be prepared, its
+reason) doesn't draw the table wider (the maintainer, 2026-11-18).
+`COLUMNS` doesn't change it, as sb-go's piped wrap. This is bench's own
+choice; term-ui's piped tables otherwise keep their natural width
+(term-ui spec, "Piped").
 
 **1. System** (a two-column table; each row found as sb-go's
 bench.sh finds it, `cmd/bench_script.sh`'s `get_system_info`,

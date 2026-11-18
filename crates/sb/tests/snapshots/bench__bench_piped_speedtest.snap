@@ -1,0 +1,10 @@
+---
+source: crates/sb/tests/bench.rs
+expression: speedtest_table(&stdout)
+---
+╭─────────────────────────────────────────────────────────────────────╮
+│                              Speedtest                              │
+├─────────┬───────────────────────────────────────────────────────────┤
+│ Skipped │ Speedtest unavailable: a testing build needs              │
+│         │ SB_BENCH_TEST_NETWORK: it never reaches the real services │
+╰─────────┴───────────────────────────────────────────────────────────╯
