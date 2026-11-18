@@ -13,7 +13,10 @@ Amended 2026-11-16: bench's System rows and disk test
 follow sb-go's bench.sh row by row (decision 33, differences 19 and 46
 to 53); the help contract is a rewording. Amended 2026-11-16 at M78:
 the network rows and Speedtest follow bench.sh the same way (decision
-33, differences 54 to 58), the aarch64 pin recorded (decision 13).*
+33, differences 54 to 58), the aarch64 pin recorded (decision 13).
+Amended 2026-11-18 by the maintainer's decisions: `update` ends with
+what moved and a closing hint (step 13, "What moved, and the closing
+hint"; decisions 36 to 38, differences 62 and 63).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -645,7 +648,10 @@ required (`cobra.ExactArgs(1)`, cmd/branch.go:24).
    `reconcile_runtime`: deadsnakes, venv, fact, as `update-venv`),
    `head()` after, "Updating Saltbox tags cache" (ansible's
    `TagCache::refresh`) when the hash changed or the cache entry or its
-   tags are missing.
+   tags are missing. `head()` after is read right after the fetch and
+   reset, before the runtime (HEAD doesn't move in between; what moved
+   is then known even if the runtime fails, decision 38), and the old
+   cache entry is read before the rebuild writes over it (step 13).
 8. **"Securing Saltbox configuration permissions"** / "Saltbox
    configuration permissions secured": `secure_existing_configs`
    (`sb setup`, above).
@@ -665,6 +671,8 @@ required (`cobra.ExactArgs(1)`, cmd/branch.go:24).
     completions" (success "Shell completions checked"), holding
     completion's "Refreshing shell completions" and a step per shell
     (M87).
+13. **What moved, then the closing hint** ("What moved, and the closing
+    hint", below), once the last runner is done.
 
 Errors keep sb-go's wrapping: `error updating Saltbox: ...`, `error
 updating Sandbox: ...`, `error securing Saltbox configuration
@@ -724,6 +732,94 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
   - Skipped (declined or `--migrations skip`): warning `Skipped
     migrations: <repo> <tag>, ...`, so the screen and the log keep them
     (decision 22).
+
+#### What moved, and the closing hint
+
+The maintainer's decisions of 2026-11-18 (layout "B" and hint "H2" of
+the mock-ups; decisions 36 to 38). sb-go printed none of this.
+
+- **Where:** after the last step tree (validation's and the completion
+  refresh's), a blank line, the block, then, when a checkout moved, a
+  blank line and the hint. Both on stderr through `lines`, as sb's other
+  lines in `update` (the migration lines, the warnings), so they follow
+  the tree on the same stream.
+- **The block,** one line per checkout whose pull finished, Saltbox's
+  first, the name padded to 9 columns (`Saltbox  `, `Sandbox  `); each
+  id is the commit's first 7 characters:
+  - moved: `Saltbox  a1b2c3d → e4f5a6b`;
+  - not moved: `Saltbox  already up to date (e4f5a6b)`;
+  - moved, the tags compared and none added or removed:
+    `Sandbox  c6b5a49 → d7e8f90, no tag changes`;
+  - moved, the tags compared, some added or removed: the range line,
+    then `  New tags:      <tags>` and `  Removed tags:  <tags>`, each
+    only when its list isn't empty, the tags starting at column 18;
+  - moved, the tags not compared: the range line only.
+- **The tags** as the user types them: Saltbox's as listed, Sandbox's
+  with `sandbox-`; the new ones in the new listing's order, the removed
+  ones in the old one's; each escaped (cli-core's `escaped`: a tag is
+  Ansible's output).
+- **Each list** is the tags joined with `, `, wrapped at words to 80
+  columns under its label (63 columns of tags; term-ui's `wrap_line`,
+  tabled's `Wrap::wrap`, as the tree and help wrap; a tag wider than
+  that breaks anywhere), and capped at two lines: when the whole list
+  needs more, as many tags as fit in two lines, then ` and <n> more (sb
+  list)`. 80 whatever the terminal's width: one layout to read and paste
+  (as bench's piped tables).
+  ```
+  Sandbox  0f9e8d7 → 9a8b7c6
+    New tags:      sandbox-a, sandbox-b, sandbox-c, sandbox-d, sandbox-e,
+                   sandbox-f, sandbox-g, sandbox-h and 9 more (sb list)
+  ```
+- **When the tags are compared** (decision 37): only when the
+  checkout's old cache entry was valid for the commit before the pull,
+  and the rebuild after the pull finished. Valid is ansible's
+  `TagCache::fresh(repo, <HEAD before the fetch>)`: the file present,
+  readable and parsed, the entry of sb's shape (`commit` a string,
+  `tags` strings), `tags` not empty, and `commit` the HEAD read before
+  the fetch. sb-go writes the same shape (its ansible/cache.go and
+  `RunAndCacheAnsibleTags`), so an entry it wrote counts as any other:
+  the rule is the entry's, not its writer's. The entry is read before
+  the rebuild writes over it: the cache is loaded once before
+  Saltbox's step, and Saltbox's rebuild changes only Saltbox's entry. In
+  every other case (no file, no entry, an unreadable or corrupt file,
+  an entry of another shape, an entry for another commit, empty tags, a
+  rebuild that failed or didn't run) the line shows the range only,
+  never every tag as new: the first update on a host with no cache shows
+  `Saltbox  a1b2c3d → e4f5a6b` and nothing more.
+- **Colours,** the theme's roles: the ids and the arrow in Muted, the
+  new tags in Ok, the removed ones in Warn (a removed tag needs a look,
+  but isn't a failure, which is Problem's ✗), `sb list` and the hint's
+  commands in Code (the mock-ups' value colour); the rest plain.
+  `lines` is anstream's stderr, so it is plain under `NO_COLOR`,
+  `--color=never` or when stderr isn't a terminal.
+- **The run log:** after each pull `checkout pulled` with `repo`, `old`
+  and `new` (the full ids); after a rebuild `tags compared` with `repo`,
+  `added` and `removed` (`, `-joined, every tag), or `tags not compared`
+  with `repo` and the reason (`no valid cache entry for the old
+  commit`).
+- **The hint** (decision 36), the commands in Code:
+  - when Saltbox moved (whether or not Sandbox did), hint H2:
+    ```
+    Saltbox's files are updated; your server and apps are not yet. To apply it:
+      sb install saltbox         your main tag (or mediabox, feederbox); includes core
+      sb install core,<apps>     the minimum: core plus the apps you run
+    ```
+  - when only Sandbox moved, Sandbox's own, in the same layout and
+    without core (nothing in core changed):
+    ```
+    Sandbox's files are updated; your Sandbox apps are not yet. To apply it:
+      sb install sandbox-<app>   each Sandbox app you run
+      sb install sandbox-roles   the apps you list in sandbox_roles
+    ```
+  - when nothing moved: no hint.
+- **A failed or interrupted run** (decision 38): the block shows the
+  checkouts whose pull finished (their HEAD read after the fetch and
+  reset), each by the rules above (its tags only if its rebuild
+  finished), printed once the runner that failed is done, then the
+  error as before. No hint: it is the next step after a finished
+  update, and after a failure the next step is the error's. Nothing is
+  printed when no pull finished (a refusal before any step, a failed
+  self-update or apt step, a replaced sb).
 
 ### `sb branch <name>` and `sb branch-sandbox <name>`
 
@@ -1131,6 +1227,16 @@ Every text from the file is escaped as sb's other output (cli-core's
 61. `sb announcements check` is new: sb-go had no check of an
     announcement file but its loader.
 
+`update`'s end (the maintainer, 2026-11-18; decisions 36 to 38):
+62. `update` ends with what moved: each checkout's commit range or
+    `already up to date`, and the tags the pull added or removed when
+    the old cache entry was valid for the commit before it; the commits
+    and the tag diff in the run log. sb-go printed nothing after its
+    last step.
+63. `update` ends with a closing hint when a checkout moved: how to
+    apply the update (`sb install saltbox` or `core,<apps>`; Sandbox's
+    tags). sb-go gave none.
+
 ## Scope
 
 **In:**
@@ -1442,7 +1548,25 @@ the real services.
     - a failed migration (and Ansible's own Ctrl-C exit 99): the error
       naming it and those after it as `sb install` lines, exit 1; sb
       interrupted (SIGTERM) during one: the warning with those lines,
-      death by the signal.
+      death by the signal;
+    - what moved (decisions 36 to 38): piped, the block and the hint
+      on stderr, plain, and the run log's `checkout pulled` and `tags
+      compared` records.
+  - **What moved, in process** (`crates/ops/tests/update.rs`, the
+    stand-in `ansible-playbook` listing a file the remote commits): a
+    tag added and one removed in Sandbox (the lines, the H2 hint);
+    nothing moved (both `already up to date`, no hint); only Sandbox
+    moved (Sandbox's hint); moved with the same tags (`, no tag
+    changes`); and the range only, never the tags, for each case of
+    decision 37: no cache file (the first update), no entry, an
+    unreadable file, a corrupt file, an entry of another shape, an entry
+    for another commit, empty tags, a failed rebuild (with the run's
+    error, and no hint); a failure after Saltbox's pull (the Saltbox
+    line, no Sandbox line, no hint).
+  - **Units** for the block: the layout of each line kind, the 80-column
+    wrap, the two-line cap and its `and <n> more (sb list)`, a list that
+    fits exactly two lines, the colours by role and plain with the plain
+    theme, each hint's text.
   - **`announcements`:** the root's own file and Sandbox's (under the
     test's own appdata path, an inventory in the temporary root, never
     the host's), piped: every entry that applies inline, each headed with
@@ -1565,6 +1689,9 @@ the real services.
    warning, before apt.
 21. Inline announcements go to stdout, sanitized, when stdout isn't a
    terminal.
+22. `update` ends with the block and the hint of "What moved, and the
+   closing hint", its tags only from an old cache entry valid for the
+   commit before the pull, every case of decision 37 tested.
 
 ## Decisions
 
@@ -1756,6 +1883,34 @@ the real services.
     words where they overlap. `--repo` names a given file's repository
     for the tag check (an addition: a Sandbox file outside its
     checkout can't be told by its path).
+36. **`update` says what moved and what to do next** (the maintainer,
+    2026-11-18, the report's "sb update should say what changed and
+    what to do next"): a short block after the tree (layout B, chosen
+    over the tags inside the tree, which can't wrap a long list, and
+    over counts only, which `sb list` can't point at), then hint H2, or
+    Sandbox's own when only Sandbox moved, and none when nothing moved.
+    No list of new roles: sb can't tell which roles a user cares about;
+    the tags are what the user types. sb can't tell which main tag a host
+    was installed with (Saltbox keeps no install record), so the hint
+    names the options. Decided: H2's second line keeps its
+    description in the first line's column (the mock-up had it one
+    column to the left, its `<apps>` written as HTML entities), and
+    Sandbox's hint takes H2's layout so both read alike; the block and
+    the hint go to stderr with the tree; removed tags are in Warn.
+37. **Tags only from a valid old entry** (the maintainer, 2026-11-18):
+    never every tag as new because the old cache is missing or doesn't
+    fit the commit before the pull; each of those cases is tested,
+    the first update on a host with no cache among them.
+38. **A partial run shows what moved, without the hint** (the
+    least surprising option, chosen at the maintainer's request):
+    a checkout whose pull finished is on disk at its new commit whatever
+    failed after it, so the block names it; a step that didn't finish
+    shows nothing; the hint, which assumes a finished update, is left
+    out, so the last thing shown is the error and what it asks for.
+    The other options: nothing at all (a moved checkout then goes
+    unmentioned, and the next run says `already up to date`), or the
+    hint too (advice to run `sb install` while, say, the config doesn't
+    validate).
 
 ## Known limits
 
@@ -1821,6 +1976,11 @@ the commit has no blob at the path, held to 1 MiB and UTF-8 (exec's
 lossy capture: a U+FFFD counts as not UTF-8); `RepoError::Ref` (`'<ref>'
 isn't a commit in <path>`) when `rev-parse` exits 1, and git's own error
 for any other failure (no repository, its dubious-ownership refusal).
+
+**term-ui spec (2026-11-18, `update`'s end):** `wrap_line(line, width,
+words)`, the tree's wrap (tabled's `Wrap::wrap` by display width, a
+colour closed and reopened at each break), becomes public, for
+`update`'s tag lists.
 
 **Tui spec (2026-11-18, `announcements check`):** `markdown::problems(message)`,
 what the announcement's Markdown can't show: HTML (block and inline,

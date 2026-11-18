@@ -327,7 +327,10 @@ nothing from ops, so it lands here.
   `branch-sandbox` in `ops`), and `run(repo, tags, &RunArgs)`, one
   attached playbook run by tag with the `Executing...` and success
   lines, returning exec's `Ran` (`sb install`, `sb diag`, and ops'
-  announcement migrations).
+  announcement migrations). `update` reads `fresh(repo, head)` for the
+  HEAD before its pull, before `refresh` writes over the entry, to tell
+  which tags the pull added or removed (ops spec, "What moved, and the
+  closing hint").
 
 ### Differences from sb-go (the complete list)
 
