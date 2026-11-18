@@ -42,12 +42,12 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, ResolveFlags};
 use rustix::io::Errno;
-use sb_cli_core::config::MAX_FILE_BYTES;
+use sb_cli_core::config::{MAX_FILE_BYTES, yaml};
 
 use crate::issue::escape_controls;
 use crate::run::{self, FILES, File, Settings};
-use crate::schema;
-use crate::tree::{Data, Node};
+use crate::tree::{self, Data, Node};
+use crate::{parse, schema};
 
 /// Where the original is copied before the rewrite, unless the caller
 /// names another folder (sb's `SB_BACKUPS_DIR`, the tests').
@@ -104,9 +104,43 @@ pub(crate) enum Plan {
 }
 
 /// The plan for `text`, motd.yml's, with the current schema from
-/// `settings`' Saltbox root.
+/// `settings`' Saltbox root. A file with no app section holding a list
+/// is current, decided from its plain tree before the older schema is
+/// parsed and checked, which cost most of the plan (the performance pass,
+/// 2026-11-18: about 3 M instructions, 13% of validate-config). The
+/// decision is [`plan_checked`]'s: a file it would take further has such
+/// a section in the plain tree too, whose shape the secret paths don't
+/// change (they only redact an issue's text).
 #[must_use]
 pub(crate) fn plan(settings: &Settings, text: &str) -> Plan {
+    if !lists_apps(text) {
+        return Plan::Current;
+    }
+    plan_checked(settings, text)
+}
+
+/// Whether `text` parses into a tree with an app section holding a
+/// non-empty list, the old format's mark: [`run::parse_and_check`]'s
+/// steps without a schema, on the YAML reader's stack (`yaml::with_stack`),
+/// where the tree is dropped too. A file that doesn't parse, or whose
+/// reader can't start, has none, as `plan_checked` reads it.
+fn lists_apps(text: &str) -> bool {
+    let Ok(prepared) = parse::prepare(MOTD.path, text) else {
+        return false;
+    };
+    yaml::with_stack(prepared.depth(), || {
+        parse::load(MOTD.path, &prepared)
+            .ok()
+            .and_then(|root| tree::build(MOTD.path, &root, &|_| false).ok())
+            .is_some_and(|tree| !old_sections(&tree).is_empty())
+    })
+    .unwrap_or(false)
+}
+
+/// The plan for `text` with every check: the older schema's, and the
+/// rewrite's against the current schema.
+#[must_use]
+fn plan_checked(settings: &Settings, text: &str) -> Plan {
     let old_rules = schema::parse("motd-d7eb9712.schema.yml", OLD_SCHEMA)
         .expect("the pinned older schema loads (a test loads it)");
     let Ok(old) = run::parse_and_check(settings, MOTD, text, Some(&old_rules)) else {
@@ -747,11 +781,73 @@ mod tests {
         );
     }
 
+    /// The quick format check decides as the full one did (the
+    /// performance pass, 2026-11-18): every text the tests here use, the
+    /// fixture set's motd.yml, and texts the tree build or the parser treat
+    /// apart (a key that is a mapping, a bad tag, one under a secret key,
+    /// an alias, a duplicate key, nesting past the reader's shallow stack,
+    /// a second document) give the same plan both ways, and the quick
+    /// check passes exactly the files the full one takes past current.
+    #[test]
+    fn the_quick_check_decides_as_the_full_one() {
+        let valid = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/valid/motd.yml"),
+        )
+        .expect("the valid fixture");
+        let deep = (0..300).fold(
+            String::from("plex:\n  - name: P\n    url: http://p\n    token: t\n    x:\n"),
+            |text, i| format!("{text}{}k:\n", "  ".repeat(i + 3)),
+        );
+        assert!(
+            parse::prepare(MOTD.path, &deep).expect("prepares").depth() > yaml::SHALLOW,
+            "the deep text is read on the reader's own thread"
+        );
+        let texts = [
+            T1,
+            valid.as_str(),
+            deep.as_str(),
+            "sonarr:\n- name: Sonarr\n  url: http://sonarr:8989\n  apikey: k1\n",
+            "emby: [{name: Emby, url: 'http://emby:8096', token: t1}] # one\nplex: []\n",
+            "plex:\r\n  - name: Plex\r\n    url: http://plex:32400\r\n    token: t\r\n",
+            "nzbget:\n      - name: N\n        url: http://nzbget:6789\n        user: u\n        password: p\n",
+            "plex:\n  instances:\n    - name: Plex\n      url: http://plex:32400\n      token: t\n",
+            "plex: []\nradarr:\n  []\n",
+            "colors:\n  text:\n    label: '#FF79D0'\n",
+            "plex: [\n",
+            "",
+            "plex:\n  - name: Plex\n    token: t\n",
+            "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: t\nrutorrent:\n  - name: R\n",
+            "  plex:\n    - name: Plex\n      url: http://plex:32400\n      token: t\n",
+            "plex:\n  - name: |\n      Plex\n    url: http://plex:32400\n    token: t\n",
+            "? {a: 1}\n: x\nplex:\n  - name: P\n    url: http://p\n    token: t\n",
+            "plex:\n  - name: !!int nope\n    url: http://p\n    token: t\n",
+            "plex:\n  - name: P\n    url: http://p\n    token: !!int nope\n",
+            "base: &b\n  - name: P\n    url: http://p\n    token: t\nplex: *b\n",
+            "plex:\n  - name: P\nplex:\n  - name: Q\n",
+            "plex:\n  - name: P\n    url: http://p\n    token: t\n---\nplex: []\n",
+            "sonarr: 3\nradarr: {a: 1}\n",
+        ];
+        let root = root("");
+        let settings = settings(root.path());
+        for text in texts {
+            assert_eq!(
+                plan(&settings, text),
+                plan_checked(&settings, text),
+                "{text:?}"
+            );
+            assert_eq!(
+                lists_apps(text),
+                plan_checked(&settings, text) != Plan::Current,
+                "{text:?}"
+            );
+        }
+    }
+
     #[test]
     fn values_are_compared_whole() {
         let tree = |text: &str| {
-            let root = crate::parse::parse("motd.yml", text).expect("parses");
-            crate::tree::build("motd.yml", &root, &|_| true).expect("builds")
+            let root = parse::parse("motd.yml", text).expect("parses");
+            tree::build("motd.yml", &root, &|_| true).expect("builds")
         };
         let old = tree("plex:\n  - name: a\n");
         let new = tree("plex:\n  instances:\n    - name: a\n");
