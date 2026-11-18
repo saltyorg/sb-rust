@@ -7,7 +7,7 @@ use std::fs::{DirBuilder, File, OpenOptions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, FileExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +36,200 @@ const POLL: Duration = Duration::from_millis(100);
 
 /// The most of the holder's record a waiting sb reads.
 const RECORD_LIMIT: usize = 256;
+
+/// Saltbox's backup lock, in its checkout (spec, "Run lock", Saltbox's
+/// backup): Saltbox's `backup` and `backup2` roles touch
+/// `<checkout>/backup.lock` once their sanity check has passed and remove
+/// it when they end, however they end. It holds no pid and no `flock`, so
+/// it says nothing of its own liveness: a backup killed outright leaves it.
+const BACKUP_LOCK: &str = "backup.lock";
+
+/// The playbook Saltbox's scheduled backup runs, in its checkout: cron's
+/// `sudo ... ansible-playbook <checkout>/backup.yml --tags backup2` (or
+/// `backup`; `roles/backup2/tasks/cron.yml`), as root.
+const BACKUP_PLAYBOOK: &str = "backup.yml";
+
+/// When the backup holding the lock in `checkout` started, as the lock's
+/// mtime says, and its playbook's pid, while it runs: the lock is there
+/// (looked at without following a link, as Ansible's `stat` does by
+/// default) and `alive` gives the pid of a process running the backup's
+/// playbook ([`BackupPlaybook`]). Liveness, not the lock's age, decides
+/// (the maintainer, 2026-11-18): a lock left by a dead backup holds
+/// nothing however young, and a backup past Saltbox's own age limits
+/// still holds while it runs. sb never writes the file.
+fn backup_running(
+    checkout: &Path,
+    alive: impl FnOnce() -> Option<i32>,
+) -> Option<(SystemTime, i32)> {
+    let since = std::fs::symlink_metadata(checkout.join(BACKUP_LOCK))
+        .ok()?
+        .modified()
+        .ok()?;
+    alive().map(|pid| (since, pid))
+}
+
+/// The process running Saltbox's backup playbook from a checkout, found
+/// once and then held: procfs's `Process` keeps `/proc/<pid>` open, so a
+/// later poll asks only it (`is_alive`, one `stat` read) and a pid reused
+/// by another process can't pass for it; `/proc` is scanned again only once
+/// it is gone (every process's `cmdline`, `status` and namespaces: procfs's
+/// `all_processes`,
+/// <https://docs.rs/procfs/0.18.0/procfs/process/fn.all_processes.html>).
+struct BackupPlaybook<'a> {
+    checkout: &'a Path,
+    held: Option<procfs::process::Process>,
+}
+
+impl BackupPlaybook<'_> {
+    /// The live backup playbook's pid, if one runs.
+    fn alive(&mut self) -> Option<i32> {
+        if let Some(process) = &self.held
+            && process.is_alive()
+        {
+            return Some(process.pid());
+        }
+        self.held = find_backup_playbook(self.checkout);
+        self.held.as_ref().map(procfs::process::Process::pid)
+    }
+}
+
+/// A process on the host running Saltbox's backup playbook from
+/// `checkout` ([`runs_backup_playbook`]), as root (its effective uid, from
+/// `status`; the backup only runs so) and in sb's own mount namespace (not
+/// a container's): any user or container can name its own process after
+/// the playbook. A process that ends or can't be read meanwhile is
+/// skipped; a `/proc` that can't be listed finds none, logged.
+fn find_backup_playbook(checkout: &Path) -> Option<procfs::process::Process> {
+    let processes = match procfs::process::all_processes() {
+        Ok(processes) => processes,
+        Err(err) => {
+            tracing::warn!(error = %err, "can't list processes to look for a Saltbox backup");
+            return None;
+        }
+    };
+    let own_mount = mount_namespace(&procfs::process::Process::myself().ok()?)?;
+    processes.flatten().find(|process| {
+        process
+            .cmdline()
+            .is_ok_and(|args| runs_backup_playbook(&args, || process.cwd().ok(), checkout))
+            && process.status().is_ok_and(|status| status.euid == 0)
+            && mount_namespace(process) == Some(own_mount)
+    })
+}
+
+/// `process`'s mount namespace's identifier (procfs's `namespaces`).
+fn mount_namespace(process: &procfs::process::Process) -> Option<u64> {
+    let namespaces = process.namespaces().ok()?;
+    namespaces
+        .0
+        .get(std::ffi::OsStr::new("mnt"))
+        .map(|namespace| namespace.identifier)
+}
+
+/// Whether `args` (a process's command line) run Saltbox's backup
+/// playbook from `checkout`: the program is `ansible-playbook`, or a
+/// Python running it as its script (the venv's entry point, the process
+/// that runs the whole playbook); and one argument is
+/// `<checkout>/backup.yml`, or a relative path to it from the process's
+/// working directory (`cwd`, asked only then; `backup.yml`,
+/// `./backup.yml`).
+fn runs_backup_playbook(
+    args: &[String],
+    cwd: impl FnOnce() -> Option<PathBuf>,
+    checkout: &Path,
+) -> bool {
+    let named = |arg: Option<&String>, name: &str| {
+        arg.and_then(|arg| Path::new(arg).file_name())
+            .and_then(|file| file.to_str())
+            .is_some_and(|file| file == name || (name == "python" && file.starts_with("python")))
+    };
+    let ansible = named(args.first(), "ansible-playbook")
+        || (named(args.first(), "python") && named(args.get(1), "ansible-playbook"));
+    if !ansible {
+        return false;
+    }
+    let whole = checkout.join(BACKUP_PLAYBOOK);
+    if args.iter().any(|arg| Path::new(arg) == whole) {
+        return true;
+    }
+    let relative: Vec<&Path> = args
+        .iter()
+        .map(Path::new)
+        .filter(|arg| arg.is_relative() && arg.file_name() == Some(BACKUP_PLAYBOOK.as_ref()))
+        .collect();
+    !relative.is_empty()
+        && cwd().is_some_and(|dir| relative.iter().any(|arg| dir.join(arg) == whole))
+}
+
+/// A wait for Saltbox's backup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackupWait {
+    /// When the backup started: its lock's mtime.
+    pub since: SystemTime,
+    /// How long sb waited.
+    pub waited: Duration,
+    /// The pid of the backup's playbook when sb first saw it.
+    pub pid: i32,
+}
+
+/// Wait while Saltbox's backup runs from `checkout`: its lock there and
+/// its playbook alive ([`BackupPlaybook`]). `waiting` is called once, with
+/// when it started; every [`POLL`] it is looked at again until the lock is
+/// gone or no backup playbook runs, or `token` is cancelled. `None` when no
+/// backup ran. Why polled, not an inotify watch or a pidfd: the token is
+/// polled anyway, and neither wait is in the tree.
+///
+/// # Errors
+///
+/// [`LockError::Interrupted`] once `token` is cancelled while waiting.
+pub fn wait_for_backup(
+    checkout: &Path,
+    token: &CancellationToken,
+    waiting: impl FnMut(SystemTime),
+) -> Result<Option<BackupWait>, LockError> {
+    let mut playbook = BackupPlaybook {
+        checkout,
+        held: None,
+    };
+    wait_for_backup_with(checkout, token, waiting, || playbook.alive())
+}
+
+/// [`wait_for_backup`] with the liveness check `alive` (M-MOCKABLE-SYSCALLS:
+/// the unit tests give theirs).
+fn wait_for_backup_with(
+    checkout: &Path,
+    token: &CancellationToken,
+    mut waiting: impl FnMut(SystemTime),
+    mut alive: impl FnMut() -> Option<i32>,
+) -> Result<Option<BackupWait>, LockError> {
+    let started = Instant::now();
+    let mut seen = None;
+    while let Some((since, pid)) = backup_running(checkout, &mut alive) {
+        if seen.is_none() {
+            waiting(since);
+            seen = Some((since, pid));
+        }
+        if token.is_cancelled() {
+            return Err(LockError::Interrupted);
+        }
+        std::thread::sleep(POLL);
+        if token.is_cancelled() {
+            return Err(LockError::Interrupted);
+        }
+    }
+    Ok(seen.map(|(since, pid)| BackupWait {
+        since,
+        waited: started.elapsed(),
+        pid,
+    }))
+}
+
+/// The line a sb waiting for Saltbox's backup prints once on stderr
+/// (spec, "Run lock"), `since` the backup's start as sb shows a time.
+#[must_use]
+pub fn backup_waiting_line(since: &str) -> String {
+    format!("a Saltbox backup is running (since {since}); waiting… (Ctrl-C to give up)")
+}
 
 /// The lock's directory: [`DIR`], or a test build's [`DIR_VAR`] when set
 /// and not empty.
@@ -120,8 +314,9 @@ pub enum LockError {
     File { path: PathBuf, source: io::Error },
     #[error("run lock {} must be a regular file owned by the user running sb", path.display())]
     UnsafeFile { path: PathBuf },
-    /// Ctrl-C or a signal while waiting: the run ends by it.
-    #[error("interrupted while waiting for the run lock")]
+    /// Ctrl-C or a signal while waiting, for the run lock or Saltbox's
+    /// backup: the run ends by it.
+    #[error("interrupted while waiting")]
     Interrupted,
 }
 
@@ -508,6 +703,233 @@ mod tests {
         let record = std::fs::read_to_string(dir.path().join(FILE)).expect("record");
         assert_eq!(record, short.record());
         assert_eq!(read_record(&file), Some(short));
+    }
+
+    /// A stand-in backup lock in `dir`, its mtime `at`.
+    fn backup_file(dir: &Path, at: SystemTime) -> PathBuf {
+        let path = dir.join(BACKUP_LOCK);
+        File::create(&path)
+            .expect("file")
+            .set_modified(at)
+            .expect("mtime");
+        path
+    }
+
+    /// The lock and a live backup playbook hold it, however old the lock
+    /// is; the lock alone, however young, or a playbook alone, hold
+    /// nothing; a link there is the link's own, not followed.
+    #[test]
+    fn a_backup_holds_its_lock_while_its_playbook_runs() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert_eq!(backup_running(dir.path(), || Some(7)), None);
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        backup_file(dir.path(), old);
+        assert_eq!(backup_running(dir.path(), || Some(7)), Some((old, 7)));
+        assert_eq!(backup_running(dir.path(), || None), None);
+        backup_file(dir.path(), SystemTime::now());
+        assert_eq!(backup_running(dir.path(), || None), None);
+        let path = dir.path().join(BACKUP_LOCK);
+        std::fs::remove_file(&path).expect("rm");
+        std::os::unix::fs::symlink("/nonexistent-target", &path).expect("link");
+        assert!(backup_running(dir.path(), || Some(7)).is_some());
+    }
+
+    /// Saltbox's cron line, as the venv's Python runs it and as the
+    /// program itself, and the forms that aren't its backup from this
+    /// checkout.
+    #[test]
+    fn the_backup_playbook_is_known_by_its_arguments() {
+        let checkout = Path::new("/srv/git/saltbox");
+        let args = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let no_cwd = || -> Option<PathBuf> { panic!("cwd asked") };
+        for line in [
+            &[
+                "/srv/ansible/venv/bin/python3",
+                "/srv/ansible/venv/bin/ansible-playbook",
+                "/srv/git/saltbox/backup.yml",
+                "--tags",
+                "backup2",
+            ][..],
+            &[
+                "python3.12",
+                "ansible-playbook",
+                "/srv/git/saltbox/backup.yml",
+            ],
+            &["ansible-playbook", "/srv/git/saltbox/backup.yml"],
+            &[
+                "/usr/local/bin/ansible-playbook",
+                "/srv/git/saltbox/./backup.yml",
+            ],
+        ] {
+            assert!(
+                runs_backup_playbook(&args(line), no_cwd, checkout),
+                "{line:?}"
+            );
+        }
+        // Relative, run from the checkout: by the working directory.
+        for relative in ["backup.yml", "./backup.yml"] {
+            let line = args(&["ansible-playbook", relative, "--tags", "backup"]);
+            assert!(runs_backup_playbook(
+                &line,
+                || Some(checkout.to_owned()),
+                checkout
+            ));
+            assert!(!runs_backup_playbook(
+                &line,
+                || Some(PathBuf::from("/tmp")),
+                checkout
+            ));
+            assert!(!runs_backup_playbook(&line, || None, checkout));
+        }
+        for line in [
+            &[
+                "ansible-playbook",
+                "/srv/git/saltbox/saltbox.yml",
+                "--tags",
+                "backup",
+            ][..],
+            &["ansible-playbook", "/elsewhere/backup.yml"],
+            // The program isn't ansible-playbook, whatever its arguments.
+            &["grep", "ansible-playbook", "/srv/git/saltbox/backup.yml"],
+            &[
+                "sudo",
+                "/usr/local/bin/ansible-playbook",
+                "/srv/git/saltbox/backup.yml",
+            ],
+            &[
+                "less",
+                "--x=/a/ansible-playbook",
+                "/srv/git/saltbox/backup.yml",
+            ],
+            &["not-ansible-playbook", "/srv/git/saltbox/backup.yml"],
+            &[
+                "python3",
+                "-c",
+                "ansible-playbook",
+                "/srv/git/saltbox/backup.yml",
+            ],
+            &[],
+        ] {
+            assert!(
+                !runs_backup_playbook(&args(line), || None, checkout),
+                "{line:?}"
+            );
+        }
+    }
+
+    /// A root process of this test's own, named and given arguments as the
+    /// backup's, is found and held until it ends; none is for another
+    /// checkout. Not root, the test's process isn't one sb would count.
+    #[test]
+    fn a_live_backup_playbook_is_found_and_held() {
+        use std::os::unix::process::CommandExt as _;
+        let dir = tempfile::tempdir().expect("dir");
+        let playbook = dir.path().join(BACKUP_PLAYBOOK);
+        // Blocked in `read` on a pipe held here: no child of its own.
+        let mut child = std::process::Command::new("sh")
+            .arg0("ansible-playbook")
+            .args(["-c", "read -r line", "sh"])
+            .arg(&playbook)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("stand-in");
+        let pid = i32::try_from(child.id()).expect("pid");
+        let root = crate::root::effective_uid() == 0;
+        let mut held = BackupPlaybook {
+            checkout: dir.path(),
+            held: None,
+        };
+        let found = (0..50).find_map(|_| {
+            let seen = held.alive();
+            if seen.is_none() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            seen
+        });
+        let elsewhere = tempfile::tempdir().expect("dir");
+        let other = find_backup_playbook(elsewhere.path()).map(|process| process.pid());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(other, None);
+        if !root {
+            assert_eq!(found, None);
+            return;
+        }
+        assert_eq!(found, Some(pid));
+        assert!(held.held.is_some());
+        // Ended: the held process says so, and no other is found.
+        assert_eq!(held.alive(), None);
+    }
+
+    #[test]
+    fn a_running_backup_is_waited_for_once_and_named() {
+        let dir = tempfile::tempdir().expect("dir");
+        let since = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let path = backup_file(dir.path(), since);
+        let cancel = token();
+        let (told, waiting) = std::sync::mpsc::channel();
+        let (result, seen, held_for) = std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                wait_for_backup_with(
+                    dir.path(),
+                    &cancel,
+                    |at| {
+                        let _ = told.send(at);
+                    },
+                    || Some(7),
+                )
+            });
+            let seen = waiting.recv().expect("told");
+            let from = Instant::now();
+            std::thread::sleep(POLL * 2);
+            std::fs::remove_file(&path).expect("done");
+            let held_for = from.elapsed();
+            assert_eq!(waiting.try_recv().ok(), None, "told twice");
+            (waiter.join().expect("waiter"), seen, held_for)
+        });
+        assert_eq!(seen, since);
+        let waited = result.expect("waited").expect("a wait");
+        assert_eq!(waited.since, since);
+        assert_eq!(waited.pid, 7);
+        assert!(waited.waited >= held_for, "{waited:?} {held_for:?}");
+        // A lock with no live playbook: no wait, nothing told.
+        backup_file(dir.path(), SystemTime::now());
+        let none =
+            wait_for_backup_with(dir.path(), &cancel, |_| panic!("told"), || None).expect("ok");
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn a_cancelled_backup_wait_is_interrupted() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = backup_file(dir.path(), SystemTime::now());
+        let cancel = token();
+        let (told, waiting) = std::sync::mpsc::channel();
+        let result = std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                wait_for_backup_with(
+                    dir.path(),
+                    &cancel,
+                    |_| {
+                        let _ = told.send(());
+                    },
+                    || Some(7),
+                )
+            });
+            waiting.recv().expect("told");
+            cancel.cancel();
+            waiter.join().expect("waiter")
+        });
+        assert!(matches!(result, Err(LockError::Interrupted)), "{result:?}");
+        assert!(path.exists(), "sb never touches Saltbox's file");
+    }
+
+    #[test]
+    fn the_backup_line_names_its_start() {
+        assert_eq!(
+            backup_waiting_line("2026-11-18 03:00:12 CET"),
+            "a Saltbox backup is running (since 2026-11-18 03:00:12 CET); waiting… (Ctrl-C to give up)"
+        );
     }
 
     #[test]

@@ -24,6 +24,8 @@ shlex.workspace = true
 sb-release.workspace = true
 # `sb logs`: the picker and the viewer (tui spec; ADR-023).
 sb-tui.workspace = true
+# The start of a Saltbox backup sb waits for, in the local zone (main.rs).
+jiff.workspace = true
 # `sb update-venv` (python-env spec).
 sb-python-env.workspace = true
 # The hidden `sb announcements` (ops spec), and later the other workflow

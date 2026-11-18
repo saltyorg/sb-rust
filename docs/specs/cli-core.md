@@ -299,6 +299,63 @@ run one at a time. Each command decides in an exhaustive match
   has released the lock and starts nothing more. The record is written
   over the old one, then cut to its length, so it is never read cut
   short.
+- **Saltbox's backup** (2026-11-18; the maintainer): Saltbox's
+  scheduled backup runs `ansible-playbook <checkout>/backup.yml --tags
+  backup2` (or `backup`) from cron (`roles/backup2/tasks/cron.yml`), not
+  through sb, so sb's lock never sees it; while it runs, with the
+  containers stopped, `sb update` could reset the checkout under it or
+  rebuild the venv it runs from. So a command that takes sb's lock, once
+  it has it, also waits while that backup runs.
+  - **Saltbox's lock** (read on public GitHub, 2026-11-18):
+    `<checkout>/backup.lock` (`SB_SALTBOX_DIR`'s root), a plain file
+    the `backup` and `backup2` roles touch (`state: touch`, the Saltbox
+    user's, 0664) once their sanity check passes, and remove in the
+    block's `always` when they end. It holds no pid and no `flock`, so
+    it can't tell whether its backup still runs. Saltbox judges it by
+    age: the backup roles' sanity check refuses while it is under 2
+    whole hours old and deletes it at 2 or more; the generic sanity
+    check other playbooks run refuses only in the first hour, and
+    deletes it at 2 hours or more too. A backup can run past both, and
+    one killed outright leaves the file.
+  - **sb's rule:** liveness, not age (the maintainer, 2026-11-18). The
+    backup runs while the file is there (looked at without following a
+    link, as Ansible's `stat`) and a process runs its playbook: its
+    program is `ansible-playbook`, or a Python running it as its script
+    (the venv's entry point); one argument is `<checkout>/backup.yml`,
+    or a relative path to it from the process's working directory
+    (`backup.yml`, `./backup.yml`); it runs as root (its effective uid:
+    the backup only runs so) and in sb's own mount namespace (not a
+    container's), so no other user or container can pass for it
+    (procfs: `cmdline`, `cwd`, `status`, namespaces). The process found
+    is then held (procfs keeps its `/proc` entry open) and asked alone
+    on each poll; `/proc` is scanned again only once it is gone. The
+    file's mtime is the backup's start. A file whose backup is gone
+    holds nothing, however young; a backup past Saltbox's age limits
+    still holds while it runs, until something deletes the file.
+  - **Never Saltbox's:** sb only looks: it never takes, makes or
+    removes the file. Saltbox's design has its backup roles alone take
+    it, and their next run clears one left behind.
+  - **Waiting:** one line on stderr: `a Saltbox backup is running (since
+    <time>); waiting… (Ctrl-C to give up)`, the start in the local zone
+    (`%Y-%m-%d %H:%M:%S %Z`); looked at again every 100 ms; Ctrl-C or a
+    signal ends the run as above; the run log records `waited for a
+    Saltbox backup` with `waited_ms`, the start and the playbook's pid
+    (`backup_pid`). A nested sb doesn't wait (its ancestor did), nor does
+    a command that never takes sb's lock (`motd` among them). A second
+    locking sb queued behind one that waits for the backup shows the
+    first's line ("another sb command is running"), not the backup's.
+  - **Limits:** a backup that starts after sb began isn't seen
+    (Saltbox's backup doesn't look at sb's lock). The playbook runs
+    without its file at both ends: its sanity check, variables and
+    snapshot steps before it touches the file, and its cleanup of old
+    archives (rclone) after it removes it; sb goes on then. A second
+    `backup.yml` started by hand while one runs fails its sanity check
+    and deletes the first's file in its `always`, and another playbook's
+    sanity check deletes a file 2 hours old: sb stops waiting then too.
+    A backup run another way (`sb install backup2` takes sb's own lock
+    instead) is covered by that lock. Root, and the Saltbox user's file
+    with a root process of theirs, can hold sb's host-changing commands
+    back, as they can Saltbox's own playbooks.
 - **Tests:** `SB_TEST_RUN_LOCK_DIR` replaces `/run/sb` in test builds
   (cli-core's `testing` feature), never in a release build. sb's tests
   give every run a directory of its own (`common::apply_sb_env`), and
@@ -412,7 +469,8 @@ Rust 1.100.0, edition 2024 (`rust-toolchain.toml`). From the capability
 map's stack: clap 4 (derive), colorchoice-clap, anstream/anstyle, console,
 tokio (signals, cancellation via `tokio-util`'s `CancellationToken`),
 tracing + tracing-subscriber + tracing-appender, rustix (euid), std's
-`File::try_lock` and procfs (the run lock's `flock` and parent pids;
+`File::try_lock` and procfs (the run lock's `flock`, its parent pids
+and Saltbox's backup playbook process;
 2026-11-18), serde and
 `toml` for the config; icu_properties for the escaper's combining marks
 (plan decision 40); tabled's `Wrap::wrap` for help's line wrap (already

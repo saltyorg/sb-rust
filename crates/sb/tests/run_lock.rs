@@ -286,6 +286,173 @@ fn a_preview_waits_only_when_it_runs_migrations() {
     );
 }
 
+/// A stand-in for Saltbox's backup in the test's Saltbox root: its lock
+/// (`<root>/backup.lock`, as the backup roles touch it), made `age` ago,
+/// and, when `running`, a root process named and given arguments as the
+/// cron job's (`ansible-playbook <root>/backup.yml`): a shell under that
+/// name, blocked in `read` on a pipe the test holds, so it starts no child
+/// to leave behind, killed on drop.
+struct Backup {
+    lock: PathBuf,
+    playbook: Option<Child>,
+}
+
+impl Backup {
+    fn new(world: &World, age: Duration, running: bool) -> Self {
+        let lock = world.path("saltbox/backup.lock");
+        File::create(&lock)
+            .expect("backup.lock")
+            .set_modified(std::time::SystemTime::now() - age)
+            .expect("mtime");
+        let playbook = running.then(|| {
+            std::process::Command::new("sh")
+                .arg0("ansible-playbook")
+                .args(["-c", "read -r line", "sh"])
+                .arg(world.path("saltbox/backup.yml"))
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .expect("stand-in playbook")
+        });
+        Self { lock, playbook }
+    }
+
+    /// The backup dies outright, its lock left behind.
+    fn kill(&mut self) {
+        if let Some(mut child) = self.playbook.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for Backup {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// The backup line's shape: its start is the lock's mtime, local.
+fn backup_waiting(stderr: &str) -> bool {
+    stderr.starts_with("a Saltbox backup is running (since ")
+        && stderr.ends_with("); waiting… (Ctrl-C to give up)\n")
+}
+
+/// While Saltbox's backup runs (its lock there and its playbook alive,
+/// however old the lock: three hours here, past Saltbox's own age
+/// limits), a locking command prints one line and waits; it runs once the
+/// backup removes its lock, and the run log records the wait.
+#[test]
+fn a_locking_command_waits_for_a_running_saltbox_backup() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let backup = Backup::new(&world, Duration::from_hours(3), true);
+    let run = world.install("first", "");
+    wait_for("the backup line", || backup_waiting(&run.stderr()));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!world.ran("first"), "it ran under the backup");
+    std::fs::remove_file(&backup.lock).expect("backup done");
+    let (status, stdout, stderr) = run.end();
+    assert!(status.success(), "{stdout}\n{stderr}");
+    assert!(world.ran("first"));
+    assert_eq!(
+        stderr.matches("a Saltbox backup is running").count(),
+        1,
+        "{stderr}"
+    );
+    let logged = world.logged();
+    assert!(logged.contains("waited for a Saltbox backup"), "{logged}");
+}
+
+/// A backup that dies outright leaves its lock: once its playbook is gone
+/// the wait ends, and sb leaves Saltbox's file in place.
+#[test]
+fn a_dead_backups_lock_ends_the_wait() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut backup = Backup::new(&world, Duration::from_secs(60), true);
+    let run = world.install("first", "");
+    wait_for("the backup line", || backup_waiting(&run.stderr()));
+    backup.kill();
+    let (status, stdout, stderr) = run.end();
+    assert!(status.success(), "{stdout}\n{stderr}");
+    assert!(world.ran("first"));
+    assert!(backup.lock.exists(), "sb removed Saltbox's file");
+}
+
+/// A lock with no backup playbook running holds nothing, however young.
+#[test]
+fn a_lock_without_a_running_backup_is_not_waited_for() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let backup = Backup::new(&world, Duration::ZERO, false);
+    let (status, stdout, stderr) = world.install("first", "").end();
+    assert!(status.success(), "{stdout}\n{stderr}");
+    assert!(!stderr.contains("Saltbox backup"), "{stderr}");
+    assert!(backup.lock.exists(), "sb removed Saltbox's file");
+}
+
+/// An sb started under a locked sb doesn't wait for a backup that began
+/// after its parent's own wait: the parent's lock is its, waited for
+/// already.
+#[test]
+fn a_nested_sb_doesnt_wait_for_a_backup() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let outer = world.install("outer", "nested-after");
+    wait_for("the outer playbook", || world.ran("outer"));
+    let _backup = Backup::new(&world, Duration::from_secs(60), true);
+    std::fs::write(world.path("go"), "").expect("go");
+    let (status, stdout, stderr) = outer.end();
+    assert!(status.success(), "{stdout}\n{stderr}");
+    assert!(world.ran("inner"));
+    assert!(!stderr.contains("Saltbox backup"), "{stderr}");
+    let logged = world.logged();
+    assert!(!logged.contains("waited for a Saltbox backup"), "{logged}");
+}
+
+/// Commands that never take the run lock don't wait for a backup either.
+#[test]
+fn a_read_only_command_doesnt_wait_for_a_backup() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let _backup = Backup::new(&world, Duration::from_secs(60), true);
+    for args in [&["validate-config"][..], &["version"], &["diag"]] {
+        let (_, stdout, stderr) = world.start_reader(args).end();
+        assert!(
+            !stderr.contains("Saltbox backup"),
+            "{args:?}: {stdout}\n{stderr}"
+        );
+    }
+}
+
+/// Ctrl-C while waiting for a backup ends sb by SIGINT, before its
+/// command has run; the backup's file is left as it was.
+#[test]
+fn ctrl_c_while_waiting_for_a_backup_ends_by_sigint() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let backup = Backup::new(&world, Duration::from_secs(60), true);
+    let run = world.install("first", "");
+    wait_for("the backup line", || backup_waiting(&run.stderr()));
+    run.signal(Signal::INT);
+    let (status, _, stderr) = run.end();
+    assert_eq!(status.signal(), Some(2), "{status:?} {stderr}");
+    assert!(!world.ran("first"));
+    assert!(backup.lock.exists());
+}
+
 /// Ctrl-C while waiting ends sb by SIGINT (`$?` 130), before its command
 /// has run, and the holder keeps the lock.
 #[test]

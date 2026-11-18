@@ -666,9 +666,10 @@ impl Command {
 }
 
 /// The run lock for `command`, when it takes it (cli-core spec, "Run
-/// lock"): waiting with one line on stderr while another sb holds it;
-/// the run log gets how long it waited, or the ancestor whose lock this
-/// run is under.
+/// lock"): waiting with one line on stderr while another sb holds it,
+/// then while Saltbox's backup holds its own lock in the checkout; the run
+/// log gets how long it waited, or the ancestor whose lock this run is
+/// under (which waited for the backup already).
 ///
 /// # Errors
 ///
@@ -695,13 +696,43 @@ fn take_run_lock(
             holder_command = waited_for.as_ref().map(|holder| holder.command.as_str()),
             "run lock taken"
         ),
-        run_lock::Taken::Nested(holder) => tracing::info!(
-            holder_pid = holder.pid,
-            holder_command = holder.command.as_str(),
-            "run lock held by an ancestor sb; running under it"
-        ),
+        run_lock::Taken::Nested(holder) => {
+            tracing::info!(
+                holder_pid = holder.pid,
+                holder_command = holder.command.as_str(),
+                "run lock held by an ancestor sb; running under it"
+            );
+            return Ok(Some(taken));
+        }
+    }
+    let checkout = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
+    let waited = run_lock::wait_for_backup(&checkout, &shutdown.token(), |since| {
+        let line = exit::escaped(&run_lock::backup_waiting_line(&shown_time(since)));
+        let _ = writeln!(anstream::stderr(), "{line}");
+    })?;
+    if let Some(waited) = waited {
+        tracing::info!(
+            waited_ms = waited.waited.as_millis(),
+            since = shown_time(waited.since),
+            backup_pid = waited.pid,
+            "waited for a Saltbox backup"
+        );
     }
     Ok(Some(taken))
+}
+
+/// `at` as sb shows a time: the local zone's (`/etc/localtime`, as
+/// sb-tui's), seconds and the zone's name, as bench's timestamp; a time
+/// jiff can't hold is its debug form.
+fn shown_time(at: std::time::SystemTime) -> String {
+    jiff::Timestamp::try_from(at).map_or_else(
+        |_| format!("{at:?}"),
+        |at| {
+            at.to_zoned(sb_tui::line::local_zone())
+                .strftime("%Y-%m-%d %H:%M:%S %Z")
+                .to_string()
+        },
+    )
 }
 
 fn main() -> RunEnd {
