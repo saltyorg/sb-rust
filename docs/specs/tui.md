@@ -17,7 +17,9 @@ announcement viewer is the third ("The announcement viewer", written
 2026-11-15 from proto-markdown's reviewed design). *Amended 2026-11-18
 (maintainer): `sb docker logs` is removed; `sb logs` is the one entry
 point (decision 1).* It was built as the picker filtered to containers
-(M69, M70); the text below describes `sb logs` alone.
+(M69, M70); the text below describes `sb logs` alone. "Keys: one map
+for every screen" (a draft of 2026-11-18, for approval) aligns the keys
+and hints of every screen.
 
 The behaviour comes from sb-go 35a7acc (2026-10-28), `cmd/logs.go`,
 `cmd/dockerLogs.go` and `host/systemd.go`, redesigned as capability map
@@ -1788,6 +1790,520 @@ modes.
   The screen returns its rows, the summary and how it ended; ops prints
   the final list.
 
+## Keys: one map for every screen
+
+*Draft, 2026-11-18, for the maintainer's approval; no code yet.* The
+maintainer's decision of 2026-11-18: the screens' keys are "properly
+aligned across the board". Each key has one meaning on every screen, a
+hint row fits on every screen, and `?` shows every key. The motd layout
+and `sb logs <name>` were declined and are not part of this section.
+
+It covers every screen built on the `tui` crate: the log picker and
+viewer (`sb logs`, `sb docker logs`), the edit picker (`sb edit`), the
+fact editor (`sb fact`), the announcement viewer (`sb update`, `sb
+announcements`) and the restore screen (`sb restore`). The whole-log
+keys from "Whole-log search, save and print" (approved
+2026-11-18) are counted as landed.
+
+### Objective
+
+A Saltbox user who learns a key on one screen can use it on the next.
+No key that saves, shows or deletes on one screen does something else on
+another. A key pressed from habit never reveals a secret. At 50 columns
+(a phone over SSH) every screen still shows how to get help and how to
+leave, and `?` lists the rest.
+
+### Today's keys (main at 75953b9, plus whole-log search)
+
+Read from the code (`crates/tui/src/picker.rs`, `viewer.rs`,
+`edit_picker.rs`, `fact/{mod,keys,mouse,dialog}.rs`, `announcements.rs`,
+`restore.rs`) and checked against this spec's sections. "—" means the
+key does nothing there.
+
+| Key | Log picker | Log viewer | Edit picker | Fact editor | Announcements | Restore | |
+|---|---|---|---|---|---|---|---|
+| ↑ ↓, k j | move | a row | move | move | entry | field (form, ↑ ↓ only); menu or line (review) | |
+| PgUp PgDn | a page | a page | — | a page | a page of text | a page (file pane) | **G** |
+| `u` / `d` | — | page up / down | — | undo / **delete** | — | — | **C** |
+| `b` / Space | — | — | — | — | page up / down | page up / down (file); Space presses Continue | **G** **C** |
+| Home End | first, last | top, bottom (End follows) | — | first, last | top, bottom | first, last | **G** |
+| `g` `G` | — | top, bottom | — | — | top, bottom | first, last | **G** |
+| ← → | — | sideways (wrap off) | — | fold, unfold | — | back to menu, into file | **C** |
+| Enter | open | — | open | fold, or edit | — | next field, submit; into file; Continue | |
+| Tab | kind filter | — | — | leaves the search box | — | next field; next part | |
+| Shift-Tab | — | — | — | — | — | previous field or part | **G** |
+| `/` | filter | search | — | search | — | — | **G** |
+| `n` `N` | — | next, previous match | — | — (dialogs: `n` = no) | — | — | |
+| Esc | clears the filter, else quits | clears the search, else back to the picker; stops a save first (whole log) | quits | clears the search box; on the page **quits even with a search in effect** | closes | form: cancels; menu: ends; file: back to menu | **G** |
+| `q` | quits | quits | quits | quits (asks with changes) | closes | menu: ends; file pane: — | **G** |
+| Ctrl-C | 130 | 130 | 130 | 130 | 130 | 130 | |
+| `s` | — | **saves the log** | — | **shows a secret** | — | **shows the line's secret** | **C** |
+| Ctrl+S | — | — | — | edit box: **shows the masked text** | — | — | **C** |
+| `v` | — | — | — | saves | — | — | **G** |
+| `c` | — | — | — | copies a value; drift and waiting dialogs: **cancel** | — | **continue** | **C** |
+| `a` | — | — | — | adds a setting | — | **shows every secret** | **C** |
+| `r` | — | — | — | drift dialog: reload | — | — | |
+| `p` `f` `t` `w` | — | print, follow, time, wrap | — | — | — | — | |
+| `e` `m` Menu | — | — | — | edit, menu | — | — | |
+| `y` | — | — | — | dialogs: yes | — | — | |
+| `?` | — | — | — | — | — | — | **G** |
+
+**C** marks a conflict (one key, different meanings), **G** a gap (one
+action on different keys, or missing where it applies). The ones that
+matter:
+
+1. **`s` reveals a secret on two screens and saves on a third.** Pressed
+   from the viewer's habit, `s` in `sb fact` or the restore screen shows
+   a token, which is bad while sharing a screen for support. sb-go's
+   fact editor saved on `s` and Ctrl+S (sb-go `factui/update.go:256`),
+   so an sb-go user's habit does the same.
+2. **Ctrl+S reveals** the text in the fact editor's edit and value boxes.
+   It is sb-go's save key there, and k9s's save key in its log view.
+3. **`d` and `u`** page in the viewer (in sb-go, the bubbles
+   viewport's half-page keys, never in its hint row) and delete and undo
+   in the fact editor (sb-go's `d` too).
+4. **`c`** copies in the fact editor, continues in the restore screen
+   and cancels in two of the fact editor's dialogs. **`a`** adds in the
+   fact editor and shows every secret in the restore screen.
+5. **Page up** is `u` in the viewer and `b` in the announcement viewer
+   and the restore screen; `g`/`G` are missing from three screens;
+   the edit picker has no page keys at all.
+6. **Esc** clears a search before it quits in the picker and the viewer,
+   but quits the fact editor's page with a search in effect (sb-go's
+   fact editor cleared the search, `factui/update.go:262`).
+7. **No screen has `?`.** sb-go's edit picker had it (bubbles `list`'s
+   `ShowFullHelp`, whose help row sb-go left on).
+8. **Labels:** the fact editor's edit box says `Enter save` for staging,
+   while `Save (v)` writes the file; the announcement viewer says
+   `q close`, the others `q quit`.
+
+**Hint rows cut at 80 columns or narrower** (measured from the snapshots
+and the hint strings):
+
+| Screen | Hint row | Width | Cut |
+|---|---|---|---|
+| Log viewer | in the header, after the name, kind and state | keys alone 76; with `app  service  following` 102 | at 80 for any name: `s save`, `p print` and `q quit` are never visible (the 80×24 snapshot ends `Esc back · q q`). With `saltbox_managed_rclone_vfs`, cut at 120 too |
+| Log picker | footer | 51; 70 with a filter in effect; trouble text goes first | at 50, `q quit`; at 80 with `Docker events stopped; retrying`, the last two hints |
+| Fact editor | the button row | 77 with `Save`, 85 with `Save changes` | below 78: `Quit (q)` first, then `Save (v)` |
+| Restore, review | footer | 79 (file focused) | below 80: `c continue`; at 50, `s`, `a` and `c` |
+| Restore, form | footer | 63 | at 50: `Esc cancel` |
+| Announcements | footer | 52 with `● new` | at 50: the `● new` legend |
+| Edit picker | footer | 29 | none |
+
+### Rules
+
+1. **One meaning per key.** A key that does nothing on a screen does
+   nothing there; it never does something else. One class is
+   directional (rule 7).
+2. **Text boxes take printable keys.** In the picker's filter line, the
+   viewer's search line, the fact editor's boxes and the restore form,
+   every printable key types (`?`, `q`, `s`, `r` included). Only Enter,
+   Esc, Tab, the arrows, the box's own Ctrl and Alt keys (ratatui-textarea's
+   table) and Ctrl-C act. F1 opens the keys overlay from a box.
+3. **A dialog asks one question.** Its keys are its buttons, each printed
+   on its button: Enter for the highlighted one, Esc for Cancel, `y`
+   and `n` for a yes-or-no question. Nothing on the page under it acts.
+   A button letter never reveals, and a letter the page uses means the
+   same kind of thing in the dialog (the quit question's `d` discards).
+4. **Reveal is never on a key that saves, or has saved, anywhere** in sb
+   or sb-go.
+5. **Esc goes back one step:** it closes the open thing (the overlay, a
+   menu, a dialog, a text line), clears a search or filter, or stops a
+   running save. With nothing to close, it leaves the screen: the viewer
+   to its picker, any other screen as `q` does.
+6. **`q` leaves the screen.** Its hint says what follows: `q quit` when
+   sb ends, `q close` when the command goes on (`sb update` after the
+   announcements). With staged changes the fact editor asks first, as
+   today.
+7. **Arrows point.** ← and →, and `h` and `l` with them, move in the
+   direction they show on what the screen holds (Question 3): the
+   viewer's text sideways, the fact editor's tree in and out, the split
+   screens' list to the previous and next entry. All three are sb-go's,
+   and so are `h` `l` in the viewer (bubbles `viewport`) and the
+   announcement viewer.
+8. **sb-go's keys stay** wherever sb-go had the screen, unless two of
+   them conflict ("sb-go's keys" below).
+
+### The key map
+
+**Everywhere a screen has a list or text:**
+
+| Key | Meaning | Change |
+|---|---|---|
+| ↑ ↓, `k` `j` | move one: the selection, or the text by a row | — |
+| PgUp PgDn, `b` Space | a page up, down | `b` and Space join the picker, the viewer, the edit picker and the fact editor (less's keys, and sb-go's viewer's and announcement viewer's); Space no longer presses the restore screen's Continue |
+| Home End, `g` `G` | first, last (the viewer: oldest loaded; End and `G` follow) | `g` `G` join the pickers and the fact editor; Home End and the page keys join the edit picker |
+| ← →, `h` `l` | the direction they point (rule 7) | `h` `l` come back (sb-go's, in the viewer and the announcement viewer) and join the fact editor; restore's ← → move to the previous, next file, as the announcement viewer's |
+| Enter | open or do the selected thing | — |
+| Tab, Shift-Tab | next, previous part: the picker's kind, the restore screen's focus, the fact editor's search box and page | Shift-Tab joins the picker (the kind backwards) |
+| `/` | find: filter a list, or search a text | the edit picker gets the log picker's filter line (sb-go's edit picker had `/`) |
+| `n` `N` | next, previous match | — |
+| Esc | back one step (rule 5) | the fact editor's page clears a search before it quits |
+| `q` | leave the screen (rule 6) | the restore screen's file pane too; `c` no longer continues |
+| Ctrl-C | stop sb, exit 130 | — |
+| `?`, F1 | the keys overlay | new; F1 also from a text box |
+
+**Screen keys,** each on the screens where it applies and nowhere else:
+
+| Key | Meaning | Screens | Change |
+|---|---|---|---|
+| `s`, Ctrl+S | save | viewer: the log to a file; fact editor: the staged changes (the save question) | fact editor: was `v`; `s` and Ctrl+S are sb-go's. Ctrl+S is new in the viewer (k9s's save key) |
+| `r` | reveal or hide the selected secret | fact editor (the `Reveal`/`Hide` button), restore (the cursor line) | was `s` in both (Question 2) |
+| `R` | reveal or hide every secret | restore | was `a` |
+| Ctrl+R | reveal or hide the text in a masked box | the fact editor's edit and value boxes | was Ctrl+S. It replaces ratatui-textarea's redo in a masked box only, where the text can't be read anyway |
+| `c` | copy the selected value (OSC 52) | fact editor | — |
+| `e` `a` `d` `u` | edit, add, delete or keep, undo | fact editor | — (Question 1, option A) |
+| `m`, Menu | the row's menu | fact editor | — |
+| `p` | print the log and quit | viewer | — |
+| `f`, `F` | follow on, off | viewer | `F` is new: less's follow key, which `journalctl`'s pager users know |
+| `w` | wrap on, off | viewer | — |
+| `t` | time and origin on, off | viewer | — |
+
+**Dialogs** (rule 3): the save question `y`/Enter, `n`/Esc; the quit
+question `y`/Enter, `d`, `n`/Esc; waiting for Saltbox, `Cancel (Esc)`
+(was `c`); the drift dialog, `Reload (Enter)` and `Cancel (Esc)` (was `r`
+and `c`, with Question 2's option A; sb-go took Enter for reload too,
+`factui/update.go:184`); the
+outcome, `OK (Enter)`, closed by Enter, Esc or `q` as today. The fact
+editor's edit box reads `Enter keep · Alt+Enter new line · Ctrl+R
+reveal · Esc cancel`, so "save" means the file only.
+
+**The whole-log keys** fit as they are: Esc stops a running save before
+it goes back (rule 5), and another key ends `n`'s wait for a match, as
+that section says.
+
+### Hints
+
+- **A footer row on every screen,** the last row. The viewer's keys move
+  there from its header, which keeps the name, kind, follow state and
+  the search's count and progress (`3/17+  searching… 2 days back`).
+  The header cuts the name with `…` first, so the state and the count
+  stay. The viewer shows one log row fewer for it.
+- **The fixed tail,** right-aligned on every screen: `? keys · q quit`
+  (`q close` where rule 6 says, `F1 keys · Esc cancel` in the restore
+  form, where `?` and `q` type). It is never dropped, so `?` is in the
+  same place on every screen.
+- **The screen's hints,** left-aligned, in the screen's order of
+  importance. When the row is too narrow, the last ones go, whole: a
+  hint is never cut. sb-go's hint row (bubbles `help`'s
+  `ShortHelpView`) also dropped whole items, from the end, with an `…`
+  ([help.go](https://github.com/charmbracelet/bubbles/blob/v2.2.1/help/help.go),
+  `shouldAddItem`). sb drops by importance and shows no `…`, because
+  the tail already points at the overlay.
+- **Trouble and notices** keep their places: the picker's trouble text
+  leads the footer and is never dropped (cut with `…` only when it alone
+  is wider than the room the tail leaves); the viewer's save notice is its
+  own row above the footer, as today. A text line (filter, search)
+  takes the footer's place while it's open, with its own hints, as
+  today.
+- **The fact editor's buttons** are its footer: `Keys (?)` joins them
+  before `Quit (q)`. Narrow, the lowest buttons go first (Copy, Add,
+  Reveal, Delete, Edit), and `Save changes` becomes `Save` first, as
+  today. Every dropped button still works by its key, in the menu (`m`)
+  and in the overlay.
+- **Widths** are display widths (ratatui's `Span::width`, as the picker
+  measures its filter line today).
+
+**Mock-ups** (each row exactly as wide as stated; `|` marks the edges):
+
+```text
+Log viewer
+120 |Esc back · / search · s save · p print · f follow · w wrap · t time                                      ? keys · q quit|
+ 80 |Esc back · / search · s save · p print · f follow · w wrap       ? keys · q quit|
+ 50 |Esc back · / search · s save       ? keys · q quit|
+
+Log viewer, a search in effect
+120 |n/N match · Esc clear · s save · p print · f follow · w wrap · t time                                    ? keys · q quit|
+ 80 |n/N match · Esc clear · s save · p print · f follow · w wrap     ? keys · q quit|
+ 50 |n/N match · Esc clear · s save     ? keys · q quit|
+
+Log picker
+120 |Enter open · / filter · Tab kind · ↑↓ move                                                               ? keys · q quit|
+ 80 |Enter open · / filter · Tab kind · ↑↓ move                       ? keys · q quit|
+ 50 |Enter open · / filter · Tab kind   ? keys · q quit|
+
+Log picker, with trouble
+120 |Docker events stopped; retrying   Enter open · / filter · Tab kind · ↑↓ move                             ? keys · q quit|
+ 80 |Docker events stopped; retrying   Enter open · / filter          ? keys · q quit|
+ 50 |Docker events stopped; retrying    ? keys · q quit|
+
+Edit picker
+120 |Enter edit · / filter · ↑↓ move                                                                          ? keys · q quit|
+ 80 |Enter edit · / filter · ↑↓ move                                  ? keys · q quit|
+ 50 |Enter edit · / filter · ↑↓ move    ? keys · q quit|
+
+Fact editor (the buttons)
+120 |  Edit (e)   Add (a)   Copy (c)   Reveal (r)   Delete (d)   Save changes (s)   Keys (?)   Quit (q)                      |
+ 80 |  Edit (e)   Reveal (r)   Delete (d)   Save (s)   Keys (?)   Quit (q)           |
+ 50 |  Edit (e)   Save (s)   Keys (?)   Quit (q)       |
+
+Announcements (sb update; sb announcements says q quit)
+120 |↑↓ choose · PgUp/PgDn scroll · ● new                                                                    ? keys · q close|
+ 80 |↑↓ choose · PgUp/PgDn scroll · ● new                            ? keys · q close|
+ 50 |↑↓ choose · PgUp/PgDn scroll      ? keys · q close|
+
+Restore, the review
+120 |Enter open · r reveal · R reveal all · Tab part · ↑↓ move                                                ? keys · q quit|
+ 80 |Enter open · r reveal · R reveal all · Tab part · ↑↓ move        ? keys · q quit|
+ 50 |Enter open · r reveal              ? keys · q quit|
+
+Restore, the form
+120 |Tab next field · Enter next (restores on the last)                                                  F1 keys · Esc cancel|
+ 80 |Tab next field · Enter next (restores on the last)          F1 keys · Esc cancel|
+ 50 |Tab next field                F1 keys · Esc cancel|
+```
+
+`● new` is a legend, not a key, and the first to go. The
+restore screen ends sb (ops spec: "Restore has no step after it"), so
+its tail says `q quit`.
+
+### The `?` overlay
+
+- **One overlay per screen,** drawn from the same key table as the
+  footer, so the two can't disagree. It lists every key that works on
+  that screen, aliases included (`k j`, `b Space`, `g G`, `F`), and
+  nothing that doesn't.
+- **Layout:** a tui-popup over the screen, rounded and titled
+  ` Keys: <screen> `, its body a `Paragraph` of groups (Move, Find,
+  Show, Save, Change, Leave), each a heading and two columns: the keys,
+  as wide as the widest, then the meaning. A last line names the mouse.
+  At 80 columns and wider the groups go in two columns of groups when
+  they don't fit one; narrower, one column, scrolled with tui-scrollview
+  when it is taller than the screen (the drift dialog's pattern), with
+  `↑↓ scroll` on its bottom border.
+- **Closing:** any key that doesn't scroll it closes it and does nothing
+  else, so `q` closes it (less's help habit) without quitting. Ctrl-C
+  still stops sb. The screen behind keeps running (following, the live
+  picker).
+- **Mouse:** a click outside it closes it; the wheel scrolls it.
+
+The log viewer's overlay at 80×24:
+
+```text
+app  service  following
+
+
+ ╭ Keys: log viewer ──────────────────────────────────────────────────────────╮
+ │                                                                            │
+ │ Move                                   Show                                │
+ │  ↑ ↓  k j      a line                   f F        follow on, off          │
+ │  PgUp PgDn     a page                   w          wrap on, off            │
+ │  b Space       a page up, down          t          time, origin on, off    │
+ │  Home End g G  top; bottom follows                                         │
+ │  ← →  h l      sideways (wrap off)     Save                                │
+ │                                         s Ctrl+S   save to a file          │
+ │ Find                                    p          print it and quit       │
+ │  /             search the whole log                                        │
+ │  n N           next, previous match    Leave                               │
+ │  Esc           clear the search         Esc        back to the list        │
+ │                                         q          quit                    │
+ │                                         Ctrl+C     stop (exit 130)         │
+ │                                                                            │
+ │ Mouse: the wheel scrolls; Shift+wheel goes sideways                        │
+ ╰ any key closes ────────────────────────────────────────────────────────────╯
+
+
+Esc back · / search · s save · p print · f follow · w wrap       ? keys · q quit
+```
+
+The same at 50×19, one column, scrolled (the scrollbar on the right
+border):
+
+```text
+app  service  following
+ ╭ Keys: log viewer ────────────────────────────╮
+ │ Move                                         █
+ │  ↑ ↓  k j      a line                        █
+ │  PgUp PgDn     a page                        █
+ │  b Space       a page up, down               █
+ │  Home End g G  top; bottom follows           █
+ │  ← →  h l      sideways (wrap off)           █
+ │                                              █
+ │ Find                                         █
+ │  /             search the whole log          │
+ │  n N           next, previous match          │
+ │  Esc           clear the search              │
+ │                                              │
+ │ Show                                         │
+ │  f F           follow on, off                │
+ │  w             wrap on, off                  │
+ │  t             time, origin on, off          │
+ ╰ ↑↓ scroll · other keys close ────────────────╯
+Esc back · / search · s save       ? keys · q quit
+```
+
+The other overlays, by group: the log picker (Move; Find: `/`, Esc;
+Show: Tab, Shift-Tab kind; Leave: Enter open, Esc, `q`); the edit
+picker (Move; Find; Leave: Enter edit, `q`); the fact editor (Move, with
+← → `h` `l` to fold; Find; Change: `e` `a` `d` `u` `c`, `r` reveal, `m`
+menu; Save: `s` Ctrl+S; In a box: Enter keep, Alt+Enter new line, Ctrl+R
+reveal, Esc cancel; Leave); the announcement viewer (Move: ↑↓ ← → `h`
+`l` the entry, the page keys and Home End the text; Leave); the restore
+review (Move; Tab parts; `r` `R`; Enter, Esc; Leave).
+
+### Comparable tools and libraries
+
+- **less** (the pager `journalctl` uses): `h` help, `q` quit, `j` `k`,
+  Space and `b` a page, `d` `u` half a page, `g` and `G` (or Home and End)
+  the ends, `F` follow, `/` and `n` `N` search, `s` saves piped input to
+  a file, `-S` chops long lines
+  ([less(1)](https://man7.org/linux/man-pages/man1/less.1.html),
+  COMMANDS). sb takes its Space, `b`, `g`, `G`, `F`, `/`, `n`, `N`, `s`.
+  Not `?`, which in less searches backwards: every other tool below
+  uses `?` for help, and sb's search has `N`.
+- **k9s:** `?` shows the keys, Esc backs out of a view or filter, `/`
+  filters, `:q` or Ctrl-C quit
+  ([commands](https://k9scli.io/topics/commands/)). Its log view: `w`
+  wrap, `t` timestamps, Ctrl+S save, `c` copy, `s` autoscroll, `q` and
+  Esc back
+  ([internal/view/log.go](https://github.com/derailed/k9s/blob/master/internal/view/log.go),
+  `bindKeys`). sb matches `w`, `t`, Ctrl+S, `c`, `?`, Esc. Its `s` is
+  sb's `f`; sb keeps `s` for save (less's and sb-go's) and `q` for quit
+  (sb-go's).
+- **lazygit:** `?` opens the keybindings menu, Esc cancels, `q` and
+  Ctrl-C quit, `/` searches the view, `<` `>` or Home End go to the ends,
+  PgUp PgDn scroll
+  ([Keybindings_en.md](https://github.com/jesseduffield/lazygit/blob/master/docs/keybindings/Keybindings_en.md)).
+- **htop:** F1, `h` or `?` the help screen; F3 or `/` search; F4 or `\`
+  filter; F10 or `q` quit; Home, End, PgUp, PgDn
+  ([htop(1)](https://man7.org/linux/man-pages/man1/htop.1.html), 3.6.0).
+  sb takes F1 beside `?`, for text boxes.
+- **ratatui 0.30.2 and its widgets:** no help or key-hint widget, in
+  ratatui or in tui-widgets (its crates: tui-bar-graph, tui-big-text,
+  tui-box-text, tui-cards, tui-equalizer, tui-popup, tui-prompts,
+  tui-qrcode, tui-scrollbar, tui-scrollview;
+  [tui-widgets](https://github.com/ratatui/tui-widgets)), nor among
+  [the third-party widgets](https://ratatui.rs/showcase/third-party-widgets/).
+  The popup pattern is ratatui's (`Clear`, then a bordered block,
+  [popup example](https://ratatui.rs/examples/apps/popup/)), which
+  tui-popup 0.7.7 wraps: centred, sized to its body, any `KnownSize`
+  widget as the body
+  ([docs](https://docs.rs/tui-popup/0.7.7/tui_popup/)). sb already uses
+  tui-popup for the fact editor's dialogs and tui-scrollview 0.6.8 for
+  scrolling them. The footer is a `Line` of `Span`s, as every screen
+  draws it today. The rule that drops hints to fit is ours (domain
+  logic), with no library to follow.
+- **ratatui-textarea 0.9.3** maps Ctrl+R to redo, Ctrl+U to undo and
+  Ctrl+V and Alt+V to the page keys, and leaves Ctrl+S, Ctrl+T, Ctrl+O
+  unmapped ([key table](https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/index.html)).
+  The masked box's Ctrl+R replaces redo there only.
+
+### sb-go's keys
+
+sb-go 35a7acc had five of these screens (not the restore review, which
+is sb's).
+
+- **Logs viewer** (`cmd/logs.go`, `cmd/dockerLogs.go`; the keys sb-go
+  doesn't take itself go to bubbles `viewport` v2.2.1, whose defaults
+  add `b` and Space for a page, `h` `l` sideways and `u` `d` for half a
+  page): ↑/`k`, ↓/`j`, ←/`h`, →/`l`, PgUp/`b`, PgDn/Space, `t`, `f`,
+  Enter, Esc back, `q` quit, Ctrl-C. All kept; `b`, Space, `h` and `l`
+  come back. `u` and `d`, never in sb-go's hint row, go (Question 1).
+- **Logs picker** (bubbles `list` v2.2.1's defaults, filtering and help
+  off): ↑↓ `k` `j`, PgUp PgDn `b`, Home End `g` `G` kept; `u`, `d`, `f`,
+  `h`, `l`, ← and → as page keys not kept (`d` `u` are the fact
+  editor's, `f` follows, `h` `l` ← → are directions).
+- **Edit picker** (the same `list`, help and filter on): the same, plus
+  `/` (kept, new in sb) and `?` (kept, as the overlay). The list's own
+  `v` ("select") quit the list without a choice, bubbles' default; not
+  kept.
+- **Fact editor** (`factui/update.go`): `s` and Ctrl+S save (back),
+  `q`, `/`, Esc clearing the search (back), ↑↓ `k` `j`, Home End PgUp
+  PgDn, ← → fold, Enter, `a` `e` `d` (kept). Not kept: `x` and `c`
+  (expand and collapse all; sb's page folds per app and `c` copies), `[`
+  `]` (no inspector pane), the review dialog's `a` and `r` (sb's
+  question is `y`, `d`, `n`).
+- **Announcement viewer** (`saltbox/announcements.go`, bubbles
+  `viewport`): ←/`h`, →/`l` previous and next (back), PgUp/`b`,
+  PgDn/Space (kept), `q`, Esc, Ctrl-C (kept). ↑↓ scrolled the text in
+  sb-go and choose the entry in sb (the reviewed design, decision 39);
+  the viewport's `f`, `u` and `d` page aliases are not kept.
+- **Restore form** (`cmd/restore.go`): Tab, Shift-Tab, ↑, ↓, Enter, Esc,
+  Ctrl-C, all kept.
+
+### Migration, per screen
+
+What changes for a user's fingers. sb is unreleased, so "today" is main,
+which only the maintainer's checks have used; sb-go is what users know.
+
+| Screen | From sb-go | From today's main |
+|---|---|---|
+| Log picker | `?`, `/` filter (new in sb already), Shift-Tab; `u` `d` `f` `h` `l` no longer page | `g` `G` `b` Space, Shift-Tab, `?` added |
+| Log viewer | `u` `d` no longer page (PgUp PgDn, `b` Space do); keys in a footer | `b` Space `h` `l`, Ctrl+S, `F`, `?` added; `u` `d` gone; keys in a footer, one log row fewer |
+| Edit picker | `/` and `?` as before; `v` no longer leaves | page keys, Home End `g` `G`, `/`, `?` added |
+| Fact editor | `s` and Ctrl+S save again; Esc clears a search before it quits, as sb-go; `x`, `c` collapse, `[` `]` gone | `h` `l` fold, `g` `G` `b` Space, `?` added; **save is `s`, not `v`; reveal is `r`, not `s`**; Ctrl+R reveals in a box, not Ctrl+S; Esc clears a search first; dialogs cancel with Esc, not `c`; drift reloads on Enter, not `r` |
+| Announcements | ← → `h` `l` move again; ↑↓ choose the entry | ← → `h` `l` added; `?` |
+| Restore | the form as sb-go | reveal `r` and `R`, not `s` and `a`; `c` gone (Enter on Continue, `q`, Esc); ← → previous, next file, not out of and into the pane; Space no longer presses Continue |
+
+`v` does nothing anywhere afterwards, so a tester's old save habit costs
+nothing.
+
+### Testing
+
+- **One key table per screen** in sb-tui, each row a key, its meaning
+  and its group; the footer, the overlay and the key handling read it.
+  A test over all the tables checks rule 1: a key has the same meaning
+  wherever it appears (with rule 7's arrows as the one declared class).
+- **Each screen, on `TestBackend`:** every key in its table does what
+  its row says, and a key not in it changes nothing (`Flow::Unchanged`).
+  In each text box, `?`, `q`, `s` and `r` type.
+- **The footer:** snapshots at 120, 80 and 50 for every screen and
+  state above; a test over every width from 10 to 240 that no hint is
+  cut, the row is never wider than the screen, and the tail is there
+  from 16 columns.
+- **The overlay:** snapshots at 80×24 and 50×19 for each screen; any
+  key closes it without acting (`q` doesn't quit); the scroll at 50.
+- **Secrets:** in the fact editor and the restore review, `s`, `v`,
+  Ctrl+S and `a` never unmask a value; `r`, `R` and Ctrl+R do, and the
+  run log names the key as today.
+- **PTY, through sb:** `sb logs` on a journal fixture (`?`, a key, `q`
+  exits 0), `sb fact` on a fixture directory (`s` opens the save
+  question), with `SB_LOG_DIR` in a temp directory.
+
+### Scope
+
+- **In:** the keys and hints of the screens above, the overlay, the
+  labels.
+- **Not doing:** keys set by the user; mouse changes; term-ui's inline
+  prompts (`y/N`, not ratatui screens); the motd layout and `sb logs
+  <name>` (declined 2026-11-18); expand-all and collapse-all in the fact
+  editor.
+
+### Success criteria
+
+1. Every key in the map has one meaning on every screen (the table test).
+2. No key that saves anywhere, or saved in sb-go, reveals a secret.
+3. At 50 columns every screen shows `? keys` and how to leave; at 80
+   the viewer shows `s save` and `p print`.
+4. `?` (F1 from a text box) lists every key of the screen, and only
+   those.
+5. sb-go's keys work where this section says they're kept.
+
+### Questions for the maintainer
+
+1. **`d` and `u`:** A (recommended) the viewer stops paging on `u` and
+   `d` (sb-go's half-page keys, never in its hint row; PgUp PgDn, `b`
+   and Space page),
+   and the fact editor keeps `d` delete and `u` undo (sb-go's `d`). B:
+   the viewer keeps `u` `d` (less's and `journalctl`'s half-page habit),
+   and the fact editor's delete moves to `D` and the Delete key, its
+   undo to `U`.
+2. **The reveal key:** A (recommended) `r`, "reveal", which has never
+   saved anywhere; the drift dialog's Reload moves to Enter. B: `v`,
+   "view", which saves on today's main, so a tester's habit would
+   reveal; the drift dialog keeps `r`.
+3. **Arrows by direction (rule 7):** A (recommended) keep ← → as the
+   direction on each screen (sideways, fold, previous and next entry),
+   all sb-go's, as the one declared exception to rule 1. B: one meaning
+   for ← →, sideways only: the fact editor folds with Enter alone and
+   the split screens drop ← → and `h` `l`.
+4. **Esc on a top screen:** A (recommended) Esc leaves when there is
+   nothing to close, as on every top screen today and in sb-go's
+   announcements and restore form. B: only `q` leaves; Esc never quits.
+5. **The tail's place:** A (recommended) `? keys · q quit` right-aligned
+   on every screen. B: `? keys` first on the left, as the UX research
+   suggested, `q quit` last.
+
 ## Verification notes
 
 - **Input latency (groundwork, M61, 2026-11-13):** a key to the screen's
@@ -2086,8 +2602,10 @@ modes.
 
 ## Open questions
 
-None. decided.md settled the brief's nine; decisions 18 to 20 follow
-from recorded decisions. The editors' question (when `sb fact` takes a
+The key map's five questions ("Keys: one map for every screen",
+Questions for the maintainer) wait for the maintainer. Otherwise none:
+decided.md settled the brief's nine; decisions 18 to 20 follow from
+recorded decisions. The editors' question (when `sb fact` takes a
 role's lock) was decided on 2026-11-13 from recorded rules: decision 38.
 
 ## Amendments to other specs
