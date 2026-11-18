@@ -60,7 +60,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 ### Behaviour
 
 - **Arguments:** none (sb-go: `cobra.NoArgs`); help texts sb-go's
-  ("Validate Saltbox configuration files"). No `--verbose/-v` (decision 1).
+  ("Validate Saltbox configuration files"). One flag, the new `--json`
+  (below). No `--verbose/-v` (decision 1).
 - **The Saltbox root** is `/srv/git/saltbox`, or `SB_SALTBOX_DIR` when set
   and not empty (tests and debugging, as `SB_CONFIG`; sudo's relaunch
   drops it). It moves cli-core's inventory path too (read at startup for
@@ -332,6 +333,37 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   signal (`$?` 130 / 143; exec decision 7), terminal restored.
 - **Logging** (verbose by default): each file, its issues, each check's
   outcome and timing; never a secret's value.
+- **`--json`** (decision 9, the maintainer, 2026-11-18): the same run,
+  its steps on stderr, and on stdout one line of compact JSON (cli-core's
+  `json::line`: keys in this order, one trailing newline, every control
+  character escaped, C1 and DEL included), never coloured. Fields are
+  only ever added, never renamed or removed; `schema` rises only on a
+  breaking change.
+
+  | Key | Value |
+  |---|---|
+  | `schema` | `1` |
+  | `files` | one object per file, in the order above |
+  | `checks` | one object per credential check accounts.yml asks for or skips |
+
+  - **A file:** `file` (as the table names it), `outcome`, and `issues`.
+    - `outcome` is `validated` (no issue, its checks passed), `skipped`
+      (an optional file not there; `reason`, the notice's text) or
+      `failed` (an issue, a failed check, or a file or schema that
+      couldn't be read: `error`, the block's text).
+    - Each issue: `file`, `line`, `column`, `path` (the dotted key, `""`
+      for the file itself), `severity` (`error`) and `message`. A
+      warning of the parse is an issue with `severity` `warning`,
+      `line` and `column` `null` and `path` `""`.
+  - **A check:** `check` (`cloudflare`, `dockerhub`), `outcome`
+    (`validated`, `skipped`: no credentials set, with `reason`; `failed`,
+    with `message`, the step's error).
+  - **Exit code:** unchanged: 0 when every file validated or skipped, 1
+    otherwise, with the failed files' blocks on stderr.
+  - **No output** on stdout when the run stops (Ctrl-C, SIGTERM, an
+    error before the files): the ending as without `--json` (`sb docker
+    ps --json`'s convention).
+  - Example: `{"schema":1,"files":[{"file":"accounts.yml","outcome":"validated","issues":[]},{"file":"settings.yml","outcome":"failed","issues":[{"file":"settings.yml","line":12,"column":3,"path":"downloads.path","severity":"error","message":"must be an absolute path"}]},{"file":"motd.yml","outcome":"skipped","reason":"motd.yml not found; skipped","issues":[]}],"checks":[{"check":"cloudflare","outcome":"validated"},{"check":"dockerhub","outcome":"skipped","reason":"no Docker Hub credentials set; skipped"}]}`.
 
 ### Differences from sb-go (the complete list)
 
@@ -429,6 +461,7 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   as a date) waits at most 60 s (maintainer, 2026-11-05;
   cloudflare-go waits as long as the server says, so one answer could
   hold the step for an hour).
+- `--json` (decision 9): sb-go has no machine-readable validate-config.
 - No `--verbose/-v` (decision 1): `-v` is a parse error, exit 2.
   *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 - No `validate_rclone_remote` (decision 6): a schema naming it fails
@@ -600,3 +633,6 @@ docs/specs/config.md      this spec
    [ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md)
    (2026-11-13): a glibc build in an `ubuntu:22.04` image, whose GCC
    compiles aws-lc-sys.*
+9. **`--json`** (the maintainer, 2026-11-18, the shape as proposed): for
+   scripts, monitoring and CI, beside `sb version --json` and `sb docker
+   ps --json`, in the shape under Behaviour.

@@ -26,7 +26,8 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 
 /// What sb has that sb-go doesn't, on purpose: `--color`, the one new
 /// global flag, `sb docker ps --json` (cli-core spec, command tree;
-/// docker spec decision 2), `sb list --json` (ansible decision 20), `sb edit --no-edit-again` (tui spec,
+/// docker spec decision 2), `sb list --json` (ansible decision 20),
+/// `sb validate-config --json` (config decision 9), `sb edit --no-edit-again` (tui spec,
 /// editors, difference 22), `sb setup`'s `--keep-branch` and
 /// `--reset-branch`, update's flags (ops decision 29, difference 6),
 /// `sb update --migrations` (ops decision 19, difference 23), and
@@ -40,6 +41,7 @@ const EXTENSIONS: &[&str] = &[
     "flag\tsb\tglobal\tcolor",
     "flag\tsb docker ps\tlocal\tjson",
     "flag\tsb list\tlocal\tjson",
+    "flag\tsb validate-config\tlocal\tjson",
     "flag\tsb edit\tglobal\tno-edit-again",
     "flag\tsb setup\tglobal\tkeep-branch",
     "flag\tsb setup\tglobal\treset-branch",

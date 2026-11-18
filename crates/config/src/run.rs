@@ -3,7 +3,9 @@
 //! checks, drawn as term-ui steps. sb's command builds the runner and the
 //! settings and calls `run`; nothing is decided twice.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sb_cli_core::config::{read_inventory, read_small, yaml};
@@ -225,24 +227,176 @@ impl Issues {
 /// `Exit(1)` when a file or credential check failed, or the run was
 /// interrupted or stopped.
 pub async fn run(runner: &mut Runner, settings: &Settings, backups: &Path) -> Result<(), Exit> {
+    run_recording(runner, settings, backups).await.0
+}
+
+/// [`run`], and what it found: each file's outcome and issues and each
+/// credential check's, for validate-config's `--json` (spec, Behaviour).
+/// A run that stopped has the results of what ran before.
+pub async fn run_recording(
+    runner: &mut Runner,
+    settings: &Settings,
+    backups: &Path,
+) -> (Result<(), Exit>, Results) {
+    let results = RefCell::new(Results::default());
     let labels = Labels::new(
         "Validating Saltbox configuration",
         "Saltbox configuration validated",
     );
-    runner
+    let result = runner
         .step(labels, async |step| {
             let mut failed = false;
             for file in FILES {
                 let result = step
                     .step(file_labels(file), async |step| {
-                        validate_file_migrating(step, settings, file, Checks::Run, backups).await
+                        validate_file_into(
+                            step,
+                            settings,
+                            file,
+                            Checks::Run,
+                            backups,
+                            Some(&results),
+                        )
+                        .await
                     })
                     .await;
                 failed |= result.is_err();
             }
             if failed { Err(Exit(1).into()) } else { Ok(()) }
         })
-        .await
+        .await;
+    (result, results.into_inner())
+}
+
+/// What a run found (validate-config's `--json`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Results {
+    /// Each file checked, in [`FILES`]' order.
+    pub files: Vec<FileResult>,
+    /// Each credential check accounts.yml asked for or skipped.
+    pub checks: Vec<CheckResult>,
+}
+
+/// A file's outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileResult {
+    /// The file, as [`FILES`] names it.
+    pub file: &'static str,
+    pub outcome: Outcome,
+    /// Why it was skipped, or the error that stopped its check.
+    pub detail: Option<String>,
+    pub issues: Vec<Issue>,
+    pub warnings: Vec<String>,
+}
+
+/// A credential check's outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckResult {
+    /// `cloudflare` or `dockerhub`.
+    pub check: &'static str,
+    pub outcome: Outcome,
+    /// Why it was skipped, or its step's error.
+    pub detail: Option<String>,
+}
+
+/// How a file or a check ended; its `--json` word is serde's
+/// `lowercase` of the name (<https://serde.rs/container-attrs.html#rename_all>).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Outcome {
+    Validated,
+    Skipped,
+    Failed,
+}
+
+/// validate-config's `--json` document (spec, Behaviour, `--json`; decision
+/// 9): schema 1, the files and the checks. Fields are only ever added
+/// (scripts read them); serde keeps the fields' order.
+#[must_use]
+pub fn render_json(results: &Results) -> String {
+    #[derive(serde::Serialize)]
+    struct Document<'a> {
+        schema: u32,
+        files: Vec<FileJson<'a>>,
+        checks: Vec<CheckJson<'a>>,
+    }
+    #[derive(serde::Serialize)]
+    struct FileJson<'a> {
+        file: &'a str,
+        outcome: Outcome,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<&'a str>,
+        issues: Vec<IssueJson<'a>>,
+    }
+    #[derive(serde::Serialize)]
+    struct IssueJson<'a> {
+        file: &'a str,
+        line: Option<usize>,
+        column: Option<usize>,
+        path: &'a str,
+        severity: &'static str,
+        message: &'a str,
+    }
+    #[derive(serde::Serialize)]
+    struct CheckJson<'a> {
+        check: &'a str,
+        outcome: Outcome,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<&'a str>,
+    }
+    let files = results
+        .files
+        .iter()
+        .map(|file| {
+            let detail = file.detail.as_deref();
+            let skipped = file.outcome == Outcome::Skipped;
+            let errors = file.issues.iter().map(|issue| IssueJson {
+                file: &issue.file,
+                line: Some(issue.line),
+                column: Some(issue.column),
+                path: &issue.path,
+                severity: "error",
+                message: &issue.message,
+            });
+            let warnings = file.warnings.iter().map(|warning| IssueJson {
+                file: file.file,
+                line: None,
+                column: None,
+                path: "",
+                severity: "warning",
+                message: warning,
+            });
+            FileJson {
+                file: file.file,
+                outcome: file.outcome,
+                reason: detail.filter(|_| skipped),
+                error: detail.filter(|_| !skipped),
+                issues: errors.chain(warnings).collect(),
+            }
+        })
+        .collect();
+    let checks = results
+        .checks
+        .iter()
+        .map(|check| {
+            let detail = check.detail.as_deref();
+            CheckJson {
+                check: check.check,
+                outcome: check.outcome,
+                reason: detail.filter(|_| check.outcome == Outcome::Skipped),
+                message: detail.filter(|_| check.outcome == Outcome::Failed),
+            }
+        })
+        .collect();
+    sb_cli_core::json::line(&Document {
+        schema: 1,
+        files,
+        checks,
+    })
 }
 
 /// A file's step labels, as validate-config shows them: "Validating
@@ -385,25 +539,64 @@ pub async fn validate_file(
     file: File,
     checks: Checks,
 ) -> anyhow::Result<()> {
+    validate_checked(step, settings, file, checks, None).await
+}
+
+/// [`validate_file`], its outcome recorded in `results` when given.
+async fn validate_checked(
+    step: &mut Step,
+    settings: &Settings,
+    file: File,
+    checks: Checks,
+    results: Option<&RefCell<Results>>,
+) -> anyhow::Result<()> {
+    let record = |result: FileResult| {
+        if let Some(results) = results {
+            results.borrow_mut().files.push(result);
+        }
+    };
+    let ended = |outcome, detail| FileResult {
+        file: file.path,
+        outcome,
+        detail,
+        issues: Vec::new(),
+        warnings: Vec::new(),
+    };
     let checked = match check_file(settings, file) {
         Ok(checked) => checked,
         Err(skipped @ FileError::Skipped(_)) => {
+            record(ended(Outcome::Skipped, Some(skipped.to_string())));
             step.info(skipped.to_string());
             return Ok(());
         }
-        Err(err) => return Err(err.into()),
+        Err(err) => {
+            record(ended(Outcome::Failed, Some(err.to_string())));
+            return Err(err.into());
+        }
     };
     let report = &checked.report;
     for warning in &report.warnings {
         step.warn(warning.as_str());
     }
+    let mut check_results = Vec::new();
     for validator in &report.skipped {
-        if let Some(name) = check_name(*validator) {
-            step.info(format!("no {name} credentials set; skipped"));
+        if let Some((id, name)) = credential_check(*validator) {
+            let reason = format!("no {name} credentials set; skipped");
+            check_results.push(CheckResult {
+                check: id,
+                outcome: Outcome::Skipped,
+                detail: Some(reason.clone()),
+            });
+            step.info(reason);
         }
     }
     let checks_failed = match checks {
-        Checks::Run => run_checks(step, settings, &report.requests).await,
+        Checks::Run => {
+            let ran = run_checks(step, settings, &report.requests).await;
+            let failed = ran.iter().any(|check| check.outcome == Outcome::Failed);
+            check_results.extend(ran);
+            failed
+        }
         Checks::Skip => {
             if !report.requests.is_empty() {
                 step.info(CHECKS_SKIPPED);
@@ -411,6 +604,22 @@ pub async fn validate_file(
             false
         }
     };
+    check_results.sort_by_key(|check| CHECK_ORDER.iter().position(|id| *id == check.check));
+    if let Some(results) = results {
+        results.borrow_mut().checks.extend(check_results);
+    }
+    let outcome = if report.issues.is_empty() && !checks_failed {
+        Outcome::Validated
+    } else {
+        Outcome::Failed
+    };
+    record(FileResult {
+        file: file.path,
+        outcome,
+        detail: None,
+        issues: report.issues.clone(),
+        warnings: report.warnings.clone(),
+    });
     if !report.issues.is_empty() {
         return Err(Issues::new(&report.issues).into());
     }
@@ -437,6 +646,19 @@ pub async fn validate_file_migrating(
     checks: Checks,
     backups: &Path,
 ) -> anyhow::Result<()> {
+    validate_file_into(step, settings, file, checks, backups, None).await
+}
+
+/// [`validate_file_migrating`], its outcome recorded in `results` when
+/// given.
+async fn validate_file_into(
+    step: &mut Step,
+    settings: &Settings,
+    file: File,
+    checks: Checks,
+    backups: &Path,
+    results: Option<&RefCell<Results>>,
+) -> anyhow::Result<()> {
     if file.path == crate::migrate::MOTD.path {
         match crate::migrate::motd(settings, backups) {
             Ok(Some(backup)) => step.info(format!(
@@ -450,7 +672,7 @@ pub async fn validate_file_migrating(
             }
         }
     }
-    validate_file(step, settings, file, checks).await
+    validate_checked(step, settings, file, checks, results).await
 }
 
 /// A check under `step`, ended early when the step is cancelled (Ctrl-C,
@@ -466,23 +688,44 @@ async fn stoppable(
     }
 }
 
-/// The service a credential validator checks, as notices name it.
-fn check_name(validator: Validator) -> Option<&'static str> {
+/// The credential check a validator stands for: its `--json` name and
+/// the service as notices name it.
+fn credential_check(validator: Validator) -> Option<(&'static str, &'static str)> {
     match validator {
-        Validator::ValidateCloudflareConfig => Some("Cloudflare"),
-        Validator::ValidateDockerhubConfig => Some("Docker Hub"),
+        Validator::ValidateCloudflareConfig => Some(("cloudflare", "Cloudflare")),
+        Validator::ValidateDockerhubConfig => Some(("dockerhub", "Docker Hub")),
         _ => None,
     }
 }
 
+/// The `--json` order of the checks: Cloudflare, then Docker Hub, skipped
+/// or run.
+const CHECK_ORDER: [&str; 2] = ["cloudflare", "dockerhub"];
+
 /// The credential checks `requests` asks for, as concurrent steps under
-/// `step` that all run to their end (decision 3): whether any failed.
-async fn run_checks(step: &mut Step, settings: &Settings, requests: &[Request]) -> bool {
+/// `step` that all run to their end (decision 3): each one's outcome, with
+/// its step's error when it failed (`GroupAll::join` gives each result in
+/// spawn order, its error shown by its step: each body records its own
+/// text here too).
+async fn run_checks(
+    step: &mut Step,
+    settings: &Settings,
+    requests: &[Request],
+) -> Vec<CheckResult> {
     if requests.is_empty() {
-        return false;
+        return Vec::new();
     }
+    let errors: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(vec![None; requests.len()]));
+    let mut names = Vec::with_capacity(requests.len());
     let mut group = step.group_all::<()>();
-    for request in requests {
+    for (index, request) in requests.iter().enumerate() {
+        let errors = Arc::clone(&errors);
+        let noted = move |result: anyhow::Result<()>| {
+            if let (Err(err), Ok(mut errors)) = (&result, errors.lock()) {
+                errors[index] = Some(format!("{err:#}"));
+            }
+            result
+        };
         let http = settings.http.clone();
         // The login the rules accepted, carried by the request: nothing to
         // parse again, so no ready section can go unchecked.
@@ -497,13 +740,14 @@ async fn run_checks(step: &mut Step, settings: &Settings, requests: &[Request]) 
                     "Cloudflare API credentials validated",
                 )
                 .failure("Cloudflare API credentials validation");
+                names.push("cloudflare");
                 group.spawn(labels, move |step| async move {
                     let check = Check {
                         http: &http,
                         base_url: &base_url,
                         backoff: &backoff,
                     };
-                    stoppable(&step, cloudflare::check(&check, &credentials, &domain)).await
+                    noted(stoppable(&step, cloudflare::check(&check, &credentials, &domain)).await)
                 });
             }
             Login::Dockerhub(login) => {
@@ -513,13 +757,35 @@ async fn run_checks(step: &mut Step, settings: &Settings, requests: &[Request]) 
                     "Docker Hub credentials validated",
                 )
                 .failure("Docker Hub credentials validation");
+                names.push("dockerhub");
                 group.spawn(labels, move |step| async move {
-                    stoppable(&step, dockerhub::login(&http, &url, &login)).await
+                    noted(stoppable(&step, dockerhub::login(&http, &url, &login)).await)
                 });
             }
         }
     }
-    group.join().await.iter().any(Result::is_err)
+    let joined = group.join().await;
+    let errors = errors.lock().map_or_default(|errors| errors.clone());
+    joined
+        .iter()
+        .zip(names)
+        .enumerate()
+        .map(|(index, (result, check))| CheckResult {
+            check,
+            outcome: if result.is_ok() {
+                Outcome::Validated
+            } else {
+                Outcome::Failed
+            },
+            detail: result.as_ref().err().map(|exit| {
+                errors
+                    .get(index)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_else(|| format!("ended with {}", exit.0))
+            }),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -590,6 +856,279 @@ mod tests {
         let result = run(&mut runner, &settings, &root.join("backups")).await;
         runner.finish();
         (result, term.contents())
+    }
+
+    /// The run over `root` against `fake`, recorded: its result and what
+    /// it found (`--json`'s results).
+    async fn record_on(root: &std::path::Path, fake: &Fake) -> (Result<(), Exit>, Results) {
+        let term = indicatif::InMemoryTerm::new(80, 140);
+        let options = Options {
+            target: Target::InMemory {
+                term,
+                colour: false,
+            },
+        };
+        let shutdown = Shutdown::new();
+        let mut runner = Runner::start("sb validate-config", &shutdown, None, options);
+        let settings = Settings {
+            root: root.to_path_buf(),
+            zoneinfo: Vec::new(),
+            http: Http::new(&Proxy::Off, Duration::from_secs(5)).expect("client"),
+            cloudflare_url: format!("{}/client/v4/", fake.url()),
+            dockerhub_url: format!("{}/v2/users/login/", fake.url()),
+            backoff: no_wait,
+        };
+        let recorded = run_recording(&mut runner, &settings, &root.join("backups")).await;
+        runner.finish();
+        recorded
+    }
+
+    /// Every file and both checks recorded with their outcomes, in the run's
+    /// order; the optional file that isn't there skipped with its notice.
+    #[tokio::test]
+    async fn a_run_records_every_file_and_check() {
+        let root = saltbox_root("valid").expect("root");
+        let (result, results) = record_on(root.path(), &healthy()).await;
+        assert!(result.is_ok());
+        let files: Vec<(&str, Outcome)> =
+            results.files.iter().map(|f| (f.file, f.outcome)).collect();
+        assert_eq!(
+            files,
+            FILES
+                .iter()
+                .map(|f| {
+                    let outcome = if f.path == "inventories/host_vars/localhost.yml" {
+                        Outcome::Skipped
+                    } else {
+                        Outcome::Validated
+                    };
+                    (f.path, outcome)
+                })
+                .collect::<Vec<_>>()
+        );
+        let skipped = results
+            .files
+            .iter()
+            .find(|f| f.outcome == Outcome::Skipped)
+            .expect("skipped");
+        assert_eq!(
+            skipped.detail.as_deref(),
+            Some("inventories/host_vars/localhost.yml not found; skipped")
+        );
+        assert_eq!(
+            results.checks,
+            [
+                CheckResult {
+                    check: "cloudflare",
+                    outcome: Outcome::Validated,
+                    detail: None
+                },
+                CheckResult {
+                    check: "dockerhub",
+                    outcome: Outcome::Validated,
+                    detail: None
+                },
+            ]
+        );
+    }
+
+    /// The checks keep `--json`'s order, Cloudflare then Docker Hub, when
+    /// one is skipped and the other runs.
+    #[tokio::test]
+    async fn the_checks_keep_their_order_when_one_is_skipped() {
+        let root = saltbox_root("valid").expect("root");
+        let accounts = std::fs::read_to_string(root.path().join("accounts.yml")).expect("read");
+        let without_dockerhub = accounts.split("dockerhub:").next().expect("before");
+        write(root.path(), "accounts.yml", without_dockerhub);
+        let (result, results) = record_on(root.path(), &healthy()).await;
+        assert!(result.is_ok());
+        let checks: Vec<(&str, Outcome)> = results
+            .checks
+            .iter()
+            .map(|c| (c.check, c.outcome))
+            .collect();
+        assert_eq!(
+            checks,
+            [
+                ("cloudflare", Outcome::Validated),
+                ("dockerhub", Outcome::Skipped)
+            ]
+        );
+    }
+
+    /// A failed check is recorded with its step's error, and fails
+    /// accounts.yml; an issue is recorded with its position; a file that
+    /// can't be read is failed with the error.
+    #[tokio::test]
+    async fn failures_are_recorded_with_their_text() {
+        let root = saltbox_root("valid").expect("root");
+        let fake = Fake::start().expect("fake");
+        fake.script("/client/v4/zones", Answer::json(200, ZONES));
+        fake.script(
+            "/client/v4/zones/z1/settings/ssl",
+            Answer::json(200, SSL_FULL),
+        );
+        fake.script(
+            "/v2/users/login/",
+            Answer::json(401, r#"{"message":"Incorrect authentication credentials"}"#),
+        );
+        write(root.path(), "adv_settings.yml", "not: [valid\n");
+        std::fs::remove_file(root.path().join("hetzner_vlan.yml")).expect("remove");
+        let (result, results) = record_on(root.path(), &fake).await;
+        assert!(matches!(result, Err(Exit(1))));
+        let file = |name: &str| {
+            results
+                .files
+                .iter()
+                .find(|f| f.file == name)
+                .expect(name)
+                .clone()
+        };
+        assert_eq!(file("accounts.yml").outcome, Outcome::Failed);
+        assert_eq!(file("accounts.yml").issues, Vec::new());
+        let dockerhub = results
+            .checks
+            .iter()
+            .find(|c| c.check == "dockerhub")
+            .expect("dockerhub");
+        assert_eq!(dockerhub.outcome, Outcome::Failed);
+        assert!(
+            dockerhub
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("Incorrect authentication credentials")),
+            "{dockerhub:?}"
+        );
+        let adv = file("adv_settings.yml");
+        assert_eq!(adv.outcome, Outcome::Failed);
+        assert!(!adv.issues.is_empty(), "{adv:?}");
+        assert!(
+            adv.issues
+                .iter()
+                .all(|issue| issue.line >= 1 && issue.file == "adv_settings.yml"),
+            "{adv:?}"
+        );
+        let vlan = file("hetzner_vlan.yml");
+        assert_eq!(vlan.outcome, Outcome::Failed);
+        assert!(
+            vlan.detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("required config file not found: ")),
+            "{vlan:?}"
+        );
+    }
+
+    fn issue(file: &str, line: usize, path: &str, message: &str) -> Issue {
+        Issue {
+            file: file.into(),
+            line,
+            column: 3,
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
+    /// The document (spec, `--json`): a skipped file's `reason`, a failed
+    /// one's issues and `error`, a warning as an issue without a position,
+    /// each check's outcome with its `reason` or `message`; controls
+    /// escaped.
+    #[test]
+    fn the_document_is_the_specs() {
+        let results = Results {
+            files: vec![
+                FileResult {
+                    file: "settings.yml",
+                    outcome: Outcome::Failed,
+                    detail: None,
+                    issues: vec![issue(
+                        "settings.yml",
+                        12,
+                        "downloads.path",
+                        "must be an absolute path",
+                    )],
+                    warnings: vec!["password is short\u{1b}".into()],
+                },
+                FileResult {
+                    file: "motd.yml",
+                    outcome: Outcome::Skipped,
+                    detail: Some("motd.yml not found; skipped".into()),
+                    issues: Vec::new(),
+                    warnings: Vec::new(),
+                },
+                FileResult {
+                    file: "hetzner_vlan.yml",
+                    outcome: Outcome::Failed,
+                    detail: Some("required config file not found: /x/hetzner_vlan.yml".into()),
+                    issues: Vec::new(),
+                    warnings: Vec::new(),
+                },
+            ],
+            checks: vec![
+                CheckResult {
+                    check: "cloudflare",
+                    outcome: Outcome::Validated,
+                    detail: None,
+                },
+                CheckResult {
+                    check: "dockerhub",
+                    outcome: Outcome::Skipped,
+                    detail: Some("no Docker Hub credentials set; skipped".into()),
+                },
+                CheckResult {
+                    check: "dockerhub",
+                    outcome: Outcome::Failed,
+                    detail: Some("HTTP 401".into()),
+                },
+            ],
+        };
+        assert_eq!(
+            render_json(&results),
+            concat!(
+                r#"{"schema":1,"files":["#,
+                r#"{"file":"settings.yml","outcome":"failed","issues":["#,
+                r#"{"file":"settings.yml","line":12,"column":3,"path":"downloads.path","severity":"error","message":"must be an absolute path"},"#,
+                r#"{"file":"settings.yml","line":null,"column":null,"path":"","severity":"warning","message":"password is short\u001b"}]},"#,
+                r#"{"file":"motd.yml","outcome":"skipped","reason":"motd.yml not found; skipped","issues":[]},"#,
+                r#"{"file":"hetzner_vlan.yml","outcome":"failed","error":"required config file not found: /x/hetzner_vlan.yml","issues":[]}],"#,
+                r#""checks":[{"check":"cloudflare","outcome":"validated"},"#,
+                r#"{"check":"dockerhub","outcome":"skipped","reason":"no Docker Hub credentials set; skipped"},"#,
+                r#"{"check":"dockerhub","outcome":"failed","message":"HTTP 401"}]}"#,
+                "\n"
+            )
+        );
+    }
+
+    /// Schema 1's keys, frozen: a field may be added (append it here), never
+    /// renamed or removed, as scripts read them (spec, `--json`).
+    /// `serde_json`'s map sorts its keys; the exact-string test has the order.
+    #[test]
+    fn the_document_keeps_schema_1s_keys() {
+        let results = Results {
+            files: vec![FileResult {
+                file: "settings.yml",
+                outcome: Outcome::Failed,
+                detail: None,
+                issues: vec![issue("settings.yml", 1, "", "x")],
+                warnings: Vec::new(),
+            }],
+            checks: vec![CheckResult {
+                check: "cloudflare",
+                outcome: Outcome::Validated,
+                detail: None,
+            }],
+        };
+        let value: serde_json::Value = serde_json::from_str(&render_json(&results)).expect("JSON");
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value.as_object().expect("object").keys().cloned().collect()
+        };
+        assert_eq!(keys(&value), ["checks", "files", "schema"]);
+        assert_eq!(value["schema"], 1);
+        assert_eq!(keys(&value["files"][0]), ["file", "issues", "outcome"]);
+        assert_eq!(
+            keys(&value["files"][0]["issues"][0]),
+            ["column", "file", "line", "message", "path", "severity"]
+        );
+        assert_eq!(keys(&value["checks"][0]), ["check", "outcome"]);
     }
 
     /// `Settings`' `Debug` shows the service URLs as the log does, with

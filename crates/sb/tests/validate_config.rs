@@ -497,3 +497,95 @@ fn colour_follows_the_flag_and_no_color_on_a_terminal() {
         );
     }
 }
+
+/// `validate-config --json` (config spec, `--json`; decision 9): the steps
+/// on stderr, the document alone on stdout, every file and both checks
+/// validated, exit 0.
+#[test]
+fn json_prints_the_document() {
+    if !root_gate::requested() {
+        return;
+    }
+    let root = saltbox_root("valid").expect("root");
+    let fake = healthy();
+    let out = common::sb()
+        .args(["validate-config", "--json"])
+        .env("SB_SALTBOX_DIR", root.path())
+        .env("CLOUDFLARE_BASE_URL", format!("{}/client/v4/", fake.url()))
+        .env(
+            "SB_DOCKERHUB_URL",
+            format!("{}/v2/users/login/", fake.url()),
+        )
+        .output()
+        .expect("run sb");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("✓ Saltbox configuration validated"),
+        "{stderr}"
+    );
+    let stdout = String::from_utf8(out.stdout).expect("UTF-8");
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        stdout.starts_with(
+            r#"{"schema":1,"files":[{"file":"accounts.yml","outcome":"validated","issues":[]},"#
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(r#"{"file":"inventories/host_vars/localhost.yml","outcome":"skipped","reason":"inventories/host_vars/localhost.yml not found; skipped","issues":[]}"#),
+        "{stdout}"
+    );
+    assert!(
+        stdout.ends_with(concat!(
+            r#""checks":[{"check":"cloudflare","outcome":"validated"},{"check":"dockerhub","outcome":"validated"}]}"#,
+            "\n"
+        )),
+        "{stdout}"
+    );
+}
+
+/// A broken set: exit 1 as without `--json`, each issue with its position
+/// in its file, a missing file failed with its error, no secret shown.
+#[test]
+fn json_reports_issues_with_their_positions() {
+    if !root_gate::requested() {
+        return;
+    }
+    let root = saltbox_root("valid").expect("root");
+    let accounts = root.path().join("accounts.yml");
+    let text = std::fs::read_to_string(&accounts).expect("read");
+    let broken = text.replace("pass: correct-horse-battery", "pass: !!int s3cret-pass");
+    assert!(broken.contains("pass: !!int s3cret-pass"), "{broken}");
+    std::fs::write(&accounts, broken).expect("write");
+    std::fs::remove_file(root.path().join("settings.yml")).expect("remove");
+    let fake = healthy();
+    let out = common::sb()
+        .args(["validate-config", "--json"])
+        .env("SB_SALTBOX_DIR", root.path())
+        .env("CLOUDFLARE_BASE_URL", format!("{}/client/v4/", fake.url()))
+        .env(
+            "SB_DOCKERHUB_URL",
+            format!("{}/v2/users/login/", fake.url()),
+        )
+        .output()
+        .expect("run sb");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        stdout.contains(r#"{"file":"accounts.yml","line":6,"column":9,"path":"user.pass","severity":"error","message":"cannot decode !!str `[REDACTED]` as a !!int"}"#),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            r#"{"file":"settings.yml","outcome":"failed","error":"required config file not found: "#
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("s3cret-pass"), "{stdout}");
+}

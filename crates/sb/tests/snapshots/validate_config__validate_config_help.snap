@@ -13,3 +13,4 @@ expression: "String::from_utf8_lossy(&help.get_output().stdout)"
 
     --color    Controls when to use color (auto)
     -h --help  Help for validate-config
+    --json     Print the results as JSON

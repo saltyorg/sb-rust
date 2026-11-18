@@ -67,7 +67,12 @@ enum Command {
     // No verbose mode: the run log has the detail (config decision 1);
     // sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = "Validate Saltbox configuration files")]
-    ValidateConfig,
+    ValidateConfig {
+        /// Print the results as JSON
+        // New in sb (config spec, `--json`; decision 9).
+        #[arg(long)]
+        json: bool,
+    },
     /// Change the branch used by Saltbox
     #[command(long_about = "Change the branch used by Saltbox")]
     Branch {
@@ -499,7 +504,7 @@ impl Command {
                 DockerCommand::Stop { .. } => "docker stop",
                 DockerCommand::Restart { .. } => "docker restart",
             },
-            Command::ValidateConfig => "validate-config",
+            Command::ValidateConfig { .. } => "validate-config",
             Command::Branch { .. } => "branch",
             Command::BranchSandbox { .. } => "branch-sandbox",
             Command::Update(_) => "update",
@@ -623,7 +628,7 @@ impl Command {
             // command (ops assumption 2; gha's and setup's apt, /srv and
             // the configs).
             Command::Docker { .. }
-            | Command::ValidateConfig
+            | Command::ValidateConfig { .. }
             | Command::Branch { .. }
             | Command::BranchSandbox { .. }
             | Command::Update(_)
@@ -969,7 +974,7 @@ fn notice(message: impl std::fmt::Display) {
 
 fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     match *command {
-        Command::ValidateConfig => validate_config(shutdown, log)?,
+        Command::ValidateConfig { json } => validate_config(json, shutdown, log)?,
         Command::Branch { ref name } => branch::branch(Checkout::Saltbox, name, shutdown, log)?,
         Command::BranchSandbox { ref name } => {
             branch::branch(Checkout::Sandbox, name, shutdown, log)?;
@@ -1174,16 +1179,30 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
 /// motd.yml is migrated first, its original copied to `SB_BACKUPS_DIR`,
 /// or sb-config's default, `/opt/saltbox/backups` (motd decision 4; a
 /// temporary folder in sb's test build).
-fn validate_config(shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
+fn validate_config(json: bool, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     let settings = validate_settings()?;
     // The runtime's error first (`?`), then the run's, as the result.
     block_on(async {
         let options = sb_term_ui::Options::default();
         let mut runner = sb_term_ui::Runner::start("sb validate-config", shutdown, log, options);
-        let result = sb_config::run::run(&mut runner, &settings, &backups_dir()).await;
+        let (result, results) =
+            sb_config::run::run_recording(&mut runner, &settings, &backups_dir()).await;
         runner.finish();
+        if let Some(document) = json_document(json, shutdown.token().is_cancelled(), &results) {
+            let mut out = std::io::stdout().lock();
+            out.write_all(document.as_bytes())
+                .and_then(|()| out.flush())
+                .map_err(exit::output_error)?;
+        }
         result.map_err(anyhow::Error::from)
     })?
+}
+
+/// validate-config's `--json` document, for stdout after the steps drew
+/// on stderr; none without `--json`, and none for a run that stopped
+/// (config spec, `--json`).
+fn json_document(json: bool, stopped: bool, results: &sb_config::run::Results) -> Option<String> {
+    (json && !stopped).then(|| sb_config::run::render_json(results))
 }
 
 /// validate-config's settings, `sb update`'s too: the Saltbox root, the
@@ -1455,9 +1474,19 @@ mod tests {
 
     /// `validate-config` reads root's config and logs under its name.
     #[test]
+    fn validate_config_json_is_written_only_for_a_whole_run() {
+        let results = sb_config::run::Results::default();
+        let document = json_document(true, false, &results).expect("a document");
+        assert!(document.starts_with(r#"{"schema":1,"#), "{document}");
+        assert_eq!(json_document(true, true, &results), None);
+        assert_eq!(json_document(false, false, &results), None);
+    }
+
+    #[test]
     fn validate_config_needs_root() {
-        assert!(Command::ValidateConfig.needs_root());
-        assert_eq!(Command::ValidateConfig.name(), "validate-config");
+        let command = Command::ValidateConfig { json: false };
+        assert!(command.needs_root());
+        assert_eq!(command.name(), "validate-config");
     }
 
     /// Both branch commands change a root-owned checkout and its
