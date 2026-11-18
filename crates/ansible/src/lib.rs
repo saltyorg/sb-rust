@@ -26,8 +26,9 @@ pub use cache::{
     CacheError, FILE as CACHE_FILE, LazyRunner, Listed, RepoTags, TagCache, label as cache_label,
 };
 pub use list::{
-    ListArgs, Listing, Match, PIPED_WIDTH, Section, failures_error as list_failures, gather,
-    render_list, render_search, search,
+    Cache as ListCache, ListArgs, Listing, Match, PIPED_WIDTH, Section,
+    failures_error as list_failures, gather, render_json as render_list_json, render_list,
+    render_search, search,
 };
 pub use run::{RunArgs, RunError, Tags, pass_through};
 pub use suggest::{

@@ -31,8 +31,8 @@ struct Binding<'a> {
     protocol: &'a str,
 }
 
-/// The rows as the spec's JSON: compact, one trailing newline, as `sb
-/// version --json`.
+/// The rows as the spec's JSON: one line of compact JSON with every
+/// control character escaped (cli-core's `json::line`).
 #[must_use]
 pub fn json(rows: &[Row]) -> String {
     let containers: Vec<Container<'_>> = rows
@@ -59,39 +59,7 @@ pub fn json(rows: &[Row]) -> String {
                 .collect(),
         })
         .collect();
-    // Serialising strings, numbers and booleans into a `Vec` can't fail,
-    // and the formatter writes only valid UTF-8.
-    let mut out = Vec::new();
-    let _ = containers.serialize(&mut serde_json::Serializer::with_formatter(
-        &mut out,
-        EscapeControls,
-    ));
-    let mut text = String::from_utf8(out).unwrap_or_default();
-    text.push('\n');
-    text
-}
-
-/// `serde_json`'s compact output (every method but one is the trait's
-/// default, which `CompactFormatter` uses too), with DEL and C1 in strings
-/// escaped as `\u00XX` as well: `serde_json` escapes only U+0000 to U+001F,
-/// and an 8-bit CSI, OSC or ST in a label would reach a terminal running
-/// `--json` raw. The hook for the unescaped parts of a string:
-/// <https://docs.rs/serde_json/1.0.154/serde_json/ser/trait.Formatter.html#method.write_string_fragment>.
-struct EscapeControls;
-
-impl serde_json::ser::Formatter for EscapeControls {
-    fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> std::io::Result<()>
-    where
-        W: ?Sized + std::io::Write,
-    {
-        let mut rest = 0;
-        for (at, c) in fragment.char_indices().filter(|(_, c)| c.is_control()) {
-            writer.write_all(&fragment.as_bytes()[rest..at])?;
-            write!(writer, "\\u{:04x}", u32::from(c))?;
-            rest = at + c.len_utf8();
-        }
-        writer.write_all(&fragment.as_bytes()[rest..])
-    }
+    sb_cli_core::json::line(&containers)
 }
 
 #[cfg(test)]

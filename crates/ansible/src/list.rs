@@ -31,6 +31,10 @@ pub struct ListArgs {
     /// Include Saltbox-mod tags
     #[arg(short = 'm', long)]
     pub include_mod: bool,
+    /// Print the tags as JSON
+    // New in sb (spec, `--json`; decision 20).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// One repository's tags.
@@ -40,6 +44,24 @@ pub struct Section {
     pub repo: Kind,
     /// Its tags, in Ansible's order.
     pub tags: Vec<String>,
+    /// Where they came from (`--json`'s `cache`; the run log's `cached`).
+    pub cache: Cache,
+}
+
+/// Where a repository's tags came from (spec, `--json`), its word there
+/// serde's `lowercase` of the name
+/// (<https://serde.rs/container-attrs.html#rename_all>).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Cache {
+    /// Read from cache.json.
+    Cached,
+    /// Listed and written now.
+    Rebuilt,
+    /// `saltbox_mod`'s, listed fresh and never cached.
+    Listed,
+    /// `-m`'s `saltbox_mod` isn't there (`--json` only).
+    Missing,
 }
 
 /// What `sb list` found.
@@ -92,6 +114,11 @@ pub async fn gather<F: FnOnce() -> Runner>(
                 listing.sections.push(Section {
                     repo: repo.kind(),
                     tags: listed.tags,
+                    cache: if listed.cached {
+                        Cache::Cached
+                    } else {
+                        Cache::Rebuilt
+                    },
                 });
             }
             Err(err) => listing.failures.push(format!(
@@ -113,6 +140,7 @@ pub async fn gather<F: FnOnce() -> Runner>(
                 Ok(tags) => listing.sections.push(Section {
                     repo: Kind::Mod,
                     tags,
+                    cache: Cache::Listed,
                 }),
                 Err(err) => listing.failures.push(format!(
                     "error running ansible list tags for {}: {err:#}",
@@ -122,6 +150,76 @@ pub async fn gather<F: FnOnce() -> Runner>(
         }
     }
     listing
+}
+
+/// `sb list --json`'s document (spec, `--json`; decision 20): schema 1,
+/// each repository with its install prefix, cache state and tags (with a
+/// query, its matches in the search's order), and the failures' lines.
+/// Fields are only ever added (scripts read them); serde keeps the fields'
+/// order.
+#[must_use]
+pub fn render_json(listing: &Listing, query: Option<&str>) -> String {
+    #[derive(serde::Serialize)]
+    struct Document<'a> {
+        schema: u32,
+        query: Option<&'a str>,
+        repositories: Vec<Entry<'a>>,
+        errors: &'a [String],
+    }
+    #[derive(serde::Serialize)]
+    struct Entry<'a> {
+        repository: &'static str,
+        prefix: &'static str,
+        cache: Cache,
+        tags: Vec<&'a str>,
+    }
+    let found = query.map(|query| search(listing, query));
+    let mut repositories: Vec<Entry<'_>> = listing
+        .sections
+        .iter()
+        .map(|section| Entry {
+            repository: json_name(section.repo),
+            prefix: json_prefix(section.repo),
+            cache: section.cache,
+            tags: match &found {
+                None => section.tags.iter().map(String::as_str).collect(),
+                Some(found) => found
+                    .iter()
+                    .filter(|m| m.repo == section.repo)
+                    .map(|m| m.tag.as_str())
+                    .collect(),
+            },
+        })
+        .collect();
+    if listing.mod_missing {
+        repositories.push(Entry {
+            repository: json_name(Kind::Mod),
+            prefix: json_prefix(Kind::Mod),
+            cache: Cache::Missing,
+            tags: Vec::new(),
+        });
+    }
+    sb_cli_core::json::line(&Document {
+        schema: 1,
+        query,
+        repositories,
+        errors: &listing.failures,
+    })
+}
+
+/// A repository's `--json` name.
+fn json_name(repo: Kind) -> &'static str {
+    match repo {
+        Kind::Saltbox => "saltbox",
+        Kind::Sandbox => "sandbox",
+        Kind::Mod => "saltbox_mod",
+    }
+}
+
+/// What `sb install` takes before a repository's tags (its routing): the
+/// prefix the listing's headings show.
+fn json_prefix(repo: Kind) -> &'static str {
+    named(repo).1
 }
 
 /// The step `saltbox_mod`'s listing shows in while it runs (the
@@ -497,10 +595,12 @@ mod tests {
                 Section {
                     repo: Kind::Saltbox,
                     tags: strings(&SALTBOX),
+                    cache: Cache::Cached,
                 },
                 Section {
                     repo: Kind::Sandbox,
                     tags: strings(&SANDBOX),
+                    cache: Cache::Rebuilt,
                 },
             ],
             failures: Vec::new(),
@@ -523,6 +623,7 @@ mod tests {
             listing.sections.push(Section {
                 repo: Kind::Mod,
                 tags: strings(&MOD),
+                cache: Cache::Listed,
             });
         }
         listing
@@ -758,6 +859,7 @@ mod tests {
         all.sections.push(Section {
             repo: Kind::Mod,
             tags: strings(&MOD),
+            cache: Cache::Listed,
         });
         let found: Vec<(Kind, String, usize)> = search(&all, "PLEX")
             .into_iter()
@@ -812,10 +914,12 @@ mod tests {
                 Section {
                     repo: Kind::Saltbox,
                     tags: strings(&["abd"]),
+                    cache: Cache::Cached,
                 },
                 Section {
                     repo: Kind::Sandbox,
                     tags: strings(&["abc1"]),
+                    cache: Cache::Rebuilt,
                 },
             ],
             ..Listing::default()
@@ -866,5 +970,106 @@ mod tests {
         );
         let err = failures_error(&failed, true).expect("an error");
         assert_eq!(err.to_string(), "errors occurred while searching tags");
+    }
+
+    /// `--json`'s document (spec): `schema`, the query, each repository
+    /// with its install prefix, cache state and tags, the failures.
+    #[test]
+    fn json_lists_each_repository_with_its_prefix_and_cache() {
+        let mut listing = listing();
+        listing.sections[0].tags = strings(&["plex", "sonarr"]);
+        listing.sections[1].tags = strings(&["komga"]);
+        assert_eq!(
+            render_json(&listing, None),
+            concat!(
+                r#"{"schema":1,"query":null,"repositories":["#,
+                r#"{"repository":"saltbox","prefix":"","cache":"cached","tags":["plex","sonarr"]},"#,
+                r#"{"repository":"sandbox","prefix":"sandbox-","cache":"rebuilt","tags":["komga"]}],"#,
+                r#""errors":[]}"#,
+                "\n"
+            )
+        );
+        listing.sections.push(Section {
+            repo: Kind::Mod,
+            tags: strings(&["custom"]),
+            cache: Cache::Listed,
+        });
+        let text = render_json(&listing, None);
+        assert!(
+            text.contains(
+                r#"{"repository":"saltbox_mod","prefix":"mod-","cache":"listed","tags":["custom"]}"#
+            ),
+            "{text}"
+        );
+    }
+
+    /// `-m` with no `saltbox_mod` directory is a `missing` repository with no
+    /// tags; a failed repository has no object, its line is under
+    /// `errors`; a tag's control characters are escaped.
+    #[test]
+    fn json_shows_a_missing_mod_and_the_failures() {
+        let listing = Listing {
+            mod_missing: true,
+            sections: vec![Section {
+                repo: Kind::Saltbox,
+                tags: strings(&["pl\u{1b}[31mex"]),
+                cache: Cache::Rebuilt,
+            }],
+            failures: strings(&["error running and caching ansible tags for /opt/sandbox: boom"]),
+        };
+        assert_eq!(
+            render_json(&listing, None),
+            concat!(
+                r#"{"schema":1,"query":null,"repositories":["#,
+                r#"{"repository":"saltbox","prefix":"","cache":"rebuilt","tags":["pl\u001b[31mex"]},"#,
+                r#"{"repository":"saltbox_mod","prefix":"mod-","cache":"missing","tags":[]}],"#,
+                r#""errors":["error running and caching ansible tags for /opt/sandbox: boom"]}"#,
+                "\n"
+            )
+        );
+    }
+
+    /// A query keeps each repository's matches, in the search's order (by
+    /// distance, then tag), and records the query as given.
+    #[test]
+    fn json_with_a_query_keeps_the_matches() {
+        let text = render_json(&listing(), Some("Sonar"));
+        assert!(
+            text.starts_with(r#"{"schema":1,"query":"Sonar","repositories":["#),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                r#"{"repository":"saltbox","prefix":"","cache":"cached","tags":["sonarr"]}"#
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"{"repository":"sandbox","prefix":"sandbox-","cache":"rebuilt","tags":["sonarr4k"]}"#),
+            "{text}"
+        );
+        let none = render_json(&listing(), Some("zzzzzz"));
+        assert!(none.contains(r#""tags":[]"#), "{none}");
+    }
+
+    /// Schema 1's keys, frozen: a field may be added (append it here), never
+    /// renamed or removed, as scripts read them (spec, `--json`).
+    #[test]
+    fn json_schema_1_keeps_its_keys() {
+        let mut listing = listing();
+        listing.failures.push("x".into());
+        let value: serde_json::Value =
+            serde_json::from_str(&render_json(&listing, Some("plex"))).expect("JSON");
+        // serde_json's map sorts its keys: the order is the exact-string
+        // tests'; this is the set.
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value.as_object().expect("object").keys().cloned().collect()
+        };
+        assert_eq!(keys(&value), ["errors", "query", "repositories", "schema"]);
+        assert_eq!(value["schema"], 1);
+        assert_eq!(
+            keys(&value["repositories"][0]),
+            ["cache", "prefix", "repository", "tags"]
+        );
     }
 }

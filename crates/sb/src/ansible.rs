@@ -205,6 +205,8 @@ pub fn list(args: &ListArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> anyho
         let query = args.query.as_deref().filter(|query| !query.is_empty());
         let colour = sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
         let text = match query {
+            // Pure JSON on stdout; the steps drew on stderr (spec, `--json`).
+            _ if args.json => Some(sb_ansible::render_list_json(&listing, query)),
             None => Some(sb_ansible::render_list(
                 &listing,
                 theme::current(),

@@ -1447,3 +1447,86 @@ fn list_search_shows_the_mod_notice_and_an_empty_query_lists() {
         stdout(&output)
     );
 }
+
+/// `sb list --json` (spec, `--json`; decision 20): stdout is the document
+/// alone, the cache state each repository's; a rebuild's steps don't reach
+/// stdout.
+#[test]
+fn list_json_prints_the_document() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world.sb(&["list", "--json"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        concat!(
+            r#"{"schema":1,"query":null,"repositories":["#,
+            r#"{"repository":"saltbox","prefix":"","cache":"cached","tags":["always","plex","sonarr"]},"#,
+            r#"{"repository":"sandbox","prefix":"sandbox-","cache":"cached","tags":["always","b","tautulli"]}],"#,
+            r#""errors":[]}"#,
+            "\n"
+        )
+    );
+    std::fs::remove_file(world.root().join("cache.json")).expect("no cache");
+    tag_cache::listing(&world.root(), &["always", "plex"]);
+    tag_cache::listing(&world.appdata().join("sandbox"), &["b"]);
+    let output = world
+        .sb(&["list", "--json", "pl"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(out.starts_with(r#"{"schema":1,"query":"pl","repositories":[{"repository":"saltbox","prefix":"","cache":"rebuilt","tags":["plex"]}"#), "{out}");
+}
+
+/// A failed repository's line is under `errors`, the others printed, exit
+/// 1 with the error block on stderr.
+#[test]
+fn list_json_reports_a_failed_repository() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let sandbox = world.appdata().join("sandbox");
+    std::fs::remove_dir_all(&sandbox).expect("no Sandbox");
+    let saltbox_mod = world.appdata().join("saltbox_mod");
+    if saltbox_mod.exists() {
+        std::fs::remove_dir_all(&saltbox_mod).expect("no saltbox_mod");
+    }
+    let output = world
+        .sb(&["list", "--json", "-m"])
+        .output()
+        .expect("run sb");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(
+        out.contains(r#"{"repository":"saltbox_mod","prefix":"mod-","cache":"missing","tags":[]}"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            r#""errors":["error running and caching ansible tags for {}"#,
+            sandbox.display()
+        )),
+        "{out}"
+    );
+    assert!(
+        stderr(&output).contains("✗ errors occurred while listing tags"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// `--json` is in `sb list`'s help.
+#[test]
+fn list_help_has_json() {
+    let output = common::sb()
+        .args(["list", "--help"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("--json"), "{}", stdout(&output));
+}

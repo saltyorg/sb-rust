@@ -10,6 +10,7 @@ pub mod colour;
 pub mod config;
 pub mod exit;
 pub mod help;
+pub mod json;
 pub mod log;
 pub mod root;
 pub mod run_lock;

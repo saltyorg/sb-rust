@@ -179,7 +179,7 @@ death by signal for an interrupted run (cli-core).
 
 ### `sb list [query]`
 
-- Flags: `-m, --include-mod`. sb-go's counted `-v` is dropped (exit 2), as
+- Flags: `-m, --include-mod`, and the new `--json` (below). sb-go's counted `-v` is dropped (exit 2), as
   in `validate-config` and `docker` (config decision 1, docker decision 6,
   term-ui decision 9): the run log holds the detail.
 - Repos: Saltbox and Sandbox through the cache (rebuilt as a step when
@@ -233,6 +233,34 @@ death by signal for an interrupted run (cli-core).
   matching 'q'`, exit 0.
 - Per-repo errors are collected; the other repos still print; then one
   error block, exit 1.
+- **`--json`** (decision 20, the maintainer, 2026-11-18): stdout is one
+  line of compact JSON (cli-core's `json::line`: keys in this order, one
+  trailing newline, every control character escaped, C1 and DEL
+  included), never coloured. The steps still draw on stderr, as without
+  it. Fields are only ever added, never renamed or removed; `schema`
+  rises only on a breaking change.
+
+  | Key | Value |
+  |---|---|
+  | `schema` | `1` |
+  | `query` | the query as given, or `null` |
+  | `repositories` | one object per repository, Saltbox, Sandbox, then saltbox_mod with `-m` |
+  | `errors` | each failed repository's line, as the error block's (strings) |
+
+  Each repository: `repository` (`saltbox`, `sandbox`, `saltbox_mod`),
+  `prefix` (what `sb install` takes before its tags: `""`, `sandbox-`,
+  `mod-`), `cache`, and `tags` (in Ansible's order; with a query, the
+  matches in the search's order).
+  - **`cache`:** `cached` (read from cache.json), `rebuilt` (listed and
+    written now), `listed` (saltbox_mod, listed fresh and never cached),
+    `missing` (`-m` given and no saltbox_mod directory: no tags).
+  - **Failures:** a failed repository has no object; its line is under
+    `errors`, the others are printed, exit 1, the error block on stderr
+    as without `--json`.
+  - **No output** on stdout when the run stops (Ctrl-C, an error before
+    the listing): the error block on stderr and the exit code as without
+    `--json` (`sb docker ps --json`'s convention).
+  - Example: `{"schema":1,"query":null,"repositories":[{"repository":"saltbox","prefix":"","cache":"cached","tags":["plex","sonarr"]},{"repository":"sandbox","prefix":"sandbox-","cache":"rebuilt","tags":["komga"]}],"errors":[]}`.
 
 ### `sb diag`
 
@@ -336,6 +364,8 @@ nothing from ops, so it lands here.
     2026-11-15; the text above), and its `-h --help` row reads `Help for
     install (--help shows more details)` in `-h` and `--help` (cli-core
     spec, Help). sb-go has one help text and neither.
+16. **`sb list --json`** (decision 20): sb-go has no machine-readable
+    `list`.
 
 ### Scope
 
@@ -691,6 +721,11 @@ for validate-config.
     missing-`saltbox_mod` notice keeps its place, first, before the
     blank line. Unchanged: the notice's text, the search output, the
     transient step tree.
+20. **`sb list --json`** (the maintainer, 2026-11-18, the shape as
+    proposed): for scripts, monitoring and CI, beside `sb version --json`
+    and `sb docker ps --json`, in the shape above. The cache state, which
+    the text leaves to the run log (decision 19), is a field here: a
+    script can tell a fresh listing from the cache.
 
 ## Known limits
 
