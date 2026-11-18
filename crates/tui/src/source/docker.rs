@@ -104,7 +104,7 @@ impl Default for Settings {
             page: PAGE,
             retry: RETRY,
             search_step: SEARCH_STEP,
-            matches: super::journal::MATCHES,
+            matches: super::MATCHES,
         }
     }
 }

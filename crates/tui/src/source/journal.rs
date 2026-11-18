@@ -88,10 +88,6 @@ const RETRY: Duration = Duration::from_millis(250);
 const SEARCH_STEP: usize = 5_000;
 const SEARCH_OUTPUT: usize = 16 << 20;
 
-/// The most matches a side of a search keeps (tui spec, "Matches
-/// kept").
-pub(crate) const MATCHES: usize = 10_000;
-
 /// A source task for `unit`'s journal: one [`Journal::unit_query`] for
 /// every page and the follow. `journal` is the run's one journal, opened
 /// under `spawn_blocking`.
@@ -129,7 +125,7 @@ impl Default for Settings {
             retry: RETRY,
             search_step: SEARCH_STEP,
             search_limits: Limits::with_output(SEARCH_OUTPUT),
-            matches: MATCHES,
+            matches: super::MATCHES,
         }
     }
 }

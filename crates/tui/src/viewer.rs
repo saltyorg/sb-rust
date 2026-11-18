@@ -75,9 +75,14 @@ use crate::line::{self, Format};
 use crate::resume::{self, Resumes};
 use crate::save;
 use crate::source::{
-    Event, Generation, Line, Notice, Outbox, PageKind, Position, Request, SourceHandle, Tagged,
+    Event, Generation, Line, Matcher, Notice, Outbox, PageKind, Position, Request, Search,
+    SourceHandle, Tagged,
 };
 use crate::term::{App, Flow};
+
+mod whole;
+
+use whole::{Hit, Whole};
 
 /// Rows the wheel scrolls (tui spec, "Scrolling").
 const WHEEL_ROWS: usize = 3;
@@ -420,6 +425,15 @@ pub struct Viewer {
     query: String,
     total: usize,
     current: Option<(usize, usize)>,
+    /// The whole-log search of the query in effect (tui spec, "Whole-log
+    /// search"), and the count of searches started, its id.
+    whole: Option<Whole>,
+    searches: u64,
+    /// `n` (`true`) or `N` waiting for a match the search hasn't read yet.
+    waiting: Option<bool>,
+    /// The match a jump asked the source's surroundings of
+    /// (`Request::Around`), and the match within its entry to show.
+    around: Option<(Position, usize)>,
     /// Where `s` saves: the run log's directory; `s` does nothing
     /// without one.
     save_dir: Option<PathBuf>,
@@ -508,6 +522,10 @@ impl Viewer {
             query: String::new(),
             total: 0,
             current: None,
+            whole: None,
+            searches: 0,
+            waiting: None,
+            around: None,
             save_dir: None,
             saved: None,
             #[cfg(test)]
@@ -596,10 +614,31 @@ impl Viewer {
                 if let Some(last) = lines.last() {
                     self.newer.position = Some(last.position.clone());
                 }
+                let from = self.entries.len();
                 self.append(lines);
+                self.follow_matches(from);
             }
-            Event::Found { .. } => {}
+            Event::Found {
+                search,
+                side,
+                order,
+                found,
+                reached,
+                end,
+            } => {
+                let Some(whole) = self.whole.as_mut().filter(|w| w.id == search) else {
+                    return;
+                };
+                whole.step(side, order, found, reached, end);
+                if let Some(forward) = self.waiting {
+                    self.jump(forward);
+                }
+            }
             Event::Notice(notice) => {
+                // A jump whose page couldn't be read: the view stays.
+                if matches!(notice, Notice::ReadFailed(_)) {
+                    self.around = None;
+                }
                 // The follow has stopped or never started (follow-L4): the
                 // view stays where it is, paged, and `f` retries.
                 let cant_follow = matches!(notice, Notice::CantFollow(_));
@@ -635,6 +674,10 @@ impl Viewer {
         self.last_page = Some(kind);
         match kind {
             PageKind::Tail | PageKind::Around => {
+                if kind == PageKind::Around {
+                    // A jump's page: the view is paged where the match is.
+                    self.follow = Follow::Off;
+                }
                 self.entries.clear();
                 self.bytes = 0;
                 self.total = 0;
@@ -658,6 +701,16 @@ impl Viewer {
                 }
                 if !self.stuck() {
                     self.anchor = Anchor { item: 0, skip: 0 };
+                }
+                if kind == PageKind::Tail {
+                    // The newest lines: any match new since the search
+                    // goes at its newest end.
+                    self.follow_matches(0);
+                } else if let Some((position, k)) = self.around.take() {
+                    self.current = self
+                        .entry_at(&position)
+                        .map(|entry| (entry, k.min(self.hits_in(entry).saturating_sub(1))));
+                    self.show_current(true);
                 }
             }
             PageKind::Older => {
@@ -1195,9 +1248,112 @@ impl Viewer {
             self.hit_from(top).or_else(|| self.hit_before(top))
         };
         self.show_current(false);
+        self.start_whole();
+    }
+
+    /// The whole-log search of the query (tui spec, "Whole-log search"):
+    /// the buffer's matches as its middle, and the source asked to read
+    /// the older side from the buffer's oldest edge, and the newer side
+    /// from its newest when it doesn't reach the end and isn't following.
+    /// The source matches with the screen's own count (`line::hits`).
+    fn start_whole(&mut self) {
+        self.stop_whole();
+        self.searches += 1;
+        let middle = self
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Line(line, hits, _) if *hits > 0 => Some(Hit {
+                    position: line.position.clone(),
+                    count: *hits,
+                }),
+                _ => None,
+            })
+            .collect();
+        let older = self
+            .older
+            .position
+            .clone()
+            .filter(|_| self.loaded && self.older.more);
+        let newer = self
+            .newer
+            .position
+            .clone()
+            .filter(|_| self.loaded && self.newer.more && !self.following());
+        self.whole = Some(Whole::new(
+            self.searches,
+            Timestamp::now(),
+            middle,
+            older.is_some(),
+            newer.is_some(),
+            crate::source::MATCHES,
+        ));
+        let (format, query) = (self.format.clone(), self.query.clone());
+        self.source.send(Request::Search(Search {
+            id: self.searches,
+            matcher: Matcher::new(move |line| line::hits(line, &format, &query)),
+            older,
+            newer,
+        }));
+    }
+
+    /// The search counted again (after `t`), the view and the current
+    /// match kept where they can be, and its whole-log read started
+    /// again.
+    fn recount(&mut self) {
+        self.total = 0;
+        let (format, query) = (&self.format, &self.query);
+        for entry in &mut self.entries {
+            if let Entry::Line(line, hits, _) = entry {
+                *hits = line::hits(line, format, query);
+                self.total += *hits;
+            }
+        }
+        self.current = self.current.and_then(|(entry, k)| {
+            let hits = self.hits_in(entry);
+            (hits > 0).then(|| (entry, k.min(hits - 1)))
+        });
+        self.start_whole();
+    }
+
+    /// The whole-log search ends: its read stops, and a jump waiting or
+    /// asked for is dropped.
+    fn stop_whole(&mut self) {
+        if self.whole.take().is_some() {
+            self.source.send(Request::StopSearch);
+        }
+        self.waiting = None;
+        self.around = None;
+    }
+
+    /// The matches of the entries from `from` on, which the follow (or a
+    /// tail) brought, to the whole-log search's newest end.
+    fn follow_matches(&mut self, from: usize) {
+        let Some(whole) = self.whole.as_mut() else {
+            return;
+        };
+        for entry in self.entries.iter().skip(from) {
+            if let Entry::Line(line, hits, _) = entry
+                && *hits > 0
+            {
+                whole.followed(Hit {
+                    position: line.position.clone(),
+                    count: *hits,
+                });
+            }
+        }
+    }
+
+    /// The buffer's entry at `position`.
+    fn entry_at(&self, position: &Position) -> Option<usize> {
+        self.entries.iter().position(|entry| match entry {
+            Entry::Line(line, _, _) => &line.position == position,
+            Entry::Notice(_) => false,
+        })
     }
 
     fn clear_search(&mut self) {
+        self.stop_whole();
         self.query.clear();
         self.total = 0;
         self.current = None;
@@ -1250,6 +1406,12 @@ impl Viewer {
             (None, true) => self.hit_from(self.top_entry()),
             (None, false) => self.hit_before(self.top_entry() + 1),
         };
+        if next.is_none() {
+            // None left in the buffer: the whole-log search's next, past it.
+            self.whole_jump(forward);
+            return;
+        }
+        self.waiting = None;
         if next.is_some() {
             // While following, the window's top is worked out from the
             // bottom: pin it first, so a match already on the top row
@@ -1320,6 +1482,76 @@ impl Viewer {
         if jump || !self.in_sight(at) {
             self.move_to(at);
         }
+    }
+
+    /// `n` or `N` past the buffer (tui spec, "Whole-log search"): the
+    /// whole-log search's next match outside it, its surroundings asked of
+    /// the source (`Request::Around`), which starts the buffer again
+    /// there. The buffer's place among the matches is that of its matches
+    /// (the current one's, else any held), or, holding none, where it was
+    /// when the search started. A match the search hasn't read yet is
+    /// waited for while it reads; past the last, nothing happens, as in
+    /// the buffer.
+    fn whole_jump(&mut self, forward: bool) {
+        let Some(whole) = self.whole.as_ref() else {
+            return;
+        };
+        if self.around.is_some() {
+            return;
+        }
+        let loaded: std::collections::HashSet<&Position> = self
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Line(line, _, _) => Some(&line.position),
+                Entry::Notice(_) => None,
+            })
+            .collect();
+        let held = |i: usize| {
+            whole
+                .get(i)
+                .is_some_and(|hit| loaded.contains(&hit.position))
+        };
+        let here = self
+            .current
+            .and_then(|(entry, _)| match self.entries.get(entry) {
+                Some(Entry::Line(line, _, _)) => whole.index_of(&line.position),
+                _ => None,
+            })
+            .or_else(|| (0..whole.len()).find(|&i| held(i)));
+        let target = match (here, forward) {
+            (Some(mut i), true) => {
+                while held(i) {
+                    i += 1;
+                }
+                Some(i)
+            }
+            (Some(i), false) => (0..=i).rev().find(|&j| !held(j)),
+            (None, true) => Some(whole.start_gap()),
+            (None, false) => whole.start_gap().checked_sub(1),
+        };
+        let hit = target
+            .filter(|&i| whole.known(i))
+            .and_then(|i| whole.get(i));
+        let Some(hit) = hit else {
+            self.waiting = whole.running().then_some(forward);
+            return;
+        };
+        let k = if forward {
+            0
+        } else {
+            hit.count.saturating_sub(1)
+        };
+        let position = hit.position.clone();
+        self.waiting = None;
+        if self.following() {
+            if self.stuck() {
+                self.anchor = self.bottom_anchor();
+            }
+            self.follow = Follow::Off;
+        }
+        self.around = Some((position.clone(), k));
+        self.source.send(Request::Around(position));
     }
 
     /// Whether the row `at` is in the window.
@@ -1466,6 +1698,11 @@ impl Viewer {
             KeyCode::Char('t') => {
                 self.format.meta = !self.format.meta;
                 self.clamp_anchor();
+                // The match covers the time and origin: the search counts
+                // again on what the screen shows now, the view kept.
+                if !self.query.is_empty() {
+                    self.recount();
+                }
             }
             KeyCode::Esc => {
                 self.leave = Some(Leave::Back);
@@ -1730,6 +1967,9 @@ impl Viewer {
         }
         let query = DisplayText::from_bytes(self.query.as_bytes(), false);
         let query = query.lines().next().unwrap_or_default();
+        if let Some(whole) = &self.whole {
+            return format!("  /{query}{}", self.whole_state(whole));
+        }
         if self.total == 0 {
             return format!("  /{query} no matches");
         }
@@ -1743,11 +1983,66 @@ impl Viewer {
     }
 }
 
+impl Viewer {
+    /// The header's whole-log search part (tui spec, "Progress"): the
+    /// count, `+` while it can grow, then how the search stands.
+    fn whole_state(&self, whole: &Whole) -> String {
+        let total = whole.total();
+        let plus = if whole.running() { "+" } else { "" };
+        let progress = if whole.failed() {
+            "  search stopped: read error".to_string()
+        } else if whole.capped() {
+            format!("  stopped at {} matches", thousands(crate::source::MATCHES))
+        } else if whole.running() {
+            match whole.back() {
+                Some(back) => format!("  searching… {back} back"),
+                None => "  searching…".to_string(),
+            }
+        } else {
+            String::new()
+        };
+        if total == 0 {
+            return if whole.running() {
+                progress
+            } else {
+                format!(" no matches{progress}")
+            };
+        }
+        let at = self
+            .current
+            .and_then(|(entry, k)| match self.entries.get(entry) {
+                Some(Entry::Line(line, _, _)) => whole
+                    .index_of(&line.position)
+                    .map(|i| whole.count_before(i) + k + 1),
+                _ => None,
+            });
+        match at {
+            Some(at) => format!(" {at}/{total}{plus}{progress}"),
+            None => format!(" -/{total}{plus}{progress}"),
+        }
+    }
+}
+
+/// `n` with a comma between thousands, as the header shows the cap.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 impl App for Viewer {
     fn input(&mut self, input: Input) -> Flow {
         match input {
             Input::Key(key) => {
-                // The save's notice goes with the next key.
+                // The save's notice goes with the next key, and so does a
+                // jump waiting for the search (`n` waits again).
+                self.waiting = None;
                 let cleared = self.saved.take().is_some();
                 match self.key(key) {
                     Flow::Unchanged if cleared => Flow::Redraw,

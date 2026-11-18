@@ -14,6 +14,7 @@ use sb_cli_core::theme::{Palette, Profile, Theme};
 
 use super::*;
 use crate::ahead::Ahead;
+use crate::source::{Found, Order, SearchEnd, Side};
 use crate::testing::{FakeSource, fake_source, line, position};
 
 struct Harness {
@@ -113,6 +114,37 @@ impl Harness {
             .skip(1)
             .filter(|row| !row.is_empty())
             .collect()
+    }
+}
+
+impl Harness {
+    /// The source answers the viewer's last search: the older side's
+    /// matches at `older` (nearest first), then its end.
+    fn search_answered(&mut self, older: &[u64]) {
+        let id = self
+            .requests()
+            .into_iter()
+            .rev()
+            .find_map(|r| match r {
+                Request::Search(search) => Some(search.id),
+                _ => None,
+            })
+            .expect("a search asked for");
+        self.send(Event::Found {
+            search: id,
+            side: Side::Older,
+            order: Order::NearestFirst,
+            found: older
+                .iter()
+                .map(|&n| Found {
+                    position: position(n),
+                    time: None,
+                    count: 1,
+                })
+                .collect(),
+            reached: None,
+            end: Some(SearchEnd::Done),
+        });
     }
 }
 
@@ -1044,8 +1076,10 @@ fn an_older_page_moves_the_current_match_along() {
     h.requests();
     h.send(tail(40..50, true));
     h.search("m4");
+    // The whole-log search found m4 before the buffer.
+    h.search_answered(&[4]);
     h.key(KeyCode::Char('N'));
-    assert!(h.header().contains("/m4 9/10"), "{}", h.header());
+    assert!(h.header().contains("/m4 10/11"), "{}", h.header());
     h.send(older(0..40, false));
     assert!(h.header().contains("/m4 10/11"), "{}", h.header());
     h.key(KeyCode::Char('n'));
@@ -1297,22 +1331,26 @@ fn the_current_match_follows_the_fronts_changes() {
     h.requests();
     h.send(tail(40..50, true));
     h.search("m4");
+    h.search_answered(&[]);
     assert!(h.header().contains("/m4 10/10"), "{}", h.header());
+    // The count is the log's (tui spec, "Whole-log search"): a match
+    // the buffer drops is still one.
     h.send(Event::Followed(lines(50..53)));
-    assert!(h.header().contains("/m4 9/9"), "{}", h.header());
+    assert!(h.header().contains("/m4 10/10"), "{}", h.header());
     assert_eq!(h.viewer.current, Some((8, 0)));
     h.send(Event::Followed(lines(53..55)));
-    assert!(h.header().contains("/m4 7/7"), "{}", h.header());
+    assert!(h.header().contains("/m4 10/10"), "{}", h.header());
     assert_eq!(h.viewer.current, Some((6, 0)));
     h.send(Event::Followed(lines(55..62)));
     assert_eq!(h.viewer.current, None, "gone with its entry");
-    assert!(h.header().contains("/m4 no matches"), "{}", h.header());
+    assert!(h.header().contains("/m4 -/10"), "{}", h.header());
 
     let mut h = open(60, 8, Limits::default());
     h.requests();
     h.send(tail(40..50, true));
     h.key(KeyCode::Char('g'));
     h.search("m45");
+    h.search_answered(&[]);
     assert_eq!(h.viewer.current, Some((5, 0)));
     h.send(older(30..40, true));
     assert_eq!(h.viewer.current, Some((15, 0)));
@@ -1330,7 +1368,9 @@ fn a_tail_page_picks_the_newest_match_again() {
     h.send(tail(40..50, false));
     h.search("m4");
     h.send(tail(40..48, false));
-    assert!(h.header().contains("/m4 8/8"), "{}", h.header());
+    // The newest match in the buffer, numbered among the log's ten.
+    assert_eq!(h.viewer.current, Some((7, 0)));
+    assert!(h.header().contains("/m4 8/10"), "{}", h.header());
 }
 
 // --- pasteable output ---
@@ -2451,4 +2491,294 @@ fn a_paste_goes_into_the_search_line_whole() {
     assert_eq!(line.lines(), ["m4"]);
     h.key(KeyCode::Enter);
     assert!(h.header().contains("/m4 11/11"), "{}", h.header());
+}
+
+// --- the whole-log search (tui spec, "Whole-log search, save and print") ---
+
+/// The searches the viewer asked for since the last look, and whether it
+/// asked to stop one.
+fn searches(requests: &[Request]) -> (Vec<Search>, usize) {
+    let asked = requests
+        .iter()
+        .filter_map(|r| match r {
+            Request::Search(search) => Some(search.clone()),
+            _ => None,
+        })
+        .collect();
+    let stops = requests
+        .iter()
+        .filter(|r| matches!(r, Request::StopSearch))
+        .count();
+    (asked, stops)
+}
+
+/// The jumps the viewer asked for since the last look (paging requests
+/// around them left out).
+fn jumps(requests: &[Request]) -> Vec<Request> {
+    requests
+        .iter()
+        .filter(|r| matches!(r, Request::Around(_)))
+        .cloned()
+        .collect()
+}
+
+fn found_at(ns: &[u64]) -> Vec<Found> {
+    ns.iter()
+        .map(|&n| Found {
+            position: position(n),
+            time: None,
+            count: 1,
+        })
+        .collect()
+}
+
+/// A step of the search `id`'s `side`.
+fn step(id: u64, side: Side, order: Order, ns: &[u64], end: Option<SearchEnd>) -> Event {
+    Event::Found {
+        search: id,
+        side,
+        order,
+        found: found_at(ns),
+        reached: None,
+        end,
+    }
+}
+
+/// A jump's page around `at`: lines `range`, `at`'s message `hit`.
+fn around(range: std::ops::Range<u64>, at: u64, hit: &str) -> Event {
+    let ls: Vec<Line> = range
+        .map(|n| {
+            if n == at {
+                line(n, hit)
+            } else {
+                line(n, &format!("m{n}"))
+            }
+        })
+        .collect();
+    Event::Page {
+        kind: PageKind::Around,
+        oldest: ls.first().map(|l| l.position.clone()),
+        newest: ls.last().map(|l| l.position.clone()),
+        lines: ls,
+        more_older: true,
+        more_newer: true,
+    }
+}
+
+/// Enter starts the whole-log search: the older side from the buffer's
+/// oldest edge, the newer side not while following; the source counts
+/// with the screen's own match. Esc and a new query stop it.
+#[test]
+fn a_search_asks_the_source_to_read_the_rest_of_the_log() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m4");
+    let (asked, stops) = searches(&h.requests());
+    assert_eq!(stops, 0);
+    let [search] = &asked[..] else {
+        panic!("one search: {asked:?}")
+    };
+    assert_eq!(search.older, Some(position(40)));
+    assert_eq!(search.newer, None, "following: nothing newer to read");
+    assert_eq!(search.matcher.count(&line(3, "m4 m4")), 2);
+    assert!(
+        h.header().contains("/m4 10/10+  searching…"),
+        "{}",
+        h.header()
+    );
+    h.search("m45");
+    let (asked, stops) = searches(&h.requests());
+    assert_eq!((asked.len(), stops), (1, 1));
+    assert_eq!(asked[0].id, search.id + 1);
+    // A step of the first search is dropped.
+    h.send(step(
+        search.id,
+        Side::Older,
+        Order::NearestFirst,
+        &[4],
+        None,
+    ));
+    assert!(h.header().contains("/m45 1/1+"), "{}", h.header());
+    h.key(KeyCode::Esc);
+    assert_eq!(searches(&h.requests()).1, 1);
+    assert!(!h.header().contains("/m45"), "{}", h.header());
+}
+
+/// Paged away from the end, the newer side is read too.
+#[test]
+fn a_search_off_the_end_reads_the_newer_side() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Char('f'));
+    h.send(around(20..30, 25, "x"));
+    h.requests();
+    h.search("x");
+    let (asked, _) = searches(&h.requests());
+    assert_eq!(asked[0].older, Some(position(20)));
+    assert_eq!(asked[0].newer, Some(position(29)));
+}
+
+/// `N` past the buffer: the older side's nearest match, its
+/// surroundings asked of the source, the buffer starting again there,
+/// not following, the match current and numbered among the log's.
+#[test]
+fn n_past_the_buffer_loads_the_matchs_surroundings() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m45");
+    let id = searches(&h.requests()).0[0].id;
+    h.send(step(id, Side::Older, Order::NearestFirst, &[20, 10], None));
+    assert!(h.header().contains("/m45 3/3+"), "{}", h.header());
+    h.key(KeyCode::Char('N'));
+    assert_eq!(jumps(&h.requests()), [Request::Around(position(20))]);
+    h.send(around(15..25, 20, "the m45 before"));
+    assert!(!h.viewer.following());
+    assert_eq!(h.viewer.current, Some((5, 0)));
+    assert!(h.header().contains("/m45 2/3+"), "{}", h.header());
+    assert!(h.log()[0].contains("the m45 before"), "{:?}", h.log());
+    // And on to the next older one.
+    h.key(KeyCode::Char('N'));
+    assert_eq!(jumps(&h.requests()), [Request::Around(position(10))]);
+    h.send(around(5..15, 10, "m45 first"));
+    assert!(h.header().contains("/m45 1/3+"), "{}", h.header());
+    // Back the other way: the match after this buffer.
+    h.key(KeyCode::Char('n'));
+    assert_eq!(jumps(&h.requests()), [Request::Around(position(20))]);
+}
+
+/// A match not read yet is waited for: `N` with the older side sending
+/// farthest first waits for its end; another key gives up the wait; past
+/// the last match with the search done, nothing happens.
+#[test]
+fn a_jump_waits_for_a_match_not_read_yet() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m45");
+    let id = searches(&h.requests()).0[0].id;
+    h.send(step(id, Side::Older, Order::FarthestFirst, &[5, 10], None));
+    h.key(KeyCode::Char('N'));
+    assert_eq!(jumps(&h.requests()), [], "the nearest isn't known yet");
+    h.send(step(
+        id,
+        Side::Older,
+        Order::FarthestFirst,
+        &[20],
+        Some(SearchEnd::Done),
+    ));
+    assert_eq!(jumps(&h.requests()), [Request::Around(position(20))]);
+
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m45");
+    let id = searches(&h.requests()).0[0].id;
+    h.key(KeyCode::Char('N'));
+    h.key(KeyCode::Char('k'));
+    h.send(step(id, Side::Older, Order::NearestFirst, &[20], None));
+    assert_eq!(jumps(&h.requests()), [], "the wait was given up");
+    h.send(step(
+        id,
+        Side::Older,
+        Order::NearestFirst,
+        &[],
+        Some(SearchEnd::Done),
+    ));
+    h.key(KeyCode::Char('n'));
+    assert_eq!(jumps(&h.requests()), [], "past the last match");
+}
+
+/// The header's forms: how far back while reading, the cap, a failure.
+#[test]
+fn the_header_shows_how_the_search_stands() {
+    let mut h = open(90, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m45");
+    let id = searches(&h.requests()).0[0].id;
+    let two_days = Timestamp::now() - jiff::SignedDuration::from_hours(49);
+    h.send(Event::Found {
+        search: id,
+        side: Side::Older,
+        order: Order::NearestFirst,
+        found: found_at(&[20]),
+        reached: Some(two_days),
+        end: None,
+    });
+    assert!(
+        h.header().contains("/m45 2/2+  searching… 2 days back"),
+        "{}",
+        h.header()
+    );
+    h.send(step(
+        id,
+        Side::Older,
+        Order::NearestFirst,
+        &[],
+        Some(SearchEnd::Capped),
+    ));
+    assert!(
+        h.header().contains("/m45 2/2  stopped at 10,000 matches"),
+        "{}",
+        h.header()
+    );
+    h.search("m44");
+    let id = searches(&h.requests()).0[0].id;
+    h.send(step(
+        id,
+        Side::Older,
+        Order::NearestFirst,
+        &[],
+        Some(SearchEnd::Failed("x".into())),
+    ));
+    assert!(
+        h.header().contains("/m44 1/1  search stopped: read error"),
+        "{}",
+        h.header()
+    );
+    h.search("zz");
+    let id = searches(&h.requests()).0[0].id;
+    assert!(h.header().contains("/zz  searching…"), "{}", h.header());
+    h.send(step(
+        id,
+        Side::Older,
+        Order::NearestFirst,
+        &[],
+        Some(SearchEnd::Done),
+    ));
+    assert!(h.header().contains("/zz no matches"), "{}", h.header());
+}
+
+/// `t` changes what the match covers: the search counts again and
+/// reads the log again, the view kept.
+#[test]
+fn t_starts_the_search_again() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m4");
+    let first = searches(&h.requests()).0[0].id;
+    h.key(KeyCode::Char('t'));
+    let (asked, stops) = searches(&h.requests());
+    assert_eq!((asked.len(), stops), (1, 1));
+    assert_eq!(asked[0].id, first + 1);
+}
+
+/// While following, the follow's new matches join the count.
+#[test]
+fn the_follows_matches_join_the_count() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m4");
+    h.search_answered(&[4]);
+    assert!(h.header().contains("/m4 11/11"), "{}", h.header());
+    h.send(Event::Followed(vec![
+        line(50, "m4 again"),
+        line(51, "none"),
+    ]));
+    assert!(h.header().contains("/12"), "{}", h.header());
 }

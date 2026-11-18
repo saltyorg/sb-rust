@@ -134,6 +134,11 @@ pub enum Request {
     StopSearch,
 }
 
+/// The most matches a side of a search keeps (tui spec, "Matches
+/// kept"): the sources stop a side sending nearest first there, and the
+/// viewer keeps the nearest of a side sending farthest first.
+pub const MATCHES: usize = 10_000;
+
 /// A whole-log search: its id, the viewer's match, and where each side
 /// starts (`None`: that side isn't read).
 #[derive(Clone, Debug, PartialEq, Eq)]
