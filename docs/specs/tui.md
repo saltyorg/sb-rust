@@ -188,6 +188,11 @@ docs/community/support.md:34) and sb-go's screens can't give.
 - **Scrolling** moves the view by screen rows, with no selection cursor
   (proto-logs):
   - ↑/k, ↓/j, the wheel (3 rows), PgUp/`u`, PgDn/`d`, Home/`g`, End/`G`.
+    *Amended 2026-11-18 (the maintainer; "Keys: one map for every
+    screen"):* Home/`g` jumps to the earliest entry of the whole log (the
+    journal's first entry for the source, or the container log's start),
+    not the oldest loaded line; End/`G` jumps to the newest and resumes
+    following. Built on the viewer side after whole-log search lands.
   - Scrolling up pauses following; End, `G` or `f` resumes it, and so
     does reaching the bottom.
   - `w` toggles wrap, on by default. With wrap off, ←/→, Shift+wheel and
@@ -1938,7 +1943,7 @@ and the hint strings):
 |---|---|---|
 | ↑ ↓, `k` `j` | move one: the selection, or the text by a row | — |
 | PgUp PgDn, `b` Space | a page up, down | `b` and Space join the picker, the viewer, the edit picker and the fact editor (less's keys, and sb-go's viewer's and announcement viewer's); Space no longer presses the restore screen's Continue |
-| Home End, `g` `G` | first, last (the viewer: oldest loaded; End and `G` follow) | `g` `G` join the pickers and the fact editor; Home End and the page keys join the edit picker |
+| Home End, `g` `G` | first, last of what the screen shows; in the log viewer, Home and `g` the earliest entry of the whole log (the journal's first entry for the source, or the start of the container's log), not the oldest loaded line, and End and `G` the newest, following again (the maintainer, 2026-11-18; the jump is built once whole-log search lands) | `g` `G` join the pickers and the fact editor; Home End and the page keys join the edit picker |
 | ← →, `h` `l` | the direction they point (rule 7) | `h` `l` come back (sb-go's, in the viewer and the announcement viewer) and join the fact editor; restore's ← → move to the previous, next file, as the announcement viewer's |
 | Enter | open or do the selected thing | — |
 | Tab, Shift-Tab | next, previous part: the picker's kind, the restore screen's focus, the fact editor's search box and page | Shift-Tab joins the picker (the kind backwards) |
@@ -2095,7 +2100,7 @@ app  service  following
  │  ↑ ↓  k j      a line                   f F        follow on, off          │
  │  PgUp PgDn     a page                   w          wrap on, off            │
  │  b Space       a page up, down          t          time, origin on, off    │
- │  Home End g G  top; bottom follows                                         │
+ │  Home End g G  log's start; end follows                                    │
  │  ← →  h l      sideways (wrap off)     Save                                │
  │                                         s Ctrl+S   save to a file          │
  │ Find                                    p          print it and quit       │
@@ -2122,7 +2127,7 @@ app  service  following
  │  ↑ ↓  k j      a line                        █
  │  PgUp PgDn     a page                        █
  │  b Space       a page up, down               █
- │  Home End g G  top; bottom follows           █
+ │  Home End g G  log's start; end follows      █
  │  ← →  h l      sideways (wrap off)           █
  │                                              █
  │ Find                                         █
