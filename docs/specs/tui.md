@@ -218,6 +218,8 @@ docs/community/support.md:34) and sb-go's screens can't give.
   next and previous match and pause following; a search while following
   starts at the newest match (proto-logs' fix). The header shows `3/17`.
   Esc clears the search. The query resets when another source opens.
+  The search also reads the rest of the log in the background
+  ("Whole-log search, save and print" below).
 - **Follow:** `f` toggles it. Turning it on with the newest line not
   loaded loads the tail first.
 - **Pasteable output** (decided.md A-Q3):
@@ -233,7 +235,8 @@ docs/community/support.md:34) and sb-go's screens can't give.
   - `p` leaves the screen and writes the loaded buffer, plain, to stdout,
     then the same review line to stderr, and exits 0.
   - Both write only what is loaded: the notice says so, and PgUp loads
-    more first. No automatic redaction (journal spec, Scope: its own
+    more first. Superseded: both write the whole log ("Whole-log
+    search, save and print" below). No automatic redaction (journal spec, Scope: its own
     decision). OSC 52 copying is later.
 - **Leaving:** Esc goes back to the picker (the source's stream is
   stopped and its follow freed); `q` quits, exit 0; Ctrl-C quits, exit
@@ -452,8 +455,7 @@ Docker containers"; the contract test lists it as removed.)
     `DisplayText`) for stdout that isn't a terminal (ops spec, `update`,
     decisions 24 and 26). Its section is "The announcement viewer"
     below.
-- **Later for the viewer:** regex search; searching the whole journal
-  (sb-journal's "budgeted, resumable search" slice); OSC 52 copy
+- **Later for the viewer:** regex search; OSC 52 copy
   (crossterm `osc52`); journal priorities and unit events from
   sb-journal's later slices; light themes.
 - **Not doing:** a source named on the command line; a Recent section;
@@ -806,10 +808,171 @@ no real systemctl.
   to 500 lines (sb-docker's `logs::older`): bounded by what the
   container logged in the window, at most Saltbox's 30 MiB of rotated
   log (M73's security pass).
-- **Save and print give the loaded part only;** a complete log needs
-  paging back first.
+- **Save and print give at most the newest 256 MiB** of the log
+  ("Whole-log search, save and print" below).
 - **Services have no live signal:** a change shows within the 5 s
   refresh (no D-Bus dependency, proto-logs).
+
+## Whole-log search, save and print (the log viewer)
+
+Status: approved by the maintainer as drafted (2026-11-18, the six
+decisions below). It extends
+"The viewer" above (Search, Pasteable output) and takes the journal
+spec's "budgeted, resumable search" slice (journal spec, "Search").
+
+### Objective
+
+A search in `sb logs` or `sb docker logs` reaches back through the
+whole of what the source holds: the unit's whole journal (as `journalctl
+-u` with no `--since` would read it), or the container's whole log (what
+the daemon still keeps). It runs in the background, finds matches
+outside the loaded part, jumps to each in turn, and loads a match's
+surroundings when it jumps there. The screen stays live while it runs.
+Save and print cover the whole log too.
+
+**The rule:** viewing without a search costs what it costs today. No
+scan runs, the match list is empty, and no frame does more work than it
+does on main (measured, "Testing").
+
+### Behaviour
+
+- **Starting.** `/`, a query and Enter search the loaded buffer at once,
+  as today (smart-case substring over the line as the screen shows it,
+  `t`'s time and origin included when shown). The same Enter starts the
+  whole-log search: older than the buffer, from its oldest edge to the
+  start of the log, and, when the buffer doesn't reach the newest line,
+  newer, from its newest edge to the end. Each line outside the buffer
+  is matched exactly as a buffer line would be: the same `Line`, the
+  same 64 KiB record cap, the same `DisplayText` with colour off, the
+  same smart case.
+- **Progress** shows in the header, after the count:
+  - `3/17+  searching… 2 days back`: the age of the oldest entry the
+    search has read, from when it started, in whole minutes (`40 min`),
+    hours (`5 h`) or days (`2 days`). `+` while the count can still
+    grow.
+  - `3/17` alone when the whole log has been read.
+  - `3/10000+  stopped at 10,000 matches` at the cap (below).
+  - A read error ends that direction of the search with the source's
+    usual notice row (`couldn't read the log: …`), and the header says
+    `search stopped: read error`.
+- **`n` and `N`** go to the next newer and next older match, as today,
+  across the unloaded part too:
+  - Within the buffer, nothing changes.
+  - To a match outside it, the viewer asks the source for the match's
+    surroundings (a new `Request::Around(position)`): up to 250 entries
+    before it, the match, and up to 249 after it. The buffer starts
+    again with that page, as after a tail; paging, the start and end
+    markers and the buffer caps work as usual from there. Following
+    pauses, as `n` and `N` already do.
+  - When the next match in that direction isn't known yet, because the
+    search hasn't read that far, the key waits for it: the header shows
+    `searching…`, and the view jumps when the match arrives. Another
+    key cancels the wait.
+  - Past the last match the key does nothing, as today (no wrap).
+  - The count `3/17` numbers every match in log order, loaded or not.
+- **Following.** A search while following reads older only. New lines
+  are matched as they arrive, as today, and join the newest end of the
+  match list. A search started while following begins at the newest
+  match, as today.
+- **Cancelling.** Esc clears the search and stops its read, as it
+  clears the highlight today. A new query replaces the search and its
+  read. `t` (time and origin, which the match covers) restarts it.
+  Leaving the source stops it.
+- **Save (`s`) and print (`p`) cover the whole log,** oldest line
+  first, written as the source reads it and never held whole in memory:
+  - Save writes the same plain file as today (name, mode,
+    `create_new`). While it runs the notice row shows `saving… 2 days
+    back`, and Esc stops it, keeping what's written and saying so. It
+    ends with `saved the N lines of the whole log to <path>. Review it
+    for domains, IPs and tokens before sharing it.`
+  - Print leaves the screen, then streams the whole log to stdout and
+    the review line to stderr, and exits 0. Ctrl-C stops it (exit 130).
+  - Both stop at 256 MiB of text. When the log is larger, they keep the
+    newest 256 MiB: the source first steps back from the newest line,
+    counting, to find where to start. The notice and the stderr line
+    then say `the newest N lines (256 MiB) of the log`.
+  - The search's matches aren't involved: save and print write
+    everything, as today.
+
+### Budget, memory and threads
+
+The runtime is current-thread tokio (Assumption 5): the screen and the
+sources share one thread, so a search works in bounded steps and the
+screen runs between them.
+
+- **Journal.** Each step is one call of sb-journal's `Journal::search`
+  on the blocking pool (sb-host's `spawn_blocking` helper, as pages
+  are), off the screen's thread. A step reads at most 5,000 entries or
+  16 MiB of message bytes, whichever comes first, and returns the
+  matches' cursors and times and where to go on from. The source task
+  takes its next step only after serving any page or follow request
+  waiting, so paging and following go first. On the screen's thread a
+  step costs one event: its matches joined to the list.
+- **Docker.** The Engine API has no search and no index:
+  `/containers/{id}/logs` takes only `follow`, `stdout`, `stderr`,
+  `since`, `until`, `timestamps` and `tail` (bollard 0.21.1's
+  `LogsOptions`, bollard-stubs 1.53.1; Docker Engine API, ContainerLogs),
+  and the daemon reads its json-file log from the start for any `since`
+  (the platform note, "Both filters are one-sided"). So a search is one
+  streamed read: from the container's creation to the buffer's oldest
+  edge, and from its newest edge to the end when that's not loaded. Each
+  line is matched as it arrives and dropped, and only the matches'
+  positions are kept: sb holds one line at a time, at most the 64 KiB
+  record cap. The daemon's read is bounded by Saltbox's json-file
+  rotation, 10 MiB × 3 per container (Known limits). bollard's stream
+  is decoded on the screen's thread, so the read yields to the screen
+  after every 256 KiB of log text. A container's nearest older match is
+  known only when the read reaches the buffer, so an `N` waits for the
+  read to finish.
+- **Matches kept:** at most 10,000, each its position, time and count
+  (about 200 bytes for a journal cursor, so about 2 MiB). They are the
+  10,000 nearest the buffer: the journal search reads outward from the
+  buffer and stops there; the Docker read keeps the newest 10,000 of the
+  older part as it goes. The header then shows `stopped at 10,000
+  matches`.
+- **Frame budget:** the 5 ms per frame at 240×70 holds while a search
+  runs. A frame draws only the window, as today, and the count and
+  progress are a few header cells. The screen's per-step work is
+  bounded (one event, or at most 256 KiB of Docker text matched).
+- **The buffer's caps** (20,000 entries, 32 MiB) don't change. An
+  `Around` page is 500 entries at most.
+
+### Testing
+
+- **Journal fixtures** big enough that matches lie outside the loaded
+  500: sb-journal's `testing` writer makes a unit journal of 200,000
+  entries over several files and boots, with matches before and after
+  the window, several in one entry, one in a 64 KiB-cut entry's held
+  part and one in its cut part (not found, as on screen).
+- **Docker:** sb-docker's fake daemon serves a 30 MiB log with matches
+  through it, a TTY container, and a log that fails halfway.
+- **Viewer tests** (fake source, `testing`): `n` and `N` across the
+  unloaded part in both directions, the `Around` page and the buffer
+  starting again, the wait for a match not yet read and its cancel,
+  the cap, Esc and a new query stopping the read, `t` restarting it,
+  following while searching, and the header's forms.
+- **Frame cost:** the frame-cost test (lines measured per frame) runs
+  with a search going and stays flat. The release timing at 240×70
+  (size ADR) is taken before and after the change, with and without a
+  search, and both are recorded. No-search frames must not get slower.
+- **PTY tests:** `sb logs` on the journal fixture in a pseudo-terminal:
+  search, `N` to a match outside the window, the header's progress,
+  Esc; `s` and `p` on a log above the 256 MiB cap's test value (the cap
+  is a constant the test build lowers).
+- **Save and print:** the whole log in order, the cut at the cap keeping
+  the newest, Esc during a save, a read error halfway.
+
+### Decisions (the maintainer, 2026-11-18, approved as drafted)
+
+1. A search reads the whole log in the background; Enter starts it.
+2. `n` and `N` jump outside the buffer, and the buffer starts again
+   around the match (500 entries).
+3. The progress form `searching… 2 days back`.
+4. At most 10,000 matches, the nearest kept.
+5. Save and print write the whole log, cut at 256 MiB keeping the
+   newest; Esc stops a save.
+6. Docker searches by one streamed read, with no daemon-side search to
+   use; it's bounded by Saltbox's 30 MiB.
 
 ## Editors: `sb edit` and `sb fact`
 

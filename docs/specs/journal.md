@@ -666,7 +666,7 @@ as it does for journalctl.
 - invocations (the last run, the last failed run);
 - this boot;
 - since/until with a realtime bisect;
-- a budgeted, resumable search;
+- a budgeted, resumable search ("Search" below, approved 2026-11-18);
 - a boot list (FIELD objects);
 - several systemd units at once, such as a service and its timer. This
   is not log-picker.md's declined merged multi-source view.
@@ -680,6 +680,82 @@ as it does for journalctl.
 - redaction for export (its own decision);
 - docker logs;
 - tokio.
+
+### Search (the "budgeted, resumable search" slice)
+
+Status: approved with the tui spec's "Whole-log search, save and
+print" (the maintainer, 2026-11-18).
+
+The log viewer's whole-journal search reads a unit's journal outward
+from what it has loaded, in steps that each fit a budget, and goes on
+from where the last step stopped. The crate scans and the caller
+matches, so the match is the viewer's own (its screen text and smart
+case) and the crate learns nothing about display.
+
+```rust
+pub enum Position { Tail, Before(Cursor), After(Cursor), From(Cursor) }
+
+/// How much one step may read: entries examined and message bytes,
+/// whichever runs out first; built through a constructor that caps both.
+pub struct Budget { /* private */ }
+
+pub struct SearchStep {
+    /// The matching entries in the order read: newest first going back
+    /// (`Before`), oldest first going on (`After`).
+    pub hits: Vec<Hit>,
+    /// Where the next step starts; `None` when the step reached the end
+    /// of the journal in its direction.
+    pub resume: Option<Position>,
+    /// The last entry examined's time, for the caller's progress.
+    pub reached: Option<jiff::Timestamp>,
+    pub errors: ReadErrors,
+}
+
+pub struct Hit {
+    pub cursor: Cursor,
+    pub realtime: Option<jiff::Timestamp>,
+    /// What `matches` returned for it (the viewer's match count).
+    pub count: usize,
+}
+
+impl Journal {
+    /// Entries of `q` from `from` (`Before` or `After`), each given to
+    /// `matches`, until `budget` runs out or the journal ends. An entry
+    /// for which `matches` returns more than 0 is a hit. `Tail` and
+    /// `From` are refused (`SearchStep` with no hits and `resume` as
+    /// given).
+    pub fn search(
+        &self,
+        q: &Query,
+        from: &Position,
+        budget: &Budget,
+        limits: &Limits,
+        matches: &mut dyn FnMut(&Record) -> usize,
+    ) -> SearchStep;
+}
+```
+
+- **The same reading as `page`:** the same file listing, the boot order
+  (decision 11), the cycle guard, the output limit per entry and the
+  read errors (ten distinct, then a count). A search step and a page
+  over the same entries see the same ones in the same order (tested).
+- **`From(cursor)`** is new for `page`: the entry at the cursor and
+  those after it. The viewer's jump to a match reads `Before(c)` and
+  `From(c)` to load the match with its surroundings.
+- **Resumable:** `resume` is a `Before` or `After` of the last entry
+  examined, whether it matched or not, so the next step neither repeats
+  nor skips one. No descriptor is held between steps, as for `page`.
+- **The budget's defaults** (the viewer's): 5,000 entries or 16 MiB of
+  message bytes per step; a step is measured on the release build to
+  stay under 20 ms on the blocking pool (recorded with the frame
+  timings).
+- **No regex and no matching in the crate:** the matcher is the
+  caller's (Scope, Out: regex).
+- **Tests:** on the testing writer's journals: a step over each file and
+  boot boundary, resume without gaps or repeats on 200,000 entries in
+  steps of every budget from 1 entry up, the budget's byte limit on a
+  large entry, `From` against `Before` and `After`, read errors in a
+  step, and the same entries as `page`.
 
 ### Capability map correction
 
