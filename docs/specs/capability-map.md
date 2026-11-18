@@ -139,8 +139,9 @@ Rust libraries in place of sb-go's internals.
       otherwise the user's state directory. To be settled in the spec, with
       file permissions that keep the logs root-only.
     - **Never logged:** secrets. That means fact values, credentials and
-      tokens, and anything the fact editor masks. The secret check is shared
-      with the fact editor's masking.
+      tokens, and any value sb-config's key-name rule
+      (`facts::secret::is_secret_key`) calls secret. *Amended 2026-11-18:*
+      the screens no longer mask; the rule is for logged text only.
 
 ## Assumptions (still open to correction)
 
@@ -254,7 +255,7 @@ GitHub API (last push, archived flag).
 | `config` | Saltbox YAML: strict schema loading (drift fails loudly), position-carrying validation collecting all issues, `pattern` and `additionalProperties` support, `validate-config`; facts with a line-preserving writer (round-trip tests), locking and drift detection | cli-core, term-ui (validate-config); exec, host, ansible, release from the facts half and `sb update` on (config spec) | saltbox, facts |
 | `docker` | ps, the container list (kept live by the event stream) and log streams via bollard; start/stop/restart via the Saltbox Docker controller's HTTP API after a `systemctl` check (docker spec) | cli-core, term-ui; exec and an HTTP client from start/stop/restart on | cmd/docker* |
 | `motd` | System facts (/proc, sysfs, syscalls), packages, logins, disks, services, containers and Traefik, plus media-server and downloader providers (thin reqwest clients), collected in parallel under the login's time budget ([motd spec](motd.md)). *Amended 2026-11-13 by the motd spec.* | cli-core, term-ui, exec, host, config, docker | motd |
-| `tui` | ratatui screens: one shared streaming log viewer (docker and systemd) with an inline fallback; fact editor (modal editor, masked secrets, mouse); edit picker; announcements viewer (tui-markdown, announcement list, tui-scrollview). Mouse via recorded layout rects on all screens ([tui spec](tui.md)) | docker, host, config | cmd/logs, cmd/dockerLogs, cmd/edit, factui, saltbox/announcements |
+| `tui` | ratatui screens: one shared streaming log viewer (docker and systemd) with an inline fallback; fact editor (modal editor, mouse); edit picker; announcements viewer (tui-markdown, announcement list, tui-scrollview). Mouse via recorded layout rects on all screens ([tui spec](tui.md)) | docker, host, config | cmd/logs, cmd/dockerLogs, cmd/edit, factui, saltbox/announcements |
 | `ops` | Workflow commands: setup, update, branch, branch-sandbox, reinstall-*, update-venv, restore, diag, bench, gha ([ops spec](ops.md)) | all of the above as needed | remaining cmd/* |
 | `completion` | Dynamic completion via `CompleteEnv` (one tag completer reading the tag cache); install writes the generated per-shell registration stub ([completion spec](completion.md)) | cli-core, exec, term-ui, ansible; deny.toml's wrappers follow. *Amended 2026-11-13 by the completion spec.* | completion, cmd/tag_completion |
 

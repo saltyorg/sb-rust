@@ -18,8 +18,8 @@ announcement viewer is the third ("The announcement viewer", written
 (maintainer): `sb docker logs` is removed; `sb logs` is the one entry
 point (decision 1).* It was built as the picker filtered to containers
 (M69, M70); the text below describes `sb logs` alone. "Keys: one map
-for every screen" (a draft of 2026-11-18, for approval) aligns the keys
-and hints of every screen.
+for every screen" (approved 2026-11-18) aligns the keys and hints of
+every screen.
 
 The behaviour comes from sb-go 35a7acc (2026-10-28), `cmd/logs.go`,
 `cmd/dockerLogs.go` and `host/systemd.go`, redesigned as capability map
@@ -1084,7 +1084,9 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     opens matching apps. The page opens expanded when it fits, otherwise
     folded to app names (threshold settled in the manual check).
   - Buttons along the bottom, each showing its key and clickable: Edit,
-    Add, Copy, Show/Hide, Delete/Keep, Save changes, Quit.
+    Add, Copy, Delete/Keep, Save changes, Keys, Quit (*amended
+    2026-11-18:* Show/Hide gone, Keys added; "Keys: one map for every
+    screen").
   - The "Unsaved changes" panel is always visible, with an undo per
     change. It sits on the right at 100 columns or more and at the bottom
     below that.
@@ -1113,34 +1115,27 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     Cancel (sb-go's Apply/Discard/Return).
   - Mouse: click selects, the wheel scrolls, right-click opens the menu.
     Shift-drag is left to the terminal for native selection.
-- **Secrets:**
-  - A value is masked (dots of a fixed length) when its key name contains
-    `pass`, `secret`, `token`, `key` or `api`, in any case (proto-facts
-    `looks_secret`). Facts have no schema, so validate-config's secret
-    paths don't apply. Masking too much is harmless. *Amended 2026-11-17
-    (ops decision 32):* the rule is shared with restore's viewer
-    (sb-config's `facts::secret::is_secret`), and gains the words
-    `apprise`, `auth`, `credential` and `hook`, and a value whose first
-    word is a URL with a user, a password, or a query parameter named by
-    a secret word or `sig`. *Amended 2026-11-18 (the maintainer, after a
-    survey of every `saltbox_facts` key in Saltbox and Sandbox):* it
-    gains the words `hmac` and `claim`, and `kid` and `eab` as a whole
-    word of the name (split at anything but a letter or digit), for
-    ZeroSSL's EAB key id `kid` and HMAC key `hmacencoded` and Sandbox
-    tracearr's `claim_code`.
-  - **Show** reveals the selected value only, until the selection moves.
-    **Copy** sends it through crossterm's OSC 52 `CopyToClipboard`
-    without showing it. The status line says "Copied <key> (if your
-    terminal allows it; otherwise use Show)", because success can't be
-    confirmed (the shorter lead-in fits 80 columns; the maintainer,
-    2026-11-16).
-  - The edit box for a masked value opens with the text hidden until
-    Show is pressed in it.
+- **Values** (*amended 2026-11-18, the maintainer:* values are shown, not
+  hidden): every value shows as it is, in the page, the
+  boxes, the changes panel and the dialogs. There is no masking and no
+  Show key. Until then a value was masked by its key's name, with a
+  per-value Show.
+  - **Copy** sends the selected value through crossterm's OSC 52
+    `CopyToClipboard`. The status line says "Copied <key> (if your
+    terminal allows it)", because success can't be confirmed.
   - Values are shown through term-ui's `DisplayText`, so control
     characters are escaped (as sb-go's `display()`).
-  - **Never logged:** any fact value, masked or not (map decision 11 names
-    "fact values"). The log records role, copy, key and change kind,
-    lock waits, drift, and each role's outcome (the Result line above).
+  - **Never logged:** any fact value (map decision 11 names "fact
+    values"). The log records role, copy, key and change kind, lock
+    waits, drift, and each role's outcome (the Result line above).
+  - **The key-name rule stays for text that leaves the screen.**
+    sb-config's `facts::secret::is_secret_key` (`pass`, `secret`,
+    `token`, `key`, `api`, `apprise`, `auth`, `credential`, `hook`,
+    `hmac`, `claim`, and `kid` or `eab` as a whole word of the name;
+    amended 2026-11-17 and 2026-11-18) marks validate-config's secret
+    paths in its issue lines and the run log, and the query values of
+    the URLs sb-config logs. "Keys: one map for every screen", "Secrets:
+    where masking stays", lists every place.
 - **Exit codes:** 0 on quit (with or without a save), 1 on an open error
   or no terminal, 130 or 143 on Ctrl+C or SIGTERM with the terminal
   restored. A Ctrl+C with staged changes discards them, and an
@@ -1170,8 +1165,8 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     Its keys change with it. The help text's "Changes are staged for review
     before applying" becomes "Changes are listed in the changes panel until
     you save".
-29. Credentials in facts are masked by key name, with per-value Show and
-    Copy. sb-go shows every value in plain text (factui/view.go:37-49).
+29. *Withdrawn 2026-11-18:* values show as they are, as in sb-go
+    (factui/view.go:37-49). Copy is Difference 31.
 30. Fact files over 1 MiB fail the open, naming the file (sb-go reads them
     whole).
 31. Copy to the clipboard (OSC 52) is new.
@@ -1215,12 +1210,11 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
 **In:** the edit picker, the eight subcommands (motd and providers since
 2026-11-18), editor choice and run, the
 post-edit validation and prompt; `sb fact` with its session, dialect,
-apply, screen, masking and mouse; sb-config's facts half and per-file
+apply, screen and mouse; sb-config's facts half and per-file
 validation API.
 
 **Later or out:**
 - Renaming keys, new apps, new copies (sb-go has none).
-- A "show all secrets" toggle (the idea's "Not Doing").
 - Editing a temp copy visudo-style (F-Q1 option C, not chosen).
 
 ### Tech Stack
@@ -1282,7 +1276,7 @@ crates/config/src/facts/        sb-config's facts half
   document.rs                   parser and line-preserving writer
   session.rs                    pinned dir, editor and role locks, catalog, drift
   apply.rs                      changes, prepare, commit, outcome
-  secret.rs                     is_secret_key (the masking list)
+  secret.rs                     is_secret_key (the key-name rule for logged values)
 crates/config/tests/fixtures/facts/  synthetic fact files (CRLF, continuations, comments)
 crates/sb/src/edit.rs           sb edit: target checks, editor choice, run, validation, prompt
 crates/tui/src/                 sb-tui (base shared with the log viewer)
@@ -1380,12 +1374,12 @@ the test's directory.
   a seam, not by crashing a disk).
 - **Fact screen:** `TestBackend` and insta snapshots of the page, the
   folded page, search with and without matches, the changes panel at
-  110 and 80 columns, every dialog, and the menu. Masking: a snapshot
-  with secret keys shows dots, and no rendered buffer contains a known
-  secret until Show. OSC 52: the emitted payload decodes to exactly the
+  110 and 80 columns, every dialog, and the menu. Values: a snapshot
+  with secret-named keys shows their values as they are (amended
+  2026-11-18). OSC 52: the emitted payload decodes to exactly the
   value.
 - **Log:** a known fact value in a fixture never appears in the run log
-  after browsing, Show, Copy, edit and save.
+  after browsing, Copy, edit and save.
 - **PTY smoke** (`portable-pty`): open, search, edit, save and quit
   against fixtures; the file has the intended bytes; the terminal is
   restored with no stray mouse bytes after `q`.
@@ -1402,7 +1396,7 @@ the test's directory.
   path; restore the terminal before the editor starts.
 - **Ask first:** another file in `edit`; a new
   crate outside Cargo.lock; a term-ui API change beyond the prompts;
-  changing the masking list; any change to how sb takes Saltbox's lock.
+  changing the key-name rule for logged values; any change to how sb takes Saltbox's lock.
 - **Never:** write a YAML config file from sb (the editor writes it);
   touch `saltbox.fact`; follow a symlink in the facts directory; run the
   credential network checks from `edit`; read or change a real Saltbox
@@ -1442,8 +1436,9 @@ the test's directory.
     kept), Failed and Unattempted.
 26. Adding a key to an existing copy writes it, and the limits refuse
     bad names before staging.
-27. Secret-looking keys render masked; Show reveals one value; Copy's
-    OSC 52 payload is the value; no known fact value is in any log.
+27. Every value shows as it is, secret-named keys too (amended
+    2026-11-18); Copy's OSC 52 payload is the value; no known fact value
+    is in any log.
 28. The manual two-emulator check is done and the maintainer has looked
     at the picker and the fact editor.
 
@@ -1477,9 +1472,10 @@ the test's directory.
     (a failed step's command exits 1, term-ui criterion 4).
 31. **The fact editor is the reviewed settings page.** Source: brief F D7
     (docs/ideas/fact-editor.md; proto-facts' verdict; map decision 4).
-32. **Secrets in the fact editor are masked by key name; no fact value is
-    ever logged.** Source: brief F D8 (term-ui decision 8; map decision
-    11).
+32. **No fact value is ever logged.** Source: brief F D8 (term-ui
+    decision 8; map decision 11). *Amended 2026-11-18 (the maintainer):*
+    nothing is masked on screen; until then values were masked by key
+    name.
 33. **The facts data layer is sb-config's facts half, with sb-go's
     session semantics:** pinned directory fd, `.fact-editor.lock`,
     Saltbox's `<role>.ini.lock` at 50 ms for up to 30 s (taken at Save
@@ -1541,8 +1537,10 @@ the test's directory.
 
 ### Known limits
 
-- OSC 52 copy can't confirm success. The status line says so and points
-  to Show.
+- OSC 52 copy can't confirm success. The status line says so.
+- Values show as they are, so a frame left on a terminal without an
+  alternate screen (GNU screen's default) keeps them after sb exits (the
+  maintainer's choice, 2026-11-18).
 - A commit across several roles has no rollback. A failure leaves the
   earlier roles applied, and the outcome dialog says which.
 - A `;` line that doesn't continue a value (at column 0, say) is a
@@ -1555,8 +1553,9 @@ the test's directory.
   needs the Saltbox user, who usually has sudo anyway, so sb doesn't
   guard against it (2026-11-15, after the security
   review).
-- The masking list is a guess by name. A secret under another name (for
-  example `cookie`) shows until it is added to the list. Every secret
+- The key-name rule (for what is logged) is a guess by name. A secret
+  under another name (for example `cookie`) in a config file is quoted
+  in an issue line until it is added to the list. Every secret
   Saltbox's and Sandbox's roles stored through `saltbox_facts` on
   2026-11-18 is on it; a camel-case `eabKid` is not split, so its `kid`
   isn't a word.
@@ -1777,9 +1776,9 @@ modes.
   wrapped `Paragraph`, as the announcement's, with a line cursor: each
   line's first row from `Paragraph::line_count`, the offset moved to
   keep the cursor's rows in sight. Each line goes through term-ui's
-  `DisplayText` (colour off); a value whose key (before the first `:` or
-  `=`, a list's `- ` trimmed) or value is secret by the caller's rule
-  shows `••••••••` until `s` (the cursor's line) or `a` (all). Focus is
+  `DisplayText` (colour off) and shows as it is (*amended 2026-11-18,
+  the maintainer:* no masking, so no `s` or `a`; "Keys: one map for
+  every screen"). Focus is
   the menu, the content or Continue (Tab, Shift-Tab); the focused part's
   border or button is the accent's. The selected row is the Selected
   roles' bar, reverse video with colour off (decision 23's rule).
@@ -1792,9 +1791,9 @@ modes.
 
 ## Keys: one map for every screen
 
-*Draft, 2026-11-18, for the maintainer's approval; no code yet.* The
-maintainer's decision of 2026-11-18: the screens' keys are "properly
-aligned across the board". Each key has one meaning on every screen, a
+*Approved 2026-11-18, with the maintainer's answers to its five
+questions ("Decisions" at the end).* The maintainer's decision of
+2026-11-18: the screens' keys are "properly aligned across the board". Each key has one meaning on every screen, a
 hint row fits on every screen, and `?` shows every key. The motd layout
 and `sb logs <name>` were declined and are not part of this section.
 
@@ -1808,8 +1807,8 @@ keys from "Whole-log search, save and print" (approved
 ### Objective
 
 A Saltbox user who learns a key on one screen can use it on the next.
-No key that saves, shows or deletes on one screen does something else on
-another. A key pressed from habit never reveals a secret. At 50 columns
+No key that saves or deletes on one screen does something else on
+another. No screen hides a value, so no key reveals one. At 50 columns
 (a phone over SSH) every screen still shows how to get help and how to
 leave, and `?` lists the rest.
 
@@ -1903,10 +1902,12 @@ and the hint strings):
 3. **A dialog asks one question.** Its keys are its buttons, each printed
    on its button: Enter for the highlighted one, Esc for Cancel, `y`
    and `n` for a yes-or-no question. Nothing on the page under it acts.
-   A button letter never reveals, and a letter the page uses means the
-   same kind of thing in the dialog (the quit question's `d` discards).
-4. **Reveal is never on a key that saves, or has saved, anywhere** in sb
-   or sb-go.
+   A letter the page uses means the same kind of thing in the dialog
+   (the quit question's `d` discards).
+4. **No screen hides a value** (decision 2): the fact editor and the
+   restore screen show every value as it is, so there is no reveal key
+   and no masked box. Masking stays where text leaves the screen: the run
+   log, and output meant for sharing (Secrets, below).
 5. **Esc goes back one step:** it closes the open thing (the overlay, a
    menu, a dialog, a text line), clears a search or filter, or stops a
    running save. With nothing to close, it leaves the screen: the viewer
@@ -1916,7 +1917,7 @@ and the hint strings):
    announcements). With staged changes the fact editor asks first, as
    today.
 7. **Arrows point.** ← and →, and `h` and `l` with them, move in the
-   direction they show on what the screen holds (Question 3): the
+   direction they show on what the screen holds (decision 3): the
    viewer's text sideways, the fact editor's tree in and out, the split
    screens' list to the previous and next entry. All three are sb-go's,
    and so are `h` `l` in the viewer (bubbles `viewport`) and the
@@ -1947,12 +1948,9 @@ and the hint strings):
 
 | Key | Meaning | Screens | Change |
 |---|---|---|---|
-| `s`, Ctrl+S | save | viewer: the log to a file; fact editor: the staged changes (the save question) | fact editor: was `v`; `s` and Ctrl+S are sb-go's. Ctrl+S is new in the viewer (k9s's save key) |
-| `r` | reveal or hide the selected secret | fact editor (the `Reveal`/`Hide` button), restore (the cursor line) | was `s` in both (Question 2) |
-| `R` | reveal or hide every secret | restore | was `a` |
-| Ctrl+R | reveal or hide the text in a masked box | the fact editor's edit and value boxes | was Ctrl+S. It replaces ratatui-textarea's redo in a masked box only, where the text can't be read anyway |
+| `s`, Ctrl+S | save | viewer: the log to a file; fact editor: the staged changes (the save question) | fact editor: was `v`, and `s` showed a secret; `s` and Ctrl+S are sb-go's. Ctrl+S is new in the viewer (k9s's save key) and no longer reveals in the fact editor's boxes |
 | `c` | copy the selected value (OSC 52) | fact editor | — |
-| `e` `a` `d` `u` | edit, add, delete or keep, undo | fact editor | — (Question 1, option A) |
+| `e` `a` `d` `u` | edit, add, delete or keep, undo | fact editor | — (decision 1) |
 | `m`, Menu | the row's menu | fact editor | — |
 | `p` | print the log and quit | viewer | — |
 | `f`, `F` | follow on, off | viewer | `F` is new: less's follow key, which `journalctl`'s pager users know |
@@ -1961,12 +1959,11 @@ and the hint strings):
 
 **Dialogs** (rule 3): the save question `y`/Enter, `n`/Esc; the quit
 question `y`/Enter, `d`, `n`/Esc; waiting for Saltbox, `Cancel (Esc)`
-(was `c`); the drift dialog, `Reload (Enter)` and `Cancel (Esc)` (was `r`
-and `c`, with Question 2's option A; sb-go took Enter for reload too,
-`factui/update.go:184`); the
-outcome, `OK (Enter)`, closed by Enter, Esc or `q` as today. The fact
-editor's edit box reads `Enter keep · Alt+Enter new line · Ctrl+R
-reveal · Esc cancel`, so "save" means the file only.
+(was `c`, which copies); the drift dialog, `Reload (r)` as today (sb-go's
+key, and `r` means nothing else now that no key reveals) and `Cancel
+(Esc)` (was `c`); the outcome, `OK (Enter)`, closed by Enter, Esc or `q`
+as today. The fact editor's edit box reads `Enter keep · Alt+Enter new
+line · Esc cancel`, so "save" means the file only.
 
 **The whole-log keys** fit as they are: Esc stops a running save before
 it goes back (rule 5), and another key ends `n`'s wait for a match, as
@@ -1996,10 +1993,10 @@ that section says.
   own row above the footer, as today. A text line (filter, search)
   takes the footer's place while it's open, with its own hints, as
   today.
-- **The fact editor's buttons** are its footer: `Keys (?)` joins them
-  before `Quit (q)`. Narrow, the lowest buttons go first (Copy, Add,
-  Reveal, Delete, Edit), and `Save changes` becomes `Save` first, as
-  today. Every dropped button still works by its key, in the menu (`m`)
+- **The fact editor's buttons** are its footer: `Show/Hide` goes,
+  `Keys (?)` joins them before `Quit (q)`. Narrow, the lowest buttons go
+  first (Copy, Add, Delete, Edit), and `Save changes` becomes `Save`
+  first, as today. Every dropped button still works by its key, in the menu (`m`)
   and in the overlay.
 - **Widths** are display widths (ratatui's `Span::width`, as the picker
   measures its filter line today).
@@ -2033,8 +2030,8 @@ Edit picker
  50 |Enter edit · / filter · ↑↓ move    ? keys · q quit|
 
 Fact editor (the buttons)
-120 |  Edit (e)   Add (a)   Copy (c)   Reveal (r)   Delete (d)   Save changes (s)   Keys (?)   Quit (q)                      |
- 80 |  Edit (e)   Reveal (r)   Delete (d)   Save (s)   Keys (?)   Quit (q)           |
+120 |  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Keys (?)   Quit (q)                                   |
+ 80 |  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save (s)   Keys (?)   Quit (q)   |
  50 |  Edit (e)   Save (s)   Keys (?)   Quit (q)       |
 
 Announcements (sb update; sb announcements says q quit)
@@ -2043,9 +2040,9 @@ Announcements (sb update; sb announcements says q quit)
  50 |↑↓ choose · PgUp/PgDn scroll      ? keys · q close|
 
 Restore, the review
-120 |Enter open · r reveal · R reveal all · Tab part · ↑↓ move                                                ? keys · q quit|
- 80 |Enter open · r reveal · R reveal all · Tab part · ↑↓ move        ? keys · q quit|
- 50 |Enter open · r reveal              ? keys · q quit|
+120 |Enter open · Tab part · ← → file · ↑↓ move                                                               ? keys · q quit|
+ 80 |Enter open · Tab part · ← → file · ↑↓ move                       ? keys · q quit|
+ 50 |Enter open · Tab part · ← → file   ? keys · q quit|
 
 Restore, the form
 120 |Tab next field · Enter next (restores on the last)                                                  F1 keys · Esc cancel|
@@ -2135,11 +2132,11 @@ Esc back · / search · s save       ? keys · q quit
 The other overlays, by group: the log picker (Move; Find: `/`, Esc;
 Show: Tab, Shift-Tab kind; Leave: Enter open, Esc, `q`); the edit
 picker (Move; Find; Leave: Enter edit, `q`); the fact editor (Move, with
-← → `h` `l` to fold; Find; Change: `e` `a` `d` `u` `c`, `r` reveal, `m`
-menu; Save: `s` Ctrl+S; In a box: Enter keep, Alt+Enter new line, Ctrl+R
-reveal, Esc cancel; Leave); the announcement viewer (Move: ↑↓ ← → `h`
+← → `h` `l` to fold; Find; Change: `e` `a` `d` `u` `c`, `m` menu; Save:
+`s` Ctrl+S; In a box: Enter keep, Alt+Enter new line, Esc cancel;
+Leave); the announcement viewer (Move: ↑↓ ← → `h`
 `l` the entry, the page keys and Home End the text; Leave); the restore
-review (Move; Tab parts; `r` `R`; Enter, Esc; Leave).
+review (Move; Tab parts; Enter, Esc; Leave).
 
 ### Comparable tools and libraries
 
@@ -2184,9 +2181,9 @@ review (Move; Tab parts; `r` `R`; Enter, Esc; Leave).
   draws it today. The rule that drops hints to fit is ours (domain
   logic), with no library to follow.
 - **ratatui-textarea 0.9.3** maps Ctrl+R to redo, Ctrl+U to undo and
-  Ctrl+V and Alt+V to the page keys, and leaves Ctrl+S, Ctrl+T, Ctrl+O
-  unmapped ([key table](https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/index.html)).
-  The masked box's Ctrl+R replaces redo there only.
+  Ctrl+V and Alt+V to the page keys, and leaves Ctrl+S unmapped
+  ([key table](https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/index.html)).
+  sb's boxes add no Ctrl key of their own once Ctrl+S stops revealing.
 
 ### sb-go's keys
 
@@ -2198,7 +2195,7 @@ is sb's).
   add `b` and Space for a page, `h` `l` sideways and `u` `d` for half a
   page): ↑/`k`, ↓/`j`, ←/`h`, →/`l`, PgUp/`b`, PgDn/Space, `t`, `f`,
   Enter, Esc back, `q` quit, Ctrl-C. All kept; `b`, Space, `h` and `l`
-  come back. `u` and `d`, never in sb-go's hint row, go (Question 1).
+  come back. `u` and `d`, never in sb-go's hint row, go (decision 1).
 - **Logs picker** (bubbles `list` v2.2.1's defaults, filtering and help
   off): ↑↓ `k` `j`, PgUp PgDn `b`, Home End `g` `G` kept; `u`, `d`, `f`,
   `h`, `l`, ← and → as page keys not kept (`d` `u` are the fact
@@ -2231,9 +2228,9 @@ which only the maintainer's checks have used; sb-go is what users know.
 | Log picker | `?`, `/` filter (new in sb already), Shift-Tab; `u` `d` `f` `h` `l` no longer page | `g` `G` `b` Space, Shift-Tab, `?` added |
 | Log viewer | `u` `d` no longer page (PgUp PgDn, `b` Space do); keys in a footer | `b` Space `h` `l`, Ctrl+S, `F`, `?` added; `u` `d` gone; keys in a footer, one log row fewer |
 | Edit picker | `/` and `?` as before; `v` no longer leaves | page keys, Home End `g` `G`, `/`, `?` added |
-| Fact editor | `s` and Ctrl+S save again; Esc clears a search before it quits, as sb-go; `x`, `c` collapse, `[` `]` gone | `h` `l` fold, `g` `G` `b` Space, `?` added; **save is `s`, not `v`; reveal is `r`, not `s`**; Ctrl+R reveals in a box, not Ctrl+S; Esc clears a search first; dialogs cancel with Esc, not `c`; drift reloads on Enter, not `r` |
+| Fact editor | `s` and Ctrl+S save again; every value shows, as in sb-go; Esc clears a search before it quits, as sb-go; `x`, `c` collapse, `[` `]` gone | `h` `l` fold, `g` `G` `b` Space, `?` added; **save is `s`, not `v`; nothing is masked, and Show/Hide and the boxes' Ctrl+S are gone**; Esc clears a search first; dialogs cancel with Esc, not `c` |
 | Announcements | ← → `h` `l` move again; ↑↓ choose the entry | ← → `h` `l` added; `?` |
-| Restore | the form as sb-go | reveal `r` and `R`, not `s` and `a`; `c` gone (Enter on Continue, `q`, Esc); ← → previous, next file, not out of and into the pane; Space no longer presses Continue |
+| Restore | the form as sb-go | the files show as they are; `s`, `a` and `c` gone (Continue by Enter on it, `q`, Esc); ← → previous, next file, not out of and into the pane; Space no longer presses Continue |
 
 `v` does nothing anywhere afterwards, so a tester's old save habit costs
 nothing.
@@ -2253,9 +2250,9 @@ nothing.
   from 16 columns.
 - **The overlay:** snapshots at 80×24 and 50×19 for each screen; any
   key closes it without acting (`q` doesn't quit); the scroll at 50.
-- **Secrets:** in the fact editor and the restore review, `s`, `v`,
-  Ctrl+S and `a` never unmask a value; `r`, `R` and Ctrl+R do, and the
-  run log names the key as today.
+- **Values:** the fact page, its boxes, the changes panel, the drift
+  dialog and the restore pane show a secret-named value as it is; no
+  fact value and no restored file's content reaches the run log.
 - **PTY, through sb:** `sb logs` on a journal fixture (`?`, a key, `q`
   exits 0), `sb fact` on a fixture directory (`s` opens the save
   question), with `SB_LOG_DIR` in a temp directory.
@@ -2272,37 +2269,48 @@ nothing.
 ### Success criteria
 
 1. Every key in the map has one meaning on every screen (the table test).
-2. No key that saves anywhere, or saved in sb-go, reveals a secret.
+2. No screen masks a value, and no key reveals one; the run log holds
+   none.
 3. At 50 columns every screen shows `? keys` and how to leave; at 80
    the viewer shows `s save` and `p print`.
 4. `?` (F1 from a text box) lists every key of the screen, and only
    those.
 5. sb-go's keys work where this section says they're kept.
 
-### Questions for the maintainer
+### Secrets: where masking stays
 
-1. **`d` and `u`:** A (recommended) the viewer stops paging on `u` and
-   `d` (sb-go's half-page keys, never in its hint row; PgUp PgDn, `b`
-   and Space page),
-   and the fact editor keeps `d` delete and `u` undo (sb-go's `d`). B:
-   the viewer keeps `u` `d` (less's and `journalctl`'s half-page habit),
-   and the fact editor's delete moves to `D` and the Delete key, its
-   undo to `U`.
-2. **The reveal key:** A (recommended) `r`, "reveal", which has never
-   saved anywhere; the drift dialog's Reload moves to Enter. B: `v`,
-   "view", which saves on today's main, so a tester's habit would
-   reveal; the drift dialog keeps `r`.
-3. **Arrows by direction (rule 7):** A (recommended) keep ← → as the
-   direction on each screen (sideways, fold, previous and next entry),
-   all sb-go's, as the one declared exception to rule 1. B: one meaning
-   for ← →, sideways only: the fact editor folds with Enter alone and
-   the split screens drop ← → and `h` `l`.
-4. **Esc on a top screen:** A (recommended) Esc leaves when there is
-   nothing to close, as on every top screen today and in sb-go's
-   announcements and restore form. B: only `q` leaves; Esc never quits.
-5. **The tail's place:** A (recommended) `? keys · q quit` right-aligned
-   on every screen. B: `? keys` first on the left, as the UX research
-   suggested, `q quit` last.
+Decision 2 (values are shown, not hidden): the screens show
+every value as it is. Masking stays wherever text leaves the screen:
+
+| Where | What masks | Kept because |
+|---|---|---|
+| validate-config's and `sb edit`'s issue lines, printed and logged | `facts::secret::is_secret_key` inside sb-config's `secret::is_secret` and `rules::secret_paths` (a secret path's value never quoted) | the terminal's scrollback and the run log are shared for support |
+| sb-config's logged URLs | `is_secret_key` over a URL's query names (`http::loggable_url`) | the run log |
+| The run log | no fact value and no restored file's content is logged (map decision 11) | the run log |
+| term-ui's step output | `Line::secret` prints `[REDACTED]` unless `.shown()` | it stays in the scrollback and is pasted into support requests |
+| exec's child records | `Cmd::secret` | the run log |
+| The restore form's password fields | ratatui-textarea's `set_mask_char` | typed input, as any password prompt; not a value shown for review |
+
+Removed, with no user left: the fact editor's dots, Show and Hide,
+the boxes' mask and Ctrl+S, the drift dialog's dots; the restore pane's
+mask, `s` and `a`; and sb-config's `facts::secret::is_secret` and
+`is_secret_value` (the value rule, a URL with credentials), whose only
+caller was the restore pane. A frame left on a terminal without an
+alternate screen (GNU screen's default) now holds the values as shown;
+that is the maintainer's choice, recorded under Known limits.
+
+### Decisions (the maintainer, 2026-11-18)
+
+1. **`d` and `u`:** the viewer stops paging on them; the fact editor
+   keeps `d` delete and `u` undo (option A).
+2. **Reveal:** replaced. Neither `sb fact` nor restore's review hides a
+   value, so there is no reveal key; masking stays where text leaves the
+   screen ("Secrets: where masking stays"). The drift dialog keeps
+   `Reload (r)`.
+3. **Arrows:** ← → and `h` `l` keep a per-screen direction (option A).
+4. **Esc** leaves a top-level screen when nothing is open (option A).
+5. **The tail** `? keys · q quit` sits right-aligned on every screen
+   (option A).
 
 ## Verification notes
 
@@ -2602,9 +2610,8 @@ nothing.
 
 ## Open questions
 
-The key map's five questions ("Keys: one map for every screen",
-Questions for the maintainer) wait for the maintainer. Otherwise none:
-decided.md settled the brief's nine; decisions 18 to 20 follow from
+None. The key map's five questions were answered on 2026-11-18 ("Keys:
+one map for every screen", Decisions). decided.md settled the brief's nine; decisions 18 to 20 follow from
 recorded decisions. The editors' question (when `sb fact` takes a
 role's lock) was decided on 2026-11-13 from recorded rules: decision 38.
 

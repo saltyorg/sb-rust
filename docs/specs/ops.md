@@ -349,25 +349,18 @@ screen: the line form, as without a terminal.
   - The content: the file as placed, read-only, each line made safe,
     wrapped, scrolled with a line cursor (↑, ↓, PgUp, PgDn, Home, End,
     the wheel, a click on a line); Esc goes back to the menu.
-  - Secrets are masked (`key: ••••••••`) by the shared rule (below); `s`
-    shows the cursor line's value until the cursor moves, `a` shows all
-    of them until pressed again; the pane's title says when all show.
+  - Every line shows as it is, secrets included (*amended 2026-11-18,
+    the maintainer:* values are shown, not hidden; until then
+    secrets were masked, with `s` and `a` to show them).
   - Tab and Shift-Tab move between the menu, the content and Continue.
-    Continue (Enter on it, `c`, a click on it, or `q` and Esc in the
-    menu) closes the screen. Restore has no step after it, so Continue
+    Continue (Enter on it, a click on it, `q`, or Esc in the menu)
+    closes the screen (*amended 2026-11-18:* `c` copies elsewhere, so it
+    no longer continues; tui spec, "Keys: one map for every screen"). Restore has no step after it, so Continue
     ends sb restore; a later step of a flow would follow it.
-- **The masking rule** is sb-config's, shared with the fact editor
-  (`facts::secret::is_secret`): a key whose name, in any case, contains
-  `pass`, `secret`, `token`, `key`, `api`, `apprise`, `auth`,
-  `credential`, `hook`, `hmac` or `claim`, or has `kid` or `eab` as a
-  whole word (amended 2026-11-18, tui spec's Secrets), or a value whose
-  first word (a comment after it ignored) is a URL with a user or
-  password in it, or with a query parameter named by such a word or
-  `sig` (an Azure SAS signature). A bare URL, a list item's or a whole
-  line's, is judged as a value too.
-  When the screen closes, every shown value is hidden again and one more
-  frame drawn, so a terminal without an alternate screen (GNU screen's
-  default) keeps a masked frame. The run
+- **No masking on screen** (*amended 2026-11-18*). The masking rule this
+  bullet held (sb-config's `facts::secret::is_secret`, a key's name or a
+  URL with credentials) had the pane as its only user and goes with it,
+  and so does the masked last frame drawn when the screen closed. The run
   log never holds a restored file's content; a URL it logs drops its user
   and password and masks such query values (`http::loggable_url`).
 - **Leaving:** Ctrl-C ends sb with 130 at any time, quietly, as the
@@ -1046,7 +1039,7 @@ Every text from the file is escaped as sb's other output (cli-core's
 `restore`:
 9. On a terminal, a full-screen form and then a live list of the nine
    files, each row's outcome and reason as it comes, then a viewer of
-   the restored files with secrets masked and shown on demand, closed
+   the restored files as they are (amended 2026-11-18), closed
    by Continue; the final list printed after the screen closes. sb-go's
    full-screen form gave way to its lines (decision 32). With both flags
    given, the lines only, as sb-go's.
@@ -1459,9 +1452,10 @@ the real services.
   asserts that neither, nor the key, is in the run log, stdout or
   stderr.
 - **restore, the screen:** tui's unit tests on ratatui's `TestBackend`
-  (the fields, the checks, the masks, the list's updates, the viewer's
-  menu, content, cursor, `s` and `a`, failures not opened, Continue, the
-  mouse); sb-config's tests of the shared rule and `loggable_url`; on a
+  (the fields, the checks, the password fields' masks, the list's
+  updates, the viewer's menu, content shown as it is, cursor, failures
+  not opened, Continue, the mouse); sb-config's tests of
+  `loggable_url`; on a
   PTY (portable-pty and vt100): the form, the mismatch text, the list,
   the viewer and Continue, the final list after it, Esc's cancel, Ctrl-C
   in the form and mid-run ending 130, both flags giving the line form;
@@ -1876,7 +1870,9 @@ the real services.
     show it optionally on demand in the TUI": masked on screen with `s`
     and `a` to show them, one rule shared with the fact editor, which
     gains `apprise`, `auth`, `credential`, `hook` and URLs with
-    credentials. Both `--user` and `--password-file` given: no screen,
+    credentials. *Amended 2026-11-18 (the maintainer):* values are shown, not
+    hidden; the screen masks nothing, and logging still
+    masks. Both `--user` and `--password-file` given: no screen,
     the line form. Decided: "a terminal" is stdout's, as the
     log viewer's screen; Esc in the form keeps sb-go's cancel; the final
     list prints after the screen closes in the line form.
@@ -1974,11 +1970,9 @@ the real services.
   root could point it elsewhere. The root is the operator's (Saltbox's
   seed user's), so this is left as it is. Its copies of the file (the
   lines, the frames) aren't cleared; the file is on disk anyway.
-- The viewer masks by the key's name and a URL's credentials (the
-  shared rule): a secret under another name shows, such as a token in a
-  URL's path (an Apprise URL under a key that isn't `apprise`), a
-  flow mapping's values, or the lines of a block scalar under a secret
-  key. A file past 2,000 wrapped rows is cut there in the pane, as the
+- The viewer shows every value, so a frame left on a terminal without an
+  alternate screen (GNU screen's default) keeps them after sb exits (the
+  maintainer's choice, 2026-11-18). A file past 2,000 wrapped rows is cut there in the pane, as the
   announcement viewer's.
 - The form's fields are ratatui-textarea `String`s, not cleared on drop:
   sb takes the answers into `Zeroizing` buffers and empties the fields
