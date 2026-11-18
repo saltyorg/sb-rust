@@ -232,9 +232,12 @@ run one at a time. Each command decides in an exhaustive match
 
 - **Takes it:** `install`, `update`, `setup`, `gha`, `branch`,
   `branch-sandbox`, `self-update`, `update-venv`, `reinstall-venv`,
-  `reinstall-python`, `reinstall-facts`, `restore`.
+  `reinstall-python`, `reinstall-facts`, `restore`, and
+  `announcements preview --run-migrations`, which runs the migrations
+  as `update` does (ops decision 34).
 - **Never takes it:** the rest. `motd`, `list`, `logs`, `docker ps`,
-  `docker logs`, `validate-config`, `announcements`, `edit`, `fact`,
+  `docker logs`, `validate-config`, `announcements` (its `preview`
+  without `--run-migrations`, and `check`), `edit`, `fact`,
   `bench`, `completion` and `version` only read or are interactive;
   `motd` must never wait (pam_motd runs it at login). `diag` is left
   out: Saltbox's diag role only reports (debug output, a Cloudflare

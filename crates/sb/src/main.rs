@@ -1549,6 +1549,7 @@ mod tests {
             &["reinstall-python"],
             &["reinstall-facts"],
             &["restore"],
+            &["announcements", "preview", "--run-migrations"],
         ] {
             assert!(takes(args), "{args:?}");
         }
@@ -1563,6 +1564,8 @@ mod tests {
             &["docker", "restart"],
             &["validate-config"],
             &["announcements"],
+            &["announcements", "preview"],
+            &["announcements", "check"],
             &["edit", "settings"],
             &["fact"],
             &["bench"],

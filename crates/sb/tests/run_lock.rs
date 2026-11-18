@@ -142,6 +142,16 @@ impl World {
         }
     }
 
+    /// `sb <args>` on this test build, with git kept from looking above
+    /// the test's directory (`GIT_CEILING_DIRECTORIES`), so the Saltbox
+    /// root is no repository at all.
+    fn start_in_ceiling(&self, name: &str, args: &[&str]) -> Run {
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("sb"));
+        common::apply_sb_env(&mut cmd);
+        cmd.env("GIT_CEILING_DIRECTORIES", self.dir.path());
+        self.run(cmd, name, "", args)
+    }
+
     /// `sb install --no-cache <name>`, a locking command.
     fn install(&self, name: &str, mode: &str) -> Run {
         self.start(name, mode, &["install", "--no-cache", name])
@@ -232,6 +242,48 @@ fn a_read_only_command_is_never_blocked() {
     world.release();
     let (status, _, stderr) = holder.end();
     assert!(status.success(), "{stderr}");
+}
+
+/// `announcements preview` takes the lock only when it runs its
+/// migrations (`--run-migrations`), as update's migrations change the
+/// host; the dry preview never waits.
+#[test]
+fn a_preview_waits_only_when_it_runs_migrations() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let holder = world.install("first", "hold");
+    wait_for("the holder's playbook", || world.ran("first"));
+    let holder_pid = holder.pid();
+    // Saltbox's checkout only (never the host's Sandbox one), and git
+    // stopped at the test's directory, so no repository above it counts.
+    let preview = |name: &str, extra: &[&str]| {
+        let mut args = vec!["announcements", "preview", "--repo", "saltbox"];
+        args.extend_from_slice(extra);
+        world.start_in_ceiling(name, &args)
+    };
+    let (_, stdout, stderr) = preview("dry", &[]).end();
+    assert!(
+        !stderr.contains("another sb command is running"),
+        "{stdout}\n{stderr}"
+    );
+    let running = preview("running", &["--run-migrations"]);
+    wait_for("the waiting line", || {
+        running.stderr() == waiting(holder_pid)
+    });
+    world.release();
+    let (status, _, stderr) = holder.end();
+    assert!(status.success(), "{stderr}");
+    let (_, _, stderr) = running.end();
+    assert!(stderr.starts_with(&waiting(holder_pid)), "{stderr}");
+    // It took the lock once the holder was done.
+    let logged = world.logged();
+    assert_eq!(logged.matches("run lock taken").count(), 2, "{logged}");
+    assert!(
+        logged.contains("command=\"announcements preview\""),
+        "{logged}"
+    );
 }
 
 /// Ctrl-C while waiting ends sb by SIGINT (`$?` 130), before its command
