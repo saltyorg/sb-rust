@@ -73,6 +73,7 @@ fn small(page: usize) -> Settings {
     Settings {
         page,
         retry: Duration::from_millis(100),
+        ..Settings::default()
     }
 }
 
@@ -122,6 +123,7 @@ impl Viewer {
             } => Paged {
                 kind,
                 messages: messages(&lines),
+                lines,
                 oldest,
                 newest,
                 more_older,
@@ -151,6 +153,7 @@ impl Viewer {
 struct Paged {
     kind: PageKind,
     messages: Vec<String>,
+    lines: Vec<Line>,
     oldest: Option<Position>,
     newest: Option<Position>,
     more_older: bool,
@@ -451,6 +454,7 @@ async fn a_failing_follow_says_why_after_its_lines() {
         tail_failed: false,
         events: None,
         retry: None,
+        search: None,
     };
     adapter.follow_at(START);
     let line = LogLine {
@@ -653,4 +657,122 @@ async fn the_watch_ends_with_its_receiver() {
     drop(rx);
     engine.event(container_event("start", ID, NAME));
     within(task).await.expect("ended");
+}
+
+/// The viewer's stand-in match: one in a line whose number ends `0`.
+fn tens() -> Matcher {
+    Matcher::new(|line: &Line| usize::from(line.message.ends_with(b"0")))
+}
+
+impl Viewer {
+    /// One side's `Found` events for `search` until it ends: the matches'
+    /// messages, the steps, the order and how it ended. A match's entry
+    /// is read by its position from `by`.
+    async fn found(
+        &mut self,
+        by: &HashMap<Position, String>,
+        search: u64,
+        side: Side,
+    ) -> (Vec<String>, usize, Order, SearchEnd) {
+        let (mut shown, mut steps) = (Vec::new(), 0);
+        loop {
+            match self.next().await {
+                Event::Found {
+                    search: id,
+                    side: s,
+                    order,
+                    found,
+                    end,
+                    ..
+                } if id == search && s == side => {
+                    steps += 1;
+                    shown.extend(found.iter().map(|f| by[&f.position].clone()));
+                    if let Some(end) = end {
+                        return (shown, steps, order, end);
+                    }
+                }
+                other => panic!("not this side's step: {other:?}"),
+            }
+        }
+    }
+}
+
+/// Every line's message by its position, from pages back to the start.
+async fn by_position(v: &mut Viewer) -> HashMap<Position, String> {
+    let tail = v.page(Request::Tail).await;
+    let mut lines = tail.lines;
+    let mut edge = tail.oldest;
+    while let Some(at) = edge {
+        let older = v.page(Request::Older(at)).await;
+        edge = older.more_older.then_some(older.oldest).flatten();
+        lines.extend(older.lines);
+    }
+    lines
+        .into_iter()
+        .map(|l| {
+            let message = String::from_utf8_lossy(&l.message).into_owned();
+            (l.position, message)
+        })
+        .collect()
+}
+
+/// A container's search: the older side reads from the creation, its
+/// matches farthest first, in steps of log text, to the buffer.
+#[tokio::test]
+async fn a_search_reads_the_older_side_from_the_creation() {
+    let engine = engine(HashMap::from([(ID.into(), log_of(300))]));
+    let settings = Settings {
+        search_step: 200,
+        ..small(50)
+    };
+    let mut v = Viewer::on(&engine, container(), settings).await;
+    let by = by_position(&mut v).await;
+    let tail = v.page(Request::Tail).await;
+    assert_eq!(tail.messages[0], "line 250");
+    v.handle.send(Request::Search(Search {
+        id: 3,
+        matcher: tens(),
+        older: tail.oldest.clone(),
+        newer: None,
+    }));
+    let (found, steps, order, end) = v.found(&by, 3, Side::Older).await;
+    let expected: Vec<String> = (0..25).map(|i| format!("line {}", i * 10)).collect();
+    assert_eq!(found, expected);
+    assert_eq!(order, Order::FarthestFirst);
+    assert_eq!(end, SearchEnd::Done);
+    assert!(steps > 2, "{steps}");
+}
+
+/// A jump's page: the entry with the page before it and the rest of a
+/// page after, not following; then the newer side's matches nearest
+/// first, stopping at the cap.
+#[tokio::test]
+async fn around_a_match_then_the_newer_side_to_its_cap() {
+    let engine = engine(HashMap::from([(ID.into(), log_of(300))]));
+    let settings = Settings {
+        matches: 4,
+        ..small(50)
+    };
+    let mut v = Viewer::on(&engine, container(), settings).await;
+    let by = by_position(&mut v).await;
+    let at = by
+        .iter()
+        .find(|(_, m)| m.as_str() == "line 100")
+        .map(|(p, _)| p.clone())
+        .expect("line 100");
+    let around = v.page(Request::Around(at)).await;
+    assert_eq!(around.kind, PageKind::Around);
+    let expected: Vec<String> = (75..125).map(|i| format!("line {i}")).collect();
+    assert_eq!(around.messages, expected);
+    assert!(around.more_older && around.more_newer, "{around:?}");
+    v.handle.send(Request::Search(Search {
+        id: 4,
+        matcher: tens(),
+        older: None,
+        newer: around.newest.clone(),
+    }));
+    let (found, _, order, end) = v.found(&by, 4, Side::Newer).await;
+    assert_eq!(found, ["line 130", "line 140", "line 150", "line 160"]);
+    assert_eq!(order, Order::NearestFirst);
+    assert_eq!(end, SearchEnd::Capped);
 }

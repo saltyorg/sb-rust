@@ -25,8 +25,9 @@ serde_json.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
-# The wait's sleep between polls (start/stop/restart).
-tokio = { workspace = true, features = ["time"] }
+# The wait's sleep between polls (start/stop/restart); the log scan's
+# `task::yield_now` (`rt`, which bollard enables too).
+tokio = { workspace = true, features = ["rt", "time"] }
 # The Saltbox Docker controller's HTTP client (docker spec, "Start, stop
 # and restart"): already in sb through sb-config.
 reqwest.workspace = true

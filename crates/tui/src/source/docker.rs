@@ -26,8 +26,10 @@
 //! follow start and stop, and every error; never a log's content (tui
 //! spec, "The run log").
 
+use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::future::OptionFuture;
@@ -40,8 +42,12 @@ use sb_docker::ps::Row;
 use tokio::sync::{Notify, mpsc, watch as channel};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, Sleep};
+use tracing::Instrument as _;
 
-use super::{Event, Inner, Line, Notice, Outbox, PageKind, Position, Request, SourceHandle};
+use super::{
+    Event, Found, Inner, Line, Matcher, Notice, Order, Outbox, PageKind, Position, Request, Search,
+    SearchEnd, Side, SourceHandle,
+};
 
 /// The page size: the tail's 500 lines (tui spec, "Opening"), and each
 /// older and newer page.
@@ -77,11 +83,19 @@ pub fn spawn(daemon: Arc<Daemon>, container: Container, outbox: Outbox) -> Sourc
     spawn_with(daemon, container, Settings::default(), outbox)
 }
 
+/// The log text a search's side reads between its events: sb-docker's
+/// scan yields to the screen as often.
+const SEARCH_STEP: usize = 256 * 1024;
+
 /// The adapter's sizes and waits; the tests make them small.
 #[derive(Clone, Copy, Debug)]
 struct Settings {
     page: usize,
     retry: Duration,
+    /// A search's step (log text between events) and its cap of matches
+    /// a side.
+    search_step: usize,
+    matches: usize,
 }
 
 impl Default for Settings {
@@ -89,6 +103,8 @@ impl Default for Settings {
         Self {
             page: PAGE,
             retry: RETRY,
+            search_step: SEARCH_STEP,
+            matches: super::journal::MATCHES,
         }
     }
 }
@@ -112,6 +128,7 @@ fn spawn_with(
             tail_failed: false,
             events,
             retry: None,
+            search: None,
         }
         .run(requests)
     })
@@ -166,6 +183,16 @@ struct Adapter {
     tail_failed: bool,
     events: Option<Events>,
     retry: Option<Pin<Box<Sleep>>>,
+    /// The search in progress: its sides' stop flag.
+    search: Option<Arc<AtomicBool>>,
+}
+
+/// A source that goes stops its search: the reads see the flag at their
+/// next entry.
+impl Drop for Adapter {
+    fn drop(&mut self) {
+        self.stop_search();
+    }
 }
 
 /// The next item of `stream`, if there is one: in a `select!` branch
@@ -242,11 +269,16 @@ impl Adapter {
             Request::Older(Position(Inner::Docker(before))) => self.older(before).await,
             Request::Newer(Position(Inner::Docker(after))) => self.newer(after).await,
             // Another source's position: none of this one's lines.
-            Request::Older(_)
-            | Request::Newer(_)
-            | Request::Around(_)
-            | Request::Search(_)
-            | Request::StopSearch => true,
+            Request::Around(Position(Inner::Docker(at))) => self.around(at).await,
+            Request::Older(_) | Request::Newer(_) | Request::Around(_) => true,
+            Request::Search(search) => {
+                self.start_search(search);
+                true
+            }
+            Request::StopSearch => {
+                self.stop_search();
+                true
+            }
             Request::Follow(true) => self.start_following(after_failed_tail).await,
             Request::Follow(false) => {
                 self.stop_following();
@@ -307,6 +339,80 @@ impl Adapter {
                 ))
             }
             Err(err) => self.failed(PageKind::Newer, &err),
+        }
+    }
+
+    /// The entry at `at` with its surroundings (`Request::Around`): the
+    /// page before it, then the page from it on, as one page that starts a
+    /// new buffer, not following. A read that fails is a notice only: the
+    /// buffer stays as it was.
+    async fn around(&mut self, at: logs::Position) -> bool {
+        self.stop_following();
+        let started = Instant::now();
+        let id = &self.container.id;
+        let before_n = self.settings.page / 2;
+        let before = logs::older(&self.daemon, id, at, before_n, self.container.created).await;
+        // Just before `at`, so the page after it starts with `at`.
+        let previous = match at.ordinal.checked_sub(1) {
+            Some(ordinal) => logs::Position { ordinal, ..at },
+            None => logs::Position {
+                time_ns: at.time_ns - 1,
+                ordinal: u32::MAX,
+            },
+        };
+        let after = logs::newer(&self.daemon, id, previous, self.settings.page - before_n).await;
+        let (before, after) = match (before, after) {
+            (Ok(before), Ok(after)) => (before, after),
+            (Err(err), _) | (_, Err(err)) => {
+                let cause = format!("{err:#}");
+                tracing::warn!(direction = ?PageKind::Around, error = %cause, "container log page failed");
+                return self.outbox.send(Event::Notice(Notice::ReadFailed(cause)));
+            }
+        };
+        let mut lines = before.lines;
+        lines.extend(after.lines);
+        if !after.more {
+            self.follow_from = Some(lines.last().map_or(at, |l| l.position));
+        }
+        self.outbox.send(page(
+            PageKind::Around,
+            &lines,
+            before.more,
+            after.more,
+            started,
+        ))
+    }
+
+    /// A search's sides, each one read of the log in a task of its own
+    /// (`SideRead`), beside this task's pages and follow. The search
+    /// before it stops.
+    fn start_search(&mut self, search: Search) {
+        self.stop_search();
+        let stop = Arc::new(AtomicBool::new(false));
+        self.search = Some(Arc::clone(&stop));
+        tracing::info!(search = search.id, "container search started");
+        for (side, from) in [(Side::Older, search.older), (Side::Newer, search.newer)] {
+            let Some(Position(Inner::Docker(at))) = from else {
+                continue;
+            };
+            let read = SideRead {
+                daemon: Arc::clone(&self.daemon),
+                container: self.container.clone(),
+                side,
+                at,
+                search: search.id,
+                matcher: search.matcher.clone(),
+                stop: Arc::clone(&stop),
+                outbox: self.outbox.clone(),
+                settings: self.settings,
+            };
+            tokio::spawn(read.run().in_current_span());
+        }
+    }
+
+    fn stop_search(&mut self) {
+        if let Some(stop) = self.search.take() {
+            stop.store(true, Ordering::Relaxed);
         }
     }
 
@@ -510,6 +616,114 @@ fn page(
         more_older,
         more_newer,
         lines: lines.iter().map(line).collect(),
+    }
+}
+
+/// One side of a search: sb-docker's one read of the log before (or
+/// after) `at`, each entry matched as it comes and dropped, the matches
+/// sent every `search_step` of log text as an [`Event::Found`].
+struct SideRead {
+    daemon: Arc<Daemon>,
+    container: Container,
+    side: Side,
+    at: logs::Position,
+    search: u64,
+    matcher: Matcher,
+    stop: Arc<AtomicBool>,
+    outbox: Outbox,
+    settings: Settings,
+}
+
+impl SideRead {
+    /// The read goes oldest first: the older side's matches come
+    /// farthest from the buffer first, all of them, the viewer keeping
+    /// the nearest; the newer side's nearest first, stopping at the cap
+    /// (tui spec, "Matches kept"). A read that fails ends its side as
+    /// failed, with its cause.
+    async fn run(self) {
+        let Self {
+            daemon,
+            container,
+            side,
+            at,
+            search,
+            matcher,
+            stop,
+            outbox,
+            settings,
+        } = self;
+        let (range, order) = match side {
+            Side::Older => (logs::Range::Before(at), Order::FarthestFirst),
+            Side::Newer => (logs::Range::After(at), Order::NearestFirst),
+        };
+        let started = Instant::now();
+        let mut found = Vec::new();
+        let mut reached = None;
+        let mut kept = 0;
+        let mut unsent = 0;
+        let mut capped = false;
+        let mut gone = false;
+        let read = logs::scan(&daemon, &container.id, range, container.created, |entry| {
+            if stop.load(Ordering::Relaxed) {
+                return ControlFlow::Break(());
+            }
+            unsent += entry.bytes.len();
+            let line = line(&entry);
+            reached = line.time.or(reached);
+            let count = matcher.count(&line);
+            if count > 0 {
+                found.push(Found {
+                    position: line.position,
+                    time: line.time,
+                    count,
+                });
+            }
+            if order == Order::NearestFirst && kept + found.len() >= settings.matches {
+                capped = true;
+                return ControlFlow::Break(());
+            }
+            if unsent >= settings.search_step {
+                unsent = 0;
+                kept += found.len();
+                let step = Event::Found {
+                    search,
+                    side,
+                    order,
+                    found: std::mem::take(&mut found),
+                    reached,
+                    end: None,
+                };
+                if !outbox.send(step) {
+                    gone = true;
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        })
+        .await;
+        let end = match read {
+            _ if gone || stop.load(Ordering::Relaxed) => {
+                tracing::info!(
+                    search,
+                    ?side,
+                    millis = started.elapsed().as_millis(),
+                    "container search side stopped"
+                );
+                return;
+            }
+            Ok(_) if capped => SearchEnd::Capped,
+            Ok(_) => SearchEnd::Done,
+            Err(err) => SearchEnd::Failed(format!("{err:#}")),
+        };
+        tracing::info!(search, ?side, millis = started.elapsed().as_millis(), outcome = ?end, "container search side ended");
+        let _ = outbox.send(Event::Found {
+            search,
+            side,
+            order,
+            found,
+            reached,
+            end: Some(end),
+        });
     }
 }
 

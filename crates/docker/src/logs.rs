@@ -347,6 +347,76 @@ pub async fn newer(daemon: &Daemon, id: &str, after: Position, n: usize) -> anyh
     Ok(Page { lines, more })
 }
 
+/// Which entries [`scan`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Range {
+    /// The whole log, from the container's creation.
+    All,
+    /// The entries before this position.
+    Before(Position),
+    /// The entries after this position.
+    After(Position),
+}
+
+/// The log text [`scan`] hands on between yields to the runtime: the log
+/// viewer's runtime has one thread, which the screen shares (tui spec,
+/// "Whole-log search", Docker).
+const YIELD_EVERY: usize = 256 * 1024;
+
+/// Every entry of `range`, oldest first, each to `each` until it breaks:
+/// one read of the log, for the log viewer's whole-log search and its
+/// save. The Engine API has no search, and its `since` reads from the
+/// log's start anyway (the platform note), so the read is one window:
+/// from `created` (when known, else the log's start) to the second after
+/// `Before`'s position, or from `After`'s second on, filtered here as
+/// every read is. Ordinals count from each second's first entry, as the
+/// pages' windows do, so a position found here is where a page shows it.
+/// The task yields after every 256 KiB of log text, so the screen draws
+/// between.
+///
+/// # Errors
+///
+/// The daemon's error (its message kept), or a broken stream.
+pub async fn scan(
+    daemon: &Daemon,
+    id: &str,
+    range: Range,
+    created: Option<Timestamp>,
+    mut each: impl FnMut(LogLine) -> ControlFlow<()>,
+) -> anyhow::Result<ControlFlow<()>> {
+    let start = created.map_or(1, |created| floor_secs(created.as_nanosecond()).max(1));
+    let options = match range {
+        Range::All => options().since(api_secs(start)).build(),
+        Range::Before(before) => options()
+            .since(api_secs(start.min(ceil_secs(before.time_ns))))
+            .until(api_secs(ceil_secs(before.time_ns)))
+            .build(),
+        Range::After(after) => options().since(api_secs(floor_secs(after.time_ns))).build(),
+    };
+    let keep = |position: Position| match range {
+        Range::All => true,
+        Range::Before(before) => position < before,
+        Range::After(after) => position > after,
+    };
+    let mut stream = std::pin::pin!(daemon.docker.logs(id, Some(options)));
+    let mut lines = Lines::default();
+    let mut unyielded = 0;
+    while let Some(output) = stream.next().await {
+        let output = output.with_context(|| format!("reading the log of {id}"))?;
+        for line in lines.push(output) {
+            unyielded += line.bytes.len();
+            if keep(line.position) && each(line).is_break() {
+                return Ok(ControlFlow::Break(()));
+            }
+        }
+        if unyielded >= YIELD_EVERY {
+            unyielded = 0;
+            tokio::task::yield_now().await;
+        }
+    }
+    Ok(ControlFlow::Continue(()))
+}
+
 /// The entries after `after` as they come: [`newer`]'s read with
 /// `follow`, until the daemon ends the stream (the container stopped) or
 /// fails, which is the stream's last item.
@@ -1125,5 +1195,59 @@ mod tests {
         .await
         .expect("read");
         assert_eq!(found, 0);
+    }
+    /// The whole-log search's read (tui spec, "Whole-log search, save and
+    /// print"): every entry of the range once, oldest first, those sharing
+    /// a time included, with the positions the pages give; `All` from the
+    /// creation.
+    #[tokio::test]
+    async fn a_scan_reads_each_range_once_oldest_first() {
+        let log = long_log(400);
+        let engine = engine(log.clone());
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let created = Some(second(0));
+        let collect = |range| {
+            let daemon = &daemon;
+            async move {
+                let mut seen = Vec::new();
+                let ended = scan(daemon, ID, range, created, |line| {
+                    seen.push(line);
+                    ControlFlow::Continue(())
+                })
+                .await
+                .expect("scan");
+                assert_eq!(ended, ControlFlow::Continue(()));
+                seen
+            }
+        };
+        let all = collect(Range::All).await;
+        assert_eq!(texts(&all), all_texts(&log));
+        // The same positions a tail gives, so a match found here is where
+        // a page shows it.
+        let last = tail(&daemon, ID, 20).await.expect("tail");
+        assert_eq!(all[all.len() - 20..], last[..]);
+        let middle = all[200].position;
+        assert_eq!(collect(Range::Before(middle)).await, all[..200]);
+        assert_eq!(collect(Range::After(middle)).await, all[201..]);
+    }
+
+    /// A scan stops when its caller breaks.
+    #[tokio::test]
+    async fn a_scan_stops_when_asked() {
+        let engine = engine(long_log(100));
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let mut n = 0;
+        let ended = scan(&daemon, ID, Range::All, Some(second(0)), |_| {
+            n += 1;
+            if n == 5 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .await
+        .expect("scan");
+        assert_eq!(ended, ControlFlow::Break(()));
+        assert_eq!(n, 5);
     }
 }
