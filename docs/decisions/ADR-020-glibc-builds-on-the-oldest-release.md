@@ -243,3 +243,14 @@ jemalloc on glibc adds 641 KB and is slightly slower to start. Every
 variant is inside the 10 ms startup budget and the size limit. A
 static binary, if ever wanted, would be musl with jemalloc, not plain
 musl.
+
+**Rechecked on the finished binary (2026-11-18).** The same harness,
+toolchain and allocator versions on c5b79ca, every module task merged:
+glibc with its own malloc is still the smallest binary (21,689,856
+bytes; every variant grew by about the same 1.39 MB) and still ties for
+fastest with musl and jemalloc (within 0.26 ms on startup, `list`,
+`docker ps` and `validate-config`, and 0.2 ms ahead on `motd`). Plain
+musl's malloc is still the slow one, and mimalloc still costs 8 to
+13 MiB more peak memory. The host was quieter than for the first run,
+so the two runs compare variant against variant, not figure against
+figure. The choice stands.
