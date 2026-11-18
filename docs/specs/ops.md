@@ -827,11 +827,12 @@ the mock-ups; decisions 36 to 38). sb-go printed none of this.
   - when Saltbox moved (whether or not Sandbox did), hint H2:
     ```
     Saltbox's files are updated; your server and apps are not yet. To apply it:
-      sb install saltbox         your main tag (or mediabox, feederbox); includes core
-      sb install core,<apps>     the minimum: core plus the apps you run
+      sb install saltbox       your main tag (or mediabox, feederbox, core)
+      sb install core,<apps>   the minimum: core plus the apps you run
     ```
-  - when only Sandbox moved, Sandbox's own, in the same layout and
-    without core (nothing in core changed):
+  - when only Sandbox moved, Sandbox's own, in the same layout (its
+    descriptions at one column, three spaces after its longer command)
+    and without core (nothing in core changed):
     ```
     Sandbox's files are updated; your Sandbox apps are not yet. To apply it:
       sb install sandbox-<app>   each Sandbox app you run
@@ -1924,11 +1925,13 @@ the real services.
     No list of new roles: sb can't tell which roles a user cares about;
     the tags are what the user types. sb can't tell which main tag a host
     was installed with (Saltbox keeps no install record), so the hint
-    names the options. Decided: H2's second line keeps its
-    description in the first line's column (the mock-up had it one
-    column to the left, its `<apps>` written as HTML entities), and
-    Sandbox's hint takes H2's layout so both read alike; the block and
-    the hint go to stderr with the tree; removed tags are in Warn.
+    names the options. *Amended 2026-11-18 (the maintainer):* both of a
+    hint's descriptions start at one column, three spaces after its
+    longer command, every line within 80 columns, and H2's first reads
+    `your main tag (or mediabox, feederbox, core)` (the mock-up's line
+    was 82 columns and its second description one column off). Decided: Sandbox's hint takes H2's layout so both read alike; the
+    block and the hint go to stderr with the tree; removed tags are in
+    Warn.
 37. **Tags only from a valid old entry** (the maintainer, 2026-11-18):
     never every tag as new because the old cache is missing or doesn't
     fit the commit before the pull; each of those cases is tested,

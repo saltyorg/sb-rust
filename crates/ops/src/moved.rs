@@ -23,9 +23,10 @@ const LABEL: usize = 17;
 /// The lines a list takes at most before ` and <n> more (sb list)`.
 const MOST_LINES: usize = 2;
 
-/// The width a hint's command is padded to: its description starts at
-/// column 29, after the two-space indent.
-const HINT_COMMAND: usize = 27;
+/// The spaces between a hint's longer command and the descriptions,
+/// which start at one column within each hint (the maintainer,
+/// 2026-11-18).
+const HINT_GAP: usize = 3;
 
 /// The width a checkout's name is padded to: `Saltbox  `.
 const NAME: usize = 9;
@@ -181,7 +182,7 @@ fn hint(moved: &[Moved], theme: &Theme) -> String {
             [
                 (
                     "sb install saltbox",
-                    "your main tag (or mediabox, feederbox); includes core",
+                    "your main tag (or mediabox, feederbox, core)",
                 ),
                 (
                     "sb install core,<apps>",
@@ -204,9 +205,14 @@ fn hint(moved: &[Moved], theme: &Theme) -> String {
         return String::new();
     };
     let code = theme.style(Role::Code);
+    let widest = commands
+        .iter()
+        .map(|(command, _)| command.len())
+        .max()
+        .unwrap_or(0);
     let mut out = format!("\n{heading}\n");
     for (command, what) in commands {
-        let pad = HINT_COMMAND.saturating_sub(command.len());
+        let pad = widest + HINT_GAP - command.len();
         let _ = writeln!(out, "  {code}{command}{code:#}{:pad$}{what}", "");
     }
     out
@@ -304,8 +310,8 @@ mod tests {
     fn the_hint_follows_what_moved() {
         let plain = Theme::plain();
         let h2 = "\nSaltbox's files are updated; your server and apps are not yet. To apply it:\n  \
-                  sb install saltbox         your main tag (or mediabox, feederbox); includes core\n  \
-                  sb install core,<apps>     the minimum: core plus the apps you run\n";
+                  sb install saltbox       your main tag (or mediabox, feederbox, core)\n  \
+                  sb install core,<apps>   the minimum: core plus the apps you run\n";
         let sandbox = "\nSandbox's files are updated; your Sandbox apps are not yet. To apply it:\n  \
                        sb install sandbox-<app>   each Sandbox app you run\n  \
                        sb install sandbox-roles   the apps you list in sandbox_roles\n";
@@ -324,11 +330,15 @@ mod tests {
         assert!(render(&only_sandbox, true, &plain).ends_with(sandbox));
         let still = [saltbox_still, sandbox_still];
         assert!(!render(&still, true, &plain).contains("To apply"));
-        // Each description starts at the same column.
-        for line in [h2, sandbox].iter().flat_map(|hint| hint.lines()) {
-            if line.starts_with("  sb install") {
-                assert_eq!(&line[28..29], " ", "{line:?}");
-                assert_ne!(&line[29..30], " ", "{line:?}");
+        // Within each hint both descriptions start at one column, three
+        // spaces after the longer command, and every line fits 80 columns.
+        for (hint, column) in [(h2, 27), (sandbox, 29)] {
+            for line in hint.lines() {
+                assert!(line.chars().count() <= WIDTH, "{line:?}");
+                if line.starts_with("  sb install") {
+                    assert_eq!(&line[column - 1..column], " ", "{line:?}");
+                    assert_ne!(&line[column..=column], " ", "{line:?}");
+                }
             }
         }
     }

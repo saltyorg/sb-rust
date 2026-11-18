@@ -101,8 +101,8 @@ Sandbox  0f9e8d7 → c6b5a49
   Removed tags:  sandbox-hoarder
 
 Saltbox's files are updated; your server and apps are not yet. To apply it:
-  sb install saltbox         your main tag (or mediabox, feederbox); includes core
-  sb install core,<apps>     the minimum: core plus the apps you run
+  sb install saltbox       your main tag (or mediabox, feederbox, core)
+  sb install core,<apps>   the minimum: core plus the apps you run
 ```
 
 ## The run log

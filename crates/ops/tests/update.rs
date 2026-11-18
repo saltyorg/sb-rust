@@ -1242,8 +1242,8 @@ async fn a_failing_migration_stops_with_its_words() {
 /// hint H2), as the block's plain text.
 const SALTBOX_HINT: &str = "\
 Saltbox's files are updated; your server and apps are not yet. To apply it:
-  sb install saltbox         your main tag (or mediabox, feederbox); includes core
-  sb install core,<apps>     the minimum: core plus the apps you run
+  sb install saltbox       your main tag (or mediabox, feederbox, core)
+  sb install core,<apps>   the minimum: core plus the apps you run
 ";
 
 /// Sandbox's closing hint, when only Sandbox moved.
