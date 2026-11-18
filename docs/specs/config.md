@@ -114,6 +114,13 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
     issue count) and the parsed tree, so a caller that needs the values
     (motd's typed model) reads the file once. `FileError` is a read or
     schema-load failure, worded as validate-config words it.
+  - `run::PROVIDERS` is one more such entry, outside `FILES`:
+    providers.yml, capped, optional, with no schema, so it gets the
+    pre-pass, the parse and duplicate keys only, as localhost.yml does.
+    validate-config doesn't check it (sb-go doesn't); `sb edit providers`
+    does, as a required file, since the file existed when the editor
+    started, so a removed one is an issue (the tui spec, Difference 38;
+    *amended 2026-11-18*).
   - `run::validate_file(step, settings, file, checks)` draws
     `check_file`'s result under the caller's step exactly as `run` does
     for that file. `checks` is `Checks::Run` (validate-config and `sb

@@ -787,7 +787,7 @@ no real systemctl.
 ## Editors: `sb edit` and `sb fact`
 
 This section of the spec covers the module's two editing commands:
-`sb edit` (a picker, or one of six subcommands, then the user's
+`sb edit` (a picker, or one of eight subcommands, then the user's
 `$EDITOR`) and `sb fact` (the full-screen fact editor). `tui` comes after
 `config` in the capability map's build order. `sb edit <file>` needs no
 ratatui and comes first. The picker and the fact editor build on the
@@ -806,7 +806,8 @@ specs, docs/ideas/fact-editor.md and prototypes/proto-facts/FINDINGS.md.
 
 1. **sb-go's commands and files.** `edit` keeps its bare picker and its
    six subcommands (`accounts`, `adv_settings`, `backup_config`,
-   `hetzner_vlan`, `settings`, `inventory`). `fact` takes no arguments.
+   `hetzner_vlan`, `settings`, `inventory`), and adds `motd` and
+   `providers` (Difference 38). `fact` takes no arguments.
    Help texts are sb-go's except where a difference below changes them
    (capability map decision 1).
 2. **Root.** Both commands need root (cli-core decision 3). cli-core's
@@ -850,8 +851,35 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   | Backup Settings | backup_config.yml | `backup_config` | backup_config.yml |
   | Hetzner VLAN Settings | hetzner_vlan.yml | `hetzner_vlan` | hetzner_vlan.yml |
   | Inventory Settings | localhost.yml | `inventory` | inventories/host_vars/localhost.yml |
+  | Motd Settings | motd.yml | `motd` | motd.yml |
+  | Providers | providers.yml | `providers` | providers.yml |
 
-  `motd.yml` and `providers.yml` stay out, as in sb-go.
+  The last two are sb's (maintainer, 2026-11-18; Difference 38). Not
+  every host has them: the picker leaves each out when its file doesn't
+  exist, and `sb edit motd` or `sb edit providers` then fails with the
+  target check's `configuration file does not yet exist: <path>`, exit 1,
+  creating nothing. The six keep their behaviour.
+  - **motd.yml** is validated as validate-config validates it, its
+    schema included. A file still in its older format is migrated first,
+    exactly as validate-config migrates it (sb-config's
+    `validate_file_migrating`): the original is backed up to
+    `SB_BACKUPS_DIR`, with the same notice. So both commands leave the
+    file the same way.
+  - **A file the editor removed** is the file's issue (`required config
+    file not found`), offered again, as for the five required files. The
+    file was there when the editor started (the target check), so `sb
+    edit` checks both as required; validate-config skips a missing one,
+    and localhost.yml stays skipped in both.
+  - **providers.yml** holds Saltbox's DNS providers' credentials. It is a
+    `vars_files` entry of saltbox.yml, read from the Saltbox root, with
+    `defaults/providers.yml.default` when it's missing (Saltbox,
+    saltbox.yml). Saltbox has no schema for it, so it gets the check
+    localhost.yml gets: the YAML pre-pass, the parse and duplicate keys
+    (sb-config's `run::PROVIDERS`, not one of validate-config's files).
+    Its step reads `Validating providers.yml (no duplicates)`. The
+    editor run and the log rules are the other files': the log has the
+    file's name, its issue count and the step's record, never its
+    content, and its issue lines name keys and positions, never values.
 - **Picker** (`sb edit` with no subcommand). A ratatui list screen with
   sb-go's prompt line, "Select a Saltbox configuration file to edit:",
   each item's title and shown name, and a key hint line. Keys: Up/Down
@@ -1145,17 +1173,20 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
 37. An edit that would change how any other fact reads is refused with
     `Merged`. sb-go re-checks only the values it set (decision 39,
     2026-11-15).
+38. `sb edit` also opens motd.yml ("Motd Settings", `sb edit motd`) and
+    providers.yml ("Providers", `sb edit providers`), each left out of
+    the picker when its file doesn't exist. sb-go's edit has neither
+    (maintainer, 2026-11-18; decision 42).
 
 ### Scope
 
-**In:** the edit picker, the six subcommands, editor choice and run, the
+**In:** the edit picker, the eight subcommands (motd and providers since
+2026-11-18), editor choice and run, the
 post-edit validation and prompt; `sb fact` with its session, dialect,
 apply, screen, masking and mouse; sb-config's facts half and per-file
 validation API.
 
 **Later or out:**
-- `motd.yml` and `providers.yml` in `edit` (a new feature, the
-  maintainer's call).
 - Renaming keys, new apps, new copies (sb-go has none).
 - A "show all secrets" toggle (the idea's "Not Doing").
 - Editing a temp copy visudo-style (F-Q1 option C, not chosen).
@@ -1337,7 +1368,7 @@ the test's directory.
   `<role>.ini.lock` before writing a role; keep owner and mode; keep
   every fact value out of the log; validate through sb-config's one code
   path; restore the terminal before the editor starts.
-- **Ask first:** adding `motd.yml` or `providers.yml` to `edit`; a new
+- **Ask first:** another file in `edit`; a new
   crate outside Cargo.lock; a term-ui API change beyond the prompts;
   changing the masking list; any change to how sb takes Saltbox's lock.
 - **Never:** write a YAML config file from sb (the editor writes it);
@@ -1348,7 +1379,7 @@ the test's directory.
 ### Success Criteria
 
 15. `sb edit <sub>` runs the editor from `VISUAL`, then `EDITOR`, then the
-    fallback list, with argv as specified, for each of the six files;
+    fallback list, with argv as specified, for each of the eight files;
     each sb-go edit_test.go case passes.
 16. The target checks fail with sb-go's texts for a missing file, a
     directory and a FIFO, and accept a symlink to a regular file.
@@ -1467,6 +1498,14 @@ the test's directory.
     the next role; a failure or an unsynced role stops it. Unsynced is
     sb-go's "both Applied and Failed" under its own name. Decided after
     the code review, 2026-11-15.
+
+42. **motd.yml and providers.yml are in `edit`** (the maintainer,
+    2026-11-18, answering the "Later" item). motd.yml migrates as
+    validate-config migrates it, so the two commands never leave it
+    differently. providers.yml gets the schema-less check sb-config
+    already has (localhost.yml's), the only YAML check there is for it.
+    Both are left out of the picker when missing, and refused by name
+    (the target check) when asked for directly.
 
 ### Known limits
 

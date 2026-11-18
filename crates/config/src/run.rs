@@ -32,6 +32,19 @@ pub struct File {
     pub capped: bool,
 }
 
+/// providers.yml (Saltbox's DNS providers' credentials, a `vars_files`
+/// entry of saltbox.yml): `sb edit providers` checks it, validate-config
+/// doesn't (sb-go doesn't), so it is outside [`FILES`]. Saltbox has no
+/// schema for it, so it gets localhost.yml's check: the pre-pass, the
+/// parse and duplicate keys (config spec, "One file"; tui spec,
+/// Difference 38).
+pub const PROVIDERS: File = File {
+    path: "providers.yml",
+    schema: None,
+    required: false,
+    capped: true,
+};
+
 /// The files, in sb-go's order.
 pub const FILES: [File; 7] = [
     File {

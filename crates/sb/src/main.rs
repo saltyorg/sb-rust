@@ -425,6 +425,10 @@ enum EditCommand {
     Settings,
     /// Inventory Settings
     Inventory,
+    /// Motd Settings
+    Motd,
+    /// Providers
+    Providers,
 }
 
 impl EditCommand {
@@ -437,6 +441,8 @@ impl EditCommand {
             Self::HetznerVlan => edit::File::HetznerVlan,
             Self::Settings => edit::File::Settings,
             Self::Inventory => edit::File::Inventory,
+            Self::Motd => edit::File::Motd,
+            Self::Providers => edit::File::Providers,
         }
     }
 }
@@ -505,6 +511,8 @@ impl Command {
                 Some(EditCommand::HetznerVlan) => "edit hetzner_vlan",
                 Some(EditCommand::Settings) => "edit settings",
                 Some(EditCommand::Inventory) => "edit inventory",
+                Some(EditCommand::Motd) => "edit motd",
+                Some(EditCommand::Providers) => "edit providers",
             },
             Command::Fact => "fact",
             Command::Motd(_) => "motd",

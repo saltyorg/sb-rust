@@ -55,14 +55,19 @@ exit "${FAKE_EXIT:-0}"
 const STARTED: &str = "fake editor started";
 
 /// The six files and their subcommands, as sb-go's layout has them.
-const FILES: [(&str, &str); 6] = [
+const FILES: [(&str, &str); 8] = [
     ("accounts", "accounts.yml"),
     ("settings", "settings.yml"),
     ("adv_settings", "adv_settings.yml"),
     ("backup_config", "backup_config.yml"),
     ("hetzner_vlan", "hetzner_vlan.yml"),
     ("inventory", "inventories/host_vars/localhost.yml"),
+    ("motd", "motd.yml"),
+    ("providers", "providers.yml"),
 ];
+
+/// A providers.yml as Saltbox's default lays it out (no values).
+const PROVIDERS: &str = "duckdns:\n  token:\ndynu:\n  api_key:\n";
 
 /// A setting sb-go's schema doesn't know: one issue in any schema-backed
 /// file, `<file>:<line>:1: not_a_setting: unknown field`.
@@ -194,6 +199,7 @@ fn each_subcommand_opens_its_file_with_the_extra_words() {
         return;
     }
     let world = World::new();
+    std::fs::write(world.root().join("providers.yml"), PROVIDERS).expect("providers");
     for (sub, file) in FILES {
         let output = world
             .sb(sub)
@@ -1324,4 +1330,214 @@ fn ctrl_c_in_the_picker_exits_130() {
     assert_eq!(status.exit_code(), 130, "{}", pty.contents());
     assert!(!world.ran());
     pty.assert_restored();
+}
+
+/// motd.yml is validated as validate-config validates it, its schema
+/// included: a clean edit passes; one with issues fails with the file's
+/// block, and is offered again (`--no-edit-again` answering no).
+#[test]
+fn motd_is_validated_and_offered_again() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let output = world
+        .sb("motd")
+        .env("VISUAL", world.fake())
+        .output()
+        .expect("run sb");
+    let text = stderr(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("✓ Validated motd.yml"), "{text}");
+    let broken = format!("{}{UNKNOWN}", world.text("motd.yml"));
+    // The editor's second run here saves `broken` (its saves count runs).
+    let saves = world.saves(&["", &broken]);
+    let output = world
+        .sb("motd")
+        .arg("--no-edit-again")
+        .env("VISUAL", world.fake())
+        .env("FAKE_SAVES", &saves)
+        .output()
+        .expect("run sb");
+    let text = stderr(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("✗ Validation of motd.yml"), "{text}");
+    // validate-config's issue line for it.
+    let line = broken.lines().count();
+    assert!(
+        text.contains(&format!("motd.yml:{line}:1: not_a_setting: unknown field")),
+        "{text}"
+    );
+    assert_eq!(world.text("motd.yml"), broken);
+}
+
+/// An old-format motd.yml is migrated after the edit, as validate-config
+/// migrates it: the notice, one backup in `SB_BACKUPS_DIR` holding the
+/// original, and the file rewritten (motd decision 4).
+#[test]
+fn an_old_motd_yml_is_migrated_after_the_edit() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let old = "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: plex-token-zz\n";
+    let saves = world.saves(&[old]);
+    let backups = world.dir.path().join("backups");
+    let output = world
+        .sb("motd")
+        .env("VISUAL", world.fake())
+        .env("FAKE_SAVES", &saves)
+        .env("SB_BACKUPS_DIR", &backups)
+        .output()
+        .expect("run sb");
+    let text = stderr(&output);
+    assert!(output.status.success(), "{text}");
+    let notice = format!(
+        "Migrated motd.yml to the current format (backup: {}/motd.yml.",
+        backups.display()
+    );
+    assert!(text.contains(&notice), "{text}");
+    let copies: Vec<_> = std::fs::read_dir(&backups).expect("backups").collect();
+    assert_eq!(copies.len(), 1);
+    let copy = copies[0].as_ref().expect("entry").path();
+    assert_eq!(std::fs::read_to_string(copy).expect("copy"), old);
+    assert!(world.text("motd.yml").contains("  instances:\n"));
+    assert!(!text.contains("plex-token-zz"), "{text}");
+}
+
+/// providers.yml opens and saves as the others do, and is checked as
+/// localhost.yml is (no schema: the parse and duplicate keys); a
+/// duplicate key is an issue.
+#[test]
+fn providers_opens_saves_and_gets_the_duplicate_check() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::write(world.root().join("providers.yml"), PROVIDERS).expect("providers");
+    let edited = format!("{PROVIDERS}hetzner:\n  api_key:\n");
+    let saves = world.saves(&[&edited]);
+    let output = world
+        .sb("providers")
+        .env("VISUAL", world.fake())
+        .env("FAKE_SAVES", &saves)
+        .output()
+        .expect("run sb");
+    let text = stderr(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("✓ Validated providers.yml (no duplicates)"),
+        "{text}"
+    );
+    assert_eq!(world.text("providers.yml"), edited);
+    let duplicated = format!("{PROVIDERS}duckdns:\n  token:\n");
+    // The editor's second run here saves `duplicated`.
+    let saves = world.saves(&["", &duplicated]);
+    let output = world
+        .sb("providers")
+        .arg("--no-edit-again")
+        .env("VISUAL", world.fake())
+        .env("FAKE_SAVES", &saves)
+        .output()
+        .expect("run sb");
+    let text = stderr(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("✗ Validation of providers.yml (no duplicates)"),
+        "{text}"
+    );
+}
+
+/// An editor that removes motd.yml or providers.yml leaves the file's
+/// issue, as for the five required files: offered again, exit 1 with
+/// `--no-edit-again`, the block naming the file.
+#[test]
+fn a_motd_or_providers_the_editor_removed_is_an_issue() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::write(world.root().join("providers.yml"), PROVIDERS).expect("providers");
+    for (sub, file) in [("motd", "motd.yml"), ("providers", "providers.yml")] {
+        let path = world.root().join(file);
+        let output = world
+            .sb(sub)
+            .arg("--no-edit-again")
+            // The editor is `rm`, given the path as an editor is.
+            .env("VISUAL", "/bin/rm")
+            .output()
+            .expect("run sb");
+        let text = stderr(&output);
+        assert_eq!(output.status.code(), Some(1), "{sub}: {text}");
+        assert!(
+            text.contains(&format!("✗ Validation of {file}")),
+            "{sub}: {text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "required config file not found: {}",
+                path.display()
+            )),
+            "{sub}: {text}"
+        );
+        assert!(!path.exists(), "{sub}");
+    }
+}
+
+/// motd.yml and providers.yml aren't on every host: asked for directly
+/// when missing, each is named, exit 1, with no editor run and no file
+/// made.
+#[test]
+fn a_missing_motd_or_providers_is_named_and_not_made() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::remove_file(world.root().join("motd.yml")).expect("remove motd.yml");
+    for (sub, file) in [("motd", "motd.yml"), ("providers", "providers.yml")] {
+        let path = world.root().join(file);
+        let output = world
+            .sb(sub)
+            .env("VISUAL", world.fake())
+            .output()
+            .expect("run sb");
+        let text = stderr(&output);
+        assert_eq!(output.status.code(), Some(1), "{sub}: {text}");
+        assert!(
+            text.contains(&format!(
+                "configuration file does not yet exist: {}",
+                path.display()
+            )),
+            "{sub}: {text}"
+        );
+        assert!(!path.exists(), "{sub}");
+        assert!(!world.ran(), "{sub}");
+    }
+}
+
+/// The picker lists motd.yml and providers.yml only when they exist, after
+/// sb-go's six; the six are always listed.
+#[test]
+fn the_picker_lists_motd_and_providers_only_when_they_exist() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut pty = picker(&world);
+    let shown = pty.contents();
+    assert!(shown.contains("Motd Settings"), "{shown}");
+    assert!(!shown.contains("Providers"), "{shown}");
+    assert!(shown.contains("Inventory Settings"), "{shown}");
+    pty.send(b"q");
+    assert_eq!(pty.exit().exit_code(), 0);
+    std::fs::write(world.root().join("providers.yml"), PROVIDERS).expect("providers");
+    std::fs::remove_file(world.root().join("motd.yml")).expect("remove motd.yml");
+    let mut pty = picker(&world);
+    let shown = pty.contents();
+    assert!(shown.contains("Providers"), "{shown}");
+    assert!(shown.contains("providers.yml"), "{shown}");
+    assert!(!shown.contains("Motd Settings"), "{shown}");
+    assert!(shown.contains("Accounts"), "{shown}");
+    pty.send(b"q");
+    assert_eq!(pty.exit().exit_code(), 0);
 }

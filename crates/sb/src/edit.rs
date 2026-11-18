@@ -2,7 +2,9 @@
 //! module build M49, M50): the target checks, the editor choice and the
 //! run, then the file validated as validate-config validates it and, with
 //! issues, "Edit <file> again?". Bare `sb edit` shows sb-tui's picker
-//! first (M53), then takes the same path with the file chosen.
+//! first (M53), then takes the same path with the file chosen. motd.yml
+//! and providers.yml are sb's own two, listed only when they exist (tui
+//! spec, Difference 38).
 
 use std::ffi::OsStr;
 use std::io::IsTerminal as _;
@@ -16,7 +18,9 @@ use sb_cli_core::log::RunLog;
 use sb_config::run::{self, Checks, FileError, Issues};
 use sb_exec::{Cmd, Ending, SpawnCause, SpawnError};
 
-/// One of the six files `sb edit` opens (sb-go layout/layout.go:13-21).
+/// One of the files `sb edit` opens: sb-go's six (sb-go
+/// layout/layout.go:13-21), then motd.yml and providers.yml (tui spec,
+/// Difference 38).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum File {
     Accounts,
@@ -25,18 +29,30 @@ pub enum File {
     BackupConfig,
     HetznerVlan,
     Inventory,
+    Motd,
+    Providers,
 }
 
 impl File {
-    /// The six, in the picker's order (sb-go cmd/edit.go:175-205).
-    pub const ALL: [Self; 6] = [
+    /// All of them, in the picker's order: sb-go's six (sb-go
+    /// cmd/edit.go:175-205), then sb's two.
+    pub const ALL: [Self; 8] = [
         Self::Accounts,
         Self::Settings,
         Self::AdvSettings,
         Self::BackupConfig,
         Self::HetznerVlan,
         Self::Inventory,
+        Self::Motd,
+        Self::Providers,
     ];
+
+    /// Whether the picker lists it only when its file exists: motd.yml and
+    /// providers.yml, which not every host has. sb-go's six are always
+    /// listed (a missing one fails the target check once chosen).
+    fn optional(self) -> bool {
+        matches!(self, Self::Motd | Self::Providers)
+    }
 
     /// The picker's title for it (sb-go cmd/edit.go:175-205).
     pub fn title(self) -> &'static str {
@@ -47,6 +63,8 @@ impl File {
             Self::BackupConfig => "Backup Settings",
             Self::HetznerVlan => "Hetzner VLAN Settings",
             Self::Inventory => "Inventory Settings",
+            Self::Motd => "Motd Settings",
+            Self::Providers => "Providers",
         }
     }
 
@@ -59,6 +77,8 @@ impl File {
             Self::BackupConfig => "backup_config.yml",
             Self::HetznerVlan => "hetzner_vlan.yml",
             Self::Inventory => "localhost.yml",
+            Self::Motd => "motd.yml",
+            Self::Providers => "providers.yml",
         }
     }
 
@@ -73,7 +93,8 @@ impl File {
 
     /// Its entry in validate-config's files (sb-config's `run::FILES`,
     /// in sb-go's order), so it is checked exactly as validate-config
-    /// checks it.
+    /// checks it; providers.yml, which validate-config doesn't check, its
+    /// own schema-less entry (`run::PROVIDERS`).
     fn checked_as(self) -> run::File {
         let [
             accounts,
@@ -81,7 +102,7 @@ impl File {
             backup_config,
             hetzner_vlan,
             settings,
-            _motd,
+            motd,
             inventory,
         ] = run::FILES;
         match self {
@@ -91,15 +112,50 @@ impl File {
             Self::BackupConfig => backup_config,
             Self::HetznerVlan => hetzner_vlan,
             Self::Inventory => inventory,
+            // Required here: the file was there when the editor started
+            // (the target check), so one the editor removed is the file's
+            // issue, offered again, as for the five required files;
+            // validate-config skips a missing one (tui spec, the editors'
+            // files).
+            Self::Motd => run::File {
+                required: true,
+                ..motd
+            },
+            Self::Providers => run::File {
+                required: true,
+                ..run::PROVIDERS
+            },
         }
     }
+}
+
+/// The files the picker lists under the Saltbox `root`: every one but an
+/// optional one with nothing at its path. Looked at without following a
+/// link (`symlink_metadata`: `try_exists` follows one, so a broken link
+/// would read as absent;
+/// <https://doc.rust-lang.org/1.100.0/std/path/struct.Path.html#method.symlink_metadata>),
+/// and only `NotFound` hides it, as `try_exists` counts only that as
+/// absent: a broken link, or a path that can't be looked at, is listed,
+/// and the target check names what is wrong once it is chosen.
+fn pickable(root: &Path) -> Vec<File> {
+    File::ALL
+        .into_iter()
+        .filter(|file| {
+            !file.optional()
+                || !matches!(
+                    file.path(root).symlink_metadata(),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound
+                )
+        })
+        .collect()
 }
 
 /// The picker's refusal without a terminal on stdin and stdout (tui
 /// spec, editors, "Picker").
 pub const NO_TERMINAL: &str = "sb edit requires an interactive terminal; use sb edit <file>";
 
-/// Bare `sb edit`: sb-tui's picker over [`File::ALL`], then [`edit`] on
+/// Bare `sb edit`: sb-tui's picker over the files there are
+/// ([`pickable`]), then [`edit`] on
 /// the file chosen, once the picker has restored the terminal (alternate
 /// screen left, mouse off, input drained), so both paths run the editor
 /// the same way. `q` or Esc ends with nothing done, exit 0.
@@ -113,13 +169,17 @@ pub fn pick(no_edit_again: bool, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         bail!(NO_TERMINAL);
     }
-    let items = File::ALL.map(|file| {
-        let item = sb_tui::edit_picker::Item {
-            title: file.title(),
-            shown: file.shown(),
-        };
-        (item, file)
-    });
+    let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
+    let items: Vec<_> = pickable(&root)
+        .into_iter()
+        .map(|file| {
+            let item = sb_tui::edit_picker::Item {
+                title: file.title(),
+                shown: file.shown(),
+            };
+            (item, file)
+        })
+        .collect();
     let (ending, chosen) = super::block_on(sb_tui::edit_picker::pick(
         shutdown,
         &items,
@@ -265,8 +325,10 @@ enum Validated {
 }
 
 /// `file` validated under term-ui's runner, titled `sb edit`, as
-/// validate-config's step for that file (sb-config's `validate_file`,
-/// credential checks skipped), started only now the editor has exited
+/// validate-config's step for that file (sb-config's
+/// `validate_file_migrating`, credential checks skipped: motd.yml in its
+/// older format is migrated first, backed up to `SB_BACKUPS_DIR`, as
+/// validate-config migrates it), started only now the editor has exited
 /// (exec refuses `attached` while a runner draws) and finished before
 /// any question (term-ui's prompts refuse while one draws). The issue
 /// count reaches the log; the issues themselves only the step's record,
@@ -289,7 +351,14 @@ async fn validate(
     let mut issues = None;
     let result = runner
         .step(run::file_labels(checked), async |step| {
-            let result = run::validate_file(step, settings, checked, Checks::Skip).await;
+            let result = run::validate_file_migrating(
+                step,
+                settings,
+                checked,
+                Checks::Skip,
+                &crate::backups_dir(),
+            )
+            .await;
             issues = match &result {
                 Ok(()) => Some(0),
                 Err(err) => fixable(err),
@@ -511,8 +580,24 @@ mod tests {
                 ("Backup Settings", "backup_config.yml"),
                 ("Hetzner VLAN Settings", "hetzner_vlan.yml"),
                 ("Inventory Settings", "localhost.yml"),
+                ("Motd Settings", "motd.yml"),
+                ("Providers", "providers.yml"),
             ]
         );
+    }
+
+    /// The picker lists sb-go's six always, and motd.yml and
+    /// providers.yml only when something is at their path.
+    #[test]
+    fn the_picker_leaves_out_a_missing_motd_or_providers() {
+        let root = tempfile::tempdir().expect("root");
+        let always: Vec<File> = File::ALL.into_iter().filter(|f| !f.optional()).collect();
+        let six = always.as_slice();
+        assert_eq!(pickable(root.path()), six);
+        std::fs::write(root.path().join("providers.yml"), "a: 1\n").expect("providers");
+        assert_eq!(pickable(root.path()), [six, &[File::Providers]].concat());
+        std::os::unix::fs::symlink("gone", root.path().join("motd.yml")).expect("link");
+        assert_eq!(pickable(root.path()), File::ALL);
     }
 
     #[test]
@@ -539,6 +624,8 @@ mod tests {
                 "{file:?}"
             );
         }
+        assert_eq!(File::Motd.checked_as().schema, Some("motd.schema.yml"));
+        assert_eq!(File::Providers.checked_as().schema, None);
     }
 
     /// `changed` compares bytes; a file that couldn't be read is unknown.
