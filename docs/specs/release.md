@@ -245,9 +245,11 @@ The maintainer's decisions of 2026-11-18.
   `sb_linux_arm64_beta` beside the amd64 assets, chosen by the build's
   architecture (decision 9) with `_beta` for the beta channel.
   - **Locally,** `check.sh full` cross-builds the aarch64 production
-    binary and runs its `version --json` under QEMU user-mode
+    binary and runs its `sb version` under QEMU user-mode
     (`qemu-aarch64-static -L` on 22.04's arm64 glibc, in a throwaway
-    amd64 container). That needs no binfmt handler on the host.
+    amd64 container, `sb-rust-gate/qemu-check:<hash>`, kept as a cache:
+    CONSTRAINTS.md, "Images the gate keeps"). That needs no binfmt
+    handler on the host.
   - **The test suite stays CI-only for arm64,** on GitHub's native arm
     runners (`ubuntu-22.04-arm`, `ubuntu-24.04-arm`). Under emulation it
     would run several times slower within the CPU cap, and the
@@ -260,7 +262,10 @@ The maintainer's decisions of 2026-11-18.
   `~`, which GNU sort orders before the release it precedes. Either way
   the installed binary then follows its own baked channel. It accepts
   x86_64 and aarch64, and installs that architecture's asset after the
-  ELF check names the matching machine.
+  ELF check names the matching machine and the binary's `sb version`
+  names the channel asked for (`Release channel: release`, or `beta`).
+  It checks no digest: a gap from before the channels, which the pinned
+  https URL narrows.
 - **On an unsupported Ubuntu release** (not another distribution),
   `sb version` and the standalone `sb self-update` run with a warning;
   every other command, `--help` and `sb update` included, still refuses.
@@ -283,9 +288,15 @@ The maintainer's decisions of 2026-11-18.
       architectures; prerelease tags: `_beta` only);
     - checks each binary's `version --json` (the tag's version, the
       asset's channel, a valid `uv_version`);
-    - checks that a build without `SB_VERSION` has self-update disabled,
-      mirroring sb-go's build.yml;
-    - publishes the release, as a prerelease for rc tags.
+    - publishes the release, as a prerelease for rc tags, through the
+      `release` environment, whose required reviewers approve it.
+  - The release runs only for a commit on `main` whose ci.yml run
+    passed, and for a tag that is semver without leading zeros. A release
+    reaches every host on its channel as root, since `sb update`
+    self-updates without asking.
+  - ci.yml's `untagged` job mirrors sb-go's build.yml: a build without
+    `SB_VERSION` has a valid `uv_version` and self-update disabled. It
+    runs on tag pushes too.
   - **Closing findings:**
     - **sb-M4:** `Cross.toml`'s `[build.env] passthrough` names
       `SB_VERSION`, `SB_GIT_COMMIT` and `SB_CHANNEL`, so cross's
@@ -638,9 +649,11 @@ No test reaches the network or replaces an installed sb.
   sb-rust keeps `version --json`'s `uv_version` and bare tags, as the
   update-saltbox-python action reads sb's version that way.
 - **The workflows are unrun:** written locally, never pushed. The
-  26.04 job runs in an `ubuntu:26.04` container on GitHub's 24.04
-  runner (`UNVERIFIED`: GitHub's image list had no 26.04 runner when
-  this was written).
+  repository's settings they rely on (the `release` environment's
+  reviewers, a ruleset on who may push version tags) wait for the
+  maintainer with the repository itself. GitHub's 22.04 runners are
+  deprecated from 2026-09-17 and unsupported from 2027-04-17; the 22.04
+  jobs need a plan by then.
 - The proxy and GitHub are trusted for the digest; a compromised GitHub
   release isn't caught until signed checksums.
 - If sb's file was replaced while it ran, `/proc/self/exe` ends in
