@@ -547,8 +547,10 @@ mod tests {
             let seen = waiting.recv().expect("told");
             let since = Instant::now();
             std::thread::sleep(POLL * 2);
-            drop(holder);
+            // Read before the release: once it's released the waiter can
+            // take the lock and stop its clock before this thread reads.
             let held_for = since.elapsed();
+            drop(holder);
             assert_eq!(waiting.try_recv().ok(), None, "told twice");
             (
                 waiter.join().expect("waiter").map(|taken| (taken, seen)),
@@ -882,8 +884,9 @@ mod tests {
             let seen = waiting.recv().expect("told");
             let from = Instant::now();
             std::thread::sleep(POLL * 2);
-            std::fs::remove_file(&path).expect("done");
+            // Read before the removal, as above.
             let held_for = from.elapsed();
+            std::fs::remove_file(&path).expect("done");
             assert_eq!(waiting.try_recv().ok(), None, "told twice");
             (waiter.join().expect("waiter"), seen, held_for)
         });
