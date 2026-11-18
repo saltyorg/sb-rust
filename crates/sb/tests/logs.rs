@@ -709,6 +709,9 @@ fn a_search_reaches_a_match_outside_the_loaded_lines() {
         pty.contents()
     );
     assert!(pty.showing("/needle 1/1"), "{}", pty.contents());
+    // The jump's whole frame: the match on the top row, the window's last
+    // row 28 entries on.
+    assert!(pty.showing("app[42]: line 128"), "{}", pty.contents());
     assert!(!pty.contents().contains("following"), "{}", pty.contents());
     pty.send(b"\x1b");
     assert!(pty.showing("/ search"), "{}", pty.contents());

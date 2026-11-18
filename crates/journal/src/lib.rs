@@ -3589,4 +3589,41 @@ mod tests {
         assert_eq!(messages_of(&first), ["m0"]);
         assert!(!first.more_older);
     }
+    /// A step whose entries pass the output limit still hands on every
+    /// entry: the part the limit left out is read next, within a limit of
+    /// its own, before the scan goes on (the code review of the
+    /// whole-log search: 58 of 100 came through before).
+    #[test]
+    fn a_scan_step_over_the_output_limit_loses_no_entry() {
+        let payloads: Vec<Vec<u8>> = (0..100)
+            .map(|i| format!("BIG={i}{}", "x".repeat(2_000)).into_bytes())
+            .collect();
+        let entries: Vec<Vec<&[u8]>> = payloads.iter().map(|p| vec![p.as_slice()]).collect();
+        let entries: Vec<&[&[u8]]> = entries.iter().map(Vec::as_slice).collect();
+        let (mut c, _) = crafted::journal_of(&entries);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let mut seen = Vec::new();
+        let mut limit_errors = 0;
+        let _ = j.scan(
+            &Query::every(),
+            &Position::Tail,
+            50,
+            &Limits::with_output(64 << 10),
+            &mut |records, errors| {
+                limit_errors += errors
+                    .shown
+                    .iter()
+                    .filter(|e| matches!(e.kind(), ReadErrorKind::OutputLimit { .. }))
+                    .count();
+                seen.extend(records.iter().map(|r| {
+                    String::from_utf8_lossy(r.message().expect("a message")).into_owned()
+                }));
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        let all: Vec<String> = (0..100).rev().map(|i| format!("m{i}")).collect();
+        assert_eq!(seen, all);
+        assert_eq!(limit_errors, 0, "nothing was left out");
+    }
 }

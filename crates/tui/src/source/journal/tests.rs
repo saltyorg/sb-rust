@@ -882,3 +882,46 @@ async fn a_stopped_search_goes_quiet() {
         }
     }
 }
+
+/// A search side's read errors don't end it: they are one notice, the
+/// first with the count of the others, before its end (as a page's are).
+#[tokio::test]
+async fn a_search_sides_read_errors_are_one_notice_before_its_end() {
+    let t = crafted::journal(100).0.file();
+    let dir = tempfile::tempdir().expect("a directory");
+    let gone = [dir.path().join("a.journal"), dir.path().join("b.journal")];
+    let paths: Vec<&Path> = [t.path(), &gone[0], &gone[1]].into();
+    let settings = Settings {
+        search_step: 10,
+        ..small(10)
+    };
+    let mut v = Viewer::on(files(&release("24.04"), &paths), every_entry(), settings);
+    let tail = v.page(Request::Tail).await;
+    assert!(matches!(
+        v.next().await,
+        Event::Notice(Notice::ReadErrors { .. })
+    ));
+    v.handle.send(Request::Search(Search {
+        id: 11,
+        matcher: hundreds(),
+        older: tail.oldest.clone(),
+        newer: None,
+    }));
+    let mut notices = Vec::new();
+    loop {
+        match v.next().await {
+            Event::Found { end: None, .. } => {}
+            Event::Found { end: Some(end), .. } => {
+                assert_eq!(end, SearchEnd::Done);
+                break;
+            }
+            Event::Notice(notice) => notices.push(notice),
+            other => panic!("{other:?}"),
+        }
+    }
+    let [Notice::ReadErrors { first, others }] = &notices[..] else {
+        panic!("one notice: {notices:?}")
+    };
+    assert!(first.contains("a.journal"), "{first}");
+    assert_eq!(*others, 1);
+}

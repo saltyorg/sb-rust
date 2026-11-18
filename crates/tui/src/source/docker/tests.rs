@@ -776,3 +776,32 @@ async fn around_a_match_then_the_newer_side_to_its_cap() {
     assert_eq!(order, Order::NearestFirst);
     assert_eq!(end, SearchEnd::Capped);
 }
+
+/// A log that can't be read: a search's side ends failed with the
+/// daemon's cause.
+#[tokio::test]
+async fn a_log_that_cant_be_read_fails_the_search() {
+    // No log for the container: the daemon's 404.
+    let engine = engine(HashMap::new());
+    let mut v = Viewer::on(&engine, container(), small(50)).await;
+    let at = Position(Inner::Docker(logs::Position {
+        time_ns: base().as_nanosecond(),
+        ordinal: 0,
+    }));
+    v.handle.send(Request::Search(Search {
+        id: 5,
+        matcher: tens(),
+        older: Some(at),
+        newer: None,
+    }));
+    loop {
+        match v.next().await {
+            Event::Found { end: Some(end), .. } => {
+                assert!(matches!(end, SearchEnd::Failed(_)), "{end:?}");
+                break;
+            }
+            Event::Found { .. } => {}
+            other => panic!("{other:?}"),
+        }
+    }
+}

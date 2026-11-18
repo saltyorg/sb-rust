@@ -119,8 +119,10 @@ impl Whole {
         reached: Option<Timestamp>,
         end: Option<SearchEnd>,
     ) {
-        if reached.is_some() {
-            self.reached = reached;
+        // The oldest reached, whichever side: the progress is how far
+        // back the search has read (tui spec, "Progress").
+        if let Some(reached) = reached {
+            self.reached = Some(self.reached.map_or(reached, |old| old.min(reached)));
         }
         for f in found {
             if !self.known.insert(f.position.clone()) {
@@ -246,6 +248,11 @@ impl Whole {
         }
     }
 
+    /// Whether the newer side was asked for (reading or ended).
+    pub(crate) fn read_newer(&self) -> bool {
+        self.newer_side.running || self.newer_side.end.is_some()
+    }
+
     /// Whether a side still reads.
     pub(crate) fn running(&self) -> bool {
         self.older_side.running || self.newer_side.running
@@ -276,7 +283,12 @@ impl Whole {
 }
 
 /// An age as the progress shows it: whole minutes under an hour, hours
-/// under two days, then days; at least `1 min`.
+/// under two days, then days; at least `1 min`. Why not jiff's friendly
+/// printer (<https://docs.rs/jiff/0.2.38/jiff/fmt/friendly/struct.SpanPrinter.html>):
+/// each of its designators is one label set (`min`/`hr`, or `m`/`h`/`d`),
+/// none mixes `min`, `h` and `days`, and the spec's hours up to two days
+/// need a rule of their own; indicatif's `HumanDuration` shows one unit,
+/// rounded.
 pub(crate) fn age(age: jiff::SignedDuration) -> String {
     let secs = age.as_secs().max(0);
     if secs < 3_600 {
@@ -436,8 +448,65 @@ mod tests {
         assert_eq!(order(&whole), positions(&[50, 60, 70, 80]));
     }
 
+    /// Where the buffer was at the start, between the parts; a part is
+    /// known by its side's order, the middle always; a side that ended at
+    /// its cap is capped however few it kept.
+    #[test]
+    fn the_parts_edges_and_the_cap() {
+        let mut whole = start(&[50], 10);
+        whole.step(
+            Side::Older,
+            Order::NearestFirst,
+            found(&[40, 30]),
+            None,
+            None,
+        );
+        assert_eq!(whole.start_gap(), 3);
+        whole.step(
+            Side::Newer,
+            Order::FarthestFirst,
+            found(&[70, 60]),
+            None,
+            None,
+        );
+        assert!(whole.known(2), "the middle");
+        assert!(
+            !whole.known(3),
+            "the newer part, still sending farthest first"
+        );
+        assert!(!whole.capped());
+        whole.step(
+            Side::Older,
+            Order::NearestFirst,
+            Vec::new(),
+            None,
+            Some(SearchEnd::Capped),
+        );
+        assert!(whole.capped());
+        // Either part at the cap is capped, the other below it.
+        let mut whole = start(&[], 2);
+        whole.step(
+            Side::Newer,
+            Order::FarthestFirst,
+            found(&[90, 80, 70]),
+            None,
+            None,
+        );
+        assert!(whole.capped());
+        let mut whole = start(&[], 2);
+        whole.step(
+            Side::Older,
+            Order::FarthestFirst,
+            found(&[1, 2, 3]),
+            None,
+            None,
+        );
+        assert!(whole.capped());
+    }
+
     #[test]
     fn ages_read_as_minutes_hours_and_days() {
+        assert_eq!(age(jiff::SignedDuration::from_secs(3_600)), "1 h");
         let secs = jiff::SignedDuration::from_secs;
         assert_eq!(age(secs(5)), "1 min");
         assert_eq!(age(secs(40 * 60)), "40 min");

@@ -852,9 +852,14 @@ does on main (measured, "Testing").
     grow.
   - `3/17` alone when the whole log has been read.
   - `3/10000+  stopped at 10,000 matches` at the cap (below).
-  - A read error ends that direction of the search with the source's
-    usual notice row (`couldn't read the log: …`), and the header says
-    `search stopped: read error`.
+  - A read that fails ends that direction of the search with the
+    source's usual notice row (`couldn't read the log: …`), and the
+    header says `search stopped: read error`. An entry a journal side
+    can't read doesn't end it, as it doesn't end paging: its read errors
+    are one notice (`read error: …`, with the count of the others)
+    before the side ends.
+  - The progress's age is that of the oldest entry the search has read,
+    whichever side read it.
 - **`n` and `N`** go to the next newer and next older match, as today,
   across the unloaded part too:
   - Within the buffer, nothing changes.
@@ -873,7 +878,9 @@ does on main (measured, "Testing").
 - **Following.** A search while following reads older only. New lines
   are matched as they arrive, as today, and join the newest end of the
   match list. A search started while following begins at the newest
-  match, as today.
+  match, as today. Back at the end (End, `G`, `f`) from a search that
+  read the newer side, the search starts again as one while following,
+  so the tail's matches and the newer side's never mix out of order.
 - **Cancelling.** Esc clears the search and stops its read, as it
   clears the highlight today. A new query replaces the search and its
   read. Leaving the source stops it. `t` doesn't search again, as today:
@@ -945,12 +952,17 @@ screen runs between them.
 ### Testing
 
 - **Journal fixtures** big enough that matches lie outside the loaded
-  500: sb-journal's `testing` writer makes a unit journal of 200,000
-  entries over several files and boots, with matches before and after
-  the window, several in one entry, one in a 64 KiB-cut entry's held
-  part and one in its cut part (not found, as on screen).
-- **Docker:** sb-docker's fake daemon serves a 30 MiB log with matches
-  through it, a TTY container, and a log that fails halfway.
+  500: crafted journals of 1,234 to 3,000 entries (the scan's steps, the
+  adapter's sides, the PTY tests), two boots across two files in the
+  page's order, and a step past its output limit losing no entry. As
+  built, the 200,000-entry fixture stayed the step-cost measurement
+  (journal spec, "Why one scan"); the 64 KiB cut is `Line::new`'s, the
+  same for a line searched as for one shown, and is tested there.
+- **Docker:** sb-docker's fake daemon serves logs of 300 entries with
+  matches through them, entries sharing a time, and a log that can't be
+  read (the search's side fails, the export is a read failure). The TTY
+  decoding is the line decoder's, tested in sb-docker, the same for the
+  scan as for pages.
 - **Viewer tests** (fake source, `testing`): `n` and `N` across the
   unloaded part in both directions, the `Around` page and the buffer
   starting again, the wait for a match not yet read and its cancel,

@@ -29,7 +29,6 @@
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::future::OptionFuture;
@@ -42,6 +41,7 @@ use sb_docker::ps::Row;
 use tokio::sync::{Notify, mpsc, watch as channel};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, Sleep};
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::Instrument as _;
 
 use super::{
@@ -183,16 +183,12 @@ struct Adapter {
     tail_failed: bool,
     events: Option<Events>,
     retry: Option<Pin<Box<Sleep>>>,
-    /// The search in progress: its sides' stop flag.
-    search: Option<Arc<AtomicBool>>,
-}
-
-/// A source that goes stops its search: the reads see the flag at their
-/// next entry.
-impl Drop for Adapter {
-    fn drop(&mut self) {
-        self.stop_search();
-    }
+    /// The search in progress: its token, cancelled when the guard drops
+    /// (a new search, its stop, or the source's drop; tokio-util's
+    /// `DropGuard`,
+    /// <https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.drop_guard>),
+    /// which the scans see at their next step.
+    search: Option<DropGuard>,
 }
 
 /// The next item of `stream`, if there is one: in a `select!` branch
@@ -388,8 +384,8 @@ impl Adapter {
     /// before it stops.
     fn start_search(&mut self, search: Search) {
         self.stop_search();
-        let stop = Arc::new(AtomicBool::new(false));
-        self.search = Some(Arc::clone(&stop));
+        let stop = CancellationToken::new();
+        self.search = Some(stop.clone().drop_guard());
         tracing::info!(search = search.id, "container search started");
         for (side, from) in [(Side::Older, search.older), (Side::Newer, search.newer)] {
             let Some(Position(Inner::Docker(at))) = from else {
@@ -402,7 +398,7 @@ impl Adapter {
                 at,
                 search: search.id,
                 matcher: search.matcher.clone(),
-                stop: Arc::clone(&stop),
+                stop: stop.clone(),
                 outbox: self.outbox.clone(),
                 settings: self.settings,
             };
@@ -411,9 +407,7 @@ impl Adapter {
     }
 
     fn stop_search(&mut self) {
-        if let Some(stop) = self.search.take() {
-            stop.store(true, Ordering::Relaxed);
-        }
+        self.search = None;
     }
 
     /// A page that couldn't be read: an empty page that ends paging that
@@ -629,7 +623,7 @@ struct SideRead {
     at: logs::Position,
     search: u64,
     matcher: Matcher,
-    stop: Arc<AtomicBool>,
+    stop: CancellationToken,
     outbox: Outbox,
     settings: Settings,
 }
@@ -664,7 +658,7 @@ impl SideRead {
         let mut capped = false;
         let mut gone = false;
         let read = logs::scan(&daemon, &container.id, range, container.created, |entry| {
-            if stop.load(Ordering::Relaxed) {
+            if stop.is_cancelled() {
                 return ControlFlow::Break(());
             }
             unsent += entry.bytes.len();
@@ -702,7 +696,7 @@ impl SideRead {
         })
         .await;
         let end = match read {
-            _ if gone || stop.load(Ordering::Relaxed) => {
+            _ if gone || stop.is_cancelled() => {
                 tracing::info!(
                     search,
                     ?side,

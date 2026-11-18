@@ -339,8 +339,7 @@ pub(crate) fn scan_back(
     let mut merge = Merge::new(walks, boots);
     loop {
         let (picked, more) = newest(&mut merge, step, held, &mut errors);
-        let (mut records, _files, _reached) =
-            decode(files, &picked, End::Newest, bounds.payload, &mut errors);
+        let mut records = decode_all(files, &picked, bounds.payload, &mut errors);
         records.reverse();
         if !records.is_empty() || !errors.is_empty() {
             each(records, std::mem::take(&mut errors))?;
@@ -349,6 +348,42 @@ pub(crate) fn scan_back(
             return ControlFlow::Continue(());
         }
     }
+}
+
+/// `picked` (oldest first) decoded from the newest end, every one of
+/// them: where the output limit stops `decode`, the entries it left out
+/// are decoded next within a limit of their own, so a scan's step hands
+/// on its whole step (a page leaves them for the next page; a scan's
+/// merge has passed them). The limit's own error goes with them, as
+/// nothing is left out; the others are kept. Oldest first.
+fn decode_all(
+    files: &[JournalFile],
+    picked: &[Candidate],
+    payload_limit: usize,
+    errors: &mut ReadErrors,
+) -> Vec<Record> {
+    let mut parts = Vec::new();
+    let mut rest = picked;
+    while !rest.is_empty() {
+        let mut found = ReadErrors::default();
+        let (part, _files, reached) = decode(files, rest, End::Newest, payload_limit, &mut found);
+        let left_out = reached
+            .oldest
+            .filter(|_| reached.older)
+            .and_then(|oldest| rest.iter().position(|c| c.location == oldest));
+        if left_out.is_some() {
+            found
+                .shown
+                .retain(|e| !matches!(e.kind(), ReadErrorKind::OutputLimit { .. }));
+        }
+        errors.absorb(found);
+        parts.push(part);
+        match left_out {
+            Some(oldest) => rest = &rest[..oldest],
+            None => break,
+        }
+    }
+    parts.into_iter().rev().flatten().collect()
 }
 
 /// Each file's newest readable entry in its main list, with its offset,

@@ -2810,3 +2810,54 @@ fn the_follows_matches_join_the_count() {
     ]));
     assert!(h.header().contains("/12"), "{}", h.header());
 }
+
+/// A side that couldn't read on says why in a notice row, as a page
+/// does, and the header says the search stopped.
+#[test]
+fn a_failed_side_says_why() {
+    let mut h = open(100, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m45");
+    let id = searches(&h.requests()).0[0].id;
+    h.send(step(
+        id,
+        Side::Older,
+        Order::FarthestFirst,
+        &[],
+        Some(SearchEnd::Failed("the daemon went away".into())),
+    ));
+    let screen = h.screen().join("\n");
+    assert!(
+        screen.contains("couldn't read the log: the daemon went away"),
+        "{screen}"
+    );
+    assert!(
+        h.header().contains("search stopped: read error"),
+        "{}",
+        h.header()
+    );
+}
+
+/// Back at the end from a search that read the newer side, the search
+/// starts again as one while following: older only.
+#[test]
+fn back_at_the_end_a_search_reads_older_only() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Char('f'));
+    h.send(around(20..30, 25, "x"));
+    h.requests();
+    h.search("x");
+    let (asked, _) = searches(&h.requests());
+    assert!(asked[0].newer.is_some());
+    h.send(tail(40..50, true));
+    let (asked, stops) = searches(&h.requests());
+    assert_eq!(stops, 1);
+    let [search] = &asked[..] else {
+        panic!("one search: {asked:?}")
+    };
+    assert_eq!(search.newer, None);
+    assert_eq!(search.older, Some(position(40)));
+}

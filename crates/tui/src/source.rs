@@ -139,6 +139,9 @@ pub enum Request {
 /// viewer keeps the nearest of a side sending farthest first.
 pub const MATCHES: usize = 10_000;
 
+/// [`MATCHES`] as the header writes it.
+pub const MATCHES_TEXT: &str = "10,000";
+
 /// A whole-log search: its id, the viewer's match, and where each side
 /// starts (`None`: that side isn't read).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -454,6 +457,16 @@ impl Drop for SourceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The search's matcher compares by identity, and its debug output
+    /// shows nothing of what it holds.
+    #[test]
+    fn matchers_are_compared_by_identity() {
+        let matcher = Matcher::new(|_: &Line| 1);
+        assert_eq!(matcher, matcher.clone());
+        assert_ne!(matcher, Matcher::new(|_: &Line| 1));
+        assert_eq!(format!("{matcher:?}"), "Matcher");
+    }
 
     /// A line holds at most the record cap of its message and the origin
     /// cap of its origin, and counts the message bytes it cut (M73's

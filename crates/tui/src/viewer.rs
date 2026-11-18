@@ -76,7 +76,7 @@ use crate::resume::{self, Resumes};
 use crate::save;
 use crate::source::{
     Event, Generation, Line, Matcher, Notice, Outbox, PageKind, Position, Request, Search,
-    SourceHandle, Tagged,
+    SearchEnd, SourceHandle, Tagged,
 };
 use crate::term::{App, Flow};
 
@@ -629,7 +629,15 @@ impl Viewer {
                 let Some(whole) = self.whole.as_mut().filter(|w| w.id == search) else {
                     return;
                 };
+                let failed = match &end {
+                    Some(SearchEnd::Failed(cause)) => Some(cause.clone()),
+                    _ => None,
+                };
                 whole.step(side, order, found, reached, end);
+                // A side that couldn't read on says why, as a page does.
+                if let Some(cause) = failed {
+                    self.apply(Event::Notice(Notice::ReadFailed(cause)));
+                }
                 if let Some(forward) = self.waiting {
                     self.jump(forward);
                 }
@@ -703,9 +711,17 @@ impl Viewer {
                     self.anchor = Anchor { item: 0, skip: 0 };
                 }
                 if kind == PageKind::Tail {
-                    // The newest lines: any match new since the search
-                    // goes at its newest end.
-                    self.follow_matches(0);
+                    if self.whole.as_ref().is_some_and(Whole::read_newer) {
+                        // Back at the end from a search that read the newer
+                        // side: its matches and the tail's can't be put in
+                        // order, so the search starts again as a search
+                        // while following, which reads older only.
+                        self.start_whole();
+                    } else {
+                        // The newest lines: any match new since the search
+                        // goes at its newest end.
+                        self.follow_matches(0);
+                    }
                 } else if let Some((position, k)) = self.around.take() {
                     self.current = self
                         .entry_at(&position)
@@ -1968,7 +1984,7 @@ impl Viewer {
         let progress = if whole.failed() {
             "  search stopped: read error".to_string()
         } else if whole.capped() {
-            format!("  stopped at {} matches", thousands(crate::source::MATCHES))
+            format!("  stopped at {} matches", crate::source::MATCHES_TEXT)
         } else if whole.running() {
             match whole.back() {
                 Some(back) => format!("  searching… {back} back"),
@@ -1997,19 +2013,6 @@ impl Viewer {
             None => format!(" -/{total}{plus}{progress}"),
         }
     }
-}
-
-/// `n` with a comma between thousands, as the header shows the cap.
-fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 impl App for Viewer {

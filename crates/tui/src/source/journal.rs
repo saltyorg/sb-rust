@@ -47,7 +47,6 @@ use std::collections::{HashSet, VecDeque};
 use std::ops::ControlFlow;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::FutureExt as _;
@@ -60,6 +59,7 @@ use sb_host::journal::{
 };
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::Instrument as _;
 
 use super::{
@@ -239,16 +239,12 @@ struct Adapter {
     follow_from: Option<PageEnd>,
     sent: Sent,
     follow: Option<Following>,
-    /// The search in progress: its sides' stop flag.
-    search: Option<Arc<AtomicBool>>,
-}
-
-/// A source that goes stops its search: the scans see the flag at their
-/// next step.
-impl Drop for Adapter {
-    fn drop(&mut self) {
-        self.stop_search();
-    }
+    /// The search in progress: its token, cancelled when the guard drops
+    /// (a new search, its stop, or the source's drop; tokio-util's
+    /// `DropGuard`,
+    /// <https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.drop_guard>),
+    /// which the scans see at their next step.
+    search: Option<DropGuard>,
 }
 
 impl Adapter {
@@ -461,8 +457,8 @@ impl Adapter {
     /// neither waits for the other. The search before it stops.
     fn start_search(&mut self, search: Search) {
         self.stop_search();
-        let stop = Arc::new(AtomicBool::new(false));
-        self.search = Some(Arc::clone(&stop));
+        let stop = CancellationToken::new();
+        self.search = Some(stop.clone().drop_guard());
         tracing::info!(search = search.id, "journal search started");
         for (side, from) in [(Side::Older, search.older), (Side::Newer, search.newer)] {
             let Some(Position(Inner::Journal(cursor))) = from else {
@@ -475,7 +471,7 @@ impl Adapter {
                 from: cursor,
                 search: search.id,
                 matcher: search.matcher.clone(),
-                stop: Arc::clone(&stop),
+                stop: stop.clone(),
                 outbox: self.outbox.clone(),
                 settings: self.settings,
             };
@@ -484,9 +480,7 @@ impl Adapter {
     }
 
     fn stop_search(&mut self) {
-        if let Some(stop) = self.search.take() {
-            stop.store(true, Ordering::Relaxed);
-        }
+        self.search = None;
     }
 
     /// Follow from the last page that held the newest entry, reading the
@@ -645,7 +639,7 @@ struct SideScan {
     from: Cursor,
     search: u64,
     matcher: Matcher,
-    stop: Arc<AtomicBool>,
+    stop: CancellationToken,
     outbox: Outbox,
     settings: Settings,
 }
@@ -655,8 +649,9 @@ impl SideScan {
     /// the buffer first, and stop at the cap; the newer side's farthest
     /// first, all of them, the viewer keeping the nearest (tui spec,
     /// "Matches kept"). A read error in a step is logged, and the scan
-    /// goes on, as a page's notice doesn't end paging; a scan that
-    /// panics ends its side as failed. The scan stops at the step after
+    /// goes on, as a page's notice doesn't end paging: the errors are one
+    /// notice, the first with the count of the others, before the side's
+    /// end. A scan that panics ends its side as failed. The scan stops at the step after
     /// the stop flag is set or the viewer has gone.
     async fn run(self) {
         let Self {
@@ -675,19 +670,15 @@ impl SideScan {
             Side::Newer => (journal::Position::After(from), Order::FarthestFirst),
         };
         let started = Instant::now();
-        let (step_outbox, step_stop) = (outbox.clone(), Arc::clone(&stop));
+        let (step_outbox, step_stop) = (outbox.clone(), stop.clone());
+        let failures = Arc::new(Failures::default());
+        let step_failures = Arc::clone(&failures);
         let mut kept = 0;
         let each = move |records: Vec<Record>, errors: ReadErrors| {
-            if step_stop.load(Ordering::Relaxed) {
+            if step_stop.is_cancelled() {
                 return ControlFlow::Break(());
             }
-            if !errors.is_empty() {
-                tracing::warn!(
-                    errors = errors.shown.len() + errors.omitted,
-                    first = %errors.shown.first().map_or_default(|e| with_causes(e)),
-                    "journal search read errors"
-                );
-            }
+            step_failures.note(&errors);
             let mut found = Vec::new();
             let mut reached = None;
             for record in &records {
@@ -746,7 +737,10 @@ impl SideScan {
             Err(_) => SearchEnd::Failed("the search failed".to_string()),
         };
         tracing::info!(search, ?side, millis = started.elapsed().as_millis(), outcome = ?end, "journal search side ended");
-        if !stop.load(Ordering::Relaxed) {
+        if !stop.is_cancelled() {
+            if let Some(notice) = failures.notice() {
+                let _ = outbox.send(Event::Notice(notice));
+            }
             let _ = outbox.send(Event::Found {
                 search,
                 side,
@@ -756,6 +750,48 @@ impl SideScan {
                 end: Some(end),
             });
         }
+    }
+}
+
+/// A search side's read errors: the first, with its causes, and how
+/// many, for one notice at its end.
+#[derive(Debug, Default)]
+struct Failures(std::sync::Mutex<(Option<String>, usize)>);
+
+impl Failures {
+    /// A step's errors: logged, and kept for the notice.
+    fn note(&self, errors: &ReadErrors) {
+        if errors.is_empty() {
+            return;
+        }
+        let count = errors.shown.len() + errors.omitted;
+        let first = errors.shown.first().map(|e| with_causes(e));
+        tracing::warn!(
+            errors = count,
+            first = %first.clone().unwrap_or_default(),
+            "journal search read errors"
+        );
+        let mut failed = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if failed.0.is_none() {
+            failed.0 = first;
+        }
+        failed.1 += count;
+    }
+
+    /// The notice: the first error, with the count of the others.
+    fn notice(&self) -> Option<Notice> {
+        let failed = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let first = failed.0.clone()?;
+        Some(Notice::ReadErrors {
+            first,
+            others: failed.1.saturating_sub(1),
+        })
     }
 }
 

@@ -360,7 +360,11 @@ pub enum Range {
 
 /// The log text [`scan`] hands on between yields to the runtime: the log
 /// viewer's runtime has one thread, which the screen shares (tui spec,
-/// "Whole-log search", Docker).
+/// "Whole-log search", Docker). Why not tokio's
+/// `task::coop::consume_budget`
+/// (<https://docs.rs/tokio/1.54.1/tokio/task/coop/fn.consume_budget.html>):
+/// its budget counts operations, and 128 entries of up to 64 KiB each are
+/// about 8 MiB between yields; the spec bounds a step by its text.
 const YIELD_EVERY: usize = 256 * 1024;
 
 /// Every entry of `range`, oldest first, each to `each` until it breaks:
