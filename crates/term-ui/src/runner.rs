@@ -96,7 +96,7 @@ pub struct Options {
 }
 
 /// Where the runner draws.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum Target {
     #[default]
     Stderr,
@@ -132,9 +132,19 @@ impl Area {
     }
 
     fn draw(&mut self, printed: &[String], live: &[String]) {
-        for line in printed {
-            // Nothing better to do if stderr fails; the run goes on.
-            let _ = self.multi.println(line);
+        // One `println` for the lines (it splits them itself), so the
+        // tree printed at the run's end redraws the area once, not once
+        // per line (indicatif 0.18.6 `MultiState::println`,
+        // <https://docs.rs/indicatif/0.18.6/indicatif/struct.MultiProgress.html#method.println>).
+        // Nothing better to do if stderr fails; the run goes on.
+        // `str::lines` drops one trailing empty line, so a last empty line
+        // gets its own newline.
+        if !printed.is_empty() {
+            let mut text = printed.join("\n");
+            if printed.last().is_some_and(String::is_empty) {
+                text.push('\n');
+            }
+            let _ = self.multi.println(text);
         }
         // indicatif's cursor-moving redraw doesn't clear rows below a
         // shorter area (draw_target.rs `draw_to_term`), so the area keeps
@@ -179,6 +189,9 @@ struct State {
     clock: Clock,
     frame: usize,
     ended: bool,
+    /// Paused (`Runner::pause_over`, `Runner::pause_below`): nothing is
+    /// drawn until the next step, or the run's end.
+    paused: bool,
 }
 
 /// A plain line held for the run's end (`State::waiting`).
@@ -270,7 +283,7 @@ impl State {
         // Nothing after the restore hook ran, nor after the run's end (a
         // late close; indicatif's finished bar ignores messages anyway, so
         // this is defence in depth there).
-        if self.stop.load(Ordering::SeqCst) || self.ended {
+        if self.stop.load(Ordering::SeqCst) || self.ended || self.paused {
             return;
         }
         let Mode::Live(area) = &mut self.mode else {
@@ -394,8 +407,24 @@ pub struct Runner {
     saved: Saved,
     /// Puts the terminal back on a second Ctrl-C; removed at the end.
     restore: Option<RestoreHook>,
-    /// Counts this runner as live until it is dropped.
-    _live: Live,
+    /// Counts this runner as live until it is dropped; `None` while
+    /// paused, so a prompt or an attached child may run.
+    live: Option<Live>,
+    /// Where it draws: a new live area is made there after
+    /// [`Runner::pause_below`].
+    target: Target,
+    /// How it is paused, until the next step or the run's end.
+    paused: Option<Pause>,
+}
+
+/// How a runner is paused (term-ui decision 14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pause {
+    /// Under the alternate screen: the live area stays as drawn.
+    Over,
+    /// Under lines written on the normal screen: the live area is
+    /// cleared, and drawn again below them.
+    Below,
 }
 
 /// How many runners are live in the process, from start to drop: an
@@ -448,7 +477,7 @@ impl Runner {
         // `MultiProgress::println` before its bar first drew was lost
         // (seen on indicatif's in-memory terminal).
         let Options { target } = options;
-        let on_stderr = matches!(target, Target::Stderr);
+        let kept = target.clone();
         let (mode, colour, size, clock, terminal) = match target {
             Target::Stderr => {
                 // indicatif hides its stderr target when stderr isn't a
@@ -488,18 +517,10 @@ impl Runner {
                 // (`start_paused`) moves: a test whose frames came with no
                 // real time between them lost its last ones in a release
                 // build, and nothing draws a dropped frame again.
-                let target = ProgressDrawTarget::term_like(Box::new(term));
+                let target = draw_target(&Target::InMemory { term, colour });
                 let clock = Clock::Frozen(Instant::now());
                 (Mode::Live(Area::new(target)), colour, size, clock, true)
             }
-        };
-        let plain = matches!(mode, Mode::Plain);
-        // Live on stderr's terminal: quiet it (the echoes off, the cursor
-        // hidden) before the first frame.
-        let saved = if plain || !on_stderr {
-            Saved::default()
-        } else {
-            Saved::quiet()
         };
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Mutex::new(State {
@@ -521,14 +542,47 @@ impl Runner {
             clock,
             frame: 0,
             ended: false,
+            paused: false,
         }));
         lock(&shared).redraw();
+        let mut runner = Runner {
+            shared,
+            shutdown: shutdown.clone(),
+            frames: None,
+            saved: Saved::default(),
+            restore: None,
+            live: Some(Live::new()),
+            target: kept,
+            paused: None,
+        };
+        runner.draw_live();
+        runner
+    }
+
+    /// Live: quiet the terminal (stderr's: the echoes off, the cursor
+    /// hidden) before the first frame, hook its restore to a second
+    /// Ctrl-C, and start the frames. At the start and after a pause.
+    fn draw_live(&mut self) {
+        let (live, stop) = {
+            let state = lock(&self.shared);
+            (matches!(state.mode, Mode::Live(_)), Arc::clone(&state.stop))
+        };
+        if !live {
+            return;
+        }
+        if matches!(self.target, Target::Stderr) {
+            self.saved = Saved::quiet();
+        }
         // cli-core puts the terminal back on a second Ctrl-C: drawing stops
         // first (no redraw starts once `stop` is set, and one under way is
         // waited for, briefly, well inside cli-core's 500 ms deadline).
-        let restore = saved.changed().then(|| {
-            let (saved, stop, shared) = (saved.clone(), Arc::clone(&stop), Arc::clone(&shared));
-            shutdown.on_forced_exit(move || {
+        self.restore = self.saved.changed().then(|| {
+            let (saved, stop, shared) = (
+                self.saved.clone(),
+                Arc::clone(&stop),
+                Arc::clone(&self.shared),
+            );
+            self.shutdown.on_forced_exit(move || {
                 stop.store(true, Ordering::SeqCst);
                 for _ in 0..20 {
                     // Free, or poisoned (no draw under way either).
@@ -540,15 +594,105 @@ impl Runner {
                 saved.clone().restore_for_exit();
             })
         });
-        let frames = (!plain).then(|| tokio::spawn(frames(Arc::clone(&shared), stop)));
-        Runner {
-            shared,
-            shutdown: shutdown.clone(),
-            frames,
-            saved,
-            restore,
-            _live: Live::new(),
+        self.frames = Some(tokio::spawn(frames(Arc::clone(&self.shared), stop)));
+    }
+
+    /// Pause for something on the alternate screen (a question asked
+    /// with [`crate::confirm_over`], a full-screen view): the live area
+    /// stays as drawn under it, the frames stop, the terminal's modes
+    /// are put back and the runner stops counting as live (the prompts
+    /// and exec's `attached` refuse while one is). The next
+    /// [`Runner::step`] draws on in place. Nothing is printed (term-ui
+    /// decision 14).
+    pub fn pause_over(&mut self) {
+        self.pause(Pause::Over);
+    }
+
+    /// Pause for lines on the normal screen (an attached child's, and
+    /// the command's own around it): as [`Runner::pause_over`], and the
+    /// live area is cleared; the next step, or the run's end, draws it
+    /// again below them. Nothing is printed (term-ui decision 14).
+    pub fn pause_below(&mut self) {
+        self.pause(Pause::Below);
+    }
+
+    /// Why not indicatif's `MultiProgress::suspend`
+    /// (<https://docs.rs/indicatif/0.18.6/indicatif/struct.MultiProgress.html#method.suspend>):
+    /// it takes a synchronous closure and holds the area's lock for all of
+    /// it ("avoid long-running operations"), where a pause spans awaited
+    /// work (the migrations' playbooks, the viewer, a prompt). Why not
+    /// `set_draw_target` to a hidden target: the line count of the
+    /// in-place redraw lives in the target, so swapping it loses where the
+    /// area is. A pause below makes a new area instead (`resume`).
+    fn pause(&mut self, how: Pause) {
+        if let Some(frames) = self.frames.take() {
+            frames.abort();
         }
+        {
+            let mut state = lock(&self.shared);
+            // Cleared once, however often it is paused below; drawn just
+            // before, as the run's end clears it (`State::end`).
+            if how == Pause::Below && self.paused != Some(Pause::Below) {
+                state.redraw();
+                if let Mode::Live(area) = &state.mode {
+                    area.clear();
+                }
+            }
+            state.paused = true;
+        }
+        self.saved.restore();
+        self.restore = None;
+        self.live = None;
+        if self.paused != Some(Pause::Below) {
+            self.paused = Some(how);
+        }
+    }
+
+    /// After a pause: a new live area when it was cleared, then drawing
+    /// as at the start. `frames`: whether to draw on (a step), or only to
+    /// end (the run's end).
+    fn resume(&mut self, frames: bool) {
+        let Some(how) = self.paused.take() else {
+            return;
+        };
+        {
+            let mut state = lock(&self.shared);
+            if how == Pause::Below && matches!(state.mode, Mode::Live(_)) {
+                state.mode = Mode::Live(Area::new(draw_target(&self.target)));
+            }
+            state.paused = false;
+            // Drawn at once, a new area too: indicatif lost a `println`
+            // before its bar first drew (see `Runner::start`).
+            state.redraw();
+        }
+        if frames {
+            self.live = Some(Live::new());
+            self.draw_live();
+        }
+    }
+
+    /// An info notice (`›`, muted) under the run's newest top-level
+    /// step, finished or not: what the command decided between steps (a
+    /// question's answer), kept in the tree and logged as a step's own
+    /// notices are (term-ui decision 14).
+    pub fn info(&mut self, text: impl Into<Line>) {
+        self.notice(false, &text.into());
+    }
+
+    /// A warning notice (orange `!`) under the run's newest top-level
+    /// step, as [`Runner::info`].
+    pub fn warn(&mut self, text: impl Into<Line>) {
+        self.notice(true, &text.into());
+    }
+
+    fn notice(&mut self, warn: bool, line: &Line) {
+        let newest = lock(&self.shared).tree.last_top();
+        let Some(id) = newest else {
+            // No step to hang it under: the run log still has it.
+            tracing::info!(warn, text = ?line.masked(), "notice before any step");
+            return;
+        };
+        notice(&self.shared, id, None, warn, line, false);
     }
 
     /// Run one top-level step to its end, after the previous one. The
@@ -564,6 +708,7 @@ impl Runner {
         labels: Labels,
         body: impl AsyncFnOnce(&mut Step) -> anyhow::Result<T>,
     ) -> Result<T, Exit> {
+        self.resume(true);
         let context = Context {
             shared: Arc::clone(&self.shared),
             shutdown: self.shutdown.clone(),
@@ -583,6 +728,9 @@ impl Runner {
         if let Some(frames) = self.frames.take() {
             frames.abort();
         }
+        // A paused run ends where it is: after a pause below, its tree is
+        // drawn below what was written.
+        self.resume(false);
         lock(&self.shared).end();
         // Then the terminal, every ending; the hook goes with it, so a
         // later second Ctrl-C can't restore stale modes.
@@ -623,14 +771,67 @@ fn begin(
     let started = state.clock.now();
     let id = state.tree.add(parent, labels.clone(), started);
     tracing::info!(step = labels.running.as_str(), "step started");
-    // Once a transient step has started, lines wait for the run's end.
-    if !state.tree.holding() {
-        state.show_title();
-    }
+    // The title heads the live area until the tree is printed with it at
+    // the run's end (decision 14); plain, the first line prints it.
     let held = state.tree.held(id);
     state.plain(held, prefixed(prefix, &format!("- {}", labels.running)));
     state.redraw();
     Some((id, started))
+}
+
+/// A notice under step `id`, logged (secret values replaced), drawn in
+/// the tree and, plain, printed; `prefix` is a concurrent sibling's
+/// label. `running`: only while the step runs (a step's own notices: one
+/// kept past its end draws nothing more); else under a finished step
+/// too ([`Runner::info`]).
+fn notice(
+    shared: &Shared,
+    id: usize,
+    prefix: Option<&str>,
+    warn: bool,
+    line: &Line,
+    running: bool,
+) {
+    let (
+        Sink {
+            colour,
+            codes,
+            terminal,
+        },
+        step,
+    ) = {
+        let state = lock(shared);
+        (state.sink, state.tree.running_label(id).to_owned())
+    };
+    // Logged outside the lock: the log write blocks on the file.
+    let step = step.as_str();
+    // The log gets secret values replaced in place, always.
+    for text in DisplayText::from_bytes(line.masked().as_bytes(), false).lines() {
+        if warn {
+            tracing::warn!(step, text = ?text, "notice");
+        } else {
+            tracing::info!(step, text = ?text, "notice");
+        }
+    }
+    let mut state = lock(shared);
+    if running && !state.tree.is_running(id) {
+        return;
+    }
+    let held = state.tree.held(id);
+    for text in line.on_screen(codes, terminal) {
+        if matches!(state.mode, Mode::Plain) {
+            let (role, mark) = if warn {
+                (Role::Warn, "!")
+            } else {
+                (Role::Muted, "›")
+            };
+            let mark = paint(theme::current(), role, colour, mark);
+            let line = prefixed(prefix, &format!("{mark} {text}"));
+            state.plain(held, line);
+        }
+        state.tree.notice(id, warn, text);
+    }
+    state.redraw();
 }
 
 /// `text` with a concurrent sibling's label in front, for plain mode.
@@ -960,41 +1161,14 @@ impl Step {
     }
 
     fn notice(&mut self, warn: bool, line: &Line) {
-        let Sink {
-            colour,
-            codes,
-            terminal,
-        } = lock(&self.context.shared).sink;
-        // Logged outside the lock: the log write blocks on the file.
-        let step = self.name.as_str();
-        // The log gets secret values replaced in place, always.
-        for text in DisplayText::from_bytes(line.masked().as_bytes(), false).lines() {
-            if warn {
-                tracing::warn!(step, text = ?text, "notice");
-            } else {
-                tracing::info!(step, text = ?text, "notice");
-            }
-        }
-        let mut state = lock(&self.context.shared);
-        // A step kept past its end draws nothing more.
-        if !state.tree.is_running(self.id) {
-            return;
-        }
-        let held = state.tree.held(self.id);
-        for text in line.on_screen(codes, terminal) {
-            if matches!(state.mode, Mode::Plain) {
-                let (role, mark) = if warn {
-                    (Role::Warn, "!")
-                } else {
-                    (Role::Muted, "›")
-                };
-                let mark = paint(theme::current(), role, colour, mark);
-                let line = prefixed(self.prefix.as_deref(), &format!("{mark} {text}"));
-                state.plain(held, line);
-            }
-            state.tree.notice(self.id, warn, text);
-        }
-        state.redraw();
+        notice(
+            &self.context.shared,
+            self.id,
+            self.prefix.as_deref(),
+            warn,
+            line,
+            true,
+        );
     }
 
     /// Output: shown in the live tail (or plainly) and logged (sensitive
@@ -1412,6 +1586,16 @@ impl From<String> for Line {
 impl From<&String> for Line {
     fn from(text: &String) -> Self {
         Line::new(text.clone())
+    }
+}
+
+/// The live area's drawing target for `target`: stderr's, or the
+/// in-memory screen's with no refresh limit (see [`Runner::start`]).
+fn draw_target(target: &Target) -> ProgressDrawTarget {
+    match target {
+        Target::Stderr => ProgressDrawTarget::stderr(),
+        #[cfg(any(test, feature = "testing"))]
+        Target::InMemory { term, .. } => ProgressDrawTarget::term_like(Box::new(term.clone())),
     }
 }
 
@@ -1918,9 +2102,11 @@ mod tests {
             .expect("step");
         let lines: Vec<&str> = seen.lines().collect();
         assert_eq!(lines.len(), 12, "{seen}");
-        assert!(lines[0].contains("Starting containers"), "{seen}");
-        assert_eq!(lines[1], "│   ├── … 22 finished", "{seen}");
-        assert!(lines[2].contains("✓ app22 started"), "{seen}");
+        // The title heads the live area until the run's end (decision 14).
+        assert_eq!(lines[0], "sb demo", "{seen}");
+        assert!(lines[1].contains("Starting containers"), "{seen}");
+        assert_eq!(lines[2], "│   ├── … 23 finished", "{seen}");
+        assert!(lines[3].contains("✓ app23 started"), "{seen}");
         assert!(lines[10].contains("Starting plex"), "{seen}");
         assert_eq!(lines[11], "│   │   plex: waiting for its health check");
         run.finish();
@@ -3179,5 +3365,126 @@ mod tests {
             ),
             "✗ pull failed   SIGTERM · 2.0s"
         );
+    }
+
+    /// One tree for a run that pauses (decision 14): over, the live area
+    /// stays as drawn and nothing is printed; the runner isn't live, so
+    /// a prompt may ask; the next step draws on, and at the end the title
+    /// and every step are printed once, in one column, the answer a
+    /// notice under the step it followed.
+    #[tokio::test]
+    async fn a_paused_run_is_one_tree_printed_at_its_end() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
+        run.step(
+            Labels::new("Checking for updates", "Checked for updates"),
+            async |_| Ok(()),
+        )
+        .await
+        .expect("step");
+        let before = term.contents();
+        run.pause_over();
+        assert!(run.live.is_none(), "not live while paused");
+        assert!(run.frames.is_none());
+        run.info("Saltbox: Kept branch 'develop' (your answer)");
+        // Nothing drawn or printed while paused.
+        assert_eq!(term.contents(), before);
+        run.step(
+            Labels::new(
+                "Updating a checkout with a much longer label than the rest",
+                "Checkout with a much longer label than the rest updated",
+            ),
+            async |_| Ok(()),
+        )
+        .await
+        .expect("step");
+        assert!(run.live.is_some(), "live again");
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        sb demo
+        ├── ✓ Checked for updates                                          0.0s
+        │   › Saltbox: Kept branch 'develop' (your answer)
+        ╰── ✓ Checkout with a much longer label than the rest updated      0.0s
+        ");
+    }
+
+    /// Paused below: the live area is cleared, what the command writes
+    /// meanwhile stays above, and the tree is printed under it at the
+    /// end, once; a run that ends while paused below still prints it.
+    #[tokio::test]
+    async fn paused_below_the_tree_is_drawn_under_what_was_written() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
+        run.step(Labels::new("Reading", "Read"), async |_| Ok(()))
+            .await
+            .expect("step");
+        run.pause_below();
+        // Twice is once.
+        run.pause_below();
+        run.pause_over();
+        run.warn("Skipped migrations: Saltbox x");
+        indicatif::TermLike::write_line(&term, "a playbook's line").expect("write");
+        run.step(Labels::new("Validating", "Validated"), async |_| Ok(()))
+            .await
+            .expect("step");
+        run.pause_below();
+        indicatif::TermLike::write_line(&term, "another line").expect("write");
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        a playbook's line
+        another line
+        sb demo
+        ├── ✓ Read                                                    0.0s
+        │   ! Skipped migrations: Saltbox x
+        ╰── ✓ Validated                                               0.0s
+        ");
+    }
+
+    /// A notice before any step has nowhere to go but the run log.
+    #[tokio::test]
+    async fn a_notice_before_any_step_only_reaches_the_log() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
+        run.info("nothing to hang it under");
+        run.finish();
+        assert!(!term.contents().contains("nothing"), "{}", term.contents());
+    }
+
+    /// `update`'s path for migrations it runs: paused over for the
+    /// question, its answer noted, then paused below for the playbooks:
+    /// the area drawn before the question is cleared, the playbooks'
+    /// lines stay above, and the tree is printed once under them.
+    #[tokio::test]
+    async fn paused_over_then_below_prints_the_tree_under_what_was_written() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
+        run.step(
+            Labels::new(
+                "Checking for new announcements",
+                "Checked for new announcements",
+            ),
+            async |_| Ok(()),
+        )
+        .await
+        .expect("step");
+        run.pause_over();
+        run.info("Migrations run: Saltbox migrate-a");
+        run.pause_below();
+        indicatif::TermLike::write_line(&term, "PLAY [migrate-a]").expect("write");
+        run.step(Labels::new("Validating", "Validated"), async |_| Ok(()))
+            .await
+            .expect("step");
+        run.finish();
+        insta::assert_snapshot!(term.contents(), @r"
+        PLAY [migrate-a]
+        sb demo
+        ├── ✓ Checked for new announcements                           0.0s
+        │   › Migrations run: Saltbox migrate-a
+        ╰── ✓ Validated                                               0.0s
+        ");
     }
 }

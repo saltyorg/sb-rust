@@ -11,7 +11,7 @@ mod tree;
 mod tty;
 
 pub use child::ChildFailure;
-pub use prompt::{PromptError, can_ask, confirm};
+pub use prompt::{PromptError, can_ask, confirm, confirm_over};
 pub use runner::{
     Group, GroupAll, Labels, Line, Options, Runner, Step, Target, keeps_codes, runner_live,
 };

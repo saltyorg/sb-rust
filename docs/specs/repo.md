@@ -61,6 +61,11 @@ not a directory` (cmd/update.go:391-400).
     naming the flag.
   - sb-go's info `<Repo>: Currently on branch '<b>'` comes first whenever
     they differ (git/git.go:101).
+  - *Amended 2026-11-18 (ops decision 39):* when the caller asked, its
+    step's notice is the answer instead, `<Repo>: Kept branch '<b>' (your
+    answer)` or `<Repo>: Reset from branch '<b>' to '<wanted>' (your
+    answer)` (ops' `branch::resolve`, `update`'s and `setup`'s); the
+    current branch was shown with the question.
 - **`check_branch_name(name)`:** refuses a name that starts with `-`, and
   a name `git check-ref-format --branch <name>` rejects or rewrites (it
   expands `@{-1}`; the printed name must equal the given one). Error:

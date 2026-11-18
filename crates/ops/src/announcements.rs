@@ -508,6 +508,21 @@ pub fn show(shown: &[(Checkout, Vec<Announcement>)]) -> anyhow::Result<()> {
 ///
 /// cli-core's `OutputError` when stdout can't be written.
 pub fn show_migrations(pending: &[Pending]) -> anyhow::Result<()> {
+    let colour = sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
+    let rendered = migrations_table(pending, colour, sb_term_ui::stdout_width());
+    let mut out = io::stdout().lock();
+    writeln!(out, "\n{rendered}")
+        .and_then(|()| out.flush())
+        .map_err(exit::output_error)?;
+    Ok(())
+}
+
+/// The line `The following tags need to be run to handle migrations:`
+/// and the migrations' table (term-ui's), in colour when `colour`, fitted
+/// to `width` when given: on stdout, or as the question's context on the
+/// alternate screen (`update`, decision 39).
+#[must_use]
+pub fn migrations_table(pending: &[Pending], colour: bool, width: Option<usize>) -> String {
     let mut table =
         sb_term_ui::Table::new(["#", "Repo", "Tag", "Announcement Date"]).right_align(0);
     for (number, migration) in (1..).zip(pending) {
@@ -518,16 +533,13 @@ pub fn show_migrations(pending: &[Pending]) -> anyhow::Result<()> {
             migration.date.clone(),
         ]);
     }
-    let colour = sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
-    let rendered = table.render(&stdout_theme(), colour, sb_term_ui::stdout_width());
-    let mut out = io::stdout().lock();
-    writeln!(
-        out,
-        "\nThe following tags need to be run to handle migrations:\n\n{rendered}"
-    )
-    .and_then(|()| out.flush())
-    .map_err(exit::output_error)?;
-    Ok(())
+    let theme = if colour {
+        theme::current().clone()
+    } else {
+        Theme::plain()
+    };
+    let rendered = table.render(&theme, colour, width);
+    format!("The following tags need to be run to handle migrations:\n\n{rendered}")
 }
 
 /// The run's theme, or none when stdout gets no colour (`NO_COLOR`,

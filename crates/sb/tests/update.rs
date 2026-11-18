@@ -341,8 +341,10 @@ fn without_a_terminal_missing_flags_are_refused_first() {
 /// On a terminal with both checkouts off master (ops spec, Testing
 /// Strategy: "`update` on a PTY: the branch questions before the first
 /// step"): Saltbox's question, then Sandbox's, each after its current
-/// branch, on the terminal (term-ui's confirm), and only then apt and the
-/// checkouts; `y` resets Saltbox, `n` keeps Sandbox's branch.
+/// branch, on the alternate screen over the paused tree (term-ui's
+/// `confirm_over`, ops decision 39), and only then apt and the checkouts;
+/// `y` resets Saltbox, `n` keeps Sandbox's branch, each answer a notice in
+/// the one tree printed at the end.
 #[test]
 fn on_a_terminal_both_questions_come_before_the_first_step() {
     if !root_gate::requested() {
@@ -367,19 +369,42 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
     let status = pty.exit();
     let text = pty.text();
     assert!(status.success(), "{text}");
+    let (enter, leave) = ("\u{1b}[?1049h", "\u{1b}[?1049l");
     in_order(
         &text,
         &[
+            enter,
             "Saltbox: Currently on branch 'develop'",
             saltbox,
+            leave,
+            enter,
             "Sandbox: Currently on branch 'develop'",
             sandbox,
+            leave,
             "Updating apt package cache",
+            "Saltbox: Reset from branch 'develop' to 'master' (your answer)",
             "Saltbox repository updated (master)",
-            "Sandbox: Updating the current branch 'develop'",
+            "Sandbox: Kept branch 'develop' (your answer)",
             "Sandbox repository updated (develop)",
         ],
     );
+    assert_eq!(text.matches(enter).count(), 2, "{text}");
+    // On the screen once it is drawn (vt100, taller than the PTY so
+    // nothing scrolls away): one tree, its title and each step once.
+    let mut screen = vt100::Parser::new(200, 100, 0);
+    screen.process(text.as_bytes());
+    let shown = screen.screen().contents();
+    for once in [
+        "sb update",
+        "Checked for sb CLI updates",
+        "(your answer)",
+        "Shell completions checked",
+    ] {
+        let count = shown.matches(once).count();
+        let want = if once == "(your answer)" { 2 } else { 1 };
+        assert_eq!(count, want, "{once}:\n{shown}");
+    }
+    assert!(!shown.contains("Do you want to reset"), "{shown}");
     assert_eq!(
         World::branch(&world.saltbox()),
         ("master".into(), "master".into())
@@ -387,6 +412,77 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
     assert_eq!(
         World::branch(&world.sandbox()),
         ("develop".into(), "develop".into())
+    );
+}
+
+/// Ctrl-C at a branch question on the alternate screen (ops decision 39):
+/// the screen is left, the terminal restored, and sb ends by SIGINT,
+/// nothing changed.
+#[test]
+fn on_a_terminal_ctrl_c_at_a_question_leaves_the_screen_and_ends_by_sigint() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("develop", "master");
+    let sb = test_build();
+    let cmd = world.namespaced(
+        Path::new(&sb),
+        &["update", "--color=never", "--migrations", "skip"],
+        &[],
+    );
+    let mut pty = Pty::spawn(&cmd);
+    let question = "Saltbox: Do you want to reset to the 'master' branch?";
+    assert!(pty.showing(question), "{}", pty.text());
+    pty.send(b"\x03");
+    let status = pty.exit();
+    let text = pty.text();
+    assert_eq!(status.signal(), Some("Interrupt"), "{status:?}: {text:?}");
+    in_order(
+        &text,
+        &["\u{1b}[?1049h", question, "\u{1b}[?1049l", "interrupted"],
+    );
+    // The cursor shown, never left hidden by whatever drew last.
+    let shown = text.rfind("\u{1b}[?25h").expect("the cursor is shown");
+    if let Some(hidden) = text.rfind("\u{1b}[?25l") {
+        assert!(shown > hidden, "{text:?}");
+    }
+    assert!(world.changes().is_empty(), "{:?}", world.changes());
+    assert_eq!(
+        World::branch(&world.saltbox()),
+        ("develop".into(), "develop".into())
+    );
+}
+
+/// stderr not a terminal (redirected to a file) while the questions can
+/// still be asked on the terminal: the runner draws plain, so there is
+/// no live tree to keep, and the question is asked on the normal screen
+/// with its context above it, no alternate screen (term-ui decision 14).
+#[test]
+fn with_stderr_redirected_the_question_stays_on_the_normal_screen() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("develop", "master");
+    let sb = test_build();
+    let log = world.dir.path().join("stderr.log");
+    let script = format!(
+        "exec {sb} update --color=never --migrations skip 2>{}",
+        log.display()
+    );
+    let cmd = world.namespaced(Path::new("/bin/sh"), &["-c", &script], &[]);
+    let mut pty = Pty::spawn(&cmd);
+    let question = "Saltbox: Do you want to reset to the 'master' branch?";
+    assert!(pty.showing(question), "{}", pty.text());
+    pty.send(b"n\r");
+    let status = pty.exit();
+    let text = pty.text();
+    assert!(status.success(), "{text}");
+    assert!(!text.contains("\u{1b}[?1049h"), "{text:?}");
+    in_order(&text, &["Saltbox: Currently on branch 'develop'", question]);
+    let stderr = std::fs::read_to_string(&log).expect("stderr");
+    assert!(
+        stderr.contains("Saltbox: Kept branch 'develop' (your answer)"),
+        "{stderr}"
     );
 }
 

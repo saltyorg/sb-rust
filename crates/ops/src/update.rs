@@ -6,6 +6,7 @@
 //! on a terminal, inline piped; M87), their migrations (M86), and
 //! validation, then completion's refresh (M87).
 
+use std::cell::LazyCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -150,34 +151,37 @@ struct Opened {
     current: String,
 }
 
-/// `sb update`, in sb-go's order with the spec's changes:
+/// `sb update`, in sb-go's order with the spec's changes, on one tree
+/// (`runner`, started by its first step, printed once when the run ends:
+/// ops decision 39, term-ui decision 14):
 ///
 /// 1. both checkouts opened and their branches read, then
 ///    [`missing_answers`] with `terminal` (term-ui's `can_ask`) for the
 ///    checkouts that could be read;
 /// 2. host's disk check of `disk_paths`;
-/// 3. self-update (a runner of its own from `runner`): replaced, the run
-///    ends here with a requested exit 0 and release's [`RERUN`] warning;
-/// 4. the branch questions, Saltbox's then Sandbox's ([`branch::resolve`],
-///    `ask` on the terminal, no runner drawing);
-/// 5. one runner: "Updating apt package cache"; each checkout's
-///    announcements read; "Updating Saltbox" (the fetch and reset, the
-///    runtime, the tags when the commit moved or none are cached);
-///    "Securing Saltbox configuration permissions"; "Updating Sandbox"
-///    (the same but the runtime); "Checking for new announcements". A
-///    checkout that couldn't be opened or read fails its own step (`error
-///    updating <Repo>: ...`), after the steps before it, as sb-go's
+/// 3. self-update's steps: replaced, the run ends here with a requested
+///    exit 0 and release's [`RERUN`] warning;
+/// 4. the branch questions, Saltbox's then Sandbox's ([`branch::resolve`]:
+///    `ask`, on the alternate screen in sb, the tree paused over it),
+///    each answer a notice under its checkout's step;
+/// 5. "Updating apt package cache"; each checkout's announcements read;
+///    "Updating Saltbox" (the fetch and reset, the runtime, the tags when
+///    the commit moved or none are cached); "Securing Saltbox
+///    configuration permissions"; "Updating Sandbox" (the same but the
+///    runtime); "Checking for new announcements". A checkout that
+///    couldn't be opened or read fails its own step (`error updating
+///    <Repo>: ...`), after the steps before it, as sb-go's
 ///    `requireDirectory` does;
-/// 6. the new announcements, once that runner is done: on stdout's
-///    terminal tui's viewer, every entry that applies marked new or not,
-///    else the new ones inline; then their [`migrations`];
-/// 7. a runner of its own: validate-config's checks (sb-config's `run`),
-///    then, when they passed, the completion refresh ([`completions`],
-///    a failure a warning);
-/// 8. what moved, on `lines` (ops spec, "What moved, and the closing
-///    hint"): each checkout whose pull finished, and the closing hint
-///    when the run ended well; after a failure from step 5 on too, once
-///    its runner is done, without the hint (decision 38).
+/// 6. the new announcements: on stdout's terminal tui's viewer (the tree
+///    paused over it), every entry that applies marked new or not, else
+///    the new ones inline; then their [`migrations`];
+/// 7. validate-config's checks (sb-config's `run`), then, when they
+///    passed, the completion refresh ([`completions`], a failure a
+///    warning);
+/// 8. the tree printed, then what moved, on `lines` (ops spec, "What
+///    moved, and the closing hint"): each checkout whose pull finished,
+///    and the closing hint when the run ended well; after a failure from
+///    step 5 on too, without the hint (decision 38).
 ///
 /// # Errors
 ///
@@ -189,8 +193,8 @@ pub async fn run(
     update: &Update<'_>,
     terminal: Result<(), String>,
     mut ask: impl FnMut(&str, &str) -> Result<bool, PromptError>,
-    confirm: impl FnOnce(&str) -> Result<bool, PromptError>,
-    mut runner: impl FnMut() -> Runner,
+    confirm: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
+    runner: impl FnOnce() -> Runner,
     shutdown: &Shutdown,
     lines: &mut impl Write,
 ) -> anyhow::Result<()> {
@@ -218,10 +222,17 @@ pub async fn run(
     )
     .map_err(anyhow::Error::msg)?;
     update.disk.check_disk_space(update.disk_paths)?;
+    // One tree for the run (decision 39), started by its first step:
+    // self-update's, or apt's, so a run refused at a branch question with
+    // no self-update draws no title. std's `LazyCell`
+    // (<https://doc.rust-lang.org/std/cell/struct.LazyCell.html#method.force_mut>),
+    // as ansible's `LazyRunner`.
+    let mut tree = LazyCell::new(runner);
     if let Some(self_update) = update.self_update {
-        let outcome = sb_release::self_update(update.releases, self_update, &mut runner)
-            .await
-            .context("error during self-update")?;
+        let outcome =
+            sb_release::self_update(update.releases, self_update, LazyCell::force_mut(&mut tree))
+                .await
+                .context("error during self-update")?;
         if matches!(outcome, Outcome::Updated(_)) {
             // The new sb isn't run in this process (sb-go 1123432): the
             // run ends successfully here, as sb-go's `Shutdown(ctx, 0)`.
@@ -229,22 +240,44 @@ pub async fn run(
             return Ok(());
         }
     }
-    let saltbox = plan(saltbox, answer, &mut ask, shutdown).await?;
-    let sandbox = plan(sandbox, answer, &mut ask, shutdown).await?;
-    // What moved, once the last runner is done, whatever ended the run
-    // (ops spec, "What moved, and the closing hint"): the checkouts whose
-    // pull finished, the hint only after a finished run (decision 38).
+    // A question on the alternate screen, the tree (when self-update
+    // started it) paused over it (decision 39).
+    let mut asked = |tree: &mut LazyCell<Runner, _>, shown: &str, question: &str| {
+        if let Some(steps) = LazyCell::get_mut(tree) {
+            steps.pause_over();
+        }
+        ask(shown, question)
+    };
+    let saltbox = plan(
+        saltbox,
+        answer,
+        |shown: &str, question: &str| asked(&mut tree, shown, question),
+        shutdown,
+    )
+    .await?;
+    let sandbox = plan(
+        sandbox,
+        answer,
+        |shown: &str, question: &str| asked(&mut tree, shown, question),
+        shutdown,
+    )
+    .await?;
+    // What moved, once the tree is printed, whatever ended the run (ops
+    // spec, "What moved, and the closing hint"): the checkouts whose pull
+    // finished, the hint only after a finished run (decision 38).
     let mut pulled = Vec::new();
     let result = checkouts_onward(
         update,
         [saltbox, sandbox],
         confirm,
-        &mut runner,
+        LazyCell::force_mut(&mut tree),
         shutdown,
         lines,
         &mut pulled,
     )
     .await;
+    // The tree, printed once, at the run's end (decision 39).
+    drop(tree);
     let block = moved::render(&pulled, result.is_ok(), theme::current());
     let written = if block.is_empty() {
         Ok(())
@@ -267,15 +300,14 @@ pub async fn run(
 async fn checkouts_onward(
     update: &Update<'_>,
     [saltbox, sandbox]: [anyhow::Result<(Repo, Resolved)>; 2],
-    confirm: impl FnOnce(&str) -> Result<bool, PromptError>,
-    runner: &mut impl FnMut() -> Runner,
+    confirm: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
+    steps: &mut Runner,
     shutdown: &Shutdown,
     lines: &mut impl Write,
     pulled: &mut Vec<Moved>,
 ) -> anyhow::Result<()> {
-    let mut steps = runner();
-    let result = async {
-        apt_cache(&mut steps, update.apt).await?;
+    let found = async {
+        apt_cache(steps, update.apt).await?;
         // Each checkout's announcements before its pull (sb-go reads both
         // here, after apt).
         let before: Vec<_> = [Checkout::Saltbox, Checkout::Sandbox]
@@ -287,58 +319,62 @@ async fn checkouts_onward(
             tags: &mut tags,
             pulled,
         };
-        checkout_step(&mut steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
-        secure_step(&mut steps, update.root).await?;
-        checkout_step(&mut steps, Checkout::Sandbox, sandbox, update, &mut cache).await?;
+        checkout_step(steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
+        secure_step(steps, update.root).await?;
+        checkout_step(steps, Checkout::Sandbox, sandbox, update, &mut cache).await?;
         let before = [Checkout::Saltbox, Checkout::Sandbox]
             .into_iter()
             .zip(before)
             .collect();
-        announcements::compare(&mut steps, update.root, before, None).await
+        announcements::compare(steps, update.root, before, None).await
     }
     .await;
-    steps.finish();
-    let announcements::Found { shown, listed } = result?;
-    // Once the runner is done (ops spec, "Shown"): on stdout's terminal
-    // the viewer, its every entry that applies, the new ones marked (tui
-    // spec, "The announcement viewer", Input); piped, the new ones inline
-    // (decision 24).
+    let announcements::Found { shown, listed } = found?;
+    // After the step that found them (ops spec, "Shown"): on stdout's
+    // terminal the viewer, on the alternate screen over the paused tree
+    // (decision 39), its every entry that applies, the new ones marked
+    // (tui spec, "The announcement viewer", Input); piped, the new ones
+    // inline on stdout (decision 24), the tree paused below them, since
+    // stderr may be the terminal the pipe's reader shows them on.
     if !shown.is_empty() {
         if update.stdout_terminal {
+            steps.pause_over();
             let ending =
                 announcements::view(announcements::viewer_entries(listed), shutdown).await?;
-            left_viewer(ending, &shown, lines)?;
+            left_viewer(ending, &shown, steps)?;
         } else {
+            steps.pause_below();
             announcements::show(&shown)?;
         }
     }
-    migrations(update, &shown, confirm, shutdown, lines).await?;
-    let mut steps = runner();
-    let validated = sb_config::run::run(&mut steps, update.settings, update.backups).await;
+    migrations(update, &shown, confirm, steps, shutdown, lines).await?;
+    let validated = sb_config::run::run(steps, update.settings, update.backups).await;
     // Then the completion refresh, under a step of its own, a failure a
     // warning (step 12); sb-go's update returns before it when
     // validation failed.
     let refreshed = if validated.is_ok() {
-        completions::refresh(&mut steps, &update.completions).await
+        completions::refresh(steps, &update.completions).await
     } else {
         Ok(())
     };
-    steps.finish();
     validated.context("error validating Saltbox configuration")?;
     Ok(refreshed?)
 }
 
 /// The migrations the new announcements `shown` name (ops spec,
 /// "Migrations"; sb-go's `PromptForMigrations` and `ExecuteMigrations`),
-/// all or none: their table on stdout, then `--migrations` or, without
-/// it, [`MIGRATIONS_QUESTION`] (`confirm`, on the terminal; default no).
-/// Run: `Starting migration execution`, then for each `Running migration
-/// '<tag>' for <Repo> repository` and ansible's run of that tag in that
-/// checkout's playbook, attached, its lines on stdout as `sb install`'s,
-/// then `All migrations completed successfully`. Not run: a warning
-/// naming each (decision 22). sb's lines go to `lines`, a stream that
-/// strips colour when it is off (anstream's); the run log gets the
-/// decision and each migration.
+/// all or none: `--migrations`, or else [`MIGRATIONS_QUESTION`]
+/// (`confirm`, on the alternate screen with their table as its context,
+/// `steps` paused over it; default no). Their table goes to stdout too
+/// when stdout isn't the tree's terminal. The decision is a notice under
+/// the run's newest step (decision 39): `Migrations run: <repo> <tag>,
+/// ...`, or the warning `Skipped migrations: ...` (decision 22). Run:
+/// `steps` paused below, `Starting migration execution`, then for each
+/// `Running migration '<tag>' for <Repo> repository` and ansible's run of
+/// that tag in that checkout's playbook, attached, its lines on stdout as
+/// `sb install`'s, then `All migrations completed successfully`. sb's
+/// lines go to `lines`, a stream that strips colour when it is off
+/// (anstream's); the run log gets the decision and each migration.
 ///
 /// # Errors
 ///
@@ -350,7 +386,8 @@ async fn checkouts_onward(
 async fn migrations(
     update: &Update<'_>,
     shown: &[(Checkout, Vec<Announcement>)],
-    confirm: impl FnOnce(&str) -> Result<bool, PromptError>,
+    confirm: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
+    steps: &mut Runner,
     shutdown: &Shutdown,
     lines: &mut impl Write,
 ) -> anyhow::Result<()> {
@@ -358,11 +395,21 @@ async fn migrations(
     if pending.is_empty() {
         return Ok(());
     }
-    announcements::show_migrations(&pending)?;
+    // On stdout as before when it is a pipe or a file; on its terminal the
+    // tree is live, so the table is the question's context only.
+    if !update.stdout_terminal {
+        steps.pause_below();
+        announcements::show_migrations(&pending)?;
+    }
     let approved = match update.args.migrations {
         Some(Migrations::Run) => true,
         Some(Migrations::Skip) => false,
-        None => confirm(MIGRATIONS_QUESTION)?,
+        None => {
+            steps.pause_over();
+            let colour = sb_term_ui::colour_on(sb_term_ui::Stream::Stderr);
+            let context = announcements::migrations_table(&pending, colour, None);
+            confirm(MIGRATIONS_QUESTION, &context)?
+        }
     };
     let named = named(&pending);
     // The run log keeps what was decided and what ran (decision 22), as
@@ -375,8 +422,14 @@ async fn migrations(
         "migrations decided"
     );
     if !approved {
-        return warn_skipped(lines, &pending);
+        tracing::warn!(migrations = %named, "migrations skipped");
+        steps.warn(format!("Skipped migrations: {named}"));
+        return Ok(());
     }
+    steps.info(format!("Migrations run: {named}"));
+    // The playbooks are attached and write on the normal screen: the live
+    // tree is drawn again below them.
+    steps.pause_below();
     run_pending(&pending, update.root, update.ansible, shutdown, lines).await
 }
 
@@ -506,23 +559,27 @@ pub(crate) async fn run_pending(
 /// or a signal, the run ends there, its pending migrations named first
 /// as an interrupted migration names them (`Migrations interrupted; to
 /// run by hand: ...`, decision 22 and difference 43), since the next
-/// update won't offer them again: Ctrl-C with 130, as the viewer's other
-/// callers, a signal with the quiet exit cli-core ends by.
+/// update won't offer them again, in a warning notice of `steps`' tree:
+/// Ctrl-C with 130, as the viewer's other callers, a signal with the
+/// quiet exit cli-core ends by.
 ///
 /// # Errors
 ///
-/// The ending; `lines` that can't be written.
+/// The ending.
 fn left_viewer(
     ending: sb_tui::Ending,
     shown: &[(Checkout, Vec<Announcement>)],
-    lines: &mut impl Write,
+    steps: &mut Runner,
 ) -> anyhow::Result<()> {
     if ending == sb_tui::Ending::Quit {
         return Ok(());
     }
     let pending = announcements::migrations(shown);
     if !pending.is_empty() {
-        warn_unrun(lines, &by_hand(&pending))?;
+        // A notice in the tree, printed at the run's end (decision 39).
+        let unrun = by_hand(&pending);
+        tracing::warn!(migrations = %unrun, "migrations interrupted");
+        steps.warn(format!("Migrations interrupted; to run by hand: {unrun}"));
     }
     let code = if ending == sb_tui::Ending::Interrupted {
         130

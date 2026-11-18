@@ -80,6 +80,11 @@ completion files call a command sb doesn't have.
 - **motd:** idle containers are no longer listed, queue states read "with
   a warning", and redaction is `[REDACTED]`.
 - **Announcements** join line breaks inside a paragraph, as Markdown does.
+- **`sb update` and `sb self-update` draw one tree,** printed when the
+  run ends. Their questions (the branch questions, `Run all migration
+  tags?`, `Do you want to update`) open on the alternate screen, with
+  what they are about, and each answer is a `›` line in the tree.
+  Skipped migrations are a `!` line there too, not a `warning:` line.
 - **Errors** go to stderr as a `✗` block, with a `details:` line pointing
   at the run log. A failed playbook's block has none: Ansible's output
   above it says what failed, as with sb-go.

@@ -203,7 +203,7 @@ impl World {
         let confirmed = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&confirmed);
         let interrupt = self.interrupt_at_confirm.get().then(|| shutdown.clone());
-        let confirm = move |question: &str| {
+        let confirm = move |question: &str, _table: &str| {
             record.lock().expect("confirmed").push(question.to_owned());
             if let Some(shutdown) = &interrupt {
                 shutdown.signalled(15);
@@ -601,9 +601,11 @@ async fn validation_shows_issues_as_validate_config_does() {
         let start = screen
             .find("Validating Saltbox configuration")
             .expect("the validation step");
+        // The spaces before each time collapsed: update's time column is
+        // its whole tree's (term-ui decision 14), validate-config's its own.
         screen[start..]
             .lines()
-            .map(|line| line.trim_end().to_owned())
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|line| !line.is_empty())
             .collect()
     };
@@ -837,11 +839,15 @@ async fn both_questions_are_asked_in_order_before_any_step() {
         World::branch(&world.sandbox()),
         ("develop".into(), "develop".into())
     );
-    assert!(
-        ran.screen
-            .contains("Sandbox: Updating the current branch 'develop'"),
-        "{}",
-        ran.screen
+    // Each answer is a notice under its step (ops decision 39).
+    in_order(
+        &ran.screen,
+        &[
+            "Saltbox updated",
+            "› Saltbox: Reset from branch 'develop' to 'master' (your answer)",
+            "Sandbox updated",
+            "› Sandbox: Kept branch 'develop' (your answer)",
+        ],
     );
 
     let world = World::new("develop", "develop");
@@ -1069,11 +1075,15 @@ async fn migrations_skipped_are_named_and_the_question_decides() {
         .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
         .await;
     assert_eq!(ran.error, None, "{}", ran.screen);
-    assert!(
-        ran.lines
-            .contains("Skipped migrations: Sandbox migrate-b, Saltbox migrate-a"),
-        "{}",
-        ran.lines
+    // A warning notice in the tree, under the step that found them (ops
+    // decision 39).
+    in_order(
+        &ran.screen,
+        &[
+            "Checked for new announcements",
+            "! Skipped migrations: Sandbox migrate-b, Saltbox migrate-a",
+            "Saltbox configuration validated",
+        ],
     );
     assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
 
@@ -1084,7 +1094,11 @@ async fn migrations_skipped_are_named_and_the_question_decides() {
         .await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     assert_eq!(ran.confirmed, [update::MIGRATIONS_QUESTION]);
-    assert!(ran.lines.contains("Skipped migrations:"), "{}", ran.lines);
+    assert!(
+        ran.screen.contains("! Skipped migrations:"),
+        "{}",
+        ran.screen
+    );
     assert!(tag_runs(&world).is_empty(), "{:?}", world.host.calls());
 
     let (world, _, _) = migrations_world();
@@ -1093,6 +1107,12 @@ async fn migrations_skipped_are_named_and_the_question_decides() {
         .await;
     assert_eq!(ran.error, None, "{}{}", ran.screen, ran.lines);
     assert_eq!(tag_runs(&world).len(), 2, "{:?}", world.host.calls());
+    assert!(
+        ran.screen
+            .contains("› Migrations run: Sandbox migrate-b, Saltbox migrate-a"),
+        "{}",
+        ran.screen
+    );
 
     // No migration among the new announcements: nothing asked.
     let world = World::new("master", "master");

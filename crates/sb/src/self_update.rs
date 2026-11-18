@@ -4,7 +4,7 @@
 use sb_cli_core::build_info::{BuildInfo, Channel};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::log::RunLog;
-use sb_release::{GithubRepo, Outcome, Releases, SelfUpdate};
+use sb_release::{GithubRepo, Releases, SelfUpdate};
 
 /// The repository sb's releases come from (release spec, assumption 2:
 /// the maintainer, 2026-11-18). install/install.sh names the same.
@@ -34,18 +34,19 @@ pub(crate) fn self_update(
         message: None,
         shutdown,
     };
-    let outcome = super::block_on(sb_release::self_update(&releases, update, || {
-        sb_term_ui::Runner::start(
+    // One tree for the check, the question and the install (term-ui
+    // decision 14); a declined question is its warning there.
+    super::block_on(async {
+        let mut runner = sb_term_ui::Runner::start(
             "sb self-update",
             shutdown,
             log,
             sb_term_ui::Options::default(),
-        )
-    }))??;
-    if outcome == Outcome::Declined {
-        super::warn("Update of sb CLI cancelled");
-    }
-    Ok(())
+        );
+        let outcome = sb_release::self_update(&releases, update, &mut runner).await;
+        runner.finish();
+        outcome.map(drop)
+    })?
 }
 
 /// sb's own file, from `/proc/self/exe`

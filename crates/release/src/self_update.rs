@@ -29,6 +29,9 @@ use crate::{Arch, ElfError, GithubRepo, Release, Releases, Stage, Track, activat
 const QUESTION: &str = "Do you want to update?";
 /// The question when `--channel` switches to another channel.
 const SWITCH_QUESTION: &str = "Do you want to switch?";
+/// The warning under the check's step when the question is declined
+/// (sb-go's text).
+const CANCELLED: &str = "Update of sb CLI cancelled";
 /// The staged file's name before it replaces sb (sb-go's pattern).
 const PREFIX: &str = ".sb-update-";
 /// The largest sb binary accepted (sb-go's cap).
@@ -118,8 +121,12 @@ fn track(channel: Channel) -> Track {
     }
 }
 
-/// Run a self-update: each runner from `runner` (titled and logged by the
-/// caller), the question in between.
+/// Run a self-update on `runner` (the caller's, titled and logged by it:
+/// one tree for the check, the question and the install, term-ui decision
+/// 14): the check's step; the question, unless `update.yes` answers it, on
+/// the alternate screen with the runner paused over it, its answer a
+/// notice under the check's step (release spec, "Ask"); then the install's
+/// step. The caller finishes the runner.
 ///
 /// # Errors
 ///
@@ -129,19 +136,20 @@ fn track(channel: Channel) -> Track {
 pub async fn self_update(
     releases: &Releases,
     update: SelfUpdate<'_>,
-    mut runner: impl FnMut() -> Runner,
+    runner: &mut Runner,
 ) -> anyhow::Result<Outcome> {
     let build = update.build;
     // A raw build counts as disabled (decision 11): a developer build
     // never replaces itself with a release.
     let disabled = build.self_update_off();
-    let mut checking = runner();
-    let found = checking
+    let found = runner
         .step(
             Labels::new("Checking for sb CLI updates", "Checked for sb CLI updates"),
             async |step| {
                 if disabled && !update.force {
-                    step.warn("Self-update is disabled in this build");
+                    // Notices under the step (the maintainer, 2026-11-18):
+                    // the text sb-go's CI greps is kept.
+                    step.info("Self-update is disabled in this build");
                     step.info("Use --force-update to override this restriction");
                     return Ok(None);
                 }
@@ -184,21 +192,27 @@ pub async fn self_update(
                 let version = newest.version.clone().with_context(|| {
                     format!("check for updates: release {} has no version", newest.tag)
                 })?;
+                let mut context = Vec::new();
                 if switching {
-                    step.info(format!(
+                    context.push(format!(
                         "Switching sb CLI to the {} channel: {version} (current: {current}, {})",
                         channel.name(),
                         build.channel.name()
                     ));
+                    step.info(context[0].as_str());
                     if version.cmp_precedence(&current) == std::cmp::Ordering::Less {
-                        step.warn(format!("{version} is older than the running {current}"));
+                        let older = format!("{version} is older than the running {current}");
+                        step.warn(older.as_str());
+                        context.push(older);
                     }
                 } else {
-                    step.info(format!(
+                    context.push(format!(
                         "New sb CLI version available: {version} (current: {current})"
                     ));
+                    step.info(context[0].as_str());
                 }
                 Ok(Some(Found {
+                    context: context.join("\n"),
                     release: newest,
                     version,
                     arch,
@@ -208,7 +222,6 @@ pub async fn self_update(
             },
         )
         .await;
-    checking.finish();
     let Some(found) = found? else {
         return Ok(if disabled && !update.force {
             Outcome::Disabled
@@ -216,25 +229,53 @@ pub async fn self_update(
             Outcome::Latest
         });
     };
-    if !sb_term_ui::confirm(
-        if found.switching {
-            SWITCH_QUESTION
-        } else {
-            QUESTION
-        },
+    if !accept(&update, &found, runner)? {
+        return Ok(Outcome::Declined);
+    }
+    install(releases, update, &found, runner).await?;
+    Ok(Outcome::Updated(found.version))
+}
+
+/// The question, unless `--yes` answers it: on the alternate screen, the
+/// tree paused over it, what the check found shown with it (term-ui
+/// decision 14); the answer a notice under the check's step, the
+/// declined one sb-go's warning.
+///
+/// # Errors
+///
+/// The prompt's (no terminal and no `--yes`, Ctrl-C).
+fn accept(update: &SelfUpdate<'_>, found: &Found, runner: &mut Runner) -> anyhow::Result<bool> {
+    if !update.yes {
+        runner.pause_over();
+    }
+    let question = if found.switching {
+        SWITCH_QUESTION
+    } else {
+        QUESTION
+    };
+    let accepted = sb_term_ui::confirm_over(
+        question,
+        &found.context,
         update.yes.then_some(true),
         "--yes",
         update.shutdown,
-    )? {
-        return Ok(Outcome::Declined);
+    )?;
+    if !accepted {
+        runner.warn(CANCELLED);
+    } else if !update.yes {
+        runner.info(format!(
+            "Update to {} accepted (your answer)",
+            found.version
+        ));
     }
-    install(releases, update, &found, runner()).await?;
-    Ok(Outcome::Updated(found.version))
+    Ok(accepted)
 }
 
 /// The release the lookup found, its version, and the architecture and
 /// channel its asset was chosen for; whether it switches channel.
 struct Found {
+    /// The check's lines the question is about, shown with it.
+    context: String,
     release: Release,
     version: Version,
     arch: Arch,
@@ -249,7 +290,7 @@ async fn install(
     releases: &Releases,
     update: SelfUpdate<'_>,
     found: &Found,
-    mut updating: Runner,
+    updating: &mut Runner,
 ) -> anyhow::Result<()> {
     let Found {
         release: newest,
@@ -310,7 +351,6 @@ async fn install(
             },
         )
         .await;
-    updating.finish();
     Ok(done?)
 }
 

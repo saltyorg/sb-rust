@@ -220,6 +220,16 @@ impl Tree {
         false
     }
 
+    /// The newest top-level step, if a step has started.
+    pub fn last_top(&self) -> Option<usize> {
+        self.nodes.iter().rposition(|n| n.parent.is_none())
+    }
+
+    /// Step `id`'s running label, naming it in the run log.
+    pub fn running_label(&self, id: usize) -> &str {
+        &self.nodes[id].labels.running
+    }
+
     pub fn notice(&mut self, id: usize, warn: bool, text: impl Into<String>) {
         self.nodes[id].notices.push(Notice {
             warn,
@@ -591,16 +601,19 @@ impl Tree {
                 .all(|(child, _)| self.settled(child))
     }
 
-    /// Take the lines that can be printed for good, in tree order: each
-    /// step whose subtree has ended and whose place (middle or last) is
-    /// known (decision 3). Once a transient step has started, none until
-    /// the run's end, when it is known which steps stay.
+    /// Take the lines that can be printed for good, in tree order: none
+    /// until the run's end, then the whole tree (decision 14: printed
+    /// once, every line in one column, the column over every step; and
+    /// at the end it is known which transient steps stay, decision 12).
     pub fn take_printable(&mut self, d: &Draw) -> Vec<String> {
         let mut out = Vec::new();
-        if self.holding && !self.ended {
+        let column = self.column(d);
+        // The furthest right so far, kept, so the live area never moves
+        // left (decision 11).
+        self.column = self.column.max(column);
+        if !self.ended {
             return out;
         }
-        let column = self.column(d);
         let mut printed = self.printed;
         // A bounded loop over the steps not yet printed.
         for &next in &self.order[self.printed..] {
@@ -859,10 +872,11 @@ mod tests {
         assert!(ends.windows(2).all(|w| w[0] == w[1]), "{printed}");
     }
 
-    /// Once a long line is printed, later lines keep its column, so the
-    /// times stay in one column down the screen.
+    /// Nothing is printed before the run's end (decision 14): a finished
+    /// step with a long label keeps the live area's column right, and
+    /// at the end every line is printed in that one column.
     #[test]
-    fn the_time_column_never_moves_left() {
+    fn the_tree_prints_once_at_the_end_in_one_column() {
         let theme = plain();
         let t0 = Instant::now();
         let mut tree = Tree::default();
@@ -877,17 +891,60 @@ mod tests {
         tree.finish(long, Status::Interrupted, secs(t0, 1));
         let short = tree.add(None, Labels::new("Short", "short done"), t0);
         let d = draw(&theme, secs(t0, 2));
-        let printed = tree.take_printable(&d);
+        assert_eq!(tree.take_printable(&d), [] as [String; 0]);
         let live = tree.live(&d);
-        assert_eq!(printed.len(), 1, "{printed:?}");
-        assert_eq!(width(&printed[0]), width(&live[0]), "{printed:?} {live:?}");
+        assert_eq!(live.len(), 2, "{live:?}");
+        assert_eq!(width(&live[0]), width(&live[1]), "{live:?}");
         assert!(width(&live[0]) > COLUMN, "{live:?}");
-        // Printed in turn, the short line keeps the column too.
         tree.finish(short, Status::Done, secs(t0, 2));
+        assert_eq!(tree.take_printable(&d), [] as [String; 0]);
         tree.end();
         let printed = tree.take_printable(&d);
-        assert_eq!(printed.len(), 1, "{printed:?}");
-        assert_eq!(width(&printed[0]), width(&live[0]), "{printed:?}");
+        assert_eq!(printed.len(), 2, "{printed:?}");
+        assert!(
+            printed.iter().all(|l| width(l) == width(&live[0])),
+            "{printed:?}"
+        );
+    }
+
+    /// The regression the maintainer saw (2026-11-18, a real `sb update`):
+    /// a short step finished first, then a later step with a long label.
+    /// The short step used to be printed at 66 and the rest at 71; now
+    /// the tree is printed at the end, every time in one column.
+    #[test]
+    fn a_late_long_label_moves_the_whole_trees_column() {
+        let theme = plain();
+        let t0 = Instant::now();
+        let mut tree = Tree::default();
+        let apt = tree.add(
+            None,
+            Labels::new("Updating apt package cache", "Updated apt package cache"),
+            t0,
+        );
+        tree.finish(apt, Status::Done, secs(t0, 1));
+        let saltbox = tree.add(None, Labels::new("Updating Saltbox", "Saltbox updated"), t0);
+        let venv = tree.add(
+            Some(saltbox),
+            Labels::new(
+                "Checking the Ansible virtual environment",
+                "Ansible virtual environment was already up to date",
+            ),
+            t0,
+        );
+        tree.finish(venv, Status::Done, secs(t0, 2));
+        tree.finish(saltbox, Status::Done, secs(t0, 3));
+        let d = draw(&theme, secs(t0, 3));
+        assert_eq!(tree.take_printable(&d), [] as [String; 0]);
+        tree.end();
+        let printed = tree.take_printable(&d).join("\n");
+        insta::assert_snapshot!(printed, @r"
+        ├── ✓ Updated apt package cache                                1.0s
+        ╰── ✓ Saltbox updated                                          3.0s
+            ╰── ✓ Ansible virtual environment was already up to date   2.0s
+        ");
+        let ends: Vec<usize> = printed.lines().map(width).collect();
+        assert!(ends.windows(2).all(|w| w[0] == w[1]), "{printed}");
+        assert!(ends[0] > COLUMN, "{printed}");
     }
 
     /// A live step's line pushes the column right as its time grows, and
@@ -1015,9 +1072,11 @@ mod tests {
         tree.output(check, "checking item 1 of 11");
         tree.output(check, "checking item 2 of 11");
         let d = draw(&theme, secs(t0, 2));
-        let printed = tree.take_printable(&d).join("\n");
-        insta::assert_snapshot!(printed, @"├── ✓ accounts.yml read                                       1.0s");
+        // Nothing is printed before the run's end (decision 14); live, the
+        // finished step's place is known once the next one started.
+        assert_eq!(tree.take_printable(&d), [] as [String; 0]);
         insta::assert_snapshot!(tree.live(&d).join("\n"), @r"
+        ├── ✓ accounts.yml read                                       1.0s
         ├── ⠋ Checking settings.yml                                   2.0s
         │   checking item 1 of 11
         │   checking item 2 of 11

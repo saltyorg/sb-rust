@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use sb_cli_core::build_info::BuildInfo;
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
+use sb_cli_core::exit;
 use sb_cli_core::log::RunLog;
 use sb_host::apt::Apt;
 use sb_host::disk::Disk;
@@ -20,7 +21,6 @@ use sb_release::SelfUpdate;
 use sb_term_ui::{Options, Runner};
 
 use crate::self_update::{SB_REPO, executable};
-use crate::setup::ask_branch;
 
 /// `sb update`.
 ///
@@ -87,10 +87,22 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
                 executable: &executable,
             },
         };
-        let ask = |shown: &str, question: &str| ask_branch(shown, question, shutdown);
-        // The migrations' question on the terminal, `--migrations` its flag.
-        let confirm =
-            |question: &str| sb_term_ui::confirm(question, None, "--migrations", shutdown);
+        // The questions on the alternate screen, with what they are about,
+        // over the paused tree (ops decision 39; term-ui's `confirm_over`).
+        let ask = |shown: &str, question: &str| {
+            sb_term_ui::confirm_over(
+                question,
+                &exit::escaped(shown),
+                None,
+                sb_ops::update::BRANCH_FLAGS,
+                shutdown,
+            )
+        };
+        // The migrations' question, `--migrations` its flag; the table it
+        // is about as its context.
+        let confirm = |question: &str, table: &str| {
+            sb_term_ui::confirm_over(question, table, None, "--migrations", shutdown)
+        };
         let runner = || Runner::start("sb update", shutdown, log, Options::default());
         super::block_on(sb_ops::update::run(
             &update,

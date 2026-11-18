@@ -24,6 +24,11 @@ anstyle.workspace = true
 anstyle-parse.workspace = true
 console.workspace = true
 dialoguer.workspace = true
+# The alternate screen a question during a run opens on (`confirm_over`,
+# term-ui decision 14): crossterm's `EnterAlternateScreen` and
+# `LeaveAlternateScreen`; dialoguer and console have none. Already in sb
+# through ratatui (sb-tui).
+crossterm.workspace = true
 tabled.workspace = true
 termtree.workspace = true
 

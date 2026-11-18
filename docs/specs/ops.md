@@ -16,7 +16,9 @@ the network rows and Speedtest follow bench.sh the same way (decision
 33, differences 54 to 58), the aarch64 pin recorded (decision 13).
 Amended 2026-11-18 by the maintainer's decisions: `update` ends with
 what moved and a closing hint (step 13, "What moved, and the closing
-hint"; decisions 36 to 38, differences 62 and 63).*
+hint"; decisions 36 to 38, differences 62 and 63); and it draws one
+tree for the whole run, its questions on the alternate screen (decision
+39, difference 64; term-ui decision 14).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -624,20 +626,32 @@ required (`cobra.ExactArgs(1)`, cmd/branch.go:24).
 
 #### Steps
 
+From here on the run draws one runner's tree, titled `sb update`, printed
+once, when the run ends (term-ui decision 14; decision 39): self-update,
+the steps, validation and completions. It pauses over what opens on the
+alternate screen (the branch questions, the announcement viewer, the
+migrations question) and below for the migrations' playbooks.
+
 3. **Self-update** unless `--skip-self-update`: release's flow with the
-   answer given (no prompt, sb-go's `autoUpdate=true`).
-   - Off (disabled or raw build): warning `Self-update is disabled in
-     this build`, and on.
+   answer given (no prompt, sb-go's `autoUpdate=true`), its steps in
+   update's tree.
+   - Off (disabled or raw build): the `›` notices `Self-update is
+     disabled in this build` and `Use --force-update to override this
+     restriction` under its step, and on.
    - Replaced: warning `Re-run the update command to update Saltbox`,
      then exit 0 (cli-core's requested exit code; sb-go 6108017). The new
      binary isn't run in this process (sb-go tried a relaunch, eda3d73,
      and removed it, 1123432).
-4. **Branch questions**, now, before the runner draws (repo's
+4. **Branch questions**, now, before the next step (repo's
    `branch_choice` for Saltbox, then Sandbox; sb-go asked Sandbox's after
-   Saltbox's update had finished): `<Repo>: Currently on branch '<b>'`,
-   then the confirm `<Repo>: Do you want to reset to the 'master'
-   branch?` (default no), or the flag's answer. Asked after self-update
-   so a run that replaces sb doesn't ask twice.
+   Saltbox's update had finished), on the alternate screen (term-ui's
+   `confirm_over`, the runner paused over it): `<Repo>: Currently on
+   branch '<b>'`, then the confirm `<Repo>: Do you want to reset to the
+   'master' branch?` (default no), or the flag's answer. Asked after
+   self-update so a run that replaces sb doesn't ask twice. The answer
+   is a `›` notice under the checkout's step: `<Repo>: Kept branch '<b>'
+   (your answer)` or `<Repo>: Reset from branch '<b>' to 'master' (your
+   answer)`, in place of repo's notices for the choice.
 5. **"Updating apt package cache"** with the sub-step "Refreshing apt
    package lists": host's `update_lists`.
 6. **Announcements before:** both files read (below).
@@ -696,7 +710,8 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
   text within each repository (a stable sort; sb-go's `sort.Slice` left
   equal dates in any order), Saltbox's shown before Sandbox's.
 - **Shown:** info `Displaying new announcements`, then
-  - stdout a terminal: tui's announcement viewer (capability map module
+  - stdout a terminal: the runner paused over it, tui's announcement
+    viewer (on the alternate screen) (capability map module
     table; its design is the tui spec's), every announcement that
     applies listed, the new ones marked (M87). `q` or Esc goes on to the
     migrations; Ctrl-C (130) or a signal ends the run there, after the
@@ -713,8 +728,16 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
   migrations:`, a table `#`, `Repo`, `Tag`,
   `Announcement Date` (term-ui's table), then the confirm `Run all
   migration tags?` (default no), or `--migrations`. All or none
-  (saltbox/announcements.go:460-571).
-  - Run: info `Starting migration execution`, for each `Running migration
+  (saltbox/announcements.go:460-571). *Amended 2026-11-18 (decision
+  39):* asked, the line and the table are the question's context on the
+  alternate screen (`confirm_over`, the runner paused over it); stdout
+  not a terminal, they also go to stdout as before; stdout a terminal
+  and answered by the flag, they aren't printed (the tree is live
+  there), and the notice names the tags. The decision is a notice under
+  the run's newest step (`Runner::info`, `Runner::warn`): `Migrations
+  run: <repo> <tag>, ...` before they run, or the warning below.
+  - Run: the runner paused below (the playbooks are attached and write
+    on the normal screen), then info `Starting migration execution`, for each `Running migration
     '<tag>' for <Repo> repository` and ansible's `run` (its playbook run
     by tag, as `sb install`'s) with that tag in that repository (Saltbox, Sandbox, saltbox_mod by
     path), then `All migrations completed successfully`. A failure:
@@ -731,15 +754,18 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
     (difference 43).
   - Skipped (declined or `--migrations skip`): warning `Skipped
     migrations: <repo> <tag>, ...`, so the screen and the log keep them
-    (decision 22).
+    (decision 22); a warning notice in the tree (decision 39). So is
+    `Migrations interrupted; to run by hand: ...` after the viewer; after
+    an interrupted playbook it stays a line beside the playbook's output
+    on the normal screen, the runner paused below.
 
 #### What moved, and the closing hint
 
 The maintainer's decisions of 2026-11-18 (layout "B" and hint "H2" of
 the mock-ups; decisions 36 to 38). sb-go printed none of this.
 
-- **Where:** after the last step tree (validation's and the completion
-  refresh's), a blank line, the block, then, when a checkout moved, a
+- **Where:** after the run's tree (printed once, at the run's end:
+  decision 39), a blank line, the block, then, when a checkout moved, a
   blank line and the hint. Both on stderr through `lines`, as sb's other
   lines in `update` (the migration lines, the warnings), so they follow
   the tree on the same stream.
@@ -1227,7 +1253,7 @@ Every text from the file is escaped as sb's other output (cli-core's
 61. `sb announcements check` is new: sb-go had no check of an
     announcement file but its loader.
 
-`update`'s end (the maintainer, 2026-11-18; decisions 36 to 38):
+`update`'s end (the maintainer, 2026-11-18; decisions 36 to 39):
 62. `update` ends with what moved: each checkout's commit range or
     `already up to date`, and the tags the pull added or removed when
     the old cache entry was valid for the commit before it; the commits
@@ -1236,6 +1262,11 @@ Every text from the file is escaped as sb's other output (cli-core's
 63. `update` ends with a closing hint when a checkout moved: how to
     apply the update (`sb install saltbox` or `core,<apps>`; Sandbox's
     tags). sb-go gave none.
+64. `update` draws one tree for the whole run, printed once at its end
+    in one time column, its questions on the alternate screen and each
+    answer a notice in the tree (decision 39). sb-go's runner drew one
+    tree too, its questions and the migration table on the normal
+    screen between its lines.
 
 ## Scope
 
@@ -1912,6 +1943,26 @@ the real services.
     unmentioned, and the next run says `already up to date`), or the
     hint too (advice to run `sb install` while, say, the config doesn't
     validate).
+39. **One tree for the run, never printed early** (the maintainer,
+    2026-11-18, after a real run drew three `sb update` trees, the
+    self-update notices loose after the first, and the time column
+    jumped mid-tree; term-ui decision 14): one runner from self-update
+    to the completion refresh, printed once, at the end. The branch
+    questions and the migrations question open on the alternate screen
+    with what they are about (the current branch; the migration table),
+    so the live tree is never touched, and each answer is a `›` notice
+    in the tree; the viewer was on the alternate screen already. The
+    migrations' playbooks are attached, so the runner pauses below for
+    them and the live area is drawn again under their output. The
+    skipped migrations' warning, and the interrupted ones' after the
+    viewer, become notices too: a loose line would land inside the live
+    area. Piped output on stdout (the inline announcements, the
+    migration table) pauses the tree below it first, since stderr may be
+    the terminal the pipe's reader shows it on. Decided: the
+    answer notices' wording, which `setup`'s branch question shares
+    (`branch::resolve`; setup asks before its runner starts, on the
+    normal screen, as before); and the table left off stdout when stdout
+    is the tree's terminal and the flag answered.
 
 ## Known limits
 

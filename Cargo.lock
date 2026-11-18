@@ -3814,6 +3814,7 @@ dependencies = [
  "anstyle-parse",
  "anyhow",
  "console",
+ "crossterm",
  "dialoguer",
  "fastrand",
  "indicatif",

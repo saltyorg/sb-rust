@@ -379,8 +379,9 @@ fn at_a_terminal_the_question_follows_the_current_branch() {
     let status = pty.exit();
     assert!(status.success(), "{}", pty.text());
     let text = pty.text();
+    // The answer is the notice (ops decision 39).
     assert!(
-        text.contains("Saltbox: Updating the current branch 'develop'"),
+        text.contains("Saltbox: Kept branch 'develop' (your answer)"),
         "{text}"
     );
     // The current branch line once, before the question only.

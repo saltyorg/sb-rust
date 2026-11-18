@@ -65,8 +65,10 @@ pub struct Resolved {
 /// checkout is on it; otherwise `answer` (the flags') decides, or else
 /// `ask` shows repo's `<Repo>: Currently on branch '<b>'` and asks `<Repo>:
 /// Do you want to reset to the '<wanted>' branch?` (term-ui's confirm in
-/// sb, on the terminal), in sb-go's order; the notices then leave out the
-/// line already shown. The chosen branch must pass repo's
+/// sb, on the terminal), in sb-go's order; the notices are then the
+/// answer, `<Repo>: Kept branch '<b>' (your answer)` or `<Repo>: Reset
+/// from branch '<b>' to '<wanted>' (your answer)` (ops decision 39), in
+/// place of repo's notices for the choice. The chosen branch must pass repo's
 /// `check_branch_name` (a kept detached HEAD doesn't).
 ///
 /// # Panics
@@ -104,13 +106,20 @@ pub async fn resolve(
         }
         choice => (choice, false),
     };
-    let mut notices = branch_notices(repo, current, wanted, &choice);
-    if asked {
-        notices.retain(|notice| !shown.contains(notice));
-    }
-    let branch = match choice {
-        Choice::Use(branch) | Choice::Keep(branch) => branch,
+    let branch = match &choice {
+        Choice::Use(branch) | Choice::Keep(branch) => branch.clone(),
         Choice::Ask => unreachable!("branch_choice asked with an answer given"),
+    };
+    // Asked (on the alternate screen in `update`, ops decision 39), the
+    // answer is the notice: it names the branch the question showed.
+    let notices = if asked {
+        let name = repo.name();
+        vec![match choice {
+            Choice::Keep(_) => format!("{name}: Kept branch '{branch}' (your answer)"),
+            _ => format!("{name}: Reset from branch '{current}' to '{branch}' (your answer)"),
+        }]
+    } else {
+        branch_notices(repo, current, wanted, &choice)
     };
     repo.check_branch_name(&branch, &shutdown.token()).await?;
     Ok(Resolved { branch, notices })

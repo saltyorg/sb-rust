@@ -315,8 +315,8 @@ async fn over_a_checkout_on_another_branch_the_question_decides() {
     );
     assert_eq!(asked, None);
 
-    // Asked: the current branch is shown before the question (sb-go's
-    // order), so the notices keep only what follows the answer.
+    // Asked: the current branch is shown with the question (sb-go's
+    // order), and the answer is the notice (ops decision 39).
     let asking = Some((
         "Saltbox: Currently on branch 'develop'".to_owned(),
         "Saltbox: Do you want to reset to the 'master' branch?".to_owned(),
@@ -324,14 +324,17 @@ async fn over_a_checkout_on_another_branch_the_question_decides() {
     let (plan, asked) = plan_for(root, "master", None, Some(true)).await;
     let plan = plan.expect("yes");
     assert_eq!(plan.branch, "master");
-    assert!(plan.notices.is_empty(), "{:?}", plan.notices);
+    assert_eq!(
+        plan.notices,
+        ["Saltbox: Reset from branch 'develop' to 'master' (your answer)"]
+    );
     assert_eq!(asked, asking);
     let (plan, asked) = plan_for(root, "master", None, Some(false)).await;
     let plan = plan.expect("no");
     assert_eq!(plan.branch, "develop");
     assert_eq!(
         plan.notices,
-        ["Saltbox: Updating the current branch 'develop'"]
+        ["Saltbox: Kept branch 'develop' (your answer)"]
     );
     assert_eq!(asked, asking);
 

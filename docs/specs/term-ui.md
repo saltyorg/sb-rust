@@ -1,5 +1,11 @@
 # Spec: `term-ui` (approved 2026-10-30; Checkpoint A 2026-11-01)
 
+*Amended 2026-11-18 by the maintainer's decisions after a real `sb
+update` run: one tree per command, paused while something else needs
+the terminal, printed once, when its run ends, in one column; questions
+asked during a run open on the alternate screen (decision 14 and
+"Prompts"; decisions 3 and 11 amended).*
+
 Module of the approved capability map (`term-ui`: inline UI only; depends
 on `cli-core`). The first vertical slice is `sb version` (done) →
 `sb docker ps` → `sb validate-config`, built as `cli-core` → `term-ui` →
@@ -82,8 +88,8 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
 
 - **Look (proto-runner, reviewed):** a root line, then one branch per step
   (`├──`, the last `╰──`), times and exit codes ending in one column
-  (at least column 66, further right as far as the longest line not yet
-  printed needs, never past the screen: decisions 11 and 13). The
+  (at least column 66, further right as far as the tree's longest line
+  needs, never past the screen: decisions 11, 13 and 14). The
   running step is a branch with its running label, spinner and label in
   the `Accent` role, and a live tail of its newest output lines under it:
   each running step's tail at most sb-go's 8 lines, all running tails
@@ -104,6 +110,14 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   steps leaves nothing on the screen, title included; if any step
   failed, was interrupted or was stopped, the whole tree is printed as
   any run's.
+- **One tree per command** (decision 14): a command draws one runner's
+  tree for its whole run. While a question, a full-screen view, an
+  attached child or other output needs the terminal, the command pauses
+  the runner (`Runner::pause_over`, `Runner::pause_below`), and the same
+  tree goes on at its next top-level step. Until the run ends, finished
+  steps stay in the live area ("Taller than the terminal" collapses
+  them); the tree is printed once, at the run's end, every line in one
+  column.
 - **Notices:** a step can add info and warning lines, which stay under it
   in the finished tree (sb-go's `Task.Info` and `Task.Warning`), drawn as
   bullets: `›` for info in the muted colour, an orange `!` for warnings
@@ -401,6 +415,30 @@ sequence.
   the run is interrupted before the confirm returns, without a wait.
   M50's bounded wait in `sb edit` is gone; self-update's confirm gets
   the same. *Amended 2026-11-15 (maintainer).*
+- **A question during a run opens on the alternate screen**
+  (`confirm_over(question, context, answer, flag, shutdown)`; the
+  maintainer, 2026-11-18, decision 14): the command pauses its runner
+  over it (`Runner::pause_over`), and the confirm switches the terminal
+  it asks on to the alternate screen (crossterm's `EnterAlternateScreen`,
+  `\e[?1049h`, written to that terminal,
+  <https://docs.rs/crossterm/0.29.0/crossterm/terminal/struct.EnterAlternateScreen.html>;
+  dialoguer and console have no alternate-screen call), writes
+  `context` there (what the question is about: the current branch, the
+  migration table), asks exactly as `confirm` does (its keys, texts and
+  answer rules), and leaves the alternate screen
+  (`LeaveAlternateScreen`) on every ending: an answer, Ctrl-C (sb then
+  ends by SIGINT, the terminal restored), a failed read, and a second
+  Ctrl-C (a restore hook on the run's `Shutdown`). The normal screen,
+  the live tree on it included, is never touched. The command records
+  the answer as a `›` notice under its step (`Runner::info`). With no
+  terminal, or an answer from the flag, it is `confirm`: no screen.
+  The question starts at the alternate screen's top left (crossterm's
+  `MoveTo(0, 0)`: `?1049h` keeps the cursor where the live area left
+  it). It switches screens only where a runner would draw live
+  (indicatif's rule for stderr, `ProgressDrawTarget::is_hidden`: a
+  terminal, `TERM` set and not `dumb`); elsewhere (stderr redirected, a
+  dumb terminal) there is no live tree to keep, and `context` is
+  written above the question on the screen as it is.
 - Prompts read the terminal, not stdin (`curl … | sudo bash` leaves stdin
   as the script; the install-script plan says prompts use `/dev/tty`). No
   terminal, or a background process group, and no answer: a clear error
@@ -901,7 +939,9 @@ Choices behind it:
    (maintainer, 2026-11-03):** the tree is drawn in tree order at any
    depth (each parent's children in start order, each subtree whole), so
    a step started late inside a nested sibling is drawn in its own
-   subtree, not after a later outer sibling.
+   subtree, not after a later outer sibling. *Amended 2026-11-18
+   (decision 14):* every finished step stays live until the run ends,
+   so each step's place is known when the tree is printed.
 4. **Steps are async** and get cli-core's cancellation token; the runner
    draws on indicatif's own ticker (tokio, capability map decision 8).
    **Amended at Checkpoint A:** a tokio task drives the frames (several
@@ -988,6 +1028,12 @@ Choices behind it:
     check's ("Validating Cloudflare API credent…"). Plain end lines, which
     have no column, put the same three spaces before the time and reason
     (`✗ Pulling   interrupted · 2s`; the maintainer, 2026-11-04).
+    *Amended 2026-11-18 by decision 14, which supersedes "lines printed
+    before a longer one keep their column":* the tree is printed for
+    good only when its run ends, so the column is the whole tree's and
+    no line of it ends left of another's. The rest stands: no label is
+    cut while the screen has room, never left of 66, never past the
+    screen, never moving left in the live area.
 12. **Transient steps (the maintainer, 2026-11-14):** `Labels::transient()`
     marks a step shown only while it runs, for work that takes a while
     but whose result is the command's output (`sb list`'s steps, its
@@ -1033,3 +1079,67 @@ Choices behind it:
     (`125s`). The snapshot tests'
     in-memory screen has a clock that stands still (`Clock::Frozen`), so
     their times read `0.0s` on any machine.
+14. **One tree per command, printed once, at its run's end (the
+    maintainer, 2026-11-18: the tree is never printed
+    early):** that run drew three trees,
+    each titled `sb update` (the self-update check with its two notices
+    after it, the main steps, validation and completions), and its time
+    column jumped from 66 to 71 mid-tree: a late long label ("Ansible
+    virtual environment was already up to date") came after the apt
+    step had been printed for good (`take_printable` and `column`).
+    - **One runner per command run, its tree printed once, at the end,**
+      every line ending in one column: the widest line's need over the
+      whole run, at least 66, never past the screen (decision 11, as
+      amended). Until then every finished step stays in the live area,
+      collapsing to `… N finished` when the tree is taller than the
+      screen, as before. Ctrl-C, a signal and a failure print it at the
+      end as before (decision 7's endings, the failure block, the
+      pointer).
+    - **Pausing.** While something else needs the terminal, the command
+      pauses the runner; nothing is printed then. Its next
+      `Runner::step` starts drawing again, and the title is printed
+      once, with the tree.
+      - `Runner::pause_over`, for what opens on the alternate screen (the
+        announcement viewer, a question asked with `confirm_over`): the
+        live area stays as drawn under it, the frames stop, the
+        terminal's modes are put back, and the runner no longer counts
+        as live (`runner_live`: the prompts and exec's `attached` refuse
+        while one is); the next step redraws the same area in place.
+      - `Runner::pause_below`, for what writes on the normal screen (an
+        attached child, such as `update`'s migration playbooks, and the
+        lines around it): the live area is cleared as well, and the next
+        step (or the run's end) draws it again below what was written.
+      - Custom, not indicatif's `MultiProgress::suspend`: that takes a
+        synchronous closure and holds the area's lock throughout ("avoid
+        long-running operations"), and a pause spans awaited work; nor
+        a hidden draw target swapped in, which would lose the in-place
+        redraw's line count.
+    - **The end's print is one `MultiProgress::println`** of the whole
+      tree (it splits the lines itself), so the area is redrawn once,
+      not once per line.
+    - **`Runner::info` and `Runner::warn`:** a notice under the run's
+      newest top-level step, finished or not, for what a command decides
+      between steps (a question's answer, the migrations run or skipped),
+      kept in the tree like a step's own notices and logged the same way.
+    - **Plain** (stderr not a terminal) **is already line by line and
+      stays so** (checked 2026-11-18: `State::plain` prints each start,
+      output, notice and end line as it comes, except while a transient
+      step holds them); a pause prints nothing there, and the title is
+      printed once for the run.
+    - **The run log is unchanged:** each step is recorded as it runs.
+    - **The commands** (every `Runner::start`, swept 2026-11-18):
+      `update` had three runners and has one (paused over the branch
+      questions, the announcement viewer and the migrations question,
+      below for the migrations' playbooks); `self-update` had two (the
+      check, then the install after its question) and has one, paused
+      over its question. Already one tree at most per run, unchanged:
+      `bench` (a transient runner per section, between its tables: a
+      successful run draws no tree, and a failed section ends the run
+      with its own), `install` and `list` (one runner started at its
+      first step), `setup` (its branch question comes before its
+      runner), `gha`, `branch`, `branch-sandbox`, `validate-config`,
+      `announcements` and `announcements preview`, the python-env
+      commands, and `docker start`, `stop` and `restart`. `edit` keeps a
+      runner per check of its edit-again loop: each check's tree is what
+      its question asks about, so it is printed before the question, and
+      the editor takes the whole screen in between.

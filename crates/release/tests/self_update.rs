@@ -101,20 +101,19 @@ async fn try_run_on(
         message,
         shutdown: &shutdown,
     };
-    let outcome = self_update(&releases, update, || {
-        Runner::start(
-            "sb self-update",
-            &shutdown,
-            None,
-            Options {
-                target: Target::InMemory {
-                    term: term.clone(),
-                    colour: false,
-                },
+    let mut runner = Runner::start(
+        "sb self-update",
+        &shutdown,
+        None,
+        Options {
+            target: Target::InMemory {
+                term: term.clone(),
+                colour: false,
             },
-        )
-    })
-    .await;
+        },
+    );
+    let outcome = self_update(&releases, update, &mut runner).await;
+    runner.finish();
     (outcome, term.contents())
 }
 
@@ -182,12 +181,13 @@ async fn a_disabled_build_only_updates_when_forced() {
     let disabled = BuildInfo::from_env("0.1.0", Some("1.0.0"), None, Channel::None);
     let (outcome, screen) = run(&fake, &disabled, &target, false, None).await;
     assert_eq!(outcome, Outcome::Disabled);
+    // Both `›` notices under the check's step (term-ui decision 14).
     assert!(
-        screen.contains("Self-update is disabled in this build"),
+        screen.contains("› Self-update is disabled in this build"),
         "{screen}"
     );
     assert!(
-        screen.contains("Use --force-update to override this restriction"),
+        screen.contains("› Use --force-update to override this restriction"),
         "{screen}"
     );
     assert_eq!(fake.seen(), Vec::new());

@@ -68,6 +68,10 @@ you could trip over.
 - **`-v`/`--verbose` no longer changes the output** of the commands that
   had it; it is accepted with a note, and the run log keeps the detail.
   `install` keeps `-v` to `-vvvv` for Ansible.
+- **One tree per command run,** printed once, at the end, with every
+  time in one column: `sb update` and `sb self-update` no longer draw a
+  tree per phase. Their questions open on the alternate screen, and
+  each answer is noted in the tree.
 - **New layouts** for `sb list`, `sb docker ps`, `sb motd`'s Docker and
   queue lines, `sb bench` and `sb fact`.
 - **Cancellation:** Ctrl-C and a dropped SSH session stop the whole

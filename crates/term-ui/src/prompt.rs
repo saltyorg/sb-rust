@@ -14,10 +14,14 @@
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
+use std::io::Write as _;
 
+use crossterm::cursor::MoveTo;
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use dialoguer::Input;
 use dialoguer::theme::Theme;
-use sb_cli_core::cancel::Shutdown;
+use sb_cli_core::cancel::{RestoreHook, Shutdown};
 use sb_cli_core::theme::Role;
 
 use crate::style::paint;
@@ -77,6 +81,140 @@ pub fn confirm(
         crate::runner_live(),
         || OpenOptions::new().read(true).write(true).open("/dev/tty"),
     )
+}
+
+/// [`confirm`] on the alternate screen, for a question asked while a
+/// runner is paused over it (`Runner::pause_over`; term-ui decision 14):
+/// the terminal switches to the alternate screen, `context` is written
+/// there (what the question is about), the question is asked as
+/// [`confirm`] asks it (its keys, texts and answer rules), and the normal
+/// screen, the live tree on it, comes back untouched on every ending: an
+/// answer, Ctrl-C, a failed read, and a second Ctrl-C (a restore hook on
+/// `shutdown`). crossterm's commands, written to the opened terminal
+/// (<https://docs.rs/crossterm/0.29.0/crossterm/terminal/struct.EnterAlternateScreen.html>,
+/// <https://docs.rs/crossterm/0.29.0/crossterm/macro.execute.html>).
+/// Why not dialoguer or console: neither has an alternate-screen call
+/// (dialoguer 0.12.0 draws on the `Term` it is given; console 0.16.6's
+/// `Term` clears and moves, it doesn't switch screens). An answer given,
+/// or no terminal, is [`confirm`]'s: no screen.
+///
+/// # Errors
+///
+/// As [`confirm`]'s; [`PromptError::Failed`] when the screen can't be
+/// switched.
+pub fn confirm_over(
+    question: &str,
+    context: &str,
+    answer: Option<bool>,
+    flag: &'static str,
+    shutdown: &Shutdown,
+) -> Result<bool, PromptError> {
+    confirm_over_on(
+        question,
+        context,
+        answer,
+        flag,
+        shutdown,
+        Here {
+            runner_live: crate::runner_live(),
+            // Only where a runner would draw live: indicatif's own rule for
+            // stderr (a terminal, `TERM` set and not `dumb`; `is_hidden`,
+            // <https://docs.rs/indicatif/0.18.6/indicatif/struct.ProgressDrawTarget.html#method.is_hidden>).
+            // Elsewhere there is no live tree to keep, and a dumb terminal
+            // may not have the alternate screen.
+            alternate: !indicatif::ProgressDrawTarget::stderr().is_hidden(),
+        },
+        || OpenOptions::new().read(true).write(true).open("/dev/tty"),
+    )
+}
+
+/// What [`confirm_over`] reads of the process, passed in so a test
+/// doesn't read the process-wide state other tests change.
+#[derive(Clone, Copy)]
+struct Here {
+    /// Whether a runner is live.
+    runner_live: bool,
+    /// Whether to switch to the alternate screen; else `context` is
+    /// written above the question on the screen as it is.
+    alternate: bool,
+}
+
+/// [`confirm_over`] with the terminal from `terminal` and the process's
+/// state given (`here`), as [`confirm_on`].
+fn confirm_over_on(
+    question: &str,
+    context: &str,
+    answer: Option<bool>,
+    flag: &'static str,
+    shutdown: &Shutdown,
+    here: Here,
+    terminal: impl FnOnce() -> std::io::Result<File>,
+) -> Result<bool, PromptError> {
+    let Here {
+        runner_live,
+        alternate,
+    } = here;
+    if answer.is_some() || runner_live {
+        return confirm_on(question, answer, flag, shutdown, runner_live, terminal);
+    }
+    let tty = match open_terminal(terminal) {
+        Ok(tty) => tty,
+        // No terminal: the confirm's own error, naming the flag.
+        Err(reason) => {
+            return Err(PromptError::NoTerminal {
+                question: question.to_owned(),
+                reason,
+                flag,
+            });
+        }
+    };
+    let failed = |error: std::io::Error| PromptError::Failed {
+        question: question.to_owned(),
+        error: error.to_string(),
+    };
+    let screen = if alternate {
+        Some(Screen::enter(&tty, shutdown).map_err(failed)?)
+    } else {
+        None
+    };
+    let mut out = &tty;
+    if !context.is_empty() {
+        writeln!(out, "{context}\n").map_err(failed)?;
+    }
+    let asked = confirm_on(question, None, flag, shutdown, false, || tty.try_clone());
+    drop(screen);
+    asked
+}
+
+/// The alternate screen, entered on a terminal and left when dropped, or
+/// by the restore hook on a second Ctrl-C (cli-core's forced exit).
+struct Screen {
+    tty: File,
+    _hook: RestoreHook,
+}
+
+impl Screen {
+    fn enter(tty: &File, shutdown: &Shutdown) -> std::io::Result<Self> {
+        let mut tty = tty.try_clone()?;
+        let hook_tty = tty.try_clone()?;
+        // At the top left: the alternate screen keeps the cursor where the
+        // live area left it (`?1049h` saves it, and clears, but doesn't
+        // move it).
+        execute!(tty, EnterAlternateScreen, MoveTo(0, 0))?;
+        let hook = shutdown.on_forced_exit(move || {
+            // `&File` writes, so the hook stays `Fn`.
+            let mut out = &hook_tty;
+            let _ = execute!(out, LeaveAlternateScreen);
+        });
+        Ok(Self { tty, _hook: hook })
+    }
+}
+
+impl Drop for Screen {
+    fn drop(&mut self) {
+        // Nothing better to do if the terminal fails here.
+        let _ = execute!(self.tty, LeaveAlternateScreen);
+    }
 }
 
 /// Whether a question can be asked here, by [`confirm`]'s rule: `/dev/tty`
@@ -347,6 +485,55 @@ mod tests {
             "can't ask \"Do you want to update\": sb runs in the background; answer it \
              with --yes"
         );
+    }
+
+    /// On the alternate screen, the confirm's own rules first: a given
+    /// answer asks nothing, a live runner refuses, and without a terminal
+    /// (or from the background) the error names the flag; no screen is
+    /// switched then (a file that isn't a terminal stays empty).
+    #[test]
+    fn the_alternate_screens_confirm_keeps_the_confirms_rules() {
+        let shutdown = Shutdown::new();
+        let ask = |answer, live, terminal: Box<dyn FnOnce() -> std::io::Result<File>>| {
+            confirm_over_on(
+                "Run all migration tags?",
+                "The following tags need to be run to handle migrations:",
+                answer,
+                "--migrations",
+                &shutdown,
+                Here {
+                    runner_live: live,
+                    alternate: true,
+                },
+                terminal,
+            )
+        };
+        for answer in [true, false] {
+            let asked = ask(Some(answer), true, Box::new(|| unreachable!("not asked")));
+            assert_eq!(asked.expect("answered"), answer);
+        }
+        let err =
+            ask(None, true, Box::new(|| unreachable!("no terminal opened"))).expect_err("refused");
+        assert!(matches!(err, PromptError::RunnerLive(_)), "{err}");
+        let err = ask(None, false, Box::new(no_tty)).expect_err("no terminal");
+        assert!(
+            matches!(
+                err,
+                PromptError::NoTerminal {
+                    flag: "--migrations",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        let file = tempfile::tempfile().expect("file");
+        let seen = file.try_clone().expect("clone");
+        let err = ask(None, false, Box::new(|| Ok(file))).expect_err("not a terminal");
+        assert!(
+            err.to_string().contains("sb runs in the background"),
+            "{err}"
+        );
+        assert_eq!(seen.metadata().expect("metadata").len(), 0);
     }
 
     /// The whole line is the answer: `y` or `yes` in any case, spaces

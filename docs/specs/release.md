@@ -148,9 +148,11 @@ channels"); `--force-update` only in builds where self-update is off
 1. **Off:** a build whose channel is `none` (`SB_CHANNEL` unset or
    `none`), or a raw build (no `SB_VERSION` at build time; decision 11).
    *Amended 2026-11-18: `SB_CHANNEL` replaces `SB_DISABLE_SELF_UPDATE`.* Without
-   `--force-update`: warning `Self-update is disabled in this build`,
+   `--force-update`: info `Self-update is disabled in this build`,
    info `Use --force-update to override this restriction`, exit 0 (the
-   text sb-go's CI greps, build.yml:108-113). With it: info `Forcing
+   text sb-go's CI greps, build.yml:108-113). *Amended 2026-11-18 (the
+   maintainer, term-ui decision 14): both are `›` notices under the
+   check's step; the first was a warning.* With it: info `Forcing
    self-update despite build configuration`, then on.
 2. **Look up:** step "Checking for sb CLI updates": `list` for the
    configured repository; drafts skipped, and prereleases for the
@@ -165,7 +167,13 @@ channels"); `--force-update` only in builds where self-update is off
    text had no question mark, which sb's other questions have).
    `--yes` answers it. No terminal and no `--yes`: an error naming
    `--yes`, exit 1. Declined: warning `Update of sb CLI cancelled`,
-   exit 0.
+   exit 0. *Amended 2026-11-18 (term-ui decision 14):* the check, the
+   question and the update are one tree: the caller's runner is passed
+   in (`self_update(releases, update, &mut runner)`), paused over the
+   question, which opens on the alternate screen (`confirm_over`) with
+   the `New sb CLI version available` line as its context; the answer
+   is a notice under the check's step, `Update to <new> accepted (your
+   answer)`, or the warning `Update of sb CLI cancelled` there.
 4. **Update:** step "Updating sb CLI to <new>", sub-steps:
    "Downloading <asset>" (the download above, into the directory of
    `std::env::current_exe()`, which reads `/proc/self/exe`); "Checking
