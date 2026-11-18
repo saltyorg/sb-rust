@@ -842,7 +842,7 @@ fn password_file_dash_on_a_terminal_asks() {
         "{}",
         pty.contents()
     );
-    pty.send(b"c");
+    pty.send(b"q");
     assert!(pty.exit().success(), "{}", pty.contents());
     assert!(
         pty.contents()

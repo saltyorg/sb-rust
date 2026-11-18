@@ -1,7 +1,7 @@
 //! The restore screen (ops spec, "`sb restore` (hidden)", decision 32):
 //! the form's fields, checks and cancel; the live list's updates; the
-//! viewer's menu, content, cursor, masking, `s` and `a`, focus and
-//! Continue; the mouse. On ratatui's `TestBackend`.
+//! viewer's menu, content shown as it is, cursor, focus and Continue;
+//! the mouse. On ratatui's `TestBackend`.
 
 use crossterm::event::{KeyModifiers, MouseEvent};
 use ratatui::Terminal;
@@ -11,20 +11,6 @@ use sb_cli_core::theme::{Palette, Profile};
 use super::*;
 
 const FILES: [&str; 3] = ["accounts.yml", "rclone.conf", "settings.yml"];
-
-/// A stand-in for the shared rule ops passes (sb-config's
-/// `facts::secret::is_secret`): a secret word in the key, or a URL with
-/// credentials as the value's first word.
-fn secret(key: &str, value: &str) -> bool {
-    let key = key.to_lowercase();
-    ["pass", "secret", "token", "key", "api"]
-        .iter()
-        .any(|word| key.contains(word))
-        || value
-            .split_whitespace()
-            .next()
-            .is_some_and(|word| word.contains("://") && word.contains('@'))
-}
 
 struct Harness {
     screen: Screen,
@@ -42,7 +28,6 @@ fn harness(prefill: Prefill) -> Harness {
             files: &FILES,
             root: root.path().to_path_buf(),
             base: "http://fake".into(),
-            is_secret: secret,
             theme: Theme::resolve(&Palette::default(), Profile::TrueColor),
         },
         prefill,
@@ -419,9 +404,10 @@ fn a_file_not_restored_shows_why() {
     assert!(screen_text(&mut h).contains("Not on the restore service for this user"));
 }
 
-/// Tab and Shift-Tab go round the menu, the content and Continue; Esc
-/// and ← go back to the menu; Enter on Continue, `c`, and `q` or Esc in
-/// the menu close.
+/// Tab and Shift-Tab go round the menu, the content and Continue; Enter
+/// goes into the file and Esc back to the menu; Enter on Continue, `q`
+/// anywhere and Esc in the menu close. `c` copies elsewhere, so it no
+/// longer continues; Space no longer presses Continue (tui spec, "Keys").
 #[test]
 fn focus_moves_and_continue_closes() {
     let mut h = harness(Prefill::default());
@@ -431,11 +417,8 @@ fn focus_moves_and_continue_closes() {
     assert_eq!(h.screen.focus_on, Focus::Menu);
     key(&mut h, KeyCode::Enter);
     assert_eq!(h.screen.focus_on, Focus::File);
+    assert_eq!(key(&mut h, KeyCode::Char('q')), Flow::Quit, "q in the file");
     key(&mut h, KeyCode::Esc);
-    assert_eq!(h.screen.focus_on, Focus::Menu);
-    key(&mut h, KeyCode::Right);
-    assert_eq!(h.screen.focus_on, Focus::File);
-    key(&mut h, KeyCode::Left);
     assert_eq!(h.screen.focus_on, Focus::Menu);
     key(&mut h, KeyCode::Tab);
     assert_eq!(h.screen.focus_on, Focus::File);
@@ -449,8 +432,9 @@ fn focus_moves_and_continue_closes() {
     key(&mut h, KeyCode::Esc);
     assert_eq!(h.screen.focus_on, Focus::Menu);
     shift_tab(&mut h);
+    assert_eq!(key(&mut h, KeyCode::Char(' ')), Flow::Unchanged);
+    assert_eq!(key(&mut h, KeyCode::Char('c')), Flow::Unchanged);
     assert_eq!(key(&mut h, KeyCode::Enter), Flow::Quit);
-    assert_eq!(key(&mut h, KeyCode::Char('c')), Flow::Quit);
     h.screen.focus_on = Focus::Menu;
     assert_eq!(key(&mut h, KeyCode::Char('q')), Flow::Quit);
     assert_eq!(key(&mut h, KeyCode::Esc), Flow::Quit);
@@ -480,12 +464,25 @@ fn the_menu_moves_and_loads() {
     key(&mut h, KeyCode::Home);
     assert_eq!(h.screen.menu.selected(), Some(0));
     assert!(screen_text(&mut h).contains("first: 1"));
+    // ← → and `h` `l` choose the previous and next file, from the file
+    // too, as the announcement viewer's (tui spec, "Keys", rule 7).
+    key(&mut h, KeyCode::Enter);
+    assert_eq!(h.screen.focus_on, Focus::File);
+    for (code, at) in [
+        (KeyCode::Right, 1),
+        (KeyCode::Char('l'), 2),
+        (KeyCode::Left, 1),
+        (KeyCode::Char('h'), 0),
+    ] {
+        assert_eq!(key(&mut h, code), Flow::Redraw, "{code:?}");
+        assert_eq!(h.screen.menu.selected(), Some(at), "{code:?}");
+    }
 }
 
-/// Secrets are masked; `s` shows the cursor line's until it moves, `a`
-/// every one until pressed again, the title saying so.
+/// Every line shows as it is, secrets too (the maintainer, 2026-11-18:
+/// values are shown, not hidden); `s` and `a` do nothing.
 #[test]
-fn secrets_show_on_demand() {
+fn every_value_shows_as_it_is() {
     let mut h = harness(Prefill::default());
     place(
         &h,
@@ -495,34 +492,18 @@ fn secrets_show_on_demand() {
     submit(&mut h, "someone", "pw");
     ended(&mut h, [Status::Ignored, Status::Done, Status::Ignored]);
     let text = screen_text(&mut h);
-    assert!(text.contains("type = drive"), "{text}");
-    assert!(text.contains("token = ••••••••"), "{text}");
-    assert!(text.contains("client_secret = ••••••••"), "{text}");
-    assert!(
-        text.contains("url = ••••••••"),
-        "a URL with credentials: {text}"
-    );
-    assert!(!text.contains("abc123") && !text.contains("shh") && !text.contains("u:pw"));
-    assert!(text.contains("a show all"), "{text}");
+    for line in [
+        "type = drive",
+        "token = abc123",
+        "client_secret = shh",
+        "url = https:",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+    assert!(!text.contains('•'), "{text}");
     key(&mut h, KeyCode::Enter);
-    key(&mut h, KeyCode::Down);
-    key(&mut h, KeyCode::Down);
-    key(&mut h, KeyCode::Char('s'));
-    let text = screen_text(&mut h);
-    assert!(text.contains("token = abc123"), "{text}");
-    assert!(!text.contains("shh"), "only the cursor's line: {text}");
-    key(&mut h, KeyCode::Down);
-    assert!(
-        !screen_text(&mut h).contains("abc123"),
-        "hidden once the cursor moves"
-    );
-    key(&mut h, KeyCode::Char('a'));
-    let text = screen_text(&mut h);
-    assert!(text.contains("abc123") && text.contains("shh") && text.contains("u:pw"));
-    assert!(text.contains("secrets shown"), "{text}");
-    assert!(text.contains("a hide all"), "{text}");
-    key(&mut h, KeyCode::Char('a'));
-    assert!(!screen_text(&mut h).contains("abc123"));
+    assert_eq!(key(&mut h, KeyCode::Char('s')), Flow::Unchanged);
+    assert_eq!(key(&mut h, KeyCode::Char('a')), Flow::Unchanged);
 }
 
 /// The cursor stays in sight: End scrolls to the last line, Home back;
@@ -544,7 +525,6 @@ fn the_cursor_scrolls_the_file() {
     let cursor = |h: &Harness| h.screen.pane.as_ref().map(|p| p.cursor);
     key(&mut h, KeyCode::End);
     assert_eq!(cursor(&h), Some(100));
-    key(&mut h, KeyCode::Char('s'));
     let rows = drawn(&mut h, 100, 30);
     let inner = h.screen.pane.as_ref().expect("pane").inner;
     let joined: String = rows[usize::from(inner.y)..usize::from(inner.bottom())]
@@ -638,38 +618,17 @@ fn the_mouse_selects_scrolls_and_continues() {
     assert_eq!(click(&mut h, button.x + 1, button.y), Flow::Quit);
 }
 
-/// Where a secret value starts: after `:` or `=`, its spaces kept in the
-/// shown part, a list's `- ` and the key's spaces trimmed; by the key or
-/// the value; none for one that isn't secret, or a key with no value.
-#[test]
-fn secret_values_are_found() {
-    assert_eq!(secret_value("token: abc", secret), Some(7));
-    assert_eq!(secret_value("  api_key = xyz", secret), Some(12));
-    assert_eq!(secret_value("- password: p", secret), Some(12));
-    assert_eq!(secret_value("pass=x", secret), Some(5));
-    assert_eq!(secret_value("url: https://u:p@h", secret), Some(5));
-    assert_eq!(secret_value("  - mailto://u:p@h", secret), Some(4));
-    assert_eq!(secret_value("https://u:p@h", secret), Some(0));
-    assert_eq!(secret_value("- \"https://u:p@h\"", secret), Some(2));
-    assert_eq!(secret_value("- https://example.test", secret), None);
-    assert_eq!(secret_value("user: someone", secret), None);
-    assert_eq!(secret_value("token:", secret), None);
-    assert_eq!(secret_value("token:   ", secret), None);
-    assert_eq!(secret_value("no separator token", secret), None);
-    assert_eq!(secret_value(": token", secret), None);
-}
-
 /// The file's escapes and control characters never reach the viewer.
 #[test]
 fn a_file_is_shown_safely() {
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("f");
     std::fs::write(&path, "a: \x1b]0;t\x07b\nc\x07d\n").expect("file");
-    let lines = read_lines(&path, secret);
-    for (line, _) in &lines {
+    let lines = read_lines(&path);
+    for line in &lines {
         assert!(!line.chars().any(char::is_control), "{line:?}");
     }
-    assert_eq!(lines[0].0, "a: b");
+    assert_eq!(lines[0], "a: b");
 }
 
 /// The answers never show through `Debug`.
@@ -754,24 +713,6 @@ fn the_focus_leaves_a_file_that_is_gone() {
     assert_eq!(key(&mut h, KeyCode::Down), Flow::Unchanged);
 }
 
-/// The last frame hides every shown secret (`a` and `s`): a terminal
-/// without an alternate screen keeps it.
-#[test]
-fn the_last_frame_is_masked() {
-    let mut h = harness(Prefill::default());
-    place(&h, "accounts.yml", "token: abc123\n");
-    submit(&mut h, "someone", "pw");
-    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
-    key(&mut h, KeyCode::Enter);
-    key(&mut h, KeyCode::Char('s'));
-    key(&mut h, KeyCode::Char('a'));
-    assert!(screen_text(&mut h).contains("abc123"));
-    h.screen.conceal();
-    assert!(!screen_text(&mut h).contains("abc123"));
-    assert!(!h.screen.show_all);
-    assert!(h.screen.pane.as_ref().is_some_and(|p| !p.revealed));
-}
-
 /// A filled password field's first edit empties both: what is typed
 /// then is the password, never the fill's placeholder.
 #[test]
@@ -800,7 +741,7 @@ fn editing_a_given_password_starts_it_afresh() {
     );
 }
 
-/// The footer names `s` only in the content; a reason's own full stop
+/// The footer names the keys, and no secret key; a reason's own full stop
 /// isn't doubled.
 #[test]
 fn the_footer_and_the_reason_read_right() {
@@ -816,10 +757,13 @@ fn the_footer_and_the_reason_read_right() {
         ],
     );
     let text = screen_text(&mut h);
-    assert!(!text.contains("s show the value"), "{text}");
-    assert!(text.contains("a show all"), "{text}");
+    assert!(
+        text.contains("↑↓ move · Tab menu, file, Continue · ← → file · q quit"),
+        "{text}"
+    );
+    assert!(!text.contains("show"), "{text}");
     key(&mut h, KeyCode::Enter);
-    assert!(screen_text(&mut h).contains("s show the value"));
+    assert!(!screen_text(&mut h).contains("show"));
     key(&mut h, KeyCode::Esc);
     key(&mut h, KeyCode::Down);
     let text = screen_text(&mut h);
@@ -938,28 +882,6 @@ fn the_focused_block_has_the_accents_border() {
     let b = buffer(&mut h, 100, 30);
     assert_eq!(b[menu_edge].fg, border, "the menu, not focused");
     assert_eq!(b[pane_edge].fg, accent, "the file, focused");
-}
-
-/// A value shown with `s` stays shown while the cursor stays (a key
-/// that doesn't move it); it hides once the cursor moves.
-#[test]
-fn a_shown_value_stays_until_the_cursor_moves() {
-    let mut h = harness(Prefill::default());
-    place(&h, "accounts.yml", "token: abc123\nname: x\n");
-    submit(&mut h, "someone", "pw");
-    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
-    key(&mut h, KeyCode::Enter);
-    key(&mut h, KeyCode::Char('s'));
-    assert!(screen_text(&mut h).contains("token: abc123"));
-    // Up on the first line: the cursor stays, and so does the value.
-    key(&mut h, KeyCode::Up);
-    assert!(screen_text(&mut h).contains("token: abc123"), "still shown");
-    key(&mut h, KeyCode::Down);
-    let text = screen_text(&mut h);
-    assert!(
-        text.contains("token: ••••••••") && !text.contains("abc123"),
-        "{text}"
-    );
 }
 
 /// Lines that fill the pane exactly take its whole width: no column goes

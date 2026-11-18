@@ -19,12 +19,9 @@
 //!   row): the menu a `List` with a `ListState`, the pane a tui-scrollview
 //!   `ScrollView`
 //!   (<https://docs.rs/tui-scrollview/0.6.8/tui_scrollview/struct.ScrollView.html>)
-//!   of the file's wrapped lines with a line cursor. Why a cursor over the
-//!   announcement's plain scroll: `s` shows one line's value, so a line
-//!   is chosen.
-//! - **Secrets in the files** are masked by the caller's rule (ops: the
-//!   rule shared with the fact editor, sb-config's `facts::secret`), on
-//!   a key's name or a value's look; `s` and `a` show them on demand.
+//!   of the file's wrapped lines with a line cursor, each line shown as it
+//!   is, secrets too (the maintainer, 2026-11-18: values are shown, not
+//!   hidden; tui spec, "Keys: one map for every screen").
 //! - **Secrets typed:** the answers leave the form in buffers cleared on
 //!   drop; the text areas are emptied once read (their own `String`s are
 //!   not cleared: a known limit). Nothing here logs a value.
@@ -56,10 +53,6 @@ use crate::term::{App, Ending, Flow, Tui};
 
 /// The passwords' mask in the form.
 pub const MASK_CHAR: char = '•';
-
-/// A secret value's mask in the viewer: a fixed length, so the value's
-/// length doesn't show.
-const VALUE_MASK: &str = "••••••••";
 
 /// Lines the wheel moves the pane's cursor by.
 const WHEEL_LINES: usize = 3;
@@ -169,9 +162,6 @@ pub struct Setup<'a> {
     pub root: PathBuf,
     /// The service's base, as the list's heading shows it.
     pub base: String,
-    /// Whether the value under a key is a secret, given the key and the
-    /// value (the rule shared with the fact editor).
-    pub is_secret: fn(&str, &str) -> bool,
     pub theme: Theme,
 }
 
@@ -216,11 +206,7 @@ where
             () = &mut run, if !ran => ran = true,
         }
     };
-    // The last frame masked: a terminal without an alternate screen (GNU
-    // screen's default, tmux's `alternate-screen off`) keeps it.
-    app.conceal();
-    let drawn = tui.draw(&mut app);
-    let left = tui.leave().await.and(drawn);
+    let left = tui.leave().await;
     tracing::info!(
         ending = ?ending.as_ref().ok(),
         started = app.started,
@@ -254,7 +240,6 @@ pub(crate) struct Screen {
     theme: Theme,
     root: PathBuf,
     base: String,
-    is_secret: fn(&str, &str) -> bool,
     fields: [TextArea<'static>; 3],
     focus: usize,
     /// The password file's bytes, while neither password field is edited.
@@ -270,8 +255,6 @@ pub(crate) struct Screen {
     menu: ListState,
     /// The selected file's content, when it was restored.
     pane: Option<Pane>,
-    /// `a`: every secret shows.
-    show_all: bool,
     /// From the last draw, for the mouse: the menu, its rows inside the
     /// border, and the Continue button.
     menu_area: Rect,
@@ -291,7 +274,6 @@ impl Screen {
             theme: setup.theme,
             root: setup.root,
             base: setup.base,
-            is_secret: setup.is_secret,
             fields: [field(false), field(true), field(true)],
             focus: usize::from(prefill.user.is_some()),
             given: None,
@@ -312,7 +294,6 @@ impl Screen {
             focus_on: Focus::Menu,
             menu: ListState::default(),
             pane: None,
-            show_all: false,
             menu_area: Rect::default(),
             menu_rows: Rect::default(),
             button: Rect::default(),
@@ -461,23 +442,12 @@ impl Screen {
         self.pane = match row {
             Some(row) if row.status == Status::Done => {
                 tracing::info!(file = row.name, "restored file viewed");
-                Some(Pane::new(read_lines(
-                    &self.root.join(&row.name),
-                    self.is_secret,
-                )))
+                Some(Pane::new(read_lines(&self.root.join(&row.name))))
             }
             _ => None,
         };
         if self.pane.is_none() && self.focus_on == Focus::File {
             self.focus_on = Focus::Menu;
-        }
-    }
-
-    /// Every shown secret hidden again (`s` and `a`), for the last frame.
-    fn conceal(&mut self) {
-        self.show_all = false;
-        if let Some(pane) = self.pane.as_mut() {
-            pane.revealed = false;
         }
     }
 
@@ -514,12 +484,15 @@ impl Screen {
     }
 
     fn review_key(&mut self, key: KeyEvent) -> Flow {
+        // `q` closes from any part; ← → and `h` `l` choose the previous
+        // and next file from any part, as the announcement viewer's (tui
+        // spec, "Keys: one map for every screen", rules 6 and 7).
         match key.code {
-            KeyCode::Char('a') => {
-                self.show_all = !self.show_all;
-                return Flow::Redraw;
+            KeyCode::Char('q') => return Flow::Quit,
+            KeyCode::Left | KeyCode::Char('h') => {
+                return self.move_menu(ListState::select_previous);
             }
-            KeyCode::Char('c') => return Flow::Quit,
+            KeyCode::Right | KeyCode::Char('l') => return self.move_menu(ListState::select_next),
             KeyCode::Tab => return self.cycle(1),
             KeyCode::BackTab => return self.cycle(-1),
             _ => {}
@@ -528,7 +501,7 @@ impl Screen {
             Focus::Menu => self.menu_key(key.code),
             Focus::File => self.file_key(key.code),
             Focus::Continue => match key.code {
-                KeyCode::Enter | KeyCode::Char(' ') => Flow::Quit,
+                KeyCode::Enter => Flow::Quit,
                 KeyCode::Esc => {
                     self.focus_on = Focus::Menu;
                     Flow::Redraw
@@ -540,12 +513,12 @@ impl Screen {
 
     fn menu_key(&mut self, code: KeyCode) -> Flow {
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => Flow::Quit,
+            KeyCode::Esc => Flow::Quit,
             KeyCode::Down | KeyCode::Char('j') => self.move_menu(ListState::select_next),
             KeyCode::Up | KeyCode::Char('k') => self.move_menu(ListState::select_previous),
             KeyCode::Home | KeyCode::Char('g') => self.move_menu(ListState::select_first),
             KeyCode::End | KeyCode::Char('G') => self.move_menu(ListState::select_last),
-            KeyCode::Enter | KeyCode::Right if self.pane.is_some() => {
+            KeyCode::Enter if self.pane.is_some() => {
                 self.focus_on = Focus::File;
                 Flow::Redraw
             }
@@ -554,7 +527,7 @@ impl Screen {
     }
 
     fn file_key(&mut self, code: KeyCode) -> Flow {
-        if matches!(code, KeyCode::Esc | KeyCode::Left) {
+        if code == KeyCode::Esc {
             self.focus_on = Focus::Menu;
             return Flow::Redraw;
         }
@@ -564,10 +537,6 @@ impl Screen {
         let screenful = usize::from(pane.inner.height.max(1));
         let at = pane.cursor;
         let to = match code {
-            KeyCode::Char('s') => {
-                pane.revealed = !pane.revealed;
-                return Flow::Redraw;
-            }
             KeyCode::Down | KeyCode::Char('j') => at.saturating_add(1),
             KeyCode::Up | KeyCode::Char('k') => at.saturating_sub(1),
             KeyCode::PageDown | KeyCode::Char(' ') => at.saturating_add(screenful),
@@ -871,9 +840,6 @@ impl Screen {
         };
         if why.is_none() {
             title.push(Span::styled("read-only ", self.style(Role::Muted)));
-            if self.show_all {
-                title.push(Span::styled("· secrets shown ", self.style(Role::Problem)));
-            }
         }
         let block = self
             .block(self.focus_on == Focus::File)
@@ -892,12 +858,10 @@ impl Screen {
         }
         let styles = PaneStyles {
             text: self.style(Role::Text),
-            mask: self.style(Role::Faint),
             cursor: (self.focus_on == Focus::File).then(|| split::selected(&self.theme)),
         };
-        let show_all = self.show_all;
         if let Some(pane) = self.pane.as_mut() {
-            pane.draw(frame, inner, &styles, show_all);
+            pane.draw(frame, inner, &styles);
         }
     }
 
@@ -925,21 +889,12 @@ impl Screen {
         .areas(bottom);
         self.button = button;
         frame.render_widget(Paragraph::new(Span::styled(label, style)), button);
-        let mut hints = vec![("↑↓", "move"), ("Tab", "menu, file, Continue")];
-        if self.focus_on == Focus::File {
-            hints.push(("s", "show the value"));
-        }
-        if self.pane.is_some() {
-            hints.push((
-                "a",
-                if self.show_all {
-                    "hide all"
-                } else {
-                    "show all"
-                },
-            ));
-        }
-        hints.push(("c", "continue"));
+        let hints = [
+            ("↑↓", "move"),
+            ("Tab", "menu, file, Continue"),
+            ("← →", "file"),
+            ("q", "quit"),
+        ];
         frame.render_widget(Paragraph::new(self.hints(&hints)), footer);
     }
 }
@@ -947,7 +902,6 @@ impl Screen {
 /// The styles a pane draws with.
 struct PaneStyles {
     text: Style,
-    mask: Style,
     /// The cursor's bar, when the content is focused.
     cursor: Option<Style>,
 }
@@ -959,16 +913,12 @@ struct PaneStyles {
 /// Why not ratatui's `List`, whose `ListState` keeps a selection in
 /// sight: its items don't wrap (ratatui-widgets 0.3.2's `reflow` is
 /// private), and a long value, an rclone token, must show whole. Why not
-/// ratatui-textarea's cursor: its mask covers the whole text, not one
-/// value on a line. tui-scrollview has no "scroll this into view", so
+/// ratatui-textarea's cursor: the pane is read-only. tui-scrollview has no "scroll this into view", so
 /// the offset is set from each line's rows (`ScrollViewState::set_offset`).
 struct Pane {
-    /// Each line, made safe, and where its secret value starts, if it
-    /// has one.
-    lines: Vec<(String, Option<usize>)>,
+    /// Each line, made safe.
+    lines: Vec<String>,
     cursor: usize,
-    /// `s`: the cursor line's value shows, until the cursor moves.
-    revealed: bool,
     scroll: ScrollViewState,
     /// Each line's first row and its row count, at the last draw.
     starts: Vec<u16>,
@@ -978,11 +928,10 @@ struct Pane {
 }
 
 impl Pane {
-    fn new(lines: Vec<(String, Option<usize>)>) -> Self {
+    fn new(lines: Vec<String>) -> Self {
         Self {
             lines,
             cursor: 0,
-            revealed: false,
             scroll: ScrollViewState::default(),
             starts: Vec::new(),
             heights: Vec::new(),
@@ -990,14 +939,9 @@ impl Pane {
         }
     }
 
-    /// The cursor on line `to` (clamped to the last); moving hides the
-    /// shown value.
+    /// The cursor on line `to` (clamped to the last).
     fn cursor_to(&mut self, to: usize) {
-        let to = to.min(self.lines.len().saturating_sub(1));
-        if to != self.cursor {
-            self.revealed = false;
-        }
-        self.cursor = to;
+        self.cursor = to.min(self.lines.len().saturating_sub(1));
     }
 
     /// The line drawn at `at`, by the last draw's rows.
@@ -1012,17 +956,9 @@ impl Pane {
             .position(|(start, height)| (*start..start.saturating_add(*height)).contains(&row))
     }
 
-    /// Line `index` as drawn: its secret value masked unless shown.
-    fn line(&self, index: usize, styles: &PaneStyles, show_all: bool) -> Line<'static> {
-        let (text, secret) = &self.lines[index];
-        let shown = show_all || (self.revealed && index == self.cursor);
-        let mut line = match secret {
-            Some(start) if !shown => Line::from(vec![
-                Span::styled(text[..*start].to_owned(), styles.text),
-                Span::styled(VALUE_MASK, styles.mask),
-            ]),
-            _ => Line::styled(text.clone(), styles.text),
-        };
+    /// Line `index` as drawn, the cursor's bar on it when focused.
+    fn line(&self, index: usize, styles: &PaneStyles) -> Line<'static> {
+        let mut line = Line::styled(self.lines[index].clone(), styles.text);
         if index == self.cursor
             && let Some(cursor) = styles.cursor
         {
@@ -1036,10 +972,10 @@ impl Pane {
     /// in sight. Each line's rows come from `Paragraph::line_count`
     /// (ratatui's `unstable-rendered-line-info`, ADR-001), measured again
     /// a column narrower when the scrollbar takes one.
-    fn draw(&mut self, frame: &mut Frame<'_>, inner: Rect, styles: &PaneStyles, show_all: bool) {
+    fn draw(&mut self, frame: &mut Frame<'_>, inner: Rect, styles: &PaneStyles) {
         self.inner = inner;
         let lines: Vec<Line<'static>> = (0..self.lines.len())
-            .map(|i| self.line(i, styles, show_all))
+            .map(|i| self.line(i, styles))
             .collect();
         let mut width = inner.width;
         let mut heights = measure(&lines, width);
@@ -1106,43 +1042,16 @@ fn field(masked: bool) -> TextArea<'static> {
 }
 
 /// `path`'s lines as the viewer shows them: each made safe (term-ui's
-/// `DisplayText`, colour off), with where its value starts when it is a
-/// secret by `is_secret`; a file that can't be read is one line saying
-/// why.
-fn read_lines(path: &Path, is_secret: fn(&str, &str) -> bool) -> Vec<(String, Option<usize>)> {
+/// `DisplayText`, colour off); a file that can't be read is one line
+/// saying why.
+fn read_lines(path: &Path) -> Vec<String> {
     match std::fs::read(path) {
         Ok(bytes) => DisplayText::from_bytes(&bytes, false)
             .lines()
-            .map(|line| {
-                let secret = secret_value(line, is_secret);
-                (line.to_owned(), secret)
-            })
+            .map(str::to_owned)
             .collect(),
-        Err(err) => vec![(format!("can't read the file: {err}"), None)],
+        Err(err) => vec![format!("can't read the file: {err}")],
     }
-}
-
-/// Where `line`'s value starts when it is a secret: the key is what comes
-/// before the first `:` or `=` (YAML's `key: value`, INI's and rclone's
-/// `key = value`), a list's `- ` and spaces trimmed; the value is what
-/// follows, its leading spaces kept in the shown part; `is_secret` decides
-/// on both. None when there is no key or no value, or it isn't secret.
-fn secret_value(line: &str, is_secret: fn(&str, &str) -> bool) -> Option<usize> {
-    // A bare value, a list item's or the line's, that is a secret itself
-    // (a URL with credentials, whose scheme's `:` isn't a key's).
-    let trimmed = line.trim_start();
-    let whole = trimmed.strip_prefix("- ").map_or(trimmed, str::trim_start);
-    if !whole.is_empty() && is_secret("", whole) {
-        return Some(line.len() - whole.len());
-    }
-    let split = line.find([':', '='])?;
-    let key = line[..split].trim().trim_start_matches('-').trim();
-    let rest = &line[split + 1..];
-    let value = rest.trim_start();
-    if key.is_empty() || value.is_empty() || !is_secret(key, value) {
-        return None;
-    }
-    Some(split + 1 + (rest.len() - value.len()))
 }
 
 impl App for Screen {

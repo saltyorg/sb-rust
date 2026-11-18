@@ -222,7 +222,6 @@ async fn on_screen(
         files: &FILES,
         root: root.to_path_buf(),
         base: base.to_owned(),
-        is_secret: sb_config::facts::secret::is_secret,
         theme: stdout_theme(),
     };
     let closed = sb_tui::restore::screen(shutdown, setup, prefill, |answers, updates| {
