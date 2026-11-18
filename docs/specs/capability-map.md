@@ -350,15 +350,17 @@ To discuss with the maintainer once every module is done, not before:
   maintainer, 2026-11-13). They stay as they are until then. With every
   command in place they are re-measured, and the maintainer decides how
   far they can be cut down. The fixed limits (the 10 ms startup budget,
-  the size ceiling) gate every change meanwhile. Last measured on main
-  at 90e9d4f (2026-11-17, glibc build), the way the gate and ADR-014
-  measure: coverage 98.51% of lines (69,601 of 70,657) and 97.67% of
-  functions (8,632 of 8,838) over `crates/`, production binary
-  20,307,264 bytes, `sb --help` median 3.99 ms and `sb version` 4.23 ms.
-  Timed side by side on one host and load, 90e9d4f's release build
-  starts in 4.11 ms (`--help`) and 4.47 ms (`version`) against
-  964f963's 2.57 ms and 2.96 ms. Measured before at the hardening
-  plan's Checkpoint B (2026-11-13, 964f963): 98.63% of lines, 98.119% of
+  the size ceiling) gate every change meanwhile. Last measured on the
+  finished tree, main at c5b79ca (2026-11-18, every module task merged,
+  glibc build), the way the gate and ADR-014 measure: coverage 98.40% of
+  lines (78,292 of 79,565) and 97.66% of functions (9,580 of 9,810) over
+  `crates/`, production binary 21,693,856 bytes, `sb --help` median
+  3.90 ms and `sb version` 4.19 ms. Timed side by side on one host and
+  load, c5b79ca's release build starts in 3.93 ms (`--help`) and 4.17 ms
+  (`version`) against 90e9d4f's 3.70 ms and 4.04 ms. Measured before on
+  main at 90e9d4f (2026-11-17): 98.51% of lines, 97.67% of functions,
+  20,307,264 bytes, `sb --help` 3.99 ms; and at the hardening plan's
+  Checkpoint B (2026-11-13, 964f963): 98.63% of lines, 98.119% of
   functions, 11,843,920 bytes, `sb --help` 2.30 ms. The rows' own
   figures came from older hardware.
 - **musl or glibc** (maintainer, 2026-11-13). glibc and musl builds of
