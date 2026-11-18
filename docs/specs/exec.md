@@ -483,7 +483,8 @@ let outcome = Cmd::new("systemctl")
    ansible run passes its own code through, with one line naming the
    program and its outcome (as sb-go's "playbook … failed, scroll up …"):
    `Ran::pass_through` (Task 8b) writes cli-core's error block for it (the
-   arguments masked) and returns cli-core's quiet `Exit` with the child's
+   arguments masked; no log pointer: the child's output is on the screen
+   and not in the run log, the maintainer, 2026-11-18) and returns cli-core's quiet `Exit` with the child's
    code, 128 plus a signal's number, or 1 for a timeout; an interrupted
    run returns a quiet `Exit(1)` with no line, so the command stops and
    cli-core ends sb by the signal.

@@ -373,7 +373,12 @@ SIGPIPE kills it.
 
 **Errors:** one block on stderr: `✗` and the message, each cause on its
 own line, then the log pointer (`details: /var/log/sb/sb.log (run <id>)`)
-when the run is logged. Error text can carry untrusted bytes (a file
+when the run is logged. One exception, chosen by the caller for that
+error (`exit::no_pointer`): a playbook that ran attached and failed (an
+`sb install` or `sb diag` run, an update's migration). Its output is on
+the screen above, and the run log doesn't have it, so the block has no
+pointer (the maintainer, 2026-11-18). A playbook that couldn't start
+keeps the pointer. Error text can carry untrusted bytes (a file
 name, a daemon's message), so every line of the block (the message, each
 cause, the pointer) and every `warning:` line goes through
 `exit::escaped`: its control characters, invisible and direction marks

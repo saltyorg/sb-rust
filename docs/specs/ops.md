@@ -712,7 +712,10 @@ permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
     path), then `All migrations completed successfully`. A failure:
     `failed to execute migration '<tag>' for <Repo> repository (to run
     by hand: sb install <tag>, sb install sandbox-<tag>, ...): ...`,
-    exit 1, the list naming it and the migrations after it. Ctrl-C
+    exit 1, the list naming it and the migrations after it. A playbook
+    that ran and failed has no `details:` line under it: its output is
+    above (cli-core, **Errors**; the maintainer, 2026-11-18); one that
+    couldn't start keeps it. Ctrl-C
     during one reaches Ansible, which exits 99: that failure, with its
     list. sb's own interrupt (SIGTERM, a hangup, Ctrl-C before a
     playbook starts or one it dies of): warning `Migrations interrupted;

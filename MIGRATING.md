@@ -78,7 +78,8 @@ completion files call a command sb doesn't have.
   a warning", and redaction is `[REDACTED]`.
 - **Announcements** join line breaks inside a paragraph, as Markdown does.
 - **Errors** go to stderr as a `✗` block, with a `details:` line pointing
-  at the run log.
+  at the run log. A failed playbook's block has none: Ansible's output
+  above it says what failed, as with sb-go.
 
 ## What's new
 

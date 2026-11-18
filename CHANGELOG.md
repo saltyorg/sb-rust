@@ -22,7 +22,8 @@ you could trip over.
   install script and Saltbox stay x86_64 only until then; a hand-installed
   arm64 sb updates itself on its channel.
 - **A run log,** `/var/log/sb/sb.log`, for every root run, with a run id in
-  each record and a pointer to it when a command fails.
+  each record and a pointer to it when a command fails (not under a
+  failed playbook, whose own output on the screen says why).
 - **A new log viewer** for `sb logs` and `sb docker logs`: one live picker
   for services and containers, search, wrap, mouse support, and saving
   the view to a file.

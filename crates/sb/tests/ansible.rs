@@ -220,6 +220,9 @@ fn a_failed_playbook_passes_its_code_through() {
             "{code}: {err}"
         );
         assert!(err.trim_end().ends_with(hint), "{code}: {err}");
+        // The playbook ran: the cause is on the screen above, so no
+        // run-log pointer (the maintainer, 2026-11-18).
+        assert!(!err.contains("details:"), "{code}: {err}");
         assert!(!stdout(&output).contains("executed successfully"));
         assert_eq!(world.runs().len(), 1);
     }
@@ -267,6 +270,9 @@ fn a_missing_program_is_a_spawn_error() {
         "{}",
         stderr(&output)
     );
+    // Ansible never ran, so nothing on the screen says why: the run log's
+    // pointer stays.
+    assert!(stderr(&output).contains("details: "), "{}", stderr(&output));
 }
 
 /// `diag` takes no arguments (sb-go's `cobra.NoArgs`): clap's usage

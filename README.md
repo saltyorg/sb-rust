@@ -102,6 +102,10 @@ full output is:
 details: /var/log/sb/sb.log (run 4f2a91c0d3b5e817)
 ```
 
+A failed Ansible playbook is the exception: its own output, on the screen
+above, says what failed (`Scroll up to the failed task to review.`), and
+sb's log doesn't have it.
+
 Secrets are masked in the log, as on screen. One exception: values given
 to `sb install -e` are shown and logged as typed (`-e @file` keeps them
 out). The log is readable by root only.

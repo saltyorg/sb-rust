@@ -548,6 +548,9 @@ fn a_failing_migration_exits_1_with_its_words() {
         ),
         "{stderr}"
     );
+    // The playbook ran and said why on the screen: no run-log pointer
+    // (the maintainer, 2026-11-18).
+    assert!(!stderr.contains("details:"), "{stderr}");
     assert_eq!(tag_runs(&world).len(), 1, "{:?}", world.host.calls());
     assert!(
         !stderr.contains("Validating Saltbox configuration"),

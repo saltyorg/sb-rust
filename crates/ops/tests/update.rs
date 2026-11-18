@@ -222,7 +222,14 @@ impl World {
         let asked = asked.lock().expect("asked").clone();
         let confirmed = confirmed.lock().expect("confirmed").clone();
         Ran {
-            error: result.err().map(|err| format!("{err:#}")),
+            error: result.as_ref().err().map(|err| format!("{err:#}")),
+            block: result.err().map(|err| {
+                sb_cli_core::exit::error_block(
+                    err.as_ref(),
+                    Some("POINTER"),
+                    &sb_cli_core::theme::Theme::plain(),
+                )
+            }),
             screen: term.contents(),
             requested: shutdown.requested(),
             asked,
@@ -236,6 +243,8 @@ impl World {
 /// lines the migrations wrote besides.
 struct Ran {
     error: Option<String>,
+    /// cli-core's error block for the error, with `POINTER` as the log's.
+    block: Option<String>,
     screen: String,
     requested: Option<u8>,
     asked: Vec<String>,
@@ -1191,6 +1200,11 @@ async fn a_failing_migration_stops_with_its_words() {
         "{error}"
     );
     assert!(error.contains("exited with code 2"), "{error}");
+    // The playbook ran: its output above says why, so the block has no log
+    // pointer (the maintainer, 2026-11-18).
+    let block = ran.block.expect("a block");
+    assert!(block.contains("exited with code 2"), "{block}");
+    assert!(!block.contains("POINTER"), "{block}");
     assert_eq!(tag_runs(&world).len(), 1, "{:?}", world.host.calls());
     assert!(
         !ran.lines.contains("All migrations completed"),

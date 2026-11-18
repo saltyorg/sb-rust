@@ -158,7 +158,11 @@ Steps, in sb-go's order (cmd/install.go:60-210):
      then sb prints `Scroll up to the failed task to review.` (sb-go's
      hint) and exits with Ansible's own code: 2 for a failed host, 4, 5,
      250 and so on; 128 plus the signal for a playbook killed by a signal
-     sb didn't receive.
+     sb didn't receive. The block has no `details:` line: the playbook
+     ran, and its output above says why, which sb's run log doesn't have
+     (decision 5; the maintainer, 2026-11-18). A playbook that couldn't
+     run at all (the program missing, a spawn failure, anything before
+     it started) is sb's own error block, with the run log's pointer.
 7. **Ctrl-C during a playbook:** the terminal delivers SIGINT to Ansible
    and sb, sb holds and waits (exec decision 2). Ansible prints "User
    interrupted execution" and exits 99, not by SIGINT, so by exec's rule

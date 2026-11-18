@@ -439,7 +439,13 @@ pub(crate) async fn run_pending(
             warn_unrun(lines, &left())?;
             return Err(Exit(1).into());
         }
-        let _ran = ran.check().with_context(context)?;
+        // It ran: Ansible's output above says why, so no log pointer
+        // (the maintainer, 2026-11-18). A playbook that couldn't start
+        // keeps it (the `?` on `run` above).
+        let _ran = ran
+            .check()
+            .map_err(exit::no_pointer)
+            .with_context(context)?;
         tracing::info!(repo = name, tag = %tag, "migration completed");
     }
     write(lines, "All migrations completed successfully")

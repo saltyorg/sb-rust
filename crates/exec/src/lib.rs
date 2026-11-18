@@ -478,7 +478,7 @@ impl Ran {
     /// run with no line (cli-core ends sb by the signal, its own block
     /// shown), else after one line on `out` naming the program and its
     /// outcome (cli-core's `report`, the arguments masked as in
-    /// [`Ran::check`]), with the child's own code, 128 plus a signal's
+    /// [`Ran::check`], no log pointer), with the child's own code, 128 plus a signal's
     /// number, or 1 for a timeout.
     ///
     /// # Errors
@@ -498,7 +498,10 @@ impl Ran {
         };
         if let Err(failed) = self.check() {
             // cli-core's error block and write (its own code, 1, isn't the
-            // one passed through).
+            // one passed through), with no run-log pointer: the child's
+            // output is on the terminal above and not in the run log (the
+            // maintainer, 2026-11-18). An attached child that couldn't
+            // start is the caller's error, and keeps the pointer.
             let _ = sb_cli_core::exit::report(&failed, None, out);
         }
         Err(sb_cli_core::exit::Exit(code))

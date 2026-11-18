@@ -87,10 +87,51 @@ pub fn finish_run(
 /// The error and its causes, outermost first. Why not `Error::sources()`:
 /// still unstable (`error_iter`); why not anyhow's `Chain`: cli-core takes
 /// any `std::error::Error` and doesn't depend on anyhow.
+/// A [`NoPointer`] is passed over for the error it wraps, so a quiet
+/// exit or a [`Sensitive`](crate::log::Sensitive) error under one is
+/// still found, and the lines shown are the same.
 pub fn chain<'a>(
     err: &'a (dyn Error + 'static),
 ) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
-    std::iter::successors(Some(err), |&e| e.source())
+    let unwrapped = |e: &'a (dyn Error + 'static)| match e.downcast_ref::<NoPointer>() {
+        Some(wrapper) => &*wrapper.0 as &(dyn Error + 'static),
+        None => e,
+    };
+    std::iter::successors(Some(unwrapped(err)), move |&e| e.source().map(unwrapped))
+}
+
+/// An error whose cause the user reads on the terminal already, so its
+/// block carries no log pointer: a playbook that ran attached and failed,
+/// its own output above the block (the maintainer, 2026-11-18). The
+/// caller chooses it for that one error, so every other failure keeps
+/// its `details:` line. It shows as the error it wraps (its message, then
+/// that error's causes): transparent, as thiserror's `#[error(transparent)]`
+/// is, written by hand because a boxed `dyn Error` isn't an `Error` itself.
+#[derive(Debug)]
+pub struct NoPointer(Box<dyn Error + Send + Sync + 'static>);
+
+impl std::fmt::Display for NoPointer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Error for NoPointer {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// `err` shown without the log pointer ([`NoPointer`]).
+#[must_use]
+pub fn no_pointer(err: impl Into<Box<dyn Error + Send + Sync + 'static>>) -> NoPointer {
+    NoPointer(err.into())
+}
+
+/// Whether `err`'s block leaves out the log pointer: a [`NoPointer`]
+/// anywhere in its chain.
+fn pointer_left_out(err: &(dyn Error + 'static)) -> bool {
+    std::iter::successors(Some(err), |&e| e.source()).any(<dyn Error>::is::<NoPointer>)
 }
 
 /// An error writing sb's own output (stdout or stderr). Commands wrap their
@@ -145,7 +186,7 @@ pub fn report(
 }
 
 /// The error block for `err` in `theme`: `✗` and the message, each cause on
-/// its own line, then the log pointer. Why not anyhow's `{:#}` or `{:?}`:
+/// its own line, then the log pointer (none for a [`NoPointer`]). Why not anyhow's `{:#}` or `{:?}`:
 /// one line, or numbered causes and a backtrace, neither the spec's format.
 pub fn error_block(
     err: &(dyn Error + 'static),
@@ -154,6 +195,7 @@ pub fn error_block(
 ) -> String {
     let mut lines = shown_chain(err).into_iter();
     let headline = lines.next().unwrap_or_default();
+    let log_pointer = log_pointer.filter(|_| !pointer_left_out(err));
     block(&headline, lines, log_pointer, theme)
 }
 
@@ -400,6 +442,28 @@ mod tests {
             text,
             "✗ step failed\n  details: /var/log/sb/sb.2026-10-30.log (run 1a2b3c4d)\n"
         );
+    }
+
+    /// A cause the user reads on the terminal (an attached playbook run's
+    /// own output, the maintainer's 2026-11-18 decision): the block names
+    /// it and its context, as any other, with no log pointer under it.
+    #[test]
+    fn a_cause_on_screen_has_no_log_pointer() {
+        let err = Failure {
+            message: "failed to execute migration 'a'",
+            cause: Some(Box::new(no_pointer(failure("tool exited with code 2")))),
+        };
+        let (text, code) = report_text(&err, Some("/var/log/sb/x.log (run 1)"));
+        assert_eq!(
+            text,
+            "✗ failed to execute migration 'a'\n  caused by: tool exited with code 2\n"
+        );
+        assert_eq!(code, ExitCode::from(1));
+        // The headline itself, too; and a quiet exit under it stays quiet.
+        let (text, _) = report_text(&no_pointer(failure("boom")), Some("/x (run 1)"));
+        assert_eq!(text, "✗ boom\n");
+        let (text, code) = report_text(&no_pointer(Exit(4)), Some("/x (run 1)"));
+        assert_eq!((text.as_str(), code), ("", ExitCode::from(4)));
     }
 
     /// A requested code (a child's own code, or "already shown") exits

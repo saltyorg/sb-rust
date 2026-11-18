@@ -163,8 +163,9 @@ impl Ansible {
 
 /// A run's ending passed on (spec, step 6 and decision 6): `Ok` for exit 0;
 /// otherwise exec's pass-through (one error block on `out` naming the
-/// command, as shown, and its ending; the child's own code, or 128 plus a
-/// signal's number), then sb-go's hint, `Scroll up to the failed task to
+/// command, as shown, and its ending, with no run-log pointer: Ansible's
+/// output above says why, the maintainer's 2026-11-18 decision; the
+/// child's own code, or 128 plus a signal's number), then sb-go's hint, `Scroll up to the failed task to
 /// review.`, or `Ansible was interrupted.` for Ansible's Ctrl-C code (99,
 /// step 7). A run sb's own signal ended prints nothing: cli-core shows the
 /// interruption and ends sb by the signal.
