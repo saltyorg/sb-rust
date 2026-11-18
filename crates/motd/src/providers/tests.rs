@@ -2,6 +2,7 @@
 //! "HTTP providers on `sb_config::testing::Fake`").
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use sb_config::http::Proxy;
@@ -370,4 +371,88 @@ async fn the_client_is_built_once() {
     let one = section(vec![with_token("Plex", "http://x", "t")]);
     let text = plex::plex(Some(&one), &broken, &Paint::plain()).await;
     assert_eq!(text, format!("Error: {why}"));
+}
+
+/// A client build begun by `start` runs on the blocking pool: it begins
+/// before any provider asks, a slow one holds up none of the runtime's
+/// other tasks, and the providers asking meanwhile share the one client
+/// it builds.
+#[tokio::test]
+async fn a_started_build_runs_beside_the_other_tasks() {
+    static BUILDS: AtomicUsize = AtomicUsize::new(0);
+    fn slow(proxy: &Proxy) -> Result<Http, String> {
+        BUILDS.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        build(proxy)
+    }
+    let shared = Shared::with_build(
+        Proxy::Off,
+        Instant::now() + crate::run::CAP,
+        Secrets::default(),
+        slow,
+    );
+    let started = std::time::Instant::now();
+    shared.start();
+    let ticker = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        started.elapsed()
+    });
+    let begun = tokio::time::timeout(Duration::from_secs(5), async {
+        while BUILDS.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    assert!(begun.await.is_ok(), "start began no build");
+    let (first, second) = tokio::join!(shared.client(), shared.client());
+    let other = ticker.await.unwrap();
+    assert!(other < Duration::from_millis(200), "{other:?}");
+    let first: *const reqwest::Client = first.unwrap();
+    let second: *const reqwest::Client = second.unwrap();
+    assert_eq!(first, second);
+    assert_eq!(BUILDS.load(Ordering::SeqCst), 1);
+}
+
+/// A client that can't be built fails each request that needs it, with
+/// the build's text, as before the build moved off the runtime.
+#[tokio::test]
+async fn a_client_that_cant_be_built_fails_the_requests() {
+    fn broken(_: &Proxy) -> Result<Http, String> {
+        Err("no roots".to_string())
+    }
+    let shared = Shared::with_build(
+        Proxy::Off,
+        Instant::now() + crate::run::CAP,
+        Secrets::default(),
+        broken,
+    );
+    shared.start();
+    assert_eq!(shared.client().await.unwrap_err(), "no roots");
+    let one = section(vec![with_token("Plex", "http://x", "t")]);
+    let text = plex::plex(Some(&one), &shared, &Paint::plain()).await;
+    assert_eq!(text, "Error: no roots");
+}
+
+/// A build that panics is each asking instance's error line, as a panic
+/// in the instance's own task is, from one build.
+#[tokio::test]
+async fn a_build_that_panics_is_the_instances_error() {
+    static BUILDS: AtomicUsize = AtomicUsize::new(0);
+    fn panics(_: &Proxy) -> Result<Http, String> {
+        BUILDS.fetch_add(1, Ordering::SeqCst);
+        panic!("build broke")
+    }
+    let shared = Shared::with_build(
+        Proxy::Off,
+        Instant::now() + crate::run::CAP,
+        Secrets::default(),
+        panics,
+    );
+    shared.start();
+    let one = section(vec![with_token("Plex", "http://x", "t")]);
+    let text = plex::plex(Some(&one), &shared, &Paint::plain()).await;
+    assert_eq!(text, "Error: panic: build broke");
+    let two = section(vec![with_token("Emby", "http://y", "t")]);
+    let text = emby::emby(Some(&two), &shared, &Paint::plain()).await;
+    assert_eq!(text, "Error: panic: build broke");
+    assert_eq!(BUILDS.load(Ordering::SeqCst), 1);
 }

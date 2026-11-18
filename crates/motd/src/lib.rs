@@ -129,6 +129,40 @@ impl Section {
         }
     }
 
+    /// The motd.yml apps its provider asks: the Arr apps for Download
+    /// Queues, its own for every other provider, none for the rest.
+    #[must_use]
+    pub(crate) fn apps(self) -> &'static [config::App] {
+        use config::App;
+        match self {
+            Section::Queues => &[App::Sonarr, App::Radarr, App::Lidarr, App::Readarr],
+            Section::Sabnzbd => &[App::Sabnzbd],
+            Section::Nzbget => &[App::Nzbget],
+            Section::Qbittorrent => &[App::Qbittorrent],
+            Section::Rtorrent => &[App::Rtorrent],
+            Section::Plex => &[App::Plex],
+            Section::Emby => &[App::Emby],
+            Section::Jellyfin => &[App::Jellyfin],
+            Section::Distribution
+            | Section::Kernel
+            | Section::Uptime
+            | Section::LoadAverages
+            | Section::Processes
+            | Section::Cpu
+            | Section::Gpu
+            | Section::Memory
+            | Section::Packages
+            | Section::Reboot
+            | Section::Sessions
+            | Section::LastLogin
+            | Section::Disk
+            | Section::Services
+            | Section::Docker
+            | Section::Traefik
+            | Section::Certificates => &[],
+        }
+    }
+
     /// The flag that selects it (`cmd/motd.go:68-100`), which is also its
     /// name in the run log; the Certificates line's run-log name, which
     /// `--traefik` selects.
@@ -412,9 +446,12 @@ pub async fn report_from(
     banner::check(&options.banner, &sources.banner)?;
     let file = banner::read_file(&options.banner)?;
     let tools = sources.banner.clone();
+    // Biased: the banner's child starts before `report_with` reads
+    // motd.yml (see there).
     let (drawn, lines) = tokio::join!(
+        biased;
         banner::draw(&options.banner, file, &tools),
-        report_with(chosen, colours, sources, load(), options.share),
+        report_with(chosen, colours, sources, load, options.share),
     );
     Ok(Report {
         text: drawn.text + &lines?,
@@ -437,15 +474,21 @@ pub struct Sources {
 /// The `Config:` line's key (Difference 2).
 const CONFIG_KEY: &str = "Config:";
 
-/// [`report`] with the sections chosen, their sources and motd.yml
-/// given, not read from the environment (the tests' fakes).
+/// [`report`] with the sections chosen, their sources and motd.yml's
+/// reader given, not read from the environment (the tests' fakes).
+/// motd.yml is read here, at the first poll, so `report_from`'s
+/// `tokio::join!` has started the banner's child first: it is `biased`,
+/// polling its futures in the order written, where by default it rotates
+/// which one goes first
+/// (<https://docs.rs/tokio/1.54.1/tokio/macro.join.html#fairness>).
 async fn report_with(
     chosen: Vec<Section>,
     colours: Colours<'_>,
     sources: Sources,
-    loaded: config::Loaded,
+    load: impl FnOnce() -> config::Loaded,
     share: bool,
 ) -> Result<String, Error> {
+    let loaded = load();
     let names: Vec<&str> = chosen.iter().map(|s| s.flag()).collect();
     tracing::info!(sections = names.join(","), "motd sections chosen");
     let motd_colours = loaded.motd.as_ref().map_or_default(|motd| motd.colours);
@@ -468,6 +511,9 @@ async fn report_with(
         Some(motd) => (motd.systemd.map(Arc::new), motd.apps),
         None => (None, std::collections::BTreeMap::new()),
     };
+    if asks_a_provider(&chosen, &apps) {
+        providers.start();
+    }
     let context = Context {
         paint,
         containers,
@@ -497,6 +543,26 @@ async fn report_with(
         }))
         .collect();
     Ok(layout::render(&lines, |key| paint.label(key)))
+}
+
+/// Whether a chosen section asks a provider: an app it reads is on in
+/// motd.yml with an instance on and a URL. Each provider also skips an
+/// instance without its credentials; this doesn't, so such a file builds
+/// a client that goes unused, as every run did before the client was
+/// built at its first request.
+fn asks_a_provider(
+    chosen: &[Section],
+    apps: &std::collections::BTreeMap<config::App, config::AppSection>,
+) -> bool {
+    chosen.iter().flat_map(|section| section.apps()).any(|app| {
+        apps.get(app).is_some_and(|section| {
+            section.enabled
+                && section
+                    .instances
+                    .iter()
+                    .any(|instance| instance.enabled && !instance.url.is_empty())
+        })
+    })
 }
 
 /// What the sections' jobs share: the paint, the one container listing,
@@ -819,7 +885,7 @@ esac"#,
             options.chosen().unwrap(),
             colours,
             sources,
-            config::Loaded::default(),
+            config::Loaded::default,
             false,
         )
         .await
@@ -879,15 +945,9 @@ esac"#,
             Section::Emby,
             Section::Jellyfin,
         ];
-        let text = report_with(
-            http,
-            colours,
-            kernel_only(),
-            config::Loaded::default(),
-            false,
-        )
-        .await
-        .unwrap();
+        let text = report_with(http, colours, kernel_only(), config::Loaded::default, false)
+            .await
+            .unwrap();
         assert_eq!(text, "\n");
     }
 
@@ -1061,7 +1121,7 @@ esac"#,
             theme: &theme,
             on: false,
         };
-        let shared = report_with(vec![Section::Plex], colours, kernel_only(), loaded(), true)
+        let shared = report_with(vec![Section::Plex], colours, kernel_only(), loaded, true)
             .await
             .unwrap();
         assert!(
@@ -1069,7 +1129,7 @@ esac"#,
                 .contains("via [HOST] at xxx.xxx.xxx.xxx and [xxxx:xxxx:xxxx:xxxx]:443 for [HOST]"),
             "{shared}"
         );
-        let plain = report_with(vec![Section::Plex], colours, kernel_only(), loaded(), false)
+        let plain = report_with(vec![Section::Plex], colours, kernel_only(), loaded, false)
             .await
             .unwrap();
         assert!(
@@ -1091,9 +1151,15 @@ esac"#,
             motd: None,
             line: Some("motd.yml has 2 issues; run sb validate-config".to_string()),
         };
-        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded, false)
-            .await
-            .unwrap();
+        let text = report_with(
+            vec![Section::Kernel],
+            colours,
+            kernel_only(),
+            || loaded,
+            false,
+        )
+        .await
+        .unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
@@ -1109,9 +1175,15 @@ esac"#,
             motd: None,
             line: Some("x".to_string()),
         };
-        let text = report_with(vec![Section::Kernel], colours, kernel_only(), loaded, false)
-            .await
-            .unwrap();
+        let text = report_with(
+            vec![Section::Kernel],
+            colours,
+            kernel_only(),
+            || loaded,
+            false,
+        )
+        .await
+        .unwrap();
         let paint = Paint::new(&theme, true);
         assert!(
             text.starts_with(&format!(
@@ -1161,9 +1233,15 @@ esac"#,
             motd: Some(motd),
             line: None,
         };
-        let text = report_with(vec![Section::Services], colours, sources(), loaded, false)
-            .await
-            .unwrap();
+        let text = report_with(
+            vec![Section::Services],
+            colours,
+            sources(),
+            || loaded,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             text,
             "Services:  Docker   failed\n           Rclone   inactive\n\n"
@@ -1172,9 +1250,15 @@ esac"#,
             motd: None,
             line: Some("x".to_string()),
         };
-        let text = report_with(vec![Section::Services], colours, sources(), loaded, false)
-            .await
-            .unwrap();
+        let text = report_with(
+            vec![Section::Services],
+            colours,
+            sources(),
+            || loaded,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(text, "Config:    x\nServices:  Docker   failed\n\n");
     }
 
@@ -1228,6 +1312,114 @@ esac"#,
             elapsed < std::time::Duration::from_millis(3500),
             "{elapsed:?}"
         );
+    }
+
+    /// The banner's toilet starts before motd.yml is read: the reading
+    /// stand-in waits up to 5 s for the toilet stand-in's mark, and sees
+    /// it.
+    #[tokio::test]
+    async fn the_banner_starts_before_the_config_is_read() {
+        let _spawns = packages::tests::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mark = dir.path().join("toilet-started");
+        let systemctl = dir.path().join("systemctl");
+        packages::tests::stand_in(&systemctl, "echo '[]'");
+        let toilet = dir.path().join("toilet");
+        packages::tests::stand_in(&toilet, &format!("touch '{}'; echo BANNER", mark.display()));
+        let theme = Theme::plain();
+        let colours = Colours {
+            theme: &theme,
+            on: false,
+        };
+        let options = Options {
+            sections: vec![Section::Services],
+            banner: banner::Banner {
+                title: "T".into(),
+                kind: "none".into(),
+                font: "ivrit".into(),
+                ..banner::Banner::default()
+            },
+            ..Options::default()
+        };
+        let sources = Sources {
+            docker: docker::Settings::default(),
+            systemd: Systemd::new().with_program(&systemctl),
+            banner: banner::Tools {
+                toilet,
+                ..banner::Tools::system()
+            },
+        };
+        let load = || {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !mark.exists() && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let seen = if mark.exists() {
+                "started"
+            } else {
+                "not started"
+            };
+            config::Loaded {
+                motd: None,
+                line: Some(format!("toilet {seen}")),
+            }
+        };
+        let report = report_from(&options, colours, sources, load).await.unwrap();
+        assert!(report.text.contains("toilet started\n"), "{}", report.text);
+    }
+
+    /// The providers' client is started early only when a chosen section
+    /// asks an app with an instance on and a URL.
+    #[test]
+    fn the_client_starts_for_a_chosen_configured_provider() {
+        use providers::tests::{instance, section};
+        let on = || section(vec![instance("x", "http://x")]);
+        let apps = |pairs: Vec<(config::App, config::AppSection)>| {
+            pairs
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let plex = apps(vec![(config::App::Plex, on())]);
+        assert!(asks_a_provider(&[Section::Plex], &plex));
+        assert!(asks_a_provider(&[Section::Services, Section::Plex], &plex));
+        assert!(!asks_a_provider(
+            &[Section::Services, Section::Docker],
+            &plex
+        ));
+        assert!(!asks_a_provider(&[Section::Emby], &plex));
+        let sonarr = apps(vec![(config::App::Sonarr, on())]);
+        assert!(asks_a_provider(&[Section::Queues], &sonarr));
+        assert!(!asks_a_provider(&[Section::Plex], &sonarr));
+        let readarr = apps(vec![(config::App::Readarr, on())]);
+        assert!(asks_a_provider(&[Section::Queues], &readarr));
+        let off = apps(vec![(
+            config::App::Plex,
+            config::AppSection {
+                enabled: false,
+                ..on()
+            },
+        )]);
+        assert!(!asks_a_provider(&[Section::Plex], &off));
+        let mut quiet = instance("x", "http://x");
+        quiet.enabled = false;
+        let no_url = instance("x", "");
+        let unusable = apps(vec![(config::App::Plex, section(vec![quiet, no_url]))]);
+        assert!(!asks_a_provider(&[Section::Plex], &unusable));
+        for (section, app) in [
+            (Section::Emby, config::App::Emby),
+            (Section::Jellyfin, config::App::Jellyfin),
+            (Section::Sabnzbd, config::App::Sabnzbd),
+            (Section::Nzbget, config::App::Nzbget),
+            (Section::Qbittorrent, config::App::Qbittorrent),
+            (Section::Rtorrent, config::App::Rtorrent),
+            (Section::Queues, config::App::Radarr),
+            (Section::Queues, config::App::Lidarr),
+        ] {
+            assert!(
+                asks_a_provider(&[section], &apps(vec![(app, on())])),
+                "{section:?}"
+            );
+        }
     }
 
     #[tokio::test]

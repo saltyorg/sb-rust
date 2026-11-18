@@ -6,7 +6,9 @@
 //! - Every request goes through the run's one `sb_config::http::Http`
 //!   (reqwest with rustls, no redirects followed, bodies read through
 //!   sb-config's 1 MiB cap; the torrent clients' data whole up to their
-//!   own caps), built when the first provider asks for it.
+//!   own caps), built once on the blocking pool, begun as the sections
+//!   start when one of them will ask (`Shared::start`), else at the
+//!   first provider's request.
 //! - Each instance is its own tokio task, so a panic in one is that
 //!   instance's error line
 //!   (<https://docs.rs/tokio/1.54.1/tokio/task/struct.JoinError.html#method.try_into_panic>).
@@ -45,21 +47,36 @@ use sb_config::http::{Http, Proxy};
 use tokio::sync::OnceCell;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
+use tracing::Instrument as _;
 
 use crate::Paint;
 use crate::config::{AppSection, Instance};
 use crate::redact::Secrets;
 use crate::text::{capped, first_line, one_line};
 
+/// How a run's client is built: [`build`], or the tests' stand-ins.
+type Build = fn(&Proxy) -> Result<Http, String>;
+
+/// The run's client with `proxy`, built now: reqwest's builder loads the
+/// platform's root certificates (sb-config's `Http::client`), several
+/// milliseconds of work that [`Shared::start`] moves off the runtime.
+fn build(proxy: &Proxy) -> Result<Http, String> {
+    let http = Http::new(proxy, DEFAULT_TIMEOUT)?;
+    http.client()?;
+    Ok(http)
+}
+
 /// sb-go's limit for one request when the instance sets none.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// What every provider of a run shares: the client, made once, the
-/// section's deadline and the credentials to hide. Its debug output
-/// names neither the proxy (its URL may carry a login) nor a credential.
+/// What every provider of a run shares: the client, made once on the
+/// blocking pool, the section's deadline and the credentials to hide.
+/// Its debug output names neither the proxy (its URL may carry a login)
+/// nor a credential.
 pub struct Shared {
     proxy: Proxy,
     http: OnceCell<Result<Http, String>>,
+    build: Build,
     /// The end of the sections' 30 s.
     pub deadline: Instant,
     pub secrets: Secrets,
@@ -75,26 +92,73 @@ impl std::fmt::Debug for Shared {
 }
 
 impl Shared {
-    /// A client to be built with `proxy` when first asked for.
+    /// A client to be built with `proxy` when [`Shared::start`] begins it
+    /// or a provider first asks for it.
     #[must_use]
     pub fn new(proxy: Proxy, deadline: Instant, secrets: Secrets) -> Arc<Self> {
+        Self::with_build(proxy, deadline, secrets, build)
+    }
+
+    /// [`Shared::new`] with its client built by `build`.
+    fn with_build(proxy: Proxy, deadline: Instant, secrets: Secrets, build: Build) -> Arc<Self> {
         Arc::new(Self {
             proxy,
             http: OnceCell::new(),
+            build,
             deadline,
             secrets,
         })
     }
 
+    /// Begins building the client, for a run whose providers will ask for
+    /// it, so the build runs while the other sections are collected.
+    /// Must be called inside the tokio runtime. The build is a task of its
+    /// own (`tokio::spawn`), filling the cell the providers wait on
+    /// (<https://docs.rs/tokio/1.54.1/tokio/sync/struct.OnceCell.html#method.get_or_init>:
+    /// a caller arriving during the build waits for it), so an instance
+    /// cancelled at its section's cap doesn't cancel the build for the
+    /// others.
+    pub fn start(self: &Arc<Self>) {
+        let shared = Arc::clone(self);
+        tokio::spawn(
+            async move {
+                shared.http().await;
+            }
+            .in_current_span(),
+        );
+    }
+
+    /// The run's client, or why it couldn't be built: built once, on the
+    /// blocking pool (`sb_cli_core::spawn::blocking`), so the runtime's
+    /// one thread runs the other sections meanwhile. A build that panics
+    /// is kept as the error `panic: <message>`
+    /// (`JoinError::try_into_panic`), the line each instance showed when
+    /// the build ran in its own task, now from one build. The other join
+    /// error, a cancelled build, needs the runtime shut down while a
+    /// section still waits, which `sb motd`'s run doesn't do.
+    async fn http(&self) -> &Result<Http, String> {
+        self.http
+            .get_or_init(|| async {
+                let proxy = self.proxy.clone();
+                let build = self.build;
+                match sb_cli_core::spawn::blocking(move || build(&proxy)).await {
+                    Ok(http) => http,
+                    Err(err) => match err.try_into_panic() {
+                        Ok(payload) => Err(format!(
+                            "panic: {}",
+                            crate::run::panic_message(Some(payload.as_ref()))
+                        )),
+                        Err(err) => Err(format!("failed to build client: {err}")),
+                    },
+                }
+            })
+            .await
+    }
+
     /// The run's client, built at the first request, or why it couldn't
     /// be.
     async fn client(&self) -> Result<&reqwest::Client, String> {
-        self.http
-            .get_or_init(|| async { Http::new(&self.proxy, DEFAULT_TIMEOUT) })
-            .await
-            .as_ref()
-            .map_err(Clone::clone)?
-            .client()
+        self.http().await.as_ref().map_err(Clone::clone)?.client()
     }
 
     /// One request's limit for `instance`: its `timeout` or sb-go's 1 s,
@@ -149,8 +213,8 @@ impl Shared {
         let Some(Ok(http)) = self.http.get() else {
             return text.to_string();
         };
-        // Built already: the cell is filled only by `Shared::client`,
-        // which builds the client then.
+        // Built already: the cell is filled only by `Shared::http`, whose
+        // build makes the client first.
         let Ok(client) = http.client() else {
             return text.to_string();
         };
