@@ -1549,8 +1549,26 @@ and `setup`, with a warning on failure.
 **Scope:** S
 
 ## Checkpoint C: completion
-- [ ] M57-M60 merged; `check.sh full`; the shell containers pass.
-- [ ] Look: covered by the proto-complete review that unpaused it.
+- [x] M57-M60 merged; `check.sh full`; the shell containers pass. Done:
+      full passed on main's tree at 5ddc2d0 (2026-11-18): every step over
+      the whole workspace, 3501 tests, startup medians 3.95 ms (`--help`)
+      and 4.31 ms (`version`), size 21693856 bytes, `sb version` in
+      22.04, 24.04 and 26.04 (no base, so changed-line coverage and
+      mutation had no changed code to check; each task was mutated in
+      its own gate on the way in). shells.sh passed on 22.04, 24.04 and
+      26.04 with that commit's debug build: 58 cases per release (19 per
+      shell in bash with bash-completion, zsh and fish, the first Tab of
+      each and the symlink name among them, plus zsh's dump rebuilt
+      after a completion, which keeps `'sb' '_sb'`). Item 6 re-measured:
+      a bash Tab-time request for `sb install tag2` against 300 Saltbox
+      and 100 Sandbox tags took 3.2 ms mean (± 0.2), against 4.3 ms for
+      `sb version` (release build, hyperfine -N, 50 runs; budget 10 ms).
+- [ ] Look: the maintainer's own test of sb's completion in their shells,
+      once the CLI is complete (they unpaused completion on that basis on
+      2026-11-17, in place of the proto-complete review this box named).
+      Verification item 1's upstream note is clap-rs/clap#6566, already
+      reported; a comment for it is drafted, not posted (a remote action
+      for the maintainer).
 
 ---
 
