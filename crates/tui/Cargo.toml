@@ -40,6 +40,9 @@ ansi-to-tui.workspace = true
 # Announcements' Markdown, the inline form (tui spec, Scope; ops spec,
 # "Shown"), with syntect's code highlighting (CONSTRAINTS.md E1).
 tui-markdown.workspace = true
+# The announcement check's Markdown problems (ops decision 35): the
+# parser tui-markdown renders with, its events and broken-link callback.
+pulldown-cmark.workspace = true
 # The announcement viewer's pane (tui spec, "The announcement viewer").
 tui-scrollview.workspace = true
 # sb restore's answers, cleared on drop (ops decision 10).

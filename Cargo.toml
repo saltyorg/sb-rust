@@ -157,6 +157,10 @@ ansi-to-tui = "8.0.1"
 # decision 8). Its default `highlight-code` feature (syntect) stays on:
 # YAML highlighting in announcements, CONSTRAINTS.md exception E1.
 tui-markdown = "0.3.12"
+# The announcement check's Markdown events (ops decision 35): tui-markdown's
+# own parser at its version, already in the tree through it (its features
+# are tui-markdown's, which takes the defaults).
+pulldown-cmark = { version = "0.13.6", default-features = false }
 # The fact editor's dialogs (ratatui org; tui spec, editors, Tech Stack;
 # proto-facts' verdict).
 tui-popup = "0.7.7"

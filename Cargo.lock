@@ -3841,6 +3841,7 @@ dependencies = [
  "insta",
  "jiff",
  "portable-pty",
+ "pulldown-cmark",
  "ratatui",
  "ratatui-core",
  "ratatui-textarea",

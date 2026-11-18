@@ -152,6 +152,107 @@ fn sanitized(message: &str) -> String {
     clean
 }
 
+/// What an announcement's Markdown can't show as its author meant
+/// (ops decision 35, `sb announcements check`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Problem {
+    /// HTML, a block or inline: tui-markdown shows it as text. The HTML,
+    /// its first line, cut to 40 characters.
+    Html(String),
+    /// A reference link (`[text][label]`, `[label][]`) whose label the
+    /// message doesn't define: shown as its brackets. The label. A
+    /// shortcut (`[label]` alone) isn't one: it is prose as often.
+    UndefinedLink(String),
+}
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Html(html) => write!(f, "`message` has HTML, which sb shows as text: '{html}'"),
+            Self::UndefinedLink(label) => {
+                write!(f, "`message` links to '[{label}]', which it doesn't define")
+            }
+        }
+    }
+}
+
+/// The [`Problem`]s of `message`, in its order: parsed as tui-markdown
+/// parses it (its `from_str_with_options` options, tui-markdown 0.3.12
+/// `renderer/mod.rs`), after the same sanitizing, with pulldown-cmark's
+/// events for HTML and its broken-link callback for undefined references
+/// (<https://docs.rs/pulldown-cmark/0.13.6/pulldown_cmark/struct.Parser.html#method.new_with_broken_link_callback>).
+/// HTML inside a code span or block is code, not HTML, and isn't one.
+#[must_use]
+pub fn problems(message: &str) -> Vec<Problem> {
+    use pulldown_cmark::{BrokenLink, Event, LinkType, Options as Parse, Parser, Tag};
+    let message = sanitized(message);
+    // tui-markdown's options, to re-sync when it is bumped.
+    let mut options = Parse::empty();
+    for option in [
+        Parse::ENABLE_STRIKETHROUGH,
+        Parse::ENABLE_TASKLISTS,
+        Parse::ENABLE_HEADING_ATTRIBUTES,
+        Parse::ENABLE_YAML_STYLE_METADATA_BLOCKS,
+        Parse::ENABLE_SUPERSCRIPT,
+        Parse::ENABLE_SUBSCRIPT,
+        Parse::ENABLE_MATH,
+        Parse::ENABLE_FOOTNOTES,
+        Parse::ENABLE_DEFINITION_LIST,
+        Parse::ENABLE_GFM,
+        Parse::ENABLE_TABLES,
+    ] {
+        options.insert(option);
+    }
+    let undefined = std::cell::RefCell::new(Vec::new());
+    // A shortcut (`[beta]` alone) is prose as often as a link, and
+    // tui-markdown shows it as written: only `[text][label]` and
+    // `[label][]` name a definition the message lacks.
+    let callback = |link: BrokenLink<'_>| {
+        if matches!(
+            link.link_type,
+            LinkType::Shortcut | LinkType::ShortcutUnknown
+        ) {
+            return None;
+        }
+        undefined.borrow_mut().push((
+            link.span.start,
+            Problem::UndefinedLink(link.reference.to_string()),
+        ));
+        None
+    };
+    let mut found: Vec<(usize, Problem)> = Vec::new();
+    for (event, range) in
+        Parser::new_with_broken_link_callback(&message, options, Some(callback)).into_offset_iter()
+    {
+        match event {
+            // A block, one problem: pulldown-cmark wraps its lines' `Html`
+            // events in `HtmlBlock`, its range the whole block.
+            Event::Start(Tag::HtmlBlock) => {
+                let block = message.get(range.clone()).unwrap_or_default();
+                found.push((range.start, Problem::Html(snippet(block))));
+            }
+            Event::InlineHtml(html) => found.push((range.start, Problem::Html(snippet(&html)))),
+            _ => {}
+        }
+    }
+    found.extend(undefined.into_inner());
+    found.sort_by_key(|(at, _)| *at);
+    found.into_iter().map(|(_, problem)| problem).collect()
+}
+
+/// `html`'s first line, trimmed, cut to 40 characters (the spec's length,
+/// in characters: a problem line's quote, not a column layout; why not
+/// console's `truncate_str`, which counts width: sb-tui doesn't depend on
+/// console, and the cut needs no width here).
+fn snippet(html: &str) -> String {
+    let line = html.lines().next().unwrap_or_default().trim();
+    let mut cut: String = line.chars().take(40).collect();
+    if line.chars().count() > 40 {
+        cut.push('…');
+    }
+    cut
+}
+
 /// `message` as the announcement viewer draws it (tui spec, "The
 /// announcement viewer"): sanitized and rendered as the inline form
 /// (the palette's sheet; tui-markdown's own sheet, markers and fences
@@ -657,5 +758,46 @@ mod tests {
             assert!(style.add_modifier.contains(Modifier::ITALIC), "{style:?}");
         }
         assert!(sheet.link().add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    /// HTML, a block (one problem for its lines) and inline, and an
+    /// undefined reference link are problems, in the message's order;
+    /// HTML in code, a defined reference, a plain link and autolinks
+    /// aren't.
+    #[test]
+    fn the_markdown_problems() {
+        assert_eq!(
+            problems(
+                "Text <b>bold</b> and [docs][guide].\n\n<div>\nraw\n</div>\n\nAlso [missing][], not [beta]."
+            ),
+            vec![
+                Problem::Html("<b>".to_owned()),
+                Problem::Html("</b>".to_owned()),
+                Problem::UndefinedLink("guide".to_owned()),
+                Problem::Html("<div>".to_owned()),
+                Problem::UndefinedLink("missing".to_owned()),
+            ]
+        );
+        assert_eq!(
+            problems(
+                "`<b>` in code, [defined][d], [plain](https://example.com), \
+                 <https://example.com>.\n\n```html\n<div></div>\n```\n\n[d]: https://example.com\n"
+            ),
+            Vec::<Problem>::new()
+        );
+        assert_eq!(
+            Problem::Html("<b>".to_owned()).to_string(),
+            "`message` has HTML, which sb shows as text: '<b>'"
+        );
+        assert_eq!(
+            Problem::UndefinedLink("guide".to_owned()).to_string(),
+            "`message` links to '[guide]', which it doesn't define"
+        );
+        let long = format!("<p class=\"{}\">", "x".repeat(60));
+        let Some(Problem::Html(shown)) = problems(&long).into_iter().next() else {
+            panic!("no problem for {long}");
+        };
+        assert_eq!(shown.chars().count(), 41, "{shown}");
+        assert!(shown.ends_with('…'), "{shown}");
     }
 }
