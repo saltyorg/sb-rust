@@ -1553,6 +1553,14 @@ fn long_tail(n: u64) -> Event {
 /// 240×70: the entries measured, the texts built, and the time taken (a
 /// key's handling, paging requests included, and its frame).
 fn frame_costs(n: u64) -> Vec<(usize, usize, std::time::Duration)> {
+    frame_costs_searching(n, false)
+}
+
+/// [`frame_costs`], with a whole-log search reading when `searching`:
+/// 9,999 matches outside the buffer known and the progress in the
+/// header, its query matching none of the buffer (tui spec, "Whole-log
+/// search", "Frame budget").
+fn frame_costs_searching(n: u64, searching: bool) -> Vec<(usize, usize, std::time::Duration)> {
     // Room for every record: the cap by bytes would drop most of them.
     let limits = Limits {
         entries: 20_000,
@@ -1560,6 +1568,28 @@ fn frame_costs(n: u64) -> Vec<(usize, usize, std::time::Duration)> {
     };
     let mut h = open(240, 70, limits);
     h.send(long_tail(n));
+    if searching {
+        h.requests();
+        h.search("no such text");
+        let id = searches(&h.requests()).0[0].id;
+        // One short of the cap, so the side still reads.
+        let older: Vec<u64> = (1..crate::source::MATCHES as u64)
+            .map(|i| 1_000_000 + i)
+            .collect();
+        h.send(Event::Found {
+            search: id,
+            side: Side::Older,
+            order: Order::NearestFirst,
+            found: found_at(&older),
+            reached: Some(Timestamp::now() - jiff::SignedDuration::from_hours(49)),
+            end: None,
+        });
+        assert!(
+            h.header().contains("searching… 2 days back"),
+            "{}",
+            h.header()
+        );
+    }
     let keys = [
         // Following at the bottom, the layout changed (`t` off, on).
         KeyCode::Char('t'),
@@ -1883,6 +1913,19 @@ fn a_frames_cost_doesnt_grow_with_the_buffer() {
     times.sort();
     eprintln!(
         "frame cost at 240x70, 20,000 records: median {:?}, slowest {:?}",
+        times[times.len() / 2],
+        times[times.len() - 1]
+    );
+    // While a whole-log search reads, each frame does the same work, and
+    // the header's count and progress cost a look at the matches.
+    let searching = frame_costs_searching(20_000, true);
+    assert_eq!(counts(&searching), counts(&big));
+    assert_eq!(builds(&searching), builds(&big));
+    let mut times: Vec<_> = searching.iter().map(|(_, _, time)| *time).collect();
+    eprintln!("frame cost at 240x70, 20,000 records, searching, by key: {times:?}");
+    times.sort();
+    eprintln!(
+        "frame cost at 240x70, 20,000 records, searching: median {:?}, slowest {:?}",
         times[times.len() / 2],
         times[times.len() - 1]
     );
@@ -2750,21 +2793,6 @@ fn the_header_shows_how_the_search_stands() {
         Some(SearchEnd::Done),
     ));
     assert!(h.header().contains("/zz no matches"), "{}", h.header());
-}
-
-/// `t` changes what the match covers: the search counts again and
-/// reads the log again, the view kept.
-#[test]
-fn t_starts_the_search_again() {
-    let mut h = open(60, 8, Limits::default());
-    h.requests();
-    h.send(tail(40..50, true));
-    h.search("m4");
-    let first = searches(&h.requests()).0[0].id;
-    h.key(KeyCode::Char('t'));
-    let (asked, stops) = searches(&h.requests());
-    assert_eq!((asked.len(), stops), (1, 1));
-    assert_eq!(asked[0].id, first + 1);
 }
 
 /// While following, the follow's new matches join the count.

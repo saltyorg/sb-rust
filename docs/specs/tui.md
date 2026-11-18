@@ -876,8 +876,11 @@ does on main (measured, "Testing").
   match, as today.
 - **Cancelling.** Esc clears the search and stops its read, as it
   clears the highlight today. A new query replaces the search and its
-  read. `t` (time and origin, which the match covers) restarts it.
-  Leaving the source stops it.
+  read. Leaving the source stops it. `t` doesn't search again, as today:
+  the match is of the line as shown when the search started, and Enter
+  searches again. Counting the buffer again at `t` took 1.4 s on
+  20,000 records of 5,000 characters (the frame-cost timing), where `t`
+  costs 3 ms today.
 - **Save (`s`) and print (`p`) cover the whole log,** oldest line
   first, written as the source reads it and never held whole in memory:
   - Save writes the same plain file as today (name, mode,
@@ -951,16 +954,17 @@ screen runs between them.
 - **Viewer tests** (fake source, `testing`): `n` and `N` across the
   unloaded part in both directions, the `Around` page and the buffer
   starting again, the wait for a match not yet read and its cancel,
-  the cap, Esc and a new query stopping the read, `t` restarting it,
-  following while searching, and the header's forms.
+  the cap, Esc and a new query stopping the read, following while
+  searching, and the header's forms.
 - **Frame cost:** the frame-cost test (lines measured per frame) runs
   with a search going and stays flat. The release timing at 240×70
   (size ADR) is taken before and after the change, with and without a
   search, and both are recorded. No-search frames must not get slower.
-- **PTY tests:** `sb logs` on the journal fixture in a pseudo-terminal:
-  search, `N` to a match outside the window, the header's progress,
-  Esc; `s` and `p` on a log above the 256 MiB cap's test value (the cap
-  is a constant the test build lowers).
+- **PTY tests:** `sb logs` on a journal fixture of 3,000 entries in a
+  pseudo-terminal: search, `N` to a match 2,900 entries outside the
+  window, its number, Esc; `s` and `p` writing all 3,000 lines. The
+  cap is tested in the adapters' tests, with a small cap, not through
+  the binary.
 - **Save and print:** the whole log in order, the cut at the cap keeping
   the newest, Esc during a save, a read error halfway.
 

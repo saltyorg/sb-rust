@@ -1297,25 +1297,6 @@ impl Viewer {
         }));
     }
 
-    /// The search counted again (after `t`), the view and the current
-    /// match kept where they can be, and its whole-log read started
-    /// again.
-    fn recount(&mut self) {
-        self.total = 0;
-        let (format, query) = (&self.format, &self.query);
-        for entry in &mut self.entries {
-            if let Entry::Line(line, hits, _) = entry {
-                *hits = line::hits(line, format, query);
-                self.total += *hits;
-            }
-        }
-        self.current = self.current.and_then(|(entry, k)| {
-            let hits = self.hits_in(entry);
-            (hits > 0).then(|| (entry, k.min(hits - 1)))
-        });
-        self.start_whole();
-    }
-
     /// The whole-log search ends: its read stops, and a jump waiting or
     /// asked for is dropped.
     fn stop_whole(&mut self) {
@@ -1698,11 +1679,6 @@ impl Viewer {
             KeyCode::Char('t') => {
                 self.format.meta = !self.format.meta;
                 self.clamp_anchor();
-                // The match covers the time and origin: the search counts
-                // again on what the screen shows now, the view kept.
-                if !self.query.is_empty() {
-                    self.recount();
-                }
             }
             KeyCode::Esc => {
                 self.leave = Some(Leave::Back);

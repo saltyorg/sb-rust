@@ -48,6 +48,7 @@ const UNIT_FILES: &str = r#"[
 trait Journal {
     fn write_journal(&self);
     fn append(&self);
+    fn write_long_journal(&self, n: usize);
 }
 
 impl Journal for World {
@@ -76,6 +77,35 @@ impl Journal for World {
                 b"SYSLOG_PID=42",
             ],
         ];
+        journal_file(&self.journal().join("system.journal"), 1, &entries);
+    }
+
+    /// `APP`'s journal of `n` entries, `line 0` on, with `the needle
+    /// here` as entry 100's message: far outside the 500 lines a viewer
+    /// loads.
+    fn write_long_journal(&self, n: usize) {
+        let unit = format!("_SYSTEMD_UNIT={APP}.service");
+        let messages: Vec<String> = (0..n)
+            .map(|i| {
+                if i == 100 {
+                    "MESSAGE=the needle here".to_string()
+                } else {
+                    format!("MESSAGE=line {i}")
+                }
+            })
+            .collect();
+        let payloads: Vec<[&[u8]; 4]> = messages
+            .iter()
+            .map(|m| {
+                [
+                    m.as_bytes(),
+                    unit.as_bytes(),
+                    b"SYSLOG_IDENTIFIER=app".as_slice(),
+                    b"SYSLOG_PID=42".as_slice(),
+                ]
+            })
+            .collect();
+        let entries: Vec<&[&[u8]]> = payloads.iter().map(<[&[u8]; 4]>::as_slice).collect();
         journal_file(&self.journal().join("system.journal"), 1, &entries);
     }
 
@@ -655,4 +685,37 @@ fn s_saves_the_loaded_lines_in_the_log_directory() {
     assert!(log.contains("log saved"), "{log}");
     assert!(log.contains("lines=3"), "{log}");
     assert!(!log.contains(MARKER), "{log}");
+}
+
+/// The whole-log search on a PTY (tui spec, "Whole-log search, save and
+/// print"): a match far outside the loaded lines is found, `N` loads its
+/// surroundings and shows it, numbered; Esc clears the search.
+#[test]
+fn a_search_reaches_a_match_outside_the_loaded_lines() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_long_journal(3_000);
+    let mut pty = Pty::spawn(&["logs"], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    pty.send(b"jj\r");
+    assert!(pty.showing("app[42]: line 2999"), "{}", pty.contents());
+    assert!(!pty.contents().contains("the needle here"));
+    pty.send(b"/needle\r");
+    // Read to the start of the log: one match, none current.
+    assert!(pty.showing("/needle -/1"), "{}", pty.contents());
+    pty.send(b"N");
+    assert!(
+        pty.showing("app[42]: the needle here"),
+        "{}",
+        pty.contents()
+    );
+    assert!(pty.showing("/needle 1/1"), "{}", pty.contents());
+    assert!(!pty.contents().contains("following"), "{}", pty.contents());
+    pty.send(b"\x1b");
+    assert!(pty.showing("/ search"), "{}", pty.contents());
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    let log = world.log();
+    assert!(log.contains("journal search started"), "{log}");
+    assert!(!log.contains("needle"), "{log}");
 }
