@@ -105,6 +105,9 @@ mod tests {
     fn the_commands_are_sb_gos_but_install_and_setup() {
         let mut theirs: Vec<String> = SB_GO_TREE
             .lines()
+            // Flag lines only: the fixture also has `default` lines
+            // (the contract's defaults), whose fourth field is the name too.
+            .filter(|line| line.starts_with("flag\t"))
             .filter(|line| line.split('\t').nth(3) == Some("verbose"))
             .filter(|line| {
                 !line.starts_with("flag\tsb install\t") && !line.starts_with("flag\tsb setup\t")
