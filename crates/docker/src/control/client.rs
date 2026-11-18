@@ -1,7 +1,9 @@
 //! Asking the controller for a job and waiting for it (sb-go's
 //! `requestDockerJob`, `waitForJobCompletion` and `getJobStatus`).
 
-use super::{Action, ControlError, Controller, Job};
+use std::time::Duration;
+
+use super::{Action, ControlError, Controller, FailedContainer, Failure, Job};
 
 /// How many failed polls in a row the wait rides out before it gives up
 /// (docker spec decision 10; docker-M2): a poll that can't reach the
@@ -10,8 +12,8 @@ use super::{Action, ControlError, Controller, Job};
 /// (docker-L4), a moment of load. Three that fail at once take 10 s (two
 /// 5 s intervals between them); three that time out take 40 s (three
 /// 10 s request limits and the two intervals): long enough to mean the
-/// controller is gone or stuck, short beside the 295 s wait. Counted
-/// toward the polls, so the wait's length is unchanged.
+/// controller is gone or stuck, short beside the wait's 300 s or 600 s.
+/// They don't lengthen the wait: its limit is one of time.
 pub(super) const FAILED_POLLS_IN_A_ROW: u32 = 3;
 
 impl Controller {
@@ -55,64 +57,35 @@ impl Controller {
         match answer.and_then(|a| a.job_id) {
             Some(id) if !id.trim().is_empty() => {
                 tracing::info!(job = %sb_cli_core::config::escape_controls(&id), "controller job");
-                Ok(Job { id })
+                Ok(Job { id, action })
             }
             _ => Err(ControlError::MissingJobId),
         }
     }
 
-    /// Wait for `job` to end (sb-go's `waitForJobCompletion`): its status
-    /// asked at once, then every `poll_interval`, at most `max_polls`
-    /// times, with no sleep after the last. Cancelled by dropping the
-    /// future (the step's token, `run_until_cancelled`:
+    /// Wait for `job` to end (sb-go's `waitForJobCompletion`, for as long
+    /// as the controller gives the job and its ending:
+    /// [`Controller::window`]): its status asked at once, then every
+    /// `poll_interval` ([`wait_until`]). Cancelled
+    /// by dropping the future (the step's token, `run_until_cancelled`:
     /// <https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled>).
-    /// Why not `tokio::time::interval`: its period runs from the tick,
-    /// where sb-go's timer starts after each answer. Each status goes to
-    /// the run log.
+    /// Each status goes to the run log.
     ///
     /// # Errors
     ///
-    /// The [`ControlError`] that ended the wait: the job failed, an
-    /// unknown status, the last of [`FAILED_POLLS_IN_A_ROW`] failed polls
-    /// (or a failed last poll), or the last poll still pending or running.
+    /// The [`ControlError`] that ended the wait: the job failed (with what
+    /// the controller said of it), an unknown status, the last of
+    /// [`FAILED_POLLS_IN_A_ROW`] failed polls (or a failed last poll), or
+    /// the job still pending or running at the limit.
     pub async fn wait(&self, job: &Job) -> Result<(), ControlError> {
         let url = self.url(&["job_status", job.id()])?;
-        let mut failed = 0;
-        for poll in 1..=self.max_polls {
-            let status = match self.status(url.clone(), job).await {
-                Ok(status) => {
-                    failed = 0;
-                    status
-                }
-                // A few failed polls in a row are ridden out (docker spec
-                // decision 10).
-                Err(err) => {
-                    failed += 1;
-                    if failed >= FAILED_POLLS_IN_A_ROW || poll == self.max_polls {
-                        return Err(err);
-                    }
-                    let error: &(dyn std::error::Error + 'static) = &err;
-                    tracing::warn!(error, failed, "job status poll failed; asking again");
-                    tokio::time::sleep(self.poll_interval).await;
-                    continue;
-                }
-            };
-            match status.as_str() {
-                "completed" => return Ok(()),
-                "failed" => return Err(ControlError::JobFailed),
-                "pending" | "running" if poll < self.max_polls => {
-                    tokio::time::sleep(self.poll_interval).await;
-                }
-                "pending" | "running" => {}
-                other => return Err(ControlError::UnknownStatus(other.to_string())),
-            }
-        }
-        Err(ControlError::Timeout)
+        let window = self.window(job.action());
+        wait_until(window, self.poll_interval, || self.status(url.clone(), job)).await
     }
 
     /// One poll (sb-go's `getJobStatus`): the job's status, escaped for
     /// the log and the screen.
-    async fn status(&self, url: reqwest::Url, job: &Job) -> Result<String, ControlError> {
+    async fn status(&self, url: reqwest::Url, job: &Job) -> Result<Polled, ControlError> {
         let response = self
             .http
             .get(url)
@@ -131,15 +104,23 @@ impl Controller {
             .map_err(ControlError::DecodeStatus)?;
         let answer: Option<StatusAnswer> =
             first_value(&body).map_err(ControlError::DecodeStatus)?;
-        match answer.and_then(|a| a.status) {
+        let Some(answer) = answer else {
+            return Err(ControlError::MissingStatus);
+        };
+        match answer.status.as_deref() {
             Some(status) if !status.is_empty() => {
-                let status = sb_cli_core::config::escape_controls(&status);
+                let status = sb_cli_core::config::escape_controls(status);
                 tracing::info!(
                     job = %sb_cli_core::config::escape_controls(job.id()),
                     status = %status,
                     "job status"
                 );
-                Ok(status)
+                Ok(match status.as_str() {
+                    "completed" => Polled::Completed,
+                    "failed" => Polled::Failed(answer.failure()),
+                    "pending" | "running" => Polled::Waiting,
+                    _ => Polled::Unknown(status),
+                })
             }
             _ => Err(ControlError::MissingStatus),
         }
@@ -185,10 +166,142 @@ struct JobAnswer {
     job_id: Option<String>,
 }
 
-/// The status answer's one field sb reads.
+/// What one poll said of the job.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Polled {
+    Completed,
+    Failed(Failure),
+    /// `pending` or `running`.
+    Waiting,
+    /// Another status, escaped.
+    Unknown(String),
+}
+
+/// The wait's schedule, over `poll` (one status each call): the first at
+/// once, then one `interval` after each answer, the last one when `limit`
+/// has passed since the wait began (the sleep before it cut short), so
+/// a job is asked about up to its limit and no longer (docker spec
+/// decision 12); no sleep after the last. A few failed polls in a row are
+/// ridden out (decision 10). The time is tokio's, so a test's paused
+/// clock runs it (<https://docs.rs/tokio/1.54.1/tokio/time/fn.pause.html>).
+/// Why not `tokio::time::interval`: its period runs from the tick, where
+/// sb-go's timer starts after each answer. Why not `tokio::time::timeout_at`
+/// around the loop: it would drop a poll in flight at the limit, where the
+/// last poll's own answer ends the wait.
+pub(super) async fn wait_until<F, P>(
+    limit: Duration,
+    interval: Duration,
+    mut poll: F,
+) -> Result<(), ControlError>
+where
+    F: FnMut() -> P,
+    P: Future<Output = Result<Polled, ControlError>>,
+{
+    let deadline = tokio::time::Instant::now() + limit;
+    let mut failed = 0;
+    loop {
+        let polled = poll().await;
+        let now = tokio::time::Instant::now();
+        let last = now >= deadline;
+        match polled {
+            Ok(Polled::Completed) => return Ok(()),
+            Ok(Polled::Failed(failure)) => return Err(ControlError::JobFailed(failure)),
+            Ok(Polled::Unknown(status)) => return Err(ControlError::UnknownStatus(status)),
+            Ok(Polled::Waiting) if last => return Err(ControlError::Timeout),
+            Ok(Polled::Waiting) => failed = 0,
+            // A few failed polls in a row are ridden out (docker spec
+            // decision 10).
+            Err(err) => {
+                failed += 1;
+                if failed >= FAILED_POLLS_IN_A_ROW || last {
+                    return Err(err);
+                }
+                let error: &(dyn std::error::Error + 'static) = &err;
+                tracing::warn!(error, failed, "job status poll failed; asking again");
+            }
+        }
+        tokio::time::sleep(interval.min(deadline.saturating_duration_since(now))).await;
+    }
+}
+
+/// The status answer's fields sb reads: the status, and for a failed job
+/// what the controller said of it (docs/platform-notes/docker-controller.md;
+/// the controller's `jobStatusResponse`). Each one absent or `null` is
+/// none.
 #[derive(serde::Deserialize)]
 struct StatusAnswer {
     status: Option<String>,
+    error: Option<String>,
+    failed: Option<Vec<String>>,
+    outcomes: Option<Vec<OutcomeAnswer>>,
+}
+
+/// One container's entry in a job's `outcomes`.
+#[derive(serde::Deserialize)]
+struct OutcomeAnswer {
+    container: Option<String>,
+    outcome: Option<String>,
+    reason: Option<String>,
+    error: Option<String>,
+}
+
+/// The outcomes that keep a container from the requested state, the
+/// controller's `blocked`, `failed` and `canceled`; `changed`,
+/// `unchanged`, `ignored` and `protected` don't fail a job.
+const FAILING: [&str; 3] = ["failed", "blocked", "canceled"];
+
+impl StatusAnswer {
+    /// The failed job's [`Failure`]: the containers its `failed` names, in
+    /// its order, then any other whose outcome failed it, each with its
+    /// `outcomes` entry where it has one. Every text made safe for one
+    /// line (cli-core's `exit::escaped`, which keeps quotes as they are:
+    /// Docker's errors quote paths); blank names and fields left out.
+    fn failure(&self) -> Failure {
+        let escape = |text: Option<&str>| {
+            text.filter(|t| !t.trim().is_empty())
+                .map(sb_cli_core::exit::escaped)
+        };
+        let outcomes = self.outcomes.as_deref().unwrap_or_default();
+        let mut names: Vec<&str> = self
+            .failed
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .collect();
+        for o in outcomes {
+            if let (Some(name), Some(outcome)) = (o.container.as_deref(), o.outcome.as_deref())
+                && FAILING.contains(&outcome)
+                && !name.trim().is_empty()
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+        let containers = names
+            .into_iter()
+            .map(|name| {
+                let entry = outcomes
+                    .iter()
+                    .find(|o| o.container.as_deref() == Some(name));
+                let field = |pick: fn(&OutcomeAnswer) -> Option<&str>| escape(entry.and_then(pick));
+                let outcome = field(|o| o.outcome.as_deref());
+                FailedContainer {
+                    name: sb_cli_core::exit::escaped(name),
+                    // A reason or an error shows only with its outcome.
+                    reason: outcome
+                        .as_ref()
+                        .and_then(|_| field(|o| o.reason.as_deref())),
+                    error: outcome.as_ref().and_then(|_| field(|o| o.error.as_deref())),
+                    outcome,
+                }
+            })
+            .collect();
+        Failure {
+            error: escape(self.error.as_deref()),
+            containers,
+        }
+    }
 }
 
 /// The first JSON value in `body`, as Go's `Decoder` reads one: trailing
@@ -223,7 +336,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::control::{UNIT, UNIT_FILE};
+    use crate::control::{POLL_INTERVAL, UNIT, UNIT_FILE};
     use crate::testing::controller::{Answer, FakeController};
 
     const JOB: &str = r#"{"job_id":"job-1","status":"pending"}"#;
@@ -257,7 +370,10 @@ mod tests {
         assert_eq!(c.request_timeout, Duration::from_secs(10));
         assert_eq!(c.poll_interval, Duration::from_secs(5));
         assert_eq!(c.body_limit, 1 << 20);
-        assert_eq!(c.max_polls, 60);
+        // The controller's own job limits (decision 12), not sb-go's 60
+        // polls.
+        assert_eq!(c.limit(Action::Start), Duration::from_secs(600));
+        assert_eq!(c.limit(Action::Stop), Duration::from_secs(300));
         assert_eq!(UNIT, "saltbox_managed_docker_controller.service");
     }
 
@@ -514,7 +630,10 @@ mod tests {
     }
 
     fn job(id: &str) -> Job {
-        Job { id: id.to_string() }
+        Job {
+            id: id.to_string(),
+            action: Action::Start,
+        }
     }
 
     fn status(text: &str) -> Answer {
@@ -529,7 +648,7 @@ mod tests {
         for answer in ["pending", "running", "running", "completed"] {
             fake.script("/job_status/job-1", status(answer));
         }
-        let c = controller(&fake).with_polls(Duration::from_millis(10), 60);
+        let c = controller(&fake).with_wait(Duration::from_millis(10), Duration::from_secs(60));
         assert_eq!(c.wait(&job("job-1")).await, Ok(()));
         let seen = fake.seen();
         assert_eq!(seen.len(), 4);
@@ -547,7 +666,10 @@ mod tests {
     #[tokio::test]
     async fn these_end_the_wait() {
         let at_once: [(Answer, ControlError); 2] = [
-            (status("failed"), ControlError::JobFailed),
+            (
+                status("failed"),
+                ControlError::JobFailed(Failure::default()),
+            ),
             (
                 status("queued"),
                 ControlError::UnknownStatus("queued".to_string()),
@@ -557,7 +679,7 @@ mod tests {
             let fake = FakeController::start().expect("fake");
             fake.script("/job_status/job-1", status("running"));
             fake.script("/job_status/job-1", answer);
-            let c = controller(&fake).with_polls(Duration::from_millis(10), 60);
+            let c = controller(&fake).with_wait(Duration::from_millis(10), Duration::from_secs(60));
             let shown = expected.to_string();
             assert_eq!(c.wait(&job("job-1")).await, Err(expected), "{shown}");
             assert_eq!(fake.seen().len(), 2, "{shown}");
@@ -581,7 +703,7 @@ mod tests {
             fake.script("/job_status/job-1", status("running"));
             // The last answer scripted repeats.
             fake.script("/job_status/job-1", answer);
-            let c = controller(&fake).with_polls(Duration::from_millis(10), 60);
+            let c = controller(&fake).with_wait(Duration::from_millis(10), Duration::from_secs(60));
             let shown = expected.to_string();
             assert_eq!(c.wait(&job("job-1")).await, Err(expected), "{shown}");
             assert_eq!(
@@ -590,7 +712,10 @@ mod tests {
                 "{shown}"
             );
         }
-        assert_eq!(ControlError::JobFailed.to_string(), "job failed");
+        assert_eq!(
+            ControlError::JobFailed(Failure::default()).to_string(),
+            "job failed"
+        );
         assert_eq!(
             ControlError::UnknownStatus("queued".into()).to_string(),
             "unknown job status: queued"
@@ -622,7 +747,7 @@ mod tests {
         );
         let err = controller(&fake)
             .with_request_timeout(Duration::from_millis(100))
-            .with_polls(Duration::from_millis(20), 60)
+            .with_wait(Duration::from_millis(20), Duration::from_secs(60))
             .wait(&job("job-1"))
             .await
             .expect_err("timeout");
@@ -635,7 +760,7 @@ mod tests {
         let err = controller(&fake)
             .with_base(&format!("http://{addr}"))
             .expect("base")
-            .with_polls(Duration::from_millis(20), 60)
+            .with_wait(Duration::from_millis(20), Duration::from_secs(60))
             .wait(&job("job-1"))
             .await
             .expect_err("refused");
@@ -676,29 +801,9 @@ mod tests {
         fake.script(path, status("completed"));
         let c = controller(&fake)
             .with_request_timeout(timeout)
-            .with_polls(Duration::from_millis(20), 60);
+            .with_wait(Duration::from_millis(20), Duration::from_secs(60));
         assert_eq!(c.wait(&job("job-1")).await, Ok(()));
         assert_eq!(fake.seen().len(), 6);
-        // The tolerated failures count toward the polls: none left, the
-        // last one's error.
-        let fake = FakeController::start().expect("fake");
-        fake.script(path, Answer::with_status(502, ""));
-        let c = controller(&fake).with_polls(Duration::from_millis(20), 2);
-        assert_eq!(
-            c.wait(&job("job-1")).await,
-            Err(ControlError::StatusCheck(502))
-        );
-        assert_eq!(fake.seen().len(), 2);
-    }
-
-    /// No polls at all (sb-go's `range 0`): the timeout, nothing asked.
-    #[tokio::test]
-    async fn no_polls_is_the_timeout_at_once() {
-        let fake = FakeController::start().expect("fake");
-        fake.script("/job_status/job-1", status("completed"));
-        let c = controller(&fake).with_polls(Duration::from_secs(5), 0);
-        assert_eq!(c.wait(&job("job-1")).await, Err(ControlError::Timeout));
-        assert_eq!(fake.seen().len(), 0);
     }
 
     /// A status with control characters is shown escaped.
@@ -715,22 +820,24 @@ mod tests {
         assert!(!shown.contains('\u{1b}'), "{shown:?}");
     }
 
-    /// After the last poll: sb-go's timeout, with exactly `max_polls`
-    /// asks; the first at once and no sleep after the last, so three polls
-    /// take two intervals and not three (real time: tokio's paused clock
-    /// runs ahead while a real socket waits).
+    /// At its limit: sb-go's timeout, the first poll at once, the last at
+    /// the limit and no sleep after it, so a limit of two intervals takes
+    /// three polls and ends at the limit, not an interval past it (real
+    /// time: tokio's paused clock runs ahead while a real socket waits;
+    /// [`wait_until`]'s own tests run the schedule on it).
     #[tokio::test]
-    async fn the_wait_gives_up_after_its_polls() {
+    async fn the_wait_gives_up_at_its_limit() {
         let fake = FakeController::start().expect("fake");
         fake.script("/job_status/job-1", status("running"));
         let interval = Duration::from_millis(300);
-        let c = controller(&fake).with_polls(interval, 3);
+        let limit = interval * 2;
+        let c = controller(&fake).with_wait(interval, limit);
         let started = std::time::Instant::now();
         assert_eq!(c.wait(&job("job-1")).await, Err(ControlError::Timeout));
         let elapsed = started.elapsed();
         assert_eq!(fake.seen().len(), 3);
-        assert!(elapsed >= interval * 2, "{elapsed:?}");
-        assert!(elapsed < interval * 3, "{elapsed:?}");
+        assert!(elapsed >= limit, "{elapsed:?}");
+        assert!(elapsed < limit + interval, "{elapsed:?}");
         assert_eq!(
             ControlError::Timeout.to_string(),
             "timeout waiting for job completion"
@@ -743,7 +850,7 @@ mod tests {
     async fn a_cancelled_wait_ends_at_once() {
         let fake = FakeController::start().expect("fake");
         fake.script("/job_status/job-1", status("running"));
-        let c = controller(&fake).with_polls(Duration::from_secs(60), 2);
+        let c = controller(&fake).with_wait(Duration::from_secs(60), Duration::from_secs(120));
         let token = tokio_util::sync::CancellationToken::new();
         let cancel = token.clone();
         let seen = std::sync::Arc::new(fake);
@@ -837,5 +944,195 @@ mod tests {
         );
         assert_eq!(fake.seen().len(), 1);
         assert_eq!(proxy.seen().len(), 1);
+    }
+
+    /// A job the controller still runs is waited out to the controller's
+    /// own limit for it and the grace for its ending (decision 12): 600 s
+    /// for a start and 300 s for a stop, then 15 s, polled every 5 s from
+    /// the first at once, so 124 and 64 polls, the last at the end, then
+    /// sb-go's timeout. On tokio's paused clock, so the minutes pass at
+    /// once.
+    #[tokio::test(start_paused = true)]
+    async fn a_long_job_is_waited_out_to_the_controllers_limit() {
+        let c = Controller::saltbox().expect("client");
+        for (action, polls) in [(Action::Start, 124), (Action::Stop, 64)] {
+            let window = c.window(action);
+            assert_eq!(window, c.limit(action) + Duration::from_secs(15));
+            let started = tokio::time::Instant::now();
+            let mut asked = 0;
+            let ended = wait_until(window, POLL_INTERVAL, || {
+                asked += 1;
+                async { Ok(Polled::Waiting) }
+            })
+            .await;
+            assert_eq!(ended, Err(ControlError::Timeout), "{action:?}");
+            assert_eq!(asked, polls, "{action:?}");
+            assert_eq!(started.elapsed(), window, "{action:?}");
+        }
+        // A start that takes nearly its 600 s still ends done, where
+        // sb-go's 60 polls (about 5 minutes) gave up.
+        let started = tokio::time::Instant::now();
+        let ended = wait_until(c.window(Action::Start), POLL_INTERVAL, || {
+            let at = started.elapsed();
+            async move {
+                Ok(if at >= Duration::from_secs(595) {
+                    Polled::Completed
+                } else {
+                    Polled::Waiting
+                })
+            }
+        })
+        .await;
+        assert_eq!(ended, Ok(()));
+        assert_eq!(started.elapsed(), Duration::from_secs(595));
+    }
+
+    /// The controller's own ending is seen: polls that take a second each
+    /// still reach past the limit, so a job it fails at its deadline (its
+    /// containers cancelled, read a few seconds after the 600 s) is the
+    /// failure, not sb's timeout.
+    #[tokio::test(start_paused = true)]
+    async fn the_controllers_deadline_failure_is_seen() {
+        let c = Controller::saltbox().expect("client");
+        let started = tokio::time::Instant::now();
+        let cancelled = || Failure {
+            error: Some("context deadline exceeded".to_string()),
+            containers: vec![FailedContainer {
+                name: "plex".to_string(),
+                outcome: Some("canceled".to_string()),
+                reason: Some("deadline_exceeded".to_string()),
+                error: Some("context deadline exceeded".to_string()),
+            }],
+        };
+        let ended = wait_until(c.window(Action::Start), POLL_INTERVAL, || async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(if started.elapsed() >= Duration::from_secs(606) {
+                Polled::Failed(cancelled())
+            } else {
+                Polled::Waiting
+            })
+        })
+        .await;
+        assert_eq!(ended, Err(ControlError::JobFailed(cancelled())));
+    }
+
+    /// The limit counts the polls' own time too, and the last poll comes
+    /// at the limit, its sleep cut short: polls of 4 s each, every 9 s,
+    /// then one at 60 s.
+    #[tokio::test(start_paused = true)]
+    async fn slow_polls_count_toward_the_limit() {
+        let limit = Duration::from_secs(60);
+        let started = tokio::time::Instant::now();
+        let mut asked = Vec::new();
+        let ended = wait_until(limit, POLL_INTERVAL, || {
+            asked.push(started.elapsed().as_secs());
+            async {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+                Ok(Polled::Waiting)
+            }
+        })
+        .await;
+        assert_eq!(ended, Err(ControlError::Timeout));
+        assert_eq!(asked, [0, 9, 18, 27, 36, 45, 54, 60]);
+        assert_eq!(started.elapsed(), Duration::from_secs(64));
+    }
+
+    /// A failed poll at the limit ends the wait with its error, whatever
+    /// the count in a row; a zero limit polls once.
+    #[tokio::test(start_paused = true)]
+    async fn the_last_poll_at_the_limit_ends_the_wait_with_its_own_error() {
+        let mut asked = 0;
+        let ended = wait_until(Duration::from_secs(10), POLL_INTERVAL, || {
+            asked += 1;
+            let answer = if asked == 3 {
+                Err(ControlError::StatusCheck(502))
+            } else {
+                Ok(Polled::Waiting)
+            };
+            async move { answer }
+        })
+        .await;
+        assert_eq!(ended, Err(ControlError::StatusCheck(502)));
+        assert_eq!(asked, 3);
+        let mut asked = 0;
+        let ended = wait_until(Duration::ZERO, POLL_INTERVAL, || {
+            asked += 1;
+            async { Ok(Polled::Waiting) }
+        })
+        .await;
+        assert_eq!(ended, Err(ControlError::Timeout));
+        assert_eq!(asked, 1);
+    }
+
+    /// A failed job names its containers (decision 11), from v1.0.8's
+    /// answer as it sends it (`jobStatusResponse`;
+    /// docs/platform-notes/docker-controller.md): its `error`, then each
+    /// container `failed` names (sorted, exactly those whose outcome is
+    /// `failed`, `blocked` or `canceled`) with its outcome, reason and
+    /// error; a changed or skipped container isn't named. Docker's
+    /// quotes stay as they are.
+    #[tokio::test]
+    async fn a_failed_job_names_its_containers_and_their_outcomes() {
+        let fake = FakeController::start().expect("fake");
+        fake.script("/job_status/job-1", status("running"));
+        fake.script(
+            "/job_status/job-1",
+            Answer::ok(
+                r#"{"id":"job-1","type":"start","status":"failed","created_at":"2026-11-18T10:00:00Z","started_at":"2026-11-18T10:00:00Z","ended_at":"2026-11-18T10:01:00Z","timeout":600,"ignore":[],"started":["sonarr"],"skipped":["traefik"],"failed":["plex","radarr"],"outcomes":[{"container":"plex","outcome":"failed","reason":"operation_failed","error":"Error response from daemon: error while creating mount source path '/mnt/unionfs/Media': mkdir /mnt/unionfs: file exists"},{"container":"radarr","outcome":"blocked","reason":"dependency_failed","error":"plex"},{"container":"sonarr","outcome":"changed"},{"container":"traefik","outcome":"unchanged","reason":"already_running"}],"error":"one or more containers did not reach the requested state"}"#,
+            ),
+        );
+        let c = controller(&fake).with_wait(Duration::from_millis(10), Duration::from_secs(60));
+        let err = c.wait(&job("job-1")).await.expect_err("failed");
+        assert_eq!(
+            err.to_string(),
+            concat!(
+                "job failed: one or more containers did not reach the requested state\n",
+                "  plex: failed (operation_failed): Error response from daemon: error while creating mount source path '/mnt/unionfs/Media': mkdir /mnt/unionfs: file exists\n",
+                "  radarr: blocked (dependency_failed): plex",
+            )
+        );
+        // A failed job is final: nothing is asked after it.
+        assert_eq!(fake.seen().len(), 2);
+    }
+
+    /// At its deadline the controller cancels every container it manages,
+    /// each with the same outcome: they share one line. Defensively, a
+    /// name `failed` gives without an entry stands alone, an entry that
+    /// fails the job but isn't in `failed` comes after them, blank names
+    /// are left out, and control characters are escaped.
+    #[tokio::test]
+    async fn alike_outcomes_share_a_line_and_odd_answers_are_read_safely() {
+        let fake = FakeController::start().expect("fake");
+        fake.script(
+            "/job_status/job-1",
+            Answer::ok(
+                r#"{"status":"failed","failed":["bazarr","lidarr","overseerr"," "],"outcomes":[{"container":"bazarr","outcome":"canceled","reason":"deadline_exceeded","error":"context deadline exceeded"},{"container":"lidarr","outcome":"canceled","reason":"deadline_exceeded","error":"context deadline exceeded"},{"container":"tautulli\u001b[31m","outcome":"failed","reason":"operation_failed","error":"x"}],"error":"context deadline exceeded"}"#,
+            ),
+        );
+        let err = controller(&fake)
+            .wait(&job("job-1"))
+            .await
+            .expect_err("failed");
+        assert_eq!(
+            err.to_string(),
+            concat!(
+                "job failed: context deadline exceeded\n",
+                "  bazarr, lidarr: canceled (deadline_exceeded): context deadline exceeded\n",
+                "  overseerr\n",
+                "  tautulli\\u{1b}[31m: failed (operation_failed): x",
+            )
+        );
+        // Without the fields (an older controller, or none named): sb-go's
+        // text alone.
+        let fake = FakeController::start().expect("fake");
+        fake.script(
+            "/job_status/job-1",
+            Answer::ok(r#"{"status":"failed","failed":null,"outcomes":null,"error":""}"#),
+        );
+        let err = controller(&fake)
+            .wait(&job("job-1"))
+            .await
+            .expect_err("failed");
+        assert_eq!(err.to_string(), "job failed");
     }
 }

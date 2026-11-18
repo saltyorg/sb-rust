@@ -553,18 +553,40 @@ no `--ignore`); a failed stop starts nothing.
     failed with status code: N"; "decode Docker controller response:
     <cause>"; "docker controller response is missing job ID".
 - **Wait:** `GET <base>/job_status/<id>` (the ID one path segment,
-  escaped) at once, then every 5 s, at most 60 times; no sleep follows
-  the 60th.
+  escaped) at once, then every 5 s for as long as the controller gives
+  the job: its own limit, 600 s for a start and 300 s for a stop (its
+  default job timeouts; decision 12), then 15 s more for its own ending.
+  At its deadline the controller cancels the job and lists the containers
+  again (up to 5 s) before the job reads `failed`, and sb's last poll
+  should see that. The last poll comes at the end, the sleep before it
+  cut short; no sleep follows it.
   - `completed` ends the step; `pending` and `running` wait.
-  - These end the wait at once: `failed` is "job failed"; another
-    status is "unknown job status: X".
+  - These end the wait at once: `failed` is "job failed", with what the
+    controller said of the job (decision 11): its `error` after a colon,
+    then the containers that didn't reach the requested state. Those
+    are each one its `failed` names, in its order (sorted), then any
+    other whose outcome is `failed`, `blocked` or `canceled`.
+    - Each shows its outcome, the reason in parentheses and the
+      outcome's error, where its `outcomes` entry has them: `plex:
+      failed (operation_failed): <Docker's error>`, `radarr: blocked
+      (dependency_failed): plex`. A name without an entry shows alone.
+    - Containers with the same outcome share a line (`bazarr, lidarr:
+      canceled (deadline_exceeded): context deadline exceeded`): at its
+      deadline the controller cancels every container it manages.
+    - Every text is made safe for one line (cli-core's `exit::escaped`,
+      so Docker's quotes stay as they are).
+    - Without these fields the text is "job failed" alone.
+
+    Another status is "unknown job status: X".
   - A failed poll (a transport error or timeout, reqwest's cause; "job
     status check failed with status code: N"; "decode job status
     response: <cause>"; "job status response is missing status") is
     asked again after the usual 5 s; three failed polls in a row
     (`FAILED_POLLS_IN_A_ROW`) end the wait with the last one's text
-    (decision 10). Failed polls count toward the 60.
-  - After the 60th: "timeout waiting for job completion".
+    (decision 10). Failed polls don't lengthen the wait: a failed poll
+    that is the last before the limit ends it with its text.
+  - At the limit, the job still pending or running: "timeout waiting for
+    job completion".
 - **HTTP:** reqwest (already in sb through config), each request limited
   to 10 s (`RequestBuilder::timeout`), at most 1 MiB of response read
   (sb-go's `LimitReader`: a body cut by the limit fails as a decode
@@ -620,6 +642,11 @@ no `--ignore`); a failed stop starts nothing.
   sb-go says only the error.
 - Up to three failed polls in a row are ridden out (decision 10); sb-go
   ends the wait at the first.
+- A failed job names its containers, with their outcomes (decision 11);
+  sb-go says only "job failed".
+- The wait lasts as long as the controller's own limit for the job,
+  600 s for a start and 300 s for a stop (decision 12); sb-go gives up
+  after 60 polls, about 5 minutes.
 - sb's runner look and failure block, not sb-go's spinner and its outer
   `error: ...` wrapping; the texts above are the innermost cause.
 - `SB_DOCKER_CONTROLLER_URL` and `SB_DOCKER_CONTROLLER_UNIT` replace the
@@ -664,7 +691,9 @@ overrides.
     space and an ampersand;
   - a missing or blank job ID; non-200 on the request and on a poll; a
     transport failure on each;
-  - `failed`, an unknown status, the 60-poll timeout (a short interval);
+  - `failed`, with and without containers named, an unknown status, the
+    timeout at a short limit; the wait's schedule up to 600 s and
+    300 s on tokio's paused clock;
   - cancellation mid-wait: sb-go's
     `TestWaitForJobCompletionHonorsCancellation`;
   - a body over 1 MiB (cut: a decode error), trailing data after the
@@ -713,7 +742,8 @@ overrides.
    included.
 3. Every request and wait answer and failure above has a test.
    `Controller::saltbox()`'s values are pinned (5 s check, 10 s request,
-   5 s interval, 1 MiB, 60 polls, the first at once).
+   5 s interval, 1 MiB, the 600 s and 300 s limits, the first poll at
+   once).
 4. `--ignore` reaches only the stop, encoded; restart stops before it
    starts and starts nothing after a failed stop.
 5. No proxy is used for the controller with `HTTP_PROXY`, `http_proxy`
@@ -728,18 +758,16 @@ overrides.
 
 ### Known limits
 
-- **A failed job's containers aren't named:** a job that reads `failed`
-  names the containers that didn't reach the requested state (its
-  `failed`, `outcomes` and `error`; docs/platform-notes/docker-controller.md).
-  sb, like sb-go, says only "job failed"; naming them is a later
-  difference.
-- **sb can give up before the controller does:** the wait ends after
-  about 5 minutes (59 sleeps of 5 s), while the controller's own job
-  timeouts are 600 s for start and 300 s for stop, and a job can wait
-  `pending` behind another. "timeout waiting for job completion" can
-  come while the job goes on (as sb-go); the notice then says the
-  controller may still be at work, and a restart says its start wasn't
-  requested (decision 10).
+- **sb can still give up before the controller ends:** the wait's limit
+  runs from when sb starts waiting, the controller's from when the job
+  starts running (`started_at`), and a job can wait `pending` behind
+  another. So "timeout waiting for job completion" can still come while
+  the job goes on; the notice then says the controller may still be at
+  work, and a restart says its start wasn't requested (decision 10).
+  Once a job runs, its answer's `started_at` and `timeout` give the
+  controller's own deadline, which sb could follow instead; it keeps the
+  fixed limits, which need no clock shared with the controller, until
+  the rewrite reports a deadline (the wishes below).
 - **The command-tree contract:** these commands leave out sb-go's `-v`,
   as validate-config does; a future full-equality contract test records
   them as dropped flags.
@@ -779,3 +807,90 @@ overrides.
     polls in a row (three) ridden out before it; a restart whose stop
     doesn't end done says its start wasn't requested and why. Listed
     differences from sb-go.
+
+## Decisions (maintainer, 2026-11-18: start, stop and restart)
+
+11. **A failed job names its containers:** each container that didn't
+    reach the requested state, with its outcome where the controller
+    gives one, under sb-go's "job failed" and the controller's error.
+12. **sb waits as long as the controller does:** up to the controller's
+    own limit for the job, 600 s for a start (and a restart's start) and
+    300 s for a stop, in place of sb-go's 60 polls. An ending without a
+    final status keeps decision 10's notice.
+13. **A wish list for the controller's Rust rewrite (sdc),** drawn from
+    what sb works around today: the section below. It is a list of
+    wishes, not a spec of sdc.
+
+## Wishes for the controller's Rust rewrite (sdc)
+
+The controller is being rewritten in Rust, and things can be added
+(decision 13). Each wish below comes from something sb's start, stop and
+restart had to work around against today's controller (v1.0.8,
+docs/platform-notes/docker-controller.md). Each says why it would help
+and what sb would do with it. None is a requirement: sb keeps working
+against today's API.
+
+- **Streamed per-container progress or events:** today sb polls
+  `job_status` every 5 s and sees only `pending`, `running` and the final
+  answer, so a 10-minute start shows one spinner with no sign of which
+  container it is on. A stream of per-container events (Server-Sent
+  Events or chunked JSON lines: "plex: starting", "plex: healthy",
+  "radarr: blocked by plex") would let sb show each container as a
+  sub-step of the wait, with no polling and no 5 s lag on the end.
+- **Outcomes for a job that never ran:** v1.0.8's `outcomes`, `started`,
+  `stopped` and `skipped` already cover every job that ran, done or
+  failed: sb names a failed job's containers from them (decision 11),
+  and could show a summary of a done one ("12 started, 3 already
+  running, 1 ignored") today. But a job failed in the queue (a shutdown,
+  its start dropped behind a shutdown's stop) has only a reason in
+  `error`. Outcomes for the containers it would have touched would let
+  sb say which ones were left as they were.
+- **Health state in the outcomes:** a container counts as started when
+  Docker says so. Its health check result (starting, healthy, unhealthy,
+  none) in its outcome, and an option to wait for healthy, would let sb
+  report "started but unhealthy" instead of a success the user finds out
+  about later. The controller already reads health for its dependency
+  ordering (`dependency_unhealthy`).
+- **A versioned API with a features check:** sb can't tell which
+  controller it talks to. `GET /version` (or a version field in `/ping`)
+  with the API version and a list of features would let sb use streaming,
+  health and cancel where they exist, and fall back to today's polling
+  where they don't, without guessing from error codes.
+- **Authentication, or a unix socket:** the controller listens on
+  unauthenticated HTTP, on 127.0.0.1:3377 by default, so any local user or container
+  with host networking can stop every container. A unix socket owned by
+  root (mode 0600), or a token in a root-only file, would limit that to
+  root. sb already relaunches as root for these commands, so it could
+  use either at no cost to the user. The socket would also take sb's
+  no-proxy and no-redirect rules off the table.
+- **A cancel endpoint:** Ctrl-C ends sb's wait but not the job (decision
+  5), so sb can only say the controller may still be at work.
+  `POST /job/{id}/cancel` would let sb cancel the job it started when the
+  user interrupts. sb would ask once and wait a few seconds for the
+  cancelled status, so the notice could say what was stopped.
+- **An explicit "still working" status:** `running` says nothing about
+  progress, so sb can't tell a job that is slowly starting 40 containers
+  from one that is stuck. A last-activity time or a progress count
+  ("14 of 40") in the status would let sb show progress and tell a stuck
+  job apart, rather than wait out the whole limit.
+- **Its deadline while a job is pending:** sb hard-codes 600 s and 300 s
+  because they are the controller's defaults (decision 12). Once a job
+  runs, its `started_at` and `timeout` give its deadline. While it is
+  `pending`, `started_at` is unset and nothing says how long the queue
+  ahead of it will take. A deadline (`expires_at`) in the creation
+  answer and the status, and the job's place in the queue, would let sb
+  wait exactly as long as the controller will, queue time included, and
+  drop the guess (Known limits).
+- **The job ID and the job in the creation answer:** returning the same
+  object as `job_status` from `POST /start` and `/stop`, with the plan
+  (which containers it will touch, which are ignored or protected),
+  would let sb show the plan before the wait, and catch a request that
+  touches nothing.
+- **Machine-readable errors:** errors are free text today (`{"error":
+  "Invalid timeout"}`). A stable code beside the text (`queue_full`,
+  `blocked`, `shutting_down`) would let sb say what is going on ("the
+  controller is blocked: another operation, such as a backup, holds it")
+  instead of the raw text.
+- **A dry run:** `POST /start?dry_run=true`, answering with the plan and
+  no job, would let `sb docker start --dry-run` show what would happen,
+  ignored names and dependencies included.

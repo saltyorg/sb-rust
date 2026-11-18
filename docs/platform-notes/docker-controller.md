@@ -28,6 +28,40 @@ Go, chi v5.5.0 router) on 2026-11-06. Not run against a live controller.
   when over 1000 finished jobs are held. Bad requests are 400, a blocked,
   full or shutting-down controller 503, other failures 500, each with
   `{"error": ...}`.
+- **A job's status answer** (re-read from v1.0.8's source on
+  2026-11-18, `internal/api/handlers.go`'s `Job` and
+  `internal/lifecycle`): `id`, `type` (`start` or `stop`), `status`,
+  `created_at`, `started_at`, `ended_at`, `timeout` (seconds), `ignore`,
+  and, each left out when empty, `started`, `stopped`, `skipped`,
+  `failed` (container names, sorted), `outcomes` and `error`. Each entry
+  of `outcomes` is `{"container", "outcome", "reason", "error"}`, the
+  last two left out when empty.
+  - An outcome is one of `changed`, `unchanged`, `ignored`, `protected`,
+    `blocked`, `failed` and `canceled`. `failed` lists exactly the
+    containers whose outcome is `blocked`, `failed` or `canceled`.
+  - A reason is one of `already_running`, `already_stopped`,
+    `requested_ignore`, `required_by_ignored_container`,
+    `dependency_ignored_unavailable`, `missing_dependency`,
+    `dependency_failed`, `dependency_unhealthy`, `operation_failed`,
+    `canceled_by_shutdown`, `deadline_exceeded` and `dependency_cycle`.
+  - An outcome's `error` depends on its reason (`executor.go`,
+    `planner.go`):
+    - Docker's error for `operation_failed`;
+    - the failed or unavailable dependency's name for
+      `dependency_failed`, `dependency_ignored_unavailable` and
+      `missing_dependency`, and the ignored container's for
+      `required_by_ignored_container`;
+    - the health wait's error for `dependency_unhealthy`, the cycle's for
+      `dependency_cycle`;
+    - the context's (`context deadline exceeded`, `context canceled`)
+      for a cancelled container.
+  - At a job's deadline or a shutdown, the controller cancels it and
+    lists every container it manages as `canceled` (`canceledSnapshot`,
+    within 5 s), and the job's `error` is the context's error.
+  - A job failed while still queued has no outcomes, and its `error` is
+    the reason alone (`canceled_by_shutdown`, `deadline_exceeded`).
+  - A job's timeout runs from when it starts running (`started_at`), not
+    from when it was queued.
 - **Container failures fail the job:** a container that failed, was
   blocked or was cancelled makes the job `failed`, its `error` "one or
   more containers did not reach the requested state" and its `failed` and

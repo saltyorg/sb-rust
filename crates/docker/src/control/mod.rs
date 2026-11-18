@@ -36,8 +36,21 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// sb-go's `dockerJobPollInterval`.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// sb-go's `dockerJobMaxPolls`.
-pub const MAX_POLLS: u32 = 60;
+/// How long sb waits for a start job: the controller's own limit for one
+/// (its default job timeout, docs/platform-notes/docker-controller.md),
+/// so sb doesn't give up while the controller is still at it (docker
+/// spec decision 12; sb-go gives up after about 5 minutes).
+pub const START_LIMIT: Duration = Duration::from_secs(600);
+
+/// How long sb waits for a stop job: the controller's own limit, as
+/// [`START_LIMIT`].
+pub const STOP_LIMIT: Duration = Duration::from_secs(300);
+
+/// How long sb goes on asking past a job's limit, for the controller's
+/// own ending: at its deadline it cancels the job's Docker calls and
+/// lists the containers again (up to 5 s; v1.0.8's `canceledSnapshot`)
+/// before the job reads `failed`, and sb's last poll should see that.
+pub const ENDING_GRACE: Duration = Duration::from_secs(15);
 
 /// sb-go's `dockerAPIResponseLimit`: at most this much of an answer is read.
 pub const BODY_LIMIT: usize = 1 << 20;
@@ -88,8 +101,10 @@ pub enum ControlError {
     DecodeStatus(String),
     #[error("job status response is missing status")]
     MissingStatus,
-    #[error("job failed")]
-    JobFailed,
+    /// The job read `failed`: sb-go's "job failed", then what the
+    /// controller said of it ([`Failure`]).
+    #[error("{0}")]
+    JobFailed(Failure),
     #[error("unknown job status: {0}")]
     UnknownStatus(String),
     #[error("timeout waiting for job completion")]
@@ -114,6 +129,7 @@ pub enum ControlError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
     id: String,
+    action: Action,
 }
 
 impl Job {
@@ -121,6 +137,87 @@ impl Job {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// What the job was asked to do.
+    #[must_use]
+    pub fn action(&self) -> Action {
+        self.action
+    }
+}
+
+/// What the controller said of a failed job (docker spec decision 11):
+/// its `error`, and each container that didn't reach the requested
+/// state, with its outcome where the job's `outcomes` has one
+/// (docs/platform-notes/docker-controller.md). Every text is the
+/// controller's, made safe for one line (cli-core's `exit::escaped`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Failure {
+    /// The job's `error`, when it has one.
+    pub error: Option<String>,
+    /// Each container named, in the controller's order.
+    pub containers: Vec<FailedContainer>,
+}
+
+/// One container of a failed job, and its `outcomes` entry's fields
+/// where it has one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FailedContainer {
+    pub name: String,
+    /// `failed`, `blocked` or `canceled`.
+    pub outcome: Option<String>,
+    /// The controller's reason (`operation_failed`, `dependency_failed`).
+    pub reason: Option<String>,
+    /// The outcome's error: Docker's for a failed operation, the failed
+    /// dependency's name for a blocked one, the context's for a cancelled
+    /// one.
+    pub error: Option<String>,
+}
+
+impl FailedContainer {
+    /// The outcome as shown, `failed (operation_failed): <error>`; `None`
+    /// without one.
+    fn shown(&self) -> Option<String> {
+        let outcome = self.outcome.as_deref()?;
+        let reason = self
+            .reason
+            .as_deref()
+            .map_or_default(|reason| format!(" ({reason})"));
+        let error = self
+            .error
+            .as_deref()
+            .map_or_default(|error| format!(": {error}"));
+        Some(format!("{outcome}{reason}{error}"))
+    }
+}
+
+/// "job failed", the job's error after it, then a line per outcome:
+/// term-ui's failure block shows every line. Containers with the same
+/// outcome share its line (`bazarr, lidarr: canceled (deadline_exceeded):
+/// context deadline exceeded`): at its deadline the controller cancels
+/// every container it manages, which would be dozens of lines alike.
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("job failed")?;
+        if let Some(error) = &self.error {
+            write!(f, ": {error}")?;
+        }
+        let mut lines: Vec<(Option<String>, Vec<&str>)> = Vec::new();
+        for container in &self.containers {
+            let shown = container.shown();
+            match lines.iter_mut().find(|(outcome, _)| *outcome == shown) {
+                Some((_, names)) => names.push(&container.name),
+                None => lines.push((shown, vec![&container.name])),
+            }
+        }
+        for (outcome, names) in lines {
+            let names = names.join(", ");
+            match outcome {
+                Some(outcome) => write!(f, "\n  {names}: {outcome}")?,
+                None => write!(f, "\n  {names}")?,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -135,7 +232,9 @@ pub struct Controller {
     request_timeout: Duration,
     poll_interval: Duration,
     body_limit: usize,
-    max_polls: u32,
+    start_limit: Duration,
+    stop_limit: Duration,
+    ending_grace: Duration,
     http: reqwest::Client,
 }
 
@@ -168,7 +267,9 @@ impl Controller {
             request_timeout: REQUEST_TIMEOUT,
             poll_interval: POLL_INTERVAL,
             body_limit: BODY_LIMIT,
-            max_polls: MAX_POLLS,
+            start_limit: START_LIMIT,
+            stop_limit: STOP_LIMIT,
+            ending_grace: ENDING_GRACE,
             http,
         })
     }
@@ -220,12 +321,31 @@ impl Controller {
         self
     }
 
-    /// The wait's interval and its number of polls instead.
+    /// The wait's interval, and how long it waits for a job of either
+    /// action, with no grace after it, instead.
     #[must_use]
-    pub fn with_polls(mut self, interval: Duration, max: u32) -> Self {
+    pub fn with_wait(mut self, interval: Duration, limit: Duration) -> Self {
         self.poll_interval = interval;
-        self.max_polls = max;
+        self.start_limit = limit;
+        self.stop_limit = limit;
+        self.ending_grace = Duration::ZERO;
         self
+    }
+
+    /// The controller's limit for a job of `action`.
+    #[must_use]
+    pub fn limit(&self, action: Action) -> Duration {
+        match action {
+            Action::Start => self.start_limit,
+            Action::Stop => self.stop_limit,
+        }
+    }
+
+    /// How long the wait asks about a job of `action`: its limit, and
+    /// the grace for the controller's own ending ([`ENDING_GRACE`]).
+    #[must_use]
+    pub fn window(&self, action: Action) -> Duration {
+        self.limit(action) + self.ending_grace
     }
 
     /// At most `limit` bytes of an answer read instead.

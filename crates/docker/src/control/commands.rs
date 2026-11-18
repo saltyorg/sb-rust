@@ -273,7 +273,7 @@ impl Ended {
     fn of(err: &anyhow::Error) -> Self {
         match err.downcast_ref::<ControlError>() {
             Some(ControlError::Interrupted) => Ended::Interrupted,
-            Some(ControlError::JobFailed) => Ended::JobFailed,
+            Some(ControlError::JobFailed(_)) => Ended::JobFailed,
             Some(ControlError::RequestStatus(_)) => Ended::Refused,
             Some(err) if no_final_status(err) => Ended::Unknown,
             _ => Ended::Other,
@@ -330,7 +330,7 @@ mod tests {
             .expect("base")
             .with_unit_file(unit)
             .with_systemctl(systemctl(dir, script))
-            .with_polls(Duration::from_millis(20), 60)
+            .with_wait(Duration::from_millis(20), Duration::from_secs(60))
     }
 
     /// `command` on an in-memory runner: its result and the screen.
@@ -375,6 +375,42 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    /// A failed job names its containers under its step (decision 11),
+    /// one line each, after sb-go's "job failed" and the controller's
+    /// error; a failed job is final, so no notice that the controller may
+    /// still be at work.
+    #[tokio::test]
+    async fn a_failed_job_names_its_containers_under_its_step() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let fake = FakeController::start().expect("fake");
+        fake.script("/start", Answer::ok(JOB_T));
+        fake.script(
+            "/job_status/job-t",
+            Answer::ok(
+                r#"{"status":"failed","failed":["plex","radarr"],"outcomes":[{"container":"sonarr","outcome":"changed"},{"container":"plex","outcome":"failed","reason":"operation_failed","error":"port is already allocated"},{"container":"radarr","outcome":"blocked","reason":"dependency_failed","error":"plex"}],"error":"one or more containers did not reach the requested state"}"#,
+            ),
+        );
+        let c = controller(dir.path(), &fake, "echo active");
+        let (result, screen) = run(Command::Start, &c, &[], &Shutdown::new()).await;
+        assert_eq!(
+            tree(&screen),
+            concat!(
+                "sb docker\n",
+                "╰── ✗ Starting Docker containers            sub-step failed\n",
+                "    ├── ✓ Docker controller service ready\n",
+                "    ├── ✓ Requesting Docker start job\n",
+                "    ╰── ✗ Waiting for Docker start job\n",
+                "        job failed: one or more containers did not reach the requested state\n",
+                "          plex: failed (operation_failed): port is already allocated\n",
+                "          radarr: blocked (dependency_failed): plex\n",
+            ),
+            "{screen}"
+        );
+        assert!(matches!(result, Err(Exit(1))), "{screen}");
+        assert!(!screen.contains("may still be"), "{screen}");
     }
 
     /// A start: sb-go's labels, the service check, the job asked for and
@@ -631,8 +667,8 @@ mod tests {
         let fake = FakeController::start().expect("fake");
         fake.script("/stop", Answer::ok(JOB_S));
         fake.script("/job_status/job-s", status("running"));
-        let c =
-            controller(dir.path(), &fake, "echo active").with_polls(Duration::from_secs(60), 60);
+        let c = controller(dir.path(), &fake, "echo active")
+            .with_wait(Duration::from_secs(60), Duration::from_secs(3600));
         let (result, screen) = interrupted_run(Command::Stop, &c, || fake.seen().len() >= 2).await;
         assert_eq!(
             tree(&screen),
@@ -655,8 +691,8 @@ mod tests {
         fake.script("/job_status/job-s", status("completed"));
         fake.script("/start", Answer::ok(JOB_T));
         fake.script("/job_status/job-t", status("running"));
-        let c =
-            controller(dir.path(), &fake, "echo active").with_polls(Duration::from_secs(60), 60);
+        let c = controller(dir.path(), &fake, "echo active")
+            .with_wait(Duration::from_secs(60), Duration::from_secs(3600));
         let (result, screen) =
             interrupted_run(Command::Restart, &c, || fake.seen().len() >= 4).await;
         assert_eq!(
@@ -688,8 +724,8 @@ mod tests {
         let fake = FakeController::start().expect("fake");
         fake.script("/stop", Answer::ok(JOB_S));
         fake.script("/job_status/job-s", status("running"));
-        let c =
-            controller(dir.path(), &fake, "echo active").with_polls(Duration::from_secs(60), 60);
+        let c = controller(dir.path(), &fake, "echo active")
+            .with_wait(Duration::from_secs(60), Duration::from_secs(3600));
         let (result, screen) =
             interrupted_run(Command::Restart, &c, || fake.seen().len() >= 2).await;
         assert_eq!(
@@ -730,7 +766,7 @@ mod tests {
             "timeout" => {
                 fake.script(&format!("/{path}"), Answer::ok(answer));
                 fake.script(&format!("/job_status/{job}"), status("running"));
-                c.with_polls(Duration::from_millis(20), 3)
+                c.with_wait(Duration::from_millis(20), Duration::from_millis(50))
             }
             "failed polls" => {
                 fake.script(&format!("/{path}"), Answer::ok(answer));

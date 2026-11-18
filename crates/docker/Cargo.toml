@@ -48,7 +48,8 @@ indicatif.workspace = true
 form_urlencoded.workspace = true
 axum.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+# test-util: the wait's schedule on tokio's paused clock.
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "test-util", "time"] }
 tower.workspace = true
 insta.workspace = true
 console.workspace = true
