@@ -328,7 +328,22 @@ The `Follower` and its wake fd are `Send`.
   - Keyed (siphash24) and Jenkins hashes.
   - xz, lz4 and zstd payloads; zstd needs its content size and is
     checked against it.
-  - An unknown incompatible flag is an error naming the file.
+  - An unknown incompatible flag is an error naming the file, saying
+    plainly that its format is newer than this sb understands and that a
+    newer sb is needed (`<path>: its format is newer than this sb
+    understands (incompatible flags <all>, unknown <unknown>): a newer sb
+    is needed to read it`). *Amended 2026-11-18 at the maintainer's
+    backlog.* A new release's flags are meant to be found before users
+    meet them: sb refuses a release with no `RELEASES` row at startup, and
+    the scheduled journal-matrix workflow runs compare.sh and compat.sh on
+    each row's current image (a stable update's new flag) and canaries of
+    the interim and devel images under the newest row's rules (the next
+    release's; `continue-on-error`, so a warning, not a failed run). A new
+    flag there means new code in `INCOMPAT_KNOWN` with its row. Its limits:
+    compare.sh's writer variants are a fixed set beside the default
+    journald (a flag off by default goes unseen until it is on), and the
+    rows install from the live archive, not -proposed, so a stable
+    update's flag reaches the daily run when it reaches users.
   - Every offset and size is checked. Links only point forward, and
     entry arrays never decrease (a repeat is skipped).
   - Corruption is reported per file and per entry, and what is readable

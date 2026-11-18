@@ -275,9 +275,16 @@ impl JournalFile {
         self.check(n >= 208, || "header too short".into())?;
         self.check(&buf[0..8] == SIGNATURE, || "not a journal file".into())?;
         let incompatible = le32(&buf, 12);
-        self.check(incompatible & !INCOMPAT_KNOWN == 0, || {
+        // A flag this sb doesn't know: a systemd newer than the releases
+        // it was built for wrote the file (the scheduled matrix's rows and
+        // canaries look for a new release's flags first: rules.rs
+        // RELEASES, journal-matrix.yml). The way out is a newer sb, said
+        // plainly.
+        let unknown = incompatible & !INCOMPAT_KNOWN;
+        self.check(unknown == 0, || {
             format!(
-                "unsupported journal format (incompatible flags {incompatible:#x}); this sb release doesn't read it"
+                "its format is newer than this sb understands \
+                 (incompatible flags {incompatible:#x}, unknown {unknown:#x}): a newer sb is needed to read it"
             )
         })?;
         let size = le64(&buf, 88);
@@ -2825,14 +2832,27 @@ mod tests {
         assert!(err.to_string().contains("outside the arena"));
     }
 
+    /// An incompatible flag this sb doesn't know: the file is in a newer
+    /// format than this sb understands, a newer sb is needed (journal
+    /// spec, "Format"), the flags named, the unknown ones apart.
     #[test]
     fn an_unknown_incompatible_flag_names_the_file() {
         let (t, _f) = file_with_array(&[]);
         let mut b = std::fs::read(t.path()).expect("read");
-        b[12..16].copy_from_slice(&(1u32 << 5).to_le_bytes());
+        // Two known flags beside two unknown ones, one the word's top bit:
+        // the message names all of them, and the unknown ones apart.
+        let flags = INCOMPAT_KEYED_HASH | INCOMPAT_COMPACT | 1 << 5 | 1 << 31;
+        b[12..16].copy_from_slice(&flags.to_le_bytes());
         std::fs::write(t.path(), &b).expect("write");
         let err = JournalFile::open(t.path()).expect_err("refused");
-        assert!(err.to_string().contains("unsupported journal format"));
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{}: its format is newer than this sb understands \
+                 (incompatible flags 0x80000034, unknown 0x80000020): a newer sb is needed to read it",
+                t.path().display()
+            )
+        );
         // Named by the typed error, and first in its message.
         assert_eq!(err.path(), Some(t.path()));
         assert!(
