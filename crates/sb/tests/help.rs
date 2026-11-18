@@ -282,6 +282,40 @@ fn install_help_shows_the_extra_vars_examples() {
     assert!(!short.contains("Each value"), "{short}");
 }
 
+/// `sb install --help` shows how to name tags, after its about and
+/// before USAGE: both separators, the Sandbox and mod prefixes and `sb
+/// list` (ansible spec, difference 17). `-h` keeps sb-go's one line.
+#[test]
+fn install_help_shows_how_to_name_tags() {
+    let help = install_help(Some("120"));
+    let examples = [
+        "  Examples:",
+        "    sb install plex sonarr       # Two Saltbox tags",
+        "    sb install plex,sonarr       # The same, with commas",
+        "    sb install \"plex, sonarr\"    # Commas and spaces, quoted",
+        "    sb install sandbox-jellyfin  # A Sandbox role: sandbox-<tag>",
+        "    sb install mod-myrole        # A Saltbox mod role: mod-<tag>",
+        "    sb list                      # Every tag there is",
+    ];
+    let block = examples.join("\n");
+    let at = help.find(&block).unwrap_or_else(|| panic!("{help}"));
+    let about = help
+        .find("  Runs Ansible playbooks with specified tags\n")
+        .expect("about");
+    let usage = help.find("  USAGE").expect("usage");
+    assert!(about < at && at < usage, "{help}");
+    let short = sb()
+        .args(["install", "-h", "--color=never"])
+        .assert()
+        .success();
+    let short = String::from_utf8(short.get_output().stdout.clone()).expect("utf-8");
+    assert!(!short.contains("Examples:"), "{short}");
+    assert!(
+        short.contains("  Runs Ansible playbooks with specified tags\n"),
+        "{short}"
+    );
+}
+
 /// The flag list has no blank line (maintainer, 2026-11-14): `-e`'s long
 /// help holds a paragraph break, which its row leaves out, at every width.
 #[test]

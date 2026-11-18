@@ -224,9 +224,7 @@ fn apply_at(cmd: Command, path: &str, inherited: &[Arg], look: &Look<'_>) -> Com
         format!("{LEAD}{}", text.trim_start_matches('\n'))
     };
     let text = led(false);
-    let long = shown_flags(&cmd, &refs)
-        .any(|a| a.get_long_help().is_some())
-        .then(|| led(true));
+    let long = has_long_help(&cmd, &refs).then(|| led(true));
     let mut below = inherited.to_vec();
     below.extend(cmd.get_arguments().filter(|a| a.is_global_set()).cloned());
     let names: Vec<String> = cmd
@@ -244,6 +242,14 @@ fn apply_at(cmd: Command, path: &str, inherited: &[Arg], look: &Look<'_>) -> Com
         cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, look));
     }
     cmd
+}
+
+/// Whether `cmd` has a long text that `--help` shows and `-h` doesn't: a
+/// shown flag's long help, or the command's own `after_long_help` (its
+/// examples, `sb install`'s).
+fn has_long_help(cmd: &Command, inherited: &[&Arg]) -> bool {
+    cmd.get_after_long_help().is_some()
+        || shown_flags(cmd, inherited).any(|a| a.get_long_help().is_some())
 }
 
 /// Whether clap will add its `help` subcommand (it does for any command
@@ -403,8 +409,11 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], look: &Look<'_>, long: 
         .collect();
     if !cmd.is_disable_help_flag_set() {
         // A command with a long help says so on `-h` and `--help` alike.
-        let more = shown_flags(cmd, inherited).any(|a| a.get_long_help().is_some());
-        let more = if more { LONG_HELP_HINT } else { "" };
+        let more = if has_long_help(cmd, inherited) {
+            LONG_HELP_HINT
+        } else {
+            ""
+        };
         flags.push((
             "help".into(),
             "-h --help".into(),
@@ -431,11 +440,17 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], look: &Look<'_>, long: 
     let muted = theme.style(Role::Muted);
     let flag = theme.style(Role::Ok);
 
-    // fang shows the long description, else the short one.
-    let about = cmd
+    // fang shows the long description, else the short one; `--help`
+    // adds the command's `after_long_help` below it, as a paragraph of
+    // the about (clap's own place for it is after the flags, but sb's
+    // template draws only `before-help`).
+    let mut about = cmd
         .get_long_about()
         .or(cmd.get_about())
         .map_or_default(ToString::to_string);
+    if long && let Some(after) = cmd.get_after_long_help() {
+        about = format!("{about}\n\n{after}");
+    }
     let mut out = String::new();
     // fang wraps the about at the width less its indent.
     let about_width = width.saturating_sub(ABOUT_INDENT).max(MIN_TEXT_WIDTH);
@@ -818,6 +833,37 @@ mod tests {
             .try_get_matches_from(args)
             .expect_err("help is shown as an error")
             .to_string()
+    }
+
+    /// A command's `after_long_help` (examples) follows its about on
+    /// `--help` only, a blank line between, under the about's indent; its
+    /// `-h --help` row says `--help` shows more, on both.
+    #[test]
+    fn a_commands_examples_show_on_help_only() {
+        let cmd = || {
+            Command::new("sb").subcommand(
+                Command::new("install")
+                    .about("Runs playbooks")
+                    .after_long_help("Examples:\n  sb install plex  # One tag"),
+            )
+        };
+        let long = shown(cmd(), &["sb", "install", "--help"]);
+        assert!(
+            long.contains(
+                "  Runs playbooks\n\n  Examples:\n    sb install plex  # One tag\n\n  USAGE"
+            ),
+            "{long}"
+        );
+        assert!(
+            long.contains("Help for install (--help shows more details)"),
+            "{long}"
+        );
+        let short = shown(cmd(), &["sb", "install", "-h"]);
+        assert!(!short.contains("Examples:"), "{short}");
+        assert!(
+            short.contains("Help for install (--help shows more details)"),
+            "{short}"
+        );
     }
 
     /// `--help` shows a flag's long help, its later lines under the help

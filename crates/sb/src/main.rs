@@ -140,7 +140,12 @@ enum Command {
     #[command(long_about = "Runs Saltbox diagnostics role")]
     Diag,
     /// Runs Ansible playbooks with specified tags
-    #[command(long_about = "Runs Ansible playbooks with specified tags")]
+    // sb-go's help; `--help` adds how to name tags (ansible spec,
+    // difference 17), `-h` and the contract keep sb-go's one line.
+    #[command(
+        long_about = "Runs Ansible playbooks with specified tags",
+        after_long_help = INSTALL_EXAMPLES
+    )]
     Install(sb_ansible::InstallArgs),
     /// Install GHA dependencies
     // Hidden, as sb-go's; no flags (ops spec, "`sb gha` (hidden)").
@@ -333,6 +338,17 @@ The restore URL defaults to \"crs.saltbox.dev\". On a terminal the user name and
 are asked for in a form unless --user and --password-file give them; without one, both flags
 are needed. --user shows in the process list and in sudo's log: leave it out to be asked
 instead.";
+
+/// `sb install --help`'s examples, in the style of [`LIST_LONG`]'s (ansible
+/// spec, difference 17): both tag separators, the Sandbox and mod
+/// prefixes, and `sb list`.
+const INSTALL_EXAMPLES: &str = "Examples:
+  sb install plex sonarr       # Two Saltbox tags
+  sb install plex,sonarr       # The same, with commas
+  sb install \"plex, sonarr\"    # Commas and spaces, quoted
+  sb install sandbox-jellyfin  # A Sandbox role: sandbox-<tag>
+  sb install mod-myrole        # A Saltbox mod role: mod-<tag>
+  sb list                      # Every tag there is";
 
 /// `sb list`'s long help, sb-go's (cmd/list.go).
 const LIST_LONG: &str = "List available Saltbox, Sandbox or Saltbox-mod tags

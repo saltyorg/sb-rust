@@ -72,6 +72,20 @@ checks them):
 | `--no-cache` | `SetTrue` | nothing: skips the cache and tag validation |
 | `--force-disk-full` (hidden) | `SetTrue` | nothing: fails with host's `disk_space_error` |
 
+`sb install --help` (not `-h`, and not the short help the contract
+compares) ends its about with how tags are named, in the style of `sb
+list`'s examples (ux review, 2026-11-18; difference 17):
+
+```
+Examples:
+  sb install plex sonarr       # Two Saltbox tags
+  sb install plex,sonarr       # The same, with commas
+  sb install "plex, sonarr"    # Commas and spaces, quoted
+  sb install sandbox-jellyfin  # A Sandbox role: sandbox-<tag>
+  sb install mod-myrole        # A Saltbox mod role: mod-<tag>
+  sb list                      # Every tag there is
+```
+
 `-e`'s long help (`--help`, not the short help the contract compares)
 adds how each value is passed and Ansible's forms by example (the
 maintainer, 2026-11-15; difference 15):
@@ -370,6 +384,9 @@ nothing from ops, so it lands here.
     spec, Help). sb-go has one help text and neither.
 16. **`sb list --json`** (decision 20): sb-go has no machine-readable
     `list`.
+17. **`sb install --help` shows how to name tags** (the examples above):
+    both separators, the `sandbox-` and `mod-` prefixes and `sb list`.
+    sb-go's help is its one line.
 
 ### Scope
 
