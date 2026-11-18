@@ -414,25 +414,34 @@ without the credential checks. If it has issues, sb offers to edit it again;
 /// `sb edit`'s subcommands, one per file (tui spec, editors; sb-go's
 /// names, underscores kept).
 #[derive(Subcommand, Clone, Copy)]
+// Each also takes its file's name, and the inventory its own
+// (`localhost`), as hidden aliases: the names users type from the files
+// (tui spec, editors; clap's `Command::alias`,
+// <https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.alias>).
 enum EditCommand {
     /// Accounts
+    #[command(alias = "accounts.yml")]
     Accounts,
     /// Advanced Settings
-    #[command(name = "adv_settings")]
+    #[command(name = "adv_settings", alias = "adv_settings.yml")]
     AdvSettings,
     /// Backup Settings
-    #[command(name = "backup_config")]
+    #[command(name = "backup_config", alias = "backup_config.yml")]
     BackupConfig,
     /// Hetzner VLAN Settings
-    #[command(name = "hetzner_vlan")]
+    #[command(name = "hetzner_vlan", alias = "hetzner_vlan.yml")]
     HetznerVlan,
     /// Settings
+    #[command(alias = "settings.yml")]
     Settings,
     /// Inventory Settings
+    #[command(aliases = ["localhost", "localhost.yml"])]
     Inventory,
     /// Motd Settings
+    #[command(alias = "motd.yml")]
     Motd,
     /// Providers
+    #[command(alias = "providers.yml")]
     Providers,
 }
 
@@ -961,9 +970,68 @@ fn parse_failed(err: clap::Error) -> ! {
 /// clap's exit code (2, the usage-error convention; cli-core spec).
 fn parse_error(err: clap::Error) -> ! {
     let code = err.exit_code();
-    let block = help::parse_error_block(err, theme::current());
+    let args: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let err = hinted(err, &args);
+    let block = help::parse_error_block(err, theme::current(), help::error_width());
     let _ = write!(anstream::stderr(), "{block}");
     std::process::exit(code)
+}
+
+/// `err` with a hint for two mistakes clap can't explain, as one of its
+/// own tips (`ContextKind::Suggested`, which clap renders as `tip:` and
+/// the error block as `hint:`;
+/// <https://docs.rs/clap/4.6.7/clap/error/enum.ContextKind.html#variant.Suggested>):
+/// `sb install` with no tags names `sb list`, and a name given to `sb
+/// docker restart|stop|start`, which act on every Saltbox container,
+/// names Docker's own command for one. `args` is the command line, read
+/// for the subcommands it names.
+fn hinted(mut err: clap::Error, args: &[String]) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    let path = command_path(args);
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let typed = match err.get(ContextKind::InvalidArg) {
+        Some(ContextValue::String(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let hint = match (path.as_slice(), err.kind(), typed) {
+        (["install"], ErrorKind::MissingRequiredArgument, _) => {
+            Some("to see the tags, use 'sb list'".to_string())
+        }
+        (
+            ["docker", action @ ("restart" | "stop" | "start")],
+            ErrorKind::UnknownArgument,
+            Some(name),
+        ) if !name.starts_with('-') => Some(format!(
+            "sb docker {action} acts on every Saltbox container; for one container, use \
+                 'docker {action} {name}'"
+        )),
+        _ => None,
+    };
+    if let Some(hint) = hint {
+        err.insert(
+            ContextKind::Suggested,
+            ContextValue::StyledStrs(vec![hint.into()]),
+        );
+    }
+    err
+}
+
+/// The subcommands `args` (sb's command line) names, outermost first, by
+/// their names (an alias read as its command's): each word that is a
+/// subcommand of the one before. Flags and their values are passed over.
+fn command_path(args: &[String]) -> Vec<String> {
+    let mut cmd = Cli::command();
+    let mut path = Vec::new();
+    for arg in args.iter().skip(1) {
+        let Some(sub) = cmd.find_subcommand(arg).cloned() else {
+            continue;
+        };
+        path.push(sub.get_name().to_string());
+        cmd = sub;
+    }
+    path
 }
 
 /// Open the run log and make it the process's subscriber; a log that can't
@@ -1542,6 +1610,72 @@ mod tests {
             let command = Cli::try_parse_from(args).expect("parses").command;
             assert!(command.needs_root(), "{name}");
             assert_eq!(command.name(), name);
+        }
+    }
+
+    /// `sb install` with no tags, and `sb docker restart|stop|start` given a
+    /// name, get a hint naming the next command; other errors keep
+    /// clap's own lines.
+    #[test]
+    fn context_hints_name_the_next_command() {
+        let block = |args: &[&str]| {
+            let err = Cli::command()
+                .try_get_matches_from(args)
+                .expect_err("a parse error");
+            let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+            help::parse_error_block(hinted(err, &args), &theme::Theme::plain(), help::MAX_WIDTH)
+        };
+        let install = block(&["sb", "install"]);
+        assert!(
+            install.contains("\n  hint: to see the tags, use 'sb list'\n"),
+            "{install}"
+        );
+        let with_colour = block(&["sb", "--color=never", "install"]);
+        assert!(with_colour.contains("use 'sb list'"), "{with_colour}");
+        for action in ["restart", "stop", "start"] {
+            let docker = block(&["sb", "docker", action, "plex"]);
+            assert!(
+                docker.contains(&format!(
+                    "\n  hint: sb docker {action} acts on every Saltbox container; for one \
+                     container, use 'docker {action} plex'\n"
+                )),
+                "{docker}"
+            );
+        }
+        let flag = block(&["sb", "docker", "restart", "--bogus"]);
+        assert!(!flag.contains("Saltbox container"), "{flag}");
+        let other = block(&["sb", "version", "plex"]);
+        assert!(!other.contains("hint:"), "{other}");
+        let docker = block(&["sb", "docker", "ps", "plex"]);
+        assert!(!docker.contains("Saltbox container"), "{docker}");
+    }
+
+    /// `sb edit` takes each file's own name, and the inventory's
+    /// `localhost`, as the subcommand that opens it.
+    #[test]
+    fn edit_takes_the_file_names_too() {
+        for (name, file) in [
+            ("accounts.yml", edit::File::Accounts),
+            ("settings.yml", edit::File::Settings),
+            ("adv_settings.yml", edit::File::AdvSettings),
+            ("backup_config.yml", edit::File::BackupConfig),
+            ("hetzner_vlan.yml", edit::File::HetznerVlan),
+            ("localhost", edit::File::Inventory),
+            ("localhost.yml", edit::File::Inventory),
+            ("motd.yml", edit::File::Motd),
+            ("providers.yml", edit::File::Providers),
+        ] {
+            let parsed = Cli::try_parse_from(["sb", "edit", name])
+                .unwrap_or_else(|err| panic!("{name}: {err}"))
+                .command;
+            let Command::Edit {
+                command: Some(command),
+                ..
+            } = parsed
+            else {
+                panic!("{name}: not an edit subcommand");
+            };
+            assert_eq!(command.file(), file, "{name}");
         }
     }
 

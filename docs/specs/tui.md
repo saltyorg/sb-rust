@@ -807,7 +807,8 @@ specs, docs/ideas/fact-editor.md and prototypes/proto-facts/FINDINGS.md.
 1. **sb-go's commands and files.** `edit` keeps its bare picker and its
    six subcommands (`accounts`, `adv_settings`, `backup_config`,
    `hetzner_vlan`, `settings`, `inventory`), and adds `motd` and
-   `providers` (Difference 38). `fact` takes no arguments.
+   `providers` (Difference 38), each also by its file's name (Difference
+   39). `fact` takes no arguments.
    Help texts are sb-go's except where a difference below changes them
    (capability map decision 1).
 2. **Root.** Both commands need root (cli-core decision 3). cli-core's
@@ -1184,6 +1185,11 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     providers.yml ("Providers", `sb edit providers`), each left out of
     the picker when its file doesn't exist. sb-go's edit has neither
     (maintainer, 2026-11-18; decision 42).
+39. Each `sb edit` subcommand also takes its file's name as a hidden
+    alias (`sb edit accounts.yml`, `sb edit adv_settings.yml`, ...), and
+    `inventory` also takes `localhost` and `localhost.yml`, the
+    inventory file's name: the names users type from the files. sb-go
+    has no aliases; the contract test lists them as extensions.
 
 ### Scope
 

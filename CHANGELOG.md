@@ -40,7 +40,11 @@ you could trip over.
   `restore --user` and `--password-file`, `edit --no-edit-again`.
 - **Host-changing commands run one at a time.** A second one waits for the
   first, and says so.
-- **Longer help with examples,** and parse errors laid out with hints.
+- **Longer help with examples,** and parse errors laid out with hints
+  (the best guess first, `sb list` for `sb install` without tags, and
+  Docker's own command for one container), wrapped to the terminal.
+- **`sb edit` takes the file's name** too: `sb edit accounts.yml`, and
+  `sb edit localhost` for the inventory.
 - **`version` and `self-update` on an unsupported Ubuntu release,** with a
   warning, so such a host can still update sb.
 

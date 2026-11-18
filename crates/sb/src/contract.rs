@@ -544,11 +544,39 @@ fn aliases(root: &clap::Command) -> Vec<String> {
     lines
 }
 
-/// sb-go has no aliases, and neither has sb.
+/// sb's hidden aliases sb-go lacks: each `sb edit` file's own name, and
+/// the inventory's `localhost` (tui spec, editors, difference 39).
+const ALIAS_EXTENSIONS: &[&str] = &[
+    "alias\tsb edit accounts\taccounts.yml",
+    "alias\tsb edit adv_settings\tadv_settings.yml",
+    "alias\tsb edit backup_config\tbackup_config.yml",
+    "alias\tsb edit hetzner_vlan\thetzner_vlan.yml",
+    "alias\tsb edit settings\tsettings.yml",
+    "alias\tsb edit inventory\tlocalhost",
+    "alias\tsb edit inventory\tlocalhost.yml",
+    "alias\tsb edit motd\tmotd.yml",
+    "alias\tsb edit providers\tproviders.yml",
+];
+
+/// sb-go has no aliases; sb has only [`ALIAS_EXTENSIONS`], every one
+/// hidden.
 #[test]
 fn aliases_are_sb_gos() {
     let theirs: Vec<String> = sb_go("alias").iter().map(|f| f.join("\t")).collect();
-    assert_eq!(aliases(&crate::Cli::command()), theirs);
+    let ours: Vec<String> = aliases(&crate::Cli::command())
+        .into_iter()
+        .filter(|line| !ALIAS_EXTENSIONS.contains(&line.as_str()))
+        .collect();
+    assert_eq!(ours, theirs);
+    let all = aliases(&crate::Cli::command());
+    for alias in ALIAS_EXTENSIONS {
+        assert!(all.iter().any(|line| line == alias), "not sb's: {alias}");
+    }
+    let edit = crate::Cli::command();
+    let edit = edit.find_subcommand("edit").expect("edit");
+    for sub in edit.get_subcommands() {
+        assert_eq!(sub.get_visible_aliases().count(), 0, "{}", sub.get_name());
+    }
 }
 
 /// What clap makes of `path` (sb-go's command path) followed by `words`:

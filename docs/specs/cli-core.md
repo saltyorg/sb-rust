@@ -448,8 +448,15 @@ in sb's palette
 (maintainer, 2026-11-01, look H1 from proto-help): an `ERROR` badge, clap's message with
 the value you typed in the problem colour, clap's tips as `hint:` lines
 (label orange, the fix green; "a similar … exists: 'x'" reads "did you
-mean 'x'?") and its context lines (possible values in green), with no
-pointer to help, as sb-go. They go to stderr and exit 2, the usage-error
+mean 'x'?", several names the best guess first, where clap lists it
+last) and its context lines (possible values in green), with no
+pointer to help, as sb-go. Each line wraps at words to stderr's width
+(the help's rule, for stderr's terminal), its later rows under its
+two-space indent. Two mistakes get a hint of sb's own, as one of
+clap's tips: `sb install` with no tags (`to see the tags, use 'sb
+list'`), and a name given to `sb docker restart|stop|start`, which act
+on every Saltbox container (`... for one container, use 'docker
+restart <name>'`). They go to stderr and exit 2, the usage-error
 convention (sb-go exits 1; a deliberate difference). Run errors keep sb's
 `✗` block. `-v` on a command sb-go gave it is no parse error (the
 maintainer, 2026-11-18; above); on one sb-go didn't, it still is.

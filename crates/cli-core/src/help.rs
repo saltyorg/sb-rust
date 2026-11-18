@@ -135,7 +135,9 @@ fn layout_width(terminal: Option<usize>, columns: Option<&std::ffi::OsStr>) -> u
 /// carries the one it broke at to the next piece, which also makes the
 /// line after an exactly full one break a column early) and a piece of
 /// spaces only is dropped; the first piece keeps the line's own indent,
-/// and a line of spaces only comes back as one empty piece.
+/// and a line of spaces only comes back as one empty piece. A line may
+/// carry colour codes (a parse error's): tabled's `ansi` feature keeps a
+/// colour across a break, and they count no columns.
 ///
 /// Why not textwrap (`Options::subsequent_indent`,
 /// <https://docs.rs/textwrap/0.16.2/textwrap/struct.Options.html#structfield.subsequent_indent>):
@@ -143,13 +145,14 @@ fn layout_width(terminal: Option<usize>, columns: Option<&std::ffi::OsStr>) -> u
 /// tabled's wrap is already in sb's binary. sb's help texts hold no
 /// colour codes: the styles are added to each piece after.
 fn wrapped(line: &str, width: usize) -> Vec<String> {
-    if line.width() <= width {
+    // Measured as tabled measures it: colour codes take no columns.
+    if tabled::grid::util::string::get_line_width(line) <= width {
         return vec![line.to_owned()];
     }
     let wrapped = tabled::settings::width::Wrap::wrap(line, width, true);
     let pieces: Vec<&str> = wrapped
         .split('\n')
-        .filter(|piece| !piece.trim().is_empty())
+        .filter(|piece| tabled::grid::util::string::get_line_width(piece.trim()) > 0)
         .collect();
     if pieces.is_empty() {
         return vec![String::new()];
@@ -496,6 +499,10 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
 /// then clap's tips as `hint:` lines (see [`tip_hint`]; the label in the
 /// warn colour) and clap's context lines (`[possible values: …]`, the
 /// values in the OK colour).
+/// Every line wraps at words to `width` (the stderr terminal's,
+/// [`error_width`]), its later rows under its two-column indent, through
+/// the help's own wrap ([`wrapped`], tabled's `Wrap::wrap`, which keeps a
+/// colour across a break with its `ansi` feature).
 /// No pointer to help, as sb-go. clap's usage paragraph is left out:
 /// removed with clap's `Error::remove(ContextKind::Usage)`
 /// (<https://docs.rs/clap/4.6.7/clap/error/struct.Error.html#method.remove>),
@@ -514,7 +521,7 @@ fn usage_block(cmd: &Command, path: &str, theme: &Theme, colour: bool) -> String
 /// `, use '`); the tests pin each shape, so a clap update that changes one
 /// fails them.
 #[must_use]
-pub fn parse_error_block(mut err: clap::Error, theme: &Theme) -> String {
+pub fn parse_error_block(mut err: clap::Error, theme: &Theme, width: usize) -> String {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     let _ = err.remove(ContextKind::Usage);
     // The value the user typed, exactly as clap recorded it (so an
@@ -580,15 +587,34 @@ pub fn parse_error_block(mut err: clap::Error, theme: &Theme) -> String {
             .bold(),
         None => Style::new(),
     };
-    let mut out = format!("\n  {badge} ERROR {badge:#}\n\n  {headline}\n");
+    let mut out = format!("\n  {badge} ERROR {badge:#}\n\n");
+    let indented = |out: &mut String, line: &str| {
+        for piece in wrapped(line, width.saturating_sub(ERROR_INDENT).max(MIN_TEXT_WIDTH)) {
+            let _ = writeln!(out, "  {piece}");
+        }
+    };
+    indented(&mut out, &headline);
     if !body.is_empty() {
         out.push('\n');
     }
     for line in body {
-        let _ = writeln!(out, "  {line}");
+        indented(&mut out, &line);
     }
     out.push('\n');
     out
+}
+
+/// A parse error's lines' indent (fang's).
+const ERROR_INDENT: usize = 2;
+
+/// The width parse errors wrap at: [`width`]'s rule, for stderr's
+/// terminal, where they are printed.
+#[must_use]
+pub fn error_width() -> usize {
+    let terminal = rustix::termios::tcgetwinsize(std::io::stderr())
+        .ok()
+        .map(|size| usize::from(size.ws_col));
+    layout_width(terminal, std::env::var_os("COLUMNS").as_deref())
 }
 
 /// One of clap's tips as a hint. clap's suggestions ("a similar subcommand
@@ -603,10 +629,14 @@ fn tip_hint(tip: &str, ok: Style) -> String {
         .and_then(|rest| rest.split_once(": '"))
         .and_then(|(_, names)| names.strip_suffix('\''));
     if let Some(names) = suggested {
-        let names: Vec<String> = names
+        // clap lists them by ascending similarity, the most similar last
+        // (`clap_builder` 4.6.7 `parser/features/suggestions.rs`,
+        // `did_you_mean`): the best guess goes first.
+        let mut names: Vec<String> = names
             .split("', '")
             .map(|name| format!("'{ok}{name}{ok:#}'"))
             .collect();
+        names.reverse();
         let names = match names.split_last() {
             Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
             _ => names.concat(),
@@ -1044,7 +1074,7 @@ mod tests {
             "invalid value 'x'\n  [possible values: a, b]\n\n  tip: try 'a'\n\nUsage: sb one\n       sb two\n\nFor more information, try '--help'.\n",
         );
         assert_eq!(
-            parse_error_block(err, &Theme::plain()),
+            parse_error_block(err, &Theme::plain(), MAX_WIDTH),
             "\n   ERROR \n\n  invalid value 'x'\n\n  [possible values: a, b]\n  hint: try 'a'\n\n"
         );
     }
@@ -1058,7 +1088,7 @@ mod tests {
             .subcommand(Command::new("version"))
             .try_get_matches_from(["sb", "nope"])
             .expect_err("unknown command");
-        let block = parse_error_block(err, &theme);
+        let block = parse_error_block(err, &theme, MAX_WIDTH);
         assert!(
             block.starts_with(&format!(
                 "\n  {badge} ERROR {badge:#}\n",
@@ -1077,7 +1107,7 @@ mod tests {
             .subcommand(Command::new("version"))
             .try_get_matches_from(["sb", "verison"])
             .expect_err("typo");
-        let block = parse_error_block(typo, &theme);
+        let block = parse_error_block(typo, &theme, MAX_WIDTH);
         assert!(
             block.contains(&format!("{}hint:", theme.style(Role::Warn)))
                 && block.contains(&format!("'{}version", theme.style(Role::Ok))),
@@ -1089,6 +1119,7 @@ mod tests {
         parse_error_block(
             cmd.try_get_matches_from(argv).expect_err("a parse error"),
             &Theme::plain(),
+            MAX_WIDTH,
         )
     }
 
@@ -1174,7 +1205,7 @@ mod tests {
             .arg(Arg::new("mode").long("mode").value_parser(["a", "b"]))
             .try_get_matches_from(["sb", "--mode=c"])
             .expect_err("bad value");
-        let block = parse_error_block(bad, &theme);
+        let block = parse_error_block(bad, &theme, MAX_WIDTH);
         assert!(
             block.contains(&format!("'{problem}c{problem:#}'")),
             "{block:?}"
@@ -1193,30 +1224,73 @@ mod tests {
             .subcommand(Command::new("version"))
             .try_get_matches_from(["sb", "--verbose"])
             .expect_err("missing subcommand");
-        let block = parse_error_block(missing, &theme);
+        let block = parse_error_block(missing, &theme, MAX_WIDTH);
         assert!(block.contains("  'sb' requires a subcommand"), "{block:?}");
     }
 
-    /// Several similar names read as one question, each candidate green.
+    /// Several similar names read as one question, each candidate green,
+    /// the best guess first: clap lists them by ascending similarity,
+    /// most similar last.
     #[test]
     fn several_suggestions_read_as_one_question() {
         let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
         let ok = theme.style(Role::Ok);
         let err = Command::new("sb")
+            .subcommand(Command::new("list"))
             .subcommand(Command::new("install"))
-            .subcommand(Command::new("instal1"))
             .try_get_matches_from(["sb", "instal"])
             .expect_err("typo");
-        let block = parse_error_block(err, &theme);
+        let block = parse_error_block(err, &theme, MAX_WIDTH);
         assert!(
             block.contains(&format!(
-                "did you mean '{ok}instal1{ok:#}' or '{ok}install{ok:#}'?"
-            )) || block.contains(&format!(
-                "did you mean '{ok}install{ok:#}' or '{ok}instal1{ok:#}'?"
+                "did you mean '{ok}install{ok:#}' or '{ok}list{ok:#}'?"
             )),
             "{block:?}"
         );
         assert!(!block.contains("exist:"), "{block:?}");
+    }
+
+    /// At a narrow width every line wraps at words under its two-column
+    /// indent, colours kept; a line that fits is left whole.
+    #[test]
+    fn a_parse_error_wraps_under_its_indent() {
+        let commands = ["reinstall-python", "reinstall-facts", "reinstall-venv"];
+        let err = || {
+            commands
+                .iter()
+                .fold(Command::new("sb"), |cmd, name| {
+                    cmd.subcommand(Command::new(*name))
+                })
+                .try_get_matches_from(["sb", "reinstall"])
+                .expect_err("typo")
+        };
+        let block = parse_error_block(err(), &Theme::plain(), 40);
+        let lines: Vec<&str> = block.lines().collect();
+        assert!(lines.iter().all(|line| line.width() <= 40), "{block}");
+        let hint = lines
+            .iter()
+            .position(|line| line.starts_with("  hint: did you mean"))
+            .expect("the hint");
+        let next = lines[hint + 1];
+        assert!(
+            next.starts_with("  ") && !next.starts_with("   "),
+            "{block}"
+        );
+        assert_eq!(block.matches("reinstall-").count(), 3, "{block}");
+        // Coloured, the codes don't count towards the width.
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let coloured = parse_error_block(err(), &theme, 40);
+        let plain = anstream::adapter::strip_str(&coloured).to_string();
+        assert!(plain.lines().all(|line| line.width() <= 40), "{plain}");
+        assert_eq!(plain, block);
+        // Wide, it is one line.
+        let wide = parse_error_block(err(), &Theme::plain(), MAX_WIDTH);
+        assert!(
+            wide.lines()
+                .any(|line| line.starts_with("  hint: did you mean 'reinstall-")
+                    && line.ends_with('?')),
+            "{wide}"
+        );
     }
 
     /// The typed value is coloured whole, apostrophes and all, and a tip's
@@ -1229,7 +1303,7 @@ mod tests {
             .subcommand(Command::new("version"))
             .try_get_matches_from(["sb", "it's"])
             .expect_err("unknown command");
-        let block = parse_error_block(err, &theme);
+        let block = parse_error_block(err, &theme, MAX_WIDTH);
         assert!(
             block.contains(&format!("'{problem}it's{problem:#}'")),
             "{block:?}"
@@ -1238,7 +1312,7 @@ mod tests {
             .arg(Arg::new("name"))
             .try_get_matches_from(["sb", "--it's"])
             .expect_err("unknown flag");
-        let block = parse_error_block(err, &theme);
+        let block = parse_error_block(err, &theme, MAX_WIDTH);
         assert!(
             block.contains(&format!("'{problem}--it's{problem:#}'")),
             "{block:?}"
@@ -1251,7 +1325,7 @@ mod tests {
             .subcommand(Command::new("version"))
             .try_get_matches_from(["sb", "--", "version"])
             .expect_err("subcommand after --");
-        let block = parse_error_block(err, &theme);
+        let block = parse_error_block(err, &theme, MAX_WIDTH);
         assert!(!block.contains(&format!("{ok}--{ok:#}")), "{block:?}");
     }
 
@@ -1264,7 +1338,7 @@ mod tests {
             .arg(Arg::new("mode").long("mode").value_parser(["a", "b"]))
             .try_get_matches_from(["sb", "--mode="])
             .expect_err("empty value");
-        let block = parse_error_block(err, &theme);
+        let block = parse_error_block(err, &theme, MAX_WIDTH);
         let headline = block.lines().nth(3).expect("headline");
         assert!(!headline.contains('\x1b'), "{block:?}");
     }

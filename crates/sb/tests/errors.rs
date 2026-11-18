@@ -140,6 +140,34 @@ fn a_parse_error_on_a_subcommand_is_one_block() {
         ));
 }
 
+/// `sb install` with no tags names `sb list`; a typo's guesses come best
+/// first; at a narrow `COLUMNS` (no terminal on stderr) every line wraps
+/// under its indent.
+#[test]
+fn parse_errors_hint_order_and_wrap() {
+    sb().arg("install")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "\n  hint: to see the tags, use 'sb list'\n",
+        ));
+    let out = sb().arg("instal").output().expect("run sb");
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("hint: did you mean 'install', "), "{text}");
+    let out = sb()
+        .arg("reinstal")
+        .env("COLUMNS", "40")
+        .output()
+        .expect("run sb");
+    assert_eq!(out.status.code(), Some(2));
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        text.lines().all(|line| line.chars().count() <= 40),
+        "{text}"
+    );
+    assert!(text.lines().count() > 6, "wrapped: {text}");
+}
+
 /// clap's suggestions for a flag and for a value read as "did you mean";
 /// a value suggestion follows the possible values.
 #[test]
