@@ -3491,6 +3491,7 @@ dependencies = [
  "clap_lex",
  "colorchoice-clap",
  "icu_properties",
+ "procfs",
  "rustix",
  "saphyr",
  "saphyr-parser",

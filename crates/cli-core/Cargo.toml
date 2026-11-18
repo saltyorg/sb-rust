@@ -24,6 +24,8 @@ tokio-util.workspace = true
 # The blocking pool, for spawn.rs's helper that carries the caller's span.
 tokio.workspace = true
 rustix.workspace = true
+# The run lock's ancestor walk (run_lock.rs): each process's parent pid.
+procfs.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-log.workspace = true
@@ -34,6 +36,11 @@ tabled.workspace = true
 # A combining mark stays with its base character in escaped text
 # (plan decision 40).
 icu_properties.workspace = true
+
+[features]
+# The run lock's directory under a test's (`run_lock::DIR_VAR`), for sb's
+# tests; never in a release build.
+testing = []
 
 [dev-dependencies]
 anstream.workspace = true

@@ -12,5 +12,6 @@ pub mod exit;
 pub mod help;
 pub mod log;
 pub mod root;
+pub mod run_lock;
 pub mod spawn;
 pub mod theme;

@@ -59,6 +59,9 @@ sb-ops = { workspace = true, features = ["testing"] }
 # The test build's `SB_TEST_COMPLETION_ROOT`, where `sb completion install`
 # writes in tests (never in a release or production build).
 sb-completion = { workspace = true, features = ["testing"] }
+# The test build's `SB_TEST_RUN_LOCK_DIR`, the run lock's directory in
+# tests (never in a release or production build).
+sb-cli-core = { workspace = true, features = ["testing"] }
 # The Speedtest archive the fake release serves (bench's tests).
 tar.workspace = true
 flate2.workspace = true

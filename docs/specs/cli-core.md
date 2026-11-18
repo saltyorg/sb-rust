@@ -142,7 +142,8 @@ logged. *Amended 2026-11-13 by the completion spec.*
    and can override individual palette roles. A missing file means the
    built-in theme; an invalid one is a warning (shown and logged) and the
    built-in theme is used, so a typo can't block `sb update`.
-7. **Run the command** with a cancellation token.
+7. **Run the command** with a cancellation token, under the run lock
+   when the command changes the host (below).
 
 **Command tree:** sb-go's names, subcommands and flags (decision 1). There
 is no generated `completion` subcommand (completion has its own module)
@@ -224,6 +225,83 @@ The thread records a first signal under the holds' lock, so a delivery
 is seen either undecided or recorded, and the first signal counted is
 kept there for both (after a command's own request too). *Amended 2026-11-15
 (maintainer).*
+
+**Run lock** (maintainer, 2026-11-18): commands that change the host
+run one at a time. Each command decides in an exhaustive match
+(`takes_run_lock`), as for root, so a new one can't skip it.
+
+- **Takes it:** `install`, `update`, `setup`, `gha`, `branch`,
+  `branch-sandbox`, `self-update`, `update-venv`, `reinstall-venv`,
+  `reinstall-python`, `reinstall-facts`, `restore`.
+- **Never takes it:** the rest. `motd`, `list`, `logs`, `docker ps`,
+  `docker logs`, `validate-config`, `announcements`, `edit`, `fact`,
+  `bench`, `completion` and `version` only read or are interactive;
+  `motd` must never wait (pam_motd runs it at login). `diag` is left
+  out: Saltbox's diag role only reports (debug output, a Cloudflare
+  lookup, gathered facts). `docker start`, `stop` and `restart` go
+  through the Docker controller, which runs its own jobs one at a
+  time. The files `list` and completion's installing forms write (the
+  tag cache, the shells' files) are written atomically, so a locked
+  run beside them never reads half a file.
+- **Where:** in the root run, after the sudo relaunch, the log and the
+  signal handlers, before the command.
+- **Mechanism:** an exclusive `flock` on `/run/sb/run.lock`, through
+  std's `File::try_lock` (stable since Rust 1.89; `flock(LOCK_EX |
+  LOCK_NB)` on Linux). The kernel releases it when the process ends,
+  however it ends, so no lock is ever stale. A limit: sb killed outright
+  (SIGKILL, which no handler sees) leaves the children it started in
+  their own process groups, a playbook among them, running without the
+  lock; every other ending waits for them first. Why std, not fd-lock,
+  fs4 or rustix's `flock`: the same call, with no new dependency. The
+  file is opened `O_CLOEXEC` (std's default), so no child (git,
+  ansible, what they start) holds the lock after sb is gone. A wait
+  polls `try_lock` every 100 ms against the shutdown token: a blocking
+  `flock` can't be cancelled, because the signal handlers restart the
+  call.
+- **The path:** `/run/sb` is in `/run`, a root-owned 0755 tmpfs, so only
+  root can create it; it lasts until reboot, as `flock` state does. Why
+  not `/var/lock/sb.lock`: `/var/lock` is `/run/lock`, world-writable
+  (1777), where any user could create the file first and hold its lock,
+  stalling every root run. sb creates `/run/sb` 0700. An existing one
+  must be a directory (not a link) owned by the user running sb (root)
+  and not group- or world-writable, else the run is refused, as for
+  `SB_LOG_DIR`. The file is opened with `O_NOFOLLOW`, created 0600, and
+  must be a regular file of that user's.
+- **The holder:** once it has the lock, sb replaces the file's contents
+  with its pid and its command, one per line (`1234`, `sb install`). A
+  waiting sb reads at most 256 bytes of it and escapes what it prints.
+- **Waiting:** one line on stderr, with or without a terminal, so cron
+  jobs wait their turn (in no set order: each waiter tries every
+  100 ms): `another sb command is running (sb install, pid 1234);
+  waiting… (Ctrl-C to give up)`, or `another sb command is running;
+  waiting… (Ctrl-C to give up)` when the holder can't be read. Ctrl-C,
+  SIGTERM or a hangup while waiting ends the run as any interrupted run
+  (130, 143, 129), before the command has done anything. Once the lock
+  is taken the run goes on; the run log records `run lock taken` with
+  the time waited (`waited_ms`) and the holder waited for.
+- **Nesting:** a locking sb whose lock is held by one of its own
+  ancestors (the holder's pid, found by walking the parent pids
+  through `/proc`) runs without taking it, and logs the holder. No sb
+  runs sb today: update's migrations run ansible, setup runs no
+  install, and Saltbox's and Sandbox's playbooks call no sb (they only
+  name commands in messages; checked 2026-11-18). This covers a
+  playbook or script started by a locked run that calls sb. Why
+  ancestry, not an inherited descriptor or an environment token: a
+  descriptor kept open across `exec` leaks into every child and holds
+  the lock after sb dies; an environment token doesn't survive sudo,
+  and any caller could set one. The holder's record is root's, and
+  only a process the holder started has it as an ancestor. The pid is
+  read only while someone holds the lock. Between a new holder taking
+  it and writing its pid (microseconds), the old pid is a process that
+  has released the lock and starts nothing more. The record is written
+  over the old one, then cut to its length, so it is never read cut
+  short.
+- **Tests:** `SB_TEST_RUN_LOCK_DIR` replaces `/run/sb` in test builds
+  (cli-core's `testing` feature), never in a release build. sb's tests
+  give every run a directory of its own (`common::apply_sb_env`), and
+  the lock's tests share one between runs, always on the test build. A
+  test run of another build (`SB_TEST_BINARY`) takes the host's lock in
+  `/run/sb` for its locking commands.
 
 **Exit codes:** 0 success; 1 error; 2 for a parse error; death by
 SIGINT, SIGTERM or SIGHUP when interrupted (`$?` reads 130, 143 or
@@ -330,7 +408,9 @@ release spec.*
 Rust 1.100.0, edition 2024 (`rust-toolchain.toml`). From the capability
 map's stack: clap 4 (derive), colorchoice-clap, anstream/anstyle, console,
 tokio (signals, cancellation via `tokio-util`'s `CancellationToken`),
-tracing + tracing-subscriber + tracing-appender, rustix (euid), serde and
+tracing + tracing-subscriber + tracing-appender, rustix (euid), std's
+`File::try_lock` and procfs (the run lock's `flock` and parent pids;
+2026-11-18), serde and
 `toml` for the config; icu_properties for the escaper's combining marks
 (plan decision 40); tabled's `Wrap::wrap` for help's line wrap (already
 term-ui's; 2026-11-14). Exact versions are pinned when the crate is added;

@@ -1,0 +1,20 @@
+#!/bin/sh
+# The run lock's stand-in ansible-playbook (crates/sb/tests/run_lock.rs):
+# records that it ran (its pid in `ran.<name>`), then, as RUN_LOCK_MODE
+# says, holds until the test's `release` file appears (30 s at most), or
+# runs a nested `sb install` under its parent's lock.
+dir=$RUN_LOCK_TEST_DIR
+echo $$ > "$dir/ran.$RUN_LOCK_NAME"
+case "$RUN_LOCK_MODE" in
+hold)
+    i=0
+    while [ ! -e "$dir/release" ] && [ "$i" -lt 600 ]; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    ;;
+nested)
+    RUN_LOCK_MODE= RUN_LOCK_NAME=inner "$RUN_LOCK_SB" install --no-cache inner </dev/null
+    exit $?
+    ;;
+esac

@@ -182,7 +182,7 @@ GitHub API (last push, archived flag).
 | YAML, schema-validated config | `saphyr` (`MarkedYaml`, positions, duplicate-key rejection) | 0.3.3 / 2026-10 | 1.1M | yaml.v3 nodes + custom duplicate-key walker | proto-yaml, cli-core (inventory) |
 | Schema `pattern` rules | `regex` | 1.13.1 / 2026-07 | 1.3B | (not enforced by sb-go) | proto-yaml, config Task 1 |
 | XML-RPC (rTorrent) | `quick-xml` (thin client) | 0.42.0 / 2026-08 | 151M | go-rtorrent | the motd spec. *Amended 2026-11-13 by the motd spec.* |
-| System facts from /proc (motd) | `procfs` (no default features). *Amended 2026-11-13 by the motd spec.* | 0.18.0 | 23.7M | /proc parsing and `uptime`, `ps` children (motd/info.go) | the motd spec |
+| System facts from /proc (motd) | `procfs` (no default features). *Amended 2026-11-13 by the motd spec; also cli-core's run lock, its parent pids (2026-11-18).* | 0.18.0 | 23.7M | /proc parsing and `uptime`, `ps` children (motd/info.go) | the motd spec |
 | ELF header check (staged sb, saltbox.fact) | `object` (`read_core`, `elf`; no default features). *Amended 2026-11-13 by the release spec.* | 0.41.0 | — | debug/elf (release/asset.go, saltbox/fact.go) | untested (release and python-env specs) |
 | Archives (uv, Speedtest) | `tar` + `flate2` (`rust_backend`). *Amended 2026-11-13 by the ops spec.* | 0.4.46 / 1.1.10 | — | archive/tar, compress/gzip | untested (python-env and ops specs) |
 | Versions | `semver` | 1.0.28 | 253M | Masterminds/semver | untested |

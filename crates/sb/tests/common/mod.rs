@@ -11,12 +11,25 @@ pub fn test_log_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sb-test-logs")
 }
 
+/// A run lock directory no other run of sb uses: this test process's id
+/// and a count, in [`test_log_dir`], made here (sb makes the lock's own
+/// directory, never its parent).
+fn run_lock_dir() -> PathBuf {
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::fs::create_dir_all(test_log_dir()).expect("test log dir");
+    test_log_dir().join(format!("run-lock-{}-{run}", std::process::id()))
+}
+
 /// The built `sb`, logging to [`test_log_dir`]. `assert_cmd`'s prelude adds
 /// `.assert()` to it. `SB_TEST_BINARY`, an absolute path to an existing
 /// file, runs another build of sb in every test that uses this (the
 /// production glibc binary, docker plan Task 9); a bare name would go
 /// through `PATH` and could find an installed sb, so it is refused.
-/// scripts/check.sh unsets it.
+/// scripts/check.sh unsets it. Such a build has no test seams of its
+/// own: its locking commands take the host's run lock in `/run/sb`
+/// (cli-core spec, "Run lock"), so tests that hold the lock use this test
+/// build.
 pub fn sb() -> std::process::Command {
     let program = std::env::var_os("SB_TEST_BINARY")
         .filter(|path| !path.is_empty())
@@ -97,6 +110,10 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
         "SB_TEST_COMPLETION_ROOT",
         test_log_dir().join("no-completion-root"),
     );
+    // Nor the host's run lock (`/run/sb`): a lock directory of this run's
+    // own, so tests running at once never wait for each other; the lock's
+    // tests share one between their runs.
+    cmd.env("SB_TEST_RUN_LOCK_DIR", run_lock_dir());
     // No test reaches Cloudflare or Docker Hub: both checks go to a
     // loopback port nothing listens on unless a test points them at its
     // fake, with no proxy, certificate or zoneinfo settings of the

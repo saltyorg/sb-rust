@@ -16,6 +16,7 @@ use sb_cli_core::exit::{self, RunEnd};
 use sb_cli_core::help;
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
+use sb_cli_core::run_lock;
 use sb_cli_core::theme;
 use sb_ops::Checkout;
 
@@ -536,6 +537,48 @@ impl Command {
         }
     }
 
+    /// Whether the command takes the run lock (cli-core spec, "Run
+    /// lock"; the maintainer, 2026-11-18): the commands that change the
+    /// host. Every command decides here, with no wildcard arm, as for
+    /// root.
+    fn takes_run_lock(&self) -> bool {
+        match self {
+            Command::Install(_)
+            | Command::Update(_)
+            | Command::Setup(_)
+            | Command::Gha
+            | Command::Branch { .. }
+            | Command::BranchSandbox { .. }
+            | Command::SelfUpdate { .. }
+            | Command::UpdateVenv
+            | Command::ReinstallVenv
+            | Command::ReinstallPython
+            | Command::ReinstallFacts
+            | Command::Restore(_)
+            // A preview that runs its migrations changes the host as
+            // update's migrations do (ops decision 34).
+            | Command::Announcements {
+                command: Some(AnnouncementsCommand::Preview { run_migrations: true, .. }),
+            } => true,
+            // Read-only or interactive; motd never waits (pam_motd runs
+            // it at login); diag's role only reports; docker start, stop
+            // and restart go through the controller's own jobs; list's
+            // tag cache and completion's files are written atomically.
+            Command::Version { .. }
+            | Command::Docker { .. }
+            | Command::ValidateConfig
+            | Command::Edit { .. }
+            | Command::Fact
+            | Command::Motd(_)
+            | Command::Logs
+            | Command::Diag
+            | Command::List(_)
+            | Command::Announcements { .. }
+            | Command::Bench
+            | Command::Completion { .. } => false,
+        }
+    }
+
     /// Whether the command runs on an unsupported Ubuntu release, with a
     /// warning: `version` and the standalone `self-update` only (cli-core
     /// spec, startup step 1). `update` keeps refusing: it changes the host.
@@ -607,6 +650,45 @@ impl Command {
             } => true,
         }
     }
+}
+
+/// The run lock for `command`, when it takes it (cli-core spec, "Run
+/// lock"): waiting with one line on stderr while another sb holds it;
+/// the run log gets how long it waited, or the ancestor whose lock this
+/// run is under.
+///
+/// # Errors
+///
+/// cli-core's [`run_lock::LockError`]: the lock's directory or file isn't
+/// safe or can't be opened, or Ctrl-C or a signal came while waiting.
+fn take_run_lock(
+    command: &Command,
+    shutdown: &Shutdown,
+) -> anyhow::Result<Option<run_lock::Taken>> {
+    if !command.takes_run_lock() {
+        return Ok(None);
+    }
+    let name = format!("sb {}", command.name());
+    let taken = run_lock::take(&run_lock::dir(), &name, &shutdown.token(), |holder| {
+        let line = exit::escaped(&run_lock::waiting_line(holder));
+        let _ = writeln!(anstream::stderr(), "{line}");
+    })?;
+    match &taken {
+        run_lock::Taken::Held {
+            waited, waited_for, ..
+        } => tracing::info!(
+            waited_ms = waited.as_millis(),
+            holder_pid = waited_for.as_ref().map(|holder| holder.pid),
+            holder_command = waited_for.as_ref().map(|holder| holder.command.as_str()),
+            "run lock taken"
+        ),
+        run_lock::Taken::Nested(holder) => tracing::info!(
+            holder_pid = holder.pid,
+            holder_command = holder.command.as_str(),
+            "run lock held by an ancestor sb; running under it"
+        ),
+    }
+    Ok(Some(taken))
 }
 
 fn main() -> RunEnd {
@@ -712,7 +794,11 @@ fn main() -> RunEnd {
     let result = shutdown
         .listen_for_signals()
         .map_err(anyhow::Error::from)
-        .and_then(|()| run(&cli.command, &shutdown, log.as_ref()));
+        .and_then(|()| {
+            // Held until the command is done (cli-core spec, "Run lock").
+            let _lock = take_run_lock(&cli.command, &shutdown)?;
+            run(&cli.command, &shutdown, log.as_ref())
+        });
     let error = result.as_ref().err().map(|e| e.as_ref() as _);
     // One frozen view of how the run ended, so the log and the screen agree
     // even if a signal arrives between them.
@@ -1430,6 +1516,54 @@ mod tests {
     fn logs_needs_root() {
         assert!(Command::Logs.needs_root());
         assert_eq!(Command::Logs.name(), "logs");
+    }
+
+    /// The run lock's commands (cli-core spec, "Run lock"): the ones that
+    /// change the host take it; motd, which `pam_motd` runs at login, and
+    /// the read-only and interactive ones never do.
+    #[test]
+    fn the_host_changing_commands_take_the_run_lock() {
+        let takes = |args: &[&str]| {
+            let cli = Cli::try_parse_from(std::iter::once("sb").chain(args.iter().copied()))
+                .unwrap_or_else(|err| panic!("{args:?}: {err}"));
+            cli.command.takes_run_lock()
+        };
+        for args in [
+            &["install", "plex"][..],
+            &["update"],
+            &["setup"],
+            &["gha"],
+            &["branch", "develop"],
+            &["branch-sandbox", "develop"],
+            &["self-update"],
+            &["update-venv"],
+            &["reinstall-venv"],
+            &["reinstall-python"],
+            &["reinstall-facts"],
+            &["restore"],
+        ] {
+            assert!(takes(args), "{args:?}");
+        }
+        for args in [
+            &["motd"][..],
+            &["list"],
+            &["logs"],
+            &["docker", "ps"],
+            &["docker", "logs"],
+            &["docker", "start"],
+            &["docker", "stop"],
+            &["docker", "restart"],
+            &["validate-config"],
+            &["announcements"],
+            &["edit", "settings"],
+            &["fact"],
+            &["bench"],
+            &["completion", "install"],
+            &["version"],
+            &["diag"],
+        ] {
+            assert!(!takes(args), "{args:?}");
+        }
     }
 
     /// `diag` runs a playbook as root and logs under its name.
