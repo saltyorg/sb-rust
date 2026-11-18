@@ -502,7 +502,7 @@ fn an_edit_is_saved_to_the_file() {
     pty.send(b"\x7f\x7f\x7f\x7fAway");
     pty.send(b"\r");
     assert!(pty.showing("Away  changed"), "{}", pty.contents());
-    pty.send(b"v");
+    pty.send(b"s");
     assert!(pty.showing("Save 1 change"), "{}", pty.contents());
     pty.send(b"y");
     assert!(pty.showing("homepage: saved"), "{}", pty.contents());
@@ -570,7 +570,7 @@ fn the_smoke_test_searches_edits_saves_and_quits() {
         assert!(pty.showing("Edit title"), "{}", pty.contents());
         pty.send(b"\x7f\x7f\x7f\x7fAway\r");
         assert!(pty.showing("Away  changed"), "{}", pty.contents());
-        pty.send(b"vy");
+        pty.send(b"sy");
         assert!(pty.showing("homepage: saved"), "{}", pty.contents());
         pty.send(b"\rq");
         assert!(

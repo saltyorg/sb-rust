@@ -66,7 +66,7 @@ impl Page {
         line.move_cursor(CursorMove::Bottom);
         line.move_cursor(CursorMove::End);
         let title = format!(" Edit {} ", one_line(&setting.key));
-        let keys = " Enter save · Alt+Enter new line · Esc cancel ";
+        let keys = " Enter keep · Alt+Enter new line · Esc cancel ";
         self.popup = Popup::Edit {
             line: Box::new(self.dialog_line(line, title, keys)),
             target,
@@ -218,7 +218,7 @@ impl Page {
             },
             Popup::Saving => (Popup::Saving, Flow::Unchanged),
             Popup::Waiting { role, waited } => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('c'))
+                if key.code == KeyCode::Esc
                     && let Some(running) = &self.saving
                 {
                     running.cancel_wait();
@@ -323,8 +323,9 @@ impl Page {
         (Popup::AddValue { line, target }, Flow::Redraw)
     }
 
-    /// A key in the drift dialog: `r` reloads, `c` or Esc cancels (the
-    /// answer goes to the save), the arrows and page keys scroll.
+    /// A key in the drift dialog: `r` reloads, Esc cancels (the answer goes
+    /// to the save; `c` copies on the page, so it doesn't cancel here), the
+    /// arrows and page keys scroll.
     fn drift_key(
         key: KeyEvent,
         role: String,
@@ -334,7 +335,7 @@ impl Page {
     ) -> (Popup, Flow) {
         let answer = match key.code {
             KeyCode::Char('r') => Some(DriftChoice::Reload),
-            KeyCode::Esc | KeyCode::Char('c') => Some(DriftChoice::Cancel),
+            KeyCode::Esc => Some(DriftChoice::Cancel),
             KeyCode::Down | KeyCode::Char('j') => {
                 scroll.scroll_down();
                 None

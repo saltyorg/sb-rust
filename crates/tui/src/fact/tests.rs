@@ -270,7 +270,7 @@ fn each_app_is_a_heading_with_its_settings_and_values() {
     );
     assert_eq!(
         rows[23],
-        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (v)   Quit (q)"
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Quit (q)"
     );
 }
 
@@ -393,6 +393,58 @@ fn q_and_esc_quit() {
         let mut p = page();
         assert_eq!(press(&mut p, code), Flow::Quit, "{code:?}");
     }
+}
+
+/// Esc goes back one step: a search in effect is cleared first, as sb-go's
+/// editor did, and only then does Esc leave (tui spec, "Keys", rule 5).
+#[test]
+fn esc_clears_a_search_in_effect_before_it_quits() {
+    let mut p = page();
+    press(&mut p, KeyCode::Char('/'));
+    type_text(&mut p, "komodo");
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(press(&mut p, KeyCode::Esc), Flow::Redraw);
+    assert_eq!(p.query, "");
+    assert_eq!(p.search.lines().concat(), "");
+    assert!(shows(&mut p, 80, 24, "Homepage"));
+    assert_eq!(press(&mut p, KeyCode::Esc), Flow::Quit);
+}
+
+/// `s` and Ctrl+S save (sb-go's keys, the log viewer's `s`); `v` does
+/// nothing now (tui spec, "Keys").
+#[test]
+fn s_and_ctrl_s_save_and_v_does_nothing() {
+    let mut p = page();
+    down(&mut p, 2);
+    press(&mut p, KeyCode::Char('d'));
+    assert_eq!(press(&mut p, KeyCode::Char('v')), Flow::Unchanged);
+    assert!(matches!(p.popup, Popup::None));
+    press(&mut p, KeyCode::Char('s'));
+    assert!(matches!(p.popup, Popup::ConfirmSave));
+    press(&mut p, KeyCode::Esc);
+    ctrl(&mut p, 's');
+    assert!(matches!(p.popup, Popup::ConfirmSave));
+}
+
+/// `g` and `G` go to the first and last row, as Home and End; `b` and
+/// Space page up and down, as `PgUp` and `PgDn`; `h` and `l` fold and open,
+/// as ← and → (tui spec, "Keys").
+#[test]
+fn the_alias_keys_move_page_and_fold() {
+    let mut p = page();
+    drawn(&mut p, 80, 24);
+    press(&mut p, KeyCode::Char('G'));
+    assert_eq!(p.selected(), Some(Row::Setting((2, 1, 1))));
+    press(&mut p, KeyCode::Char('g'));
+    assert_eq!(p.selected(), Some(Row::App(0)));
+    press(&mut p, KeyCode::Char(' '));
+    assert_eq!(p.selected(), Some(Row::Setting((2, 1, 1))));
+    press(&mut p, KeyCode::Char('b'));
+    assert_eq!(p.selected(), Some(Row::App(0)));
+    press(&mut p, KeyCode::Char('h'));
+    assert!(shows(&mut p, 80, 24, "▸ Homepage"));
+    press(&mut p, KeyCode::Char('l'));
+    assert!(shows(&mut p, 80, 24, "▾ Homepage"));
 }
 
 /// Searching narrows the page to the matching apps, copies and keys, in
@@ -611,7 +663,7 @@ fn a_narrow_screen_shows_the_changes_panel_at_the_bottom() {
     assert!(rows[27].starts_with("╰─"), "{rows:?}");
     assert_eq!(
         rows[29],
-        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (v)   Quit (q)"
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (s)   Quit (q)"
     );
 }
 
@@ -1032,6 +1084,11 @@ fn a_secret_s_edit_box_shows_its_value() {
     assert!(rows.contains(SECRET), "{rows}");
     assert!(!rows.contains('•'), "{rows}");
     assert!(!rows.contains("Ctrl+S"), "{rows}");
+    // Enter stages; "save" is the file's (tui spec, "Keys", Dialogs).
+    assert!(
+        rows.contains("Enter keep · Alt+Enter new line · Esc cancel"),
+        "{rows}"
+    );
     ctrl(&mut f.page, 's');
     assert!(shows(&mut f.page, 100, 40, SECRET));
 }
@@ -1238,7 +1295,7 @@ fn save_writes_the_changes_and_says_so() {
     press(&mut f.page, KeyCode::Enter);
     select(&mut f.page, "    plex2");
     press(&mut f.page, KeyCode::Char('d'));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     assert!(matches!(f.page.popup, Popup::ConfirmSave));
     assert!(shows(
         &mut f.page,
@@ -1255,7 +1312,7 @@ fn save_writes_the_changes_and_says_so() {
     // n cancels.
     press(&mut f.page, KeyCode::Char('n'));
     assert!(matches!(f.page.popup, Popup::None));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Char('y'));
     f.settle();
     assert!(f.page.pending.is_empty());
@@ -1285,7 +1342,7 @@ fn saving_an_app_s_deletion_removes_its_file() {
     let mut f = Fixture::new(&roles());
     select(&mut f.page, "▾ Komodo");
     press(&mut f.page, KeyCode::Char('d'));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     f.settle();
     assert_eq!(f.file("komodo"), None);
@@ -1297,7 +1354,7 @@ fn saving_an_app_s_deletion_removes_its_file() {
 #[test]
 fn save_with_nothing_staged_says_so() {
     let mut f = Fixture::new(&roles());
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     assert!(matches!(f.page.popup, Popup::None));
     assert_eq!(f.page.status, "Nothing to save");
 }
@@ -1351,7 +1408,7 @@ fn a_drift_reloads_on_r() {
         format!("[komodo]\ndatabase_password = {SECRET}\njwt_secret = other\nport = 1\n"),
     )
     .expect("write");
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     f.wait_for_dialog();
     assert!(matches!(f.page.popup, Popup::Drift { .. }));
@@ -1383,12 +1440,15 @@ fn a_drift_cancel_keeps_the_change() {
     select(&mut f.page, "jwt_secret");
     press(&mut f.page, KeyCode::Char('d'));
     std::fs::remove_file(f.dir.path().join("komodo.ini")).expect("remove");
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     f.wait_for_dialog();
     assert!(shows(&mut f.page, 100, 40, "(the file is gone)"));
     press(&mut f.page, KeyCode::Down);
-    press(&mut f.page, KeyCode::Char('c'));
+    // `c` copies on the page: it doesn't cancel here (tui spec, "Keys").
+    assert_eq!(press(&mut f.page, KeyCode::Char('c')), Flow::Unchanged);
+    assert!(shows(&mut f.page, 100, 40, "Cancel (Esc)"));
+    press(&mut f.page, KeyCode::Esc);
     f.settle();
     assert_eq!(f.page.pending.len(), 1);
     assert!(shows(&mut f.page, 100, 40, " Not everything was saved "));
@@ -1409,7 +1469,7 @@ fn a_held_lock_shows_the_waiting_dialog_and_cancels() {
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).expect("flock");
     select(&mut f.page, "theme");
     press(&mut f.page, KeyCode::Char('d'));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     f.wait_for_dialog();
     assert!(matches!(f.page.popup, Popup::Waiting { .. }));
@@ -1420,7 +1480,10 @@ fn a_held_lock_shows_the_waiting_dialog_and_cancels() {
         40,
         "Saltbox is changing homepage's settings."
     ));
+    assert!(shows(&mut f.page, 100, 40, "Cancel (Esc)"));
     press(&mut f.page, KeyCode::Char('c'));
+    assert!(matches!(f.page.popup, Popup::Waiting { .. }));
+    press(&mut f.page, KeyCode::Esc);
     f.settle();
     assert_eq!(f.page.pending.len(), 1);
     assert!(shows(
@@ -1440,7 +1503,7 @@ fn the_page_s_keys_wait_while_saving() {
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).expect("flock");
     select(&mut f.page, "theme");
     press(&mut f.page, KeyCode::Char('d'));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     f.wait_for_dialog();
     assert_eq!(press(&mut f.page, KeyCode::Char('q')), Flow::Redraw);
@@ -1459,7 +1522,7 @@ fn a_stopped_save_finishes_with_the_session() {
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).expect("flock");
     select(&mut f.page, "theme");
     press(&mut f.page, KeyCode::Char('d'));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     let running = f.page.saving.take().expect("saving");
     running.stop();
@@ -1486,7 +1549,7 @@ fn the_log_names_each_change_without_its_value() {
         press(&mut f.page, KeyCode::Enter);
         select(&mut f.page, "api_key");
         press(&mut f.page, KeyCode::Char('u'));
-        press(&mut f.page, KeyCode::Char('v'));
+        press(&mut f.page, KeyCode::Char('s'));
         press(&mut f.page, KeyCode::Enter);
         f.settle();
     });
@@ -1504,11 +1567,11 @@ fn the_log_names_each_change_without_its_value() {
 #[test]
 fn the_save_button_shortens_on_a_narrow_screen() {
     let mut f = Fixture::new(&roles());
-    assert!(shows(&mut f.page, 100, 40, "Save changes (v)"));
+    assert!(shows(&mut f.page, 100, 40, "Save changes (s)"));
     let rows = screen(&drawn(&mut f.page, 70, 40));
     assert_eq!(
         rows[39],
-        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save (v)   Quit (q)"
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save (s)   Quit (q)"
     );
 }
 
@@ -1556,7 +1619,7 @@ fn snapshot_dialog_save_80x24() {
     let mut f = Fixture::new(&roles());
     select(&mut f.page, "theme");
     press(&mut f.page, KeyCode::Char('d'));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     assert_snapshot!(drawn(&mut f.page, 80, 24).backend());
 }
 
@@ -1648,7 +1711,7 @@ fn quit_s_save_that_saves_nothing_stays_open_with_the_changes() {
     press(&mut f.page, KeyCode::Char('q'));
     press(&mut f.page, KeyCode::Char('y'));
     f.wait_for_dialog();
-    press(&mut f.page, KeyCode::Char('c'));
+    press(&mut f.page, KeyCode::Esc);
     f.settle();
     assert_eq!(press(&mut f.page, KeyCode::Enter), Flow::Redraw);
     assert_eq!(f.page.pending.len(), 1);
@@ -1665,7 +1728,7 @@ fn teardown_with_a_drift_open_writes_nothing() {
     press(&mut f.page, KeyCode::Char('d'));
     let disk = "[komodo]\nport = 1\n";
     std::fs::write(f.dir.path().join("komodo.ini"), disk).expect("write");
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     f.wait_for_dialog();
     assert!(matches!(f.page.popup, Popup::Drift { .. }));
@@ -1700,7 +1763,7 @@ fn a_lost_save_says_so() {
     select(&mut f.page, "theme");
     press(&mut f.page, KeyCode::Char('d'));
     // No session: nothing checks, the change is staged; the save can't run.
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Char('y'));
     assert!(
         f.page
@@ -1942,7 +2005,7 @@ fn a_click_on_a_button_acts() {
     let delete = find(&mut f.page, "Delete (d)");
     left_click(&mut f.page, delete);
     assert_eq!(f.page.pending.len(), 1);
-    let save = find(&mut f.page, "Save changes (v)");
+    let save = find(&mut f.page, "Save changes (s)");
     left_click(&mut f.page, save);
     assert!(matches!(f.page.popup, Popup::ConfirmSave));
     // The dialog's Cancel, by its button.
@@ -1989,7 +2052,7 @@ fn the_drift_dialog_s_reload_button_reloads() {
     select(&mut f.page, "jwt_secret");
     press(&mut f.page, KeyCode::Char('d'));
     std::fs::write(f.dir.path().join("komodo.ini"), "[komodo]\nport = 1\n").expect("write");
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     press(&mut f.page, KeyCode::Enter);
     f.wait_for_dialog();
     let reload = find(&mut f.page, "Reload (r)");
@@ -2151,12 +2214,12 @@ fn the_save_waiting_and_outcome_buttons_click() {
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).expect("flock");
     select(&mut f.page, "theme");
     press(&mut f.page, KeyCode::Char('d'));
-    press(&mut f.page, KeyCode::Char('v'));
+    press(&mut f.page, KeyCode::Char('s'));
     let save = find(&mut f.page, "Save (y)");
     left_click(&mut f.page, save);
     assert!(f.page.saving.is_some());
     f.wait_for_dialog();
-    let cancel = find(&mut f.page, "Cancel (c)");
+    let cancel = find(&mut f.page, "Cancel (Esc)");
     left_click(&mut f.page, cancel);
     f.settle();
     assert!(matches!(f.page.popup, Popup::Outcome { .. }));

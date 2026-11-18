@@ -279,7 +279,7 @@ fn drift(
         page.style(Role::Text).patch(page.bg(Role::ButtonBg)),
     );
     let cancel = Span::styled(
-        " Cancel (c) ",
+        " Cancel (Esc) ",
         page.style(Role::Text).patch(page.bg(Role::ButtonBg)),
     );
     let [reload_area, cancel_area] = buttons.layout(
@@ -293,7 +293,7 @@ fn drift(
     frame.render_widget(cancel, cancel_area);
     vec![
         (reload_area, KeyCode::Char('r')),
-        (cancel_area, KeyCode::Char('c')),
+        (cancel_area, KeyCode::Esc),
     ]
 }
 
@@ -375,7 +375,7 @@ fn draw_question(
                 waited.as_secs(),
                 LOCK_TIMEOUT.as_secs()
             ))];
-            let buttons = [("Cancel (c)", false, KeyCode::Char('c'))];
+            let buttons = [("Cancel (Esc)", false, KeyCode::Esc)];
             confirm(page, frame, area, " Waiting for Saltbox ", text, &buttons)
         }
         Popup::Outcome { lines, all_saved } => {

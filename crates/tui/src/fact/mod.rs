@@ -44,7 +44,8 @@
 //!   once, with its reason on the status line.
 //! - **The changes panel** lists each staged change with its undo: on the
 //!   right from 100 columns, a band at the bottom below that.
-//! - **Save** (`v`) asks first, then saves on its own thread ([`save`]),
+//! - **Save** (`s` or Ctrl+S, sb-go's keys and the log viewer's `s`) asks
+//!   first, then saves on its own thread ([`save`]),
 //!   with the "waiting for Saltbox", drift and outcome dialogs
 //!   ([`dialog`]). Quit with staged changes asks Save, Discard or Cancel.
 //!   Dialogs are tui-popup's (<https://docs.rs/tui-popup/0.7.7/tui_popup/>);
@@ -562,6 +563,11 @@ impl Page {
             self.search_key(key);
             return Flow::Redraw;
         }
+        // Ctrl+S saves, as `s` does (sb-go's keys); every other Ctrl or Alt
+        // combination does nothing.
+        if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
+            return self.act(Action::Save);
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -569,24 +575,35 @@ impl Page {
             return Flow::Unchanged;
         }
         let page = self.height.max(1);
+        // The keys every screen shares (tui spec, "Keys: one map for every
+        // screen"): `g` `G` as Home End, `b` Space as PgUp PgDn, `h` `l`
+        // as ← →.
         match key.code {
             KeyCode::Char('/') => self.searching = true,
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(ListState::select_next),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(ListState::select_previous),
-            KeyCode::PageDown => self.move_selection(|l| l.scroll_down_by(page)),
-            KeyCode::PageUp => self.move_selection(|l| l.scroll_up_by(page)),
-            KeyCode::Home => self.move_selection(ListState::select_first),
-            KeyCode::End => self.move_selection(ListState::select_last),
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.move_selection(|l| l.scroll_down_by(page));
+            }
+            KeyCode::PageUp | KeyCode::Char('b') => self.move_selection(|l| l.scroll_up_by(page)),
+            KeyCode::Home | KeyCode::Char('g') => self.move_selection(ListState::select_first),
+            KeyCode::End | KeyCode::Char('G') => self.move_selection(ListState::select_last),
             KeyCode::Enter => self.activate(),
-            KeyCode::Left => self.fold_selected(true),
-            KeyCode::Right => self.fold_selected(false),
+            KeyCode::Left | KeyCode::Char('h') => self.fold_selected(true),
+            KeyCode::Right | KeyCode::Char('l') => self.fold_selected(false),
             KeyCode::Char('u') => self.undo_selected(),
             KeyCode::Char('m') | KeyCode::Menu => self.open_menu(None),
             KeyCode::Char('e') => return self.act(Action::Edit),
             KeyCode::Char('a') => return self.act(Action::Add),
             KeyCode::Char('c') => return self.act(Action::Copy),
             KeyCode::Char('d') => return self.act(Action::Delete),
-            KeyCode::Char('v') => return self.act(Action::Save),
+            KeyCode::Char('s') => return self.act(Action::Save),
+            // Esc goes back one step: a search in effect first, as
+            // sb-go's editor did (`factui/update.go`), then it leaves.
+            KeyCode::Esc if !self.query.is_empty() => {
+                self.search.clear();
+                self.searched();
+            }
             KeyCode::Char('q') | KeyCode::Esc => return self.act(Action::Quit),
             _ => return Flow::Unchanged,
         }
@@ -1001,7 +1018,7 @@ impl Page {
                 ("Add", "a", Action::Add, can_add),
                 ("Copy", "c", Action::Copy, on_setting.is_some()),
                 (delete, "d", Action::Delete, can_delete),
-                (save, "v", Action::Save, !self.pending.is_empty()),
+                (save, "s", Action::Save, !self.pending.is_empty()),
                 ("Quit", "q", Action::Quit, true),
             ]
         };
